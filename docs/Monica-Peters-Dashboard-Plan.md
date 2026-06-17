@@ -3,7 +3,7 @@
 **Focus:** React review dashboard, human approval workflow (proposed→suggested→active), contradiction resolution UI, credibility metrics viz, injection controls.  
 **Interview Claim:** "I designed and built the human approval dashboard that enforces quality gates and makes knowledge promotion transparent and measurable."
 
-**Sprint Schedule Note:** 10 full work days (skipping Thursday June 18). Day 1 = Friday June 19. Days 9–10 (June 27–28) reserved for project completion and presentation practice/perfection. All times EOD unless noted.
+**Sprint Schedule Note:** 10 full work days (skipping Thursday June 18). Day 1 = Wednesday June 16. Days 9–10 (June 26–27) reserved for project completion and presentation practice/perfection. All times EOD unless noted.
 
 ## Overall Success Criteria (Shared)
 - MVP delivered with full pipeline.
@@ -12,14 +12,14 @@
 
 ## High-Level Phases & Personal Deliverables
 
-### Days 1–2: Project Plan, Foundation & Design (Due: End of Day 2 — Saturday, June 20)
+### Days 1–2: Project Plan Drafts, Foundation & Design (Due: End of Day 2 — Friday, June 19)
 - **Day 1 Deliverables:**
-  - Dashboard wireframes & tech stack decision (React + state management).
+  - Dashboard wireframes & team tech stack decision (React + state management).
 - **Day 2 Deliverables:**
   - Build review dashboard shell + candidate list view.
 - **Key Output:** Approved wireframes; interactive shell ready for data population; tech stack finalized with team.
 
-### Days 3–5: Parallel Core Build (Due: End of Day 5 — Tuesday, June 23)
+### Days 3–5: Parallel Core Build (Due: End of Day 5 — Monday, June 22)
 - **Day 3 Deliverables:**
   - Candidate detail view + confidence score UI components.
 - **Day 4 Deliverables:**
@@ -28,7 +28,7 @@
   - Contradiction resolution interface + credibility metrics visualization.
 - **Key Output:** Polished dashboard UI components for reviewing, scoring, and gating knowledge candidates.
 
-### Days 6–7: Integration & Human Gate (Due: End of Day 7 — Thursday, June 25)
+### Days 6–7: Integration & Human Gate (Due: End of Day 7 — Wednesday, June 24)
 - **Day 6 Deliverables:**
   - Dashboard ↔ backend API integration + approval actions wired.
 - **Day 7 Deliverables:**
@@ -36,12 +36,12 @@
   - Provenance display in UI.
 - **Key Output:** End-to-end human gate functional: users can review, resolve contradictions, promote knowledge with full audit trail visible.
 
-### Day 8: Eval Harness & Measurement (Due: End of Day 8 — Friday, June 26)
+### Day 8: Eval Harness & Measurement (Due: End of Day 8 — Thursday, June 25)
 - Dashboard polish + edge-case handling in review flow.
 - Support eval metrics visualization if needed.
 - **Key Output:** Robust, demo-ready dashboard handling real data and edge cases.
 
-### Day 9–10: Demo Polish, Documentation & Final Runs (Due: End of Day 10 — Sunday, June 28)
+### Day 9–10: Demo Polish, Documentation & Final Runs (Due: End of Day 10 — Saturday, June 27)
 - Dashboard demo-ready.
 - User flow video capture.
 - Practice Presentation contribution (Dashboard/Human Gate pillar).
