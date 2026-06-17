@@ -1,0 +1,23 @@
+---
+description: PRAXIS team-wide standards for enterprise-grade quality, consistency, and reviewability across React dashboard, ML pipeline, and eval harness.
+alwaysApply: true
+---
+
+# PRAXIS Shared Quality Standards
+
+## Commits, Reviews & GitLab
+- Use conventional commits (feat, fix, chore, docs, refactor, test) with `#<issue>` references.
+- Every MR requires at least one peer review before merge; use `review-and-ship` or `make-pr-easy-to-review` skill on every significant change.
+- Prefer small, focused MRs with clear purpose and updated descriptions when behavior changes.
+- All code must pass lint/type checks; fix issues before requesting review.
+
+## TypeScript & Code Style (applies to any TS/JS)
+- Use exhaustive switch handling for unions/enums with `never` default check.
+- Keep imports at top of file; no inline imports except for documented circular-dependency cases.
+- Error handling must preserve provenance (link back to source log lines or data contracts).
+
+## General Project Practices
+- Daily 15-min syncs; document decisions in MRs or daily notes.
+- Provenance and confidence rationale visible in all UI and outputs for interview storytelling.
+- Use existing Cursor skills (review-bugbot, review-security, canvas for wireframes) proactively.
+- No global Cursor setting changes; all project config lives in this `.cursor/rules/` for team onboarding.

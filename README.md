@@ -1,6 +1,8 @@
 # PRAXIS
 
+## Cursor & Quality Workflow (Enterprise Echelon)
 
+This repository uses committed project-level Cursor rules in `.cursor/rules/` (praxis-shared, praxis-dashboard, praxis-pipeline-eval) to enforce consistent, reviewable, interview-ready code from Day 1. All team members enable these rules. Every significant change uses `review-and-ship` or `make-pr-easy-to-review` before merge; peer review is mandatory. Daily 15-min syncs + cross-pairing on integration days ensure cohesion. These practices directly support polished deliverables, human grader appeal, and the ≥50% correction-reduction success metric.
 
 ## Getting started
 

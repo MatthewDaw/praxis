@@ -1,0 +1,23 @@
+---
+description: Monica Peters — Dashboard & Human Gate specific patterns for React review UI, human approval workflow, and credibility visualizations.
+alwaysApply: true
+---
+
+# PRAXIS Dashboard & Human Gate UI Guidelines (Monica's Pillar)
+
+## Component Structure
+- Human gate states: proposed → suggested → active with clear visual transitions and provenance display on every item.
+- Use consistent confidence/credibility score components (frequency, recency, breadth indicators) with tooltips explaining rationale.
+- Contradiction resolution UI: side-by-side comparison cards with resolution actions that update state and trigger backend approval flow.
+
+## State & Data Flow
+- Dashboard shell + candidate list on Day 2; detail views wired by Day 3.
+- All approval actions (promote, reject, resolve) must show audit trail and link to originating JSONL lines.
+- Integrate with backend API on Days 6-7; handle loading/error states with provenance context preserved.
+
+## Demo & Accessibility
+- Ensure flows are keyboard-accessible and screen-reader friendly for live demo on Days 9-10.
+- Polish edge cases (Day 8) so review experience feels effortless and trustworthy.
+- Coordinate with Dominic on eval metrics visualization embedding if needed.
+
+These patterns ensure the "human in the loop" pillar is interview-ready and supports ≥50% correction reduction narrative.

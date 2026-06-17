@@ -1,0 +1,22 @@
+---
+description: Matthew & Dominic — ML pipeline, knowledge graph, eval harness, and injection layer consistency guidelines.
+alwaysApply: true
+---
+
+# PRAXIS Pipeline, Eval & Integration Guidelines
+
+## Python & Data Contracts
+- All Python modules: strict typing, Google-style docstrings, and explicit data contracts between distillation, clustering, scoring, and dashboard API responses.
+- Provenance fields mandatory on every candidate/lesson object (source log path + line offset).
+- Eval harness outputs must include before/after correction counts, tokens, time, plus compounding curve data for dashboard consumption.
+
+## Integration Points (Days 6-7)
+- Dashboard ↔ backend: REST/GraphQL endpoints return full provenance + confidence breakdown; approval mutations trigger GitHub hook/PR creation (Dominic).
+- Knowledge injection: generated CLAUDE.md / skills include only promoted items with decay rules applied; expose injection logs for eval measurement.
+
+## Measurement & Demo Readiness
+- Fixed quirky repo tasks + metrics defined early (Day 2); cold-run baseline captured before any injection.
+- Day 8: full compounding curve measurement; identify and handle demo quirks.
+- Use `fix-ci` and `loop-on-ci` once GitLab CI is live; keep harness deterministic for credible ≥50% improvement proof.
+
+These ensure the architecture/eval pillar produces measurable, reproducible results that back the team narrative.
