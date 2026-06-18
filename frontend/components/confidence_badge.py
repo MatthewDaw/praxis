@@ -9,8 +9,6 @@ from models.candidate import Candidate, CandidateState, candidate_state_color
 
 def render_state_badge(state_label: str, state: CandidateState | None = None) -> None:
     """Color-coded lifecycle badge (proposed / suggested / active / decayed / unknown)."""
-    from models.candidate import CandidateState
-
     enum_state = state if state is not None else CandidateState(state_label)
     color = candidate_state_color(enum_state)
     st.markdown(f":{color}[**{state_label.upper()}**]")
@@ -18,7 +16,10 @@ def render_state_badge(state_label: str, state: CandidateState | None = None) ->
 
 def render_confidence_progress(confidence: float) -> None:
     """Aggregate confidence score as a progress bar."""
-    st.progress(confidence, text=f"Confidence: {confidence:.2f}")
+    st.progress(
+        confidence,
+        text=f"Confidence: {confidence:.2f}",
+    )
 
 
 def render_confidence_breakdown(candidate: Candidate) -> None:
@@ -38,18 +39,21 @@ def render_confidence_breakdown(candidate: Candidate) -> None:
         st.metric(
             "Frequency",
             f"{breakdown.frequency:.0%}",
-            help=breakdown.frequency_rationale or "How often this lesson appeared across sessions",
+            help=breakdown.frequency_rationale
+            or "How often this lesson appeared across sessions — higher means repeated evidence.",
         )
     with c2:
         st.metric(
             "Recency",
             f"{breakdown.recency:.0%}",
-            help=breakdown.recency_rationale or "How recently this pattern was observed",
+            help=breakdown.recency_rationale
+            or "How recently this pattern was observed — higher means fresher signal.",
         )
     with c3:
         st.metric(
             "Breadth",
             f"{breakdown.breadth:.0%}",
-            help=breakdown.breadth_rationale or "How many distinct contexts support this lesson",
+            help=breakdown.breadth_rationale
+            or "How many distinct contexts support this lesson — higher means broader applicability.",
         )
     render_confidence_progress(candidate.confidence)

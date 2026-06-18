@@ -24,8 +24,16 @@ import os
 import streamlit as st
 
 from components.candidate_detail import render_candidate_detail
-from components.candidate_list import filter_candidates, render_card_view, render_table_view
+from components.candidate_list import (
+    filter_candidates,
+    render_card_view,
+    render_last_action_banner,
+    render_selection_control,
+    render_table_view,
+    sync_selected_candidate,
+)
 from components.eval_metrics_embed import render_eval_metrics_embed
+from models.candidate import Candidate
 from services.data_provider import DataProvider, get_data_provider
 
 st.set_page_config(
@@ -42,8 +50,9 @@ def _ensure_provider() -> DataProvider:
 
 
 def _render_mode_banner() -> None:
-    if os.environ.get("PRAXIS_API_BASE_URL", "").strip():
-        st.caption("Live API mode — connected via PRAXIS_API_BASE_URL.")
+    api_url = os.environ.get("PRAXIS_API_BASE_URL", "").strip()
+    if api_url:
+        st.caption(f"Live API mode — `{api_url}`")
     else:
         st.caption(
             "Mock mode — local fixtures only. "
@@ -51,33 +60,66 @@ def _render_mode_banner() -> None:
         )
 
 
+def _load_candidates(provider: DataProvider) -> tuple[list[Candidate] | None, str | None]:
+    """Return candidates or (None, error_message) when the provider fails."""
+    try:
+        return provider.list_candidates(), None
+    except Exception as exc:  # noqa: BLE001 — surface API errors in UI
+        return None, str(exc)
+
+
 provider = _ensure_provider()
 
 st.title("Candidate Review Gate")
 st.markdown("Review and promote AI-learned knowledge candidates from agent sessions.")
 _render_mode_banner()
+render_last_action_banner()
 
 with st.container():
     col1, col2 = st.columns([3, 1])
     with col1:
-        search_query = st.text_input("Search", placeholder="Search by title or content...")
+        search_query = st.text_input(
+            "Search",
+            placeholder="Search by title or content...",
+            help="Filters the candidate list in real time.",
+        )
     with col2:
-        state_filter = st.selectbox("Filter by State", ["All", "proposed", "suggested", "active"])
+        state_filter = st.selectbox(
+            "Filter by State",
+            ["All", "proposed", "suggested", "active", "decayed"],
+            help="Show only candidates in the selected lifecycle state.",
+        )
 
-all_candidates = provider.list_candidates()
-filtered = filter_candidates(all_candidates, search_query=search_query, state_filter=state_filter)
+all_candidates, load_error = _load_candidates(provider)
 
-selected_for_detail = filtered[0].id if filtered else None
+if load_error:
+    st.error(
+        f"Backend unavailable — could not load candidates. ({load_error}) "
+        "Unset PRAXIS_API_BASE_URL to use mock fixtures locally."
+    )
+    all_candidates = []
+
+filtered = filter_candidates(all_candidates or [], search_query=search_query, state_filter=state_filter)
+selected_for_detail = render_selection_control(filtered)
 
 tab_table, tab_cards = st.tabs(["Table View", "Card View"])
 
 with tab_table:
-    render_table_view(filtered, provider, on_action="table")
+    render_table_view(
+        filtered,
+        provider,
+        selected_id=selected_for_detail,
+        on_action="table",
+    )
 
 with tab_cards:
     render_card_view(filtered, provider, on_action="cards")
 
-render_candidate_detail(filtered, selected_id=selected_for_detail)
+render_candidate_detail(
+    filtered,
+    selected_id=sync_selected_candidate(filtered),
+    provider=provider,
+)
 render_eval_metrics_embed()
 
 st.divider()

@@ -8,8 +8,13 @@ import pandas as pd
 import streamlit as st
 
 from components.confidence_badge import render_confidence_progress, render_state_badge
-from models.candidate import Candidate
+from models.candidate import Candidate, CandidateState, next_promotion_state
 from services.data_provider import DataProvider
+
+_SELECTED_KEY = "selected_candidate_id"
+_CONFIRM_PROMOTE_KEY = "confirm_promote_id"
+_CONFIRM_REJECT_KEY = "confirm_reject_id"
+_LAST_ACTION_KEY = "last_gate_action"
 
 
 def filter_candidates(
@@ -31,33 +36,60 @@ def filter_candidates(
     return filtered
 
 
-def _candidates_to_display_frame(candidates: list[Candidate]) -> pd.DataFrame:
-    return pd.DataFrame(
-        [
-            {
-                "title": c.title,
-                "state": c.display_state,
-                "confidence": c.confidence,
-                "provenance": c.provenance,
-                "createdAt": c.created_at,
-                "id": c.id,
-            }
-            for c in candidates
-        ]
+def sync_selected_candidate(candidates: list[Candidate]) -> str | None:
+    """Keep session selection valid against the current filtered list."""
+    if not candidates:
+        st.session_state.pop(_SELECTED_KEY, None)
+        return None
+
+    valid_ids = {c.id for c in candidates}
+    current = st.session_state.get(_SELECTED_KEY)
+    if current not in valid_ids:
+        st.session_state[_SELECTED_KEY] = candidates[0].id
+    return st.session_state[_SELECTED_KEY]
+
+
+def render_selection_control(candidates: list[Candidate]) -> str | None:
+    """Shared selectbox driving detail view and table actions."""
+    if not candidates:
+        return None
+
+    id_to_candidate = {c.id: c for c in candidates}
+    options = list(id_to_candidate.keys())
+    selected_id = sync_selected_candidate(candidates)
+    default_index = options.index(selected_id) if selected_id in options else 0
+
+    chosen = st.selectbox(
+        "Selected candidate (detail + table actions)",
+        options,
+        index=default_index,
+        format_func=lambda cid: f"{id_to_candidate[cid].title} ({id_to_candidate[cid].display_state})",
+        key="global_candidate_select",
+        help="Keyboard: Tab to this control, then arrow keys to change selection.",
     )
+    st.session_state[_SELECTED_KEY] = chosen
+    return chosen
+
+
+def render_last_action_banner() -> None:
+    """Show feedback from the most recent promote/reject action."""
+    action = st.session_state.pop(_LAST_ACTION_KEY, None)
+    if action:
+        st.success(action)
 
 
 def render_table_view(
     candidates: list[Candidate],
     provider: DataProvider,
     *,
+    selected_id: str | None,
     on_action: str,
 ) -> None:
     """Sortable table with promote/reject action row."""
     st.markdown(f"**{len(candidates)} candidates**")
 
     if not candidates:
-        st.info("No candidates match the current filter.")
+        st.info("No candidates match the current filter. Try clearing search or choosing **All** states.")
         return
 
     display_df = _candidates_to_display_frame(candidates)[
@@ -86,27 +118,38 @@ def render_table_view(
         hide_index=True,
     )
 
+    if selected_id is None:
+        return
+
     st.markdown("### Actions")
     action_col1, action_col2 = st.columns([3, 1])
     id_to_title = {c.id: c.title for c in candidates}
 
     with action_col1:
-        selected_id = st.selectbox(
-            "Select a candidate to action:",
-            list(id_to_title.keys()),
-            format_func=lambda cid: id_to_title[cid],
-            key=f"table_select_{on_action}",
-        )
+        st.caption(f"Acting on: **{id_to_title.get(selected_id, selected_id)}**")
     with action_col2:
         st.write("")
         st.write("")
         b1, b2 = st.columns(2)
         with b1:
-            if st.button("Promote", type="primary", use_container_width=True, key=f"table_promote_{on_action}"):
-                _handle_promote(provider, selected_id)
+            if st.button(
+                "Promote",
+                type="primary",
+                use_container_width=True,
+                key=f"table_promote_{on_action}",
+                help="Advance proposed → suggested → active",
+            ):
+                _begin_promote(provider, selected_id)
         with b2:
-            if st.button("Reject", use_container_width=True, key=f"table_reject_{on_action}"):
-                _handle_reject(provider, selected_id)
+            if st.button(
+                "Reject",
+                use_container_width=True,
+                key=f"table_reject_{on_action}",
+                help="Remove candidate from review queue",
+            ):
+                _begin_reject(selected_id)
+
+    _render_confirmation_dialogs(provider)
 
 
 def render_card_view(
@@ -119,7 +162,7 @@ def render_card_view(
     st.markdown(f"**{len(candidates)} candidates**")
 
     if not candidates:
-        st.info("No candidates match the current filter.")
+        st.info("No candidates match the current filter. Try clearing search or choosing **All** states.")
         return
 
     cols = st.columns(3)
@@ -135,6 +178,15 @@ def render_card_view(
                 created = datetime.fromisoformat(candidate.created_at.replace("Z", "+00:00"))
                 st.caption(f"Created: {created.strftime('%b %d, %Y')}")
 
+                if st.button(
+                    "Inspect in detail",
+                    key=f"card_inspect_{candidate.id}_{on_action}",
+                    use_container_width=True,
+                    help="Select this candidate in the detail panel below",
+                ):
+                    st.session_state[_SELECTED_KEY] = candidate.id
+                    st.rerun()
+
                 b1, b2 = st.columns(2)
                 with b1:
                     if st.button(
@@ -142,36 +194,142 @@ def render_card_view(
                         key=f"card_promo_{candidate.id}_{on_action}",
                         type="primary",
                         use_container_width=True,
+                        help="Advance lifecycle state",
                     ):
-                        _handle_promote(provider, candidate.id)
+                        _begin_promote(provider, candidate.id)
                 with b2:
                     if st.button(
                         "Reject",
                         key=f"card_rej_{candidate.id}_{on_action}",
                         use_container_width=True,
+                        help="Remove from review queue",
                     ):
-                        _handle_reject(provider, candidate.id)
+                        _begin_reject(candidate.id)
+
+    _render_confirmation_dialogs(provider)
 
 
-def _handle_promote(provider: DataProvider, candidate_id: str) -> None:
-    from models.candidate import next_promotion_state
+def _candidates_to_display_frame(candidates: list[Candidate]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "title": c.title,
+                "state": c.display_state,
+                "confidence": c.confidence,
+                "provenance": c.provenance,
+                "createdAt": c.created_at,
+                "id": c.id,
+            }
+            for c in candidates
+        ]
+    )
 
+
+def _begin_promote(provider: DataProvider, candidate_id: str) -> None:
     existing = provider.get_candidate(candidate_id)
     if existing is None:
-        st.toast("Candidate not found", icon="⚠️")
+        st.session_state[_LAST_ACTION_KEY] = "Candidate not found — list may be stale."
+        st.session_state.pop(_CONFIRM_PROMOTE_KEY, None)
         st.rerun()
         return
-    next_state = next_promotion_state(existing.state)
-    if next_state is None:
-        st.toast("Candidate is already Active", icon="⚠️")
+    if next_promotion_state(existing.state) is None:
+        st.session_state[_LAST_ACTION_KEY] = (
+            f"**{existing.title}** is already **{existing.display_state}** — no further promotion."
+        )
         st.rerun()
         return
-    provider.promote(candidate_id)
-    st.toast(f"Promoted candidate to {next_state.value.capitalize()}")
+    if existing.state is CandidateState.DECAYED:
+        st.session_state[_LAST_ACTION_KEY] = (
+            f"**{existing.title}** is **decayed** — restore via pipeline before promoting."
+        )
+        st.rerun()
+        return
+    st.session_state[_CONFIRM_PROMOTE_KEY] = candidate_id
+    st.session_state.pop(_CONFIRM_REJECT_KEY, None)
     st.rerun()
 
 
-def _handle_reject(provider: DataProvider, candidate_id: str) -> None:
-    provider.reject(candidate_id)
-    st.toast("Rejected candidate")
+def _begin_reject(candidate_id: str) -> None:
+    st.session_state[_CONFIRM_REJECT_KEY] = candidate_id
+    st.session_state.pop(_CONFIRM_PROMOTE_KEY, None)
+    st.rerun()
+
+
+def _render_confirmation_dialogs(provider: DataProvider) -> None:
+    promote_id = st.session_state.get(_CONFIRM_PROMOTE_KEY)
+    if promote_id:
+        candidate = provider.get_candidate(promote_id)
+        if candidate is None:
+            st.session_state.pop(_CONFIRM_PROMOTE_KEY, None)
+            return
+        next_state = next_promotion_state(candidate.state)
+        if next_state is None:
+            st.session_state.pop(_CONFIRM_PROMOTE_KEY, None)
+            return
+        st.warning(
+            f"Promote **{candidate.title}** from **{candidate.display_state}** "
+            f"to **{next_state.value}**?"
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Confirm promote", type="primary", key="confirm_promote_yes"):
+                _execute_promote(provider, promote_id, candidate.title, next_state)
+        with c2:
+            if st.button("Cancel", key="confirm_promote_no"):
+                st.session_state.pop(_CONFIRM_PROMOTE_KEY, None)
+                st.rerun()
+        return
+
+    reject_id = st.session_state.get(_CONFIRM_REJECT_KEY)
+    if reject_id:
+        candidate = provider.get_candidate(reject_id)
+        title = candidate.title if candidate else reject_id
+        st.warning(f"Reject **{title}** and remove it from the review queue?")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("Confirm reject", type="primary", key="confirm_reject_yes"):
+                _execute_reject(provider, reject_id, title)
+        with c2:
+            if st.button("Cancel", key="confirm_reject_no"):
+                st.session_state.pop(_CONFIRM_REJECT_KEY, None)
+                st.rerun()
+
+
+def _execute_promote(
+    provider: DataProvider,
+    candidate_id: str,
+    title: str,
+    next_state: CandidateState,
+) -> None:
+    try:
+        provider.promote(candidate_id)
+    except KeyError as exc:
+        st.session_state[_LAST_ACTION_KEY] = f"Promote failed: {exc}"
+    except ValueError as exc:
+        st.session_state[_LAST_ACTION_KEY] = f"Promote failed: {exc}"
+    except Exception as exc:
+        from services.api_client import ApiConflictError
+
+        if isinstance(exc, ApiConflictError):
+            st.session_state[_LAST_ACTION_KEY] = (
+                f"Promote conflict (409) for **{title}** — refresh and retry. ({exc})"
+            )
+        else:
+            st.session_state[_LAST_ACTION_KEY] = f"Promote failed: {exc}"
+    else:
+        st.session_state[_LAST_ACTION_KEY] = (
+            f"Promoted **{title}** to **{next_state.value}**."
+        )
+    st.session_state.pop(_CONFIRM_PROMOTE_KEY, None)
+    st.rerun()
+
+
+def _execute_reject(provider: DataProvider, candidate_id: str, title: str) -> None:
+    try:
+        provider.reject(candidate_id)
+    except KeyError as exc:
+        st.session_state[_LAST_ACTION_KEY] = f"Reject failed: {exc}"
+    else:
+        st.session_state[_LAST_ACTION_KEY] = f"Rejected **{title}**."
+    st.session_state.pop(_CONFIRM_REJECT_KEY, None)
     st.rerun()

@@ -14,11 +14,11 @@ Pillar Owner:       Monica Peters (monigarr@monigarr.com)
 Co-Leads:           Matthew Daw (ML Pipeline), Dominic Antonelli (Eval & Integration)
 Organization:       Gauntlet AI for America
 Branch:             monica/dashboard-human-gate
-Version:            0.1.0 (Day 2 shell — MVP in progress)
-Status:             Active development — shell complete, integration pending Days 6–7
+Version:            0.2.0 (Days 1–8 complete on mock; API client ready for Matthew)
+Status:             Active development — UI feature-complete on mock; awaiting live API
 Classification:     Internal — capstone sprint
 Created:            2026-06-18
-Last Updated:       2026-06-18 (docs/monica relocation + forward-compatible contract)
+Last Updated:       2026-06-18 (Day 3–8 deliverables + ApiDataProvider)
 Source of Truth:    docs/PRAXIS_Project_Plan.html
 License:            TBD — Gauntlet AI capstone (2026)
 ============================================================================
@@ -829,13 +829,13 @@ From [PRAXIS_Project_Plan.html](../PRAXIS_Project_Plan.html) and [Monica-Peters-
 |-----|-------------|--------|
 | 1 | Wireframes, Streamlit stack decision | ✅ Done |
 | 2 | Dashboard shell + candidate list | ✅ Done |
-| 3 | Candidate detail + confidence UI | 🟡 Partial — detail expander + breakdown stub shipped; pipeline breakdown Day 5 |
-| 4 | Human gate workflow UI polish | 🔲 |
-| 5 | Contradiction resolution + credibility viz | 🔲 |
-| 6 | API integration + approval actions | 🔲 |
-| 7 | Full approval flow + provenance in UI | 🔲 |
-| 8 | Edge-case polish + eval embed support | 🔲 |
-| 9–10 | Demo-ready + user flow video | 🔲 |
+| 3 | Candidate detail + confidence UI | ✅ Done — breakdown metrics, audit trail, global selection |
+| 4 | Human gate workflow UI polish | ✅ Done — confirmations, transition feedback, empty/error states |
+| 5 | Contradiction resolution + credibility viz | ✅ Done — mock resolve + breakdown tooltips |
+| 6 | API integration + approval actions | ✅ Client ready — `ApiDataProvider` wired; awaits Matthew's server |
+| 7 | Full approval flow + provenance in UI | ✅ Done on mock; live audit from API when available |
+| 8 | Edge-case polish + eval embed support | ✅ Done — `PRAXIS_EVAL_METRICS_URL`, 409 handling, API error banner |
+| 9–10 | Demo-ready + user flow video | 🔲 Rehearsal + video capture |
 
 ---
 
@@ -899,6 +899,9 @@ The dashboard connects them through contracts — not through shared mutable int
 | [PRAXIS_Project_Plan.html](../PRAXIS_Project_Plan.html) | HTML mirror + architecture diagram |
 | [Monica-Peters-Dashboard-Plan.md](Monica-Peters-Dashboard-Plan.md) | Sprint plan |
 | [monica-wireframes.md](monica-wireframes.md) | As-built UX spec |
+| [DEMO_SCRIPT.md](DEMO_SCRIPT.md) | Live demo + user-flow video beats |
+| [STANDUP_TEMPLATE.md](STANDUP_TEMPLATE.md) | Daily 10 AM standup with Tom Tarpey |
+| [RENDER_DEPLOY.md](RENDER_DEPLOY.md) | Render.com deploy notes + cold-start expectations |
 | [Matthew-Daw-ML-Pipeline-PlanDRAFT.md](../Matthew-Daw-ML-Pipeline-PlanDRAFT.md) | Upstream data producer |
 | [Dominic-Antonelli-Architecture-Eval-PlanDRAFT.md](../Dominic-Antonelli-Architecture-Eval-PlanDRAFT.md) | Downstream measurement |
 | [README.md](../README.md) | Repo overview and run instructions |

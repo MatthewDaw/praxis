@@ -47,6 +47,16 @@ class DataProvider(Protocol):
         """Reject and remove a candidate from the active review queue."""
         ...
 
+    def resolve_contradiction(
+        self,
+        contradiction_id: str,
+        *,
+        resolution: str,
+        keep_id: str,
+    ) -> Candidate:
+        """Resolve a contradiction pair; keep_id is the winning candidate."""
+        ...
+
 
 def get_data_provider() -> DataProvider:
     """

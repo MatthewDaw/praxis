@@ -17,7 +17,29 @@ def get_mock_candidate_dicts() -> list[dict]:
             "state": "proposed",
             "confidence": 0.85,
             "provenance": "logs/session_20260615.jsonl:88",
-            "createdAt": "2026-06-15T14:30:00Z"
+            "createdAt": "2026-06-15T14:30:00Z",
+            "confidenceBreakdown": {
+                "frequency": 0.82,
+                "recency": 0.88,
+                "breadth": 0.76,
+                "frequencyRationale": "Seen in 9 of 11 TypeScript sessions with union-heavy refactors",
+                "recencyRationale": "Last observed 2026-06-15 during exhaustive-switch MR review",
+                "breadthRationale": "Applies across frontend, CLI, and shared types packages",
+            },
+            "auditTrail": [
+                {
+                    "action": "distilled",
+                    "timestamp": "2026-06-15T14:30:00Z",
+                    "provenance": "logs/session_20260615.jsonl:88",
+                    "actor": "pipeline",
+                },
+                {
+                    "action": "scored",
+                    "timestamp": "2026-06-15T14:31:00Z",
+                    "provenance": "logs/session_20260615.jsonl:88",
+                    "actor": "pipeline",
+                },
+            ],
         },
         {
             "id": "cand_2",
@@ -26,7 +48,29 @@ def get_mock_candidate_dicts() -> list[dict]:
             "state": "suggested",
             "confidence": 0.92,
             "provenance": "logs/session_20260614.jsonl:214",
-            "createdAt": "2026-06-14T09:15:00Z"
+            "createdAt": "2026-06-14T09:15:00Z",
+            "confidenceBreakdown": {
+                "frequency": 0.91,
+                "recency": 0.93,
+                "breadth": 0.89,
+                "frequencyRationale": "Repeated in 14 React debugging sessions over two weeks",
+                "recencyRationale": "Observed 2026-06-14 after interval leak repro",
+                "breadthRationale": "Hooks, subscriptions, and third-party SDK integrations",
+            },
+            "auditTrail": [
+                {
+                    "action": "distilled",
+                    "timestamp": "2026-06-14T09:15:00Z",
+                    "provenance": "logs/session_20260614.jsonl:214",
+                    "actor": "pipeline",
+                },
+                {
+                    "action": "promoted_to_suggested",
+                    "timestamp": "2026-06-14T16:00:00Z",
+                    "provenance": "logs/session_20260614.jsonl:214",
+                    "actor": "human-gate",
+                },
+            ],
         },
         {
             "id": "cand_3",
@@ -35,7 +79,29 @@ def get_mock_candidate_dicts() -> list[dict]:
             "state": "active",
             "confidence": 0.98,
             "provenance": "logs/session_20260610.jsonl:52",
-            "createdAt": "2026-06-10T11:45:00Z"
+            "createdAt": "2026-06-10T11:45:00Z",
+            "confidenceBreakdown": {
+                "frequency": 0.97,
+                "recency": 0.95,
+                "breadth": 0.99,
+                "frequencyRationale": "Consistent CI hygiene correction across 6 repos",
+                "recencyRationale": "Still referenced in June 2026 pipeline reviews",
+                "breadthRationale": "GitLab CI jobs in backend, frontend, and infra repos",
+            },
+            "auditTrail": [
+                {
+                    "action": "distilled",
+                    "timestamp": "2026-06-10T11:45:00Z",
+                    "provenance": "logs/session_20260610.jsonl:52",
+                    "actor": "pipeline",
+                },
+                {
+                    "action": "promoted_to_active",
+                    "timestamp": "2026-06-11T09:00:00Z",
+                    "provenance": "logs/session_20260610.jsonl:52",
+                    "actor": "human-gate",
+                },
+            ],
         },
         {
             "id": "cand_4",
@@ -90,7 +156,8 @@ def get_mock_candidate_dicts() -> list[dict]:
             "state": "proposed",
             "confidence": 0.72,
             "provenance": "logs/nushell_contrib_20260611.jsonl:56",
-            "createdAt": "2026-06-11T16:10:00Z"
+            "createdAt": "2026-06-11T16:10:00Z",
+            "contradiction_ids": ["cand_16"],
         },
         {
             "id": "cand_10",
@@ -114,10 +181,25 @@ def get_mock_candidate_dicts() -> list[dict]:
             "id": "cand_12",
             "title": "Non-Blocking Reedline Completions",
             "content": "REPL completions must not block the main input thread. When touching Reedline completion paths, add timeout guards and verify the prompt stays interactive under slow filesystem or network-backed path providers.",
-            "state": "proposed",
+            "state": "decayed",
             "confidence": 0.68,
             "provenance": "logs/nushell_contrib_20260603.jsonl:412",
-            "createdAt": "2026-06-03T08:30:00Z"
+            "createdAt": "2026-06-03T08:30:00Z",
+            "auditTrail": [
+                {
+                    "action": "distilled",
+                    "timestamp": "2026-06-03T08:30:00Z",
+                    "provenance": "logs/nushell_contrib_20260603.jsonl:412",
+                    "actor": "pipeline",
+                },
+                {
+                    "action": "decayed",
+                    "timestamp": "2026-06-17T12:00:00Z",
+                    "provenance": "logs/nushell_contrib_20260603.jsonl:412",
+                    "actor": "pipeline",
+                    "note": "Superseded by upstream Reedline timeout defaults in 0.98+",
+                },
+            ],
         },
         {
             "id": "cand_13",
@@ -153,7 +235,8 @@ def get_mock_candidate_dicts() -> list[dict]:
             "state": "proposed",
             "confidence": 0.77,
             "provenance": "logs/nushell_contrib_20260610.jsonl:44",
-            "createdAt": "2026-06-10T09:05:00Z"
+            "createdAt": "2026-06-10T09:05:00Z",
+            "contradiction_ids": ["cand_9"],
         },
         {
             "id": "cand_17",

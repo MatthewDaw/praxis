@@ -4,9 +4,9 @@
 **Branch:** `monica/dashboard-human-gate`  
 **Created:** 2026-06-17  
 **Last updated:** 2026-06-18  
-**Status:** As-built for shipped UI on this branch (Day 2 shell + partial Day 3).
+**Status:** As-built through Day 8 (mock-complete; live API when Matthew publishes endpoints).
 
-Architecture source of truth: [CONFIDENTIAL_PRAXIS_Project_Plan.html](../PRAXIS_Project_Plan.html).
+Architecture source of truth: [PRAXIS_Project_Plan.html](../PRAXIS_Project_Plan.html).
 
 Pillar architecture: [ARCHITECTURE_MONICA.md](ARCHITECTURE_MONICA.md).
 
@@ -16,10 +16,12 @@ The human-gate dashboard is a **modular Streamlit app** under `frontend/`. Entry
 
 ```text
 frontend/app.py
-  → components/candidate_list.py      (table + card views)
-  → components/candidate_detail.py    (detail expander)
-  → components/eval_metrics_embed.py  (placeholder curve)
+  → components/candidate_list.py      (table + card views, confirmations)
+  → components/candidate_detail.py    (detail + audit trail)
+  → components/contradiction_panel.py (side-by-side + resolve actions)
+  → components/eval_metrics_embed.py  (Dominic metrics URL or placeholder)
   → services/data_provider.py         (mock or API factory)
+  → services/api_client.py            (HTTP client — Matthew's API)
 ```
 
 Lifecycle states: `proposed → suggested → active` (plus `decayed` and unrecognized API values preserved for display).
@@ -33,41 +35,44 @@ Lifecycle states: `proposed → suggested → active` (plus `decayed` and unreco
 | Header | `st.title("Candidate Review Gate")` + subtitle markdown |
 | Mode banner | Mock vs live API caption from `PRAXIS_API_BASE_URL` |
 | Search | `st.text_input` — filters title and content (case-insensitive) |
-| State filter | `st.selectbox` — All / proposed / suggested / active |
-| Table tab | `st.dataframe` with `ProgressColumn` for confidence; shared Promote/Reject row |
-| Card tab | `st.columns(3)` grid, `st.container(border=True)` per candidate |
+| State filter | `st.selectbox` — All / proposed / suggested / active / decayed |
+| Global selection | Shared selectbox drives detail view + table actions |
+| Table tab | `st.dataframe` with `ProgressColumn`; promote/reject with confirmations |
+| Card tab | `st.columns(3)` grid; **Inspect in detail** sets global selection |
 | State badge | `confidence_badge.render_state_badge` — orange/blue/green/gray |
 | Confidence | `st.progress` on cards; `ProgressColumn` in table |
 | Provenance | `st.caption` with `` `logs/<file>.jsonl:<line>` `` |
-| Actions | Promote advances one lifecycle step; Reject removes from mock queue |
+| Actions | Confirm dialogs; success banner; decayed candidates blocked from promote |
+| Error states | Empty filter message; API load failure banner in `app.py` |
 | Footer | Pillar + integration note |
 
-**Mock data:** 17 candidates in `frontend/mock_data.py` (5 generic + 12 nushell session-derived). All provenance uses `logs/<file>.jsonl:<line>`.
+**Mock data:** 17 candidates in `frontend/mock_data.py`. Includes `confidenceBreakdown` on cand_1–3, contradiction pair cand_9 ↔ cand_16, and decayed cand_12.
 
-## Screen 2: Candidate detail (partial Day 3 — shipped)
+## Screen 2: Candidate detail (Day 3 — shipped)
 
 **File:** `frontend/components/candidate_detail.py`
 
 | Element | Implementation |
 |---------|----------------|
-| Container | `st.expander("Candidate detail (Day 3)")`, expanded when list non-empty |
-| Selector | `st.selectbox` to inspect any filtered candidate |
+| Container | `st.expander("Candidate detail")`, expanded when list non-empty |
+| Selector | Synced with global selection + local selectbox |
 | Content | Full title, state, provenance, body |
-| Confidence | `render_confidence_breakdown` — metrics when breakdown present; placeholder progress bar otherwise |
-| Audit trail | Caption with `created_at`; full JSONL audit wiring Days 6–7 |
-| Extra fields | `st.expander("Additional pipeline fields")` shows `Candidate.extra` for unknown API keys |
-| Contradictions | `contradiction_panel.py` when `contradiction_ids` set (layout stub; mutations Days 6–7) |
+| Confidence | `render_confidence_breakdown` — frequency/recency/breadth metrics + tooltips |
+| Audit trail | Renders `auditTrail` entries with JSONL provenance links |
+| Extra fields | Pipeline-only keys (excludes auditTrail duplicate) |
+| Contradictions | `contradiction_panel.py` with keep-A / keep-B / defer actions |
 
-## Screen 3: Eval metrics embed (Day 8 placeholder — shipped)
+## Screen 3: Eval metrics embed (Day 8 — shipped)
 
 **File:** `frontend/components/eval_metrics_embed.py`
 
-- Collapsed expander with placeholder `st.line_chart` correction-rate curve.
-- Dominic owns computation in `eval/`; dashboard renders API/JSON only.
+- Collapsed expander with correction-rate line chart.
+- `PRAXIS_EVAL_METRICS_URL` → Dominic JSON endpoint; placeholder when unset.
+- Optional before/after correction scoreboard when API returns those fields.
 
 ## Data contract (forward-compatible)
 
-`frontend/models/candidate.py` — `Candidate.from_mapping()` is the integration surface.
+`frontend/models/candidate.py` — `Candidate.from_mapping()` is the integration surface. **Matthew handshake:** use this section + `api_client.py` endpoint list for Days 6–7 integration.
 
 ### Required for display (defaults if absent)
 
@@ -87,32 +92,30 @@ Lifecycle states: `proposed → suggested → active` (plus `decayed` and unreco
 |-------|---------|-------|
 | `confidenceBreakdown` | `confidence_breakdown` | `{ frequency, recency, breadth }` + optional rationale strings |
 | `contradictions` | `contradiction_ids` | List of ids or `{ id }` objects |
+| `auditTrail` | `audit_trail` | List of `{ action, timestamp, provenance, actor, note? }` |
 | *any other key* | — | Preserved in `Candidate.extra` and shown in detail view |
 
 **Versioning:** HTTP client sends `X-Praxis-Contract: 1`. Matthew/Dominic may extend the schema; Monica's pillar must not break on unknown fields.
 
-### Mutations (Days 6–7)
+### Mutations (implemented in `api_client.py`)
 
-| Action | Endpoint |
-|--------|----------|
-| Promote | `POST /candidates/{id}/promote` |
-| Reject | `POST /candidates/{id}/reject` |
-| Resolve contradiction | `POST /contradictions/{id}/resolve` |
+| Action | Endpoint | Body |
+|--------|----------|------|
+| Promote | `POST /candidates/{id}/promote` | `{}` → updated candidate |
+| Reject | `POST /candidates/{id}/reject` | `{ reason? }` |
+| Resolve contradiction | `POST /contradictions/{id}/resolve` | `{ resolution, keepId }` → kept candidate |
 
-Stub: `frontend/services/api_client.py`.
+409 responses surface as user-visible conflict messages (refresh + retry).
 
 ## Design notes
 
 - Streamlit-native layout — no custom CSS framework
 - Theme: `frontend/.streamlit/config.toml` (light, high-contrast defaults)
-- Keyboard/a11y polish targeted Days 8–10
+- Keyboard: Tab to selection controls; button `help` text on promote/reject/inspect
+- Deploy: `frontend/render.yaml` — see [RENDER_DEPLOY.md](RENDER_DEPLOY.md)
 
-## Remaining (not yet on this branch)
+## Remaining (Days 9–10)
 
 | Day | Item |
 |-----|------|
-| 4 | Workflow polish (confirmations, state transitions UX) |
-| 5 | Contradiction resolution actions + live credibility breakdown from pipeline |
-| 6–7 | `ApiDataProvider` HTTP wire-up, audit trail from backend |
-| 8 | Real eval metrics from Dominic's API |
-| 9–10 | Demo polish, user-flow video |
+| 9–10 | Live demo rehearsal, user-flow video capture, final a11y pass with screen reader |

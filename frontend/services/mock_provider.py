@@ -15,6 +15,9 @@ OPERATIONAL:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from typing import Any
+
 from models.candidate import Candidate, CandidateState, next_promotion_state
 from mock_data import get_mock_candidate_dicts
 
@@ -41,19 +44,12 @@ class MockDataProvider:
         next_state = next_promotion_state(candidate.state)
         if next_state is None:
             raise ValueError(f"Candidate {candidate_id!r} is already {candidate.state.value}")
-        updated = Candidate(
-            id=candidate.id,
-            title=candidate.title,
-            content=candidate.content,
-            state=next_state,
-            confidence=candidate.confidence,
-            provenance=candidate.provenance,
-            created_at=candidate.created_at,
-            confidence_breakdown=candidate.confidence_breakdown,
-            contradiction_ids=list(candidate.contradiction_ids),
-            state_label=next_state.value,
-            extra=dict(candidate.extra),
+        audit = _append_audit(
+            candidate,
+            action=f"promoted_to_{next_state.value}",
+            actor="human-gate",
         )
+        updated = _clone_candidate(candidate, state=next_state, extra=audit)
         self._candidates[candidate_id] = updated
         return updated
 
@@ -62,8 +58,87 @@ class MockDataProvider:
             raise KeyError(f"Unknown candidate id: {candidate_id!r}")
         del self._candidates[candidate_id]
 
+    def resolve_contradiction(
+        self,
+        contradiction_id: str,
+        *,
+        resolution: str,
+        keep_id: str,
+    ) -> Candidate:
+        if resolution == "defer":
+            raise ValueError("Defer is a UI-only action — no mutation performed.")
+
+        primary_id, rival_id = _parse_contradiction_pair(contradiction_id, keep_id)
+        keeper = self._require_candidate(keep_id)
+        loser_id = rival_id if keep_id == primary_id else primary_id
+        if loser_id in self._candidates:
+            self.reject(loser_id, reason=f"contradiction_resolved:{contradiction_id}")
+
+        cleared_ids = [cid for cid in keeper.contradiction_ids if cid != loser_id]
+        audit = _append_audit(
+            keeper,
+            action="contradiction_resolved",
+            actor="human-gate",
+            note=f"Kept {keep_id} over {loser_id} ({resolution})",
+        )
+        updated = _clone_candidate(keeper, contradiction_ids=cleared_ids, extra=audit)
+        self._candidates[keep_id] = updated
+        return updated
+
     def _require_candidate(self, candidate_id: str) -> Candidate:
         candidate = self._candidates.get(candidate_id)
         if candidate is None:
             raise KeyError(f"Unknown candidate id: {candidate_id!r}")
         return candidate
+
+
+def _parse_contradiction_pair(contradiction_id: str, keep_id: str) -> tuple[str, str]:
+    if "__" in contradiction_id:
+        left, right = contradiction_id.split("__", 1)
+        return left, right
+    raise ValueError(f"Invalid contradiction id: {contradiction_id!r}")
+
+
+def _append_audit(
+    candidate: Candidate,
+    *,
+    action: str,
+    actor: str,
+    note: str = "",
+) -> dict[str, Any]:
+    extra = dict(candidate.extra)
+    trail = list(extra.get("auditTrail") or extra.get("audit_trail") or [])
+    entry: dict[str, Any] = {
+        "action": action,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "provenance": candidate.provenance,
+        "actor": actor,
+    }
+    if note:
+        entry["note"] = note
+    trail.append(entry)
+    extra["auditTrail"] = trail
+    return extra
+
+
+def _clone_candidate(
+    candidate: Candidate,
+    *,
+    state: CandidateState | None = None,
+    contradiction_ids: list[str] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> Candidate:
+    resolved_state = state if state is not None else candidate.state
+    return Candidate(
+        id=candidate.id,
+        title=candidate.title,
+        content=candidate.content,
+        state=resolved_state,
+        confidence=candidate.confidence,
+        provenance=candidate.provenance,
+        created_at=candidate.created_at,
+        confidence_breakdown=candidate.confidence_breakdown,
+        contradiction_ids=list(contradiction_ids if contradiction_ids is not None else candidate.contradiction_ids),
+        state_label=resolved_state.value,
+        extra=dict(extra if extra is not None else candidate.extra),
+    )
