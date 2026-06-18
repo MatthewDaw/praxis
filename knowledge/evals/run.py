@@ -164,23 +164,14 @@ def load_case(case_dir: Path) -> EvalCase:
 
 
 def load_cases(cases_dir: Path = CASES_DIR) -> list[EvalCase]:
-    """Load every registered case (a dir containing ``case.yaml``).
-
-    Top-level case dirs are scanned first; one nested level is also supported
-    (``<group>/<case_id>/case.yaml``) so additional cases can ship without
-    requiring new top-level siblings under ``cases/``.
-    """
+    """Load every registered case (a dir containing ``case.yaml``)."""
     if not cases_dir.exists():
         return []
-    cases: list[EvalCase] = []
-    for d in sorted(cases_dir.iterdir()):
-        if not d.is_dir():
-            continue
-        if (d / "case.yaml").exists():
-            cases.append(load_case(d))
-        for sub in sorted(d.iterdir()):
-            if sub.is_dir() and (sub / "case.yaml").exists():
-                cases.append(load_case(sub))
+    cases = [
+        load_case(d)
+        for d in sorted(cases_dir.iterdir())
+        if d.is_dir() and (d / "case.yaml").exists()
+    ]
     return cases
 
 

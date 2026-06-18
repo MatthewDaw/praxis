@@ -87,7 +87,7 @@ def test_write_baseline_appends_one_row_per_case(tmp_path):
 def test_registered_example_case_runs_end_to_end():
     cases = load_cases()
     assert any(c.id == "example_add_function" for c in cases)
-    example = load_case(CASES_DIR / "iambic_poem" / "example_add_function")
+    example = next(c for c in cases if c.id == "example_add_function")
     result = run_case(example, FakeRunner())  # offline -> expected fail
     assert result.case_id == "example_add_function"
     assert result.passed is False

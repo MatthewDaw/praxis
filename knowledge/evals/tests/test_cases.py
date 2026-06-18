@@ -1,4 +1,4 @@
-﻿"""Offline harness tests for Matthew-pillar knowledge injection eval cases."""
+﻿"""Offline harness tests for registered knowledge-injection eval cases."""
 
 from knowledge.evals.run import CASES_DIR, FakeRunner, load_case, load_cases, run_case
 
@@ -67,7 +67,7 @@ def test_poison_negative_control_registered():
 
 
 def test_poison_negative_control_passes_without_os_path():
-    case = load_case(CASES_DIR / "pathlib_preference" / "poison_negative_control")
+    case = load_case(CASES_DIR / "poison_negative_control")
     scripted = {
         "poison_negative_control": (
             "from pathlib import Path\n\n"
@@ -84,7 +84,7 @@ def test_poison_negative_control_passes_without_os_path():
 
 
 def test_poison_negative_control_fails_when_poison_present():
-    case = load_case(CASES_DIR / "pathlib_preference" / "poison_negative_control")
+    case = load_case(CASES_DIR / "poison_negative_control")
     scripted = {
         "poison_negative_control": (
             "import os.path\n\n"
