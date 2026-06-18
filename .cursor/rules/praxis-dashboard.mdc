@@ -1,9 +1,11 @@
 ---
-description: Monica Peters — Dashboard & Human Gate specific patterns for React review UI, human approval workflow, and credibility visualizations.
+description: Monica Peters — Dashboard & Human Gate specific patterns for Streamlit human-gate UI in frontend/, human approval workflow, and credibility visualizations.
 alwaysApply: true
 ---
 
 # PRAXIS Dashboard & Human Gate UI Guidelines (Monica's Pillar)
+
+Architecture source of truth: `docs/CONFIDENTIAL_PRAXIS_Project_Plan.html`.
 
 ## Component Structure
 - Human gate states: proposed → suggested → active with clear visual transitions and provenance display on every item.

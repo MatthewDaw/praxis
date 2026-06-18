@@ -1,0 +1,43 @@
+---
+description: Keep PRAXIS dev branches in sync with GitLab main (origin/main) at session start and before MRs.
+alwaysApply: true
+---
+
+# PRAXIS GitLab main sync
+
+**Remote:** `origin` → `https://labs.gauntletai.com/monicapeters/praxis.git`  
+**Source of truth:** `main` on GitLab (`origin/main`). Dev work lives on feature branches (e.g. `monica/dashboard-human-gate`).
+
+## When to sync
+
+Run **before starting a work session** and **before opening a merge request**.
+
+## Standard sync (on your dev branch)
+
+```powershell
+git fetch origin main
+git merge origin/main
+```
+
+If `main` has moved, that brings those commits into your dev branch. If it's already current, Git will say "Already up to date."
+
+## Agent behavior
+
+When the user starts dashboard/pipeline/eval work or asks to open an MR:
+
+1. Confirm the current branch is a **dev/feature branch**, not `main`.
+2. Run `git fetch origin main` then `git merge origin/main` (use `;` between commands in PowerShell, not `&&`).
+3. If merge conflicts occur, resolve **on the dev branch** only — never merge dev into `main` to sync.
+4. Report: commits brought in from `main`, or "already up to date"; note any conflicts or unstaged WIP.
+
+## Optional: refresh local `main` without checkout
+
+```powershell
+git fetch origin main:main
+```
+
+## Invariants
+
+- Sync direction is always **`origin/main` → dev branch**, never dev → `main`.
+- Publish dev work with `git push origin <dev-branch>`; open MRs with **target branch `main`**.
+- Use `/sync-with-main` or the `sync-dev-with-gitlab-main` skill for the full checklist.

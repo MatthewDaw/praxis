@@ -1,5 +1,7 @@
 # Capstone Proposal — Praxis
 
+> **Historical capstone proposal** (pre-architecture lock). For the current build specification and sprint schedule, see [CONFIDENTIAL_PRAXIS_Project_Plan.html](CONFIDENTIAL_PRAXIS_Project_Plan.html).
+
 *An agent that distills its own session logs into durable, reusable knowledge.*
 
 **One line:** Claude Code's auto-memory already saves a few notes between sessions — but it's an unverified black box (no human approval, no dedup, no measurement). Praxis mines the *full* JSONL logs the agent produces, distills the real lessons, runs them through a confidence + human-approval gate, and feeds the promoted ones back into future sessions — so the agent provably stops relearning the same things and gets better over time.
@@ -36,7 +38,9 @@ This hits hard on three different axis: **(A) ML+LLM** — classical ML clusters
 **Spine — eval harness:** fixed tasks on a fixed (deliberately quirky) repo, run cold vs. with injected knowledge. Metrics: corrections, repeated failures, tokens, time, success.
 
 ## Scope
-**MVP:** ingest + segment real logs → learning-moment detection (heuristics + LLM) → LLM distillation with provenance → simple cluster/dedup + confidence → **review dashboard with the proposed→suggested→active gate** → injection via generated `CLAUDE.md`/skills → **eval harness** measuring correction-rate before/after.
+**MVP:** ingest + segment real logs → learning-moment detection (heuristics + LLM) → LLM distillation with provenance → simple cluster/dedup + confidence → **review dashboard with the proposed→suggested→active gate** → injection via **Knowledge Graph + get-context tool** (primary), with generated `CLAUDE.md`/skills as a complementary substrate → **eval harness** measuring correction-rate before/after.
+
+*Note: this proposal's original CLAUDE.md emphasis is simplified early framing; the locked architecture is in the confidential project plan.*
 
 **Stretch:** trained classifier; substrate bake-off; confidence decay + re-verification; auto outcome-correlation; contradiction-resolution UI; auto-generated hooks; cross-project/global knowledge.
 **Out of scope:** training from scratch; hosted SaaS; non–Claude-Code agents; real-time mid-session learning (we distill *between* sessions).

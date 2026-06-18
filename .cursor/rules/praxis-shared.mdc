@@ -21,3 +21,4 @@ alwaysApply: true
 - Provenance and confidence rationale visible in all UI and outputs for interview storytelling.
 - Use existing Cursor skills (review-bugbot, review-security, canvas for wireframes) proactively.
 - No global Cursor setting changes; all project config lives in this `.cursor/rules/` for team onboarding.
+- Before dev work or MRs, sync with GitLab `main` per `praxis-git-sync.mdc` or run `/sync-with-main`.

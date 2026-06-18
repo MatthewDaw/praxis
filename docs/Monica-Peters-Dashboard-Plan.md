@@ -1,6 +1,6 @@
 # Monica Peters — Dashboard & Human Gate Individual Plan
 **Role:** Dashboard & Human Gate Lead  
-**Focus:** React review dashboard, human approval workflow (proposed→suggested→active), contradiction resolution UI, credibility metrics viz, injection controls.  
+**Focus:** Streamlit human-gate dashboard (`frontend/`), human approval workflow (proposed→suggested→active), contradiction resolution UI, credibility metrics viz, injection controls. React deferred — custom UI design out of sprint scope.  
 **Interview Claim:** "I designed and built the human approval dashboard that enforces quality gates and makes knowledge promotion transparent and measurable."
 
 **Sprint Schedule Note:** 10 full work days (skipping Thursday June 18). Day 1 = Wednesday June 16. Days 9–10 (June 26–27) reserved for project completion and presentation practice/perfection. All times EOD unless noted.
@@ -14,7 +14,8 @@
 
 ### Days 1–2: Project Plan Drafts, Foundation & Design (Due: End of Day 2 — Friday, June 19)
 - **Day 1 Deliverables:**
-  - Dashboard wireframes & team tech stack decision (React + state management).
+  - Repo setup, documentation drafts, and project plan drafts.
+  - Dashboard wireframes & team tech stack decision (**Streamlit** in `frontend/`).
 - **Day 2 Deliverables:**
   - Build review dashboard shell + candidate list view.
 - **Key Output:** Approved wireframes; interactive shell ready for data population; tech stack finalized with team.

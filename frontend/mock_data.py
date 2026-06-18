@@ -1,7 +1,15 @@
+"""Mock knowledge candidates for the PRAXIS human-gate dashboard.
+
+Rows cand_6–cand_17 simulate pipeline distillation from Claude Code JSONL
+sessions while contributing to nushell/nushell — not live GitHub API data.
+"""
+
 import pandas as pd
 
-def get_mock_candidates():
-    return pd.DataFrame([
+
+def get_mock_candidate_dicts() -> list[dict]:
+    """Return mock candidates as contract-shaped dicts (camelCase createdAt)."""
+    return [
         {
             "id": "cand_1",
             "title": "TypeScript Exhaustive Switch Pattern",
@@ -46,5 +54,119 @@ def get_mock_candidates():
             "confidence": 0.88,
             "provenance": "logs/session_20260617.jsonl",
             "createdAt": "2026-06-17T10:05:00Z"
-        }
-    ])
+        },
+        # --- nushell/nushell session-derived candidates (mock) ---
+        {
+            "id": "cand_6",
+            "title": "Nu Parser: Bitwise vs Pipeline Precedence",
+            "content": "When editing the nushell parser or writing Nu expressions that mix bitwise and pipeline operators, remember that `&` binds tighter than `|`. Wrap pipeline sub-expressions in parentheses when combining them with bitwise ops, or precedence bugs will surface only in nested cases.",
+            "state": "proposed",
+            "confidence": 0.91,
+            "provenance": "logs/nushell_contrib_20260503.jsonl:142",
+            "createdAt": "2026-05-03T18:40:00Z"
+        },
+        {
+            "id": "cand_7",
+            "title": "flatten Column Rename on Parent Conflicts",
+            "content": "When building multi-stage table pipelines with `flatten`, later parent columns can collide with earlier names. Nushell renames conflicting columns automatically — always inspect output column names after each flatten stage and add explicit `rename` steps when downstream commands assume stable headers.",
+            "state": "proposed",
+            "confidence": 0.84,
+            "provenance": "logs/nushell_contrib_20260613.jsonl:89",
+            "createdAt": "2026-06-13T11:20:00Z"
+        },
+        {
+            "id": "cand_8",
+            "title": "Interrupt-Safe from json Streaming",
+            "content": "For commands like `open large.json | from json` or stdin-fed parsers, verify Ctrl+C interrupts the reader without leaving a zombie task. When implementing or testing streaming parsers, use large inputs and confirm the REPL remains responsive after interrupt.",
+            "state": "suggested",
+            "confidence": 0.79,
+            "provenance": "logs/nushell_contrib_20260614.jsonl:301",
+            "createdAt": "2026-06-14T09:55:00Z"
+        },
+        {
+            "id": "cand_9",
+            "title": "experimental_options Before Config Load",
+            "content": "Early-boot experimental flags in nushell are read from the `experimental_options` environment variable before `config.nu` is evaluated. Set this variable in the parent shell or launcher script prior to starting `nu`, not inside config, when testing features that must be active at startup.",
+            "state": "proposed",
+            "confidence": 0.72,
+            "provenance": "logs/nushell_contrib_20260611.jsonl:56",
+            "createdAt": "2026-06-11T16:10:00Z"
+        },
+        {
+            "id": "cand_10",
+            "title": "ls Hidden Directory Glob Display",
+            "content": "When fixing or testing `ls` with globs like `.*`, hidden directory names should retain their leading dot in output. Regression tests should cover both `ls .hidden` and pattern-based listings so dot-prefixed entries are not stripped or normalized away.",
+            "state": "suggested",
+            "confidence": 0.88,
+            "provenance": "logs/nushell_contrib_20260511.jsonl:178",
+            "createdAt": "2026-05-11T13:25:00Z"
+        },
+        {
+            "id": "cand_11",
+            "title": "any/all Row Conditions vs Closures",
+            "content": "Prefer row conditions over closures for simple predicates in `any` and `all` — they are easier to read and type-check. Reserve closures for multi-step logic; mixing both styles in one pipeline makes failures harder to localize during review.",
+            "state": "suggested",
+            "confidence": 0.86,
+            "provenance": "logs/nushell_contrib_20260605.jsonl:224",
+            "createdAt": "2026-06-05T10:45:00Z"
+        },
+        {
+            "id": "cand_12",
+            "title": "Non-Blocking Reedline Completions",
+            "content": "REPL completions must not block the main input thread. When touching Reedline completion paths, add timeout guards and verify the prompt stays interactive under slow filesystem or network-backed path providers.",
+            "state": "proposed",
+            "confidence": 0.68,
+            "provenance": "logs/nushell_contrib_20260603.jsonl:412",
+            "createdAt": "2026-06-03T08:30:00Z"
+        },
+        {
+            "id": "cand_13",
+            "title": "Decouple Plugin Protocol Version",
+            "content": "Plugin protocol version should not track nushell semver one-to-one. Bump protocol only when the wire format changes, and document compatibility so patch releases do not break existing plugins that only need bugfix-level shell updates.",
+            "state": "active",
+            "confidence": 0.94,
+            "provenance": "logs/nushell_contrib_20260420.jsonl:67",
+            "createdAt": "2026-04-20T14:00:00Z"
+        },
+        {
+            "id": "cand_14",
+            "title": "Guard stdout/stderr on Parent Exit",
+            "content": "Child processes spawned by the shell must not write to stdout or stderr after the parent has closed those descriptors — doing so can trigger SIGABRT on some platforms. Audit spawn/exit paths and suppress or redirect IO during teardown.",
+            "state": "suggested",
+            "confidence": 0.81,
+            "provenance": "logs/nushell_contrib_20260617.jsonl:193",
+            "createdAt": "2026-06-17T07:15:00Z"
+        },
+        {
+            "id": "cand_15",
+            "title": "enforce-runtime-annotations Opt-Out Change",
+            "content": "`enforce-runtime-annotations` is now opt-out rather than opt-in. When upgrading nushell or drafting release notes, call out this breaking behavior and verify plugins or scripts that relied on the old default still pass CI with annotations enabled.",
+            "state": "active",
+            "confidence": 0.90,
+            "provenance": "logs/nushell_contrib_20260606.jsonl:118",
+            "createdAt": "2026-06-06T12:50:00Z"
+        },
+        {
+            "id": "cand_16",
+            "title": "Experimental Flags in config.nu",
+            "content": "For most experimental nushell features, enable flags under the `$env.config` experimental section in `config.nu` so they persist across sessions. This is the preferred path for day-to-day development when flags do not need to be set before the first config parse.",
+            "state": "proposed",
+            "confidence": 0.77,
+            "provenance": "logs/nushell_contrib_20260610.jsonl:44",
+            "createdAt": "2026-06-10T09:05:00Z"
+        },
+        {
+            "id": "cand_17",
+            "title": "Symlink Directory Completion Trailing Slash",
+            "content": "Path completions for symlinked directories should normalize trailing slashes consistently between tab-complete and manual entry. Add tests for both `link/` and `link` forms so Reedline and the filesystem layer agree on the displayed path.",
+            "state": "active",
+            "confidence": 0.83,
+            "provenance": "logs/nushell_contrib_20260428.jsonl:256",
+            "createdAt": "2026-04-28T15:35:00Z"
+        },
+    ]
+
+
+def get_mock_candidates() -> pd.DataFrame:
+    """Return mock candidates as a DataFrame (legacy helper for notebooks)."""
+    return pd.DataFrame(get_mock_candidate_dicts())
