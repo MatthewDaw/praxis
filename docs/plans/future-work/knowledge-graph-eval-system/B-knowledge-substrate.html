@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Component B — Knowledge substrate</title>
+<style>
+  :root { --fg:#1c1e21; --muted:#5b616e; --bg:#fff; --accent:#2b6cb0; --rule:#e2e5ea; --code:#f5f6f8; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         color:var(--fg); background:var(--bg); max-width:880px; margin:0 auto; padding:2.5rem 1.5rem; line-height:1.6; }
+  h1 { font-size:1.9rem; margin-bottom:.2rem; }
+  h2 { font-size:1.3rem; margin-top:2.4rem; border-bottom:2px solid var(--rule); padding-bottom:.3rem; }
+  .crumb { color:var(--muted); font-size:.9rem; margin-bottom:1.5rem; }
+  .crumb a { color:var(--accent); text-decoration:none; }
+  .meta { color:var(--muted); font-size:.85rem; }
+  code { background:var(--code); padding:.1rem .35rem; border-radius:4px; font-size:.88em; }
+  .diagram { border:1px dashed #b7c0cc; border-radius:8px; padding:1rem; background:#fafbfc; }
+  .diagram .hint { color:var(--muted); font-size:.8rem; margin-bottom:.6rem; }
+  ul { padding-left:1.3rem; }
+  .field { font-weight:600; }
+  .decision { background:#f3f8fd; border-left:3px solid var(--accent); padding:.6rem 1rem; border-radius:0 6px 6px 0; margin:.8rem 0; }
+</style>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad:true, theme:'neutral' });
+</script>
+</head>
+<body>
+
+<div class="crumb">Praxis · Knowledge-Graph Eval System · <a href="../feat-knowledge-graph-eval-system-plan.html">↑ Plan overview</a></div>
+
+<h1>Component B — Knowledge substrate</h1>
+<p class="meta">Units: U3</p>
+
+<p>The Phase-1 knowledge artifact and the tool the agent uses to read it, built
+behind a swappable seam so Phase-2 selective retrieval drops in without reworking
+measurement, grading, or gating.</p>
+
+<h2>Architecture diagram</h2>
+<div class="diagram">
+  <div class="hint"><!-- Replace the Mermaid below with your own arch diagram, or drop an image:
+       <img src="diagrams/B-substrate.png" alt="Knowledge substrate" style="max-width:100%"> --></div>
+  <pre class="mermaid">
+flowchart TD
+    Ing[ingestions<br/>role: used / ignored] --> Sub[ClaudeMdSubstrate]
+    Sub -->|credibility / conflict-resolution| Doc[(CLAUDE.md)]
+    Doc --> Tool[read_tool<br/>whole-file reader]
+    Tool --> Trace[records: called → attribution U7]
+    subgraph seam [KnowledgeSubstrate / Reader protocol]
+      Sub
+      Tool
+    end
+    seam -.Phase-2 retrieving reader.-> seam
+  </pre>
+</div>
+
+<h2>Design decisions</h2>
+<div class="decision"><strong>Phase-1 substrate is a <code>CLAUDE.md</code> file; reader is a whole-file tool (KTD-1).</strong>
+  The "knowledge graph" is a generated <code>CLAUDE.md</code>; the "reader" is a registered
+  Claude tool whose function returns the entire file. No ranking, no selective
+  retrieval yet. The harness talks to a <code>Reader</code>/<code>KnowledgeSubstrate</code> protocol so
+  Phase-2 retrieval swaps in behind the same seam (see origin: Deferred — substrate bake-off).</div>
+<div class="decision"><strong>Write-time poison resistance (KTD-3, write-time half).</strong> Phase-1
+  poison-resistance asserts the poison insight is <strong>absent from the generated
+  <code>CLAUDE.md</code></strong> (write-time credibility/conflict-resolution), since the whole-file
+  reader cannot exclude at read time. A code comment + schema note records that
+  this assertion returns to retrieval-level in Phase 2. (The assertion-evaluation
+  half of KTD-3 lives in <a href="E-measurement-and-gating.html">Component E / U9</a>.)</div>
+
+<h2>U3. Phase-1 knowledge substrate and reader tool</h2>
+<p><span class="field">Goal:</span> Generate a <code>CLAUDE.md</code> from a case's <code>used</code> ingestions and expose a whole-file reader tool, behind a swappable substrate/reader seam.<br>
+<span class="field">Requirements:</span> R3 (seam for later retrieval), KTD-1, KTD-3 &nbsp;·&nbsp; <span class="field">Dependencies:</span> U1<br>
+<span class="field">Files:</span> <code>evals/knowledge/base.py</code>, <code>evals/knowledge/claude_md.py</code>, <code>evals/knowledge/read_tool.py</code>, <code>evals/tests/test_claude_md.py</code></p>
+<p><span class="field">Approach:</span> Define <code>KnowledgeSubstrate</code> (build from ingestions → produce injected artifact) and <code>Reader</code> (the tool surface the agent calls) protocols. Phase-1 <code>ClaudeMdSubstrate</code> distills <code>used</code> ingestions into a <code>CLAUDE.md</code> (distillation itself may be a thin pass for Phase 1 — generation is the seam, not the research problem). <code>read_tool</code> registers a Claude tool whose function returns the whole <code>CLAUDE.md</code> verbatim and records that it was called (for attribution, U7). <code>ignored</code>-role ingestions are routed through the same credibility/conflict-resolution path so poison cases can assert absence from the output <code>CLAUDE.md</code> (KTD-3). Keep the protocol minimal so a Phase-2 retrieving reader implements the same interface.</p>
+<p><span class="field">Patterns to follow:</span> protocol-based seams; the read tool mirrors the production injection mechanism named in <code>docs/proposal-praxis.md</code> §Inject &amp; retrieve.</p>
+<p class="field">Test scenarios:</p>
+<ul>
+  <li>Happy path: <code>used</code> ingestions produce a non-empty <code>CLAUDE.md</code> containing their lessons.</li>
+  <li>Whole-file read: the reader tool returns the exact file contents and flags itself called.</li>
+  <li>Poison exclusion: an <code>ignored</code>/conflicting ingestion is absent from the generated <code>CLAUDE.md</code> (the Phase-1 resistance signal).</li>
+  <li>Seam: a stub alternate <code>Reader</code> satisfies the protocol and is accepted by the orchestrator (compile/contract test).</li>
+  <li>Empty: a case with no <code>used</code> ingestions yields an empty/absent artifact and the injected arm degenerates to cold (asserted in U8).</li>
+</ul>
+
+</body>
+</html>

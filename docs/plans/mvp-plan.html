@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Praxis MVP — distillation, retrieval &amp; eval harness</title>
+<style>
+  :root { --fg:#1c1e21; --muted:#5b616e; --bg:#fff; --accent:#2b6cb0; --rule:#e2e5ea; --code:#f5f6f8; --good:#2f855a; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         color:var(--fg); background:var(--bg); max-width:900px; margin:0 auto; padding:2.5rem 1.5rem; line-height:1.62; }
+  h1 { font-size:2.05rem; margin-bottom:.2rem; }
+  h2 { font-size:1.4rem; margin-top:2.6rem; border-bottom:2px solid var(--rule); padding-bottom:.3rem; }
+  h3 { font-size:1.1rem; margin-top:1.7rem; color:var(--accent); }
+  .meta { color:var(--muted); font-size:.85rem; }
+  code { background:var(--code); padding:.1rem .35rem; border-radius:4px; font-size:.88em; }
+  pre.tree, pre.snip { background:var(--code); padding:1rem; border-radius:8px; overflow:auto; font-size:.82rem; line-height:1.45; }
+  .diagram { border:1px dashed #b7c0cc; border-radius:8px; padding:1rem; background:#fafbfc; margin:1rem 0; }
+  .diagram .hint { color:var(--muted); font-size:.8rem; margin-bottom:.6rem; }
+  ul { padding-left:1.3rem; }
+  a { color:var(--accent); }
+  .goal { background:#f3f8fd; border-left:3px solid var(--accent); padding:.7rem 1rem; border-radius:0 6px 6px 0; margin:1rem 0; }
+  .unit { border:1px solid var(--rule); border-radius:8px; padding:.2rem 1.1rem 1rem; margin:1.1rem 0; }
+  .unit h3 { margin-top:1rem; }
+  .field { font-weight:600; }
+  .pill { display:inline-block; font-size:.72rem; text-transform:uppercase; letter-spacing:.04em; background:#eef3f9; color:var(--accent); border-radius:20px; padding:.1rem .6rem; margin-left:.4rem; vertical-align:middle; }
+  .oos { background:#fff7ed; border-left:3px solid #dd6b20; padding:.7rem 1rem; border-radius:0 6px 6px 0; margin:1rem 0; }
+  table.def { border-collapse:collapse; width:100%; margin-top:.6rem; }
+  table.def th, table.def td { text-align:left; padding:.5rem .7rem; border-bottom:1px solid var(--rule); vertical-align:top; font-size:.92rem; }
+  table.def th { background:#f7f9fc; color:var(--muted); font-size:.8rem; text-transform:uppercase; letter-spacing:.03em; }
+  table.def td.k { white-space:nowrap; font-weight:600; }
+</style>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad:true, theme:'neutral' });
+</script>
+</head>
+<body>
+
+<h1>Praxis MVP</h1>
+<p class="meta">scope: MVP only · date: 2026-06-18 · Fuller design parked in <a href="future-work/feat-knowledge-graph-eval-system-plan.html">future-work/</a></p>
+
+<div class="goal">
+<strong>The one goal:</strong> ship the simplest possible Praxis knowledge loop (ingest → store → read) and an
+eval harness solid enough that we can <strong>fan out and write a pile of evals — most of which we expect to
+fail</strong>. Register them, get a baseline number, and iterate from there. Everything past that is deferred.
+</div>
+
+<h2>Scope</h2>
+<p>Two things, each at its absolute minimum:</p>
+<ul>
+  <li><strong>The core product</strong> — the simplest knowledge distillation/retrieval we can write: a <code>CLAUDE.md</code>
+      knowledge graph, an ingestion tool that rewrites it, and a reader tool that returns it.</li>
+  <li><strong>The eval harness</strong> — a fully spelled-out eval-case definition plus a runner that executes a case
+      and records a score, so cases can be authored and baselined en masse.</li>
+</ul>
+
+<div class="oos">
+<strong>Explicitly out of scope (parked in <a href="future-work/feat-knowledge-graph-eval-system-plan.html">future-work</a>):</strong>
+selective/ranked retrieval, real knowledge-graph structures, substrate bake-offs, cold-vs-injected lift,
+attribution/context-control metrics, poison-resistance, per-case ε tuning, the diff-scoped selector, the
+git-committed scoreboard with verify/compare, and the GitLab CI gate. None of it blocks writing and baselining evals.
+</div>
+
+<h2>Architecture at a glance</h2>
+<div class="diagram">
+  <div class="hint"><!-- Replace with your own arch diagram or an image: <img src="diagrams/mvp.png" style="max-width:100%"> --></div>
+<pre class="mermaid">
+flowchart TD
+    subgraph product [Core product — the knowledge loop]
+        Input[arbitrary insight string] --> Ingest[Ingestion tool<br/>hardcoded update prompt + input → Claude]
+        Ingest --> KG[(CLAUDE.md<br/>the knowledge graph)]
+        KG --> Reader[Reader tool<br/>returns full CLAUDE.md]
+    end
+    subgraph harness [Eval harness]
+        Case[EvalCase<br/>seed prompt · target commit · start commit? · checks · rubric] --> Runner
+        Reader --> Runner[Runner<br/>headless Claude Code on seed prompt]
+        Runner --> Output[(produced output / diff)]
+        Output --> Checks[deterministic python checks]
+        Output --> Rubric[rubric grade]
+        Checks --> Score[CaseResult + baseline record]
+        Rubric --> Score
+    end
+</pre>
+</div>
+
+<h2>Part 1 — Core product (simplest knowledge loop)</h2>
+
+<p>Strict OOP: each of the three core pieces is an <strong>abstract parent</strong> that pins down the function names and
+their typed inputs/outputs. Concrete <strong>variants</strong> subclass the parent and solve the same problem differently
+(MVP ships one trivial variant of each). What must be frozen <em>now</em> is the parent contracts below — variants are free to churn.</p>
+
+<h3>Core contracts (freeze these now)</h3>
+
+<p><span class="field">Knowledge graph</span> — the storage primitive both other pieces depend on. MVP variant is a <code>CLAUDE.md</code> file.</p>
+<pre class="snip">
+# praxis/knowledge/knowledge_graph/parent_knowledge_graph.py
+from abc import ABC, abstractmethod
+
+class KnowledgeGraph(ABC):
+    """The knowledge store. The 'graph' is whatever a variant persists."""
+
+    @abstractmethod
+    def read(self) -> str:
+        """Return the full current knowledge content."""
+
+    @abstractmethod
+    def write(self, content: str) -> None:
+        """Replace the stored knowledge with `content`."""
+
+# variant: knowledge_graph_variants/claude_md_graph.py
+#   class ClaudeMdGraph(KnowledgeGraph): def __init__(self, path: Path): ...
+#   read() returns the file text; write() overwrites it.
+</pre>
+
+<p><span class="field">Ingestor</span> — folds an arbitrary insight string into the graph. MVP variant = hardcoded update prompt + one Claude call.</p>
+<pre class="snip">
+# praxis/knowledge/injestion/parent_injestor.py
+from abc import ABC, abstractmethod
+from praxis.knowledge.knowledge_graph.parent_knowledge_graph import KnowledgeGraph
+
+class Ingestor(ABC):
+    """Distills an insight into the knowledge graph."""
+
+    def __init__(self, graph: KnowledgeGraph) -> None:
+        self.graph = graph
+
+    @abstractmethod
+    def ingest(self, insight: str) -> str:
+        """Fold `insight` into the graph, persist it via self.graph.write(),
+        and return the new graph content."""
+
+# variant: injestor_variants/prompt_injestor.py
+#   class PromptIngestor(Ingestor):
+#       def __init__(self, graph, llm): ...
+#       ingest(insight): new = llm(UPDATE_PROMPT, self.graph.read(), insight)
+#                        self.graph.write(new); return new
+#   UPDATE_PROMPT is a single hardcoded constant for MVP.
+</pre>
+
+<p><span class="field">Graph reader</span> — retrieves knowledge for the agent, given current context. Signature takes <code>context</code> now even though the MVP variant ignores it and returns everything.</p>
+<pre class="snip">
+# praxis/knowledge/graph_reader/parent_graph_reader.py
+from abc import ABC, abstractmethod
+from praxis.knowledge.knowledge_graph.parent_knowledge_graph import KnowledgeGraph
+
+class GraphReader(ABC):
+    """Retrieves knowledge for the agent, given current context."""
+
+    def __init__(self, graph: KnowledgeGraph) -> None:
+        self.graph = graph
+
+    @abstractmethod
+    def read(self, context: str | None = None) -> str:
+        """Return knowledge relevant to `context`."""
+
+# variant: grapher_reader_variants/whole_file_reader.py
+#   class WholeFileReader(GraphReader):
+#       def read(self, context=None) -> str: return self.graph.read()  # context ignored
+#   A thin adapter registers read() as a Claude tool; the method stays pure.
+</pre>
+
+<div class="unit">
+<h3>M1. <code>KnowledgeGraph</code> parent + <code>ClaudeMdGraph</code> variant <span class="pill">product</span></h3>
+<p><span class="field">MVP done when:</span> <code>ClaudeMdGraph(path).read()/.write()</code> round-trips a <code>CLAUDE.md</code> file. The "graph" is just the file text — no structure, no index.</p>
+</div>
+
+<div class="unit">
+<h3>M2. <code>Ingestor</code> parent + <code>PromptIngestor</code> variant <span class="pill">product</span></h3>
+<p><span class="field">MVP done when:</span> <code>PromptIngestor(graph, llm).ingest("some insight")</code> feeds the hardcoded <code>UPDATE_PROMPT</code> + current graph + insight to Claude, writes the result back, and returns the new content.</p>
+</div>
+
+<div class="unit">
+<h3>M3. <code>GraphReader</code> parent + <code>WholeFileReader</code> variant <span class="pill">product</span></h3>
+<p><span class="field">MVP done when:</span> <code>WholeFileReader(graph).read()</code> returns the full graph, and a thin adapter exposes it as a registered Claude tool the agent under eval can call.</p>
+</div>
+
+<h2>Part 2 — Eval harness</h2>
+
+<h3>The eval-case definition (spelled out in full)</h3>
+<p>An <code>EvalCase</code> is exactly these fields — nothing more for MVP:</p>
+<table class="def">
+  <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td class="k">deterministic_checks</td><td>Python code that runs against the produced output and returns pass/fail (e.g. "tests pass", "function X exists", "string Y present").</td></tr>
+    <tr><td class="k">rubric</td><td>A checklist scored by an LLM judge for the qualitative things deterministic checks can't capture.</td></tr>
+    <tr><td class="k">target_commit</td><td>The git commit representing the desired end state — the reference the checks/rubric are authored against.</td></tr>
+    <tr><td class="k">start_commit <span class="pill">optional</span></td><td>The commit the agent starts from. Optional — absent means start from an empty/clean baseline.</td></tr>
+    <tr><td class="k">seed_prompt</td><td>The instruction handed to the agent (e.g. "build this feature").</td></tr>
+  </tbody>
+</table>
+
+<h3>The schema — <code>eval_def.py</code> (Pydantic, frozen now)</h3>
+<p>Cases are authored as data (YAML undecided but likely) and load into this model. Deterministic checks are
+<strong>references</strong> to callables under <code>evals/deterministic_checks/</code>; the rubric is inline for MVP.</p>
+<pre class="snip">
+# praxis/knowledge/evals/eval_def.py
+from pydantic import BaseModel, Field, model_validator
+
+class DeterministicCheckRef(BaseModel):
+    """Points at a registered callable in evals/deterministic_checks/."""
+    name: str
+    ref: str                      # dotted path, e.g. "deterministic_checks.builds:tests_pass"
+    params: dict = Field(default_factory=dict)
+
+class RubricItem(BaseModel):
+    id: str
+    criterion: str                # what the LLM judge evaluates
+    weight: float = 1.0
+
+class Rubric(BaseModel):
+    id: str
+    items: list[RubricItem]
+
+class EvalCase(BaseModel):
+    id: str
+    seed_prompt: str                          # instruction handed to the agent
+    target_commit: str                        # desired end state / reference
+    start_commit: str | None = None           # optional; None => clean baseline
+    repo: str | None = None                   # where the commits live (defaults to this repo)
+    deterministic_checks: list[DeterministicCheckRef] = Field(default_factory=list)
+    rubric: Rubric | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one_grader(self):
+        if not self.deterministic_checks and self.rubric is None:
+            raise ValueError("a case needs deterministic_checks and/or a rubric")
+        return self
+
+# --- the contracts a registered check and a run must satisfy ---
+
+class CheckResult(BaseModel):
+    name: str
+    passed: bool
+    evidence: str = ""
+
+# a deterministic check is:  Callable[[EvalContext], CheckResult]
+#   where EvalContext carries the produced output + checkout path.
+
+class CaseResult(BaseModel):
+    case_id: str
+    checks: list[CheckResult]
+    rubric_score: float | None = None
+    passed: bool                              # overall verdict for the baseline row
+</pre>
+
+<div class="unit">
+<h3>M4. <code>EvalCase</code> schema + loader <span class="pill">harness</span></h3>
+<p><span class="field">What it is:</span> the Pydantic models above (in <code>eval_def.py</code>) plus a loader from an on-disk case (YAML + referenced check files). Validation: <code>seed_prompt</code> + <code>target_commit</code> required; <code>start_commit</code> optional; at least one of checks/rubric present (enforced by the validator).</p>
+<p><span class="field">MVP done when:</span> a case file loads into <code>EvalCase</code> and round-trips, and a <code>DeterministicCheckRef.ref</code> resolves to a real callable.</p>
+</div>
+
+<div class="unit">
+<h3>M5. Deterministic check runner <span class="pill">harness</span></h3>
+<p><span class="field">What it is:</span> runs a case's Python checks against the produced output / checkout and returns structured pass/fail + evidence. Checks are plain Python so authors can write anything (run the repo's tests, grep for a symbol, assert a file exists).</p>
+<p><span class="field">MVP done when:</span> a known-good output passes its checks and a known-bad one fails, with which check failed reported.</p>
+</div>
+
+<div class="unit">
+<h3>M6. Rubric grader <span class="pill">harness</span></h3>
+<p><span class="field">What it is:</span> loads a case's rubric and grades the produced output with an LLM judge (each rubric item judged with quoted evidence; total = item aggregate). The judge LLM client is injected so it can be stubbed in tests.</p>
+<p><span class="field">MVP done when:</span> a stubbed judge returns per-item results and an aggregate score for a given output.</p>
+</div>
+
+<div class="unit">
+<h3>M7. Runner <span class="pill">harness</span></h3>
+<p><span class="field">What it is:</span> the thing that actually executes a case. Check out <code>start_commit</code> (or a clean base), make the knowledge available (place <code>CLAUDE.md</code> + register the M3 reader tool), run the <code>seed_prompt</code> through <strong>headless Claude Code</strong>, and capture the produced output (diff / files / text). Then hand the output to M5 + M6 to grade.</p>
+<p><span class="field">MVP done when:</span> given a case, it produces a graded <code>CaseResult</code>. Keep the Claude Code invocation thin; a fake runner backs the harness's own tests so CI stays offline.</p>
+</div>
+
+<div class="unit">
+<h3>M8. Case registry + baseline record <span class="pill">harness</span></h3>
+<p><span class="field">What it is:</span> a place to register cases and record their scores so a baseline exists to iterate against. MVP = a directory of cases + a plain JSON/JSONL results file written by a run. No verify, no compare, no gate — just "run the registered cases and write down what they scored."</p>
+<p><span class="field">MVP done when:</span> running the suite emits a results file with one row per case; re-running reproduces comparable numbers.</p>
+</div>
+
+<div class="unit">
+<h3>M9. Worked example case (expected to fail) <span class="pill">harness</span></h3>
+<p><span class="field">What it is:</span> one real end-to-end case proving the whole loop runs — a seed prompt, a target commit, deterministic checks, and a rubric. It's fine (expected, even) that the agent doesn't pass it yet; the point is the harness <em>runs</em> and records the failure as a baseline.</p>
+<p><span class="field">MVP done when:</span> the case runs end-to-end through M7 → M5/M6 → M8 and produces a recorded (failing) score. This is the template every future eval is cloned from.</p>
+</div>
+
+<h2>Module layout (uv project, OOP)</h2>
+<p>Each core piece is a <code>parent_*.py</code> abstract base plus a <code>*_variants/</code> folder of concrete implementations.</p>
+<pre class="tree">
+praxis/
+  knowledge/
+    injestion/
+      parent_injestor.py            # M2 abstract Ingestor (ingest contract)
+      injestor_variants/
+        prompt_injestor.py          # M2 hardcoded UPDATE_PROMPT + Claude call
+    knowledge_graph/
+      parent_knowledge_graph.py     # M1 abstract KnowledgeGraph (read/write)
+      knowledge_graph_variants/
+        claude_md_graph.py          # M1 CLAUDE.md-backed variant
+    graph_reader/
+      parent_graph_reader.py        # M3 abstract GraphReader (read(context))
+      grapher_reader_variants/
+        whole_file_reader.py        # M3 returns full graph; + Claude-tool adapter
+    run.py                          # wires a concrete trio (ingest/read demo loop)
+    evals/
+      eval_def.py                   # M4 Pydantic EvalCase + result models
+      run.py                        # M5–M8 load cases, run, grade, write baseline
+      deterministic_checks/         # registered Python checks (referenced by cases)
+        builds.py                   # e.g. tests_pass(ctx) -> CheckResult
+      cases/
+        &lt;example&gt;/case.yaml         # M9 first case (expected to fail)
+      results/
+        baseline.jsonl              # M8 one row per case per run
+      tests/
+</pre>
+<p class="meta">M5 (check runner), M6 (rubric grader), M7 (headless Claude Code runner + fake), and M8 (registry + baseline writer) live within <code>evals/run.py</code> and its helpers for MVP; split into modules when they grow.</p>
+
+<h2>Definition of done for the MVP</h2>
+<ul>
+  <li>I can call <code>ingest("some insight")</code> and watch <code>CLAUDE.md</code> change.</li>
+  <li>An agent run can call the reader tool and get the whole <code>CLAUDE.md</code> back.</li>
+  <li>I can write a case (5 fields), register it, run it, and get a recorded score — even a failing one.</li>
+  <li>The example case proves the pipeline end-to-end, giving everyone a template to fan out from.</li>
+</ul>
+<p>Once that baseline exists, the harness grows into the fuller design in
+<a href="future-work/feat-knowledge-graph-eval-system-plan.html">future-work/</a> (lift, scoreboard, CI gate, real retrieval) without rework.</p>
+
+</body>
+</html>

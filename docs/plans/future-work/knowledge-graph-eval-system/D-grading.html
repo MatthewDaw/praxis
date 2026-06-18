@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Component D — Grading</title>
+<style>
+  :root { --fg:#1c1e21; --muted:#5b616e; --bg:#fff; --accent:#2b6cb0; --rule:#e2e5ea; --code:#f5f6f8; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         color:var(--fg); background:var(--bg); max-width:880px; margin:0 auto; padding:2.5rem 1.5rem; line-height:1.6; }
+  h1 { font-size:1.9rem; margin-bottom:.2rem; }
+  h2 { font-size:1.3rem; margin-top:2.4rem; border-bottom:2px solid var(--rule); padding-bottom:.3rem; }
+  .crumb { color:var(--muted); font-size:.9rem; margin-bottom:1.5rem; }
+  .crumb a { color:var(--accent); text-decoration:none; }
+  .meta { color:var(--muted); font-size:.85rem; }
+  code { background:var(--code); padding:.1rem .35rem; border-radius:4px; font-size:.88em; }
+  .diagram { border:1px dashed #b7c0cc; border-radius:8px; padding:1rem; background:#fafbfc; }
+  .diagram .hint { color:var(--muted); font-size:.8rem; margin-bottom:.6rem; }
+  ul { padding-left:1.3rem; }
+  .field { font-weight:600; }
+  .decision { background:#f3f8fd; border-left:3px solid var(--accent); padding:.6rem 1rem; border-radius:0 6px 6px 0; margin:.8rem 0; }
+</style>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad:true, theme:'neutral' });
+</script>
+</head>
+<body>
+
+<div class="crumb">Praxis · Knowledge-Graph Eval System · <a href="../feat-knowledge-graph-eval-system-plan.html">↑ Plan overview</a></div>
+
+<h1>Component D — Grading</h1>
+<p class="meta">Units: U5, U6, U7</p>
+
+<p>Turns a <code>RunResult</code> into a normalized <code>match</code> score per target type, plus the
+attribution and context-control metrics that make "the knowledge was actually
+used, without bloat" measurable. All three target graders compose the same
+shared primitives (deterministic checks + frozen-rubric judge).</p>
+
+<h2>Architecture diagram</h2>
+<div class="diagram">
+  <div class="hint"><!-- Replace the Mermaid below with your own arch diagram, or drop an image:
+       <img src="diagrams/D-grading.png" alt="Grading" style="max-width:100%"> --></div>
+  <pre class="mermaid">
+flowchart TD
+    subgraph core [U5 grading core]
+      Check[Check interface]
+      Rubric[RubricJudge<br/>frozen, versioned]
+      Shared[shared: credibility +<br/>conflict-resolution]
+    end
+    core --> CodeT[U6 code_target<br/>behavioral / oracle]
+    core --> DocT[U6 doc_target<br/>required-decisions + rubric]
+    core --> TickT[U6 tickets_target<br/>semantic precision/recall]
+    CodeT --> Match[(match in 0..1 + evidence)]
+    DocT --> Match
+    TickT --> Match
+    Match --> Attr[U7 attribution +<br/>context-control]
+  </pre>
+</div>
+
+<h2>Design decisions</h2>
+<div class="decision"><strong>Autonomous grading, deterministic-first (R4).</strong> A frozen, versioned rubric +
+  LLM judge where determinism is not possible; credibility/conflict-resolution checks are
+  shared across all target types. The judge LLM client is injected so harness tests stub it.</div>
+<div class="decision"><strong>Context control is first-class, efficiency subsidiary (R3).</strong> Attribution tracks
+  present-vs-used knowledge; <code>CLAUDE.md</code> size + used/present ratio are the gating-relevant
+  signals, while tokens/time/turns are recorded but explicitly not part of the gate.</div>
+
+<h2>U5. Grading core — deterministic checks, frozen rubric judge, shared checks</h2>
+<p><span class="field">Goal:</span> Provide the grading primitives all target types share: deterministic check runner, frozen-rubric LLM judge, and shared credibility/conflict-resolution checks.<br>
+<span class="field">Requirements:</span> R4 &nbsp;·&nbsp; <span class="field">Dependencies:</span> U4<br>
+<span class="field">Files:</span> <code>evals/grading/base.py</code>, <code>evals/grading/rubric.py</code>, <code>evals/grading/shared.py</code>, <code>evals/tests/test_grading_core.py</code></p>
+<p><span class="field">Approach:</span> <code>Check</code> interface (input: <code>RunResult</code> + target → <code>CheckResult{passed, score, evidence}</code>). <code>RubricJudge</code> loads a <strong>frozen, versioned rubric</strong> (checklist items, each judged separately with quoted evidence) by <code>rubric_id</code>; the LLM call is injected so tests stub it. <code>shared.py</code> holds credibility and conflict-resolution checks usable by any target type (R4: "shared metrics across target types"). Rubrics live as versioned files under the case <code>target/</code>; humans edit them offline (no runtime human feedback).</p>
+<p><span class="field">Patterns to follow:</span> inject the judge LLM client; keep rubric IDs stable and file-backed for git versioning.</p>
+<p class="field">Test scenarios:</p>
+<ul>
+  <li>Happy path: a deterministic check over a known output yields the expected pass/score/evidence.</li>
+  <li>Rubric judge: a stubbed judge over a rubric returns per-item evidence-bearing results; total is the item aggregate.</li>
+  <li>Frozen rubric: loading by <code>rubric_id</code> returns the exact committed checklist; an unknown id errors.</li>
+  <li>Shared check: the conflict-resolution check flags an output that adopts a known-contradictory claim.</li>
+  <li>Determinism: identical inputs to a deterministic check produce identical results across calls.</li>
+</ul>
+
+<h2>U6. Per-target graders (code / requirements doc / tickets)</h2>
+<p><span class="field">Goal:</span> Implement <code>match</code> scoring for each of the three target kinds, reusing U5 primitives.<br>
+<span class="field">Requirements:</span> R4, and origin "three targets ⇒ three graders" &nbsp;·&nbsp; <span class="field">Dependencies:</span> U5<br>
+<span class="field">Files:</span> <code>evals/grading/code_target.py</code>, <code>evals/grading/doc_target.py</code>, <code>evals/grading/tickets_target.py</code>, <code>evals/tests/test_target_graders.py</code></p>
+<p><span class="field">Approach:</span></p>
+<ul>
+  <li><strong>Code:</strong> behavioral-first — run the target repo's tests / case-specified oracle checks against the injected output applied to the U2 checkout; the gold commit/PR is a reference, not a diff answer-key.</li>
+  <li><strong>Requirements doc:</strong> required-decision presence (deterministic "must mention X") + frozen-rubric judge for coverage/quality.</li>
+  <li><strong>Tickets:</strong> semantic set match — precision/recall of produced units of work vs target units, order-insensitive (judge-assisted equivalence).</li>
+</ul>
+<p>Each returns a normalized <code>match</code> score in <code>[0,1]</code> plus evidence, so lift is comparable across kinds.</p>
+<p><span class="field">Patterns to follow:</span> all three compose <code>Check</code>/<code>RubricJudge</code> from U5; no bespoke LLM calls outside the injected judge.</p>
+<p class="field">Test scenarios:</p>
+<ul>
+  <li>Code happy path: output passing the oracle checks scores high; output failing them scores low (runner + checks faked).</li>
+  <li>Code non-diff: an alternative-but-correct implementation that passes tests is NOT penalized for differing from the gold commit.</li>
+  <li>Doc: a doc covering all required decisions scores higher than one missing a decision; missing-decision is identified by name.</li>
+  <li>Tickets precision/recall: target of 4 units vs produced 3-correct+1-spurious yields the expected precision/recall.</li>
+  <li>Tickets order-insensitivity: reordering produced tickets does not change the score.</li>
+  <li>Normalization: each grader returns <code>[0,1]</code>.</li>
+</ul>
+
+<h2>U7. Attribution and context-control metrics</h2>
+<p><span class="field">Goal:</span> Capture whether injected knowledge was <em>used</em> (not just present) and the context-control metrics that make "no bloat" measurable.<br>
+<span class="field">Requirements:</span> R1 (attribution sub-metric), R3 &nbsp;·&nbsp; <span class="field">Dependencies:</span> U6<br>
+<span class="field">Files:</span> <code>evals/attribution.py</code>, <code>evals/tests/test_attribution.py</code></p>
+<p><span class="field">Approach:</span> From a <code>RunResult</code>, classify attribution: <code>caused</code> (output reflects an injected insight — citation/match), <code>correlated</code>, or <code>unused</code> (a win with no injected insight used = flagged false positive for the knowledge system). Context-control metrics for Phase 1: size of injected <code>CLAUDE.md</code>, and used/present ratio (since the whole file is injected, "retrieved more than needed" surfaces as file bloat vs. what the output actually used). Efficiency (tokens/time/turns) is recorded but explicitly subsidiary. A code comment notes that in Phase 2 (selective reader) the present/retrieved distinction becomes real and the poison signal returns to retrieval-level.</p>
+<p><span class="field">Patterns to follow:</span> read the read-tool trace and output evidence captured by U3/U4; no new LLM calls unless used-detection requires the injected judge.</p>
+<p class="field">Test scenarios:</p>
+<ul>
+  <li>Caused: output reflecting an injected insight is classed <code>caused</code>.</li>
+  <li>Unused false-positive: a passing injected run that used no injected insight is flagged <code>unused</code>.</li>
+  <li>Context-control: a larger <code>CLAUDE.md</code> with low used/present ratio reports the expected bloat metric.</li>
+  <li>Subsidiarity: efficiency metrics are present but not part of the gating signal returned (assert separation).</li>
+</ul>
+
+</body>
+</html>

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Component F — Worked examples</title>
+<style>
+  :root { --fg:#1c1e21; --muted:#5b616e; --bg:#fff; --accent:#2b6cb0; --rule:#e2e5ea; --code:#f5f6f8; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         color:var(--fg); background:var(--bg); max-width:880px; margin:0 auto; padding:2.5rem 1.5rem; line-height:1.6; }
+  h1 { font-size:1.9rem; margin-bottom:.2rem; }
+  h2 { font-size:1.3rem; margin-top:2.4rem; border-bottom:2px solid var(--rule); padding-bottom:.3rem; }
+  .crumb { color:var(--muted); font-size:.9rem; margin-bottom:1.5rem; }
+  .crumb a { color:var(--accent); text-decoration:none; }
+  .meta { color:var(--muted); font-size:.85rem; }
+  code { background:var(--code); padding:.1rem .35rem; border-radius:4px; font-size:.88em; }
+  .diagram { border:1px dashed #b7c0cc; border-radius:8px; padding:1rem; background:#fafbfc; }
+  .diagram .hint { color:var(--muted); font-size:.8rem; margin-bottom:.6rem; }
+  ul { padding-left:1.3rem; }
+  .field { font-weight:600; }
+</style>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad:true, theme:'neutral' });
+</script>
+</head>
+<body>
+
+<div class="crumb">Praxis · Knowledge-Graph Eval System · <a href="../feat-knowledge-graph-eval-system-plan.html">↑ Plan overview</a></div>
+
+<h1>Component F — Worked examples</h1>
+<p class="meta">Units: U13</p>
+
+<p>One end-to-end example case per target kind (plus a poison/negative control),
+shipped as fixtures, proving the whole harness runs end-to-end under the
+deterministic fake runner. These are the template for all future and bootstrapped
+cases.</p>
+
+<h2>Architecture diagram</h2>
+<div class="diagram">
+  <div class="hint"><!-- Replace the Mermaid below with your own arch diagram, or drop an image:
+       <img src="diagrams/F-examples.png" alt="Worked examples" style="max-width:100%"> --></div>
+  <pre class="mermaid">
+flowchart LR
+    Code[code-target case] --> E2E[e2e smoke<br/>FakeRunner]
+    Doc[requirements-doc case] --> E2E
+    Tick[ticket-list case] --> E2E
+    Poison[poison / negative-control case] --> E2E
+    E2E --> Pipe[cold+injected → grade → attribute → assert → scoreboard]
+  </pre>
+</div>
+
+<h2>U13. Worked example cases (one per target type)</h2>
+<p><span class="field">Goal:</span> Ship one end-to-end example case per target kind as fixtures, including a poison case, proving the harness runs end-to-end.<br>
+<span class="field">Requirements:</span> R2, R6 (entry points), exercises U1–U10 &nbsp;·&nbsp; <span class="field">Dependencies:</span> U10<br>
+<span class="field">Files:</span> <code>evals/cases/&lt;code-case&gt;/…</code>, <code>evals/cases/&lt;doc-case&gt;/…</code>, <code>evals/cases/&lt;tickets-case&gt;/…</code>, <code>evals/cases/&lt;poison-case&gt;/…</code>, <code>evals/tests/test_examples_e2e.py</code></p>
+<p><span class="field">Approach:</span> Author a small code-target case (against a real pinned GitHub or GitLab repo+commit), a requirements-doc case, a ticket-list case, and a poison/negative-control case (an <code>ignored</code> conflicting ingestion). Each includes ingestions, seed prompt, target, frozen rubric where applicable, and an assertion. An e2e smoke test runs them under <code>FakeRunner</code> so CI verifies the whole pipeline deterministically; the real-runner path is exercised manually/integration.</p>
+<p><span class="field">Patterns to follow:</span> these fixtures are the template for all future cases and for later bootstrapped cases (R10).</p>
+<p class="field">Test scenarios:</p>
+<ul>
+  <li>E2e (fake): each example case runs cold+injected → grade → attribute → assert → scoreboard without error.</li>
+  <li>Poison case: the negative-control case passes only when the poison is absent from the generated <code>CLAUDE.md</code>.</li>
+  <li>Schema: every example case validates against U1.</li>
+  <li>Sufficiency sanity: each helpfulness example is constructed so cold under-performs and injected improves under <code>FakeRunner</code> scripting (encodes the origin sufficiency intent).</li>
+</ul>
+
+</body>
+</html>

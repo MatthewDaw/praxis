@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>feat: Knowledge-Graph Eval System</title>
+<style>
+  :root { --fg:#1c1e21; --muted:#5b616e; --bg:#fff; --accent:#2b6cb0; --rule:#e2e5ea; --code:#f5f6f8; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+         color:var(--fg); background:var(--bg); max-width:920px; margin:0 auto; padding:2.5rem 1.5rem; line-height:1.6; }
+  h1 { font-size:2.1rem; margin-bottom:.2rem; }
+  h2 { font-size:1.4rem; margin-top:2.6rem; border-bottom:2px solid var(--rule); padding-bottom:.3rem; }
+  h3 { font-size:1.05rem; margin-top:1.6rem; }
+  .meta { color:var(--muted); font-size:.85rem; }
+  code { background:var(--code); padding:.1rem .35rem; border-radius:4px; font-size:.88em; }
+  pre.tree { background:var(--code); padding:1rem; border-radius:8px; overflow:auto; font-size:.82rem; line-height:1.45; }
+  .diagram { border:1px dashed #b7c0cc; border-radius:8px; padding:1rem; background:#fafbfc; margin:1rem 0; }
+  ul { padding-left:1.3rem; }
+  a { color:var(--accent); }
+  table.features { border-collapse:collapse; width:100%; margin-top:1rem; }
+  table.features th, table.features td { text-align:left; padding:.55rem .7rem; border-bottom:1px solid var(--rule); vertical-align:top; }
+  table.features th { background:#f7f9fc; font-size:.85rem; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); }
+  table.features td.comp a { font-weight:600; text-decoration:none; }
+  table.features td.units { white-space:nowrap; color:var(--muted); font-size:.85rem; }
+  .req { background:#f3f8fd; border-left:3px solid var(--accent); padding:.5rem 1rem; border-radius:0 6px 6px 0; margin:.5rem 0; font-size:.92rem; }
+</style>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad:true, theme:'neutral' });
+</script>
+</head>
+<body>
+
+<h1>feat: Knowledge-Graph Eval System</h1>
+<p class="meta">type: feat · status: active · date: 2026-06-18 · depth: deep<br>
+origin: <code>docs/brainstorms/2026-06-18-knowledge-graph-eval-system-requirements.md</code></p>
+
+<h2>Summary</h2>
+<p>Build a Python eval harness that measures the <strong>lift</strong> injected knowledge gives a coding agent — <code>match(injected) − match(cold)</code> — on per-case configured targets (code / requirements doc / ticket list), grades autonomously per run, and exposes a CI gate that blocks PRs to core knowledge services unless they verifiably improve without regression. Phase 1 keeps the knowledge substrate deliberately trivial: the "knowledge graph" is a generated <code>CLAUDE.md</code> file and the "reader" is a Claude tool call that returns the whole file. The harness is built behind thin substrate/reader/runner seams so Phase-2 selective retrieval and richer graphs swap in without reworking measurement, grading, or gating.</p>
+<p>This is the measurement spine the proposal calls for (<code>docs/proposal-praxis.md</code> §Spine) — it turns "the agent gets better" from a claim into a gated, replottable number.</p>
+
+<h2>Feature list — component breakdown</h2>
+<p>The build splits into six components along the eval pipeline. Each page carries its own architecture-diagram slot, the design decisions that govern it, and its implementation units.</p>
+
+<table class="features">
+  <thead><tr><th>Component</th><th>What it does</th><th>Units</th></tr></thead>
+  <tbody>
+    <tr>
+      <td class="comp"><a href="knowledge-graph-eval-system/A-case-and-input-layer.html">A · Case &amp; input layer</a></td>
+      <td>Typed <code>EvalCase</code> schema + loader, repo fetch/checkout across GitHub &amp; GitLab, and the diff-scoped selector that picks which cases run per PR.</td>
+      <td class="units">U1, U2, U11</td>
+    </tr>
+    <tr>
+      <td class="comp"><a href="knowledge-graph-eval-system/B-knowledge-substrate.html">B · Knowledge substrate</a></td>
+      <td>Phase-1 <code>CLAUDE.md</code> generator + whole-file reader tool, behind a swappable substrate/reader seam.</td>
+      <td class="units">U3</td>
+    </tr>
+    <tr>
+      <td class="comp"><a href="knowledge-graph-eval-system/C-runner.html">C · Runner</a></td>
+      <td>Cold/injected agent runs behind a <code>Runner</code> protocol — real headless Claude Code adapter + deterministic fake.</td>
+      <td class="units">U4</td>
+    </tr>
+    <tr>
+      <td class="comp"><a href="knowledge-graph-eval-system/D-grading.html">D · Grading</a></td>
+      <td>Deterministic + frozen-rubric grading core, three per-target graders, and attribution / context-control metrics.</td>
+      <td class="units">U5, U6, U7</td>
+    </tr>
+    <tr>
+      <td class="comp"><a href="knowledge-graph-eval-system/E-measurement-and-gating.html">E · Measurement, assertions &amp; gating</a></td>
+      <td>Arms orchestration + lift, per-case assertions, git scoreboard (verify/compare), and the CLI + GitLab CI gate.</td>
+      <td class="units">U8, U9, U10, U12</td>
+    </tr>
+    <tr>
+      <td class="comp"><a href="knowledge-graph-eval-system/F-worked-examples.html">F · Worked examples</a></td>
+      <td>One end-to-end case per target type plus a poison/negative control, proving the pipeline runs deterministically.</td>
+      <td class="units">U13</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Problem frame</h2>
+<p>Praxis distills session logs into knowledge and injects it into future sessions. The claim — the agent stops relearning the same things — is only credible if measured, and the central risk is <strong>negative compounding</strong>: one wrong or over-generalized lesson degrades every future session (see origin: Problem &amp; Context). We need an autonomous, versioned eval system that proves injected knowledge (a) helps, (b) resists poisoning, and (c) does so without context bloat, and that can gate changes to the knowledge services in CI.</p>
+<p>Both the eval system and the knowledge services it tests are greenfield (repo today holds only <code>session-capture/</code> and <code>infra/</code>). The plan therefore defines the harness against thin seams and ships a real Phase-1 substrate (<code>CLAUDE.md</code> + whole-file reader tool) rather than blocking on a future KG.</p>
+
+<h2>Requirements traceability</h2>
+<p>Carried from origin (<code>docs/brainstorms/2026-06-18-knowledge-graph-eval-system-requirements.md</code>):</p>
+<div class="req"><strong>R1 Lift, not absolute</strong> — every case runs a cold arm; primary metric is <code>match(injected) − match(cold)</code>. → U7, U8</div>
+<div class="req"><strong>R2 Per-case assertions</strong> — helpfulness / poison-resistance / context-budget, configured per case. → U1, U9</div>
+<div class="req"><strong>R3 Attribution + context control</strong> — track present-vs-used knowledge; context control first-class, efficiency subsidiary. → U7</div>
+<div class="req"><strong>R4 Autonomous grading</strong> — deterministic-first, frozen versioned rubric + LLM judge otherwise; shared credibility/conflict-resolution checks. → U5, U6</div>
+<div class="req"><strong>R5 Noise handling without n-runs</strong> — greedy/low-temp runs + per-case ε margin. → U4, U8</div>
+<div class="req"><strong>R6 Scope = what the PR edits</strong> — diff-scoped slice; held fixtures isolate the changed component. → U1, U11</div>
+<div class="req"><strong>R7 Versioning + scoreboard</strong> — git-committed scoreboard; results tagged <code>{kg_version, model_id, substrate, date}</code>. → U10</div>
+<div class="req"><strong>R8 CI gate</strong> — verify committed scores are real (recompute within ε) AND improve vs main baseline per assertion. → U10, U12</div>
+<div class="req"><strong>R9 Runner = real headless Claude Code</strong> — production injection mechanism (<code>CLAUDE.md</code>/tool). → U4</div>
+<div class="req"><strong>R10 Bootstrapping deferred</strong> — schema must not preclude later auto-proposed cases. → U1 (schema only)</div>
+<p class="meta" style="margin-top:.8rem">Key technical decisions (formerly a standalone section) are now dissolved into each component's <em>Design decisions</em> block: KTD-1/3 → B &amp; E, KTD-2/5/6/8 → E, KTD-4/5 → C, KTD-7/9 → A.</p>
+
+<h2>High-level technical design</h2>
+
+<h3>Component map</h3>
+<div class="diagram">
+<pre class="mermaid">
+flowchart TD
+    Case[EvalCase + fixtures<br/>evals/cases/] --> Orchestrator
+    subgraph Harness[evals/ harness]
+        Orchestrator[Arms orchestrator<br/>arms.py] --> Cold[cold arm]
+        Orchestrator --> Injected[injected arm]
+        Injected --> Substrate[Phase-1 substrate<br/>CLAUDE.md generator]
+        Substrate --> Reader[whole-file read tool]
+        Cold --> Runner
+        Injected --> Runner[Runner adapter<br/>real Claude Code / Fake]
+        Runner --> Grading[Grading<br/>deterministic + rubric judge]
+        Grading --> Attribution[Attribution + context control]
+        Attribution --> Assertions[Per-case assertion]
+        Assertions --> Scoreboard[Scoreboard verify/compare]
+    end
+    RepoFetch[Repo fetch<br/>GitHub + GitLab] --> Injected
+    RepoFetch --> Cold
+    Scoreboard --> Gate{CI gate<br/>.gitlab-ci.yml}
+    Selector[Diff selector] --> Orchestrator
+</pre>
+</div>
+
+<h3>Cold-vs-injected + lift (one case)</h3>
+<div class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    participant O as Orchestrator
+    participant S as Substrate
+    participant R as Runner (Claude Code)
+    participant G as Grading
+    O->>S: build CLAUDE.md from ingestions (injected only)
+    O->>R: run seed prompt (cold) — no knowledge
+    R-->>G: cold output
+    O->>R: run seed prompt (injected) — CLAUDE.md + read tool
+    R-->>G: injected output + tool-call trace
+    G-->>O: match(cold), match(injected), attribution
+    O->>O: lift = match(injected) - match(cold)
+</pre>
+</div>
+
+<h3>CI gate decision</h3>
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    PR[PR touches core services] --> Sel[select affected cases]
+    Sel --> Run[rerun slice]
+    Run --> V{recomputed == committed<br/>within epsilon?}
+    V -- no --> FailF[FAIL: scores not real]
+    V -- yes --> C{passes each case assertion<br/>vs latest.json baseline?}
+    C -- no --> FailR[FAIL: regression / no lift]
+    C -- yes --> Pass[PASS — merge makes PR scoreboard the baseline]
+</pre>
+</div>
+
+<h2>Output structure</h2>
+<pre class="tree">
+evals/
+  __init__.py
+  case.py                 # U1  EvalCase schema + loader
+  selector.py             # U11 changed-files -> case slice
+  repofetch.py            # U2  GitHub/GitLab clone+cache by commit
+  arms.py                 # U8  cold/injected orchestration + lift
+  assertions.py           # U9  per-case assertion evaluation
+  attribution.py          # U7  present-vs-used + context-control metrics
+  scoreboard.py           # U10 git-file read/append/verify/compare
+  cli.py                  # U12 `run` and `gate` entrypoints
+  knowledge/
+    base.py               # U3  KnowledgeSubstrate + Reader protocols (seam)
+    claude_md.py          # U3  Phase-1 CLAUDE.md generator
+    read_tool.py          # U3  whole-file reader tool
+  runner/
+    base.py               # U4  Runner protocol
+    claude_code.py        # U4  real headless Claude Code adapter
+    fake.py               # U4  deterministic FakeRunner
+  grading/
+    base.py               # U5  check + rubric interfaces
+    rubric.py             # U5  frozen rubric LLM judge
+    shared.py             # U5  credibility + conflict-resolution checks
+    code_target.py        # U6  behavioral/test/oracle grading
+    doc_target.py         # U6  required-decisions + rubric
+    tickets_target.py     # U6  semantic set precision/recall
+  cases/                  # U13 worked example case per target type (fixtures)
+    &lt;case-id&gt;/case.yaml + ingestions/ + target/
+  scoreboard/
+    history.jsonl         # U10 append-per-green-main
+    latest.json           # U10 baseline the gate reads
+  tests/                  # per-unit tests (mirrors module layout)
+.gitlab-ci.yml            # U12 gate job
+</pre>
+<p>The per-unit <strong>Files:</strong> sections (in the component pages) are authoritative; the tree is the scope shape.</p>
+
+<h2>Scope boundaries</h2>
+<p><strong>In scope (v1):</strong> the harness (case schema, fetch, Phase-1 <code>CLAUDE.md</code> substrate + whole-file reader, runner adapter with real Claude Code + fake, deterministic+rubric grading, three target graders, attribution/context-control, lift, per-case assertions incl. poison + budget, git scoreboard with verify/compare, diff selector, CLI + GitLab CI gate, worked example cases).</p>
+
+<h3>Deferred for later (from origin)</h3>
+<ul>
+  <li><strong>Substrate bake-off</strong> as an active dimension (CLAUDE.md vs RAG vs KG vs RAG+rerank). The <code>substrate</code> field exists; v1 is <code>claude_md</code> only and the reader returns the whole file.</li>
+  <li><strong>Bootstrapped case generation</strong> from mined sessions (schema admits it; no generator built).</li>
+  <li><strong>Auto-tuned ε</strong> from accumulated variance data; v1 uses a conservative default + per-case override.</li>
+  <li><strong>Selective/ranked retrieval</strong> reader; arrives in Phase 2 behind the existing reader seam, at which point poison-resistance returns to a retrieval-level assertion.</li>
+</ul>
+
+<h3>Deferred to follow-up work (plan-local)</h3>
+<ul>
+  <li>Hardening the real headless Claude Code runner (concurrency, sandboxing, flaky-tool handling) beyond the thin Phase-1 adapter.</li>
+  <li>A live dashboard reading the scoreboard (would motivate the DynamoDB promotion noted in origin KTD-6).</li>
+</ul>
+
+<h2>Risks &amp; dependencies</h2>
+<ul>
+  <li><strong>Single-run noise vs strict gate.</strong> Greedy/low-temp + per-case ε mitigate; if flakiness persists, the deferred mitigation is widening ε per noisy case (not n-runs). Risk surfaced explicitly because the gate blocks merges.</li>
+  <li><strong>Real-runner cost/latency in CI.</strong> Bounded by the diff-scoped selector (U11) and by unit tests using <code>FakeRunner</code>; only the gated slice runs live.</li>
+  <li><strong>Default ε is a guess</strong> (origin open question). Conservative default now; a one-time variance-characterization run later tunes it. Tracked as an assumption.</li>
+  <li><strong>Used-insight attribution signal</strong> (origin open question). Phase-1 uses read-tool-call + output evidence; the precise "used" definition is finalized in U7 against what the reader exposes. Decision deliberately co-located with U3/U7 since it shapes the reader contract.</li>
+  <li><strong>Dependency — none external blocks v1:</strong> the Phase-1 substrate is real, so the harness does not wait on a future KG. Phase-2 retrieval depends on the reader seam holding (U3).</li>
+</ul>
+
+<h2>Open questions (deferred to implementation)</h2>
+<ul>
+  <li>Concrete default ε value (per-target-type vs single global) — set during U8/U9, tunable later.</li>
+  <li>Exact "used"-insight signal — finalized in U7 alongside the reader's output trace.</li>
+  <li>Whether the model/credentials for the real runner in CI come from GitLab CI variables or a separate secret store — resolved in U12 wiring.</li>
+</ul>
+
+<h2>Sources &amp; research</h2>
+<ul>
+  <li>Origin requirements: <code>docs/brainstorms/2026-06-18-knowledge-graph-eval-system-requirements.md</code></li>
+  <li>Upstream ideation: <code>docs/ideation/2026-06-18-knowledge-graph-eval-system.md</code></li>
+  <li>Proposal (eval spine, injection mechanism, central risk): <code>docs/proposal-praxis.md</code></li>
+  <li>Repo facts: Python 3.12 (<code>pyproject.toml</code>); GitLab-hosted (<code>README.md</code>) → GitLab CI; existing DynamoDB sessions table (<code>infra/lib/sessions-table-stack.ts</code>) as the scoreboard-promotion reference only.</li>
+</ul>
+
+</body>
+</html>
