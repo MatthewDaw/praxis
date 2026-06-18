@@ -1,0 +1,37 @@
+# Worked example case (M9). Expected to FAIL under the offline FakeRunner —
+# the point is the harness runs end-to-end and records a baseline. Clone this
+# directory as the template for every new eval.
+id: example_add_function
+seed_prompt: |
+  Add a function `add(a, b)` to calculator.py that returns the sum of its two
+  arguments, with a docstring and a corresponding test.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor:
+    - "This project keeps small pure helpers in calculator.py."
+  direct_to_graph:
+    - "Every public function needs a docstring and a unit test."
+
+deterministic_checks:
+  - name: defines_add
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "def add"
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+
+rubric:
+  id: add_function_v1
+  items:
+    - id: correctness
+      criterion: "The add function returns a + b for representative inputs."
+      weight: 2.0
+    - id: docstring
+      criterion: "The function has a clear docstring."
+      weight: 1.0
+    - id: test
+      criterion: "There is a test exercising the function."
+      weight: 1.0
