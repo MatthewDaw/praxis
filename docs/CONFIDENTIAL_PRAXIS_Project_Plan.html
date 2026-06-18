@@ -49,7 +49,7 @@
 <tr>
 <td style="background:#E8F4FD;border-color:#CCCCCC"><span style="color:#1F4E79"><strong>ML &amp; Knowledge Pipeline Lead</strong></span><br>Ingestion, learning moment detection (ML classifier), LLM distillation, consolidation/dedup/scoring, knowledge graph, provenance.<br><em><strong>Interview claim: </strong></em><em>&quot;I led the ML-powered distillation engine that turns raw JSONL logs into scored, deduplicated, human-approved knowledge with full provenance.&quot;</em></td>
 <td style="background:#E8F4FD;border-color:#CCCCCC"><span style="color:#2E75B6"><strong>Dashboard &amp; Human Gate Lead</strong></span><br>React review dashboard, human approval workflow (proposed→suggested→active), contradiction resolution UI, credibility metrics viz, injection controls.<br><em><strong>Interview claim: </strong></em><em>&quot;I designed and built the human approval dashboard that enforces quality gates and makes knowledge promotion transparent and measurable.&quot;</em></td>
-<td style="background:#E8F4FD;border-color:#CCCCCC"><span style="color:#5B9BD5"><strong>Architecture, Eval &amp; Integration Lead</strong></span><br>System design, eval harness (fixed tasks + metrics), GitHub hook/PR automation, Python tooling, deployment, live demo &amp; compounding curve proof.<br><em><strong>Interview claim: </strong></em><em>&quot;I architected the eval harness and integration layer that rigorously proves PRAXIS delivers ≥50% fewer corrections with compounding gains.&quot;</em></td>
+<td style="background:#E8F4FD;border-color:#CCCCCC"><span style="color:#5B9BD5"><strong>Architecture, Eval &amp; Integration Lead</strong></span><br>System design, eval harness (fixed tasks + metrics), GitHub hook/PR automation, Python tooling, deployment, live demo &amp; compounding curve proof.</td>
 </tr>
 </table>
 <p class="spacer">&nbsp;</p>
@@ -238,6 +238,13 @@
 </figure>
 <p><span style="color:#555555"><em>Figure 1: PRAXIS End-to-End Architecture — Claude Code sessions and pull requests become a verified Knowledge Graph, read back into future sessions via a get-context tool call, with measurable compounding gains.</em></span></p>
 <h2><br></h2>
+<h2>Target Outcome &amp; Success Metrics</h2>
+<ul>
+<li><strong>MVP delivered:</strong> learning-moment detection → distillation → cluster/dedup/confidence → human gate (credible insertions &amp; contradictions only) → Knowledge Graph + get-context tool → Knowledge Graph Dashboard → eval harness showing quantified improvement.</li>
+<li><strong>Primary success criterion:</strong> ≥50% reduction in user corrections on benchmark tasks vs. cold runs, with no regression in task success rate, plus visible compounding curve across sessions.</li>
+<li>Each team member owns one pillar end-to-end and can demonstrate it live in technical interviews.</li>
+</ul>
+<p class="spacer">&nbsp;</p>
 <h2>High-Level 9-Day Timeline</h2>
 <p>Days 1–2: Project Plan, Foundation &amp; Design  |  Days 3–5: Parallel Core Build (ML Pipeline + Dashboard + Evals)  |  Days 6–7: Integration &amp; Human Gate  |  Day 8: Eval Harness &amp; Measurement  |  Day 9 - 10: Demo Polish, Documentation &amp; Final Runs</p>
 <h1>Detailed 9-Day Work Schedule</h1>
@@ -314,26 +321,6 @@
 <td style="background:#E2EFDA;border-color:#CCCCCC">Live demo script + side-by-side before/after; final docs &amp; repo handoff</td>
 </tr>
 </table>
-<p class="spacer">&nbsp;</p>
-<h2>Target Outcome &amp; Success Metrics</h2>
-<ul>
-<li><strong>MVP delivered:</strong> learning-moment detection → distillation → cluster/dedup/confidence → human gate (credible insertions &amp; contradictions only) → Knowledge Graph + get-context tool → Knowledge Graph Dashboard → eval harness showing quantified improvement.</li>
-<li><strong>Primary success criterion:</strong> ≥50% reduction in user corrections on benchmark tasks vs. cold runs, with no regression in task success rate, plus visible compounding curve across sessions.</li>
-<li>Each team member owns one pillar end-to-end and can demonstrate it live in technical interviews.</li>
-</ul>
-<p class="spacer">&nbsp;</p>
-<h3><strong>Work Allocation Notes</strong></h3>
-<p>Daily 15-min sync at start of each day.</p>
-<p class="spacer">&nbsp;</p>
-<p>Matthew owns data/ML correctness and knowledge quality.</p>
-<p>Monica owns UX clarity and human-gate usability.</p>
-<p>Dominic owns measurement credibility and demo readiness.</p>
-<p class="spacer">&nbsp;</p>
-<p>Cross-pairing on integration days (6-7) ensures seamless handoff.</p>
-<p class="spacer">&nbsp;</p>
-<p>All code reviewed by at least one other member.</p>
-<p class="spacer">&nbsp;</p>
-<p>Final demo script co-owned but each presents their pillar.</p>
 </div>
 </body>
 </html>
