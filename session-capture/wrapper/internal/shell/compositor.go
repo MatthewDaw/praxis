@@ -24,7 +24,7 @@ const (
 
 // Fuzzy read-side "Forge" is hidden in the live shell per the current model
 // (Forge is driven from the /startforge–/endforge PTY flow, not a tab).
-var tabNames = []string{"Session", "Agents", "Stream"}
+var tabNames = []string{"Session", "Stream"}
 
 // Palette (256-color indices).
 const (
@@ -483,12 +483,10 @@ func (c *Compositor) Render() {
 
 	curX, curY, curVis := 0, 0, false
 	switch {
-	case c.active == 0:
-		curX, curY, curVis = c.renderSessionBody(w, h)
 	case tabNames[c.active] == "Stream":
 		c.renderStreamBody(w, h)
 	default:
-		c.renderPlaceholderBody(w, h)
+		curX, curY, curVis = c.renderSessionBody(w, h)
 	}
 
 	c.renderStatusLine(w, h)
@@ -778,12 +776,6 @@ func describeEvent(e event.Event) string {
 	}
 }
 
-func (c *Compositor) renderPlaceholderBody(w, h int) {
-	name := tabNames[c.active]
-	msg := fmt.Sprintf("%s — coming from HQ (this tab's live data wiring is next)", name)
-	c.screen.SetString(2, bodyTop, msg, colText, vt.DefaultBG, true, false)
-	c.screen.SetString(2, bodyTop+2, "Press ⇥ or ⌃T to return to the Session.", colDim, vt.DefaultBG, false, false)
-}
 
 func (c *Compositor) renderStatusLine(w, h int) {
 	row := h - 1
