@@ -2,9 +2,40 @@
 
 **Self-improving knowledge loop for Claude Code agents.**
 
+[![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](pyproject.toml)
+[![Streamlit](https://img.shields.io/badge/dashboard-Streamlit-FF4B4B.svg)](frontend/app.py)
+[![Go](https://img.shields.io/badge/session--capture-Go-00ADD8.svg)](session-capture/README.md)
+[![Contract](https://img.shields.io/badge/API-contract_v1-4CAF50.svg)](docs/integration/candidate-api-v1.md)
+
 Claude Code's auto-memory saves a few notes between sessions — but it's an unverified black box: no human approval, no deduplication, no measurement. **PRAXIS** mines the full JSONL session logs the agent already produces, distills durable lessons, runs them through a confidence score and human-approval gate, and injects only promoted knowledge into future sessions — so the agent provably stops relearning the same things and gets better over time.
 
 > **Memory vs. knowledge.** Auto-memory captures scattered, episodic notes. PRAXIS produces generalized, deduplicated, confidence-scored, human-approved, measured knowledge with full provenance.
+
+**Remote:** [GitLab — monicapeters/praxis](https://labs.gauntletai.com/monicapeters/praxis)  
+**Architecture source of truth:** [docs/PRAXIS_Project_Plan.html](docs/PRAXIS_Project_Plan.html)
+
+---
+
+## Table of contents
+
+- [The loop](#the-loop)
+- [Problem](#problem)
+- [Implementation status](#implementation-status)
+- [MVP scope](#mvp-scope)
+- [Success criteria](#success-criteria)
+- [Team & pillars](#team--pillars)
+- [Sprint timeline](#sprint-timeline)
+- [Repository layout](#repository-layout)
+- [Prerequisites](#prerequisites)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Testing](#testing)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License](#license)
+- [Changelog](#changelog)
+
+---
 
 ## The loop
 
@@ -30,7 +61,7 @@ flowchart LR
   Eval --> Gate
 ```
 
-Architecture source of truth: [docs/PRAXIS_Project_Plan.html](docs/PRAXIS_Project_Plan.html).
+---
 
 ## Problem
 
@@ -43,6 +74,27 @@ Coding agents are less amnesiac than they used to be, but durable knowledge stil
 - **Underused raw material** — full JSONL transcripts (`~/.claude/projects/<project>/<session>.jsonl`) record every mistake, correction, and success; auto-memory skims in-flight and discards the rest.
 
 PRAXIS treats that exhaust as a compounding asset.
+
+---
+
+## Implementation status
+
+Point-in-time snapshot as of **2026-06-18** (Sprint Day 2). See [AUDIT.md](AUDIT.md) for the full repo health review.
+
+| Area | Path | Owner | Status |
+|------|------|-------|--------|
+| Human-gate dashboard | `frontend/` | Monica Peters | **Demo-ready** — Streamlit UI, mock fixtures, contract v1 API client, Render deploy blueprint |
+| Knowledge substrate | `knowledge/` | Matthew Daw | **Foundation** — in-memory graph, prompt ingestor, whole-file reader, wiring factory |
+| Eval harness | `knowledge/evals/` | Dominic Antonelli | **Partial** — YAML case registry, deterministic checks, real Claude Code runner + offline FakeRunner |
+| Session capture | `session-capture/` | Dominic Antonelli | **Working** — Go `claude+` PTY daemon, JSONL tailer, DynamoDB writer |
+| Cloud infra | `infra/` | Dominic Antonelli | **Scaffolded** — AWS CDK stack for sessions DynamoDB table |
+| Candidate REST API | — | Matthew Daw | **Planned** — contract v1 documented; server not yet in-repo |
+| Eval metrics endpoint | — | Dominic Antonelli | **Planned** — contract v1 documented; dashboard embed ready |
+| CI pipeline | — | Team | **Not yet** — manual test runs only |
+
+**Integration posture:** The dashboard runs fully offline when `PRAXIS_API_BASE_URL` is unset. Set env vars per [docs/integration/wire-up.md](docs/integration/wire-up.md) to wire live backend and eval metrics without code changes.
+
+---
 
 ## MVP scope
 
@@ -60,11 +112,15 @@ PRAXIS treats that exhaust as a compounding asset.
 
 **Stretch goals:** trained classifier for learning moments; substrate bake-off (markdown/skills vs. vector RAG vs. knowledge graph); confidence decay and re-verification; contradiction-resolution UI; cross-project knowledge.
 
+---
+
 ## Success criteria
 
 - **Primary metric:** ≥50% fewer user corrections on benchmark tasks vs. cold runs, with no regression in task success rate.
 - **Compounding proof:** visible correction-rate curve falling across sessions.
 - **Demo outcome:** point PRAXIS at a repo's logs → ranked candidate lessons with evidence in minutes → human promotes the good ones → re-run shows quantified improvement (corrections, failures, tokens, time).
+
+---
 
 ## Team & pillars
 
@@ -74,9 +130,11 @@ Three Gauntlet AI Fellows, each owning one end-to-end pillar for a 9–10 day fo
 |------|--------|-------|
 | **Matthew Daw** | ML & Knowledge Pipeline | Ingestion, learning-moment detection, LLM distillation, consolidation/dedup/scoring, knowledge graph, provenance |
 | **Monica Peters** | Dashboard & Human Gate | Streamlit Knowledge Graph / human-gate dashboard, approval workflow, contradiction resolution UI, credibility metrics |
-| **Dominic Antonelli** | Architecture, Eval & Integration | System design, eval harness, VCS-agnostic replay automation, Python tooling, deployment, compounding-curve proof |
+| **Dominic Antonelli** | Architecture, Eval & Integration | System design, eval harness, VCS-agnostic replay automation, session capture wrapper, deployment, compounding-curve proof |
 
 Daily 15-minute syncs; all code reviewed by at least one other member before merge.
+
+---
 
 ## Sprint timeline
 
@@ -90,87 +148,217 @@ Sprint **Day 1 = Wednesday, June 16, 2026** (Thursday June 18 skipped). See the 
 | Measurement | 8 | Compounding curve, threshold tuning, edge-case polish |
 | Demo & handoff | 9–10 | Live demo script, documentation, presentation practice |
 
+---
+
 ## Live demo (3 acts)
 
 1. **Dumb agent** — fresh repo with deliberate quirks; agent stumbles, gets corrected; log captured.
 2. **Distillation** — PRAXIS surfaces scored candidates linked to transcript lines; human promotes `suggested → active`.
 3. **Smart agent** — sibling task nails quirks first try; side-by-side scoreboard plus compounding curve across a pre-run batch.
 
+Demo script: [docs/monica/DEMO_SCRIPT.md](docs/monica/DEMO_SCRIPT.md)
+
+---
+
+## Repository layout
+
+```text
+praxis/
+├── docs/                      # Plans, proposals, integration contracts, fixtures
+│   ├── integration/           # candidate-api-v1, eval-metrics-v1, wire-up, JSON fixtures
+│   ├── monica/                # Dashboard pillar — architecture, wireframes, deploy, demo
+│   ├── matt/future-work/      # Post-MVP knowledge-graph eval design (parked)
+│   └── plans/                 # MVP plan (mvp-plan.html)
+├── .cursor/rules/             # Team Cursor rules (shared, dashboard, pipeline-eval, git-sync)
+├── frontend/                  # Streamlit human-gate UI (Monica)
+│   ├── app.py                 # Entry — provider wiring only
+│   ├── components/            # List, detail, badges, contradiction panel, eval embed
+│   ├── models/                # Candidate types (API contract surface)
+│   ├── services/              # DataProvider, mock + API clients, contract_v1
+│   ├── tests/                 # Contract fixture + mock workflow tests
+│   ├── mock_data.py           # Local fixtures — no backend required
+│   └── render.yaml            # Render.com deploy blueprint
+├── knowledge/                 # Knowledge substrate + eval harness (Matthew & Dominic)
+│   ├── knowledge_graph/       # KnowledgeGraph ABC + InMemoryGraph
+│   ├── injestion/             # Ingestor ABC + PromptIngestor
+│   ├── graph_reader/          # WholeFileReader → Claude tool adapter
+│   ├── evals/                 # YAML cases, deterministic checks, Claude Code runner
+│   ├── wiring.py              # build_trio() factory
+│   └── run.py                 # Debugger entry — ingest smoke + eval runner
+├── session-capture/           # Go claude+ wrapper — PTY daemon + DynamoDB capture
+│   └── wrapper/               # cmd/claude-plus, internal/{pty,daemon,capture,store}
+├── infra/                     # AWS CDK — praxis-sessions DynamoDB table
+├── run.py                     # Repo-root shim → knowledge/run.py
+├── pyproject.toml             # Python 3.12+ deps (uv/pip)
+├── uv.lock                    # Locked Python dependencies
+└── README.md
+```
+
+> **Note:** Early plans referenced top-level `pipeline/` and `eval/` directories. Current implementations live under `knowledge/` and `session-capture/` respectively. API contracts are path-agnostic.
+
+---
+
+## Prerequisites
+
+| Tool | Version | Used for |
+|------|---------|----------|
+| Python | ≥ 3.12 | Dashboard, knowledge package, eval harness |
+| [uv](https://docs.astral.sh/uv/) | latest (recommended) | Dependency install and script runner |
+| Go | ≥ 1.22 | Building `session-capture/wrapper` |
+| Node.js | ≥ 20 | AWS CDK deploy (`infra/`) |
+| AWS CLI | configured | DynamoDB session capture (optional — wrapper runs without it) |
+
+---
+
+## Quick start
+
+### 1. Install Python dependencies
+
+From the repo root:
+
+```powershell
+uv sync
+```
+
+Or with pip:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\pip install -e .
+```
+
+### 2. Run the human-gate dashboard
+
+```powershell
+cd frontend
+Remove-Item Env:PRAXIS_API_BASE_URL -ErrorAction SilentlyContinue
+uv run streamlit run app.py
+```
+
+Mock mode loads fixtures from `mock_data.py` — no backend required. See [docs/integration/wire-up.md](docs/integration/wire-up.md) for live API and eval-metrics wiring.
+
+**Render deploy (portfolio demo):** [docs/monica/RENDER_DEPLOY.md](docs/monica/RENDER_DEPLOY.md)
+
+### 3. Run the eval harness
+
+Offline (no Claude Code subscription):
+
+```powershell
+$env:PRAXIS_EVAL_REAL = "0"
+uv run python run.py
+```
+
+Real Claude Code (uses subscription credits):
+
+```powershell
+uv run python run.py
+```
+
+Registered cases live in `knowledge/evals/cases/`. Results append to `knowledge/evals/results/`.
+
+### 4. Build session capture (optional)
+
+```powershell
+# Deploy DynamoDB table
+cd infra
+npm install
+npm run deploy
+
+# Build claude+ wrapper
+cd ..\session-capture\wrapper
+go build -o claude+ ./cmd/claude-plus
+
+# Host a session (streams to DynamoDB when AWS creds present)
+$env:SESSION_TABLE = "praxis-sessions"
+$env:AWS_REGION = "us-east-1"
+.\claude+
+```
+
+Full wrapper docs: [session-capture/README.md](session-capture/README.md)
+
+---
+
+## Configuration
+
+| Variable | Required | Component | Purpose |
+|----------|----------|-----------|---------|
+| `PRAXIS_API_BASE_URL` | No | Dashboard | Candidate REST API base URL; unset → mock fixtures |
+| `PRAXIS_API_TOKEN` | No | Dashboard | Bearer token for API auth |
+| `PRAXIS_CONTRACT_VERSION` | No | Dashboard | API contract version header (default `1`) |
+| `PRAXIS_EVAL_METRICS_URL` | No | Dashboard | GET endpoint returning eval metrics JSON for compounding-curve embed |
+| `PRAXIS_EVAL_REAL` | No | Eval harness | Set to `0` for offline FakeRunner; default runs real Claude Code |
+| `SESSION_TABLE` | No | Session capture | DynamoDB table name for transcript streaming |
+| `AWS_REGION` | No | Session capture | AWS region for DynamoDB writer |
+
+Secrets are **environment-only** — never commit tokens or credentials.
+
+---
+
+## Testing
+
+**Knowledge package** (30 tests — run from repo root):
+
+```powershell
+uv run pytest knowledge/ -q
+```
+
+**Dashboard contract tests** (11 tests — require `frontend` on `PYTHONPATH`):
+
+```powershell
+cd frontend
+$env:PYTHONPATH = "."
+uv run pytest tests/ -q
+```
+
+Contract fixtures are canonical in [docs/integration/fixtures/](docs/integration/fixtures/).
+
+---
+
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [docs/proposal-praxis.md](docs/proposal-praxis.md) | Capstone proposal — problem, direction, technical approach, risks (historical) |
 | [docs/PRAXIS_Project_Plan.html](docs/PRAXIS_Project_Plan.html) | **Source of truth** — team plan, architecture overview, 9-day schedule |
-| [docs/Matthew-Daw-ML-Pipeline-PlanDRAFT.md](docs/Matthew-Daw-ML-Pipeline-PlanDRAFT.md) | ML pipeline pillar plan |
-| [docs/monica/Monica-Peters-Dashboard-Plan.md](docs/monica/Monica-Peters-Dashboard-Plan.md) | Dashboard & human-gate pillar plan |
-| [docs/monica/ARCHITECTURE_MONICA.md](docs/monica/ARCHITECTURE_MONICA.md) | **Monica's pillar architecture** — Streamlit stack, API-first boundaries, React coexistence |
-| [docs/Dominic-Antonelli-Architecture-Eval-PlanDRAFT.md](docs/Dominic-Antonelli-Architecture-Eval-PlanDRAFT.md) | Architecture, eval & integration pillar plan |
-| [docs/monica/monica-wireframes.md](docs/monica/monica-wireframes.md) | Dashboard as-built spec and UX notes |
+| [docs/plans/mvp-plan.html](docs/plans/mvp-plan.html) | MVP core contracts and eval schema |
+| [docs/proposal-praxis.md](docs/proposal-praxis.md) | Capstone proposal — problem, direction, risks (historical) |
 | [docs/integration/candidate-api-v1.md](docs/integration/candidate-api-v1.md) | **Matthew ↔ Monica** candidate REST contract + fixtures |
 | [docs/integration/eval-metrics-v1.md](docs/integration/eval-metrics-v1.md) | **Dominic ↔ Monica** eval metrics JSON contract |
 | [docs/integration/wire-up.md](docs/integration/wire-up.md) | Self-serve dashboard wire-up (no pairing) |
-| [docs/PRD.pdf](docs/PRD.pdf) | Product requirements document |
-| [docs/proposal-praxis.pdf](docs/proposal-praxis.pdf) | Proposal (PDF export) |
+| [docs/monica/ARCHITECTURE_MONICA.md](docs/monica/ARCHITECTURE_MONICA.md) | Dashboard pillar architecture — Streamlit stack, API boundaries |
+| [docs/monica/monica-wireframes.md](docs/monica/monica-wireframes.md) | Dashboard as-built spec and UX notes |
+| [docs/monica/DEMO_SCRIPT.md](docs/monica/DEMO_SCRIPT.md) | Three-act live demo script |
+| [docs/Matthew-Daw-ML-Pipeline-PlanDRAFT.md](docs/Matthew-Daw-ML-Pipeline-PlanDRAFT.md) | ML pipeline pillar plan |
+| [docs/Dominic-Antonelli-Architecture-Eval-PlanDRAFT.md](docs/Dominic-Antonelli-Architecture-Eval-PlanDRAFT.md) | Architecture, eval & integration pillar plan |
+| [session-capture/README.md](session-capture/README.md) | Go wrapper — claude+ CLI, DynamoDB capture |
+| [AUDIT.md](AUDIT.md) | Full-repo health audit (2026-06-18) |
+| [CHANGELOG.md](CHANGELOG.md) | Version history and release notes |
 
 Agent and editor guidance for contributors lives in [`.cursor/rules/`](.cursor/rules/):
 
 - `praxis-shared.mdc` — commits, reviews, TypeScript style, provenance standards
 - `praxis-dashboard.mdc` — human-gate UI patterns (Monica's pillar)
 - `praxis-pipeline-eval.mdc` — pipeline data contracts, eval harness, integration (Matthew & Dominic)
+- `praxis-git-sync.mdc` — GitLab main sync workflow
 
-## Repository layout
-
-The sprint is actively scaffolding the codebase. Expected layout as pillars land:
-
-```text
-praxis/
-├── docs/                  # Plans, proposal, PRD
-│   ├── monica/            # Monica pillar — architecture, plan, as-built wireframes
-│   └── integration/       # Async API contracts + JSON fixtures (Matthew, Dominic)
-├── .cursor/rules/         # Team Cursor rules
-├── frontend/              # Streamlit human-gate UI (Monica)
-│   ├── app.py             # Entry — provider wiring only
-│   ├── components/        # UI modules (list, detail, badges, …)
-│   ├── models/            # Candidate types (API contract surface)
-│   ├── services/          # DataProvider, mock + API clients, contract_v1
-│   ├── tests/             # Contract fixture tests
-│   └── mock_data.py       # Local fixtures — no backend required
-├── frontend-react/        # Optional future React UI (same API, sibling dir)
-├── pipeline/              # Python: ingest, detect, distill, score, KG (Matthew)
-├── eval/                  # Harness, quirky benchmark repo, metrics (Dominic)
-└── README.md
-```
-
-## Run dashboard locally
-
-```powershell
-cd frontend
-python -m venv venv
-.\venv\Scripts\pip install -e ..
-.\venv\Scripts\streamlit run app.py
-```
-
-Or install dependencies directly: `.\venv\Scripts\pip install streamlit pandas`
-
-### Contract tests (offline)
-
-```powershell
-cd frontend
-$env:PYTHONPATH = "."
-.\venv\Scripts\pytest tests/ -q
-```
-
-See [docs/integration/wire-up.md](docs/integration/wire-up.md) for live API wire-up.
+---
 
 ## Contributing
 
 - Use [conventional commits](https://www.conventionalcommits.org/) (`feat`, `fix`, `chore`, `docs`, `refactor`, `test`) with `#<issue>` references.
 - Open small, focused **GitLab** merge requests with clear descriptions; at least one peer review required before merge.
+- Sync your dev branch with `origin/main` before starting work or opening an MR (`git fetch origin main; git merge origin/main`).
 - Preserve **provenance** on every candidate/lesson object (source log path + line offset) in code and UI.
 - Promotion actions should trigger **VCS-agnostic eval replay** (scripted PR/ticket scenarios) for before/after measurement.
 - All code must pass lint and type checks before review.
 
+---
+
 ## License
 
 TBD — Gauntlet AI capstone project (2026).
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for the full version history. Current release: **0.1.0** (2026-06-18).
