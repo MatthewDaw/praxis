@@ -1,0 +1,38 @@
+# Real-repo eval: a genuine merged bug fix in more-itertools.
+#
+# PR #1088 fixed exactly_n() raising ValueError on negative n. The agent starts
+# at the parent commit (buggy source + the PR's tests), and must make the
+# FAIL_TO_PASS test pass without regressing PASS_TO_PASS. Behavioral oracle
+# verified RED->GREEN agent-free via `python -m knowledge.evals.repo.verify`.
+#
+# Full-pipeline case (needs the real Claude Code runner to materialize + edit).
+# Offline (FakeRunner) it FAILS — no checkout/venv — exactly like other agent cases.
+id: exactly_n_negative
+seed_prompt: |
+  The repository is checked out in the current directory. In
+  more_itertools/more.py, exactly_n(iterable, n=..., predicate=...) raises a
+  ValueError when n is negative; it should instead handle a negative n
+  gracefully (a count can never be negative). Fix exactly_n so the test suite
+  passes. Run the tests with: python -m pytest tests/test_more.py -k ExactlyN
+target_commit: "22cf656cc0458cfcee2286c0a02369da000023ad"
+
+code_task:
+  repo: "more-itertools/more-itertools"
+  base_commit: "55fcdd8013baff9d2f5b3ab890904a0964fb61df"
+  target_commit: "22cf656cc0458cfcee2286c0a02369da000023ad"
+  test_paths: ["tests/"]
+  fail_to_pass:
+    - "tests/test_more.py::ExactlyNTests::test_false"
+  pass_to_pass:
+    - "tests/test_more.py::ExactlyNTests::test_true"
+    - "tests/test_more.py::ExactlyNTests::test_empty"
+
+deterministic_checks:
+  - name: target_tests
+    ref: "knowledge.evals.deterministic_checks.behavioral:passes_target_tests"
+    params:
+      fail_to_pass:
+        - "tests/test_more.py::ExactlyNTests::test_false"
+      pass_to_pass:
+        - "tests/test_more.py::ExactlyNTests::test_true"
+        - "tests/test_more.py::ExactlyNTests::test_empty"
