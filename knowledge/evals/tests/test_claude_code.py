@@ -63,6 +63,28 @@ def test_runner_omits_injection_when_graph_empty():
     assert ctx.output == "inline poem text"  # falls back to result text
 
 
+def test_runner_copies_fixture_into_box(tmp_path):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "calculator.py").write_text("def sub(a, b):\n    return a - b\n", encoding="utf-8")
+
+    seen = {}
+
+    def fake_cli(args, cwd, env, timeout):
+        # The fixture is present in the box when the agent starts; simulate an edit.
+        calc = Path(cwd) / "calculator.py"
+        seen["start_state"] = calc.read_text(encoding="utf-8")
+        calc.write_text(seen["start_state"] + "\ndef add(a, b):\n    return a + b\n", encoding="utf-8")
+        return json.dumps({"result": "done"})
+
+    case = _case().model_copy(update={"fixture_path": str(fixture)})
+    _, _, reader = build_trio()
+    ctx = ClaudeCodeRunner(run_cli=fake_cli).run(case, reader)
+
+    assert "def sub" in seen["start_state"]  # fixture was seeded before the run
+    assert "def sub" in ctx.output and "def add" in ctx.output  # graded on the edited file
+
+
 def test_judge_parses_overall_score():
     def fake_cli(args, cwd, env, timeout):
         return json.dumps({"result": '{"per_item": {"on_topic": 1.0}, "overall": 0.83}'})

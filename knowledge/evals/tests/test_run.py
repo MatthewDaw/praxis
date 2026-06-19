@@ -5,6 +5,7 @@ import json
 from knowledge.evals.eval_def import EvalCase, EvalContext
 from knowledge.evals.run import (
     FakeRunner,
+    load_case,
     load_cases,
     resolve_check,
     run_case,
@@ -82,6 +83,36 @@ def test_write_baseline_appends_one_row_per_case(tmp_path):
     rows = [json.loads(line) for line in path.read_text().splitlines()]
     assert len(rows) == 2
     assert rows[0]["case_id"] == "c1"
+
+
+def _write_case_yaml(case_dir):
+    case_dir.mkdir(parents=True, exist_ok=True)
+    (case_dir / "case.yaml").write_text(
+        "id: c1\n"
+        "seed_prompt: edit calculator.py\n"
+        "target_commit: abc123\n"
+        "deterministic_checks:\n"
+        "  - name: defines_add\n"
+        "    ref: knowledge.evals.deterministic_checks.builds:contains_text\n"
+        "    params: {text: 'def add'}\n",
+        encoding="utf-8",
+    )
+
+
+def test_load_case_records_sibling_fixture_dir(tmp_path):
+    case_dir = tmp_path / "case"
+    _write_case_yaml(case_dir)
+    (case_dir / "fixture").mkdir()
+    (case_dir / "fixture" / "calculator.py").write_text("x = 1\n", encoding="utf-8")
+
+    case = load_case(case_dir)
+    assert case.fixture_path == str((case_dir / "fixture").resolve())
+
+
+def test_load_case_without_fixture_leaves_path_none(tmp_path):
+    case_dir = tmp_path / "case"
+    _write_case_yaml(case_dir)
+    assert load_case(case_dir).fixture_path is None
 
 
 def test_registered_example_case_runs_end_to_end():

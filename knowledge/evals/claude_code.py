@@ -116,8 +116,11 @@ class ClaudeCodeRunner:
 
         with tempfile.TemporaryDirectory(prefix="praxis-box-") as box:
             workdir = Path(box)
-            # Dump the start state into the box (empty for the toy case; future
-            # code cases check out start_commit here).
+            # Seed the box with the start state: an inline fixture dir copied
+            # verbatim (empty for the toy case). Future code cases that set
+            # start_commit would check that out here instead.
+            if case.fixture_path:
+                shutil.copytree(case.fixture_path, workdir, dirs_exist_ok=True)
             args = ["-p", case.seed_prompt, "--output-format", "json"]
             if knowledge.strip():
                 args += ["--append-system-prompt", knowledge]
