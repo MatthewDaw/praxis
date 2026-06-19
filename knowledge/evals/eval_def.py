@@ -12,6 +12,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from knowledge.evals.repo.repo_task_def import RepoTask
+
 
 class DeterministicCheckRef(BaseModel):
     """Points at a registered callable in ``evals/deterministic_checks/``.
@@ -64,6 +66,7 @@ class EvalCase(BaseModel):
     target_commit: str | None = None  # full-pipeline: desired end state / reference
     start_commit: str | None = None  # optional; None => clean baseline
     repo: str | None = None  # where the commits live (defaults to this repo)
+    code_task: RepoTask | None = None  # real-repo (SWE-bench-style) task: clone+test oracle
     fixture_path: str | None = None  # abs path to a dir copied into the box as start state; set by load_case
     seeded_insight: SeededInsight = Field(default_factory=SeededInsight)
     deterministic_checks: list[DeterministicCheckRef] = Field(default_factory=list)
