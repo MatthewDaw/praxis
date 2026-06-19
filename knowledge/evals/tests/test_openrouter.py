@@ -50,6 +50,10 @@ def test_runner_injects_graph_as_system_prompt():
     ctx = OpenRouterRunner(client=client).run(_case(), reader)
 
     assert ctx.output == "hello there"
+    # Provenance captured for the transcript.
+    assert ctx.output_source == "completion"
+    assert "greet warmly" in ctx.injected_knowledge
+    assert "hello there" in ctx.raw_response  # raw HTTP body kept verbatim
     roles = [m["role"] for m in captured["payload"]["messages"]]
     assert roles == ["system", "user"]
     assert "greet warmly" in captured["payload"]["messages"][0]["content"]
@@ -74,8 +78,10 @@ def test_judge_parses_overall():
         post=lambda *a: _chat_response('{"per_item": {"q": 1.0}, "overall": 0.7}'),
     )
     rubric = Rubric(id="r", items=[RubricItem(id="q", criterion="good")])
-    score = OpenRouterJudge(client=client)(rubric, EvalContext(case_id="c", output="x"))
-    assert score == 0.7
+    result = OpenRouterJudge(client=client)(rubric, EvalContext(case_id="c", output="x"))
+    assert result.overall == 0.7
+    assert result.per_item == {"q": 1.0}
+    assert result.raw_response is not None
 
 
 def test_openrouter_llm_adapter_returns_text():

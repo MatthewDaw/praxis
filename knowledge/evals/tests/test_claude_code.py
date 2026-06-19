@@ -42,6 +42,10 @@ def test_runner_injects_knowledge_boxes_and_scrubs_api_key(monkeypatch):
     ctx = ClaudeCodeRunner(run_cli=fake_cli).run(_case(), reader)
 
     assert ctx.output == "a boxed poem"
+    # Provenance captured for the transcript.
+    assert ctx.raw_response == json.dumps({"result": "done"})
+    assert ctx.output_source == "named_file"
+    assert "iambic pentameter" in ctx.injected_knowledge
     assert "ANTHROPIC_API_KEY" not in captured["env"]  # subscription auth
     # Knowledge injected via system prompt — no file on disk.
     assert "--append-system-prompt" in captured["args"]
@@ -86,10 +90,14 @@ def test_runner_copies_fixture_into_box(tmp_path):
 
 
 def test_judge_parses_overall_score():
+    raw = json.dumps({"result": '{"per_item": {"on_topic": 1.0}, "overall": 0.83}'})
+
     def fake_cli(args, cwd, env, timeout):
-        return json.dumps({"result": '{"per_item": {"on_topic": 1.0}, "overall": 0.83}'})
+        return raw
 
     rubric = Rubric(id="r", items=[RubricItem(id="on_topic", criterion="about the sea")])
     judge = ClaudeCodeJudge(run_cli=fake_cli)
-    score = judge(rubric, EvalContext(case_id="c", output="some poem"))
-    assert score == 0.83
+    result = judge(rubric, EvalContext(case_id="c", output="some poem"))
+    assert result.overall == 0.83
+    assert result.per_item == {"on_topic": 1.0}
+    assert result.raw_response == raw  # raw response captured for the transcript
