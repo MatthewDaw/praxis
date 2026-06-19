@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { DataProvider } from "../api/dataProvider";
+import { EvalChartLegend } from "./viz/EvalChartLegend";
 import type { EvalMetrics } from "../types/candidate";
 
 interface EvalMetricsEmbedProps {
@@ -56,18 +57,24 @@ export function EvalMetricsEmbed({ provider }: EvalMetricsEmbedProps) {
               ? "Placeholder curve — set VITE_PRAXIS_EVAL_METRICS_URL to Dominic's eval metrics endpoint when available."
               : `Loaded from ${metrics?.source}`}
           </p>
-          <div className="chart" role="img" aria-label="Correction rate compounding curve">
-            {series.map((value, index) => (
-              <div key={labels[index]} className="chart-bar-wrap">
-                <div
-                  className="chart-bar"
-                  style={{ height: `${(value / max) * 100}%` }}
-                  title={`${labels[index]}: ${value}`}
-                />
-                <span>{labels[index]}</span>
-              </div>
-            ))}
-          </div>
+          <EvalChartLegend maxValue={max} reductionPercent={reduction}>
+            <div
+              className="chart"
+              role="img"
+              aria-label="Correction rate compounding curve. Y-axis: correction rate from 0 to 1, lower is better. X-axis: eval session."
+            >
+              {series.map((value, index) => (
+                <div key={labels[index]} className="chart-bar-wrap">
+                  <div
+                    className="chart-bar"
+                    style={{ height: `${(value / max) * 100}%` }}
+                    title={`${labels[index]}: ${value}`}
+                  />
+                  <span>{labels[index]}</span>
+                </div>
+              ))}
+            </div>
+          </EvalChartLegend>
           {metrics?.correctionsBefore != null && metrics.correctionsAfter != null ? (
             <div className="metric-row">
               <div>

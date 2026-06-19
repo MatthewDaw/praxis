@@ -12,6 +12,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import type { CandidateState } from "../../types/candidate";
 import type { KnowledgeGraphSnapshot } from "../../types/graph";
+import { GraphLegend } from "./GraphLegend";
 import { layoutGraphNodes, stateNodeColors } from "./graphLayout";
 
 interface CandidateNodeData extends Record<string, unknown> {
@@ -114,6 +115,7 @@ function KnowledgeGraphViewInner({
         <Background gap={16} size={1} />
         <Controls showInteractive={false} />
       </ReactFlow>
+      <GraphLegend className="graph-legend--overlay" />
     </div>
   );
 }

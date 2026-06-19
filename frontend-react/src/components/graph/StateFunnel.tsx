@@ -1,6 +1,6 @@
+import { FunnelLegend } from "./FunnelLegend";
+import { FUNNEL_STATES } from "../viz";
 import type { Candidate } from "../../types/candidate";
-
-const FUNNEL_STATES = ["proposed", "suggested", "active", "decayed"] as const;
 
 interface StateFunnelProps {
   candidates: Candidate[];
@@ -16,6 +16,7 @@ export function StateFunnel({ candidates }: StateFunnelProps) {
   return (
     <section className="state-funnel" aria-label="Lifecycle state distribution">
       <p className="state-funnel__label">Lifecycle funnel</p>
+      <FunnelLegend />
       <div className="state-funnel__bars">
         {counts.map(({ state, count }) => (
           <div key={state} className="state-funnel__item">
