@@ -15,5 +15,10 @@ __pycache__/
 .env
 frontend-react/.env.local
 
+# CDK build artifacts
+infra/node_modules/
+infra/cdk.out/
+infra/cdk.context.json
+
 # Server runtime data (persisted candidate store)
 knowledge/serve/data/

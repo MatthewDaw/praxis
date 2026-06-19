@@ -1,0 +1,74 @@
+-- PRAXIS knowledge-graph + dashboard schema (canonical).
+--
+-- Target: AWS RDS PostgreSQL 16 with the pgvector extension available.
+-- This file is idempotent: every statement uses IF NOT EXISTS so it can be
+-- re-run safely as a migration (see knowledge/serve/db.py :: bootstrap()).
+
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- Multi-tenancy model: every row is owned by a (org_id, user_id) pair.
+--   * org_id  -- the tenant. Rows are always partitioned by org first.
+--   * user_id -- the owning user within the org.
+--   * shared  -- when true the row is visible to the whole org (a shared
+--                graph); when false it is private to user_id.
+-- Read predicate for a requester (org O, user U):
+--     WHERE org_id = O AND (shared OR user_id = U)
+-- This gives org-shared graphs, user-private graphs, and optional sharing.
+--
+-- Record ids (e.g. dashboard "cand_1", fact ids) are only unique WITHIN a
+-- tenant graph, never globally -- so the primary key is composite
+-- (org_id, user_id, id). A bare id PK would let one tenant's seed clobber
+-- another's via ON CONFLICT.
+
+-- Dashboard candidate store: dashboard JSON shape kept verbatim in `doc`,
+-- with id/org_id/user_id/state lifted out for indexing and filtering.
+CREATE TABLE IF NOT EXISTS candidates (
+    id         text NOT NULL,
+    org_id     text NOT NULL DEFAULT 'default',
+    user_id    text NOT NULL DEFAULT 'default',
+    shared     boolean NOT NULL DEFAULT false,
+    state      text NOT NULL DEFAULT 'proposed',
+    doc        jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, user_id, id)
+);
+
+CREATE INDEX IF NOT EXISTS candidates_tenant
+    ON candidates (org_id, shared, user_id, state);
+
+-- Knowledge-graph foundation (facts + edges + embeddings).
+CREATE TABLE IF NOT EXISTS facts (
+    id                text NOT NULL,
+    org_id            text NOT NULL DEFAULT 'default',
+    user_id           text NOT NULL DEFAULT 'default',
+    shared            boolean NOT NULL DEFAULT false,
+    text              text NOT NULL,
+    source            text,
+    confidence        double precision,
+    scope             text,
+    category          text,
+    observation_count integer NOT NULL DEFAULT 1,
+    embedding         vector(1536),
+    meta              jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at        timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, user_id, id)
+);
+
+CREATE INDEX IF NOT EXISTS facts_tenant ON facts (org_id, shared, user_id, scope);
+
+CREATE INDEX IF NOT EXISTS facts_embedding_hnsw
+    ON facts USING hnsw (embedding vector_cosine_ops);
+
+-- Edges connect two facts within the same tenant graph.
+CREATE TABLE IF NOT EXISTS fact_edges (
+    org_id text NOT NULL DEFAULT 'default',
+    user_id text NOT NULL DEFAULT 'default',
+    src_id text NOT NULL,
+    dst_id text NOT NULL,
+    kind   text NOT NULL DEFAULT 'contradiction',
+    PRIMARY KEY (org_id, user_id, src_id, dst_id, kind),
+    FOREIGN KEY (org_id, user_id, src_id)
+        REFERENCES facts (org_id, user_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (org_id, user_id, dst_id)
+        REFERENCES facts (org_id, user_id, id) ON DELETE CASCADE
+);
