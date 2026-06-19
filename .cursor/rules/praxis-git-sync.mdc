@@ -23,7 +23,7 @@ If `main` has moved, that brings those commits into your dev branch. If it's alr
 
 ## Agent behavior
 
-When the user starts dashboard/pipeline/eval work or asks to open an MR:
+When the user starts dashboard/knowledge/eval work or asks to open an MR:
 
 1. Confirm the current branch is a **dev/feature branch**, not `main`.
 2. Run `git fetch origin main` then `git merge origin/main` (use `;` between commands in PowerShell, not `&&`).

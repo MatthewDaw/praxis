@@ -55,9 +55,12 @@ Vite SPA served from Render's CDN — no server process, no cold-start sleep on 
 | Field | Value |
 |-------|-------|
 | **Blueprint path** | `frontend-react/render.yaml` |
+| **Git branch** | `monica/dashboard-human-gate` (set in blueprint — not `main`) |
 | **Root directory** | `frontend-react` |
 | **Build command** | `npm ci && npm run build` |
-| **Publish directory** | `dist` |
+| **Publish directory** | `./dist` |
+| **Instance plan** | `starter` (static site; Pro workspace billing is separate from service plan) |
+| **Auto deploy** | On commit to `monica/dashboard-human-gate` |
 | **First deploy env** | **None required** (mock mode) |
 
 ### Dashboard setup
@@ -65,8 +68,11 @@ Vite SPA served from Render's CDN — no server process, no cold-start sleep on 
 1. **Render → New → Blueprint**
 2. Connect GitLab repo: `https://labs.gauntletai.com/monicapeters/praxis.git`
 3. Set **Blueprint Path** to `frontend-react/render.yaml` (Streamlit uses `frontend/render.yaml` separately — do not overwrite the existing Streamlit service)
-4. Leave `VITE_PRAXIS_API_BASE_URL` unset for portfolio mock demo
-5. Deploy and note the `*.onrender.com` URL
+4. Confirm **Branch** is `monica/dashboard-human-gate` (blueprint sets this; override in Dashboard only if you rename the dev branch)
+5. Leave `VITE_PRAXIS_API_BASE_URL` unset for portfolio mock demo
+6. Deploy and note the `*.onrender.com` URL
+
+**Pro workspace note:** Account Pro billing unlocks workspace features (e.g. preview environments, team access). This static site uses the `starter` service plan in the blueprint — appropriate for a Vite CDN deploy. Do not set `plan: free` if you want Render's default production static-site tier.
 
 ### Environment variables
 
