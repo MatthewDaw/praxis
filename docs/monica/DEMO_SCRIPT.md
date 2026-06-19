@@ -4,12 +4,23 @@
 
 ## Setup (before recording)
 
+**Streamlit (Monica's sprint demo path):**
+
 ```powershell
 cd frontend
 .\venv\Scripts\streamlit run app.py
 ```
 
-Confirm mock mode banner (no `PRAXIS_API_BASE_URL`). Filter state = **All**.
+**React (Matthew API validation — optional second take):**
+
+```powershell
+cd frontend-react
+npm run dev
+```
+
+Confirm mock mode banner (no `PRAXIS_API_BASE_URL` / `VITE_PRAXIS_API_BASE_URL`). Filter state = **All**.
+
+For live API rehearsal: set env vars, use sidebar **Refresh data** after mutations.
 
 ## Beat 1 — Problem framing (20s)
 
@@ -30,14 +41,15 @@ Point at candidate list — note provenance on every row (`logs/...jsonl:line`).
 1. Select **experimental_options Before Config Load** (cand_9).
 2. Show side-by-side rival **Experimental Flags in config.nu**.
 3. Click **Keep this candidate** — rival leaves queue; audit entry appended.
+4. (Optional) Show **Defer** — both candidates remain for later review.
 
 > "Contradictions surface as pairs, not silent conflicts in memory."
 
 ## Beat 4 — Human gate promotion (45s)
 
-1. Filter **proposed**; pick any proposed candidate.
-2. Click **Promote** → confirm dialog → success banner shows `proposed → suggested`.
-3. Promote again to **active** (Act 2 climax for interview story).
+1. Filter **proposed**; pick any proposed candidate (or cand_12 with low confidence to show warning).
+2. Click **Promote** → **confirmation dialog** → if confidence < 50%, note the low-confidence warning → **Confirm promote**.
+3. Success banner shows `proposed → suggested`; promote again to **active** (Act 2 climax).
 
 > "Nothing reaches the knowledge graph without an explicit human promotion."
 
@@ -55,5 +67,6 @@ Expand **Eval metrics** — placeholder or live curve if `PRAXIS_EVAL_METRICS_UR
 
 - [ ] 1920×1080 window, light theme (default Streamlit)
 - [ ] Zoom candidate detail expander before breakdown shot
-- [ ] Capture confirmation dialog + success banner
+- [ ] Capture confirmation dialog + low-confidence warning (if applicable) + success banner
 - [ ] Optional: split-screen with JSONL log file for provenance punch-in
+- [ ] Optional: second take from `frontend-react/` for React client parity

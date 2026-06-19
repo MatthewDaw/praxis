@@ -1,9 +1,12 @@
 # Matthew Daw — ML & Knowledge Pipeline Individual Plan
+
+> **Individual draft.** Team operating calendar, gap checklist, and canonical paths: [docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md](monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md). Code lives under `knowledge/`.
+
 **Role:** ML & Knowledge Pipeline Lead  
 **Focus:** Ingestion, learning moment detection (ML classifier), LLM distillation, consolidation/dedup/scoring, knowledge graph, provenance.  
 **Interview Claim:** "I led the ML-powered distillation engine that turns raw JSONL logs into scored, deduplicated, human-approved knowledge with full provenance."
 
-**Sprint Schedule Note:** 10 full work days (skipping Thursday June 18). Day 1 = Friday June 19. Days 9–10 (June 27–28) reserved for project completion and presentation practice/perfection. All times EOD unless noted.
+**Sprint Schedule Note:** 10 full work days (skipping Thursday June 18). Day 1 = Wednesday June 16. **Internal** Days 9–10 (June 26–27): freeze and practice. **Public** Gauntlet showcase: **Monday, June 29**. See [PLAN_ALIGNMENT_GAP_CHECKLIST.md](monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md). All times EOD unless noted.
 
 ## Overall Success Criteria (Shared)
 - MVP delivered with full pipeline.

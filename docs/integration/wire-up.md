@@ -11,13 +11,14 @@ cd frontend
 
 ## 1. Contract tests (offline)
 
-Confirms fixtures and payload builders match canonical v1:
+Confirms fixtures and payload builders match canonical v1. From **repo root** (recommended):
 
 ```powershell
-cd frontend
-$env:PYTHONPATH = "."
-.\venv\Scripts\pytest tests/test_contract_fixtures.py -v
+$env:PYTHONPATH = "frontend"
+uv run pytest frontend/tests/test_contract_fixtures.py -v
 ```
+
+Or from `frontend/` with `$env:PYTHONPATH = "."`.
 
 ## 2. Mock dashboard (no backend)
 
@@ -37,10 +38,11 @@ Rehearse Act 2 per [`../monica/DEMO_SCRIPT.md`](../monica/DEMO_SCRIPT.md):
 ## 3. Live API (when Matthew's server is up)
 
 ```powershell
-cd frontend
 $env:PRAXIS_API_BASE_URL = "http://localhost:8000"
 $env:PRAXIS_API_TOKEN = ""   # optional
-.\venv\Scripts\pytest tests/test_contract_fixtures.py -v
+$env:PYTHONPATH = "frontend"
+uv run pytest frontend/tests/test_contract_fixtures.py -v
+cd frontend
 .\venv\Scripts\streamlit run app.py
 ```
 
@@ -59,7 +61,11 @@ Expand **Eval metrics — compounding curve** and confirm live chart + before/af
 
 No `PRAXIS_API_BASE_URL` in Render env vars. See [`../monica/RENDER_DEPLOY.md`](../monica/RENDER_DEPLOY.md).
 
-## 6. React dashboard (Matthew — no Streamlit required)
+## 6. Integration smoke checklist
+
+Full pass/fail tables for mock + live API + eval metrics: [`../monica/INTEGRATION_SMOKE.md`](../monica/INTEGRATION_SMOKE.md).
+
+## 7. React dashboard (Matthew — no Streamlit required)
 
 ```powershell
 cd frontend-react

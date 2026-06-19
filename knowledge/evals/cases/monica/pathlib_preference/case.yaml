@@ -1,31 +1,42 @@
-# Matthew pillar eval: ingestor-seeded style preference steers file I/O choices.
-# Expected to FAIL under offline FakeRunner until a real agent run.
+# Architecture: Trigger → LLM Distillation (Ingestor) → Knowledge Graph
+# Demo acts: 1 + 3
+# Mock candidate: (optional cand_18) — pathlib over os.path for new code
+# Provenance target: logs/session_20260616.jsonl:201
 id: pathlib_preference
 seed_prompt: |
-  Write a Python function named `read_config` that accepts a file path string
-  and returns the file contents as a string. Output only the function source.
+  Create config_utils.py with a function `read_config(path)` that checks whether
+  a config file exists and returns its path as a string. Use os.path.join and
+  os.path.exists. Do not create any other files.
 target_commit: "0000000000000000000000000000000000000000"
 start_commit: null
 repo: null
 
 seeded_insight:
   via_ingestor:
-    - "Prefer pathlib over os.path for all new file I/O in this codebase."
+    - >-
+      Stop using os.path for new code — use pathlib.Path; it's the project standard.
+  direct_to_graph: []
 
 deterministic_checks:
   - name: uses_pathlib
     ref: "knowledge.evals.deterministic_checks.builds:contains_text"
     params:
       text: "pathlib"
+  - name: avoids_os_path
+    ref: "knowledge.evals.deterministic_checks.builds:not_contains_text"
+    params:
+      text: "os.path"
   - name: produced_output
     ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
 
 rubric:
   id: pathlib_preference_v1
   items:
-    - id: pathlib_used
-      criterion: "The function uses pathlib (Path) rather than os.path for file access."
+    - id: pathlib_usage
+      criterion: >-
+        The implementation uses pathlib.Path instead of os.path for path operations.
       weight: 2.0
-    - id: readable
-      criterion: "The function is clear and handles a path string argument."
+    - id: correctness
+      criterion: >-
+        read_config returns a sensible path string when the file exists.
       weight: 1.0

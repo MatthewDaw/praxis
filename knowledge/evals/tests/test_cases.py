@@ -47,7 +47,9 @@ def test_docstring_policy_passes_with_scripted_output():
             "    Returns:\n"
             "        Product of a and b.\n"
             '    """\n'
-            "    return a * b\n"
+            "    return a * b\n\n"
+            "def test_multiply():\n"
+            "    assert multiply(2, 3) == 6\n"
         )
     }
     result = run_case(case, FakeRunner(scripted=scripted))
@@ -97,4 +99,116 @@ def test_poison_negative_control_fails_when_poison_present():
     assert result.passed is False
     poison_check = next(c for c in result.checks if c.name == "no_os_path_poison")
     assert poison_check.passed is False
+
+
+def test_quirky_exhaustive_switch_registered():
+    cases = load_cases()
+    assert any(c.id == "quirky_exhaustive_switch" for c in cases)
+
+
+def test_quirky_exhaustive_switch_passes_with_scripted_output():
+    case = load_case(CASES_DIR / "quirky_exhaustive_switch")
+    scripted = {
+        "quirky_exhaustive_switch": (
+            'function statusLabel(status: "open" | "closed" | "pending"): string {\n'
+            "  switch (status) {\n"
+            '    case "open": return "Open";\n'
+            '    case "closed": return "Closed";\n'
+            '    case "pending": return "Pending";\n'
+            "    default: {\n"
+            "      const _exhaustive: never = status;\n"
+            "      return _exhaustive;\n"
+            "    }\n"
+            "  }\n"
+            "}\n"
+        )
+    }
+    result = run_case(case, FakeRunner(scripted=scripted))
+    assert result.case_id == "quirky_exhaustive_switch"
+    assert result.passed is True
+
+
+def test_quirky_exhaustive_switch_fails_offline_by_default():
+    case = load_case(CASES_DIR / "quirky_exhaustive_switch")
+    result = run_case(case, FakeRunner())
+    assert result.passed is False
+
+
+def test_quirky_config_load_order_registered():
+    cases = load_cases()
+    assert any(c.id == "quirky_config_load_order" for c in cases)
+
+
+def test_quirky_config_load_order_passes_with_scripted_output():
+    case = load_case(CASES_DIR / "quirky_config_load_order")
+    scripted = {
+        "quirky_config_load_order": (
+            "# Set experimental_options in parent shell before launching nu\n"
+            "$env.experimental_options = 'feature_x'\n"
+            "nu\n"
+        )
+    }
+    result = run_case(case, FakeRunner(scripted=scripted))
+    assert result.case_id == "quirky_config_load_order"
+    assert result.passed is True
+
+
+def test_quirky_config_load_order_fails_offline_by_default():
+    case = load_case(CASES_DIR / "quirky_config_load_order")
+    result = run_case(case, FakeRunner())
+    assert result.passed is False
+
+
+def test_poison_negative_control_good_registered():
+    cases = load_cases()
+    assert any(c.id == "poison_negative_control_good" for c in cases)
+
+
+def test_poison_negative_control_good_passes_with_scripted_output():
+    case = load_case(CASES_DIR / "monica" / "poison_negative_control_good")
+    scripted = {
+        "poison_negative_control_good": (
+            "def divide(a: float, b: float) -> float:\n"
+            '    """Divide a by b."""\n'
+            "    return a / b\n\n"
+            "def test_divide():\n"
+            "    assert divide(10, 2) == 5\n"
+        )
+    }
+    result = run_case(case, FakeRunner(scripted=scripted))
+    assert result.case_id == "poison_negative_control_good"
+    assert result.passed is True
+
+
+def test_poison_negative_control_good_fails_offline_by_default():
+    case = load_case(CASES_DIR / "monica" / "poison_negative_control_good")
+    result = run_case(case, FakeRunner())
+    assert result.passed is False
+
+
+def test_poison_negative_control_bad_registered():
+    cases = load_cases()
+    assert any(c.id == "poison_negative_control_bad" for c in cases)
+
+
+def test_poison_negative_control_bad_passes_with_scripted_output():
+    case = load_case(CASES_DIR / "monica" / "poison_negative_control_bad")
+    scripted = {
+        "poison_negative_control_bad": (
+            "def divide(a: float, b: float) -> float:\n"
+            '    """Divide a by b."""\n'
+            "    return a / b\n\n"
+            "def test_divide():\n"
+            "    assert divide(10, 2) == 5\n"
+        )
+    }
+    result = run_case(case, FakeRunner(scripted=scripted))
+    assert result.case_id == "poison_negative_control_bad"
+    assert result.passed is True
+
+
+def test_poison_negative_control_bad_fails_offline_by_default():
+    case = load_case(CASES_DIR / "monica" / "poison_negative_control_bad")
+    result = run_case(case, FakeRunner())
+    assert result.passed is False
 

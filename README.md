@@ -13,7 +13,7 @@ Claude Code's auto-memory saves a few notes between sessions — but it's an unv
 > **Memory vs. knowledge.** Auto-memory captures scattered, episodic notes. PRAXIS produces generalized, deduplicated, confidence-scored, human-approved, measured knowledge with full provenance.
 
 **Remote:** [GitLab — monicapeters/praxis](https://labs.gauntletai.com/monicapeters/praxis)  
-**Architecture source of truth:** [docs/PRAXIS_Project_Plan.html](docs/PRAXIS_Project_Plan.html)
+**Architecture source of truth:** [docs/plans/PRAXIS_Project_Plan.html](docs/plans/PRAXIS_Project_Plan.html)
 
 ---
 
@@ -87,7 +87,7 @@ Point-in-time snapshot as of **2026-06-18** (Sprint Day 2). See [AUDIT.md](AUDIT
 | Human-gate dashboard (Streamlit) | `frontend/` | Monica Peters | **Demo-ready** — mock fixtures, contract v1 API client, Render deploy blueprint |
 | Knowledge Graph dashboard (React) | `frontend-react/` | Monica Peters (client) / Matthew Daw (server) | **Demo-ready (mock)** — Vite + TypeScript UI targeting same candidate-api-v1; Matthew validates his REST server without Streamlit |
 | Knowledge substrate | `knowledge/` | Matthew Daw | **Foundation** — in-memory graph, prompt ingestor, whole-file reader, wiring factory |
-| Eval harness | `knowledge/evals/` | Dominic Antonelli | **Partial** — YAML case registry, deterministic checks, real Claude Code runner + offline FakeRunner |
+| Eval harness | `knowledge/evals/` | Dominic Antonelli | **Partial** — 5 YAML cases, deterministic checks, real Claude Code runner + offline FakeRunner |
 | Session capture | `session-capture/` | Dominic Antonelli | **Working** — Go `claude+` PTY daemon, JSONL tailer, DynamoDB writer |
 | Cloud infra | `infra/` | Dominic Antonelli | **Scaffolded** — AWS CDK stack for sessions DynamoDB table |
 | Candidate REST API | — | Matthew Daw | **Planned** — contract v1 documented; server not yet in-repo |
@@ -108,11 +108,13 @@ Point-in-time snapshot as of **2026-06-18** (Sprint Day 2). See [AUDIT.md](AUDIT
 | Cluster/dedup + confidence scoring | Real-time mid-session learning |
 | Knowledge Graph as primary knowledge store | |
 | get-context tool (session + codebase + graph → injected context) | |
-| Streamlit human-gate dashboard in `frontend/` (`proposed → suggested → active`) | |
+| Streamlit + React human-gate dashboards in `frontend/` and `frontend-react/` (`proposed → suggested → active`) | |
 | Complementary injection via generated `CLAUDE.md` / skills | |
 | Eval harness measuring correction rate before/after (VCS-agnostic PR/ticket replay) | |
 
-**Stretch goals:** trained classifier for learning moments; substrate bake-off (markdown/skills vs. vector RAG vs. knowledge graph); confidence decay and re-verification; contradiction-resolution UI; cross-project knowledge.
+**Implemented beyond MVP shell:** contradiction-resolution UI (dashboard); React client for Matthew API validation.
+
+**Stretch goals:** trained classifier for learning moments; substrate bake-off (markdown/skills vs. vector RAG vs. knowledge graph); confidence decay and re-verification; pipeline-side contradiction **detection**; cross-project knowledge.
 
 ---
 
@@ -148,7 +150,10 @@ Sprint **Day 1 = Wednesday, June 16, 2026** (Thursday June 18 skipped). See the 
 | Parallel core build | 3–5 | Full pipeline, human-gate UI, scoring/decay, eval replay automation |
 | Integration | 6–7 | Dashboard ↔ backend API, injection, eval harness, promotion triggers replay |
 | Measurement | 8 | Compounding curve, threshold tuning, edge-case polish |
-| Demo & handoff | 9–10 | Live demo script, documentation, presentation practice |
+| Demo & handoff | 9–10 | Live demo script, documentation, presentation practice (internal **Jun 26–27**) |
+| **Gauntlet showcase** | — | **Mon Jun 29** — 10-minute live presentation |
+
+Team freeze gates and three practice runs: [docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md](docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md).
 
 ---
 
@@ -200,7 +205,7 @@ praxis/
 └── README.md
 ```
 
-> **Note:** Early plans referenced top-level `pipeline/` and `eval/` directories. Current implementations live under `knowledge/` and `session-capture/` respectively. API contracts are path-agnostic.
+> **Note:** Early plans referenced top-level `pipeline/` and `eval/` directories. Current implementations live under `knowledge/` (including `knowledge/evals/`) and `session-capture/`. API contracts are path-agnostic.
 
 ---
 
@@ -316,18 +321,17 @@ Secrets are **environment-only** — never commit tokens or credentials.
 
 ## Testing
 
-**Knowledge package** (30 tests — run from repo root):
+**Knowledge package** (39 tests — run from repo root):
 
 ```powershell
 uv run pytest knowledge/ -q
 ```
 
-**Dashboard contract tests** (11 tests — require `frontend` on `PYTHONPATH`):
+**Dashboard contract tests** (11 tests — set `PYTHONPATH` from repo root):
 
 ```powershell
-cd frontend
-$env:PYTHONPATH = "."
-uv run pytest tests/ -q
+$env:PYTHONPATH = "frontend"
+uv run pytest frontend/tests/ -q
 ```
 
 Contract fixtures are canonical in [docs/integration/fixtures/](docs/integration/fixtures/).
@@ -338,9 +342,9 @@ Contract fixtures are canonical in [docs/integration/fixtures/](docs/integration
 
 | Document | Description |
 |----------|-------------|
-| [docs/PRAXIS_Project_Plan.html](docs/PRAXIS_Project_Plan.html) | **Source of truth** — team plan, architecture overview, 9-day schedule |
+| [docs/plans/PRAXIS_Project_Plan.html](docs/plans/PRAXIS_Project_Plan.html) | **Source of truth** — team plan, architecture overview, 9-day schedule |
 | [docs/plans/mvp-plan.html](docs/plans/mvp-plan.html) | MVP core contracts and eval schema |
-| [docs/proposal-praxis.md](docs/proposal-praxis.md) | Capstone proposal — problem, direction, risks (historical) |
+| [docs/plans/proposal-praxis.md](docs/plans/proposal-praxis.md) | Capstone proposal — problem, direction, risks (historical) |
 | [docs/integration/candidate-api-v1.md](docs/integration/candidate-api-v1.md) | **Matthew ↔ Monica** candidate REST contract + fixtures |
 | [docs/integration/eval-metrics-v1.md](docs/integration/eval-metrics-v1.md) | **Dominic ↔ Monica** eval metrics JSON contract |
 | [docs/integration/wire-up.md](docs/integration/wire-up.md) | Self-serve Streamlit + React wire-up (no pairing) |
@@ -348,6 +352,8 @@ Contract fixtures are canonical in [docs/integration/fixtures/](docs/integration
 | [docs/monica/ARCHITECTURE_MONICA.md](docs/monica/ARCHITECTURE_MONICA.md) | Dashboard pillar architecture — Streamlit stack, API boundaries |
 | [docs/monica/monica-wireframes.md](docs/monica/monica-wireframes.md) | Dashboard as-built spec and UX notes |
 | [docs/monica/DEMO_SCRIPT.md](docs/monica/DEMO_SCRIPT.md) | Three-act live demo script |
+| [docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md](docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md) | Team gap checklist, Scrum Master duties, demo freeze gates |
+| [docs/monica/STANDUP_TEMPLATE.md](docs/monica/STANDUP_TEMPLATE.md) | Daily 15-min standup template |
 | [docs/Matthew-Daw-ML-Pipeline-PlanDRAFT.md](docs/Matthew-Daw-ML-Pipeline-PlanDRAFT.md) | ML pipeline pillar plan |
 | [docs/Dominic-Antonelli-Architecture-Eval-PlanDRAFT.md](docs/Dominic-Antonelli-Architecture-Eval-PlanDRAFT.md) | Architecture, eval & integration pillar plan |
 | [session-capture/README.md](session-capture/README.md) | Go wrapper — claude+ CLI, DynamoDB capture |

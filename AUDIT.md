@@ -15,10 +15,10 @@ PRAXIS is a three-pillar capstone sprint building a self-improving knowledge loo
 | Pillar | Owner | Location | Maturity |
 |--------|-------|----------|----------|
 | Dashboard & Human Gate | Monica Peters | `frontend/`, `frontend-react/` | **High** — Streamlit demo-ready on mock; React client shipped for Matthew API validation |
-| ML & Knowledge Pipeline | Matthew Daw | `knowledge/` (+ planned `pipeline/`) | **Early** — in-memory KG, ingestor skeleton; no REST API yet |
+| ML & Knowledge Pipeline | Matthew Daw | `knowledge/` | **Early** — in-memory KG, ingestor skeleton; no REST API yet |
 | Architecture, Eval & Integration | Dominic Antonelli | `knowledge/evals/`, `session-capture/`, `infra/` | **Partial** — eval harness skeleton + session capture Go wrapper |
 
-**Overall verdict:** The human-gate pillar is demo-ready on mock fixtures and contract-tested for Days 6–7 integration. The backend candidate API (`GET/POST /candidates/*`) is **not implemented** in-repo. README layout (`pipeline/`, `eval/`) **lags actual code layout** (`knowledge/`, `session-capture/`). No GitLab CI pipeline exists yet.
+**Overall verdict:** The human-gate pillar is demo-ready on mock fixtures and contract-tested for Days 6–7 integration. The backend candidate API (`GET/POST /candidates/*`) is **not implemented** in-repo. Canonical code paths: `knowledge/` (Matthew), `knowledge/evals/` + `session-capture/` (Dominic). No GitLab CI pipeline exists yet.
 
 **Primary risks before demo (Days 9–10):**
 
@@ -35,41 +35,39 @@ PRAXIS is a three-pillar capstone sprint building a self-improving knowledge loo
 Sprint Day 1 = 2026-06-16 (Wed)
 Today        = 2026-06-18 (Thu — skipped work day per plan; audit run on dev branch)
 Integration  = Days 6–7 target (2026-06-23 – 2026-06-24)
-Demo         = Days 9–10 (2026-06-26 – 2026-06-27)
+Internal     = Days 9–10 freeze/practice (2026-06-26 – 2026-06-27)
+Showcase     = Gauntlet live demo Mon 2026-06-29 (see docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md)
 ```
 
 This audit reflects the tree on `monica/dashboard-human-gate` after syncing with `origin/main`. It is a point-in-time snapshot, not a merge request.
 
 ---
 
-## Repository layout — planned vs actual
-
-### README expected layout
+## Repository layout (canonical)
 
 ```text
 praxis/
-├── pipeline/          # Matthew — ingest, detect, distill, score, KG
-├── eval/              # Dominic — harness, benchmark, metrics
-├── frontend/          # Monica — Streamlit human gate
-└── frontend-react/    # Optional future React UI
+├── knowledge/           # Matthew — ingest, distillation, KG, candidate API (planned)
+│   └── evals/           # Dominic — eval harness (YAML cases, runners, metrics)
+├── session-capture/     # Dominic — Go claude+ wrapper, DynamoDB JSONL capture
+├── infra/               # Dominic — AWS CDK (sessions table)
+├── frontend/            # Monica — Streamlit human gate
+└── frontend-react/      # Monica — React human gate (Matthew API client)
 ```
-
-### Actual layout (2026-06-18)
 
 | Path | Status | Notes |
 |------|--------|-------|
-| `frontend/` | ✅ Present | 17 Python modules; Streamlit app, components, services, tests |
-| `frontend-react/` | ✅ Present | Vite + React + TS; contract v1 client; mock + live API modes; `npm run build` passes |
-| `pipeline/` | ❌ Missing | Matthew's distillation/API work lives under `knowledge/` today |
-| `eval/` | ❌ Missing | Eval harness under `knowledge/evals/`; not top-level `eval/` |
-| `knowledge/` | ✅ Present | KG, ingestion, graph reader, eval harness (29 `.py` files) |
-| `session-capture/` | ✅ Present | Go `claude+` wrapper, DynamoDB capture (50 non-vendored `.go` files) |
-| `infra/` | ✅ Present | AWS CDK — DynamoDB sessions table (2 `.ts` files) |
+| `frontend/` | ✅ Present | Streamlit app, components, services, tests |
+| `frontend-react/` | ✅ Present | Vite + React + TS; contract v1 client; mock + live API modes |
+| `knowledge/` | ✅ Present | KG, ingestion, graph reader, eval harness |
+| `knowledge/evals/` | ✅ Present | YAML cases, deterministic checks, Claude Code runner |
+| `session-capture/` | ✅ Present | Go `claude+` wrapper, DynamoDB capture |
+| `infra/` | ✅ Present | AWS CDK — DynamoDB sessions table |
 | `docs/` | ✅ Rich | Plans, integration contracts, fixtures, pillar docs |
 | `.cursor/rules/` | ✅ Present | Team quality standards |
 | `.gitlab-ci.yml` | ❌ Missing | No automated CI |
 
-**Docs/code drift:** README, Monica architecture, and integration docs reference `pipeline/` and `eval/` as canonical paths. Implementations currently sit in `knowledge/` and `session-capture/`. This is not blocking integration (API contracts are path-agnostic) but **will confuse onboarding** until README or directory names converge.
+> Early sprint plans used top-level `pipeline/` and `eval/` names; implementations live under `knowledge/` and `knowledge/evals/` as above.
 
 ---
 
@@ -89,7 +87,7 @@ praxis/
 | Eval embed | `eval_metrics_embed.py` — fetches `PRAXIS_EVAL_METRICS_URL` or shows placeholder |
 | API client | `ApiDataProvider` — stdlib `urllib`, contract v1 headers, 409/400 retry logic |
 | Deploy | `render.yaml` — mock-only portfolio deploy; env vars for live API |
-| Boundary rule | ✅ No imports from `pipeline/` or `eval/` (verified) |
+| Boundary rule | ✅ No imports from `knowledge/` or `knowledge/evals/` inside `frontend/` (verified) |
 
 **Tests (11 passing with `PYTHONPATH=frontend`):**
 
@@ -179,7 +177,7 @@ Harness is runnable via `uv run python knowledge/run.py` or `python -m knowledge
 
 **Missing vs plan:**
 
-- Top-level `eval/` directory and quirky benchmark repo
+- Quirky benchmark repo (eval cases under `knowledge/evals/cases/`)
 - Eval metrics HTTP endpoint for dashboard (`PRAXIS_EVAL_METRICS_URL`)
 - VCS-agnostic promotion replay automation
 - Compounding-curve measurement on fixed benchmark tasks
@@ -208,7 +206,7 @@ Contracts are **well-defined** and **client-implemented**:
 
 | Suite | Command | Result |
 |-------|---------|--------|
-| Knowledge | `pytest knowledge -q` | **30 passed** |
+| Knowledge | `pytest knowledge -q` | **39 passed** |
 | Frontend | `PYTHONPATH=frontend pytest frontend/tests -q` | **11 passed** |
 | Root (default) | `pytest knowledge frontend/tests -q` | **2 collection errors** (frontend imports) |
 | Go (session-capture) | `go test ./...` | **Not run** — Go toolchain absent |
@@ -267,8 +265,10 @@ Or document that all contributors must run frontend tests from `frontend/` with 
 
 | Document | Alignment with code |
 |----------|---------------------|
-| `README.md` | ⚠️ Layout section outdated (`pipeline/`, `eval/` paths) |
-| `docs/monica/ARCHITECTURE_MONICA.md` | ✅ Accurate for dashboard; references future `pipeline/` |
+| `README.md` | ✅ Layout reflects `knowledge/`, `session-capture/`, `frontend-react/` |
+| `docs/monica/ARCHITECTURE_MONICA.md` | ✅ Accurate for dashboard; canonical paths `knowledge/` |
+| `docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md` | ✅ Team operating doc — sprint gaps, demo calendar |
+| `docs/monica/STANDUP_TEMPLATE.md` | ✅ Daily Scrum Master standup template |
 | `docs/integration/*` | ✅ Matches client implementation |
 | `docs/monica/DEMO_SCRIPT.md` | ✅ Actionable for mock rehearsal |
 | `session-capture/README.md` | ✅ Matches Go layout |
@@ -279,9 +279,9 @@ Or document that all contributors must run frontend tests from `frontend/` with 
 
 ### P0 — Before Days 6–7 integration
 
-1. **Matthew:** Implement candidate REST API per `candidate-api-v1.md` (can live in `knowledge/` or new `pipeline/` — pick one path and update README).
-2. **Fix pytest pythonpath** in `pyproject.toml` so `pytest` from repo root passes all 41 tests.
-3. **Update README layout** to reflect `knowledge/`, `session-capture/`, `infra/` until `pipeline/` and `eval/` exist.
+1. **Matthew:** Implement candidate REST API per `candidate-api-v1.md` under `knowledge/` (or adjacent API module).
+2. **Fix pytest pythonpath** in `pyproject.toml` so `pytest` from repo root passes all **50** Python tests (39 knowledge + 11 frontend).
+3. **Run live integration smoke** once Matthew API lands — document in MR.
 
 ### P1 — Before demo (Days 9–10)
 
@@ -305,9 +305,9 @@ Or document that all contributors must run frontend tests from `frontend/` with 
 # Sync dev branch (start of session)
 git fetch origin main; git merge origin/main
 
-# All Python tests (after pythonpath fix — today use frontend path)
+# All Python tests (from repo root)
 $env:PYTHONPATH = "frontend"
-.\.venv\Scripts\pytest knowledge frontend/tests -q
+uv run pytest knowledge/ frontend/tests/ -q
 
 # Mock dashboard
 cd frontend
@@ -339,7 +339,7 @@ cd ../session-capture/wrapper; go build -o claude+ ./cmd/claude-plus
 | `infra/` | 2 TypeScript |
 | `docs/integration/fixtures/` | 4 JSON fixtures |
 
-**Total automated tests:** 41 Python (`def test_` across 9 test modules).
+**Total automated tests:** 50 Python (39 knowledge + 11 frontend).
 
 ---
 
@@ -350,6 +350,14 @@ cd ../session-capture/wrapper; go build -o claude+ ./cmd/claude-plus
 | Branch audited | `monica/dashboard-human-gate` |
 | Commits ahead of `origin/main` | Dev-branch-only work (not enumerated in this audit) |
 | Next audit trigger | After Matthew candidate API lands, or before MR to `main` |
-| Owner action | Monica: pytest pythonpath fix + README drift MR; Matthew/Dominic: P0 server endpoints |
+| Owner action | Monica: pytest pythonpath fix in `pyproject.toml`; Matthew/Dominic: P0 server endpoints |
+
+## Related team docs
+
+| Document | Use |
+|----------|-----|
+| [docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md](docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md) | Gap checklist, freeze gates, eval backlog |
+| [docs/monica/STANDUP_TEMPLATE.md](docs/monica/STANDUP_TEMPLATE.md) | Daily standup (Scrum Master) |
+| [docs/PRAXIS_GAP_CHECKLIST_DAYS3-9.md](docs/PRAXIS_GAP_CHECKLIST_DAYS3-9.md) | Redirect to PLAN_ALIGNMENT |
 
 *Generated as part of local dev session on 2026-06-18. Update this file when integration milestones land.*

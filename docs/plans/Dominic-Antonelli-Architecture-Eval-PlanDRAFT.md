@@ -1,9 +1,12 @@
 # Dominic Antonelli — Architecture, Eval & Integration Individual Plan
+
+> **Individual draft.** Team operating calendar, gap checklist, and canonical paths: [docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md](monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md). Eval harness: `knowledge/evals/`; session capture: `session-capture/`.
+
 **Role:** Architecture, Eval & Integration Lead  
 **Focus:** System design, eval harness (fixed tasks + metrics), GitHub hook/PR automation, Python tooling, deployment, live demo & compounding curve proof.  
 **Interview Claim:** "I architected the eval harness and integration layer that rigorously proves PRAXIS delivers ≥50% fewer corrections with compounding gains."
 
-**Sprint Schedule Note:** 10 full work days (skipping Thursday June 18). Day 1 = Friday June 19. Days 9–10 (June 27–28) reserved for project completion and presentation practice/perfection. All times EOD unless noted.
+**Sprint Schedule Note:** 10 full work days (skipping Thursday June 18). Day 1 = Wednesday June 16. **Internal** Days 9–10 (June 26–27): freeze and practice. **Public** Gauntlet showcase: **Monday, June 29**. See [PLAN_ALIGNMENT_GAP_CHECKLIST.md](monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md). All times EOD unless noted.
 
 ## Overall Success Criteria (Shared)
 - MVP delivered with full pipeline.

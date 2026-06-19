@@ -9,9 +9,9 @@
 | [ARCHITECTURE_MONICA.md](../ARCHITECTURE_MONICA.md) | Pillar architecture, ACR touchpoints, contracts, M.O.M. |
 | [monica-wireframes.md](../monica-wireframes.md) | As-built screens, candidate data contract |
 | [Monica-Peters-Dashboard-Plan.md](../Monica-Peters-Dashboard-Plan.md) | Sprint deliverables Days 1–10 |
-| [PRAXIS_Project_Plan.html](../../PRAXIS_Project_Plan.html) | Team schedule, interview claim, system diagram |
+| [PRAXIS_Project_Plan.html](../../plans/PRAXIS_Project_Plan.html) | Team schedule, interview claim, system diagram |
 | [PRD.pdf](../../PRD.pdf) | Capstone framing: technically ambitious, demo what shipped |
-| [proposal-praxis.md](../../proposal-praxis.md) | Human gate lifecycle, provenance, ≥50% correction-reduction narrative |
+| [proposal-praxis.md](../../plans/proposal-praxis.md) | Human gate lifecycle, provenance, ≥50% correction-reduction narrative |
 
 **Interview claim (project plan):** *"I led the design and built the human approval dashboard that enforces quality gates and makes knowledge promotion transparent and measurable."*
 
@@ -35,13 +35,13 @@ A six-role council (mapped from [Agent Council Review (ACR)](../ARCHITECTURE_MON
 - Preparing Days 6–7 integration MRs against Matthew's candidate API
 - Day 8–10 polish: accessibility, edge cases, eval metrics embed, demo Act 2 script
 
-**Out of scope for this team:** `pipeline/` distillation, `eval/` harness computation, DynamoDB/KG storage, GitHub hook implementation (Dominic), React `frontend-react/` unless explicitly chartered.
+**Out of scope for this team:** `knowledge/` distillation, `knowledge/evals/` harness computation, DynamoDB/KG storage, GitHub hook implementation (Dominic), React `frontend-react/` unless explicitly chartered.
 
 #### Agent Roles
 
 | Role | Agent Name | Model | Function | Trust Level |
 |------|------------|-------|----------|-------------|
-| Orchestrator | | | Sprint routing: Day deliverables from [Monica-Peters-Dashboard-Plan.md](../Monica-Peters-Dashboard-Plan.md); integration stop conditions (mock still works, no `pipeline/` imports); demo Act 2 checklist | Medium |
+| Orchestrator | | | Sprint routing: Day deliverables from [Monica-Peters-Dashboard-Plan.md](../Monica-Peters-Dashboard-Plan.md); integration stop conditions (mock still works, no `knowledge/` imports); demo Act 2 checklist | Medium |
 | Architect | | | Module boundaries (`models/` → `services/` → `components/` → `app.py`); `DataProvider` contract stability; React coexistence guarantees ([§2.4](../ARCHITECTURE_MONICA.md#24-react-coexistence--no-blockers-for-teammates)) | Medium-high |
 | Adversarial UX | | | Edge cases per ACR: empty candidate list, API unreachable, duplicate promote, Streamlit rerun mid-action, mock-vs-live confusion, stale confidence | Low |
 | Verification | | | `Candidate.from_mapping()` forward compatibility; mock fixtures match API schema; exhaustive `CandidateState` handling; promote/reject idempotency expectations for Days 6–7 | Medium |
@@ -81,7 +81,7 @@ Routing sprint work through ACR-mapped roles yields reviewable MRs that preserve
 
 | Role | Agent Name | Model | Function | Trust Level |
 |------|------------|-------|----------|-------------|
-| Orchestrator | GateCoordinator | Composer 2.5 Fast or Gemini 3 Flash | Maps tasks to sprint days; enforces pillar scope; blocks `pipeline/`/`eval/` edits; tracks mock + API dual-path | Medium |
+| Orchestrator | GateCoordinator | Composer 2.5 Fast or Gemini 3 Flash | Maps tasks to sprint days; enforces pillar scope; blocks `knowledge/`/`knowledge/evals/` edits; tracks mock + API dual-path | Medium |
 | Architect | BoundarySmith | Claude 4.6 Sonnet or GPT-5.4 | `DataProvider` protocol, module map, non-blocking integration checklist ([§17](../ARCHITECTURE_MONICA.md#17-integration-architecture--data-contracts)) | Medium-high |
 | Adversarial UX | EdgeCaseForge | Gemini 3 Flash | Empty states, API-down banner, 409 promote conflict, reject audit gap, unknown `state` values, contradiction stub without mutations | Low |
 | Verification | ContractGuard | Claude 4.6 Sonnet or GPT-5.4 | `Candidate` aliases (`provenance`/`source_log`, `confidenceBreakdown`); `X-Praxis-Contract: 1`; lifecycle `proposed → suggested → active` | Medium |
@@ -94,24 +94,24 @@ Routing sprint work through ACR-mapped roles yields reviewable MRs that preserve
 |-----|-----------------------------------|----------------|-----------|
 | 1 | Wireframes, Streamlit stack decision | Orchestrator, Documentation | ✅ |
 | 2 | Dashboard shell + candidate list | Architect, Verification | ✅ |
-| 3 | Candidate detail + confidence UI | Verification, Documentation | 🟡 partial |
-| 4 | Human gate workflow polish | Adversarial UX, Orchestrator | 🔲 |
-| 5 | Contradiction resolution + credibility viz | Architect, Adversarial UX | 🔲 |
-| 6 | API integration + approval actions | BoundarySmith, ContractGuard | 🔲 |
-| 7 | Full approval flow + provenance in UI | ContractGuard, TrustSentinel | 🔲 |
-| 8 | Edge-case polish + eval embed | EdgeCaseForge, PillarScribe | 🔲 |
+| 3 | Candidate detail + confidence UI | Verification, Documentation | ✅ |
+| 4 | Human gate workflow polish | Adversarial UX, Orchestrator | ✅ |
+| 5 | Contradiction resolution + credibility viz | Architect, Adversarial UX | ✅ |
+| 6 | API integration + approval actions | BoundarySmith, ContractGuard | ✅ client; awaits Matthew server |
+| 7 | Full approval flow + provenance in UI | ContractGuard, TrustSentinel | ✅ mock |
+| 8 | Edge-case polish + eval embed | EdgeCaseForge, PillarScribe | ✅ |
 | 9–10 | Demo-ready + user flow video | GateCoordinator, PillarScribe | 🔲 |
 
 #### Run Notes + Scorecard
 
 | Date | Sprint Day / Target | Scope | Contract OK | A11y Spot-check | Edge Cases Covered | Integration Risk | Demo Narrative (1–10) | Keep? |
 |------|---------------------|-------|:-----------:|:---------------:|:------------------:|:----------------:|:---------------------:|-------|
-| 2026-06-18 | Day 2–3 — modular shell | `frontend/` extraction + pillar docs | Yes | Partial | 4 (empty list, mock banner, unknown state, extra fields) | Low | 6 | Yes |
+| 2026-06-19 | Day 4–8 — workflow + API client | Streamlit + React + contract v1 | Yes | Partial | 8+ (confirm, reject reason, 409, defer) | Low (mock) | 8 | Yes |
 
 **Observations:**  
-- What worked: Modular `models/` / `services/` / `components/` layout; mock provider unblocks Matthew; wireframes match shipped list + detail expander.  
-- What failed: Contradiction mutations and `ApiDataProvider` still stubbed — expected until Days 6–7.  
-- What to change next: Add Day 4 confirmation UX and Day 5 side-by-side resolution actions; run ContractGuard against Matthew's OpenAPI when published.
+- What worked: Modular layout; `ApiDataProvider` + `contract_v1.py`; mock + React parity; confirmation UX and contradiction resolve on mock.  
+- What failed: Live E2E still blocked on Matthew's API server.  
+- What to change next: Days 9–10 demo rehearsal + user-flow video; ContractGuard against Matthew's OpenAPI when published.
 
 ---
 
@@ -121,7 +121,7 @@ Routing sprint work through ACR-mapped roles yields reviewable MRs that preserve
 
 **Purpose:** Wire `ApiDataProvider` to Matthew's REST endpoints without breaking mock mode.  
 **Hypothesis:** Security & Performance + Verification roles front-loaded prevent session-state corruption and auth leaks.  
-**Trigger:** Matthew publishes candidate list + promote/reject/resolve OpenAPI or JSON Schema.
+**Trigger:** Matthew publishes candidate list + promote/reject/resolve server (client already implemented).
 
 | Role | Focus |
 |------|-------|
@@ -140,7 +140,7 @@ Routing sprint work through ACR-mapped roles yields reviewable MRs that preserve
 
 | Role | Focus |
 |------|-------|
-| Orchestrator | Demo script timing; Act 2 beat from [proposal-praxis.md](../../proposal-praxis.md) |
+| Orchestrator | Demo script timing; Act 2 beat from [proposal-praxis.md](../../plans/proposal-praxis.md) |
 | Architect | Minimal diff; no last-minute architecture churn |
 | Adversarial UX | Render cold start, stale data, keyboard-only walkthrough |
 | Verification | Staging run with real candidates; provenance links valid |

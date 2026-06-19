@@ -1,6 +1,7 @@
-# Daily Team StandUp Report — Monica Peters
+# Daily Team StandUp Report — Monica Peters (Scrum Master)
 
-**Sync with:** Tom Tarpey · **Time:** 10:00 AM daily · **Duration:** 15 minutes
+**Sync with:** Tom Tarpey · **Time:** 10:00 AM daily · **Duration:** 15 minutes  
+**Checklist owner:** Monica — tick items in [PLAN_ALIGNMENT_GAP_CHECKLIST.md](PLAN_ALIGNMENT_GAP_CHECKLIST.md) after each sync
 
 Copy this template into your daily notes or Slack post.
 
@@ -34,6 +35,8 @@ Dashboard human-gate: _mock / API-integrated / demo-ready_ — see [monica-wiref
 
 ## Quick links
 
+- [PLAN_ALIGNMENT_GAP_CHECKLIST.md](PLAN_ALIGNMENT_GAP_CHECKLIST.md) — team gap checklist, freeze gates, eval backlog
 - [Monica-Peters-Dashboard-Plan.md](Monica-Peters-Dashboard-Plan.md)
 - [ARCHITECTURE_MONICA.md](ARCHITECTURE_MONICA.md) §19 sprint table
+- [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) — architecture diagram
 - Branch: `monica/dashboard-human-gate`

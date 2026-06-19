@@ -41,7 +41,8 @@ export function useCandidates() {
     async (id: string, reason?: string) => {
       await provider.reject(id, reason);
       await refresh();
-      setLastAction(`Rejected candidate ${id}.`);
+      const note = reason ? ` (reason: ${reason})` : "";
+      setLastAction(`Rejected candidate ${id}${note}.`);
     },
     [provider, refresh],
   );

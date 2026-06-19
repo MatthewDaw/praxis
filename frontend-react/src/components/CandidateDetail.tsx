@@ -13,6 +13,7 @@ interface CandidateDetailProps {
     keepId: string,
     rivalTitle: string,
   ) => Promise<void>;
+  onDefer: (primaryTitle: string, rivalTitle: string) => void;
 }
 
 export function CandidateDetail({
@@ -20,6 +21,7 @@ export function CandidateDetail({
   selectedId,
   onSelect,
   onResolve,
+  onDefer,
 }: CandidateDetailProps) {
   if (candidates.length === 0) {
     return (
@@ -109,6 +111,7 @@ export function CandidateDetail({
           candidate={candidate}
           peersById={idToCandidate}
           onResolve={onResolve}
+          onDefer={onDefer}
         />
       ) : (
         <p className="muted">No contradictions flagged for this candidate.</p>

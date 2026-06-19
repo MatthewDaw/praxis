@@ -479,6 +479,46 @@ td {
   font-size: 0.88rem;
 }
 
+.warning-banner {
+  width: 100%;
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  background: #fff4e5;
+  border: 1px solid #f0c36d;
+  color: #7a4e00;
+  font-size: 0.9rem;
+}
+
+.reject-reason {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.88rem;
+}
+
+.reject-reason input {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.reject-reason.full {
+  width: 100%;
+}
+
+.card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.card-action-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
 @media (max-width: 960px) {
   .app-shell {
     grid-template-columns: 1fr;

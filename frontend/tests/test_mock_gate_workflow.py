@@ -1,9 +1,10 @@
-"""Smoke tests for mock DataProvider gate workflow (demo rehearsal)."""
+"""Smoke and extended tests for mock DataProvider gate workflow."""
 
 from __future__ import annotations
 
 from models.candidate import CandidateState, next_promotion_state
 from services.data_provider import get_data_provider
+from services.mock_provider import MockDataProvider
 
 
 def test_mock_provider_lists_candidates() -> None:
@@ -29,3 +30,36 @@ def test_next_promotion_state_chain() -> None:
     assert next_promotion_state(CandidateState.PROPOSED) is CandidateState.SUGGESTED
     assert next_promotion_state(CandidateState.SUGGESTED) is CandidateState.ACTIVE
     assert next_promotion_state(CandidateState.ACTIVE) is None
+
+
+def test_mock_reject_removes_candidate() -> None:
+    provider = MockDataProvider()
+    assert provider.get_candidate("cand_3") is not None
+    provider.reject("cand_3", reason="duplicate lesson")
+    assert provider.get_candidate("cand_3") is None
+
+
+def test_mock_promote_suggested_to_active() -> None:
+    provider = MockDataProvider()
+    before = provider.get_candidate("cand_2")
+    assert before is not None
+    assert before.state is CandidateState.SUGGESTED
+    updated = provider.promote("cand_2")
+    assert updated.state is CandidateState.ACTIVE
+    assert next_promotion_state(updated.state) is None
+
+
+def test_mock_resolve_contradiction_clears_rival() -> None:
+    provider = MockDataProvider()
+    primary = provider.get_candidate("cand_9")
+    assert primary is not None
+    assert "cand_16" in primary.contradiction_ids
+
+    updated = provider.resolve_contradiction(
+        "cand_9__cand_16",
+        resolution="keep_primary",
+        keep_id="cand_9",
+    )
+    assert "cand_16" not in updated.contradiction_ids
+    assert provider.get_candidate("cand_16") is None
+    assert provider.get_candidate("cand_9") is not None

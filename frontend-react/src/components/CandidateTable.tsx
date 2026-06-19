@@ -3,12 +3,14 @@ import { nextPromotionState } from "../api/candidateModel";
 import type { Candidate } from "../types/candidate";
 import { StateBadge } from "./StateBadge";
 
+const LOW_CONFIDENCE_THRESHOLD = 0.5;
+
 interface CandidateTableProps {
   candidates: Candidate[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   onPromote: (id: string) => Promise<void>;
-  onReject: (id: string) => Promise<void>;
+  onReject: (id: string, reason?: string) => Promise<void>;
 }
 
 export function CandidateTable({
@@ -21,6 +23,7 @@ export function CandidateTable({
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [confirmPromote, setConfirmPromote] = useState<string | null>(null);
   const [confirmReject, setConfirmReject] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
 
   if (candidates.length === 0) {
     return (
@@ -45,10 +48,12 @@ export function CandidateTable({
   async function runReject(id: string) {
     setPendingId(id);
     try {
-      await onReject(id);
+      const reason = rejectReason.trim() || undefined;
+      await onReject(id, reason);
     } finally {
       setPendingId(null);
       setConfirmReject(null);
+      setRejectReason("");
     }
   }
 
@@ -74,6 +79,15 @@ export function CandidateTable({
                 key={candidate.id}
                 className={candidate.id === selected?.id ? "selected-row" : undefined}
                 onClick={() => onSelect(candidate.id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelect(candidate.id);
+                  }
+                }}
+                tabIndex={0}
+                role="button"
+                aria-label={`Select ${candidate.title}`}
               >
                 <td>{candidate.title}</td>
                 <td>
@@ -105,11 +119,23 @@ export function CandidateTable({
             {nextPromotionState(selected.state) ? (
               confirmPromote === selected.id ? (
                 <>
+                  {selected.confidence < LOW_CONFIDENCE_THRESHOLD ? (
+                    <p
+                      className="warning-banner"
+                      role="alert"
+                      aria-live="assertive"
+                    >
+                      Confidence is {(selected.confidence * 100).toFixed(0)}% (below{" "}
+                      {(LOW_CONFIDENCE_THRESHOLD * 100).toFixed(0)}%) — confirm you want to
+                      promote a low-confidence lesson.
+                    </p>
+                  ) : null}
                   <button
                     type="button"
                     className="btn primary"
                     disabled={pendingId === selected.id}
                     onClick={() => void runPromote(selected.id)}
+                    aria-label={`Confirm promote ${selected.title}`}
                   >
                     Confirm promote
                   </button>
@@ -126,6 +152,8 @@ export function CandidateTable({
                   type="button"
                   className="btn primary"
                   onClick={() => setConfirmPromote(selected.id)}
+                  aria-label={`Promote ${selected.title}`}
+                  title="Advance proposed → suggested → active"
                 >
                   Promote
                 </button>
@@ -138,18 +166,31 @@ export function CandidateTable({
 
             {confirmReject === selected.id ? (
               <>
+                <label className="reject-reason">
+                  Rejection reason (optional)
+                  <input
+                    type="text"
+                    value={rejectReason}
+                    onChange={(event) => setRejectReason(event.target.value)}
+                    aria-label="Rejection reason"
+                  />
+                </label>
                 <button
                   type="button"
                   className="btn danger"
                   disabled={pendingId === selected.id}
                   onClick={() => void runReject(selected.id)}
+                  aria-label={`Confirm reject ${selected.title}`}
                 >
                   Confirm reject
                 </button>
                 <button
                   type="button"
                   className="btn ghost"
-                  onClick={() => setConfirmReject(null)}
+                  onClick={() => {
+                    setConfirmReject(null);
+                    setRejectReason("");
+                  }}
                 >
                   Cancel
                 </button>
@@ -159,6 +200,8 @@ export function CandidateTable({
                 type="button"
                 className="btn danger-outline"
                 onClick={() => setConfirmReject(selected.id)}
+                aria-label={`Reject ${selected.title}`}
+                title="Remove candidate from review queue"
               >
                 Reject
               </button>

@@ -2,11 +2,13 @@
 
 Pillar documentation: [ARCHITECTURE_MONICA.md](ARCHITECTURE_MONICA.md) · [monica-wireframes.md](monica-wireframes.md) (as-built spec).
 
-**Role:** Dashboard & Human Gate Lead  
+**Role:** Dashboard & Human Gate Lead · **Daily Scrum Master** (see [PLAN_ALIGNMENT_GAP_CHECKLIST.md](PLAN_ALIGNMENT_GAP_CHECKLIST.md))  
 **Focus:** Streamlit human-gate dashboard (`frontend/`) and React Knowledge Graph dashboard (`frontend-react/`) for Matthew's API validation — human approval workflow (proposed→suggested→active), contradiction resolution UI, credibility metrics viz, injection controls. Streamlit remains Monica's sprint demo path; React delivers the project-plan review UI for teammates who prefer a SPA stack.  
 **Interview Claim:** "I designed and built the human approval dashboard that enforces quality gates and makes knowledge promotion transparent and measurable."
 
-**Sprint Schedule Note:** 10 full work days (skipping Thursday June 18). Day 1 = Wednesday June 16. Days 9–10 (June 26–27) reserved for project completion and presentation practice/perfection. All times EOD unless noted.
+**Sprint Schedule Note:** 10 full work days (skipping Thursday June 18). Day 1 = Wednesday June 16. **Internal** Days 9–10 (June 26–27): project completion, hard freeze, and presentation practice. **Public** Gauntlet showcase: **Monday, June 29**. Team operating calendar: [PLAN_ALIGNMENT_GAP_CHECKLIST.md](PLAN_ALIGNMENT_GAP_CHECKLIST.md). All times EOD unless noted.
+
+**Completion status:** [ARCHITECTURE_MONICA.md §19](ARCHITECTURE_MONICA.md#19-sprint-alignment-monica-deliverables)
 
 ## Overall Success Criteria (Shared)
 - MVP delivered with full pipeline.

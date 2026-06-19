@@ -1,0 +1,46 @@
+# Architecture: Consolidate • Score + Human Approval Gate; Contradiction resolution
+# Demo acts: 2 + 3
+# Mock candidate: cand_9 (winning lesson after human resolution)
+# Rival pipeline output (do NOT inject): cand_16 — see README.md
+# Provenance target: logs/nushell_contrib_20260611.jsonl:56
+id: quirky_config_load_order
+seed_prompt: |
+  Write a short nushell startup snippet (save to startup.nu) that enables an
+  experimental feature requiring early-boot activation before config.nu is parsed.
+  The snippet must work when nu is launched from a parent shell.
+target_commit: "0000000000000000000000000000000000000000"
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor:
+    - >-
+      experimental_options has to be set in the parent shell before nu starts —
+      putting it in config.nu is too late.
+  direct_to_graph:
+    - >-
+      Early-boot experimental flags in nushell are read from the
+      `experimental_options` environment variable before `config.nu` is evaluated.
+      Set this variable in the parent shell or launcher script prior to starting
+      `nu`, not inside config, when testing features that must be active at startup.
+
+deterministic_checks:
+  - name: mentions_experimental_options
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "experimental_options"
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+
+rubric:
+  id: config_load_order_v1
+  items:
+    - id: early_boot
+      criterion: >-
+        The snippet sets experimental_options in the parent shell or launcher
+        before nu starts, not only inside config.nu.
+      weight: 2.0
+    - id: clarity
+      criterion: >-
+        The snippet is runnable and explains why config.nu is too late for this flag.
+      weight: 1.0

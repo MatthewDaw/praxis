@@ -3,10 +3,10 @@
 **Author:** Monica Peters <monigarr@MoniGarr.com>  
 **Branch:** `monica/dashboard-human-gate`  
 **Created:** 2026-06-17  
-**Last updated:** 2026-06-18  
-**Status:** As-built through Day 2 — Streamlit mock-complete; React client shipped (`frontend-react/`); live API when Matthew publishes endpoints.
+**Last updated:** 2026-06-19  
+**Status:** As-built through Day 8 on mock — Streamlit + React clients shipped; live E2E when Matthew publishes API endpoints.
 
-Architecture source of truth: [PRAXIS_Project_Plan.html](../PRAXIS_Project_Plan.html).
+Architecture source of truth: [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html).
 
 Pillar architecture: [ARCHITECTURE_MONICA.md](ARCHITECTURE_MONICA.md).
 
@@ -16,12 +16,15 @@ The human-gate dashboard is a **modular Streamlit app** under `frontend/`. Entry
 
 ```text
 frontend/app.py
+  → sidebar: Refresh data (clears provider, reruns)
   → components/candidate_list.py      (table + card views, confirmations)
   → components/candidate_detail.py    (detail + audit trail)
   → components/contradiction_panel.py (side-by-side + resolve actions)
   → components/eval_metrics_embed.py  (Dominic metrics URL or placeholder)
   → services/data_provider.py         (mock or API factory)
+  → services/contract_v1.py           (canonical v1 payloads + headers)
   → services/api_client.py            (HTTP client — Matthew's API)
+  → tests/                            (contract fixtures + gate workflow)
 ```
 
 Lifecycle states: `proposed → suggested → active` (plus `decayed` and unrecognized API values preserved for display).
@@ -34,6 +37,7 @@ Lifecycle states: `proposed → suggested → active` (plus `decayed` and unreco
 |---------|----------------|
 | Header | `st.title("Candidate Review Gate")` + subtitle markdown |
 | Mode banner | Mock vs live API caption from `PRAXIS_API_BASE_URL` |
+| Sidebar | **Refresh data** — clears `data_provider` in session state and reloads list |
 | Search | `st.text_input` — filters title and content (case-insensitive) |
 | State filter | `st.selectbox` — All / proposed / suggested / active / decayed |
 | Global selection | Shared selectbox drives detail view + table actions |
@@ -42,7 +46,7 @@ Lifecycle states: `proposed → suggested → active` (plus `decayed` and unreco
 | State badge | `confidence_badge.render_state_badge` — orange/blue/green/gray |
 | Confidence | `st.progress` on cards; `ProgressColumn` in table |
 | Provenance | `st.caption` with `` `logs/<file>.jsonl:<line>` `` |
-| Actions | Confirm dialogs; success banner; decayed candidates blocked from promote |
+| Actions | Confirm dialogs; optional **reject reason**; low-confidence promote warning below **50%**; success banner; decayed blocked from promote |
 | Error states | Empty filter message; API load failure banner in `app.py` |
 | Footer | Pillar + integration note |
 
@@ -95,7 +99,7 @@ Lifecycle states: `proposed → suggested → active` (plus `decayed` and unreco
 | `auditTrail` | `audit_trail` | List of `{ action, timestamp, provenance, actor, note? }` |
 | *any other key* | — | Preserved in `Candidate.extra` and shown in detail view |
 
-**Versioning:** HTTP client sends `X-Praxis-Contract: 1`. Matthew/Dominic may extend the schema; Monica's pillar must not break on unknown fields.
+**Versioning:** `PRAXIS_CONTRACT_VERSION` env (default `1`); HTTP client sends `X-Praxis-Contract` header. Matthew/Dominic may extend the schema; Monica's pillar must not break on unknown fields.
 
 ### Mutations (canonical v1 — `docs/integration/candidate-api-v1.md`)
 

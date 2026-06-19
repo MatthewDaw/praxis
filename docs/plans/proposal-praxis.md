@@ -1,6 +1,6 @@
 # Capstone Proposal — Praxis
 
-> **Historical capstone proposal** (pre-architecture lock). For the current build specification and sprint schedule, see [CONFIDENTIAL_PRAXIS_Project_Plan.html](CONFIDENTIAL_PRAXIS_Project_Plan.html).
+> **Historical capstone proposal** (pre-architecture lock). For the current build specification and sprint schedule, see [PRAXIS_Project_Plan.html](PRAXIS_Project_Plan.html).
 
 *An agent that distills its own session logs into durable, reusable knowledge.*
 

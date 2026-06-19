@@ -18,6 +18,7 @@ Monica-owned deploy; teammates can ignore and run locally.
 | `PRAXIS_API_BASE_URL` | No (mock if unset) | Matthew's candidate API base URL |
 | `PRAXIS_API_TOKEN` | No | Bearer token for API auth |
 | `PRAXIS_EVAL_METRICS_URL` | No | Dominic's eval metrics JSON endpoint |
+| `PRAXIS_CONTRACT_VERSION` | No (default `1`) | `X-Praxis-Contract` header for API requests |
 
 ## Startup expectations
 

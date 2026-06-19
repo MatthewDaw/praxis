@@ -11,12 +11,14 @@ interface ContradictionPanelProps {
     keepId: string,
     rivalTitle: string,
   ) => Promise<void>;
+  onDefer: (primaryTitle: string, rivalTitle: string) => void;
 }
 
 export function ContradictionPanel({
   candidate,
   peersById,
   onResolve,
+  onDefer,
 }: ContradictionPanelProps) {
   const [pending, setPending] = useState<string | null>(null);
   const rivals = candidate.contradictionIds
@@ -77,7 +79,13 @@ export function ContradictionPanel({
               >
                 Keep {rival.title.length > 28 ? `${rival.title.slice(0, 28)}…` : rival.title}
               </button>
-              <button type="button" className="btn ghost">
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => onDefer(candidate.title, rival.title)}
+                aria-label={`Defer contradiction between ${candidate.title} and ${rival.title}`}
+                title="Leave both candidates in queue for later review"
+              >
                 Defer
               </button>
             </div>

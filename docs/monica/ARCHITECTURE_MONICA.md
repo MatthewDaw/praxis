@@ -18,8 +18,8 @@ Version:            0.2.1 (Days 1–8 Streamlit complete; React client shipped f
 Status:             Active development — dual UI clients on mock; awaiting Matthew's live API
 Classification:     Internal — capstone sprint
 Created:            2026-06-18
-Last Updated:       2026-06-18 (frontend-react Knowledge Graph dashboard)
-Source of Truth:    docs/PRAXIS_Project_Plan.html
+Last Updated:       2026-06-19 (plans path fix + as-built alignment with branch)
+Source of Truth:    docs/plans/PRAXIS_Project_Plan.html
 License:            TBD — Gauntlet AI capstone (2026)
 ============================================================================
 
@@ -49,7 +49,7 @@ The dashboard is implemented as a **modular Python + Streamlit** application und
 
 The UI consumes candidate data from Matthew's pipeline via a **contract-first API boundary** (Days 6–7) and surfaces audit-friendly actions that Dominic's eval harness can measure. It deploys anywhere a Python web process can run — Monica's target is **Render.com**; teammates retain full sovereignty over their own hosting and frontend choices.
 
-System-wide context and end-to-end loop: [PRAXIS_Project_Plan.html](../PRAXIS_Project_Plan.html) and [README.md](../README.md).
+System-wide context and end-to-end loop: [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) and [README.md](../README.md).
 
 ---
 
@@ -132,13 +132,13 @@ Monica's presentation architecture follows **API-first, multiple clients allowed
            │                       │                       │
            ▼                       ▼                       ▼
    ┌───────────────┐      ┌───────────────┐      ┌───────────────┐
-   │ frontend/     │      │ frontend-react│      │ eval/ scripts │
-   │ Streamlit     │      │ (future React │      │ Dominic       │
-   │ Monica · now  │      │  optional)    │      │ no UI required│
+   │ frontend/     │      │ frontend-react│      │ knowledge/evals/ │
+   │ Streamlit     │      │ React client  │      │ Dominic       │
+   │ Monica · now  │      │ Monica · now  │      │ no UI required│
    └───────────────┘      └───────────────┘      └───────────────┘
 ```
 
-**Invariant:** Business logic for distillation, scoring, storage, and promotion side-effects stays in **Matthew's pipeline + Dominic's hooks**. Neither Streamlit nor React embeds that logic — both are thin clients over the same HTTP contract ([§17 Integration Architecture](#17-integration-architecture--data-contracts)).
+**Invariant:** Business logic for distillation, scoring, storage, and promotion side-effects stays in **Matthew's `knowledge/` + Dominic's hooks**. Neither Streamlit nor React embeds that logic — both are thin clients over the same HTTP contract ([§17 Integration Architecture](#17-integration-architecture--data-contracts)).
 
 ---
 
@@ -151,7 +151,7 @@ Monica's Streamlit choice **must not interfere** with current or future teammate
 | Guarantee | Mechanism |
 |-----------|-----------|
 | **No React requirement** | Matthew and Dominic integrate via API and JSON contracts — they never need Streamlit installed for their pillars |
-| **No Streamlit requirement for React devs** | A future React app lives in a **separate directory** (e.g. `frontend-react/`) with its own `package.json`, CI job, and deploy target |
+| **No Streamlit requirement for React devs** | **`frontend-react/` shipped** — Vite + React + TypeScript sibling with its own `package.json`, CI job, and deploy target |
 | **No shared UI code** | `frontend/` is Streamlit-only; React components never import from `frontend/app.py` and vice versa |
 | **No root dependency lock-in** | Root `pyproject.toml` lists Streamlit for Monica's pillar; React deps stay in the React subtree — adding React does not remove Streamlit |
 | **Same backend, any client** | OpenAPI or JSON Schema for candidates and mutations is the **only** coupling surface ([monica-wireframes.md](monica-wireframes.md)) |
@@ -160,7 +160,7 @@ Monica's Streamlit choice **must not interfere** with current or future teammate
 
 ### What Monica does not do
 
-- Does **not** add Streamlit imports to `pipeline/` or `eval/`
+- Does **not** add Streamlit imports to `knowledge/` or `knowledge/evals/`
 - Does **not** make the human-gate API Streamlit-specific (no Streamlit session IDs in API payloads)
 - Does **not** block MRs that add a React frontend in a sibling directory
 - Does **not** claim `frontend/` as the only UI path for the whole repo — only as **Monica's pillar deliverable**
@@ -177,9 +177,8 @@ If a teammate or future contributor wants **React only** for a new or replacemen
 ```text
 Coexistence timeline (all valid):
 
-  Now:        frontend/ (Streamlit) ──API──► pipeline/
-  Future A:   frontend/ + frontend-react/ ──same API──► pipeline/
-  Future B:   frontend-react/ only ──API──► pipeline/   (Streamlit archived by team choice)
+  Now:        frontend/ (Streamlit) + frontend-react/ (React) ──same API──► knowledge/
+  Future B:   frontend-react/ only ──API──► knowledge/   (Streamlit archived by team choice)
 ```
 
 **None of these futures require Monica to rewrite pipeline code or block Matthew's AWS/Dominic's eval work.**
@@ -193,7 +192,7 @@ Coexistence timeline (all valid):
 | Primary use case | Research review, eval viz, internal human gate | Custom product UI, design-system control |
 | Time to MVP in sprint | Days 1–2 shell proven | Longer — build, routing, component library |
 | Data-heavy tables/charts | Native, minimal code | Requires libraries (TanStack Table, Recharts, etc.) |
-| Python team alignment | Same stack as pipeline/eval | Requires API boundary anyway (still fine) |
+| Python team alignment | Same stack as `knowledge/` / `knowledge/evals/` | Requires API boundary anyway (still fine) |
 | Blocks other framework? | **No** — API-first | **No** — sibling directory |
 | Monica's deliverable | ✅ Sprint MVP | Optional future track |
 
@@ -264,6 +263,12 @@ Within `frontend/`:
 | `docs/monica/ARCHITECTURE_MONICA.md` | Pillar architecture (this document) |
 | `docs/monica/monica-wireframes.md` | As-built screen spec and candidate contract |
 | `docs/monica/Monica-Peters-Dashboard-Plan.md` | Sprint deliverables and timeline |
+| `docs/monica/DEMO_SCRIPT.md` | Live demo Act 2 script + video checklist |
+| `docs/monica/DAYS_9_10_REMAINING.md` | Demo rehearsal + a11y pass checklist |
+| `docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md` | Scrum Master gap tracker + eval case backlog |
+| `docs/monica/RENDER_DEPLOY.md` | Render.com deploy settings |
+| `docs/monica/STANDUP_TEMPLATE.md` | Daily standup template |
+| `docs/integration/candidate-api-v1.md` | Canonical Matthew ↔ Monica API contract |
 | `.cursor/rules/praxis-dashboard.mdc` | Agent/editor guidance for dashboard patterns |
 
 Team-wide architecture lives in the confidential project plan and Dominic's eval/integration docs — not duplicated here.
@@ -313,7 +318,7 @@ A new contributor should be able to:
 | Team-wide CI/CD, repo deployment topology | Dominic (+ shared agreement) | Each pillar deploys independently |
 | **React SPA (alternate UI)** | **Monica — shipped `frontend-react/`** | Same candidate-api-v1 contract; Matthew validates server without Streamlit; deploy to Vercel/Netlify/static host |
 
-**Non-blocking rule:** Changes under `frontend/` must not require edits to `pipeline/` or `eval/` to run. Integration is **pull-based** (dashboard calls API) or **env-configured**, never hard-coded to Matthew's AWS or Dominic's server. A React frontend, if added, follows the same rule — API-only coupling.
+**Non-blocking rule:** Changes under `frontend/` must not require edits to `knowledge/` or `knowledge/evals/` to run. Integration is **pull-based** (dashboard calls API) or **env-configured**, never hard-coded to Matthew's AWS or Dominic's server. A React frontend, if added, follows the same rule — API-only coupling.
 
 ---
 
@@ -385,7 +390,7 @@ Monica does **not** embed pipeline, eval, or storage logic. Dominic's GitHub hoo
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                         PRAXIS (team system)                             │
 ├──────────────────────┬──────────────────────────┬───────────────────────┤
-│  Matthew — pipeline/ │  Monica — frontend/       │  Dominic — eval/      │
+│  Matthew — knowledge/ │  Monica — frontend/       │  Dominic — knowledge/evals/      │
 │  ingest·distill·score│  Streamlit human gate     │  harness·hooks·metrics│
 │  KG storage          │  review·promote·resolve   │  compounding proof    │
 │  deploy: AWS (etc.)  │  deploy: Render (etc.)    │  deploy: TBD / local  │
@@ -407,13 +412,13 @@ Monica does **not** embed pipeline, eval, or storage logic. Dominic's GitHub hoo
 ```text
 [ Browser ]
      ↓
-[ Streamlit app.py ] ──→ [ st.session_state — ephemeral UI state ]
+[ Streamlit app.py ] ──→ [ sidebar: Refresh data · st.session_state ]
      ↓
 [ Components: list | detail | contradiction | metrics ]
      ↓
 [ DataProvider interface ]
-     ├── MockDataProvider  ← mock_data.py (Day 2 — implemented)
-     └── ApiDataProvider   ← PRAXIS_API_BASE_URL (Days 6–7 — planned)
+     ├── MockDataProvider  ← mock_data.py (local dev — implemented)
+     └── ApiDataProvider   ← PRAXIS_API_BASE_URL (contract v1 client — implemented; awaits Matthew's server)
      ↓
 [ Matthew's backend API ] → Knowledge Graph
      ↓
@@ -424,35 +429,36 @@ Monica does **not** embed pipeline, eval, or storage logic. Dominic's GitHub hoo
 
 ## Current Implementation (branch `monica/dashboard-human-gate`)
 
-Delivered as of modular extraction (2026-06-18):
+Delivered as of as-built alignment (2026-06-19):
 
 | File | Status | Description |
 |------|--------|-------------|
-| `frontend/app.py` | ✅ | Slim entry — provider wiring, filters, tab layout |
-| `frontend/models/candidate.py` | ✅ | Typed contract models + promotion helpers |
+| `frontend/app.py` | ✅ | Entry — sidebar refresh, filters, API error banner, global selection |
+| `frontend/models/candidate.py` | ✅ | Typed contract models + forward-compatible `from_mapping` |
 | `frontend/services/data_provider.py` | ✅ | `DataProvider` protocol + env-based factory |
-| `frontend/services/mock_provider.py` | ✅ | In-memory provider — no backend required |
+| `frontend/services/contract_v1.py` | ✅ | Canonical v1 payload builders + contract headers |
+| `frontend/services/mock_provider.py` | ✅ | In-memory fixtures; audit trail append on mutations |
 | `frontend/services/api_client.py` | ✅ | HTTP client — contract v1 (`docs/integration/candidate-api-v1.md`) |
-| `frontend/components/candidate_list.py` | ✅ | Table + card views, promote/reject |
-| `frontend/components/candidate_detail.py` | ✅ | Detail expander (Day 3 foundation) |
+| `frontend/components/candidate_list.py` | ✅ | Table + card views; promote/reject confirmations; low-confidence warning |
+| `frontend/components/candidate_detail.py` | ✅ | Detail expander; confidence breakdown; audit trail |
 | `frontend/components/confidence_badge.py` | ✅ | State badges + breakdown metrics |
-| `frontend/components/contradiction_panel.py` | ✅ | Side-by-side layout + resolve actions |
-| `frontend/components/eval_metrics_embed.py` | ✅ | Compounding curve embed (`eval-metrics-v1.md`) |
-| `frontend/mock_data.py` | ✅ | Contract-shaped fixture dicts |
-| `frontend/.streamlit/config.toml` | ✅ | Theme defaults |
-| `docs/monica/ARCHITECTURE_MONICA.md` | ✅ | Pillar architecture + coexistence guarantees |
+| `frontend/components/contradiction_panel.py` | ✅ | Side-by-side layout + keep-A / keep-B / defer |
+| `frontend/components/eval_metrics_embed.py` | ✅ | Compounding curve embed (`PRAXIS_EVAL_METRICS_URL`) |
+| `frontend/tests/` | ✅ | Contract fixtures + mock gate workflow tests |
+| `frontend/mock_data.py` | ✅ | 17 contract-shaped fixtures (breakdown, contradictions, auditTrail) |
+| `frontend/render.yaml` | ✅ | Render.com blueprint |
+| `frontend-react/` | ✅ | React client — same contract for Matthew API validation |
+| `docs/monica/` | ✅ | Pillar architecture, as-built wireframes, demo/deploy docs |
 
-Key commit: `feat(dashboard): modular Streamlit human-gate UI and pillar architecture docs`.
-
-**Lifecycle logic today (session-local demo):**
+**Lifecycle logic (mock + API client):**
 
 ```python
-proposed  --Promote-->  suggested  --Promote-->  active
-   |                        |                      |
-   +-------- Reject (drop from list) --------------+
+proposed  --Promote (confirm)-->  suggested  --Promote (confirm)-->  active
+   |                                  |                              |
+   +-------- Reject (reason?) -------+-------- decayed (no promote) -+
 ```
 
-Reject currently removes the row from the in-memory DataFrame — production will call a backend `reject` mutation and preserve audit history (Days 6–7).
+Mock `reject` removes from queue and appends audit entry; live mode calls `POST /candidates/{id}/reject`. Contradiction resolve calls `POST /contradictions/{id}/resolve` via `contract_v1.py`.
 
 ---
 
@@ -483,10 +489,10 @@ Aligned with project plan Figure 1 ("Human Approval Gate" nested under Consolida
 | Control | UI manifestation |
 |---------|-------------------|
 | Approve credible ideas | Promote buttons with state-aware transitions |
-| Resolve contradictions | Side-by-side cards + pick-winner / merge / defer (Day 5) |
-| Reject bad distillations | Reject action with confirmation |
-| Audit | Provenance links, timestamps, future audit-trail panel |
-| Override | Human can reject high-confidence or promote low-confidence (with warning) |
+| Resolve contradictions | Side-by-side cards + keep-A / keep-B / defer (mock + API client) |
+| Reject bad distillations | Reject action with confirmation + optional reason |
+| Audit | Provenance links, timestamps, `auditTrail` panel in detail view |
+| Override | Low-confidence promote warning (threshold in `candidate_list.py`) |
 
 ---
 
@@ -597,14 +603,16 @@ praxis/
 │   ├── components/        ← implemented
 │   ├── services/          ← implemented
 │   └── models/            ← implemented
-├── frontend-react/        ← optional future React UI (separate package.json, same API)
+├── frontend-react/        ← React human gate (Monica — Matthew API client; same contract)
+├── knowledge/             ← Matthew — distillation, KG, candidate API (planned)
+│   └── evals/             ← Dominic — harness, cases, metrics
+├── session-capture/       ← Dominic — Go wrapper, DynamoDB capture
+├── infra/                 ← Dominic — AWS CDK
 ├── docs/
 │   └── monica/            ← Monica pillar docs (this file, plan, as-built wireframes)
 │       ├── ARCHITECTURE_MONICA.md
 │       ├── monica-wireframes.md
 │       └── Monica-Peters-Dashboard-Plan.md
-├── pipeline/              ← Matthew — do not modify without coordination
-├── eval/                  ← Dominic — do not modify without coordination
 └── pyproject.toml         ← shared deps — coordinate changes affecting all pillars
 ```
 
@@ -659,8 +667,8 @@ Each teammate deploys **their pillar** independently. Monica's dashboard is a **
 | Person | Target (example) | Pillar artifact | Monica dependency |
 |--------|-------------------|-----------------|-------------------|
 | **Monica** | [Render.com](https://render.com) web service | `frontend/` | `PRAXIS_API_BASE_URL` → Matthew's API when integrated |
-| **Matthew** | AWS (DynamoDB, Lambda, etc.) | `pipeline/` + API | Exposes candidate REST endpoints |
-| **Dominic** | Local / TBD | `eval/` + hooks | Consumes promotion events; optional metrics iframe/embed |
+| **Matthew** | AWS (DynamoDB, Lambda, etc.) | `knowledge/` + API | Exposes candidate REST endpoints |
+| **Dominic** | Local / TBD | `knowledge/evals/` + hooks | Consumes promotion events; optional metrics iframe/embed |
 
 ---
 
@@ -728,10 +736,11 @@ The dashboard and pipeline integrate **only** through agreed JSON shapes. **Cano
 | `content` | string | ✅ | Full lesson body |
 | `state` | enum | ✅ | `proposed` \| `suggested` \| `active` \| `decayed` |
 | `confidence` | float | ✅ | 0–1 aggregate |
-| `confidenceBreakdown` | object | ⬜ Day 5 | `{ frequency, recency, breadth }` + optional rationale strings |
+| `confidenceBreakdown` | object | ✅ mock | `{ frequency, recency, breadth }` + optional rationale strings |
 | `provenance` | string | ✅ | `logs/<file>.jsonl:<line>` |
 | `createdAt` | ISO 8601 | ✅ | Creation timestamp |
-| `contradictions` | array | ⬜ Day 5 | IDs or embedded rival candidates |
+| `contradictions` | array | ✅ mock | IDs or embedded rival candidates |
+| `auditTrail` | array | ✅ mock | `{ action, timestamp, provenance, actor, note? }` |
 | *extension keys* | any | optional | Preserved in `Candidate.extra`; shown in detail view |
 
 **Forward compatibility:** `from_mapping` accepts camelCase and snake_case aliases for provenance and timestamps, tolerates unknown `state` values (displayed as-is), and never drops undeclared API fields.
@@ -767,7 +776,7 @@ class DataProvider(Protocol):
 - `MockDataProvider` — `frontend/services/mock_provider.py` (default when `PRAXIS_API_BASE_URL` unset)
 - `ApiDataProvider` — `frontend/services/api_client.py` (contract v1; tolerant read + explicit mutations)
 
-UI components depend on `DataProvider`, not on pandas or HTTP directly. A future React app calls the same HTTP endpoints — it never imports these modules.
+UI components depend on `DataProvider`, not on pandas or HTTP directly. **`frontend-react/`** calls the same HTTP endpoints — it never imports Streamlit modules.
 
 ---
 
@@ -777,7 +786,7 @@ Before merging integration MRs:
 
 - [ ] Mock data still works with zero backend (Monica local dev unblocked)
 - [ ] API URL is optional env var, not hard-coded host
-- [ ] No imports from `pipeline/` or `eval/` inside `frontend/`
+- [ ] No imports from `knowledge/` or `knowledge/evals/` inside `frontend/`
 - [ ] Matthew implements server to [candidate-api-v1.md](../integration/candidate-api-v1.md) + fixtures
 - [ ] Dominic confirms promotion events reach hooks without UI knowing GitHub details
 - [ ] Failed API calls do not corrupt local session state irreversibly
@@ -786,7 +795,7 @@ Before merging integration MRs:
 
 # 18. Modular Structure (implemented)
 
-Extracted from the Day 2 monolith per **models → services → components → slim app.py**. Each module has a single owner concern and **zero imports from `pipeline/` or `eval/`**.
+Extracted from the Day 2 monolith per **models → services → components → slim app.py**. Each module has a single owner concern and **zero imports from `knowledge/` or `knowledge/evals/`**.
 
 ```text
 frontend/
@@ -816,21 +825,21 @@ frontend/
 
 | Module | Owns | Must never |
 |--------|------|------------|
-| `models/` | Typed API contract (`Candidate`, states, promotion helpers) | Import Streamlit, HTTP, `pipeline/`, `eval/` |
+| `models/` | Typed API contract (`Candidate`, states, promotion helpers) | Import Streamlit, HTTP, `knowledge/`, `knowledge/evals/` |
 | `services/` | Data access (`DataProvider`, mock + API clients) | Render UI or embed pipeline logic |
 | `components/` | Streamlit presentation only | Call DynamoDB, GitHub, or eval scripts directly |
 | `app.py` | Provider singleton in `st.session_state`, page shell | Business logic beyond wiring |
 | `mock_data.py` | Dev/demo fixtures | Be required in production when API URL is set |
 
-**Teammate impact:** Matthew implements the server behind `ApiDataProvider` endpoints in `pipeline/` on his AWS stack. Dominic reads promotion events from that API / hooks in `eval/` — not from Streamlit session state. A React developer adds `frontend-react/` and calls the same endpoints without modifying any file above.
+**Teammate impact:** Matthew implements the server behind `ApiDataProvider` endpoints in `knowledge/` on his AWS stack. Dominic reads promotion events from that API / hooks in `knowledge/evals/` — not from Streamlit session state. A React developer adds `frontend-react/` and calls the same endpoints without modifying any file above.
 
-**Extraction status:** Initial extraction complete (2026-06-18). Day 5+ fills contradiction resolution mutations; Day 6–7 implements `ApiDataProvider` HTTP calls.
+**Extraction status:** Complete (2026-06-19). Streamlit + React clients share contract v1; live E2E awaits Matthew's API server.
 
 ---
 
 # 19. Sprint Alignment (Monica deliverables)
 
-From [PRAXIS_Project_Plan.html](../PRAXIS_Project_Plan.html) and [Monica-Peters-Dashboard-Plan.md](Monica-Peters-Dashboard-Plan.md):
+From [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) and [Monica-Peters-Dashboard-Plan.md](Monica-Peters-Dashboard-Plan.md):
 
 | Day | Deliverable | Status |
 |-----|-------------|--------|
@@ -867,7 +876,7 @@ From [PRAXIS_Project_Plan.html](../PRAXIS_Project_Plan.html) and [Monica-Peters-
 | Bulk promote/reject | Stretch — with strong audit warnings |
 | Dark mode / theme tokens | Streamlit config |
 | Read-only public demo mode | Mock-only deploy for portfolio |
-| **`frontend-react/` sibling app** | React-only teammate adds parallel UI; same API contract ([§2.4](#24-react-coexistence--no-blockers-for-teammates)) |
+| **`frontend-react/` sibling app** | **Shipped** — parallel React UI; same API contract ([§2.4](#24-react-coexistence--no-blockers-for-teammates)) |
 | Cross-project candidate filtering | When Matthew's graph supports scope metadata |
 
 ---
@@ -903,14 +912,16 @@ The dashboard connects them through contracts — not through shared mutable int
 
 | Document | Relationship |
 |----------|--------------|
-| [PRAXIS_Project_Plan.html](../PRAXIS_Project_Plan.html) | HTML mirror + architecture diagram |
+| [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) | HTML mirror + architecture diagram |
 | [Monica-Peters-Dashboard-Plan.md](Monica-Peters-Dashboard-Plan.md) | Sprint plan |
 | [monica-wireframes.md](monica-wireframes.md) | As-built UX spec |
 | [DEMO_SCRIPT.md](DEMO_SCRIPT.md) | Live demo + user-flow video beats |
+| [PLAN_ALIGNMENT_GAP_CHECKLIST.md](PLAN_ALIGNMENT_GAP_CHECKLIST.md) | Scrum Master gap tracker |
+| [DAYS_9_10_REMAINING.md](DAYS_9_10_REMAINING.md) | Demo rehearsal checklist |
 | [STANDUP_TEMPLATE.md](STANDUP_TEMPLATE.md) | Daily 10 AM standup with Tom Tarpey |
 | [RENDER_DEPLOY.md](RENDER_DEPLOY.md) | Render.com deploy notes + cold-start expectations |
-| [Matthew-Daw-ML-Pipeline-PlanDRAFT.md](../Matthew-Daw-ML-Pipeline-PlanDRAFT.md) | Upstream data producer |
-| [Dominic-Antonelli-Architecture-Eval-PlanDRAFT.md](../Dominic-Antonelli-Architecture-Eval-PlanDRAFT.md) | Downstream measurement |
+| [Matthew-Daw-ML-Pipeline-PlanDRAFT.md](../plans/Matthew-Daw-ML-Pipeline-PlanDRAFT.md) | Upstream data producer |
+| [Dominic-Antonelli-Architecture-Eval-PlanDRAFT.md](../plans/Dominic-Antonelli-Architecture-Eval-PlanDRAFT.md) | Downstream measurement |
 | [README.md](../README.md) | Repo overview and run instructions |
 | [.cursor/rules/praxis-dashboard.mdc](../../.cursor/rules/praxis-dashboard.mdc) | Editor/agent patterns |
 | [templates_temp/DREAM_AGENT_TEAM.md](templates_temp/DREAM_AGENT_TEAM.md) | ACR → Cursor agent team blueprint (`DT-001`–`DT-003`) |

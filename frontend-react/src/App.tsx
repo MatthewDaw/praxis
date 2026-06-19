@@ -28,6 +28,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [viewTab, setViewTab] = useState<ViewTab>("table");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [deferMessage, setDeferMessage] = useState<string | null>(null);
 
   const filtered = useMemo(
     () => filterCandidates(candidates, searchQuery, stateFilter),
@@ -66,13 +67,18 @@ export default function App() {
     }
   }
 
-  async function handleReject(id: string) {
+  async function handleReject(id: string, reason?: string) {
     setActionError(null);
     try {
-      await reject(id);
+      await reject(id, reason);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     }
+  }
+
+  function handleDefer(primaryTitle: string, rivalTitle: string) {
+    setDeferMessage(`Deferred contradiction between ${primaryTitle} and ${rivalTitle}.`);
+    window.setTimeout(() => setDeferMessage(null), 5000);
   }
 
   async function handleResolve(
@@ -138,6 +144,7 @@ export default function App() {
         </header>
 
         {lastAction ? <div className="success-banner">{lastAction}</div> : null}
+        {deferMessage ? <div className="info-banner">{deferMessage}</div> : null}
         {actionError ? <div className="error-banner">{actionError}</div> : null}
         {error ? (
           <div className="error-banner">
@@ -199,7 +206,12 @@ export default function App() {
             onReject={handleReject}
           />
         ) : (
-          <CandidateCards candidates={filtered} onSelect={setSelectedId} />
+          <CandidateCards
+            candidates={filtered}
+            onSelect={setSelectedId}
+            onPromote={handlePromote}
+            onReject={handleReject}
+          />
         )}
 
         <CandidateDetail
@@ -207,6 +219,7 @@ export default function App() {
           selectedId={selectedId}
           onSelect={setSelectedId}
           onResolve={handleResolve}
+          onDefer={handleDefer}
         />
 
         <EvalMetricsEmbed provider={provider} />

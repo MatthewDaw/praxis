@@ -54,7 +54,7 @@ Describe the system in concise enterprise language.
 Example:
 
 Self-Improving Knowledge Loop for Claude Code Agents • 9-Day Focused Sprint
-/docs/CONFIDENTIAL_PRAXIS_Project_Plan.html
+/docs/plans/PRAXIS_Project_Plan.html
 
 ---
 
