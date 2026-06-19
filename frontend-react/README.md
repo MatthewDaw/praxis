@@ -17,7 +17,14 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173 — loads 17 mock candidates from `public/mock-candidates.json` (exported from `frontend/mock_data.py`).
+Open http://localhost:5173 — loads 18 mock candidates from `public/mock-candidates.json` (exported from `frontend/mock_data.py`).
+
+**Sync mock JSON after editing Python fixtures:**
+
+```powershell
+# from repo root
+python scripts/export-mock-candidates.py
+```
 
 **Demo rehearsal (Act 2):**
 
@@ -71,9 +78,11 @@ frontend-react/
 
 ---
 
-## Build
+## Build & test
 
 ```powershell
+npm test          # Vitest — contract fixtures + mock gate workflow
+npm run lint
 npm run build
 npm run preview
 ```
@@ -87,7 +96,8 @@ Static output in `dist/` — deploy beside Matthew's API or serve from any stati
 ## Related docs
 
 - [candidate-api-v1.md](../docs/integration/candidate-api-v1.md) — Matthew ↔ dashboard contract
-- [wire-up.md](../docs/integration/wire-up.md) — Streamlit self-serve validation (same endpoints)
+- [wire-up.md](../docs/integration/wire-up.md) — self-serve validation (Streamlit + React)
+- [INTEGRATION_SMOKE.md](../docs/monica/INTEGRATION_SMOKE.md) — React-first smoke checklist
 - [Matthew-Daw-ML-Pipeline-PlanDRAFT.md](../docs/Matthew-Daw-ML-Pipeline-PlanDRAFT.md) — pipeline pillar plan
 - [docs/matt/future-work/](../docs/matt/future-work/) — post-MVP knowledge-graph eval design (measurement spine)
 

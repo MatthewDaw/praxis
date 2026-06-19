@@ -2,7 +2,7 @@ import { createApiDataProvider } from "./apiClient";
 import { candidateFromMapping, parseCandidateList } from "./candidateModel";
 import { buildPromoteBody, buildResolveBody } from "./contract";
 import type { DataProvider } from "./dataProvider";
-import type { Candidate, EvalMetrics } from "../types/candidate";
+import type { Candidate, EvalMetrics, RawCandidate } from "../types/candidate";
 
 const PLACEHOLDER_METRICS: EvalMetrics = {
   source: "placeholder",
@@ -12,21 +12,11 @@ const PLACEHOLDER_METRICS: EvalMetrics = {
   correctionsAfter: 5,
 };
 
-export function createMockDataProvider(): DataProvider {
-  let candidates: Candidate[] = [];
-
-  async function ensureLoaded(): Promise<void> {
-    if (candidates.length > 0) {
-      return;
-    }
-    const response = await fetch("/mock-candidates.json");
-    const payload = await response.json();
-    candidates = parseCandidateList(payload).map(candidateFromMapping);
-  }
+export function createMockDataProviderWithRows(rows: RawCandidate[]): DataProvider {
+  let candidates = rows.map(candidateFromMapping);
 
   return {
     async listCandidates(state) {
-      await ensureLoaded();
       if (!state) {
         return [...candidates];
       }
@@ -34,12 +24,10 @@ export function createMockDataProvider(): DataProvider {
     },
 
     async getCandidate(id) {
-      await ensureLoaded();
       return candidates.find((c) => c.id === id) ?? null;
     },
 
     async promote(id) {
-      await ensureLoaded();
       const index = candidates.findIndex((c) => c.id === id);
       if (index < 0) {
         throw new Error(`Unknown candidate id: ${id}`);
@@ -65,7 +53,6 @@ export function createMockDataProvider(): DataProvider {
     },
 
     async reject(id, reason) {
-      await ensureLoaded();
       const index = candidates.findIndex((c) => c.id === id);
       if (index < 0) {
         throw new Error(`Unknown candidate id: ${id}`);
@@ -89,7 +76,6 @@ export function createMockDataProvider(): DataProvider {
     },
 
     async resolveContradiction(contradictionId, resolution, keepId) {
-      await ensureLoaded();
       buildResolveBody(resolution, keepId);
       const kept = candidates.find((c) => c.id === keepId);
       if (!kept) {
@@ -117,7 +103,51 @@ export function createMockDataProvider(): DataProvider {
         }
         return candidate;
       });
-      return kept;
+      const updated = candidates.find((c) => c.id === keepId);
+      return updated ?? kept;
+    },
+
+    async getEvalMetrics() {
+      return PLACEHOLDER_METRICS;
+    },
+  };
+}
+
+export function createMockDataProvider(): DataProvider {
+  let delegate: DataProvider | null = null;
+
+  async function load(): Promise<DataProvider> {
+    if (!delegate) {
+      const response = await fetch("/mock-candidates.json");
+      const payload = await response.json();
+      delegate = createMockDataProviderWithRows(parseCandidateList(payload));
+    }
+    return delegate;
+  }
+
+  return {
+    async listCandidates(state) {
+      return (await load()).listCandidates(state);
+    },
+
+    async getCandidate(id) {
+      return (await load()).getCandidate(id);
+    },
+
+    async promote(id) {
+      return (await load()).promote(id);
+    },
+
+    async reject(id, reason) {
+      await (await load()).reject(id, reason);
+    },
+
+    async resolveContradiction(contradictionId, resolution, keepId) {
+      return (await load()).resolveContradiction(
+        contradictionId,
+        resolution,
+        keepId,
+      );
     },
 
     async getEvalMetrics() {

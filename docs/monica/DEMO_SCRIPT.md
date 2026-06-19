@@ -4,23 +4,25 @@
 
 ## Setup (before recording)
 
-**Streamlit (Monica's sprint demo path):**
-
-```powershell
-cd frontend
-.\venv\Scripts\streamlit run app.py
-```
-
-**React (Matthew API validation — optional second take):**
+**React (primary demo path — portfolio / Render static):**
 
 ```powershell
 cd frontend-react
 npm run dev
 ```
 
-Confirm mock mode banner (no `PRAXIS_API_BASE_URL` / `VITE_PRAXIS_API_BASE_URL`). Filter state = **All**.
+Open http://localhost:5173 — confirm mock mode banner (no `VITE_PRAXIS_API_BASE_URL`).
 
-For live API rehearsal: set env vars, use sidebar **Refresh data** after mutations.
+**Streamlit (reference client — Matthew Python validation):**
+
+```powershell
+cd frontend
+.\venv\Scripts\streamlit run app.py
+```
+
+Confirm mock mode banner (no `PRAXIS_API_BASE_URL`). Filter state = **All**.
+
+For live API rehearsal: set env vars per [INTEGRATION_SMOKE.md](INTEGRATION_SMOKE.md); use **Refresh data** (Streamlit sidebar) or page reload (React) after mutations.
 
 ## Beat 1 — Problem framing (20s)
 

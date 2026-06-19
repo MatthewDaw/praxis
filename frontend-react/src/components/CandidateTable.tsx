@@ -1,6 +1,11 @@
-import { useState } from "react";
-import { nextPromotionState } from "../api/candidateModel";
+import { Fragment, useState, type MouseEvent } from "react";
+import {
+  formatCandidateDate,
+  nextPromotionState,
+  promoteUnavailableReason,
+} from "../api/candidateModel";
 import type { Candidate } from "../types/candidate";
+import { EmptyState } from "./ui/EmptyState";
 import { StateBadge } from "./StateBadge";
 
 const LOW_CONFIDENCE_THRESHOLD = 0.5;
@@ -27,13 +32,19 @@ export function CandidateTable({
 
   if (candidates.length === 0) {
     return (
-      <p className="info-banner">
-        No candidates match the current filter. Try clearing search or choosing <strong>All</strong> states.
-      </p>
+      <EmptyState
+        message={
+          <>
+            No candidates match the current filter. Try clearing search or choosing{" "}
+            <strong>All</strong> states.
+          </>
+        }
+      />
     );
   }
 
   const selected = candidates.find((c) => c.id === selectedId) ?? candidates[0];
+  const expandedId = confirmPromote ?? confirmReject;
 
   async function runPromote(id: string) {
     setPendingId(id);
@@ -57,130 +68,83 @@ export function CandidateTable({
     }
   }
 
-  return (
-    <div className="table-panel">
-      <p className="count-line">
-        <strong>{candidates.length}</strong> candidates
-      </p>
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Title</th>
-              <th>State</th>
-              <th>Confidence</th>
-              <th>Provenance</th>
-              <th>Created</th>
-            </tr>
-          </thead>
-          <tbody>
-            {candidates.map((candidate) => (
-              <tr
-                key={candidate.id}
-                className={candidate.id === selected?.id ? "selected-row" : undefined}
-                onClick={() => onSelect(candidate.id)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    onSelect(candidate.id);
-                  }
-                }}
-                tabIndex={0}
-                role="button"
-                aria-label={`Select ${candidate.title}`}
-              >
-                <td>{candidate.title}</td>
-                <td>
-                  <StateBadge state={candidate.state} label={candidate.displayState} />
-                </td>
-                <td>
-                  <div className="inline-progress">
-                    <div
-                      className="progress-fill"
-                      style={{ width: `${Math.round(candidate.confidence * 100)}%` }}
-                    />
-                  </div>
-                  <span className="mono">{candidate.confidence.toFixed(2)}</span>
-                </td>
-                <td className="mono small">{candidate.provenance}</td>
-                <td>{formatDate(candidate.createdAt)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+  function handlePromoteClick(event: MouseEvent, candidate: Candidate) {
+    event.stopPropagation();
+    onSelect(candidate.id);
+    if (nextPromotionState(candidate.state)) {
+      setConfirmPromote(candidate.id);
+      setConfirmReject(null);
+      setRejectReason("");
+    }
+  }
 
-      {selected ? (
-        <div className="action-bar">
-          <span>
-            Actions for <strong>{selected.title}</strong>
-          </span>
-          <div className="action-buttons">
-            {nextPromotionState(selected.state) ? (
-              confirmPromote === selected.id ? (
-                <>
-                  {selected.confidence < LOW_CONFIDENCE_THRESHOLD ? (
-                    <p
-                      className="warning-banner"
-                      role="alert"
-                      aria-live="assertive"
-                    >
-                      Confidence is {(selected.confidence * 100).toFixed(0)}% (below{" "}
-                      {(LOW_CONFIDENCE_THRESHOLD * 100).toFixed(0)}%) — confirm you want to
-                      promote a low-confidence lesson.
-                    </p>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="btn primary"
-                    disabled={pendingId === selected.id}
-                    onClick={() => void runPromote(selected.id)}
-                    aria-label={`Confirm promote ${selected.title}`}
-                  >
-                    Confirm promote
-                  </button>
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    onClick={() => setConfirmPromote(null)}
-                  >
-                    Cancel
-                  </button>
-                </>
-              ) : (
+  function handleRejectClick(event: MouseEvent, candidate: Candidate) {
+    event.stopPropagation();
+    onSelect(candidate.id);
+    setConfirmReject(candidate.id);
+    setConfirmPromote(null);
+  }
+
+  function renderConfirmRow(candidate: Candidate) {
+    const nextState = nextPromotionState(candidate.state);
+    const isPromote = confirmPromote === candidate.id;
+    const isReject = confirmReject === candidate.id;
+
+    return (
+      <tr className="row-expand">
+        <td colSpan={6}>
+          {isPromote && nextState ? (
+            <>
+              <p className="info-banner">
+                Promote <strong>{candidate.title}</strong> from{" "}
+                <strong>{candidate.displayState}</strong> to{" "}
+                <strong>{nextState}</strong>?
+              </p>
+              {candidate.confidence < LOW_CONFIDENCE_THRESHOLD ? (
+                <p className="warning-banner" role="alert" aria-live="assertive">
+                  Confidence is {(candidate.confidence * 100).toFixed(0)}% (below{" "}
+                  {(LOW_CONFIDENCE_THRESHOLD * 100).toFixed(0)}%) — confirm you want to
+                  promote a low-confidence lesson.
+                </p>
+              ) : null}
+              <div className="action-buttons">
                 <button
                   type="button"
                   className="btn primary"
-                  onClick={() => setConfirmPromote(selected.id)}
-                  aria-label={`Promote ${selected.title}`}
-                  title="Advance proposed → suggested → active"
+                  disabled={pendingId === candidate.id}
+                  onClick={() => void runPromote(candidate.id)}
+                  aria-label={`Confirm promote ${candidate.title}`}
                 >
-                  Promote
+                  Confirm promote
                 </button>
-              )
-            ) : (
-              <button type="button" className="btn" disabled>
-                Promote unavailable
-              </button>
-            )}
-
-            {confirmReject === selected.id ? (
-              <>
-                <label className="reject-reason">
-                  Rejection reason (optional)
-                  <input
-                    type="text"
-                    value={rejectReason}
-                    onChange={(event) => setRejectReason(event.target.value)}
-                    aria-label="Rejection reason"
-                  />
-                </label>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  onClick={() => setConfirmPromote(null)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
+          ) : null}
+          {isReject ? (
+            <>
+              <label className="reject-reason">
+                Rejection reason (optional)
+                <input
+                  type="text"
+                  value={rejectReason}
+                  onChange={(event) => setRejectReason(event.target.value)}
+                  aria-label="Rejection reason"
+                />
+              </label>
+              <div className="action-buttons">
                 <button
                   type="button"
                   className="btn danger"
-                  disabled={pendingId === selected.id}
-                  onClick={() => void runReject(selected.id)}
-                  aria-label={`Confirm reject ${selected.title}`}
+                  disabled={pendingId === candidate.id}
+                  onClick={() => void runReject(candidate.id)}
+                  aria-label={`Confirm reject ${candidate.title}`}
                 >
                   Confirm reject
                 </button>
@@ -194,36 +158,114 @@ export function CandidateTable({
                 >
                   Cancel
                 </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                className="btn danger-outline"
-                onClick={() => setConfirmReject(selected.id)}
-                aria-label={`Reject ${selected.title}`}
-                title="Remove candidate from review queue"
-              >
-                Reject
-              </button>
-            )}
-          </div>
-        </div>
-      ) : null}
+              </div>
+            </>
+          ) : null}
+        </td>
+      </tr>
+    );
+  }
+
+  return (
+    <div className="table-panel">
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th scope="col">Title</th>
+              <th scope="col">State</th>
+              <th scope="col" className="col-numeric">
+                Confidence
+              </th>
+              <th scope="col">Provenance</th>
+              <th scope="col">Created</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {candidates.map((candidate) => {
+              const isSelected = candidate.id === selected?.id;
+              const promoteBlocked = promoteUnavailableReason(candidate);
+              const canPromote = !!nextPromotionState(candidate.state);
+
+              return (
+                <Fragment key={candidate.id}>
+                  <tr
+                    className={isSelected ? "row-selected" : undefined}
+                    onClick={() => onSelect(candidate.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        onSelect(candidate.id);
+                      }
+                    }}
+                    tabIndex={0}
+                    role="button"
+                    aria-selected={isSelected}
+                    aria-label={`Select ${candidate.title}`}
+                  >
+                    <td>{candidate.title}</td>
+                    <td>
+                      <StateBadge state={candidate.state} label={candidate.displayState} />
+                    </td>
+                    <td className="col-numeric">
+                      <span className="confidence-cell">
+                        <span className="inline-progress">
+                          <span
+                            className="progress-fill"
+                            style={{ width: `${Math.round(candidate.confidence * 100)}%` }}
+                          />
+                        </span>
+                        <span className="mono">{candidate.confidence.toFixed(2)}</span>
+                      </span>
+                    </td>
+                    <td
+                      className="mono small provenance-cell"
+                      title={candidate.provenance}
+                    >
+                      {candidate.provenance}
+                    </td>
+                    <td>{formatCandidateDate(candidate.createdAt)}</td>
+                    <td className="actions-cell">
+                      {canPromote ? (
+                        <button
+                          type="button"
+                          className="btn primary"
+                          onClick={(event) => handlePromoteClick(event, candidate)}
+                          aria-label={`Promote ${candidate.title}`}
+                          title="Advance proposed → suggested → active"
+                        >
+                          Promote
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled
+                          title={promoteBlocked ?? undefined}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          Promote
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="btn danger-outline"
+                        onClick={(event) => handleRejectClick(event, candidate)}
+                        aria-label={`Reject ${candidate.title}`}
+                        title="Remove candidate from review queue"
+                      >
+                        Reject
+                      </button>
+                    </td>
+                  </tr>
+                  {expandedId === candidate.id ? renderConfirmRow(candidate) : null}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
-}
-
-function formatDate(iso: string): string {
-  if (!iso) {
-    return "—";
-  }
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) {
-    return iso;
-  }
-  return date.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
 }

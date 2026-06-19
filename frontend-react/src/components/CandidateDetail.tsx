@@ -1,7 +1,10 @@
 import type { Candidate } from "../types/candidate";
+import { AuditTimeline } from "./AuditTimeline";
 import { ConfidenceBreakdown } from "./ConfidenceBreakdown";
 import { ContradictionPanel } from "./ContradictionPanel";
+import { MetadataGrid } from "./MetadataGrid";
 import { StateBadge } from "./StateBadge";
+import { formatCandidateDate } from "../api/candidateModel";
 
 interface CandidateDetailProps {
   candidates: Candidate[];
@@ -23,11 +26,15 @@ export function CandidateDetail({
   onResolve,
   onDefer,
 }: CandidateDetailProps) {
+  const detailPanelId = "candidate-detail-panel";
+
   if (candidates.length === 0) {
     return (
-      <section className="detail-panel">
-        <h2>Candidate detail</h2>
-        <p className="muted">Select a candidate from the list views above.</p>
+      <section className="detail-panel" id={detailPanelId} aria-labelledby="detail-empty-heading">
+        <p className="detail-panel__label" id="detail-empty-heading">
+          Candidate detail
+        </p>
+        <p className="muted">Select a candidate from the list to inspect details.</p>
       </section>
     );
   }
@@ -41,14 +48,20 @@ export function CandidateDetail({
   );
 
   return (
-    <section className="detail-panel">
+    <section
+      className="detail-panel"
+      id={detailPanelId}
+      aria-labelledby="detail-title"
+    >
       <div className="detail-head">
-        <h2>Candidate detail</h2>
+        <p className="detail-panel__label">Candidate detail</p>
         <label className="detail-select">
           Inspect candidate
           <select
             value={activeId}
             onChange={(event) => onSelect(event.target.value)}
+            aria-controls={detailPanelId}
+            aria-label="Inspect candidate"
           >
             {candidates.map((row) => (
               <option key={row.id} value={row.id}>
@@ -59,37 +72,45 @@ export function CandidateDetail({
         </label>
       </div>
 
-      <h3>{candidate.title}</h3>
-      <p>
-        <strong>State:</strong>{" "}
-        <StateBadge state={candidate.state} label={candidate.displayState} />
-      </p>
-      <p className="mono small">
-        <strong>Provenance:</strong> {candidate.provenance}
-      </p>
+      <h2 className="detail-panel__title" id="detail-title">
+        {candidate.title}
+      </h2>
 
-      <div className="detail-section">
-        <h4>Content</h4>
+      <MetadataGrid
+        items={[
+          {
+            label: "State",
+            value: <StateBadge state={candidate.state} label={candidate.displayState} />,
+          },
+          {
+            label: "Provenance",
+            value: <code className="mono small">{candidate.provenance}</code>,
+          },
+          {
+            label: "Created",
+            value: formatCandidateDate(candidate.createdAt),
+          },
+          {
+            label: "Confidence",
+            value: <span className="mono">{candidate.confidence.toFixed(2)}</span>,
+          },
+        ]}
+      />
+
+      <div className="detail-section" aria-labelledby="detail-content-heading">
+        <h4 id="detail-content-heading">Content</h4>
         <p className="content-body">{candidate.content}</p>
       </div>
 
-      <div className="detail-section">
-        <h4>Confidence</h4>
+      <div className="detail-section" aria-labelledby="detail-confidence-heading">
+        <h4 id="detail-confidence-heading">Confidence</h4>
         <ConfidenceBreakdown candidate={candidate} />
       </div>
 
-      <div className="detail-section">
-        <h4>Audit trail</h4>
+      <div className="detail-section" aria-labelledby="detail-audit-heading">
+        <h4 id="detail-audit-heading">Audit trail</h4>
         {candidate.auditTrail.length > 0 ? (
-          <ul className="audit-list">
-            {candidate.auditTrail.map((entry, index) => (
-              <li key={`${entry.action}-${index}`}>
-                <strong>{entry.action}</strong> · {entry.timestamp} ·{" "}
-                <code>{entry.provenance}</code> · <em>{entry.actor}</em>
-                {entry.note ? ` — ${entry.note}` : ""}
-              </li>
-            ))}
-          </ul>
+          <AuditTimeline entries={candidate.auditTrail} />
         ) : (
           <p className="muted">
             Created {candidate.createdAt} · Source log line{" "}
@@ -114,7 +135,10 @@ export function CandidateDetail({
           onDefer={onDefer}
         />
       ) : (
-        <p className="muted">No contradictions flagged for this candidate.</p>
+        <p className="status-ok" role="status">
+          <span aria-hidden="true">✓</span>
+          No contradictions flagged for this candidate.
+        </p>
       )}
     </section>
   );

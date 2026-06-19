@@ -65,22 +65,77 @@ export function nextPromotionState(
   }
 }
 
-export function candidateStateColor(state: CandidateState): string {
+export function promoteUnavailableReason(candidate: Candidate): string {
+  if (nextPromotionState(candidate.state)) {
+    return "";
+  }
+  if (candidate.state === "decayed") {
+    return `${candidate.title} is decayed — restore via pipeline before promoting.`;
+  }
+  return `${candidate.title} is already ${candidate.displayState} — no further promotion.`;
+}
+
+export function formatCandidateDate(iso: string): string {
+  if (!iso) {
+    return "—";
+  }
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return iso;
+  }
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+export interface CandidateStateStyle {
+  bg: string;
+  text: string;
+  border: string;
+}
+
+export function candidateStateStyle(state: CandidateState): CandidateStateStyle {
   switch (state) {
     case "proposed":
-      return "var(--state-proposed)";
+      return { bg: "#fef3c7", text: "#92400e", border: "#fcd34d" };
     case "suggested":
-      return "var(--state-suggested)";
+      return { bg: "#dbeafe", text: "#1e40af", border: "#93c5fd" };
     case "active":
-      return "var(--state-active)";
+      return { bg: "#dcfce7", text: "#166534", border: "#86efac" };
     case "decayed":
     case "unrecognized":
-      return "var(--state-muted)";
+      return { bg: "#f3f4f6", text: "#4b5563", border: "#d1d5db" };
     default: {
       const _exhaustive: never = state;
       throw new Error(`Unhandled candidate state: ${_exhaustive}`);
     }
   }
+}
+
+export function candidateStateClass(state: CandidateState): string {
+  switch (state) {
+    case "proposed":
+      return "state-badge--proposed";
+    case "suggested":
+      return "state-badge--suggested";
+    case "active":
+      return "state-badge--active";
+    case "decayed":
+      return "state-badge--decayed";
+    case "unrecognized":
+      return "state-badge--unrecognized";
+    default: {
+      const _exhaustive: never = state;
+      throw new Error(`Unhandled candidate state: ${_exhaustive}`);
+    }
+  }
+}
+
+/** @deprecated Use candidateStateClass or candidateStateStyle for muted enterprise pills. */
+export function candidateStateColor(state: CandidateState): string {
+  return candidateStateStyle(state).bg;
 }
 
 function firstString(data: RawCandidate, ...keys: string[]): string {

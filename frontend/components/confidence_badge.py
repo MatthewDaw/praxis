@@ -2,23 +2,35 @@
 
 from __future__ import annotations
 
+import html
+
 import streamlit as st
 
-from models.candidate import Candidate, CandidateState, candidate_state_color
+from models.candidate import Candidate, CandidateState, candidate_state_style
 
 
 def render_state_badge(state_label: str, state: CandidateState | None = None) -> None:
     """Color-coded lifecycle badge (proposed / suggested / active / decayed / unknown)."""
     enum_state = state if state is not None else CandidateState(state_label)
-    color = candidate_state_color(enum_state)
-    st.markdown(f":{color}[**{state_label.upper()}**]")
+    style = candidate_state_style(enum_state)
+    safe_label = html.escape(state_label)
+    st.markdown(
+        f'<span class="state-badge" style="background:{style["bg"]};'
+        f'color:{style["text"]};border-color:{style["border"]};">{safe_label}</span>',
+        unsafe_allow_html=True,
+    )
 
 
 def render_confidence_progress(confidence: float) -> None:
     """Aggregate confidence score as a progress bar."""
-    st.progress(
-        confidence,
-        text=f"Confidence: {confidence:.2f}",
+    pct = int(confidence * 100)
+    st.markdown(
+        f'<div style="background:#e2e8f0;border-radius:999px;height:8px;overflow:hidden;">'
+        f'<div style="width:{pct}%;height:100%;background:linear-gradient(90deg,#60a5fa,#2563eb);">'
+        f"</div></div>"
+        f'<p style="font-size:0.85rem;margin:0.35rem 0 0;color:#6b7280;">'
+        f"Aggregate: <strong>{confidence:.2f}</strong></p>",
+        unsafe_allow_html=True,
     )
 
 

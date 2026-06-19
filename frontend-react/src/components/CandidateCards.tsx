@@ -1,12 +1,18 @@
 import { useState } from "react";
-import { nextPromotionState } from "../api/candidateModel";
+import {
+  formatCandidateDate,
+  nextPromotionState,
+  promoteUnavailableReason,
+} from "../api/candidateModel";
 import type { Candidate } from "../types/candidate";
+import { EmptyState } from "./ui/EmptyState";
 import { StateBadge } from "./StateBadge";
 
 const LOW_CONFIDENCE_THRESHOLD = 0.5;
 
 interface CandidateCardsProps {
   candidates: Candidate[];
+  selectedId: string | null;
   onSelect: (id: string) => void;
   onPromote: (id: string) => Promise<void>;
   onReject: (id: string, reason?: string) => Promise<void>;
@@ -14,6 +20,7 @@ interface CandidateCardsProps {
 
 export function CandidateCards({
   candidates,
+  selectedId,
   onSelect,
   onPromote,
   onReject,
@@ -25,9 +32,14 @@ export function CandidateCards({
 
   if (candidates.length === 0) {
     return (
-      <p className="info-banner">
-        No candidates match the current filter.
-      </p>
+      <EmptyState
+        message={
+          <>
+            No candidates match the current filter. Try clearing search or choosing{" "}
+            <strong>All</strong> states.
+          </>
+        }
+      />
     );
   }
 
@@ -55,124 +67,144 @@ export function CandidateCards({
 
   return (
     <div className="card-grid">
-      {candidates.map((candidate) => (
-        <article key={candidate.id} className="candidate-card">
-          <div className="card-head">
-            <h3>{candidate.title}</h3>
-            <StateBadge state={candidate.state} label={candidate.displayState} />
-          </div>
-          <p className="card-excerpt">{truncate(candidate.content, 180)}</p>
-          <div className="inline-progress">
-            <div
-              className="progress-fill"
-              style={{ width: `${Math.round(candidate.confidence * 100)}%` }}
-            />
-          </div>
-          <p className="mono small">{candidate.provenance}</p>
+      {candidates.map((candidate) => {
+        const nextState = nextPromotionState(candidate.state);
+        const promoteBlocked = promoteUnavailableReason(candidate);
+        const isSelected = candidate.id === selectedId;
 
-          {confirmPromote === candidate.id ? (
-            <div className="card-actions">
-              {candidate.confidence < LOW_CONFIDENCE_THRESHOLD ? (
-                <p className="warning-banner" role="alert" aria-live="assertive">
-                  Low confidence ({(candidate.confidence * 100).toFixed(0)}%) — confirm promote?
+        return (
+          <article
+            key={candidate.id}
+            className={
+              isSelected ? "candidate-card candidate-card--selected" : "candidate-card"
+            }
+          >
+            <div className="card-head">
+              <h3>{candidate.title}</h3>
+              <StateBadge state={candidate.state} label={candidate.displayState} />
+            </div>
+            <p className="card-excerpt">{candidate.content}</p>
+            <div className="inline-progress">
+              <div
+                className="progress-fill"
+                style={{ width: `${Math.round(candidate.confidence * 100)}%` }}
+              />
+            </div>
+            <p className="mono small" title={candidate.provenance}>
+              {candidate.provenance}
+            </p>
+            <p className="small muted">
+              Created: {formatCandidateDate(candidate.createdAt)}
+            </p>
+
+            {confirmPromote === candidate.id ? (
+              <div className="card-actions">
+                <p className="info-banner">
+                  Promote <strong>{candidate.title}</strong> from{" "}
+                  <strong>{candidate.displayState}</strong> to{" "}
+                  <strong>{nextState}</strong>?
                 </p>
-              ) : null}
-              <button
-                type="button"
-                className="btn primary full"
-                disabled={pendingId === candidate.id}
-                onClick={() => void runPromote(candidate.id)}
-              >
-                Confirm promote
-              </button>
-              <button
-                type="button"
-                className="btn ghost full"
-                onClick={() => setConfirmPromote(null)}
-              >
-                Cancel
-              </button>
-            </div>
-          ) : confirmReject === candidate.id ? (
-            <div className="card-actions">
-              <label className="reject-reason full">
-                Rejection reason (optional)
-                <input
-                  type="text"
-                  value={rejectReason}
-                  onChange={(event) => setRejectReason(event.target.value)}
-                  aria-label="Rejection reason"
-                />
-              </label>
-              <button
-                type="button"
-                className="btn danger full"
-                disabled={pendingId === candidate.id}
-                onClick={() => void runReject(candidate.id)}
-              >
-                Confirm reject
-              </button>
-              <button
-                type="button"
-                className="btn ghost full"
-                onClick={() => {
-                  setConfirmReject(null);
-                  setRejectReason("");
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <div className="card-actions">
-              <button
-                type="button"
-                className="btn ghost full"
-                onClick={() => onSelect(candidate.id)}
-              >
-                Inspect in detail
-              </button>
-              <div className="card-action-row">
-                {nextPromotionState(candidate.state) ? (
-                  <button
-                    type="button"
-                    className="btn primary"
-                    onClick={() => {
-                      setConfirmPromote(candidate.id);
-                      setConfirmReject(null);
-                    }}
-                    aria-label={`Promote ${candidate.title}`}
-                  >
-                    Promote
-                  </button>
-                ) : (
-                  <button type="button" className="btn" disabled>
-                    Promote
-                  </button>
-                )}
+                {candidate.confidence < LOW_CONFIDENCE_THRESHOLD ? (
+                  <p className="warning-banner" role="alert" aria-live="assertive">
+                    Low confidence ({(candidate.confidence * 100).toFixed(0)}%) — confirm
+                    promote?
+                  </p>
+                ) : null}
                 <button
                   type="button"
-                  className="btn danger-outline"
-                  onClick={() => {
-                    setConfirmReject(candidate.id);
-                    setConfirmPromote(null);
-                  }}
-                  aria-label={`Reject ${candidate.title}`}
+                  className="btn primary full"
+                  disabled={pendingId === candidate.id}
+                  onClick={() => void runPromote(candidate.id)}
                 >
-                  Reject
+                  Confirm promote
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost full"
+                  onClick={() => setConfirmPromote(null)}
+                >
+                  Cancel
                 </button>
               </div>
-            </div>
-          )}
-        </article>
-      ))}
+            ) : confirmReject === candidate.id ? (
+              <div className="card-actions">
+                <label className="reject-reason full">
+                  Rejection reason (optional)
+                  <input
+                    type="text"
+                    value={rejectReason}
+                    onChange={(event) => setRejectReason(event.target.value)}
+                    aria-label="Rejection reason"
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="btn danger full"
+                  disabled={pendingId === candidate.id}
+                  onClick={() => void runReject(candidate.id)}
+                >
+                  Confirm reject
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost full"
+                  onClick={() => {
+                    setConfirmReject(null);
+                    setRejectReason("");
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <div className="card-actions">
+                <button
+                  type="button"
+                  className="btn ghost full"
+                  onClick={() => onSelect(candidate.id)}
+                >
+                  Inspect in detail
+                </button>
+                {promoteBlocked ? (
+                  <p className="small muted">{promoteBlocked}</p>
+                ) : null}
+                <div className="card-action-row">
+                  {nextState ? (
+                    <button
+                      type="button"
+                      className="btn primary"
+                      onClick={() => {
+                        onSelect(candidate.id);
+                        setConfirmPromote(candidate.id);
+                        setConfirmReject(null);
+                      }}
+                      aria-label={`Promote ${candidate.title}`}
+                    >
+                      Promote
+                    </button>
+                  ) : (
+                    <button type="button" className="btn" disabled>
+                      Promote
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn danger-outline"
+                    onClick={() => {
+                      onSelect(candidate.id);
+                      setConfirmReject(candidate.id);
+                      setConfirmPromote(null);
+                    }}
+                    aria-label={`Reject ${candidate.title}`}
+                  >
+                    Reject
+                  </button>
+                </div>
+              </div>
+            )}
+          </article>
+        );
+      })}
     </div>
   );
-}
-
-function truncate(text: string, max: number): string {
-  if (text.length <= max) {
-    return text;
-  }
-  return `${text.slice(0, max).trim()}…`;
 }

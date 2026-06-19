@@ -222,19 +222,24 @@ def _normalize_contradiction_ids(raw: Any) -> list[str]:
     return ids
 
 
-def candidate_state_color(state: CandidateState) -> str:
-    """Streamlit markdown color token for lifecycle badges."""
+def candidate_state_style(state: CandidateState) -> dict[str, str]:
+    """Enterprise muted pill colors shared with frontend-react tokens."""
     match state:
         case CandidateState.PROPOSED:
-            return "orange"
+            return {"bg": "#fef3c7", "text": "#92400e", "border": "#fcd34d"}
         case CandidateState.SUGGESTED:
-            return "blue"
+            return {"bg": "#dbeafe", "text": "#1e40af", "border": "#93c5fd"}
         case CandidateState.ACTIVE:
-            return "green"
+            return {"bg": "#dcfce7", "text": "#166534", "border": "#86efac"}
         case CandidateState.DECAYED | CandidateState.UNRECOGNIZED:
-            return "gray"
+            return {"bg": "#f3f4f6", "text": "#4b5563", "border": "#d1d5db"}
         case _:
             raise ValueError(f"Unhandled candidate state: {state!r}")
+
+
+def candidate_state_color(state: CandidateState) -> str:
+    """Legacy helper — returns text color hex for badges."""
+    return candidate_state_style(state)["text"]
 
 
 def next_promotion_state(current: CandidateState) -> CandidateState | None:

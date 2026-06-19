@@ -20,6 +20,7 @@ OPERATIONAL:
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import streamlit as st
 
@@ -27,8 +28,8 @@ from components.candidate_detail import render_candidate_detail
 from components.candidate_list import (
     filter_candidates,
     render_card_view,
+    render_count_chip,
     render_last_action_banner,
-    render_selection_control,
     render_table_view,
     sync_selected_candidate,
 )
@@ -37,10 +38,17 @@ from models.candidate import Candidate
 from services.data_provider import DataProvider, get_data_provider
 
 st.set_page_config(
-    page_title="PRAXIS Candidate Review Gate",
+    page_title="PRAXIS Knowledge Graph Dashboard",
     page_icon="🧠",
     layout="wide",
 )
+
+_CSS_PATH = Path(__file__).resolve().parent / "static" / "dashboard.css"
+
+
+def _inject_dashboard_css() -> None:
+    if _CSS_PATH.is_file():
+        st.markdown(f"<style>{_CSS_PATH.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
 
 
 def _ensure_provider() -> DataProvider:
@@ -49,29 +57,40 @@ def _ensure_provider() -> DataProvider:
     return st.session_state.data_provider
 
 
-def _render_sidebar_controls() -> None:
-    with st.sidebar:
-        st.markdown("### Controls")
+def _render_header() -> None:
+    api_url = os.environ.get("PRAXIS_API_BASE_URL", "").strip()
+    badge_class = "env-badge env-badge--live" if api_url else "env-badge env-badge--mock"
+    badge_text = (
+        f"Live API · <code>{api_url}</code>" if api_url else "Mock mode — local fixtures only"
+    )
+
+    st.markdown(
+        f"""
+        <div class="praxis-header">
+          <div class="praxis-brand">PRAXIS</div>
+          <h1>Candidate Review Gate</h1>
+          <p>Review and promote AI-learned knowledge candidates from agent sessions.</p>
+          <p><span class="{badge_class}">{badge_text}</span></p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    action_col1, action_col2 = st.columns([1, 3])
+    with action_col1:
         if st.button(
             "Refresh data",
+            type="primary",
             use_container_width=True,
             help="Reload candidates from the API or mock provider after mutations.",
         ):
             st.session_state.pop("data_provider", None)
             st.rerun()
+    with action_col2:
         st.caption(
-            "Integration: [candidate-api-v1.md](../docs/integration/candidate-api-v1.md)"
-        )
-
-
-def _render_mode_banner() -> None:
-    api_url = os.environ.get("PRAXIS_API_BASE_URL", "").strip()
-    if api_url:
-        st.caption(f"Live API mode — `{api_url}`")
-    else:
-        st.caption(
-            "Mock mode — local fixtures only. "
-            "Matthew's pipeline and Dominic's eval are not required to run this UI."
+            "Contract: [candidate-api-v1.md](../docs/integration/candidate-api-v1.md) · "
+            "Matthew implements the server; this Streamlit client targets the same endpoints "
+            "as the React dashboard in `frontend-react/`."
         )
 
 
@@ -83,12 +102,9 @@ def _load_candidates(provider: DataProvider) -> tuple[list[Candidate] | None, st
         return None, str(exc)
 
 
+_inject_dashboard_css()
 provider = _ensure_provider()
-_render_sidebar_controls()
-
-st.title("Candidate Review Gate")
-st.markdown("Review and promote AI-learned knowledge candidates from agent sessions.")
-_render_mode_banner()
+_render_header()
 render_last_action_banner()
 
 with st.container():
@@ -101,12 +117,13 @@ with st.container():
         )
     with col2:
         state_filter = st.selectbox(
-            "Filter by State",
+            "Filter by state",
             ["All", "proposed", "suggested", "active", "decayed"],
             help="Show only candidates in the selected lifecycle state.",
         )
 
-all_candidates, load_error = _load_candidates(provider)
+with st.spinner("Loading candidates…"):
+    all_candidates, load_error = _load_candidates(provider)
 
 if load_error:
     st.error(
@@ -116,26 +133,32 @@ if load_error:
     all_candidates = []
 
 filtered = filter_candidates(all_candidates or [], search_query=search_query, state_filter=state_filter)
-selected_for_detail = render_selection_control(filtered)
+render_count_chip(len(filtered))
+selected_for_detail = sync_selected_candidate(filtered)
 
-tab_table, tab_cards = st.tabs(["Table View", "Card View"])
+list_col, detail_col = st.columns([3, 2], gap="large")
 
-with tab_table:
-    render_table_view(
+with list_col:
+    tab_table, tab_cards = st.tabs(["Table view", "Card view"])
+
+    with tab_table:
+        render_table_view(
+            filtered,
+            provider,
+            selected_id=selected_for_detail,
+            on_action="table",
+        )
+
+    with tab_cards:
+        render_card_view(filtered, provider, on_action="cards")
+
+with detail_col:
+    render_candidate_detail(
         filtered,
-        provider,
-        selected_id=selected_for_detail,
-        on_action="table",
+        selected_id=sync_selected_candidate(filtered),
+        provider=provider,
     )
 
-with tab_cards:
-    render_card_view(filtered, provider, on_action="cards")
-
-render_candidate_detail(
-    filtered,
-    selected_id=sync_selected_candidate(filtered),
-    provider=provider,
-)
 render_eval_metrics_embed()
 
 st.divider()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import html
+
 import streamlit as st
 
 from models.candidate import Candidate
@@ -24,15 +26,19 @@ def render_contradiction_panel(
     for rival in rivals:
         left, right = st.columns(2)
         with left:
-            with st.container(border=True):
-                st.markdown("**This candidate**")
-                st.write(candidate.content)
-                st.caption(f"`{candidate.provenance}`")
+            st.markdown(
+                f'<div class="compare-card-primary"><strong>This candidate</strong>'
+                f"<p>{html.escape(candidate.content)}</p>"
+                f"<code>{html.escape(candidate.provenance)}</code></div>",
+                unsafe_allow_html=True,
+            )
         with right:
-            with st.container(border=True):
-                st.markdown(f"**Rival:** {rival.title}")
-                st.write(rival.content)
-                st.caption(f"`{rival.provenance}`")
+            st.markdown(
+                f'<div class="compare-card-rival"><strong>Rival: {html.escape(rival.title)}</strong>'
+                f"<p>{html.escape(rival.content)}</p>"
+                f"<code>{html.escape(rival.provenance)}</code></div>",
+                unsafe_allow_html=True,
+            )
 
         contradiction_id = f"{candidate.id}__{rival.id}"
         c1, c2, c3 = st.columns(3)

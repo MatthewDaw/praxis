@@ -10,7 +10,7 @@ from services.mock_provider import MockDataProvider
 def test_mock_provider_lists_candidates() -> None:
     provider = get_data_provider()
     candidates = provider.list_candidates()
-    assert len(candidates) >= 17
+    assert len(candidates) >= 18
 
 
 def test_mock_promote_proposed_to_suggested() -> None:

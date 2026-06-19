@@ -51,6 +51,14 @@ def sync_selected_candidate(candidates: list[Candidate]) -> str | None:
     return st.session_state[_SELECTED_KEY]
 
 
+def render_count_chip(count: int) -> None:
+    """Candidate count chip aligned with React FilterBar."""
+    st.markdown(
+        f'<p style="margin:0.5rem 0 1rem;"><span class="count-chip">{count} candidates</span></p>',
+        unsafe_allow_html=True,
+    )
+
+
 def render_selection_control(candidates: list[Candidate]) -> str | None:
     """Shared selectbox driving detail view and table actions."""
     if not candidates:
@@ -88,11 +96,11 @@ def render_table_view(
     on_action: str,
 ) -> None:
     """Sortable table with promote/reject action row."""
-    st.markdown(f"**{len(candidates)} candidates**")
-
     if not candidates:
         st.info("No candidates match the current filter. Try clearing search or choosing **All** states.")
         return
+
+    st.markdown('<div class="list-panel-wrap">', unsafe_allow_html=True)
 
     display_df = _candidates_to_display_frame(candidates)[
         ["title", "state", "confidence", "provenance", "createdAt"]
@@ -120,9 +128,12 @@ def render_table_view(
         hide_index=True,
     )
 
+    st.markdown("</div>", unsafe_allow_html=True)
+
     if selected_id is None:
         return
 
+    st.markdown('<div class="actions-block">', unsafe_allow_html=True)
     st.markdown("### Actions")
     action_col1, action_col2 = st.columns([3, 1])
     id_to_title = {c.id: c.title for c in candidates}
@@ -152,6 +163,7 @@ def render_table_view(
                 _begin_reject(selected_id)
 
     _render_confirmation_dialogs(provider)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_card_view(
@@ -161,8 +173,6 @@ def render_card_view(
     on_action: str,
 ) -> None:
     """Three-column card grid with per-card actions."""
-    st.markdown(f"**{len(candidates)} candidates**")
-
     if not candidates:
         st.info("No candidates match the current filter. Try clearing search or choosing **All** states.")
         return

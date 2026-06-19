@@ -1,5 +1,5 @@
+import { candidateStateClass } from "../api/candidateModel";
 import type { CandidateState } from "../types/candidate";
-import { candidateStateColor } from "../api/candidateModel";
 
 interface StateBadgeProps {
   state: CandidateState;
@@ -9,8 +9,8 @@ interface StateBadgeProps {
 export function StateBadge({ state, label }: StateBadgeProps) {
   return (
     <span
-      className="state-badge"
-      style={{ backgroundColor: candidateStateColor(state) }}
+      className={`state-badge ${candidateStateClass(state)}`}
+      aria-label={`State: ${label}`}
     >
       {label}
     </span>

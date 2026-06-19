@@ -42,6 +42,14 @@ export function buildRejectBody(reason?: string): { reason?: string } {
   return reason ? { reason } : {};
 }
 
+export function normalizeResolution(resolution: string): string {
+  const mapped = RESOLUTION_TO_API[resolution];
+  if (!mapped) {
+    throw new Error(`Unsupported resolution ${resolution}`);
+  }
+  return mapped;
+}
+
 export function buildResolveBody(
   resolution: string,
   keepId: string,

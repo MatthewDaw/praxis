@@ -4,6 +4,11 @@ import { CandidateCards } from "./components/CandidateCards";
 import { CandidateDetail } from "./components/CandidateDetail";
 import { CandidateTable } from "./components/CandidateTable";
 import { EvalMetricsEmbed } from "./components/EvalMetricsEmbed";
+import { AppShell } from "./components/layout/AppShell";
+import { ContentSplit } from "./components/layout/ContentSplit";
+import { DashboardHeader } from "./components/layout/DashboardHeader";
+import { FilterBar } from "./components/layout/FilterBar";
+import { LoadingSkeleton } from "./components/ui/LoadingSkeleton";
 import { filterCandidates, useCandidates } from "./hooks/useCandidates";
 import "./index.css";
 
@@ -95,140 +100,76 @@ export default function App() {
     }
   }
 
+  const listView =
+    viewTab === "table" ? (
+      <CandidateTable
+        candidates={filtered}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        onPromote={handlePromote}
+        onReject={handleReject}
+      />
+    ) : (
+      <CandidateCards
+        candidates={filtered}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        onPromote={handlePromote}
+        onReject={handleReject}
+      />
+    );
+
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">PRAXIS</span>
-          <span className="brand-sub">Knowledge Graph Dashboard</span>
+    <AppShell>
+      <DashboardHeader
+        apiUrl={apiUrl || undefined}
+        onRefresh={() => void refresh()}
+      />
+
+      {lastAction ? <div className="success-banner">{lastAction}</div> : null}
+      {deferMessage ? <div className="info-banner">{deferMessage}</div> : null}
+      {actionError ? <div className="error-banner">{actionError}</div> : null}
+      {error ? (
+        <div className="error-banner">
+          Backend unavailable — could not load candidates. ({error}) Unset{" "}
+          <code>VITE_PRAXIS_API_BASE_URL</code> to use mock fixtures locally.
         </div>
-        <button type="button" className="btn primary full" onClick={() => void refresh()}>
-          Refresh data
-        </button>
-        <p className="sidebar-note">
-          Contract:{" "}
-          <a
-            href="../docs/integration/candidate-api-v1.md"
-            target="_blank"
-            rel="noreferrer"
-          >
-            candidate-api-v1
-          </a>
-        </p>
-        <p className="sidebar-note muted">
-          Matthew implements the server; this React client targets the same endpoints as
-          the Streamlit dashboard in <code>frontend/</code>.
-        </p>
-      </aside>
+      ) : null}
 
-      <main className="main">
-        <header className="page-header">
-          <div>
-            <h1>Candidate Review Gate</h1>
-            <p>
-              Review and promote AI-learned knowledge candidates from agent sessions.
-            </p>
-          </div>
-          <p className="mode-banner">
-            {apiUrl ? (
-              <>
-                Live API mode — <code>{apiUrl}</code>
-              </>
-            ) : (
-              <>
-                Mock mode — local fixtures only. Matthew&apos;s pipeline and Dominic&apos;s
-                eval are not required to run this UI.
-              </>
-            )}
-          </p>
-        </header>
+      <FilterBar
+        searchQuery={searchQuery}
+        stateFilter={stateFilter}
+        viewTab={viewTab}
+        candidateCount={filtered.length}
+        onSearchChange={setSearchQuery}
+        onStateFilterChange={setStateFilter}
+        onViewTabChange={setViewTab}
+      />
 
-        {lastAction ? <div className="success-banner">{lastAction}</div> : null}
-        {deferMessage ? <div className="info-banner">{deferMessage}</div> : null}
-        {actionError ? <div className="error-banner">{actionError}</div> : null}
-        {error ? (
-          <div className="error-banner">
-            Backend unavailable — could not load candidates. ({error}) Unset{" "}
-            <code>VITE_PRAXIS_API_BASE_URL</code> to use mock fixtures locally.
-          </div>
-        ) : null}
-
-        <section className="filters">
-          <label>
-            Search
-            <input
-              type="search"
-              placeholder="Search by title or content..."
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
+      {loading ? (
+        <LoadingSkeleton />
+      ) : (
+        <ContentSplit
+          list={listView}
+          detail={
+            <CandidateDetail
+              candidates={filtered}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              onResolve={handleResolve}
+              onDefer={handleDefer}
             />
-          </label>
-          <label>
-            Filter by state
-            <select
-              value={stateFilter}
-              onChange={(event) => setStateFilter(event.target.value)}
-            >
-              <option>All</option>
-              <option>proposed</option>
-              <option>suggested</option>
-              <option>active</option>
-              <option>decayed</option>
-            </select>
-          </label>
-        </section>
-
-        {loading ? <p className="muted">Loading candidates…</p> : null}
-
-        <div className="tabs">
-          <button
-            type="button"
-            className={viewTab === "table" ? "tab active" : "tab"}
-            onClick={() => setViewTab("table")}
-          >
-            Table view
-          </button>
-          <button
-            type="button"
-            className={viewTab === "cards" ? "tab active" : "tab"}
-            onClick={() => setViewTab("cards")}
-          >
-            Card view
-          </button>
-        </div>
-
-        {viewTab === "table" ? (
-          <CandidateTable
-            candidates={filtered}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            onPromote={handlePromote}
-            onReject={handleReject}
-          />
-        ) : (
-          <CandidateCards
-            candidates={filtered}
-            onSelect={setSelectedId}
-            onPromote={handlePromote}
-            onReject={handleReject}
-          />
-        )}
-
-        <CandidateDetail
-          candidates={filtered}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          onResolve={handleResolve}
-          onDefer={handleDefer}
+          }
         />
+      )}
 
-        <EvalMetricsEmbed provider={provider} />
+      <EvalMetricsEmbed provider={provider} />
 
-        <footer className="page-footer">
-          React Knowledge Graph Dashboard · Integrates with Matthew&apos;s API via{" "}
-          <code>VITE_PRAXIS_API_BASE_URL</code> · Does not import pipeline code directly
-        </footer>
-      </main>
-    </div>
+      <footer className="page-footer">
+        React Knowledge Graph Dashboard · Integrates with Matthew&apos;s API via{" "}
+        <code>VITE_PRAXIS_API_BASE_URL</code> · Does not import pipeline code directly ·
+        Streamlit reference client in <code>frontend/</code>
+      </footer>
+    </AppShell>
   );
 }
