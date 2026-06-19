@@ -1,0 +1,25 @@
+# Scenario: a single long, noisy ingestion line carries one real engineering
+# lesson ("always pin dependency versions") padded with filler and a trailing
+# garbage token "lorem-ipsum-noise". Desired behavior: the ingestor distills the
+# input down to the signal and drops the noise.
+# Scope: ingestion-only component (no agent). NO-LLM passthrough: the raw line is
+# stored verbatim as one insight, so the noise token survives.
+# Expected under a real run: FAIL. contains_text("pin dependency versions") passes
+# (the signal is present verbatim), but forbids_substring("lorem-ipsum-noise")
+# fails because the passthrough ingestor performs no distillation/noise stripping.
+id: ingestion_strip_noise_keep_signal
+component: ingestion
+
+seeded_insight:
+  via_ingestor:
+    - "Reminder from the postmortem: always pin dependency versions in pyproject.toml and the lockfile, because an unpinned transitive bump silently broke the CI build last Tuesday and cost us three hours of debugging — also note the cafeteria menu changed and parking lot B is closed, lorem-ipsum-noise"
+
+deterministic_checks:
+  - name: keeps_signal
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "pin dependency versions"
+  - name: strips_noise
+    ref: "knowledge.evals.deterministic_checks.text:forbids_substring"
+    params:
+      text: "lorem-ipsum-noise"

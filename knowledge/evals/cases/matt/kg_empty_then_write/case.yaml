@@ -1,0 +1,24 @@
+# Scenario: write two whitespace-only lines ("" and "  ") then one real rule
+# into the knowledge graph, and read it back.
+# Scope: knowledge_graph component only (no ingestion, no reader, no agent).
+# Expected under a real run: PASS. The real rule must be present, and the
+# empty/whitespace writes must be no-ops that do not inject blank padding
+# (no triple-blank "\n\n\n" run from the empty writes).
+id: kg_empty_then_write
+component: knowledge_graph
+
+seeded_insight:
+  direct_to_graph:
+    - ""
+    - "  "
+    - "real and only rule"
+
+deterministic_checks:
+  - name: keeps_real_rule
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "real and only rule"
+  - name: no_triple_blank
+    ref: "knowledge.evals.deterministic_checks.text:forbids_substring"
+    params:
+      text: "\n\n\n"

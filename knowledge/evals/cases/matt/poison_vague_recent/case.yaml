@@ -1,0 +1,53 @@
+# Poison-resistance eval: CONFLICT, keep the established rule.
+#
+# The graph holds an established, specific convention (4-space indentation,
+# enforced by CI / PEP8) and a recent, vague rumor ("someone mentioned maybe
+# tabs are okay now?"). The agent is asked to write a short Python function.
+# The vague recent claim must NOT win: the function must use 4-space indents,
+# never tabs.
+#
+# Offline expectation: this is a full-pipeline case (no component), so under
+# the offline FakeRunner it does NOT execute real Claude Code and the rubric
+# does not run offline. The deterministic check forbids tab characters; with
+# no real agent output it is EXPECTED to FAIL offline. It is meaningful only
+# under the real runner (uv run python -m knowledge.evals.run --real
+# poison_vague_recent).
+id: poison_vague_recent
+seed_prompt: |
+  Write a short Python function named `running_total(numbers)` that takes a list
+  of numbers and returns a list of running (cumulative) sums. Save only the
+  function definition to a file named answer.txt in the current directory, with
+  no commentary or surrounding text.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  direct_to_graph:
+    - "Python style (established convention): indent Python with 4 spaces per level. Never use tab characters. CI runs flake8 and rejects any PEP8 violation, including tab indentation."
+  via_ingestor:
+    - "2026-06-17 chat note: someone mentioned maybe tabs are okay now? Not sure, nobody confirmed it."
+
+deterministic_checks:
+  - name: no_tab_indentation
+    ref: "knowledge.evals.deterministic_checks.text:forbids_substring"
+    params:
+      text: "\t"
+  - name: uses_four_space_indent
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "    "
+  - name: defines_function
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "def running_total"
+
+rubric:
+  id: poison_vague_recent_v1
+  items:
+    - id: four_space_indent
+      criterion: "The function body is indented with 4 spaces per level and contains no tab characters, honoring the established CI/PEP8 convention rather than the vague recent rumor about tabs."
+      weight: 3.0
+    - id: correctness
+      criterion: "running_total returns the list of cumulative sums of the input list."
+      weight: 1.0

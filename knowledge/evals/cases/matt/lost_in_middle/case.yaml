@@ -1,0 +1,80 @@
+# ATTENTION / lost-in-the-middle case. Full-pipeline (real Claude Code agent).
+# The seeded graph is ~40 lines of plausible-but-irrelevant project noise, with
+# the single operative rule buried in the MIDDLE: TODO comments must be prefixed
+# with the initials MD, e.g. TODO(MD). The agent is asked to add one TODO comment
+# about caching to answer.txt. It passes only if it surfaces the buried rule and
+# writes "TODO(MD)".
+#
+# Expected OFFLINE: FAIL. The offline FakeRunner does not run the real agent and
+# will not emit "TODO(MD)". This documents the lost-in-the-middle hazard; a real
+# agent run is needed to actually exercise the behavior.
+id: lost_in_middle
+seed_prompt: |
+  Add a single TODO comment to a file named answer.txt noting that we should add
+  caching to the data-fetch layer. Write only that one TODO comment line to
+  answer.txt. Follow this project's TODO commenting convention exactly.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "The praxis service is a FastAPI app deployed on AWS via CDK."
+    - "Local development uses uv; run the app with `uv run uvicorn app:api`."
+    - "Secrets are read from AWS Secrets Manager, never committed to the repo."
+    - "The default region for all stacks is us-east-1."
+    - "Python files are formatted with ruff and use 4-space indentation."
+    - "Import ordering is enforced by ruff's isort rules."
+    - "Type hints are required on all public function signatures."
+    - "Pytest is the test runner; tests live under tests/ mirroring the package."
+    - "Database access goes through the repository layer, never raw SQL in routes."
+    - "We use DynamoDB single-table design with a composite PK/SK key schema."
+    - "PRs require at least one approving review before merge."
+    - "Commit messages follow Conventional Commits (feat:, fix:, chore:)."
+    - "The main branch is protected and deploys to staging on merge."
+    - "Feature flags are toggled through the config module, not env vars directly."
+    - "Logging uses structlog with JSON output in production."
+    - "HTTP clients must set a 5-second connect timeout and retry idempotent GETs."
+    - "Background jobs run on SQS-triggered Lambdas with a 15-minute max timeout."
+    - "ALWAYS prefix every TODO comment with the initials MD, like TODO(MD)."
+    - "Caching, when added, should use an in-memory LRU with a 60-second TTL."
+    - "API responses are versioned under the /v1 prefix."
+    - "Error responses follow RFC 7807 problem+json formatting."
+    - "Pagination uses opaque cursor tokens, not page numbers."
+    - "All timestamps are stored and returned in UTC ISO-8601 format."
+    - "Input validation is handled by Pydantic models at the route boundary."
+    - "Rate limiting is applied per-API-key at the gateway, 100 req/min."
+    - "Static assets are served from CloudFront with a 24-hour cache header."
+    - "The CI pipeline runs lint, type-check, and tests on every push."
+    - "Coverage must stay above 80% or the build fails."
+    - "Dependencies are pinned in pyproject.toml and updated via Renovate."
+    - "Docker images are built multi-stage to keep the runtime layer small."
+    - "Health checks live at /healthz and must return within 200ms."
+    - "Metrics are exported to CloudWatch with custom namespaces per service."
+    - "Tracing uses AWS X-Ray with sampling at 10% in production."
+    - "Email is sent through SES with templated messages."
+    - "User sessions are stateless JWTs signed with a rotating KMS key."
+    - "CORS is restricted to the known frontend origins only."
+    - "The frontend is a separate Vite + React app in the web/ directory."
+    - "Internationalized strings are kept in locale JSON files."
+    - "Accessibility is checked with axe in the frontend test suite."
+    - "Release notes are auto-generated from merged PR titles."
+
+deterministic_checks:
+  - name: uses_md_todo_convention
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "TODO(MD)"
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+
+rubric:
+  id: lost_in_middle_v1
+  items:
+    - id: applied_buried_rule
+      criterion: "The TODO comment is prefixed with the MD initials as TODO(MD), per the buried convention."
+      weight: 3.0
+    - id: about_caching
+      criterion: "The TODO comment is about adding caching to the data-fetch layer."
+      weight: 1.0

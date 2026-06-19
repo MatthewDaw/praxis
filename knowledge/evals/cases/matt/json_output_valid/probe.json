@@ -1,0 +1,4 @@
+{
+  "good": "{\"name\": \"praxis-knowledge-harness\", \"version\": \"1.4.2\", \"enabled\": true}",
+  "bad": "name: praxis-knowledge-harness\nversion: 1.4.2\nenabled: true\n"
+}

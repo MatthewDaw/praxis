@@ -1,0 +1,24 @@
+# Component eval: knowledge_graph only. Writes a single large (~3KB) rule -- a
+# multi-step deployment runbook -- directly into the graph and reads it back.
+# The rule ends with the sentinel "END_OF_LARGE_BLOB_MARKER" placed at the very
+# tail. The deterministic check requires that marker to be present in the output,
+# proving the graph stored and returned the entire blob without truncating its
+# tail. No ingestion, no reader, no agent.
+#
+# Scope: knowledge_graph component (direct_to_graph write -> read back).
+# Expected offline: PASS -- the knowledge_graph component stores
+# direct_to_graph verbatim and returns the full graph contents, so the trailing
+# marker on a ~3KB single insight survives the round-trip.
+id: kg_large_blob_capacity
+component: knowledge_graph
+
+seeded_insight:
+  direct_to_graph:
+    - "DEPLOYMENT_RUNBOOK rule (single large blob): Before promoting any service from staging to production, the on-call engineer must complete every step in this runbook in order. Step 1: Confirm the release tag matches the approved change ticket and that the ticket is in the Approved state with two reviewer sign-offs recorded. Step 2: Verify the database migration plan is backward compatible within the current release window; run the migration against a restored production snapshot in the pre-prod account and confirm zero failed statements and no table-level exclusive locks held longer than two seconds. Step 3: Check that all feature flags introduced by this release default to off, and that any flag intended to be on at launch has an owner, a kill switch, and a documented rollback procedure. Step 4: Validate that the canary fleet (5 percent of traffic) has run the new build for at least thirty minutes with error rate below 0.1 percent, p99 latency within 10 percent of the prior baseline, and no new error signatures in the structured logs. Step 5: Confirm dashboards and alerts for the service are green and that the synthetic probes for the critical user journeys (login, checkout, search) are passing in every region. Step 6: Ensure the rollback artifact (previous known-good image and its config bundle) is pinned and reachable, and that the rollback command has been dry-run within the last twenty-four hours. Step 7: Post the deployment intent in the release channel with the change ticket link, the canary metrics snapshot, and the expected blast radius; wait for an explicit acknowledgement from the secondary on-call before proceeding. Step 8: Execute the rolling deploy one availability zone at a time, pausing five minutes between zones to watch error budgets; if the error budget burn rate exceeds 2x in any zone, halt immediately and initiate rollback. Step 9: After full rollout, keep heightened monitoring for sixty minutes, re-run the synthetic probes, and only then close the change ticket with a short post-deploy note covering anomalies observed and follow-ups filed. Step 10: If at any point a SEV1 or SEV2 is declared, abandon the runbook, page the incident commander, freeze further deploys to this service, and capture a timeline for the post-incident review. This runbook is mandatory and may not be abbreviated under deadline pressure; skipping steps is itself a reportable process violation. END_OF_LARGE_BLOB_MARKER"
+
+deterministic_checks:
+  - name: tail_marker_survives
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "END_OF_LARGE_BLOB_MARKER"

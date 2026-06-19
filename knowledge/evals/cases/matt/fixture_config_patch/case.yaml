@@ -1,0 +1,28 @@
+# Scenario: a full-pipeline case that ships a starter config.json fixture. The
+# runner mounts fixtures/ into the sealed box, then the agent (per the seeded
+# graph) must raise retries to 3 and write the updated config to answer.json.
+# Scope: full-pipeline (no component) — real Claude Code agent.
+# Expected under a real run: PASS if the agent honors the seeded policy and
+# emits valid JSON containing the bumped retries in order. The deterministic
+# checks below also serve as the probe target; this case exercises
+# fixture mounting + json_valid + ordered_substrings + regex_matches.
+id: fixture_config_patch
+seed_prompt: |
+  A config.json exists in your working directory. Read it, raise the "retries"
+  value to 3, keep every other field, and write the full updated JSON object to
+  answer.json. Output nothing else to that file.
+target_commit: "0000000000000000000000000000000000000000"
+seeded_insight:
+  direct_to_graph:
+    - "Policy: production services must use retries=3 for resilience."
+deterministic_checks:
+  - name: valid_json
+    ref: knowledge.evals.deterministic_checks.text:json_valid
+  - name: retries_bumped
+    ref: knowledge.evals.deterministic_checks.text:regex_matches
+    params:
+      pattern: '"retries"\s*:\s*3'
+  - name: fields_in_order
+    ref: knowledge.evals.deterministic_checks.text:ordered_substrings
+    params:
+      texts: ["service", "retries", "timeout_seconds"]

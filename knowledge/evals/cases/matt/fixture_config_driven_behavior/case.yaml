@@ -1,0 +1,33 @@
+# Scenario: A fixtures/config.json holds a feature flag {"feature_x_enabled": true}.
+#   The seeded graph says "read behavior flags from config.json." The agent is
+#   asked to write answer.py that reads feature_x_enabled from config.json.
+# Scope: full-pipeline (real Claude Code agent in a sealed box with the mounted
+#   fixtures/config.json). Checks the produced answer.py source text references
+#   both the flag name and the config file.
+# Expected under a real run: PASS. A competent agent given the config fixture and
+#   the explicit instruction will write code that opens "config.json" and reads
+#   the "feature_x_enabled" key, so both contains_text checks should be satisfied.
+
+id: fixture_config_driven_behavior
+seed_prompt: |
+  This box contains a config.json file at the repository root with feature
+  flags. The knowledge graph notes that behavior flags are read from
+  config.json. Write a Python program to answer.py that opens config.json,
+  reads the boolean "feature_x_enabled" flag, and prints whether feature X is
+  enabled. Write ONLY the program source to answer.py.
+target_commit: "0000000000000000000000000000000000000000"
+
+seeded_insight:
+  direct_to_graph:
+    - "Behavior flags are read from config.json at the repository root."
+    - "The feature_x_enabled flag in config.json toggles feature X on or off."
+
+deterministic_checks:
+  - name: mentions_flag
+    ref: knowledge.evals.deterministic_checks.builds:contains_text
+    params:
+      text: "feature_x_enabled"
+  - name: mentions_config_file
+    ref: knowledge.evals.deterministic_checks.builds:contains_text
+    params:
+      text: "config.json"

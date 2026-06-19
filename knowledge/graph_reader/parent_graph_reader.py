@@ -10,19 +10,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from pydantic import BaseModel
-
+from knowledge.graph_reader.graph_reader_def import ReadRequest
 from knowledge.knowledge_graph.parent_knowledge_graph import KnowledgeGraph
-
-
-class ReadRequest(BaseModel):
-    """A structured retrieval request against the graph.
-
-    One field for now; a Phase-2 retrieving reader can add filters, top-k,
-    section selectors, etc.
-    """
-
-    query: str = ""
 
 
 class GraphReader(ABC):

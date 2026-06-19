@@ -1,0 +1,26 @@
+# Scenario: a full-pipeline case shipping a pyproject.toml fixture that sets
+# [tool.ruff] line-length = 100. The runner mounts fixtures/ into the sealed
+# box. The seeded graph tells the agent to honor the repo's configured line
+# length, so the module the agent writes to answer.py must keep every line at or
+# under 100 characters.
+# Scope: full-pipeline (no component) — real Claude Code agent.
+# Expected under a real run: PASS — a competent agent reads pyproject.toml, sees
+# line-length = 100, and writes a module whose lines stay within that limit.
+# This exercises fixture mounting + the seeded line-length policy + the
+# text:max_line_length deterministic check (which also serves as the probe).
+id: fixture_honor_pyproject_line_length
+seed_prompt: |
+  A pyproject.toml exists in your working directory. Read it and find the
+  project's configured maximum line length under [tool.ruff]. Then write a small,
+  working Python module to answer.py: a function that takes a list of integers
+  and returns their sum, plus a short docstring. Every line you write must stay
+  within the configured line length. Output only the module to answer.py.
+target_commit: "0000000000000000000000000000000000000000"
+seeded_insight:
+  direct_to_graph:
+    - "Style: always honor the repo's configured line length from pyproject.toml when writing code."
+deterministic_checks:
+  - name: lines_within_limit
+    ref: knowledge.evals.deterministic_checks.text:max_line_length
+    params:
+      limit: 100

@@ -1,0 +1,25 @@
+# Component eval: knowledge_graph only.
+# Scenario: three ordered rules are written directly into the graph, then read
+#   back. The check asserts the read output preserves the original write order
+#   (RULE_A first, then RULE_B second, then RULE_C third).
+# Scope: knowledge_graph (write direct_to_graph -> read it back). No ingestion,
+#   no reader, no agent.
+# Expected under a real run: PASS — the KG round-trips the seeded lines and the
+#   ordered_substrings check confirms write/read order is preserved.
+id: kg_preserves_order
+component: knowledge_graph
+
+seeded_insight:
+  direct_to_graph:
+    - "RULE_A first"
+    - "RULE_B second"
+    - "RULE_C third"
+
+deterministic_checks:
+  - name: preserves_write_order
+    ref: "knowledge.evals.deterministic_checks.text:ordered_substrings"
+    params:
+      texts:
+        - "RULE_A first"
+        - "RULE_B second"
+        - "RULE_C third"

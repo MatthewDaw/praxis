@@ -1,0 +1,4 @@
+{
+  "good": "from utils import slugify\n\ntitle = \"Hello, World! My First Post\"\nprint(slugify(title))\n",
+  "bad": "import re\n\ndef slugify(text):\n    return re.sub(r\"[^a-z0-9]+\", \"-\", text.lower()).strip(\"-\")\n\ndef slugify_safe(text):\n    def slugify(t):\n        return t\n    return slugify(text)\n\ntitle = \"Hello, World! My First Post\"\nprint(slugify(title))\n"
+}

@@ -1,0 +1,38 @@
+# CONFLICT/compatible: two NON-conflicting style rules seeded into the graph and
+# injected into real Claude Code. The agent writes a small Python module to
+# answer.py and must satisfy BOTH compatible rules at once: no line longer than
+# 80 characters, AND every function carries a one-line docstring (so the output
+# contains a triple-quote token). The rules do not interact, so a correct module
+# trivially satisfies both.
+#
+# Scope: full-pipeline (real Claude Code agent; no component).
+# Offline expectation: FAIL. The offline FakeRunner does not run the real agent,
+# so answer.py is not produced and the deterministic checks have nothing real to
+# grade. Under a REAL run it should PASS, since both rules are easy and
+# compatible. Run for real with:
+#   uv run python -m knowledge.evals.run --real compatible_rules_both_apply
+id: compatible_rules_both_apply
+seed_prompt: |
+  Write a small Python module that defines two functions: add(a, b) returning
+  the sum of two numbers, and is_even(n) returning whether n is even. Keep the
+  module concise. Save the entire module to a file named answer.py in the
+  current directory, with no surrounding commentary, code fences, or
+  explanation.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  direct_to_graph:
+    - "Style rule: keep every line at or under 80 characters; wrap longer statements across multiple lines."
+    - "Style rule: every function must begin with a one-line docstring (a triple-quoted string) describing what it does."
+
+deterministic_checks:
+  - name: lines_within_80
+    ref: "knowledge.evals.deterministic_checks.text:max_line_length"
+    params:
+      limit: 80
+  - name: has_docstring
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: '"""'

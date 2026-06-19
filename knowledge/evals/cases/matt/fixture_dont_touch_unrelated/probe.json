@@ -1,0 +1,4 @@
+{
+  "good": "\"\"\"Shared constants. Do not edit.\"\"\"\n\nSENTINEL_DO_NOT_CHANGE = 42\n\n\ndef sentinel() -> int:\n    return SENTINEL_DO_NOT_CHANGE\n",
+  "bad": "\"\"\"Shared constants. Do not edit.\"\"\"\n\nSENTINEL_DO_NOT_CHANGE = 99\n\n\ndef sentinel() -> int:\n    return SENTINEL_DO_NOT_CHANGE\n"
+}

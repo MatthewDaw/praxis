@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from knowledge.graph_reader.parent_graph_reader import GraphReader, ReadRequest
+from knowledge.graph_reader.graph_reader_def import ReadRequest
+from knowledge.graph_reader.parent_graph_reader import GraphReader
 
 
 class WholeFileReader(GraphReader):

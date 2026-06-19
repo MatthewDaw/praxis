@@ -9,19 +9,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from pydantic import BaseModel
-
+from knowledge.injestion.injestion_def import Insight
 from knowledge.knowledge_graph.parent_knowledge_graph import KnowledgeGraph
-
-
-class Insight(BaseModel):
-    """A single distilled unit of knowledge.
-
-    One field for now; expand as the distillation gets richer (source,
-    confidence, tags, ...).
-    """
-
-    raw_text: str
 
 
 class Ingestor(ABC):

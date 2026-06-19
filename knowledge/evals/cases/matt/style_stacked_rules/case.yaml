@@ -1,0 +1,35 @@
+# STYLE under load: four simultaneous style rules seeded into the graph and
+# injected into real Claude Code. The agent writes a small Python module to
+# answer.txt and must obey all four rules at once: snake_case names, no line
+# longer than 80 chars, never use an em dash, and a trailing newline at EOF.
+#
+# Offline expectation: FAIL. The offline FakeRunner does not run the real agent,
+# so answer.txt is not produced as intended and the deterministic checks have no
+# real module to grade. Run for real with:
+#   uv run python -m knowledge.evals.run --real style_stacked_rules
+id: style_stacked_rules
+seed_prompt: |
+  Write a small Python module that defines a function to compute the nth
+  Fibonacci number iteratively, plus a tiny demo that prints the first ten
+  values. Save the entire module to a file named answer.txt in the current
+  directory, with no surrounding commentary, code fences, or explanation.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  direct_to_graph:
+    - "Style rule: all Python identifiers (functions, variables, modules) must use snake_case, never camelCase or PascalCase."
+    - "Style rule: keep every line at or under 80 characters; wrap longer statements across multiple lines."
+    - "Style rule: never use em dashes (the character) in code or comments; use a plain hyphen or rephrase instead."
+    - "Style rule: every file must end with a single trailing newline character."
+
+deterministic_checks:
+  - name: lines_within_80
+    ref: "knowledge.evals.deterministic_checks.text:max_line_length"
+    params:
+      limit: 80
+  - name: no_em_dash
+    ref: "knowledge.evals.deterministic_checks.text:forbids_substring"
+    params:
+      text: "—"

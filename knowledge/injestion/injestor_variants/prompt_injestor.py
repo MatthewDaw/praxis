@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from typing import Callable
 
-from knowledge.injestion.parent_injestor import Ingestor, Insight
+from knowledge.injestion.injestion_def import Insight
+from knowledge.injestion.parent_injestor import Ingestor
 from knowledge.knowledge_graph.parent_knowledge_graph import KnowledgeGraph
 
 # The one hardcoded instruction for the MVP. The current graph + raw input are

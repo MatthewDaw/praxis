@@ -66,6 +66,9 @@ class EvalCase(BaseModel):
     seeded_insight: SeededInsight = Field(default_factory=SeededInsight)
     deterministic_checks: list[DeterministicCheckRef] = Field(default_factory=list)
     rubric: Rubric | None = None
+    # Filesystem dir the case was loaded from; set by load_case. Used to find a
+    # fixtures/ subdir to mount into the sealed box. Not authored in YAML.
+    source_dir: str | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> "EvalCase":

@@ -1,0 +1,35 @@
+# Full-pipeline eval: NEGATIVE PHRASING — can injected knowledge make real
+# Claude Code AVOID a word? Models are notoriously weak at honoring negative
+# instructions ("never use X"). We seed a documentation style rule forbidding
+# the word "simply", inject it into real Claude Code via the system prompt, and
+# ask it to write a short install paragraph to answer.txt.
+#
+# Deterministic checks: output must be non-empty AND must not contain "simply"
+# (case-insensitive, so "Simply" at sentence start is caught too).
+#
+# Offline expectation: JUDGE — the deterministic checks require the REAL agent
+# to actually run and write answer.txt; nothing executes in the offline verify
+# pass, so there is no output to grade there. When run for real, this is the
+# kind of negative constraint models often violate, so it MAY FAIL.
+id: style_negative_phrasing
+seed_prompt: |
+  Write a 3-sentence paragraph for our project's README explaining how to
+  install the project from PyPI using pip. Save it to a file named answer.txt
+  in the current directory, with no title, headings, code fences, or any
+  surrounding commentary — just the three sentences.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  direct_to_graph:
+    - "Documentation style rule: never use the word \"simply\" in documentation. It is condescending and assumes the reader's effort; describe the concrete steps instead."
+
+deterministic_checks:
+  - name: output_nonempty
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+  - name: forbids_simply
+    ref: "knowledge.evals.deterministic_checks.text:forbids_substring"
+    params:
+      text: "simply"
+      case_insensitive: true

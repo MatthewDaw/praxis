@@ -1,0 +1,4 @@
+{
+  "good": "RULE_A first\nRULE_B second\nRULE_C third\n",
+  "bad": "RULE_C third\nRULE_B second\nRULE_A first\n"
+}

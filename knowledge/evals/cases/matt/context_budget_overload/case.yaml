@@ -1,0 +1,82 @@
+# BUDGET / no-bloat, no-leak under a LARGE graph. The seeded graph holds ~50
+# unrelated rules spanning many domains; exactly one buries the unique token
+# "ZEBRA_RULE". The task touches none of them: write a Python `add(a, b)` to
+# answer.py. We assert the artifact defines `add` AND that none of the
+# irrelevant graph content (specifically "ZEBRA_RULE") leaks into the output.
+#
+# Scope: full-pipeline (real Claude Code agent; no `component`).
+# Expected under a REAL run: PASS. A competent agent ignores the irrelevant
+# rules and emits a clean two-line function, so "def add" is present and
+# "ZEBRA_RULE" is absent. (Under the offline FakeRunner there is no real agent
+# output, so it would FAIL offline -- the probe below proves the checks are sound.)
+id: context_budget_overload
+seed_prompt: |
+  Write a Python function `add(a, b)` that returns the sum of its two arguments.
+  Write the complete function definition to a file named answer.py and nothing else.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor:
+    - "Indent Python code with 4 spaces; never use tabs."
+    - "Wrap all source lines at 88 characters to match the Black formatter."
+    - "Run the linter with `uv run ruff check` before opening a pull request."
+    - "Type-annotate every public function signature and its return type."
+    - "Prefer pathlib.Path over os.path for filesystem manipulation."
+    - "Log at INFO for lifecycle events and DEBUG for per-request detail."
+    - "Database migrations live in db/migrations and are applied in timestamp order."
+    - "Cache TTL for the product catalog is 300 seconds."
+    - "Retry failed HTTP calls with exponential backoff capped at 30 seconds."
+    - "The default API page size is 25 items; the maximum is 100."
+    - "Feature flags are read from the LaunchDarkly client at request start."
+    - "Secrets are loaded from AWS Secrets Manager, never from environment files."
+    - "Use UTC for every stored timestamp and convert to local time only at render."
+    - "Image uploads are limited to 10 MB and must be JPEG, PNG, or WebP."
+    - "The staging environment mirrors production but uses a separate database cluster."
+    - "Background jobs run on the Celery worker pool named `default`."
+    - "Email templates are stored as MJML and compiled at build time."
+    - "The mobile app minimum supported version is iOS 16 and Android 12."
+    - "ZEBRA_RULE: every audit-log entry must include the actor id and a request trace id."
+    - "GraphQL queries deeper than 8 levels are rejected by the depth limiter."
+    - "Session cookies are HttpOnly, Secure, and SameSite=Lax."
+    - "The CDN purges edge caches within 60 seconds of a deploy."
+    - "Unit tests must not make real network calls; stub the HTTP layer."
+    - "Use semantic versioning; breaking changes bump the major version."
+    - "Pull requests require one approving review before merge."
+  direct_to_graph:
+    - "The checkout service charges in the customer's local currency."
+    - "Refunds over $500 require manager approval in the admin console."
+    - "Inventory counts sync from the warehouse every 15 minutes."
+    - "Discount codes are case-insensitive and stored uppercased."
+    - "Shipping estimates exclude weekends and recognized holidays."
+    - "The recommendation model is retrained nightly at 02:00 UTC."
+    - "Search results are paginated with a cursor, not an offset."
+    - "User passwords must be at least 12 characters with one symbol."
+    - "Two-factor authentication is mandatory for admin accounts."
+    - "Webhook deliveries are signed with an HMAC-SHA256 signature header."
+    - "Rate limits are 600 requests per minute per API key."
+    - "Soft-deleted records are purged 90 days after deletion."
+    - "Analytics events are batched and flushed every 10 seconds."
+    - "The support SLA for priority-1 tickets is a 1-hour first response."
+    - "Invoices are generated as PDF/A for long-term archival."
+    - "The data warehouse is loaded via nightly CDC streams."
+    - "Customer PII is encrypted at rest with AES-256."
+    - "The status page is updated automatically from health-check probes."
+    - "Locale negotiation falls back to en-US when no match is found."
+    - "Map tiles are served from a self-hosted vector tile server."
+    - "The newsletter double-opt-in confirmation link expires in 48 hours."
+    - "Audit reports are exportable as CSV and signed XLSX."
+    - "The blue-green deploy keeps the previous version warm for 30 minutes."
+    - "Cron jobs are defined in infra/cron and reviewed quarterly."
+    - "Temporary files are written to /tmp and cleaned on process exit."
+
+deterministic_checks:
+  - name: defines_add
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "def add"
+  - name: no_zebra_leak
+    ref: "knowledge.evals.deterministic_checks.text:forbids_substring"
+    params:
+      text: "ZEBRA_RULE"

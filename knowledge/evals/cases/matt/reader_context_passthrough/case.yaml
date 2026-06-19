@@ -1,0 +1,23 @@
+# Scenario: A graph holds two infra facts (DB host, Cache host). A reader is
+#   asked "what is the DB host?". The Phase-2 desire is that the reader returns
+#   ONLY the relevant fact (db.internal), filtering out the irrelevant cache
+#   fact. The seed_prompt is a context hint for retrieval.
+# Scope: graph_reader component. Writes direct_to_graph then reads via the
+#   whole-file reader (which, in the MVP, returns EVERYTHING and ignores the
+#   context hint).
+# Expected under a real run: PASS today. The whole-file reader returns all
+#   insights, so "db.internal" is present and contains_text passes. Precision /
+#   context-filtering (returning only the relevant fact) is UNBUILT — this case
+#   documents the relevant fact is retrievable, not that it is isolated.
+id: reader_context_passthrough
+component: graph_reader
+seed_prompt: "what is the DB host?"
+seeded_insight:
+  direct_to_graph:
+    - "DB host is db.internal"
+    - "Cache host is cache.internal"
+deterministic_checks:
+  - name: contains_db_host
+    ref: knowledge.evals.deterministic_checks.builds:contains_text
+    params:
+      text: "db.internal"

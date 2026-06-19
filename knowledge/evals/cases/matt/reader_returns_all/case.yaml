@@ -1,0 +1,28 @@
+# Component eval: graph_reader only. Seeds the graph with three distinct facts,
+# then retrieves through the reader given a narrow context hint. The MVP
+# whole-file reader IGNORES the hint and returns the entire graph, so all three
+# facts come back even though the hint only asks about config.
+#
+# This documents current behavior: precision filtering (returning only the
+# relevant fact) is Phase-2 work. Expected to PASS offline — the deterministic
+# check requires all three facts to be present, which the whole-file reader
+# satisfies. When Phase-2 filtering lands, this case should start FAILING and be
+# revisited.
+id: reader_returns_all
+component: graph_reader
+seed_prompt: "Where is the config file?"  # narrow hint; MVP reader ignores it
+
+seeded_insight:
+  direct_to_graph:
+    - "The application config lives at config/settings.toml."
+    - "Database migrations are stored in db/migrations/ and run via 'make migrate'."
+    - "CI runs on GitHub Actions defined in .github/workflows/ci.yml."
+
+deterministic_checks:
+  - name: returns_all_three_facts
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "config/settings.toml"
+        - "db/migrations/"
+        - ".github/workflows/ci.yml"

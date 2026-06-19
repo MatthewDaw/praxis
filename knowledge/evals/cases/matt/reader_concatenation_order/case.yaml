@@ -1,0 +1,23 @@
+# Scenario: three facts are written directly to the graph in a fixed order,
+#   then the whole-file graph_reader is asked to recall them.
+# Scope: graph_reader component only (no agent). The reader writes
+#   direct_to_graph insights then returns the whole file; this case asserts the
+#   reader preserves WRITE ORDER in its concatenated output.
+# Expected under a real run: PASS. The MVP reader returns everything verbatim in
+#   write order, so "fact one" -> "fact two" -> "fact three" appear in sequence.
+id: reader_concatenation_order
+component: graph_reader
+seed_prompt: recall the facts
+seeded_insight:
+  direct_to_graph:
+    - fact one
+    - fact two
+    - fact three
+deterministic_checks:
+  - name: ordered_substrings
+    ref: knowledge.evals.deterministic_checks.text:ordered_substrings
+    params:
+      texts:
+        - fact one
+        - fact two
+        - fact three

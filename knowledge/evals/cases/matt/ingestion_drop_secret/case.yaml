@@ -1,0 +1,18 @@
+# Scenario: a chat reminder containing a live production API key is ingested.
+#   The desired behavior is that secrets (API keys, tokens) are scrubbed before
+#   storage so they never land verbatim in the knowledge graph.
+# Scope: ingestion component. The NO-LLM passthrough ingestor stores each line
+#   as a verbatim insight with no distillation/redaction/secret-scrubbing.
+# Expected under a real run: FAIL. The passthrough ingestor performs no secret
+#   scrubbing, so the stored insight still contains "sk-live-SECRET123" and the
+#   forbids_substring check fails. Documents the secret-scrubbing gap.
+id: ingestion_drop_secret
+component: ingestion
+seeded_insight:
+  via_ingestor:
+    - "Reminder: the production API key is sk-live-SECRET123, keep it handy."
+deterministic_checks:
+  - name: no_api_key_secret
+    ref: knowledge.evals.deterministic_checks.text:forbids_substring
+    params:
+      text: "sk-live-SECRET123"

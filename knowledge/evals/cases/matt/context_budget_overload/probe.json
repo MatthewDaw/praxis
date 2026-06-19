@@ -1,0 +1,4 @@
+{
+  "good": "def add(a, b):\n    return a + b\n",
+  "bad": "def add(a, b):\n    # per ZEBRA_RULE every audit-log entry needs actor id\n    return a + b\n"
+}

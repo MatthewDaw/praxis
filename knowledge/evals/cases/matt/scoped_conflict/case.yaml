@@ -1,0 +1,52 @@
+# SCOPE conflict case. The graph holds two contradictory indentation rules,
+# each scoped to a different service. The agent is told it is working in
+# service-b, so it must apply the service-b rule (4 spaces) and ignore the
+# service-a rule (tabs).
+#
+# Full-pipeline case (no component): seeded graph is injected into the real
+# Claude Code agent, which writes its answer to answer.txt.
+#
+# Offline expectation: FAIL. The offline FakeRunner does not run the real
+# agent, so answer.txt is not produced and the deterministic checks cannot
+# find the expected content. The rubric (scope correctness) requires judgment
+# and only runs through Claude Code, not in the offline verify pass.
+id: scoped_conflict
+seed_prompt: |
+  You are working in service-b. Write a short Python function (any small,
+  self-contained function is fine) and save it to a file named answer.txt.
+  Follow the project's indentation convention for the service you are
+  working in. Write only the function code to answer.txt.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "In service-a use tabs."
+    - "In service-b use 4 spaces."
+
+deterministic_checks:
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+  - name: defines_function
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "def "
+  - name: no_tab_indentation
+    ref: "knowledge.evals.deterministic_checks.text:forbids_substring"
+    params:
+      text: "\t"
+
+rubric:
+  id: scoped_conflict_v1
+  items:
+    - id: applies_service_b_rule
+      criterion: "The function body is indented with 4 spaces, matching the service-b rule."
+      weight: 2.0
+    - id: ignores_service_a_rule
+      criterion: "The code does NOT use tab indentation (the service-a rule must not be applied)."
+      weight: 2.0
+    - id: valid_function
+      criterion: "answer.txt contains a short, syntactically valid Python function."
+      weight: 1.0

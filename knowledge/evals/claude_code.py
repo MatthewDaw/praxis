@@ -91,6 +91,28 @@ def _extract_json(text: str) -> dict:
         raise
 
 
+def mount_fixtures(case, workdir: Path) -> int:
+    """Copy ``<case.source_dir>/fixtures/**`` into ``workdir`` (structure preserved).
+
+    Returns the number of files copied. A no-op when the case has no
+    ``source_dir`` or no ``fixtures/`` subdir.
+    """
+    if not getattr(case, "source_dir", None):
+        return 0
+    fixtures = Path(case.source_dir) / "fixtures"
+    if not fixtures.is_dir():
+        return 0
+    copied = 0
+    for src in sorted(fixtures.rglob("*")):
+        if not src.is_file():
+            continue
+        dest = workdir / src.relative_to(fixtures)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        copied += 1
+    return copied
+
+
 class ClaudeCodeRunner:
     """Run a case's seed prompt through the real headless Claude Code, boxed.
 
@@ -116,8 +138,9 @@ class ClaudeCodeRunner:
 
         with tempfile.TemporaryDirectory(prefix="praxis-box-") as box:
             workdir = Path(box)
-            # Dump the start state into the box (empty for the toy case; future
-            # code cases check out start_commit here).
+            # Mount any fixtures/ the case ships as the box's start state
+            # (empty for the toy case; future code cases check out here too).
+            mount_fixtures(case, workdir)
             args = ["-p", case.seed_prompt, "--output-format", "json"]
             if knowledge.strip():
                 args += ["--append-system-prompt", knowledge]

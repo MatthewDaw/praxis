@@ -1,0 +1,19 @@
+# Scenario: A spec note containing non-ASCII text (accented Latin, CJK, and an
+#   emoji) is written directly into the knowledge graph, then read back.
+# Scope: knowledge_graph component (write direct_to_graph -> read it back). No
+#   agent / LLM involved.
+# Expected under a real run: PASS. The graph stores insight text verbatim, so
+#   unicode (café, 日本語, 🚀) survives the storage roundtrip unchanged.
+id: kg_unicode_roundtrip
+component: knowledge_graph
+seeded_insight:
+  direct_to_graph:
+    - "Spec note: café — 日本語 — 🚀 rocket"
+deterministic_checks:
+  - name: requires_all_substrings
+    ref: knowledge.evals.deterministic_checks.text:requires_all_substrings
+    params:
+      texts:
+        - "café"
+        - "日本語"
+        - "🚀"

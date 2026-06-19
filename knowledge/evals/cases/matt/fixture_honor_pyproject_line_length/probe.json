@@ -1,0 +1,4 @@
+{
+  "good": "\"\"\"Summation helpers honoring the repo's configured 100-char line length.\"\"\"\n\nfrom __future__ import annotations\n\n\ndef sum_ints(values: list[int]) -> int:\n    \"\"\"Return the sum of the given integers (empty list yields zero).\"\"\"\n    total = 0\n    for value in values:\n        total += value\n    return total\n",
+  "bad": "\"\"\"This module deliberately exceeds the configured 100 character line length to fail the max_line_length check.\"\"\"\n\n\ndef sum_ints(values: list[int]) -> int:\n    return sum(values)  # this trailing comment pushes the total length of this single line far beyond one hundred characters\n"
+}

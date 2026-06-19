@@ -1,0 +1,4 @@
+{
+  "good": "\"\"\"Tiny math helpers. This module is intentionally indented with TABS.\"\"\"\n\n\ndef add(a, b):\n\tresult = a + b\n\treturn result\n\n\ndef sub(a, b):\n\tresult = a - b\n\treturn result\n",
+  "bad": "\"\"\"Tiny math helpers.\"\"\"\n\n\ndef add(a, b):\n    result = a + b\n    return result\n\n\ndef sub(a, b):\n    result = a - b\n    return result\n"
+}

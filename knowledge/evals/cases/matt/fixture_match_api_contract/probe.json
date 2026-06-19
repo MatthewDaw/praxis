@@ -1,0 +1,4 @@
+{
+  "good": "from base import Transport\n\n\nclass HttpTransport(Transport):\n    def fetch(self, url: str, timeout: float) -> bytes:\n        import urllib.request\n\n        with urllib.request.urlopen(url, timeout=timeout) as resp:\n            return resp.read()\n",
+  "bad": "from base import Transport\n\n\nclass HttpTransport(Transport):\n    def fetch(self, url, timeout):\n        import urllib.request\n\n        with urllib.request.urlopen(url, timeout=timeout) as resp:\n            return resp.read()\n"
+}

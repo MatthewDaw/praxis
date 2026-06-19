@@ -1,0 +1,58 @@
+# Signal-in-noise eval: can injected knowledge steer real Claude Code when the
+# operative rule is buried in a pile of plausible but irrelevant project notes?
+#
+# The seeded graph is ~25 lines of mundane project facts (the noise) with exactly
+# ONE operative style rule mixed in: never use em dashes. We then ask the agent to
+# write a 4-sentence plain-text project overview to answer.txt. A deterministic
+# check forbids the em-dash character; output_nonempty guards against an empty file.
+#
+# Expected offline: this is a full-pipeline case (no component), so it runs the
+# REAL Claude Code agent. The offline verify pass does NOT execute the agent, so
+# there is no output to grade and the deterministic checks cannot meaningfully run
+# offline. Treat this as JUDGE / not-run-offline. When run for real, it should PASS
+# if the agent honors the buried rule.
+id: buried_signal_no_em_dash
+seed_prompt: |
+  Write a plain-text overview of the Praxis project for new engineers. It must be
+  exactly four sentences, in plain prose with no headings, bullet points, or markdown.
+  Save it to a file named answer.txt in the current directory, with no surrounding
+  commentary.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  direct_to_graph:
+    - "Praxis is a uv-managed Python monorepo; the knowledge harness lives under knowledge/."
+    - "Tests run with `uv run pytest -q` from the repo root."
+    - "The CDK infrastructure was recently moved from infra/ to the repo root."
+    - "Captured PTY sessions are routed to DynamoDB rather than the old Command-HQ service."
+    - "The claude+ CLI exposes host, ls, and stop subcommands over the PTY daemon."
+    - "The Agents tab was removed from the claude+ Chrome wrapper."
+    - "Eval cases live under knowledge/evals/cases/<author>/<case-id>/case.yaml."
+    - "The case loader (load_cases) discovers case.yaml files recursively."
+    - "Deterministic checks are referenced as module.path:function strings."
+    - "Full-pipeline eval cases omit the component field and run the real Claude Code agent."
+    - "Seeded knowledge is injected into the agent through the system prompt."
+    - "Full-pipeline agents run inside a sealed temporary working directory."
+    - "The default branch for pull requests is main."
+    - "Commit messages follow the conventional-commit prefix style (feat, refactor, docs)."
+    - "Project planning documents live under docs/plans/."
+    - "WRITING STYLE RULE: never use em dashes (the — character) in any prose you produce; rewrite sentences with commas, periods, or parentheses instead."
+    - "The PTY daemon was ported over from the upstream claude+ project."
+    - "Diagnostics and config were copied from claude+ alongside the title and pty modules."
+    - "Pydantic models define the EvalCase schema in knowledge/evals/eval_def.py."
+    - "The ingestion path supports a no-LLM passthrough where each line becomes one insight verbatim."
+    - "Graph reads in the MVP use a whole-file reader that returns the entire graph."
+    - "Rubric grading runs through Claude Code and is skipped during the offline verify pass."
+    - "The repo targets Windows and POSIX shells via separate tooling notes."
+    - "Insights can be seeded via the ingestor or written directly to the graph."
+    - "The harness prefers a named artifact file as eval output when one is written."
+
+deterministic_checks:
+  - name: no_em_dash
+    ref: "knowledge.evals.deterministic_checks.text:forbids_substring"
+    params:
+      text: "—"
+  - name: nonempty
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"

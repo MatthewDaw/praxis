@@ -1,0 +1,4 @@
+{
+  "good": "DB host is db.internal\nCache host is cache.internal",
+  "bad": "Cache host is cache.internal"
+}

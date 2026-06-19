@@ -1,0 +1,20 @@
+# Component eval: graph_reader only. The graph is seeded with NOTHING (no
+# direct_to_graph, no via_ingestor). The whole-file reader is then asked to
+# retrieve given an arbitrary context hint. With an empty graph there is no
+# content to return, so the reader's output must be empty.
+#
+# Scope: graph_reader component (no agent). Documents that an empty knowledge
+# graph yields empty retrieval — the reader does not hallucinate or emit
+# boilerplate. Expected to PASS offline: with no seeded insight the whole-file
+# reader has nothing to concatenate, so the output is empty/whitespace and the
+# is_empty check holds.
+id: reader_empty_returns_empty
+component: graph_reader
+seed_prompt: "anything"  # arbitrary hint; the empty graph has nothing to return
+
+seeded_insight: {}
+
+deterministic_checks:
+  - name: empty_graph_yields_empty_output
+    ref: "knowledge.evals.deterministic_checks.text:is_empty"
+    params: {}

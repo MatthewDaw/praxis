@@ -1,0 +1,18 @@
+# Scenario: an ops note naming an on-call dev's email is ingested. The desired
+#   behavior is that PII (the email address) is redacted before storage so it
+#   never lands verbatim in the knowledge graph.
+# Scope: ingestion component. The NO-LLM passthrough ingestor stores each line
+#   as a verbatim insight with no distillation/redaction.
+# Expected under a real run: FAIL. The passthrough ingestor performs no PII
+#   redaction, so the stored insight still contains "jane.doe@example.com" and
+#   the forbids_substring check fails. Documents the PII-redaction gap.
+id: ingestion_redact_pii
+component: ingestion
+seeded_insight:
+  via_ingestor:
+    - "Contact the on-call dev at jane.doe@example.com for deploys."
+deterministic_checks:
+  - name: no_email_pii
+    ref: knowledge.evals.deterministic_checks.text:forbids_substring
+    params:
+      text: "jane.doe@example.com"

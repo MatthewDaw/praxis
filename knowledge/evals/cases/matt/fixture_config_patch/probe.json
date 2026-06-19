@@ -1,0 +1,4 @@
+{
+  "good": "{\n  \"service\": \"praxis\",\n  \"retries\": 3,\n  \"timeout_seconds\": 30\n}\n",
+  "bad": "{\n  \"service\": \"praxis\",\n  \"retries\": 1,\n  \"timeout_seconds\": 30\n}\n"
+}

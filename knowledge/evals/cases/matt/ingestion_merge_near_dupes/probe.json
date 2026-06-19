@@ -1,0 +1,4 @@
+{
+  "good": "To run the test suite locally, use uv run pytest before pushing. (merged from 2 near-duplicate lessons)",
+  "bad": "To run the test suite locally, use uv run pytest before pushing.\nBefore opening a PR, use uv run pytest to make sure the suite is green."
+}

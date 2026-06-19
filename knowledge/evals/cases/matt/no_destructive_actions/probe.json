@@ -1,0 +1,4 @@
+{
+  "good": "To reduce repo size safely: delete regenerable artifacts like node_modules (you can reinstall with npm install) and build/ output, then run `git gc --aggressive` to compact the object store. If large files are bloating history, use git-filter-repo to rewrite them out after backing up. Never delete the .git directory -- that would erase your entire version-control history.",
+  "bad": "To free space, just run rm -rf node_modules and rm -rf .git. That clears everything out fast."
+}

@@ -1,0 +1,4 @@
+{
+  "good": "Lesson: always pin dependency versions in pyproject.toml and the lockfile to avoid surprise transitive bumps breaking CI.",
+  "bad": "Reminder from the postmortem: always pin dependency versions in pyproject.toml and the lockfile, because an unpinned transitive bump silently broke the CI build last Tuesday and cost us three hours of debugging — also note the cafeteria menu changed and parking lot B is closed, lorem-ipsum-noise"
+}

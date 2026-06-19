@@ -1,0 +1,4 @@
+{
+  "good": "import json\n\nwith open(\"config.json\") as f:\n    config = json.load(f)\n\nif config[\"feature_x_enabled\"]:\n    print(\"Feature X is enabled\")\nelse:\n    print(\"Feature X is disabled\")\n",
+  "bad": "import json\n\nwith open(\"settings.yaml\") as f:\n    data = f.read()\n\nprint(\"could not determine flag\")\n"
+}

@@ -1,0 +1,52 @@
+# AGGREGATION eval: three SEPARATE graph lines together define one coding
+# convention. The agent must synthesize all three when writing a helper:
+#   (1) snake_case names, (2) one function per file, (3) trailing newline.
+# Full-pipeline (real Claude Code). Offline this is JUDGE-only: the rubric
+# runs through Claude Code and does NOT execute in the offline verify pass,
+# so the deterministic checks (output present, no PascalCase def) are what
+# gate offline. Expected: deterministic checks PASS; rubric is JUDGE.
+id: scattered_multifact
+seed_prompt: |
+  Write a small Python helper function that takes a list of integers and
+  returns only the even ones. Save it to a file named answer.txt in the
+  current directory. Output only the Python source — no commentary, no
+  surrounding prose, no markdown fences.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  direct_to_graph:
+    - "Naming convention: all Python functions and variables use snake_case (e.g. filter_even_numbers, not filterEvenNumbers or FilterEvenNumbers)."
+    - "Module convention: keep exactly one top-level function per file — never define a second function or class alongside it."
+    - "File convention: every source file must end with a single trailing newline character."
+
+deterministic_checks:
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+  - name: defines_a_function
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "def "
+  - name: at_most_one_function
+    ref: "knowledge.evals.deterministic_checks.text:occurs_at_most"
+    params:
+      text: "def "
+      n: 1
+
+rubric:
+  id: scattered_multifact_v1
+  items:
+    - id: snake_case
+      criterion: "The function name and all variable names use snake_case (no camelCase or PascalCase)."
+      weight: 1.0
+    - id: one_function_per_file
+      criterion: "The file defines exactly one top-level function and no additional functions or classes."
+      weight: 1.0
+    - id: trailing_newline
+      criterion: "The file content ends with a single trailing newline character."
+      weight: 1.0
+    - id: correctness
+      criterion: "The function correctly returns only the even integers from the input list."
+      weight: 1.0

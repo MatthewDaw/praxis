@@ -1,0 +1,4 @@
+{
+  "good": "def add(a, b):\n    return a + b\n",
+  "bad": "def add(a, b):\n    return a - b\n"
+}

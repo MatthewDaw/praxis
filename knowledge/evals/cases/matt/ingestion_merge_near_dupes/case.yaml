@@ -1,0 +1,21 @@
+# Component eval: ingestion only (no agent). Feeds the SAME lesson TWICE,
+# phrased differently (trivial wording variation) but sharing the identical
+# load-bearing phrase "use uv run pytest". Scope: ingestion (NO-LLM passthrough
+# appends each line verbatim as its own insight). EXPECTED-FAIL baseline: today
+# both near-duplicate lines are appended, so "use uv run pytest" appears twice
+# and occurs_at_most(n=1) FAILS. Desired behavior is to merge/dedup the
+# near-duplicate lessons into one, after which this case PASSES.
+id: ingestion_merge_near_dupes
+component: ingestion
+
+seeded_insight:
+  via_ingestor:
+    - "To run the test suite locally, use uv run pytest before pushing."
+    - "Before opening a PR, use uv run pytest to make sure the suite is green."
+
+deterministic_checks:
+  - name: near_dupes_merged
+    ref: "knowledge.evals.deterministic_checks.text:occurs_at_most"
+    params:
+      text: "use uv run pytest"
+      n: 1

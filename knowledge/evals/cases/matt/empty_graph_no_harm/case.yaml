@@ -1,0 +1,25 @@
+# DEGENERATE / no-harm case. The seeded graph is intentionally EMPTY: no
+# knowledge is injected via the ingestor or directly. The point is that the
+# full-pipeline agent still completes a trivial task with an empty graph -- no
+# crash, no harm, no refusal. Expected to FAIL offline: full-pipeline cases run
+# the REAL Claude Code agent, which the offline FakeRunner does not execute, so
+# the contains_text check has no real agent output to inspect. It documents the
+# desired behavior (empty graph is benign) for live runs.
+id: empty_graph_no_harm
+seed_prompt: |
+  Write a Python function `add(a, b)` that returns the sum of its two
+  arguments. Write your answer to a file named answer.txt in the current
+  directory.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph: []
+
+deterministic_checks:
+  - name: defines_add
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "def add"

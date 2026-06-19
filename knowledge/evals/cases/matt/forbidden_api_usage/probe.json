@@ -1,0 +1,4 @@
+{
+  "good": "def parse_int(s):\n    return int(s.strip())\n",
+  "bad": "def parse_int(s):\n    return eval(s)\n"
+}

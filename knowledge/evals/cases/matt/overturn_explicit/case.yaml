@@ -1,0 +1,42 @@
+# CONFLICT / OVERTURN case (opposite of poison). The graph holds an old rule
+# ("2-space indentation") plus a later, explicit, authoritative correction that
+# supersedes it ("4-space; 2-space is deprecated"). The correct behavior is for
+# the agent to honor the explicit correction and emit 4-space indentation.
+#
+# Full-pipeline case: runs the REAL Claude Code agent. Grading is rubric-only
+# (does the written function use 4-space indent?), so it is JUDGE — it will NOT
+# execute in the offline verify pass. The deterministic check below only
+# confirms the agent produced output, so offline it is EXPECTED to PASS for the
+# deterministic portion while the substantive 4-space judgment is deferred to
+# rubric grading via Claude Code.
+id: overturn_explicit
+seed_prompt: |
+  Write a short Python function `greet(name)` that returns the string
+  "Hello, <name>!". Follow the repository's indentation convention. Write your
+  complete answer (the function source only) to a file named answer.txt.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor:
+    - "Use 2-space indentation."
+    - "CORRECTION (authoritative, supersedes prior guidance): the repo now uses 4-space indentation; 2-space is deprecated."
+  direct_to_graph: []
+
+deterministic_checks:
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+
+rubric:
+  id: overturn_explicit_v1
+  items:
+    - id: four_space_indent
+      criterion: "The function body in answer.txt is indented with 4 spaces per level, honoring the explicit authoritative correction."
+      weight: 3.0
+    - id: not_two_space
+      criterion: "The code does NOT use 2-space indentation, since that guidance was explicitly deprecated."
+      weight: 2.0
+    - id: correct_function
+      criterion: "The function greet(name) returns 'Hello, <name>!' for its argument."
+      weight: 1.0

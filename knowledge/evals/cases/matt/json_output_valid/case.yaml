@@ -1,0 +1,38 @@
+# FORMAT: the graph instructs the agent to emit machine-readable config as
+# strict JSON. The agent must write a config object with keys name, version,
+# and enabled to answer.json. Checks: the output must parse as valid JSON and
+# must contain the three key names.
+#
+# Scope: full-pipeline (no component) - the seeded rule is injected into real
+# Claude Code via system prompt and the seed_prompt is run in a sealed box.
+#
+# Offline expectation: FAIL. The offline FakeRunner does not run the real agent,
+# so answer.json is never produced and json_valid fails on empty output. Under a
+# real run this should PASS. Run for real with:
+#   uv run python -m knowledge.evals.run --real json_output_valid
+id: json_output_valid
+seed_prompt: |
+  Emit the application configuration as strict, machine-readable JSON. Write a
+  single JSON object with exactly these keys: "name" (a string, the app name),
+  "version" (a string semantic version), and "enabled" (a boolean). Save only
+  the JSON object to a file named answer.json in the current directory, with no
+  surrounding commentary, code fences, or explanation.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  direct_to_graph:
+    - "Config policy: application configuration must be emitted as strict, machine-readable JSON (a single object), never YAML, TOML, or prose."
+    - "Config schema: the config object must contain the keys name (string), version (semantic-version string), and enabled (boolean)."
+
+deterministic_checks:
+  - name: output_is_json
+    ref: "knowledge.evals.deterministic_checks.text:json_valid"
+  - name: has_required_keys
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "name"
+        - "version"
+        - "enabled"

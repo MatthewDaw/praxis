@@ -197,7 +197,8 @@ def run_case(
 def load_case(case_dir: Path) -> EvalCase:
     """Load an ``EvalCase`` from ``<case_dir>/case.yaml``."""
     data = yaml.safe_load((case_dir / "case.yaml").read_text(encoding="utf-8"))
-    return EvalCase.model_validate(data)
+    case = EvalCase.model_validate(data)
+    return case.model_copy(update={"source_dir": str(case_dir)})
 
 
 def load_cases(cases_dir: Path = CASES_DIR) -> list[EvalCase]:
@@ -209,6 +210,13 @@ def load_cases(cases_dir: Path = CASES_DIR) -> list[EvalCase]:
     if not cases_dir.exists():
         return []
     return [load_case(f.parent) for f in sorted(cases_dir.rglob("case.yaml"))]
+
+
+def iter_case_dirs(cases_dir: Path = CASES_DIR) -> list[Path]:
+    """Every directory containing a ``case.yaml`` (recursive, sorted)."""
+    if not cases_dir.exists():
+        return []
+    return [f.parent for f in sorted(cases_dir.rglob("case.yaml"))]
 
 
 def write_baseline(results: list[CaseResult], path: Path = BASELINE_PATH) -> None:

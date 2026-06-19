@@ -1,0 +1,25 @@
+# Scenario: a FIXTURE full-pipeline case. fixtures/calc.py ships a buggy
+# `add` (returns a - b) and fixtures/test_calc.py asserts add(2, 3) == 5.
+# The runner mounts fixtures/ into the sealed box; the agent must fix calc.py
+# so the test passes and write the corrected source to answer.py.
+# Scope: full-pipeline (no component) — real Claude Code agent.
+# Expected under a real run: PASS — fixing a one-line sign bug is well within
+# agent capability. NOTE: a full grader would actually RUN test_calc.py against
+# the answer; that runner is NOT built yet. The regex check below is the proxy:
+# it asserts the corrected body `return a + b` is present. The probe proves the
+# regex would catch a still-buggy submission.
+id: fixture_failing_test_to_green
+seed_prompt: |
+  Your working directory contains calc.py and test_calc.py. Running the test
+  fails because calc.py has a bug in `add`. Fix calc.py so that the test passes
+  (add must return the sum of its two arguments), then write the full corrected
+  contents of calc.py to a file named answer.py. Write nothing else to that file.
+target_commit: "0000000000000000000000000000000000000000"
+seeded_insight:
+  direct_to_graph:
+    - "When a test fails, fix the implementation, not the test."
+deterministic_checks:
+  - name: add_returns_sum
+    ref: knowledge.evals.deterministic_checks.text:regex_matches
+    params:
+      pattern: 'return a \+ b'

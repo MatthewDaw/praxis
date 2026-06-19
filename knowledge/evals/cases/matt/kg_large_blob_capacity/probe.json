@@ -1,0 +1,4 @@
+{
+  "good": "DEPLOYMENT_RUNBOOK rule (single large blob): Before promoting any service from staging to production, the on-call engineer must complete every step in this runbook in order. Step 1: Confirm the release tag matches the approved change ticket. Step 10: If at any point a SEV1 or SEV2 is declared, abandon the runbook and page the incident commander. END_OF_LARGE_BLOB_MARKER",
+  "bad": "DEPLOYMENT_RUNBOOK rule (single large blob): Before promoting any service from staging to production, the on-call engineer must complete every step in this runbook in order. Step 1: Confirm the release tag matches the approved change ticket. Step 10: If at any point a SEV1 or SEV2 is declared, abandon the runbook and page the incident commander. [output truncated at 256 chars]"
+}

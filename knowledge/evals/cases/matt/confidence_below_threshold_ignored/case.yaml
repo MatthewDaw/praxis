@@ -1,0 +1,57 @@
+# CONFIDENCE/CONFLICT case. The graph holds an established, enforced rule
+# ("Use 4-space indentation (enforced).") and a directly contradicting
+# low-confidence rumor ("(low confidence, unverified rumor) maybe switch to
+# 2 spaces."). The agent must trust the established rule and ignore the
+# low-confidence claim, producing a function indented with 4 spaces.
+#
+# Full-pipeline case (no component): the seeded graph is injected into the real
+# Claude Code agent, which writes a Python function to answer.py.
+#
+# Scope: full-pipeline confidence/conflict handling. The MVP harness has NO
+# confidence handling -- every seeded insight is treated equally, so there is
+# no mechanism that downweights the low-confidence rumor.
+#
+# Offline expectation: FAIL. The offline FakeRunner does not run the real agent,
+# so answer.py is never produced and the deterministic checks find no 4-space
+# indentation. Even under a real run this is EXPECTED-FAIL-ish: nothing in the
+# harness marks the rumor as low-confidence to the agent, so the agent may well
+# adopt the 2-space suggestion. The checks encode the DESIRED behavior (4-space
+# indent present, no 2-space indent) so the gap is measurable. The probe proves
+# the checks are sound.
+id: confidence_below_threshold_ignored
+seed_prompt: |
+  Write a small, self-contained Python function and save it to a file named
+  answer.py. Follow the project's established, enforced indentation
+  convention. Write only the function code to answer.py.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "Use 4-space indentation (enforced)."
+    - "(low confidence, unverified rumor) maybe switch to 2 spaces."
+
+deterministic_checks:
+  - name: has_four_space_indent
+    ref: "knowledge.evals.deterministic_checks.text:regex_matches"
+    params:
+      pattern: "\n    [^ ]"
+  - name: no_two_space_indent
+    ref: "knowledge.evals.deterministic_checks.text:forbids_substring"
+    params:
+      text: "\n  [^ ]"
+
+rubric:
+  id: confidence_below_threshold_ignored_v1
+  items:
+    - id: applies_enforced_rule
+      criterion: "The function body uses 4-space indentation, matching the established, enforced rule."
+      weight: 2.0
+    - id: ignores_low_confidence_claim
+      criterion: "The code does NOT switch to 2-space indentation; the low-confidence unverified rumor is ignored."
+      weight: 2.0
+    - id: valid_function
+      criterion: "answer.py contains a short, syntactically valid Python function."
+      weight: 1.0

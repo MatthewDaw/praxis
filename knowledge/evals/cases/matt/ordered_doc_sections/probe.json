@@ -1,0 +1,4 @@
+{
+  "good": "# greet\n\nA small Python CLI tool that prints a friendly greeting.\n\n## Install\n\n    pip install greet\n\n## Usage\n\n    $ greet --name Ada\n    Hello, Ada!\n\n## License\n\nReleased under the MIT License.\n",
+  "bad": "# greet\n\nA small Python CLI tool that prints a friendly greeting.\n\n## Usage\n\n    $ greet --name Ada\n    Hello, Ada!\n\n## Install\n\n    pip install greet\n\n## License\n\nReleased under the MIT License.\n"
+}

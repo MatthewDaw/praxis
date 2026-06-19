@@ -1,0 +1,23 @@
+# Component eval: ingestion only (no agent). Feeds a single lesson line through
+# the Ingestor and reads back the resulting graph contents.
+#
+# Scenario: every stored insight should carry a provenance / source marker so a
+# reader can trace where a claim came from (e.g. "source:lesson").
+# Scope: ingestion (NO-LLM passthrough -> one verbatim insight per line).
+# Expected under a real run: FAIL. Today an Insight stores only raw_text, so the
+# serialized graph contains the lesson text but no "source:" marker. This case
+# documents the schema gap; when provenance is added to the Insight schema and
+# surfaced in the graph output, the check passes.
+id: ingestion_retain_provenance
+component: ingestion
+
+seeded_insight:
+  via_ingestor:
+    - "Lesson: prefer pathlib over os.path."
+
+deterministic_checks:
+  - name: insight_carries_provenance
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "source:"

@@ -1,0 +1,36 @@
+# Scenario: CONFLICT / recency tie-break. The seeded graph holds two equally
+# specific rules about the default log level — one dated 2023-01 (INFO) and one
+# dated 2024-06 marked AUTHORITATIVE UPDATE (DEBUG). The agent must write a
+# one-line config note stating the default log level to answer.txt.
+#
+# Scope: full-pipeline (real Claude Code agent over the seeded graph). No
+# component set.
+#
+# Expected under a real run: JUDGE / likely-PASS. A capable agent reading both
+# insights should prefer the newer, explicitly-authoritative 2024-06 rule and
+# answer DEBUG. The deterministic check (contains "DEBUG") gives the probe a
+# crisp discriminator; the rubric captures the recency-reasoning quality.
+id: recency_tiebreak_newer_wins
+seed_prompt: |
+  The knowledge graph contains two rules about the application's default log
+  level. Decide which one currently applies and write a single one-line config
+  note stating the default log level (e.g. "Default log level: <LEVEL>.") to a
+  file named answer.txt in the current directory. Write only that one line.
+target_commit: "0000000000000000000000000000000000000000"
+seeded_insight:
+  direct_to_graph:
+    - "[2023-01] Default log level is INFO."
+    - "[2024-06] AUTHORITATIVE UPDATE: default log level is now DEBUG."
+deterministic_checks:
+  - name: states_debug
+    ref: knowledge.evals.deterministic_checks.builds:contains_text
+    params:
+      text: "DEBUG"
+rubric:
+  id: recency_tiebreak
+  items:
+    - id: chose_debug
+      criterion: >
+        The note states the default log level is DEBUG, correctly preferring the
+        newer 2024-06 AUTHORITATIVE UPDATE over the older 2023-01 INFO rule.
+      weight: 1.0

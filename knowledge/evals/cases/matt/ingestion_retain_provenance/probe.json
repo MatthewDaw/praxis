@@ -1,0 +1,4 @@
+{
+  "good": "insight: Lesson: prefer pathlib over os.path. | source:lesson",
+  "bad": "insight: Lesson: prefer pathlib over os.path."
+}

@@ -1,0 +1,5 @@
+{
+  "service": "praxis",
+  "retries": 1,
+  "timeout_seconds": 30
+}

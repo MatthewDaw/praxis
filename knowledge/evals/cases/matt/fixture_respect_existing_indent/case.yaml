@@ -1,0 +1,30 @@
+# Scenario: A fixture mod.py defines add() indented with TABS. The graph is
+#   empty (no seeded knowledge). The agent must add a second function and write
+#   the FULL file to answer.py, matching the file's existing style -> tabs.
+# Scope: full-pipeline (real Claude Code agent in a sealed box; fixtures mounted).
+# Expected under a real run: likely PASS (or JUDGE). Style inference from the
+#   visible file alone is achievable, but tools/formatters that normalize to
+#   4-space indentation could flip it to FAIL. The checks encode the DESIRED
+#   behavior: preserve tab indentation. No knowledge graph is needed.
+
+id: fixture_respect_existing_indent
+seed_prompt: |
+  The file mod.py exists in your working directory. It defines a function
+  indented with tabs. Add a second function `sub(a, b)` that returns a - b,
+  matching the file's EXISTING indentation and style exactly (tabs, not
+  spaces). Then write the COMPLETE contents of mod.py (both functions) to a
+  new file named answer.py. Do not reformat or convert the indentation.
+target_commit: "0000000000000000000000000000000000000000"
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph: []
+
+deterministic_checks:
+  - name: tab_indentation_present
+    ref: knowledge.evals.deterministic_checks.text:regex_matches
+    params:
+      pattern: "\n\t"
+  - name: output_nonempty
+    ref: knowledge.evals.deterministic_checks.builds:output_nonempty
+    params: {}

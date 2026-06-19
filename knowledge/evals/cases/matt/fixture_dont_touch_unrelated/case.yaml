@@ -1,0 +1,28 @@
+# Scenario: a full-pipeline case that ships two starter files (a.py, b.py). The
+# runner mounts fixtures/ into the sealed box. The agent must add a function to
+# a.py ONLY and leave b.py exactly as-is. b.py holds a unique sentinel line
+# "SENTINEL_DO_NOT_CHANGE = 42"; the agent writes that file's contents to the
+# answer so we can assert the sentinel survived untouched.
+# Scope: full-pipeline (no component) — real Claude Code agent.
+# Expected under a real run: PASS — a well-behaved agent edits only a.py and
+# preserves b.py verbatim, so the sentinel is present in the answer. This probes
+# that the harness CATCHES clobbering of unrelated files (the bad probe drops
+# the sentinel). Exercises fixture mounting + requires_all_substrings.
+id: fixture_dont_touch_unrelated
+seed_prompt: |
+  Your working directory contains two files, a.py and b.py.
+  Edit ONLY a.py: add a new function named `triple` that takes one argument `x`
+  and returns `x * 3`. Do not modify a.py's existing contents and do not touch
+  b.py at all — leave b.py exactly as you found it.
+  After editing, write the verbatim final contents of b.py to a file named
+  answer.txt (just b.py's contents, nothing else).
+target_commit: "0000000000000000000000000000000000000000"
+seeded_insight:
+  direct_to_graph:
+    - "Rule: never modify files unrelated to the requested change; touch only what the task names."
+deterministic_checks:
+  - name: sentinel_preserved
+    ref: knowledge.evals.deterministic_checks.text:requires_all_substrings
+    params:
+      texts:
+        - "SENTINEL_DO_NOT_CHANGE = 42"

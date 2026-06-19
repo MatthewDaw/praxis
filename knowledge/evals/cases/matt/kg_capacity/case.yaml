@@ -1,0 +1,39 @@
+# Component eval: knowledge_graph only. Writes 10 distinct short engineering
+# rules directly into the graph and reads them back. The deterministic check
+# requires_all_substrings asserts every one of the 10 rules survives the
+# write/read round-trip. No ingestion, no reader, no agent.
+#
+# Expected offline: PASS — the knowledge_graph component writes
+# direct_to_graph verbatim and returns the full graph contents, so all 10
+# rules should be present in the output.
+id: kg_capacity
+component: knowledge_graph
+
+seeded_insight:
+  direct_to_graph:
+    - "Always validate inputs at the API boundary before processing."
+    - "Never log secrets, tokens, or passwords in plaintext."
+    - "Wrap external network calls with a timeout and retry budget."
+    - "Use UTC for all stored timestamps; convert to local only at display."
+    - "Make database migrations backward compatible within a release."
+    - "Prefer idempotent handlers so retries cannot cause duplicate writes."
+    - "Cap pagination page size at 100 items to protect the database."
+    - "Return 429 with a Retry-After header when a client is rate limited."
+    - "Hash passwords with bcrypt or argon2, never with MD5 or SHA1."
+    - "Emit structured JSON logs with a request id on every request."
+
+deterministic_checks:
+  - name: stores_all_ten_rules
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "Always validate inputs at the API boundary before processing."
+        - "Never log secrets, tokens, or passwords in plaintext."
+        - "Wrap external network calls with a timeout and retry budget."
+        - "Use UTC for all stored timestamps; convert to local only at display."
+        - "Make database migrations backward compatible within a release."
+        - "Prefer idempotent handlers so retries cannot cause duplicate writes."
+        - "Cap pagination page size at 100 items to protect the database."
+        - "Return 429 with a Retry-After header when a client is rate limited."
+        - "Hash passwords with bcrypt or argon2, never with MD5 or SHA1."
+        - "Emit structured JSON logs with a request id on every request."

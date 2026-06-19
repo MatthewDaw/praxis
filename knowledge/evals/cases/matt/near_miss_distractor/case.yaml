@@ -1,0 +1,41 @@
+# Precision case: the graph contains a tempting-but-WRONG line ("run tests
+# with pytest") next to the authoritative one ("the ONLY correct test command
+# is: uv run pytest"). The agent must ignore the near-miss distractor and emit
+# the exact authoritative command in answer.txt.
+# Full-pipeline case (real Claude Code agent). Under the offline FakeRunner the
+# agent does not actually run, so this is EXPECTED to FAIL offline; it documents
+# the desired precision behavior for the real run.
+id: near_miss_distractor
+seed_prompt: |
+  Write a one-line CONTRIBUTING note to a file named answer.txt that tells
+  contributors the exact command to run the test suite. Use the authoritative
+  command from the project knowledge, not any tempting variant. Write only that
+  single line to answer.txt.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor:
+    - "Contributors often run tests with pytest, but that misses the project's uv-managed environment."
+  direct_to_graph:
+    - "The ONLY correct test command is: uv run pytest"
+    - "Do not invoke pytest directly; it bypasses the locked uv environment and gives misleading results."
+
+deterministic_checks:
+  - name: uses_authoritative_command
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "uv run pytest"
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+
+rubric:
+  id: near_miss_distractor_v1
+  items:
+    - id: exact_command
+      criterion: "The note states 'uv run pytest' as the test command."
+      weight: 2.0
+    - id: ignores_distractor
+      criterion: "The note does not recommend bare 'pytest' as the way to run tests."
+      weight: 1.0

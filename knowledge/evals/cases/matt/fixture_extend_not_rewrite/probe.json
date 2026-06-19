@@ -1,0 +1,4 @@
+{
+  "good": "def alpha(x):\n    return x + 1\n\n\ndef beta(x):\n    return x * 2\n\n\ndef gamma(x):\n    return x * x\n\n\ndef delta(x):\n    return x - 1\n",
+  "bad": "def gamma(x):\n    return x * x\n\n\ndef delta(x):\n    return x - 1\n"
+}

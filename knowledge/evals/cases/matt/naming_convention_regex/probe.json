@@ -1,0 +1,4 @@
+{
+  "good": "def add_numbers(a: int, b: int) -> int:\n    return a + b\n\n\ndef larger_of(a: int, b: int) -> int:\n    return a if a > b else b\n",
+  "bad": "def addNumbers(a: int, b: int) -> int:\n    return a + b\n\n\ndef largerOf(a: int, b: int) -> int:\n    return a if a > b else b\n"
+}

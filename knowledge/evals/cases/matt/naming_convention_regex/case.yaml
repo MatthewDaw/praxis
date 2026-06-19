@@ -1,0 +1,41 @@
+# Format/style eval: does the real Claude Code agent honor a seeded naming
+# convention when writing code? The seeded graph states a single operative rule:
+# "all function names must be lower_snake_case." We then ask the agent to write
+# two functions to answer.py. Deterministic checks enforce the convention via
+# regex: at least one `def lower_snake(` definition must appear, and NO function
+# definition may contain an uppercase letter in its name (camelCase / PascalCase).
+#
+# Scope: full-pipeline (no component) -> runs the REAL Claude Code agent with the
+# seeded graph injected via the system prompt, inside a sealed box.
+#
+# Expected under a real run: JUDGE / not-run-offline. The offline verify pass does
+# not execute the agent, so there is no output to grade offline. When run for real
+# it should PASS, since lower_snake_case is the conventional Python default and the
+# rule reinforces it; the probe proves the checks would CATCH a camelCase violation.
+id: naming_convention_regex
+seed_prompt: |
+  Write two small Python functions and save them to a file named answer.py in the
+  current directory. The first should add two numbers and return the sum; the second
+  should return the larger of two numbers. Follow the project's naming convention.
+  Write only the code to answer.py, with no surrounding commentary.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  direct_to_graph:
+    - "Praxis is a uv-managed Python monorepo; the knowledge harness lives under knowledge/."
+    - "Tests run with `uv run pytest -q` from the repo root."
+    - "CODING CONVENTION: all function names must be lower_snake_case (e.g. add_numbers, not addNumbers or AddNumbers)."
+    - "Module-level constants are written in UPPER_SNAKE_CASE."
+    - "Type hints are required on all public function signatures."
+
+deterministic_checks:
+  - name: has_snake_case_def
+    ref: "knowledge.evals.deterministic_checks.text:regex_matches"
+    params:
+      pattern: "def [a-z][a-z0-9_]*\\("
+  - name: no_camel_or_pascal_def
+    ref: "knowledge.evals.deterministic_checks.text:regex_absent"
+    params:
+      pattern: "def [a-z0-9_]*[A-Z]"

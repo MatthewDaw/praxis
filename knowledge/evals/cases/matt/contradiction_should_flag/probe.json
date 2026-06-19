@@ -1,0 +1,4 @@
+{
+  "good": "Conflict found: one rule says ALWAYS use tabs (spaces forbidden) while another says ALWAYS use spaces (tabs forbidden). These two rules contradict each other and cannot both be satisfied, so the guidance is ambiguous. I am flagging this rather than silently picking one.",
+  "bad": "I reviewed the coding guidance. I will use tabs for indentation throughout the project, as instructed."
+}

@@ -1,0 +1,34 @@
+# Negative control / NO-HARM case. The seeded graph is entirely about CSS color
+# variables, which has nothing to do with the task (write a Python `add(a, b)`).
+# We assert the agent produces a correct function AND does NOT leak the
+# irrelevant "color" knowledge into its answer.
+#
+# Offline expectation: the deterministic checks (contains_text + forbids_substring)
+# run against the artifact. Under the offline FakeRunner the agent does not
+# actually run, so this is EXPECTED to FAIL offline (no real output). With the
+# real Claude Code agent it should PASS.
+id: negative_control_irrelevant
+seed_prompt: |
+  Write a Python function `add(a, b)` that returns the sum of its two arguments.
+  Write the complete function definition to a file named answer.txt and nothing else.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor:
+    - "Define the brand primary color as the CSS variable --color-primary: #1d4ed8."
+    - "Use --color-bg: #ffffff for light backgrounds and --color-bg-dark: #0f172a for dark mode."
+  direct_to_graph:
+    - "All CSS color variables live in :root and are named with a --color- prefix."
+    - "Never hardcode hex colors in component styles; reference the --color-* custom properties instead."
+
+deterministic_checks:
+  - name: defines_add
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "def add"
+  - name: no_color_leak
+    ref: "knowledge.evals.deterministic_checks.text:forbids_substring"
+    params:
+      text: "color"

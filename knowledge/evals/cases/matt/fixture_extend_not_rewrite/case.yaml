@@ -1,0 +1,26 @@
+# Scenario: a full-pipeline case shipping a fixtures/lib.py with three functions
+# (alpha, beta, gamma). The runner mounts fixtures/ into the sealed box; the
+# agent must ADD a delta() function WITHOUT removing the existing three, then
+# write the entire updated file to answer.py.
+# Scope: full-pipeline (no component) — real Claude Code agent.
+# Expected under a real run: PASS. Extending a file while preserving its
+# existing definitions is a routine, well-specified edit; a competent agent
+# should retain alpha/beta/gamma and add delta. The deterministic check both
+# graders the run and serves as the probe target, exercising fixture mounting +
+# requires_all_substrings (regression guard against destructive rewrites).
+id: fixture_extend_not_rewrite
+seed_prompt: |
+  A file named lib.py exists in your working directory. It defines three
+  functions: alpha(), beta(), and gamma(). ADD a new function delta(x) that
+  returns x minus one. Do NOT remove or rename any of the existing functions.
+  Write the FULL updated contents of lib.py (all four functions) to answer.py.
+  Output nothing else to that file.
+target_commit: "0000000000000000000000000000000000000000"
+seeded_insight:
+  direct_to_graph:
+    - "Convention: when extending lib.py, preserve all existing functions; only add new ones."
+deterministic_checks:
+  - name: all_four_functions_present
+    ref: knowledge.evals.deterministic_checks.text:requires_all_substrings
+    params:
+      texts: ["def alpha", "def beta", "def gamma", "def delta"]

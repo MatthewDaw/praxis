@@ -1,0 +1,4 @@
+{
+  "good": "fact one\nfact two\nfact three\n",
+  "bad": "fact three\nfact two\nfact one\n"
+}

@@ -1,0 +1,31 @@
+# Scenario: a fixtures/base.py declares an abstract Transport with
+#   def fetch(self, url: str, timeout: float) -> bytes
+# The runner mounts fixtures/ into the sealed box; the agent must implement a
+# concrete subclass in answer.py honoring that EXACT signature.
+# Scope: full-pipeline (no component) — real Claude Code agent.
+# Expected under a real run: PASS. The signature is fully specified in the
+# fixture and the seed_prompt, so a competent agent reproduces it verbatim.
+# This case exercises fixture mounting + regex_matches on an exact API contract;
+# the regex would FAIL if the agent drifts (renames params, drops the float/bytes
+# annotations, or reorders url/timeout).
+id: fixture_match_api_contract
+seed_prompt: |
+  A file base.py exists in your working directory. It declares an abstract base
+  class Transport with an abstract method:
+
+      def fetch(self, url: str, timeout: float) -> bytes
+
+  Implement a concrete subclass named HttpTransport in answer.py that imports
+  Transport from base and overrides fetch with the EXACT same signature
+  (parameter names, type annotations, and return type must match verbatim). The
+  body may perform any reasonable fetch and return bytes. Write only valid
+  Python to answer.py.
+target_commit: "0000000000000000000000000000000000000000"
+seeded_insight:
+  direct_to_graph:
+    - "Convention: subclasses must preserve the parent abstract method signature exactly, including parameter names and type annotations."
+deterministic_checks:
+  - name: signature_matches
+    ref: knowledge.evals.deterministic_checks.text:regex_matches
+    params:
+      pattern: 'def fetch\(self, url: str, timeout: float\) -> bytes'

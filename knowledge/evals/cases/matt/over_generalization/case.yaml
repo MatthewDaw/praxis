@@ -1,0 +1,50 @@
+# SPECIFICITY / over-generalization case (full-pipeline, runs the real agent).
+# The graph holds a SCOPED naming rule: functions get the legacy_ prefix ONLY
+# inside the legacy/ directory. The seed_prompt asks the agent to write a brand
+# new function for a NON-legacy feature module. A correct agent must NOT bleed
+# the scoped rule onto the new code -> the function must NOT carry legacy_.
+#
+# Offline expectation: FAIL. The deterministic forbids_substring check below
+# should pass on a good answer, but the offline FakeRunner does not produce a
+# real implementation, so the end-to-end run is expected to fail. The rubric is
+# the real arbiter of over-generalization and only runs through Claude Code.
+id: over_generalization
+seed_prompt: |
+  Implement a function for a NEW feature module that lives at
+  features/billing/discounts.py (this is NOT in the legacy/ directory).
+  Write a function named `apply_percentage_discount(price, percent)` that
+  returns the price after subtracting `percent` percent, with a short
+  docstring. Write ONLY the function definition for this new module to a file
+  named answer.txt in the working directory. Do not add any other functions.
+target_commit: "0000000000000000000000000000000000000000"
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor:
+    - "The billing feature modules live under features/billing/."
+  direct_to_graph:
+    - "In the legacy/ directory only, prefix every function name with legacy_."
+    - "Functions outside the legacy/ directory use plain snake_case names with no special prefix."
+
+deterministic_checks:
+  - name: defines_target_function
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "def apply_percentage_discount"
+  - name: no_legacy_prefix_bleed
+    ref: "knowledge.evals.deterministic_checks.text:forbids_substring"
+    params:
+      text: "legacy_"
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+
+rubric:
+  id: over_generalization_v1
+  items:
+    - id: scope_respected
+      criterion: "The function name is NOT prefixed with legacy_; the legacy/-scoped rule was correctly NOT applied to this non-legacy module."
+      weight: 3.0
+    - id: correct_function
+      criterion: "The function is named apply_percentage_discount and computes a percentage discount on the price."
+      weight: 1.0

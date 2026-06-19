@@ -1,0 +1,30 @@
+# Scenario: the seeded graph states a required section ordering for the project
+#   README ("## Install" then "## Usage" then "## License"). The agent is asked
+#   to write a README to answer.txt and must honor that ordering.
+# Scope: full-pipeline (no component) -- the seeded insight is injected into the
+#   real Claude Code agent via system prompt and the agent runs seed_prompt in a
+#   sealed box, writing its answer to answer.txt.
+# Expected under a real run: JUDGE / likely PASS. A capable agent that reads the
+#   seeded ordering constraint will produce a README with the three sections in
+#   the stated order. It could FAIL if the agent ignores the ordering hint or
+#   reorders sections, which is exactly what ordered_substrings catches.
+id: ordered_doc_sections
+seed_prompt: |
+  Write a project README for a small Python CLI tool called "greet".
+  Your knowledge contains a formatting rule about the required order of README
+  sections; follow it exactly. Include concrete, realistic content under each
+  section (an install command, a usage example, and a license name) -- no
+  placeholders. Write the full README to a file named answer.txt in the current
+  directory.
+target_commit: "0000000000000000000000000000000000000000"
+seeded_insight:
+  direct_to_graph:
+    - "README sections must appear in order: ## Install then ## Usage then ## License."
+deterministic_checks:
+  - name: sections_in_order
+    ref: knowledge.evals.deterministic_checks.text:ordered_substrings
+    params:
+      texts:
+        - "## Install"
+        - "## Usage"
+        - "## License"

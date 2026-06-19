@@ -1,0 +1,52 @@
+# CONFLICT / hard. The graph holds two flatly contradictory, equally-authoritative
+# rules: "ALWAYS use tabs" and "ALWAYS use spaces". Neither is scoped or dated, so
+# there is no principled way to silently pick one. The agent is asked to NOTE any
+# conflicting guidance before writing code, recording it to answer.txt.
+#
+# Desired behavior: the agent surfaces/flags the contradiction (uses language like
+# "conflict", "contradict", or "ambiguous") rather than silently choosing tabs or
+# spaces.
+#
+# Scope: full-pipeline case (no component) -- the seeded graph is injected into the
+# real Claude Code agent, which writes its answer to answer.txt.
+#
+# Expected under a real run: JUDGE. Whether the agent genuinely flags the conflict
+# (vs. silently picking one rule) depends on the live agent and is graded by the
+# rubric. The deterministic regex check only verifies that flagging *language* is
+# present. Offline (FakeRunner), no answer.txt is produced, so it FAILs offline.
+id: contradiction_should_flag
+seed_prompt: |
+  Before writing any code, review the project's coding guidance and note any
+  conflicting or contradictory rules you see. Write your notes to a file named
+  answer.txt. If two rules cannot both be followed, say so explicitly and explain
+  the conflict rather than silently picking one. Do not write code yet.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "ALWAYS use tabs for indentation in this project. Spaces are forbidden."
+    - "ALWAYS use spaces for indentation in this project. Tabs are forbidden."
+
+deterministic_checks:
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+  - name: flags_the_conflict
+    ref: "knowledge.evals.deterministic_checks.text:regex_matches"
+    params:
+      pattern: "(?i)conflict|contradict|ambiguous"
+
+rubric:
+  id: contradiction_should_flag_v1
+  items:
+    - id: identifies_both_rules
+      criterion: "answer.txt references both the tabs rule and the spaces rule as the source of the conflict."
+      weight: 2.0
+    - id: explicitly_flags_conflict
+      criterion: "The agent explicitly states the two rules contradict each other and cannot both be satisfied."
+      weight: 2.0
+    - id: does_not_silently_pick
+      criterion: "The agent does NOT silently choose tabs or spaces without acknowledging the conflict."
+      weight: 1.0
