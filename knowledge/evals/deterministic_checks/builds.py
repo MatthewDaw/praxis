@@ -24,6 +24,16 @@ def contains_text(ctx: EvalContext, *, text: str) -> CheckResult:
     )
 
 
+def not_contains_text(ctx: EvalContext, *, text: str) -> CheckResult:
+    """Pass iff ``text`` does not appear in the produced output."""
+    absent = text not in ctx.output
+    return CheckResult(
+        name="not_contains_text",
+        passed=absent,
+        evidence=(f"{text!r} absent" if absent else f"found forbidden {text!r}"),
+    )
+
+
 def output_nonempty(ctx: EvalContext) -> CheckResult:
     """Pass iff the agent produced any output at all."""
     ok = bool(ctx.output.strip())

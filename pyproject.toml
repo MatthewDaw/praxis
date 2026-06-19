@@ -16,4 +16,4 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-testpaths = ["knowledge"]
+testpaths = ["knowledge", "frontend/tests"]

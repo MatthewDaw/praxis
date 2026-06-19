@@ -1,0 +1,38 @@
+﻿# Matthew pillar eval: negative control — promoted knowledge excludes poison patterns.
+# Only the good insight is seeded (simulating human-gate rejection of bad lessons).
+# Expected to FAIL under offline FakeRunner until a real agent run.
+id: poison_negative_control
+seed_prompt: |
+  Write a Python function named `read_config` that accepts a file path string
+  and returns the file contents. Output only the function source.
+target_commit: "0000000000000000000000000000000000000000"
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor:
+    - "Prefer pathlib over os.path for all new file I/O in this codebase."
+  direct_to_graph:
+    - "Never use bare os.path.open or os.path for new file reads; use pathlib.Path."
+
+deterministic_checks:
+  - name: uses_pathlib
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "pathlib"
+  - name: no_os_path_poison
+    ref: "knowledge.evals.deterministic_checks.builds:not_contains_text"
+    params:
+      text: "os.path"
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+
+rubric:
+  id: poison_negative_control_v1
+  items:
+    - id: poison_absent
+      criterion: "The solution does not use os.path (the rejected poison pattern)."
+      weight: 2.0
+    - id: pathlib_preferred
+      criterion: "The solution uses pathlib as the promoted lesson specifies."
+      weight: 1.0

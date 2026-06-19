@@ -4,7 +4,7 @@
 **Branch:** `monica/dashboard-human-gate`  
 **Created:** 2026-06-17  
 **Last updated:** 2026-06-18  
-**Status:** As-built through Day 8 (mock-complete; live API when Matthew publishes endpoints).
+**Status:** As-built through Day 2 — Streamlit mock-complete; React client shipped (`frontend-react/`); live API when Matthew publishes endpoints.
 
 Architecture source of truth: [PRAXIS_Project_Plan.html](../PRAXIS_Project_Plan.html).
 
@@ -72,7 +72,7 @@ Lifecycle states: `proposed → suggested → active` (plus `decayed` and unreco
 
 ## Data contract (forward-compatible)
 
-`frontend/models/candidate.py` — `Candidate.from_mapping()` is the integration surface. **Matthew handshake:** use this section + `api_client.py` endpoint list for Days 6–7 integration.
+`frontend/models/candidate.py` — `Candidate.from_mapping()` is the integration surface. **Canonical contract:** [candidate-api-v1.md](../integration/candidate-api-v1.md).
 
 ### Required for display (defaults if absent)
 
@@ -97,15 +97,33 @@ Lifecycle states: `proposed → suggested → active` (plus `decayed` and unreco
 
 **Versioning:** HTTP client sends `X-Praxis-Contract: 1`. Matthew/Dominic may extend the schema; Monica's pillar must not break on unknown fields.
 
-### Mutations (implemented in `api_client.py`)
+### Mutations (canonical v1 — `docs/integration/candidate-api-v1.md`)
 
 | Action | Endpoint | Body |
 |--------|----------|------|
-| Promote | `POST /candidates/{id}/promote` | `{}` → updated candidate |
-| Reject | `POST /candidates/{id}/reject` | `{ reason? }` |
-| Resolve contradiction | `POST /contradictions/{id}/resolve` | `{ resolution, keepId }` → kept candidate |
+| Promote | `POST /candidates/{id}/promote` | `{ "targetState": "suggested" \| "active" }` → updated candidate |
+| Reject | `POST /candidates/{id}/reject` | `{ "reason"?: string }` |
+| Resolve contradiction | `POST /contradictions/{id}/resolve` | `{ "resolution": "keep_a" \| "keep_b", "keepId": string }` → kept candidate |
 
-409 responses surface as user-visible conflict messages (refresh + retry).
+Contradiction id: `{primaryId}__{rivalId}`. UI maps "Keep this candidate" → `keep_a`, rival → `keep_b` in `contract_v1.py`.
+
+409 responses surface as user-visible conflict messages (refresh + retry). Promote retries with `{}` if server rejects explicit `targetState`.
+
+## React client (`frontend-react/`) — shipped 2026-06-18
+
+Parallel **Vite + React + TypeScript** app for Matthew's API validation. Same contract, same mock fixtures (`public/mock-candidates.json` exported from `mock_data.py`), same Act 2 demo steps.
+
+| Element | Implementation |
+|---------|----------------|
+| Entry | `src/App.tsx` — sidebar refresh, filters, table/card tabs |
+| API | `src/api/apiClient.ts` + `mockProvider.ts` — contract v1 headers, promote 400/422 retry |
+| List | `CandidateTable.tsx`, `CandidateCards.tsx` |
+| Detail | `CandidateDetail.tsx` + `ConfidenceBreakdown.tsx` |
+| Contradictions | `ContradictionPanel.tsx` — keep primary / keep rival / defer |
+| Eval embed | `EvalMetricsEmbed.tsx` — `VITE_PRAXIS_EVAL_METRICS_URL` or placeholder |
+| Env vars | `VITE_PRAXIS_API_BASE_URL`, `VITE_PRAXIS_API_TOKEN`, `VITE_PRAXIS_CONTRACT_VERSION` |
+
+Matthew runs `npm run dev` in `frontend-react/`; Monica's Streamlit path unchanged in `frontend/`.
 
 ## Design notes
 
@@ -116,6 +134,4 @@ Lifecycle states: `proposed → suggested → active` (plus `decayed` and unreco
 
 ## Remaining (Days 9–10)
 
-| Day | Item |
-|-----|------|
-| 9–10 | Live demo rehearsal, user-flow video capture, final a11y pass with screen reader |
+See [DAYS_9_10_REMAINING.md](DAYS_9_10_REMAINING.md) — demo rehearsal checklist, user-flow video, screen-reader pass.

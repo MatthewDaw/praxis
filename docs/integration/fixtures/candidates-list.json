@@ -1,0 +1,35 @@
+[
+  {
+    "id": "cand_1",
+    "title": "TypeScript Exhaustive Switch Pattern",
+    "content": "When using a switch statement on a discriminated union or enum, include a default case that assigns the value to a variable of type `never`.",
+    "state": "proposed",
+    "confidence": 0.85,
+    "provenance": "logs/session_20260615.jsonl:88",
+    "createdAt": "2026-06-15T14:30:00Z",
+    "confidenceBreakdown": {
+      "frequency": 0.82,
+      "recency": 0.88,
+      "breadth": 0.76
+    }
+  },
+  {
+    "id": "cand_2",
+    "title": "React useEffect Cleanup",
+    "content": "Always return a cleanup function from useEffect when subscribing to external events or setting up intervals.",
+    "state": "suggested",
+    "confidence": 0.92,
+    "provenance": "logs/session_20260614.jsonl:214",
+    "createdAt": "2026-06-14T09:15:00Z"
+  },
+  {
+    "id": "cand_9",
+    "title": "Prefer explicit error types in Rust",
+    "content": "Use custom error enums instead of Box<dyn Error> in library code for clearer propagation.",
+    "state": "suggested",
+    "confidence": 0.71,
+    "provenance": "logs/session_20260612.jsonl:301",
+    "createdAt": "2026-06-12T08:00:00Z",
+    "contradictions": ["cand_16"]
+  }
+]

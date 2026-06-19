@@ -14,6 +14,7 @@ SECURITY:
 - Token via PRAXIS_API_TOKEN environment variable only.
 
 OPERATIONAL:
+- Targets docs/integration/candidate-api-v1.md (contract v1).
 - Uses stdlib urllib — no extra HTTP dependencies.
 - No imports from pipeline/ or eval/ — Matthew owns server implementation.
 ===============================================================================
@@ -22,12 +23,23 @@ OPERATIONAL:
 from __future__ import annotations
 
 import json
+import logging
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
 
 from models.candidate import Candidate, CandidateState
+from services.contract_v1 import (
+    build_promote_body,
+    build_promote_body_implicit,
+    build_reject_body,
+    build_resolve_body,
+    contract_headers,
+    parse_candidate_list,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class ApiConflictError(Exception):
@@ -36,6 +48,14 @@ class ApiConflictError(Exception):
     def __init__(self, message: str, *, candidate_id: str | None = None) -> None:
         super().__init__(message)
         self.candidate_id = candidate_id
+
+
+class ApiClientError(Exception):
+    """Raised when the API returns a non-success HTTP status."""
+
+    def __init__(self, message: str, *, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class ApiDataProvider:
@@ -56,16 +76,16 @@ class ApiDataProvider:
         if state is not None:
             query = "?" + urllib.parse.urlencode({"state": state.value})
         payload = self._request("GET", f"/candidates{query}")
-        rows = payload if isinstance(payload, list) else payload.get("candidates", [])
-        return [Candidate.from_mapping(row) for row in rows if isinstance(row, dict)]
+        rows = parse_candidate_list(payload)
+        return [Candidate.from_mapping(row) for row in rows]
 
     def get_candidate(self, candidate_id: str) -> Candidate | None:
         try:
             payload = self._request("GET", f"/candidates/{urllib.parse.quote(candidate_id, safe='')}")
         except ApiConflictError:
             raise
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
+        except ApiClientError as exc:
+            if exc.status_code == 404:
                 return None
             raise
         if isinstance(payload, dict):
@@ -74,17 +94,34 @@ class ApiDataProvider:
 
     def promote(self, candidate_id: str) -> Candidate:
         encoded = urllib.parse.quote(candidate_id, safe="")
-        payload = self._request("POST", f"/candidates/{encoded}/promote", body={})
+        path = f"/candidates/{encoded}/promote"
+        current = self.get_candidate(candidate_id)
+        if current is None:
+            raise KeyError(f"Unknown candidate id: {candidate_id!r}")
+
+        explicit_body = build_promote_body(current_state=current.state)
+        try:
+            payload = self._request("POST", path, body=explicit_body)
+        except ApiClientError as exc:
+            if exc.status_code not in (400, 422):
+                raise
+            logger.info(
+                "Promote with targetState rejected (%s); retrying with implicit body",
+                exc.status_code,
+            )
+            payload = self._request("POST", path, body=build_promote_body_implicit())
+
         if not isinstance(payload, dict):
             raise ValueError("Promote response must be a candidate object")
         return Candidate.from_mapping(payload)
 
     def reject(self, candidate_id: str, reason: str | None = None) -> None:
         encoded = urllib.parse.quote(candidate_id, safe="")
-        body: dict[str, Any] = {}
-        if reason:
-            body["reason"] = reason
-        self._request("POST", f"/candidates/{encoded}/reject", body=body)
+        self._request(
+            "POST",
+            f"/candidates/{encoded}/reject",
+            body=build_reject_body(reason=reason),
+        )
 
     def resolve_contradiction(
         self,
@@ -94,24 +131,14 @@ class ApiDataProvider:
         keep_id: str,
     ) -> Candidate:
         encoded = urllib.parse.quote(contradiction_id, safe="")
-        payload = self._request(
-            "POST",
-            f"/contradictions/{encoded}/resolve",
-            body={"resolution": resolution, "keepId": keep_id},
-        )
+        body = build_resolve_body(resolution=resolution, keep_id=keep_id)
+        payload = self._request("POST", f"/contradictions/{encoded}/resolve", body=body)
         if not isinstance(payload, dict):
             raise ValueError("Resolve response must include the kept candidate")
         return Candidate.from_mapping(payload)
 
     def _headers(self) -> dict[str, str]:
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "X-Praxis-Contract": "1",
-        }
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
-        return headers
+        return contract_headers(token=self._token)
 
     def _request(
         self,
@@ -138,7 +165,10 @@ class ApiDataProvider:
                     f"Conflict (409): {detail or exc.reason}",
                     candidate_id=_extract_candidate_id(path),
                 ) from exc
-            raise RuntimeError(f"API {method} {path} failed ({exc.code}): {detail or exc.reason}") from exc
+            raise ApiClientError(
+                f"API {method} {path} failed ({exc.code}): {detail or exc.reason}",
+                status_code=exc.code,
+            ) from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"API unreachable: {exc.reason}") from exc
 

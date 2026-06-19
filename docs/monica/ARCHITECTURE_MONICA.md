@@ -14,11 +14,11 @@ Pillar Owner:       Monica Peters (monigarr@monigarr.com)
 Co-Leads:           Matthew Daw (ML Pipeline), Dominic Antonelli (Eval & Integration)
 Organization:       Gauntlet AI for America
 Branch:             monica/dashboard-human-gate
-Version:            0.2.0 (Days 1–8 complete on mock; API client ready for Matthew)
-Status:             Active development — UI feature-complete on mock; awaiting live API
+Version:            0.2.1 (Days 1–8 Streamlit complete; React client shipped for Matthew)
+Status:             Active development — dual UI clients on mock; awaiting Matthew's live API
 Classification:     Internal — capstone sprint
 Created:            2026-06-18
-Last Updated:       2026-06-18 (Day 3–8 deliverables + ApiDataProvider)
+Last Updated:       2026-06-18 (frontend-react Knowledge Graph dashboard)
 Source of Truth:    docs/PRAXIS_Project_Plan.html
 License:            TBD — Gauntlet AI capstone (2026)
 ============================================================================
@@ -311,7 +311,7 @@ A new contributor should be able to:
 | Eval harness, cold vs injected runs, compounding curve computation | Dominic | Measurement spine |
 | GitHub hook / PR automation on promotion | Dominic | Integration layer |
 | Team-wide CI/CD, repo deployment topology | Dominic (+ shared agreement) | Each pillar deploys independently |
-| **React SPA (alternate UI)** | **Future contributor** | **Fully supported in sibling dir** (e.g. `frontend-react/`) — same API; does not replace or block `frontend/` Streamlit unless team chooses deprecation |
+| **React SPA (alternate UI)** | **Monica — shipped `frontend-react/`** | Same candidate-api-v1 contract; Matthew validates server without Streamlit; deploy to Vercel/Netlify/static host |
 
 **Non-blocking rule:** Changes under `frontend/` must not require edits to `pipeline/` or `eval/` to run. Integration is **pull-based** (dashboard calls API) or **env-configured**, never hard-coded to Matthew's AWS or Dominic's server. A React frontend, if added, follows the same rule — API-only coupling.
 
@@ -432,12 +432,12 @@ Delivered as of modular extraction (2026-06-18):
 | `frontend/models/candidate.py` | ✅ | Typed contract models + promotion helpers |
 | `frontend/services/data_provider.py` | ✅ | `DataProvider` protocol + env-based factory |
 | `frontend/services/mock_provider.py` | ✅ | In-memory provider — no backend required |
-| `frontend/services/api_client.py` | ⬜ Stub | Documented REST endpoints for Days 6–7 |
+| `frontend/services/api_client.py` | ✅ | HTTP client — contract v1 (`docs/integration/candidate-api-v1.md`) |
 | `frontend/components/candidate_list.py` | ✅ | Table + card views, promote/reject |
 | `frontend/components/candidate_detail.py` | ✅ | Detail expander (Day 3 foundation) |
 | `frontend/components/confidence_badge.py` | ✅ | State badges + breakdown metrics |
-| `frontend/components/contradiction_panel.py` | ✅ Stub | Side-by-side layout; API wiring Day 5–7 |
-| `frontend/components/eval_metrics_embed.py` | ✅ Stub | Placeholder chart; Dominic API Day 8 |
+| `frontend/components/contradiction_panel.py` | ✅ | Side-by-side layout + resolve actions |
+| `frontend/components/eval_metrics_embed.py` | ✅ | Compounding curve embed (`eval-metrics-v1.md`) |
 | `frontend/mock_data.py` | ✅ | Contract-shaped fixture dicts |
 | `frontend/.streamlit/config.toml` | ✅ | Theme defaults |
 | `docs/monica/ARCHITECTURE_MONICA.md` | ✅ | Pillar architecture + coexistence guarantees |
@@ -717,7 +717,7 @@ Mock mode activates automatically when no API URL is configured.
 
 ## Contract-First Integration (Matthew ↔ Monica)
 
-The dashboard and pipeline integrate **only** through agreed JSON shapes. Draft contract (Matthew may extend — Monica's `Candidate.from_mapping` preserves unknown fields in `extra`). See [monica-wireframes.md](monica-wireframes.md) for the as-built contract table.
+The dashboard and pipeline integrate **only** through agreed JSON shapes. **Canonical contract:** [candidate-api-v1.md](../integration/candidate-api-v1.md). Monica's `Candidate.from_mapping` preserves unknown fields in `extra`.
 
 ### Candidate (read model)
 
@@ -742,7 +742,11 @@ The dashboard and pipeline integrate **only** through agreed JSON shapes. Draft 
 |--------|---------|-------|
 | `POST /candidates/{id}/promote` | `{ "targetState": "suggested" \| "active" }` | Matthew API; Dominic webhook side-effect |
 | `POST /candidates/{id}/reject` | `{ "reason": string? }` | Matthew API |
-| `POST /contradictions/{id}/resolve` | `{ "resolution": "keep_a" \| "keep_b" \| "merge", "mergedContent"?: string }` | Matthew API |
+| `POST /contradictions/{id}/resolve` | `{ "resolution": "keep_a" \| "keep_b", "keepId": string }` | Matthew API; `merge` stretch |
+
+**Contradiction id:** `{primaryId}__{rivalId}`. Dashboard maps UI labels via `frontend/services/contract_v1.py`.
+
+**Promote fallback:** Client retries with `{}` if server returns 400/422 on explicit `targetState`.
 
 **Versioning:** Prefix contract version in API path or header (`X-Praxis-Contract: 1`) when schema evolves — Monica's client checks version at startup.
 
@@ -761,7 +765,7 @@ class DataProvider(Protocol):
 ```
 
 - `MockDataProvider` — `frontend/services/mock_provider.py` (default when `PRAXIS_API_BASE_URL` unset)
-- `ApiDataProvider` — `frontend/services/api_client.py` (stub endpoints documented for Days 6–7)
+- `ApiDataProvider` — `frontend/services/api_client.py` (contract v1; tolerant read + explicit mutations)
 
 UI components depend on `DataProvider`, not on pandas or HTTP directly. A future React app calls the same HTTP endpoints — it never imports these modules.
 
@@ -774,7 +778,7 @@ Before merging integration MRs:
 - [ ] Mock data still works with zero backend (Monica local dev unblocked)
 - [ ] API URL is optional env var, not hard-coded host
 - [ ] No imports from `pipeline/` or `eval/` inside `frontend/`
-- [ ] Matthew publishes OpenAPI or JSON schema before UI wires mutations
+- [ ] Matthew implements server to [candidate-api-v1.md](../integration/candidate-api-v1.md) + fixtures
 - [ ] Dominic confirms promotion events reach hooks without UI knowing GitHub details
 - [ ] Failed API calls do not corrupt local session state irreversibly
 
@@ -789,16 +793,19 @@ frontend/
 ├── app.py                      # Entry: page config, provider wiring, layout only
 ├── components/
 │   ├── candidate_list.py       # ✅ Table + card views, filter, promote/reject actions
-│   ├── candidate_detail.py     # ✅ Detail expander (Day 3 — confidence + audit stub)
-│   ├── contradiction_panel.py  # ✅ Side-by-side layout stub (Day 5 API wiring)
+│   ├── candidate_detail.py     # ✅ Detail expander (confidence + audit trail)
+│   ├── contradiction_panel.py  # ✅ Side-by-side resolve actions
 │   ├── confidence_badge.py     # ✅ State badges + confidence breakdown metrics
-│   └── eval_metrics_embed.py   # ✅ Placeholder curve (Day 8 — Dominic API)
+│   └── eval_metrics_embed.py   # ✅ Compounding curve embed (eval-metrics-v1)
 ├── models/
 │   └── candidate.py            # ✅ Candidate, CandidateState, ConfidenceBreakdown
 ├── services/
 │   ├── data_provider.py        # ✅ Protocol + get_data_provider() factory
 │   ├── mock_provider.py        # ✅ In-memory fixtures for local dev
-│   └── api_client.py           # ⬜ ApiDataProvider stub (Days 6–7 HTTP wire-up)
+│   ├── contract_v1.py          # ✅ Canonical v1 payload builders
+│   └── api_client.py           # ✅ ApiDataProvider — contract v1 HTTP client
+├── tests/
+│   └── test_contract_fixtures.py  # ✅ Fixture contract tests
 ├── mock_data.py                # ✅ Static fixtures as contract-shaped dicts
 ├── requirements.txt
 └── .streamlit/

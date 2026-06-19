@@ -49,6 +49,21 @@ def _ensure_provider() -> DataProvider:
     return st.session_state.data_provider
 
 
+def _render_sidebar_controls() -> None:
+    with st.sidebar:
+        st.markdown("### Controls")
+        if st.button(
+            "Refresh data",
+            use_container_width=True,
+            help="Reload candidates from the API or mock provider after mutations.",
+        ):
+            st.session_state.pop("data_provider", None)
+            st.rerun()
+        st.caption(
+            "Integration: [candidate-api-v1.md](../docs/integration/candidate-api-v1.md)"
+        )
+
+
 def _render_mode_banner() -> None:
     api_url = os.environ.get("PRAXIS_API_BASE_URL", "").strip()
     if api_url:
@@ -69,6 +84,7 @@ def _load_candidates(provider: DataProvider) -> tuple[list[Candidate] | None, st
 
 
 provider = _ensure_provider()
+_render_sidebar_controls()
 
 st.title("Candidate Review Gate")
 st.markdown("Review and promote AI-learned knowledge candidates from agent sessions.")
