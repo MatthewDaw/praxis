@@ -26,7 +26,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
-from knowledge.evals.eval_def import EvalContext, Rubric
+from knowledge.evals.eval_def import EvalContext, JudgeResult, Rubric
 
 # Tools the boxed agent may use. Bash / WebSearch / WebFetch are explicitly
 # denied so it can only produce the answer from its own knowledge + the
@@ -156,20 +156,28 @@ class ClaudeCodeRunner:
                 "bypassPermissions",
             ]
             stdout = self.run_cli(args, workdir, _subscription_env(), self.timeout)
-            output = self._collect_output(workdir, stdout)
-            return EvalContext(case_id=case.id, output=output, checkout_path=str(workdir))
+            output, source = self._collect_output(workdir, stdout)
+            return EvalContext(
+                case_id=case.id,
+                output=output,
+                checkout_path=str(workdir),
+                raw_response=stdout,
+                output_source=source,
+                injected_knowledge=knowledge,
+            )
 
-    def _collect_output(self, workdir: Path, stdout: str) -> str:
-        """The graded output: the named artifact if present, else everything the
-        agent wrote into the box, else the assistant's final text.
+    def _collect_output(self, workdir: Path, stdout: str) -> tuple[str, str]:
+        """The graded output plus which artifact it came from.
 
-        Reading the box's files keeps the runner case-agnostic — a poem case
-        yields poem.txt, a code case yields the source files — so one runner
-        drives every case.
+        The named artifact if present, else everything the agent wrote into the
+        box, else the assistant's final text. Reading the box's files keeps the
+        runner case-agnostic — a poem case yields poem.txt, a code case yields
+        the source files — so one runner drives every case. The source tag is
+        recorded on the transcript so a graded result is traceable to its origin.
         """
         preferred = workdir / self.output_file
         if preferred.exists():
-            return preferred.read_text(encoding="utf-8")
+            return preferred.read_text(encoding="utf-8"), "named_file"
 
         parts: list[str] = []
         for path in sorted(workdir.rglob("*")):
@@ -183,21 +191,24 @@ class ClaudeCodeRunner:
                 continue
             parts.append(f"# {path.relative_to(workdir).as_posix()}\n{text}")
 
-        return "\n\n".join(parts) if parts else _result_text(stdout)
+        if parts:
+            return "\n\n".join(parts), "box_sweep"
+        return _result_text(stdout), "final_text"
 
 
 class ClaudeCodeJudge:
     """Rubric judge that also runs through real Claude Code (subscription).
 
     Runs in a fresh temp dir with no CLAUDE.md so the injected knowledge can't
-    bias the grade. Returns a score in [0, 1].
+    bias the grade. Returns a :class:`JudgeResult` (overall score in [0, 1],
+    per-item scores, and the raw response for the transcript).
     """
 
     def __init__(self, run_cli: CliRunner | None = None, timeout: int = 120) -> None:
         self.run_cli = run_cli or _default_run_cli
         self.timeout = timeout
 
-    def __call__(self, rubric: Rubric, ctx: EvalContext) -> float:
+    def __call__(self, rubric: Rubric, ctx: EvalContext) -> JudgeResult:
         items = "\n".join(f"- ({it.weight}) {it.id}: {it.criterion}" for it in rubric.items)
         prompt = (
             "You are grading an artifact against a rubric. Score each criterion "
@@ -220,5 +231,6 @@ class ClaudeCodeJudge:
             stdout = self.run_cli(args, Path(tmp), _subscription_env(), self.timeout)
 
         parsed = _extract_json(_result_text(stdout))
-        overall = float(parsed.get("overall", 0.0))
-        return max(0.0, min(1.0, overall))
+        overall = max(0.0, min(1.0, float(parsed.get("overall", 0.0))))
+        per_item = {k: float(v) for k, v in (parsed.get("per_item") or {}).items()}
+        return JudgeResult(overall=overall, per_item=per_item, raw_response=stdout)

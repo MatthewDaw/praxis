@@ -5,11 +5,14 @@ import json
 from knowledge.evals.eval_def import EvalCase, EvalContext
 from knowledge.evals.run import (
     FakeRunner,
+    build_transcript,
     load_case,
     load_cases,
     resolve_check,
     run_case,
+    run_case_full,
     write_baseline,
+    write_transcript,
 )
 
 
@@ -113,6 +116,45 @@ def test_load_case_without_fixture_leaves_path_none(tmp_path):
     case_dir = tmp_path / "case"
     _write_case_yaml(case_dir)
     assert load_case(case_dir).fixture_path is None
+
+
+class _CaptureRunner:
+    """Runner that reports provenance, to prove the transcript captures it."""
+
+    def run(self, case, reader):
+        return EvalContext(
+            case_id=case.id,
+            output="def add(a, b):\n    return a + b\n",
+            raw_response='{"result": "done", "total_cost_usd": 0.01}',
+            output_source="named_file",
+            injected_knowledge="prefer terse code",
+        )
+
+
+def test_transcript_captures_raw_response_and_verdict():
+    case = _case()
+    ctx, judge_result, verdict = run_case_full(case, _CaptureRunner())
+    transcript = build_transcript(case, ctx, judge_result, verdict, run_id="run1")
+
+    assert transcript.run_id == "run1"
+    assert transcript.case_id == "c1"
+    assert transcript.injected_knowledge == "prefer terse code"
+    assert transcript.agent.raw_response == '{"result": "done", "total_cost_usd": 0.01}'
+    assert transcript.agent.output_source == "named_file"
+    assert transcript.verdict.passed is True
+    assert transcript.judge is None  # no rubric on this case
+
+
+def test_write_transcript_lands_file_under_run_id(tmp_path):
+    case = _case()
+    ctx, judge_result, verdict = run_case_full(case, _CaptureRunner())
+    transcript = build_transcript(case, ctx, judge_result, verdict, run_id="run1")
+
+    path = write_transcript(transcript, runs_dir=tmp_path)
+    assert path == tmp_path / "run1" / "c1.json"
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written["agent"]["raw_response"] == '{"result": "done", "total_cost_usd": 0.01}'
+    assert written["verdict"]["passed"] is True
 
 
 def test_registered_example_case_runs_end_to_end():

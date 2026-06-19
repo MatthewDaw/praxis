@@ -21,7 +21,7 @@ import re
 import urllib.request
 from typing import Callable
 
-from knowledge.evals.eval_def import EvalContext, Rubric
+from knowledge.evals.eval_def import EvalContext, JudgeResult, Rubric
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-4o-mini"
@@ -76,6 +76,24 @@ class OpenRouterClient:
         model: str | None = None,
     ) -> str:
         """Return the assistant message text for one chat completion."""
+        text, _ = self.complete_raw(
+            messages, temperature=temperature, max_tokens=max_tokens, model=model
+        )
+        return text
+
+    def complete_raw(
+        self,
+        messages: list[dict],
+        *,
+        temperature: float = 0.0,
+        max_tokens: int = 1024,
+        model: str | None = None,
+    ) -> tuple[str, str]:
+        """Like :meth:`complete`, but also return the raw response body.
+
+        The raw body carries usage/model/id metadata, so the transcript keeps it
+        verbatim — the parallel to ``ClaudeCodeRunner``'s ``raw_response``.
+        """
         if not self.api_key:
             raise RuntimeError("set OPENROUTER_API_KEY to use the OpenRouter backend")
         payload = {
@@ -98,7 +116,7 @@ class OpenRouterClient:
 
         raw = self.post(OPENROUTER_URL, payload, headers, self.timeout)
         data = json.loads(raw)
-        return data["choices"][0]["message"]["content"]
+        return data["choices"][0]["message"]["content"], raw
 
 
 class OpenRouterRunner:
@@ -125,19 +143,25 @@ class OpenRouterRunner:
         if knowledge.strip():
             messages.append({"role": "system", "content": knowledge})
         messages.append({"role": "user", "content": case.seed_prompt})
-        output = self.client.complete(
+        output, raw = self.client.complete_raw(
             messages, temperature=self.temperature, max_tokens=self.max_tokens
         )
-        return EvalContext(case_id=case.id, output=output)
+        return EvalContext(
+            case_id=case.id,
+            output=output,
+            raw_response=raw,
+            output_source="completion",  # single-shot reply, no tools/files
+            injected_knowledge=knowledge,
+        )
 
 
 class OpenRouterJudge:
-    """Rubric judge via a cheap OpenRouter model. Returns a score in [0, 1]."""
+    """Rubric judge via a cheap OpenRouter model. Returns a :class:`JudgeResult`."""
 
     def __init__(self, client: OpenRouterClient | None = None) -> None:
         self.client = client or OpenRouterClient()
 
-    def __call__(self, rubric: Rubric, ctx: EvalContext) -> float:
+    def __call__(self, rubric: Rubric, ctx: EvalContext) -> JudgeResult:
         items = "\n".join(
             f"- ({it.weight}) {it.id}: {it.criterion}" for it in rubric.items
         )
@@ -148,11 +172,13 @@ class OpenRouterJudge:
             "No prose.\n\n"
             f"RUBRIC:\n{items}\n\nARTIFACT:\n{ctx.output}\n"
         )
-        text = self.client.complete(
+        text, raw = self.client.complete_raw(
             [{"role": "user", "content": prompt}], temperature=0.0, max_tokens=512
         )
-        overall = float(_extract_json(text).get("overall", 0.0))
-        return max(0.0, min(1.0, overall))
+        parsed = _extract_json(text)
+        overall = max(0.0, min(1.0, float(parsed.get("overall", 0.0))))
+        per_item = {k: float(v) for k, v in (parsed.get("per_item") or {}).items()}
+        return JudgeResult(overall=overall, per_item=per_item, raw_response=raw)
 
 
 def openrouter_llm(client: OpenRouterClient | None = None) -> Callable[[str], str]:
