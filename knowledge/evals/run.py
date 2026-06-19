@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -23,12 +24,15 @@ import yaml
 
 from knowledge.evals.claude_code import ClaudeCodeJudge, ClaudeCodeRunner
 from knowledge.evals.eval_def import (
+    AgentRun,
     CaseResult,
     CheckResult,
     DeterministicCheckRef,
     EvalCase,
     EvalContext,
+    JudgeResult,
     Rubric,
+    RunTranscript,
 )
 from knowledge.wiring import build_trio
 
@@ -36,6 +40,7 @@ HERE = Path(__file__).parent
 CASES_DIR = HERE / "cases"
 RESULTS_DIR = HERE / "results"
 BASELINE_PATH = RESULTS_DIR / "baseline.jsonl"
+RUNS_DIR = RESULTS_DIR / "runs"  # verbose per-run transcripts (gitignored)
 
 # Overall verdict threshold for a rubric-only case.
 PASS_THRESHOLD = 0.5
@@ -98,14 +103,14 @@ def run_checks(case: EvalCase, ctx: EvalContext) -> list[CheckResult]:
 # --------------------------------------------------------------------------- #
 # M6 — rubric grader
 # --------------------------------------------------------------------------- #
-# A judge scores a rubric against the output, returning a value in [0, 1].
-RubricJudge = Callable[[Rubric, EvalContext], float]
+# A judge scores a rubric against the output, returning a JudgeResult.
+RubricJudge = Callable[[Rubric, EvalContext], JudgeResult]
 
 
 def grade_rubric(
     case: EvalCase, ctx: EvalContext, judge: RubricJudge | None
-) -> float | None:
-    """Return the rubric score, or ``None`` when there's no rubric/judge."""
+) -> JudgeResult | None:
+    """Return the judge result, or ``None`` when there's no rubric/judge."""
     if case.rubric is None or judge is None:
         return None
     return judge(case.rubric, ctx)
@@ -157,16 +162,18 @@ def run_component(case: EvalCase, llm=None) -> EvalContext:
     return EvalContext(case_id=case.id, output=output)
 
 
-def run_case(
+def run_case_full(
     case: EvalCase,
     runner: Runner,
     judge: RubricJudge | None = None,
     llm=None,
-) -> CaseResult:
-    """Run a single case end-to-end and return its graded result.
+) -> tuple[EvalContext, JudgeResult | None, CaseResult]:
+    """Run + grade a case, returning everything a transcript needs.
 
     Component-scoped cases run deterministically via ``run_component`` and ignore
     ``runner``; full-pipeline cases seed knowledge and run the agent ``runner``.
+    Returns the runner's context, the judge result (``None`` if unjudged), and
+    the verdict. :func:`run_case` is the thin verdict-only wrapper over this.
     """
     if case.component is not None:
         ctx = run_component(case, llm=llm)
@@ -175,7 +182,8 @@ def run_case(
         ctx = runner.run(case, reader)
 
     checks = run_checks(case, ctx)
-    rubric_score = grade_rubric(case, ctx, judge)
+    judge_result = grade_rubric(case, ctx, judge)
+    rubric_score = None if judge_result is None else judge_result.overall
 
     checks_ok = bool(checks) and all(c.passed for c in checks)
     if checks:
@@ -183,11 +191,46 @@ def run_case(
     else:
         passed = rubric_score is not None and rubric_score >= PASS_THRESHOLD
 
-    return CaseResult(
+    result = CaseResult(
         case_id=case.id,
         checks=checks,
         rubric_score=rubric_score,
         passed=passed,
+    )
+    return ctx, judge_result, result
+
+
+def run_case(
+    case: EvalCase,
+    runner: Runner,
+    judge: RubricJudge | None = None,
+    llm=None,
+) -> CaseResult:
+    """Run a single case end-to-end and return its graded verdict."""
+    _, _, result = run_case_full(case, runner, judge=judge, llm=llm)
+    return result
+
+
+def build_transcript(
+    case: EvalCase,
+    ctx: EvalContext,
+    judge_result: JudgeResult | None,
+    verdict: CaseResult,
+    run_id: str,
+) -> RunTranscript:
+    """Assemble the verbose per-case record from a completed run."""
+    return RunTranscript(
+        run_id=run_id,
+        case_id=case.id,
+        seed_prompt=case.seed_prompt or "",  # component cases have no seed_prompt
+        injected_knowledge=ctx.injected_knowledge or "",
+        agent=AgentRun(
+            raw_response=ctx.raw_response,
+            output=ctx.output,
+            output_source=ctx.output_source,
+        ),
+        judge=judge_result,
+        verdict=verdict,
     )
 
 
@@ -270,6 +313,15 @@ def select_runner(kind: str):
     return ClaudeCodeRunner(), ClaudeCodeJudge()
 
 
+def write_transcript(transcript: RunTranscript, runs_dir: Path = RUNS_DIR) -> Path:
+    """Write one verbose transcript to ``<runs_dir>/<run_id>/<case_id>.json``."""
+    out_dir = runs_dir / transcript.run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{transcript.case_id}.json"
+    path.write_text(json.dumps(transcript.model_dump(), indent=2), encoding="utf-8")
+    return path
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="knowledge.evals.run")
     parser.add_argument("case_ids", nargs="*", help="case ids to run (default: all)")
@@ -299,10 +351,12 @@ def main(argv: list[str] | None = None) -> int:
     runner, judge = select_runner(kind)
     print(f"running {len(cases)} case(s) through {_BACKEND_LABEL[kind]}...")
 
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     results = []
     for case in cases:
-        run_result = run_case(case, runner, judge=judge)
+        ctx, judge_result, run_result = run_case_full(case, runner, judge=judge)
         results.append(run_result)
+        write_transcript(build_transcript(case, ctx, judge_result, run_result, run_id))
     write_baseline(results)
 
     for r in results:
@@ -313,6 +367,7 @@ def main(argv: list[str] | None = None) -> int:
             f"checks={sum(c.passed for c in r.checks)}/{len(r.checks)}{score}"
         )
     print(f"\nwrote {len(results)} rows -> {BASELINE_PATH}")
+    print(f"wrote {len(results)} transcript(s) -> {RUNS_DIR / run_id}")
     return 0
 
 

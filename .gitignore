@@ -6,6 +6,9 @@
 # Generated eval baselines
 knowledge/evals/results/*.jsonl
 
+# Verbose per-run eval transcripts (raw agent/judge responses)
+knowledge/evals/results/runs/
+
 # Python
 __pycache__/
 *.pyc

@@ -90,11 +90,19 @@ class EvalCase(BaseModel):
 
 
 class EvalContext(BaseModel):
-    """What graders see: the agent's produced output and where it ran."""
+    """What graders see: the agent's produced output and where it ran.
+
+    The trailing fields are *provenance* for the run transcript — they don't
+    affect grading. A runner with nothing to report (e.g. ``FakeRunner``) leaves
+    them ``None``.
+    """
 
     case_id: str
     output: str  # produced diff / files / text
     checkout_path: str | None = None  # working dir the run happened in
+    raw_response: str | None = None  # full agent CLI stdout (json: result + cost/usage/turns)
+    output_source: str | None = None  # which artifact `output` came from
+    injected_knowledge: str | None = None  # what the graph reader fed into the system prompt
 
 
 class CheckResult(BaseModel):
@@ -107,8 +115,42 @@ class CheckResult(BaseModel):
 # resolved from a DeterministicCheckRef.ref and called with ref.params as kwargs.
 
 
+class JudgeResult(BaseModel):
+    """What a rubric judge returns: the overall score plus its provenance."""
+
+    overall: float  # weighted average in [0, 1] — the value that drives the verdict
+    per_item: dict[str, float] = Field(default_factory=dict)  # per-criterion scores
+    raw_response: str | None = None  # the judge's full CLI stdout
+
+
 class CaseResult(BaseModel):
     case_id: str
     checks: list[CheckResult] = Field(default_factory=list)
     rubric_score: float | None = None
     passed: bool  # overall verdict for the baseline row
+
+
+class AgentRun(BaseModel):
+    """The agent half of a transcript: what it produced and the raw response."""
+
+    raw_response: str | None = None
+    output: str = ""
+    output_source: str | None = None
+
+
+class RunTranscript(BaseModel):
+    """The full, verbose record of one case in one run.
+
+    Written per-case to ``results/runs/<run_id>/<case_id>.json`` — the scoreboard
+    (``baseline.jsonl``) stays compact; this carries everything for debugging:
+    the raw agent + judge responses (cost/usage/turns ride along inside them),
+    the injected knowledge, and the graded verdict.
+    """
+
+    run_id: str
+    case_id: str
+    seed_prompt: str
+    injected_knowledge: str = ""
+    agent: AgentRun
+    judge: JudgeResult | None = None
+    verdict: CaseResult
