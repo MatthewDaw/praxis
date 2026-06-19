@@ -33,6 +33,12 @@ def _cors_origin_regex() -> str:
     return custom or _DEFAULT_CORS_REGEX
 
 
+def _store_type(store: Any) -> str:
+    from knowledge.serve.postgres_store import PostgresCandidateStore
+
+    return "postgres" if isinstance(store, PostgresCandidateStore) else "json"
+
+
 def default_store() -> Any:
     """Pick a backing store: Postgres when a DSN resolves, else the JSON file.
 
@@ -72,7 +78,11 @@ def create_app(store: Any | None = None) -> FastAPI:
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        return {"status": "ok", "candidates": len(store.list())}
+        return {
+            "status": "ok",
+            "candidates": len(store.list()),
+            "store": _store_type(store),
+        }
 
     @app.get("/candidates")
     def list_candidates(state: str | None = None) -> list[dict[str, Any]]:

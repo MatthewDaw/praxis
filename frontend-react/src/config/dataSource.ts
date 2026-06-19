@@ -22,6 +22,7 @@ export const DATA_SOURCE_STORAGE_KEY = "praxis-data-source-v1";
 export const PRESET_IDS = {
   mock: "mock-fixtures",
   local: "live-local",
+  postgres: "live-postgres-aws",
   deployed: "live-deployed",
   custom: "live-custom",
 } as const;
@@ -39,14 +40,22 @@ export const DATA_SOURCE_PRESETS: DataSourcePreset[] = [
     label: "Local API (Matthew)",
     mode: "live",
     defaultApiBaseUrl: "http://localhost:8000",
-    helpText: "knowledge/serve FastAPI on localhost — pipeline-seeded candidates.",
+    helpText:
+      "knowledge/serve FastAPI on localhost — JSON or Postgres depending on PRAXIS_DB_URL on the API.",
+  },
+  {
+    id: PRESET_IDS.postgres,
+    label: "Live API (PostgreSQL on AWS)",
+    mode: "live",
+    helpText:
+      "Matthew's candidate API backed by AWS RDS (praxis_kg). Set PRAXIS_DB_URL on the API — dashboard uses API URL only.",
   },
   {
     id: PRESET_IDS.deployed,
     label: "Deployed API (Render)",
     mode: "live",
     helpText:
-      "Build-time VITE_PRAXIS_API_BASE_URL — praxis-candidate-api on Render.",
+      "Build-time VITE_PRAXIS_API_BASE_URL — praxis-candidate-api on Render; ephemeral JSON unless PRAXIS_DB_URL is set on the API service.",
   },
   {
     id: PRESET_IDS.custom,
@@ -61,8 +70,20 @@ function envApiBaseUrl(): string | undefined {
   return import.meta.env.VITE_PRAXIS_API_BASE_URL?.trim() || undefined;
 }
 
+function envPostgresApiBaseUrl(): string | undefined {
+  return (
+    import.meta.env.VITE_PRAXIS_POSTGRES_API_BASE_URL?.trim() ||
+    import.meta.env.VITE_PRAXIS_API_BASE_URL?.trim() ||
+    undefined
+  );
+}
+
 export function getDeployedApiBaseUrl(): string | undefined {
   return envApiBaseUrl();
+}
+
+export function getPostgresApiBaseUrl(): string | undefined {
+  return envPostgresApiBaseUrl();
 }
 
 function envApiToken(): string | undefined {
@@ -104,6 +125,8 @@ export function buildConfigFromPreset(
     apiBaseUrl = customApiBaseUrl?.trim();
   } else if (preset.id === PRESET_IDS.deployed) {
     apiBaseUrl = envApiBaseUrl();
+  } else if (preset.id === PRESET_IDS.postgres) {
+    apiBaseUrl = envPostgresApiBaseUrl() ?? "http://localhost:8000";
   } else {
     apiBaseUrl = preset.defaultApiBaseUrl;
   }
@@ -115,7 +138,8 @@ export function buildConfigFromPreset(
   const normalized = apiBaseUrl.replace(/\/$/, "");
   const evalFromEnv = envEvalMetricsUrl();
   const evalMetricsUrl =
-    evalFromEnv && preset.id === PRESET_IDS.deployed
+    evalFromEnv &&
+    (preset.id === PRESET_IDS.deployed || preset.id === PRESET_IDS.postgres)
       ? evalFromEnv
       : deriveEvalMetricsUrl(normalized);
 
@@ -171,9 +195,13 @@ export function resolveInitialConfig(): DataSourceConfig {
     /* ignore corrupt storage */
   }
 
+  if (envPostgresApiBaseUrl()) {
+    return buildConfigFromPreset(PRESET_IDS.postgres);
+  }
+
   const deployedUrl = envApiBaseUrl();
   if (deployedUrl) {
-    return buildConfigFromPreset(PRESET_IDS.deployed);
+    return buildConfigFromPreset(PRESET_IDS.postgres);
   }
 
   return buildConfigFromPreset(PRESET_IDS.mock);

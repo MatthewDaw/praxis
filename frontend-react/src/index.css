@@ -860,6 +860,11 @@ code,
   margin: 0;
 }
 
+.data-source-control__hint--warn {
+  color: var(--warning, #b45309);
+  margin-top: 0.35rem;
+}
+
 .env-badge code {
   font-size: 0.75rem;
   max-width: 200px;

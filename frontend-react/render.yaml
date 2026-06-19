@@ -22,6 +22,8 @@ services:
         value: 0.0.0.0
       - key: PYTHON_VERSION
         value: "3.12"
+      - key: PRAXIS_DB_URL
+        sync: false
 
   - type: web
     name: praxis-react-human-gate
@@ -41,6 +43,11 @@ services:
       - key: NODE_VERSION
         value: "20"
       - key: VITE_PRAXIS_API_BASE_URL
+        fromService:
+          type: web
+          name: praxis-candidate-api
+          envVarKey: RENDER_EXTERNAL_URL
+      - key: VITE_PRAXIS_POSTGRES_API_BASE_URL
         fromService:
           type: web
           name: praxis-candidate-api

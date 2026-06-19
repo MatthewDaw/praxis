@@ -2,11 +2,13 @@ import { DataSourceControl } from "../ui/DataSourceControl";
 import { EnvironmentBadge } from "../ui/EnvironmentBadge";
 import { GitLabRepoLink } from "../ui/GitLabRepoLink";
 import type { DataSourceConfig, DataSourceMode } from "../../config/dataSource";
+import type { ApiStoreType } from "../../hooks/useApiHealth";
 
 interface DashboardHeaderProps {
   mode: DataSourceMode;
   label: string;
   detail?: string;
+  storeType?: ApiStoreType;
   config: DataSourceConfig;
   onDataSourceLoad: (presetId: string, customApiBaseUrl?: string) => void;
   onRefresh: () => void;
@@ -16,6 +18,7 @@ export function DashboardHeader({
   mode,
   label,
   detail,
+  storeType,
   config,
   onDataSourceLoad,
   onRefresh,
@@ -33,8 +36,17 @@ export function DashboardHeader({
         </p>
       </div>
       <div className="dashboard-header__meta">
-        <EnvironmentBadge mode={mode} label={label} detail={detail} />
-        <DataSourceControl config={config} onLoad={onDataSourceLoad} />
+        <EnvironmentBadge
+          mode={mode}
+          label={label}
+          detail={detail}
+          storeType={storeType}
+        />
+        <DataSourceControl
+          config={config}
+          storeType={storeType}
+          onLoad={onDataSourceLoad}
+        />
         <div className="dashboard-header__actions">
           <button type="button" className="btn primary" onClick={onRefresh}>
             Refresh data

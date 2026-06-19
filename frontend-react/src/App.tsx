@@ -13,6 +13,7 @@ import { ContentSplit } from "./components/layout/ContentSplit";
 import { DashboardHeader } from "./components/layout/DashboardHeader";
 import { FilterBar } from "./components/layout/FilterBar";
 import { LoadingSkeleton } from "./components/ui/LoadingSkeleton";
+import { useApiHealth } from "./hooks/useApiHealth";
 import { useDataSource } from "./hooks/useDataSource";
 import { filterCandidates, useCandidates } from "./hooks/useCandidates";
 import "./index.css";
@@ -21,6 +22,8 @@ type ViewTab = "table" | "cards" | "contradictions";
 
 export default function App() {
   const { config, mode, label, detail, applyConfig } = useDataSource();
+  const [healthRefreshKey, setHealthRefreshKey] = useState(0);
+  const { storeType, refetch: refetchHealth } = useApiHealth(config, healthRefreshKey);
   const {
     provider,
     candidates,
@@ -76,6 +79,14 @@ export default function App() {
   function handleDataSourceLoad(presetId: string, customApiBaseUrl?: string) {
     setActionError(null);
     applyConfig(presetId, customApiBaseUrl);
+    setHealthRefreshKey((value) => value + 1);
+    refetchHealth();
+  }
+
+  function handleRefresh() {
+    void refresh();
+    setHealthRefreshKey((value) => value + 1);
+    refetchHealth();
   }
 
   async function handlePromote(id: string) {
@@ -144,9 +155,10 @@ export default function App() {
         mode={mode}
         label={label}
         detail={detail}
+        storeType={storeType}
         config={config}
         onDataSourceLoad={handleDataSourceLoad}
-        onRefresh={() => void refresh()}
+        onRefresh={handleRefresh}
       />
 
       {lastAction ? <div className="success-banner">{lastAction}</div> : null}

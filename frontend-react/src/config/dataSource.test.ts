@@ -37,6 +37,7 @@ describe("dataSource config", () => {
   beforeEach(() => {
     vi.stubGlobal("localStorage", createStorageMock());
     vi.stubEnv("VITE_PRAXIS_API_BASE_URL", "");
+    vi.stubEnv("VITE_PRAXIS_POSTGRES_API_BASE_URL", "");
     vi.stubEnv("VITE_PRAXIS_API_TOKEN", "");
     vi.stubEnv("VITE_PRAXIS_EVAL_METRICS_URL", "");
   });
@@ -56,6 +57,21 @@ describe("dataSource config", () => {
     expect(config.evalMetricsUrl).toBe("http://localhost:8000/metrics");
   });
 
+  it("builds postgres preset with localhost fallback when env unset", () => {
+    const config = buildConfigFromPreset(PRESET_IDS.postgres);
+    expect(config.mode).toBe("live");
+    expect(config.presetId).toBe(PRESET_IDS.postgres);
+    expect(config.apiBaseUrl).toBe("http://localhost:8000");
+    expect(config.evalMetricsUrl).toBe("http://localhost:8000/metrics");
+  });
+
+  it("postgres preset prefers VITE_PRAXIS_POSTGRES_API_BASE_URL over generic URL", () => {
+    vi.stubEnv("VITE_PRAXIS_POSTGRES_API_BASE_URL", "https://postgres.api.test");
+    vi.stubEnv("VITE_PRAXIS_API_BASE_URL", "https://generic.api.test");
+    const config = buildConfigFromPreset(PRESET_IDS.postgres);
+    expect(config.apiBaseUrl).toBe("https://postgres.api.test");
+  });
+
   it("derives eval metrics URL without trailing slash", () => {
     expect(deriveEvalMetricsUrl("http://localhost:8000/")).toBe(
       "http://localhost:8000/metrics",
@@ -70,13 +86,20 @@ describe("dataSource config", () => {
     expect(restored.apiBaseUrl).toBe("http://localhost:8000");
   });
 
-  it("defaults to deployed preset when env API URL is set", () => {
+  it("defaults to postgres preset when env API URL is set", () => {
     vi.stubEnv("VITE_PRAXIS_API_BASE_URL", "https://api.example.com");
     vi.stubEnv("VITE_PRAXIS_EVAL_METRICS_URL", "https://api.example.com/metrics");
     const config = resolveInitialConfig();
     expect(config.mode).toBe("live");
-    expect(config.presetId).toBe(PRESET_IDS.deployed);
+    expect(config.presetId).toBe(PRESET_IDS.postgres);
     expect(config.apiBaseUrl).toBe("https://api.example.com");
+  });
+
+  it("defaults to postgres preset when postgres env URL is set", () => {
+    vi.stubEnv("VITE_PRAXIS_POSTGRES_API_BASE_URL", "https://postgres.example.com");
+    const config = resolveInitialConfig();
+    expect(config.presetId).toBe(PRESET_IDS.postgres);
+    expect(config.apiBaseUrl).toBe("https://postgres.example.com");
   });
 
   it("custom preset requires URL", () => {
