@@ -1,0 +1,35 @@
+# Matthew pillar eval: direct graph write (provenance-style policy) is visible to reader.
+# Expected to FAIL under offline FakeRunner until a real agent run.
+id: docstring_policy
+seed_prompt: |
+  Write a Python function named `multiply` that returns the product of two
+  numbers. Output only the function source.
+target_commit: "0000000000000000000000000000000000000000"
+start_commit: null
+repo: null
+
+seeded_insight:
+  direct_to_graph:
+    - "Every public function must include a Google-style docstring with Args and Returns sections."
+
+deterministic_checks:
+  - name: has_docstring
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: '"""'
+  - name: defines_multiply
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "def multiply"
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+
+rubric:
+  id: docstring_policy_v1
+  items:
+    - id: google_style
+      criterion: "The docstring follows Google style with Args and Returns."
+      weight: 2.0
+    - id: correctness
+      criterion: "multiply returns a * b for numeric inputs."
+      weight: 1.0

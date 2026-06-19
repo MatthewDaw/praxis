@@ -1,0 +1,52 @@
+# Fixture-seeded case: the sibling `fixture/` dir (a tiny working calculator app
+# with subtract but no add) is copied into the box as the start state, and the
+# agent must edit calculator.py to add `add`. Expected to FAIL under the offline
+# FakeRunner — the point is the harness runs end-to-end and records a baseline.
+id: dom_fixture_test
+seed_prompt: |
+  Add a function `add(a, b)` to calculator.py that returns the sum of its two
+  arguments, with a docstring and a corresponding test.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor:
+    - "This project keeps small pure helpers in calculator.py."
+  direct_to_graph:
+    - "Every public function needs a docstring and a unit test."
+    ######
+    ## This one didn't convince Claude Code to pass the eval.
+#    - "If an existing function can calculate something already, just with an input remapping, use it."
+    ######
+    ## This one worked, but was pretty much overfitting
+#    - "add functions should always be written in terms of subtract, rather than implemented directly."
+    ######
+    ## This one worked too, and is a little more general
+    - "If a function can be written in terms of an existing function, it should be, rather than being implemented directly"
+
+deterministic_checks:
+  - name: defines_add
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "def add"
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+  - name: add_calls_subtract
+    ref: "knowledge.evals.deterministic_checks.builds:function_calls"
+    params:
+      caller: add
+      callee: subtract
+
+rubric:
+  id: add_function_v1
+  items:
+    - id: correctness
+      criterion: "The add function returns a + b for representative inputs."
+      weight: 2.0
+    - id: docstring
+      criterion: "The function has a clear docstring."
+      weight: 1.0
+    - id: test
+      criterion: "There is a test exercising the function."
+      weight: 1.0

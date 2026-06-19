@@ -14,7 +14,9 @@ from services.data_provider import DataProvider
 _SELECTED_KEY = "selected_candidate_id"
 _CONFIRM_PROMOTE_KEY = "confirm_promote_id"
 _CONFIRM_REJECT_KEY = "confirm_reject_id"
+_CONFIRM_REJECT_REASON_KEY = "confirm_reject_reason"
 _LAST_ACTION_KEY = "last_gate_action"
+_LOW_CONFIDENCE_THRESHOLD = 0.5
 
 
 def filter_candidates(
@@ -270,6 +272,11 @@ def _render_confirmation_dialogs(provider: DataProvider) -> None:
             f"Promote **{candidate.title}** from **{candidate.display_state}** "
             f"to **{next_state.value}**?"
         )
+        if candidate.confidence < _LOW_CONFIDENCE_THRESHOLD:
+            st.warning(
+                f"Confidence is **{candidate.confidence:.0%}** (below {_LOW_CONFIDENCE_THRESHOLD:.0%}) — "
+                "confirm you want to promote a low-confidence lesson."
+            )
         c1, c2 = st.columns(2)
         with c1:
             if st.button("Confirm promote", type="primary", key="confirm_promote_yes"):
@@ -285,13 +292,19 @@ def _render_confirmation_dialogs(provider: DataProvider) -> None:
         candidate = provider.get_candidate(reject_id)
         title = candidate.title if candidate else reject_id
         st.warning(f"Reject **{title}** and remove it from the review queue?")
+        reason = st.text_input(
+            "Rejection reason (optional)",
+            key=_CONFIRM_REJECT_REASON_KEY,
+            help="Sent to Matthew's API as the reject reason when using live mode.",
+        )
         c1, c2 = st.columns(2)
         with c1:
             if st.button("Confirm reject", type="primary", key="confirm_reject_yes"):
-                _execute_reject(provider, reject_id, title)
+                _execute_reject(provider, reject_id, title, reason=reason.strip() or None)
         with c2:
             if st.button("Cancel", key="confirm_reject_no"):
                 st.session_state.pop(_CONFIRM_REJECT_KEY, None)
+                st.session_state.pop(_CONFIRM_REJECT_REASON_KEY, None)
                 st.rerun()
 
 
@@ -324,12 +337,20 @@ def _execute_promote(
     st.rerun()
 
 
-def _execute_reject(provider: DataProvider, candidate_id: str, title: str) -> None:
+def _execute_reject(
+    provider: DataProvider,
+    candidate_id: str,
+    title: str,
+    *,
+    reason: str | None = None,
+) -> None:
     try:
-        provider.reject(candidate_id)
+        provider.reject(candidate_id, reason=reason)
     except KeyError as exc:
         st.session_state[_LAST_ACTION_KEY] = f"Reject failed: {exc}"
     else:
-        st.session_state[_LAST_ACTION_KEY] = f"Rejected **{title}**."
+        note = f" (reason: {reason})" if reason else ""
+        st.session_state[_LAST_ACTION_KEY] = f"Rejected **{title}**{note}."
     st.session_state.pop(_CONFIRM_REJECT_KEY, None)
+    st.session_state.pop(_CONFIRM_REJECT_REASON_KEY, None)
     st.rerun()

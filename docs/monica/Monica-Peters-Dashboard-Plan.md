@@ -3,7 +3,7 @@
 Pillar documentation: [ARCHITECTURE_MONICA.md](ARCHITECTURE_MONICA.md) · [monica-wireframes.md](monica-wireframes.md) (as-built spec).
 
 **Role:** Dashboard & Human Gate Lead  
-**Focus:** Streamlit human-gate dashboard (`frontend/`), human approval workflow (proposed→suggested→active), contradiction resolution UI, credibility metrics viz, injection controls. React deferred — custom UI design out of sprint scope.  
+**Focus:** Streamlit human-gate dashboard (`frontend/`) and React Knowledge Graph dashboard (`frontend-react/`) for Matthew's API validation — human approval workflow (proposed→suggested→active), contradiction resolution UI, credibility metrics viz, injection controls. Streamlit remains Monica's sprint demo path; React delivers the project-plan review UI for teammates who prefer a SPA stack.  
 **Interview Claim:** "I designed and built the human approval dashboard that enforces quality gates and makes knowledge promotion transparent and measurable."
 
 **Sprint Schedule Note:** 10 full work days (skipping Thursday June 18). Day 1 = Wednesday June 16. Days 9–10 (June 26–27) reserved for project completion and presentation practice/perfection. All times EOD unless noted.
@@ -34,11 +34,11 @@ Pillar documentation: [ARCHITECTURE_MONICA.md](ARCHITECTURE_MONICA.md) · [monic
 
 ### Days 6–7: Integration & Human Gate (Due: End of Day 7 — Wednesday, June 24)
 - **Day 6 Deliverables:**
-  - Dashboard ↔ backend API integration + approval actions wired.
+  - Dashboard ↔ backend API integration + approval actions wired (Streamlit + React clients).
 - **Day 7 Deliverables:**
-  - Full human approval flow complete.
+  - Full human approval flow complete on both UIs.
   - Provenance display in UI.
-- **Key Output:** End-to-end human gate functional: users can review, resolve contradictions, promote knowledge with full audit trail visible.
+- **Key Output:** End-to-end human gate functional: users can review, resolve contradictions, promote knowledge with full audit trail visible. Matthew validates server against `frontend-react/` without installing Streamlit.
 
 ### Day 8: Eval Harness & Measurement (Due: End of Day 8 — Thursday, June 25)
 - Dashboard polish + edge-case handling in review flow.

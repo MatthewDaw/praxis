@@ -195,7 +195,11 @@ def run_case(
 # M4 (loader) + M8 (registry / baseline)
 # --------------------------------------------------------------------------- #
 def load_case(case_dir: Path) -> EvalCase:
-    """Load an ``EvalCase`` from ``<case_dir>/case.yaml``."""
+    """Load an ``EvalCase`` from ``<case_dir>/case.yaml``.
+
+    A sibling ``fixture/`` dir (if present) is the case's start state: its
+    resolved path is recorded on the case so the runner can copy it into the box.
+    """
     data = yaml.safe_load((case_dir / "case.yaml").read_text(encoding="utf-8"))
     case = EvalCase.model_validate(data)
     return case.model_copy(update={"source_dir": str(case_dir)})

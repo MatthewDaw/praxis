@@ -35,4 +35,4 @@ streamlit run app.py
 ## Files
 
 - [`frontend/render.yaml`](../frontend/render.yaml) — Render blueprint
-- [`frontend/.streamlit/config.toml`](../frontend/.streamlit/config.toml) — light theme defaults
+- [`frontend/.streamlit/config.toml`](../frontend/.streamlit/config.toml) — light theme defaults (committed via `!.streamlit/config.toml` in `frontend/.gitignore`)
