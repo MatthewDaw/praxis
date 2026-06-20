@@ -36,6 +36,7 @@ def _export_eval_metrics() -> None:
 
 
 def main() -> int:
+    sys.path.insert(0, str(_REPO_ROOT))
     sys.path.insert(0, str(_FRONTEND))
     from mock_data import get_mock_candidate_dicts, get_mock_graph_dict  # noqa: PLC0415
 

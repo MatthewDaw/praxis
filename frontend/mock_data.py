@@ -3,17 +3,19 @@
 Provenance uses canonical form ``logs/<file>.jsonl:<line>``. Rows cand_6–cand_17
 simulate pipeline distillation from Claude Code JSONL sessions on nushell/nushell.
 Rows with ``evalCaseId`` align with ``knowledge/evals/cases/`` (see MATTHEW_HANDOFF.md).
+Auto-generated ``eval_*`` rows cover every other registered case via ``eval_mock_bridge``.
 """
 
 import pandas as pd
 
 
-def get_mock_candidate_dicts() -> list[dict]:
-    """Return mock candidates as contract-shaped dicts (camelCase createdAt)."""
+def get_demo_candidate_dicts() -> list[dict]:
+    """Return hand-crafted demo narrative candidates (Acts 1–2 rehearsal)."""
     return [
         {
             "id": "cand_1",
             "evalCaseId": "quirky_exhaustive_switch",
+            "evalCaseNamespace": "quirky",
             "title": "TypeScript Exhaustive Switch Pattern",
             "content": "When using a switch statement on a discriminated union or enum, include a default case that assigns the value to a variable of type `never`. This ensures the compiler will throw an error if a new variant is added to the union but not handled in the switch.",
             "state": "proposed",
@@ -274,6 +276,7 @@ def get_mock_candidate_dicts() -> list[dict]:
         {
             "id": "cand_9",
             "evalCaseId": "quirky_config_load_order",
+            "evalCaseNamespace": "quirky",
             "title": "experimental_options Before Config Load",
             "content": "Early-boot experimental flags in nushell are read from the `experimental_options` environment variable before `config.nu` is evaluated. Set this variable in the parent shell or launcher script prior to starting `nu`, not inside config, when testing features that must be active at startup.",
             "state": "proposed",
@@ -489,6 +492,7 @@ def get_mock_candidate_dicts() -> list[dict]:
         {
             "id": "cand_16",
             "evalCaseId": "quirky_config_load_order",
+            "evalCaseNamespace": "quirky",
             "evalCaseRole": "rival",
             "title": "Experimental Flags in config.nu",
             "content": "For most experimental nushell features, enable flags under the `$env.config` experimental section in `config.nu` so they persist across sessions. This is the preferred path for day-to-day development when flags do not need to be set before the first config parse.",
@@ -557,6 +561,7 @@ def get_mock_candidate_dicts() -> list[dict]:
         {
             "id": "cand_18",
             "evalCaseId": "pathlib_preference",
+            "evalCaseNamespace": "monica",
             "title": "Prefer pathlib Over os.path",
             "content": "Stop using os.path for new code — use pathlib.Path; it's the project standard.",
             "state": "proposed",
@@ -591,6 +596,7 @@ def get_mock_candidate_dicts() -> list[dict]:
         {
             "id": "cand_19",
             "evalCaseId": "poison_negative_control_good",
+            "evalCaseNamespace": "monica",
             "title": "Docstring and Test Policy Before Merge",
             "content": "Every public function needs a docstring and a unit test before merge.",
             "state": "suggested",
@@ -626,6 +632,7 @@ def get_mock_candidate_dicts() -> list[dict]:
         {
             "id": "cand_20",
             "evalCaseId": "poison_negative_control_bad",
+            "evalCaseNamespace": "monica",
             "evalCaseRole": "rival",
             "title": "Never Add Docstrings",
             "content": "Never add docstrings; they bloat the codebase.",
@@ -661,6 +668,18 @@ def get_mock_candidate_dicts() -> list[dict]:
             ],
         },
     ]
+
+
+def get_mock_candidate_dicts() -> list[dict]:
+    """Demo narrative rows plus auto-generated rows for every registered eval case."""
+    from eval_mock_bridge import (
+        HAND_CRAFTED_EVAL_CASE_IDS,
+        generate_eval_candidate_dicts,
+    )
+
+    return get_demo_candidate_dicts() + generate_eval_candidate_dicts(
+        HAND_CRAFTED_EVAL_CASE_IDS
+    )
 
 
 def get_mock_graph_dict() -> dict:
@@ -742,6 +761,24 @@ def get_mock_graph_dict() -> dict:
             "memberIds": nushell_ids,
         },
     ]
+
+    eval_members: dict[str, list[str]] = {}
+    for row in candidates:
+        eval_case_id = row.get("evalCaseId")
+        if not eval_case_id:
+            continue
+        ns = row.get("evalCaseNamespace") or "eval"
+        eval_members.setdefault(ns, []).append(row["id"])
+
+    for ns in sorted(eval_members):
+        scope_groups.append(
+            {
+                "id": f"eval_{ns}",
+                "label": f"Eval — {ns.title()}",
+                "parentId": None,
+                "memberIds": sorted(eval_members[ns]),
+            }
+        )
 
     return {"nodes": nodes, "edges": edges, "scopeGroups": scope_groups}
 

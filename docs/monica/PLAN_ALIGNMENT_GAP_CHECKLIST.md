@@ -192,7 +192,7 @@ Dominic owns harness pairing (cold vs injected) and metrics; Monica owns **case 
 |------|--------|----------|
 | Reader / distiller wrapper | ⚠️ Partial | `knowledge/wiring.py`, `WholeFileReader`, `PromptIngestor` |
 | Basic injection into agent run | ⚠️ Partial | `knowledge/evals/claude_code.py` — `--append-system-prompt` from graph reader |
-| Fixed quirky repo / eval cases | ✅ | P0 `quirky_*` + poison good/bad shipped; mock rows `cand_1`, `cand_9`/`cand_16`, `cand_18`–`cand_20` carry `evalCaseId` |
+| Fixed quirky repo / eval cases | ✅ | All **63** registered YAML cases map to mock rows (`eval_*` auto-gen + hand-crafted `cand_*` demos) |
 | GitHub hook design | ❌ | No hook code in repo |
 
 ---

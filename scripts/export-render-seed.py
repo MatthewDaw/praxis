@@ -28,6 +28,7 @@ _API_SEED = _REPO_ROOT / "knowledge" / "serve" / "data" / "pipeline-candidates.j
 
 
 def main() -> int:
+    sys.path.insert(0, str(_REPO_ROOT))
     sys.path.insert(0, str(_FRONTEND))
     from mock_data import get_mock_candidate_dicts, get_mock_graph_dict  # noqa: PLC0415
 

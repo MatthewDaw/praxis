@@ -5,7 +5,7 @@ services:
     branch: monica/dashboard-human-gate
     runtime: python
     plan: free
-    buildCommand: pip install . && python scripts/export-render-seed.py
+    buildCommand: pip install . && python scripts/export-render-seed.py && python scripts/export-mock-candidates.py
     startCommand: uvicorn knowledge.serve.app:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     autoDeployTrigger: commit
@@ -16,6 +16,8 @@ services:
         - knowledge/injestion/**
         - knowledge/llm/**
         - pyproject.toml
+        - knowledge/evals/cases/**
+        - frontend/eval_mock_bridge.py
         - frontend/mock_data.py
         - scripts/export-render-seed.py
         - scripts/export-mock-candidates.py
@@ -34,14 +36,17 @@ services:
     branch: monica/dashboard-human-gate
     rootDir: frontend-react
     runtime: static
-    buildCommand: npm ci && npm run build:render
+    buildCommand: cd .. && pip install . && python scripts/export-mock-candidates.py && cd frontend-react && npm ci && npm run build:render
     staticPublishPath: ./dist
     autoDeployTrigger: commit
     buildFilter:
       paths:
         - frontend-react/**
-      ignoredPaths:
-        - frontend-react/**/*.md
+        - frontend/mock_data.py
+        - frontend/eval_mock_bridge.py
+        - knowledge/evals/cases/**
+        - scripts/export-mock-candidates.py
+        - docs/integration/fixtures/eval-metrics.json
     envVars:
       - key: NODE_VERSION
         value: "20"

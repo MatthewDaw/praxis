@@ -25,7 +25,7 @@ describe("mock graph workflow", () => {
       loadMockGraph(),
     );
     const graph = await provider.getGraph();
-    expect(graph.nodes.length).toBeGreaterThanOrEqual(20);
+    expect(graph.nodes.length).toBeGreaterThanOrEqual(78);
     const contradiction = graph.edges.find(
       (edge) =>
         edge.kind === "contradiction" &&
