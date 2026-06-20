@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib/core';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { Construct } from 'constructs';
+import { SESSION_SLICES } from './config';
 
 export interface SessionSlicesStackProps extends cdk.StackProps {
   /** S3 bucket holding raw transcript slices. Defaults to `praxis-session-slices`. */
@@ -42,7 +43,7 @@ export class SessionSlicesStack extends cdk.Stack {
     super(scope, id, props);
 
     this.slicesBucket = new s3.Bucket(this, 'SlicesBucket', {
-      bucketName: props.bucketName ?? 'praxis-session-slices',
+      bucketName: props.bucketName ?? SESSION_SLICES.bucketName,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
@@ -59,7 +60,7 @@ export class SessionSlicesStack extends cdk.Stack {
     });
 
     this.insightsTable = new dynamodb.Table(this, 'InsightsTable', {
-      tableName: props.insightsTableName ?? 'praxis-session-insights',
+      tableName: props.insightsTableName ?? SESSION_SLICES.insightsTableName,
       partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,

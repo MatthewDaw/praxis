@@ -6,3 +6,4 @@ cdk.out/
 cdk-outputs.json
 cdk-web-out.json
 node_modules/
+.db-backup/

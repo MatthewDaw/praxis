@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib/core';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import { Construct } from 'constructs';
+import { COGNITO } from './config';
 
 export interface AuthUserPoolStackProps extends cdk.StackProps {
   /** Physical Cognito User Pool name. Defaults to `praxis-users`. */
@@ -28,7 +29,7 @@ export class AuthUserPoolStack extends cdk.Stack {
     super(scope, id, props);
 
     this.userPool = new cognito.UserPool(this, 'UserPool', {
-      userPoolName: props.userPoolName ?? 'praxis-users',
+      userPoolName: props.userPoolName ?? COGNITO.userPoolName,
       selfSignUpEnabled: true,
       signInAliases: { email: true },
       autoVerify: { email: true },

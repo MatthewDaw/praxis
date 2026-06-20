@@ -59,7 +59,17 @@ def connect(dsn: str | None = None) -> psycopg.Connection:
             "No Postgres DSN available: set PRAXIS_DB_URL, or configure "
             f"PRAXIS_DB_SECRET (default {DEFAULT_SECRET!r}) with AWS credentials."
         )
-    return psycopg.connect(dsn, autocommit=True)
+    conn = psycopg.connect(dsn, autocommit=True)
+    # Register the pgvector adapter so embeddings round-trip as python lists.
+    # Best-effort: offline/no-vector paths must still get a usable connection.
+    try:
+        from pgvector.psycopg import register_vector
+
+        register_vector(conn)
+    except Exception:
+        # pgvector not installed, or the `vector` type isn't present — ignore.
+        pass
+    return conn
 
 
 def bootstrap(dsn: str | None = None) -> None:

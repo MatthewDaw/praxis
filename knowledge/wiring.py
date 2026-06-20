@@ -28,6 +28,26 @@ def _graph_for(substrate: str) -> KnowledgeGraph:
         return VectorGraph()
     if substrate == "in_memory":
         return InMemoryGraph.create()
+    if substrate == "postgres":
+        # The persistent store needs an explicit tenant; the backend injects a
+        # per-request instance via ``build_trio(graph=…)`` instead of going
+        # through ``substrate``. For standalone use (e.g. evals), supply tenancy
+        # via PRAXIS_ORG_ID / PRAXIS_USER_ID.
+        import os
+
+        from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+            PostgresVectorGraph,
+        )
+        from knowledge.serve import db
+
+        org_id = os.environ.get("PRAXIS_ORG_ID")
+        user_id = os.environ.get("PRAXIS_USER_ID")
+        if not org_id or not user_id:
+            raise ValueError(
+                "substrate 'postgres' needs tenancy: set PRAXIS_ORG_ID and "
+                "PRAXIS_USER_ID, or inject a PostgresVectorGraph via build_trio(graph=…)."
+            )
+        return PostgresVectorGraph(db.connect(), org_id, user_id)
     raise ValueError(f"unknown substrate: {substrate!r}")
 
 

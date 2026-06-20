@@ -1,7 +1,13 @@
 node_modules
 **/node_modules
 .git
-infra/cdk.out
+# The backend image copies only pyproject.toml, uv.lock, README.md and
+# knowledge/ — nothing from infra/. Excluding the whole dir keeps CDK synth
+# output (cdk.out and any variant) out of the Docker build context, which is
+# the repo root; otherwise the output dir nests into itself infinitely.
+infra/
+**/cdk.out*
+infra/cdk.out*
 infra/node_modules
 frontend-react/node_modules
 frontend-react/dist

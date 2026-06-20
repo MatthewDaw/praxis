@@ -23,10 +23,20 @@ from typing import Any
 from fastapi import Body, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+    PostgresVectorGraph,
+)
+from knowledge.knowledge_graph.write_policy.write_step_variants import (
+    ConflictOverwriter,
+    Deduper,
+    Redactor,
+)
+from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
 from knowledge.serve import contradiction_adapter, db
 from knowledge.serve.auth import Principal, current_user
 from knowledge.serve.orgs_store import OrgsStore
 from knowledge.serve.store import CandidateStore, PromotionError, contradiction_ids
+from knowledge.wiring import build_trio
 
 METRICS_FIXTURE = (
     Path(__file__).resolve().parents[2] / "docs" / "integration" / "fixtures" / "eval-metrics.json"
@@ -277,6 +287,68 @@ def create_app(store: Any | None = None) -> FastAPI:
         elif hasattr(store, "_persist"):
             store._persist()
         return {"detected_pairs": len(pairs)}
+
+    @app.post("/insights")
+    def add_insight(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Ingest a fully-approved insight into the active ``facts`` store.
+
+        Runs the eval write path (``ingestor.ingest`` -> ``graph.write``) with the
+        force-overwrite policy, so a contradicting add supersedes the conflicting
+        fact in place. The in-chat confirmation is the human gate, so the insight
+        enters at full credibility (``confidence`` defaults to 1.0 in the graph).
+        """
+        if orgs_store is None:
+            raise HTTPException(status_code=503, detail="insights require a database")
+        insight = (body.get("insight") or "").strip()
+        if not insight:
+            raise HTTPException(status_code=400, detail="insight required")
+        graph = PostgresVectorGraph(
+            store._conn,
+            org,
+            principal.sub,
+            policy=[Redactor(), Deduper(), ConflictOverwriter(llm=OpenRouterLlm())],
+        )
+        _, ingestor, _ = build_trio(graph=graph, llm=None)
+        before = graph.search(insight, top_k=1)
+        ingestor.ingest(insight)
+        after = graph.search(insight, top_k=1)
+        # Read back the outcome: a stable id with a higher observation_count means
+        # a merge/overwrite; a fresh id (or text change) means an add/overwrite.
+        prior = before[0].fact if before else None
+        top = after[0].fact if after else None
+        if prior is not None and top is not None and prior.id == top.id:
+            action = "overwrote" if top.text != prior.text else "merged"
+        else:
+            action = "added"
+        return {
+            "summary": f"{action} insight",
+            "action": action,
+            "id": top.id if top is not None else None,
+        }
+
+    @app.get("/context")
+    def get_context(
+        query: str = "",
+        top_k: int = 8,
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Return active-fact context relevant to ``query`` (the eval read path)."""
+        if orgs_store is None:
+            raise HTTPException(status_code=503, detail="context requires a database")
+        graph = PostgresVectorGraph(store._conn, org, principal.sub)
+        _, _, reader = build_trio(graph=graph, llm=None)
+        hits = graph.search(query, top_k=top_k) if query.strip() else []
+        return {
+            "context": reader.read(query),
+            "hits": [
+                {"id": h.fact.id, "text": h.fact.text, "score": h.score} for h in hits
+            ],
+        }
 
     @app.get("/metrics")
     def eval_metrics(

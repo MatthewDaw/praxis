@@ -12,7 +12,13 @@ dependencies = [
     "boto3>=1.35",
     "pyjwt[crypto]>=2.9",
     "httpx>=0.28",
+    "pgvector>=0.3",
+    "mcp>=1.2",
+    "pycognito>=2024.5",
 ]
+
+[project.scripts]
+praxis-mcp = "knowledge.mcp.server:main"
 
 [project.optional-dependencies]
 # Phoenix/OpenTelemetry tracing — install with `uv sync --extra observability`.

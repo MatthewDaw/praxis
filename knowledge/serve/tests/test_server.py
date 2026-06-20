@@ -5,8 +5,10 @@ principal. The in-memory store has no OrgsStore, so the X-Praxis-Org header is
 accepted without a membership check; we send one anyway to exercise the path.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
+from knowledge.serve import db
 from knowledge.serve.app import create_app
 from knowledge.serve.store import CandidateStore, SEED_FIXTURE, contradiction_ids
 
@@ -106,3 +108,39 @@ def test_orgs_create_requires_db(tmp_path):
     client, _ = _client(tmp_path)
     res = client.post("/orgs", json={"orgId": "acme", "password": "pw"})
     assert res.status_code == 503  # orgs require a database
+
+
+def test_insights_and_context_require_db(tmp_path):
+    # The graph endpoints only work on the Postgres path; the in-memory store has
+    # no OrgsStore, so both degrade to 503 (like the orgs routes).
+    client, _ = _client(tmp_path)
+    assert client.post("/insights", json={"insight": "use uv"}).status_code == 503
+    assert client.get("/context", params={"query": "deps"}).status_code == 503
+
+
+@pytest.mark.skipif(
+    db.resolve_dsn() is None,
+    reason="no Postgres DSN available (set PRAXIS_DB_URL or configure AWS secret)",
+)
+def test_insight_then_context_round_trips(unique_org):
+    # Real Postgres path: seed an org + membership for the dev principal, then
+    # assert POST /insights lands a fact and GET /context retrieves it.
+    from knowledge.serve.app import create_app as _create_app
+    from knowledge.serve.orgs_store import OrgsStore
+
+    app = _create_app()  # picks the Postgres store (DSN resolved)
+    conn = db.connect()
+    # Deterministic org id (from the test name) — clean any prior run so the
+    # create + membership + facts start fresh and reruns stay isolated.
+    conn.execute("DELETE FROM facts WHERE org_id = %s", (unique_org,))
+    conn.execute("DELETE FROM org_members WHERE org_id = %s", (unique_org,))
+    conn.execute("DELETE FROM orgs WHERE org_id = %s", (unique_org,))
+    OrgsStore(conn).create_org(unique_org, unique_org, "pw", "dev-user")
+    client = TestClient(app, headers={"X-Praxis-Org": unique_org})
+
+    res = client.post("/insights", json={"insight": "use uv, not pip, in this repo"})
+    assert res.status_code == 200
+    assert res.json()["action"] in {"added", "merged", "overwrote"}
+
+    ctx = client.get("/context", params={"query": "how do I install deps?"}).json()
+    assert "uv" in ctx["context"]

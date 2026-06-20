@@ -5,6 +5,7 @@ import * as ecrAssets from 'aws-cdk-lib/aws-ecr-assets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
+import { COGNITO, DB_SECRET_NAME } from './config';
 
 export interface BackendServiceStackProps extends cdk.StackProps {
   /** Cognito user pool id. Defaults to the deployed pool `us-east-1_4nAMe6bPK`. */
@@ -37,15 +38,15 @@ export class BackendServiceStack extends cdk.Stack {
     const cognitoUserPoolId =
       props.cognitoUserPoolId ??
       this.node.tryGetContext('cognitoUserPoolId') ??
-      'us-east-1_4nAMe6bPK';
+      COGNITO.userPoolId;
     const cognitoClientId =
       props.cognitoClientId ??
       this.node.tryGetContext('cognitoClientId') ??
-      '3ij653bq912pi4f17l5hn9iqqn';
+      COGNITO.clientId;
     const cognitoRegion =
       props.cognitoRegion ??
       this.node.tryGetContext('cognitoRegion') ??
-      'us-east-1';
+      COGNITO.region;
 
     // Build the backend image from the repo-root Dockerfile and publish it to
     // the CDK assets ECR repo.
@@ -66,7 +67,7 @@ export class BackendServiceStack extends cdk.Stack {
     secretsmanager.Secret.fromSecretNameV2(
       this,
       'DbSecret',
-      'praxis/knowledge-graph/db',
+      DB_SECRET_NAME,
     ).grantRead(instanceRole);
 
     this.service = new apprunner.CfnService(this, 'Service', {

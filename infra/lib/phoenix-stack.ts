@@ -1,9 +1,13 @@
 import * as cdk from 'aws-cdk-lib/core';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as route53 from 'aws-cdk-lib/aws-route53';
 import { Construct } from 'constructs';
+import { DEFAULT_ALLOWED_CIDR, GRAVITON } from './config';
 
 export interface PhoenixStackProps extends cdk.StackProps {
+  /** Shared VPC the instance and its data volume live in (see NetworkStack). */
+  readonly vpc: ec2.IVpc;
   /**
    * Arize Phoenix container image tag. The image is `arizephoenix/phoenix`;
    * pin a concrete release for production. Defaults to the latest verified
@@ -29,6 +33,13 @@ export interface PhoenixStackProps extends cdk.StackProps {
   readonly allowedWebCidr?: string;
   /** Size (GiB) of the retained EBS data volume. Defaults to 20. */
   readonly dataVolumeGib?: number;
+  /**
+   * Route 53 hosted zone to create the public A record in. When supplied
+   * together with `domain`, this stack points `domain` at the Elastic IP, so
+   * Caddy's Let's Encrypt challenge resolves. Omit to manage DNS elsewhere
+   * (e.g. straight in Cloudflare).
+   */
+  readonly hostedZone?: route53.IHostedZone;
 }
 
 /**
@@ -50,23 +61,15 @@ export interface PhoenixStackProps extends cdk.StackProps {
  * Admin access is via SSM Session Manager (no SSH port, no key pair).
  */
 export class PhoenixStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props: PhoenixStackProps = {}) {
+  constructor(scope: Construct, id: string, props: PhoenixStackProps) {
     super(scope, id, props);
 
     const imageTag = props.imageTag ?? 'version-17.9.0';
     const domain = props.domain ?? '';
-    const allowedWebCidr = props.allowedWebCidr ?? '0.0.0.0/0';
+    const allowedWebCidr = props.allowedWebCidr ?? DEFAULT_ALLOWED_CIDR;
     const dataVolumeGib = props.dataVolumeGib ?? 20;
 
-    // Minimal VPC: public subnets only, no NAT gateways (cost), matching the
-    // knowledge-graph DB stack.
-    const vpc = new ec2.Vpc(this, 'PhoenixVpc', {
-      maxAzs: 2,
-      natGateways: 0,
-      subnetConfiguration: [
-        { name: 'public', subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 },
-      ],
-    });
+    const vpc = props.vpc;
 
     // Pin the instance and its data volume to one AZ — an EBS volume can only
     // attach to an instance in its own AZ.
@@ -113,10 +116,7 @@ export class PhoenixStack extends cdk.Stack {
     const instance = new ec2.Instance(this, 'PhoenixInstance', {
       vpc,
       vpcSubnets: { subnets: [subnet] },
-      instanceType: ec2.InstanceType.of(
-        ec2.InstanceClass.BURSTABLE4_GRAVITON,
-        ec2.InstanceSize.SMALL,
-      ),
+      instanceType: ec2.InstanceType.of(GRAVITON, ec2.InstanceSize.SMALL),
       machineImage: ec2.MachineImage.latestAmazonLinux2023({
         cpuType: ec2.AmazonLinuxCpuType.ARM_64,
       }),
@@ -149,6 +149,18 @@ export class PhoenixStack extends cdk.Stack {
       allocationId: eip.attrAllocationId,
       instanceId: instance.instanceId,
     });
+
+    // Point the domain at the Elastic IP so Caddy's Let's Encrypt HTTP-01
+    // challenge resolves. Only when a zone is supplied AND a domain is set —
+    // the self-signed fallback (no domain) needs no DNS.
+    if (props.hostedZone && domain) {
+      new route53.ARecord(this, 'PhoenixARecord', {
+        zone: props.hostedZone,
+        recordName: domain,
+        target: route53.RecordTarget.fromIpAddresses(eip.ref),
+        ttl: cdk.Duration.minutes(5),
+      });
+    }
 
     const baseUrl = domain ? `https://${domain}` : `https://${eip.ref}`;
     new cdk.CfnOutput(this, 'ElasticIp', { value: eip.ref });
