@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib/core';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as route53 from 'aws-cdk-lib/aws-route53';
 import { Construct } from 'constructs';
 
 export interface PhoenixStackProps extends cdk.StackProps {
@@ -29,6 +30,13 @@ export interface PhoenixStackProps extends cdk.StackProps {
   readonly allowedWebCidr?: string;
   /** Size (GiB) of the retained EBS data volume. Defaults to 20. */
   readonly dataVolumeGib?: number;
+  /**
+   * Route 53 hosted zone to create the public A record in. When supplied
+   * together with `domain`, this stack points `domain` at the Elastic IP, so
+   * Caddy's Let's Encrypt challenge resolves. Omit to manage DNS elsewhere
+   * (e.g. straight in Cloudflare).
+   */
+  readonly hostedZone?: route53.IHostedZone;
 }
 
 /**
@@ -149,6 +157,18 @@ export class PhoenixStack extends cdk.Stack {
       allocationId: eip.attrAllocationId,
       instanceId: instance.instanceId,
     });
+
+    // Point the domain at the Elastic IP so Caddy's Let's Encrypt HTTP-01
+    // challenge resolves. Only when a zone is supplied AND a domain is set —
+    // the self-signed fallback (no domain) needs no DNS.
+    if (props.hostedZone && domain) {
+      new route53.ARecord(this, 'PhoenixARecord', {
+        zone: props.hostedZone,
+        recordName: domain,
+        target: route53.RecordTarget.fromIpAddresses(eip.ref),
+        ttl: cdk.Duration.minutes(5),
+      });
+    }
 
     const baseUrl = domain ? `https://${domain}` : `https://${eip.ref}`;
     new cdk.CfnOutput(this, 'ElasticIp', { value: eip.ref });

@@ -6,6 +6,7 @@ import { KnowledgeGraphDbStack } from '../lib/knowledge-graph-db-stack';
 import { PhoenixStack } from '../lib/phoenix-stack';
 import { BackendServiceStack } from '../lib/backend-service-stack';
 import { FrontendSiteStack } from '../lib/frontend-site-stack';
+import { DnsStack } from '../lib/dns-stack';
 
 const app = new cdk.App();
 
@@ -35,10 +36,16 @@ new KnowledgeGraphDbStack(app, 'PraxisKnowledgeGraphDbStack', {
   allowedCidr: app.node.tryGetContext('allowedCidr'),
 });
 
+const dns = new DnsStack(app, 'PraxisDnsStack', {
+  env,
+  domainName: app.node.tryGetContext('domainName') ?? 'praxiskg.com',
+});
+
 new PhoenixStack(app, 'PraxisPhoenixStack', {
   env,
   imageTag: app.node.tryGetContext('phoenixImageTag'),
   domain: app.node.tryGetContext('phoenixDomain'),
+  hostedZone: dns.zone,
   allowedWebCidr: app.node.tryGetContext('phoenixAllowedWebCidr'),
   dataVolumeGib: app.node.tryGetContext('phoenixDataVolumeGib'),
 });
