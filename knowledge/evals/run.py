@@ -338,6 +338,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # Load .env (PHOENIX_*, OPENROUTER_*) and light up tracing if configured.
+    load_env()
+    from knowledge.observability.tracing import setup_tracing
+
+    setup_tracing()
+
     cases = load_cases()
     if args.case_ids:
         wanted = set(args.case_ids)

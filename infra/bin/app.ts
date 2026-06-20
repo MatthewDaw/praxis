@@ -2,6 +2,7 @@
 import * as cdk from 'aws-cdk-lib/core';
 import { SessionsTableStack } from '../lib/sessions-table-stack';
 import { KnowledgeGraphDbStack } from '../lib/knowledge-graph-db-stack';
+import { PhoenixStack } from '../lib/phoenix-stack';
 
 const app = new cdk.App();
 
@@ -22,4 +23,12 @@ new KnowledgeGraphDbStack(app, 'PraxisKnowledgeGraphDbStack', {
   env,
   databaseName: app.node.tryGetContext('databaseName') ?? 'praxis_kg',
   allowedCidr: app.node.tryGetContext('allowedCidr'),
+});
+
+new PhoenixStack(app, 'PraxisPhoenixStack', {
+  env,
+  imageTag: app.node.tryGetContext('phoenixImageTag'),
+  domain: app.node.tryGetContext('phoenixDomain'),
+  allowedWebCidr: app.node.tryGetContext('phoenixAllowedWebCidr'),
+  dataVolumeGib: app.node.tryGetContext('phoenixDataVolumeGib'),
 });

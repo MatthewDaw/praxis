@@ -22,6 +22,7 @@ import urllib.request
 from typing import Callable
 
 from knowledge.evals.eval_def import EvalContext, JudgeResult, Rubric
+from knowledge.observability import tracing
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-4o-mini"
@@ -96,8 +97,9 @@ class OpenRouterClient:
         """
         if not self.api_key:
             raise RuntimeError("set OPENROUTER_API_KEY to use the OpenRouter backend")
+        model_name = model or self.model
         payload = {
-            "model": model or self.model,
+            "model": model_name,
             "messages": messages,
             "temperature": temperature,  # greedy by default for determinism
             "max_tokens": max_tokens,
@@ -114,9 +116,19 @@ class OpenRouterClient:
         if title:
             headers["X-Title"] = title
 
-        raw = self.post(OPENROUTER_URL, payload, headers, self.timeout)
-        data = json.loads(raw)
-        return data["choices"][0]["message"]["content"], raw
+        with tracing.llm_span("openrouter.chat", model=model_name, input_value=messages) as span:
+            raw = self.post(OPENROUTER_URL, payload, headers, self.timeout)
+            data = json.loads(raw)
+            content = data["choices"][0]["message"]["content"]
+            usage = data.get("usage") or {}
+            tracing.record_output(
+                span,
+                output=content,
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+            )
+            return content, raw
 
 
 class OpenRouterRunner:

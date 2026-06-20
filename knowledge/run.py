@@ -25,7 +25,7 @@ import sys
 if __package__ in (None, ""):
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from knowledge.evals.run import load_cases, run_case, select_runner, write_baseline
+from knowledge.evals.run import load_cases, load_env, run_case, select_runner, write_baseline
 from knowledge.graph_reader.grapher_reader_variants.whole_file_reader import (
     as_claude_tool,
 )
@@ -51,6 +51,11 @@ def demo() -> None:
 
 def main() -> int:
     """Run every registered eval case end-to-end and write the baseline."""
+    load_env()
+    from knowledge.observability.tracing import setup_tracing
+
+    setup_tracing()
+
     kind = _runner_kind()
     runner, judge = select_runner(kind)
     print(f"running all cases through backend: {kind}...")

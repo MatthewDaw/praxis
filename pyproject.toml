@@ -14,10 +14,18 @@ dependencies = [
     "boto3>=1.35",
 ]
 
+[project.optional-dependencies]
+# Phoenix/OpenTelemetry tracing — install with `uv sync --extra observability`.
+observability = [
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp-proto-http>=1.20",
+]
+
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
     "pytest>=9.1.0",
+    "opentelemetry-sdk>=1.20",
 ]
 
 [tool.pytest.ini_options]

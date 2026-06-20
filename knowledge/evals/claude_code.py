@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable
 
 from knowledge.evals.eval_def import EvalContext, JudgeResult, Rubric
+from knowledge.observability import tracing
 
 # Tools the boxed agent may use. Bash / WebSearch / WebFetch are explicitly
 # denied so it can only produce the answer from its own knowledge + the
@@ -75,6 +76,23 @@ def _result_text(stdout: str) -> str:
     if isinstance(data, dict):
         return str(data.get("result", "")).strip()
     return stdout.strip()
+
+
+def _claude_usage(stdout: str) -> dict:
+    """Pull cost / token usage / turns out of `claude --output-format json` stdout."""
+    try:
+        data = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    usage = data.get("usage") or {}
+    return {
+        "cost_usd": data.get("total_cost_usd"),
+        "input_tokens": usage.get("input_tokens"),
+        "output_tokens": usage.get("output_tokens"),
+        "num_turns": data.get("num_turns"),
+    }
 
 
 def _extract_json(text: str) -> dict:
@@ -155,16 +173,35 @@ class ClaudeCodeRunner:
                 "--permission-mode",
                 "bypassPermissions",
             ]
-            stdout = self.run_cli(args, workdir, _subscription_env(), self.timeout)
-            output, source = self._collect_output(workdir, stdout)
-            return EvalContext(
-                case_id=case.id,
-                output=output,
-                checkout_path=str(workdir),
-                raw_response=stdout,
-                output_source=source,
-                injected_knowledge=knowledge,
-            )
+            with tracing.llm_span(
+                "claude_code.agent",
+                kind="AGENT",
+                model="claude-code",
+                input_value=case.seed_prompt,
+            ) as span:
+                stdout = self.run_cli(args, workdir, _subscription_env(), self.timeout)
+                output, source = self._collect_output(workdir, stdout)
+                usage = _claude_usage(stdout)
+                tracing.record_output(
+                    span,
+                    output=output,
+                    prompt_tokens=usage.get("input_tokens"),
+                    completion_tokens=usage.get("output_tokens"),
+                    cost_usd=usage.get("cost_usd"),
+                    **{
+                        "praxis.case_id": case.id,
+                        "praxis.output_source": source,
+                        "praxis.num_turns": usage.get("num_turns"),
+                    },
+                )
+                return EvalContext(
+                    case_id=case.id,
+                    output=output,
+                    checkout_path=str(workdir),
+                    raw_response=stdout,
+                    output_source=source,
+                    injected_knowledge=knowledge,
+                )
 
     def _collect_output(self, workdir: Path, stdout: str) -> tuple[str, str]:
         """The graded output plus which artifact it came from.
@@ -218,19 +255,31 @@ class ClaudeCodeJudge:
             f"RUBRIC:\n{items}\n\n"
             f"ARTIFACT:\n{ctx.output}\n"
         )
-        with tempfile.TemporaryDirectory() as tmp:
-            args = [
-                "-p",
-                prompt,
-                "--output-format",
-                "json",
-                "--disallowedTools",
-                *_ALLOWED_TOOLS,
-                *_DISALLOWED_TOOLS,
-            ]
-            stdout = self.run_cli(args, Path(tmp), _subscription_env(), self.timeout)
+        with tracing.llm_span(
+            "claude_code.judge", kind="LLM", model="claude-code", input_value=prompt
+        ) as span:
+            with tempfile.TemporaryDirectory() as tmp:
+                args = [
+                    "-p",
+                    prompt,
+                    "--output-format",
+                    "json",
+                    "--disallowedTools",
+                    *_ALLOWED_TOOLS,
+                    *_DISALLOWED_TOOLS,
+                ]
+                stdout = self.run_cli(args, Path(tmp), _subscription_env(), self.timeout)
 
-        parsed = _extract_json(_result_text(stdout))
-        overall = max(0.0, min(1.0, float(parsed.get("overall", 0.0))))
-        per_item = {k: float(v) for k, v in (parsed.get("per_item") or {}).items()}
-        return JudgeResult(overall=overall, per_item=per_item, raw_response=stdout)
+            parsed = _extract_json(_result_text(stdout))
+            overall = max(0.0, min(1.0, float(parsed.get("overall", 0.0))))
+            per_item = {k: float(v) for k, v in (parsed.get("per_item") or {}).items()}
+            usage = _claude_usage(stdout)
+            tracing.record_output(
+                span,
+                output=stdout,
+                prompt_tokens=usage.get("input_tokens"),
+                completion_tokens=usage.get("output_tokens"),
+                cost_usd=usage.get("cost_usd"),
+                **{"praxis.case_id": ctx.case_id, "praxis.overall": overall},
+            )
+            return JudgeResult(overall=overall, per_item=per_item, raw_response=stdout)

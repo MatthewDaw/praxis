@@ -13,6 +13,8 @@ import os
 import urllib.request
 from typing import Callable
 
+from knowledge.observability import tracing
+
 BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_CHAT_MODEL = "openai/gpt-4o-mini"
 DEFAULT_EMBED_MODEL = "openai/text-embedding-3-small"
@@ -56,16 +58,28 @@ def chat_complete(
     timeout: int = 120,
 ) -> str:
     """Return the assistant text for one chat completion."""
+    model_name = model or os.getenv("OPENROUTER_MODEL", DEFAULT_CHAT_MODEL)
     payload = {
-        "model": model or os.getenv("OPENROUTER_MODEL", DEFAULT_CHAT_MODEL),
+        "model": model_name,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
-    raw = (post or default_post)(
-        f"{BASE_URL}/chat/completions", payload, _headers(_require_key(api_key)), timeout
-    )
-    return json.loads(raw)["choices"][0]["message"]["content"]
+    with tracing.llm_span("openrouter.chat", model=model_name, input_value=messages) as span:
+        raw = (post or default_post)(
+            f"{BASE_URL}/chat/completions", payload, _headers(_require_key(api_key)), timeout
+        )
+        data = json.loads(raw)
+        content = data["choices"][0]["message"]["content"]
+        usage = data.get("usage") or {}
+        tracing.record_output(
+            span,
+            output=content,
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
+        )
+        return content
 
 
 def embed(
@@ -77,12 +91,21 @@ def embed(
     timeout: int = 120,
 ) -> list[list[float]]:
     """Return one embedding vector per input text, order-preserved."""
-    payload = {
-        "model": model or os.getenv("OPENROUTER_EMBED_MODEL", DEFAULT_EMBED_MODEL),
-        "input": texts,
-    }
-    raw = (post or default_post)(
-        f"{BASE_URL}/embeddings", payload, _headers(_require_key(api_key)), timeout
-    )
-    data = json.loads(raw)["data"]
-    return [row["embedding"] for row in data]
+    model_name = model or os.getenv("OPENROUTER_EMBED_MODEL", DEFAULT_EMBED_MODEL)
+    payload = {"model": model_name, "input": texts}
+    with tracing.llm_span(
+        "openrouter.embed", kind="EMBEDDING", model=model_name, input_value=texts
+    ) as span:
+        raw = (post or default_post)(
+            f"{BASE_URL}/embeddings", payload, _headers(_require_key(api_key)), timeout
+        )
+        body = json.loads(raw)
+        vectors = [row["embedding"] for row in body["data"]]
+        usage = body.get("usage") or {}
+        tracing.record_output(
+            span,
+            output=f"{len(vectors)} embedding vector(s)",
+            prompt_tokens=usage.get("prompt_tokens"),
+            total_tokens=usage.get("total_tokens"),
+        )
+        return vectors
