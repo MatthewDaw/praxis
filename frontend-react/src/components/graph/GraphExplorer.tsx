@@ -44,13 +44,14 @@ export function GraphExplorer({
             onSelectNode={onSelectNode}
           />
         </aside>
-        <div className="graph-explorer__canvas">
+        <section className="graph-explorer__canvas" aria-label="Graph">
+          <p className="graph-canvas__label">Graph</p>
           <KnowledgeGraphView
             graph={graph}
             selectedId={selectedId}
             onSelectNode={onSelectNode}
           />
-        </div>
+        </section>
         <aside className="graph-explorer__detail">
           <CandidateDetail
             candidates={filteredCandidates}

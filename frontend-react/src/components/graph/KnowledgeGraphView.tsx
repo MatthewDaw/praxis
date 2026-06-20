@@ -1,10 +1,13 @@
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import {
   Background,
   Controls,
   Handle,
   Position,
   ReactFlow,
+  useNodesInitialized,
+  useReactFlow,
+  useStore,
   type Edge,
   type Node,
   type NodeProps,
@@ -13,7 +16,7 @@ import "@xyflow/react/dist/style.css";
 import type { CandidateState } from "../../types/candidate";
 import type { KnowledgeGraphSnapshot } from "../../types/graph";
 import { GraphLegend } from "./GraphLegend";
-import { layoutGraphNodes, stateNodeColors } from "./graphLayout";
+import { getTopCenterViewport, layoutGraphNodes, stateNodeColors } from "./graphLayout";
 
 interface CandidateNodeData extends Record<string, unknown> {
   label: string;
@@ -46,6 +49,59 @@ function CandidateGraphNode({ data, selected }: NodeProps<Node<CandidateNodeData
 const nodeTypes = {
   candidateNode: CandidateGraphNode,
 };
+
+function FitGraphViewTopCenter({
+  graphKey,
+  nodeCount,
+  edgeCount,
+}: {
+  graphKey: string;
+  nodeCount: number;
+  edgeCount: number;
+}) {
+  const nodesInitialized = useNodesInitialized();
+  const { getNodes, getNodesBounds, setViewport } = useReactFlow();
+  const width = useStore((state) => state.width);
+  const height = useStore((state) => state.height);
+  const lastFitKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!nodesInitialized || width === 0 || height === 0) {
+      return;
+    }
+
+    const fitKey = `${graphKey}:${nodeCount}:${edgeCount}:${width}:${height}`;
+    if (lastFitKeyRef.current === fitKey) {
+      return;
+    }
+
+    const nodes = getNodes();
+    if (nodes.length === 0) {
+      return;
+    }
+
+    const frame = requestAnimationFrame(() => {
+      const bounds = getNodesBounds(nodes);
+      const viewport = getTopCenterViewport(bounds, { width, height });
+      void setViewport(viewport, { duration: 0 });
+      lastFitKeyRef.current = fitKey;
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [
+    edgeCount,
+    getNodes,
+    getNodesBounds,
+    graphKey,
+    height,
+    nodeCount,
+    nodesInitialized,
+    setViewport,
+    width,
+  ]);
+
+  return null;
+}
 
 interface KnowledgeGraphViewProps {
   graph: KnowledgeGraphSnapshot;
@@ -106,14 +162,18 @@ function KnowledgeGraphViewInner({
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
-        fitView
-        minZoom={0.3}
+        minZoom={0.2}
         maxZoom={1.5}
         onNodeClick={(_, node) => onSelectNode(node.id)}
         proOptions={{ hideAttribution: true }}
       >
+        <FitGraphViewTopCenter
+          graphKey={`${graph.source}:${graph.nodes.length}:${graph.edges.length}`}
+          nodeCount={graph.nodes.length}
+          edgeCount={graph.edges.length}
+        />
         <Background gap={16} size={1} />
-        <Controls showInteractive={false} />
+        <Controls showInteractive={false} position="top-right" />
       </ReactFlow>
       <GraphLegend className="graph-legend--overlay" />
     </div>

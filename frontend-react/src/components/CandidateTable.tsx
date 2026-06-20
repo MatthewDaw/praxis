@@ -6,7 +6,6 @@ import {
 } from "../api/candidateModel";
 import type { Candidate } from "../types/candidate";
 import { EmptyState } from "./ui/EmptyState";
-import { TableScrollShell } from "./ui/TableScrollShell";
 import { StateBadge } from "./StateBadge";
 
 const LOW_CONFIDENCE_THRESHOLD = 0.5;
@@ -93,7 +92,7 @@ export function CandidateTable({
 
     return (
       <tr className="row-expand">
-        <td colSpan={6}>
+        <td colSpan={4}>
           {isPromote && nextState ? (
             <>
               <p className="info-banner">
@@ -169,20 +168,17 @@ export function CandidateTable({
 
   return (
     <div className="table-panel">
-      <TableScrollShell>
-        <thead>
-          <tr>
-            <th scope="col">Title</th>
-            <th scope="col">State</th>
-            <th scope="col" className="col-numeric">
-              Confidence
-            </th>
-            <th scope="col">Provenance</th>
-            <th scope="col">Created</th>
-            <th scope="col">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
+      <div className="table-wrap">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th scope="col">Title</th>
+              <th scope="col">State</th>
+              <th scope="col">Created</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
           {candidates.map((candidate) => {
             const isSelected = candidate.id === selected?.id;
             const promoteBlocked = promoteUnavailableReason(candidate);
@@ -207,23 +203,6 @@ export function CandidateTable({
                   <td>{candidate.title}</td>
                   <td>
                     <StateBadge state={candidate.state} label={candidate.displayState} />
-                  </td>
-                  <td className="col-numeric">
-                    <span className="confidence-cell">
-                      <span className="inline-progress">
-                        <span
-                          className="progress-fill"
-                          style={{ width: `${Math.round(candidate.confidence * 100)}%` }}
-                        />
-                      </span>
-                      <span className="mono">{candidate.confidence.toFixed(2)}</span>
-                    </span>
-                  </td>
-                  <td
-                    className="mono small provenance-cell"
-                    title={candidate.provenance}
-                  >
-                    {candidate.provenance}
                   </td>
                   <td>{formatCandidateDate(candidate.createdAt)}</td>
                   <td className="actions-cell">
@@ -263,8 +242,9 @@ export function CandidateTable({
               </Fragment>
             );
           })}
-        </tbody>
-      </TableScrollShell>
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

@@ -211,6 +211,7 @@ code,
 .filter-bar__fields {
   display: grid;
   grid-template-columns: 2fr 1fr;
+  align-items: end;
   gap: var(--space-4);
   flex: 1 1 360px;
 }
@@ -298,7 +299,7 @@ code,
 
 .content-split {
   display: grid;
-  grid-template-columns: 1.4fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
   gap: var(--space-4);
   align-items: start;
 }
@@ -327,62 +328,35 @@ code,
   overflow: hidden;
 }
 
-.table-scroll-shell {
-  display: flex;
-  flex-direction: column;
-}
-
-.table-scroll-x--top {
-  overflow-x: auto;
-  overflow-y: hidden;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--line);
-  background: #f8fafc;
-  scrollbar-width: thin;
-}
-
-.table-scroll-x__spacer {
-  height: 1px;
-}
-
 .table-wrap {
-  overflow-x: auto;
+  overflow-x: hidden;
   overflow-y: auto;
   max-height: min(62vh, 560px);
   scrollbar-width: thin;
   scrollbar-gutter: stable;
 }
 
-.table-wrap::-webkit-scrollbar,
-.table-scroll-x--top::-webkit-scrollbar {
+.table-wrap::-webkit-scrollbar {
   width: 10px;
-  height: 10px;
 }
 
-.table-wrap::-webkit-scrollbar-thumb,
-.table-scroll-x--top::-webkit-scrollbar-thumb {
+.table-wrap::-webkit-scrollbar-thumb {
   background: #cbd5e1;
   border-radius: 999px;
 }
 
-.table-wrap::-webkit-scrollbar-thumb:hover,
-.table-scroll-x--top::-webkit-scrollbar-thumb:hover {
+.table-wrap::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
 
-.table-wrap::-webkit-scrollbar-track,
-.table-scroll-x--top::-webkit-scrollbar-track {
+.table-wrap::-webkit-scrollbar-track {
   background: #f1f5f9;
-}
-
-.table-wrap::-webkit-scrollbar:horizontal {
-  height: 0;
 }
 
 .data-table {
   width: 100%;
-  min-width: 920px;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 .data-table thead th {
@@ -423,20 +397,7 @@ code,
   outline-offset: -2px;
 }
 
-.col-numeric {
-  text-align: right;
-  white-space: nowrap;
-}
-
-.col-numeric .confidence-cell {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-2);
-}
-
-.provenance-cell {
-  max-width: 180px;
+.data-table td:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -576,13 +537,18 @@ code,
 
 .metadata-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
+  grid-template-columns: auto auto;
+  justify-content: start;
+  align-items: start;
+  column-gap: var(--space-4);
+  row-gap: var(--space-3);
   margin-bottom: var(--space-4);
   padding: var(--space-3);
   background: #f8fafc;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
+  width: fit-content;
+  max-width: 100%;
 }
 
 .metadata-item {
@@ -602,6 +568,10 @@ code,
 .metadata-item__value {
   font-size: 0.88rem;
   color: var(--ink);
+}
+
+.metadata-item__value code {
+  word-break: break-all;
 }
 
 .detail-section {
@@ -1461,18 +1431,40 @@ code,
 }
 
 .graph-explorer__canvas {
+  display: flex;
+  flex-direction: column;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-panel);
   min-height: 520px;
+  padding: var(--space-4);
+  overflow: hidden;
+}
+
+.graph-canvas__label,
+.graph-summary__label,
+.state-funnel__label,
+.scope-tree__label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 0 0 var(--space-2);
 }
 
 .knowledge-graph-view {
   position: relative;
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  height: 100%;
+}
+
+.knowledge-graph-view .react-flow {
   width: 100%;
   height: 100%;
-  min-height: 520px;
 }
 
 .graph-node {
@@ -1509,17 +1501,6 @@ code,
 
 .graph-edge--support {
   stroke-width: 2;
-}
-
-.graph-summary__label,
-.state-funnel__label,
-.scope-tree__label {
-  font-size: 0.75rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-  margin: 0 0 var(--space-2);
 }
 
 .graph-summary__text {
