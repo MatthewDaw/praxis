@@ -1,0 +1,12 @@
+node_modules
+**/node_modules
+.git
+infra/cdk.out
+infra/node_modules
+frontend-react/node_modules
+frontend-react/dist
+**/__pycache__
+*.pyc
+.venv
+.env
+.env.local

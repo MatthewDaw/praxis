@@ -4,6 +4,8 @@ import { SessionsTableStack } from '../lib/sessions-table-stack';
 import { AuthUserPoolStack } from '../lib/auth-user-pool-stack';
 import { KnowledgeGraphDbStack } from '../lib/knowledge-graph-db-stack';
 import { PhoenixStack } from '../lib/phoenix-stack';
+import { BackendServiceStack } from '../lib/backend-service-stack';
+import { FrontendSiteStack } from '../lib/frontend-site-stack';
 
 const app = new cdk.App();
 
@@ -38,3 +40,7 @@ new PhoenixStack(app, 'PraxisPhoenixStack', {
   allowedWebCidr: app.node.tryGetContext('phoenixAllowedWebCidr'),
   dataVolumeGib: app.node.tryGetContext('phoenixDataVolumeGib'),
 });
+
+new BackendServiceStack(app, 'PraxisBackendServiceStack', { env });
+
+new FrontendSiteStack(app, 'PraxisFrontendSiteStack', { env });

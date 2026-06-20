@@ -32,7 +32,8 @@ METRICS_FIXTURE = (
     Path(__file__).resolve().parents[2] / "docs" / "integration" / "fixtures" / "eval-metrics.json"
 )
 _DEFAULT_CORS_REGEX = (
-    r"(http://(localhost|127\.0\.0\.1):\d+|https://[\w-]+\.onrender\.com)"
+    r"(http://(localhost|127\.0\.0\.1):\d+|https://[\w-]+\.onrender\.com"
+    r"|https://[\w-]+\.cloudfront\.net|https://[\w-]+\.awsapprunner\.com)"
 )
 
 
