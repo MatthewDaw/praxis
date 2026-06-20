@@ -14,6 +14,7 @@ from models.candidate import CandidateState, next_promotion_state
 
 CONTRACT_VERSION = "1"
 CONTRACT_HEADER = "X-Praxis-Contract"
+ORG_HEADER = "X-Praxis-Org"
 
 # UI / mock resolution labels → API enum (contradiction pair: primary = keep_a side).
 _RESOLUTION_TO_API: dict[str, str] = {
@@ -29,7 +30,13 @@ def contract_version() -> str:
     return os.environ.get("PRAXIS_CONTRACT_VERSION", CONTRACT_VERSION).strip() or CONTRACT_VERSION
 
 
-def contract_headers(*, token: str | None = None) -> dict[str, str]:
+def contract_headers(*, token: str | None = None, org_id: str | None = None) -> dict[str, str]:
+    """Build request headers for the candidate API.
+
+    The server hard-requires a Cognito Bearer JWT on every data route and
+    resolves the active org from ``X-Praxis-Org`` (mirrors the React client's
+    ``contractHeaders(token, orgId)``).
+    """
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
@@ -37,6 +44,8 @@ def contract_headers(*, token: str | None = None) -> dict[str, str]:
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    if org_id:
+        headers[ORG_HEADER] = org_id
     return headers
 
 

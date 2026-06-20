@@ -2246,3 +2246,129 @@ code,
   }
 }
 
+/* ==========================================================================
+   Phoenix traces (Candidate Detail)
+   ========================================================================== */
+
+.error-text {
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+.phoenix-trace-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.phoenix-trace {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  background: var(--surface);
+}
+
+.phoenix-trace__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.phoenix-status {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--state-muted-bg);
+  color: var(--state-muted-text);
+  border: 1px solid var(--state-muted-border);
+}
+
+.phoenix-status--ok {
+  background: var(--state-active-bg);
+  color: var(--state-active-text);
+  border-color: var(--state-active-border);
+}
+
+.phoenix-status--error {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.phoenix-trace__meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2) var(--space-4);
+  margin: 0 0 var(--space-2);
+}
+
+.phoenix-trace__meta div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.phoenix-trace__meta dt {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.phoenix-trace__meta dd {
+  margin: 0;
+  font-size: 0.88rem;
+  color: var(--h3);
+}
+
+.phoenix-trace__spans summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--secondary);
+}
+
+.phoenix-trace__spans ul {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.phoenix-trace__spans li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.phoenix-span__kind {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--accent);
+  min-width: 72px;
+}
+
+.phoenix-span__name {
+  flex: 1;
+  font-size: 0.84rem;
+  color: var(--h3);
+}
+
+.phoenix-trace__link {
+  display: inline-block;
+  margin-top: var(--space-2);
+  font-size: 0.84rem;
+  font-weight: 500;
+}
+

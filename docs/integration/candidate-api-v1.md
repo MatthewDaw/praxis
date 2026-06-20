@@ -12,7 +12,19 @@ This document is the **async integration handshake**. Matthew implements the ser
 
 ## Base URL
 
-Set `PRAXIS_API_BASE_URL` for Python contract smoke tests (e.g. `http://localhost:8000`). React uses build-time `VITE_PRAXIS_API_BASE_URL` (same URL). Optional Bearer token: `PRAXIS_API_TOKEN` / `VITE_PRAXIS_API_TOKEN`.
+Set `PRAXIS_API_BASE_URL` for Python contract smoke tests (e.g. `http://localhost:8000`). React uses build-time `VITE_PRAXIS_API_BASE_URL` (same URL). Bearer token: `PRAXIS_API_TOKEN` / `VITE_PRAXIS_API_TOKEN`. Active org: `PRAXIS_ORG_ID` / `VITE_PRAXIS_ORG_ID` (default `default`).
+
+---
+
+## Authentication & tenancy
+
+The server (`knowledge/serve/app.py`) hard-requires authentication and tenant context on **every data route** (`/health` stays open):
+
+- **Bearer JWT** — a valid Cognito ID/access token in `Authorization: Bearer <token>`. Missing or invalid token → **401**. The token's `sub` is the tenant `user_id`.
+- **`X-Praxis-Org`** — selects the active org. The server defaults to `default` when the header is absent. On the Postgres path the caller must be a member of that org, else **403**; on the in-memory/JSON path (offline/dev) the membership check is skipped and any org string is accepted.
+- **Dev seam** — set `PRAXIS_AUTH_DISABLED=1` on the server to bypass JWT verification and return a fixed `dev-user` principal. This is how the contract smoke tests run without minting real tokens.
+
+Clients send these via `PRAXIS_API_TOKEN` → `Authorization` and `PRAXIS_ORG_ID` → `X-Praxis-Org` (`frontend/services/contract_v1.py` `contract_headers`; React `frontend-react/src/api/contract.ts` `contractHeaders`). The Python client surfaces 401/403 as an `ApiClientError` with a hint to set the token/org.
 
 ---
 
@@ -23,6 +35,8 @@ Set `PRAXIS_API_BASE_URL` for Python contract smoke tests (e.g. `http://localhos
 | `Accept` | `application/json` |
 | `Content-Type` | `application/json` (mutations) |
 | `X-Praxis-Contract` | `1` |
+| `Authorization` | `Bearer <cognito-jwt>` (data routes; omit only when server has `PRAXIS_AUTH_DISABLED=1`) |
+| `X-Praxis-Org` | active org id (data routes; defaults to `default`) |
 
 ---
 

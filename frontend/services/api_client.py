@@ -67,9 +67,15 @@ class ApiDataProvider:
     itself is UI-agnostic.
     """
 
-    def __init__(self, base_url: str, token: str | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token: str | None = None,
+        org_id: str | None = None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = token
+        self._org_id = org_id
 
     def list_candidates(self, state: CandidateState | None = None) -> list[Candidate]:
         query = ""
@@ -151,7 +157,7 @@ class ApiDataProvider:
         return Candidate.from_mapping(payload)
 
     def _headers(self) -> dict[str, str]:
-        return contract_headers(token=self._token)
+        return contract_headers(token=self._token, org_id=self._org_id)
 
     def _request(
         self,
@@ -177,6 +183,21 @@ class ApiDataProvider:
                 raise ApiConflictError(
                     f"Conflict (409): {detail or exc.reason}",
                     candidate_id=_extract_candidate_id(path),
+                ) from exc
+            if exc.code in (401, 403):
+                # The server requires a Cognito Bearer JWT (PRAXIS_API_TOKEN) and an
+                # org the caller belongs to (PRAXIS_ORG_ID -> X-Praxis-Org). Surface
+                # that explicitly instead of a generic API error.
+                hint = (
+                    "missing or invalid bearer token"
+                    if exc.code == 401
+                    else "token valid but not a member of the requested org"
+                )
+                raise ApiClientError(
+                    f"API {method} {path} unauthorized ({exc.code}): {hint}. "
+                    f"Set PRAXIS_API_TOKEN and PRAXIS_ORG_ID (or PRAXIS_AUTH_DISABLED=1 "
+                    f"on a dev server). Detail: {detail or exc.reason}",
+                    status_code=exc.code,
                 ) from exc
             raise ApiClientError(
                 f"API {method} {path} failed ({exc.code}): {detail or exc.reason}",

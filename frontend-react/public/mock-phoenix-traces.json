@@ -1,0 +1,54 @@
+{
+  "project": "praxis-eval",
+  "phoenixBaseUrl": "https://phoenix.praxiskg.com",
+  "traces": [
+    {
+      "traceId": "phx-trace-exhaustive-switch",
+      "sessionId": "session_20260615",
+      "startTime": "2026-06-15T14:29:58Z",
+      "latencyMs": 4820.5,
+      "statusCode": "OK",
+      "spanCount": 4,
+      "tokens": { "prompt": 1840, "completion": 612, "total": 2452 },
+      "model": "claude-sonnet-4",
+      "spans": [
+        { "name": "agent.turn", "kind": "AGENT", "latencyMs": 4820.5, "statusCode": "OK" },
+        { "name": "retrieve.context", "kind": "RETRIEVER", "latencyMs": 312.0, "statusCode": "OK" },
+        { "name": "llm.exhaustive_switch", "kind": "LLM", "latencyMs": 3990.2, "statusCode": "OK" },
+        { "name": "tool.edit_file", "kind": "TOOL", "latencyMs": 410.1, "statusCode": "OK" }
+      ],
+      "phoenixUrl": "https://phoenix.praxiskg.com/projects/praxis-eval/traces/phx-trace-exhaustive-switch"
+    },
+    {
+      "traceId": "phx-trace-useeffect-cleanup",
+      "sessionId": "session_20260614",
+      "startTime": "2026-06-14T09:14:51Z",
+      "latencyMs": 6190.0,
+      "statusCode": "OK",
+      "spanCount": 3,
+      "tokens": { "prompt": 2210, "completion": 980, "total": 3190 },
+      "model": "claude-sonnet-4",
+      "spans": [
+        { "name": "agent.turn", "kind": "AGENT", "latencyMs": 6190.0, "statusCode": "OK" },
+        { "name": "llm.diagnose_leak", "kind": "LLM", "latencyMs": 5410.7, "statusCode": "OK" },
+        { "name": "tool.run_tests", "kind": "TOOL", "latencyMs": 612.4, "statusCode": "ERROR" }
+      ],
+      "phoenixUrl": "https://phoenix.praxiskg.com/projects/praxis-eval/traces/phx-trace-useeffect-cleanup"
+    },
+    {
+      "traceId": "phx-trace-ci-artifact-expiry",
+      "sessionId": "session_20260610",
+      "startTime": "2026-06-10T11:44:30Z",
+      "latencyMs": 2140.3,
+      "statusCode": "OK",
+      "spanCount": 2,
+      "tokens": { "prompt": 760, "completion": 240, "total": 1000 },
+      "model": "claude-haiku-4",
+      "spans": [
+        { "name": "agent.turn", "kind": "AGENT", "latencyMs": 2140.3, "statusCode": "OK" },
+        { "name": "llm.ci_hygiene", "kind": "LLM", "latencyMs": 1880.9, "statusCode": "OK" }
+      ],
+      "phoenixUrl": "https://phoenix.praxiskg.com/projects/praxis-eval/traces/phx-trace-ci-artifact-expiry"
+    }
+  ]
+}

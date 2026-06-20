@@ -1,8 +1,10 @@
 import type { Candidate } from "../types/candidate";
+import type { DataSourceMode } from "../config/dataSource";
 import { AuditTimeline } from "./AuditTimeline";
 import { ConfidenceBreakdown } from "./ConfidenceBreakdown";
 import { ContradictionPanel } from "./ContradictionPanel";
 import { MetadataGrid } from "./MetadataGrid";
+import { PhoenixTraces } from "./PhoenixTraces";
 import { StateBadge } from "./StateBadge";
 import { formatCandidateDate } from "../api/candidateModel";
 
@@ -17,6 +19,8 @@ interface CandidateDetailProps {
     rivalTitle: string,
   ) => Promise<void>;
   onDefer: (primaryTitle: string, rivalTitle: string) => void;
+  /** Current data-source mode — selects Phoenix proxy (live) vs fixture. */
+  dataSourceMode?: DataSourceMode;
 }
 
 export function CandidateDetail({
@@ -25,6 +29,7 @@ export function CandidateDetail({
   onSelect,
   onResolve,
   onDefer,
+  dataSourceMode = "mock",
 }: CandidateDetailProps) {
   const detailPanelId = "candidate-detail-panel";
 
@@ -119,6 +124,8 @@ export function CandidateDetail({
           </p>
         )}
       </div>
+
+      <PhoenixTraces candidate={candidate} mode={dataSourceMode} />
 
       {Object.keys(pipelineExtra).length > 0 ? (
         <details className="detail-section">

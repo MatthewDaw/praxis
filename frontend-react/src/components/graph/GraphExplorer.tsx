@@ -4,6 +4,7 @@ import { KnowledgeGraphView } from "./KnowledgeGraphView";
 import { ScopeTree } from "./ScopeTree";
 import { StateFunnel } from "./StateFunnel";
 import type { Candidate } from "../../types/candidate";
+import type { DataSourceMode } from "../../config/dataSource";
 import type { KnowledgeGraphSnapshot } from "../../types/graph";
 
 interface GraphExplorerProps {
@@ -19,6 +20,7 @@ interface GraphExplorerProps {
     rivalTitle: string,
   ) => Promise<void>;
   onDefer: (primaryTitle: string, rivalTitle: string) => void;
+  dataSourceMode?: DataSourceMode;
 }
 
 export function GraphExplorer({
@@ -29,6 +31,7 @@ export function GraphExplorer({
   onSelectNode,
   onResolve,
   onDefer,
+  dataSourceMode,
 }: GraphExplorerProps) {
   return (
     <div className="graph-explorer">
@@ -59,6 +62,7 @@ export function GraphExplorer({
             onSelect={onSelectNode}
             onResolve={onResolve}
             onDefer={onDefer}
+            dataSourceMode={dataSourceMode}
           />
         </aside>
       </div>

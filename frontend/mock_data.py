@@ -22,6 +22,8 @@ def get_demo_candidate_dicts() -> list[dict]:
             "createdAt": "2026-06-15T14:30:00Z",
             "scope": "frontend/typescript",
             "category": "pattern",
+            "traceId": "phx-trace-exhaustive-switch",
+            "sessionId": "session_20260615",
             "confidenceBreakdown": {
                 "frequency": 0.82,
                 "recency": 0.88,
@@ -55,6 +57,8 @@ def get_demo_candidate_dicts() -> list[dict]:
             "createdAt": "2026-06-14T09:15:00Z",
             "scope": "frontend/react",
             "category": "pattern",
+            "traceId": "phx-trace-useeffect-cleanup",
+            "sessionId": "session_20260614",
             "confidenceBreakdown": {
                 "frequency": 0.91,
                 "recency": 0.93,
@@ -88,6 +92,8 @@ def get_demo_candidate_dicts() -> list[dict]:
             "createdAt": "2026-06-10T11:45:00Z",
             "scope": "infra/ci",
             "category": "constraint",
+            "traceId": "phx-trace-ci-artifact-expiry",
+            "sessionId": "session_20260610",
             "confidenceBreakdown": {
                 "frequency": 0.97,
                 "recency": 0.95,

@@ -9,8 +9,11 @@ import pytest
 
 from models.candidate import Candidate, CandidateState
 from services.contract_v1 import (
+    CONTRACT_HEADER,
+    ORG_HEADER,
     build_promote_body,
     build_resolve_body,
+    contract_headers,
     contradiction_pair_id,
     normalize_resolution,
     parse_candidate_list,
@@ -44,6 +47,20 @@ def test_resolve_request_fixture_matches_builder() -> None:
     expected = _load_json("resolve-request.json")
     built = build_resolve_body(resolution="keep_primary", keep_id="cand_9")
     assert built == expected
+
+
+def test_contract_headers_includes_auth_and_org_when_provided() -> None:
+    headers = contract_headers(token="t", org_id="acme")
+    assert headers["Authorization"] == "Bearer t"
+    assert headers[ORG_HEADER] == "acme"
+    assert headers[CONTRACT_HEADER] == "1"
+
+
+def test_contract_headers_omits_auth_and_org_when_absent() -> None:
+    headers = contract_headers()
+    assert "Authorization" not in headers
+    assert ORG_HEADER not in headers
+    assert headers[CONTRACT_HEADER] == "1"
 
 
 def test_resolution_mapping_ui_to_api() -> None:

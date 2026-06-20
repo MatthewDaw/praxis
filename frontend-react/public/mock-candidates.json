@@ -11,6 +11,8 @@
     "createdAt": "2026-06-15T14:30:00Z",
     "scope": "frontend/typescript",
     "category": "pattern",
+    "traceId": "phx-trace-exhaustive-switch",
+    "sessionId": "session_20260615",
     "confidenceBreakdown": {
       "frequency": 0.82,
       "recency": 0.88,
@@ -44,6 +46,8 @@
     "createdAt": "2026-06-14T09:15:00Z",
     "scope": "frontend/react",
     "category": "pattern",
+    "traceId": "phx-trace-useeffect-cleanup",
+    "sessionId": "session_20260614",
     "confidenceBreakdown": {
       "frequency": 0.91,
       "recency": 0.93,
@@ -77,6 +81,8 @@
     "createdAt": "2026-06-10T11:45:00Z",
     "scope": "infra/ci",
     "category": "constraint",
+    "traceId": "phx-trace-ci-artifact-expiry",
+    "sessionId": "session_20260610",
     "confidenceBreakdown": {
       "frequency": 0.97,
       "recency": 0.95,
@@ -887,7 +893,7 @@
     "evalCaseId": "decayed_lesson_ignored",
     "evalCaseNamespace": "eval",
     "title": "Decayed Lesson Ignored",
-    "content": "ACTIVE_PATHLIB_STANDARD: Stop using os.path for new code — use pathlib.Path; it's the project standard.",
+    "content": "ACTIVE_PATHLIB_STANDARD: Stop using os.path for new code — use pathlib.Path; it's the project standard.\n\nDECAYED_RIVAL_MARKER: Always use os.path.join and os.path.exists for config paths — legacy standard.",
     "state": "proposed",
     "confidence": 0.78,
     "provenance": "logs/evals/eval/decayed_lesson_ignored.jsonl:1",
@@ -909,14 +915,15 @@
         "provenance": "logs/evals/eval/decayed_lesson_ignored.jsonl:1",
         "actor": "eval-mock-bridge"
       }
-    ]
+    ],
+    "evalCaseInsightCount": 2
   },
   {
     "id": "eval_decayed_lesson_ignored_reader",
     "evalCaseId": "decayed_lesson_ignored_reader",
     "evalCaseNamespace": "eval",
     "title": "Decayed Lesson Ignored Reader",
-    "content": "ACTIVE_PATHLIB_STANDARD: Stop using os.path for new code — use pathlib.Path; it's the project standard.",
+    "content": "ACTIVE_PATHLIB_STANDARD: Stop using os.path for new code — use pathlib.Path; it's the project standard.\n\nDECAYED_RIVAL_MARKER: Always use os.path.join and os.path.exists for config paths — legacy standard.",
     "state": "proposed",
     "confidence": 0.78,
     "provenance": "logs/evals/eval/decayed_lesson_ignored_reader.jsonl:1",
@@ -938,7 +945,8 @@
         "provenance": "logs/evals/eval/decayed_lesson_ignored_reader.jsonl:1",
         "actor": "eval-mock-bridge"
       }
-    ]
+    ],
+    "evalCaseInsightCount": 2
   },
   {
     "id": "eval_docstring_policy",
@@ -1825,7 +1833,7 @@
     "evalCaseId": "lost_in_middle",
     "evalCaseNamespace": "eval",
     "title": "Lost In Middle",
-    "content": "The praxis service is a FastAPI app deployed on AWS via CDK.\n\nLocal development uses uv; run the app with `uv run uvicorn app:api`.\n\nSecrets are read from AWS Secrets Manager, never committed to the repo.\n\nThe default region for all stacks is us-east-1.\n\nPython files are formatted with ruff and use 4-space indentation.\n\nImport ordering is enforced by ruff's isort rules.\n\nType hints are required on all public function signatures.\n\nPytest is the test runner; tests live under tests/ mirroring the package.\n\nDatabase access goes through the repository layer, never raw SQL in routes.\n\nWe use DynamoDB single-table design with a composite PK/SK key schema.\n\nPRs require at least one approving review before merge.\n\nCommit messages follow Conventional Commits (feat:, fix:, chore:).\n\nThe main branch is protected and deploys to staging on merge.\n\nFeature flags are toggled through the config module, not env vars directly.\n\nLogging uses structlog with JSON output in production.\n\nHTTP clients must set a 5-second connect timeout and retry idempotent GETs.\n\nBackground jobs run on SQS-triggered Lambdas with a 15-minute max timeout.\n\nALWAYS prefix every TODO comment with the initials MD, like TODO(MD).\n\nCaching, when added, should use an in-memory LRU with a 60-second TTL.\n\nAPI responses are versioned under the /v1 prefix.\n\nError responses follow RFC 7807 problem+json formatting.\n\nPagination uses opaque cursor tokens, not page numbers.\n\nAll timestamps are stored and returned in UTC ISO-8601 format.\n\nInput validation is handled by Pydantic models at the route boundary.\n\nRate limiting is applied per-API-key at the gateway, 100 req/min.\n\nStatic assets are served from CloudFront with a 24-hour cache header.\n\nThe CI pipeline runs lint, type-check, and tests on every push.\n\nCoverage must stay above 80% or the build fails.\n\nDependencies are pinned in pyproject.toml and updated via Renovate.\n\nDocker images are built multi-stage to keep the runtime layer small.\n\nHealth checks live at /healthz and must return within 200ms.\n\nMetrics are exported to CloudWatch with custom namespaces per service.\n\nTracing uses AWS X-Ray with sampling at 10% in production.\n\nEmail is sent through SES with templated messages.\n\nUser sessions are stateless JWTs signed with a rotating KMS key.\n\nCORS is restricted to the known frontend origins only.\n\nThe frontend is a separate Vite + React app in the web/ directory.\n\nInternationalized strings are kept in locale JSON files.\n\nAccessibility is checked with axe in the frontend test suite.\n\nRelease notes are auto-generated from merged PR titles.",
+    "content": "Policy 0000: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0001: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0002: ALWAYS format Python with ruff before pushing.\n\nPolicy 0003: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0004: ALWAYS add type hints to public function signatures.\n\nPolicy 0005: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0006: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0007: Tag every Docker image with the git short SHA.\n\nPolicy 0008: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0009: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0010: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0011: Prefix all metric names with the service namespace.\n\nPolicy 0012: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0013: NEVER merge without one approving review.\n\nPolicy 0014: ALWAYS bump the API version prefix for breaking changes.\n\nPolicy 0015: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0016: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0017: ALWAYS format Python with ruff before pushing.\n\nPolicy 0018: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0019: ALWAYS add type hints to public function signatures.\n\nPolicy 0020: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0021: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0022: Tag every Docker image with the git short SHA.\n\nPolicy 0023: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0024: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0025: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0026: Prefix all metric names with the service namespace.\n\nPolicy 0027: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0028: NEVER merge without one approving review.\n\nPolicy 0029: ALWAYS bump the API version prefix for breaking changes.\n\nPolicy 0030: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0031: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0032: ALWAYS format Python with ruff before pushing.\n\nPolicy 0033: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0034: ALWAYS add type hints to public function signatures.\n\nPolicy 0035: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0036: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0037: Tag every Docker image with the git short SHA.\n\nPolicy 0038: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0039: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0040: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0041: Prefix all metric names with the service namespace.\n\nPolicy 0042: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0043: NEVER merge without one approving review.\n\nPolicy 0044: ALWAYS bump the API version prefix for breaking changes.\n\nPolicy 0045: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0046: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0047: ALWAYS format Python with ruff before pushing.\n\nPolicy 0048: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0049: ALWAYS add type hints to public function signatures.\n\nPolicy 0050: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0051: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0052: Tag every Docker image with the git short SHA.\n\nPolicy 0053: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0054: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0055: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0056: Prefix all metric names with the service namespace.\n\nPolicy 0057: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0058: NEVER merge without one approving review.\n\nPolicy 0059: ALWAYS bump the API version prefix for breaking changes.\n\nPolicy 0060: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0061: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0062: ALWAYS format Python with ruff before pushing.\n\nPolicy 0063: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0064: ALWAYS add type hints to public function signatures.\n\nPolicy 0065: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0066: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0067: Tag every Docker image with the git short SHA.\n\nPolicy 0068: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0069: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0070: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0071: Prefix all metric names with the service namespace.\n\nPolicy 0072: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0073: NEVER merge without one approving review.\n\nPolicy 0074: ALWAYS bump the API version prefix for breaking changes.\n\nPolicy 0075: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0076: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0077: ALWAYS format Python with ruff before pushing.\n\nPolicy 0078: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0079: ALWAYS add type hints to public function signatures.\n\nPolicy 0080: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0081: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0082: Tag every Docker image with the git short SHA.\n\nPolicy 0083: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0084: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0085: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0086: Prefix all metric names with the service namespace.\n\nPolicy 0087: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0088: NEVER merge without one approving review.\n\nPolicy 0089: ALWAYS bump the API version prefix for breaking changes.\n\nPolicy 0090: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0091: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0092: ALWAYS format Python with ruff before pushing.\n\nPolicy 0093: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0094: ALWAYS add type hints to public function signatures.\n\nPolicy 0095: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0096: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0097: Tag every Docker image with the git short SHA.\n\nPolicy 0098: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0099: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0100: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0101: Prefix all metric names with the service namespace.\n\nPolicy 0102: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0103: NEVER merge without one approving review.\n\nPolicy 0104: ALWAYS bump the API version prefix for breaking changes.\n\nPolicy 0105: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0106: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0107: ALWAYS format Python with ruff before pushing.\n\nPolicy 0108: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0109: ALWAYS add type hints to public function signatures.\n\nPolicy 0110: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0111: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0112: Tag every Docker image with the git short SHA.\n\nPolicy 0113: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0114: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0115: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0116: Prefix all metric names with the service namespace.\n\nPolicy 0117: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0118: NEVER merge without one approving review.\n\nPolicy 0119: ALWAYS bump the API version prefix for breaking changes.\n\nPolicy 0120: ALWAYS prefix every TODO comment with the initials MD, like TODO(MD).\n\nPolicy 0120: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0121: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0122: ALWAYS format Python with ruff before pushing.\n\nPolicy 0123: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0124: ALWAYS add type hints to public function signatures.\n\nPolicy 0125: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0126: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0127: Tag every Docker image with the git short SHA.\n\nPolicy 0128: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0129: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0130: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0131: Prefix all metric names with the service namespace.\n\nPolicy 0132: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0133: NEVER merge without one approving review.\n\nPolicy 0134: ALWAYS bump the API version prefix for breaking changes.\n\nPolicy 0135: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0136: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0137: ALWAYS format Python with ruff before pushing.\n\nPolicy 0138: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0139: ALWAYS add type hints to public function signatures.\n\nPolicy 0140: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0141: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0142: Tag every Docker image with the git short SHA.\n\nPolicy 0143: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0144: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0145: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0146: Prefix all metric names with the service namespace.\n\nPolicy 0147: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0148: NEVER merge without one approving review.\n\nPolicy 0149: ALWAYS bump the API version prefix for breaking changes.\n\nPolicy 0150: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0151: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0152: ALWAYS format Python with ruff before pushing.\n\nPolicy 0153: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0154: ALWAYS add type hints to public function signatures.\n\nPolicy 0155: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0156: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0157: Tag every Docker image with the git short SHA.\n\nPolicy 0158: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0159: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0160: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0161: Prefix all metric names with the service namespace.\n\nPolicy 0162: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0163: NEVER merge without one approving review.\n\nPolicy 0164: ALWAYS bump the API version prefix for breaking changes.\n\nPolicy 0165: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0166: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0167: ALWAYS format Python with ruff before pushing.\n\nPolicy 0168: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0169: ALWAYS add type hints to public function signatures.\n\nPolicy 0170: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0171: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0172: Tag every Docker image with the git short SHA.\n\nPolicy 0173: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0174: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0175: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0176: Prefix all metric names with the service namespace.\n\nPolicy 0177: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0178: NEVER merge without one approving review.\n\nPolicy 0179: ALWAYS bump the API version prefix for breaking changes.\n\nPolicy 0180: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0181: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0182: ALWAYS format Python with ruff before pushing.\n\nPolicy 0183: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0184: ALWAYS add type hints to public function signatures.\n\nPolicy 0185: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0186: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0187: Tag every Docker image with the git short SHA.\n\nPolicy 0188: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0189: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0190: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0191: Prefix all metric names with the service namespace.\n\nPolicy 0192: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0193: NEVER merge without one approving review.\n\nPolicy 0194: ALWAYS bump the API version prefix for breaking changes.\n\nPolicy 0195: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0196: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0197: ALWAYS format Python with ruff before pushing.\n\nPolicy 0198: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0199: ALWAYS add type hints to public function signatures.\n\nPolicy 0200: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0201: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0202: Tag every Docker image with the git short SHA.\n\nPolicy 0203: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0204: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0205: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0206: Prefix all metric names with the service namespace.\n\nPolicy 0207: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0208: NEVER merge without one approving review.\n\nPolicy 0209: ALWAYS bump the API version prefix for breaking changes.\n\nPolicy 0210: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0211: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0212: ALWAYS format Python with ruff before pushing.\n\nPolicy 0213: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0214: ALWAYS add type hints to public function signatures.\n\nPolicy 0215: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0216: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0217: Tag every Docker image with the git short SHA.\n\nPolicy 0218: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0219: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0220: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0221: Prefix all metric names with the service namespace.\n\nPolicy 0222: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0223: NEVER merge without one approving review.\n\nPolicy 0224: ALWAYS bump the API version prefix for breaking changes.\n\nPolicy 0225: ALWAYS pin every dependency to an exact version in pyproject.toml.\n\nPolicy 0226: NEVER commit secrets; read them from AWS Secrets Manager.\n\nPolicy 0227: ALWAYS format Python with ruff before pushing.\n\nPolicy 0228: Prefix all feature branches with the Jira ticket id, like PROJ-123.\n\nPolicy 0229: ALWAYS add type hints to public function signatures.\n\nPolicy 0230: NEVER use raw SQL in routes; go through the repository layer.\n\nPolicy 0231: ALWAYS write tests under tests/ mirroring the package layout.\n\nPolicy 0232: Tag every Docker image with the git short SHA.\n\nPolicy 0233: ALWAYS set a 5-second connect timeout on HTTP clients.\n\nPolicy 0234: NEVER log PII; redact emails and tokens before logging.\n\nPolicy 0235: ALWAYS return timestamps in UTC ISO-8601.\n\nPolicy 0236: Prefix all metric names with the service namespace.\n\nPolicy 0237: ALWAYS validate input with Pydantic at the route boundary.\n\nPolicy 0238: NEVER merge without one approving review.\n\nPolicy 0239: ALWAYS bump the API version prefix for breaking changes.",
     "state": "proposed",
     "confidence": 0.78,
     "provenance": "logs/evals/eval/lost_in_middle.jsonl:1",
@@ -1848,7 +1856,37 @@
         "actor": "eval-mock-bridge"
       }
     ],
-    "evalCaseInsightCount": 40
+    "evalCaseInsightCount": 241
+  },
+  {
+    "id": "eval_lost_in_middle_reader",
+    "evalCaseId": "lost_in_middle_reader",
+    "evalCaseNamespace": "eval",
+    "title": "Lost In Middle Reader",
+    "content": "The praxis service is a FastAPI app deployed on AWS via CDK.\n\nLocal development uses uv; run the app with `uv run uvicorn app:api`.\n\nSecrets are read from AWS Secrets Manager, never committed to the repo.\n\nThe default region for all stacks is us-east-1.\n\nPython files are formatted with ruff and use 4-space indentation.\n\nType hints are required on all public function signatures.\n\nDatabase access goes through the repository layer, never raw SQL in routes.\n\nPRs require at least one approving review before merge.\n\nLogging uses structlog with JSON output in production.\n\nALWAYS prefix every TODO comment with the initials MD, like TODO(MD).\n\nCaching, when added, should use an in-memory LRU with a 60-second TTL.\n\nAPI responses are versioned under the /v1 prefix.\n\nAll timestamps are stored and returned in UTC ISO-8601 format.\n\nRate limiting is applied per-API-key at the gateway, 100 req/min.\n\nStatic assets are served from CloudFront with a 24-hour cache header.\n\nEmail is sent through SES with templated messages.\n\nTracing uses AWS X-Ray with sampling at 10% in production.\n\nCORS is restricted to the known frontend origins only.",
+    "state": "proposed",
+    "confidence": 0.78,
+    "provenance": "logs/evals/eval/lost_in_middle_reader.jsonl:1",
+    "createdAt": "2026-06-18T12:00:00Z",
+    "scope": "eval/eval",
+    "category": "eval_fixture",
+    "confidenceBreakdown": {
+      "frequency": 0.73,
+      "recency": 0.81,
+      "breadth": 0.76,
+      "frequencyRationale": "Registered eval case under cases/",
+      "recencyRationale": "Auto-generated from eval case registry for mock dashboard",
+      "breadthRationale": "Exercises eval harness case lost_in_middle_reader"
+    },
+    "auditTrail": [
+      {
+        "action": "distilled",
+        "timestamp": "2026-06-18T12:00:00Z",
+        "provenance": "logs/evals/eval/lost_in_middle_reader.jsonl:1",
+        "actor": "eval-mock-bridge"
+      }
+    ],
+    "evalCaseInsightCount": 18
   },
   {
     "id": "eval_naming_convention_regex",
@@ -2057,6 +2095,35 @@
       }
     ],
     "evalCaseInsightCount": 2
+  },
+  {
+    "id": "eval_pathlib_preference_before",
+    "evalCaseId": "pathlib_preference_before",
+    "evalCaseNamespace": "eval",
+    "title": "Pathlib Preference Before",
+    "content": "Create config_utils.py with a function `read_config(path)` that checks whether",
+    "state": "proposed",
+    "confidence": 0.78,
+    "provenance": "logs/evals/eval/pathlib_preference_before.jsonl:1",
+    "createdAt": "2026-06-18T12:00:00Z",
+    "scope": "eval/eval",
+    "category": "eval_fixture",
+    "confidenceBreakdown": {
+      "frequency": 0.73,
+      "recency": 0.81,
+      "breadth": 0.76,
+      "frequencyRationale": "Registered eval case under cases/",
+      "recencyRationale": "Auto-generated from eval case registry for mock dashboard",
+      "breadthRationale": "Exercises eval harness case pathlib_preference_before"
+    },
+    "auditTrail": [
+      {
+        "action": "distilled",
+        "timestamp": "2026-06-18T12:00:00Z",
+        "provenance": "logs/evals/eval/pathlib_preference_before.jsonl:1",
+        "actor": "eval-mock-bridge"
+      }
+    ]
   },
   {
     "id": "eval_poison_negative_control",

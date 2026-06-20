@@ -26,7 +26,8 @@ pytestmark = pytest.mark.skipif(
 def provider() -> ApiDataProvider:
     base = os.environ["PRAXIS_API_BASE_URL"].strip().rstrip("/")
     token = os.environ.get("PRAXIS_API_TOKEN", "").strip() or None
-    return ApiDataProvider(base_url=base, token=token)
+    org_id = os.environ.get("PRAXIS_ORG_ID", "default").strip() or "default"
+    return ApiDataProvider(base_url=base, token=token, org_id=org_id)
 
 
 def test_live_list_candidates(provider: ApiDataProvider) -> None:

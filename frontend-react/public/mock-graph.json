@@ -521,6 +521,15 @@
       "category": "eval_fixture"
     },
     {
+      "id": "eval_lost_in_middle_reader",
+      "label": "Lost In Middle Reader",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/lost_in_middle_reader.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
       "id": "eval_naming_convention_regex",
       "label": "Naming Convention Regex",
       "state": "proposed",
@@ -580,6 +589,15 @@
       "state": "proposed",
       "confidence": 0.78,
       "provenance": "logs/evals/eval/overturn_explicit.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_pathlib_preference_before",
+      "label": "Pathlib Preference Before",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/pathlib_preference_before.jsonl:1",
       "scope": "eval/eval",
       "category": "eval_fixture"
     },
@@ -864,6 +882,7 @@
         "eval_kg_roundtrip",
         "eval_kg_unicode_roundtrip",
         "eval_lost_in_middle",
+        "eval_lost_in_middle_reader",
         "eval_naming_convention_regex",
         "eval_near_miss_distractor",
         "eval_negative_control_irrelevant",
@@ -871,6 +890,7 @@
         "eval_ordered_doc_sections",
         "eval_over_generalization",
         "eval_overturn_explicit",
+        "eval_pathlib_preference_before",
         "eval_poison_negative_control",
         "eval_poison_vague_recent",
         "eval_reader_concatenation_order",

@@ -348,6 +348,7 @@ export default function App() {
           onSelectNode={setSelectedId}
           onResolve={handleResolve}
           onDefer={handleDefer}
+          dataSourceMode={mode}
         />
       ) : (
         <ContentSplit
@@ -359,6 +360,7 @@ export default function App() {
               onSelect={setSelectedId}
               onResolve={handleResolve}
               onDefer={handleDefer}
+              dataSourceMode={mode}
             />
           }
         />

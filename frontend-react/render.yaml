@@ -37,6 +37,36 @@ services:
       - key: COGNITO_REGION
         value: us-east-1
 
+  # Monica-owned read-only Phoenix proxy. Holds the Phoenix Bearer key
+  # server-side so it never ships in the static React bundle. Separate from
+  # praxis-candidate-api so the dashboard pillar owns this without touching
+  # Matthew's knowledge/serve app.
+  - type: web
+    name: praxis-phoenix-proxy
+    repo: https://labs.gauntletai.com/monicapeters/praxis.git
+    branch: monica/dashboard-human-gate
+    runtime: python
+    plan: free
+    buildCommand: pip install .
+    startCommand: uvicorn frontend.phoenix_proxy.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    buildFilter:
+      paths:
+        - frontend/phoenix_proxy/**
+        - pyproject.toml
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      # Phoenix REST API connection (read-only). Set as secrets in the Render
+      # dashboard — Dominic provides the project identifier and read-only key.
+      - key: PHOENIX_BASE_URL
+        value: https://phoenix.praxiskg.com
+      - key: PHOENIX_PROJECT
+        sync: false
+      - key: PHOENIX_API_KEY
+        sync: false
+
   - type: web
     name: praxis-react-human-gate
     repo: https://labs.gauntletai.com/monicapeters/praxis.git
@@ -66,6 +96,12 @@ services:
         fromService:
           type: web
           name: praxis-candidate-api
+          envVarKey: RENDER_EXTERNAL_URL
+      # Phoenix trace proxy URL — Candidate Detail fetches trace context here.
+      - key: VITE_PRAXIS_PHOENIX_PROXY_URL
+        fromService:
+          type: web
+          name: praxis-phoenix-proxy
           envVarKey: RENDER_EXTERNAL_URL
       - key: VITE_PRAXIS_API_TOKEN
         sync: false
