@@ -53,7 +53,7 @@ new PhoenixStack(app, 'PraxisPhoenixStack', {
   env,
   vpc: network.vpc,
   imageTag: app.node.tryGetContext('phoenixImageTag'),
-  domain: app.node.tryGetContext('phoenixDomain'),
+  domain: app.node.tryGetContext('phoenixDomain') ?? 'phoenix.praxiskg.com',
   hostedZone: dns.zone,
   allowedWebCidr: app.node.tryGetContext('phoenixAllowedWebCidr'),
   dataVolumeGib: app.node.tryGetContext('phoenixDataVolumeGib'),
