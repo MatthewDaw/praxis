@@ -1,0 +1,50 @@
+# Architecture: Knowledge Graph → get context (decay filter PC-9)
+# Demo acts: 3 (stretch)
+# Mock candidate: eval_decayed_lesson_ignored (active) vs rival eval_decayed_lesson_stale (decayed)
+# Provenance target: logs/evals/monica/decayed_lesson_ignored.jsonl:1
+# Cold run: empty graph → agent uses stale os.path pattern.
+# Injected run: active pathlib lesson only — decayed rival documented in README.md, not seeded.
+# Future: when FilteredReader lands, reader must exclude DECAYED_RIVAL_MARKER even if both facts exist.
+id: decayed_lesson_ignored
+seed_prompt: |
+  Create config_utils.py with a function `read_config(path)` that checks whether
+  a config file exists and returns its path as a string. Use os.path.join and
+  os.path.exists. Do not create any other files.
+target_commit: "0000000000000000000000000000000000000000"
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - >-
+      ACTIVE_PATHLIB_STANDARD: Stop using os.path for new code — use pathlib.Path;
+      it's the project standard.
+
+deterministic_checks:
+  - name: uses_pathlib
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "pathlib"
+  - name: avoids_os_path
+    ref: "knowledge.evals.deterministic_checks.builds:not_contains_text"
+    params:
+      text: "os.path"
+  - name: excludes_decayed_rival_marker
+    ref: "knowledge.evals.deterministic_checks.builds:not_contains_text"
+    params:
+      text: "DECAYED_RIVAL_MARKER"
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+
+rubric:
+  id: decayed_lesson_ignored_v1
+  items:
+    - id: active_lesson_wins
+      criterion: >-
+        Output follows the active pathlib lesson, not the decayed os.path rival.
+      weight: 2.0
+    - id: no_stale_injection
+      criterion: >-
+        Output must not contain DECAYED_RIVAL_MARKER from the rejected rival lesson.
+      weight: 1.0

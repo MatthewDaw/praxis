@@ -17,7 +17,7 @@ PRAXIS uses two AWS data stores:
 | Raw session logs | DynamoDB (`praxis-sessions`) | Dominic / session-capture | Full Claude Code JSONL transcripts |
 | Distilled knowledge | RDS PostgreSQL 16 + pgvector (`praxis_kg`) | Matthew / `knowledge/serve` | Dashboard candidates + KG facts/embeddings |
 
-Dashboard clients (Streamlit and React) call the **candidate REST API** only. They never connect to Postgres directly. See [ARCHITECTURE_MONICA.md §17](ARCHITECTURE_MONICA.md) for the pillar boundary.
+Dashboard clients (React) call the **candidate REST API** only. They never connect to Postgres directly. See [ARCHITECTURE_MONICA.md §17](ARCHITECTURE_MONICA.md) for the pillar boundary.
 
 ```text
 Dashboard (PRAXIS_API_BASE_URL) → Candidate API (knowledge/serve)
@@ -227,7 +227,6 @@ Monica's pillar configures **API URL only** — never DB credentials.
 
 | Client | Env var | Example |
 |--------|---------|---------|
-| Streamlit | `PRAXIS_API_BASE_URL` | `https://praxis-candidate-api.onrender.com` |
 | React (build-time) | `VITE_PRAXIS_API_BASE_URL` | Set via `fromService` in blueprint or Render env |
 
 Full Render steps: [RENDER_DEPLOY.md](RENDER_DEPLOY.md) — **Live integration blueprint** section.
@@ -279,7 +278,7 @@ Local wire-up: [wire-up.md](../integration/wire-up.md) §3.
 | `NoCredentialsError` from boto3 | AWS CLI not configured | Run `aws configure` or set `AWS_PROFILE` |
 | Secret fetch 403 | IAM missing `secretsmanager:GetSecretValue` | Attach policy for secret ARN from stack output |
 | Render API can't reach RDS | SG allows only your laptop IP | Widen CIDR temporarily or use VPN; set `PRAXIS_DB_URL` on API service |
-| Dashboard shows stale list after promote | Client cache | Use **Refresh data** (Streamlit sidebar) or reload React page |
+| Dashboard shows stale list after promote | Client cache | Reload React page or use **Refresh data** toolbar |
 
 If Secrets Manager or RDS access is blocked on your account, ask Matthew or raise it in daily standup — do not commit credentials to the repo.
 

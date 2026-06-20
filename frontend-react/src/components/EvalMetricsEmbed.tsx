@@ -55,7 +55,9 @@ export function EvalMetricsEmbed({ provider }: EvalMetricsEmbedProps) {
           <p className="muted">
             {metrics?.source === "placeholder"
               ? "Placeholder curve — set VITE_PRAXIS_EVAL_METRICS_URL to Dominic's eval metrics endpoint when available."
-              : `Loaded from ${metrics?.source}`}
+              : metrics?.source === "mock"
+                ? "Loaded from mock eval metrics fixture (docs/integration/fixtures)."
+                : `Loaded from ${metrics?.source}`}
           </p>
           <EvalChartLegend maxValue={max} reductionPercent={reduction}>
             <div

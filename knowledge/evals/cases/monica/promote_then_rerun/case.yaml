@@ -1,0 +1,49 @@
+# Architecture: Consolidate • Score + Human Approval Gate → Knowledge Graph → get context
+# Demo acts: 2 + 3
+# Mock candidate: cand_9 (post-promote active lesson — mirrors quirky_config_load_order winner)
+# Provenance target: logs/nushell_contrib_20260611.jsonl:56
+# Gap: full promote→rerun E2E blocked on serve wiring; seeds simulate post-promote graph state.
+# Cold run: empty graph → agent puts experimental_options in config.nu (too late).
+# Injected run: promoted active fact in graph → agent sets parent-shell env before nu starts.
+id: promote_then_rerun
+seed_prompt: |
+  Write a short nushell startup snippet (save to startup.nu) that enables an
+  experimental feature requiring early-boot activation before config.nu is parsed.
+  Put the experimental_options assignment inside config.nu. Do not mention parent shells.
+target_commit: "0000000000000000000000000000000000000000"
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - >-
+      Early-boot experimental flags in nushell are read from the
+      `experimental_options` environment variable before `config.nu` is evaluated.
+      Set this variable in the parent shell or launcher script prior to starting
+      `nu`, not inside config, when testing features that must be active at startup.
+
+deterministic_checks:
+  - name: mentions_experimental_options
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "experimental_options"
+  - name: avoids_config_only_trap
+    ref: "knowledge.evals.deterministic_checks.builds:not_contains_text"
+    params:
+      text: "config.nu is sufficient"
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+
+rubric:
+  id: promote_then_rerun_v1
+  items:
+    - id: post_promote_injection
+      criterion: >-
+        The snippet reflects the human-promoted lesson: set experimental_options
+        in the parent shell or launcher before nu starts, not only inside config.nu.
+      weight: 2.0
+    - id: clarity
+      criterion: >-
+        The snippet is runnable and explains why config.nu is too late for this flag.
+      weight: 1.0

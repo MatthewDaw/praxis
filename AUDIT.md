@@ -14,7 +14,7 @@ PRAXIS is a three-pillar capstone sprint building a self-improving knowledge loo
 
 | Pillar | Owner | Location | Maturity |
 |--------|-------|----------|----------|
-| Dashboard & Human Gate | Monica Peters | `frontend/`, `frontend-react/` | **High** — Streamlit demo-ready on mock; React client shipped for Matthew API validation |
+| Dashboard & Human Gate | Monica Peters | `frontend-react/`, `frontend/` (contract) | **High** — React demo-ready on mock; Python contract layer for API validation |
 | ML & Knowledge Pipeline | Matthew Daw | `knowledge/` | **Early** — in-memory KG, ingestor skeleton; no REST API yet |
 | Architecture, Eval & Integration | Dominic Antonelli | `knowledge/evals/`, `session-capture/`, `infra/` | **Partial** — eval harness skeleton + session capture Go wrapper |
 
@@ -51,13 +51,13 @@ praxis/
 │   └── evals/           # Dominic — eval harness (YAML cases, runners, metrics)
 ├── session-capture/     # Dominic — Go claude+ wrapper, DynamoDB JSONL capture
 ├── infra/               # Dominic — AWS CDK (sessions table)
-├── frontend/            # Monica — Streamlit human gate
-└── frontend-react/      # Monica — React human gate (Matthew API client)
+├── frontend/            # Monica — Python contract + mock data
+└── frontend-react/      # Monica — React human gate (dashboard UI)
 ```
 
 | Path | Status | Notes |
 |------|--------|-------|
-| `frontend/` | ✅ Present | Streamlit app, components, services, tests |
+| `frontend/` | ✅ Present | Contract models, services, mock_data, pytest |
 | `frontend-react/` | ✅ Present | Vite + React + TS; contract v1 client; mock + live API modes |
 | `knowledge/` | ✅ Present | KG, ingestion, graph reader, eval harness |
 | `knowledge/evals/` | ✅ Present | YAML cases, deterministic checks, Claude Code runner |
@@ -73,20 +73,17 @@ praxis/
 
 ## Pillar assessments
 
-### 1. Dashboard & Human Gate (`frontend/`) — Monica
+### 1. Dashboard contract layer (`frontend/`) — Monica
 
-**Status:** Demo-ready on mock; API client implemented; awaiting live backend.
+**Status:** Contract-tested; mock data canonical; no UI runtime.
 
 | Area | Finding |
 |------|---------|
-| Entry | `app.py` — slim wiring only; UI in `components/`, data in `services/` |
 | State machine | `proposed → suggested → active` via `next_promotion_state()`; `decayed` + unknown states handled |
-| Provenance | Required on `Candidate`; displayed in detail view |
-| Contradictions | Side-by-side panel with resolve/defer; `cand_9` ↔ `cand_16` in mock |
-| Confidence UX | `ConfidenceBreakdown` + badge components; low-confidence promote warning |
-| Eval embed | `eval_metrics_embed.py` — fetches `PRAXIS_EVAL_METRICS_URL` or shows placeholder |
+| Provenance | Required on `Candidate`; validated in contract tests |
+| Contradictions | Mock pair `cand_9` ↔ `cand_16` in `mock_data.py` |
 | API client | `ApiDataProvider` — stdlib `urllib`, contract v1 headers, 409/400 retry logic |
-| Deploy | `render.yaml` — mock-only portfolio deploy; env vars for live API |
+| Mock data | `mock_data.py` — exported to React JSON and API seed |
 | Boundary rule | ✅ No imports from `knowledge/` or `knowledge/evals/` inside `frontend/` (verified) |
 
 **Tests (11 passing with `PYTHONPATH=frontend`):**
@@ -97,12 +94,10 @@ praxis/
 **Gaps:**
 
 - Live API never exercised in CI (no server in repo).
-- `pyproject.toml` does not add `frontend` to `pythonpath` — root `pytest` collection fails (see Test posture).
-- Accessibility pass and user-flow video remain manual (see `docs/monica/DAYS_9_10_REMAINING.md`).
 
 ---
 
-### 1b. Knowledge Graph Dashboard (`frontend-react/`) — Monica (Matthew API client)
+### 1b. Knowledge Graph Dashboard (`frontend-react/`) — Monica
 
 **Status:** Demo-ready on mock; contract v1 client implemented; `npm run build` passes.
 
@@ -118,7 +113,7 @@ praxis/
 **Gaps:**
 
 - No automated tests yet (TypeScript `tsc -b` only).
-- Live API not exercised in CI (same blocker as Streamlit — no server in repo).
+- Live API not exercised in CI (no server in repo).
 
 ---
 
@@ -229,7 +224,7 @@ Or document that all contributors must run frontend tests from `frontend/` with 
 | Area | Tests | Gap |
 |------|-------|-----|
 | `ApiDataProvider` HTTP | None | No mock server / `responses` harness |
-| Streamlit UI | None | Smoke tests hit provider only, not rendered UI |
+| React UI | None | Vitest covers contract + mock workflow; no browser E2E |
 | Session capture Go | Unknown | Requires Go install |
 | End-to-end loop | None | No single test: ingest → candidate → promote → eval |
 
@@ -243,7 +238,7 @@ Or document that all contributors must run frontend tests from `frontend/` with 
 | Pre-commit hooks | ❌ Not configured |
 | Type checking (mypy/pyright) | ❌ Not configured |
 | Lint (ruff/eslint) | ❌ Not configured |
-| Render deploy | ✅ `frontend/render.yaml` for portfolio mock |
+| Render deploy | ✅ `frontend-react/render.yaml` for portfolio mock |
 
 `docs/monica/DAYS_9_10_REMAINING.md` lists optional GitLab CI for `frontend/tests/` when repo CI is live.
 
@@ -310,13 +305,14 @@ $env:PYTHONPATH = "frontend"
 uv run pytest knowledge/ frontend/tests/ -q
 
 # Mock dashboard
-cd frontend
-Remove-Item Env:PRAXIS_API_BASE_URL -ErrorAction SilentlyContinue
-.\venv\Scripts\streamlit run app.py
+cd frontend-react
+npm install
+npm run dev
 
 # Live API mode (when server exists)
-$env:PRAXIS_API_BASE_URL = "http://localhost:8000"
-.\venv\Scripts\streamlit run app.py
+# VITE_PRAXIS_API_BASE_URL=http://localhost:8000 in frontend-react/.env.local
+cd frontend-react
+npm run dev
 
 # Eval harness (offline)
 $env:PRAXIS_EVAL_REAL = "0"

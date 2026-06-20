@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from knowledge.evals.run import load_cases
 from models.candidate import CandidateState, next_promotion_state
 from services.data_provider import get_data_provider
 from services.mock_provider import MockDataProvider
@@ -10,7 +11,7 @@ from services.mock_provider import MockDataProvider
 def test_mock_provider_lists_candidates() -> None:
     provider = get_data_provider()
     candidates = provider.list_candidates()
-    assert len(candidates) >= 18
+    assert len(candidates) >= len(load_cases())
 
 
 def test_mock_promote_proposed_to_suggested() -> None:

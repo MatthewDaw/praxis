@@ -62,9 +62,9 @@ class ApiDataProvider:
     """
     Thin HTTP client over Matthew's REST API.
 
-    A future React app in frontend-react/ should call the same endpoints —
-    this class is Streamlit-specific only in that it returns Candidate models
-    for the dashboard; the API contract itself is UI-agnostic.
+    Python reference client for candidate-api-v1 — returns typed Candidate models.
+    The React dashboard in frontend-react/ calls the same endpoints; the contract
+    itself is UI-agnostic.
     """
 
     def __init__(self, base_url: str, token: str | None = None) -> None:

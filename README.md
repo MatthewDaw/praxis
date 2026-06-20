@@ -3,7 +3,6 @@
 **Self-improving knowledge loop for Claude Code agents.**
 
 [![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](pyproject.toml)
-[![Streamlit](https://img.shields.io/badge/dashboard-Streamlit-FF4B4B.svg)](frontend/app.py)
 [![React](https://img.shields.io/badge/dashboard-React-61DAFB.svg)](frontend-react/README.md)
 [![Go](https://img.shields.io/badge/session--capture-Go-00ADD8.svg)](session-capture/README.md)
 [![Contract](https://img.shields.io/badge/API-contract_v1-4CAF50.svg)](docs/integration/candidate-api-v1.md)
@@ -85,8 +84,8 @@ Point-in-time snapshot as of **2026-06-19** (Sprint Day 3). Live gap tracker: [d
 
 | Area | Path | Owner | Status |
 |------|------|-------|--------|
-| Human-gate dashboard (Streamlit) | `frontend/` | Monica Peters | **Demo-ready** — mock fixtures, contract v1 API client, Render deploy blueprint |
-| Knowledge Graph dashboard (React) | `frontend-react/` | Monica Peters (client) / Matthew Daw (server) | **Demo-ready (mock)** — Vite + TypeScript UI targeting same candidate-api-v1; Matthew validates his REST server without Streamlit |
+| Human-gate dashboard (React) | `frontend-react/` | Monica Peters (client) / Matthew Daw (server) | **Demo-ready (mock)** — Vite + TypeScript UI targeting candidate-api-v1 |
+| Dashboard contract layer (Python) | `frontend/` | Monica Peters | **Shipped** — mock fixtures, contract v1 reference client, pytest contract tests |
 | Knowledge substrate | `knowledge/` | Matthew Daw | **Foundation** — in-memory graph, prompt ingestor, whole-file reader, wiring factory |
 | Eval harness | `knowledge/evals/` | Dominic Antonelli | **Partial** — 63 YAML cases, deterministic checks, real Claude Code runner + offline FakeRunner |
 | Session capture | `session-capture/` | Dominic Antonelli | **Working** — Go `claude+` PTY daemon, JSONL tailer, DynamoDB writer |
@@ -135,7 +134,7 @@ Point-in-time snapshot as of **2026-06-19** (Sprint Day 3). Live gap tracker: [d
 
 **Monica (Dashboard & Human Gate)**
 
-- [x] Human-gate UI mock-complete (Streamlit + React, contract v1 clients)
+- [x] Human-gate UI mock-complete (React dashboard + Python contract v1 client)
 - [x] P0 eval cases + `test_cases.py` green
 - [ ] Live integration smoke: promote/reject/resolve chain on Matthew API ([INTEGRATION_SMOKE.md](docs/monica/INTEGRATION_SMOKE.md))
 - [ ] Timed **Act 2** rehearsal ≤3.5 min ([DEMO_SCRIPT.md](docs/monica/DEMO_SCRIPT.md))
@@ -196,7 +195,7 @@ Point-in-time snapshot as of **2026-06-19** (Sprint Day 3). Live gap tracker: [d
 | Cluster/dedup + confidence scoring | Real-time mid-session learning |
 | Knowledge Graph as primary knowledge store | |
 | get-context tool (session + codebase + graph → injected context) | |
-| Streamlit + React human-gate dashboards in `frontend/` and `frontend-react/` (`proposed → suggested → active`) | |
+| React human-gate dashboard in `frontend-react/` (`proposed → suggested → active`) | |
 | Complementary injection via generated `CLAUDE.md` / skills | |
 | Eval harness measuring correction rate before/after (VCS-agnostic PR/ticket replay) | |
 
@@ -221,7 +220,7 @@ Three Gauntlet AI Fellows, each owning one end-to-end pillar for a 9–10 day fo
 | Lead | Pillar | Focus |
 |------|--------|-------|
 | **Matthew Daw** | ML & Knowledge Pipeline | Ingestion, learning-moment detection, LLM distillation, consolidation/dedup/scoring, knowledge graph, provenance |
-| **Monica Peters** | Dashboard & Human Gate | Streamlit + React human-gate dashboards, approval workflow, contradiction resolution UI, credibility metrics |
+| **Monica Peters** | Dashboard & Human Gate | React human-gate dashboard, Python contract layer, approval workflow, contradiction resolution UI, credibility metrics |
 | **Dominic Antonelli** | Architecture, Eval & Integration | System design, eval harness, VCS-agnostic replay automation, session capture wrapper, deployment, compounding-curve proof |
 
 Daily 15-minute syncs; all code reviewed by at least one other member before merge.
@@ -267,18 +266,15 @@ praxis/
 │   ├── matt/future-work/      # Post-MVP knowledge-graph eval design (parked)
 │   └── plans/                 # MVP plan (mvp-plan.html)
 ├── .cursor/rules/             # Team Cursor rules (shared, dashboard, pipeline-eval, git-sync)
-├── frontend/                  # Streamlit human-gate UI (Monica)
-│   ├── app.py                 # Entry — provider wiring only
-│   ├── components/            # List, detail, badges, contradiction panel, eval embed
+├── frontend/                  # Python contract + mock data (Monica)
 │   ├── models/                # Candidate types (API contract surface)
 │   ├── services/              # DataProvider, mock + API clients, contract_v1
 │   ├── tests/                 # Contract fixture + mock workflow tests
-│   ├── mock_data.py           # Local fixtures — no backend required
-│   └── render.yaml            # Render.com deploy blueprint
-├── frontend-react/            # React Knowledge Graph dashboard (Monica — Matthew API client)
-│   ├── src/                   # Vite + TypeScript — same contract v1 as Streamlit
+│   └── mock_data.py           # Canonical fixtures — exported to React JSON
+├── frontend-react/            # React Knowledge Graph dashboard (Monica)
+│   ├── src/                   # Vite + TypeScript — candidate-api-v1 client
 │   ├── public/mock-candidates.json
-│   └── README.md              # Matthew self-serve wire-up (VITE_* env vars)
+│   └── README.md              # Self-serve wire-up (VITE_* env vars)
 ├── knowledge/                 # Knowledge substrate + eval harness (Matthew & Dominic)
 │   ├── knowledge_graph/       # KnowledgeGraph ABC + InMemoryGraph
 │   ├── injestion/             # Ingestor ABC + PromptIngestor
@@ -331,24 +327,14 @@ python -m venv .venv
 ### 2. Run the human-gate dashboard
 
 ```powershell
-cd frontend
-Remove-Item Env:PRAXIS_API_BASE_URL -ErrorAction SilentlyContinue
-uv run streamlit run app.py
-```
-
-Mock mode loads fixtures from `mock_data.py` — no backend required. See [docs/integration/wire-up.md](docs/integration/wire-up.md) for live API and eval-metrics wiring.
-
-**Render deploy (portfolio demo):** [docs/monica/RENDER_DEPLOY.md](docs/monica/RENDER_DEPLOY.md)
-
-### 2b. Run the React dashboard (Matthew API client)
-
-```powershell
 cd frontend-react
 npm install
 npm run dev
 ```
 
 Mock mode loads `public/mock-candidates.json` — no backend required. Set `VITE_PRAXIS_API_BASE_URL` in `.env.local` for Matthew's live server. See [frontend-react/README.md](frontend-react/README.md) and [docs/integration/wire-up.md](docs/integration/wire-up.md).
+
+**Render deploy (portfolio demo):** [docs/monica/RENDER_DEPLOY.md](docs/monica/RENDER_DEPLOY.md)
 
 ### 3. Run the eval harness
 
@@ -418,10 +404,10 @@ Phoenix itself lives in [infra/lib/phoenix-stack.ts](infra/lib/phoenix-stack.ts)
 
 | Variable | Required | Component | Purpose |
 |----------|----------|-----------|---------|
-| `PRAXIS_API_BASE_URL` | No | Dashboard | Candidate REST API base URL; unset → mock fixtures |
-| `PRAXIS_API_TOKEN` | No | Dashboard | Bearer token for API auth |
-| `PRAXIS_CONTRACT_VERSION` | No | Dashboard | API contract version header (default `1`) |
-| `PRAXIS_EVAL_METRICS_URL` | No | Streamlit dashboard | GET endpoint returning eval metrics JSON for compounding-curve embed |
+| `PRAXIS_API_BASE_URL` | No | Python contract tests | Candidate REST API base URL for live smoke tests |
+| `PRAXIS_API_TOKEN` | No | Python contract tests | Bearer token for API auth |
+| `PRAXIS_CONTRACT_VERSION` | No | Python contract tests | API contract version header (default `1`) |
+| `PRAXIS_EVAL_METRICS_URL` | No | Python contract tests | GET endpoint returning eval metrics JSON |
 | `VITE_PRAXIS_API_BASE_URL` | No | React dashboard | Same as `PRAXIS_API_BASE_URL`; unset → mock fixtures |
 | `VITE_PRAXIS_API_TOKEN` | No | React dashboard | Bearer token for API auth |
 | `VITE_PRAXIS_EVAL_METRICS_URL` | No | React dashboard | Eval metrics JSON URL for compounding-curve embed |
@@ -488,11 +474,11 @@ Contract fixtures are canonical in [docs/integration/fixtures/](docs/integration
 | [docs/plans/proposal-praxis.md](docs/plans/proposal-praxis.md) | Capstone proposal — problem, direction, risks (historical) |
 | [docs/integration/candidate-api-v1.md](docs/integration/candidate-api-v1.md) | **Matthew ↔ Monica** candidate REST contract + fixtures |
 | [docs/integration/eval-metrics-v1.md](docs/integration/eval-metrics-v1.md) | **Dominic ↔ Monica** eval metrics JSON contract |
-| [docs/integration/wire-up.md](docs/integration/wire-up.md) | Self-serve Streamlit + React wire-up (no pairing) |
+| [docs/integration/wire-up.md](docs/integration/wire-up.md) | Self-serve dashboard wire-up (no pairing) |
 | [docs/monica/RDS_KG_DEPLOY.md](docs/monica/RDS_KG_DEPLOY.md) | RDS PostgreSQL 16 + pgvector — AWS CLI, Secrets Manager, Postgres candidate store |
 | [infra/README.md](infra/README.md) | AWS CDK stacks overview |
 | [frontend-react/README.md](frontend-react/README.md) | React Knowledge Graph dashboard — Matthew API validation |
-| [docs/monica/ARCHITECTURE_MONICA.md](docs/monica/ARCHITECTURE_MONICA.md) | Dashboard pillar architecture — Streamlit stack, API boundaries |
+| [docs/monica/ARCHITECTURE_MONICA.md](docs/monica/ARCHITECTURE_MONICA.md) | Dashboard pillar architecture — React UI, API boundaries |
 | [docs/monica/monica-wireframes.md](docs/monica/monica-wireframes.md) | Dashboard as-built spec and UX notes |
 | [docs/monica/DEMO_SCRIPT.md](docs/monica/DEMO_SCRIPT.md) | Three-act live demo script |
 | [docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md](docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md) | Team gap checklist, Scrum Master duties, demo freeze gates |

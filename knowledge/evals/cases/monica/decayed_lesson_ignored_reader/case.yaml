@@ -1,0 +1,24 @@
+# Component eval: graph_reader only — active-lesson retrieval (decay filter contract).
+# Diagram node: get context + decay filter (PC-9)
+# Provenance target: logs/evals/monica/decayed_lesson_ignored.jsonl:1
+# Passes today: only the active lesson is seeded. When FilteredReader lands, add a
+# sibling test case that seeds both active + decayed facts and asserts rival excluded.
+id: decayed_lesson_ignored_reader
+component: graph_reader
+seed_prompt: "What is the project standard for config path handling?"
+
+seeded_insight:
+  direct_to_graph:
+    - >-
+      ACTIVE_PATHLIB_STANDARD: Stop using os.path for new code — use pathlib.Path;
+      it's the project standard.
+
+deterministic_checks:
+  - name: retrieves_active_marker
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "ACTIVE_PATHLIB_STANDARD"
+  - name: excludes_decayed_rival_marker
+    ref: "knowledge.evals.deterministic_checks.builds:not_contains_text"
+    params:
+      text: "DECAYED_RIVAL_MARKER"

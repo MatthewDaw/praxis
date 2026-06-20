@@ -25,7 +25,7 @@ describe("mock graph workflow", () => {
       loadMockGraph(),
     );
     const graph = await provider.getGraph();
-    expect(graph.nodes.length).toBeGreaterThanOrEqual(18);
+    expect(graph.nodes.length).toBeGreaterThanOrEqual(78);
     const contradiction = graph.edges.find(
       (edge) =>
         edge.kind === "contradiction" &&
@@ -58,8 +58,13 @@ describe("mock graph workflow", () => {
       "cand_9",
     );
     const graph = await provider.getGraph();
-    const contradiction = graph.edges.find((edge) => edge.kind === "contradiction");
-    expect(contradiction).toBeUndefined();
+    const resolvedPair = graph.edges.find(
+      (edge) =>
+        edge.kind === "contradiction" &&
+        ((edge.src === "cand_9" && edge.dst === "cand_16") ||
+          (edge.src === "cand_16" && edge.dst === "cand_9")),
+    );
+    expect(resolvedPair).toBeUndefined();
     const loser = graph.nodes.find((n) => n.id === "cand_16");
     expect(loser?.state).toBe("decayed");
   });

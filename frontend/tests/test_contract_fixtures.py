@@ -68,3 +68,22 @@ def test_eval_metrics_fixture_has_required_curve() -> None:
     assert isinstance(series, list) and len(series) >= 2
     assert metrics.get("corrections_before") is not None
     assert metrics.get("corrections_after") is not None
+
+
+def test_ingest_jsonl_request_fixture_shape() -> None:
+    payload = _load_json("ingest-jsonl-request.json")
+    assert isinstance(payload, dict)
+    files = payload.get("files")
+    assert isinstance(files, list) and len(files) >= 1
+    first = files[0]
+    assert isinstance(first, dict)
+    assert isinstance(first.get("name"), str) and first["name"]
+    assert isinstance(first.get("content"), str)
+
+
+def test_ingest_jsonl_response_fixture_shape() -> None:
+    payload = _load_json("ingest-jsonl-response.json")
+    assert isinstance(payload, dict)
+    assert isinstance(payload.get("candidatesCreated"), int)
+    assert isinstance(payload.get("candidateIds"), list)
+    assert isinstance(payload.get("provenance"), list)

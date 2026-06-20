@@ -1,0 +1,6 @@
+{
+  "correction_rate": [1.0, 0.72, 0.48, 0.35],
+  "sessions": ["cold", "run_1", "run_2", "run_3"],
+  "corrections_before": 12,
+  "corrections_after": 5
+}

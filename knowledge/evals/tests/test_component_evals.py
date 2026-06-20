@@ -70,8 +70,16 @@ def test_run_case_routes_component_and_ignores_runner():
     assert result.passed
 
 
-@pytest.mark.parametrize("case_id", ["kg_roundtrip", "ingestion_distill", "reader_retrieval"])
-def test_registered_component_cases_pass(case_id):
-    case = load_case(CASES_DIR / "matt" / case_id)
+@pytest.mark.parametrize(
+    "case_id,case_namespace",
+    [
+        ("kg_roundtrip", "matt"),
+        ("ingestion_distill", "matt"),
+        ("reader_retrieval", "matt"),
+        ("decayed_lesson_ignored_reader", "monica"),
+    ],
+)
+def test_registered_component_cases_pass(case_id, case_namespace):
+    case = load_case(CASES_DIR / case_namespace / case_id)
     result = run_case(case, FakeRunner())
     assert result.passed, [c.evidence for c in result.checks]

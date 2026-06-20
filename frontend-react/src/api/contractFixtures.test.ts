@@ -72,4 +72,25 @@ describe("contract v1 fixtures", () => {
     expect(metrics.corrections_before).toBeDefined();
     expect(metrics.corrections_after).toBeDefined();
   });
+
+  it("validates ingest-jsonl-request.json shape", () => {
+    const payload = loadFixture("ingest-jsonl-request.json") as {
+      files: Array<{ name: string; content: string }>;
+    };
+    expect(Array.isArray(payload.files)).toBe(true);
+    expect(payload.files.length).toBeGreaterThanOrEqual(1);
+    expect(payload.files[0].name).toBeTruthy();
+    expect(typeof payload.files[0].content).toBe("string");
+  });
+
+  it("validates ingest-jsonl-response.json shape", () => {
+    const payload = loadFixture("ingest-jsonl-response.json") as {
+      candidatesCreated: number;
+      candidateIds: string[];
+      provenance: string[];
+    };
+    expect(typeof payload.candidatesCreated).toBe("number");
+    expect(Array.isArray(payload.candidateIds)).toBe(true);
+    expect(Array.isArray(payload.provenance)).toBe(true);
+  });
 });

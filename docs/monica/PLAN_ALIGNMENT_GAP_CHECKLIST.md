@@ -5,7 +5,7 @@
 **Source of truth:** [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) (architecture diagram + 9-day schedule), [proposal-praxis.md](../plans/proposal-praxis.md), [AUDIT.md](../../AUDIT.md)  
 **Live demo:** **Monday, June 29, 2026** — 10-minute Gauntlet capstone presentation  
 **Demo calendar:** **Internal** freeze/practice **Thu–Fri Jun 26–27** (Sprint Days 9–10) · **Public** Gauntlet showcase **Mon Jun 29** — see [Scrum Master freeze gates](#demo-freeze--three-practice-runs-before-jun-29) below  
-**Sprint snapshot:** Monica pillar mock-complete through Day 8 (Streamlit + React); P0 eval cases `quirky_*` + poison good/bad landed with tests; Matthew live API + **PostgreSQL** still critical path for Acts 2–3 on staging
+**Sprint snapshot:** Monica pillar mock-complete through Day 8 (React UI + Python contract layer); P0 eval cases `quirky_*` + poison good/bad landed with tests; Matthew live API + **PostgreSQL** still critical path for Acts 2–3 on staging
 
 ---
 
@@ -136,7 +136,7 @@ Dominic owns harness pairing (cold vs injected) and metrics; Monica owns **case 
 | Pillar | Owner | Days 3–5 gap | Days 6–7 gap | Demo risk |
 |--------|-------|--------------|--------------|-----------|
 | **ML & Knowledge Pipeline** | Matthew | **Critical** — distillation, dedup, scoring, API not built | **Critical** — E2E wiring, KG, get-context | **Highest** — blocks live Acts 2–3 |
-| **Dashboard & Human Gate** | Monica | **Low** — Day 4–5 UI done on mock (Streamlit + React) | **Medium** — live API + eval embed | **Low on mock** — rehearse mock path until API lands |
+| **Dashboard & Human Gate** | Monica | **Low** — Day 4–5 UI done on mock (React) | **Medium** — live API + eval embed | **Low on mock** — rehearse mock path until API lands |
 | **Arch, Eval & Integration** | Dominic | **High** — PR replay, token/time, quirky repo | **High** — cold vs injected, metrics endpoint | **High** — compounding proof is demo climax |
 
 **Verdict:** Vision and contracts aligned; **Matthew’s candidate API + pipeline** and **Dominic’s measurement spine** are critical path. Monica keeps both visible daily and feeds Matthew **architecture-aligned eval cases**.
@@ -179,11 +179,11 @@ Dominic owns harness pairing (cold vs injected) and metrics; Monica owns **case 
 
 | Item | Status | Evidence |
 |------|--------|----------|
-| Candidate detail view | ✅ | `frontend/components/candidate_detail.py` |
-| Confidence breakdown UI | ✅ | `frontend/components/confidence_badge.py` |
+| Candidate detail view | ✅ | `frontend-react/src/components/CandidateDetail.tsx` |
+| Confidence breakdown UI | ✅ | `frontend-react/src/components/ConfidenceBreakdown.tsx` |
 | Provenance display | ✅ | Detail panel + list columns |
-| Audit trail display | ✅ | `candidate_detail.py` |
-| React dashboard (Matthew API client) | ✅ | `frontend-react/` — mock + contract v1 client |
+| Audit trail display | ✅ | `CandidateDetail.tsx` |
+| React dashboard | ✅ | `frontend-react/` — mock + contract v1 client |
 | **Eval cases for Matthew** | ✅ | 5 Monica namespace cases + 2 quirky P0; `test_cases.py` green |
 
 ### Dominic — Python tooling + basic injection
@@ -192,7 +192,7 @@ Dominic owns harness pairing (cold vs injected) and metrics; Monica owns **case 
 |------|--------|----------|
 | Reader / distiller wrapper | ⚠️ Partial | `knowledge/wiring.py`, `WholeFileReader`, `PromptIngestor` |
 | Basic injection into agent run | ⚠️ Partial | `knowledge/evals/claude_code.py` — `--append-system-prompt` from graph reader |
-| Fixed quirky repo / eval cases | ⚠️ Partial | **5** YAML cases registered; demo-quirk cases (`quirky_*`) still backlog |
+| Fixed quirky repo / eval cases | ✅ | All **63** registered YAML cases map to mock rows (`eval_*` auto-gen + hand-crafted `cand_*` demos) |
 | GitHub hook design | ❌ | No hook code in repo |
 
 ---
@@ -225,10 +225,10 @@ knowledge/tests/test_injestor.py
 | Planned artifact | Repo file(s) | Status | Notes |
 |------------------|--------------|--------|-------|
 | State machine | `frontend/models/candidate.py` | ✅ | `next_promotion_state()` |
-| Promote UI + confirmation | `frontend/components/candidate_list.py` | ✅ | Low-confidence warning (<50%); confirm dialogs |
+| Promote UI + confirmation | `frontend-react/src/components/CandidateTable.tsx`, `CandidateCards.tsx` | ✅ | Low-confidence warning (<50%); confirm dialogs |
 | Mock promote flow | `frontend/services/mock_provider.py` | ✅ | Audit trail appended |
-| Live promote via API | `frontend/services/api_client.py` | ✅ Client | Server at `knowledge/serve`; smoke when `PRAXIS_API_BASE_URL` set |
-| List filter by state | `frontend/components/candidate_list.py` | ✅ | |
+| Live promote via API | `frontend/services/api_client.py`, `frontend-react/src/api/apiClient.ts` | ✅ Client | Server at `knowledge/serve`; smoke when API URL set |
+| List filter by state | `frontend-react/src/components/` + filter bar | ✅ | |
 | Contract tests | `frontend/tests/test_mock_gate_workflow.py` | ✅ | 4 tests |
 | Eval: `quirky_config_load_order` | `cases/quirky_config_load_order/` | ✅ | Aligns with `cand_9` ↔ `cand_16` |
 
@@ -255,15 +255,15 @@ knowledge/tests/test_injestor.py
 |------------------|--------------|--------|-------|
 | Freq / recency / breadth scoring | — | ❌ | |
 | Decay rules (`active → decayed`) | — | ❌ | Mock `decayed` in `mock_data.py` only |
-| `confidenceBreakdown` in API | Contract + mock | ⚠️ | `mock_data.py`, `confidence_badge.py` |
+| `confidenceBreakdown` in API | Contract + mock | ⚠️ | `mock_data.py`, `ConfidenceBreakdown.tsx` |
 
 #### Monica — Contradiction resolution + credibility viz
 
 | Planned artifact | Repo file(s) | Status | Notes |
 |------------------|--------------|--------|-------|
-| Side-by-side contradiction panel | `frontend/components/contradiction_panel.py` | ✅ | |
-| Resolve via provider | `mock_provider.py`, `api_client.py` | ✅ | Mock + Matthew server (`knowledge/serve`) |
-| Credibility metrics viz | `confidence_badge.py`, list columns | ✅ | |
+| Side-by-side contradiction panel | `frontend-react/src/components/ContradictionPanel.tsx` | ✅ | |
+| Resolve via provider | `mock_provider.py`, `api_client.ts` | ✅ | Mock + Matthew server (`knowledge/serve`) |
+| Credibility metrics viz | `ConfidenceBreakdown.tsx`, list columns | ✅ | |
 | Reject with reason | `mock_provider.py`, detail UI | ✅ | |
 
 #### Dominic — Token/time tracking + dashboard hooks
@@ -273,7 +273,7 @@ knowledge/tests/test_injestor.py
 | Baseline writer | `knowledge/evals/run.py` → `results/baseline.jsonl` | ✅ | |
 | Token/time in results | — | ❌ | |
 | Eval metrics contract | `docs/integration/eval-metrics-v1.md` | ✅ | |
-| Dashboard embed | `frontend/components/eval_metrics_embed.py` | ✅ | Placeholder curve |
+| Dashboard embed | `frontend-react/src/components/EvalMetricsEmbed.tsx` | ✅ | Placeholder curve |
 | Metrics HTTP server | — | ❌ | Dominic P0 |
 
 ---
@@ -298,7 +298,7 @@ knowledge/tests/test_injestor.py
 - [ ] Promote/reject/resolve persist to PostgreSQL; API reads reflect updated state
 - [ ] Promote mutates store; returns updated `Candidate`
 - [ ] `X-Praxis-Contract: 1` enforced
-- [ ] Smoke: `PRAXIS_API_BASE_URL=http://localhost:8000 streamlit run app.py`
+- [ ] Smoke: `cd frontend-react && npm run dev` with `VITE_PRAXIS_API_BASE_URL=http://localhost:8000`
 
 #### Monica — Dashboard ↔ backend
 
@@ -308,7 +308,7 @@ knowledge/tests/test_injestor.py
 | API client | `frontend/services/api_client.py` | ✅ | |
 | Wire-up doc | `docs/integration/wire-up.md` | ✅ | |
 | Live integration smoke | — | ⚠️ | [`INTEGRATION_SMOKE.md`](INTEGRATION_SMOKE.md) + `test_live_api_smoke.py` when API up |
-| Render deploy | `frontend/render.yaml` | ✅ | Mock portfolio |
+| Render deploy | `frontend-react/render.yaml` | ✅ | Static site + API blueprint |
 | **Monica: integration smoke doc** | [INTEGRATION_SMOKE.md](INTEGRATION_SMOKE.md) | ✅ | Screenshots when API live |
 
 #### Dominic — Cold vs injected runner
@@ -421,7 +421,7 @@ knowledge/tests/test_injestor.py
 | Contract | Client | Server | Tests |
 |----------|--------|--------|-------|
 | Candidate API v1 | ✅ `api_client.py`, `frontend-react/src/api/apiClient.ts` | ✅ `knowledge/serve/app.py` | ✅ offline + optional live smoke |
-| Eval metrics v1 | ✅ `eval_metrics_embed.py`, `EvalMetricsEmbed.tsx` | ⚠️ `/metrics` fixture on Matthew API | ✅ fixture |
+| Eval metrics v1 | ✅ `EvalMetricsEmbed.tsx` | ⚠️ `/metrics` fixture on Matthew API | ✅ fixture |
 | Wire-up | ✅ `wire-up.md` | — | — |
 
 ---
@@ -442,7 +442,7 @@ knowledge/tests/test_injestor.py
 | Act | Full stack | Fallback |
 |-----|------------|----------|
 | 1 | Live Claude Code on quirky repo | Pre-recorded clip + JSONL path |
-| 2 | Live API + Streamlit | Mock Streamlit — **demo-ready today** |
+| 2 | Live API + React dashboard | Mock React — **demo-ready today** |
 | 3 | Live re-run + metrics | Fixture metrics + “batch run Jun 26” narration |
 
 ---

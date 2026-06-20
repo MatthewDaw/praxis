@@ -1,10 +1,10 @@
 # Candidate API — Contract v1
 
-**Owner (client):** Monica Peters — Streamlit (`frontend/`) and React (`frontend-react/`)  
+**Owner (client):** Monica Peters — React (`frontend-react/`) + Python reference (`frontend/services/`)  
 **Owner (server):** Matthew Daw — ML & Knowledge Pipeline  
 **Version:** `X-Praxis-Contract: 1` (override via `PRAXIS_CONTRACT_VERSION`)
 
-This document is the **async integration handshake**. Matthew implements the server to these shapes; the Streamlit dashboard client in `frontend/services/api_client.py` targets them without a pairing session.
+This document is the **async integration handshake**. Matthew implements the server to these shapes; the Python reference client in `frontend/services/api_client.py` and the React client in `frontend-react/src/api/` target them without a pairing session.
 
 **Fixtures:** [`fixtures/`](fixtures/) — copy-paste examples for server tests and client contract tests.
 
@@ -12,7 +12,7 @@ This document is the **async integration handshake**. Matthew implements the ser
 
 ## Base URL
 
-Set `PRAXIS_API_BASE_URL` on Streamlit (e.g. `https://api.example.com` or `http://localhost:8000`). React uses build-time `VITE_PRAXIS_API_BASE_URL` (same URL). Optional Bearer token: `PRAXIS_API_TOKEN` / `VITE_PRAXIS_API_TOKEN`.
+Set `PRAXIS_API_BASE_URL` for Python contract smoke tests (e.g. `http://localhost:8000`). React uses build-time `VITE_PRAXIS_API_BASE_URL` (same URL). Optional Bearer token: `PRAXIS_API_TOKEN` / `VITE_PRAXIS_API_TOKEN`.
 
 ---
 
@@ -60,7 +60,7 @@ See [`fixtures/candidates-list.json`](fixtures/candidates-list.json).
 | `auditTrail` | array | no | `{ action, timestamp, provenance, actor, note? }` |
 | *other keys* | any | no | Preserved in dashboard `Candidate.extra` |
 
-Client parser: `frontend/models/candidate.py` → `Candidate.from_mapping()` (Streamlit); `frontend-react/src/api/candidateModel.ts` → `candidateFromMapping()` (React).
+Client parser: `frontend/models/candidate.py` → `Candidate.from_mapping()` (Python); `frontend-react/src/api/candidateModel.ts` → `candidateFromMapping()` (React).
 
 ---
 
@@ -138,7 +138,7 @@ See [`fixtures/resolve-request.json`](fixtures/resolve-request.json).
 
 Implementation:
 
-- Streamlit: `frontend/services/contract_v1.py`, `frontend/services/api_client.py`
+- Python: `frontend/services/contract_v1.py`, `frontend/services/api_client.py`
 - React: `frontend-react/src/api/contract.ts`, `frontend-react/src/api/apiClient.ts`
 - Server: `knowledge/serve/app.py` (Matthew)
 

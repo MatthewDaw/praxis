@@ -1,4 +1,2 @@
 __pycache__/
 venv/
-.streamlit/*
-!.streamlit/config.toml

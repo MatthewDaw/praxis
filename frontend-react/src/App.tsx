@@ -312,7 +312,7 @@ export default function App() {
 
       <footer className="page-footer">
         React Knowledge Graph Dashboard · Data source: {footerModeLabel} ·
-        candidate-api-v1 contract · Streamlit reference client in <code>frontend/</code>
+        candidate-api-v1 contract · Python reference client in <code>frontend/services/</code>
       </footer>
     </AppShell>
   );

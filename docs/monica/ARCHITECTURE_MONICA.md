@@ -14,19 +14,20 @@ Pillar Owner:       Monica Peters (monigarr@monigarr.com)
 Co-Leads:           Matthew Daw (ML Pipeline), Dominic Antonelli (Eval & Integration)
 Organization:       Gauntlet AI for America
 Branch:             monica/dashboard-human-gate
-Version:            0.2.1 (Days 1–8 Streamlit complete; React client shipped for Matthew)
-Status:             Active development — dual UI clients on mock; awaiting Matthew's live API
+Version:            0.3.0 (Days 1–8 React dashboard complete; Python contract layer in frontend/)
+Status:             Active development — React UI on mock; awaiting Matthew's live API
 Classification:     Internal — capstone sprint
 Created:            2026-06-18
-Last Updated:       2026-06-19 (Matthew PostgreSQL persistence; plans path fix + as-built alignment)
+Last Updated:       2026-06-19 (React-only dashboard posture; frontend/ = contract/mock layer)
 Source of Truth:    docs/plans/PRAXIS_Project_Plan.html
 License:            TBD — Gauntlet AI capstone (2026)
 ============================================================================
 
 DESCRIPTION
 ----------------------------------------------------------------------------
-Architecture definition for Monica's pillar only: the Streamlit human-gate
-dashboard in frontend/. This document does NOT prescribe Matthew's pipeline,
+Architecture definition for Monica's pillar only: the React human-gate
+dashboard in frontend-react/ and the Python contract/mock layer in frontend/.
+This document does NOT prescribe Matthew's pipeline,
 Dominic's eval harness, or team-wide deployment topology. It defines how the
 dashboard integrates via agreed contracts so each pillar can ship, deploy,
 and evolve independently.
@@ -45,9 +46,9 @@ gates and makes knowledge promotion transparent and measurable."
 
 PRAXIS turns Claude Code session JSONL logs into a verified **Knowledge Graph** with a mandatory **human approval gate** before knowledge is injected into future sessions. Monica's pillar owns the **Knowledge Graph Dashboard** — the UI where reviewers inspect distilled candidates, understand confidence and provenance, promote lessons through lifecycle states, resolve contradictions, and trigger downstream approval flows.
 
-The dashboard is implemented as a **modular Python + Streamlit** application under `frontend/`. Monica chose Streamlit deliberately for **research-data visualization and human review workflows** — not as a repo-wide UI mandate. Full rationale, stack definition, and **React coexistence guarantees** are in [§2 Tech Stack & Presentation Architecture](#2-tech-stack--presentation-architecture-monicas-decision).
+The dashboard UI is a **Vite + React + TypeScript** application under `frontend-react/`. Shared **Python contract models, mock fixtures, and API client** live in `frontend/` (models, services, `mock_data.py`, tests) — not a presentation layer. Stack definition and repo layout are in [§2 Tech Stack & Presentation Architecture](#2-tech-stack--presentation-architecture-monicas-decision).
 
-The UI consumes candidate data from Matthew's pipeline via a **contract-first API boundary** (Days 6–7) and surfaces audit-friendly actions that Dominic's eval harness can measure. It deploys anywhere a Python web process can run — Monica's target is **Render.com**; teammates retain full sovereignty over their own hosting and frontend choices.
+The UI consumes candidate data from Matthew's pipeline via a **contract-first API boundary** (Days 6–7) and surfaces audit-friendly actions that Dominic's eval harness can measure. Monica's deploy target is **Render.com** (React static site + Matthew's API service); teammates retain full sovereignty over their own hosting choices.
 
 System-wide context and end-to-end loop: [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) and [README.md](../README.md).
 
@@ -68,9 +69,9 @@ System-wide context and end-to-end loop: [PRAXIS_Project_Plan.html](../plans/PRA
 
 This pillar follows:
 
-- **AI-First Engineering** — Streamlit + Python for rapid iteration; AI assists wireframes, components, and docs; humans approve all promotions.
+- **AI-First Engineering** — React + TypeScript for the review UI; Python contract layer for mocks and API parity; AI assists wireframes, components, and docs; humans approve all promotions.
 - **Human-in-the-loop accountability** — No candidate reaches `active` without explicit human action in the dashboard.
-- **Sovereign engineering** — Monica owns `frontend/` UX and presentation; Matthew owns distillation/scoring truth; Dominic owns measurement and integration hooks. No pillar blocks another.
+- **Sovereign engineering** — Monica owns `frontend-react/` UX and `frontend/` contract layer; Matthew owns distillation/scoring truth; Dominic owns measurement and integration hooks. No pillar blocks another.
 - **Documentation as infrastructure** — Wireframes, data contracts, and this architecture doc are onboarding artifacts for teammates and future users.
 - **Handoff-ready engineering** — Clear module boundaries, typed contracts, env-driven configuration, and mock providers so Matthew can integrate before the API exists.
 
@@ -78,49 +79,27 @@ This pillar follows:
 
 # 2. Tech Stack & Presentation Architecture (Monica's Decision)
 
-This section documents **Monica Peters' pillar-specific** architecture and technology choices. It is authoritative for the human-gate dashboard only. It does **not** override Matthew's pipeline stack, Dominic's eval/integration stack, or any future contributor's choice to build a **React-only** (or other) frontend.
+This section documents **Monica Peters' pillar-specific** architecture and technology choices. It is authoritative for the human-gate dashboard only. It does **not** override Matthew's pipeline stack or Dominic's eval/integration stack.
 
 ## 2.1 Monica's Tech Stack (Human Gate Pillar)
 
 | Layer | Choice | Version / notes |
 |-------|--------|-----------------|
-| **Language** | Python | 3.12+ (matches repo `pyproject.toml`) |
-| **UI framework** | [Streamlit](https://streamlit.io/) | ≥1.32 — pillar presentation layer |
-| **Tabular data** | pandas | DataFrames for list/filter/sort; aligns with pipeline output shapes |
-| **Visualization** | Streamlit native + Altair (bundled) | Progress columns, charts, metrics for research review |
-| **State** | `st.session_state` | Ephemeral UI state; backend KG is source of truth |
-| **Integration** | HTTP client (planned) | REST to Matthew's API — UI framework agnostic |
-| **Local deps** | `frontend/requirements.txt` | Isolated from React `node_modules` if added later |
-| **Deploy target** | Render.com web service | Monica-owned; not required for teammates |
+| **UI framework** | [React](https://react.dev/) + [Vite](https://vitejs.dev/) + TypeScript | Human-gate dashboard in `frontend-react/` |
+| **Contract / mocks** | Python 3.12+ | `frontend/models/`, `frontend/services/`, `frontend/mock_data.py`, `frontend/tests/` |
+| **Visualization** | React components (Recharts, custom graph views) | Confidence breakdown, eval compounding curve, KG explorer |
+| **State** | React hooks + context | Ephemeral UI state; backend KG is source of truth |
+| **Integration** | HTTP client | REST to Matthew's API — shared contract v1 |
+| **Local deps** | `frontend-react/package.json` + root `pyproject.toml` | React UI deps isolated in `frontend-react/` |
+| **Deploy target** | Render.com static site + API service | Monica-owned blueprint in `frontend-react/render.yaml` |
 
-**Ownership boundary:** Everything in this table lives under `frontend/` and Monica's Render config. Teammates who never run the dashboard are unaffected.
-
----
-
-## 2.2 Why Streamlit — Research Data & Human Review
-
-PRAXIS's human gate is a **research review instrument**, not a marketing site. Reviewers work with structured evidence: scored candidates, confidence decompositions, provenance links to JSONL lines, contradiction pairs, and (via Dominic) compounding eval curves. Monica chose Streamlit because it optimizes for that workflow.
-
-| Requirement | How Streamlit serves it |
-|-------------|---------------------------|
-| **Dense research tables** | `st.dataframe` with sortable columns, `ProgressColumn` for confidence, built-in formatting — ideal for scanning dozens of distilled lessons |
-| **Rapid visual iteration** | Wireframe → working UI in hours; no separate build toolchain for sprint Days 1–5 |
-| **Quantitative credibility UX** | `st.progress`, `st.metric`, line/bar charts (Altair) for frequency/recency/breadth and eval compounding curves |
-| **Provenance-forward layout** | Captions, expanders, bordered containers for evidence chains without custom CSS frameworks |
-| **Python-native pipeline fit** | Same language as Matthew's distillation code and Dominic's eval scripts — shared JSON contracts, no JS/Python impedance mismatch during integration |
-| **Sprint realism** | 9–10 day capstone; custom React design system explicitly out of scope per [Monica-Peters-Dashboard-Plan.md](Monica-Peters-Dashboard-Plan.md) Day 1 decision |
-
-**What Streamlit is not chosen for:** pixel-perfect brand UI, native mobile apps, or replacing a production SaaS shell. Those are valid reasons for a future React app — and this architecture **allows** that without undoing Monica's work.
-
-**Interview framing:** *"I chose Streamlit because the human gate is a data-review surface — scored candidates, provenance, and confidence metrics — and Streamlit let me ship credible research visuals fast while keeping integration contract-first so the backend stays UI-agnostic."*
-
-Pillar docs live under `docs/monica/` (canonical home for Monica's documentation).
+**Ownership boundary:** Presentation lives in `frontend-react/`. Python under `frontend/` is the **contract and mock-data package** — typed DTOs, `DataProvider` protocol, `ApiClient`, fixtures, and pytest — not a UI runtime.
 
 ---
 
-## 2.3 Architecture Pattern: API-First, UI-Optional
+## 2.2 Architecture Pattern: API-First, Thin Clients
 
-Monica's presentation architecture follows **API-first, multiple clients allowed**:
+Monica's presentation architecture follows **API-first, contract-stable clients**:
 
 ```text
                     ┌─────────────────────────────────────┐
@@ -133,86 +112,42 @@ Monica's presentation architecture follows **API-first, multiple clients allowed
            ▼                       ▼                       ▼
    ┌───────────────┐      ┌───────────────┐      ┌───────────────┐
    │ frontend/     │      │ frontend-react│      │ knowledge/evals/ │
-   │ Streamlit     │      │ React client  │      │ Dominic       │
-   │ Monica · now  │      │ Monica · now  │      │ no UI required│
+   │ Python        │      │ React UI      │      │ Dominic       │
+   │ contract+mock │      │ Monica · now  │      │ no UI required│
    └───────────────┘      └───────────────┘      └───────────────┘
 ```
 
-**Invariant:** Business logic for distillation, scoring, storage, and promotion side-effects stays in **Matthew's `knowledge/` + Dominic's hooks**. Neither Streamlit nor React embeds that logic — both are thin clients over the same HTTP contract ([§17 Integration Architecture](#17-integration-architecture--data-contracts)).
+**Invariant:** Business logic for distillation, scoring, storage, and promotion side-effects stays in **Matthew's `knowledge/` + Dominic's hooks**. Neither the React app nor the Python contract layer embeds that logic — both are thin clients over the same HTTP contract ([§17 Integration Architecture](#17-integration-architecture--data-contracts)).
 
 ---
 
-## 2.4 React Coexistence — No Blockers for Teammates
+## 2.3 Repo Layout — UI vs Contract Layer
 
-Monica's Streamlit choice **must not interfere** with current or future teammates who prefer **React only**. This architecture enforces that through repo layout and integration rules, not goodwill alone.
+| Directory | Role | Run command |
+|-----------|------|-------------|
+| `frontend-react/` | **Dashboard UI** — list, detail, promote/reject, contradictions, eval embed | `npm run dev` |
+| `frontend/` | **Contract + mock layer** — `Candidate` models, `DataProvider`, `api_client.py`, `mock_data.py`, pytest | `uv run pytest frontend/tests/ -q` |
 
-### Guarantees
+Matthew and Dominic integrate via API and JSON contracts — they never need the React dev server for their pillars. Mock fixtures in `frontend/mock_data.py` export to `frontend-react/public/mock-candidates.json` via `scripts/export-mock-candidates.py`.
 
-| Guarantee | Mechanism |
-|-----------|-----------|
-| **No React requirement** | Matthew and Dominic integrate via API and JSON contracts — they never need Streamlit installed for their pillars |
-| **No Streamlit requirement for React devs** | **`frontend-react/` shipped** — Vite + React + TypeScript sibling with its own `package.json`, CI job, and deploy target |
-| **No shared UI code** | `frontend/` is Streamlit-only; React components never import from `frontend/app.py` and vice versa |
-| **No root dependency lock-in** | Root `pyproject.toml` lists Streamlit for Monica's pillar; React deps stay in the React subtree — adding React does not remove Streamlit |
-| **Same backend, any client** | OpenAPI or JSON Schema for candidates and mutations is the **only** coupling surface ([monica-wireframes.md](monica-wireframes.md)) |
-| **Parallel deploys** | Streamlit on Render, React on Vercel/Netlify/AWS CloudFront — all point at the same `PRAXIS_API_BASE_URL` |
-| **Parallel development** | Monica merges to `frontend/`; a React contributor merges to `frontend-react/` — no file conflicts if boundaries are respected |
+**Interview framing:** *"I built a React human-gate dashboard with a contract-first Python layer so Matthew could validate the API against typed fixtures and pytest before the UI ever needed a live server."*
 
-### What Monica does not do
-
-- Does **not** add Streamlit imports to `knowledge/` or `knowledge/evals/`
-- Does **not** make the human-gate API Streamlit-specific (no Streamlit session IDs in API payloads)
-- Does **not** block MRs that add a React frontend in a sibling directory
-- Does **not** claim `frontend/` as the only UI path for the whole repo — only as **Monica's pillar deliverable**
-
-### Future React-only path (explicitly supported)
-
-If a teammate or future contributor wants **React only** for a new or replacement UI:
-
-1. **Consume the same API** — implement list/detail/promote against the published contract; do not fork pipeline code.
-2. **Add `frontend-react/`** (or team-agreed name) — Vite/Next/CRA per their choice; zero changes required in `frontend/` for them to start.
-3. **Deprecate Streamlit optionally** — a team decision, not a technical prerequisite; Monica's Streamlit app can remain as internal/research tooling even if React becomes the public-facing UI.
-4. **Reuse Monica's UX artifacts** — wireframes, state machine (`proposed → suggested → active`), and data contract transfer directly; only the view layer changes.
-
-```text
-Coexistence timeline (all valid):
-
-  Now:        frontend/ (Streamlit) + frontend-react/ (React) ──same API──► knowledge/
-  Future B:   frontend-react/ only ──API──► knowledge/   (Streamlit archived by team choice)
-```
-
-**None of these futures require Monica to rewrite pipeline code or block Matthew's PostgreSQL pipeline or Dominic's eval work.**
+Pillar docs live under `docs/monica/` (canonical home for Monica's documentation).
 
 ---
 
-## 2.5 Streamlit vs React — Decision Record
+## 2.4 Research Visualization Roadmap (React)
 
-| Criterion | Streamlit (Monica — chosen) | React (teammate — supported alternate) |
-|-----------|----------------------------|----------------------------------------|
-| Primary use case | Research review, eval viz, internal human gate | Custom product UI, design-system control |
-| Time to MVP in sprint | Days 1–2 shell proven | Longer — build, routing, component library |
-| Data-heavy tables/charts | Native, minimal code | Requires libraries (TanStack Table, Recharts, etc.) |
-| Python team alignment | Same stack as `knowledge/` / `knowledge/evals/` | Requires API boundary anyway (still fine) |
-| Blocks other framework? | **No** — API-first | **No** — sibling directory |
-| Monica's deliverable | ✅ Sprint MVP | Optional future track |
+Planned visuals in the dashboard (Days 3–8):
 
-**Decision date:** Day 1 (2026-06-16), recorded in [monica-wireframes.md](monica-wireframes.md) and team plan HTML (Streamlit in scope; React noted as original plan language but deferred for Monica's sprint path).
-
-**Revisit trigger:** Post-sprint, if product needs branded multi-page SaaS UX, a React app can be added **alongside or instead of** Streamlit without architectural contradiction — because the API contract was the integration spine from Day 1.
-
----
-
-## 2.6 Research Visualization Roadmap (Streamlit)
-
-Planned visuals that justify the stack choice (Days 3–8):
-
-| Visual | Streamlit mechanism | Research purpose |
-|--------|---------------------|------------------|
-| Confidence breakdown | Columns + `st.metric` + tooltips | Show freq/recency/breadth rationale |
-| Candidate comparison | `st.columns` + bordered containers | Contradiction resolution side-by-side |
-| Compounding curve | `st.line_chart` / Altair | Dominic's eval: correction rate falling over sessions |
-| Provenance audit | `st.caption`, `st.expander` | Link every lesson to JSONL line evidence |
-| State distribution | Bar chart or metric row | Demo narrative: proposed → active funnel |
+| Visual | React mechanism | Research purpose |
+|--------|-----------------|------------------|
+| Confidence breakdown | `ConfidenceBreakdown.tsx` + metrics grid | Show freq/recency/breadth rationale |
+| Candidate comparison | `ContradictionPanel.tsx` side-by-side | Contradiction resolution |
+| Compounding curve | `EvalMetricsEmbed.tsx` | Dominic's eval: correction rate falling over sessions |
+| Provenance audit | Detail panel + metadata grid | Link every lesson to JSONL line evidence |
+| State distribution | `StateFunnel.tsx` / graph views | Demo narrative: proposed → active funnel |
+| Knowledge graph | `KnowledgeGraphView.tsx` | Scope and relationship exploration |
 
 These ship in Monica's pillar without requiring charting decisions in Matthew's or Dominic's codebases.
 
@@ -237,7 +172,7 @@ The dashboard exists because AI distillation is **untrusted by default**. Monica
 |-------|----------------|
 | **Traditional intelligence** | Review heuristics, checklist UX, provenance linking, accessibility patterns |
 | **Human contextual reasoning** | Final promotion, contradiction resolution, rejection of bad distillations |
-| **AI acceleration** | Streamlit rapid UI, mock data generation, component scaffolding |
+| **AI acceleration** | React component scaffolding, mock data generation, contract tests |
 
 All three remain visible in the UI — nothing is hidden behind a black-box "approve all" control.
 
@@ -245,14 +180,14 @@ All three remain visible in the UI — nothing is hidden behind a black-box "app
 
 ## 3.3 Enterprise from Day One (Pillar Scope)
 
-Within `frontend/`:
+Within `frontend/` (contract layer) and `frontend-react/` (UI):
 
 - **Security** — No secrets in code; API URL via environment; read-only log paths in UI where possible.
-- **Maintainability** — Modular packages (`components/`, `services/`, `models/`) as the app grows beyond Day 2 shell.
+- **Maintainability** — Modular packages: Python `models/` + `services/`; React `components/` + `api/`.
 - **Observability** — User-visible toasts and error states; structured logging hook points for Dominic's eval (Days 6–7).
-- **Extensibility** — `DataProvider` abstraction: swap `MockDataProvider` → `ApiDataProvider` without UI rewrites.
+- **Extensibility** — `DataProvider` abstraction in Python; React `providerFactory.ts` — swap mock → API without UI rewrites.
 - **Documentation** — [monica-wireframes.md](monica-wireframes.md), [Monica-Peters-Dashboard-Plan.md](Monica-Peters-Dashboard-Plan.md), this file.
-- **Handoff** — Any teammate runs `streamlit run app.py` with mocks; no PostgreSQL/Render lock-in required for Monica's pillar (Matthew owns DB setup).
+- **Handoff** — Any teammate runs `npm run dev` in `frontend-react/` with mocks; pytest in `frontend/tests/` validates contract parity; no PostgreSQL lock-in required for Monica's pillar (Matthew owns DB setup).
 
 ---
 
@@ -279,9 +214,10 @@ Team-wide architecture lives in the confidential project plan and Dominic's eval
 
 A new contributor should be able to:
 
-1. Clone the repo, `cd frontend`, install deps, run the dashboard with mock data in under five minutes.
-2. Point `PRAXIS_API_BASE_URL` at Matthew's pipeline API when ready — no code fork required.
-3. Deploy to Render (Monica), Matthew's PostgreSQL-backed API host, or local (Dominic) using only pillar-specific config — see [§16 Deployment Architecture](#16-deployment-architecture).
+1. Clone the repo, `cd frontend-react`, `npm install`, run the dashboard with mock data in under five minutes.
+2. Point `VITE_PRAXIS_API_BASE_URL` at Matthew's pipeline API when ready — no code fork required.
+3. Run `uv run pytest frontend/tests/ -q` to validate contract fixtures against Matthew's schema.
+4. Deploy to Render (Monica), Matthew's PostgreSQL-backed API host, or local (Dominic) using only pillar-specific config — see [§16 Deployment Architecture](#16-deployment-architecture).
 
 ---
 
@@ -291,14 +227,14 @@ A new contributor should be able to:
 
 | Area | Responsibility |
 |------|----------------|
-| **Human-gate UI** | Streamlit dashboard: candidate list, detail view, filters, search |
+| **Human-gate UI** | React dashboard (`frontend-react/`): candidate list, detail view, filters, search, KG explorer |
 | **Lifecycle workflow** | `proposed → suggested → active` promotion and reject flows |
 | **Provenance display** | Every item shows `logs/<file>.jsonl:<line>` (or agreed canonical form) |
 | **Confidence UX** | Aggregate score now; freq/recency/breadth breakdown + tooltips (Days 3–5) |
 | **Contradiction resolution** | Side-by-side comparison cards + resolution actions (Day 5) |
 | **Credibility metrics viz** | Visual indicators supporting promotion decisions (Day 5) |
 | **API client layer** | Thin HTTP client calling Matthew's backend; no pipeline logic in UI |
-| **Mock data provider** | Local development without blocking on pipeline readiness |
+| **Mock data provider** | Local development without blocking on pipeline readiness (`frontend/mock_data.py` → exported JSON) |
 | **Accessibility** | Keyboard-friendly flows, high contrast, screen-reader labels (Days 8–10 polish) |
 | **Eval embed points** | Optional panels/hooks for Dominic's compounding-curve widgets (coordinate Day 8) |
 
@@ -316,9 +252,8 @@ A new contributor should be able to:
 | Eval harness, cold vs injected runs, compounding curve computation | Dominic | Measurement spine |
 | GitHub hook / PR automation on promotion | Dominic | Integration layer |
 | Team-wide CI/CD, repo deployment topology | Dominic (+ shared agreement) | Each pillar deploys independently |
-| **React SPA (alternate UI)** | **Monica — shipped `frontend-react/`** | Same candidate-api-v1 contract; Matthew validates server without Streamlit; deploy to Vercel/Netlify/static host |
 
-**Non-blocking rule:** Changes under `frontend/` must not require edits to `knowledge/` or `knowledge/evals/` to run. Integration is **pull-based** (dashboard calls API) or **env-configured**, never hard-coded to Matthew's PostgreSQL host or Dominic's server. A React frontend, if added, follows the same rule — API-only coupling.
+**Non-blocking rule:** Changes under `frontend-react/` and the Python contract layer in `frontend/` must not require edits to `knowledge/` or `knowledge/evals/` to run. Integration is **pull-based** (dashboard calls API) or **env-configured**, never hard-coded to Matthew's PostgreSQL host or Dominic's server.
 
 ---
 
@@ -363,8 +298,8 @@ A new contributor should be able to:
 | **Accessibility** | WCAG AA-oriented contrast; keyboard navigation; meaningful labels (Days 8–10) |
 | **Observability** | Toast feedback on actions; hook points for structured action logs (Dominic eval) |
 | **Maintainability** | Small modules; one component per file; exhaustive handling of lifecycle states |
-| **Scalability** | Stateless Streamlit + external API — horizontal scale via Render/reverse proxy |
-| **Portability** | Runs on Windows dev laptop, Render web service, or any Python 3.12+ host |
+| **Scalability** | Stateless React static site + external API — CDN-friendly deploy |
+| **Portability** | Runs in any modern browser; dev server via Vite |
 | **Disaster recovery** | UI state is ephemeral; source of truth is backend KG — redeploy dashboard without data loss |
 
 ---
@@ -375,10 +310,10 @@ A new contributor should be able to:
 
 **Modular presentation layer** with **adapter-based data access**:
 
-- **UI layer** — Streamlit pages, tabs, components (`frontend/app.py` → `frontend/components/`)
-- **Application layer** — State transitions, filtering, session management
-- **Service layer** — `DataProvider` interface; `MockDataProvider` (now), `ApiDataProvider` (Days 6–7)
-- **Integration boundary** — REST (preferred) or GraphQL per team agreement — dashboard is a **client only**
+- **UI layer** — React pages and components (`frontend-react/src/App.tsx` → `frontend-react/src/components/`)
+- **Application layer** — State transitions, filtering, selection hooks
+- **Service layer** — `apiClient.ts` + `mockProvider.ts` (React); `DataProvider` protocol + `ApiClient` (Python contract layer)
+- **Integration boundary** — REST per team agreement — dashboard is a **client only**
 
 Monica does **not** embed pipeline, eval, or storage logic. Dominic's GitHub hooks and Matthew's PostgreSQL-backed API remain behind the API boundary.
 
@@ -390,9 +325,9 @@ Monica does **not** embed pipeline, eval, or storage logic. Dominic's GitHub hoo
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                         PRAXIS (team system)                             │
 ├──────────────────────┬──────────────────────────┬───────────────────────┤
-│  Matthew — knowledge/ │  Monica — frontend/       │  Dominic — knowledge/evals/      │
-│  ingest·distill·score│  Streamlit human gate     │  harness·hooks·metrics│
-│  KG storage (PG)     │  review·promote·resolve   │  compounding proof    │
+│  Matthew — knowledge/ │  Monica — frontend-react/   │  Dominic — knowledge/evals/      │
+│  ingest·distill·score│  React human gate           │  harness·hooks·metrics│
+│  KG storage (PG)     │  + frontend/ contract layer │  compounding proof    │
 │  deploy: TBD         │  deploy: Render (etc.)    │  deploy: TBD / local  │
 └──────────┬───────────┴────────────┬─────────────┴───────────┬───────────┘
            │                        │                         │
@@ -412,17 +347,25 @@ Monica does **not** embed pipeline, eval, or storage logic. Dominic's GitHub hoo
 ```text
 [ Browser ]
      ↓
-[ Streamlit app.py ] ──→ [ sidebar: Refresh data · st.session_state ]
+[ React App (frontend-react/src/App.tsx) ] ──→ [ sidebar: Refresh · filters · data source badge ]
      ↓
-[ Components: list | detail | contradiction | metrics ]
+[ Components: CandidateTable | CandidateDetail | ContradictionPanel | EvalMetricsEmbed | KnowledgeGraphView ]
      ↓
-[ DataProvider interface ]
-     ├── MockDataProvider  ← mock_data.py (local dev — implemented)
-     └── ApiDataProvider   ← PRAXIS_API_BASE_URL (contract v1 client — implemented; awaits Matthew's server)
+[ apiClient.ts / mockProvider.ts ]
+     ├── mock-candidates.json  ← exported from frontend/mock_data.py (local dev)
+     └── HTTP client           ← VITE_PRAXIS_API_BASE_URL (contract v1 — Matthew's server)
      ↓
 [ Matthew's backend API ] → Knowledge Graph
      ↓
 [ Dominic's hooks ] ← promotion events (server-side, not UI-owned)
+```
+
+**Python contract layer (parallel, no UI):**
+
+```text
+frontend/models/candidate.py  →  frontend/services/data_provider.py
+                                    ├── mock_provider.py  (pytest + export source)
+                                    └── api_client.py     (live API smoke tests)
 ```
 
 ---
@@ -433,21 +376,19 @@ Delivered as of as-built alignment (2026-06-19):
 
 | File | Status | Description |
 |------|--------|-------------|
-| `frontend/app.py` | ✅ | Entry — sidebar refresh, filters, API error banner, global selection |
+| `frontend-react/src/App.tsx` | ✅ | Entry — layout, filters, API error banner, global selection |
+| `frontend-react/src/api/apiClient.ts` | ✅ | HTTP client — contract v1 |
+| `frontend-react/src/api/mockProvider.ts` | ✅ | In-memory fixtures from exported JSON |
+| `frontend-react/src/components/*` | ✅ | Table, cards, detail, contradictions, eval embed, graph views |
 | `frontend/models/candidate.py` | ✅ | Typed contract models + forward-compatible `from_mapping` |
 | `frontend/services/data_provider.py` | ✅ | `DataProvider` protocol + env-based factory |
 | `frontend/services/contract_v1.py` | ✅ | Canonical v1 payload builders + contract headers |
 | `frontend/services/mock_provider.py` | ✅ | In-memory fixtures; audit trail append on mutations |
-| `frontend/services/api_client.py` | ✅ | HTTP client — contract v1 (`docs/integration/candidate-api-v1.md`) |
-| `frontend/components/candidate_list.py` | ✅ | Table + card views; promote/reject confirmations; low-confidence warning |
-| `frontend/components/candidate_detail.py` | ✅ | Detail expander; confidence breakdown; audit trail |
-| `frontend/components/confidence_badge.py` | ✅ | State badges + breakdown metrics |
-| `frontend/components/contradiction_panel.py` | ✅ | Side-by-side layout + keep-A / keep-B / defer |
-| `frontend/components/eval_metrics_embed.py` | ✅ | Compounding curve embed (`PRAXIS_EVAL_METRICS_URL`) |
-| `frontend/tests/` | ✅ | Contract fixtures + mock gate workflow tests |
-| `frontend/mock_data.py` | ✅ | 17 contract-shaped fixtures (breakdown, contradictions, auditTrail) |
-| `frontend/render.yaml` | ✅ | Render.com blueprint |
-| `frontend-react/` | ✅ | React client — same contract for Matthew API validation |
+| `frontend/services/api_client.py` | ✅ | Python HTTP client — contract v1 (pytest / live smoke) |
+| `frontend/tests/` | ✅ | Contract fixtures + mock gate workflow + live API smoke |
+| `frontend/mock_data.py` | ✅ | 17+ contract-shaped fixtures (source for mock JSON export) |
+| `frontend-react/render.yaml` | ✅ | Render.com blueprint (API + static site) |
+| `scripts/export-mock-candidates.py` | ✅ | Syncs `mock_data.py` → `frontend-react/public/` |
 | `docs/monica/` | ✅ | Pillar architecture, as-built wireframes, demo/deploy docs |
 
 **Lifecycle logic (mock + API client):**
@@ -468,7 +409,7 @@ Mock `reject` removes from queue and appends audit entry; live mode calls `POST 
 
 AI assists:
 
-- Wireframe → Streamlit translation
+- Wireframe → React component translation
 - Component scaffolding and accessibility copy
 - Mock candidate generation from JSONL patterns
 - Architecture and integration doc drafts
@@ -492,7 +433,7 @@ Aligned with project plan Figure 1 ("Human Approval Gate" nested under Consolida
 | Resolve contradictions | Side-by-side cards + keep-A / keep-B / defer (mock + API client) |
 | Reject bad distillations | Reject action with confirmation + optional reason |
 | Audit | Provenance links, timestamps, `auditTrail` panel in detail view |
-| Override | Low-confidence promote warning (threshold in `candidate_list.py`) |
+| Override | Low-confidence promote warning (threshold in React list/card components) |
 
 ---
 
@@ -506,9 +447,9 @@ Aligned with project plan Figure 1 ("Human Approval Gate" nested under Consolida
 | Verification Agent | Mock contract tests match API schema before integration |
 | Documentation Agent | Wireframes, this doc, README run instructions |
 | Adversarial Agent | Empty states, API down, duplicate promote, race on rerun |
-| Performance Agent | Large candidate lists, Streamlit rerun cost |
+| Performance Agent | Large candidate lists, bundle size, render performance |
 
-**Cursor agent teams:** ACR roles map to the six-role dream team blueprint in [templates_temp/DREAM_AGENT_TEAM.md](templates_temp/DREAM_AGENT_TEAM.md) (`DT-001` baseline for daily `frontend/` work).
+**Cursor agent teams:** ACR roles map to the six-role dream team blueprint in [templates_temp/DREAM_AGENT_TEAM.md](templates_temp/DREAM_AGENT_TEAM.md) (`DT-001` baseline for daily `frontend-react/` + contract layer work).
 
 **Governance:** No autonomous promotion in production. All API mutations require authenticated human session (implementation TBD with Dominic Days 6–7).
 
@@ -539,7 +480,7 @@ The dashboard displays potentially sensitive session-derived content. Security i
 | Unauthorized promotion | Backend auth on mutation endpoints |
 | Leaked session logs in UI | Deploy over HTTPS; restrict Render URL if needed |
 | Mock data mistaken for production | Clear "mock mode" banner when `PRAXIS_API_BASE_URL` unset |
-| XSS via candidate content | Streamlit escaping defaults; sanitize if rendering raw HTML |
+| XSS via candidate content | React default escaping; sanitize if rendering raw HTML |
 
 ---
 
@@ -563,9 +504,9 @@ Session JSONL paths reference local or team-agreed storage; the dashboard displa
 
 | Signal | Mechanism |
 |--------|-----------|
-| User actions | `st.toast` (now); structured POST to audit endpoint (Days 6–7) |
-| API errors | `st.error` with provenance context preserved |
-| Load time | Streamlit built-in; optional timing logs |
+| User actions | Toast/banner feedback (React); structured POST to audit endpoint (Days 6–7) |
+| API errors | Error banner with provenance context preserved |
+| Load time | Browser devtools; optional timing logs |
 | Eval correlation | Dominic consumes promotion events + eval run IDs |
 
 Monica does not own Langfuse/OpenTelemetry for the full pipeline — only UI-level hooks and clear error surfaces.
@@ -596,14 +537,15 @@ Dashboard outputs (promotion events) are **inputs** to Dominic's eval harness �
 
 ```text
 praxis/
-├── frontend/              ← Monica primary ownership (Streamlit human gate)
-│   ├── app.py
+├── frontend/              ← Monica: Python contract + mock layer (models, services, tests)
 │   ├── mock_data.py
-│   ├── requirements.txt
-│   ├── components/        ← implemented
-│   ├── services/          ← implemented
-│   └── models/            ← implemented
-├── frontend-react/        ← React human gate (Monica — Matthew API client; same contract)
+│   ├── models/
+│   ├── services/
+│   └── tests/
+├── frontend-react/        ← Monica: React human-gate UI (primary deliverable)
+│   ├── src/
+│   ├── public/mock-candidates.json
+│   └── render.yaml
 ├── knowledge/             ← Matthew — distillation, KG, candidate API (planned)
 │   └── evals/             ← Dominic — harness, cases, metrics
 ├── session-capture/       ← Dominic — Go wrapper, DynamoDB capture
@@ -618,7 +560,7 @@ praxis/
 
 ## Contribution Rules (pillar)
 
-- MRs touching `frontend/` require dashboard-focused review (Monica + one peer).
+- MRs touching `frontend-react/` or the Python contract layer in `frontend/` require dashboard-focused review (Monica + one peer).
 - MRs touching shared contracts require Matthew's acknowledgment on candidate schema.
 - Promotion side-effects (webhooks, PR creation) are **backend/Dominic** — UI emits mutations only.
 - Conventional commits: `feat(dashboard):`, `fix(dashboard):`, `docs(dashboard):` with `#<issue>`.
@@ -662,11 +604,11 @@ OPERATIONAL:
 
 ## Design Principle: Pillar-Sovereign Deployments
 
-Each teammate deploys **their pillar** independently. Monica's dashboard is a **stateless Streamlit process** that calls a configurable API base URL. It does **not** assume Matthew's PostgreSQL resources or Dominic's server layout.
+Each teammate deploys **their pillar** independently. Monica's dashboard is a **static React site** (or Vite dev server locally) that calls a configurable API base URL. It does **not** assume Matthew's PostgreSQL resources or Dominic's server layout.
 
 | Person | Target (example) | Pillar artifact | Monica dependency |
 |--------|-------------------|-----------------|-------------------|
-| **Monica** | [Render.com](https://render.com) web service | `frontend/` | `PRAXIS_API_BASE_URL` → Matthew's API when integrated |
+| **Monica** | [Render.com](https://render.com) static site + API service | `frontend-react/` | `VITE_PRAXIS_API_BASE_URL` → Matthew's API when integrated |
 | **Matthew** | PostgreSQL + API server (`knowledge/`) | `knowledge/` + API | Exposes candidate REST endpoints |
 | **Dominic** | Local / TBD | `knowledge/evals/` + hooks | Consumes promotion events; optional metrics iframe/embed |
 
@@ -676,40 +618,52 @@ Each teammate deploys **their pillar** independently. Monica's dashboard is a **
 
 | Environment | Purpose | Monica config |
 |-------------|---------|---------------|
-| **Local** | Development | No API URL → mock mode |
-| **Dev** | Shared integration | `PRAXIS_API_BASE_URL=https://dev-api...` |
+| **Local** | Development | No API URL → mock mode (exported JSON) |
+| **Dev** | Shared integration | `VITE_PRAXIS_API_BASE_URL=https://dev-api...` |
 | **Staging** | Pre-demo | Render preview + staging API |
-| **Production** | Live demo | Render production service |
+| **Production** | Live demo | Render production static site + API |
 
 ---
 
 ## Render.com Deployment (Monica)
 
-Minimal `render.yaml` or dashboard settings (Monica-owned, not blocking others):
+Blueprint: `frontend-react/render.yaml` — `praxis-candidate-api` + `praxis-react-human-gate`. Full settings in [RENDER_DEPLOY.md](RENDER_DEPLOY.md).
 
 | Setting | Value |
 |---------|-------|
-| **Root directory** | `frontend` |
-| **Build command** | `pip install -r requirements.txt` |
-| **Start command** | `streamlit run app.py --server.port=$PORT --server.address=0.0.0.0` |
-| **Env vars** | `PRAXIS_API_BASE_URL`, optional `PRAXIS_API_TOKEN` |
-| **Health** | Streamlit HTTP root |
+| **Static site root** | `frontend-react` |
+| **Build command** | `npm install && npm run build` |
+| **Publish directory** | `dist` |
+| **Env vars (build-time)** | `VITE_PRAXIS_API_BASE_URL`, optional `VITE_PRAXIS_API_TOKEN`, `VITE_PRAXIS_EVAL_METRICS_URL` |
+| **Health** | Static asset root |
 
-Teammates who do not use Render **ignore this section** — run the same start command on their host.
+Teammates who do not use Render **ignore this section** — run `npm run dev` locally.
 
 ---
 
 ## Local Development
 
+**Dashboard UI:**
+
 ```powershell
-cd frontend
-python -m venv venv
-.\venv\Scripts\pip install -r requirements.txt
-# Or from repo root: pip install -e .
-.\venv\Scripts\streamlit run app.py
+cd frontend-react
+npm install
+npm run dev
 ```
 
-Mock mode activates automatically when no API URL is configured.
+Open http://localhost:5173 — mock mode when `VITE_PRAXIS_API_BASE_URL` is unset.
+
+**Contract layer (pytest):**
+
+```powershell
+uv run pytest frontend/tests/ -q
+```
+
+Sync mock JSON after editing fixtures:
+
+```powershell
+python scripts/export-mock-candidates.py
+```
 
 ---
 
@@ -717,7 +671,6 @@ Mock mode activates automatically when no API URL is configured.
 
 - Dashboard lint/typecheck via shared GitLab CI when added — must pass before MR merge.
 - Monica's Render deploy is **decoupled** from Matthew's PostgreSQL-backed pipeline and Dominic's eval runner.
-- No single shared deploy gate that blocks one pillar waiting on another.
 
 ---
 
@@ -776,7 +729,7 @@ class DataProvider(Protocol):
 - `MockDataProvider` — `frontend/services/mock_provider.py` (default when `PRAXIS_API_BASE_URL` unset)
 - `ApiDataProvider` — `frontend/services/api_client.py` (contract v1; tolerant read + explicit mutations)
 
-UI components depend on `DataProvider`, not on pandas or HTTP directly. **`frontend-react/`** calls the same HTTP endpoints — it never imports Streamlit modules.
+UI components depend on the API client / mock provider, not on HTTP details scattered in views. **`frontend/`** Python layer mirrors the same contract for pytest and Matthew's server validation.
 
 ---
 
@@ -805,45 +758,51 @@ Before merging integration MRs:
 
 # 18. Modular Structure (implemented)
 
-Extracted from the Day 2 monolith per **models → services → components → slim app.py**. Each module has a single owner concern and **zero imports from `knowledge/` or `knowledge/evals/`**.
+**React UI** (`frontend-react/`) and **Python contract layer** (`frontend/`) share the candidate-api-v1 contract. Neither imports from `knowledge/` or `knowledge/evals/`.
 
 ```text
-frontend/
-├── app.py                      # Entry: page config, provider wiring, layout only
-├── components/
-│   ├── candidate_list.py       # ✅ Table + card views, filter, promote/reject actions
-│   ├── candidate_detail.py     # ✅ Detail expander (confidence + audit trail)
-│   ├── contradiction_panel.py  # ✅ Side-by-side resolve actions
-│   ├── confidence_badge.py     # ✅ State badges + confidence breakdown metrics
-│   └── eval_metrics_embed.py   # ✅ Compounding curve embed (eval-metrics-v1)
+frontend-react/
+├── src/
+│   ├── App.tsx                     # Entry: layout, filters, provider wiring
+│   ├── api/
+│   │   ├── apiClient.ts            # HTTP client — contract v1
+│   │   ├── mockProvider.ts         # Mock fixtures from exported JSON
+│   │   └── providerFactory.ts      # Mock vs live factory
+│   └── components/
+│       ├── CandidateTable.tsx      # Table + promote/reject actions
+│       ├── CandidateDetail.tsx     # Detail + confidence + audit trail
+│       ├── ContradictionPanel.tsx  # Side-by-side resolve actions
+│       ├── EvalMetricsEmbed.tsx    # Compounding curve embed
+│       └── graph/                  # KG explorer views
+└── public/
+    └── mock-candidates.json        # Exported from frontend/mock_data.py
+
+frontend/                           # Contract + mock layer (no UI)
 ├── models/
-│   └── candidate.py            # ✅ Candidate, CandidateState, ConfidenceBreakdown
+│   └── candidate.py                # Candidate, CandidateState, ConfidenceBreakdown
 ├── services/
-│   ├── data_provider.py        # ✅ Protocol + get_data_provider() factory
-│   ├── mock_provider.py        # ✅ In-memory fixtures for local dev
-│   ├── contract_v1.py          # ✅ Canonical v1 payload builders
-│   └── api_client.py           # ✅ ApiDataProvider — contract v1 HTTP client
+│   ├── data_provider.py            # Protocol + get_data_provider() factory
+│   ├── mock_provider.py            # In-memory fixtures for pytest
+│   ├── contract_v1.py              # Canonical v1 payload builders
+│   └── api_client.py               # ApiDataProvider — contract v1 HTTP client
 ├── tests/
-│   └── test_contract_fixtures.py  # ✅ Fixture contract tests
-├── mock_data.py                # ✅ Static fixtures as contract-shaped dicts
-├── requirements.txt
-└── .streamlit/
-    └── config.toml             # ✅ Theme / a11y-oriented defaults
+│   └── test_*.py                   # Contract fixtures + gate workflow + live smoke
+└── mock_data.py                    # Static fixtures — source of truth for mock JSON
 ```
 
 ### Module boundary map (non-blocking guarantees)
 
 | Module | Owns | Must never |
 |--------|------|------------|
-| `models/` | Typed API contract (`Candidate`, states, promotion helpers) | Import Streamlit, HTTP, `knowledge/`, `knowledge/evals/` |
-| `services/` | Data access (`DataProvider`, mock + API clients) | Render UI or embed pipeline logic |
-| `components/` | Streamlit presentation only | Call PostgreSQL, GitHub, or eval scripts directly |
-| `app.py` | Provider singleton in `st.session_state`, page shell | Business logic beyond wiring |
-| `mock_data.py` | Dev/demo fixtures | Be required in production when API URL is set |
+| `frontend/models/` | Typed API contract (`Candidate`, states, promotion helpers) | Import UI frameworks, `knowledge/`, `knowledge/evals/` |
+| `frontend/services/` | Data access (`DataProvider`, mock + API clients) | Render UI or embed pipeline logic |
+| `frontend-react/src/components/` | React presentation only | Call PostgreSQL, GitHub, or eval scripts directly |
+| `frontend-react/src/api/` | HTTP + mock providers | Embed pipeline or distillation logic |
+| `frontend/mock_data.py` | Dev/demo fixtures + export source | Be required in production when API URL is set |
 
-**Teammate impact:** Matthew implements the server behind `ApiDataProvider` endpoints in `knowledge/` on his PostgreSQL-backed stack. Dominic reads promotion events from that API / hooks in `knowledge/evals/` — not from Streamlit session state. A React developer adds `frontend-react/` and calls the same endpoints without modifying any file above.
+**Teammate impact:** Matthew implements the server behind the shared endpoints in `knowledge/` on his PostgreSQL-backed stack. Dominic reads promotion events from that API / hooks in `knowledge/evals/`. The React UI and Python contract layer call the same endpoints without modifying pipeline code.
 
-**Extraction status:** Complete (2026-06-19). Streamlit + React clients share contract v1; live E2E awaits Matthew's API server.
+**Extraction status:** Complete (2026-06-19). React UI + Python contract layer share contract v1; live E2E awaits Matthew's API server on staging.
 
 ---
 
@@ -853,7 +812,7 @@ From [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) and [Monica-P
 
 | Day | Deliverable | Status |
 |-----|-------------|--------|
-| 1 | Wireframes, Streamlit stack decision | ✅ Done |
+| 1 | Wireframes, React stack decision | ✅ Done |
 | 2 | Dashboard shell + candidate list | ✅ Done |
 | 3 | Candidate detail + confidence UI | ✅ Done — breakdown metrics, audit trail, global selection |
 | 4 | Human gate workflow UI polish | ✅ Done — confirmations, transition feedback, empty/error states |
@@ -870,11 +829,11 @@ From [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) and [Monica-P
 | Failure | Expected behavior |
 |---------|-------------------|
 | API unreachable | Banner: "Backend unavailable — showing last loaded data" or mock fallback in dev |
-| Promote conflict (409) | Toast error; refresh candidate from server |
-| Streamlit rerun mid-action | `st.session_state` preserves list; idempotent API calls |
+| Promote conflict (409) | Toast/banner error; refresh candidate from server |
+| Mid-action navigation | React state preserves selection where possible; idempotent API calls |
 | Empty candidate list | Friendly empty state — not an error |
 | Stale confidence after Matthew retune | Refresh button; show `updatedAt` when available |
-| Render cold start | Acceptable for demo; document startup time |
+| Render cold start | API service only — React static site has no cold start |
 
 ---
 
@@ -884,9 +843,8 @@ From [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) and [Monica-P
 |------|-------|
 | Pagination / virtual scroll | If candidate count exceeds ~200 |
 | Bulk promote/reject | Stretch — with strong audit warnings |
-| Dark mode / theme tokens | Streamlit config |
+| Dark mode / theme tokens | CSS variables in `frontend-react/` |
 | Read-only public demo mode | Mock-only deploy for portfolio |
-| **`frontend-react/` sibling app** | **Shipped** — parallel React UI; same API contract ([§2.4](#24-react-coexistence--no-blockers-for-teammates)) |
 | Cross-project candidate filtering | When Matthew's graph supports scope metadata |
 
 ---
@@ -902,9 +860,9 @@ Monica's dashboard pillar is designed according to:
 **This pillar prioritizes:**
 
 - Human-in-the-loop quality gates the project plan requires
-- **Streamlit for research-data review visuals** — Monica's deliberate pillar choice, not a repo-wide UI mandate
-- **API-first integration** so React-only teammates (now or later) share the same backend without forking pipeline code
-- Modular Python under `frontend/` that any contributor can run, extend, or leave untouched
+- **React dashboard** for research-data review visuals — Monica's pillar deliverable
+- **Python contract layer** in `frontend/` for typed mocks, pytest, and API parity
+- **API-first integration** so Matthew and Dominic share the same backend without UI coupling
 - Strict ownership boundaries so Matthew's PostgreSQL + API, Dominic's eval spine, and Monica's Render deploy coexist without mutual blockers
 - Interview-ready transparency: every promotion is visible, evidenced, and measurable
 

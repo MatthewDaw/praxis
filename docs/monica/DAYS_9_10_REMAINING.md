@@ -1,6 +1,6 @@
 # Days 9–10 — Remaining human deliverables
 
-Code polish for this phase is in place (reject reason, refresh, low-confidence promote warning, contract tests, React parity, expanded pytest, Vitest, mock export script, UX parity with Streamlit). Complete these manually before presentation:
+Code polish for this phase is in place (reject reason, refresh, low-confidence promote warning, contract tests, React dashboard, expanded pytest, Vitest, mock export script). Complete these manually before presentation:
 
 ## Automated gate (run before each rehearsal)
 
@@ -14,16 +14,15 @@ npm run build
 
 - [x] Automated gate green (2026-06-19) — pytest + Vitest + build
 - [x] Mock export script: `python scripts/export-mock-candidates.py` (18 candidates incl. `cand_18`)
-- [x] React UX parity: full card text, created date, decayed messaging, promote confirm copy
+- [x] React UX: full card text, created date, decayed messaging, promote confirm copy
 
-## Demo rehearsal (React-first)
+## Demo rehearsal (React)
 
 **Primary:** `cd frontend-react && npm run dev` → http://localhost:5173
 
 - [ ] Run Act 2 from [DEMO_SCRIPT.md](DEMO_SCRIPT.md) on mock React (timed, ≤3.5 min)
-- [ ] Run Act 2 on mock Streamlit (`cd frontend && streamlit run app.py`) — parity check
 - [ ] Run Act 2 again with `VITE_PRAXIS_API_BASE_URL` when Matthew's API is live — see [INTEGRATION_SMOKE.md](INTEGRATION_SMOKE.md)
-- [ ] Rehearse cold-start mention if using Render free tier for Streamlit ([RENDER_DEPLOY.md](RENDER_DEPLOY.md)); React static site has no cold start
+- [ ] Rehearse API cold-start mention if using Render free tier for `praxis-candidate-api` ([RENDER_DEPLOY.md](RENDER_DEPLOY.md)); React static site has no cold start
 
 ### Act 2 quick checklist (React)
 
@@ -37,7 +36,6 @@ npm run build
 
 - [ ] Capture screen recording from **React** client: filter → detail → promote → contradiction resolve → eval embed
 - [ ] Keep under 3 minutes for interview portfolio
-- [ ] Optional second take from Streamlit for Matthew API validation narrative
 
 ## Accessibility pass
 
@@ -45,7 +43,7 @@ Code improvements shipped 2026-06-19 (React): `aria-label` on promote/reject/ins
 
 Manual verification still required:
 
-- [ ] Tab through global selection, promote/reject confirmations, and contradiction buttons (React first, then Streamlit)
+- [ ] Tab through global selection, promote/reject confirmations, and contradiction buttons
 - [ ] Screen reader: verify button `aria-label` text reads for promote/reject/inspect/defer
 - [ ] Confirm low-confidence promote warning is announced when triggered
 - [ ] Confirm decayed promote helper text is readable when **cand_12** is selected

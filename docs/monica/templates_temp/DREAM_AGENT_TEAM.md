@@ -1,6 +1,6 @@
 # PRAXIS Dashboard & Human Gate — Dream Agent Team
 
-**Pillar owner:** Monica Peters · **Branch:** `monica/dashboard-human-gate` · **Scope:** `frontend/` Streamlit human-gate dashboard only
+**Pillar owner:** Monica Peters · **Branch:** `monica/dashboard-human-gate` · **Scope:** `frontend-react/` React human-gate dashboard + `frontend/` Python contract/mock layer
 
 **Aligned sources:**
 
@@ -24,29 +24,29 @@
 ### Team: `DT-XXX — Team Name`
 
 **Purpose:**  
-Cursor agent team optimized for Monica Peters' **Dashboard & Human Gate** pillar — Streamlit review UI, lifecycle workflow, provenance display, contradiction resolution, and API-first integration with Matthew's pipeline and Dominic's eval embed points.
+Cursor agent team optimized for Monica Peters' **Dashboard & Human Gate** pillar — React review UI, lifecycle workflow, provenance display, contradiction resolution, Python contract layer, and API-first integration with Matthew's pipeline and Dominic's eval embed points.
 
 **Hypothesis:**  
 A six-role council (mapped from [Agent Council Review (ACR)](../ARCHITECTURE_MONICA.md#9-agent-council-review-acr--pillar-touchpoints)) produces contract-stable, demo-ready dashboard increments without blocking teammates or embedding pipeline logic in `frontend/`.
 
 **When To Use:**  
-- Building or refactoring `frontend/` (components, services, models, `app.py`)
+- Building or refactoring `frontend-react/` (components, api, hooks) or the Python contract layer in `frontend/`
 - Updating pillar docs (`docs/monica/`, wireframes, architecture)
 - Preparing Days 6–7 integration MRs against Matthew's candidate API
 - Day 8–10 polish: accessibility, edge cases, eval metrics embed, demo Act 2 script
 
-**Out of scope for this team:** `knowledge/` distillation, `knowledge/evals/` harness computation, PostgreSQL/KG storage (Matthew), GitHub hook implementation (Dominic), React `frontend-react/` unless explicitly chartered.
+**Out of scope for this team:** `knowledge/` distillation, `knowledge/evals/` harness computation, PostgreSQL/KG storage (Matthew), GitHub hook implementation (Dominic).
 
 #### Agent Roles
 
 | Role | Agent Name | Model | Function | Trust Level |
 |------|------------|-------|----------|-------------|
 | Orchestrator | | | Sprint routing: Day deliverables from [Monica-Peters-Dashboard-Plan.md](../Monica-Peters-Dashboard-Plan.md); integration stop conditions (mock still works, no `knowledge/` imports); demo Act 2 checklist | Medium |
-| Architect | | | Module boundaries (`models/` → `services/` → `components/` → `app.py`); `DataProvider` contract stability; React coexistence guarantees ([§2.4](../ARCHITECTURE_MONICA.md#24-react-coexistence--no-blockers-for-teammates)) | Medium-high |
-| Adversarial UX | | | Edge cases per ACR: empty candidate list, API unreachable, duplicate promote, Streamlit rerun mid-action, mock-vs-live confusion, stale confidence | Low |
+| Architect | | | Module boundaries (`frontend/` models/services + `frontend-react/` components/api); `DataProvider` contract stability ([§2](../ARCHITECTURE_MONICA.md#2-tech-stack--presentation-architecture-monicas-decision)) | Medium-high |
+| Adversarial UX | | | Edge cases per ACR: empty candidate list, API unreachable, duplicate promote, mid-action navigation, mock-vs-live confusion, stale confidence | Low |
 | Verification | | | `Candidate.from_mapping()` forward compatibility; mock fixtures match API schema; exhaustive `CandidateState` handling; promote/reject idempotency expectations for Days 6–7 | Medium |
-| Documentation | | | Wireframes, architecture deltas, provenance/confidence UX rationale; MR descriptions with `#<issue>`; handoff run instructions (`streamlit run app.py`) | Medium |
-| Security & Performance | | | `PRAXIS_API_*` env-only secrets; HTTPS deploy posture; no log exfiltration; list/detail perf for ~200 candidates; Streamlit rerun cost awareness | High |
+| Documentation | | | Wireframes, architecture deltas, provenance/confidence UX rationale; MR descriptions with `#<issue>`; handoff run instructions (`npm run dev` in `frontend-react/`) | Medium |
+| Security & Performance | | | `PRAXIS_API_*` / `VITE_PRAXIS_*` env-only secrets; HTTPS deploy posture; no log exfiltration; list/detail perf for ~200 candidates; bundle size awareness | High |
 
 #### Run Notes + Scorecard
 
@@ -72,7 +72,7 @@ Default Cursor agent council for daily dashboard development on `monica/dashboar
 Routing sprint work through ACR-mapped roles yields reviewable MRs that preserve mock-mode local dev, provenance on every row, and API-first boundaries before Days 6–7 wire-up.
 
 **When To Use:**  
-- Default for feature work in `frontend/`
+- Default for feature work in `frontend-react/` and contract layer in `frontend/`
 - Doc updates under `docs/monica/`
 - Pre-MR self-review (peer review still required per team rules)
 - First-pass checks before pairing with Matthew (API) or Dominic (eval embed)
@@ -92,7 +92,7 @@ Routing sprint work through ACR-mapped roles yields reviewable MRs that preserve
 
 | Day | Monica deliverable (project plan) | Primary agents | Done when |
 |-----|-----------------------------------|----------------|-----------|
-| 1 | Wireframes, Streamlit stack decision | Orchestrator, Documentation | ✅ |
+| 1 | Wireframes, React stack decision | Orchestrator, Documentation | ✅ |
 | 2 | Dashboard shell + candidate list | Architect, Verification | ✅ |
 | 3 | Candidate detail + confidence UI | Verification, Documentation | ✅ |
 | 4 | Human gate workflow polish | Adversarial UX, Orchestrator | ✅ |
@@ -106,7 +106,7 @@ Routing sprint work through ACR-mapped roles yields reviewable MRs that preserve
 
 | Date | Sprint Day / Target | Scope | Contract OK | A11y Spot-check | Edge Cases Covered | Integration Risk | Demo Narrative (1–10) | Keep? |
 |------|---------------------|-------|:-----------:|:---------------:|:------------------:|:----------------:|:---------------------:|-------|
-| 2026-06-19 | Day 4–8 — workflow + API client | Streamlit + React + contract v1 | Yes | Partial | 8+ (confirm, reject reason, 409, defer) | Low (mock) | 8 | Yes |
+| 2026-06-19 | Day 4–8 — workflow + API client | React UI + contract v1 | Yes | Partial | 8+ (confirm, reject reason, 409, defer) | Low (mock) | 8 | Yes |
 
 **Observations:**  
 - What worked: Modular layout; `ApiDataProvider` + `contract_v1.py`; mock + React parity; confirmation UX and contradiction resolve on mock.  
@@ -172,7 +172,7 @@ Routing sprint work through ACR-mapped roles yields reviewable MRs that preserve
 | Verification Agent | Mock contract tests match API schema | Verification |
 | Documentation Agent | Wireframes, architecture, README | Documentation |
 | Adversarial Agent | Empty states, API down, duplicate promote, rerun races | Adversarial UX |
-| Performance Agent | Large lists, Streamlit rerun cost | Security & Performance |
+| Performance Agent | Large lists, React render performance | Security & Performance |
 
 **Cross-pillar coordination (not agent-owned):**
 

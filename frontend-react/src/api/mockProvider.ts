@@ -19,10 +19,57 @@ const PLACEHOLDER_METRICS: EvalMetrics = {
   correctionsAfter: 5,
 };
 
+const MOCK_EVAL_METRICS_URL = "/mock-eval-metrics.json";
+
+function metricsFromPayload(
+  payload: Record<string, unknown>,
+  source: string,
+): EvalMetrics {
+  return {
+    source,
+    correctionRate:
+      (payload.correction_rate as number[]) ??
+      (payload.correctionRate as number[]) ??
+      PLACEHOLDER_METRICS.correctionRate,
+    sessions:
+      (payload.sessions as string[] | undefined) ??
+      PLACEHOLDER_METRICS.sessions,
+    correctionsBefore:
+      (payload.corrections_before as number | undefined) ??
+      (payload.correctionsBefore as number | undefined) ??
+      PLACEHOLDER_METRICS.correctionsBefore,
+    correctionsAfter:
+      (payload.corrections_after as number | undefined) ??
+      (payload.correctionsAfter as number | undefined) ??
+      PLACEHOLDER_METRICS.correctionsAfter,
+  };
+}
+
 function placeholderMetrics(fetchError?: string): EvalMetrics {
   return fetchError
     ? { ...PLACEHOLDER_METRICS, fetchError }
     : PLACEHOLDER_METRICS;
+}
+
+let mockEvalMetricsPromise: Promise<EvalMetrics> | null = null;
+
+function fetchMockEvalMetrics(): Promise<EvalMetrics> {
+  if (!mockEvalMetricsPromise) {
+    mockEvalMetricsPromise = fetch(MOCK_EVAL_METRICS_URL)
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(response.statusText);
+        }
+        const payload = (await response.json()) as Record<string, unknown>;
+        return metricsFromPayload(payload, "mock");
+      })
+      .catch((error: unknown) =>
+        placeholderMetrics(
+          error instanceof Error ? error.message : "Mock eval metrics unavailable",
+        ),
+      );
+  }
+  return mockEvalMetricsPromise;
 }
 
 function fetchEvalMetrics(
@@ -30,7 +77,7 @@ function fetchEvalMetrics(
   token: string | undefined,
 ): Promise<EvalMetrics> {
   if (!url) {
-    return Promise.resolve(placeholderMetrics());
+    return fetchMockEvalMetrics();
   }
   return fetch(url, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
@@ -40,20 +87,7 @@ function fetchEvalMetrics(
         throw new Error(response.statusText);
       }
       const payload = (await response.json()) as Record<string, unknown>;
-      return {
-        source: url,
-        correctionRate:
-          (payload.correction_rate as number[]) ??
-          (payload.correctionRate as number[]) ??
-          PLACEHOLDER_METRICS.correctionRate,
-        sessions: payload.sessions as string[] | undefined,
-        correctionsBefore:
-          (payload.corrections_before as number | undefined) ??
-          (payload.correctionsBefore as number | undefined),
-        correctionsAfter:
-          (payload.corrections_after as number | undefined) ??
-          (payload.correctionsAfter as number | undefined),
-      };
+      return metricsFromPayload(payload, url);
     })
     .catch((error: unknown) =>
       placeholderMetrics(

@@ -1,0 +1,8 @@
+{
+  "files": [
+    {
+      "name": "session.jsonl",
+      "content": "{\"type\":\"user\",\"message\":\"Prefer pathlib over os.path for new config helpers.\"}\n"
+    }
+  ]
+}
