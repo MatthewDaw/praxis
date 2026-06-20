@@ -9,9 +9,13 @@ import {
   type DataSourceConfig,
   type DataSourceMode,
 } from "../config/dataSource";
+import type { ApiDataProviderAuth } from "../api/apiClient";
 import type { ParsedLogSession } from "../types/transcript";
 
-export function useDataSource(localSession?: ParsedLogSession | null) {
+export function useDataSource(
+  localSession?: ParsedLogSession | null,
+  auth?: ApiDataProviderAuth,
+) {
   const [config, setConfig] = useState<DataSourceConfig>(() => resolveInitialConfig());
 
   const applyConfig = useCallback((presetId: string, customApiBaseUrl?: string) => {
@@ -36,6 +40,7 @@ export function useDataSource(localSession?: ParsedLogSession | null) {
     detail,
     apiUrl,
     ingestApiBaseUrl,
+    auth,
     applyConfig,
   };
 }

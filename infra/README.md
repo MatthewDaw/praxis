@@ -7,6 +7,7 @@ AWS CDK app provisioning PRAXIS cloud resources. Deploys to the account from amb
 | Stack | Purpose | Key outputs |
 |-------|---------|-------------|
 | `PraxisSessionsTableStack` | DynamoDB table for raw Claude Code session logs | Table name (`praxis-sessions` by default) |
+| `PraxisAuthUserPoolStack` | Cognito User Pool + public SPA client for dashboard auth | `UserPoolId`, `UserPoolClientId`, `UserPoolRegion`, `IssuerUrl` |
 | `PraxisKnowledgeGraphDbStack` | RDS PostgreSQL 16 + pgvector knowledge-graph store | `DbEndpoint`, `DbSecretArn`, secret `praxis/knowledge-graph/db` |
 
 **Two-store model:** DynamoDB holds raw JSONL transcripts (session-capture). RDS holds distilled knowledge — dashboard candidates and KG facts/embeddings.
@@ -43,6 +44,7 @@ Pass to `cdk deploy` with `-c key=value`:
 | Flag | Stack | Default | Purpose |
 |------|-------|---------|---------|
 | `tableName` | Sessions | `praxis-sessions` | DynamoDB table name |
+| `authUserPoolName` | Auth | `praxis-users` | Cognito User Pool name |
 | `databaseName` | Knowledge graph | `praxis_kg` | Postgres database name |
 | `allowedCidr` | Knowledge graph | `0.0.0.0/0` | CIDR allowed to reach RDS port 5432 — **lock to your IP** for capstone |
 

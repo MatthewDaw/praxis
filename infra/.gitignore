@@ -1,0 +1,7 @@
+# Compiled TypeScript output (CDK source is the .ts files)
+*.js
+*.d.ts
+# CDK synth + deploy artifacts
+cdk.out/
+cdk-outputs.json
+node_modules/

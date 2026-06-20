@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib/core';
 import { SessionsTableStack } from '../lib/sessions-table-stack';
+import { AuthUserPoolStack } from '../lib/auth-user-pool-stack';
 import { KnowledgeGraphDbStack } from '../lib/knowledge-graph-db-stack';
 import { PhoenixStack } from '../lib/phoenix-stack';
 
@@ -17,6 +18,11 @@ const env: cdk.Environment = {
 new SessionsTableStack(app, 'PraxisSessionsTableStack', {
   env,
   tableName: app.node.tryGetContext('tableName') ?? 'praxis-sessions',
+});
+
+new AuthUserPoolStack(app, 'PraxisAuthUserPoolStack', {
+  env,
+  userPoolName: app.node.tryGetContext('authUserPoolName') ?? 'praxis-users',
 });
 
 new KnowledgeGraphDbStack(app, 'PraxisKnowledgeGraphDbStack', {

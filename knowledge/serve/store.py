@@ -88,10 +88,22 @@ class CandidateStore:
         self.path.write_text(json.dumps(self._candidates, indent=2), encoding="utf-8")
 
     # --- reads -------------------------------------------------------------
-    def list(self, state: str | None = None) -> list[Candidate]:
+    # org_id/user_id are accepted (and ignored) so this single-tenant JSON store
+    # is interchangeable with PostgresCandidateStore behind the same routes.
+    def list(
+        self,
+        org_id: str = "default",
+        user_id: str = "default",
+        state: str | None = None,
+    ) -> list[Candidate]:
         return [c for c in self._candidates if state is None or _state(c) == state]
 
-    def get(self, cid: str) -> Candidate | None:
+    def get(
+        self,
+        org_id: str = "default",
+        user_id: str = "default",
+        cid: str = "",
+    ) -> Candidate | None:
         return next((c for c in self._candidates if _cid(c) == cid), None)
 
     # --- mutations ---------------------------------------------------------
@@ -102,8 +114,14 @@ class CandidateStore:
             entry["note"] = note
         c.setdefault(key, []).append(entry)
 
-    def promote(self, cid: str, target: str | None = None) -> Candidate:
-        c = self.get(cid)
+    def promote(
+        self,
+        org_id: str = "default",
+        user_id: str = "default",
+        cid: str = "",
+        target: str | None = None,
+    ) -> Candidate:
+        c = self.get(cid=cid)
         if c is None:
             raise KeyError(cid)
         nxt = _NEXT_STATE.get(_state(c))
@@ -116,8 +134,14 @@ class CandidateStore:
         self._persist()
         return c
 
-    def reject(self, cid: str, reason: str | None = None) -> Candidate:
-        c = self.get(cid)
+    def reject(
+        self,
+        org_id: str = "default",
+        user_id: str = "default",
+        cid: str = "",
+        reason: str | None = None,
+    ) -> Candidate:
+        c = self.get(cid=cid)
         if c is None:
             raise KeyError(cid)
         c["state"] = "decayed"
@@ -125,10 +149,16 @@ class CandidateStore:
         self._persist()
         return c
 
-    def resolve(self, pair_id: str, keep_id: str) -> Candidate:
+    def resolve(
+        self,
+        org_id: str = "default",
+        user_id: str = "default",
+        pair_id: str = "",
+        keep_id: str = "",
+    ) -> Candidate:
         a, _, b = pair_id.partition("__")
         loser_id = b if keep_id == a else a
-        kept, loser = self.get(keep_id), self.get(loser_id)
+        kept, loser = self.get(cid=keep_id), self.get(cid=loser_id)
         if kept is None:
             raise KeyError(keep_id)
         # Drop the a<->b contradiction link from both sides; decay the loser.

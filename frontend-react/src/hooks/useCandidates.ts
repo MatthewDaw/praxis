@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { resolveDataProvider } from "../api/providerFactory";
+import type { ApiDataProviderAuth } from "../api/apiClient";
 import type { DataProvider } from "../api/dataProvider";
 import type { DataSourceConfig } from "../config/dataSource";
 import type { Candidate } from "../types/candidate";
@@ -9,14 +10,22 @@ export interface UseCandidatesOptions {
   config: DataSourceConfig;
   providerOverride?: DataProvider;
   localSession?: ParsedLogSession | null;
+  auth?: ApiDataProviderAuth;
 }
 
 export function useCandidates(options: UseCandidatesOptions) {
-  const { config, providerOverride, localSession } = options;
+  const { config, providerOverride, localSession, auth } = options;
+  const getToken = auth?.getToken;
+  const orgId = auth?.orgId;
   const provider = useMemo<DataProvider>(
     () =>
-      providerOverride ?? resolveDataProvider(config, localSession),
-    [config, localSession, providerOverride],
+      providerOverride ??
+      resolveDataProvider(
+        config,
+        localSession,
+        getToken ? { getToken, orgId } : undefined,
+      ),
+    [config, localSession, providerOverride, getToken, orgId],
   );
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [loading, setLoading] = useState(true);

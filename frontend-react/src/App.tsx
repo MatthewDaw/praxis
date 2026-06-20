@@ -21,6 +21,7 @@ import { useDataSource } from "./hooks/useDataSource";
 import { useGraph } from "./hooks/useGraph";
 import { filterCandidates, useCandidates } from "./hooks/useCandidates";
 import { PRESET_IDS } from "./config/dataSource";
+import { useOrg } from "./auth/OrgGate";
 import type { LocalLogFileInput } from "./types/transcript";
 import type { ViewTab } from "./types/view";
 import "./index.css";
@@ -30,8 +31,10 @@ export default function App() {
     null,
   );
   const [localRawFiles, setLocalRawFiles] = useState<LocalLogFileInput[]>([]);
+  const { getToken, orgId, signOut } = useOrg();
+  const auth = useMemo(() => ({ getToken, orgId }), [getToken, orgId]);
   const { config, mode, label, detail, ingestApiBaseUrl, applyConfig } =
-    useDataSource(localSession);
+    useDataSource(localSession, auth);
   const [healthRefreshKey, setHealthRefreshKey] = useState(0);
   const [graphRefreshKey, setGraphRefreshKey] = useState(0);
   const { storeType, refetch: refetchHealth } = useApiHealth(config, healthRefreshKey);
@@ -46,7 +49,7 @@ export default function App() {
     promote,
     reject,
     resolveContradiction,
-  } = useCandidates({ config, localSession });
+  } = useCandidates({ config, localSession, auth });
 
   const { graph, loading: graphLoading, error: graphError } = useGraph(
     provider,
@@ -311,8 +314,11 @@ export default function App() {
       <EvalMetricsEmbed provider={provider} />
 
       <footer className="page-footer">
-        React Knowledge Graph Dashboard · Data source: {footerModeLabel} ·
-        candidate-api-v1 contract · Python reference client in <code>frontend/services/</code>
+        React Knowledge Graph Dashboard · Data source: {footerModeLabel} · Org:{" "}
+        <code>{orgId}</code> · candidate-api-v1 contract ·{" "}
+        <button type="button" className="link-button" onClick={() => void signOut()}>
+          Sign out
+        </button>
       </footer>
     </AppShell>
   );

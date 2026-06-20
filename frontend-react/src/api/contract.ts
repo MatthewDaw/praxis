@@ -2,6 +2,7 @@ import type { CandidateState } from "../types/candidate";
 import { nextPromotionState } from "./candidateModel";
 
 export const CONTRACT_HEADER = "X-Praxis-Contract";
+export const ORG_HEADER = "X-Praxis-Org";
 
 const RESOLUTION_TO_API: Record<string, string> = {
   keep_primary: "keep_a",
@@ -14,7 +15,7 @@ export function contractVersion(): string {
   return import.meta.env.VITE_PRAXIS_CONTRACT_VERSION?.trim() || "1";
 }
 
-export function contractHeaders(token?: string): HeadersInit {
+export function contractHeaders(token?: string, orgId?: string): HeadersInit {
   const headers: Record<string, string> = {
     Accept: "application/json",
     "Content-Type": "application/json",
@@ -22,6 +23,9 @@ export function contractHeaders(token?: string): HeadersInit {
   };
   if (token) {
     headers.Authorization = `Bearer ${token}`;
+  }
+  if (orgId) {
+    headers[ORG_HEADER] = orgId;
   }
   return headers;
 }

@@ -59,6 +59,29 @@ CREATE INDEX IF NOT EXISTS facts_tenant ON facts (org_id, shared, user_id, scope
 CREATE INDEX IF NOT EXISTS facts_embedding_hnsw
     ON facts USING hnsw (embedding vector_cosine_ops);
 
+-- Orgs: app-level tenants. A user creates an org (setting its password) or
+-- joins an existing one (supplying that password). The password is stored as a
+-- pbkdf2_hmac(sha256) hash with a per-org random salt (see orgs_store.py).
+CREATE TABLE IF NOT EXISTS orgs (
+    org_id        text PRIMARY KEY,
+    name          text,
+    password_hash text NOT NULL,
+    password_salt text NOT NULL,
+    created_by    text NOT NULL,
+    created_at    timestamptz DEFAULT now()
+);
+
+-- Org membership: which users belong to which org, and their role. The org
+-- creator is added as 'owner'; subsequent joiners default to 'member'.
+CREATE TABLE IF NOT EXISTS org_members (
+    org_id    text,
+    user_id   text,
+    role      text DEFAULT 'member',
+    joined_at timestamptz DEFAULT now(),
+    PRIMARY KEY (org_id, user_id),
+    FOREIGN KEY (org_id) REFERENCES orgs (org_id) ON DELETE CASCADE
+);
+
 -- Edges connect two facts within the same tenant graph.
 CREATE TABLE IF NOT EXISTS fact_edges (
     org_id text NOT NULL DEFAULT 'default',
