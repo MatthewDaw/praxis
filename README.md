@@ -22,6 +22,7 @@ Claude Code's auto-memory saves a few notes between sessions — but it's an unv
 - [The loop](#the-loop)
 - [Problem](#problem)
 - [Implementation status](#implementation-status)
+- [Sprint TODO (team tracker)](#sprint-todo-team-tracker)
 - [MVP scope](#mvp-scope)
 - [Success criteria](#success-criteria)
 - [Team & pillars](#team--pillars)
@@ -80,21 +81,108 @@ PRAXIS treats that exhaust as a compounding asset.
 
 ## Implementation status
 
-Point-in-time snapshot as of **2026-06-18** (Sprint Day 2). See [AUDIT.md](AUDIT.md) for the full repo health review.
+Point-in-time snapshot as of **2026-06-19** (Sprint Day 3). Live gap tracker: [docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md](docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md). See [AUDIT.md](AUDIT.md) for the Jun 18 repo health review (partially stale on Candidate API — now shipped).
 
 | Area | Path | Owner | Status |
 |------|------|-------|--------|
 | Human-gate dashboard (Streamlit) | `frontend/` | Monica Peters | **Demo-ready** — mock fixtures, contract v1 API client, Render deploy blueprint |
 | Knowledge Graph dashboard (React) | `frontend-react/` | Monica Peters (client) / Matthew Daw (server) | **Demo-ready (mock)** — Vite + TypeScript UI targeting same candidate-api-v1; Matthew validates his REST server without Streamlit |
 | Knowledge substrate | `knowledge/` | Matthew Daw | **Foundation** — in-memory graph, prompt ingestor, whole-file reader, wiring factory |
-| Eval harness | `knowledge/evals/` | Dominic Antonelli | **Partial** — 5 YAML cases, deterministic checks, real Claude Code runner + offline FakeRunner |
+| Eval harness | `knowledge/evals/` | Dominic Antonelli | **Partial** — 63 YAML cases, deterministic checks, real Claude Code runner + offline FakeRunner |
 | Session capture | `session-capture/` | Dominic Antonelli | **Working** — Go `claude+` PTY daemon, JSONL tailer, DynamoDB writer |
 | Cloud infra | `infra/` | Team | **Scaffolded** — AWS CDK: DynamoDB sessions table + RDS PostgreSQL 16/pgvector KG store |
-| Candidate REST API | — | Matthew Daw | **Planned** — contract v1 documented; server not yet in-repo |
-| Eval metrics endpoint | — | Dominic Antonelli | **Planned** — contract v1 documented; dashboard embed ready |
+| Candidate REST API | `knowledge/serve/` | Matthew Daw | **Shipped** — FastAPI contract v1; JSON store + optional Postgres via `PRAXIS_DB_URL` |
+| Eval metrics endpoint | `knowledge/serve/` (`GET /metrics`) | Dominic Antonelli | **Fixture only** — contract v1 documented; dashboard embed ready; real batch data pending |
 | CI pipeline | — | Team | **Not yet** — manual test runs only |
 
 **Integration posture:** The dashboard runs fully offline when `PRAXIS_API_BASE_URL` is unset. Set env vars per [docs/integration/wire-up.md](docs/integration/wire-up.md) to wire live backend and eval metrics without code changes.
+
+**Critical path (Jun 29 demo):** Matthew pipeline (JSONL → candidates → promote→KG) and Dominic measurement spine (cold vs injected + compounding curve). Dashboard Act 2 is mock-ready today.
+
+---
+
+## Sprint TODO (team tracker)
+
+> **Last updated:** 2026-06-19 (Sprint Day 3). Detailed day-by-day gaps: [PLAN_ALIGNMENT_GAP_CHECKLIST.md](docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md). Tick items in MRs; Monica updates this block at daily sync.
+
+| Milestone | Date | Days away |
+|-----------|------|-----------|
+| Integration complete (Day 7) | Tue Jun 24 EOD | 5 |
+| Feature freeze (Day 8) | Wed Jun 25 EOD | 6 |
+| Practice 1 | Wed Jun 25 | 6 |
+| Hard freeze (Day 10) | Fri Jun 27 EOD | 8 |
+| Demo branch `demo-jun29` | Sun Jun 28 AM | 9 |
+| **Gauntlet showcase** | **Mon Jun 29** | **10** |
+
+### Critical path (P0 — blocks live demo)
+
+**Matthew (ML & Knowledge Pipeline)**
+
+- [ ] JSONL ingest + episode segmentation (`knowledge/ingestion/` — rename from `injestion/` when ready)
+- [ ] LLM distillation → structured candidate `{when, lesson, scope, evidence, form}` with provenance `logs/*.jsonl:<line>`
+- [ ] Learning-moment detector (heuristics minimum for demo)
+- [ ] **Promote → `KnowledgeGraph.write`** (approval in dashboard must persist to graph, not candidate store only)
+- [ ] PostgreSQL RDS provisioned + `PRAXIS_DB_URL` live ([RDS_KG_DEPLOY.md](docs/monica/RDS_KG_DEPLOY.md))
+- [ ] Acknowledge Monica P0 eval cases in [MATTHEW_HANDOFF.md](knowledge/evals/cases/MATTHEW_HANDOFF.md) (`quirky_exhaustive_switch`, `quirky_config_load_order`)
+
+**Dominic (Arch, Eval & Integration)**
+
+- [ ] Paired **cold vs injected** runner (same case, empty graph vs seeded insight)
+- [ ] **Correction counting** + token/time in eval results
+- [ ] Eval metrics GET per [eval-metrics-v1.md](docs/integration/eval-metrics-v1.md) (real batch data, not fixture-only)
+- [ ] Quirky benchmark wired for Acts 1 & 3 (`quirky_exhaustive_switch` pairing)
+- [ ] Compounding curve output proving **≥50% correction reduction** (or dated honest narrative + fixture fallback)
+
+**Monica (Dashboard & Human Gate)**
+
+- [x] Human-gate UI mock-complete (Streamlit + React, contract v1 clients)
+- [x] P0 eval cases + `test_cases.py` green
+- [ ] Live integration smoke: promote/reject/resolve chain on Matthew API ([INTEGRATION_SMOKE.md](docs/monica/INTEGRATION_SMOKE.md))
+- [ ] Timed **Act 2** rehearsal ≤3.5 min ([DEMO_SCRIPT.md](docs/monica/DEMO_SCRIPT.md))
+
+**Team**
+
+- [ ] End-to-end path: **log → candidates → promote → eval improved**
+- [ ] 3-act demo script with fallback matrix (Act 1 clip OK; Act 2 mock OK today; Act 3 fixture metrics fallback documented)
+
+### Remaining sprint schedule (open work)
+
+- **Day 3 (Jun 19 — today):** Matthew: distillation + provenance · Dominic: injection tooling · Monica: Act 2 rehearsal
+- **Day 4 (Jun 20):** Matthew: embeddings/HDBSCAN/contradiction pipeline · Dominic: PR/ticket replay skeleton
+- **Day 5 (Jun 21):** Matthew: freq/recency/breadth + decay · Dominic: token/time tracking
+- **Day 6 (Jun 23):** Matthew: E2E pipeline + RDS · Dominic: cold vs injected runner · Monica: live API smoke
+- **Day 7 (Jun 24):** Matthew: get-context tool + promote→KG · Dominic: demo data bundle · **integration complete EOD**
+- **Day 8 (Jun 25):** Batch evals + compounding measurement · Monica Practice 1 · **feature freeze EOD**
+- **Days 9–10 (Jun 26–27):** Demo polish, user-flow video, Practice 2, hard freeze Fri 27
+- **Showcase (Jun 29):** 10-min live demo (3 acts)
+
+### Demo & presentation gates
+
+- [ ] **Practice 1** — Wed Jun 25 — all 3 acts ≤10 min; mock dashboard OK
+- [ ] **Practice 2** — Fri Jun 27 — live API + eval metrics preferred
+- [ ] **Practice 3** — Sun Jun 28 PM — dress rehearsal; no code after unless P0
+- [ ] Tag **`demo-jun29`** — Sun Jun 28 AM
+- [ ] Backup recording captured
+- [ ] Monica: user-flow video ≤3 min (React primary)
+- [ ] Monica: manual a11y pass (tab + screen reader) per [DAYS_9_10_REMAINING.md](docs/monica/DAYS_9_10_REMAINING.md)
+- [ ] Dominic: full 3-act spoken script (Act 1 dumb agent · Act 2 distillation · Act 3 smart agent + scoreboard)
+
+### P1 (after P0 or stretch)
+
+- [ ] HDBSCAN cluster/dedup (Matthew)
+- [ ] Pipeline-side contradiction detection (Matthew)
+- [ ] Real confidence scorer from logs (Matthew)
+- [ ] GitHub hook / PR automation on promote (Dominic)
+- [ ] GitLab CI: `pytest knowledge/`, `frontend/tests/`, `frontend-react` Vitest
+- [ ] Root `pyproject.toml` pythonpath fix
+- [ ] State-distribution chart (Monica stretch)
+
+### How to update this list
+
+- Monica ticks items at daily 10am sync; pillar leads confirm in MR before checking `[x]`
+- Link MR/commit in standup notes under `docs/monica/standup-notes/`
+- Do not check integration/E2E items until smoke doc or pytest proves it
+- After Jun 25 feature freeze: bugfixes + measurement only
 
 ---
 
@@ -143,6 +231,8 @@ Daily 15-minute syncs; all code reviewed by at least one other member before mer
 ## Sprint timeline
 
 Sprint **Day 1 = Wednesday, June 16, 2026** (Thursday June 18 skipped). See the confidential project plan for the detailed day-by-day schedule.
+
+**You are here:** Day 3 evening (Jun 19) — parallel core build; integration target **Jun 24** (Day 7).
 
 | Phase | Days | Milestones |
 |-------|------|------------|
@@ -329,17 +419,32 @@ RDS + pgvector deploy and Postgres-backed candidate API: [docs/monica/RDS_KG_DEP
 
 ## Testing
 
-**Knowledge package** (39 tests — run from repo root):
+**Knowledge package** (run from repo root):
 
 ```powershell
 uv run pytest knowledge/ -q
 ```
 
-**Dashboard contract tests** (11 tests — set `PYTHONPATH` from repo root):
+**Eval case registry** (63 YAML cases):
+
+```powershell
+uv run pytest knowledge/evals/tests/test_cases.py -q
+```
+
+**Dashboard contract tests** (set `PYTHONPATH` from repo root):
 
 ```powershell
 $env:PYTHONPATH = "frontend"
 uv run pytest frontend/tests/ -q
+```
+
+**React dashboard** (Vitest + lint + build — rehearsal gate per [DAYS_9_10_REMAINING.md](docs/monica/DAYS_9_10_REMAINING.md)):
+
+```powershell
+cd frontend-react
+npm test
+npm run lint
+npm run build
 ```
 
 Contract fixtures are canonical in [docs/integration/fixtures/](docs/integration/fixtures/).
