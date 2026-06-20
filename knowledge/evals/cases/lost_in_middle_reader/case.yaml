@@ -1,0 +1,56 @@
+# Component eval: graph_reader only — the deterministic counterpart to
+# lost_in_middle. Same ~40-line noisy graph, but instead of asking an agent to
+# beat the noise, it asserts the READER did its job: surfaced the relevant rule
+# and dropped the irrelevant facts.
+#
+# Today's WholeFileReader returns the WHOLE graph unranked, so the irrelevant
+# facts (X-Ray, SES, CloudFront) are still in the output and the excludes_*
+# checks FAIL — hence xfail. A relevance-ranking reader returns only the facts
+# relevant to "add a caching TODO" and this XPASSes. Model-independent and free
+# (no agent), so it's the robust system-level red spec; lost_in_middle is the
+# end-to-end demonstration.
+id: lost_in_middle_reader
+component: graph_reader
+xfail: "no relevance-ranking reader: the whole graph is returned unranked"
+seed_prompt: "Add a TODO comment about adding caching to the data-fetch layer."
+
+seeded_insight:
+  direct_to_graph:
+    - "The praxis service is a FastAPI app deployed on AWS via CDK."
+    - "Local development uses uv; run the app with `uv run uvicorn app:api`."
+    - "Secrets are read from AWS Secrets Manager, never committed to the repo."
+    - "The default region for all stacks is us-east-1."
+    - "Python files are formatted with ruff and use 4-space indentation."
+    - "Type hints are required on all public function signatures."
+    - "Database access goes through the repository layer, never raw SQL in routes."
+    - "PRs require at least one approving review before merge."
+    - "Logging uses structlog with JSON output in production."
+    - "ALWAYS prefix every TODO comment with the initials MD, like TODO(MD)."
+    - "Caching, when added, should use an in-memory LRU with a 60-second TTL."
+    - "API responses are versioned under the /v1 prefix."
+    - "All timestamps are stored and returned in UTC ISO-8601 format."
+    - "Rate limiting is applied per-API-key at the gateway, 100 req/min."
+    - "Static assets are served from CloudFront with a 24-hour cache header."
+    - "Email is sent through SES with templated messages."
+    - "Tracing uses AWS X-Ray with sampling at 10% in production."
+    - "CORS is restricted to the known frontend origins only."
+
+deterministic_checks:
+  # The relevant rule must survive (a good reader keeps it; the dumb one does too).
+  - name: retrieves_todo_rule
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "TODO(MD)"
+  # Irrelevant facts must be dropped. Today they are NOT (whole graph returned).
+  - name: excludes_xray
+    ref: "knowledge.evals.deterministic_checks.builds:not_contains_text"
+    params:
+      text: "X-Ray"
+  - name: excludes_ses
+    ref: "knowledge.evals.deterministic_checks.builds:not_contains_text"
+    params:
+      text: "SES"
+  - name: excludes_cloudfront
+    ref: "knowledge.evals.deterministic_checks.builds:not_contains_text"
+    params:
+      text: "CloudFront"

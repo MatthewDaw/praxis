@@ -61,6 +61,29 @@ def test_runner_injects_graph_as_system_prompt():
     assert captured["headers"]["Authorization"] == "Bearer k"
 
 
+def test_runner_uses_case_model_override():
+    seen = {}
+
+    def fake_post(url, payload, headers, timeout):
+        seen["model"] = payload["model"]
+        return _chat_response("ok")
+
+    client = OpenRouterClient(api_key="k", post=fake_post, model="default/model")
+    _, _, reader = build_trio()
+    # No override -> client default.
+    OpenRouterRunner(client=client).run(_case(), reader)
+    assert seen["model"] == "default/model"
+    # Case override wins.
+    pinned = _case().model_copy(update={"model": "openai/gpt-4o-mini"})
+    OpenRouterRunner(client=client).run(pinned, reader)
+    assert seen["model"] == "openai/gpt-4o-mini"
+
+
+def test_serves_model_distinguishes_backends():
+    assert OpenRouterRunner.serves_model("openai/gpt-4o-mini") is True
+    assert OpenRouterRunner.serves_model("sonnet") is False  # a Claude alias
+
+
 def test_runner_omits_system_when_graph_empty():
     def fake_post(url, payload, headers, timeout):
         assert [m["role"] for m in payload["messages"]] == ["user"]

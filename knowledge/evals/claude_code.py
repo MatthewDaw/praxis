@@ -143,6 +143,12 @@ class ClaudeCodeRunner:
     # writes — so it can faithfully run cases that need a sandbox.
     provides = frozenset({"sandbox"})
 
+    @staticmethod
+    def serves_model(model: str) -> bool:
+        """The Claude CLI takes aliases (sonnet/opus) or claude-* names — never a
+        provider-prefixed id, so a ``/`` means it's another backend's model."""
+        return "/" not in model
+
     def __init__(
         self,
         output_file: str = "poem.txt",
@@ -167,6 +173,8 @@ class ClaudeCodeRunner:
             if getattr(case, "fixture_path", None):
                 shutil.copytree(case.fixture_path, workdir, dirs_exist_ok=True)
             args = ["-p", case.seed_prompt, "--output-format", "json"]
+            if getattr(case, "model", None):
+                args += ["--model", case.model]  # case override; else CLI default
             if knowledge.strip():
                 args += ["--append-system-prompt", knowledge]
             args += [

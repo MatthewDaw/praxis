@@ -89,6 +89,36 @@ def test_runner_copies_fixture_into_box(tmp_path):
     assert "def sub" in ctx.output and "def add" in ctx.output  # graded on the edited file
 
 
+def test_runner_passes_model_flag_when_pinned():
+    seen = {}
+
+    def fake_cli(args, cwd, env, timeout):
+        seen["args"] = args
+        (Path(cwd) / "poem.txt").write_text("p", encoding="utf-8")
+        return json.dumps({"result": "done"})
+
+    case = _case().model_copy(update={"model": "sonnet"})
+    _, _, reader = build_trio()
+    ClaudeCodeRunner(run_cli=fake_cli).run(case, reader)
+    assert "--model" in seen["args"]
+    assert seen["args"][seen["args"].index("--model") + 1] == "sonnet"
+
+
+def test_runner_omits_model_flag_when_unset():
+    def fake_cli(args, cwd, env, timeout):
+        assert "--model" not in args
+        (Path(cwd) / "poem.txt").write_text("p", encoding="utf-8")
+        return json.dumps({"result": "done"})
+
+    _, _, reader = build_trio()
+    ClaudeCodeRunner(run_cli=fake_cli).run(_case(), reader)
+
+
+def test_serves_model_rejects_provider_prefixed():
+    assert ClaudeCodeRunner.serves_model("sonnet") is True
+    assert ClaudeCodeRunner.serves_model("openai/gpt-4o-mini") is False
+
+
 def test_judge_parses_overall_score():
     raw = json.dumps({"result": '{"per_item": {"on_topic": 1.0}, "overall": 0.83}'})
 

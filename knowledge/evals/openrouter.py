@@ -143,6 +143,12 @@ class OpenRouterRunner:
     # are skipped rather than graded on a reply this runner can't make faithful.
     provides = frozenset()
 
+    @staticmethod
+    def serves_model(model: str) -> bool:
+        """OpenRouter ids are provider-prefixed (e.g. ``openai/gpt-4o-mini``); a
+        bare alias like ``sonnet`` belongs to another backend."""
+        return "/" in model
+
     def __init__(
         self,
         client: OpenRouterClient | None = None,
@@ -160,7 +166,10 @@ class OpenRouterRunner:
             messages.append({"role": "system", "content": knowledge})
         messages.append({"role": "user", "content": case.seed_prompt})
         output, raw = self.client.complete_raw(
-            messages, temperature=self.temperature, max_tokens=self.max_tokens
+            messages,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            model=getattr(case, "model", None),  # case override; None => client default
         )
         return EvalContext(
             case_id=case.id,

@@ -146,19 +146,41 @@ def unmet_needs(case: EvalCase, runner: Runner) -> set[str]:
     return case_needs(case) - provided
 
 
+def skip_reasons(case: EvalCase, runner: Runner) -> set[str]:
+    """Why this runner can't faithfully grade the case (empty => runnable).
+
+    Two sources: capabilities the runner lacks (``needs``), and a pinned ``model``
+    this backend can't serve. A runner with no ``serves_model`` serves anything.
+    """
+    reasons = set(unmet_needs(case, runner))
+    model = getattr(case, "model", None)
+    serves = getattr(runner, "serves_model", None)
+    if model and serves is not None and not serves(model):
+        reasons.add(f"model:{model}")
+    return reasons
+
+
+def _skip_reason_text(reason: str, backend: str) -> str:
+    """Render a raw skip token into a human sentence for the SKIP line."""
+    if reason.startswith("model:"):
+        return f"pinned model '{reason[len('model:'):]}' not served by the {backend} backend"
+    return f"needs '{reason}', which the {backend} backend does not provide"
+
+
 def partition_by_capability(
     cases: list[EvalCase], runner: Runner
 ) -> tuple[list[EvalCase], list[tuple[EvalCase, set[str]]]]:
     """Split cases into (runnable, skipped) for ``runner``.
 
-    Skipped entries carry the unmet needs so the caller can report *why*.
+    Skipped entries carry the reasons (unmet needs and/or an unservable model)
+    so the caller can report *why*.
     """
     runnable: list[EvalCase] = []
     skipped: list[tuple[EvalCase, set[str]]] = []
     for case in cases:
-        missing = unmet_needs(case, runner)
-        if missing:
-            skipped.append((case, missing))
+        reasons = skip_reasons(case, runner)
+        if reasons:
+            skipped.append((case, reasons))
         else:
             runnable.append(case)
     return runnable, skipped
@@ -419,8 +441,9 @@ def main(argv: list[str] | None = None) -> int:
     # Skip cases this backend can't grade faithfully (e.g. a sandbox case on the
     # single-shot OpenRouter runner) so the scoreboard reflects only real signal.
     cases, skipped = partition_by_capability(cases, runner)
-    for case, missing in skipped:
-        print(f"[SKIP] {case.id}  (needs {', '.join(sorted(missing))})")
+    for case, reasons in skipped:
+        why = "; ".join(_skip_reason_text(r, kind) for r in sorted(reasons))
+        print(f"[SKIP] {case.id}  ({why})")
     if not cases:
         print("no runnable cases for this backend")
         return 0

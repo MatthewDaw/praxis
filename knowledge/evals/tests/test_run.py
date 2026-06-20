@@ -200,6 +200,33 @@ def test_partition_splits_runnable_from_skipped():
     assert [(c.id, m) for c, m in skipped] == [("boxed", {"sandbox"})]
 
 
+def test_pinned_model_skips_backend_that_cant_serve_it():
+    class Claudeish:
+        @staticmethod
+        def serves_model(m):
+            return "/" not in m
+
+        def run(self, case, reader):  # pragma: no cover
+            return EvalContext(case_id=case.id, output="")
+
+    class OpenRouterish:
+        @staticmethod
+        def serves_model(m):
+            return "/" in m
+
+        def run(self, case, reader):  # pragma: no cover
+            return EvalContext(case_id=case.id, output="")
+
+    pinned = _case(model="openai/gpt-4o-mini")
+    # Claude-like backend can't serve a provider-prefixed id -> skipped with reason.
+    runnable, skipped = partition_by_capability([pinned], Claudeish())
+    assert not runnable
+    assert skipped[0][1] == {"model:openai/gpt-4o-mini"}
+    # OpenRouter-like backend serves it -> runnable.
+    runnable2, _ = partition_by_capability([pinned], OpenRouterish())
+    assert [c.id for c in runnable2] == ["c1"]
+
+
 def test_status_of_four_states():
     def res(passed, xfail=None):
         return CaseResult(case_id="c", passed=passed, xfail_reason=xfail)
