@@ -4,10 +4,11 @@ Self-serve validation when Matthew's candidate API and Dominic's eval metrics ar
 
 Live smoke assumes Matthew's API is backed by **PostgreSQL** (Matthew owns `PRAXIS_DB_URL` / Secrets Manager and schema — see [RDS_KG_DEPLOY.md](RDS_KG_DEPLOY.md)); dashboard env vars remain API-only (`PRAXIS_API_BASE_URL`, not a DB connection string).
 
-**Status:** Live candidate API at `knowledge/serve` (mock-seeded store + `/metrics` stub). React and Streamlit clients aligned on Matthew API v1 (reject → decayed, promote 400 conflict UX). **Local smoke (2026-06-19):** `test_live_api_smoke.py` list ✅ against `127.0.0.1:8000`; promote/reject/resolve skipped when store has no spare proposed/contradiction rows. Render dual-service checklist in §8 — tick after deploy.
+**Status:** Live candidate API at `knowledge/serve` (mock-seeded store + `/metrics` stub). React client aligned on Matthew API v1 (reject → decayed, promote 400 conflict UX). **Local smoke (2026-06-19):** `test_live_api_smoke.py` list ✅ against `127.0.0.1:8000`; promote/reject/resolve skipped when store has no spare proposed/contradiction rows. Render dual-service checklist in §8 — tick after deploy.
 
-**Primary demo client:** React (`frontend-react/`) — static Render deploy, custom branding, a11y labels.  
-**Reference client:** Streamlit (`frontend/`) — Python contract tests and Matthew wire-up parity.
+**Demo client:** React (`frontend-react/`) — static Render deploy, custom branding, a11y labels.
+
+**Contract layer:** Python (`frontend/`) — typed models, mock fixtures, pytest, and live API smoke tests (no UI runtime).
 
 ---
 
@@ -18,11 +19,10 @@ cd frontend-react
 npm install
 ```
 
-Streamlit (reference / pytest):
+Python contract tests (from repo root):
 
 ```powershell
-cd frontend
-.\venv\Scripts\pip install -e ..
+uv run pytest frontend/tests/ -q
 ```
 
 ---
@@ -117,36 +117,7 @@ Also verify:
 
 ---
 
-## 4. Streamlit mock smoke (reference client)
-
-```powershell
-cd frontend
-Remove-Item Env:PRAXIS_API_BASE_URL -ErrorAction SilentlyContinue
-.\venv\Scripts\streamlit run app.py
-```
-
-Repeat Act 2 steps — useful for Matthew's Python client validation and pytest parity.
-
----
-
-## 5. Streamlit live API smoke (reference client)
-
-```powershell
-$env:PRAXIS_API_BASE_URL = "http://localhost:8000"
-$env:PRAXIS_API_TOKEN = ""   # optional
-$env:PYTHONPATH = "frontend"
-uv run pytest frontend/tests/test_contract_fixtures.py -v
-cd frontend
-.\venv\Scripts\streamlit run app.py
-```
-
-Same pass criteria as §3; use sidebar **Refresh data** after mutations.
-
----
-
-## 6. Eval metrics live smoke (when Dominic's endpoint is up)
-
-**React (primary):**
+## 4. Eval metrics live smoke (when Dominic's endpoint is up)
 
 ```powershell
 # frontend-react/.env.local
@@ -155,19 +126,11 @@ cd frontend-react
 npm run dev
 ```
 
-**Streamlit (reference):**
-
-```powershell
-$env:PRAXIS_EVAL_METRICS_URL = "http://localhost:9000/metrics"
-cd frontend
-.\venv\Scripts\streamlit run app.py
-```
-
 **Pass criteria:** Live chart + cold/after/reduction metrics per [eval-metrics-v1.md](../integration/eval-metrics-v1.md) and [eval-metrics.json](../integration/fixtures/eval-metrics.json).
 
 ---
 
-## 7. Automated rehearsal gate (CI-friendly)
+## 5. Automated rehearsal gate (CI-friendly)
 
 Run before Practice 1 (Wed Jun 25):
 
@@ -183,7 +146,7 @@ All green = code path ready for timed Act 2 rehearsal.
 
 ---
 
-## 8. Render dual-service smoke (live API + React static)
+## 6. Render dual-service smoke (live API + React static)
 
 Blueprint: [`frontend-react/render.yaml`](../../frontend-react/render.yaml) — `praxis-candidate-api` + `praxis-react-human-gate` with `VITE_PRAXIS_API_BASE_URL` wired via `fromService`.
 
@@ -221,7 +184,7 @@ npm run dev
 
 ---
 
-## 9. Ingest + promote→graph smoke (opt-in, non-blocking)
+## 7. Ingest + promote→graph smoke (opt-in, non-blocking)
 
 These tests are **not** part of the offline merge gate. They skip when endpoints are missing or the store has no spare rows.
 

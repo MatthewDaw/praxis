@@ -7,7 +7,7 @@ CREATED: 2026-06-18
 PURPOSE:
 Protocol and factory for candidate data access. UI components depend on this
 interface — not on pandas, mock_data, or HTTP — so React or another client
-can share Matthew's API without importing Streamlit code.
+can share Matthew's API without importing dashboard UI code.
 
 USAGE:
     provider = get_data_provider()

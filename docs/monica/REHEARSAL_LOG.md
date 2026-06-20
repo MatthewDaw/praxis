@@ -23,11 +23,10 @@ Programmatic Act 2 beats against `MockDataProvider`:
 
 ## Manual rehearsal (Monica — before Practice 1)
 
-- [ ] Timed Streamlit run: `cd frontend && .\venv\Scripts\streamlit run app.py` (target ≤3.5 min)
-- [ ] Timed React run: `cd frontend-react && npm run dev`
+- [ ] Timed React run: `cd frontend-react && npm run dev` (target ≤3.5 min)
 - [ ] User-flow video capture (<3 min)
 - [ ] Accessibility tab + screen reader pass per DAYS_9_10 checklist
 
 ## Live API rehearsal (when Matthew server up)
 
-Follow [INTEGRATION_SMOKE.md](INTEGRATION_SMOKE.md) §3–4 and capture screenshots.
+Follow [INTEGRATION_SMOKE.md](INTEGRATION_SMOKE.md) §3 and capture screenshots.

@@ -11,9 +11,14 @@ and versioning aligns with [pyproject.toml](pyproject.toml) (`0.1.0`).
 
 - **`frontend-react/`** — Vite + React + TypeScript Knowledge Graph dashboard targeting [candidate-api-v1](docs/integration/candidate-api-v1.md); mock mode with 17 candidates exported from `frontend/mock_data.py`; promote/reject/contradiction resolve + eval metrics embed; `npm run build` verified.
 
+### Removed
+
+- **Streamlit human-gate dashboard** — removed `frontend/app.py`, `components/`, `.streamlit/`, `render.yaml`, and `requirements.txt`; React (`frontend-react/`) is the sole dashboard UI; `frontend/` retained as Python contract + mock-data package.
+
 ### Changed
 
-- **Documentation** — README, AUDIT, Monica pillar docs, wire-up guide, and CHANGELOG updated for dual Streamlit + React dashboard posture on `monica/dashboard-human-gate`.
+- **Documentation** — README, AUDIT, Monica pillar docs, wire-up guide, and CHANGELOG updated for React-only dashboard posture.
+- **Dependencies** — removed `streamlit` and `pandas` from root `pyproject.toml`.
 
 ### Fixed
 

@@ -3,7 +3,7 @@
 Pillar documentation: [ARCHITECTURE_MONICA.md](ARCHITECTURE_MONICA.md) · [monica-wireframes.md](monica-wireframes.md) (as-built spec).
 
 **Role:** Dashboard & Human Gate Lead · **Daily Scrum Master** (see [PLAN_ALIGNMENT_GAP_CHECKLIST.md](PLAN_ALIGNMENT_GAP_CHECKLIST.md))  
-**Focus:** Streamlit human-gate dashboard (`frontend/`) and React Knowledge Graph dashboard (`frontend-react/`) for Matthew's API validation — human approval workflow (proposed→suggested→active), contradiction resolution UI, credibility metrics viz, injection controls. Streamlit remains Monica's sprint demo path; React delivers the project-plan review UI for teammates who prefer a SPA stack.  
+**Focus:** React human-gate dashboard (`frontend-react/`) with Python contract/mock layer (`frontend/`) — human approval workflow (proposed→suggested→active), contradiction resolution UI, credibility metrics viz, injection controls. Matthew validates the candidate API against typed Python fixtures and pytest without running the React dev server unless desired.  
 **Interview Claim:** "I designed and built the human approval dashboard that enforces quality gates and makes knowledge promotion transparent and measurable."
 
 **Sprint Schedule Note:** 10 full work days (skipping Thursday June 18). Day 1 = Wednesday June 16. **Internal** Days 9–10 (June 26–27): project completion, hard freeze, and presentation practice. **Public** Gauntlet showcase: **Monday, June 29**. Team operating calendar: [PLAN_ALIGNMENT_GAP_CHECKLIST.md](PLAN_ALIGNMENT_GAP_CHECKLIST.md). All times EOD unless noted.
@@ -20,7 +20,7 @@ Pillar documentation: [ARCHITECTURE_MONICA.md](ARCHITECTURE_MONICA.md) · [monic
 ### Days 1–2: Project Plan Drafts, Foundation & Design (Due: End of Day 2 — Friday, June 19)
 - **Day 1 Deliverables:**
   - Repo setup, documentation drafts, and project plan drafts.
-  - Dashboard wireframes & team tech stack decision (**Streamlit** in `frontend/`).
+  - Dashboard wireframes & team tech stack decision (**React** in `frontend-react/`; Python contract layer in `frontend/`).
 - **Day 2 Deliverables:**
   - Build review dashboard shell + candidate list view.
 - **Key Output:** Approved wireframes; interactive shell ready for data population; tech stack finalized with team.
@@ -36,11 +36,11 @@ Pillar documentation: [ARCHITECTURE_MONICA.md](ARCHITECTURE_MONICA.md) · [monic
 
 ### Days 6–7: Integration & Human Gate (Due: End of Day 7 — Wednesday, June 24)
 - **Day 6 Deliverables:**
-  - Dashboard ↔ backend API integration + approval actions wired (Streamlit + React clients).
+  - Dashboard ↔ backend API integration + approval actions wired (React UI + Python contract tests).
 - **Day 7 Deliverables:**
-  - Full human approval flow complete on both UIs.
+  - Full human approval flow complete on React dashboard.
   - Provenance display in UI.
-- **Key Output:** End-to-end human gate functional: users can review, resolve contradictions, promote knowledge with full audit trail visible. Matthew validates server against `frontend-react/` without installing Streamlit.
+- **Key Output:** End-to-end human gate functional: users can review, resolve contradictions, promote knowledge with full audit trail visible. Matthew validates server against `frontend/tests/` and `frontend-react/` API client.
 
 ### Day 8: Eval Harness & Measurement (Due: End of Day 8 — Thursday, June 25)
 - Dashboard polish + edge-case handling in review flow.

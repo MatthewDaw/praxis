@@ -1,11 +1,11 @@
 # PRAXIS React — Knowledge Graph Dashboard
 
 **For:** Matthew Daw (ML & Knowledge Pipeline) — server owner of [candidate-api-v1](../docs/integration/candidate-api-v1.md)  
-**From:** Monica Peters — parallel React client to the Streamlit dashboard in `frontend/`
+**From:** Monica Peters — human-gate dashboard UI for the PRAXIS knowledge loop
 
 This is the **React review dashboard** described in [PRAXIS_Project_Plan.html](../docs/PRAXIS_Project_Plan.html): human approval workflow (`proposed → suggested → active`), provenance on every candidate, confidence breakdown, contradiction resolution, and Dominic's compounding-curve embed.
 
-It targets the **same REST contract** as `frontend/services/api_client.py` so Matthew can validate his FastAPI (or other) server without pairing sessions.
+It targets the **same REST contract** as `frontend/services/api_client.py` (Python reference client) so Matthew can validate his FastAPI server without pairing sessions.
 
 ---
 
@@ -17,7 +17,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173 — loads 18 mock candidates from `public/mock-candidates.json` (exported from `frontend/mock_data.py`).
+Open http://localhost:5173 — loads mock candidates from `public/mock-candidates.json` (exported from `frontend/mock_data.py`).
 
 **Sync mock JSON after editing Python fixtures:**
 
@@ -26,7 +26,7 @@ Open http://localhost:5173 — loads 18 mock candidates from `public/mock-candid
 python scripts/export-mock-candidates.py
 ```
 
-Exports both `public/mock-candidates.json` and `public/mock-graph.json` from [`frontend/mock_data.py`](../../frontend/mock_data.py).
+Exports both `public/mock-candidates.json` and `public/mock-graph.json` from [`frontend/mock_data.py`](../frontend/mock_data.py).
 
 **Demo rehearsal (Act 2):**
 
@@ -61,7 +61,7 @@ npm run dev
 | Reject | `POST /candidates/{id}/reject` |
 | Resolve | `POST /contradictions/{primary}__{rival}/resolve` |
 
-Client retries promote with `{}` if the server returns 400/422 on explicit `targetState` (same as Streamlit client).
+Client retries promote with `{}` if the server returns 400/422 on explicit `targetState` (same as the Python reference client).
 
 ---
 
@@ -98,7 +98,7 @@ Response shape mirrors `mock-graph.json`:
 }
 ```
 
-Edge `kind` values: `contradiction`, `support`, `similarity`. Persistence target for edges: [`knowledge/serve/schema.sql`](../../knowledge/serve/schema.sql) `fact_edges` table.
+Edge `kind` values: `contradiction`, `support`, `similarity`. Persistence target for edges: [`knowledge/serve/schema.sql`](../knowledge/serve/schema.sql) `fact_edges` table.
 
 **Live API fallback:** If `GET /graph` is missing (404) or fails, the client derives a minimal graph from `GET /candidates` (nodes + contradiction edges only). Support/similarity edges appear when the server or mock fixture supplies them.
 
@@ -144,7 +144,7 @@ The **Send to API for distillation** button is enabled when `VITE_PRAXIS_API_BAS
 
 ```text
 frontend-react/
-├── public/mock-candidates.json   # Same fixtures as Streamlit mock_data.py
+├── public/mock-candidates.json   # Exported from frontend/mock_data.py
 ├── src/
 │   ├── api/                      # contract v1 client + mock provider
 │   ├── components/               # list, detail, contradictions, eval embed
@@ -166,15 +166,15 @@ npm run preview
 
 Static output in `dist/` — deploy beside Matthew's API or serve from any static host.
 
-**Render deploy (portfolio mock demo):** [docs/monica/RENDER_DEPLOY.md](../docs/monica/RENDER_DEPLOY.md#react-static-site-praxis-react-human-gate) — blueprint at [`render.yaml`](render.yaml).
+**Render deploy (portfolio mock demo):** [docs/monica/RENDER_DEPLOY.md](../docs/monica/RENDER_DEPLOY.md) — blueprint at [`render.yaml`](render.yaml).
 
 ---
 
 ## Related docs
 
 - [candidate-api-v1.md](../docs/integration/candidate-api-v1.md) — Matthew ↔ dashboard contract
-- [wire-up.md](../docs/integration/wire-up.md) — self-serve validation (Streamlit + React)
-- [INTEGRATION_SMOKE.md](../docs/monica/INTEGRATION_SMOKE.md) — React-first smoke checklist
+- [wire-up.md](../docs/integration/wire-up.md) — self-serve validation
+- [INTEGRATION_SMOKE.md](../docs/monica/INTEGRATION_SMOKE.md) — smoke checklist
 - [Matthew-Daw-ML-Pipeline-PlanDRAFT.md](../docs/Matthew-Daw-ML-Pipeline-PlanDRAFT.md) — pipeline pillar plan
 - [docs/matt/future-work/](../docs/matt/future-work/) — post-MVP knowledge-graph eval design (measurement spine)
 

@@ -38,7 +38,7 @@
     },
     {
       "id": "cand_5",
-      "label": "Streamlit Session State",
+      "label": "React Client State Persistence",
       "state": "suggested",
       "confidence": 0.88,
       "provenance": "logs/session_20260617.jsonl:33",

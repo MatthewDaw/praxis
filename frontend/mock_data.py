@@ -6,8 +6,6 @@ Rows with ``evalCaseId`` align with ``knowledge/evals/cases/`` (see MATTHEW_HAND
 Auto-generated ``eval_*`` rows cover every other registered case via ``eval_mock_bridge``.
 """
 
-import pandas as pd
-
 
 def get_demo_candidate_dicts() -> list[dict]:
     """Return hand-crafted demo narrative candidates (Acts 1–2 rehearsal)."""
@@ -148,8 +146,8 @@ def get_demo_candidate_dicts() -> list[dict]:
         },
         {
             "id": "cand_5",
-            "title": "Streamlit Session State",
-            "content": "Use `st.session_state` to persist variables across Streamlit app reruns. This is essential for maintaining user input or application state between interactions.",
+            "title": "React Client State Persistence",
+            "content": "Use component state or a small context store to persist selection and filter values across re-renders. Lift shared gate state to the page shell so list and detail panes stay in sync without duplicating API calls.",
             "state": "suggested",
             "confidence": 0.88,
             "provenance": "logs/session_20260617.jsonl:33",
@@ -160,9 +158,9 @@ def get_demo_candidate_dicts() -> list[dict]:
                 "frequency": 0.86,
                 "recency": 0.90,
                 "breadth": 0.85,
-                "frequencyRationale": "Session-state pattern in 7 Streamlit dashboard iterations",
+                "frequencyRationale": "Client-state pattern in 7 React dashboard iterations",
                 "recencyRationale": "Observed 2026-06-17 during human-gate filter refactor",
-                "breadthRationale": "List, detail, and contradiction panels all rely on session state",
+                "breadthRationale": "List, detail, and contradiction panels all rely on shared page state",
             },
             "auditTrail": [
                 {
@@ -828,8 +826,3 @@ def get_mock_graph_dict() -> dict:
         )
 
     return {"nodes": nodes, "edges": edges, "scopeGroups": scope_groups}
-
-
-def get_mock_candidates() -> pd.DataFrame:
-    """Return mock candidates as a DataFrame (legacy helper for notebooks)."""
-    return pd.DataFrame(get_mock_candidate_dicts())
