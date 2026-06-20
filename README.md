@@ -388,6 +388,30 @@ $env:AWS_REGION = "us-east-1"
 
 Full wrapper docs: [session-capture/README.md](session-capture/README.md)
 
+### 5. Enable LLM tracing (optional)
+
+Trace every LLM, embedding, and Claude Code agent/judge call to a self-hosted
+[Arize Phoenix](https://phoenix.arize.com/) instance. **Off by default** — when
+`PHOENIX_COLLECTOR_ENDPOINT` is unset, tracing is a no-op, so tests and offline
+runs never touch the network.
+
+```powershell
+# 1. Install the tracing dependencies (OpenTelemetry SDK + OTLP exporter)
+uv sync --extra observability
+
+# 2. Set the Phoenix vars in .env (see .env.example)
+#    PHOENIX_COLLECTOR_ENDPOINT=https://your-phoenix-host
+#    PHOENIX_API_KEY=...          # Phoenix UI -> Settings -> API Keys
+#    PHOENIX_TLS_VERIFY=false     # only for a self-signed cert (IP-based deploy)
+
+# 3. Run any eval — spans stream to Phoenix
+uv run python -m knowledge.evals.run --openrouter pathlib_preference
+```
+
+Spans land under the `praxis` project (override with `PHOENIX_PROJECT_NAME`),
+each carrying model, token counts, and cost. The CDK stack that stands up
+Phoenix itself lives in [infra/lib/phoenix-stack.ts](infra/lib/phoenix-stack.ts).
+
 ---
 
 ## Configuration
@@ -403,6 +427,10 @@ Full wrapper docs: [session-capture/README.md](session-capture/README.md)
 | `VITE_PRAXIS_EVAL_METRICS_URL` | No | React dashboard | Eval metrics JSON URL for compounding-curve embed |
 | `VITE_PRAXIS_CONTRACT_VERSION` | No | React dashboard | API contract version header (default `1`) |
 | `PRAXIS_EVAL_REAL` | No | Eval harness | Set to `0` for offline FakeRunner; default runs real Claude Code |
+| `PHOENIX_COLLECTOR_ENDPOINT` | No | Observability | Phoenix collector base URL; unset → tracing disabled (needs `observability` extra) |
+| `PHOENIX_API_KEY` | No | Observability | Phoenix API key (UI → Settings → API Keys) when Phoenix auth is on |
+| `PHOENIX_TLS_VERIFY` | No | Observability | Set `false` for a self-signed Phoenix cert; default verifies TLS |
+| `PHOENIX_PROJECT_NAME` | No | Observability | Phoenix project spans land under (default `praxis`) |
 | `PRAXIS_DB_URL` | No | Candidate API | Postgres DSN; when set, API uses `PostgresCandidateStore` instead of JSON file |
 | `PRAXIS_DB_SECRET` | No | Candidate API | AWS Secrets Manager secret name (default `praxis/knowledge-graph/db`) |
 | `PRAXIS_ORG_ID` | No | Candidate API | Multi-tenant org scope (default `default`) |
