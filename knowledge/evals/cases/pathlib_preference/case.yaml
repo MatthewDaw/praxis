@@ -7,10 +7,13 @@ id: pathlib_preference
 # mentions "os.path" (false negative), so this needs a runner that writes the
 # file and grades the code, not the chat reply.
 needs: [sandbox]
+# Path handling is left unspecified on purpose: the seeded pathlib lesson should
+# steer the choice. (Mandating os.path here would pit the seed prompt against the
+# knowledge and test "defy the user" rather than "let knowledge steer.")
 seed_prompt: |
   Create config_utils.py with a function `read_config(path)` that checks whether
-  a config file exists and returns its path as a string. Use os.path.join and
-  os.path.exists. Do not create any other files.
+  a config file exists and returns its path as a string. Do not create any other
+  files.
 target_commit: "0000000000000000000000000000000000000000"
 start_commit: null
 repo: null

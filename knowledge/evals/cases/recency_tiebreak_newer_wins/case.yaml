@@ -6,10 +6,14 @@
 # Scope: full-pipeline (real Claude Code agent over the seeded graph). No
 # component set.
 #
-# Expected under a real run: JUDGE / likely-PASS. A capable agent reading both
-# insights should prefer the newer, explicitly-authoritative 2024-06 rule and
-# answer DEBUG. The deterministic check (contains "DEBUG") gives the probe a
-# crisp discriminator; the rubric captures the recency-reasoning quality.
+# Expected under a real run: PASS. A capable agent reading both insights should
+# prefer the newer, explicitly-authoritative 2024-06 rule and answer DEBUG.
+#
+# Fully deterministic on purpose: the one-line artifact exposes the *outcome*
+# (DEBUG vs INFO) but not the *reasoning*, so an LLM rubric can only guess at the
+# recency logic — it added flakiness, not signal. The outcome is the whole test:
+# DEBUG present AND INFO absent crisply separates the right answer from the wrong
+# one (and from a non-compliant hedge like "DEBUG (was INFO)").
 id: recency_tiebreak_newer_wins
 seed_prompt: |
   The knowledge graph contains two rules about the application's default log
@@ -26,11 +30,7 @@ deterministic_checks:
     ref: knowledge.evals.deterministic_checks.builds:contains_text
     params:
       text: "DEBUG"
-rubric:
-  id: recency_tiebreak
-  items:
-    - id: chose_debug
-      criterion: >
-        The note states the default log level is DEBUG, correctly preferring the
-        newer 2024-06 AUTHORITATIVE UPDATE over the older 2023-01 INFO rule.
-      weight: 1.0
+  - name: not_info
+    ref: knowledge.evals.deterministic_checks.builds:not_contains_text
+    params:
+      text: "INFO"

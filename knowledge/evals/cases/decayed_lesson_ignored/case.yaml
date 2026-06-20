@@ -6,10 +6,17 @@
 # Injected run: active pathlib lesson only — decayed rival documented in README.md, not seeded.
 # Future: when FilteredReader lands, reader must exclude DECAYED_RIVAL_MARKER even if both facts exist.
 id: decayed_lesson_ignored
+# Grades config_utils.py code (avoids_os_path / uses_pathlib), so a single-shot
+# backend that returns chat prose contaminates both checks — needs a sandbox
+# runner that writes and grades the file.
+needs: [sandbox]
+# Path handling is left unspecified on purpose: the active pathlib lesson should
+# steer the choice. (Mandating os.path would order the agent to do the exact
+# decayed behavior this case is meant to penalize.)
 seed_prompt: |
   Create config_utils.py with a function `read_config(path)` that checks whether
-  a config file exists and returns its path as a string. Use os.path.join and
-  os.path.exists. Do not create any other files.
+  a config file exists and returns its path as a string. Do not create any other
+  files.
 target_commit: "0000000000000000000000000000000000000000"
 start_commit: null
 repo: null
