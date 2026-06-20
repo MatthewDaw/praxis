@@ -1,1 +1,1 @@
-export type ViewTab = "table" | "cards" | "contradictions" | "graph";
+export type ViewTab = "table" | "cards" | "contradictions" | "graph" | "setup";

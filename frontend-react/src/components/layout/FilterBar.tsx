@@ -25,7 +25,7 @@ export function FilterBar({
 }: FilterBarProps) {
   return (
     <section className="filter-bar" aria-label="Candidate filters">
-      <div className="filter-bar__fields">
+      <div className="filter-bar__fields" hidden={viewTab === "setup"}>
         <label className="filter-field">
           Search
           <span className="filter-field__hint">Title or content</span>
@@ -53,14 +53,16 @@ export function FilterBar({
         </label>
       </div>
       <div className="filter-bar__controls">
-        {onAddEval ? (
+        {onAddEval && viewTab !== "setup" ? (
           <button type="button" className="btn secondary" onClick={onAddEval}>
             Add eval
           </button>
         ) : null}
-        <span className="count-chip" aria-live="polite">
-          {candidateCount} candidates
-        </span>
+        {viewTab !== "setup" ? (
+          <span className="count-chip" aria-live="polite">
+            {candidateCount} candidates
+          </span>
+        ) : null}
         <div className="view-toggle" role="tablist" aria-label="View mode">
           <button
             type="button"
@@ -100,6 +102,15 @@ export function FilterBar({
             onClick={() => onViewTabChange("graph")}
           >
             Graph
+          </button>
+          <button
+            type="button"
+            role="tab"
+            className={viewTab === "setup" ? "view-toggle__tab active" : "view-toggle__tab"}
+            aria-selected={viewTab === "setup"}
+            onClick={() => onViewTabChange("setup")}
+          >
+            MCP Setup
           </button>
         </div>
       </div>

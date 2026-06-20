@@ -10,6 +10,7 @@ import {
 } from "./components/ContradictionsReview";
 import { GraphExplorer } from "./components/graph/GraphExplorer";
 import { EvalMetricsEmbed } from "./components/EvalMetricsEmbed";
+import { McpSetupGuide } from "./components/McpSetupGuide";
 import { AppShell } from "./components/layout/AppShell";
 import { ContentSplit } from "./components/layout/ContentSplit";
 import { DashboardHeader } from "./components/layout/DashboardHeader";
@@ -331,7 +332,9 @@ export default function App() {
         onAddEval={handleAddEval}
       />
 
-      {graphViewLoading ? (
+      {viewTab === "setup" ? (
+        <McpSetupGuide />
+      ) : graphViewLoading ? (
         <LoadingSkeleton />
       ) : viewTab === "contradictions" ? (
         <ContradictionsReview
@@ -364,7 +367,7 @@ export default function App() {
         />
       )}
 
-      <EvalMetricsEmbed provider={provider} />
+      {viewTab !== "setup" ? <EvalMetricsEmbed provider={provider} /> : null}
 
       <CandidateEditorModal
         mode={editorState?.mode ?? "add"}

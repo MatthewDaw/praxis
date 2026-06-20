@@ -2246,3 +2246,130 @@ code,
   }
 }
 
+/* ==========================================================================
+   MCP setup guide tab
+   ========================================================================== */
+
+.mcp-guide {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+  padding: var(--space-5) var(--space-6);
+  max-width: 920px;
+}
+
+.mcp-guide__intro h2 {
+  margin: 0 0 var(--space-2);
+  color: var(--h1);
+}
+
+.mcp-guide__intro p {
+  margin: 0;
+  max-width: 70ch;
+}
+
+.mcp-guide__step {
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-4);
+}
+
+.mcp-guide__step h3 {
+  margin: 0 0 var(--space-3);
+  color: var(--h2);
+}
+
+.mcp-guide__step p {
+  margin: 0 0 var(--space-3);
+  max-width: 70ch;
+}
+
+.mcp-guide__step ul {
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-width: 70ch;
+}
+
+.mcp-guide__quote {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-left: 3px solid var(--accent);
+  background: var(--state-suggested-bg);
+  border-radius: var(--radius-sm);
+  color: var(--h2);
+}
+
+.mcp-command {
+  margin-bottom: var(--space-3);
+}
+
+.mcp-command__label {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: var(--space-1);
+}
+
+.mcp-command__row {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.mcp-command__code {
+  flex: 1;
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  white-space: pre;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.mcp-command__copy {
+  flex: 0 0 auto;
+  align-self: flex-start;
+}
+
+.mcp-tools-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.mcp-tools-table th,
+.mcp-tools-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.mcp-tools-table th {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.mcp-tools-table td:first-child {
+  white-space: normal;
+  width: 42%;
+}
+
+.mcp-tools-table code {
+  word-break: break-word;
+}
+
