@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib/core';
-import { SessionsTableStack } from '../lib/sessions-table-stack';
+import { SessionSlicesStack } from '../lib/session-slices-stack';
 import { AuthUserPoolStack } from '../lib/auth-user-pool-stack';
 import { KnowledgeGraphDbStack } from '../lib/knowledge-graph-db-stack';
 import { PhoenixStack } from '../lib/phoenix-stack';
@@ -17,9 +17,11 @@ const env: cdk.Environment = {
   region: process.env.CDK_DEFAULT_REGION ?? 'us-east-1',
 };
 
-new SessionsTableStack(app, 'PraxisSessionsTableStack', {
+new SessionSlicesStack(app, 'PraxisSessionSlicesStack', {
   env,
-  tableName: app.node.tryGetContext('tableName') ?? 'praxis-sessions',
+  bucketName: app.node.tryGetContext('sliceBucketName') ?? 'praxis-session-slices',
+  insightsTableName: app.node.tryGetContext('insightsTableName') ?? 'praxis-session-insights',
+  sliceRetentionDays: app.node.tryGetContext('sliceRetentionDays'),
 });
 
 new AuthUserPoolStack(app, 'PraxisAuthUserPoolStack', {
