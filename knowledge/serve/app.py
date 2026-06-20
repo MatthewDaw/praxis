@@ -158,6 +158,26 @@ def create_app(store: Any | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc))
         return {"orgId": org_id, "role": "member"}
 
+    @app.post("/orgs/password")
+    def change_org_password(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+    ) -> dict[str, Any]:
+        if orgs_store is None:
+            raise HTTPException(status_code=503, detail="orgs require a database")
+        org_id = body.get("orgId")
+        current, new = body.get("currentPassword"), body.get("newPassword")
+        if not org_id or not current or not new:
+            raise HTTPException(
+                status_code=400,
+                detail="orgId, currentPassword and newPassword required",
+            )
+        try:
+            orgs_store.set_password(str(org_id), str(current), str(new), principal.sub)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"orgId": org_id, "status": "password_changed"}
+
     @app.get("/candidates")
     def list_candidates(
         state: str | None = None,

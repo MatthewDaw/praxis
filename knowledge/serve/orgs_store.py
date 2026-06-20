@@ -83,6 +83,31 @@ class OrgsStore:
             (org_id, user_id, "member"),
         )
 
+    def set_password(
+        self, org_id: str, current_password: str, new_password: str, user_id: str
+    ) -> None:
+        """Rotate ``org_id``'s join password after verifying the current one.
+
+        The caller must be a member and supply the correct current password.
+        Raises ``ValueError`` on unknown org, non-membership, or bad password.
+        """
+        row = self._conn.execute(
+            "SELECT password_hash, password_salt FROM orgs WHERE org_id = %s",
+            (org_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown org {org_id!r}")
+        if not self.is_member(org_id, user_id):
+            raise ValueError(f"not a member of org {org_id!r}")
+        password_hash, salt = row
+        if not hmac.compare_digest(password_hash, _hash_password(current_password, salt)):
+            raise ValueError("invalid current password")
+        new_salt = secrets.token_hex(16)
+        self._conn.execute(
+            "UPDATE orgs SET password_hash = %s, password_salt = %s WHERE org_id = %s",
+            (_hash_password(new_password, new_salt), new_salt, org_id),
+        )
+
     # --- reads -------------------------------------------------------------
     def list_orgs(self, user_id: str) -> list[dict]:
         """Return the orgs ``user_id`` belongs to, with name and role."""

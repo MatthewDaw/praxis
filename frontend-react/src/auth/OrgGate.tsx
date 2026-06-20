@@ -33,6 +33,8 @@ export interface OrgContextValue {
   getToken: () => Promise<string | undefined>;
   /** Sign the user out of Amplify. */
   signOut: () => Promise<void>;
+  /** Clear the active org and return to the workspace picker (stays logged in). */
+  switchOrg: () => void;
 }
 
 const OrgContext = createContext<OrgContextValue | null>(null);
@@ -130,6 +132,23 @@ export async function joinOrg(
   }
 }
 
+export async function changeOrgPassword(
+  baseUrl: string,
+  getToken: () => Promise<string | undefined>,
+  body: { orgId: string; currentPassword: string; newPassword: string },
+): Promise<void> {
+  const token = await getToken();
+  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/orgs/password`, {
+    method: "POST",
+    headers: contractHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `POST /orgs/password failed (${response.status})`);
+  }
+}
+
 interface OrgGateProps {
   children: ReactNode;
 }
@@ -147,6 +166,8 @@ export function OrgGate({ children }: OrgGateProps) {
 
   const [createForm, setCreateForm] = useState({ orgId: "", name: "", password: "" });
   const [joinForm, setJoinForm] = useState({ orgId: "", password: "" });
+  const [pwForm, setPwForm] = useState({ orgId: "", currentPassword: "", newPassword: "" });
+  const [notice, setNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const loadMe = useCallback(async () => {
@@ -175,6 +196,11 @@ export function OrgGate({ children }: OrgGateProps) {
   const handleSignOut = useCallback(async () => {
     localStorage.removeItem(ACTIVE_ORG_STORAGE_KEY);
     await amplifySignOut();
+  }, []);
+
+  const switchOrg = useCallback(() => {
+    localStorage.removeItem(ACTIVE_ORG_STORAGE_KEY);
+    setActiveOrg(null);
   }, []);
 
   async function handleCreate(event: React.FormEvent) {
@@ -207,6 +233,22 @@ export function OrgGate({ children }: OrgGateProps) {
     }
   }
 
+  async function handleChangePassword(event: React.FormEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await changeOrgPassword(baseUrl, getToken, pwForm);
+      setNotice(`Password changed for ${pwForm.orgId}.`);
+      setPwForm({ orgId: "", currentPassword: "", newPassword: "" });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   const contextValue = useMemo<OrgContextValue | null>(() => {
     if (!activeOrg) {
       return null;
@@ -216,8 +258,8 @@ export function OrgGate({ children }: OrgGateProps) {
     if (memberships.length > 0 && !memberships.some((m) => m.orgId === activeOrg)) {
       return null;
     }
-    return { orgId: activeOrg, getToken, signOut: handleSignOut };
-  }, [activeOrg, memberships, getToken, handleSignOut]);
+    return { orgId: activeOrg, getToken, signOut: handleSignOut, switchOrg };
+  }, [activeOrg, memberships, getToken, handleSignOut, switchOrg]);
 
   if (loading) {
     return <div className="org-gate org-gate--loading">Loading your workspace…</div>;
@@ -231,12 +273,13 @@ export function OrgGate({ children }: OrgGateProps) {
     <div className="org-gate">
       <header className="org-gate__header">
         <h1>Choose a workspace</h1>
-        <button type="button" onClick={() => void handleSignOut()}>
+        <button type="button" className="link-button" onClick={() => void handleSignOut()}>
           Sign out
         </button>
       </header>
 
       {error ? <div className="error-banner">{error}</div> : null}
+      {notice ? <div className="success-banner">{notice}</div> : null}
 
       {memberships.length > 0 ? (
         <section className="org-gate__pick">
@@ -252,7 +295,9 @@ export function OrgGate({ children }: OrgGateProps) {
           </ul>
         </section>
       ) : (
-        <p>You are not a member of any organization yet. Create one or join with a password.</p>
+        <p className="org-gate__muted">
+          You are not a member of any organization yet. Create one or join with a password.
+        </p>
       )}
 
       <section className="org-gate__create">
@@ -300,6 +345,35 @@ export function OrgGate({ children }: OrgGateProps) {
           />
           <button type="submit" disabled={submitting}>
             Join org
+          </button>
+        </form>
+      </section>
+
+      <section className="org-gate__password">
+        <h2>Change an organization's password</h2>
+        <form onSubmit={handleChangePassword}>
+          <input
+            placeholder="Org id"
+            value={pwForm.orgId}
+            onChange={(e) => setPwForm({ ...pwForm, orgId: e.target.value })}
+            required
+          />
+          <input
+            type="password"
+            placeholder="Current password"
+            value={pwForm.currentPassword}
+            onChange={(e) => setPwForm({ ...pwForm, currentPassword: e.target.value })}
+            required
+          />
+          <input
+            type="password"
+            placeholder="New password"
+            value={pwForm.newPassword}
+            onChange={(e) => setPwForm({ ...pwForm, newPassword: e.target.value })}
+            required
+          />
+          <button type="submit" disabled={submitting}>
+            Change password
           </button>
         </form>
       </section>

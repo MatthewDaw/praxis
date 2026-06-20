@@ -33,7 +33,7 @@ export default function App() {
     null,
   );
   const [localRawFiles, setLocalRawFiles] = useState<LocalLogFileInput[]>([]);
-  const { getToken, orgId, signOut } = useOrg();
+  const { getToken, orgId, signOut, switchOrg } = useOrg();
   const auth = useMemo(() => ({ getToken, orgId }), [getToken, orgId]);
   const { config, mode, label, detail, ingestApiBaseUrl, applyConfig } =
     useDataSource(localSession, auth);
@@ -378,6 +378,9 @@ export default function App() {
       <footer className="page-footer">
         React Knowledge Graph Dashboard · Data source: {footerModeLabel} · Org:{" "}
         <code>{orgId}</code> · candidate-api-v1 contract ·{" "}
+        <button type="button" className="link-button" onClick={switchOrg}>
+          Switch workspace
+        </button>{" "}
         <button type="button" className="link-button" onClick={() => void signOut()}>
           Sign out
         </button>

@@ -64,3 +64,28 @@ def test_membership_isolation(unique_org):
     s = _store()
     s.create_org(unique_org, "Acme", "s3cret", "user-a")
     assert not s.is_member(unique_org, "user-z")
+
+
+def test_set_password_rotates_and_old_password_fails(unique_org):
+    s = _store()
+    s.create_org(unique_org, "Acme", "s3cret", "user-a")
+    s.set_password(unique_org, "s3cret", "n3wpass", "user-a")
+    # New password works, old one no longer does.
+    s.join_org(unique_org, "n3wpass", "user-b")
+    assert s.is_member(unique_org, "user-b")
+    with pytest.raises(ValueError):
+        s.join_org(unique_org, "s3cret", "user-c")
+
+
+def test_set_password_wrong_current_rejected(unique_org):
+    s = _store()
+    s.create_org(unique_org, "Acme", "s3cret", "user-a")
+    with pytest.raises(ValueError):
+        s.set_password(unique_org, "wrong", "n3wpass", "user-a")
+
+
+def test_set_password_non_member_rejected(unique_org):
+    s = _store()
+    s.create_org(unique_org, "Acme", "s3cret", "user-a")
+    with pytest.raises(ValueError):
+        s.set_password(unique_org, "s3cret", "n3wpass", "user-z")
