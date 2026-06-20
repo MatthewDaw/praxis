@@ -46,7 +46,7 @@ def test_rubric_only_case_is_valid():
 
 
 def test_example_case_on_disk_loads():
-    case = load_case(CASES_DIR / "matt" / "example_add_function")
+    case = load_case(CASES_DIR / "example_add_function")
     assert case.id == "example_add_function"
     assert case.seeded_insight.direct_to_graph  # non-empty
     assert len(case.deterministic_checks) == 2

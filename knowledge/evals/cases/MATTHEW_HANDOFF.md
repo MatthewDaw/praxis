@@ -10,8 +10,8 @@ uv run pytest knowledge/evals/tests/test_cases.py knowledge/evals/tests/test_eva
 Cold vs injected pairing (Dominic): run the same case with empty vs full
 `seeded_insight` via harness arms.
 
-**Mock dashboard:** Every registered case under `cases/matt/`, `cases/monica/`,
-and `cases/quirky_*` appears in mock data. P0 demo rows use `cand_*` ids; all
+**Mock dashboard:** Every registered case under `cases/<case-id>/` (including
+`quirky_*`) appears in mock data. P0 demo rows use `cand_*` ids; all
 other cases auto-generate as `eval_<case_id>` via `frontend/eval_mock_bridge.py`
 (exported to `frontend-react/public/mock-candidates.json` on Render build).
 

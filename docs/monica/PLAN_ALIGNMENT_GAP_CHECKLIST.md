@@ -74,16 +74,16 @@
 
 ## Monica — eval cases for Matthew (architecture-aligned)
 
-Monica authors **new eval cases** under `knowledge/evals/cases/monica/<case_id>/case.yaml` for Matthew to use while building distillation, scoring, and API output. Cases must follow **Matthew’s and Dominic’s first eval structures** and align with boxes in [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) Figure 1.
+Monica authors **new eval cases** under `knowledge/evals/cases/<case_id>/case.yaml` for Matthew to use while building distillation, scoring, and API output. Cases must follow **Matthew’s and Dominic’s first eval structures** and align with boxes in [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) Figure 1.
 
 ### Matthew’s existing case patterns (copy these)
 
 | Case | Path | Pattern | Architecture box |
 |------|------|---------|------------------|
-| `example_add_function` | `knowledge/evals/cases/matt/example_add_function/case.yaml` | `seeded_insight.via_ingestor` + `direct_to_graph`; `deterministic_checks` + `rubric`; coding task | **Knowledge Graph** → **get context** → agent |
-| `iambic_poem` | `knowledge/evals/cases/matt/iambic_poem/case.yaml` | `direct_to_graph` only; domain-specific deterministic check + rubric | **Injected knowledge** steers Claude Code output |
+| `example_add_function` | `knowledge/evals/cases/example_add_function/case.yaml` | `seeded_insight.via_ingestor` + `direct_to_graph`; `deterministic_checks` + `rubric`; coding task | **Knowledge Graph** → **get context** → agent |
+| `iambic_poem` | `knowledge/evals/cases/iambic_poem/case.yaml` | `direct_to_graph` only; domain-specific deterministic check + rubric | **Injected knowledge** steers Claude Code output |
 
-**Monica cases shipped:** `pathlib_preference`, `docstring_policy`, `poison_negative_control` under `knowledge/evals/cases/monica/` — covered in [test_cases.py](../../knowledge/evals/tests/test_cases.py).
+**Monica cases shipped:** `pathlib_preference`, `docstring_policy`, `poison_negative_control` under `knowledge/evals/cases/` — covered in [test_cases.py](../../knowledge/evals/tests/test_cases.py).
 
 **Registry total:** **53+** YAML cases on disk after main merge (Matt/Dominic sweep + Monica namespace).
 
@@ -108,7 +108,7 @@ Each new Monica case must cite which diagram node it exercises (Figure 1 in proj
 
 ### Monica eval authoring checklist (per new case)
 
-- [ ] Create `knowledge/evals/cases/monica/<case_id>/case.yaml` using fields in `eval_def.py` only  
+- [ ] Create `knowledge/evals/cases/<case_id>/case.yaml` using fields in `eval_def.py` only  
 - [ ] Include header comment: diagram node(s), demo act (1/2/3), linked mock candidate id if any  
 - [ ] At least one `deterministic_checks` entry **or** non-empty `rubric`  
 - [ ] `seeded_insight.via_ingestor` when testing Matthew’s **Ingestor** path; `direct_to_graph` when testing **injection** only  

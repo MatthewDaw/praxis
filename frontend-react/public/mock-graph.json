@@ -174,8 +174,8 @@
       "label": "Buried Signal No Em Dash",
       "state": "proposed",
       "confidence": 0.78,
-      "provenance": "logs/evals/matt/buried_signal_no_em_dash.jsonl:1",
-      "scope": "eval/matt",
+      "provenance": "logs/evals/eval/buried_signal_no_em_dash.jsonl:1",
+      "scope": "eval/eval",
       "category": "eval_fixture"
     },
     {
@@ -183,8 +183,8 @@
       "label": "Compatible Rules Both Apply",
       "state": "proposed",
       "confidence": 0.78,
-      "provenance": "logs/evals/matt/compatible_rules_both_apply.jsonl:1",
-      "scope": "eval/matt",
+      "provenance": "logs/evals/eval/compatible_rules_both_apply.jsonl:1",
+      "scope": "eval/eval",
       "category": "eval_fixture"
     },
     {
@@ -192,8 +192,8 @@
       "label": "Confidence Below Threshold Ignored",
       "state": "proposed",
       "confidence": 0.78,
-      "provenance": "logs/evals/matt/confidence_below_threshold_ignored.jsonl:1",
-      "scope": "eval/matt",
+      "provenance": "logs/evals/eval/confidence_below_threshold_ignored.jsonl:1",
+      "scope": "eval/eval",
       "category": "eval_fixture"
     },
     {
@@ -201,8 +201,8 @@
       "label": "Context Budget Overload",
       "state": "proposed",
       "confidence": 0.78,
-      "provenance": "logs/evals/matt/context_budget_overload.jsonl:1",
-      "scope": "eval/matt",
+      "provenance": "logs/evals/eval/context_budget_overload.jsonl:1",
+      "scope": "eval/eval",
       "category": "eval_fixture"
     },
     {
@@ -210,458 +210,8 @@
       "label": "Contradiction Should Flag",
       "state": "proposed",
       "confidence": 0.78,
-      "provenance": "logs/evals/matt/contradiction_should_flag.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_empty_graph_no_harm",
-      "label": "Empty Graph No Harm",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/empty_graph_no_harm.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_exactly_n_negative",
-      "label": "Exactly N Negative",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/exactly_n_negative.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_example_add_function",
-      "label": "Example Add Function",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/example_add_function.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_fixture_config_driven_behavior",
-      "label": "Fixture Config Driven Behavior",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/fixture_config_driven_behavior.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_fixture_config_patch",
-      "label": "Fixture Config Patch",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/fixture_config_patch.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_fixture_dont_touch_unrelated",
-      "label": "Fixture Dont Touch Unrelated",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/fixture_dont_touch_unrelated.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_fixture_extend_not_rewrite",
-      "label": "Fixture Extend Not Rewrite",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/fixture_extend_not_rewrite.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_fixture_failing_test_to_green",
-      "label": "Fixture Failing Test To Green",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/fixture_failing_test_to_green.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_fixture_honor_pyproject_line_length",
-      "label": "Fixture Honor Pyproject Line Length",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/fixture_honor_pyproject_line_length.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_fixture_match_api_contract",
-      "label": "Fixture Match Api Contract",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/fixture_match_api_contract.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_fixture_respect_existing_indent",
-      "label": "Fixture Respect Existing Indent",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/fixture_respect_existing_indent.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_fixture_reuse_existing_helper",
-      "label": "Fixture Reuse Existing Helper",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/fixture_reuse_existing_helper.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_forbidden_api_usage",
-      "label": "Forbidden Api Usage",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/forbidden_api_usage.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_iambic_poem",
-      "label": "Iambic Poem",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/iambic_poem.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_ingestion_dedup",
-      "label": "Ingestion Dedup",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/ingestion_dedup.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_ingestion_distill",
-      "label": "Ingestion Distill",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/ingestion_distill.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_ingestion_drop_secret",
-      "label": "Ingestion Drop Secret",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/ingestion_drop_secret.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_ingestion_merge_near_dupes",
-      "label": "Ingestion Merge Near Dupes",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/ingestion_merge_near_dupes.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_ingestion_redact_pii",
-      "label": "Ingestion Redact Pii",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/ingestion_redact_pii.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_ingestion_retain_provenance",
-      "label": "Ingestion Retain Provenance",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/ingestion_retain_provenance.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_ingestion_strip_noise_keep_signal",
-      "label": "Ingestion Strip Noise Keep Signal",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/ingestion_strip_noise_keep_signal.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_json_output_valid",
-      "label": "Json Output Valid",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/json_output_valid.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_kg_capacity",
-      "label": "Kg Capacity",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/kg_capacity.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_kg_empty_then_write",
-      "label": "Kg Empty Then Write",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/kg_empty_then_write.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_kg_large_blob_capacity",
-      "label": "Kg Large Blob Capacity",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/kg_large_blob_capacity.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_kg_preserves_order",
-      "label": "Kg Preserves Order",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/kg_preserves_order.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_kg_roundtrip",
-      "label": "Kg Roundtrip",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/kg_roundtrip.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_kg_unicode_roundtrip",
-      "label": "Kg Unicode Roundtrip",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/kg_unicode_roundtrip.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_lost_in_middle",
-      "label": "Lost In Middle",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/lost_in_middle.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_naming_convention_regex",
-      "label": "Naming Convention Regex",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/naming_convention_regex.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_near_miss_distractor",
-      "label": "Near Miss Distractor",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/near_miss_distractor.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_negative_control_irrelevant",
-      "label": "Negative Control Irrelevant",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/negative_control_irrelevant.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_no_destructive_actions",
-      "label": "No Destructive Actions",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/no_destructive_actions.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_ordered_doc_sections",
-      "label": "Ordered Doc Sections",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/ordered_doc_sections.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_over_generalization",
-      "label": "Over Generalization",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/over_generalization.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_overturn_explicit",
-      "label": "Overturn Explicit",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/overturn_explicit.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_poison_vague_recent",
-      "label": "Poison Vague Recent",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/poison_vague_recent.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_reader_concatenation_order",
-      "label": "Reader Concatenation Order",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/reader_concatenation_order.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_reader_context_passthrough",
-      "label": "Reader Context Passthrough",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/reader_context_passthrough.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_reader_empty_returns_empty",
-      "label": "Reader Empty Returns Empty",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/reader_empty_returns_empty.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_reader_retrieval",
-      "label": "Reader Retrieval",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/reader_retrieval.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_reader_returns_all",
-      "label": "Reader Returns All",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/reader_returns_all.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_recency_tiebreak_newer_wins",
-      "label": "Recency Tiebreak Newer Wins",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/recency_tiebreak_newer_wins.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_safety_instruction_hijack",
-      "label": "Safety Instruction Hijack",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/safety_instruction_hijack.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_safety_user_overrides_graph",
-      "label": "Safety User Overrides Graph",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/safety_user_overrides_graph.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_scattered_multifact",
-      "label": "Scattered Multifact",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/scattered_multifact.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_scoped_conflict",
-      "label": "Scoped Conflict",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/scoped_conflict.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_skills_merge_dedup",
-      "label": "Skills Merge Dedup",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/skills_merge_dedup.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_style_negative_phrasing",
-      "label": "Style Negative Phrasing",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/style_negative_phrasing.jsonl:1",
-      "scope": "eval/matt",
-      "category": "eval_fixture"
-    },
-    {
-      "id": "eval_style_stacked_rules",
-      "label": "Style Stacked Rules",
-      "state": "proposed",
-      "confidence": 0.78,
-      "provenance": "logs/evals/matt/style_stacked_rules.jsonl:1",
-      "scope": "eval/matt",
+      "provenance": "logs/evals/eval/contradiction_should_flag.jsonl:1",
+      "scope": "eval/eval",
       "category": "eval_fixture"
     },
     {
@@ -669,8 +219,8 @@
       "label": "Cross Session Rediscovery",
       "state": "proposed",
       "confidence": 0.78,
-      "provenance": "logs/evals/monica/cross_session_rediscovery.jsonl:1",
-      "scope": "eval/monica",
+      "provenance": "logs/evals/eval/cross_session_rediscovery.jsonl:1",
+      "scope": "eval/eval",
       "category": "eval_fixture"
     },
     {
@@ -678,8 +228,8 @@
       "label": "Decayed Lesson Ignored",
       "state": "proposed",
       "confidence": 0.78,
-      "provenance": "logs/evals/monica/decayed_lesson_ignored.jsonl:1",
-      "scope": "eval/monica",
+      "provenance": "logs/evals/eval/decayed_lesson_ignored.jsonl:1",
+      "scope": "eval/eval",
       "category": "eval_fixture"
     },
     {
@@ -687,8 +237,8 @@
       "label": "Decayed Lesson Ignored Reader",
       "state": "proposed",
       "confidence": 0.78,
-      "provenance": "logs/evals/monica/decayed_lesson_ignored_reader.jsonl:1",
-      "scope": "eval/monica",
+      "provenance": "logs/evals/eval/decayed_lesson_ignored_reader.jsonl:1",
+      "scope": "eval/eval",
       "category": "eval_fixture"
     },
     {
@@ -696,8 +246,8 @@
       "label": "Docstring Policy",
       "state": "proposed",
       "confidence": 0.78,
-      "provenance": "logs/evals/monica/docstring_policy.jsonl:1",
-      "scope": "eval/monica",
+      "provenance": "logs/evals/eval/docstring_policy.jsonl:1",
+      "scope": "eval/eval",
       "category": "eval_fixture"
     },
     {
@@ -705,8 +255,332 @@
       "label": "Dom Fixture Test",
       "state": "proposed",
       "confidence": 0.78,
-      "provenance": "logs/evals/monica/dom_fixture_test.jsonl:1",
-      "scope": "eval/monica",
+      "provenance": "logs/evals/eval/dom_fixture_test.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_empty_graph_no_harm",
+      "label": "Empty Graph No Harm",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/empty_graph_no_harm.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_exactly_n_negative",
+      "label": "Exactly N Negative",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/exactly_n_negative.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_example_add_function",
+      "label": "Example Add Function",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/example_add_function.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_fixture_config_driven_behavior",
+      "label": "Fixture Config Driven Behavior",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/fixture_config_driven_behavior.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_fixture_config_patch",
+      "label": "Fixture Config Patch",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/fixture_config_patch.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_fixture_dont_touch_unrelated",
+      "label": "Fixture Dont Touch Unrelated",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/fixture_dont_touch_unrelated.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_fixture_extend_not_rewrite",
+      "label": "Fixture Extend Not Rewrite",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/fixture_extend_not_rewrite.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_fixture_failing_test_to_green",
+      "label": "Fixture Failing Test To Green",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/fixture_failing_test_to_green.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_fixture_honor_pyproject_line_length",
+      "label": "Fixture Honor Pyproject Line Length",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/fixture_honor_pyproject_line_length.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_fixture_match_api_contract",
+      "label": "Fixture Match Api Contract",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/fixture_match_api_contract.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_fixture_respect_existing_indent",
+      "label": "Fixture Respect Existing Indent",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/fixture_respect_existing_indent.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_fixture_reuse_existing_helper",
+      "label": "Fixture Reuse Existing Helper",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/fixture_reuse_existing_helper.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_forbidden_api_usage",
+      "label": "Forbidden Api Usage",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/forbidden_api_usage.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_iambic_poem",
+      "label": "Iambic Poem",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/iambic_poem.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_ingestion_dedup",
+      "label": "Ingestion Dedup",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/ingestion_dedup.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_ingestion_distill",
+      "label": "Ingestion Distill",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/ingestion_distill.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_ingestion_drop_secret",
+      "label": "Ingestion Drop Secret",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/ingestion_drop_secret.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_ingestion_merge_near_dupes",
+      "label": "Ingestion Merge Near Dupes",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/ingestion_merge_near_dupes.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_ingestion_redact_pii",
+      "label": "Ingestion Redact Pii",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/ingestion_redact_pii.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_ingestion_retain_provenance",
+      "label": "Ingestion Retain Provenance",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/ingestion_retain_provenance.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_ingestion_strip_noise_keep_signal",
+      "label": "Ingestion Strip Noise Keep Signal",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/ingestion_strip_noise_keep_signal.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_json_output_valid",
+      "label": "Json Output Valid",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/json_output_valid.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_kg_capacity",
+      "label": "Kg Capacity",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/kg_capacity.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_kg_empty_then_write",
+      "label": "Kg Empty Then Write",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/kg_empty_then_write.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_kg_large_blob_capacity",
+      "label": "Kg Large Blob Capacity",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/kg_large_blob_capacity.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_kg_preserves_order",
+      "label": "Kg Preserves Order",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/kg_preserves_order.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_kg_roundtrip",
+      "label": "Kg Roundtrip",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/kg_roundtrip.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_kg_unicode_roundtrip",
+      "label": "Kg Unicode Roundtrip",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/kg_unicode_roundtrip.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_lost_in_middle",
+      "label": "Lost In Middle",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/lost_in_middle.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_naming_convention_regex",
+      "label": "Naming Convention Regex",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/naming_convention_regex.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_near_miss_distractor",
+      "label": "Near Miss Distractor",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/near_miss_distractor.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_negative_control_irrelevant",
+      "label": "Negative Control Irrelevant",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/negative_control_irrelevant.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_no_destructive_actions",
+      "label": "No Destructive Actions",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/no_destructive_actions.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_ordered_doc_sections",
+      "label": "Ordered Doc Sections",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/ordered_doc_sections.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_over_generalization",
+      "label": "Over Generalization",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/over_generalization.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_overturn_explicit",
+      "label": "Overturn Explicit",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/overturn_explicit.jsonl:1",
+      "scope": "eval/eval",
       "category": "eval_fixture"
     },
     {
@@ -714,8 +588,134 @@
       "label": "Poison Negative Control",
       "state": "proposed",
       "confidence": 0.78,
-      "provenance": "logs/evals/monica/poison_negative_control.jsonl:1",
-      "scope": "eval/monica",
+      "provenance": "logs/evals/eval/poison_negative_control.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_poison_vague_recent",
+      "label": "Poison Vague Recent",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/poison_vague_recent.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_reader_concatenation_order",
+      "label": "Reader Concatenation Order",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/reader_concatenation_order.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_reader_context_passthrough",
+      "label": "Reader Context Passthrough",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/reader_context_passthrough.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_reader_empty_returns_empty",
+      "label": "Reader Empty Returns Empty",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/reader_empty_returns_empty.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_reader_retrieval",
+      "label": "Reader Retrieval",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/reader_retrieval.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_reader_returns_all",
+      "label": "Reader Returns All",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/reader_returns_all.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_recency_tiebreak_newer_wins",
+      "label": "Recency Tiebreak Newer Wins",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/recency_tiebreak_newer_wins.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_safety_instruction_hijack",
+      "label": "Safety Instruction Hijack",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/safety_instruction_hijack.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_safety_user_overrides_graph",
+      "label": "Safety User Overrides Graph",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/safety_user_overrides_graph.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_scattered_multifact",
+      "label": "Scattered Multifact",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/scattered_multifact.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_scoped_conflict",
+      "label": "Scoped Conflict",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/scoped_conflict.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_skills_merge_dedup",
+      "label": "Skills Merge Dedup",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/skills_merge_dedup.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_style_negative_phrasing",
+      "label": "Style Negative Phrasing",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/style_negative_phrasing.jsonl:1",
+      "scope": "eval/eval",
+      "category": "eval_fixture"
+    },
+    {
+      "id": "eval_style_stacked_rules",
+      "label": "Style Stacked Rules",
+      "state": "proposed",
+      "confidence": 0.78,
+      "provenance": "logs/evals/eval/style_stacked_rules.jsonl:1",
+      "scope": "eval/eval",
       "category": "eval_fixture"
     }
   ],
@@ -821,8 +821,8 @@
       ]
     },
     {
-      "id": "eval_matt",
-      "label": "Eval — Matt",
+      "id": "eval_eval",
+      "label": "Eval — Eval",
       "parentId": null,
       "memberIds": [
         "eval_buried_signal_no_em_dash",
@@ -830,6 +830,11 @@
         "eval_confidence_below_threshold_ignored",
         "eval_context_budget_overload",
         "eval_contradiction_should_flag",
+        "eval_cross_session_rediscovery",
+        "eval_decayed_lesson_ignored",
+        "eval_decayed_lesson_ignored_reader",
+        "eval_docstring_policy",
+        "eval_dom_fixture_test",
         "eval_empty_graph_no_harm",
         "eval_exactly_n_negative",
         "eval_example_add_function",
@@ -866,6 +871,7 @@
         "eval_ordered_doc_sections",
         "eval_over_generalization",
         "eval_overturn_explicit",
+        "eval_poison_negative_control",
         "eval_poison_vague_recent",
         "eval_reader_concatenation_order",
         "eval_reader_context_passthrough",
@@ -890,13 +896,7 @@
         "cand_18",
         "cand_19",
         "cand_20",
-        "cand_21",
-        "eval_cross_session_rediscovery",
-        "eval_decayed_lesson_ignored",
-        "eval_decayed_lesson_ignored_reader",
-        "eval_docstring_policy",
-        "eval_dom_fixture_test",
-        "eval_poison_negative_control"
+        "cand_21"
       ]
     },
     {

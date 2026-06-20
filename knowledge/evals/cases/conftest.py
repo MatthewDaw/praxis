@@ -6,4 +6,4 @@ intentionally-failing ``test_*.py`` the agent must turn green). Those are
 inputs to the harness, not tests of this repo, so they must not be collected.
 """
 
-collect_ignore_glob = ["matt/*/fixtures/*"]
+collect_ignore_glob = ["*/fixtures/*"]

@@ -256,8 +256,7 @@ def load_case(case_dir: Path) -> EvalCase:
 def load_cases(cases_dir: Path = CASES_DIR) -> list[EvalCase]:
     """Load every registered case (any ``case.yaml`` under ``cases_dir``).
 
-    Searches recursively, so cases may be grouped in per-author subfolders
-    (e.g. ``cases/matt/<case-id>/case.yaml``).
+    Searches recursively, so cases may live at ``cases/<case-id>/case.yaml``.
     """
     if not cases_dir.exists():
         return []

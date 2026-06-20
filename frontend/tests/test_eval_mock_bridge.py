@@ -16,6 +16,6 @@ def test_generate_skips_hand_crafted_case_ids() -> None:
 
 
 def test_namespace_from_case_path() -> None:
-    assert namespace_from_case("knowledge/evals/cases/matt/foo", "foo") == "matt"
-    assert namespace_from_case("knowledge/evals/cases/monica/bar", "bar") == "monica"
+    assert namespace_from_case("knowledge/evals/cases/foo", "foo") == "eval"
+    assert namespace_from_case("knowledge/evals/cases/bar", "bar") == "eval"
     assert namespace_from_case(None, "quirky_exhaustive_switch") == "quirky"

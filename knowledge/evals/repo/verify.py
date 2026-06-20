@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     case_id = argv[0] if argv else "exactly_n_negative"
     from knowledge.evals.run import CASES_DIR, load_case
 
-    case = load_case(CASES_DIR / "matt" / case_id)
+    case = load_case(CASES_DIR / case_id)
     if case.code_task is None:
         print(f"case {case_id!r} has no code_task")
         return 2

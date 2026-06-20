@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -23,16 +22,8 @@ HAND_CRAFTED_EVAL_CASE_IDS = frozenset(
 _DEFAULT_TIMESTAMP = "2026-06-18T12:00:00Z"
 
 
-def namespace_from_case(source_dir: str | None, case_id: str) -> str:
-    """Map a case to matt / monica / quirky for dashboard grouping."""
-    if source_dir:
-        parts = {part.lower() for part in Path(source_dir).parts}
-        if "matt" in parts:
-            return "matt"
-        if "monica" in parts:
-            return "monica"
-        if "quirky" in parts:
-            return "quirky"
+def namespace_from_case(_source_dir: str | None, case_id: str) -> str:
+    """Map a case to quirky / eval for dashboard grouping."""
     if case_id.startswith("quirky_"):
         return "quirky"
     return "eval"
@@ -106,7 +97,7 @@ def generate_eval_candidate_dicts(
                 "frequency": round(confidence - 0.05, 2),
                 "recency": round(confidence + 0.03, 2),
                 "breadth": round(confidence - 0.02, 2),
-                "frequencyRationale": f"Registered eval case under cases/{ns}/",
+                "frequencyRationale": "Registered eval case under cases/",
                 "recencyRationale": "Auto-generated from eval case registry for mock dashboard",
                 "breadthRationale": f"Exercises eval harness case {case.id}",
             },

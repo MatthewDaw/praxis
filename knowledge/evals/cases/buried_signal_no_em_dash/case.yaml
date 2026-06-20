@@ -29,7 +29,7 @@ seeded_insight:
     - "Captured PTY sessions are routed to DynamoDB rather than the old Command-HQ service."
     - "The claude+ CLI exposes host, ls, and stop subcommands over the PTY daemon."
     - "The Agents tab was removed from the claude+ Chrome wrapper."
-    - "Eval cases live under knowledge/evals/cases/<author>/<case-id>/case.yaml."
+    - "Eval cases live under knowledge/evals/cases/<case-id>/case.yaml."
     - "The case loader (load_cases) discovers case.yaml files recursively."
     - "Deterministic checks are referenced as module.path:function strings."
     - "Full-pipeline eval cases omit the component field and run the real Claude Code agent."
