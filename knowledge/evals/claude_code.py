@@ -63,7 +63,10 @@ def _default_run_cli(args: list[str], cwd: Path, env: dict, timeout: int) -> str
         timeout=timeout,
     )
     if proc.returncode != 0:
-        raise RuntimeError(f"claude exited {proc.returncode}: {proc.stderr.strip()[:500]}")
+        # The CLI reports some failures (e.g. an invalid --model) on stdout, not
+        # stderr — fall back to stdout so the reason isn't swallowed.
+        detail = (proc.stderr.strip() or proc.stdout.strip())[:500]
+        raise RuntimeError(f"claude exited {proc.returncode}: {detail}")
     return proc.stdout
 
 
@@ -154,10 +157,14 @@ class ClaudeCodeRunner:
         output_file: str = "poem.txt",
         run_cli: CliRunner | None = None,
         timeout: int = 240,
+        model: str | None = None,
     ) -> None:
         self.output_file = output_file
         self.run_cli = run_cli or _default_run_cli
         self.timeout = timeout
+        # Default model: explicit arg, else CLAUDE_CODE_MODEL, else None (= the
+        # `claude` CLI's own default). Mirrors OPENROUTER_MODEL for OpenRouter.
+        self.model = model or os.getenv("CLAUDE_CODE_MODEL")
 
     def run(self, case, reader) -> EvalContext:
         # The knowledge graph is a data object — read it and inject it into the
@@ -173,8 +180,9 @@ class ClaudeCodeRunner:
             if getattr(case, "fixture_path", None):
                 shutil.copytree(case.fixture_path, workdir, dirs_exist_ok=True)
             args = ["-p", case.seed_prompt, "--output-format", "json"]
-            if getattr(case, "model", None):
-                args += ["--model", case.model]  # case override; else CLI default
+            model = getattr(case, "model", None) or self.model  # case pin > env/default
+            if model:
+                args += ["--model", model]
             if knowledge.strip():
                 args += ["--append-system-prompt", knowledge]
             args += [

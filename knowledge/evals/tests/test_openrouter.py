@@ -107,6 +107,23 @@ def test_judge_parses_overall():
     assert result.raw_response is not None
 
 
+def test_default_post_surfaces_http_error_body(monkeypatch):
+    import io
+    import urllib.error
+
+    from knowledge.evals import openrouter as orm
+
+    def boom(req, timeout):
+        raise urllib.error.HTTPError(
+            req.full_url, 400, "Bad Request", {}, io.BytesIO(b'{"error":"no such model: foo"}')
+        )
+
+    monkeypatch.setattr(orm.urllib.request, "urlopen", boom)
+    with pytest.raises(RuntimeError) as ei:
+        orm._default_post("https://x", {"a": 1}, {}, 5)
+    assert "no such model: foo" in str(ei.value)  # body surfaced, not just "400"
+
+
 def test_openrouter_llm_adapter_returns_text():
     client = OpenRouterClient(api_key="k", post=lambda *a: _chat_response("distilled"))
     llm = openrouter_llm(client)

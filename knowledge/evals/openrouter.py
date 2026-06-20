@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 from typing import Callable
 
@@ -35,8 +36,14 @@ def _default_post(url: str, payload: dict, headers: dict, timeout: int) -> str:
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST"
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - fixed URL
-        return resp.read().decode("utf-8")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - fixed URL
+            return resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        # The 4xx body names the actual cause (e.g. an invalid model id); a bare
+        # "HTTP Error 400" would hide it. Surface it.
+        body = e.read().decode("utf-8", "replace").strip()[:500]
+        raise RuntimeError(f"OpenRouter HTTP {e.code}: {body}") from e
 
 
 def _extract_json(text: str) -> dict:

@@ -392,6 +392,7 @@ def select_runner(kind: str):
         from knowledge.evals.openrouter import OpenRouterJudge, OpenRouterRunner
 
         return OpenRouterRunner(), OpenRouterJudge()
+    load_env()  # so CLAUDE_CODE_MODEL (and any .env) is available to the runner
     return ClaudeCodeRunner(), ClaudeCodeJudge()
 
 

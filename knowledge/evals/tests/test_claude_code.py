@@ -8,6 +8,8 @@ without launching the binary.
 import json
 from pathlib import Path
 
+import pytest
+
 from knowledge.evals.claude_code import ClaudeCodeJudge, ClaudeCodeRunner
 from knowledge.evals.eval_def import EvalCase, EvalContext, Rubric, RubricItem
 from knowledge.wiring import build_trio
@@ -104,7 +106,9 @@ def test_runner_passes_model_flag_when_pinned():
     assert seen["args"][seen["args"].index("--model") + 1] == "sonnet"
 
 
-def test_runner_omits_model_flag_when_unset():
+def test_runner_omits_model_flag_when_unset(monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_MODEL", raising=False)
+
     def fake_cli(args, cwd, env, timeout):
         assert "--model" not in args
         (Path(cwd) / "poem.txt").write_text("p", encoding="utf-8")
@@ -114,9 +118,55 @@ def test_runner_omits_model_flag_when_unset():
     ClaudeCodeRunner(run_cli=fake_cli).run(_case(), reader)
 
 
+def test_runner_uses_env_model_when_case_unset(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_MODEL", "haiku")
+    seen = {}
+
+    def fake_cli(args, cwd, env, timeout):
+        seen["args"] = args
+        (Path(cwd) / "poem.txt").write_text("p", encoding="utf-8")
+        return json.dumps({"result": "done"})
+
+    _, _, reader = build_trio()
+    ClaudeCodeRunner(run_cli=fake_cli).run(_case(), reader)  # constructed after setenv
+    assert seen["args"][seen["args"].index("--model") + 1] == "haiku"
+
+
+def test_case_model_overrides_env(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_MODEL", "haiku")
+    seen = {}
+
+    def fake_cli(args, cwd, env, timeout):
+        seen["args"] = args
+        (Path(cwd) / "poem.txt").write_text("p", encoding="utf-8")
+        return json.dumps({"result": "done"})
+
+    case = _case().model_copy(update={"model": "opus"})
+    _, _, reader = build_trio()
+    ClaudeCodeRunner(run_cli=fake_cli).run(case, reader)
+    assert seen["args"][seen["args"].index("--model") + 1] == "opus"  # case pin wins
+
+
 def test_serves_model_rejects_provider_prefixed():
     assert ClaudeCodeRunner.serves_model("sonnet") is True
     assert ClaudeCodeRunner.serves_model("openai/gpt-4o-mini") is False
+
+
+def test_default_run_cli_surfaces_stdout_on_failure(monkeypatch):
+    from types import SimpleNamespace
+
+    from knowledge.evals import claude_code as cc
+
+    monkeypatch.setattr(cc, "_claude_path", lambda: "claude")
+    # CLI failure with the reason on stdout and nothing on stderr.
+    monkeypatch.setattr(
+        cc.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=1, stdout="model may not exist", stderr=""),
+    )
+    with pytest.raises(RuntimeError) as ei:
+        cc._default_run_cli(["-p", "hi"], Path("."), {}, 5)
+    assert "model may not exist" in str(ei.value)  # stdout surfaced, not swallowed
 
 
 def test_judge_parses_overall_score():
