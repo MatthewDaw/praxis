@@ -35,6 +35,7 @@
 id: skills_merge_dedup
 component: ingestion
 substrate: vector
+xfail: "no paraphrase-level semantic merge: Deduper threshold (0.95) only collapses near-exact dups"
 
 seeded_insight:
   via_ingestor:

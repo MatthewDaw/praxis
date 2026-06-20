@@ -12,7 +12,9 @@ from knowledge.evals.run import (
     FakeRunner,
     load_case,
     run_case,
+    run_case_full,
     run_component,
+    status_of,
 )
 
 
@@ -76,10 +78,19 @@ def test_run_case_routes_component_and_ignores_runner():
         "kg_roundtrip",
         "ingestion_distill",
         "reader_retrieval",
-        "decayed_lesson_ignored_reader",
     ],
 )
 def test_registered_component_cases_pass(case_id):
     case = load_case(CASES_DIR / case_id)
     result = run_case(case, FakeRunner())
     assert result.passed, [c.evidence for c in result.checks]
+
+
+def test_decayed_reader_is_an_xfail_red_spec():
+    # Seeds both active + decayed; WholeFileReader returns the rival, so the
+    # exclusion check fails today. Marked xfail -> reports XFAIL, not a regression.
+    case = load_case(CASES_DIR / "decayed_lesson_ignored_reader")
+    assert case.xfail, "expected a red-spec reason"
+    _, _, result = run_case_full(case, FakeRunner())
+    assert result.passed is False
+    assert status_of(result) == "XFAIL"

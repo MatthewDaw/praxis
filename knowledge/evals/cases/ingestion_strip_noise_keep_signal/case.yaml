@@ -9,6 +9,7 @@
 # fails because the passthrough ingestor performs no distillation/noise stripping.
 id: ingestion_strip_noise_keep_signal
 component: ingestion
+xfail: "no distillation: the ingestor stores the raw line verbatim, noise included"
 
 seeded_insight:
   via_ingestor:

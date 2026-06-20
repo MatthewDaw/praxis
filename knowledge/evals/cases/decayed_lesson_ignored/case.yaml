@@ -2,10 +2,15 @@
 # Demo acts: 3 (stretch)
 # Mock candidate: eval_decayed_lesson_ignored (active) vs rival eval_decayed_lesson_stale (decayed)
 # Provenance target: logs/evals/monica/decayed_lesson_ignored.jsonl:1
-# Cold run: empty graph → agent uses stale os.path pattern.
-# Injected run: active pathlib lesson only — decayed rival documented in README.md, not seeded.
-# Future: when FilteredReader lands, reader must exclude DECAYED_RIVAL_MARKER even if both facts exist.
+# Injected run: BOTH the active pathlib lesson and the decayed os.path rival are
+# now seeded. Today's WholeFileReader returns everything unfiltered, so the rival
+# reaches the agent. Marked xfail per the decay-filter contract — it should pass
+# only once a FilteredReader drops decayed insights before injection. (Caveat: a
+# capable agent may prefer the active "standard" over the "legacy" rival on its
+# own, so this can XPASS without the filter; the *deterministic* decay red spec
+# lives in decayed_lesson_ignored_reader.)
 id: decayed_lesson_ignored
+xfail: "no FilteredReader: the decayed rival is surfaced to the agent unfiltered"
 # Grades config_utils.py code (avoids_os_path / uses_pathlib), so a single-shot
 # backend that returns chat prose contaminates both checks — needs a sandbox
 # runner that writes and grades the file.
@@ -27,6 +32,9 @@ seeded_insight:
     - >-
       ACTIVE_PATHLIB_STANDARD: Stop using os.path for new code — use pathlib.Path;
       it's the project standard.
+    - >-
+      DECAYED_RIVAL_MARKER: Always use os.path.join and os.path.exists for config
+      paths — legacy standard.
 
 deterministic_checks:
   - name: uses_pathlib

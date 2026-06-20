@@ -244,8 +244,21 @@ def run_case_full(
         checks=checks,
         rubric_score=rubric_score,
         passed=passed,
+        xfail_reason=case.xfail,
     )
     return ctx, judge_result, result
+
+
+def status_of(result: CaseResult) -> str:
+    """Display status: PASS / FAIL / XFAIL (expected red) / XPASS (unexpected green).
+
+    Only ``FAIL`` means a regression. A case marked ``xfail`` is expected to fail
+    until its capability lands; an ``XPASS`` is the signal that it has — promote
+    the spec to a real assertion.
+    """
+    if result.xfail_reason:
+        return "XPASS" if result.passed else "XFAIL"
+    return "PASS" if result.passed else "FAIL"
 
 
 def run_case(
@@ -421,17 +434,25 @@ def main(argv: list[str] | None = None) -> int:
         write_transcript(build_transcript(case, ctx, judge_result, run_result, run_id))
     write_baseline(results)
 
+    tally: dict[str, int] = {}
     for r in results:
-        verdict = "PASS" if r.passed else "FAIL"
+        status = status_of(r)
+        tally[status] = tally.get(status, 0) + 1
         score = "" if r.rubric_score is None else f"  rubric={r.rubric_score:.2f}"
+        note = f"  ({r.xfail_reason})" if r.xfail_reason else ""
         print(
-            f"[{verdict}] {r.case_id}  "
-            f"checks={sum(c.passed for c in r.checks)}/{len(r.checks)}{score}"
+            f"[{status}] {r.case_id}  "
+            f"checks={sum(c.passed for c in r.checks)}/{len(r.checks)}{score}{note}"
         )
     print(f"\nwrote {len(results)} rows -> {BASELINE_PATH}")
     print(f"wrote {len(results)} transcript(s) -> {RUNS_DIR / run_id}")
-    if skipped:
-        print(f"skipped {len(skipped)} case(s) this backend can't grade")
+
+    # Summary: only FAIL is a regression; XFAIL is expected; XPASS wants a promote.
+    summary = "  ".join(f"{k.lower()}={tally[k]}" for k in sorted(tally))
+    print(f"summary: {summary}", end="")
+    print(f"  skipped={len(skipped)}" if skipped else "")
+    if tally.get("XPASS"):
+        print(f"note: {tally['XPASS']} xfail case(s) now PASS — promote them to real assertions")
     return 0
 
 

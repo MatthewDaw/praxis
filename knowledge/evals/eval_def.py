@@ -69,6 +69,7 @@ class EvalCase(BaseModel):
     code_task: RepoTask | None = None  # real-repo (SWE-bench-style) task: clone+test oracle
     fixture_path: str | None = None  # abs path to a dir copied into the box as start state; set by load_case
     needs: list[str] = Field(default_factory=list)  # runner capabilities required (e.g. "sandbox"); a backend that can't provide them skips the case
+    xfail: str | None = None  # if set, the case is expected to fail (reason = the unbuilt capability); a real fail reports XFAIL, an unexpected pass reports XPASS
     seeded_insight: SeededInsight = Field(default_factory=SeededInsight)
     deterministic_checks: list[DeterministicCheckRef] = Field(default_factory=list)
     rubric: Rubric | None = None
@@ -128,7 +129,8 @@ class CaseResult(BaseModel):
     case_id: str
     checks: list[CheckResult] = Field(default_factory=list)
     rubric_score: float | None = None
-    passed: bool  # overall verdict for the baseline row
+    passed: bool  # raw verdict: did checks + rubric pass? (independent of xfail)
+    xfail_reason: str | None = None  # carried from the case; drives PASS/FAIL/XFAIL/XPASS
 
 
 class AgentRun(BaseModel):

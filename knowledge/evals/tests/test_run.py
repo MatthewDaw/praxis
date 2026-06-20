@@ -13,10 +13,12 @@ from knowledge.evals.run import (
     resolve_check,
     run_case,
     run_case_full,
+    status_of,
     unmet_needs,
     write_baseline,
     write_transcript,
 )
+from knowledge.evals.eval_def import CaseResult
 
 
 class _SandboxRunner:
@@ -196,6 +198,25 @@ def test_partition_splits_runnable_from_skipped():
     runnable, skipped = partition_by_capability([plain, sandboxed], FakeRunner())
     assert [c.id for c in runnable] == ["plain"]
     assert [(c.id, m) for c, m in skipped] == [("boxed", {"sandbox"})]
+
+
+def test_status_of_four_states():
+    def res(passed, xfail=None):
+        return CaseResult(case_id="c", passed=passed, xfail_reason=xfail)
+
+    assert status_of(res(True)) == "PASS"
+    assert status_of(res(False)) == "FAIL"
+    assert status_of(res(False, xfail="no FilteredReader")) == "XFAIL"
+    assert status_of(res(True, xfail="no FilteredReader")) == "XPASS"
+
+
+def test_xfail_reason_carried_into_result():
+    # A red-spec case that fails is XFAIL, not a regression.
+    case = _case(xfail="capability not built")
+    _, _, result = run_case_full(case, FakeRunner())  # empty output -> checks fail
+    assert result.passed is False
+    assert result.xfail_reason == "capability not built"
+    assert status_of(result) == "XFAIL"
 
 
 def test_registered_example_case_runs_end_to_end():
