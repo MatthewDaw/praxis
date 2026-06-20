@@ -1,4 +1,4 @@
-import type { CandidateState } from "../types/candidate";
+import type { CandidateState, CandidateWriteInput } from "../types/candidate";
 import { nextPromotionState } from "./candidateModel";
 
 export const CONTRACT_HEADER = "X-Praxis-Contract";
@@ -40,6 +40,33 @@ export function buildPromoteBodyImplicit(): Record<string, never> {
 
 export function buildRejectBody(reason?: string): { reason?: string } {
   return reason ? { reason } : {};
+}
+
+export function buildCreateBody(input: CandidateWriteInput): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    title: input.title.trim(),
+    content: input.content.trim(),
+    state: "proposed",
+    confidence: input.confidence ?? 0.5,
+  };
+  if (input.provenance?.trim()) {
+    body.provenance = input.provenance.trim();
+  }
+  return body;
+}
+
+export function buildUpdateBody(input: CandidateWriteInput): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    title: input.title.trim(),
+    content: input.content.trim(),
+  };
+  if (input.provenance?.trim()) {
+    body.provenance = input.provenance.trim();
+  }
+  if (input.confidence != null) {
+    body.confidence = input.confidence;
+  }
+  return body;
 }
 
 export function normalizeResolution(resolution: string): string {

@@ -166,6 +166,56 @@ class PostgresCandidateStore:
             self._upsert(loser)
         return kept
 
+    def create(self, body: dict) -> Candidate:
+        import uuid
+
+        cid = str(body.get("id") or f"cand_{uuid.uuid4().hex[:12]}")
+        if self.get(cid) is not None:
+            raise ValueError(f"candidate {cid} already exists")
+        provenance = str(body.get("provenance") or f"human-gate/manual:{_now()}")
+        c: Candidate = {
+            "id": cid,
+            "title": str(body.get("title", "")).strip(),
+            "content": str(body.get("content", "")).strip(),
+            "state": "proposed",
+            "confidence": float(body.get("confidence", 0.5)),
+            "provenance": provenance,
+            "createdAt": _now(),
+            "contradiction_ids": [],
+            "auditTrail": [],
+        }
+        if not c["title"] or not c["content"]:
+            raise ValueError("title and content are required")
+        self._audit(c, "created")
+        self._upsert(c)
+        return c
+
+    def update(self, cid: str, body: dict) -> Candidate:
+        c = self.get(cid)
+        if c is None:
+            raise KeyError(cid)
+        if "title" in body:
+            c["title"] = str(body["title"]).strip()
+        if "content" in body:
+            c["content"] = str(body["content"]).strip()
+        if "provenance" in body:
+            c["provenance"] = str(body["provenance"]).strip()
+        if "confidence" in body:
+            c["confidence"] = float(body["confidence"])
+        if not c.get("title") or not c.get("content"):
+            raise ValueError("title and content are required")
+        self._audit(c, "edited")
+        self._upsert(c)
+        return c
+
+    def delete(self, cid: str) -> None:
+        row = self._conn.execute(
+            "DELETE FROM candidates WHERE org_id = %s AND user_id = %s AND id = %s RETURNING id",
+            (self.org_id, self.user_id, cid),
+        ).fetchone()
+        if row is None:
+            raise KeyError(cid)
+
     @staticmethod
     def _strip_link(c: Candidate, other_id: str) -> None:
         for key in ("contradiction_ids", "contradictions"):

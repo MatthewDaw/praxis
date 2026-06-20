@@ -5,6 +5,12 @@ import {
   parseGraphPayload,
 } from "./graphModel";
 import { buildPromoteBody, buildResolveBody } from "./contract";
+import {
+  applyCandidateUpdate,
+  buildNewCandidate,
+  refreshGraphFromCandidates,
+  type CandidateWriteInput,
+} from "./candidateCrud";
 import type { DataProvider } from "./dataProvider";
 import type { Candidate, EvalMetrics, RawCandidate } from "../types/candidate";
 import type {
@@ -195,6 +201,33 @@ export function createMockDataProviderWithRows(
       syncGraphNodeState(graph, id, "decayed");
     },
 
+    async createCandidate(input: CandidateWriteInput) {
+      const created = buildNewCandidate(input);
+      candidates = [...candidates, created];
+      graph = refreshGraphFromCandidates(graph, candidates);
+      return created;
+    },
+
+    async updateCandidate(id, input) {
+      const index = candidates.findIndex((c) => c.id === id);
+      if (index < 0) {
+        throw new Error(`Unknown candidate id: ${id}`);
+      }
+      const updated = applyCandidateUpdate(candidates[index], input);
+      candidates[index] = updated;
+      graph = refreshGraphFromCandidates(graph, candidates);
+      return updated;
+    },
+
+    async deleteCandidate(id) {
+      const index = candidates.findIndex((c) => c.id === id);
+      if (index < 0) {
+        throw new Error(`Unknown candidate id: ${id}`);
+      }
+      candidates = candidates.filter((c) => c.id !== id);
+      graph = refreshGraphFromCandidates(graph, candidates);
+    },
+
     async resolveContradiction(contradictionId, resolution, keepId) {
       buildResolveBody(resolution, keepId);
       const kept = candidates.find((c) => c.id === keepId);
@@ -292,6 +325,18 @@ export function createMockDataProvider(
 
     async reject(id, reason) {
       await (await load()).reject(id, reason);
+    },
+
+    async createCandidate(input) {
+      return (await load()).createCandidate(input);
+    },
+
+    async updateCandidate(id, input) {
+      return (await load()).updateCandidate(id, input);
+    },
+
+    async deleteCandidate(id) {
+      await (await load()).deleteCandidate(id);
     },
 
     async resolveContradiction(contradictionId, resolution, keepId) {

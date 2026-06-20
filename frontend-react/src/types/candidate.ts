@@ -22,6 +22,13 @@ export interface AuditEntry {
   note?: string;
 }
 
+export interface CandidateWriteInput {
+  title: string;
+  content: string;
+  provenance?: string;
+  confidence?: number;
+}
+
 export interface Candidate {
   id: string;
   title: string;

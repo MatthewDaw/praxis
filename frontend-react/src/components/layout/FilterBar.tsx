@@ -9,6 +9,7 @@ interface FilterBarProps {
   onSearchChange: (value: string) => void;
   onStateFilterChange: (value: string) => void;
   onViewTabChange: (tab: ViewTab) => void;
+  onAddEval?: () => void;
 }
 
 export function FilterBar({
@@ -20,6 +21,7 @@ export function FilterBar({
   onSearchChange,
   onStateFilterChange,
   onViewTabChange,
+  onAddEval,
 }: FilterBarProps) {
   return (
     <section className="filter-bar" aria-label="Candidate filters">
@@ -51,6 +53,11 @@ export function FilterBar({
         </label>
       </div>
       <div className="filter-bar__controls">
+        {onAddEval ? (
+          <button type="button" className="btn secondary" onClick={onAddEval}>
+            Add eval
+          </button>
+        ) : null}
         <span className="count-chip" aria-live="polite">
           {candidateCount} candidates
         </span>

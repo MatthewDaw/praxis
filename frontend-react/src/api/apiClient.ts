@@ -1,8 +1,10 @@
 import {
+  buildCreateBody,
   buildPromoteBody,
   buildPromoteBodyImplicit,
   buildRejectBody,
   buildResolveBody,
+  buildUpdateBody,
   contractHeaders,
 } from "./contract";
 import {
@@ -14,7 +16,7 @@ import {
   parseGraphPayload,
 } from "./graphModel";
 import type { DataProvider } from "./dataProvider";
-import type { EvalMetrics } from "../types/candidate";
+import type { CandidateWriteInput, EvalMetrics } from "../types/candidate";
 
 class ApiConflictError extends Error {
   readonly statusCode = 409 as const;
@@ -170,6 +172,24 @@ export function createApiDataProvider(
         `/candidates/${encodeURIComponent(id)}/reject`,
         buildRejectBody(reason),
       );
+    },
+
+    async createCandidate(input: CandidateWriteInput) {
+      const payload = await request("POST", "/candidates", buildCreateBody(input));
+      return candidateFromMapping(payload as Record<string, unknown>);
+    },
+
+    async updateCandidate(id, input) {
+      const payload = await request(
+        "PATCH",
+        `/candidates/${encodeURIComponent(id)}`,
+        buildUpdateBody(input),
+      );
+      return candidateFromMapping(payload as Record<string, unknown>);
+    },
+
+    async deleteCandidate(id) {
+      await request("DELETE", `/candidates/${encodeURIComponent(id)}`);
     },
 
     async resolveContradiction(contradictionId, resolution, keepId) {

@@ -6,6 +6,12 @@ import {
 } from "./graphModel";
 import { parseJsonlFiles } from "./jsonlParser";
 import { buildPromoteBody, buildResolveBody } from "./contract";
+import {
+  applyCandidateUpdate,
+  buildNewCandidate,
+  refreshGraphFromCandidates,
+  type CandidateWriteInput,
+} from "./candidateCrud";
 import type { DataProvider } from "./dataProvider";
 import type { Candidate, EvalMetrics } from "../types/candidate";
 import type { KnowledgeGraphSnapshot } from "../types/graph";
@@ -121,6 +127,33 @@ export function createLocalLogsDataProvider(session: ParsedLogSession): DataProv
       syncGraphNodeState(graph, id, "decayed");
     },
 
+    async createCandidate(input: CandidateWriteInput) {
+      const created = buildNewCandidate(input);
+      candidates = [...candidates, created];
+      graph = refreshGraphFromCandidates(graph, candidates);
+      return created;
+    },
+
+    async updateCandidate(id, input) {
+      const index = candidates.findIndex((c) => c.id === id);
+      if (index < 0) {
+        throw new Error(`Unknown candidate id: ${id}`);
+      }
+      const updated = applyCandidateUpdate(candidates[index], input);
+      candidates[index] = updated;
+      graph = refreshGraphFromCandidates(graph, candidates);
+      return updated;
+    },
+
+    async deleteCandidate(id) {
+      const index = candidates.findIndex((c) => c.id === id);
+      if (index < 0) {
+        throw new Error(`Unknown candidate id: ${id}`);
+      }
+      candidates = candidates.filter((c) => c.id !== id);
+      graph = refreshGraphFromCandidates(graph, candidates);
+    },
+
     async resolveContradiction(contradictionId, resolution, keepId) {
       buildResolveBody(resolution, keepId);
       const kept = candidates.find((c) => c.id === keepId);
@@ -186,6 +219,19 @@ export function createEmptyLocalLogsProvider(): DataProvider {
     },
 
     async reject(id) {
+      throw new Error(`Unknown candidate id: ${id}`);
+    },
+
+    async createCandidate(input) {
+      const created = buildNewCandidate(input);
+      return created;
+    },
+
+    async updateCandidate(id) {
+      throw new Error(`Unknown candidate id: ${id}`);
+    },
+
+    async deleteCandidate(id) {
       throw new Error(`Unknown candidate id: ${id}`);
     },
 

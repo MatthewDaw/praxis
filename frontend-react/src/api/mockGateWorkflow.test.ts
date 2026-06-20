@@ -87,4 +87,24 @@ describe("mock gate workflow", () => {
     );
     expect(hasPair).toBe(true);
   });
+
+  it("creates, updates, and deletes evals", async () => {
+    const provider = createMockDataProviderWithRows(loadMockCandidates());
+    const created = await provider.createCandidate({
+      title: "Manual eval",
+      content: "Always wrap shell pipelines in parentheses.",
+      confidence: 0.61,
+    });
+    expect(created.state).toBe("proposed");
+    expect(created.title).toBe("Manual eval");
+
+    const updated = await provider.updateCandidate(created.id, {
+      title: "Manual eval (edited)",
+      content: created.content,
+    });
+    expect(updated.title).toBe("Manual eval (edited)");
+
+    await provider.deleteCandidate(created.id);
+    expect(await provider.getCandidate(created.id)).toBeNull();
+  });
 });

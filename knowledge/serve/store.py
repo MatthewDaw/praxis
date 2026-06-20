@@ -9,6 +9,7 @@ data — but now mutable and durable across restarts.
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -140,6 +141,54 @@ class CandidateStore:
             self._audit(loser, "superseded", note=f"lost contradiction to {keep_id}")
         self._persist()
         return kept
+
+    def create(self, body: dict[str, Any]) -> Candidate:
+        cid = str(body.get("id") or f"cand_{uuid.uuid4().hex[:12]}")
+        if self.get(cid) is not None:
+            raise ValueError(f"candidate {cid} already exists")
+        provenance = str(body.get("provenance") or f"human-gate/manual:{_now()}")
+        c: Candidate = {
+            "id": cid,
+            "title": str(body.get("title", "")).strip(),
+            "content": str(body.get("content", "")).strip(),
+            "state": "proposed",
+            "confidence": float(body.get("confidence", 0.5)),
+            "provenance": provenance,
+            "createdAt": _now(),
+            "contradiction_ids": [],
+            "auditTrail": [],
+        }
+        if not c["title"] or not c["content"]:
+            raise ValueError("title and content are required")
+        self._audit(c, "created")
+        self._candidates.append(c)
+        self._persist()
+        return c
+
+    def update(self, cid: str, body: dict[str, Any]) -> Candidate:
+        c = self.get(cid)
+        if c is None:
+            raise KeyError(cid)
+        if "title" in body:
+            c["title"] = str(body["title"]).strip()
+        if "content" in body:
+            c["content"] = str(body["content"]).strip()
+        if "provenance" in body:
+            c["provenance"] = str(body["provenance"]).strip()
+        if "confidence" in body:
+            c["confidence"] = float(body["confidence"])
+        if not c.get("title") or not c.get("content"):
+            raise ValueError("title and content are required")
+        self._audit(c, "edited")
+        self._persist()
+        return c
+
+    def delete(self, cid: str) -> None:
+        before = len(self._candidates)
+        self._candidates = [c for c in self._candidates if _cid(c) != cid]
+        if len(self._candidates) == before:
+            raise KeyError(cid)
+        self._persist()
 
     @staticmethod
     def _strip_link(c: Candidate, other_id: str) -> None:

@@ -16,6 +16,8 @@ interface CandidateCardsProps {
   onSelect: (id: string) => void;
   onPromote: (id: string) => Promise<void>;
   onReject: (id: string, reason?: string) => Promise<void>;
+  onEdit: (candidate: Candidate) => void;
+  onDelete: (id: string) => Promise<void>;
 }
 
 export function CandidateCards({
@@ -24,10 +26,13 @@ export function CandidateCards({
   onSelect,
   onPromote,
   onReject,
+  onEdit,
+  onDelete,
 }: CandidateCardsProps) {
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [confirmPromote, setConfirmPromote] = useState<string | null>(null);
   const [confirmReject, setConfirmReject] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
 
   if (candidates.length === 0) {
@@ -60,8 +65,22 @@ export function CandidateCards({
       await onReject(id, reason);
     } finally {
       setPendingId(null);
+      setConfirmPromote(null);
       setConfirmReject(null);
+      setConfirmDelete(null);
       setRejectReason("");
+    }
+  }
+
+  async function runDelete(id: string) {
+    setPendingId(id);
+    try {
+      await onDelete(id);
+    } finally {
+      setPendingId(null);
+      setConfirmPromote(null);
+      setConfirmReject(null);
+      setConfirmDelete(null);
     }
   }
 
@@ -129,21 +148,21 @@ export function CandidateCards({
             ) : confirmReject === candidate.id ? (
               <div className="card-actions">
                 <label className="reject-reason full">
-                  Rejection reason (optional)
+                  Decay reason (optional)
                   <input
                     type="text"
                     value={rejectReason}
                     onChange={(event) => setRejectReason(event.target.value)}
-                    aria-label="Rejection reason"
+                    aria-label="Decay reason"
                   />
                 </label>
                 <button
                   type="button"
-                  className="btn danger full"
+                  className="btn decay full"
                   disabled={pendingId === candidate.id}
                   onClick={() => void runReject(candidate.id)}
                 >
-                  Confirm reject
+                  Confirm decay
                 </button>
                 <button
                   type="button"
@@ -152,6 +171,27 @@ export function CandidateCards({
                     setConfirmReject(null);
                     setRejectReason("");
                   }}
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : confirmDelete === candidate.id ? (
+              <div className="card-actions">
+                <p className="warning-banner">
+                  Delete <strong>{candidate.title}</strong> permanently?
+                </p>
+                <button
+                  type="button"
+                  className="btn delete full"
+                  disabled={pendingId === candidate.id}
+                  onClick={() => void runDelete(candidate.id)}
+                >
+                  Confirm delete
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost full"
+                  onClick={() => setConfirmDelete(null)}
                 >
                   Cancel
                 </button>
@@ -168,37 +208,70 @@ export function CandidateCards({
                 {promoteBlocked ? (
                   <p className="small muted">{promoteBlocked}</p>
                 ) : null}
-                <div className="card-action-row">
-                  {nextState ? (
+                <div className="card-action-rows">
+                  <div className="card-action-row">
+                    {nextState ? (
+                      <button
+                        type="button"
+                        className="btn primary"
+                        onClick={() => {
+                          onSelect(candidate.id);
+                          setConfirmPromote(candidate.id);
+                          setConfirmReject(null);
+                          setConfirmDelete(null);
+                        }}
+                        aria-label={`Promote ${candidate.title}`}
+                      >
+                        Promote
+                      </button>
+                    ) : (
+                      <button type="button" className="btn" disabled>
+                        Promote
+                      </button>
+                    )}
                     <button
                       type="button"
-                      className="btn primary"
+                      className="btn decay"
                       onClick={() => {
                         onSelect(candidate.id);
-                        setConfirmPromote(candidate.id);
+                        setConfirmReject(candidate.id);
+                        setConfirmPromote(null);
+                        setConfirmDelete(null);
+                      }}
+                      aria-label={`Decay ${candidate.title}`}
+                    >
+                      Decay
+                    </button>
+                  </div>
+                  <div className="card-action-row">
+                    <button
+                      type="button"
+                      className="btn edit"
+                      onClick={() => {
+                        onSelect(candidate.id);
+                        setConfirmPromote(null);
+                        setConfirmReject(null);
+                        setConfirmDelete(null);
+                        onEdit(candidate);
+                      }}
+                      aria-label={`Edit ${candidate.title}`}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      className="btn delete"
+                      onClick={() => {
+                        onSelect(candidate.id);
+                        setConfirmDelete(candidate.id);
+                        setConfirmPromote(null);
                         setConfirmReject(null);
                       }}
-                      aria-label={`Promote ${candidate.title}`}
+                      aria-label={`Delete ${candidate.title}`}
                     >
-                      Promote
+                      Delete
                     </button>
-                  ) : (
-                    <button type="button" className="btn" disabled>
-                      Promote
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="btn danger-outline"
-                    onClick={() => {
-                      onSelect(candidate.id);
-                      setConfirmReject(candidate.id);
-                      setConfirmPromote(null);
-                    }}
-                    aria-label={`Reject ${candidate.title}`}
-                  >
-                    Reject
-                  </button>
+                  </div>
                 </div>
               </div>
             )}

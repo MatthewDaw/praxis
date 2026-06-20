@@ -43,6 +43,29 @@ def test_reject_decays(tmp_path):
     assert store.get(cid)["state"] == "decayed"
 
 
+def test_create_update_delete_candidate(tmp_path):
+    client, _ = _client(tmp_path)
+    created = client.post(
+        "/candidates",
+        json={
+            "title": "New lesson",
+            "content": "Use typed payloads at API boundaries.",
+            "confidence": 0.55,
+        },
+    )
+    assert created.status_code == 200
+    cid = created.json()["id"]
+    updated = client.patch(
+        f"/candidates/{cid}",
+        json={"title": "New lesson (edited)"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["title"] == "New lesson (edited)"
+    deleted = client.delete(f"/candidates/{cid}")
+    assert deleted.status_code == 200
+    assert client.get(f"/candidates/{cid}").status_code == 404
+
+
 def test_resolve_keeps_one_and_drops_link(tmp_path):
     client, store = _client(tmp_path)
     pair = client.get("/contradictions").json()[0]

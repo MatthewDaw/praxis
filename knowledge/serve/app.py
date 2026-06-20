@@ -111,6 +111,30 @@ def create_app(store: Any | None = None) -> FastAPI:
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
 
+    @app.post("/candidates")
+    def create_candidate(body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        try:
+            return store.create(body)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.patch("/candidates/{cid}")
+    def update_candidate(cid: str, body: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+        try:
+            return store.update(cid, body)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.delete("/candidates/{cid}")
+    def delete_candidate(cid: str) -> dict[str, Any]:
+        try:
+            store.delete(cid)
+            return {"deleted": cid}
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
+
     @app.get("/contradictions")
     def contradictions() -> list[dict[str, Any]]:
         return contradiction_adapter.serialize_pairs(store.list())

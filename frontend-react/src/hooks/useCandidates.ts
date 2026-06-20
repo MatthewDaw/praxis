@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { resolveDataProvider } from "../api/providerFactory";
 import type { DataProvider } from "../api/dataProvider";
 import type { DataSourceConfig } from "../config/dataSource";
-import type { Candidate } from "../types/candidate";
+import type { Candidate, CandidateWriteInput } from "../types/candidate";
 import type { ParsedLogSession } from "../types/transcript";
 
 export interface UseCandidatesOptions {
@@ -59,7 +59,7 @@ export function useCandidates(options: UseCandidatesOptions) {
       await provider.reject(id, reason);
       await refresh();
       const note = reason ? ` (reason: ${reason})` : "";
-      setLastAction(`Rejected candidate ${id}${note}.`);
+      setLastAction(`Decayed eval ${id}${note}.`);
     },
     [provider, refresh],
   );
@@ -78,6 +78,36 @@ export function useCandidates(options: UseCandidatesOptions) {
     [provider, refresh],
   );
 
+  const createCandidate = useCallback(
+    async (input: CandidateWriteInput) => {
+      const created = await provider.createCandidate(input);
+      await refresh();
+      setLastAction(`Added eval "${created.title}".`);
+      return created;
+    },
+    [provider, refresh],
+  );
+
+  const updateCandidate = useCallback(
+    async (id: string, input: CandidateWriteInput) => {
+      const updated = await provider.updateCandidate(id, input);
+      setCandidates((prev) => prev.map((c) => (c.id === id ? updated : c)));
+      setLastAction(`Updated eval "${updated.title}".`);
+      return updated;
+    },
+    [provider],
+  );
+
+  const deleteCandidate = useCallback(
+    async (id: string) => {
+      const existing = candidates.find((c) => c.id === id);
+      await provider.deleteCandidate(id);
+      await refresh();
+      setLastAction(`Deleted eval "${existing?.title ?? id}".`);
+    },
+    [provider, refresh, candidates],
+  );
+
   return {
     provider,
     candidates,
@@ -89,6 +119,9 @@ export function useCandidates(options: UseCandidatesOptions) {
     promote,
     reject,
     resolveContradiction,
+    createCandidate,
+    updateCandidate,
+    deleteCandidate,
   };
 }
 
