@@ -3,6 +3,10 @@
 # Mock candidate: (optional cand_18) — pathlib over os.path for new code
 # Provenance target: logs/session_20260616.jsonl:201
 id: pathlib_preference
+# avoids_os_path grades config_utils.py; a single-shot backend returns prose that
+# mentions "os.path" (false negative), so this needs a runner that writes the
+# file and grades the code, not the chat reply.
+needs: [sandbox]
 seed_prompt: |
   Create config_utils.py with a function `read_config(path)` that checks whether
   a config file exists and returns its path as a string. Use os.path.join and

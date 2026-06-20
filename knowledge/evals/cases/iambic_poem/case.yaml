@@ -7,6 +7,10 @@
 #
 #   uv run python -m knowledge.evals.run --real iambic_poem
 id: iambic_poem
+# The meter check grades poem.txt; a single-shot backend can only return chat
+# prose (commentary lines contaminate the meter check), so this needs a runner
+# that writes the file and grades it.
+needs: [sandbox]
 seed_prompt: |
   Write an original 8-line poem about the sea. Save it to a file named
   poem.txt in the current directory, with one line of verse per line and no

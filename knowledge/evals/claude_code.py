@@ -139,6 +139,10 @@ class ClaudeCodeRunner:
     file is absent.
     """
 
+    # Mounts fixtures into a real working dir and grades the files the agent
+    # writes — so it can faithfully run cases that need a sandbox.
+    provides = frozenset({"sandbox"})
+
     def __init__(
         self,
         output_file: str = "poem.txt",

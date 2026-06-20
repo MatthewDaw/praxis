@@ -139,6 +139,10 @@ class OpenRouterRunner:
     graded output. Use for cheap iteration; use ``ClaudeCodeRunner`` for fidelity.
     """
 
+    # Single-shot text: no working dir, no file edits. Cases that need a sandbox
+    # are skipped rather than graded on a reply this runner can't make faithful.
+    provides = frozenset()
+
     def __init__(
         self,
         client: OpenRouterClient | None = None,

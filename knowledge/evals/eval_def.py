@@ -68,6 +68,7 @@ class EvalCase(BaseModel):
     repo: str | None = None  # where the commits live (defaults to this repo)
     code_task: RepoTask | None = None  # real-repo (SWE-bench-style) task: clone+test oracle
     fixture_path: str | None = None  # abs path to a dir copied into the box as start state; set by load_case
+    needs: list[str] = Field(default_factory=list)  # runner capabilities required (e.g. "sandbox"); a backend that can't provide them skips the case
     seeded_insight: SeededInsight = Field(default_factory=SeededInsight)
     deterministic_checks: list[DeterministicCheckRef] = Field(default_factory=list)
     rubric: Rubric | None = None

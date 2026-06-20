@@ -62,6 +62,8 @@ class FakeRunner:
     "expected to fail" baseline before any real agent runs).
     """
 
+    provides = frozenset()  # offline echo: no sandbox
+
     def __init__(self, scripted: dict[str, str] | None = None, default: str = "") -> None:
         self.scripted = scripted or {}
         self.default = default
@@ -114,6 +116,52 @@ def grade_rubric(
     if case.rubric is None or judge is None:
         return None
     return judge(case.rubric, ctx)
+
+
+# --------------------------------------------------------------------------- #
+# Backend capabilities — skip cases a runner structurally can't grade
+# --------------------------------------------------------------------------- #
+def case_needs(case: EvalCase) -> set[str]:
+    """Runner capabilities a case requires.
+
+    The explicit ``needs`` from YAML, plus an implicit ``sandbox`` for any case
+    shipping fixtures (only a runner with a real working dir can mount + grade
+    them) and ``code_exec`` for a ``code_task`` (clone + run a test oracle). A
+    runner that can't provide these grades the case unfaithfully, so it's skipped.
+    """
+    needs = set(case.needs)
+    has_fixtures = bool(case.fixture_path) or (
+        bool(case.source_dir) and (Path(case.source_dir) / "fixtures").is_dir()
+    )
+    if has_fixtures:
+        needs.add("sandbox")
+    if case.code_task is not None:
+        needs.add("code_exec")
+    return needs
+
+
+def unmet_needs(case: EvalCase, runner: Runner) -> set[str]:
+    """Capabilities the case needs that this runner doesn't provide."""
+    provided = set(getattr(runner, "provides", frozenset()))
+    return case_needs(case) - provided
+
+
+def partition_by_capability(
+    cases: list[EvalCase], runner: Runner
+) -> tuple[list[EvalCase], list[tuple[EvalCase, set[str]]]]:
+    """Split cases into (runnable, skipped) for ``runner``.
+
+    Skipped entries carry the unmet needs so the caller can report *why*.
+    """
+    runnable: list[EvalCase] = []
+    skipped: list[tuple[EvalCase, set[str]]] = []
+    for case in cases:
+        missing = unmet_needs(case, runner)
+        if missing:
+            skipped.append((case, missing))
+        else:
+            runnable.append(case)
+    return runnable, skipped
 
 
 # --------------------------------------------------------------------------- #
@@ -354,6 +402,15 @@ def main(argv: list[str] | None = None) -> int:
 
     kind = "openrouter" if args.openrouter else "fake" if args.fake else "claude"
     runner, judge = select_runner(kind)
+
+    # Skip cases this backend can't grade faithfully (e.g. a sandbox case on the
+    # single-shot OpenRouter runner) so the scoreboard reflects only real signal.
+    cases, skipped = partition_by_capability(cases, runner)
+    for case, missing in skipped:
+        print(f"[SKIP] {case.id}  (needs {', '.join(sorted(missing))})")
+    if not cases:
+        print("no runnable cases for this backend")
+        return 0
     print(f"running {len(cases)} case(s) through {_BACKEND_LABEL[kind]}...")
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -373,6 +430,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(f"\nwrote {len(results)} rows -> {BASELINE_PATH}")
     print(f"wrote {len(results)} transcript(s) -> {RUNS_DIR / run_id}")
+    if skipped:
+        print(f"skipped {len(skipped)} case(s) this backend can't grade")
     return 0
 
 
