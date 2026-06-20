@@ -1253,6 +1253,143 @@ code,
   font-size: 0.85rem;
 }
 
+/* Footer inline actions (Sign out / Switch workspace) — subtle pill buttons. */
+.link-button {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.link-button:hover {
+  background: #eff4ff;
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+.link-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---- Org gate ("Choose a workspace") ---------------------------------- */
+.org-gate {
+  max-width: 560px;
+  margin: var(--space-6) auto;
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.org-gate--loading {
+  align-items: center;
+  color: var(--muted);
+}
+.org-gate__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.org-gate__header h1 {
+  margin: 0;
+  font-size: 1.6rem;
+  color: var(--h1);
+}
+.org-gate h2 {
+  margin: 0 0 var(--space-3);
+  font-size: 1.05rem;
+  color: var(--h2);
+}
+/* Each section is a card matching the dashboard panels. */
+.org-gate__pick,
+.org-gate__create,
+.org-gate__join,
+.org-gate__password {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+  padding: var(--space-4);
+}
+.org-gate__pick ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+/* Pick-an-org rows read as selectable buttons. */
+.org-gate__pick li button {
+  width: 100%;
+  text-align: left;
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.org-gate__pick li button:hover {
+  background: #eff4ff;
+  border-color: var(--accent);
+}
+.org-gate form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.org-gate input {
+  flex: 1 1 140px;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  background: var(--surface);
+  color: var(--ink);
+}
+.org-gate input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+/* Primary submit buttons in the forms. */
+.org-gate form button[type="submit"] {
+  flex: 0 0 auto;
+  appearance: none;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.org-gate form button[type="submit"]:hover {
+  background: var(--accent-dark);
+}
+.org-gate form button[type="submit"]:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.org-gate__muted {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .warning-banner {
   width: 100%;
   padding: var(--space-2) var(--space-3);

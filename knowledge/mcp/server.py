@@ -215,7 +215,29 @@ def praxis_whoami() -> str:
     return f"{tenant.email} — active org: {org}; member of: {listing}."
 
 
+@mcp.prompt(title="Log in to Praxis")
+def login() -> str:
+    """Log in to the Praxis knowledge graph (drives the praxis_login tool).
+
+    Exposed as an MCP prompt so it shows up as a slash command
+    (``/mcp__praxis__login``) for anyone who registers this server — no project
+    ``.claude/commands`` file needed.
+    """
+    return (
+        "Log me into the Praxis MCP server so `praxis_get_context` / "
+        "`praxis_add_insight` work.\n\n"
+        "1. Ask me for my Praxis email and password (do not guess them).\n"
+        "2. Call the `praxis_login` tool with them (and `org_id` if I name one).\n"
+        "3. If I belong to multiple orgs, list them and call `praxis_select_org`; "
+        "if I belong to none, offer `praxis_create_org` (I set a join password) or "
+        "`praxis_join_org` (needs its password).\n"
+        "4. Confirm the final state with `praxis_whoami`.\n\n"
+        "My password is only used to authenticate with Cognito — a refresh token "
+        "is cached, never the password."
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
-    """Serve the MCP over stdio. Login is via the in-session tools, not the CLI."""
+    """Serve the MCP over stdio. Login is via the in-session tools/prompt, not the CLI."""
     load_dotenv()
     mcp.run()

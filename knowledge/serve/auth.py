@@ -17,6 +17,11 @@ from fastapi import Header, HTTPException
 
 DEFAULT_REGION = "us-east-1"
 
+# Tolerate small clock skew between this machine, Cognito, and the backend so a
+# freshly-minted token isn't rejected with "not yet valid (iat)" when the local
+# clock is a second or two behind AWS. Applies to iat/nbf/exp checks.
+_CLOCK_SKEW_LEEWAY = 300  # seconds
+
 
 @dataclass
 class Principal:
@@ -73,6 +78,7 @@ def verify_token(token: str) -> dict:
             algorithms=["RS256"],
             issuer=cfg.issuer,
             audience=cfg.client_id,
+            leeway=_CLOCK_SKEW_LEEWAY,
         )
     else:
         claims = jwt.decode(
@@ -80,6 +86,7 @@ def verify_token(token: str) -> dict:
             signing_key.key,
             algorithms=["RS256"],
             issuer=cfg.issuer,
+            leeway=_CLOCK_SKEW_LEEWAY,
         )
         if claims.get("client_id") != cfg.client_id:
             raise jwt.InvalidTokenError("client_id mismatch")

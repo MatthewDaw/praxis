@@ -19,7 +19,10 @@ RUN uv sync --frozen --no-dev
 # App Runner sends traffic to 8080 and health-checks /health; uvicorn binds 0.0.0.0.
 ENV PRAXIS_API_HOST=0.0.0.0 \
     PORT=8080 \
-    PATH="/app/.venv/bin:$PATH"
+    PATH="/app/.venv/bin:$PATH" \
+    UV_NO_SYNC=1
 EXPOSE 8080
 
-CMD ["uv", "run", "python", "-m", "knowledge.serve"]
+# Run the venv interpreter directly — `uv run` re-syncs over the network at startup
+# and misses App Runner's health-check window (the container crash-loops).
+CMD ["python", "-m", "knowledge.serve"]
