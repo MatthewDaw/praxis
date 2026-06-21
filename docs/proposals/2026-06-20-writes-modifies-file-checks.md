@@ -1,7 +1,7 @@
 # Proposal: faithful per-artifact grading (`output_file` + `writes_file` / `modifies_file`)
 
 **Owner:** Dominic Antonelli — eval harness
-**Status:** Accepted — core (§4–§8) implemented; `StructuredOpenRouterRunner` (§11) is a pending follow-on
+**Status:** Accepted — core (§4–§8) and `StructuredOpenRouterRunner` §11 Phase 1 (output-side) implemented; §11 Phase 2 (fixture injection) pending
 **Date:** 2026-06-20
 **Scope:** `knowledge/evals` (EvalCase + EvalContext contracts, ClaudeCodeRunner, deterministic checks)
 
@@ -397,3 +397,20 @@ single-shot and a real agent — not a merge that erases the difference:
 Phase 2 of this proposal — it builds on the `artifacts`/`output_file` contract
 (§4), so land that first. Phase 1 (output-side, the +6) is the high-value,
 low-risk slice; Phase 2 (input-side, the +9) is optional and caveated.
+
+### 11.7 Status — Phase 1 implemented & verified
+
+`StructuredOpenRouterRunner` (output-side) is built: `provides = {file_io}`,
+`response_format` json_schema (strict), `file_changes` parsed into `artifacts` +
+`output` (via `output_file`), malformed output → loud capability error. The
+`sandbox` capability was split: `ClaudeCodeRunner` now provides `{sandbox, file_io}`,
+the six fixture-less file-writing cases moved to `needs: [file_io]`, and the
+`writes_file`/`modifies_file` auto-derive yields `file_io`. CLI: `--structured`.
+
+Live run (gpt-4o-mini) of all six `file_io` cases: `pathlib_preference` (PASS,
+pathlib) and `pathlib_preference_before` (PASS, os.path) — the discriminator
+reproduces on the cheap backend; `scoped_conflict` PASS (tabs survive in JSON
+`contents`); `safety_user_overrides_graph` PASS (the case single-shot used to
+mis-run); `iambic_poem` PASS (`writes_file` + meter); `decayed_lesson_ignored`
+XFAIL (red spec). Verdicts agree with the ClaudeCode runs, so fidelity holds for
+this slice. Fixture cases (`needs: sandbox`) correctly skip the structured runner.

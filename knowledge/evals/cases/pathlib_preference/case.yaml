@@ -6,7 +6,7 @@ id: pathlib_preference
 # avoids_os_path grades config_utils.py; a single-shot backend returns prose that
 # mentions "os.path" (false negative), so this needs a runner that writes the
 # file and grades the code, not the chat reply.
-needs: [sandbox]
+needs: [file_io]
 # Path handling is left unspecified on purpose: the seeded pathlib lesson should
 # steer the choice. (Mandating os.path here would pit the seed prompt against the
 # knowledge and test "defy the user" rather than "let knowledge steer.")

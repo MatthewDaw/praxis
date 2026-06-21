@@ -39,6 +39,63 @@ class Rubric(BaseModel):
     items: list[RubricItem]
 
 
+def align_per_item(rubric: "Rubric", raw_per_item: dict | None) -> dict[str, float]:
+    """Map a judge's returned scores onto the rubric's item ids.
+
+    Prefers exact-id keys; falls back to positional mapping when the model returned
+    different keys (e.g. ``"1"``, ``"2"`` — it scores in the order presented) but the
+    right count. Returns a score for every rubric item (missing -> 0.0), so the
+    keys always match the ids ``weighted_overall`` expects.
+    """
+    ids = [it.id for it in rubric.items]
+    scores = {k: float(v) for k, v in (raw_per_item or {}).items()}
+    if any(i in scores for i in ids):  # the model used the real ids
+        return {i: scores.get(i, 0.0) for i in ids}
+    if ids and len(scores) == len(ids):  # positional fallback (wrong/numeric keys)
+        return dict(zip(ids, scores.values()))
+    return {i: scores.get(i, 0.0) for i in ids}
+
+
+def weighted_overall(rubric: "Rubric", per_item: dict[str, float]) -> float:
+    """Weighted average of per-item scores using the rubric's declared weights.
+
+    Computed in the harness, never asked of the judge model — the LLM only returns
+    per-criterion scores, so the declared weights are authoritative (an LLM left to
+    "compute the weighted average" returns the unweighted mean). Missing items count
+    as 0; zero total weight yields 0. Clamped to [0, 1].
+    """
+    total = sum(it.weight for it in rubric.items)
+    if not total:
+        return 0.0
+    weighted = sum(per_item.get(it.id, 0.0) * it.weight for it in rubric.items)
+    return max(0.0, min(1.0, weighted / total))
+
+
+def rubric_score_schema(rubric: "Rubric") -> dict:
+    """JSON Schema forcing a judge to return ``{per_item: {<id>: number, ...}}`` with
+    exactly the rubric's ids as keys.
+
+    Used by both judges for structured output (OpenRouter ``response_format`` and the
+    Claude CLI ``--json-schema``), so the model can't drift to positional keys. No
+    ``minimum``/``maximum`` — strict structured outputs reject range keywords; the
+    0..1 range is asked in the prompt and clamped downstream.
+    """
+    ids = [it.id for it in rubric.items]
+    return {
+        "type": "object",
+        "properties": {
+            "per_item": {
+                "type": "object",
+                "properties": {i: {"type": "number"} for i in ids},
+                "required": ids,
+                "additionalProperties": False,
+            }
+        },
+        "required": ["per_item"],
+        "additionalProperties": False,
+    }
+
+
 class SeededInsight(BaseModel):
     """Knowledge pre-loaded before the run."""
 

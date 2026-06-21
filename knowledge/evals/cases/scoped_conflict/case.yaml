@@ -7,11 +7,11 @@
 # proves nothing. Tabs are AGAINST the default, so a pass here means the scoped
 # rule actively steered the agent away from what it would do on its own.
 #
-# needs: sandbox — the test is tab indentation, which only survives faithfully in
-# a written file. A single-shot backend returns chat prose / markdown fences where
-# tabs are unreliable, so this must grade answer.txt, not a reply.
+# needs: file_io — the test is tab indentation, which only survives faithfully in
+# a written file (a real box or structured file output), not a plain chat reply
+# where tabs get mangled. So this must grade answer.txt's contents, not prose.
 id: scoped_conflict
-needs: [sandbox]
+needs: [file_io]
 seed_prompt: |
   You are working in service-a. Write a short Python function (any small,
   self-contained function is fine) and save it to a file named answer.txt.

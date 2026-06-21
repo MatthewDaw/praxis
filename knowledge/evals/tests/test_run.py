@@ -47,6 +47,35 @@ def _case(**overrides):
     return EvalCase.model_validate(base)
 
 
+def test_weighted_overall_uses_declared_weights():
+    from knowledge.evals.eval_def import Rubric, RubricItem, weighted_overall
+
+    rubric = Rubric(
+        id="r",
+        items=[
+            RubricItem(id="scope", criterion="...", weight=3.0),
+            RubricItem(id="fn", criterion="...", weight=1.0),
+        ],
+    )
+    # heavily-weighted criterion fails, light one passes -> 0.25, not the 0.5 mean
+    assert weighted_overall(rubric, {"scope": 0.0, "fn": 1.0}) == 0.25
+    assert weighted_overall(rubric, {"fn": 1.0}) == 0.25  # missing item counts as 0
+    assert weighted_overall(rubric, {"scope": 1.0, "fn": 1.0}) == 1.0
+    assert weighted_overall(Rubric(id="r", items=[]), {}) == 0.0  # no items -> 0
+
+
+def test_align_per_item_handles_ids_and_positional_fallback():
+    from knowledge.evals.eval_def import Rubric, RubricItem, align_per_item
+
+    rubric = Rubric(
+        id="r", items=[RubricItem(id="a", criterion="..."), RubricItem(id="b", criterion="...")]
+    )
+    assert align_per_item(rubric, {"a": 1.0}) == {"a": 1.0, "b": 0.0}  # exact ids, missing -> 0
+    assert align_per_item(rubric, {"1": 0.0, "2": 1.0}) == {"a": 0.0, "b": 1.0}  # positional
+    assert align_per_item(rubric, {"x": 1.0}) == {"a": 0.0, "b": 0.0}  # no match, bad count -> 0
+    assert align_per_item(rubric, None) == {"a": 0.0, "b": 0.0}
+
+
 def test_resolve_check_imports_callable():
     from knowledge.evals.eval_def import DeterministicCheckRef
 
@@ -192,16 +221,48 @@ def test_fixtures_imply_sandbox_and_code_task_implies_code_exec():
     assert "code_exec" in case_needs(code_case)
 
 
-def test_file_artifact_checks_auto_derive_sandbox():
-    # A writes_file/modifies_file check reads ctx.artifacts (sandbox-only), so the
-    # case must skip on a backend that can't populate it — derived, not authored.
+def test_file_artifact_checks_auto_derive_file_io():
+    # A writes_file/modifies_file check reads ctx.artifacts, which only a file-
+    # producing runner populates — derive file_io so the case skips on a text-only
+    # backend (but runs on Claude OR the structured runner, both of which provide it).
     for ref in (
         "knowledge.evals.deterministic_checks.builds:writes_file",
         "knowledge.evals.deterministic_checks.builds:modifies_file",
     ):
         case = _case(deterministic_checks=[{"name": "f", "ref": ref, "params": {"path": "answer.txt"}}])
-        assert case_needs(case) == {"sandbox"}
-        assert unmet_needs(case, FakeRunner()) == {"sandbox"}
+        assert case_needs(case) == {"file_io"}
+        assert unmet_needs(case, FakeRunner()) == {"file_io"}
+
+
+def test_file_io_split_routes_fixture_cases_away_from_structured_runner():
+    from knowledge.evals.claude_code import ClaudeCodeRunner
+    from knowledge.evals.openrouter import StructuredOpenRouterRunner
+
+    # Claude provides both; the structured runner provides only file_io.
+    assert {"sandbox", "file_io"} <= ClaudeCodeRunner.provides
+    assert StructuredOpenRouterRunner.provides == frozenset({"file_io"})
+
+    structured = StructuredOpenRouterRunner()
+    # A file-only case runs on the structured runner; a fixture case still needs the box.
+    file_only = _case(needs=["file_io"])
+    fixture_case = _case(fixture_path="/tmp/box")
+    assert unmet_needs(file_only, structured) == set()
+    assert unmet_needs(fixture_case, structured) == {"sandbox"}
+
+
+def test_claude_runner_decouples_judge_by_openrouter_key(monkeypatch):
+    import knowledge.evals.run as run_mod
+    from knowledge.evals.claude_code import ClaudeCodeJudge, ClaudeCodeRunner
+    from knowledge.evals.openrouter import OpenRouterJudge
+
+    monkeypatch.setattr(run_mod, "load_env", lambda: None)  # don't pull .env
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    runner, judge = run_mod.select_runner("claude")
+    assert isinstance(runner, ClaudeCodeRunner) and isinstance(judge, OpenRouterJudge)
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    _, judge2 = run_mod.select_runner("claude")
+    assert isinstance(judge2, ClaudeCodeJudge)  # falls back when no OpenRouter key
 
 
 def test_partition_splits_runnable_from_skipped():

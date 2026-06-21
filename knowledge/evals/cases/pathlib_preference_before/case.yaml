@@ -6,10 +6,11 @@
 # lesson would prove nothing. Asserts the default is os.path; pair with
 # pathlib_preference (lesson seeded -> pathlib) to show the insight flips it.
 #
-# needs: sandbox for the same reason as the seeded case — the os.path / pathlib
-# checks must grade config_utils.py, not the chat reply's prose.
+# needs: file_io for the same reason as the seeded case — the os.path / pathlib
+# checks must grade config_utils.py (a real file or structured file output), not
+# the chat reply's prose.
 id: pathlib_preference_before
-needs: [sandbox]
+needs: [file_io]
 seed_prompt: |
   Create config_utils.py with a function `read_config(path)` that checks whether
   a config file exists and returns its path as a string. Do not create any other

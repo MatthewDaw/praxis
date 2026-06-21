@@ -224,15 +224,25 @@ def test_runner_honors_case_output_file():
     assert ctx.output_source == "named_file"
 
 
-def test_judge_parses_overall_score():
-    raw = json.dumps({"result": '{"per_item": {"on_topic": 1.0}, "overall": 0.83}'})
+def test_judge_reads_structured_output_and_weights():
+    # Constrained decoding -> scores land in `structured_output`, not `result`.
+    # Two items, weights 2 and 1; only the light one passes -> (0*2 + 1*1)/3 = 1/3.
+    seen = {}
+    raw = json.dumps({"structured_output": {"per_item": {"meter": 0.0, "topic": 1.0}}})
 
     def fake_cli(args, cwd, env, timeout):
+        seen["args"] = args
         return raw
 
-    rubric = Rubric(id="r", items=[RubricItem(id="on_topic", criterion="about the sea")])
-    judge = ClaudeCodeJudge(run_cli=fake_cli)
-    result = judge(rubric, EvalContext(case_id="c", output="some poem"))
-    assert result.overall == 0.83
-    assert result.per_item == {"on_topic": 1.0}
-    assert result.raw_response == raw  # raw response captured for the transcript
+    rubric = Rubric(
+        id="r",
+        items=[
+            RubricItem(id="meter", criterion="iambic", weight=2.0),
+            RubricItem(id="topic", criterion="about the sea", weight=1.0),
+        ],
+    )
+    result = ClaudeCodeJudge(run_cli=fake_cli)(rubric, EvalContext(case_id="c", output="some poem"))
+    assert "--json-schema" in seen["args"]  # constrained decoding requested
+    assert result.overall == pytest.approx(1 / 3)
+    assert result.per_item == {"meter": 0.0, "topic": 1.0}
+    assert result.raw_response == raw  # raw envelope captured for the transcript

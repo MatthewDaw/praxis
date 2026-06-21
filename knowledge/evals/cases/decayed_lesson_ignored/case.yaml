@@ -14,7 +14,7 @@ xfail: "no FilteredReader: the decayed rival is surfaced to the agent unfiltered
 # Grades config_utils.py code (avoids_os_path / uses_pathlib), so a single-shot
 # backend that returns chat prose contaminates both checks — needs a sandbox
 # runner that writes and grades the file.
-needs: [sandbox]
+needs: [file_io]
 # Path handling is left unspecified on purpose: the active pathlib lesson should
 # steer the choice. (Mandating os.path would order the agent to do the exact
 # decayed behavior this case is meant to penalize.)

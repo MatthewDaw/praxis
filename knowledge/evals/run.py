@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
@@ -137,10 +138,12 @@ def case_needs(case: EvalCase) -> set[str]:
         needs.add("sandbox")
     if case.code_task is not None:
         needs.add("code_exec")
-    # A writes_file/modifies_file check reads ctx.artifacts, which only a sandbox
-    # runner populates — derive the need so the case SKIPs (not FAILs) elsewhere.
+    # A writes_file/modifies_file check reads ctx.artifacts, which only a file-
+    # producing runner populates — derive file_io so the case SKIPs (not FAILs) on a
+    # text-only backend. file_io is weaker than sandbox: it's satisfied by the
+    # structured single-shot runner too, not just a real box.
     if any(ref.ref.endswith((":writes_file", ":modifies_file")) for ref in case.deterministic_checks):
-        needs.add("sandbox")
+        needs.add("file_io")
     return needs
 
 
@@ -380,15 +383,21 @@ _BACKEND_LABEL = {
     "claude": "real Claude Code (subscription)",
     "fake": "FakeRunner (offline, no credit)",
     "openrouter": "OpenRouter (cheap single-shot LLM)",
+    "structured": "OpenRouter structured file output (file_io)",
 }
 
 
 def select_runner(kind: str):
     """Return ``(runner, judge)`` for a backend kind.
 
-    - ``claude``     — real headless Claude Code + Claude Code judge (default, full fidelity).
+    - ``claude``     — real headless Claude Code runner (full fidelity). Grading uses
+                       the cheap OpenRouter judge when ``OPENROUTER_API_KEY`` is set
+                       (grading is a text task; routing it through the agent harness
+                       costs ~100x), falling back to the Claude judge otherwise.
     - ``fake``       — offline FakeRunner, no judge (deterministic checks only).
     - ``openrouter`` — cheap single-shot OpenRouter runner + judge (loads .env).
+    - ``structured`` — single-shot OpenRouter via structured file output (file_io):
+                       grades file artifacts on the cheap backend (loads .env).
     """
     if kind == "fake":
         return FakeRunner(), None
@@ -397,7 +406,19 @@ def select_runner(kind: str):
         from knowledge.evals.openrouter import OpenRouterJudge, OpenRouterRunner
 
         return OpenRouterRunner(), OpenRouterJudge()
-    load_env()  # so CLAUDE_CODE_MODEL (and any .env) is available to the runner
+    if kind == "structured":
+        load_env()
+        from knowledge.evals.openrouter import OpenRouterJudge, StructuredOpenRouterRunner
+
+        return StructuredOpenRouterRunner(), OpenRouterJudge()
+    load_env()  # so CLAUDE_CODE_MODEL / OPENROUTER_* (and any .env) is available
+    # Decouple grading from the runner: the judge is a text-grading task, so prefer
+    # the cheap structured OpenRouter judge; only fall back to the (far pricier)
+    # Claude judge when there's no OpenRouter key.
+    if os.getenv("OPENROUTER_API_KEY"):
+        from knowledge.evals.openrouter import OpenRouterJudge
+
+        return ClaudeCodeRunner(), OpenRouterJudge()
     return ClaudeCodeRunner(), ClaudeCodeJudge()
 
 
@@ -424,6 +445,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="cheap single-shot OpenRouter LLM backend (needs OPENROUTER_API_KEY in .env)",
     )
+    backend.add_argument(
+        "--structured",
+        action="store_true",
+        help="OpenRouter via structured file output — grades file artifacts (file_io) on the cheap backend",
+    )
     args = parser.parse_args(argv)
 
     # Load .env (PHOENIX_*, OPENROUTER_*) and light up tracing if configured.
@@ -441,7 +467,12 @@ def main(argv: list[str] | None = None) -> int:
         print("no cases to run")
         return 0
 
-    kind = "openrouter" if args.openrouter else "fake" if args.fake else "claude"
+    kind = (
+        "structured" if args.structured
+        else "openrouter" if args.openrouter
+        else "fake" if args.fake
+        else "claude"
+    )
     runner, judge = select_runner(kind)
 
     # Skip cases this backend can't grade faithfully (e.g. a sandbox case on the

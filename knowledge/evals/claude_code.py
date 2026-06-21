@@ -27,7 +27,15 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
-from knowledge.evals.eval_def import Artifact, EvalContext, JudgeResult, Rubric
+from knowledge.evals.eval_def import (
+    Artifact,
+    EvalContext,
+    JudgeResult,
+    Rubric,
+    align_per_item,
+    rubric_score_schema,
+    weighted_overall,
+)
 from knowledge.observability import tracing
 
 # Tools the boxed agent may use. Bash / WebSearch / WebFetch are explicitly
@@ -174,9 +182,10 @@ class ClaudeCodeRunner:
     file is absent.
     """
 
-    # Mounts fixtures into a real working dir and grades the files the agent
-    # writes — so it can faithfully run cases that need a sandbox.
-    provides = frozenset({"sandbox"})
+    # A real working dir: mounts fixtures (sandbox) AND grades the files the agent
+    # writes (file_io). file_io is also offered by the structured single-shot runner,
+    # so file-writing cases without a fixture run on both.
+    provides = frozenset({"sandbox", "file_io"})
 
     @staticmethod
     def serves_model(model: str) -> bool:
@@ -303,15 +312,17 @@ class ClaudeCodeJudge:
         self.timeout = timeout
 
     def __call__(self, rubric: Rubric, ctx: EvalContext) -> JudgeResult:
-        items = "\n".join(f"- ({it.weight}) {it.id}: {it.criterion}" for it in rubric.items)
+        items = "\n".join(f"- {it.id}: {it.criterion}" for it in rubric.items)
         prompt = (
-            "You are grading an artifact against a rubric. Score each criterion "
-            "from 0.0 to 1.0, then return ONLY a JSON object of the form "
-            '{\"per_item\": {\"<id>\": <score>}, \"overall\": <weighted average 0..1>}. '
-            "No prose.\n\n"
+            "You are grading an artifact against a rubric. Score each criterion from "
+            "0.0 to 1.0, keyed by its exact id (the token before its colon). Do not "
+            "compute an overall — the harness applies the weights.\n\n"
             f"RUBRIC:\n{items}\n\n"
             f"ARTIFACT:\n{ctx.output}\n"
         )
+        # Constrained decoding: the schema-conforming object lands in the envelope's
+        # `structured_output` field (NOT `result`, which stays prose).
+        schema = json.dumps(rubric_score_schema(rubric))
         with tracing.llm_span(
             "claude_code.judge", kind="LLM", model="claude-code", input_value=prompt
         ) as span:
@@ -321,15 +332,17 @@ class ClaudeCodeJudge:
                     prompt,
                     "--output-format",
                     "json",
+                    "--json-schema",
+                    schema,
                     "--disallowedTools",
                     *_ALLOWED_TOOLS,
                     *_DISALLOWED_TOOLS,
                 ]
                 stdout = self.run_cli(args, Path(tmp), _subscription_env(), self.timeout)
 
-            parsed = _extract_json(_result_text(stdout))
-            overall = max(0.0, min(1.0, float(parsed.get("overall", 0.0))))
-            per_item = {k: float(v) for k, v in (parsed.get("per_item") or {}).items()}
+            structured = (json.loads(stdout) if stdout.strip() else {}).get("structured_output") or {}
+            per_item = align_per_item(rubric, structured.get("per_item"))
+            overall = weighted_overall(rubric, per_item)
             usage = _claude_usage(stdout)
             tracing.record_output(
                 span,
