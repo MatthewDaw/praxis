@@ -94,3 +94,35 @@ def function_calls(ctx: EvalContext, *, caller: str, callee: str) -> CheckResult
         passed=False,
         evidence=f"no call to {callee} found inside {caller}",
     )
+
+
+def writes_file(ctx: EvalContext, *, path: str) -> CheckResult:
+    """Pass iff the agent CREATED a new file at ``path`` (box-relative).
+
+    Reads ``ctx.artifacts``, which only a sandbox runner populates — single-shot
+    backends leave it empty, so this fails there (the case should be gated to a
+    sandbox). Distinguishes "wrote the artifact" from "talked about it in chat".
+    """
+    created = {a.path for a in ctx.artifacts if a.status == "created"}
+    ok = path in created
+    return CheckResult(
+        name="writes_file",
+        passed=ok,
+        evidence=(f"created {path!r}" if ok else f"{path!r} not among created files {sorted(created)}"),
+    )
+
+
+def modifies_file(ctx: EvalContext, *, path: str) -> CheckResult:
+    """Pass iff the agent MODIFIED an existing (mounted) file at ``path``.
+
+    Strict counterpart to :func:`writes_file`: a freshly *created* file does not
+    count — use ``writes_file`` for that. Empty ``ctx.artifacts`` (single-shot)
+    fails, as with ``writes_file``.
+    """
+    modified = {a.path for a in ctx.artifacts if a.status == "modified"}
+    ok = path in modified
+    return CheckResult(
+        name="modifies_file",
+        passed=ok,
+        evidence=(f"modified {path!r}" if ok else f"{path!r} not among modified files {sorted(modified)}"),
+    )

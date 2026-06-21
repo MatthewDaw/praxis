@@ -71,6 +71,7 @@ class EvalCase(BaseModel):
     needs: list[str] = Field(default_factory=list)  # runner capabilities required (e.g. "sandbox"); a backend that can't provide them skips the case
     xfail: str | None = None  # if set, the case is expected to fail (reason = the unbuilt capability); a real fail reports XFAIL, an unexpected pass reports XPASS
     model: str | None = None  # pin the runner's model (e.g. "openai/gpt-4o-mini", "sonnet"); None => the backend's default. NB: model ids are backend-specific
+    output_file: str | None = None  # box-relative artifact whose content is graded; None => runner default. Only sandbox runners honor it
     seeded_insight: SeededInsight = Field(default_factory=SeededInsight)
     deterministic_checks: list[DeterministicCheckRef] = Field(default_factory=list)
     rubric: Rubric | None = None
@@ -92,12 +93,23 @@ class EvalCase(BaseModel):
 # --- the contracts a registered check and a run must satisfy ---
 
 
+class Artifact(BaseModel):
+    """A file the agent produced in the box, relative to its root.
+
+    ``status`` is computed against the start state mounted before the run, so a
+    runner without a real working dir (single-shot, fake) reports no artifacts.
+    """
+
+    path: str  # box-relative, posix ("calculator.py")
+    status: Literal["created", "modified"]  # vs the mounted start state
+
+
 class EvalContext(BaseModel):
     """What graders see: the agent's produced output and where it ran.
 
     The trailing fields are *provenance* for the run transcript — they don't
     affect grading. A runner with nothing to report (e.g. ``FakeRunner``) leaves
-    them ``None``.
+    them ``None`` / empty.
     """
 
     case_id: str
@@ -106,6 +118,7 @@ class EvalContext(BaseModel):
     raw_response: str | None = None  # full agent CLI stdout (json: result + cost/usage/turns)
     output_source: str | None = None  # which artifact `output` came from
     injected_knowledge: str | None = None  # what the graph reader fed into the system prompt
+    artifacts: list[Artifact] = Field(default_factory=list)  # files the agent created/modified (sandbox runners only)
 
 
 class CheckResult(BaseModel):
@@ -140,6 +153,7 @@ class AgentRun(BaseModel):
     raw_response: str | None = None
     output: str = ""
     output_source: str | None = None
+    artifacts: list[Artifact] = Field(default_factory=list)  # files created/modified in the box
 
 
 class RunTranscript(BaseModel):

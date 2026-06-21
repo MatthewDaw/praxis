@@ -24,6 +24,10 @@ seeded_insight:
     - "Poetry style: always write poems in strict iambic pentameter — ten syllables per line, alternating unstressed/stressed feet."
 
 deterministic_checks:
+  - name: wrote_poem_file
+    ref: "knowledge.evals.deterministic_checks.builds:writes_file"
+    params:
+      path: poem.txt
   - name: iambic_pentameter
     ref: "knowledge.evals.deterministic_checks.poetry:is_iambic_pentameter"
     params:

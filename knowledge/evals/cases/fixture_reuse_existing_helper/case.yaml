@@ -1,33 +1,36 @@
-# Scenario: a full-pipeline case that ships fixtures/utils.py containing a
-# working slugify() helper. The runner mounts fixtures/ into the sealed box.
-# The seeded graph instructs the agent to REUSE helpers from utils.py and never
-# reimplement them. The task needs a slug, so the agent should import and CALL
-# slugify(...) rather than writing its own "def slugify".
-# Scope: full-pipeline (no component) — real Claude Code agent.
-# Expected under a real run: JUDGE / often FAIL. Agents frequently reimplement a
-# trivial helper inline instead of importing the existing one, which trips the
-# occurs_at_most "def slugify" n=1 guard. The case documents the desired
-# reuse behavior; the deterministic checks (and the probe) prove the guard is
-# sound regardless of whether the agent currently obeys it.
+# Reuse-steering case (full-pipeline, real Claude Code). fixtures/utils.py ships a
+# working slugify() helper. The prompt is NEUTRAL — it never mentions utils.py or
+# mandates reuse — so the seeded knowledge ("reuse utils helpers; utils.py provides
+# slugify") is what should steer the agent to import slugify rather than write its
+# own. The agent writes answer.py; output_file scopes grading to THAT file, not the
+# box-sweep (which would otherwise read slugify( straight out of the fixture and
+# pass the check no matter what the agent did).
+#
+# Cold baseline: fixture_reuse_existing_helper_before (same fixture + prompt, empty
+# graph) shows the default is to reimplement the slug inline — so a green
+# calls_slugify here is attributable to the injected knowledge. Sandbox-gated
+# (fixture + writes_file); runs on Claude Code, SKIPs on single-shot.
 id: fixture_reuse_existing_helper
+output_file: answer.py
 seed_prompt: |
-  A module utils.py exists in your working directory; it defines a slugify(text)
-  helper that turns text into a URL-safe slug. Write a short Python script to
-  answer.py that, given the title "Hello, World! My First Post", produces its
-  slug and prints it. You MUST reuse the existing helper by importing it from
-  utils — do not write your own slug logic. Write only the script to answer.py.
+  Write a short Python script to answer.py that takes the title
+  "Hello, World! My First Post", produces its URL-safe slug, and prints it.
+  Write only the script to answer.py.
 target_commit: "0000000000000000000000000000000000000000"
 seeded_insight:
   direct_to_graph:
     - "Convention: reuse helpers in utils.py; never reimplement them."
     - "utils.py provides slugify(text) for producing URL-safe slugs."
 deterministic_checks:
+  - name: wrote_answer
+    ref: knowledge.evals.deterministic_checks.builds:writes_file
+    params:
+      path: answer.py
   - name: calls_slugify
     ref: knowledge.evals.deterministic_checks.builds:contains_text
     params:
       text: "slugify("
   - name: does_not_reimplement_slugify
-    ref: knowledge.evals.deterministic_checks.text:occurs_at_most
+    ref: knowledge.evals.deterministic_checks.text:forbids_substring
     params:
       text: "def slugify"
-      n: 1

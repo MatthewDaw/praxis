@@ -1,0 +1,4 @@
+{
+  "good": "import re\n\ntitle = \"Hello, World! My First Post\"\nslug = re.sub(r\"[^a-z0-9]+\", \"-\", title.lower()).strip(\"-\")\nprint(slug)\n",
+  "bad": "from utils import slugify\n\ntitle = \"Hello, World! My First Post\"\nprint(slugify(title))\n"
+}

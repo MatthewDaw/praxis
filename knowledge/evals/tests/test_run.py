@@ -192,6 +192,18 @@ def test_fixtures_imply_sandbox_and_code_task_implies_code_exec():
     assert "code_exec" in case_needs(code_case)
 
 
+def test_file_artifact_checks_auto_derive_sandbox():
+    # A writes_file/modifies_file check reads ctx.artifacts (sandbox-only), so the
+    # case must skip on a backend that can't populate it — derived, not authored.
+    for ref in (
+        "knowledge.evals.deterministic_checks.builds:writes_file",
+        "knowledge.evals.deterministic_checks.builds:modifies_file",
+    ):
+        case = _case(deterministic_checks=[{"name": "f", "ref": ref, "params": {"path": "answer.txt"}}])
+        assert case_needs(case) == {"sandbox"}
+        assert unmet_needs(case, FakeRunner()) == {"sandbox"}
+
+
 def test_partition_splits_runnable_from_skipped():
     plain = _case(id="plain")
     sandboxed = _case(id="boxed", needs=["sandbox"])

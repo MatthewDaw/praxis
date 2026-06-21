@@ -169,6 +169,61 @@ def test_default_run_cli_surfaces_stdout_on_failure(monkeypatch):
     assert "model may not exist" in str(ei.value)  # stdout surfaced, not swallowed
 
 
+def test_runner_records_created_artifact():
+    def fake_cli(args, cwd, env, timeout):
+        (Path(cwd) / "answer.txt").write_text("hello", encoding="utf-8")
+        return json.dumps({"result": "done"})
+
+    _, _, reader = build_trio()
+    ctx = ClaudeCodeRunner(run_cli=fake_cli).run(_case(), reader)
+    assert [(a.path, a.status) for a in ctx.artifacts] == [("answer.txt", "created")]
+
+
+def test_runner_records_modified_artifact(tmp_path):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "calculator.py").write_text("def sub(a, b):\n    return a - b\n", encoding="utf-8")
+
+    def fake_cli(args, cwd, env, timeout):
+        calc = Path(cwd) / "calculator.py"
+        calc.write_text(calc.read_text(encoding="utf-8") + "\ndef add(a, b):\n    return a + b\n", encoding="utf-8")
+        return json.dumps({"result": "done"})
+
+    case = _case().model_copy(update={"fixture_path": str(fixture)})
+    _, _, reader = build_trio()
+    ctx = ClaudeCodeRunner(run_cli=fake_cli).run(case, reader)
+    assert [(a.path, a.status) for a in ctx.artifacts] == [("calculator.py", "modified")]
+
+
+def test_runner_omits_unchanged_fixture_files(tmp_path):
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    (fixture / "calculator.py").write_text("def sub(a, b):\n    return a - b\n", encoding="utf-8")
+
+    def fake_cli(args, cwd, env, timeout):
+        (Path(cwd) / "answer.txt").write_text("new", encoding="utf-8")  # touch a different file
+        return json.dumps({"result": "done"})
+
+    case = _case().model_copy(update={"fixture_path": str(fixture)})
+    _, _, reader = build_trio()
+    ctx = ClaudeCodeRunner(run_cli=fake_cli).run(case, reader)
+    assert ("answer.txt", "created") in {(a.path, a.status) for a in ctx.artifacts}
+    assert not any(a.path == "calculator.py" for a in ctx.artifacts)  # untouched -> omitted
+
+
+def test_runner_honors_case_output_file():
+    def fake_cli(args, cwd, env, timeout):
+        (Path(cwd) / "answer.py").write_text("ANSWER", encoding="utf-8")
+        (Path(cwd) / "other.py").write_text("OTHER", encoding="utf-8")
+        return json.dumps({"result": "done"})
+
+    case = _case().model_copy(update={"output_file": "answer.py"})
+    _, _, reader = build_trio()
+    ctx = ClaudeCodeRunner(run_cli=fake_cli).run(case, reader)
+    assert ctx.output == "ANSWER"  # graded the named file alone, not OTHER / a box-sweep
+    assert ctx.output_source == "named_file"
+
+
 def test_judge_parses_overall_score():
     raw = json.dumps({"result": '{"per_item": {"on_topic": 1.0}, "overall": 0.83}'})
 

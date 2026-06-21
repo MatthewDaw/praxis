@@ -1,7 +1,7 @@
 # Proposal: faithful per-artifact grading (`output_file` + `writes_file` / `modifies_file`)
 
 **Owner:** Dominic Antonelli — eval harness
-**Status:** Draft — for review
+**Status:** Accepted — core (§4–§8) implemented; `StructuredOpenRouterRunner` (§11) is a pending follow-on
 **Date:** 2026-06-20
 **Scope:** `knowledge/evals` (EvalCase + EvalContext contracts, ClaudeCodeRunner, deterministic checks)
 
@@ -278,19 +278,26 @@ files into the box, exactly as the existing
 - **Name-coupling in `case_needs`** (auto-derive) is mild magic. Acceptable and
   mirrors the existing fixtures→sandbox rule; documented in the function.
 
-## 10. Open questions
+## 10. Decisions (resolved)
 
-1. Should `modifies_file` also accept a freshly *created* file at `path` (i.e.
-   "ensure it exists, however it got there")? Current proposal says no — keep the
-   created/modified split crisp. Revisit if a case needs the union.
-2. Do we want a `deletes_file(path)` for cases that assert cleanup? Out of scope;
-   trivial to add later (path in `start` but not in `end`).
-3. Should `artifacts` also flow into the verbose `RunTranscript` for debugging?
-   Low cost, probably yes — fold into the transcript's `AgentRun`.
-4. When `output_file` is set but the file is **absent**, fall back to the box-sweep
-   (current behavior, with `writes_file` flagging the absence) or fail the content
-   check loudly? Proposal: keep the fallback — `writes_file` is the existence
-   assertion, content checks stay orthogonal.
+1. **`modifies_file` is strict** — a freshly *created* file does not count; use
+   `writes_file` for that. Keeps the created/modified split crisp. (A `touches_file`
+   union can be added later if a case needs it.)
+2. **`deletes_file` is deferred** — no case needs it yet; trivial to add later
+   (path in `start` but not in `end`).
+3. **`artifacts` flows into the transcript** — carried on `AgentRun` so a failed run
+   shows exactly what the agent wrote.
+4. **`output_file`-absent falls back to the box-sweep** — `writes_file` is the
+   existence assertion that flags the missing file; content checks stay orthogonal
+   (so you get a granular `FAIL (n−1/n)` pinpointing the absence, not a blank).
+5. **Auto-derive the need (§6)** — a `writes_file`/`modifies_file` check adds
+   `sandbox` to `case_needs` automatically, so the case SKIPs (not FAILs) on a
+   backend that can't populate `artifacts`.
+
+Implementation note: the probe harness (`test_probes.py`) treats a probe string for
+an `output_file` case as that file's content and synthesizes a matching `created`
+artifact, so `writes_file`/`output_file` cases stay probe-able with plain good/bad
+strings.
 
 ## 11. Follow-on: `StructuredOpenRouterRunner` (output-side `file_io`)
 

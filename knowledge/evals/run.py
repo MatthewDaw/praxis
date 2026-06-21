@@ -137,6 +137,10 @@ def case_needs(case: EvalCase) -> set[str]:
         needs.add("sandbox")
     if case.code_task is not None:
         needs.add("code_exec")
+    # A writes_file/modifies_file check reads ctx.artifacts, which only a sandbox
+    # runner populates — derive the need so the case SKIPs (not FAILs) elsewhere.
+    if any(ref.ref.endswith((":writes_file", ":modifies_file")) for ref in case.deterministic_checks):
+        needs.add("sandbox")
     return needs
 
 
@@ -311,6 +315,7 @@ def build_transcript(
             raw_response=ctx.raw_response,
             output=ctx.output,
             output_source=ctx.output_source,
+            artifacts=ctx.artifacts,
         ),
         judge=judge_result,
         verdict=verdict,

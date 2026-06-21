@@ -1,0 +1,29 @@
+# Cold baseline / negative control for fixture_reuse_existing_helper. Same fixture
+# (fixtures/utils.py with slugify) and the same NEUTRAL prompt, but an EMPTY graph.
+# Without the "reuse utils helpers" lesson, the agent reimplements the slug itself
+# (observed: inline title.lower()/re.sub) instead of importing the existing helper.
+# This proves the after-arm's calls_slugify pass is caused by the injected
+# knowledge, not the model's default.
+#
+# did_not_import_helper is the discriminator: cold answer.py does NOT import from
+# utils. output_file scopes the check to answer.py (the box also contains utils.py,
+# which obviously imports nothing from utils but would still muddy a box-sweep).
+# Sandbox-gated (fixture + writes_file); runs on Claude Code, SKIPs on single-shot.
+id: fixture_reuse_existing_helper_before
+output_file: answer.py
+seed_prompt: |
+  Write a short Python script to answer.py that takes the title
+  "Hello, World! My First Post", produces its URL-safe slug, and prints it.
+  Write only the script to answer.py.
+target_commit: "0000000000000000000000000000000000000000"
+seeded_insight:
+  direct_to_graph: []
+deterministic_checks:
+  - name: wrote_answer
+    ref: knowledge.evals.deterministic_checks.builds:writes_file
+    params:
+      path: answer.py
+  - name: did_not_import_helper
+    ref: knowledge.evals.deterministic_checks.text:forbids_substring
+    params:
+      text: "from utils import"
