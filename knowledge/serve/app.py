@@ -43,7 +43,8 @@ METRICS_FIXTURE = (
 )
 _DEFAULT_CORS_REGEX = (
     r"(http://(localhost|127\.0\.0\.1):\d+|https://[\w-]+\.onrender\.com"
-    r"|https://[\w-]+\.cloudfront\.net|https://[\w-]+\.awsapprunner\.com)"
+    r"|https://[\w-]+\.cloudfront\.net|https://[\w-]+\.awsapprunner\.com"
+    r"|https://[\w-]+\.praxiskg\.com)"
 )
 
 

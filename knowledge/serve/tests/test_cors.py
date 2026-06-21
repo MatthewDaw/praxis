@@ -17,6 +17,8 @@ from knowledge.serve.app import _cors_origin_regex
         "https://praxis-dash.onrender.com",
         "https://abc-123.cloudfront.net",
         "https://praxis-backend-xyz.awsapprunner.com",
+        "https://app.praxiskg.com",
+        "https://mcp.praxiskg.com",
     ],
 )
 def test_cors_regex_allows(origin: str) -> None:
@@ -29,6 +31,7 @@ def test_cors_regex_allows(origin: str) -> None:
         "https://evil.example.com",
         "http://cloudfront.net",
         "https://abc.cloudfront.net.evil.com",
+        "https://app.praxiskg.com.evil.com",
     ],
 )
 def test_cors_regex_rejects(origin: str) -> None:
