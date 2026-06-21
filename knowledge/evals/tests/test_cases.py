@@ -263,36 +263,3 @@ def test_decayed_lesson_ignored_fails_offline_by_default():
     result = run_case(case, FakeRunner())
     assert result.passed is False
 
-
-def test_cross_session_rediscovery_registered():
-    cases = load_cases()
-    assert any(c.id == "cross_session_rediscovery" for c in cases)
-
-
-def test_cross_session_rediscovery_passes_with_scripted_output():
-    case = load_case(CASES_DIR / "cross_session_rediscovery")
-    scripted = {
-        "cross_session_rediscovery": (
-            'function statusLabel(status: "open" | "closed" | "pending"): string {\n'
-            "  switch (status) {\n"
-            '    case "open": return "Open";\n'
-            '    case "closed": return "Closed";\n'
-            '    case "pending": return "Pending";\n'
-            "    default: {\n"
-            "      const _exhaustive: never = status;\n"
-            "      return _exhaustive;\n"
-            "    }\n"
-            "  }\n"
-            "}\n"
-        )
-    }
-    result = run_case(case, FakeRunner(scripted=scripted))
-    assert result.case_id == "cross_session_rediscovery"
-    assert result.passed is True
-
-
-def test_cross_session_rediscovery_fails_offline_by_default():
-    case = load_case(CASES_DIR / "cross_session_rediscovery")
-    result = run_case(case, FakeRunner())
-    assert result.passed is False
-

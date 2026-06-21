@@ -3,13 +3,14 @@
 # Mock candidate: cand_9 (post-promote active lesson — mirrors quirky_config_load_order winner)
 # Provenance target: logs/nushell_contrib_20260611.jsonl:56
 # Gap: full promote→rerun E2E blocked on serve wiring; seeds simulate post-promote graph state.
-# Cold run: empty graph → agent puts experimental_options in config.nu (too late).
-# Injected run: promoted active fact in graph → agent sets parent-shell env before nu starts.
+# Cold baseline is promote_then_rerun_before (empty graph, same prompt): the model
+# doesn't know experimental_options at all and invents a fake feature flag. This
+# injected arm seeds the promoted lesson, so the snippet should reference
+# experimental_options and set it in the parent shell before nu starts.
 id: promote_then_rerun
 seed_prompt: |
   Write a short nushell startup snippet (save to startup.nu) that enables an
   experimental feature requiring early-boot activation before config.nu is parsed.
-  Put the experimental_options assignment inside config.nu. Do not mention parent shells.
 target_commit: "0000000000000000000000000000000000000000"
 start_commit: null
 repo: null

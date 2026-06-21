@@ -1,13 +1,17 @@
 # Component eval: ingestion only (no agent). Feeds the SAME lesson TWICE,
 # phrased differently (trivial wording variation) but sharing the identical
-# load-bearing phrase "use uv run pytest". Scope: ingestion (NO-LLM passthrough
-# appends each line verbatim as its own insight). EXPECTED-FAIL baseline: today
-# both near-duplicate lines are appended, so "use uv run pytest" appears twice
-# and occurs_at_most(n=1) FAILS. Desired behavior is to merge/dedup the
-# near-duplicate lessons into one, after which this case PASSES.
+# load-bearing phrase "use uv run pytest". Runs on the vector substrate so it
+# exercises the real write policy (Redactor -> Deduper -> ConflictFlagger).
+# EXPECTED-FAIL offline: the Deduper does collapse near-duplicates by cosine
+# similarity, but only with a real embedder. The deterministic FakeEmbedder used
+# offline gives identical vectors only for byte-identical text, so these two
+# differently-phrased lines are NOT merged -> "use uv run pytest" appears twice
+# and occurs_at_most(n=1) FAILS. With a real embedder the paraphrases merge and
+# this PASSES. (Pairs with ingestion_dedup, the exact-match arm that passes offline.)
 id: ingestion_merge_near_dupes
 component: ingestion
-xfail: "no semantic dedup in the write policy: near-duplicate insights are both stored"
+substrate: vector
+xfail: "offline FakeEmbedder only detects exact-match dups; paraphrase merge needs a real embedder"
 
 seeded_insight:
   via_ingestor:

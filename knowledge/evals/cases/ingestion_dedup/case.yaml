@@ -1,8 +1,9 @@
 # Component eval: ingestion only (no agent). Feeds the SAME line through the
-# Ingestor twice and reads the resulting graph. This is an EXPECTED-FAIL
-# baseline documenting the missing dedup capability: today the graph appends
-# duplicate insights, so "uv run pytest" appears twice and occurs_at_most(n=1)
-# FAILS. When dedup is added, the duplicate is collapsed and this case PASSES.
+# Ingestor twice and reads the resulting graph. Runs on the vector substrate, so
+# the write policy's Deduper collapses the byte-identical duplicate (exact match
+# works even with the offline FakeEmbedder): "uv run pytest" appears once and
+# occurs_at_most(n=1) PASSES. This is the exact-match arm; ingestion_merge_near_dupes
+# is the paraphrase arm that stays XFAIL offline until a real embedder is wired.
 id: ingestion_dedup
 component: ingestion
 substrate: vector

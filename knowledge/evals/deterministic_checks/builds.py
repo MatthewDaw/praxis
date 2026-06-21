@@ -94,3 +94,41 @@ def function_calls(ctx: EvalContext, *, caller: str, callee: str) -> CheckResult
         passed=False,
         evidence=f"no call to {callee} found inside {caller}",
     )
+
+
+def function_does_not_call(ctx: EvalContext, *, caller: str, callee: str) -> CheckResult:
+    """Pass iff ``caller`` is defined and does NOT call ``callee``.
+
+    The negative-control counterpart to :func:`function_calls`: it confirms the
+    agent implemented ``caller`` directly instead of delegating to ``callee``.
+    Fails if ``caller`` calls ``callee`` — and also if ``caller`` is absent, since
+    a missing function can't demonstrate the avoidance.
+    """
+    found = False
+    for src in _py_sources(ctx.output):
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            is_func = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            if is_func and node.name == caller:
+                found = True
+                for inner in ast.walk(node):
+                    if isinstance(inner, ast.Call) and _call_name(inner.func) == callee:
+                        return CheckResult(
+                            name="function_does_not_call",
+                            passed=False,
+                            evidence=f"{caller} calls {callee}",
+                        )
+    if not found:
+        return CheckResult(
+            name="function_does_not_call",
+            passed=False,
+            evidence=f"no function named {caller} found",
+        )
+    return CheckResult(
+        name="function_does_not_call",
+        passed=True,
+        evidence=f"{caller} does not call {callee}",
+    )

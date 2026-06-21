@@ -1,0 +1,37 @@
+# Negative control / cold baseline for promote_then_rerun (and quirky_config_load_order).
+# Empty graph, SAME neutral prompt as the after-arm. This proves the injected
+# lesson actually changes behavior: without it the model doesn't know nushell's
+# early-boot mechanism at all.
+#
+# Empirically (gpt-4o-mini, temp 0): cold, the model never says
+# `experimental_options` — it invents a plausible `NUSHELL_EXPERIMENTAL_FEATURE`
+# env var and drops it in a startup file. So the deterministic signal of cold
+# ignorance is the ABSENCE of `experimental_options` (the inverse of the after's
+# `mentions_experimental_options`). Mirrors pathlib_preference_before, which
+# asserts the cold default is os.path.
+#
+# Pinned to gpt-4o-mini: the cold-ignorance is model-specific (a stronger model
+# may know `experimental_options` cold and correctly break this control). Pinning
+# keeps the assertion matched to the evidence; on a backend that can't serve the
+# model the case is SKIPped, not mis-graded. Unpin if you'd rather it break
+# loudly to signal the discriminator died for a given model.
+id: promote_then_rerun_before
+model: "openai/gpt-4o-mini"  # cold-ignorance calibrated on this model
+seed_prompt: |
+  Write a short nushell startup snippet (save to startup.nu) that enables an
+  experimental feature requiring early-boot activation before config.nu is parsed.
+target_commit: "0000000000000000000000000000000000000000"
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph: []
+
+deterministic_checks:
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+  - name: lacks_experimental_options
+    ref: "knowledge.evals.deterministic_checks.builds:not_contains_text"
+    params:
+      text: "experimental_options"

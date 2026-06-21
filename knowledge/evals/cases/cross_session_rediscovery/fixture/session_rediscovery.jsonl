@@ -1,2 +1,0 @@
-{"type":"user","message":"The switch on Status enum keeps missing cases when we add variants."}
-{"type":"assistant","message":"Add a default branch: const _exhaustive: never = status; return _exhaustive; — catches new enum variants at compile time."}

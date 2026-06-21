@@ -1,6 +1,9 @@
 """Tests for the example deterministic checks."""
 
-from knowledge.evals.deterministic_checks.builds import function_calls
+from knowledge.evals.deterministic_checks.builds import (
+    function_calls,
+    function_does_not_call,
+)
 from knowledge.evals.eval_def import EvalContext
 
 
@@ -48,3 +51,24 @@ def test_function_calls_tolerates_unparseable_chunks():
         "def add(a, b):\n    return subtract(a, -b)\n"
     )
     assert function_calls(_ctx(output), caller="add", callee="subtract").passed
+
+
+def test_function_does_not_call_passes_when_implemented_directly():
+    # add is defined and computes the sum directly — the cold-baseline default.
+    src = (
+        "def subtract(a, b):\n    return a - b\n\n"
+        "def add(a, b):\n    return a + b\n\n"
+        "print(subtract(10, 4))\n"  # a call to subtract OUTSIDE add doesn't count
+    )
+    assert function_does_not_call(_ctx(src), caller="add", callee="subtract").passed
+
+
+def test_function_does_not_call_fails_when_caller_delegates():
+    src = "def add(a, b):\n    return subtract(a, -b)\n"
+    assert not function_does_not_call(_ctx(src), caller="add", callee="subtract").passed
+
+
+def test_function_does_not_call_fails_when_caller_absent():
+    # Can't demonstrate avoidance if add was never written.
+    src = "def subtract(a, b):\n    return a - b\n"
+    assert not function_does_not_call(_ctx(src), caller="add", callee="subtract").passed

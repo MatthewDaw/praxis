@@ -1,0 +1,35 @@
+# Cold baseline / negative control for add_via_subtract. Same fixture (calculator
+# app with subtract but no add) and the same neutral prompt, but an EMPTY graph.
+# Without the "reuse an existing function" lesson, the agent should implement add
+# the obvious way (return a + b) and NOT delegate to subtract. This proves the
+# add_calls_subtract pass in the after-arm is caused by the injected knowledge,
+# not the model's default (which no model implements add-via-subtract by default).
+#
+# add_avoids_subtract uses the AST-scoped function_does_not_call: the fixture's
+# main.py calls subtract(), so a plain substring check would false-positive — only
+# a call INSIDE add counts. Sandbox-gated (has a fixture): runs on Claude Code,
+# SKIPs on single-shot. Expected to FAIL under the offline FakeRunner.
+id: add_via_subtract_before
+seed_prompt: |
+  Add a function `add(a, b)` to calculator.py that returns the sum of its two
+  arguments, with a docstring and a corresponding test.
+target_commit: "0000000000000000000000000000000000000000"  # placeholder reference
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph: []
+
+deterministic_checks:
+  - name: defines_add
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "def add"
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
+  - name: add_avoids_subtract
+    ref: "knowledge.evals.deterministic_checks.builds:function_does_not_call"
+    params:
+      caller: add
+      callee: subtract

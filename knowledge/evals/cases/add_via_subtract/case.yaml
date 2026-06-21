@@ -1,8 +1,17 @@
-# Fixture-seeded case: the sibling `fixture/` dir (a tiny working calculator app
-# with subtract but no add) is copied into the box as the start state, and the
-# agent must edit calculator.py to add `add`. Expected to FAIL under the offline
-# FakeRunner — the point is the harness runs end-to-end and records a baseline.
-id: dom_fixture_test
+# Knowledge-steering case (full-pipeline, real Claude Code). The sibling fixture/
+# dir (a tiny calculator app with subtract but no add) is mounted into the box.
+# The prompt is NEUTRAL — "add a function add(a, b)" — so nothing in the task
+# itself asks for reuse. The seeded lesson ("write a function in terms of an
+# existing one") is what should steer the agent to implement add via the existing
+# subtract (return subtract(a, -b)) instead of the obvious a + b. add_calls_subtract
+# is the discriminator that proves the knowledge changed behavior.
+#
+# Cold baseline: add_via_subtract_before (same fixture + prompt, empty graph) asserts
+# the default is a direct a + b that does NOT call subtract — so a green
+# add_calls_subtract here is attributable to the injected knowledge, not the model's
+# default. Sandbox-gated (has a fixture): runs on Claude Code, SKIPs on single-shot.
+# Expected to FAIL under the offline FakeRunner.
+id: add_via_subtract
 seed_prompt: |
   Add a function `add(a, b)` to calculator.py that returns the sum of its two
   arguments, with a docstring and a corresponding test.
@@ -15,14 +24,6 @@ seeded_insight:
     - "This project keeps small pure helpers in calculator.py."
   direct_to_graph:
     - "Every public function needs a docstring and a unit test."
-    ######
-    ## This one didn't convince Claude Code to pass the eval.
-#    - "If an existing function can calculate something already, just with an input remapping, use it."
-    ######
-    ## This one worked, but was pretty much overfitting
-#    - "add functions should always be written in terms of subtract, rather than implemented directly."
-    ######
-    ## This one worked too, and is a little more general
     - "If a function can be written in terms of an existing function, it should be, rather than being implemented directly"
 
 deterministic_checks:
@@ -39,7 +40,7 @@ deterministic_checks:
       callee: subtract
 
 rubric:
-  id: add_function_v1
+  id: add_via_subtract_v1
   items:
     - id: correctness
       criterion: "The add function returns a + b for representative inputs."
