@@ -20,7 +20,8 @@ const MOCK_FIXTURE = {
       tokens: { prompt: 100, completion: 50, total: 150 },
       model: "claude-sonnet",
       spans: [],
-      phoenixUrl: "https://phoenix.example.com/projects/praxis-eval/traces/trace-a",
+      phoenixUrl:
+        "https://phoenix.example.com/v1/projects/praxis-eval/spans?trace_id=trace-a",
     },
     {
       traceId: "trace-b",

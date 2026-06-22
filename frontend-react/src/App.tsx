@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { ApiConflictError } from "./api/apiClient";
+import {
+  ApiConflictError,
+  GraphIngestUnavailableError,
+  postInsight,
+} from "./api/apiClient";
 import { buildLocalLogSession } from "./api/localLogsProvider";
 import { CandidateCards } from "./components/CandidateCards";
 import { CandidateDetail } from "./components/CandidateDetail";
@@ -122,6 +126,38 @@ export default function App() {
     setGraphRefreshKey((value) => value + 1);
   }
 
+  async function ingestActiveCandidate(candidate: Candidate) {
+    if (candidate.state !== "active" || mode !== "live" || !config.apiBaseUrl) {
+      return;
+    }
+
+    const insight = candidate.content.trim();
+    if (!insight) {
+      setInfoMessage(
+        `"${candidate.title}" is active; graph ingest skipped because it has no content.`,
+      );
+      return;
+    }
+
+    try {
+      const result = await postInsight(config.apiBaseUrl, insight, auth);
+      const idSuffix = result.id ? ` (${result.id})` : "";
+      setInfoMessage(`Graph ingest via /insights: ${result.summary}${idSuffix}.`);
+      bumpGraphRefresh();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (err instanceof GraphIngestUnavailableError) {
+        setInfoMessage(
+          `"${candidate.title}" is active; graph ingest skipped: ${message}.`,
+        );
+        return;
+      }
+      setActionError(
+        `"${candidate.title}" is active, but graph ingest failed: ${message}`,
+      );
+    }
+  }
+
   function handleDataSourceLoad(presetId: string, customApiBaseUrl?: string) {
     setActionError(null);
     if (presetId !== PRESET_IDS.localLogs) {
@@ -173,7 +209,8 @@ export default function App() {
   async function handlePromote(id: string) {
     setActionError(null);
     try {
-      await promote(id);
+      const updated = await promote(id);
+      await ingestActiveCandidate(updated);
     } catch (err) {
       if (err instanceof ApiConflictError) {
         setActionError("Conflict (409) — refresh this candidate and retry.");
@@ -208,7 +245,8 @@ export default function App() {
         const created = await createCandidate(input);
         setSelectedId(created.id);
       } else if (editorState?.mode === "edit") {
-        await updateCandidate(editorState.candidate.id, input);
+        const updated = await updateCandidate(editorState.candidate.id, input);
+        await ingestActiveCandidate(updated);
       }
       setEditorState(null);
     } catch (err) {

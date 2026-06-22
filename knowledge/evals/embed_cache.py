@@ -3,7 +3,7 @@
 Run locally with ``OPENROUTER_API_KEY`` (+ optional ``OPENROUTER_EMBED_MODEL``)
 set. It deletes the model's cache file, then re-runs every ``cached`` case so the
 recording ``CachedEmbedder`` captures exactly the vectors those cases embed at
-runtime (post-redaction, post-dedup, plus the reader's query) — then commit the
+runtime (post-redaction, post-dedup, plus the reader's query) â€” then commit the
 file. Starting from empty drops orphaned keys left by edited/removed texts.
 
     uv run python -m knowledge.evals.embed_cache --refresh
@@ -72,4 +72,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

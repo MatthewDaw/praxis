@@ -17,7 +17,7 @@
         { "name": "llm.exhaustive_switch", "kind": "LLM", "latencyMs": 3990.2, "statusCode": "OK" },
         { "name": "tool.edit_file", "kind": "TOOL", "latencyMs": 410.1, "statusCode": "OK" }
       ],
-      "phoenixUrl": "https://phoenix.praxiskg.com/projects/praxis-eval/traces/phx-trace-exhaustive-switch"
+      "phoenixUrl": "https://phoenix.praxiskg.com/v1/projects/praxis-eval/spans?trace_id=phx-trace-exhaustive-switch"
     },
     {
       "traceId": "phx-trace-useeffect-cleanup",
@@ -33,7 +33,7 @@
         { "name": "llm.diagnose_leak", "kind": "LLM", "latencyMs": 5410.7, "statusCode": "OK" },
         { "name": "tool.run_tests", "kind": "TOOL", "latencyMs": 612.4, "statusCode": "ERROR" }
       ],
-      "phoenixUrl": "https://phoenix.praxiskg.com/projects/praxis-eval/traces/phx-trace-useeffect-cleanup"
+      "phoenixUrl": "https://phoenix.praxiskg.com/v1/projects/praxis-eval/spans?trace_id=phx-trace-useeffect-cleanup"
     },
     {
       "traceId": "phx-trace-ci-artifact-expiry",
@@ -48,7 +48,7 @@
         { "name": "agent.turn", "kind": "AGENT", "latencyMs": 2140.3, "statusCode": "OK" },
         { "name": "llm.ci_hygiene", "kind": "LLM", "latencyMs": 1880.9, "statusCode": "OK" }
       ],
-      "phoenixUrl": "https://phoenix.praxiskg.com/projects/praxis-eval/traces/phx-trace-ci-artifact-expiry"
+      "phoenixUrl": "https://phoenix.praxiskg.com/v1/projects/praxis-eval/spans?trace_id=phx-trace-ci-artifact-expiry"
     }
   ]
 }

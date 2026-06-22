@@ -15,6 +15,7 @@ from frontend.phoenix_proxy.app import (
     create_app,
     normalize_span,
     normalize_trace,
+    phoenix_spans_url,
 )
 
 SECRET_KEY = "phx-super-secret-key"
@@ -88,7 +89,18 @@ def test_normalize_trace_shape_and_deep_link() -> None:
     assert out["tokens"]["total"] == 165
     assert (
         out["phoenixUrl"]
-        == "https://phoenix.example.com/projects/praxis-eval/traces/abc123"
+        == "https://phoenix.example.com/v1/projects/praxis-eval/spans?trace_id=abc123"
+    )
+
+
+def test_phoenix_spans_url_encodes_project_and_trace() -> None:
+    assert phoenix_spans_url(
+        base_url="https://phoenix.example.com",
+        project="Praxis Eval/Prod",
+        trace_id="trace:a+b c",
+    ) == (
+        "https://phoenix.example.com/v1/projects/"
+        "Praxis%20Eval%2FProd/spans?trace_id=trace%3Aa%2Bb+c"
     )
 
 
