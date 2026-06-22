@@ -129,6 +129,10 @@ class EvalCase(BaseModel):
     xfail: str | None = None  # if set, the case is expected to fail (reason = the unbuilt capability); a real fail reports XFAIL, an unexpected pass reports XPASS
     model: str | None = None  # pin the runner's model (e.g. "openai/gpt-4o-mini", "sonnet"); None => the backend's default. NB: model ids are backend-specific
     output_file: str | None = None  # box-relative artifact whose content is graded; None => runner default. Only sandbox runners honor it
+    reader: Literal["whole_file", "retrieving"] = "whole_file"  # graph reader to wire: dump-everything vs relevance-ranked
+    embedder: Literal["fake", "cached", "live"] = "fake"  # vector source: offline Fake / committed real-vector cache / online real embedder
+    reader_top_k: int | None = None  # override RetrievingReader.top_k; None => reader default
+    reader_min_score: float | None = None  # override RetrievingReader.min_score (relevance cutoff); None => reader default
     seeded_insight: SeededInsight = Field(default_factory=SeededInsight)
     deterministic_checks: list[DeterministicCheckRef] = Field(default_factory=list)
     rubric: Rubric | None = None
@@ -144,6 +148,14 @@ class EvalCase(BaseModel):
             raise ValueError(
                 "a full-pipeline case (no component) needs seed_prompt and target_commit"
             )
+        if self.reader == "retrieving":
+            if self.embedder == "fake":
+                raise ValueError(
+                    "reader 'retrieving' needs a real embedder (embedder: cached|live); "
+                    "FakeEmbedder cannot rank meaningfully"
+                )
+            if self.substrate != "vector":
+                raise ValueError("reader 'retrieving' needs substrate: vector (a SearchableGraph)")
         return self
 
 
