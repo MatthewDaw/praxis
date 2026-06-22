@@ -212,6 +212,27 @@ class PostgresCandidateStore:
         if row is None:
             raise KeyError(cid)
 
+    def replace_pipeline_candidates(
+        self,
+        org_id: str,
+        user_id: str,
+        candidates: list[Candidate] | None = None,
+    ) -> int:
+        """Replace regenerated pipeline-owned rows for this user and org."""
+        fresh = list(candidates or [])
+        self._conn.execute(
+            """
+            DELETE FROM candidates
+            WHERE org_id = %s
+              AND user_id = %s
+              AND (id LIKE 'pipe_%' OR doc->>'provenance' LIKE 'evals/%')
+            """,
+            (org_id, user_id),
+        )
+        for candidate in fresh:
+            self._upsert(org_id, user_id, candidate)
+        return len(fresh)
+
     @staticmethod
     def _strip_link(c: Candidate, other_id: str) -> None:
         for key in ("contradiction_ids", "contradictions"):

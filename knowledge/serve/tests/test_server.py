@@ -37,6 +37,59 @@ def test_contradictions_endpoint_returns_pairs(tmp_path):
     assert pair["a"]["id"] and pair["b"]["id"] and "__" in pair["id"]
 
 
+def test_graph_endpoint_derives_snapshot_from_candidates(tmp_path):
+    client, store = _client(tmp_path)
+    graph = client.get("/graph").json()["graph"]
+    assert len(graph["nodes"]) == len(store.list())
+    assert graph["nodes"][0]["id"]
+    assert "edges" in graph
+
+
+def test_regenerate_evals_replaces_pipeline_rows_only(tmp_path):
+    client, store = _client(tmp_path)
+    created = client.post(
+        "/candidates",
+        json={
+            "title": "Manual candidate",
+            "content": "Keep manually-created candidates across regeneration.",
+            "confidence": 0.7,
+        },
+    ).json()
+
+    first = client.post("/evals/regenerate", json={"preset": "offline-fake"})
+    assert first.status_code == 200
+    first_body = first.json()
+    assert first_body["cases_run"] > 0
+    assert first_body["insights_generated"] > 0
+    assert first_body["candidates_inserted"] > 0
+
+    after_first = store.list()
+    assert any(c["id"] == created["id"] for c in after_first)
+    assert sum(1 for c in after_first if c["id"].startswith("pipe_")) == first_body["candidates_inserted"]
+
+    second = client.post("/evals/regenerate", json={"preset": "offline-fake"})
+    assert second.status_code == 200
+    after_second = store.list()
+    assert any(c["id"] == created["id"] for c in after_second)
+    assert sum(1 for c in after_second if c["id"].startswith("pipe_")) == second.json()["candidates_inserted"]
+
+    graph = client.get("/graph").json()["graph"]
+    assert len(graph["nodes"]) == len(after_second)
+
+
+def test_regenerate_evals_rejects_unsupported_preset(tmp_path):
+    client, _ = _client(tmp_path)
+    res = client.post("/evals/regenerate", json={"preset": "expensive-live"})
+    assert res.status_code == 400
+
+
+def test_regenerate_evals_openrouter_is_explicitly_guarded(tmp_path):
+    client, _ = _client(tmp_path)
+    res = client.post("/evals/regenerate", json={"preset": "openrouter"})
+    assert res.status_code == 503
+    assert "PRAXIS_REGENERATE_OPENROUTER" in res.json()["detail"]
+
+
 def test_promote_advances_state(tmp_path):
     client, store = _client(tmp_path)
     proposed = next(c for c in store.list() if c.get("state") == "proposed")

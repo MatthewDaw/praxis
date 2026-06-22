@@ -49,10 +49,29 @@ class GraphIngestUnavailableError extends Error {
   }
 }
 
+class EvalRegenerateUnavailableError extends Error {
+  statusCode: number;
+
+  constructor(message: string, statusCode: number) {
+    super(message);
+    this.name = "EvalRegenerateUnavailableError";
+    this.statusCode = statusCode;
+  }
+}
+
 export interface GraphIngestResult {
   summary: string;
   action: string;
   id: string | null;
+}
+
+export interface EvalRegenerateResult {
+  preset: string;
+  casesRun: number;
+  casesSkipped: number;
+  insightsGenerated: number;
+  candidatesInserted: number;
+  ranAt: string;
 }
 
 function extractCandidateId(path: string): string | undefined {
@@ -113,6 +132,21 @@ function normalizeGraphIngestResult(payload: unknown): GraphIngestResult {
         ? row.action
         : "unknown",
     id: typeof row.id === "string" && row.id.trim() ? row.id : null,
+  };
+}
+
+function normalizeEvalRegenerateResult(payload: unknown): EvalRegenerateResult {
+  const row =
+    payload && typeof payload === "object"
+      ? (payload as Record<string, unknown>)
+      : {};
+  return {
+    preset: typeof row.preset === "string" ? row.preset : "offline-fake",
+    casesRun: Number(row.cases_run ?? row.casesRun ?? 0),
+    casesSkipped: Number(row.cases_skipped ?? row.casesSkipped ?? 0),
+    insightsGenerated: Number(row.insights_generated ?? row.insightsGenerated ?? 0),
+    candidatesInserted: Number(row.candidates_inserted ?? row.candidatesInserted ?? 0),
+    ranAt: typeof row.ran_at === "string" ? row.ran_at : String(row.ranAt ?? ""),
   };
 }
 
@@ -380,6 +414,36 @@ export async function postInsight(
   return normalizeGraphIngestResult(await parseJsonResponse(response));
 }
 
+export async function postRegenerateEvals(
+  apiBaseUrl: string,
+  preset = "offline-fake",
+  auth?: string | ApiDataProviderAuth,
+): Promise<EvalRegenerateResult> {
+  const root = apiBaseUrl.replace(/\/$/, "");
+  const resolved: ApiDataProviderAuth =
+    typeof auth === "string" ? { getToken: async () => auth } : auth ?? {};
+  const token = resolved.getToken ? await resolved.getToken() : undefined;
+  const response = await fetch(`${root}/evals/regenerate`, {
+    method: "POST",
+    headers: contractHeaders(token, resolved.orgId),
+    body: JSON.stringify({ preset }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    const message = responseDetail(detail, response.statusText);
+    if (response.status === 404 || response.status === 405 || response.status === 503) {
+      throw new EvalRegenerateUnavailableError(message, response.status);
+    }
+    throw new ApiClientError(
+      `API POST /evals/regenerate failed (${response.status}): ${message}`,
+      response.status,
+    );
+  }
+
+  return normalizeEvalRegenerateResult(await parseJsonResponse(response));
+}
+
 function normalizeEvalMetrics(
   payload: Record<string, unknown>,
   source: string,
@@ -405,4 +469,9 @@ function normalizeEvalMetrics(
   };
 }
 
-export { ApiClientError, ApiConflictError, GraphIngestUnavailableError };
+export {
+  ApiClientError,
+  ApiConflictError,
+  EvalRegenerateUnavailableError,
+  GraphIngestUnavailableError,
+};

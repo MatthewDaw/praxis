@@ -37,6 +37,12 @@ def contradiction_ids(c: Candidate) -> list[str]:
     return [str(x.get("id") if isinstance(x, dict) else x) for x in raw]
 
 
+def is_pipeline_candidate(c: Candidate) -> bool:
+    cid = _cid(c)
+    provenance = str(c.get("provenance") or "")
+    return cid.startswith("pipe_") or provenance.startswith("evals/")
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -232,6 +238,19 @@ class CandidateStore:
         if len(self._candidates) == before:
             raise KeyError(cid)
         self._persist()
+
+    def replace_pipeline_candidates(
+        self,
+        org_id: str = "default",
+        user_id: str = "default",
+        candidates: list[Candidate] | None = None,
+    ) -> int:
+        """Replace regenerated pipeline-owned rows without touching manual rows."""
+        fresh = list(candidates or [])
+        retained = [c for c in self._candidates if not is_pipeline_candidate(c)]
+        self._candidates = [*retained, *fresh]
+        self._persist()
+        return len(fresh)
 
     @staticmethod
     def _strip_link(c: Candidate, other_id: str) -> None:

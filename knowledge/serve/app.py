@@ -32,9 +32,14 @@ from knowledge.knowledge_graph.write_policy.write_step_variants import (
     Redactor,
 )
 from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
-from knowledge.serve import contradiction_adapter, db
+from knowledge.serve import contradiction_adapter, db, graph_adapter
 from knowledge.serve.auth import Principal, current_user
 from knowledge.serve.orgs_store import OrgsStore
+from knowledge.serve.regenerate import (
+    PipelineConfig,
+    RegenerateUnavailableError,
+    regenerate_candidates,
+)
 from knowledge.serve.store import CandidateStore, PromotionError, contradiction_ids
 from knowledge.wiring import build_trio
 
@@ -268,6 +273,14 @@ def create_app(store: Any | None = None) -> FastAPI:
     ) -> list[dict[str, Any]]:
         return contradiction_adapter.serialize_pairs(store.list(org, principal.sub))
 
+    @app.get("/graph")
+    def graph(
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Return a graph snapshot derived from the currently served candidates."""
+        return {"graph": graph_adapter.graph_from_candidates(store.list(org, principal.sub))}
+
     @app.post("/contradictions/{pair_id}/resolve")
     def resolve(
         pair_id: str,
@@ -308,6 +321,32 @@ def create_app(store: Any | None = None) -> FastAPI:
         elif hasattr(store, "_persist"):
             store._persist()
         return {"detected_pairs": len(pairs)}
+
+    @app.post("/evals/regenerate")
+    def regenerate_evals(
+        body: dict[str, Any] | None = Body(default=None),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Run eval-backed regeneration and replace pipeline-owned candidates."""
+        try:
+            config = PipelineConfig.from_body(body)
+            result = regenerate_candidates(config)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except RegenerateUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+
+        inserted = store.replace_pipeline_candidates(org, principal.sub, result.candidates)
+        return {
+            "preset": result.preset,
+            "cases_run": result.cases_run,
+            "cases_skipped": result.cases_skipped,
+            "insights_generated": len(result.insights),
+            "candidates_inserted": inserted,
+            "ran_at": result.ran_at,
+            "eval_results": result.eval_results,
+        }
 
     @app.post("/insights")
     def add_insight(
