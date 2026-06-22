@@ -61,6 +61,14 @@ Under `knowledge/assets/reference-videos/thealchemist/`:
 - `volta_decomposition.md` — **the style source** (image assets, voice, editing, 7-beat arc, production-spec table).
 - `frames_volta/` (161 frames), `scenes_volta/` (33 scene-cut frames + 2 contact sheets) — crop fixtures from here.
 
+These files are **gitignored** (too large for git) and hosted in S3. Don't read
+them by raw path in fixture-prep code — call
+`knowledge.evals.assets.ensure_asset("reference-videos/thealchemist/<file>")`,
+which downloads from S3 on first use and reuses the local copy afterward (set
+`PRAXIS_ASSETS_BUCKET`; populate the bucket once with
+`python -m knowledge.evals.assets --upload`). So each file downloads once per
+machine, not once per eval run.
+
 Tooling: ffmpeg at `C:\Users\mattd\.local\ffx\…\ffmpeg.exe`; `yt-dlp` on PATH (`C:\Users\mattd\.local\bin`).
 
 Conventions: new eval cases live under `knowledge/evals/cases/matt/`; KG access goes through `build_trio` ingestor/reader, never direct graph calls (relevant in Phase 2). Don't commit/push unless asked — new assets + this doc are untracked. Reference video © TheAlchemist; internal eval/research use only.
