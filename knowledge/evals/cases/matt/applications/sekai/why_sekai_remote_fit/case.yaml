@@ -2,7 +2,9 @@
 # Full-pipeline case: raw resume/LinkedIn/degree are ingested raw via
 # the ingestor; the application question drives the agent to write answer.md.
 id: matt_sekai_why_sekai_remote_fit
-substrate: in_memory
+substrate: vector
+embedder: live
+ingest_model: openai/gpt-4o-mini
 seed_prompt: 'You are helping Matthew Daw fill out a job application for the Senior Machine Learning Engineer (Search & Recommendations) role at Sekai. Using ONLY the background knowledge you have been given about Matthew (from his resume, LinkedIn, university degree, and the Gauntlet AI fellowship he is currently in), write a concise, truthful, first-person answer to the application question below. Be specific: cite concrete projects, technologies, and metrics from his actual background, and do not invent experience he does not have. If his background only partially fits the question, say so honestly and map the closest relevant experience. Write the answer to a file named answer.md and create no other files.
 
 

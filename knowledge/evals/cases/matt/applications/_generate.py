@@ -234,7 +234,15 @@ def main() -> None:
             case_id = f"matt_{folder}_{slug}"
             case = {
                 "id": case_id,
-                "substrate": "in_memory",
+                # vector substrate -> _build_trio_for builds a VectorGraph (real
+                # write policy: redact/dedup) instead of the InMemoryGraph stub.
+                "substrate": "vector",
+                # live embedder -> real OpenRouter embeddings (semantic dedup), not
+                # the offline FakeEmbedder. Needs OPENROUTER_API_KEY; skips without.
+                "embedder": "live",
+                # ingest_model -> PromptIngestor.synthesis runs a real LLM (distills
+                # the sources into facts) instead of the passthrough line-split.
+                "ingest_model": "openai/gpt-4o-mini",
                 "seed_prompt": seed_prompt(company, role, question),
                 "target_commit": "0" * 40,
                 "needs": ["sandbox"],

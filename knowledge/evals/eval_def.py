@@ -133,6 +133,7 @@ class EvalCase(BaseModel):
     embedder: Literal["fake", "cached", "live"] = "fake"  # vector source: offline Fake / committed real-vector cache / online real embedder
     reader_top_k: int | None = None  # override RetrievingReader.top_k; None => reader default
     reader_min_score: float | None = None  # override RetrievingReader.min_score (relevance cutoff); None => reader default
+    ingest_model: str | None = None  # OpenRouter chat model for ingestion distillation (PromptIngestor's LLM); None => passthrough line-split. Needs OPENROUTER_API_KEY
     seeded_insight: SeededInsight = Field(default_factory=SeededInsight)
     deterministic_checks: list[DeterministicCheckRef] = Field(default_factory=list)
     rubric: Rubric | None = None

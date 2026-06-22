@@ -29,6 +29,7 @@ class Ingestor(ABC):
         Concrete and final for the MVP — runs every time. Returns the graph
         content after ingestion for inspection/testing.
         """
-        for insight in self.synthesis(raw_input):
+        insights = self.synthesis(raw_input)
+        for insight in insights:
             self.graph.write(insight.raw_text)
         return self.graph.read()
