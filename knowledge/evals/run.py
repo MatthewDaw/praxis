@@ -293,7 +293,13 @@ def run_component(case: EvalCase, llm=None) -> EvalContext:
 
     - ``knowledge_graph`` — write the seeded ``direct_to_graph`` lines, read them back.
     - ``ingestion``       — ingest the seeded ``via_ingestor`` lines, read the graph.
-    - ``graph_reader``    — seed the graph, then retrieve via the reader (``seed_prompt`` as context).
+    - ``graph_reader``    — seed the graph (raw docs via the ingestor and/or
+      pre-distilled facts written direct), then retrieve via the reader
+      (``seed_prompt`` as the situation/query). Seeding ``via_ingestor`` lets a
+      reader case exercise the real *write-intent -> gated-read* path: the
+      ingestor encodes intent on the way in, the reader gates on it on the way
+      out. ``direct_to_graph`` still seeds pre-curated facts for tests that want
+      to isolate the reader.
     """
     graph, ingestor, reader = _build_trio_for(case, llm=llm)
 
@@ -306,6 +312,11 @@ def run_component(case: EvalCase, llm=None) -> EvalContext:
             ingestor.ingest(text)
         output = graph.read()
     elif case.component == "graph_reader":
+        # Ingest raw docs first (so intent is encoded at write time), then add any
+        # pre-distilled facts written direct. Both are additive; a case may use
+        # either or both. Existing reader cases set only ``direct_to_graph``.
+        for text in case.seeded_insight.via_ingestor:
+            ingestor.ingest(text)
         for text in case.seeded_insight.direct_to_graph:
             graph.write(text)
         output = reader.read(case.seed_prompt)

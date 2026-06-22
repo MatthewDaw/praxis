@@ -1,0 +1,90 @@
+Matthew Daw — LinkedIn Profile
+Data driven software: Data Engineer, Machine Learning Engineer, DevOps, and Full Stack Developer
+Orem, Utah, United States
+
+Contact
+801-850-4357 (Home)
+mattdaw7@gmail.com
+www.linkedin.com/in/matthew-daw (LinkedIn)
+
+Top Skills
+Windows
+Systems Engineering
+Operating Systems
+
+Certifications
+MIT Professional Certificate in Data Engineering
+Complete Web Developer Course (Udemy)
+The Complete dbt (Data Build Tool) Bootcamp: Zero to Hero Certificate
+
+Honors-Awards
+Helen and Don Robinson Scholarship
+BYU Math Department Deans List
+Full BYU Tuition
+
+Summary
+About Me: I'm Matthew Daw, a data-driven software engineer who excels not only in advanced mathematics but in building data driven products from start to finish. My expertise extends across the full spectrum—from gathering massive datasets and warehousing them, to developing original mathematical models that generate actionable insights, crafting APIs that serve these insights, and integrating them into engaging user experiences.
+Professional Highlights:
+Scraping: Daily re-scrape 14 million apartment listings across 11 property websites for less than $5,000 a month.
+Efficiency & Scalability: Reduced data collection costs by 30%, increased data availability by 700%, and developed a scalable data platform that improved query speeds and reduced maintenance by 40%.
+AI Innovation: Created an AI-driven assistant that predicts trends, suggests SEO strategies, and generates content, improving engagement and operational efficiency.
+Research Impact: Authored research that advanced multi-object detection accuracy by 5% and reduced training time by 30%.
+Skills:
+Programming Tools: Python, Pytorch, React.js, C++, C#, AWS CDK, DBT
+Focus Areas: Data Scraping, Data Engineering, Full Stack Development, AI, IoT
+Mathematical Expertise: Statistics, Linear Algebra, Differential Calculus, Bayesian Analysis, Deep Learning, Data Visualization
+
+Experience
+
+Gauntlet AI — Fellowship: Cohort V AI Challenger
+April 2026 - Present (3 months). Austin, TX.
+- 98th percentile on CCAT
+- 2% acceptance rate
+- Weekly ship fully production ready AI first application
+- Full time learning the latest about AI engineering and AI driven development
+
+HelloData — Senior Data Engineer
+March 2025 - April 2026 (1 year 2 months)
+- Wrote and maintained scraper that daily scrapes all updated rental listings across 12 listing websites and all property Google Reviews for less than $5,000 a month.
+- Reduced core 7+ terabytes data pipeline etl pipeline from 14 hours down 6 with only 20% increase compute scaling.
+- Wrote machine learning model build to rent detection offering the largest BTR database in industry.
+- Wrote ML review analysis that scores buildings across 300+ categories.
+
+Stealth AI Startup — Data / Machine Learning Engineer
+September 2024 - February 2025 (6 months). Lehi, UT.
+- Wrote text to sql pipeline.
+- Setup IaC automated deployments of all infrastructure in company.
+- Built slack bot chat integration.
+
+BENlabs — Backend Engineer II | GraphQL, NLP, RAG, MLOps, and React.JS
+February 2024 - August 2024 (7 months). Provo, Utah, United States.
+- Accelerated data scientist deployment to user applications by 4x by centralizing all ML services into a single backend using BentoML, AppSync, DynamoDB, Event Bridge, and Lambda.
+- Serviced 65% of user activity in main company product by developing an AI-driven RAG creative assistant capable of chat, SEO optimization, writing video scripts, giving insights into competitors' content, and more.
+- Mentored incoming interns, lead training and directed planning meetings, and offered many one off help calls to engineers.
+- Wrote formal documentation for 12+ finalized products, 3rd party tools, and planning documentation.
+
+BENlabs — Data Engineer | DBT, Databricks, PostgreSQL, and AWS CDK
+May 2022 - January 2024 (1 year 9 months). Provo, Utah, United States.
+- Decreased data collection cost by 30% and increase available raw data by 700%.
+- Accelerated database creation rate by 5x by building a data platform that centralizes all data, uses DBT ELT principles, scales to billions of records, and has flexible millisecond querying.
+- Saved $35,000 annually by automating manual MTurk data collection work.
+- Wrote hundreds of pull request reviews, practiced sprint planning, and tracked work in ClickUp.
+
+Zero Homes (no longer operating) — ML Engineer | PyTorch, Differential Equations, and Internet of Things (IoT)
+June 2021 - January 2022 (8 months). Orem, Utah, United States.
+- Increased home energy efficiency by 18% using a deep Q algorithm and partial differential equation model.
+- Centralized 80% of the company's IoT products by creating a single network to coordinate ML tasks.
+
+Air Force Research Laboratory — Computer Vision ML Engineer | PyTorch, ML Research, Clustering, Self Supervised Learning
+May 2021 - January 2022 (9 months). Dayton Ohio.
+- Published proprietary research paper for original multi-object detection model that outperformed the state of the art image detection model by 5% accuracy, 30% training speed.
+
+Brigham Young University — Frontend Developer | Vue.js, Node.js
+November 2019 - May 2020 (7 months). United States.
+- Front end web development for Old Assyrian Research Environment, see https://oare.byu.edu/
+- Website for Assyrian researcher historians to catalog tablet discoveries and translations.
+
+Education
+Brigham Young University — Master's degree (Incomplete), Computer Science (May 2022 - April 2025)
+Brigham Young University — Bachelor's degree, Applied Mathematics (2019 - 2022)
+Utah Valley University — Associate's degree, General Studies (2016 - 2017)

@@ -1,0 +1,54 @@
+Matthew Daw Resume
+mattdaw7@gmail.com | 801-850-4357 | https://www.linkedin.com/in/matthew-daw/
+
+Experience
+
+Senior Data Engineer, Hello Data — March 2025 - Present
+Data Engineering, Data Acquisition, Full Stack Development. Chicago, Illinois.
+- Apartment listing scrapers: wrote and maintained 9 web scrapers that daily scrape 1,670,000+ website listings or the near entirety of their catalog for less than $4000 per month.
+- Data Pipeline Improvements: significantly improved data quality and efficiency of data pipeline that daily takes newly recollect, transforms, combines, cleans, and loads over 15 million property listings and costs $5000 per month to run.
+- ML work: wrote a ML algorithm that detects more BTR properties than any competitor in the industry.
+- Full Stack Development: helped improve and incorporate my data products into user facing website.
+
+Machine/Data Engineer, Chief — July 2024 - February 2025
+Data Engineering, Infrastructure, Advanced RAG, Machine Learning. Lehi, Utah.
+- LLM agent: user asks any question, if needed, system generates SQL and includes data in response. SQL agent is able to ask for clarification for vague questions, give assignments to users, and has accuracy of 90%.
+- LLM feedback: users are able to give feedback to LLM agent that continuously improves performance.
+- Other engineering: backend state management, database architecturing, AWS IaC development, CI/CD.
+
+Software Engineer II, BEN Labs — May 2022 - July 2024
+Data Engineering, Data Acquisition, Data Platforming, Backend Engineering, MLOps. Provo, Utah.
+- Data Platform: Accelerated database creation rate by 5x with a data platform that centralizes all data, uses databricks dbt, scales to billions of records, and has flexible millisecond SQL querying.
+- ML Deployment Service: Accelerated data scientist deployment to production by 4x by centralizing all ML services into a single backend using GraphQL, AppSync, BentoML, DynamoDB, Event Bridge, and Lambda.
+- Data Collection: Decreased data collection cost by 30% and increased available raw data by 700%.
+- Enhanced flagship ML model accuracy by 25% by retraining on 14 mil subscriptions database I built.
+
+Research Intern, Autonomy Technology Research Center — May 2021 - September 2022
+Computer Vision ML Researcher for the US Air Force. Remote From Dayton, Ohio.
+- Research: Published proprietary research paper for original multi-object detection model that outperformed the state of the art image detection model by 5% accuracy and 30% training speed.
+
+Relevant Skills
+
+Engineering Tools & Technology:
+Python | AWS | GCP | Pytorch | React.js | C++ | Java | Dagster | Databricks | Snowflake | dbt | Projen | GraphQL | SQL
+
+Software Focuses:
+Data Platform Engineering | Data Collection | Web Scraping Spoofing | CI/CD | MLOps | API Architecturing | .NET | Backend Engineering | Front End Development | UX Design | Internet Of Things (IoT) | Computer Vision | NLP | RAG
+
+Mathematical Competencies:
+Statistics | Analytics | Linear Algebra | Graph Theory | Multi-agent Systems | Differential Calculus | Bayesian Analysis | Artificial Intelligence | Deep Learning | AI Explainability | Data Visualization | Formal Verification
+
+Education
+
+Gauntlet, Cohort V AI Challenger — April 2026 - July 2026
+- Weekly ship 2 production grade products using state of the art AI coding techniques.
+- Developed Praxis, advanced knowledge graph retrieval for just in time retrieval to automate and scale Claude Code skill learning.
+- 2% admission rate, 97% on PCCAT.
+
+MS, Computer Science — April 2022 - May 2025 (incomplete)
+Brigham Young University, Provo, Utah.
+- Graph theory and deep learning. Ended 9 credits short of completion due to HelloData attendance rules.
+
+BS, Applied & Computational Mathematics Emphasis (ACME) — September 2019 - April 2022
+Brigham Young University, dean's list (top 5%) and full tuition scholarship. Provo, Utah.
+- Wrote a real time learning algorithm to maximize language learning using Hidden Markov chains.
