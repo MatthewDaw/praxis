@@ -1,7 +1,7 @@
 """Agent-free verification that a RepoTask is a sound behavioral oracle.
 
 Materializes the base + target tests, grades (expect RED), applies the gold fix,
-grades again (expect GREEN) — the harness-level discrimination proof, no agent.
+grades again (expect GREEN) â€” the harness-level discrimination proof, no agent.
 Network + venv install happen here, so this is NOT part of the offline suite;
 run it on demand:
 
@@ -49,12 +49,12 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"verifying behavioral oracle for {case_id} ({case.code_task.repo})...")
     result = verify_instance(case.code_task)
-    print(f"  RED  (base, buggy source): {'failed as expected' if result['red_failed_as_expected'] else 'UNEXPECTEDLY PASSED'} — {result['red_evidence']}")
-    print(f"  GREEN (gold fix applied):  {'passed as expected' if result['green_passed_as_expected'] else 'UNEXPECTEDLY FAILED'} — {result['green_evidence']}")
+    print(f"  RED  (base, buggy source): {'failed as expected' if result['red_failed_as_expected'] else 'UNEXPECTEDLY PASSED'} â€” {result['red_evidence']}")
+    print(f"  GREEN (gold fix applied):  {'passed as expected' if result['green_passed_as_expected'] else 'UNEXPECTEDLY FAILED'} â€” {result['green_evidence']}")
     ok = result["red_failed_as_expected"] and result["green_passed_as_expected"]
-    print("\nORACLE SOUND" if ok else "\nORACLE MISMATCH — pick a different instance")
+    print("\nORACLE SOUND" if ok else "\nORACLE MISMATCH â€” pick a different instance")
     return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()
