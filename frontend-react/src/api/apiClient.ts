@@ -39,6 +39,22 @@ class ApiClientError extends Error {
   }
 }
 
+class GraphIngestUnavailableError extends Error {
+  statusCode: number;
+
+  constructor(message: string, statusCode: number) {
+    super(message);
+    this.name = "GraphIngestUnavailableError";
+    this.statusCode = statusCode;
+  }
+}
+
+export interface GraphIngestResult {
+  summary: string;
+  action: string;
+  id: string | null;
+}
+
 function extractCandidateId(path: string): string | undefined {
   const prefix = "/candidates/";
   if (!path.includes(prefix)) {
@@ -65,6 +81,39 @@ async function parseJsonResponse(response: Response): Promise<unknown> {
     return {};
   }
   return JSON.parse(raw) as unknown;
+}
+
+function responseDetail(detail: string, fallback: string): string {
+  if (!detail.trim()) {
+    return fallback;
+  }
+  try {
+    const parsed = JSON.parse(detail) as unknown;
+    if (parsed && typeof parsed === "object" && "detail" in parsed) {
+      return String((parsed as { detail: unknown }).detail);
+    }
+  } catch {
+    /* response body was plain text */
+  }
+  return detail;
+}
+
+function normalizeGraphIngestResult(payload: unknown): GraphIngestResult {
+  if (!payload || typeof payload !== "object") {
+    return { summary: "ingested insight", action: "added", id: null };
+  }
+  const row = payload as Record<string, unknown>;
+  return {
+    summary:
+      typeof row.summary === "string" && row.summary.trim()
+        ? row.summary
+        : "ingested insight",
+    action:
+      typeof row.action === "string" && row.action.trim()
+        ? row.action
+        : "unknown",
+    id: typeof row.id === "string" && row.id.trim() ? row.id : null,
+  };
 }
 
 export interface ApiDataProviderAuth {
@@ -290,6 +339,47 @@ export async function postIngestJsonl(
   }
 }
 
+export async function postInsight(
+  apiBaseUrl: string,
+  insight: string,
+  auth?: string | ApiDataProviderAuth,
+): Promise<GraphIngestResult> {
+  const text = insight.trim();
+  if (!text) {
+    throw new Error("Insight text required for graph ingest");
+  }
+
+  const root = apiBaseUrl.replace(/\/$/, "");
+  const resolved: ApiDataProviderAuth =
+    typeof auth === "string" ? { getToken: async () => auth } : auth ?? {};
+  const token = resolved.getToken ? await resolved.getToken() : undefined;
+  const response = await fetch(`${root}/insights`, {
+    method: "POST",
+    headers: contractHeaders(token, resolved.orgId),
+    body: JSON.stringify({ insight: text }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    const message = responseDetail(detail, response.statusText);
+    if (response.status === 404 || response.status === 405) {
+      throw new GraphIngestUnavailableError(
+        "Graph ingest endpoint not available yet",
+        response.status,
+      );
+    }
+    if (response.status === 503) {
+      throw new GraphIngestUnavailableError(message, response.status);
+    }
+    throw new ApiClientError(
+      `API POST /insights failed (${response.status}): ${message}`,
+      response.status,
+    );
+  }
+
+  return normalizeGraphIngestResult(await parseJsonResponse(response));
+}
+
 function normalizeEvalMetrics(
   payload: Record<string, unknown>,
   source: string,
@@ -315,4 +405,4 @@ function normalizeEvalMetrics(
   };
 }
 
-export { ApiClientError, ApiConflictError };
+export { ApiClientError, ApiConflictError, GraphIngestUnavailableError };

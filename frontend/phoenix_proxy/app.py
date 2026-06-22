@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote, urlencode
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
@@ -164,6 +165,17 @@ def _trace_id(trace: dict[str, Any]) -> str:
     return str(_first(trace, "trace_id", "traceId", "context.trace_id", "id") or "")
 
 
+def phoenix_spans_url(
+    *, base_url: str, project: str | None, trace_id: str | None
+) -> str | None:
+    """Build a Phoenix spans API link for a trace-specific detail view."""
+    if not project or not trace_id:
+        return None
+    project_path = quote(project, safe="")
+    query = urlencode({"trace_id": trace_id})
+    return f"{base_url}/v1/projects/{project_path}/spans?{query}"
+
+
 def normalize_trace(
     trace: dict[str, Any],
     *,
@@ -188,9 +200,9 @@ def normalize_trace(
 
     status = _first(trace, "status_code", "statusCode")
     trace_id = _trace_id(trace)
-    phoenix_url = None
-    if trace_id and project:
-        phoenix_url = f"{base_url}/projects/{project}/traces/{trace_id}"
+    phoenix_url = phoenix_spans_url(
+        base_url=base_url, project=project, trace_id=trace_id
+    )
 
     return {
         "traceId": trace_id,

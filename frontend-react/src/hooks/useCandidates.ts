@@ -86,6 +86,7 @@ export function useCandidates(options: UseCandidatesOptions) {
       const updated = await provider.promote(id);
       applyCandidate(updated);
       setLastAction(`Promoted ${updated.title} to ${updated.displayState}.`);
+      return updated;
     },
     [provider, applyCandidate],
   );

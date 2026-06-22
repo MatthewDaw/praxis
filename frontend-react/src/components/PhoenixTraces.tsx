@@ -92,6 +92,8 @@ function TraceCard({ trace }: { trace: PhoenixTrace }) {
           href={trace.phoenixUrl}
           target="_blank"
           rel="noreferrer"
+          aria-label={`Open Phoenix spans for trace ${trace.traceId}`}
+          title={`Open Phoenix spans for trace ${trace.traceId}`}
         >
           Open in Phoenix
           <span aria-hidden="true"> ↗</span>
