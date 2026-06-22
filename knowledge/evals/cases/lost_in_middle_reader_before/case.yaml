@@ -1,36 +1,16 @@
-# Component eval: graph_reader — the AFTER of the deterministic reader pair, and
-# the CI-verified contract that retrieval ranks. Same ~18-fact noisy graph as the
-# control lost_in_middle_reader_before; the only variable is the reader.
+# Component eval: graph_reader — the BEFORE control of the deterministic reader
+# pair. Same ~18-fact graph and same checks as lost_in_middle_reader; the only
+# variable is the reader.
 #
-# RetrievingReader (vector substrate + real embeddings, replayed from the
-# committed cache) searches the graph for "add a caching TODO" and returns only
-# the relevant facts: the TODO(MD) rule and the caching rule survive, while the
-# irrelevant facts (X-Ray, SES, CloudFront) fall below the relevance cutoff and
-# are dropped -> the excludes_* checks pass. The before-control proves the dumb
-# reader fails the same checks. Model-free and agent-free, so this pair is the
-# robust, CI-runnable contract; the lost_in_middle pair is the end-to-end demo.
-#
-# `embedder: cached` => replays the committed real-vector fixture, so it runs in
-# CI offline and deterministically. Regenerate with `embed_cache --refresh`.
-#
-# Calibrated against openai/text-embedding-3-small: the relevant facts score
-# Caching 0.52 / TODO(MD) 0.45; the distractors CloudFront 0.27 / X-Ray 0.18 /
-# SES 0.06. min_score 0.35 keeps both rules and drops all three distractors
-# (top_k alone would not — CloudFront ranks 3rd). Recalibrate if the model changes.
-#
-# PROVISIONAL: the excludes_* checks + min_score=0.35 encode ONE not-yet-decided
-# reader contract (threshold filtering). The RetrievingReader isn't wired into
-# production yet, so this is a tentative behavior, not a settled spec. Once the
-# real contract is chosen, rewrite the assertions to match it — e.g. if the reader
-# becomes pure top-k=8, assert "<=8 facts AND TODO(MD) present" and drop excludes_*
-# (top-k would keep CloudFront/X-Ray, so those checks only hold under thresholding).
-id: lost_in_middle_reader
+# WholeFileReader returns the WHOLE graph unranked, so the irrelevant facts
+# (X-Ray, SES, CloudFront) are still present and the excludes_* checks FAIL ->
+# XFAIL. This control proves the checks discriminate: the RetrievingReader after
+# (lost_in_middle_reader) drops those facts and passes. `embedder: fake` keeps
+# this fully offline (whole_file never ranks, so it needs no real vectors).
+id: lost_in_middle_reader_before
 component: graph_reader
 substrate: vector
-reader: retrieving
-embedder: cached
-reader_top_k: 8
-reader_min_score: 0.35  # relevance cutoff: above CloudFront (0.27), below TODO(MD) (0.45)
+xfail: "before-control: WholeFileReader returns the whole graph unranked, so the irrelevant facts are not dropped; the RetrievingReader after is the fix"
 seed_prompt: "Add a TODO comment about adding caching to the data-fetch layer."
 
 seeded_insight:

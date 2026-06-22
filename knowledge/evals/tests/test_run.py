@@ -250,6 +250,62 @@ def test_file_io_split_routes_fixture_cases_away_from_structured_runner():
     assert unmet_needs(fixture_case, structured) == {"sandbox"}
 
 
+def test_embedder_axis_auto_derives_capability():
+    # cached needs real_embeddings (cache or key); live needs live_embeddings (key only).
+    assert case_needs(_case(embedder="cached")) == {"real_embeddings"}
+    assert case_needs(_case(embedder="live")) == {"live_embeddings"}
+    assert "real_embeddings" not in case_needs(_case())  # fake default needs nothing extra
+
+
+def test_real_embedding_cases_skip_without_cache_or_key(monkeypatch, tmp_path):
+    import knowledge.evals.run as run_mod
+
+    monkeypatch.setattr(run_mod, "EMBED_CACHE_DIR", tmp_path)  # empty -> no committed fixture
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_EMBED_MODEL", raising=False)
+
+    assert run_mod.harness_capabilities() == set()
+    cached, live = _case(embedder="cached"), _case(embedder="live")
+    assert unmet_needs(cached, FakeRunner()) == {"real_embeddings"}
+    assert unmet_needs(live, FakeRunner()) == {"live_embeddings"}
+    runnable, skipped = partition_by_capability([cached, live], FakeRunner())
+    assert runnable == [] and len(skipped) == 2
+
+
+def test_committed_cache_provides_real_embeddings_but_not_live(monkeypatch, tmp_path):
+    import knowledge.evals.run as run_mod
+
+    monkeypatch.setattr(run_mod, "EMBED_CACHE_DIR", tmp_path)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENROUTER_EMBED_MODEL", "test/model")
+    (tmp_path / "test_model.json").write_text("{}", encoding="utf-8")  # fixture present
+
+    caps = run_mod.harness_capabilities()
+    assert "real_embeddings" in caps and "live_embeddings" not in caps
+    assert unmet_needs(_case(embedder="cached"), FakeRunner()) == set()  # replays the fixture
+    assert unmet_needs(_case(embedder="live"), FakeRunner()) == {"live_embeddings"}  # still needs a key
+
+
+def test_key_provides_both_embedding_capabilities(monkeypatch, tmp_path):
+    import knowledge.evals.run as run_mod
+
+    monkeypatch.setattr(run_mod, "EMBED_CACHE_DIR", tmp_path)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    assert run_mod.harness_capabilities() == {"real_embeddings", "live_embeddings"}
+
+
+def test_eval_embedder_resolves_per_axis(monkeypatch, tmp_path):
+    import knowledge.evals.run as run_mod
+    from knowledge.llm.embedder_variants import CachedEmbedder
+
+    monkeypatch.setattr(run_mod, "EMBED_CACHE_DIR", tmp_path)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    assert run_mod._eval_embedder(_case(embedder="fake")) is None
+    assert run_mod._eval_embedder(_case(embedder="live")) is None  # no key -> nothing online
+    cached = run_mod._eval_embedder(_case(embedder="cached"))
+    assert isinstance(cached, CachedEmbedder) and cached.allow_compute is False  # replay-only
+
+
 def test_claude_runner_decouples_judge_by_openrouter_key(monkeypatch):
     import knowledge.evals.run as run_mod
     from knowledge.evals.claude_code import ClaudeCodeJudge, ClaudeCodeRunner

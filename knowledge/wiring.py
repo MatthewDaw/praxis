@@ -12,6 +12,9 @@ harness (``knowledge.evals.run``) can import it without a circular dependency.
 
 from __future__ import annotations
 
+from knowledge.graph_reader.grapher_reader_variants.retrieving_reader import (
+    RetrievingReader,
+)
 from knowledge.graph_reader.grapher_reader_variants.whole_file_reader import (
     WholeFileReader,
 )
@@ -21,11 +24,13 @@ from knowledge.knowledge_graph.knowledge_graph_variants.in_memory_graph import (
 )
 from knowledge.knowledge_graph.knowledge_graph_variants.vector_graph import VectorGraph
 from knowledge.knowledge_graph.parent_knowledge_graph import KnowledgeGraph
+from knowledge.knowledge_graph.parent_searchable_graph import SearchableGraph
+from knowledge.llm.parent_embedder import Embedder
 
 
-def _graph_for(substrate: str) -> KnowledgeGraph:
+def _graph_for(substrate: str, embedder: Embedder | None = None) -> KnowledgeGraph:
     if substrate == "vector":
-        return VectorGraph()
+        return VectorGraph(embedder=embedder)  # None => VectorGraph's FakeEmbedder default
     if substrate == "in_memory":
         return InMemoryGraph.create()
     if substrate == "postgres":
@@ -51,12 +56,37 @@ def _graph_for(substrate: str) -> KnowledgeGraph:
     raise ValueError(f"unknown substrate: {substrate!r}")
 
 
-def build_trio(substrate: str = "in_memory", graph: KnowledgeGraph | None = None, llm=None):
+def build_trio(
+    substrate: str = "in_memory",
+    graph: KnowledgeGraph | None = None,
+    llm=None,
+    reader: str = "whole_file",
+    embedder: Embedder | None = None,
+    reader_top_k: int | None = None,
+    reader_min_score: float | None = None,
+):
     """Return a wired ``(graph, ingestor, reader)`` for the chosen substrate.
 
     Pass ``graph`` to wire a specific store instance (overrides ``substrate``).
+    ``reader`` picks the retrieval strategy: ``"whole_file"`` dumps the graph,
+    ``"retrieving"`` ranks via the store's ``search`` (needs a ``SearchableGraph``).
+    ``embedder`` is injected into the vector store; ``reader_top_k``/
+    ``reader_min_score`` override the retrieving reader's bounds (None => defaults).
     """
-    graph = graph or _graph_for(substrate)
+    graph = graph or _graph_for(substrate, embedder=embedder)
     ingestor = PromptIngestor(graph, llm=llm)
-    reader = WholeFileReader(graph)
-    return graph, ingestor, reader
+    if reader == "retrieving":
+        if not isinstance(graph, SearchableGraph):
+            raise ValueError(
+                f"reader 'retrieving' needs a searchable substrate (vector/postgres), "
+                f"got {type(graph).__name__}"
+            )
+        kwargs = {}
+        if reader_top_k is not None:
+            kwargs["top_k"] = reader_top_k
+        if reader_min_score is not None:
+            kwargs["min_score"] = reader_min_score
+        reader_obj: object = RetrievingReader(graph, **kwargs)
+    else:
+        reader_obj = WholeFileReader(graph)
+    return graph, ingestor, reader_obj

@@ -1,21 +1,24 @@
-# ATTENTION / lost-in-the-middle — the AFTER of the end-to-end pair.
+# ATTENTION / lost-in-the-middle — the BEFORE control of the end-to-end pair.
 #
-# Same ~400-policy haystack as lost_in_middle_before, but the RetrievingReader
-# (vector substrate + real embeddings) ranks the graph against the prompt and
-# feeds the agent only the top relevant facts instead of all 400 unranked. The
-# buried TODO(MD) rule survives, so the agent applies it -> XPASS. This is the
-# fix; lost_in_middle_before is the dumb-reader control.
+# The seeded graph is ~400 blended, rule-shaped project policies; the single
+# operative rule (prefix TODOs with MD -> TODO(MD)) is buried in the exact
+# MIDDLE. WholeFileReader dumps the whole graph into the agent unranked, the
+# prompt does NOT cue the convention, and the needle MATCHES the distractor
+# style, so the agent loses it. The deterministic check then fails -> XFAIL.
 #
-# `embedder: live` => real embeddings, NOT cached: this case runs ONLINE only
-# (needs OPENROUTER_API_KEY) and SKIPs in CI. It's the dramatic end-to-end demo;
-# the CI-verified before/after lives in the lost_in_middle_reader pair. Seeding
-# ~400 facts hits the embedder once per write, so it's a manual demo, not cheap.
-id: lost_in_middle
-substrate: vector
-reader: retrieving
-embedder: live
-reader_top_k: 8
-model: "openai/gpt-4o-mini"  # calibration target; a backend that can't serve it skips the case
+# This is the BEFORE: with the dumb reader the needle is lost. The AFTER,
+# `lost_in_middle`, swaps in the RetrievingReader (vector + real embeddings) so
+# the agent receives only the relevant facts and applies the rule -> XPASS. The
+# AFTER is `embedder: live` (online only, SKIP in CI); this before is the
+# CI-visible XFAIL that proves the reader is what fixes it. The deterministic,
+# model-free version of the same contract is the lost_in_middle_reader pair.
+#
+# Calibrated empirically against gpt-4o-mini (OpenRouter): at ~240 policies the
+# structured backend let the rule survive (XPASS), so the haystack was deepened
+# to ~400 to restore the lost-in-the-middle effect.
+id: lost_in_middle_before
+xfail: "before-control: WholeFileReader dumps ~400 unranked policies and the agent loses the buried rule (gpt-4o-mini-calibrated); the RetrievingReader after is the fix"
+model: "openai/gpt-4o-mini"  # calibration target; on a backend that can't serve it (e.g. Claude Code) the case is skipped, not mis-run
 seed_prompt: |
   Add a single TODO comment to a file named answer.txt noting that we should add
   caching to the data-fetch layer. Write only that one TODO comment line to

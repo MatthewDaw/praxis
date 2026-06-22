@@ -35,6 +35,9 @@ from knowledge.evals.eval_def import (
     Rubric,
     RunTranscript,
 )
+from knowledge.llm import openrouter_http
+from knowledge.llm.embedder_variants import CachedEmbedder, OpenRouterEmbedder
+from knowledge.observability import tracing
 from knowledge.wiring import build_trio
 
 HERE = Path(__file__).parent
@@ -42,6 +45,7 @@ CASES_DIR = HERE / "cases"
 RESULTS_DIR = HERE / "results"
 BASELINE_PATH = RESULTS_DIR / "baseline.jsonl"
 RUNS_DIR = RESULTS_DIR / "runs"  # verbose per-run transcripts (gitignored)
+EMBED_CACHE_DIR = HERE / "fixtures" / "embeddings"  # committed real-vector caches
 
 # Overall verdict threshold for a rubric-only case.
 PASS_THRESHOLD = 0.5
@@ -122,6 +126,48 @@ def grade_rubric(
 # --------------------------------------------------------------------------- #
 # Backend capabilities — skip cases a runner structurally can't grade
 # --------------------------------------------------------------------------- #
+def _embed_model() -> str:
+    return os.getenv("OPENROUTER_EMBED_MODEL", openrouter_http.DEFAULT_EMBED_MODEL)
+
+
+def _slug(model: str) -> str:
+    return model.replace("/", "_").replace(":", "_")
+
+
+def _eval_embedder(case: EvalCase):
+    """Resolve the embedder for a case's ``embedder`` axis.
+
+    ``fake`` -> None (VectorGraph's FakeEmbedder default). ``cached`` -> a
+    CachedEmbedder over the committed fixture (records misses only with a key).
+    ``live`` -> an online OpenRouterEmbedder, or None when no key (the case then
+    skips, per ``harness_capabilities``).
+    """
+    if case.embedder == "fake":
+        return None
+    model = _embed_model()
+    has_key = bool(os.getenv("OPENROUTER_API_KEY"))
+    live = OpenRouterEmbedder(model=model) if has_key else None
+    if case.embedder == "live":
+        return live
+    cache = EMBED_CACHE_DIR / f"{_slug(model)}.json"
+    return CachedEmbedder(live, cache, model_id=model, allow_compute=has_key)
+
+
+def harness_capabilities() -> set[str]:
+    """Embedding capabilities the harness can satisfy, independent of the runner.
+
+    A committed cache fixture provides ``real_embeddings`` (cached cases replay it
+    in CI); a live key provides both ``real_embeddings`` and ``live_embeddings``.
+    Component cases ignore the runner, so this is unioned into the provided set.
+    """
+    caps: set[str] = set()
+    if (EMBED_CACHE_DIR / f"{_slug(_embed_model())}.json").exists():
+        caps.add("real_embeddings")
+    if os.getenv("OPENROUTER_API_KEY"):
+        caps |= {"real_embeddings", "live_embeddings"}
+    return caps
+
+
 def case_needs(case: EvalCase) -> set[str]:
     """Runner capabilities a case requires.
 
@@ -144,12 +190,19 @@ def case_needs(case: EvalCase) -> set[str]:
     # structured single-shot runner too, not just a real box.
     if any(ref.ref.endswith((":writes_file", ":modifies_file")) for ref in case.deterministic_checks):
         needs.add("file_io")
+    # Real-embedding cases: cached replays a committed fixture (or a key); live
+    # needs a key and skips offline. Derived from the embedder axis so the case
+    # SKIPs (not mis-runs on FakeEmbedder) where the vectors aren't available.
+    if case.embedder == "cached":
+        needs.add("real_embeddings")
+    elif case.embedder == "live":
+        needs.add("live_embeddings")
     return needs
 
 
 def unmet_needs(case: EvalCase, runner: Runner) -> set[str]:
-    """Capabilities the case needs that this runner doesn't provide."""
-    provided = set(getattr(runner, "provides", frozenset()))
+    """Capabilities the case needs that neither the runner nor the harness provides."""
+    provided = set(getattr(runner, "provides", frozenset())) | harness_capabilities()
     return case_needs(case) - provided
 
 
@@ -196,12 +249,35 @@ def partition_by_capability(
 # --------------------------------------------------------------------------- #
 # M7/M8 — orchestration
 # --------------------------------------------------------------------------- #
+def _build_trio_for(case: EvalCase, llm=None):
+    """Wire the trio honoring the case's reader/embedder axes (§ retrieving reader)."""
+    embedder = _eval_embedder(case)
+    graph = None
+    if case.substrate == "vector" and case.embedder != "fake":
+        # Real-embedder cases seed with a minimal policy: keep redact + dedup (the
+        # dedup cases test it), drop the per-write ConflictFlagger LLM call so
+        # seeding a large graph stays cheap. Fake vector cases keep the default.
+        from knowledge.knowledge_graph.knowledge_graph_variants.vector_graph import VectorGraph
+        from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
+
+        graph = VectorGraph(embedder=embedder, policy=[Redactor(), Deduper()])
+    return build_trio(
+        substrate=case.substrate,
+        graph=graph,
+        llm=llm,
+        reader=case.reader,
+        embedder=embedder,
+        reader_top_k=case.reader_top_k,
+        reader_min_score=case.reader_min_score,
+    )
+
+
 def _seed_knowledge(case: EvalCase, llm=None):
     """Provision a fresh trio and pre-load the case's seeded insight.
 
     The graph initializes itself (in-memory for the MVP) — no path, no file.
     """
-    graph, ingestor, reader = build_trio(substrate=case.substrate, llm=llm)
+    graph, ingestor, reader = _build_trio_for(case, llm=llm)
     for text in case.seeded_insight.direct_to_graph:
         graph.write(text)
     for text in case.seeded_insight.via_ingestor:
@@ -219,7 +295,7 @@ def run_component(case: EvalCase, llm=None) -> EvalContext:
     - ``ingestion``       — ingest the seeded ``via_ingestor`` lines, read the graph.
     - ``graph_reader``    — seed the graph, then retrieve via the reader (``seed_prompt`` as context).
     """
-    graph, ingestor, reader = build_trio(substrate=case.substrate, llm=llm)
+    graph, ingestor, reader = _build_trio_for(case, llm=llm)
 
     if case.component == "knowledge_graph":
         for text in case.seeded_insight.direct_to_graph:
@@ -252,29 +328,42 @@ def run_case_full(
     Returns the runner's context, the judge result (``None`` if unjudged), and
     the verdict. :func:`run_case` is the thin verdict-only wrapper over this.
     """
-    if case.component is not None:
-        ctx = run_component(case, llm=llm)
-    else:
-        reader = _seed_knowledge(case, llm=llm)
-        ctx = runner.run(case, reader)
+    # One parent span per case groups the run + judge child spans into a single
+    # trace, named after the case so Phoenix lists it by eval name.
+    with tracing.llm_span(case.id, kind="CHAIN", input_value=case.seed_prompt) as span:
+        if case.component is not None:
+            ctx = run_component(case, llm=llm)
+        else:
+            reader = _seed_knowledge(case, llm=llm)
+            ctx = runner.run(case, reader)
 
-    checks = run_checks(case, ctx)
-    judge_result = grade_rubric(case, ctx, judge)
-    rubric_score = None if judge_result is None else judge_result.overall
+        checks = run_checks(case, ctx)
+        judge_result = grade_rubric(case, ctx, judge)
+        rubric_score = None if judge_result is None else judge_result.overall
 
-    checks_ok = bool(checks) and all(c.passed for c in checks)
-    if checks:
-        passed = checks_ok and (rubric_score is None or rubric_score >= PASS_THRESHOLD)
-    else:
-        passed = rubric_score is not None and rubric_score >= PASS_THRESHOLD
+        checks_ok = bool(checks) and all(c.passed for c in checks)
+        if checks:
+            passed = checks_ok and (rubric_score is None or rubric_score >= PASS_THRESHOLD)
+        else:
+            passed = rubric_score is not None and rubric_score >= PASS_THRESHOLD
 
-    result = CaseResult(
-        case_id=case.id,
-        checks=checks,
-        rubric_score=rubric_score,
-        passed=passed,
-        xfail_reason=case.xfail,
-    )
+        result = CaseResult(
+            case_id=case.id,
+            checks=checks,
+            rubric_score=rubric_score,
+            passed=passed,
+            xfail_reason=case.xfail,
+        )
+        tracing.record_output(
+            span,
+            output=ctx.output,
+            **{
+                "eval.status": status_of(result),
+                "eval.checks_passed": sum(c.passed for c in checks),
+                "eval.checks_total": len(checks),
+                "eval.rubric_score": rubric_score,
+            },
+        )
     return ctx, judge_result, result
 
 
