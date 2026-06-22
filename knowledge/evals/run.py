@@ -285,45 +285,70 @@ def _seed_knowledge(case: EvalCase, llm=None):
     return reader
 
 
+# --- context producers ------------------------------------------------------
+# The eval path has exactly one real fork: deterministic component isolation
+# (no agent) vs the full agent pipeline. Both just produce an ``EvalContext``
+# that the shared grade/report spine then handles. Each producer below has the
+# uniform signature ``(case, runner, llm) -> EvalContext`` and is registered in
+# ``CONTEXT_PRODUCERS`` keyed by ``case.component`` (``None`` = full pipeline),
+# so the fork is a single dispatch — no branching in the run loop, and a new
+# isolation mode is just one more producer. Component producers ignore ``runner``.
+def _produce_full(case: EvalCase, runner: Runner, llm=None) -> EvalContext:
+    """Full pipeline: seed the trio, then run the agent ``runner``."""
+    reader = _seed_knowledge(case, llm=llm)
+    return runner.run(case, reader)
+
+
+def _produce_knowledge_graph(case: EvalCase, runner: Runner, llm=None) -> EvalContext:
+    """Component: write the seeded ``direct_to_graph`` lines, read them back."""
+    graph, _, _ = _build_trio_for(case, llm=llm)
+    for text in case.seeded_insight.direct_to_graph:
+        graph.write(text)
+    return EvalContext(case_id=case.id, output=graph.read())
+
+
+def _produce_ingestion(case: EvalCase, runner: Runner, llm=None) -> EvalContext:
+    """Component: ingest the seeded ``via_ingestor`` lines, read the graph."""
+    graph, ingestor, _ = _build_trio_for(case, llm=llm)
+    for text in case.seeded_insight.via_ingestor:
+        ingestor.ingest(text)
+    return EvalContext(case_id=case.id, output=graph.read())
+
+
+def _produce_graph_reader(case: EvalCase, runner: Runner, llm=None) -> EvalContext:
+    """Component: seed the graph (raw docs via the ingestor and/or pre-distilled
+    facts written direct), then retrieve via the reader (``seed_prompt`` as the
+    situation/query). Seeding ``via_ingestor`` lets a reader case exercise the
+    real *write-intent -> gated-read* path; ``direct_to_graph`` seeds pre-curated
+    facts for tests that isolate the reader.
+    """
+    graph, ingestor, reader = _build_trio_for(case, llm=llm)
+    for text in case.seeded_insight.via_ingestor:
+        ingestor.ingest(text)
+    for text in case.seeded_insight.direct_to_graph:
+        graph.write(text)
+    return EvalContext(case_id=case.id, output=reader.read(case.seed_prompt))
+
+
+# case.component (or None for the full agent pipeline) -> context producer.
+CONTEXT_PRODUCERS = {
+    None: _produce_full,
+    "knowledge_graph": _produce_knowledge_graph,
+    "ingestion": _produce_ingestion,
+    "graph_reader": _produce_graph_reader,
+}
+
+
 def run_component(case: EvalCase, llm=None) -> EvalContext:
     """Exercise a single component in isolation (no agent) and return its output.
 
-    Each branch provisions a fresh trio and drives only the targeted piece, so
-    the graded output reflects that component alone:
-
-    - ``knowledge_graph`` — write the seeded ``direct_to_graph`` lines, read them back.
-    - ``ingestion``       — ingest the seeded ``via_ingestor`` lines, read the graph.
-    - ``graph_reader``    — seed the graph (raw docs via the ingestor and/or
-      pre-distilled facts written direct), then retrieve via the reader
-      (``seed_prompt`` as the situation/query). Seeding ``via_ingestor`` lets a
-      reader case exercise the real *write-intent -> gated-read* path: the
-      ingestor encodes intent on the way in, the reader gates on it on the way
-      out. ``direct_to_graph`` still seeds pre-curated facts for tests that want
-      to isolate the reader.
+    Thin public shim over the component context producers (used by the component
+    eval tests); the same producers drive :func:`run_case_full`.
     """
-    graph, ingestor, reader = _build_trio_for(case, llm=llm)
-
-    if case.component == "knowledge_graph":
-        for text in case.seeded_insight.direct_to_graph:
-            graph.write(text)
-        output = graph.read()
-    elif case.component == "ingestion":
-        for text in case.seeded_insight.via_ingestor:
-            ingestor.ingest(text)
-        output = graph.read()
-    elif case.component == "graph_reader":
-        # Ingest raw docs first (so intent is encoded at write time), then add any
-        # pre-distilled facts written direct. Both are additive; a case may use
-        # either or both. Existing reader cases set only ``direct_to_graph``.
-        for text in case.seeded_insight.via_ingestor:
-            ingestor.ingest(text)
-        for text in case.seeded_insight.direct_to_graph:
-            graph.write(text)
-        output = reader.read(case.seed_prompt)
-    else:  # pragma: no cover - guarded by the schema
+    producer = CONTEXT_PRODUCERS.get(case.component)
+    if case.component is None or producer is None:  # pragma: no cover - schema-guarded
         raise ValueError(f"unknown component: {case.component!r}")
-
-    return EvalContext(case_id=case.id, output=output)
+    return producer(case, None, llm)  # components ignore the runner
 
 
 def run_case_full(
@@ -342,11 +367,10 @@ def run_case_full(
     # One parent span per case groups the run + judge child spans into a single
     # trace, named after the case so Phoenix lists it by eval name.
     with tracing.llm_span(case.id, kind="CHAIN", input_value=case.seed_prompt) as span:
-        if case.component is not None:
-            ctx = run_component(case, llm=llm)
-        else:
-            reader = _seed_knowledge(case, llm=llm)
-            ctx = runner.run(case, reader)
+        producer = CONTEXT_PRODUCERS.get(case.component)
+        if producer is None:  # pragma: no cover - schema-guarded
+            raise ValueError(f"unknown component: {case.component!r}")
+        ctx = producer(case, runner, llm)
 
         checks = run_checks(case, ctx)
         judge_result = grade_rubric(case, ctx, judge)
