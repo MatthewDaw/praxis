@@ -17,6 +17,13 @@
 # Caching 0.52 / TODO(MD) 0.45; the distractors CloudFront 0.27 / X-Ray 0.18 /
 # SES 0.06. min_score 0.35 keeps both rules and drops all three distractors
 # (top_k alone would not — CloudFront ranks 3rd). Recalibrate if the model changes.
+#
+# PROVISIONAL: the excludes_* checks + min_score=0.35 encode ONE not-yet-decided
+# reader contract (threshold filtering). The RetrievingReader isn't wired into
+# production yet, so this is a tentative behavior, not a settled spec. Once the
+# real contract is chosen, rewrite the assertions to match it — e.g. if the reader
+# becomes pure top-k=8, assert "<=8 facts AND TODO(MD) present" and drop excludes_*
+# (top-k would keep CloudFront/X-Ray, so those checks only hold under thresholding).
 id: lost_in_middle_reader
 component: graph_reader
 substrate: vector
