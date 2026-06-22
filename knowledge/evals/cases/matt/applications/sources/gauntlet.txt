@@ -1,0 +1,48 @@
+Gauntlet AI — Fellowship program (context for Matthew Daw, a current Cohort V AI Challenger).
+Raw program information extracted from https://gauntletai.com/apply.
+
+Program overview:
+"Ten weeks. No shortcuts." Participants engage in sustained execution that resets how you build, with
+the goal to design and ship production-grade AI systems. Full time. No half measures.
+
+Duration & structure:
+The fellowship spans 10 weeks total: 3 weeks remote and 7 weeks in-person in Austin, Texas.
+
+Weekly cadence:
+"Monday: assignment drops. Friday: you ship. No extensions. No excuses." Participants complete weekly
+builds — ship every week, real constraints, real deadlines.
+
+Curriculum:
+Phase 1 (Remote, Weeks 1-3):
+- Week 1: AI-First Coding Methodologies — workflows, coding agents, Model Context Protocol (MCP).
+- Week 2: Legacy Systems and RAG Implementation — vector databases and enterprise codebases.
+- Week 3: Open Source Domain-Specific AI Agents — reliability and evaluation.
+Phase 2 (On-Site, Weeks 4-10):
+- Weeks 4-5: Hiring Partner Projects — delivering client work.
+- Week 6: Enterprise Systems and Fine-Tuning.
+- Week 7: Legacy Modernization and Multi-Agent Systems.
+- Week 8: Multimodal AI and Game Development.
+- Weeks 9-10: Capstone and Infrastructure projects.
+
+Cost & support:
+Travel, housing, food, compute, and model access are paid for by hiring partners. No tuition is charged
+to participants.
+
+Compensation outcomes:
+Graduates secure positions with starting compensation at or above $200k - $950k.
+
+Eligibility:
+Gauntlet Prime (private sector): 3+ years professional software engineering experience; backend or
+full-stack production experience; passing CCAT score; U.S. work authorization (no H1B sponsorship);
+full-time availability for 10 weeks with Austin relocation.
+Gauntlet for America (government track): 1+ year professional software engineering experience; backend
+or full-stack production experience; 35+ on CCAT; U.S. citizenship required; full-time commitment with
+Washington DC relocation.
+
+Selection philosophy:
+"You'd rather be judged on what you build than where you went to school" — focus on output over
+credentials.
+
+Cohorts:
+Cohort 5 starts April 27, 2026. Cohort 6 starts July 6, 2026. Cohort 7 starts September 14, 2026.
+Applications are reviewed on a rolling basis. (Matthew is in Cohort V / Cohort 5.)
