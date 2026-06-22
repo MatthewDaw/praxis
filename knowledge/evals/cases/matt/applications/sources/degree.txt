@@ -1,0 +1,120 @@
+Matthew Daw — Degree: BS in Applied & Computational Mathematics Emphasis (ACME), Brigham Young University (2019-2022).
+Dean's list (top 5%), full-tuition scholarship. ACME is a rigorous, proof-based applied and computational mathematics
+major. The four-volume ACME curriculum tables of contents (the actual course material covered) follow verbatim.
+
+=== ACME Volume 1 — Mathematical Analysis ===
+
+I Linear Analysis I
+Abstract Vector Spaces
+1.1 Vector Algebra
+1.2 Spans and Linear Independence
+1.3 Products, Sums, and Complements
+1.4 Dimension, Replacement, and Extension
+1.5 Quotient Spaces
+Linear Transformations and Matrices
+2.1 Basics of Linear Transformations I
+2.2 Basics of Linear Transformations II
+2.3 Rank, Nullity, and the First Isomorphism Theorem
+2.4 Matrix Representations
+2.5 Composition, Change of Basis, and Similarity
+2.6 Important Example: Bernstein Polynomials
+2.7 Linear Systems
+2.8 Determinants I
+2.9 Determinants II
+Inner Product Spaces
+3.1 Introduction to Inner Products
+3.2 Orthonormal Sets and Orthogonal Projections
+3.3 Gram-Schmidt Orthonormalization
+3.4 QR with Householder Transformations
+3.5 Normed Linear Spaces
+3.6 Important Norm Inequalities
+3.7 Adjoints
+3.8 Fundamental Subspaces
+3.9 Least Squares
+Spectral Theory
+4.1 Eigenvalues and Eigenvectors
+4.2 Invariant Subspaces
+4.3 Diagonalization
+4.4 Schur's Lemma
+4.5 The Singular Value Decomposition
+4.6 Consequences of the SVD
+II Nonlinear Analysis I
+Metric Space Topology (metric spaces, continuity, completeness, compactness, uniform convergence, Banach spaces)
+Differentiation (directional derivative, Frechet derivative, mean value theorem, Taylor's theorem)
+Contraction Mappings and Applications (contraction mapping principle, Newton's method, implicit/inverse function theorems, conditioning)
+III Nonlinear Analysis II
+Integration I and II (multivariable integration, Lebesgue integration, measure, dominated convergence, Fubini, change of variables)
+Calculus on Manifolds (line integrals, parametrized manifolds, Green's theorem)
+Complex Analysis (holomorphic functions, contour integrals, Cauchy's integral formula, Laurent series, residue theorem)
+IV Linear Analysis II
+Spectral Calculus (projections, generalized eigenvectors, the resolvent, spectral decomposition, Perron-Frobenius theorem, Drazin inverse, Jordan canonical form)
+Iterative Methods (methods for linear systems, Krylov subspaces, Arnoldi iteration, GMRES, computing eigenvalues)
+Spectra and Pseudospectra
+Rings and Polynomials (Euclidean domains, fundamental theorem of arithmetic, homomorphisms, Chinese remainder theorem)
+
+=== ACME Volume 2 — Algorithms, Approximation, and Optimization ===
+
+I Algorithms
+Introduction to Algorithms and Analysis (complexity, leading-order behavior, summation, nested loops, divide and conquer, Master Theorem)
+Asymptotic Integrals (Gamma function, Stirling's approximation, Laplace's method)
+Data Structures (theory of graphs, trees, search trees, priority queues and heaps, B-trees)
+Combinatorial Optimization (dynamic programming, graph search algorithms, minimum spanning trees, Huffman encoding, hard problems)
+Probability (probability theory, Bayes' rule, random variables, discrete and continuous distributions, multivariate random variables)
+Probabilistic Sampling and Estimation (estimation, law of large numbers, central limit theorem, Bayesian statistics)
+Random Algorithms (Monte Carlo methods, importance/inversion/rejection sampling, hashing, simulated annealing, genetic algorithms)
+II Approximation
+Harmonic Analysis (Fourier series, discrete Fourier transform, convolution, sampling theorem, Haar wavelets, fast wavelet transform)
+Polynomial Approximation and Interpolation (orthogonal polynomials, Chebyshev interpolation, Clenshaw-Curtis and Gaussian quadrature)
+III Interlude
+Review of Multivariate Differentiation; Fundamentals of Numerical Approximation (floating-point arithmetic, conditioning, stability, computing derivatives)
+IV Optimization
+Unconstrained Optimization (gradient descent, Newton and quasi-Newton methods, BFGS, conjugate-gradient methods)
+Linear Optimization (convex and affine sets, the simplex algorithm, duality)
+Nonlinear Constrained Optimization (Lagrange conditions, Karush-Kuhn-Tucker (KKT) conditions, numerical methods for constrained optimization)
+Convex Analysis and Optimization (convex functions, Jensen's inequality, weak and strong duality, interior point methods)
+V Dynamic Optimization
+Dynamic Optimization (finite- and infinite-horizon dynamic optimization)
+Stochastic Dynamic Optimization (Markov Decision Processes, bandit problems, Thompson sampling)
+
+=== ACME Volume 3 — Probability, Statistics, and Machine Learning ===
+
+I Probabilistic Models
+Review of Basic Probability; More Probability (modes of convergence, moments and characteristic functions, inequalities, central limit theorem, information and entropy); Markov Processes
+II Basic Statistical Modeling
+Classical Inference (nonparametric estimation, CDFs, histograms and KDE, parametric estimation, MLE, Fisher information, bootstrap methods, hypothesis testing, Bayesian statistics, classical sampling methods)
+Regression (linear regression and GLMs, logistic regression, model selection, regularization)
+III Adaptive Methods
+Graphical Models (latent variable models, expectation maximization, mixture models, discrete and continuous Hidden Markov Models, MCMC: Metropolis-Hastings and Gibbs, LDA)
+Estimation in State-Space Models (state-space modeling, recursive least squares, Kalman filtering, time series models, ARMA training and forecasting)
+IV Interlude
+Review of Multivariate Calculus (gradient, Hessian, chain rule, matrix derivatives); Review of Optimization (stochastic gradient descent, second-order methods, duality in convex optimization)
+V Machine Learning
+ML basics; Unsupervised Methods (linear dimensionality reduction, randomized PCA, nonnegative matrix factorization, clustering, Johnson-Lindenstrauss, embeddings, word representations, compressed sensing)
+Linear Models (binary classification, logistic and softmax regression, maximum entropy classifiers, hard and soft margin Support Vector Machines, kernels)
+Decision Trees (classification and regression trees, ensembles, random forests, gradient boosted trees, differentiable trees)
+Neural Networks (basic structure, back propagation and automatic differentiation, regularization)
+Deep Learning (convolutional neural networks, residual networks, long and short term memory (LSTM) networks, gated rectified units, sequence to sequence)
+VI Data Generation, Online Learning, and Reinforcement Learning
+Data Augmentation and Generation (augmentation, white-box models, Generative Adversarial Networks)
+Reinforcement Learning (Markov Decision Processes, Q-learning, deep reinforcement learning)
+
+=== ACME Volume 4 — Dynamic Modeling, PDEs, Calculus of Variations, and Optimal Control ===
+
+I Dynamic Modeling I
+Modeling (the art and science of mathematical modeling, harmonic motion, population dynamics)
+Existence and Uniqueness (ordinary differential equations, homogeneous and non-homogeneous linear systems, matrix exponentials)
+Stability Theory (stability of linear and autonomous systems, structural stability, Lyapunov's method, Poincare-Bendixson theorem, stable/center manifold theory)
+Bifurcation Theory
+II Partial Differential Equations
+Introduction to PDEs; Hyperbolic PDE (conservation laws, method of characteristics, wave equation, traveling/standing waves)
+Parabolic and Elliptic equations (well-posedness, heat equation, equilibrium/elliptic equations)
+Eigenfunction Expansions (Sturm-Liouville problems); Green's Function (distributions, computation of the Green's function)
+III Calculus of Variations
+Introduction to Optimization and the Calculus of Variations; Euler's equation; constraints; Hamilton's Principle; Noether's Theorem; conditions for strong/weak extrema
+IV Optimal Control
+Introduction to Optimal Control; Pontryagin's Maximum Principle; forms of the cost-functional; Linear Quadratic Regulator (LQR); inequality constraints and KKT; Hamilton-Jacobi-Bellman (HJB) equation
+V Optimal Control Theory
+Mathematical Systems; Control Theory (reachability, observability); Linear Control Theory (controllability, transfer functions, pole placement, optimal control, LQR); Optimal Control (maximum principle, adjoint equation, terminal constraints)
+
+Senior capstone: built a real-time learning algorithm to maximize language learning using Hidden Markov chains.
+Also: incomplete MS in Computer Science at BYU focused on graph theory and deep learning; Associate's in General Studies, Utah Valley University.

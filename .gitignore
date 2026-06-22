@@ -26,3 +26,12 @@ infra/cdk.context.json
 
 # Server runtime data (persisted candidate store)
 knowledge/serve/data/
+
+# Large reference data & media — host externally (e.g. S3), never push to git.
+# (Readers currently read these from local paths; an S3 move would change that.)
+# The assets/ dir holds the bulk (videos, extracted frames, subtitles); the
+# extension globals are scoped under it to avoid catching frontend/docs images.
+knowledge/assets/
+knowledge/**/*.mp4
+knowledge/**/*.webp
+knowledge/**/*.vtt
