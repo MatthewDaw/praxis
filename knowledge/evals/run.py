@@ -35,6 +35,7 @@ from knowledge.evals.eval_def import (
     Rubric,
     RunTranscript,
 )
+from knowledge.observability import tracing
 from knowledge.wiring import build_trio
 
 HERE = Path(__file__).parent
@@ -252,29 +253,42 @@ def run_case_full(
     Returns the runner's context, the judge result (``None`` if unjudged), and
     the verdict. :func:`run_case` is the thin verdict-only wrapper over this.
     """
-    if case.component is not None:
-        ctx = run_component(case, llm=llm)
-    else:
-        reader = _seed_knowledge(case, llm=llm)
-        ctx = runner.run(case, reader)
+    # One parent span per case groups the run + judge child spans into a single
+    # trace, named after the case so Phoenix lists it by eval name.
+    with tracing.llm_span(case.id, kind="CHAIN", input_value=case.seed_prompt) as span:
+        if case.component is not None:
+            ctx = run_component(case, llm=llm)
+        else:
+            reader = _seed_knowledge(case, llm=llm)
+            ctx = runner.run(case, reader)
 
-    checks = run_checks(case, ctx)
-    judge_result = grade_rubric(case, ctx, judge)
-    rubric_score = None if judge_result is None else judge_result.overall
+        checks = run_checks(case, ctx)
+        judge_result = grade_rubric(case, ctx, judge)
+        rubric_score = None if judge_result is None else judge_result.overall
 
-    checks_ok = bool(checks) and all(c.passed for c in checks)
-    if checks:
-        passed = checks_ok and (rubric_score is None or rubric_score >= PASS_THRESHOLD)
-    else:
-        passed = rubric_score is not None and rubric_score >= PASS_THRESHOLD
+        checks_ok = bool(checks) and all(c.passed for c in checks)
+        if checks:
+            passed = checks_ok and (rubric_score is None or rubric_score >= PASS_THRESHOLD)
+        else:
+            passed = rubric_score is not None and rubric_score >= PASS_THRESHOLD
 
-    result = CaseResult(
-        case_id=case.id,
-        checks=checks,
-        rubric_score=rubric_score,
-        passed=passed,
-        xfail_reason=case.xfail,
-    )
+        result = CaseResult(
+            case_id=case.id,
+            checks=checks,
+            rubric_score=rubric_score,
+            passed=passed,
+            xfail_reason=case.xfail,
+        )
+        tracing.record_output(
+            span,
+            output=ctx.output,
+            **{
+                "eval.status": status_of(result),
+                "eval.checks_passed": sum(c.passed for c in checks),
+                "eval.checks_total": len(checks),
+                "eval.rubric_score": rubric_score,
+            },
+        )
     return ctx, judge_result, result
 
 
