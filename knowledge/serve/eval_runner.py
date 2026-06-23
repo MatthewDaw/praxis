@@ -103,19 +103,34 @@ def _apply_overrides(case: EvalCase, overrides: dict[str, Any]) -> EvalCase:
     return EvalCase.model_validate(updated.model_dump())
 
 
-def run_scope(
-    scope: str | None = None,
+def run_scopes(
+    scopes: list[str] | None = None,
     backend: str = "openrouter",
     overrides: dict[str, Any] | None = None,
     limit: int | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
-    """Run every case under ``scope`` and return each graded verdict."""
+    """Run every case under any of ``scopes`` (deduped by id) and grade each.
+
+    ``force`` ignores the backend's capability gate, so a sandbox case (e.g. the
+    application-filling cases) can be graded single-shot on a text backend like
+    ``openrouter`` instead of being skipped — lower fidelity, but it runs.
+    """
     if backend not in VALID_BACKENDS:
         raise ValueError(f"backend must be one of {VALID_BACKENDS}, got {backend!r}")
+    selected = [s for s in (scopes or ["."]) if s] or ["."]
 
     clean = _clean_overrides(overrides)
-    cases_dir = _resolve_scope_dir(scope)
-    cases = sorted(load_cases(cases_dir), key=lambda c: c.id)
+    # Gather cases across all selected folders; a case picked via two scopes
+    # (e.g. a folder and a case inside it) runs once.
+    seen: set[str] = set()
+    cases = []
+    for scope in selected:
+        for case in load_cases(_resolve_scope_dir(scope)):
+            if case.id not in seen:
+                seen.add(case.id)
+                cases.append(case)
+    cases.sort(key=lambda c: c.id)
     if limit is not None:
         cases = cases[: max(0, limit)]
 
@@ -124,33 +139,35 @@ def run_scope(
     results: list[dict[str, Any]] = []
     try:
         for case in cases:
-            results.append(_run_one(case, runner, judge, clean, backend))
+            results.append(_run_one(case, runner, judge, clean, force))
     finally:
         set_seed_cache(False)
 
     return {
-        "scope": scope or ".",
+        "scopes": selected,
         "backend": backend,
         "overrides": clean,
+        "force": force,
         "casesRun": len(results),
         "results": results,
     }
 
 
-def _run_one(case, runner, judge, overrides, backend) -> dict[str, Any]:
+def _run_one(case, runner, judge, overrides, force) -> dict[str, Any]:
     try:
         case = _apply_overrides(case, overrides)
     except Exception as exc:  # invalid override combo for this case
         return {"caseId": case.id, "status": "ERROR", "error": str(exc)}
 
-    runnable, skipped = partition_by_capability([case], runner)
-    if not runnable:
-        _, reasons = skipped[0]
-        return {
-            "caseId": case.id,
-            "status": "SKIPPED",
-            "skipReasons": sorted(str(r) for r in reasons),
-        }
+    if not force:
+        runnable, skipped = partition_by_capability([case], runner)
+        if not runnable:
+            _, reasons = skipped[0]
+            return {
+                "caseId": case.id,
+                "status": "SKIPPED",
+                "skipReasons": sorted(str(r) for r in reasons),
+            }
 
     try:
         ctx, judge_result, result = run_case_full(case, runner, judge=judge)

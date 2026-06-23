@@ -366,15 +366,22 @@ def create_app(store: Any | None = None) -> FastAPI:
         body: dict[str, Any] = Body(default={}),
         principal: Principal = Depends(current_user),
     ) -> dict[str, Any]:
-        """Run every case under a scope (seed -> agent -> grade) with optional overrides."""
-        from knowledge.serve.eval_runner import run_scope
+        """Run every case under the selected scopes (seed -> agent -> grade)."""
+        from knowledge.serve.eval_runner import run_scopes
 
-        scope = body.get("scope")
+        raw_scopes = body.get("scopes")
+        if isinstance(raw_scopes, list):
+            scopes = [str(s) for s in raw_scopes if str(s).strip()]
+        elif body.get("scope"):
+            scopes = [str(body.get("scope"))]
+        else:
+            scopes = None
         backend = str(body.get("backend") or "openrouter").strip()
         overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
         limit = body.get("limit")
+        force = bool(body.get("force"))
         try:
-            return run_scope(scope, backend, overrides, int(limit) if limit else None)
+            return run_scopes(scopes, backend, overrides, int(limit) if limit else None, force)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 

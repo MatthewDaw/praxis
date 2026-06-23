@@ -62,13 +62,23 @@ class PipelineConfig:
 
     preset: str = DEFAULT_PRESET
     case_ids: tuple[str, ...] = field(default_factory=tuple)
+    # Explicit cases-folder scopes to ingest into the graph (multi-select). When
+    # set, these win over ``preset`` — the graph is built from exactly these dirs.
+    scopes: tuple[str, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_body(cls, body: dict[str, Any] | None) -> "PipelineConfig":
         body = body or {}
+        raw_scopes = body.get("scopes")
+        scopes = (
+            tuple(str(s) for s in raw_scopes if str(s).strip())
+            if isinstance(raw_scopes, list)
+            else ()
+        )
         preset = str(body.get("preset") or DEFAULT_PRESET).strip() or DEFAULT_PRESET
         # ``graph:<dir>`` presets are dynamic (any cases subdir); the rest are fixed.
-        if preset not in SUPPORTED_PRESETS and _graph_scope(preset) is None:
+        # Skip preset validation when explicit scopes are given (they drive the run).
+        if not scopes and preset not in SUPPORTED_PRESETS and _graph_scope(preset) is None:
             raise ValueError(
                 f"unsupported regenerate preset {preset!r}; expected one of "
                 f"{sorted(SUPPORTED_PRESETS)} or 'graph:<cases-subdir>'"
@@ -80,7 +90,7 @@ class PipelineConfig:
             case_ids = tuple(str(item) for item in raw_case_ids if str(item).strip())
         else:
             case_ids = ()
-        return cls(preset=preset, case_ids=case_ids)
+        return cls(preset=preset, case_ids=case_ids, scopes=scopes)
 
 
 @dataclass(frozen=True)
@@ -96,9 +106,11 @@ class RegenerationResult:
 
 def regenerate_candidates(config: PipelineConfig) -> RegenerationResult:
     """Run the supported eval preset and export fresh pipeline candidates."""
+    if config.scopes:
+        return _regenerate_from_cases(list(config.scopes), config)
     scope = _graph_scope(config.preset)
     if scope is not None:
-        return _regenerate_from_cases(scope, config)
+        return _regenerate_from_cases([scope], config)
     if config.preset == "openrouter" and os.getenv("PRAXIS_REGENERATE_OPENROUTER") != "1":
         raise RegenerateUnavailableError(
             "openrouter regeneration is disabled; set PRAXIS_REGENERATE_OPENROUTER=1 on the API to enable it"
@@ -140,8 +152,8 @@ def _resolve_cases_dir(relative: str) -> Path:
     return target
 
 
-def _regenerate_from_cases(relative_dir: str, config: PipelineConfig) -> RegenerationResult:
-    """Execute the REAL graph over every case under ``knowledge/evals/cases/<relative_dir>``.
+def _regenerate_from_cases(relative_dirs: list[str], config: PipelineConfig) -> RegenerationResult:
+    """Execute the REAL graph over every case under the selected cases folders.
 
     Mirrors how cases seed the graph in the eval harness (vector substrate, live
     OpenRouter embedder, ``openai/gpt-4o-mini`` ingestion distillation): each
@@ -161,8 +173,14 @@ def _regenerate_from_cases(relative_dir: str, config: PipelineConfig) -> Regener
     from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
     from knowledge.llm.embedder_variants.openrouter_embedder import OpenRouterEmbedder
 
-    cases_dir = _resolve_cases_dir(relative_dir)
-    cases = list(load_cases(cases_dir))
+    # Gather cases across all selected folders, deduped by id.
+    seen_ids: set[str] = set()
+    cases = []
+    for relative_dir in relative_dirs or ["."]:
+        for case in load_cases(_resolve_cases_dir(relative_dir)):
+            if case.id not in seen_ids:
+                seen_ids.add(case.id)
+                cases.append(case)
     if config.case_ids:
         wanted = set(config.case_ids)
         cases = [c for c in cases if c.id in wanted]

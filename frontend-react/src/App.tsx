@@ -10,6 +10,7 @@ import { buildLocalLogSession } from "./api/localLogsProvider";
 import { CandidateCards } from "./components/CandidateCards";
 import { CandidateDetail } from "./components/CandidateDetail";
 import { EvalRunner } from "./components/EvalRunner";
+import { GraphDataLoader } from "./components/GraphDataLoader";
 import { CandidateTable } from "./components/CandidateTable";
 import {
   ContradictionsReview,
@@ -347,7 +348,14 @@ export default function App() {
       ) : null}
 
       {mode === "live" && config.apiBaseUrl ? (
-        <EvalRunner apiBaseUrl={config.apiBaseUrl} auth={auth} />
+        <>
+          <GraphDataLoader
+            apiBaseUrl={config.apiBaseUrl}
+            auth={auth}
+            onLoaded={handleRefresh}
+          />
+          <EvalRunner apiBaseUrl={config.apiBaseUrl} auth={auth} />
+        </>
       ) : null}
 
       {lastAction ? <div className="success-banner">{lastAction}</div> : null}

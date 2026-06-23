@@ -5,8 +5,9 @@ import {
   type EvalRunResponse,
   type EvalScopesResponse,
   listEvalScopes,
-  runEvalScope,
+  runEvalScopes,
 } from "../api/apiClient";
+import { ScopePicker } from "./ScopePicker";
 
 interface EvalRunnerProps {
   apiBaseUrl: string;
@@ -40,9 +41,12 @@ function statusColor(status: string): string {
 
 export function EvalRunner({ apiBaseUrl, auth }: EvalRunnerProps) {
   const [meta, setMeta] = useState<EvalScopesResponse | null>(null);
-  const [scope, setScope] = useState(".");
+  const [selected, setSelected] = useState<string[]>([]);
   const [backend, setBackend] = useState("openrouter");
+  // Run sandbox cases single-shot on a text backend instead of skipping them.
+  const [force, setForce] = useState(true);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
+  const [open, setOpen] = useState(false);
   const [showOverrides, setShowOverrides] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,9 +58,6 @@ export function EvalRunner({ apiBaseUrl, auth }: EvalRunnerProps) {
       const data = await listEvalScopes(apiBaseUrl, auth);
       setMeta(data);
       setBackend((prev) => (data.backends.includes(prev) ? prev : data.backends[0] ?? "openrouter"));
-      setScope((prev) =>
-        data.scopes.some((s) => s.scope === prev) ? prev : data.scopes[0]?.scope ?? ".",
-      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -77,11 +78,12 @@ export function EvalRunner({ apiBaseUrl, auth }: EvalRunnerProps) {
   );
 
   async function handleRun() {
+    if (!selected.length) return;
     setRunning(true);
     setError(null);
     setRun(null);
     try {
-      setRun(await runEvalScope(apiBaseUrl, scope, backend, activeOverrides, auth));
+      setRun(await runEvalScopes(apiBaseUrl, selected, backend, activeOverrides, force, auth));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -100,24 +102,24 @@ export function EvalRunner({ apiBaseUrl, auth }: EvalRunnerProps) {
   return (
     <section className="eval-runner">
       <header className="eval-runner__head">
-        <h3 className="eval-runner__title">Run evals by scope</h3>
+        <button
+          type="button"
+          className="eval-runner__collapse"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+        >
+          {open ? "▾" : "▸"} <span className="eval-runner__title">Run evals by scope</span>
+        </button>
         <span className="eval-runner__hint">
-          Runs every case in the folder (seed → agent → grade). Seeds are cached across cases.
+          Select folders/cases, then run them (seed → agent → grade). Seeds are cached across cases.
         </span>
       </header>
 
-      <div className="eval-runner__row">
-        <label className="eval-runner__field">
-          <span>Scope (folder)</span>
-          <select value={scope} onChange={(e) => setScope(e.target.value)}>
-            {meta?.scopes.map((s) => (
-              <option key={s.scope} value={s.scope}>
-                {s.scope === "." ? "all cases" : s.scope} ({s.caseCount})
-              </option>
-            ))}
-          </select>
-        </label>
+      {open ? (
+        <>
+      <ScopePicker scopes={meta?.scopes ?? []} selected={selected} onChange={setSelected} />
 
+      <div className="eval-runner__row">
         <label className="eval-runner__field">
           <span>Backend</span>
           <select value={backend} onChange={(e) => setBackend(e.target.value)}>
@@ -127,6 +129,11 @@ export function EvalRunner({ apiBaseUrl, auth }: EvalRunnerProps) {
               </option>
             ))}
           </select>
+        </label>
+
+        <label className="eval-runner__force" title="Run sandbox cases single-shot on this backend instead of skipping them">
+          <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
+          Run anyway (ignore sandbox)
         </label>
 
         <button
@@ -139,8 +146,13 @@ export function EvalRunner({ apiBaseUrl, auth }: EvalRunnerProps) {
         </button>
 
         <div className="eval-runner__actions">
-          <button type="button" className="btn primary" onClick={() => void handleRun()} disabled={running}>
-            {running ? "Running…" : "Run evals"}
+          <button
+            type="button"
+            className="btn primary"
+            onClick={() => void handleRun()}
+            disabled={running || !selected.length}
+          >
+            {running ? "Running…" : selected.length ? `Run ${selected.length} selected` : "Select to run"}
           </button>
         </div>
       </div>
@@ -200,6 +212,8 @@ export function EvalRunner({ apiBaseUrl, auth }: EvalRunnerProps) {
           </ul>
         </div>
       ) : null}
+        </>
+      ) : null}
     </section>
   );
 }
@@ -225,6 +239,9 @@ function EvalCaseRow({ result }: { result: EvalCaseResult }) {
           {result.status}
         </span>
         <span className="eval-runner__case-id">{result.caseId}</span>
+        {result.skipReasons?.length ? (
+          <span className="eval-runner__skip-inline">needs {result.skipReasons.join(", ")}</span>
+        ) : null}
         {result.rubricScore != null ? (
           <span className="eval-runner__score">{(result.rubricScore * 100).toFixed(0)}%</span>
         ) : null}

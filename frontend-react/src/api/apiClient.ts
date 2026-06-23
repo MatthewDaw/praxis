@@ -469,7 +469,7 @@ export interface EvalCaseResult {
 }
 
 export interface EvalRunResponse {
-  scope: string;
+  scopes: string[];
   backend: string;
   overrides: Record<string, unknown>;
   casesRun: number;
@@ -509,11 +509,12 @@ export async function listEvalScopes(
   };
 }
 
-export async function runEvalScope(
+export async function runEvalScopes(
   apiBaseUrl: string,
-  scope: string,
+  scopes: string[],
   backend: string,
   overrides: Record<string, unknown>,
+  force: boolean,
   auth?: string | ApiDataProviderAuth,
 ): Promise<EvalRunResponse> {
   const root = apiBaseUrl.replace(/\/$/, "");
@@ -521,7 +522,7 @@ export async function runEvalScope(
   const response = await fetch(`${root}/evals/run`, {
     method: "POST",
     headers: contractHeaders(token, orgId),
-    body: JSON.stringify({ scope, backend, overrides }),
+    body: JSON.stringify({ scopes, backend, overrides, force }),
   });
   if (!response.ok) {
     const message = responseDetail(await response.text(), response.statusText);
@@ -531,6 +532,31 @@ export async function runEvalScope(
     );
   }
   return (await parseJsonResponse(response)) as EvalRunResponse;
+}
+
+export async function regenerateGraphFromScopes(
+  apiBaseUrl: string,
+  scopes: string[],
+  auth?: string | ApiDataProviderAuth,
+): Promise<EvalRegenerateResult> {
+  const root = apiBaseUrl.replace(/\/$/, "");
+  const { token, orgId } = await resolveToken(auth);
+  const response = await fetch(`${root}/evals/regenerate`, {
+    method: "POST",
+    headers: contractHeaders(token, orgId),
+    body: JSON.stringify({ scopes }),
+  });
+  if (!response.ok) {
+    const message = responseDetail(await response.text(), response.statusText);
+    if (response.status === 404 || response.status === 405 || response.status === 503) {
+      throw new EvalRegenerateUnavailableError(message, response.status);
+    }
+    throw new ApiClientError(
+      `API POST /evals/regenerate failed (${response.status}): ${message}`,
+      response.status,
+    );
+  }
+  return normalizeEvalRegenerateResult(await parseJsonResponse(response));
 }
 
 function normalizeEvalMetrics(
