@@ -292,11 +292,53 @@ def _build_trio_for(case: EvalCase, llm=None):
     )
 
 
+# Optional seed cache: many cases share the exact same seeded knowledge (e.g.
+# every matt/applications case ingests the same resume/LinkedIn/degree docs), and
+# ingestion can be expensive (real LLM distillation + embeddings). When enabled,
+# the seeded reader is cached by a signature of everything that affects the graph,
+# so shared-seed cases reuse one ingestion instead of repeating it.
+_SEED_CACHE: dict[str, object] = {}
+_SEED_CACHE_ENABLED = False
+
+
+def set_seed_cache(enabled: bool) -> None:
+    """Toggle reuse of seeded readers across cases with identical seeds."""
+    global _SEED_CACHE_ENABLED
+    _SEED_CACHE_ENABLED = enabled
+
+
+def clear_seed_cache() -> None:
+    _SEED_CACHE.clear()
+
+
+def _seed_signature(case: EvalCase) -> str:
+    import hashlib
+    import json
+
+    payload = {
+        "substrate": case.substrate,
+        "embedder": case.embedder,
+        "ingest_model": case.ingest_model,
+        "reader": case.reader,
+        "reader_top_k": case.reader_top_k,
+        "reader_min_score": case.reader_min_score,
+        "via_ingestor": list(case.seeded_insight.via_ingestor),
+        "direct_to_graph": list(case.seeded_insight.direct_to_graph),
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 def _seed_knowledge(case: EvalCase, llm=None):
     """Provision a fresh trio and pre-load the case's seeded insight.
 
     The graph initializes itself (in-memory for the MVP) — no path, no file.
     """
+    if _SEED_CACHE_ENABLED:
+        sig = _seed_signature(case)
+        cached = _SEED_CACHE.get(sig)
+        if cached is not None:
+            return cached
+
     graph, ingestor, reader = _build_trio_for(case, llm=llm)
     # Channel encodes the write intent -> the state the fact lands in:
     #   * direct_to_graph -> "active": simulates a direct user approval.
@@ -305,6 +347,9 @@ def _seed_knowledge(case: EvalCase, llm=None):
         graph.write(text, state="active")
     for text in case.seeded_insight.via_ingestor:
         ingestor.ingest(text, state="proposed")
+
+    if _SEED_CACHE_ENABLED:
+        _SEED_CACHE[sig] = reader
     return reader
 
 

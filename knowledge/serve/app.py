@@ -348,6 +348,36 @@ def create_app(store: Any | None = None) -> FastAPI:
             "eval_results": result.eval_results,
         }
 
+    @app.get("/evals/scopes")
+    def list_eval_scopes(
+        principal: Principal = Depends(current_user),
+    ) -> dict[str, Any]:
+        """List selectable case folders (scopes) and their case counts."""
+        from knowledge.serve.eval_runner import OVERRIDE_FIELDS, VALID_BACKENDS, list_scopes
+
+        return {
+            "scopes": list_scopes(),
+            "backends": list(VALID_BACKENDS),
+            "overrideFields": {k: (list(v) if v else None) for k, v in OVERRIDE_FIELDS.items()},
+        }
+
+    @app.post("/evals/run")
+    def run_eval_scope(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+    ) -> dict[str, Any]:
+        """Run every case under a scope (seed -> agent -> grade) with optional overrides."""
+        from knowledge.serve.eval_runner import run_scope
+
+        scope = body.get("scope")
+        backend = str(body.get("backend") or "openrouter").strip()
+        overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
+        limit = body.get("limit")
+        try:
+            return run_scope(scope, backend, overrides, int(limit) if limit else None)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     @app.post("/insights")
     def add_insight(
         body: dict[str, Any] = Body(default={}),

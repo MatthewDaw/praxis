@@ -9,6 +9,7 @@ import {
 import { buildLocalLogSession } from "./api/localLogsProvider";
 import { CandidateCards } from "./components/CandidateCards";
 import { CandidateDetail } from "./components/CandidateDetail";
+import { EvalRunner } from "./components/EvalRunner";
 import { CandidateTable } from "./components/CandidateTable";
 import {
   ContradictionsReview,
@@ -197,35 +198,6 @@ export default function App() {
     refetchHealth();
   }
 
-  async function handleRegenerateEvals(presetId: string) {
-    setActionError(null);
-    if (mode !== "live" || !config.apiBaseUrl) {
-      setInfoMessage("Eval regeneration requires a live API data source.");
-      return;
-    }
-
-    setRegeneratePending(true);
-    try {
-      const result = await postRegenerateEvals(config.apiBaseUrl, presetId, auth);
-      await refresh();
-      setHealthRefreshKey((value) => value + 1);
-      bumpGraphRefresh();
-      refetchHealth();
-      setInfoMessage(
-        `Regenerated ${result.candidatesInserted} candidates from ${result.insightsGenerated} eval insights (${result.casesRun} cases).`,
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (err instanceof EvalRegenerateUnavailableError) {
-        setInfoMessage(`Eval regeneration skipped: ${message}.`);
-      } else {
-        setActionError(message);
-      }
-    } finally {
-      setRegeneratePending(false);
-    }
-  }
-
   async function handleRefreshCandidate(id: string) {
     setActionError(null);
     setRefreshingCandidateId(id);
@@ -364,8 +336,6 @@ export default function App() {
         onDataSourceLoad={handleDataSourceLoad}
         onLoadLocalLogs={handleLoadLocalLogs}
         onClearLocalLogs={handleClearLocalLogs}
-        onRegenerateEvals={handleRegenerateEvals}
-        regeneratePending={regeneratePending}
         onRefresh={handleRefresh}
       />
 
@@ -374,6 +344,10 @@ export default function App() {
           Heuristic preview — not Matthew&apos;s distillation pipeline. Upload .jsonl
           session files to explore transcripts and proposed candidates in the browser.
         </div>
+      ) : null}
+
+      {mode === "live" && config.apiBaseUrl ? (
+        <EvalRunner apiBaseUrl={config.apiBaseUrl} auth={auth} />
       ) : null}
 
       {lastAction ? <div className="success-banner">{lastAction}</div> : null}

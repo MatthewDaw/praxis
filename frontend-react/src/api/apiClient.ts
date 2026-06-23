@@ -444,6 +444,95 @@ export async function postRegenerateEvals(
   return normalizeEvalRegenerateResult(await parseJsonResponse(response));
 }
 
+export interface EvalScope {
+  scope: string;
+  caseCount: number;
+}
+
+export interface EvalScopesResponse {
+  scopes: EvalScope[];
+  backends: string[];
+  overrideFields: Record<string, string[] | null>;
+}
+
+export interface EvalCaseResult {
+  caseId: string;
+  status: string;
+  passed?: boolean;
+  rubricScore?: number | null;
+  checks?: { name: string; passed: boolean; evidence: string }[];
+  output?: string;
+  injectedKnowledge?: string | null;
+  skipReasons?: string[];
+  xfailReason?: string | null;
+  error?: string;
+}
+
+export interface EvalRunResponse {
+  scope: string;
+  backend: string;
+  overrides: Record<string, unknown>;
+  casesRun: number;
+  results: EvalCaseResult[];
+}
+
+async function resolveToken(
+  auth?: string | ApiDataProviderAuth,
+): Promise<{ token?: string; orgId?: string }> {
+  const resolved: ApiDataProviderAuth =
+    typeof auth === "string" ? { getToken: async () => auth } : auth ?? {};
+  const token = resolved.getToken ? await resolved.getToken() : undefined;
+  return { token, orgId: resolved.orgId };
+}
+
+export async function listEvalScopes(
+  apiBaseUrl: string,
+  auth?: string | ApiDataProviderAuth,
+): Promise<EvalScopesResponse> {
+  const root = apiBaseUrl.replace(/\/$/, "");
+  const { token, orgId } = await resolveToken(auth);
+  const response = await fetch(`${root}/evals/scopes`, {
+    headers: contractHeaders(token, orgId),
+  });
+  if (!response.ok) {
+    const message = responseDetail(await response.text(), response.statusText);
+    throw new ApiClientError(
+      `API GET /evals/scopes failed (${response.status}): ${message}`,
+      response.status,
+    );
+  }
+  const payload = (await parseJsonResponse(response)) as Partial<EvalScopesResponse>;
+  return {
+    scopes: Array.isArray(payload.scopes) ? payload.scopes : [],
+    backends: Array.isArray(payload.backends) ? payload.backends : [],
+    overrideFields: payload.overrideFields ?? {},
+  };
+}
+
+export async function runEvalScope(
+  apiBaseUrl: string,
+  scope: string,
+  backend: string,
+  overrides: Record<string, unknown>,
+  auth?: string | ApiDataProviderAuth,
+): Promise<EvalRunResponse> {
+  const root = apiBaseUrl.replace(/\/$/, "");
+  const { token, orgId } = await resolveToken(auth);
+  const response = await fetch(`${root}/evals/run`, {
+    method: "POST",
+    headers: contractHeaders(token, orgId),
+    body: JSON.stringify({ scope, backend, overrides }),
+  });
+  if (!response.ok) {
+    const message = responseDetail(await response.text(), response.statusText);
+    throw new ApiClientError(
+      `API POST /evals/run failed (${response.status}): ${message}`,
+      response.status,
+    );
+  }
+  return (await parseJsonResponse(response)) as EvalRunResponse;
+}
+
 function normalizeEvalMetrics(
   payload: Record<string, unknown>,
   source: string,

@@ -29,6 +29,10 @@ def resolve_dsn() -> str | None:
     Returns ``None`` when no source is configured or the secret can't be
     fetched (so offline / no-creds environments degrade gracefully).
     """
+    # 0) Explicit opt-out: force the JSON candidate store (no Postgres, no org
+    #    membership checks). Handy for local single-tenant dev / demos.
+    if os.environ.get("PRAXIS_DB_DISABLED") == "1":
+        return None
     # 1) Explicit full DSN/URL wins.
     url = os.environ.get("PRAXIS_DB_URL")
     if url:

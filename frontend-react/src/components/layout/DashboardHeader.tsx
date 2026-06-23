@@ -15,8 +15,6 @@ interface DashboardHeaderProps {
   onDataSourceLoad: (presetId: string, customApiBaseUrl?: string) => void;
   onLoadLocalLogs?: (files: LocalLogFileInput[]) => void;
   onClearLocalLogs?: () => void;
-  onRegenerateEvals?: (presetId: string) => void;
-  regeneratePending?: boolean;
   onRefresh: () => void;
 }
 
@@ -30,8 +28,6 @@ export function DashboardHeader({
   onDataSourceLoad,
   onLoadLocalLogs,
   onClearLocalLogs,
-  onRegenerateEvals,
-  regeneratePending,
   onRefresh,
 }: DashboardHeaderProps) {
   return (
@@ -58,8 +54,6 @@ export function DashboardHeader({
           storeType={storeType}
           localSession={localSession}
           onLoad={onDataSourceLoad}
-          onRegenerate={onRegenerateEvals}
-          regeneratePending={regeneratePending}
           onLoadLocalLogs={onLoadLocalLogs}
           onClearLocalLogs={onClearLocalLogs}
         />
