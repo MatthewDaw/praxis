@@ -373,9 +373,11 @@ def create_app(store: Any | None = None) -> FastAPI:
             policy=[Redactor(), Deduper(), ConflictOverwriter(llm=OpenRouterLlm())],
         )
         _, ingestor, _ = build_trio(graph=graph, llm=None)
-        before = graph.search(insight, top_k=1)
+        # state=None: detect a merge/overwrite against any prior fact, including a
+        # pending (proposed) one the approved insight supersedes — not just active.
+        before = graph.search(insight, top_k=1, state=None)
         ingestor.ingest(insight, state="active")  # human-gated -> live knowledge
-        after = graph.search(insight, top_k=1)
+        after = graph.search(insight, top_k=1, state=None)
         # Read back the outcome: a stable id with a higher observation_count means
         # a merge/overwrite; a fresh id (or text change) means an add/overwrite.
         prior = before[0].fact if before else None

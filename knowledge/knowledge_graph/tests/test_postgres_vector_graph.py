@@ -58,7 +58,8 @@ def _trio(conn, org, user):
 def test_persist_and_retrieve(unique_org):
     conn = db.connect()
     graph, ingestor, reader = _trio(conn, unique_org, "u1")
-    ingestor.ingest("use uv, not pip, in this repo")
+    # Retrieval only surfaces "active" facts, so ingest as a direct approval.
+    ingestor.ingest("use uv, not pip, in this repo", state="active")
     assert _count(conn, unique_org, "u1") == 1
     out = reader.read("how do I install dependencies?")
     assert "uv" in out

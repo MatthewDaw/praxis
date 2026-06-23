@@ -64,8 +64,13 @@ class VectorGraph(SearchableGraph):
 
     # --- KnowledgeGraph contract -------------------------------------------
     def read(self, context: str | None = None) -> str:
-        """Return all fact texts concatenated (context ignored; reader filters)."""
-        return "\n\n".join(f.text for f in self._facts)
+        """Return the ``active`` fact texts concatenated (context ignored).
+
+        Only ``active`` facts are retrievable: ``proposed`` (staged) and
+        ``decayed`` (retired) facts are excluded from what the agent reads,
+        matching ``search``'s gating.
+        """
+        return "\n\n".join(f.text for f in self._facts if f.state == "active")
 
     def write(self, content: str, *, state: str = "proposed") -> None:
         """Run the write-policy pipeline over ``content``, then persist.
@@ -97,11 +102,13 @@ class VectorGraph(SearchableGraph):
         top_k: int = 10,
         filters: dict | None = None,
         scope: str | None = None,
+        state: str | None = "active",
     ) -> list[SearchHit]:
         candidates = [
             f
             for f in self._facts
             if (scope is None or f.scope == scope)
+            and (state is None or f.state == state)
             and all(getattr(f, k, None) == v for k, v in (filters or {}).items())
         ]
         if not candidates:
@@ -134,7 +141,9 @@ class VectorGraph(SearchableGraph):
 
     # --- StoreView (used by write steps) -----------------------------------
     def most_similar(self, text: str, k: int = 5) -> list[SearchHit]:
-        return self.search(text, top_k=k)
+        # Dedup/conflict detection must see pending facts too, so search all
+        # states (not just the retrievable "active" default).
+        return self.search(text, top_k=k, state=None)
 
     @property
     def facts(self) -> list[Fact]:
