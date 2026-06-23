@@ -78,8 +78,8 @@ export function FilterBar({
             {candidateCount} candidates
           </span>
         ) : null}
-        <div className="view-toggle" role="tablist" aria-label="View mode">
-          <div ref={viewMenuRef} className="view-toggle__group">
+        <div ref={viewMenuRef} className="view-toggle__group">
+          <div className="view-toggle" role="tablist" aria-label="View mode">
             <button
               type="button"
               role="tab"
@@ -91,52 +91,54 @@ export function FilterBar({
             >
               View ▾
             </button>
-            {showViewMenu && (
-              <div className="view-toggle__menu" role="menu">
-                {(
-                  [
-                    { tab: "table", label: "Table view" },
-                    { tab: "cards", label: "Card view" },
-                    { tab: "graph", label: "Graph" },
-                  ] as const
-                ).map(({ tab, label }) => (
-                  <button
-                    key={tab}
-                    type="button"
-                    role="menuitem"
-                    className={viewTab === tab ? "view-toggle__menu-item active" : "view-toggle__menu-item"}
-                    onClick={() => {
-                      onViewTabChange(tab);
-                      setShowViewMenu(false);
-                    }}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            )}
+            <button
+              type="button"
+              role="tab"
+              className={
+                viewTab === "contradictions" ? "view-toggle__tab active" : "view-toggle__tab"
+              }
+              aria-selected={viewTab === "contradictions"}
+              onClick={() => onViewTabChange("contradictions")}
+            >
+              Contradictions
+              {contradictionCount > 0 ? ` (${contradictionCount})` : ""}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className={viewTab === "setup" ? "view-toggle__tab active" : "view-toggle__tab"}
+              aria-selected={viewTab === "setup"}
+              onClick={() => onViewTabChange("setup")}
+            >
+              MCP Setup
+            </button>
           </div>
-          <button
-            type="button"
-            role="tab"
-            className={
-              viewTab === "contradictions" ? "view-toggle__tab active" : "view-toggle__tab"
-            }
-            aria-selected={viewTab === "contradictions"}
-            onClick={() => onViewTabChange("contradictions")}
-          >
-            Contradictions
-            {contradictionCount > 0 ? ` (${contradictionCount})` : ""}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            className={viewTab === "setup" ? "view-toggle__tab active" : "view-toggle__tab"}
-            aria-selected={viewTab === "setup"}
-            onClick={() => onViewTabChange("setup")}
-          >
-            MCP Setup
-          </button>
+          {showViewMenu && (
+            <div className="view-toggle__menu" role="menu">
+              {(
+                [
+                  { tab: "table", label: "Table view" },
+                  { tab: "cards", label: "Card view" },
+                  { tab: "graph", label: "Graph" },
+                ] as const
+              ).map(({ tab, label }) => (
+                <button
+                  key={tab}
+                  type="button"
+                  role="menuitem"
+                  className={
+                    viewTab === tab ? "view-toggle__menu-item active" : "view-toggle__menu-item"
+                  }
+                  onClick={() => {
+                    onViewTabChange(tab);
+                    setShowViewMenu(false);
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </section>
