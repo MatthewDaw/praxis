@@ -463,6 +463,9 @@ def _seed_signature(case: EvalCase) -> str:
         "substrate": case.substrate,
         "embedder": case.embedder,
         "ingest_model": case.ingest_model,
+        # Seed state changes what's retrievable, so two cases differing only in
+        # ingest_state must not share a cached seeded reader.
+        "ingest_state": case.ingest_state,
         "reader": case.reader,
         "reader_top_k": case.reader_top_k,
         "reader_abs_floor": case.reader_abs_floor,
@@ -492,11 +495,14 @@ def _seed_knowledge(case: EvalCase, llm=None):
     graph, ingestor, reader = _build_trio_for(case, llm=llm)
     # Channel encodes the write intent -> the state the fact lands in:
     #   * direct_to_graph -> "active": simulates a direct user approval.
-    #   * via_ingestor    -> "proposed": the system passively distilling raw input.
+    #   * via_ingestor    -> case.ingest_state ("proposed" default): the system
+    #     passively distilling raw input. A case whose seeded docs are established
+    #     background (e.g. matt/applications) sets ingest_state: active so the
+    #     distilled facts are retrievable rather than staged out of the reader.
     for text in case.seeded_insight.direct_to_graph:
         graph.write(text, state="active")
     for text in case.seeded_insight.via_ingestor:
-        ingestor.ingest(text, state="proposed")
+        ingestor.ingest(text, state=case.ingest_state)
 
     if _SEED_CACHE_ENABLED:
         _SEED_CACHE[sig] = reader
