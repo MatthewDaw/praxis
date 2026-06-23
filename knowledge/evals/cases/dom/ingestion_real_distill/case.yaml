@@ -1,0 +1,42 @@
+# Component eval: ingestion only (no agent), seeded from REAL LLM distillation
+# replayed offline from the committed ingestion cassette — NOT hand-written
+# verbatim insights. This is the case T013 demonstrates: a deterministic
+# component case whose facts come from a real `ingest_model` distillation
+# (openai/gpt-4o-mini), keyed + replayed so it is byte-identical every run.
+#
+# The raw note carries load-bearing specifics (numbers/names). The SPLIT_PROMPT
+# tells the distiller to preserve concrete specifics, so those survive into the
+# stored facts; the checks pin a couple of them. Because the distilled text is
+# served from the cassette and its vectors from the embedding cache, the run is
+# fully offline and deterministic (SC-006).
+#
+# Refresh both fixtures (ordered) when the raw note changes:
+#   uv run python -m knowledge.evals.ingestion_cache --refresh   # then embed_cache --refresh
+id: ingestion_real_distill
+component: ingestion
+substrate: vector
+embedder: cached  # real vectors for the distilled facts, replayed from the embedding cache
+ingest_model: openai/gpt-4o-mini  # real distillation, replayed from the committed ingestion cassette
+
+seeded_insight:
+  via_ingestor:
+    - |
+      Engineering note for Matthew Daw. At HelloData he reduced the core 7+ terabyte ETL
+      pipeline runtime from 14 hours down to 6 hours with only a 20% increase in compute
+      scaling. He also wrote and maintained scrapers that daily collect rental listings
+      across 12 websites for under $5,000 a month, and built an ML rent-detection model
+      offering the largest build-to-rent (BTR) database in the industry.
+
+deterministic_checks:
+  # The load-bearing specifics from the raw note survive real distillation and
+  # replay byte-identically from the committed cassette every run (SC-006). These
+  # are pinned against the *distilled* facts, not the verbatim seed.
+  - name: distilled_specifics_survive
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "14 hours"
+        - "6 hours"
+        - "20%"
+        - "$5,000"
+        - "build-to-rent (BTR)"

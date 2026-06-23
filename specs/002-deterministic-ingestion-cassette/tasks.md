@@ -26,7 +26,7 @@ Single Python package at repo root: `knowledge/...`. Tests live in per-package `
 
 ## Phase 1: Setup (Shared Infrastructure)
 
-- [ ] T001 [P] Create the committed-cassette fixture dir `knowledge/evals/fixtures/ingestion/` (add `.gitkeep`), mirroring `fixtures/embeddings/` and `fixtures/verdicts/`
+- [X] T001 [P] Create the committed-cassette fixture dir `knowledge/evals/fixtures/ingestion/` (add `.gitkeep`), mirroring `fixtures/embeddings/` and `fixtures/verdicts/`
 
 ---
 
@@ -53,31 +53,31 @@ input or the model id and confirm a loud miss.
 
 ### Tests for User Story 1 (write first, ensure they FAIL)
 
-- [ ] T002 [P] [US1] Cassette unit tests in `knowledge/tests/test_ingestion_cassette.py`: replay
+- [X] T002 [P] [US1] Cassette unit tests in `knowledge/tests/test_ingestion_cassette.py`: replay
   hit (no call), record-on-miss with a stub `inner`, loud-miss when recording disabled,
   skip-when-no-source, model-id-in-key (model swap → clean miss), record-then-replay round-trip
-- [ ] T003 [P] [US1] Harness skip test in `knowledge/evals/tests/test_run.py`: an `ingest_model`
+- [X] T003 [P] [US1] Harness skip test in `knowledge/evals/tests/test_run.py`: an `ingest_model`
   case is SKIPPED offline when neither a committed ingestion cassette nor a key is available
   (the `ingest_replay` capability gate)
 
 ### Implementation for User Story 1
 
-- [ ] T004 [US1] Implement `IngestionCassette` in `knowledge/llm/ingestion_cassette.py` — near-copy
+- [X] T004 [US1] Implement `IngestionCassette` in `knowledge/llm/ingestion_cassette.py` — near-copy
   of `CachedEmbedder` with a `str → str` value codec: `sha256(model_id + "\n" + raw_input)` key,
   `allow_compute` gate, **loud `RuntimeError`** on a disabled miss, locked merge-on-save (parallel
   `--workers` safe); a `__call__(raw_input) -> str` shape
-- [ ] T005 [US1] Wire the cassette into `knowledge/evals/run.py` `_ingest_llm_for`: wrap the
+- [X] T005 [US1] Wire the cassette into `knowledge/evals/run.py` `_ingest_llm_for`: wrap the
   `str → str` ingest callable in `IngestionCassette` (parallel to `_eval_embedder`'s `cached`
   branch); `PromptIngestor` unchanged (still receives a `str → str` callable)
-- [ ] T006 [US1] Add the `ingest_replay` capability to `harness_capabilities` (committed ingestion
+- [X] T006 [US1] Add the `ingest_replay` capability to `harness_capabilities` (committed ingestion
   cassette OR a key) + `case_needs` (`ingest_model` → `ingest_replay`) in `knowledge/evals/run.py`,
   so cassette-less offline cases SKIP rather than mis-run
-- [ ] T007 [US1] Implement the regenerator `knowledge/evals/ingestion_cache.py --refresh` (mirror
+- [X] T007 [US1] Implement the regenerator `knowledge/evals/ingestion_cache.py --refresh` (mirror
   `embed_cache.py`): require a key, delete the model's cassette, re-run every `ingest_model` case to
   record exactly the inputs they distill, persist for commit
-- [ ] T008 [US1] Record + commit the ingestion cassette
+- [X] T008 [US1] Record + commit the ingestion cassette
   `knowledge/evals/fixtures/ingestion/<model-slug>.json` for the `ingest_model` cases (live, with key)
-- [ ] T009 [US1] Verify SC-001/002/003 offline: an `ingest_model` case's ingestion runs twice →
+- [X] T009 [US1] Verify SC-001/002/003 offline: an `ingest_model` case's ingestion runs twice →
   identical distilled facts, zero live ingestion calls; a changed input/model → loud miss
 
 **Checkpoint**: Ingestion replays deterministically offline — the MVP is independently functional.
@@ -95,12 +95,12 @@ embedding calls and a stable result.
 
 **Depends on US1** (stable text is the precondition for a stable embedding key).
 
-- [ ] T010 [US2] Flip every `matt/applications/*` case that sets `ingest_model` from
+- [X] T010 [US2] Flip every `matt/applications/*` case that sets `ingest_model` from
   `embedder: live` to `embedder: cached` (`knowledge/evals/cases/matt/applications/**/case.yaml`)
-- [ ] T011 [US2] Refresh + commit the embedding cache for the now-stable distilled strings —
+- [X] T011 [US2] Refresh + commit the embedding cache for the now-stable distilled strings —
   **after** the ingestion cassette (FR-009 ordering): `embed_cache --refresh`, commit
   `knowledge/evals/fixtures/embeddings/*`
-- [ ] T012 [US2] Verify SC-004/005 offline: every flipped case runs on `cached` deterministically
+- [X] T012 [US2] Verify SC-004/005 offline: every flipped case runs on `cached` deterministically
   with zero live ingestion **or** embedding calls for graph construction (none remain on `live`)
 
 **Checkpoint**: The application suite's graph-construction layer is deterministic + free on replay.
@@ -117,7 +117,7 @@ and confirm it replays offline with identical facts every run.
 
 **Depends on US1** (the cassette is the source of the deterministic real-distilled insights).
 
-- [ ] T013 [P] [US3] Author a deterministic component case (`component: ingestion` or
+- [X] T013 [P] [US3] Author a deterministic component case (`component: ingestion` or
   `knowledge_graph`, `ingest_model` set, replayed from the committed cassette) under
   `knowledge/evals/cases/dom/` and confirm offline-identical facts (SC-006)
 
@@ -127,11 +127,11 @@ and confirm it replays offline with identical facts every run.
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T014 [P] Document the two-step refresh ordering + loud-miss staleness ergonomics where the
+- [X] T014 [P] Document the two-step refresh ordering + loud-miss staleness ergonomics where the
   cassettes are described (quickstart already covers it; mirror into any fixtures/README)
-- [ ] T015 [P] Mark `docs/proposals/2026-06-22-deterministic-ingestion-cassette.md` Implemented and
+- [X] T015 [P] Mark `docs/proposals/2026-06-22-deterministic-ingestion-cassette.md` Implemented and
   cross-link the spec; note the active-fact-retrievability follow-up (the 2nd FR-030/SC-013 prereq)
-- [ ] T016 Verify full offline determinism: committed ingestion + embedding fixtures replay with
+- [X] T016 Verify full offline determinism: committed ingestion + embedding fixtures replay with
   zero live calls; a stale fixture surfaces a loud miss; no live calls in CI
 
 ---
