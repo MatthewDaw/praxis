@@ -139,7 +139,7 @@ code,
   line-height: 1.25;
 }
 
-.gitlab-repo-link {
+.github-repo-link {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -153,17 +153,17 @@ code,
   transition: background 0.12s ease, color 0.12s ease;
 }
 
-.gitlab-repo-link:hover {
-  background: #fff4ed;
-  color: #e24329;
+.github-repo-link:hover {
+  background: #f6f8fa;
+  color: #24292f;
 }
 
-.gitlab-repo-link:focus-visible {
+.github-repo-link:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.gitlab-repo-link__icon {
+.github-repo-link__icon {
   width: 1.125rem;
   height: 1.125rem;
 }
