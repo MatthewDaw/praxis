@@ -8,7 +8,9 @@ Working note for resuming **User Story 3** (unify write path + structured confli
 - **US2 (semantic dedup) ✅** committed: `c7cebc9`, `9453650`, `9227a96` (structured merge judge). `ingestion_merge_near_dupes` + `skills_merge_dedup` flip XFAIL→PASS via real merge, replayed from a committed cassette.
 - **main merged in** (`7fbff17`) + gating-integration fix (`5925355`) + spec note (`65e0e5f`).
 - **Verification baseline:** unit suite **301 passed, 1 failed**. The 1 failure (`knowledge/serve/tests/test_server.py::test_insight_then_context_round_trips`, `set OPENROUTER_API_KEY`) is **pre-existing & unrelated** — confirmed by stashing. Treat it as the known-good baseline.
-- **US3 = not started.**
+- **US3 Tier A ✅ done & committed** (`75c4d57`, `43794f0`, `9abf477`): embed-once / one shared recall pass (T028–T032), structured `ConflictJudge` + cassette (T030, T033), conflict eval wiring + offline `conflict_should_flag` component case (T034–T035). Offline-green: 313 unit pass + the 1 pre-existing serve failure; merge + conflict eval cases replay from committed cassettes.
+- **US3 Tier B = not started (paused by owner).** Next session resumes at T036. See "Tier B" below; the gate (T039→T040) is the owner's keep/kill call (FR-022) — kill is the documented zero-cost default.
+- **Tier-A landed shape (for Tier B to build on):** `WriteStep.apply(decision)` (no `store`); steps read `decision.candidates`; `consumes_candidates` flag triggers the one `_recall` pass (embed once, `recall_floor` default 0.45, all-states). `ConflictFlagger(judge=ConflictJudge(...))`. `EvalCase.conflict_model` axis + `_conflict_judge_for` + `conflict_verdicts` capability; `knowledge_graph` producer surfaces `graph.contradictions()`. `Fact.tags` still NOT added (T036).
 
 ## CRITICAL post-merge facts (main's active-fact gating, PR #19)
 
