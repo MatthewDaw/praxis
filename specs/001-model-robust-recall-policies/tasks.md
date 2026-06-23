@@ -1,0 +1,192 @@
+---
+description: "Task list for Model-Robust Recall Policies"
+---
+
+# Tasks: Model-Robust Recall Policies for the Knowledge Graph
+
+**Input**: Design documents from `specs/001-model-robust-recall-policies/`
+
+**Prerequisites**: plan.md, spec.md, research.md, data-model.md, contracts/
+
+**Tests**: INCLUDED — FR-027 mandates mechanism-isolation + integration tests, and the project follows TDD (write red tests first).
+
+**Organization**: By user story (P1 → P2 → P3), matching the confirmed sequencing **US1 (independent) → US2 (+ shared cassette infra) → US3 (depends on US2) → ingestion-cassette follow-on (separate spec)**.
+
+## Path Conventions
+Single Python package at repo root: `knowledge/...`. Tests live in per-package `tests/` dirs.
+
+---
+
+## Phase 1: Setup (Shared Infrastructure)
+
+- [ ] T001 [P] Create verdict fixture dirs `knowledge/evals/fixtures/verdicts/merge/` and `knowledge/evals/fixtures/verdicts/conflict/` (add `.gitkeep`)
+- [ ] T002 [P] Ensure test dirs exist: `knowledge/graph_reader/tests/`, `knowledge/knowledge_graph/write_policy/tests/`, `knowledge/llm/tests/` (create with `__init__.py` if missing)
+
+---
+
+## Phase 2: Foundational (Blocking Prerequisites)
+
+**Intentionally minimal.** US1 (reader) is fully standalone and shares nothing with the write-path work; the shared verdict-cassette infrastructure is delivered at the *start* of US2 (T015–T016) per the agreed sequencing, and US3 builds on US2. There are therefore no blocking-all-stories tasks beyond Setup.
+
+**Checkpoint**: Setup complete — US1 can begin immediately.
+
+---
+
+## Phase 3: User Story 1 — Model-robust reader cutoff (Priority: P1) 🎯 MVP
+
+**Goal**: `RetrievingReader` applies floor → relative → cap, drops irrelevant-present facts, returns nothing on no-match, and survives an embedding-model swap without re-tuning a precise value.
+
+**Independent Test**: Run the reader over a fixed graph with committed vectors: all relevant facts kept, distractors dropped, no-match → empty — no live calls. Fully independent of the write-path stories.
+
+### Tests for User Story 1 (write first, ensure they FAIL)
+
+- [ ] T003 [P] [US1] Isolation test *relative-drop* (`abs_floor=0`): the relative cutoff alone drops CloudFront/X-Ray/SES in `knowledge/graph_reader/tests/test_retrieving_reader.py`
+- [ ] T004 [P] [US1] Isolation test *relative-keep-all* (`abs_floor=0`): all N varying-strength relevant facts survive, in `knowledge/graph_reader/tests/test_retrieving_reader.py`
+- [ ] T005 [P] [US1] Isolation test *floor-empties* (`rel_ratio=0`): a no-relevant-fact query returns empty, in `knowledge/graph_reader/tests/test_retrieving_reader.py`
+- [ ] T006 [P] [US1] Integration test: production defaults (floor+relative+cap) keep relevant / drop irrelevant end-to-end, in `knowledge/graph_reader/tests/test_retrieving_reader.py`
+- [ ] T007 [P] [US1] Model-robustness test: relevant/irrelevant split holds under a second (scaled) embedder without changing a precise separating value, in `knowledge/graph_reader/tests/test_retrieving_reader.py`
+
+### Implementation for User Story 1
+
+- [ ] T008 [US1] Implement floor → relative → cap in `knowledge/graph_reader/grapher_reader_variants/retrieving_reader.py` (`__init__(graph, *, top_k=8, abs_floor=0.30, rel_ratio=0.75)`; remove `min_score`)
+- [ ] T009 [US1] Update `EvalCase` in `knowledge/evals/eval_def.py`: add `reader_abs_floor` / `reader_rel_ratio`, remove `reader_min_score` (subsumed)
+- [ ] T010 [US1] Thread `reader_abs_floor` / `reader_rel_ratio` through `knowledge/wiring.py` (`build_trio`)
+- [ ] T011 [US1] Thread the new axes through `knowledge/evals/run.py` (`_build_trio_for`)
+- [ ] T012 [P] [US1] Reconcile `lost_in_middle_reader`: set `reader_abs_floor: 0`, drop `reader_min_score`, remove the PROVISIONAL note (`knowledge/evals/cases/lost_in_middle_reader/case.yaml`)
+- [ ] T013 [P] [US1] Convert `reader_returns_all` → `reader_returns_all_before` (XFAIL control asserting dump-all); add an `after` case asserting ranking **only if** not redundant with `lost_in_middle_reader`/`scattered_multifact` (note redundancy if so) (`knowledge/evals/cases/`)
+- [ ] T014 [P] [US1] Redesign `scattered_multifact` into two recall-under-noise versions: far-only (expected PASS) and near-only (provisional) with `reader_abs_floor: 0` (`knowledge/evals/cases/scattered_multifact/`)
+- [ ] T015 [P] [US1] Convert no-leak cases to floor tests: `context_budget_overload`, `negative_control_irrelevant` assert empty/clean injection (`knowledge/evals/cases/`)
+- [ ] T016 [US1] Calibrate `abs_floor`/`rel_ratio`/`top_k` against the committed `text-embedding-3-small` cache; document the model + values on `RetrievingReader`
+
+**Checkpoint**: US1 fully functional and independently testable (the read-path MVP).
+
+---
+
+## Phase 4: User Story 2 — Semantic dedup of paraphrases (Priority: P2)
+
+**Goal**: Paraphrased notes merge into one **verbatim** survivor via a loose recall gate + LLM `MergeJudge`, replayed offline from a committed merge-verdict cassette; distinct ideas preserved.
+
+**Independent Test**: Ingest a paraphrase pair → one merged survivor verbatim with bumped count; ingest a distinct pair → both kept — replayed from the merge cassette, no live calls.
+
+### Shared cassette infrastructure (delivered here, reused by US3)
+
+- [ ] T017 [US2] Implement `VerdictCassette` in `knowledge/llm/verdict_cassette.py` (keyed `sha256(model+payload)→verdict`, replay/record/loud-miss/skip, merge-on-save under a process lock) per `contracts/verdict-cassette.md`
+- [ ] T018 [P] [US2] Cassette tests: replay hit, record-on-miss-with-key, loud-miss-when-disabled, skip-when-no-key, concurrent-save merge, in `knowledge/llm/tests/test_verdict_cassette.py`
+
+### Tests for User Story 2 (write first, ensure they FAIL)
+
+- [ ] T019 [P] [US2] `MergeJudge` stub-judge tests: `same_lesson` true/false, `keep_id` selects an existing verbatim survivor, distinct ideas preserved, in `knowledge/knowledge_graph/write_policy/tests/test_merge_judge.py`
+- [ ] T020 [P] [US2] `Deduper` tests: exact-match short-circuit unchanged; recall-gate→judge ordering; below-floor candidates skip the judge, in `knowledge/knowledge_graph/write_policy/tests/test_deduper.py`
+
+### Implementation for User Story 2
+
+- [ ] T021 [US2] Implement `MergeJudge` in `knowledge/knowledge_graph/write_policy/write_step_variants/merge_judge.py` (structured `{same_lesson, keep_id}` over `OpenRouterLlm`, backed by `VerdictCassette`) per `contracts/judge-schemas.md`
+- [ ] T022 [US2] Update `Deduper` in `knowledge/knowledge_graph/write_policy/write_step_variants/deduper.py`: rename `threshold`→`recall_floor`; keep exact short-circuit; replace `score>=threshold` with recall-gate + `MergeJudge`
+- [ ] T023 [US2] Wire the merge cassette into `knowledge/evals/run.py` (graceful skip when no key/cassette)
+- [ ] T024 [US2] Add merge/conflict cassette regenerator `knowledge/evals/verdict_cache.py` (mirrors `embed_cache.py`, `--refresh`)
+- [ ] T025 [US2] Generate + commit the merge verdict cassette `knowledge/evals/fixtures/verdicts/merge/<model-slug>.json`
+- [ ] T026 [P] [US2] Flip `ingestion_merge_near_dupes`: drop the `xfail`, ride the new `Deduper` (`knowledge/evals/cases/ingestion_merge_near_dupes/case.yaml`)
+- [ ] T027 [P] [US2] Flip `skills_merge_dedup`: drop the `xfail`; confirm `distinct_ideas_survive` still guards over-merge (`knowledge/evals/cases/skills_merge_dedup/case.yaml`)
+
+**Checkpoint**: US2 works independently; the two paraphrase-dedup cases pass against cassetted verdicts; `ingestion_dedup` (exact) still passes.
+
+---
+
+## Phase 5: User Story 3 — Unified, hardened, recall-aware contradiction (Priority: P3)
+
+**Goal**: One candidate-recall pass per write (embed once), shared by merge + conflict; `ConflictFlagger` emits structured output replayed from a conflict cassette; merge-before-conflict; plus a **gated** Tier-B implicit-contradiction experiment and a documented Tier-C residual.
+
+**Independent Test**: Assert exactly one embedding of the incoming text per write; one recall pass feeds both judges; a merged dup skips the conflict check; a negation-contradiction pair flags via structured output from the cassette.
+
+**Depends on US2** (reuses `VerdictCassette` + the recall-gate shape).
+
+### Tests for User Story 3 (write first, ensure they FAIL)
+
+- [ ] T028 [P] [US3] Embed-once test: a single write embeds the incoming text exactly once (merge + conflict + persist share the vector), in `knowledge/knowledge_graph/tests/test_vector_graph.py`
+- [ ] T029 [P] [US3] Shared-recall test: one `most_similar` pass feeds both judges; a merged dup (`action==update`) triggers zero conflict checks, in `knowledge/knowledge_graph/tests/test_vector_graph.py`
+- [ ] T030 [P] [US3] `ConflictFlagger` structured-output test (stub judge `{contradicts, target_id}`); cassette replay/loud-miss, in `knowledge/knowledge_graph/write_policy/tests/test_conflict_flagger.py`
+
+### Implementation for User Story 3 — Tier A
+
+- [ ] T031 [US3] Make `knowledge/knowledge_graph/knowledge_graph_variants/vector_graph.py` vector-aware: embed once onto `WriteDecision.embedding`; one shared `most_similar` pass + single `recall_floor`; reuse the vector in `_add` (no store-time re-embed); merge-before-conflict, skip-conflict-on-update
+- [ ] T032 [US3] Update `WriteDecision` in `knowledge/knowledge_graph/write_policy/write_policy_def.py`: add `embedding` field; expose the shared candidate set to steps
+- [ ] T033 [US3] Update `ConflictFlagger` in `knowledge/knowledge_graph/write_policy/write_step_variants/conflict_flagger.py`: consume the shared candidates; structured `{contradicts, target_id}` (replace `startswith("yes")`); back with conflict `VerdictCassette`; keep graceful skip
+- [ ] T034 [US3] Wire the conflict cassette into `knowledge/evals/run.py`; generate + commit `knowledge/evals/fixtures/verdicts/conflict/<model-slug>.json`
+- [ ] T035 [P] [US3] Harden existing negation-contradiction cases (e.g. `contradiction_should_flag`, `scoped_conflict`) to assert structured-output behavior; confirm unchanged verdicts (`knowledge/evals/cases/`)
+
+### Implementation for User Story 3 — Tier B (gated experiment)
+
+- [ ] T036 [US3] Implement `AspectTagger` in `knowledge/knowledge_graph/write_policy/write_step_variants/aspect_tagger.py`: write-time controlled-vocab tags on `Fact.tags`; seed/normalize step to limit fragmentation
+- [ ] T037 [US3] Union `same-tag` candidates into the **conflict** recall path only, bounded (cap same-tag candidates per write) in `vector_graph.py`/`conflict_flagger.py`
+- [ ] T038 [P] [US3] Build the implicit-contradiction eval set (the 0.454 pair + ~5–10 disjoint-vocab/no-negation-cue siblings) under `knowledge/evals/cases/` (marked provisional)
+- [ ] T039 [US3] Report the Tier-B gate metrics (tag co-assignment recall + end-to-end flag rate) and **surface them to the feature owner for an explicit keep/kill decision** (no pre-pinned threshold, per FR-022); record the decision in the spec/research
+- [ ] T040 [US3] Gate outcome — **kill**: leave implicit cases as documented XFAIL (honest, no per-case-tuned pass) and drop the tag key; **keep**: promote the implicit cases to PASS
+
+**Checkpoint**: US3 Tier A hardens + unifies the write path; Tier B is measured and decided; Tier C (batch backstop) remains documented-only per spec FR-023.
+
+---
+
+## Phase 6: Polish & Cross-Cutting Concerns
+
+- [ ] T041 [P] Run `quickstart.md` validation: offline `--structured` run confirms the expected flips (dedup XFAIL→PASS, reader cluster reconciled) with zero live calls
+- [ ] T042 [P] Update `docs/CHANGELOG`/proposals status (mark the three source proposals implemented; cross-link the cassette follow-on)
+- [ ] T043 Verify full-suite offline determinism: cassettes committed, stale fixture surfaces a loud miss, no live calls in CI
+- [ ] T044 Follow-on (separate spec, NOT this feature): deterministic-ingestion cassette is required before relying on the application suite for FR-030/SC-013 — link `docs/proposals/2026-06-22-deterministic-ingestion-cassette.md`
+
+---
+
+## Dependencies & Execution Order
+
+### Phase Dependencies
+- **Setup (Phase 1)**: no dependencies.
+- **Foundational (Phase 2)**: minimal/none — does not block US1.
+- **US1 (Phase 3)**: after Setup. Fully independent (read path only). **This is the MVP.**
+- **US2 (Phase 4)**: after Setup. Independent of US1. Delivers the shared `VerdictCassette`.
+- **US3 (Phase 5)**: **depends on US2** (reuses `VerdictCassette` + recall-gate shape).
+- **Polish (Phase 6)**: after the desired stories complete.
+
+### Story independence
+- US1 ⟂ US2 (no shared files; can run in parallel by different people).
+- US3 → US2 (sequential).
+
+### Within each story
+- Tests (red) before implementation; data/model changes before the steps that consume them; cases reconciled after the mechanism lands.
+
+### Parallel opportunities
+- Setup: T001, T002.
+- US1 tests T003–T007 in parallel; case reconciliations T012–T015 in parallel (different files).
+- US2 cassette test T018 ∥ judge/deduper tests T019–T020; case flips T026–T027 in parallel.
+- US3 tests T028–T030 in parallel; T035/T038 in parallel.
+- US1 and US2 can proceed concurrently after Setup.
+
+---
+
+## Parallel Example: User Story 1
+
+```bash
+# Reader tests (write first, all in one file but independent cases — or split):
+Task: "Isolation relative-drop / relative-keep-all / floor-empties / integration / model-robustness"
+# Case reconciliations (different files, parallel):
+Task: "lost_in_middle_reader axes" ; "reader_returns_all → _before" ; "scattered_multifact two versions" ; "no-leak floor tests"
+```
+
+---
+
+## Implementation Strategy
+
+### MVP first (US1 only)
+Setup → US1 → validate the reader cutoff on component cases → ship the read-path improvement independently.
+
+### Incremental delivery
+US1 (read path) → US2 (dedup + cassette infra) → US3 (unify + conflict + gated Tier B). Each is a deployable increment; US3 follows US2.
+
+### Deferred (not in this feature)
+Deterministic-ingestion cassette (its own spec) before application-suite validation (FR-030/SC-013); wiring `RetrievingReader` into the serve path.
+
+---
+
+## Notes
+- `[P]` = different files, no incomplete-task dependency.
+- Verify tests FAIL before implementing (TDD; FR-027).
+- Numeric defaults are coarse/model-documented, calibrated against the committed cache — never per-case-tuned (FR-005/FR-024).
+- Commit after each task or logical group; keep each change traceable to a requirement.
