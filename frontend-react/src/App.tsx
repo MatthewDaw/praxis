@@ -349,12 +349,12 @@ export default function App() {
 
       {mode === "live" && config.apiBaseUrl ? (
         <>
+          <EvalRunner apiBaseUrl={config.apiBaseUrl} auth={auth} />
           <GraphDataLoader
             apiBaseUrl={config.apiBaseUrl}
             auth={auth}
             onLoaded={handleRefresh}
           />
-          <EvalRunner apiBaseUrl={config.apiBaseUrl} auth={auth} />
         </>
       ) : null}
 

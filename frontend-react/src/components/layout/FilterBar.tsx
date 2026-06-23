@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { ViewTab } from "../../types/view";
 
+const VIEW_TABS = [
+  { tab: "table", label: "Table view" },
+  { tab: "cards", label: "Card view" },
+  { tab: "graph", label: "Graph" },
+] as const;
+
 interface FilterBarProps {
   searchQuery: string;
   stateFilter: string;
@@ -80,10 +86,30 @@ export function FilterBar({
         ) : null}
         <div ref={viewMenuRef} className="view-toggle__group">
           <div className="view-toggle" role="tablist" aria-label="View mode">
+            {/* Inline view tabs — shown when there's room (wide screens). */}
+            <span className="view-toggle__inline">
+              {VIEW_TABS.map(({ tab, label }) => (
+                <button
+                  key={tab}
+                  type="button"
+                  role="tab"
+                  className={viewTab === tab ? "view-toggle__tab active" : "view-toggle__tab"}
+                  aria-selected={viewTab === tab}
+                  onClick={() => onViewTabChange(tab)}
+                >
+                  {label}
+                </button>
+              ))}
+            </span>
+            {/* Compact "View ▾" dropdown trigger — shown only when narrow. */}
             <button
               type="button"
               role="tab"
-              className={isViewTab ? "view-toggle__tab active" : "view-toggle__tab"}
+              className={
+                isViewTab
+                  ? "view-toggle__tab view-toggle__compact active"
+                  : "view-toggle__tab view-toggle__compact"
+              }
               aria-selected={isViewTab}
               aria-haspopup="true"
               aria-expanded={showViewMenu}
@@ -115,13 +141,7 @@ export function FilterBar({
           </div>
           {showViewMenu && (
             <div className="view-toggle__menu" role="menu">
-              {(
-                [
-                  { tab: "table", label: "Table view" },
-                  { tab: "cards", label: "Card view" },
-                  { tab: "graph", label: "Graph" },
-                ] as const
-              ).map(({ tab, label }) => (
+              {VIEW_TABS.map(({ tab, label }) => (
                 <button
                   key={tab}
                   type="button"

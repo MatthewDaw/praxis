@@ -247,10 +247,12 @@ class CandidateStore:
         org_id: str = "default",
         user_id: str = "default",
         candidates: list[Candidate] | None = None,
+        reset: bool = False,
     ) -> int:
-        """Replace regenerated pipeline-owned rows without touching manual rows."""
+        """Replace pipeline-owned rows. ``reset`` clears *all* rows first (so the
+        result is exactly ``candidates``), otherwise manual rows are kept."""
         fresh = list(candidates or [])
-        retained = [c for c in self._candidates if not is_pipeline_candidate(c)]
+        retained = [] if reset else [c for c in self._candidates if not is_pipeline_candidate(c)]
         self._candidates = [*retained, *fresh]
         self._persist()
         return len(fresh)

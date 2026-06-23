@@ -291,10 +291,35 @@ code,
   position: relative;
 }
 
+/* Inline view tabs flow into the pill on wide screens; the compact "View ▾"
+   trigger is hidden. Below the breakpoint this flips (see media query). */
+.view-toggle__inline {
+  display: contents;
+}
+.view-toggle__compact {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .view-toggle__inline {
+    display: none;
+  }
+  .view-toggle__compact {
+    display: inline-flex;
+  }
+}
+
+/* The dropdown menu only exists in the compact layout. */
+@media (min-width: 901px) {
+  .view-toggle__menu {
+    display: none;
+  }
+}
+
 .view-toggle__menu {
   position: absolute;
   top: calc(100% + 6px);
-  right: 0;
+  left: 0;
   z-index: 100;
   background: #fff;
   border: 1px solid var(--line);
@@ -2110,10 +2135,21 @@ code,
 .graph-legend--overlay {
   position: absolute;
   left: var(--space-3);
-  bottom: var(--space-3);
+  top: var(--space-3);
+  bottom: auto;
   z-index: 5;
   max-width: min(300px, calc(100% - var(--space-6)));
+  /* Cap height so the header (with the Hide toggle) stays in view and the
+     explainer body scrolls instead of overflowing the canvas. */
+  max-height: calc(100% - var(--space-6));
+  display: flex;
+  flex-direction: column;
   pointer-events: auto;
+}
+
+.graph-legend--overlay .viz-legend__body {
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .graph-edge--similarity {
@@ -2964,4 +3000,60 @@ li.eval-runner__entry.is-checked {
   border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-3);
   font-size: 0.88rem;
+}
+
+/* --- Graph cluster super-node -------------------------------------------- */
+.graph-cluster-node {
+  min-width: 150px;
+  max-width: 220px;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 2px solid var(--accent);
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--accent-dark);
+  cursor: pointer;
+  text-align: center;
+}
+.graph-cluster-node:hover {
+  background: rgba(37, 99, 235, 0.14);
+}
+.graph-cluster-node__label {
+  margin: 0;
+  font-weight: 700;
+  font-size: 0.85rem;
+  line-height: 1.25;
+  word-break: break-word;
+}
+.graph-cluster-node__count {
+  margin: 4px 0 0;
+  font-size: 0.75rem;
+  color: var(--secondary);
+  font-weight: 600;
+}
+
+/* --- Graph drill-in: back button + uniform card height ------------------- */
+.graph-back-btn {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
+  z-index: 6;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-panel);
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.85rem;
+  color: var(--h3);
+  cursor: pointer;
+}
+.graph-back-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.graph-node__title {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }

@@ -10,6 +10,8 @@ export interface GraphNode {
   scope?: string;
   category?: string;
   provenance?: string;
+  clusterId?: number | null;
+  clusterLabel?: string;
 }
 
 export interface GraphEdge {

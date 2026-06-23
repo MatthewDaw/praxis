@@ -537,6 +537,7 @@ export async function runEvalScopes(
 export async function regenerateGraphFromScopes(
   apiBaseUrl: string,
   scopes: string[],
+  distill: boolean,
   auth?: string | ApiDataProviderAuth,
 ): Promise<EvalRegenerateResult> {
   const root = apiBaseUrl.replace(/\/$/, "");
@@ -544,7 +545,7 @@ export async function regenerateGraphFromScopes(
   const response = await fetch(`${root}/evals/regenerate`, {
     method: "POST",
     headers: contractHeaders(token, orgId),
-    body: JSON.stringify({ scopes }),
+    body: JSON.stringify({ scopes, distill }),
   });
   if (!response.ok) {
     const message = responseDetail(await response.text(), response.statusText);

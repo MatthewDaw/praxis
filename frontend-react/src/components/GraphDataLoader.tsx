@@ -38,20 +38,20 @@ export function GraphDataLoader({ apiBaseUrl, auth, onLoaded }: GraphDataLoaderP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiBaseUrl]);
 
-  async function handleLoad() {
+  async function handleLoad(distill: boolean) {
     if (!selected.length) return;
     setLoading(true);
     setError(null);
     setMessage(null);
     try {
-      const result = await regenerateGraphFromScopes(apiBaseUrl, selected, auth);
+      const result = await regenerateGraphFromScopes(apiBaseUrl, selected, distill, auth);
       setMessage(
-        `Loaded ${result.candidatesInserted} candidates from ${result.insightsGenerated} facts (${result.casesRun} cases).`,
+        `${distill ? "Distilled" : "Loaded"} ${result.candidatesInserted} candidates from ${result.casesRun} cases.`,
       );
       onLoaded?.();
     } catch (err) {
       if (err instanceof EvalRegenerateUnavailableError) {
-        setError(`Graph load unavailable: ${err.message}`);
+        setError(`Unavailable: ${err.message}`);
       } else {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -72,7 +72,7 @@ export function GraphDataLoader({ apiBaseUrl, auth, onLoaded }: GraphDataLoaderP
           {open ? "▾" : "▸"} <span className="eval-runner__title">Load eval data into graph</span>
         </button>
         <span className="eval-runner__hint">
-          Distill the seed docs from selected folders/cases into the graph view (proposed/active facts).
+          Load the seed text from selected folders/cases (fast), or run the distillation pipeline.
         </span>
       </header>
 
@@ -84,14 +84,20 @@ export function GraphDataLoader({ apiBaseUrl, auth, onLoaded }: GraphDataLoaderP
               <button
                 type="button"
                 className="btn primary"
-                onClick={() => void handleLoad()}
+                onClick={() => void handleLoad(false)}
                 disabled={loading || !selected.length}
+                title="Read the seed text straight into the graph — offline, instant"
               >
-                {loading
-                  ? "Loading…"
-                  : selected.length
-                    ? `Load ${selected.length} into graph`
-                    : "Select to load"}
+                {loading ? "Working…" : `Load seed data${selected.length ? ` (${selected.length})` : ""}`}
+              </button>
+              <button
+                type="button"
+                className="btn secondary"
+                onClick={() => void handleLoad(true)}
+                disabled={loading || !selected.length}
+                title="Run the real distillation pipeline (LLM + embeddings) — slow, uses credits"
+              >
+                {loading ? "Working…" : "Run pipeline (distill)"}
               </button>
             </div>
           </div>
