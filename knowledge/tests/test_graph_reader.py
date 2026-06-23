@@ -80,15 +80,21 @@ _FACTS = (
 )
 
 
-def test_retrieving_reader_drops_facts_below_min_score():
-    reader = RetrievingReader(_vector_graph_with(*_FACTS), top_k=10, min_score=0.5)
+def test_retrieving_reader_floor_drops_irrelevant_facts():
+    # Floor isolated (rel_ratio=0): irrelevant facts (score 0) fall below the floor.
+    reader = RetrievingReader(
+        _vector_graph_with(*_FACTS), top_k=10, abs_floor=0.5, rel_ratio=0.0
+    )
     out = reader.read("add caching and a todo comment")
-    assert "caching" in out and "TODO(MD)" in out  # relevant kept
-    assert "xray" not in out and "ses" not in out  # below threshold -> dropped
+    assert "caching" in out and "TODO(MD)" in out  # relevant kept (score ~0.71)
+    assert "xray" not in out and "ses" not in out  # below the floor -> dropped
 
 
 def test_retrieving_reader_top_k_caps_count():
-    reader = RetrievingReader(_vector_graph_with(*_FACTS), top_k=1, min_score=0.0)
+    # Cutoff disabled (floor=0, ratio=0) so only the top_k cap applies.
+    reader = RetrievingReader(
+        _vector_graph_with(*_FACTS), top_k=1, abs_floor=0.0, rel_ratio=0.0
+    )
     out = reader.read("add caching and a todo comment")
     assert len([p for p in out.split("\n\n") if p]) == 1  # only the single best hit
 

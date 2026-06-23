@@ -132,7 +132,8 @@ class EvalCase(BaseModel):
     reader: Literal["whole_file", "retrieving"] = "whole_file"  # graph reader to wire: dump-everything vs relevance-ranked
     embedder: Literal["fake", "cached", "live"] = "fake"  # vector source: offline Fake / committed real-vector cache / online real embedder
     reader_top_k: int | None = None  # override RetrievingReader.top_k; None => reader default
-    reader_min_score: float | None = None  # override RetrievingReader.min_score (relevance cutoff); None => reader default
+    reader_abs_floor: float | None = None  # override RetrievingReader.abs_floor (existence floor); 0 disables it (isolation). None => default
+    reader_rel_ratio: float | None = None  # override RetrievingReader.rel_ratio (keep within X% of top); 0 disables it (isolation). None => default
     ingest_model: str | None = None  # OpenRouter chat model for ingestion distillation (PromptIngestor's LLM); None => passthrough line-split. Needs OPENROUTER_API_KEY
     seeded_insight: SeededInsight = Field(default_factory=SeededInsight)
     deterministic_checks: list[DeterministicCheckRef] = Field(default_factory=list)

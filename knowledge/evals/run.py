@@ -288,7 +288,8 @@ def _build_trio_for(case: EvalCase, llm=None):
         reader=case.reader,
         embedder=embedder,
         reader_top_k=case.reader_top_k,
-        reader_min_score=case.reader_min_score,
+        reader_abs_floor=case.reader_abs_floor,
+        reader_rel_ratio=case.reader_rel_ratio,
     )
 
 

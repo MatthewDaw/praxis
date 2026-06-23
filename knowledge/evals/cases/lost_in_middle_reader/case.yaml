@@ -15,22 +15,23 @@
 #
 # Calibrated against openai/text-embedding-3-small: the relevant facts score
 # Caching 0.52 / TODO(MD) 0.45; the distractors CloudFront 0.27 / X-Ray 0.18 /
-# SES 0.06. min_score 0.35 keeps both rules and drops all three distractors
+# SES 0.06. With reader_abs_floor=0 (floor OFF), the relative cutoff ALONE does the
+# work: 0.75 * 0.52 = 0.39 keeps both rules and drops all three distractors
 # (top_k alone would not — CloudFront ranks 3rd). Recalibrate if the model changes.
 #
-# PROVISIONAL: the excludes_* checks + min_score=0.35 encode ONE not-yet-decided
-# reader contract (threshold filtering). The RetrievingReader isn't wired into
-# production yet, so this is a tentative behavior, not a settled spec. Once the
-# real contract is chosen, rewrite the assertions to match it — e.g. if the reader
-# becomes pure top-k=8, assert "<=8 facts AND TODO(MD) present" and drop excludes_*
-# (top-k would keep CloudFront/X-Ray, so those checks only hold under thresholding).
+# Mechanism isolation (§5.1): disabling the floor forces the relative cutoff to drop
+# the distractors, so this case is sensitive to it — with the real floor (0.30),
+# the floor would drop CloudFront (0.27) by itself and mask a broken relative cutoff.
+# This asserts a narrower *sufficient* condition; the production triple (floor 0.30 +
+# ratio 0.75) also passes. The reader cutoff is now a settled system contract, so
+# the prior PROVISIONAL note is removed.
 id: lost_in_middle_reader
 component: graph_reader
 substrate: vector
 reader: retrieving
 embedder: cached
 reader_top_k: 8
-reader_min_score: 0.35  # relevance cutoff: above CloudFront (0.27), below TODO(MD) (0.45)
+reader_abs_floor: 0  # floor OFF — isolate the relative cutoff (it alone drops CloudFront/X-Ray/SES)
 seed_prompt: "Add a TODO comment about adding caching to the data-fetch layer."
 
 seeded_insight:

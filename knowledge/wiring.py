@@ -63,15 +63,17 @@ def build_trio(
     reader: str = "whole_file",
     embedder: Embedder | None = None,
     reader_top_k: int | None = None,
-    reader_min_score: float | None = None,
+    reader_abs_floor: float | None = None,
+    reader_rel_ratio: float | None = None,
 ):
     """Return a wired ``(graph, ingestor, reader)`` for the chosen substrate.
 
     Pass ``graph`` to wire a specific store instance (overrides ``substrate``).
     ``reader`` picks the retrieval strategy: ``"whole_file"`` dumps the graph,
     ``"retrieving"`` ranks via the store's ``search`` (needs a ``SearchableGraph``).
-    ``embedder`` is injected into the vector store; ``reader_top_k``/
-    ``reader_min_score`` override the retrieving reader's bounds (None => defaults).
+    ``embedder`` is injected into the vector store; ``reader_top_k`` /
+    ``reader_abs_floor`` / ``reader_rel_ratio`` override the retrieving reader's
+    cutoff (None => defaults; 0 disables a mechanism for test isolation).
     """
     graph = graph or _graph_for(substrate, embedder=embedder)
     ingestor = PromptIngestor(graph, llm=llm)
@@ -84,8 +86,10 @@ def build_trio(
         kwargs = {}
         if reader_top_k is not None:
             kwargs["top_k"] = reader_top_k
-        if reader_min_score is not None:
-            kwargs["min_score"] = reader_min_score
+        if reader_abs_floor is not None:
+            kwargs["abs_floor"] = reader_abs_floor
+        if reader_rel_ratio is not None:
+            kwargs["rel_ratio"] = reader_rel_ratio
         reader_obj: object = RetrievingReader(graph, **kwargs)
     else:
         reader_obj = WholeFileReader(graph)

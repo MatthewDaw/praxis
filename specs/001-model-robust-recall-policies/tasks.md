@@ -40,19 +40,20 @@ Single Python package at repo root: `knowledge/...`. Tests live in per-package `
 
 ### Tests for User Story 1 (write first, ensure they FAIL)
 
-- [ ] T003 [P] [US1] Isolation test *relative-drop* (`abs_floor=0`): the relative cutoff alone drops CloudFront/X-Ray/SES in `knowledge/graph_reader/tests/test_retrieving_reader.py`
-- [ ] T004 [P] [US1] Isolation test *relative-keep-all* (`abs_floor=0`): all N varying-strength relevant facts survive, in `knowledge/graph_reader/tests/test_retrieving_reader.py`
-- [ ] T005 [P] [US1] Isolation test *floor-empties* (`rel_ratio=0`): a no-relevant-fact query returns empty, in `knowledge/graph_reader/tests/test_retrieving_reader.py`
-- [ ] T006 [P] [US1] Integration test: production defaults (floor+relative+cap) keep relevant / drop irrelevant end-to-end, in `knowledge/graph_reader/tests/test_retrieving_reader.py`
-- [ ] T007 [P] [US1] Model-robustness test: relevant/irrelevant split holds under a second (scaled) embedder without changing a precise separating value, in `knowledge/graph_reader/tests/test_retrieving_reader.py`
+- [X] T003 [P] [US1] Isolation test *relative-drop* (`abs_floor=0`): the relative cutoff alone drops CloudFront/X-Ray/SES in `knowledge/graph_reader/tests/test_retrieving_reader.py`
+- [X] T004 [P] [US1] Isolation test *relative-keep-all* (`abs_floor=0`): all N varying-strength relevant facts survive, in `knowledge/graph_reader/tests/test_retrieving_reader.py`
+- [X] T005 [P] [US1] Isolation test *floor-empties* (`rel_ratio=0`): a no-relevant-fact query returns empty, in `knowledge/graph_reader/tests/test_retrieving_reader.py`
+- [X] T006 [P] [US1] Integration test: production defaults (floor+relative+cap) keep relevant / drop irrelevant end-to-end, in `knowledge/graph_reader/tests/test_retrieving_reader.py`
+- [X] T007 [P] [US1] Model-robustness test: relevant/irrelevant split holds under a second (scaled) embedder without changing a precise separating value, in `knowledge/graph_reader/tests/test_retrieving_reader.py` (also added a cap/volume-backstop test)
 
 ### Implementation for User Story 1
 
-- [ ] T008 [US1] Implement floor → relative → cap in `knowledge/graph_reader/grapher_reader_variants/retrieving_reader.py` (`__init__(graph, *, top_k=8, abs_floor=0.30, rel_ratio=0.75)`; remove `min_score`)
-- [ ] T009 [US1] Update `EvalCase` in `knowledge/evals/eval_def.py`: add `reader_abs_floor` / `reader_rel_ratio`, remove `reader_min_score` (subsumed)
-- [ ] T010 [US1] Thread `reader_abs_floor` / `reader_rel_ratio` through `knowledge/wiring.py` (`build_trio`)
-- [ ] T011 [US1] Thread the new axes through `knowledge/evals/run.py` (`_build_trio_for`)
-- [ ] T012 [P] [US1] Reconcile `lost_in_middle_reader`: set `reader_abs_floor: 0`, drop `reader_min_score`, remove the PROVISIONAL note (`knowledge/evals/cases/lost_in_middle_reader/case.yaml`)
+- [X] T008 [US1] Implement floor → relative → cap in `knowledge/graph_reader/grapher_reader_variants/retrieving_reader.py` (`__init__(graph, *, top_k=8, abs_floor=0.30, rel_ratio=0.75)`; remove `min_score`)
+- [X] T009 [US1] Update `EvalCase` in `knowledge/evals/eval_def.py`: add `reader_abs_floor` / `reader_rel_ratio`, remove `reader_min_score` (subsumed)
+- [X] T010 [US1] Thread `reader_abs_floor` / `reader_rel_ratio` through `knowledge/wiring.py` (`build_trio`)
+- [X] T011 [US1] Thread the new axes through `knowledge/evals/run.py` (`_build_trio_for`)
+- [X] T012 [P] [US1] Reconcile `lost_in_middle_reader`: set `reader_abs_floor: 0`, drop `reader_min_score`, remove the PROVISIONAL note (`knowledge/evals/cases/lost_in_middle_reader/case.yaml`) — passes offline 4/4
+- [X] T012a [US1] Update existing `knowledge/tests/test_graph_reader.py` to the new abs_floor/rel_ratio API (required by the `min_score` removal)
 - [ ] T013 [P] [US1] Convert `reader_returns_all` → `reader_returns_all_before` (XFAIL control asserting dump-all); add an `after` case asserting ranking **only if** not redundant with `lost_in_middle_reader`/`scattered_multifact` (note redundancy if so) (`knowledge/evals/cases/`)
 - [ ] T014 [P] [US1] Redesign `scattered_multifact` into two recall-under-noise versions: far-only (expected PASS) and near-only (provisional) with `reader_abs_floor: 0` (`knowledge/evals/cases/scattered_multifact/`)
 - [ ] T015 [P] [US1] Convert no-leak cases to floor tests: `context_budget_overload`, `negative_control_irrelevant` assert empty/clean injection (`knowledge/evals/cases/`)
