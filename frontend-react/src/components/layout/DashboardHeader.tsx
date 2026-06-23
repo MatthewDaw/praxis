@@ -1,6 +1,6 @@
 import { DataSourceControl } from "../ui/DataSourceControl";
 import { EnvironmentBadge } from "../ui/EnvironmentBadge";
-import { GitLabRepoLink } from "../ui/GitLabRepoLink";
+import { GitHubRepoLink } from "../ui/GitHubRepoLink";
 import type { DataSourceConfig, DataSourceMode } from "../../config/dataSource";
 import type { ApiStoreType } from "../../hooks/useApiHealth";
 import type { LocalLogFileInput } from "../../types/transcript";
@@ -36,7 +36,7 @@ export function DashboardHeader({
         <p className="dashboard-header__eyebrow">PRAXIS</p>
         <div className="dashboard-header__title-row">
           <h1 className="dashboard-header__title">Candidate Review Gate</h1>
-          <GitLabRepoLink />
+          <GitHubRepoLink />
         </div>
         <p className="dashboard-header__subtitle">
           Review and promote AI-learned knowledge candidates from agent sessions.
