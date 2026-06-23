@@ -29,6 +29,18 @@ It is **eval-infrastructure determinism, not a recall-policy change**, and it ex
 **not** make application cases fully deterministic end-to-end — the live agent and judge remain
 nondeterministic.
 
+## Clarifications
+
+### Session 2026-06-23
+
+- Q: Should feature 002 also absorb the second FR-030/SC-013 prerequisite (active-fact
+  retrievability / `ingest_state: active`)? → A: No — 002 stays **ingestion-cassette-only**. The
+  active-fact-retrievability axis is the **explicit next follow-up** after this feature, scoped as
+  its own unit; SC-007 keeps its "subject to the separately-tracked prerequisite" caveat.
+- Q: Which application cases flip from `embedder: live` to `cached` in this feature? → A: **All**
+  `matt/applications/*` cases that use `ingest_model`, in one pass. The committed distilled-text +
+  embedding fixture footprint is accepted, mitigated by the compact vector codec.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Record-once / replay-offline ingestion (Priority: P1)
@@ -113,8 +125,9 @@ input and confirm it replays offline with identical facts every run.
 - **Stale fixture** (a seeded input edited, or `ingest_model` bumped) → loud miss with a refresh
   instruction; never a silent stale pass.
 - **No verdict/fixture source and no key** → the case is skipped, not failed or mis-run.
-- **Fixture growth** — distilled outputs (and their embeddings) for the whole application suite
-  could be large; scope which cases flip to `cached` and use the compact vector codec.
+- **Fixture growth** — committing distilled outputs and their embeddings for the whole application
+  suite is sizable and accepted (all `ingest_model` cases flip); the compact vector codec is the
+  mitigation, not subsetting which cases flip.
 - **Partial determinism confusion** — because the agent and judge stay live, a flipped case is
   *not* fully reproducible end-to-end; the guarantee is scoped to graph construction and must be
   communicated as such.
@@ -142,8 +155,9 @@ input and confirm it replays offline with identical facts every run.
 - **FR-007**: The system MUST provide a regeneration path that, with a key, re-records the cassette
   by re-running the ingestion of every case that uses `ingest_model`, capturing exactly those
   inputs, for commit.
-- **FR-008**: Once ingestion replays deterministically, application cases MUST be able to use the
-  committed-vector embedding path (`cached`) instead of the uncached live embedder.
+- **FR-008**: Once ingestion replays deterministically, **all** `matt/applications/*` cases that
+  use `ingest_model` MUST be flipped to the committed-vector embedding path (`cached`) instead of
+  the uncached live embedder.
 - **FR-009**: The fixture-refresh procedure MUST be documented as an ordered two-step process —
   record the ingestion cassette first, then refresh the embedding cache against the now-stable
   strings — and following it MUST yield a self-consistent fixture pair.
@@ -176,8 +190,9 @@ input and confirm it replays offline with identical facts every run.
   or embedding calls for the graph-construction layer.
 - **SC-003**: A changed seeded input or model id surfaces a loud failure with a refresh
   instruction in 100% of cases — no silent stale pass ever occurs.
-- **SC-004**: At least one application case that is `embedder: live` today runs on `cached`
-  committed vectors deterministically after this feature.
+- **SC-004**: Every `matt/applications/*` case that uses `ingest_model` (currently `embedder:
+  live`) runs on `cached` committed vectors deterministically after this feature — none remain on
+  the uncached live embedder.
 - **SC-005**: Per-run live embedding calls for the application suite's graph construction drop to
   zero on replay (from the current 2–3 live embeds per write).
 - **SC-006**: At least one deterministic component case seeded from real cassetted distillation
@@ -203,10 +218,14 @@ input and confirm it replays offline with identical facts every run.
   merge verdicts, conflict verdicts) is **deferred** — the ingestion cassette ships as a near-copy
   of the embedding cache; extraction happens later, once three concrete instances prove the shared
   shape, not speculatively.
-- Which application cases flip to `cached` may be scoped incrementally to keep fixtures a
-  reasonable size, prioritizing the cases used for FR-030/SC-013 validation.
+- All `matt/applications/*` cases that use `ingest_model` flip to `cached` in this feature (one
+  pass, not incremental). The committed distilled-text + embedding fixture footprint is accepted as
+  a tradeoff for full coverage, mitigated by the compact vector codec; if the footprint proves
+  prohibitive in practice it can be revisited, but bounding it is not a goal of this feature.
 - The **second** prerequisite for FR-030/SC-013 — marking distilled facts retrievable so the
   active-gated reader surfaces them (e.g. an `ingest_state: active` axis, after main's active-fact
-  gating) — is tracked separately and is **out of scope** here.
+  gating) — is **out of scope** here and is the **explicit next follow-up** after this feature
+  (its own unit of work). Shipping 002 alone therefore does not, by itself, fully unblock
+  FR-030/SC-013 (see SC-007).
 - Full application-case determinism is explicitly **not** a goal; the live agent and judge remain
   nondeterministic, so "the application suite runs in CI" is **not** a claim this feature makes.
