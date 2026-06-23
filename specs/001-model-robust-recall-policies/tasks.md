@@ -57,7 +57,7 @@ Single Python package at repo root: `knowledge/...`. Tests live in per-package `
 - [ ] T013 [P] [US1] Convert `reader_returns_all` → `reader_returns_all_before` (XFAIL control asserting dump-all); add an `after` case asserting ranking **only if** not redundant with `lost_in_middle_reader`/`scattered_multifact` (note redundancy if so) (`knowledge/evals/cases/`)
 - [ ] T014 [P] [US1] Redesign `scattered_multifact` into two recall-under-noise versions: far-only (expected PASS) and near-only (provisional) with `reader_abs_floor: 0` (`knowledge/evals/cases/scattered_multifact/`)
 - [ ] T015 [P] [US1] Convert no-leak cases to floor tests: `context_budget_overload`, `negative_control_irrelevant` assert empty/clean injection (`knowledge/evals/cases/`)
-- [ ] T016 [US1] Calibrate `abs_floor`/`rel_ratio`/`top_k` against the committed `text-embedding-3-small` cache; document the model + values on `RetrievingReader`
+- [X] T016 [US1] Calibrate `abs_floor`/`rel_ratio`/`top_k` against the committed `text-embedding-3-small` cache; document the model + values on `RetrievingReader` (values validated by the lost_in_middle pair; documented on the reader)
 
 **Checkpoint**: US1 fully functional and independently testable (the read-path MVP).
 
