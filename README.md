@@ -396,6 +396,9 @@ Phoenix itself lives in [infra/lib/phoenix-stack.ts](infra/lib/phoenix-stack.ts)
 | `PHOENIX_API_KEY` | No | Observability | Phoenix API key (UI → Settings → API Keys) when Phoenix auth is on |
 | `PHOENIX_TLS_VERIFY` | No | Observability | Set `false` for a self-signed Phoenix cert; default verifies TLS |
 | `PHOENIX_PROJECT_NAME` | No | Observability | Phoenix project spans land under (default `praxis`) |
+| `PHOENIX_BASE_URL` | No | Phoenix proxy | Phoenix UI/API origin used by Candidate Detail trace links |
+| `PHOENIX_PROJECT` | Yes for proxy | Phoenix proxy | Phoenix project identifier used for read-only trace API queries |
+| `PHOENIX_PROJECT_UI_ID` | No | Phoenix proxy | Phoenix UI project node id for `/projects/{id}/spans/...` deep links, e.g. `UHJvamVjdDoz` |
 | `PRAXIS_DB_URL` | No | Candidate API, graph routes | Postgres DSN; when set/resolved, API uses `PostgresCandidateStore`, org membership checks, and graph-backed `/insights` + `/context` |
 | `PRAXIS_DB_SECRET` | No | Candidate API | AWS Secrets Manager secret name (default `praxis/knowledge-graph/db`) |
 | `PRAXIS_API_HOST` | No | Candidate API | uvicorn bind host (default `127.0.0.1`; `0.0.0.0` in container) |

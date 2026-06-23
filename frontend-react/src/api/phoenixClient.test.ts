@@ -21,7 +21,7 @@ const MOCK_FIXTURE = {
       model: "claude-sonnet",
       spans: [],
       phoenixUrl:
-        "https://phoenix.example.com/v1/projects/praxis-eval/spans?trace_id=trace-a",
+        "https://phoenix.example.com/projects/UHJvamVjdDoz/spans/8ad15c43d3c4ace7669116f0d3d47156?timeRangeKey=7d&selectedSpanNodeId=U3Bhbjo4MDgw",
     },
     {
       traceId: "trace-b",

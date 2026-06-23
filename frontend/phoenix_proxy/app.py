@@ -12,12 +12,14 @@ Environment:
     PHOENIX_BASE_URL   Phoenix origin (default ``https://phoenix.praxiskg.com``).
     PHOENIX_API_KEY    Bearer token for Phoenix (read-only key preferred).
     PHOENIX_PROJECT    Default project identifier (name or id) to query.
+    PHOENIX_PROJECT_UI_ID  Phoenix UI project node id (e.g. UHJvamVjdDoz).
     PHOENIX_CORS_ORIGINS      Comma-separated exact origins to allow (optional).
     PHOENIX_CORS_ORIGIN_REGEX Override the default localhost/Render CORS regex.
 """
 
 from __future__ import annotations
 
+import base64
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -42,6 +44,7 @@ class PhoenixSettings:
     base_url: str
     api_key: str | None
     project: str | None
+    project_ui_id: str | None = None
 
     @classmethod
     def from_env(cls) -> "PhoenixSettings":
@@ -50,6 +53,7 @@ class PhoenixSettings:
             base_url=base.rstrip("/"),
             api_key=os.getenv("PHOENIX_API_KEY", "").strip() or None,
             project=os.getenv("PHOENIX_PROJECT", "").strip() or None,
+            project_ui_id=os.getenv("PHOENIX_PROJECT_UI_ID", "").strip() or None,
         )
 
 
@@ -73,6 +77,53 @@ def _first(mapping: dict[str, Any], *keys: str) -> Any:
     for key in keys:
         if key in mapping and mapping[key] is not None:
             return mapping[key]
+    return None
+
+
+def _clean_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _path_value(mapping: dict[str, Any], path: str) -> Any:
+    cursor: Any = mapping
+    for part in path.split("."):
+        if isinstance(cursor, dict) and part in cursor:
+            cursor = cursor[part]
+        else:
+            return None
+    return cursor
+
+
+def _nested_first(mapping: dict[str, Any], *paths: str) -> Any:
+    for path in paths:
+        value = _path_value(mapping, path) if "." in path else mapping.get(path)
+        if value is not None:
+            return value
+    return None
+
+
+def _global_id(kind: str, value: Any) -> str | None:
+    """Return a Phoenix GraphQL node id for numeric or already-global ids."""
+    text = _clean_str(value)
+    if not text:
+        return None
+    prefix = f"{kind}:"
+    if text.startswith(prefix):
+        return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+    padded = text + ("=" * (-len(text) % 4))
+    try:
+        decoded = base64.b64decode(padded, validate=False).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        decoded = ""
+    if decoded.startswith(prefix):
+        return text
+
+    if text.isdigit():
+        return base64.b64encode(f"{kind}:{text}".encode("utf-8")).decode("ascii")
     return None
 
 
@@ -165,15 +216,87 @@ def _trace_id(trace: dict[str, Any]) -> str:
     return str(_first(trace, "trace_id", "traceId", "context.trace_id", "id") or "")
 
 
+def _project_ui_id(trace: dict[str, Any], fallback: str | None) -> str | None:
+    return _global_id("Project", fallback) or _global_id(
+        "Project",
+        _nested_first(
+            trace,
+            "project_node_id",
+            "projectNodeId",
+            "project_gid",
+            "projectGid",
+            "project.id",
+            "project.node_id",
+            "project.nodeId",
+            "project.global_id",
+            "project.globalId",
+            "project_id",
+            "projectId",
+        ),
+    )
+
+
+def _span_route_id(span: dict[str, Any]) -> str | None:
+    return _clean_str(
+        _nested_first(
+            span,
+            "span_id",
+            "spanId",
+            "context.span_id",
+            "context.spanId",
+            "otel_span_id",
+            "otelSpanId",
+        )
+    )
+
+
+def _span_node_id(span: dict[str, Any]) -> str | None:
+    return _global_id(
+        "Span",
+        _nested_first(
+            span,
+            "span_node_id",
+            "spanNodeId",
+            "node_id",
+            "nodeId",
+            "global_id",
+            "globalId",
+            "id",
+        ),
+    )
+
+
+def _deep_link_span(spans: list[dict[str, Any]]) -> tuple[str | None, str | None]:
+    fallback: tuple[str | None, str | None] = (None, None)
+    for span in spans:
+        span_id = _span_route_id(span)
+        if not span_id:
+            continue
+        node_id = _span_node_id(span)
+        if node_id:
+            return span_id, node_id
+        if fallback == (None, None):
+            fallback = (span_id, None)
+    return fallback
+
+
 def phoenix_spans_url(
-    *, base_url: str, project: str | None, trace_id: str | None
+    *,
+    base_url: str,
+    project_ui_id: str | None,
+    span_id: str | None,
+    span_node_id: str | None = None,
 ) -> str | None:
-    """Build a Phoenix spans API link for a trace-specific detail view."""
-    if not project or not trace_id:
+    """Build a Phoenix UI deep link for a concrete span."""
+    if not project_ui_id or not span_id:
         return None
-    project_path = quote(project, safe="")
-    query = urlencode({"trace_id": trace_id})
-    return f"{base_url}/v1/projects/{project_path}/spans?{query}"
+    query = {"timeRangeKey": "7d"}
+    if span_node_id:
+        query["selectedSpanNodeId"] = span_node_id
+    return (
+        f"{base_url}/projects/{quote(project_ui_id, safe='')}"
+        f"/spans/{quote(span_id, safe='')}?{urlencode(query)}"
+    )
 
 
 def normalize_trace(
@@ -181,6 +304,7 @@ def normalize_trace(
     *,
     base_url: str,
     project: str | None,
+    project_ui_id: str | None = None,
 ) -> dict[str, Any]:
     """Reduce a Phoenix trace (optionally with spans) to a dashboard shape.
 
@@ -200,8 +324,12 @@ def normalize_trace(
 
     status = _first(trace, "status_code", "statusCode")
     trace_id = _trace_id(trace)
+    span_id, span_node_id = _deep_link_span(span_dicts)
     phoenix_url = phoenix_spans_url(
-        base_url=base_url, project=project, trace_id=trace_id
+        base_url=base_url,
+        project_ui_id=_project_ui_id(trace, project_ui_id or project),
+        span_id=span_id,
+        span_node_id=span_node_id,
     )
 
     return {
@@ -303,7 +431,12 @@ def create_app(settings: PhoenixSettings | None = None, *, transport: Any = None
 
         traces = _extract_trace_list(response.json())
         normalized = [
-            normalize_trace(t, base_url=cfg.base_url, project=active_project)
+            normalize_trace(
+                t,
+                base_url=cfg.base_url,
+                project=active_project,
+                project_ui_id=cfg.project_ui_id,
+            )
             for t in traces
         ]
         if trace_id:

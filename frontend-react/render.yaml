@@ -64,6 +64,9 @@ services:
         value: https://phoenix.praxiskg.com
       - key: PHOENIX_PROJECT
         sync: false
+      # Phoenix UI project node id, e.g. UHJvamVjdDoz for /projects/{id}/spans links.
+      - key: PHOENIX_PROJECT_UI_ID
+        sync: false
       - key: PHOENIX_API_KEY
         sync: false
 
