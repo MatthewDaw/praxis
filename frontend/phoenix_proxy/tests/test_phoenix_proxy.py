@@ -22,11 +22,14 @@ SECRET_KEY = "phx-super-secret-key"
 
 SAMPLE_TRACE = {
     "trace_id": "abc123",
+    "project_id": 3,
     "start_time": "2026-06-18T10:00:00Z",
     "latency_ms": 1234.567,
     "status_code": "OK",
     "spans": [
         {
+            "id": 8080,
+            "span_id": "8ad15c43d3c4ace7669116f0d3d47156",
             "name": "llm_call",
             "span_kind": "LLM",
             "latency_ms": 900.0,
@@ -89,18 +92,32 @@ def test_normalize_trace_shape_and_deep_link() -> None:
     assert out["tokens"]["total"] == 165
     assert (
         out["phoenixUrl"]
-        == "https://phoenix.example.com/v1/projects/praxis-eval/spans?trace_id=abc123"
+        == "https://phoenix.example.com/projects/UHJvamVjdDoz/spans/"
+        "8ad15c43d3c4ace7669116f0d3d47156?timeRangeKey=7d"
+        "&selectedSpanNodeId=U3Bhbjo4MDgw"
     )
 
 
-def test_phoenix_spans_url_encodes_project_and_trace() -> None:
+def test_phoenix_spans_url_builds_ui_deep_link() -> None:
     assert phoenix_spans_url(
         base_url="https://phoenix.example.com",
-        project="Praxis Eval/Prod",
-        trace_id="trace:a+b c",
+        project_ui_id="UHJvamVjdDoz",
+        span_id="span/a+b c",
+        span_node_id="U3Bhbjo4MDgw",
     ) == (
-        "https://phoenix.example.com/v1/projects/"
-        "Praxis%20Eval%2FProd/spans?trace_id=trace%3Aa%2Bb+c"
+        "https://phoenix.example.com/projects/UHJvamVjdDoz/spans/"
+        "span%2Fa%2Bb%20c?timeRangeKey=7d&selectedSpanNodeId=U3Bhbjo4MDgw"
+    )
+
+
+def test_phoenix_spans_url_returns_none_without_ui_route_ids() -> None:
+    assert (
+        phoenix_spans_url(
+            base_url="https://phoenix.example.com",
+            project_ui_id=None,
+            span_id="8ad15c43d3c4ace7669116f0d3d47156",
+        )
+        is None
     )
 
 
