@@ -121,7 +121,11 @@ class ImageIngestor(Ingestor):
                 caption=caption,
                 variants=variants,
             )
-            self.seen_hashes.add(canonical.content_hash)
+            # Record every member's content hash (canonical + near-dup variants),
+            # not just the canonical — else variants reappear as fresh on re-ingest
+            # and re-cluster among themselves, breaking idempotency.
+            for member in cluster_reps:
+                self.seen_hashes.add(member.content_hash)
             insights.append(
                 Insight(
                     raw_text=card,
