@@ -237,9 +237,11 @@ def main() -> None:
                 # vector substrate -> _build_trio_for builds a VectorGraph (real
                 # write policy: redact/dedup) instead of the InMemoryGraph stub.
                 "substrate": "vector",
-                # live embedder -> real OpenRouter embeddings (semantic dedup), not
-                # the offline FakeEmbedder. Needs OPENROUTER_API_KEY; skips without.
-                "embedder": "live",
+                # cached embedder -> committed real vectors (semantic dedup) that
+                # replay offline. Usable now that the ingestion cassette stabilizes
+                # the distilled text the vectors key on (FR-008). Skips offline only
+                # when neither the embedding cache nor the ingestion cassette exists.
+                "embedder": "cached",
                 # ingest_model -> PromptIngestor.synthesis runs a real LLM (distills
                 # the sources into facts) instead of the passthrough line-split.
                 "ingest_model": "openai/gpt-4o-mini",
