@@ -217,18 +217,26 @@ class PostgresCandidateStore:
         org_id: str,
         user_id: str,
         candidates: list[Candidate] | None = None,
+        reset: bool = False,
     ) -> int:
-        """Replace regenerated pipeline-owned rows for this user and org."""
+        """Replace pipeline-owned rows. ``reset`` clears *all* rows for the tenant
+        first (result is exactly ``candidates``), otherwise manual rows are kept."""
         fresh = list(candidates or [])
-        self._conn.execute(
-            """
-            DELETE FROM candidates
-            WHERE org_id = %s
-              AND user_id = %s
-              AND (id LIKE 'pipe_%' OR doc->>'provenance' LIKE 'evals/%')
-            """,
-            (org_id, user_id),
-        )
+        if reset:
+            self._conn.execute(
+                "DELETE FROM candidates WHERE org_id = %s AND user_id = %s",
+                (org_id, user_id),
+            )
+        else:
+            self._conn.execute(
+                """
+                DELETE FROM candidates
+                WHERE org_id = %s
+                  AND user_id = %s
+                  AND (id LIKE 'pipe_%' OR doc->>'provenance' LIKE 'evals/%')
+                """,
+                (org_id, user_id),
+            )
         for candidate in fresh:
             self._upsert(org_id, user_id, candidate)
         return len(fresh)

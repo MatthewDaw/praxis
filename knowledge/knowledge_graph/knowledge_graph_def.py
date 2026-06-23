@@ -31,6 +31,10 @@ class Fact(BaseModel):
     category: str | None = None
     observation_count: int = 1
     state: FactState = "proposed"  # set by the write decision; see FactState
+    # Topic cluster assigned by the clustering pass (embed -> reduce -> HDBSCAN).
+    # None => unclustered (HDBSCAN noise). Ids are not stable across re-runs.
+    cluster_id: int | None = None
+    cluster_label: str | None = None
     embedding: list[float] | None = None
     flags: list[str] = Field(default_factory=list)  # e.g. ["contradiction:<id>"]
 

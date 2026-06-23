@@ -337,7 +337,11 @@ def create_app(store: Any | None = None) -> FastAPI:
         except RegenerateUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
 
-        inserted = store.replace_pipeline_candidates(org, principal.sub, result.candidates)
+        # A scope-based load means "show exactly this dataset", so reset all rows
+        # (clearing demo seeds / prior loads); preset regenerate keeps manual rows.
+        inserted = store.replace_pipeline_candidates(
+            org, principal.sub, result.candidates, reset=bool(config.scopes)
+        )
         return {
             "preset": result.preset,
             "cases_run": result.cases_run,

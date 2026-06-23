@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   EDGE_LEGEND,
   GRAPH_INTERACTION_LEGEND,
@@ -16,15 +16,8 @@ interface GraphLegendProps {
 }
 
 export function GraphLegend({ className }: GraphLegendProps) {
-  const [collapsed, setCollapsed] = useState(false);
-
-  useEffect(() => {
-    const media = window.matchMedia("(max-width: 767px)");
-    const sync = () => setCollapsed(media.matches);
-    sync();
-    media.addEventListener("change", sync);
-    return () => media.removeEventListener("change", sync);
-  }, []);
+  // Start collapsed so the explainer doesn't cover the graph; expand on demand.
+  const [collapsed, setCollapsed] = useState(true);
 
   return (
     <VizLegend

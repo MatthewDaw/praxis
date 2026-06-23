@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -46,9 +46,51 @@ function CandidateGraphNode({ data, selected }: NodeProps<Node<CandidateNodeData
   );
 }
 
+interface ClusterNodeData extends Record<string, unknown> {
+  label: string;
+  count: number;
+  expanded: boolean;
+}
+
+function ClusterSuperNode({ data, selected }: NodeProps<Node<ClusterNodeData>>) {
+  return (
+    <div
+      className="graph-cluster-node"
+      style={{ boxShadow: selected ? "0 0 0 2px var(--accent)" : undefined }}
+    >
+      <Handle type="target" position={Position.Top} className="graph-node__handle" />
+      <p className="graph-cluster-node__label">
+        {data.expanded ? "▾" : "▸"} {data.label || "Topic"}
+      </p>
+      <p className="graph-cluster-node__count">{data.count} facts</p>
+      <Handle type="source" position={Position.Bottom} className="graph-node__handle" />
+    </div>
+  );
+}
+
 const nodeTypes = {
   candidateNode: CandidateGraphNode,
+  clusterNode: ClusterSuperNode,
 };
+
+const UNCLUSTERED = "__unclustered__";
+
+// Group nodes by clusterId; unclustered (null/undefined) collected separately.
+function groupByCluster(nodes: KnowledgeGraphSnapshot["nodes"]) {
+  const clusters = new Map<number, { label: string; members: typeof nodes }>();
+  const unclustered: typeof nodes = [];
+  for (const node of nodes) {
+    if (node.clusterId == null) {
+      unclustered.push(node);
+      continue;
+    }
+    const entry = clusters.get(node.clusterId) ?? { label: node.clusterLabel ?? "", members: [] };
+    entry.members.push(node);
+    if (node.clusterLabel) entry.label = node.clusterLabel;
+    clusters.set(node.clusterId, entry);
+  }
+  return { clusters, unclustered };
+}
 
 function FitGraphViewTopCenter({
   graphKey,
@@ -109,48 +151,111 @@ interface KnowledgeGraphViewProps {
   onSelectNode: (id: string) => void;
 }
 
+// Position `count` items in a centered grid; returns (i) => {x, y}.
+function gridPos(count: number, cols: number, xGap: number, yGap: number) {
+  const c = Math.max(1, Math.min(cols, count || 1));
+  return (i: number) => ({ x: (i % c) * xGap, y: Math.floor(i / c) * yGap });
+}
+
 function KnowledgeGraphViewInner({
   graph,
   selectedId,
   onSelectNode,
 }: KnowledgeGraphViewProps) {
-  const positions = useMemo(
-    () => layoutGraphNodes(graph.nodes),
-    [graph.nodes],
-  );
+  const [focused, setFocused] = useState<string | null>(null);
 
-  const nodes: Node<CandidateNodeData>[] = useMemo(
-    () =>
-      graph.nodes.map((node) => ({
-        id: node.id,
-        type: "candidateNode",
-        position: positions.get(node.id) ?? { x: 0, y: 0 },
-        selected: node.id === selectedId,
-        data: {
-          label: node.label,
-          state: node.state,
-          confidence: node.confidence,
-        },
-      })),
-    [graph.nodes, positions, selectedId],
-  );
+  const { clusters, unclustered } = useMemo(() => groupByCluster(graph.nodes), [graph.nodes]);
+
+  // Ordered list of groups (largest first), plus an "Unclustered" bucket.
+  const groups = useMemo(() => {
+    const list = [...clusters.entries()]
+      .map(([id, entry]) => ({ key: String(id), label: entry.label || "Topic", members: entry.members }))
+      .sort((a, b) => b.members.length - a.members.length);
+    if (unclustered.length) {
+      list.push({ key: UNCLUSTERED, label: "Unclustered", members: unclustered });
+    }
+    return list;
+  }, [clusters, unclustered]);
+  const hasClusters = clusters.size > 0;
+
+  const focusedGroup = focused ? groups.find((g) => g.key === focused) ?? null : null;
+
+  const { nodes, visibleCandidateIds } = useMemo(() => {
+    const out: Node<CandidateNodeData | ClusterNodeData>[] = [];
+    const visible = new Set<string>();
+
+    // No cluster info at all → flat grid (legacy behavior).
+    if (!hasClusters) {
+      const positions = layoutGraphNodes(graph.nodes);
+      for (const node of graph.nodes) {
+        visible.add(node.id);
+        out.push({
+          id: node.id,
+          type: "candidateNode",
+          position: positions.get(node.id) ?? { x: 0, y: 0 },
+          selected: node.id === selectedId,
+          data: { label: node.label, state: node.state, confidence: node.confidence },
+        });
+      }
+      return { nodes: out, visibleCandidateIds: visible };
+    }
+
+    // Drilled into one cluster → its member facts in a grid.
+    if (focusedGroup) {
+      const at = gridPos(focusedGroup.members.length, 5, 240, 150);
+      focusedGroup.members.forEach((node, i) => {
+        visible.add(node.id);
+        out.push({
+          id: node.id,
+          type: "candidateNode",
+          position: at(i),
+          selected: node.id === selectedId,
+          data: { label: node.label, state: node.state, confidence: node.confidence },
+        });
+      });
+      return { nodes: out, visibleCandidateIds: visible };
+    }
+
+    // Overview → super-nodes in a grid.
+    const at = gridPos(groups.length, 4, 250, 130);
+    groups.forEach((group, i) => {
+      out.push({
+        id: `group:${group.key}`,
+        type: "clusterNode",
+        position: at(i),
+        selected: false,
+        data: { label: group.label, count: group.members.length, expanded: false },
+      });
+    });
+    return { nodes: out, visibleCandidateIds: visible };
+  }, [graph.nodes, groups, focusedGroup, hasClusters, selectedId]);
 
   const edges: Edge[] = useMemo(
     () =>
-      graph.edges.map((edge, index) => ({
-        id: `${edge.kind}-${edge.src}-${edge.dst}-${index}`,
-        source: edge.src,
-        target: edge.dst,
-        className:
-          edge.kind === "contradiction"
-            ? "graph-edge graph-edge--contradiction"
-            : edge.kind === "support"
-              ? "graph-edge graph-edge--support"
-              : "graph-edge graph-edge--similarity",
-        animated: edge.kind === "contradiction",
-      })),
-    [graph.edges],
+      graph.edges
+        .filter((edge) => visibleCandidateIds.has(edge.src) && visibleCandidateIds.has(edge.dst))
+        .map((edge, index) => ({
+          id: `${edge.kind}-${edge.src}-${edge.dst}-${index}`,
+          source: edge.src,
+          target: edge.dst,
+          className:
+            edge.kind === "contradiction"
+              ? "graph-edge graph-edge--contradiction"
+              : edge.kind === "support"
+                ? "graph-edge graph-edge--support"
+                : "graph-edge graph-edge--similarity",
+          animated: edge.kind === "contradiction",
+        })),
+    [graph.edges, visibleCandidateIds],
   );
+
+  function handleNodeClick(id: string) {
+    if (id.startsWith("group:")) {
+      setFocused(id.slice("group:".length));
+      return;
+    }
+    onSelectNode(id);
+  }
 
   if (graph.nodes.length === 0) {
     return <p className="muted">No graph nodes to display.</p>;
@@ -158,19 +263,25 @@ function KnowledgeGraphViewInner({
 
   return (
     <div className="knowledge-graph-view">
+      {focusedGroup ? (
+        <button type="button" className="graph-back-btn" onClick={() => setFocused(null)}>
+          ← All topics ({groups.length}) · <strong>{focusedGroup.label}</strong> ({focusedGroup.members.length})
+        </button>
+      ) : null}
       <ReactFlow
+        key={focused ?? "overview"}
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
         minZoom={0.2}
         maxZoom={1.5}
-        onNodeClick={(_, node) => onSelectNode(node.id)}
+        onNodeClick={(_, node) => handleNodeClick(node.id)}
         proOptions={{ hideAttribution: true }}
       >
         <FitGraphViewTopCenter
-          graphKey={`${graph.source}:${graph.nodes.length}:${graph.edges.length}`}
-          nodeCount={graph.nodes.length}
-          edgeCount={graph.edges.length}
+          graphKey={`${graph.source}:${focused ?? "overview"}:${nodes.length}`}
+          nodeCount={nodes.length}
+          edgeCount={edges.length}
         />
         <Background gap={16} size={1} />
         <Controls showInteractive={false} position="top-right" />

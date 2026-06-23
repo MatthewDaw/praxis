@@ -29,6 +29,10 @@ def graph_from_candidates(candidates: list[Candidate]) -> dict[str, Any]:
             value = candidate.get(key)
             if value is not None:
                 node[key] = str(value)
+        if candidate.get("cluster_id") is not None:
+            node["cluster_id"] = int(candidate["cluster_id"])
+        if candidate.get("cluster_label"):
+            node["cluster_label"] = str(candidate["cluster_label"])
         nodes.append(node)
 
         scope = candidate.get("scope")

@@ -45,6 +45,18 @@ export function parseGraphNode(raw: Record<string, unknown>): GraphNode | null {
         : raw.source != null
           ? String(raw.source)
           : undefined,
+    clusterId:
+      raw.clusterId != null
+        ? Number(raw.clusterId)
+        : raw.cluster_id != null
+          ? Number(raw.cluster_id)
+          : undefined,
+    clusterLabel:
+      raw.clusterLabel != null
+        ? String(raw.clusterLabel)
+        : raw.cluster_label != null
+          ? String(raw.cluster_label)
+          : undefined,
   };
 }
 
@@ -176,6 +188,8 @@ export function deriveGraphFromCandidates(
     category:
       c.extra.category != null ? String(c.extra.category) : undefined,
     provenance: c.provenance,
+    clusterId: c.extra.cluster_id != null ? Number(c.extra.cluster_id) : undefined,
+    clusterLabel: c.extra.cluster_label != null ? String(c.extra.cluster_label) : undefined,
   }));
 
   const edges: GraphEdge[] = [];
@@ -227,6 +241,14 @@ export function mergeGraphWithCandidates(
         candidate.extra.category != null
           ? String(candidate.extra.category)
           : node.category,
+      clusterId:
+        candidate.extra.cluster_id != null
+          ? Number(candidate.extra.cluster_id)
+          : node.clusterId,
+      clusterLabel:
+        candidate.extra.cluster_label != null
+          ? String(candidate.extra.cluster_label)
+          : node.clusterLabel,
     };
   });
   const nodeIds = new Set(nodes.map((node) => node.id));

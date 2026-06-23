@@ -84,6 +84,10 @@ def fact_to_candidate(
         candidate["category"] = fact.category
     if fact.scope:
         candidate["scope"] = fact.scope
+    if fact.cluster_id is not None:
+        candidate["cluster_id"] = fact.cluster_id
+    if fact.cluster_label:
+        candidate["cluster_label"] = fact.cluster_label
     return candidate
 
 

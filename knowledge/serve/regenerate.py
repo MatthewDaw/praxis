@@ -51,6 +51,16 @@ class RegenerateUnavailableError(RuntimeError):
     """Raised when a requested regeneration preset is intentionally unavailable."""
 
 
+def _is_real_fact(text: str) -> bool:
+    """Filter out passthrough-split noise: too-short lines and bare section headers
+    (e.g. "Cohorts:", "Relevant Skills") that aren't real facts."""
+    if len(text) < 25:
+        return False
+    if text.endswith(":") and len(text.split()) <= 4:
+        return False
+    return True
+
+
 @dataclass(frozen=True)
 class PipelineConfig:
     """API-facing regeneration config.
@@ -65,6 +75,9 @@ class PipelineConfig:
     # Explicit cases-folder scopes to ingest into the graph (multi-select). When
     # set, these win over ``preset`` — the graph is built from exactly these dirs.
     scopes: tuple[str, ...] = field(default_factory=tuple)
+    # Run the real distillation pipeline (LLM + embeddings) vs. a fast offline
+    # read of the seed text. False => "use the data" (file retrieval, instant).
+    distill: bool = False
 
     @classmethod
     def from_body(cls, body: dict[str, Any] | None) -> "PipelineConfig":
@@ -90,7 +103,9 @@ class PipelineConfig:
             case_ids = tuple(str(item) for item in raw_case_ids if str(item).strip())
         else:
             case_ids = ()
-        return cls(preset=preset, case_ids=case_ids, scopes=scopes)
+        return cls(
+            preset=preset, case_ids=case_ids, scopes=scopes, distill=bool(body.get("distill"))
+        )
 
 
 @dataclass(frozen=True)
@@ -153,25 +168,20 @@ def _resolve_cases_dir(relative: str) -> Path:
 
 
 def _regenerate_from_cases(relative_dirs: list[str], config: PipelineConfig) -> RegenerationResult:
-    """Execute the REAL graph over every case under the selected cases folders.
+    """Build the graph from every case under the selected folders.
 
-    Mirrors how cases seed the graph in the eval harness (vector substrate, live
-    OpenRouter embedder, ``openai/gpt-4o-mini`` ingestion distillation): each
-    case's source docs are distilled into facts and exported as candidates. No
-    agent / sandbox is run — this is the graph-ingestion half only. ``via_ingestor``
-    sources land ``proposed`` (passive add); ``direct_to_graph`` sources land
-    ``active`` (direct approval), matching the write-intent channel mapping.
+    Two modes, decided by ``config.distill``:
+      * ``False`` (default) — fast offline read: each case's seeded source text is
+        written straight into the graph (passthrough ingestor + offline
+        ``FakeEmbedder``). No LLM, no network — basically file retrieval.
+      * ``True`` — run the real pipeline: distill each source via ``gpt-4o-mini``
+        and embed with the live OpenRouter embedder (slow, uses credits).
+
+    ``via_ingestor`` sources land ``proposed`` (passive add); ``direct_to_graph``
+    sources land ``active`` (direct approval), matching the channel mapping.
     """
-    if not os.getenv("OPENROUTER_API_KEY"):
-        raise RegenerateUnavailableError(
-            "graph regeneration needs OPENROUTER_API_KEY set on the API"
-        )
-
     from knowledge.evals.run import load_cases
     from knowledge.injestion.injestor_variants.prompt_injestor import PromptIngestor
-    from knowledge.llm.llm_def import ChatMessage
-    from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
-    from knowledge.llm.embedder_variants.openrouter_embedder import OpenRouterEmbedder
 
     # Gather cases across all selected folders, deduped by id.
     seen_ids: set[str] = set()
@@ -200,17 +210,46 @@ def _regenerate_from_cases(relative_dirs: list[str], config: PipelineConfig) -> 
                     seen.add(normalized)
                     seeds.append((text, state))
 
-    ingest_model = OpenRouterLlm(model="openai/gpt-4o-mini")
-    graph = VectorGraph(
-        embedder=OpenRouterEmbedder(),
-        policy=[Redactor(), Deduper()],  # match the eval seed policy
-    )
-    ingestor = PromptIngestor(
-        graph,
-        llm=lambda prompt: ingest_model.complete([ChatMessage(role="user", content=prompt)]),
-    )
-    for source, state in seeds:
-        ingestor.ingest(source, state=state)
+    if config.distill:
+        if not os.getenv("OPENROUTER_API_KEY"):
+            raise RegenerateUnavailableError(
+                "distillation needs OPENROUTER_API_KEY set on the API"
+            )
+        from knowledge.llm.embedder_variants.openrouter_embedder import OpenRouterEmbedder
+        from knowledge.llm.llm_def import ChatMessage
+        from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
+
+        ingest_model = OpenRouterLlm(model="openai/gpt-4o-mini")
+        graph = VectorGraph(embedder=OpenRouterEmbedder(), policy=[Redactor(), Deduper()])
+        ingestor = PromptIngestor(
+            graph,
+            llm=lambda prompt: ingest_model.complete([ChatMessage(role="user", content=prompt)]),
+        )
+        for source, state in seeds:
+            ingestor.ingest(source, state=state)
+    else:
+        from knowledge.knowledge_graph.knowledge_graph_variants.in_memory_graph import InMemoryGraph
+        from knowledge.llm.embedder_variants.fake_embedder import FakeEmbedder
+
+        graph = VectorGraph(embedder=FakeEmbedder(), policy=[Redactor(), Deduper()])
+        # Passthrough split, but drop header/fragment lines (e.g. "Cohorts:",
+        # "Relevant Skills") so the graph holds real facts, not section headers.
+        splitter = PromptIngestor(InMemoryGraph())  # no llm => line split
+        for source, state in seeds:
+            for insight in splitter.synthesis(source):
+                text = " ".join(insight.raw_text.split())
+                if _is_real_fact(text):
+                    graph.write(text, state=state)
+
+    # Tag facts with topic clusters (embed -> reduce -> HDBSCAN -> LLM labels) so the
+    # graph view can group them into labeled super-nodes. Best-effort: degrades to
+    # an unclustered graph if embeddings are unavailable.
+    try:
+        from knowledge.knowledge_graph.clustering import assign_clusters
+
+        assign_clusters(graph.facts)
+    except Exception:
+        pass
 
     # Each stored fact is one distilled insight (reported in the UI toast).
     insights = [
