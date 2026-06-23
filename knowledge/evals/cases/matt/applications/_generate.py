@@ -245,6 +245,18 @@ def main() -> None:
                 # ingest_model -> PromptIngestor.synthesis runs a real LLM (distills
                 # the sources into facts) instead of the passthrough line-split.
                 "ingest_model": "openai/gpt-4o-mini",
+                # ingest_state: active -> the applicant's distilled background is
+                # established/endorsed knowledge, so it lands "active" and is
+                # retrievable (the default "proposed" would be gated out of the
+                # reader, leaving the agent with an empty knowledge prompt).
+                "ingest_state": "active",
+                # retrieving reader (001 relevance cutoff) with the volume cap OFF
+                # (reader_top_k: 0): rank all active background facts against the
+                # question, keep whatever the existence floor + relative-to-best admit
+                # — no fixed top-N starvation. abs_floor/rel_ratio stay at the tuned
+                # defaults (0.30 / 0.60).
+                "reader": "retrieving",
+                "reader_top_k": 0,
                 "seed_prompt": seed_prompt(company, role, question),
                 "target_commit": "0" * 40,
                 # file_io, not sandbox: the checks grade answer text (output_nonempty
