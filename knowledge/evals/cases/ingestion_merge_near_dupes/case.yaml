@@ -2,16 +2,18 @@
 # phrased differently (trivial wording variation) but sharing the identical
 # load-bearing phrase "use uv run pytest". Runs on the vector substrate so it
 # exercises the real write policy (Redactor -> Deduper -> ConflictFlagger).
-# EXPECTED-FAIL offline: the Deduper does collapse near-duplicates by cosine
-# similarity, but only with a real embedder. The deterministic FakeEmbedder used
-# offline gives identical vectors only for byte-identical text, so these two
-# differently-phrased lines are NOT merged -> "use uv run pytest" appears twice
-# and occurs_at_most(n=1) FAILS. With a real embedder the paraphrases merge and
-# this PASSES. (Pairs with ingestion_dedup, the exact-match arm that passes offline.)
+# EXPECTED-FAIL today: the Deduper only collapses near-EXACT duplicates (cosine
+# threshold 0.95), so these two differently-phrased lines are NOT merged -> "use
+# uv run pytest" appears twice and occurs_at_most(n=1) FAILS. This is NOT merely an
+# offline-embedder artifact: the paraphrases sit at ~0.65 cosine (measured,
+# text-embedding-3-small), well below 0.95, so a real embedder ALONE will not merge
+# them either. GREEN PATH = a paraphrase-level semantic-merge write step (loose
+# recall gate + merge-judge) that keeps one verbatim insight and drops the dup.
+# (Pairs with ingestion_dedup, the exact-match arm that passes offline.)
 id: ingestion_merge_near_dupes
 component: ingestion
 substrate: vector
-xfail: "offline FakeEmbedder only detects exact-match dups; paraphrase merge needs a real embedder"
+xfail: "no paraphrase-level semantic merge: a real embedder still won't merge ~0.65 paraphrases under the Deduper's near-exact (0.95) threshold; needs the recall-gate + merge-judge write step"
 
 seeded_insight:
   via_ingestor:
