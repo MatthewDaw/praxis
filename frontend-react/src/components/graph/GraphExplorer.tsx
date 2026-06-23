@@ -1,41 +1,22 @@
-import { CandidateDetail } from "../CandidateDetail";
 import { GraphSummary } from "./GraphSummary";
 import { KnowledgeGraphView } from "./KnowledgeGraphView";
 import { ScopeTree } from "./ScopeTree";
 import { StateFunnel } from "./StateFunnel";
 import type { Candidate } from "../../types/candidate";
-import type { DataSourceMode } from "../../config/dataSource";
 import type { KnowledgeGraphSnapshot } from "../../types/graph";
 
 interface GraphExplorerProps {
   graph: KnowledgeGraphSnapshot;
   candidates: Candidate[];
-  filteredCandidates: Candidate[];
   selectedId: string | null;
   onSelectNode: (id: string) => void;
-  onRefreshCandidate: (id: string) => Promise<void>;
-  refreshingId?: string | null;
-  onResolve: (
-    contradictionId: string,
-    resolution: "keep_primary" | "keep_rival",
-    keepId: string,
-    rivalTitle: string,
-  ) => Promise<void>;
-  onDefer: (primaryTitle: string, rivalTitle: string) => void;
-  dataSourceMode?: DataSourceMode;
 }
 
 export function GraphExplorer({
   graph,
   candidates,
-  filteredCandidates,
   selectedId,
   onSelectNode,
-  onRefreshCandidate,
-  refreshingId,
-  onResolve,
-  onDefer,
-  dataSourceMode,
 }: GraphExplorerProps) {
   return (
     <div className="graph-explorer">
@@ -59,18 +40,6 @@ export function GraphExplorer({
             onSelectNode={onSelectNode}
           />
         </section>
-        <aside className="graph-explorer__detail">
-          <CandidateDetail
-            candidates={filteredCandidates}
-            selectedId={selectedId}
-            onSelect={onSelectNode}
-            onRefreshCandidate={onRefreshCandidate}
-            refreshingId={refreshingId}
-            onResolve={onResolve}
-            onDefer={onDefer}
-            dataSourceMode={dataSourceMode}
-          />
-        </aside>
       </div>
     </div>
   );

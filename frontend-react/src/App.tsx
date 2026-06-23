@@ -287,8 +287,19 @@ export default function App() {
     }
   }
 
-  const listView =
-    viewTab === "table" ? (
+  const knowledgeView =
+    viewTab === "graph" ? (
+      graph ? (
+        <GraphExplorer
+          graph={graph}
+          candidates={candidates}
+          selectedId={selectedId}
+          onSelectNode={setSelectedId}
+        />
+      ) : (
+        <p className="muted">No graph snapshot is available.</p>
+      )
+    ) : viewTab === "table" ? (
       <CandidateTable
         candidates={filtered}
         selectedId={selectedId}
@@ -407,22 +418,9 @@ export default function App() {
           onResolve={handleResolve}
           onDefer={handleDefer}
         />
-      ) : viewTab === "graph" && graph ? (
-        <GraphExplorer
-          graph={graph}
-          candidates={candidates}
-          filteredCandidates={filtered}
-          selectedId={selectedId}
-          onSelectNode={setSelectedId}
-          onRefreshCandidate={handleRefreshCandidate}
-          refreshingId={refreshingCandidateId}
-          onResolve={handleResolve}
-          onDefer={handleDefer}
-          dataSourceMode={mode}
-        />
       ) : (
         <ContentSplit
-          list={listView}
+          list={knowledgeView}
           detail={
             <CandidateDetail
               candidates={filtered}

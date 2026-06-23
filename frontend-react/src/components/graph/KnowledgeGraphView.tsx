@@ -92,7 +92,7 @@ function groupByCluster(nodes: KnowledgeGraphSnapshot["nodes"]) {
   return { clusters, unclustered };
 }
 
-function FitGraphViewTopCenter({
+function AlignGraphViewTopCenter({
   graphKey,
   nodeCount,
   edgeCount,
@@ -105,15 +105,20 @@ function FitGraphViewTopCenter({
   const { getNodes, getNodesBounds, setViewport } = useReactFlow();
   const width = useStore((state) => state.width);
   const height = useStore((state) => state.height);
-  const lastFitKeyRef = useRef<string | null>(null);
+  const currentZoom = useStore((state) => state.transform[2]);
+  const lastLayoutKeyRef = useRef<string | null>(null);
+  const lastZoomRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!nodesInitialized || width === 0 || height === 0) {
       return;
     }
 
-    const fitKey = `${graphKey}:${nodeCount}:${edgeCount}:${width}:${height}`;
-    if (lastFitKeyRef.current === fitKey) {
+    const layoutKey = `${graphKey}:${nodeCount}:${edgeCount}:${width}:${height}`;
+    const isSameLayout = lastLayoutKeyRef.current === layoutKey;
+    const isSameZoom =
+      lastZoomRef.current != null && Math.abs(lastZoomRef.current - currentZoom) < 0.001;
+    if (isSameLayout && isSameZoom) {
       return;
     }
 
@@ -124,13 +129,22 @@ function FitGraphViewTopCenter({
 
     const frame = requestAnimationFrame(() => {
       const bounds = getNodesBounds(nodes);
-      const viewport = getTopCenterViewport(bounds, { width, height });
+      const viewport = isSameLayout
+        ? getTopCenterViewport(bounds, {
+            width,
+            height,
+            minZoom: currentZoom,
+            maxZoom: currentZoom,
+          })
+        : getTopCenterViewport(bounds, { width, height });
       void setViewport(viewport, { duration: 0 });
-      lastFitKeyRef.current = fitKey;
+      lastLayoutKeyRef.current = layoutKey;
+      lastZoomRef.current = viewport.zoom;
     });
 
     return () => cancelAnimationFrame(frame);
   }, [
+    currentZoom,
     edgeCount,
     getNodes,
     getNodesBounds,
@@ -278,7 +292,7 @@ function KnowledgeGraphViewInner({
         onNodeClick={(_, node) => handleNodeClick(node.id)}
         proOptions={{ hideAttribution: true }}
       >
-        <FitGraphViewTopCenter
+        <AlignGraphViewTopCenter
           graphKey={`${graph.source}:${focused ?? "overview"}:${nodes.length}`}
           nodeCount={nodes.length}
           edgeCount={edges.length}

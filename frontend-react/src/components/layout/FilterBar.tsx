@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState } from "react";
 import type { ViewTab } from "../../types/view";
 
 const VIEW_TABS = [
@@ -30,20 +29,7 @@ export function FilterBar({
   onViewTabChange,
   onAddEval,
 }: FilterBarProps) {
-  const [showViewMenu, setShowViewMenu] = useState(false);
-  const viewMenuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (viewMenuRef.current && !viewMenuRef.current.contains(event.target as Node)) {
-        setShowViewMenu(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  const isViewTab = viewTab === "table" || viewTab === "cards" || viewTab === "graph";
+  const isKnowledgeView = viewTab === "table" || viewTab === "cards" || viewTab === "graph";
 
   return (
     <section className="filter-bar" aria-label="Candidate filters">
@@ -72,6 +58,30 @@ export function FilterBar({
             <option>decayed</option>
           </select>
         </label>
+        {isKnowledgeView ? (
+          <div
+            className="knowledge-view-toggle"
+            role="tablist"
+            aria-label="Knowledge view mode"
+          >
+            {VIEW_TABS.map(({ tab, label }) => (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                className={
+                  viewTab === tab
+                    ? "knowledge-view-toggle__tab active"
+                    : "knowledge-view-toggle__tab"
+                }
+                aria-selected={viewTab === tab}
+                onClick={() => onViewTabChange(tab)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
       <div className="filter-bar__controls">
         {onAddEval && viewTab !== "setup" ? (
@@ -84,81 +94,39 @@ export function FilterBar({
             {candidateCount} candidates
           </span>
         ) : null}
-        <div ref={viewMenuRef} className="view-toggle__group">
-          <div className="view-toggle" role="tablist" aria-label="View mode">
-            {/* Inline view tabs — shown when there's room (wide screens). */}
-            <span className="view-toggle__inline">
-              {VIEW_TABS.map(({ tab, label }) => (
-                <button
-                  key={tab}
-                  type="button"
-                  role="tab"
-                  className={viewTab === tab ? "view-toggle__tab active" : "view-toggle__tab"}
-                  aria-selected={viewTab === tab}
-                  onClick={() => onViewTabChange(tab)}
-                >
-                  {label}
-                </button>
-              ))}
-            </span>
-            {/* Compact "View ▾" dropdown trigger — shown only when narrow. */}
-            <button
-              type="button"
-              role="tab"
-              className={
-                isViewTab
-                  ? "view-toggle__tab view-toggle__compact active"
-                  : "view-toggle__tab view-toggle__compact"
+        <div className="view-toggle" role="tablist" aria-label="Dashboard section">
+          <button
+            type="button"
+            role="tab"
+            className={isKnowledgeView ? "view-toggle__tab active" : "view-toggle__tab"}
+            aria-selected={isKnowledgeView}
+            onClick={() => {
+              if (!isKnowledgeView) {
+                onViewTabChange("table");
               }
-              aria-selected={isViewTab}
-              aria-haspopup="true"
-              aria-expanded={showViewMenu}
-              onClick={() => setShowViewMenu((prev) => !prev)}
-            >
-              View ▾
-            </button>
-            <button
-              type="button"
-              role="tab"
-              className={
-                viewTab === "contradictions" ? "view-toggle__tab active" : "view-toggle__tab"
-              }
-              aria-selected={viewTab === "contradictions"}
-              onClick={() => onViewTabChange("contradictions")}
-            >
-              Contradictions
-              {contradictionCount > 0 ? ` (${contradictionCount})` : ""}
-            </button>
-            <button
-              type="button"
-              role="tab"
-              className={viewTab === "setup" ? "view-toggle__tab active" : "view-toggle__tab"}
-              aria-selected={viewTab === "setup"}
-              onClick={() => onViewTabChange("setup")}
-            >
-              MCP Setup
-            </button>
-          </div>
-          {showViewMenu && (
-            <div className="view-toggle__menu" role="menu">
-              {VIEW_TABS.map(({ tab, label }) => (
-                <button
-                  key={tab}
-                  type="button"
-                  role="menuitem"
-                  className={
-                    viewTab === tab ? "view-toggle__menu-item active" : "view-toggle__menu-item"
-                  }
-                  onClick={() => {
-                    onViewTabChange(tab);
-                    setShowViewMenu(false);
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
+            }}
+          >
+            Knowledge
+          </button>
+          <button
+            type="button"
+            role="tab"
+            className={viewTab === "contradictions" ? "view-toggle__tab active" : "view-toggle__tab"}
+            aria-selected={viewTab === "contradictions"}
+            onClick={() => onViewTabChange("contradictions")}
+          >
+            Contradictions
+            {contradictionCount > 0 ? ` (${contradictionCount})` : ""}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            className={viewTab === "setup" ? "view-toggle__tab active" : "view-toggle__tab"}
+            aria-selected={viewTab === "setup"}
+            onClick={() => onViewTabChange("setup")}
+          >
+            MCP Setup
+          </button>
         </div>
       </div>
     </section>
