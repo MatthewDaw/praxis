@@ -138,6 +138,7 @@ class PostgresVectorGraph(SearchableGraph):
         top_k: int = 10,
         filters: dict | None = None,
         scope: str | None = None,
+        state: str | None = "active",
     ) -> list[SearchHit]:
         qvec = _fit(self._embed(query))
         sql = (
@@ -148,6 +149,9 @@ class PostgresVectorGraph(SearchableGraph):
             "AND embedding IS NOT NULL"
         )
         params: list[object] = [qvec, self.org_id, self.user_id]
+        if state is not None:
+            sql += " AND state = %s"
+            params.append(state)
         if scope is not None:
             sql += " AND scope = %s"
             params.append(scope)
@@ -176,7 +180,9 @@ class PostgresVectorGraph(SearchableGraph):
 
     # --- StoreView (used by write steps) -----------------------------------
     def most_similar(self, text: str, k: int = 5) -> list[SearchHit]:
-        return self.search(text, top_k=k)
+        # Dedup/conflict detection must see pending facts too, so search all
+        # states (not just the retrievable "active" default).
+        return self.search(text, top_k=k, state=None)
 
     # --- internals ----------------------------------------------------------
     def _embed(self, text: str) -> list[float]:
@@ -186,9 +192,12 @@ class PostgresVectorGraph(SearchableGraph):
         return vec
 
     def _recent(self, limit: int) -> list[Fact]:
+        # Backs the no-context ``read`` path, so it surfaces only retrievable
+        # ("active") facts, matching ``search``'s gating.
         rows = self._conn.execute(
             "SELECT id, text, source, confidence, scope, category, observation_count, state "
             "FROM facts WHERE org_id = %s AND (shared OR user_id = %s) "
+            "AND state = 'active' "
             "ORDER BY created_at DESC LIMIT %s",
             (self.org_id, self.user_id, limit),
         ).fetchall()

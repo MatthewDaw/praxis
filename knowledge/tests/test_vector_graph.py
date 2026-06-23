@@ -13,21 +13,22 @@ def test_is_a_searchable_knowledge_graph():
 
 def test_write_then_read_roundtrips():
     g = VectorGraph()
-    g.write("prefer composition over inheritance")
+    # Only "active" facts are retrievable; write as a direct approval.
+    g.write("prefer composition over inheritance", state="active")
     assert "composition over inheritance" in g.read()
 
 
 def test_exact_duplicate_is_deduped():
     g = VectorGraph()
-    g.write("use uv run pytest")
-    g.write("use uv run pytest")  # exact dup -> merged, not added
+    g.write("use uv run pytest", state="active")
+    g.write("use uv run pytest", state="active")  # exact dup -> merged, not added
     assert g.read().count("use uv run pytest") == 1
     assert g._facts[0].observation_count == 2
 
 
 def test_write_redacts_secrets_and_pii():
     g = VectorGraph()
-    g.write("the key is sk-live-SECRET123 and email jane.doe@example.com")
+    g.write("the key is sk-live-SECRET123 and email jane.doe@example.com", state="active")
     content = g.read()
     assert "sk-live-SECRET123" not in content
     assert "jane.doe@example.com" not in content
@@ -35,11 +36,27 @@ def test_write_redacts_secrets_and_pii():
 
 def test_search_returns_best_match_first():
     g = VectorGraph()
-    g.write("the deploy script lives at scripts/deploy.sh")
-    g.write("the test command is uv run pytest")
+    g.write("the deploy script lives at scripts/deploy.sh", state="active")
+    g.write("the test command is uv run pytest", state="active")
     hits = g.search("scripts/deploy.sh", top_k=2)
     assert hits
     assert "deploy.sh" in hits[0].fact.text
+
+
+def test_only_active_facts_are_retrievable():
+    g = VectorGraph()
+    g.write("proposed staging note", state="proposed")  # passive -> not retrievable
+    g.write("active approved note", state="active")  # direct approval -> retrievable
+    content = g.read()
+    assert "active approved note" in content
+    assert "proposed staging note" not in content
+    # search is gated the same way (defaults to state="active")
+    texts = [h.fact.text for h in g.search("note", top_k=10)]
+    assert "active approved note" in texts
+    assert "proposed staging note" not in texts
+    # ...but state=None opts back in to all states (the dedup/conflict path)
+    all_texts = [h.fact.text for h in g.search("note", top_k=10, state=None)]
+    assert "proposed staging note" in all_texts
 
 
 def test_empty_write_is_noop():
