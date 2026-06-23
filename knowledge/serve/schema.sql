@@ -48,11 +48,17 @@ CREATE TABLE IF NOT EXISTS facts (
     scope             text,
     category          text,
     observation_count integer NOT NULL DEFAULT 1,
+    -- Lifecycle state: 'proposed' (passive system add, staged), 'active' (user
+    -- directly approved -- live knowledge), 'decayed' (superseded/retired).
+    state             text NOT NULL DEFAULT 'proposed',
     embedding         vector(1536),
     meta              jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at        timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (org_id, user_id, id)
 );
+
+-- Backfill for pre-existing `facts` tables created before `state` landed.
+ALTER TABLE facts ADD COLUMN IF NOT EXISTS state text NOT NULL DEFAULT 'proposed';
 
 CREATE INDEX IF NOT EXISTS facts_tenant ON facts (org_id, shared, user_id, scope);
 

@@ -100,14 +100,13 @@ def candidates_from_graph(graph: VectorGraph) -> list[dict[str, Any]]:
     """Export all facts in ``graph`` as candidate-api records."""
     rivals = _rival_map(graph.contradictions())
     out: list[dict[str, Any]] = []
-    for index, fact in enumerate(graph.facts):
-        state = "suggested" if fact.confidence >= 0.8 else "proposed"
-        if index == 0 and state == "proposed":
-            state = "suggested"
+    for fact in graph.facts:
+        # The fact's own lifecycle state (proposed/active/decayed) is the
+        # candidate state — set at write time by the approval decision.
         out.append(
             fact_to_candidate(
                 fact,
-                state=state,
+                state=fact.state,
                 rival_ids=rivals.get(fact.id),
             )
         )

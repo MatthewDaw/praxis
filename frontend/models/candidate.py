@@ -47,10 +47,9 @@ _KNOWN_MAPPING_KEYS = frozenset(
 
 
 class CandidateState(str, Enum):
-    """Human-gate lifecycle states (contract: proposed | suggested | active | decayed)."""
+    """Human-gate lifecycle states (contract: proposed | active | decayed)."""
 
     PROPOSED = "proposed"
-    SUGGESTED = "suggested"
     ACTIVE = "active"
     DECAYED = "decayed"
     UNRECOGNIZED = "unrecognized"
@@ -227,8 +226,6 @@ def candidate_state_style(state: CandidateState) -> dict[str, str]:
     match state:
         case CandidateState.PROPOSED:
             return {"bg": "#fef3c7", "text": "#92400e", "border": "#fcd34d"}
-        case CandidateState.SUGGESTED:
-            return {"bg": "#dbeafe", "text": "#1e40af", "border": "#93c5fd"}
         case CandidateState.ACTIVE:
             return {"bg": "#dcfce7", "text": "#166534", "border": "#86efac"}
         case CandidateState.DECAYED | CandidateState.UNRECOGNIZED:
@@ -246,8 +243,6 @@ def next_promotion_state(current: CandidateState) -> CandidateState | None:
     """Return the next human-gate state, or None if already terminal for promotion."""
     match current:
         case CandidateState.PROPOSED:
-            return CandidateState.SUGGESTED
-        case CandidateState.SUGGESTED:
             return CandidateState.ACTIVE
         case CandidateState.ACTIVE | CandidateState.DECAYED | CandidateState.UNRECOGNIZED:
             return None

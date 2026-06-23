@@ -46,7 +46,6 @@ export function FilterBar({
           >
             <option>All</option>
             <option>proposed</option>
-            <option>suggested</option>
             <option>active</option>
             <option>decayed</option>
           </select>

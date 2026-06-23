@@ -95,7 +95,7 @@ def test_promote_advances_state(tmp_path):
     proposed = next(c for c in store.list() if c.get("state") == "proposed")
     res = client.post(f"/candidates/{proposed['id']}/promote", json={})
     assert res.status_code == 200
-    assert res.json()["state"] == "suggested"
+    assert res.json()["state"] == "active"  # proposed -> active (one-step funnel)
 
 
 def test_reject_decays(tmp_path):

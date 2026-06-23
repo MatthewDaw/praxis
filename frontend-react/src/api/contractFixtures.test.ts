@@ -31,13 +31,12 @@ describe("contract v1 fixtures", () => {
     const candidates = rows.map(candidateFromMapping);
     expect(candidates[0].id).toBe("cand_1");
     expect(candidates[0].state).toBe("proposed");
-    expect(candidates[1].state).toBe("suggested");
+    expect(candidates[1].state).toBe("active");
     expect(candidates[2].contradictionIds).toEqual(["cand_16"]);
   });
 
-  it("matches promote-request.json builder", () => {
-    const expected = loadFixture("promote-request.json");
-    expect(buildPromoteBody("proposed")).toEqual(expected);
+  it("promotes proposed directly to active", () => {
+    expect(buildPromoteBody("proposed")).toEqual({ targetState: "active" });
   });
 
   it("matches resolve-request.json builder", () => {

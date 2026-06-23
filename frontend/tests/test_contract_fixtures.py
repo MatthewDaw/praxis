@@ -34,13 +34,14 @@ def test_candidates_list_fixture_parses_to_models() -> None:
     candidates = [Candidate.from_mapping(row) for row in rows]
     assert candidates[0].id == "cand_1"
     assert candidates[0].state is CandidateState.PROPOSED
-    assert candidates[1].state is CandidateState.SUGGESTED
+    assert candidates[1].state is CandidateState.ACTIVE
     assert candidates[2].contradiction_ids == ["cand_16"]
 
 
-def test_promote_request_fixture_matches_builder() -> None:
-    expected = _load_json("promote-request.json")
-    assert build_promote_body(current_state=CandidateState.PROPOSED) == expected
+def test_promote_request_builder_targets_active() -> None:
+    assert build_promote_body(current_state=CandidateState.PROPOSED) == {
+        "targetState": "active",
+    }
 
 
 def test_resolve_request_fixture_matches_builder() -> None:

@@ -79,13 +79,13 @@ def test_promote_active_writes_graph_or_skips() -> None:
     rows = json.loads(body)
     if isinstance(rows, dict):
         rows = rows.get("candidates", [])
-    suggested = next(
-        (row for row in rows if row.get("state") == "suggested"),
+    proposed = next(
+        (row for row in rows if row.get("state") == "proposed"),
         None,
     )
-    if suggested is None:
-        pytest.skip("no suggested candidates available for promote→graph smoke")
-    candidate_id = suggested["id"]
+    if proposed is None:
+        pytest.skip("no proposed candidates available for promote→graph smoke")
+    candidate_id = proposed["id"]
     promote_status, promote_body = _request(
         "POST",
         f"/candidates/{candidate_id}/promote",

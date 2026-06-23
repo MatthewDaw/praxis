@@ -67,18 +67,25 @@ class VectorGraph(SearchableGraph):
         """Return all fact texts concatenated (context ignored; reader filters)."""
         return "\n\n".join(f.text for f in self._facts)
 
-    def write(self, content: str) -> None:
-        """Run the write-policy pipeline over ``content``, then persist."""
+    def write(self, content: str, *, state: str = "proposed") -> None:
+        """Run the write-policy pipeline over ``content``, then persist.
+
+        ``state`` ("active" for a direct user approval, "proposed" for a passive
+        system add) is the lifecycle state a freshly-added fact lands in.
+        """
         content = content.strip()
         if not content:
             return
-        decision = WriteDecision(text=content)
+        decision = WriteDecision(text=content, state="active" if state == "active" else "proposed")
         for step in self.policy:
             step.apply(decision, self)
         if decision.dropped:
             return
         if decision.action == "update" and decision.update_target_id:
             self._merge(decision)
+            return
+        if decision.action == "overwrite" and decision.update_target_id:
+            self._overwrite(decision)
             return
         self._add(decision)
 
@@ -140,6 +147,7 @@ class VectorGraph(SearchableGraph):
             Fact(
                 id=uuid.uuid4().hex,
                 text=decision.text,
+                state=decision.state,
                 embedding=self.embedder.embed_one(decision.text),
                 flags=list(decision.flags),
             )
@@ -152,3 +160,19 @@ class VectorGraph(SearchableGraph):
                 fact.confidence = min(1.0, fact.confidence + 0.05)
                 fact.flags.extend(decision.flags)
                 return
+
+    def _overwrite(self, decision: WriteDecision) -> None:
+        """Forced upsert (approved path): the new fact replaces the nearest
+        conflicting one in place, and every other contradiction decays — so no
+        contradictory pair lingers and the newest approved truth is the survivor.
+        """
+        targets = {decision.update_target_id, *decision.supersede_ids}
+        for fact in self._facts:
+            if fact.id == decision.update_target_id:
+                fact.text = decision.text
+                fact.state = decision.state
+                fact.observation_count += 1
+                fact.confidence = 1.0
+                fact.embedding = self.embedder.embed_one(decision.text)
+            elif fact.id in targets:
+                fact.state = "decayed"

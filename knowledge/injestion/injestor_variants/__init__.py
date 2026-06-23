@@ -1,8 +1,8 @@
 """Concrete ``Ingestor`` implementations."""
 
 from knowledge.injestion.injestor_variants.prompt_injestor import (
-    UPDATE_PROMPT,
+    SPLIT_PROMPT,
     PromptIngestor,
 )
 
-__all__ = ["PromptIngestor", "UPDATE_PROMPT"]
+__all__ = ["PromptIngestor", "SPLIT_PROMPT"]

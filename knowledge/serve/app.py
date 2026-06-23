@@ -359,7 +359,7 @@ def create_app(store: Any | None = None) -> FastAPI:
         Runs the eval write path (``ingestor.ingest`` -> ``graph.write``) with the
         force-overwrite policy, so a contradicting add supersedes the conflicting
         fact in place. The in-chat confirmation is the human gate, so the insight
-        enters at full credibility (``confidence`` defaults to 1.0 in the graph).
+        enters ``active`` at full credibility (``confidence`` defaults to 1.0).
         """
         if orgs_store is None:
             raise HTTPException(status_code=503, detail="insights require a database")
@@ -374,7 +374,7 @@ def create_app(store: Any | None = None) -> FastAPI:
         )
         _, ingestor, _ = build_trio(graph=graph, llm=None)
         before = graph.search(insight, top_k=1)
-        ingestor.ingest(insight)
+        ingestor.ingest(insight, state="active")  # human-gated -> live knowledge
         after = graph.search(insight, top_k=1)
         # Read back the outcome: a stable id with a higher observation_count means
         # a merge/overwrite; a fresh id (or text change) means an add/overwrite.

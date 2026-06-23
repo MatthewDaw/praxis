@@ -19,7 +19,10 @@ DEFAULT_STORE = HERE / "data" / "candidates.json"
 PIPELINE_SEED = HERE / "data" / "pipeline-candidates.json"
 SEED_FIXTURE = Path(__file__).resolve().parents[2] / "frontend-react" / "public" / "mock-candidates.json"
 
-_NEXT_STATE = {"proposed": "suggested", "suggested": "active"}
+# Human-gate promotion funnel: a proposed candidate is approved straight to
+# active (the intermediate "suggested" step was removed). "active" and "decayed"
+# are terminal — not in this map, so promoting from them raises.
+_NEXT_STATE = {"proposed": "active"}
 
 Candidate = dict[str, Any]
 

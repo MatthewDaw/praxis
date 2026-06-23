@@ -13,12 +13,6 @@ export function stateNodeColors(state: CandidateState): {
         text: "var(--state-proposed-text)",
         border: "var(--state-proposed-border)",
       };
-    case "suggested":
-      return {
-        bg: "var(--state-suggested-bg)",
-        text: "var(--state-suggested-text)",
-        border: "var(--state-suggested-border)",
-      };
     case "active":
       return {
         bg: "var(--state-active-bg)",

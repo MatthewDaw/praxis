@@ -44,7 +44,7 @@ Clients send these via `PRAXIS_API_TOKEN` → `Authorization` and `PRAXIS_ORG_ID
 
 ### `GET /candidates`
 
-Optional query: `?state=proposed|suggested|active|decayed`
+Optional query: `?state=proposed|active|decayed`
 
 **Response** — JSON array **or** wrapped object:
 
@@ -65,7 +65,7 @@ See [`fixtures/candidates-list.json`](fixtures/candidates-list.json).
 | `id` | string | yes | Stable identifier |
 | `title` | string | yes | Distilled lesson title |
 | `content` | string | yes | Full lesson body |
-| `state` | string | yes | `proposed`, `suggested`, `active`, `decayed` (unknown values displayed as-is) |
+| `state` | string | yes | `proposed`, `active`, `decayed` (unknown values displayed as-is) |
 | `confidence` | float | yes | 0–1 aggregate |
 | `provenance` | string | yes | `logs/<file>.jsonl:<line>` |
 | `createdAt` | ISO 8601 | yes | Aliases: `created_at`, `updatedAt` |
@@ -85,18 +85,12 @@ Client parser: `frontend/models/candidate.py` → `Candidate.from_mapping()` (Py
 **Request body (canonical v1):**
 
 ```json
-{ "targetState": "suggested" }
-```
-
-or
-
-```json
 { "targetState": "active" }
 ```
 
 See [`fixtures/promote-request.json`](fixtures/promote-request.json).
 
-The dashboard computes `targetState` from the current candidate state (`proposed` → `suggested` → `active`).
+The dashboard computes `targetState` from the current candidate state (`proposed` → `active`).
 
 **Fallback:** If the server returns **400** or **422** on explicit `targetState`, the client retries once with `{}` (server-side auto-advance).
 

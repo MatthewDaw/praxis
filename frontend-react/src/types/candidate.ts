@@ -1,6 +1,5 @@
 export type CandidateState =
   | "proposed"
-  | "suggested"
   | "active"
   | "decayed"
   | "unrecognized";

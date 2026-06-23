@@ -26,10 +26,15 @@ class KnowledgeGraph(ABC):
         """
 
     @abstractmethod
-    def write(self, content: str) -> None:
+    def write(self, content: str, *, state: str = "proposed") -> None:
         """Persist ``content`` into the store.
 
         Semantics are integrate/append, not replace: the ingestor calls this
         once per distilled insight, so a replacing implementation would clobber
         all but the last write.
+
+        ``state`` is the lifecycle state the new fact lands in: "active" when the
+        caller is enacting a direct user approval, "proposed" (the default) when
+        the system is adding knowledge passively. A variant that doesn't track
+        state may ignore it.
         """

@@ -16,7 +16,7 @@ describe("legendConfig", () => {
 
   it("matches funnel states used by StateFunnel", () => {
     expect(funnelStatesMatchConfig(FUNNEL_STATES)).toBe(true);
-    expect(FUNNEL_STATES).toEqual(["proposed", "suggested", "active", "decayed"]);
+    expect(FUNNEL_STATES).toEqual(["proposed", "active", "decayed"]);
   });
 
   it("provides unique edge kind labels", () => {

@@ -3,7 +3,7 @@
 **For:** Matthew Daw (ML & Knowledge Pipeline) — server owner of [candidate-api-v1](../docs/integration/candidate-api-v1.md)  
 **From:** Monica Peters — human-gate dashboard UI for the PRAXIS knowledge loop
 
-This is the **React review dashboard** described in [PRAXIS_Project_Plan.html](../docs/PRAXIS_Project_Plan.html): human approval workflow (`proposed → suggested → active`), provenance on every candidate, confidence breakdown, contradiction resolution, and Dominic's compounding-curve embed.
+This is the **React review dashboard** described in [PRAXIS_Project_Plan.html](../docs/PRAXIS_Project_Plan.html): human approval workflow (`proposed → active`), provenance on every candidate, confidence breakdown, contradiction resolution, and Dominic's compounding-curve embed.
 
 It targets the **same REST contract** as `frontend/services/api_client.py` (Python reference client) so Matthew can validate his FastAPI server without pairing sessions.
 
@@ -30,9 +30,9 @@ Exports both `public/mock-candidates.json` and `public/mock-graph.json` from [`f
 
 **Demo rehearsal (Act 2):**
 
-1. Filter **suggested** candidates
+1. Filter **active** candidates
 2. Inspect provenance on **cand_2**
-3. Promote **cand_1** proposed → suggested
+3. Promote **cand_1** proposed → active
 4. Resolve contradiction **cand_9** ↔ **cand_16**
 
 ---
@@ -57,7 +57,7 @@ npm run dev
 | UI action | HTTP |
 |-----------|------|
 | List | `GET /candidates` |
-| Promote | `POST /candidates/{id}/promote` with `{ "targetState": "suggested" \| "active" }` |
+| Promote | `POST /candidates/{id}/promote` with `{ "targetState": "active" }` |
 | Reject | `POST /candidates/{id}/reject` |
 | Resolve | `POST /contradictions/{primary}__{rival}/resolve` |
 

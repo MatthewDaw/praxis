@@ -30,7 +30,8 @@ def test_seed_and_promote_persist(unique_org):
     proposed = next(c for c in s.list(unique_org, "u1") if c.get("state") == "proposed")
     s.promote(unique_org, "u1", proposed["id"])
     # A fresh store for the same tenant reads the persisted state.
-    assert _store().get(unique_org, "u1", proposed["id"])["state"] == "suggested"
+    # The funnel is now proposed -> active (no intermediate "suggested").
+    assert _store().get(unique_org, "u1", proposed["id"])["state"] == "active"
 
 
 def test_tenants_are_isolated(unique_org):

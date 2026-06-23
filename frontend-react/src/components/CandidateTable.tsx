@@ -293,7 +293,7 @@ export function CandidateTable({
                               className="btn primary"
                               onClick={(event) => handlePromoteClick(event, candidate)}
                               aria-label={`Promote ${candidate.title}`}
-                              title="Advance proposed → suggested → active"
+                              title="Advance proposed → active"
                             >
                               Promote
                             </button>

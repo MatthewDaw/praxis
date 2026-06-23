@@ -14,12 +14,24 @@ from knowledge.knowledge_graph.knowledge_graph_def import SearchHit
 
 Action = Literal["add", "noop", "update", "overwrite"]
 
+# The state a freshly-written fact is persisted with. Set by the caller of
+# ``write`` (not by a policy step): "active" when the user directly approved the
+# insertion, "proposed" when the system added it passively. ("decayed" is a
+# retirement state the store assigns to superseded facts, never an entry state.)
+SeedState = Literal["proposed", "active"]
+
 
 @dataclass
 class WriteDecision:
-    """The mutable verdict for one candidate write, threaded through the steps."""
+    """The mutable verdict for one candidate write, threaded through the steps.
+
+    ``state`` is the lifecycle state the new fact lands in; it is decided by the
+    caller (direct approval -> "active", passive add -> "proposed") and the steps
+    leave it alone — they only decide add/dedup/conflict, not endorsement.
+    """
 
     text: str
+    state: SeedState = "proposed"
     action: Action = "add"
     # Fact to act on for action == "update" (bump) or "overwrite" (replace in place).
     update_target_id: str | None = None

@@ -14,10 +14,10 @@ def test_mock_provider_lists_candidates() -> None:
     assert len(candidates) >= len(load_cases())
 
 
-def test_mock_promote_proposed_to_suggested() -> None:
+def test_mock_promote_proposed_to_active() -> None:
     provider = get_data_provider()
     updated = provider.promote("cand_1")
-    assert updated.state is CandidateState.SUGGESTED
+    assert updated.state is CandidateState.ACTIVE
 
 
 def test_mock_contradiction_pair_exists() -> None:
@@ -28,8 +28,7 @@ def test_mock_contradiction_pair_exists() -> None:
 
 
 def test_next_promotion_state_chain() -> None:
-    assert next_promotion_state(CandidateState.PROPOSED) is CandidateState.SUGGESTED
-    assert next_promotion_state(CandidateState.SUGGESTED) is CandidateState.ACTIVE
+    assert next_promotion_state(CandidateState.PROPOSED) is CandidateState.ACTIVE
     assert next_promotion_state(CandidateState.ACTIVE) is None
 
 
@@ -42,14 +41,12 @@ def test_mock_reject_decays_candidate() -> None:
     assert decayed.state is CandidateState.DECAYED
 
 
-def test_mock_promote_suggested_to_active() -> None:
+def test_mock_active_is_terminal_for_promotion() -> None:
     provider = MockDataProvider()
     before = provider.get_candidate("cand_2")
     assert before is not None
-    assert before.state is CandidateState.SUGGESTED
-    updated = provider.promote("cand_2")
-    assert updated.state is CandidateState.ACTIVE
-    assert next_promotion_state(updated.state) is None
+    assert before.state is CandidateState.ACTIVE
+    assert next_promotion_state(before.state) is None
 
 
 def test_mock_resolve_contradiction_clears_rival() -> None:

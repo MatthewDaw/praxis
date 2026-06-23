@@ -26,9 +26,6 @@
   --state-proposed-bg: #fef3c7;
   --state-proposed-text: #92400e;
   --state-proposed-border: #fcd34d;
-  --state-suggested-bg: #dbeafe;
-  --state-suggested-text: #1e40af;
-  --state-suggested-border: #93c5fd;
   --state-active-bg: #dcfce7;
   --state-active-text: #166534;
   --state-active-border: #86efac;
@@ -1030,11 +1027,6 @@ code,
   border-color: var(--state-proposed-border);
 }
 
-.state-badge--suggested {
-  background: var(--state-suggested-bg);
-  color: var(--state-suggested-text);
-  border-color: var(--state-suggested-border);
-}
 
 .state-badge--active {
   background: var(--state-active-bg);
@@ -1800,9 +1792,6 @@ code,
   background: var(--state-proposed-border);
 }
 
-.state-funnel__bar--suggested {
-  background: var(--state-suggested-border);
-}
 
 .state-funnel__bar--active {
   background: var(--state-active-border);
@@ -1882,8 +1871,8 @@ code,
 
 .scope-tree__member:hover,
 .scope-tree__member--active {
-  background: var(--state-suggested-bg);
-  color: var(--state-suggested-text);
+  background: #dbeafe;
+  color: #1e40af;
 }
 
 .graph-summary {
@@ -2220,7 +2209,7 @@ code,
 }
 
 .eval-legend__marker--praxis {
-  background: var(--state-suggested-bg);
+  background: #dbeafe;
   border-color: var(--accent);
 }
 
@@ -2426,7 +2415,7 @@ code,
   margin: 0 0 var(--space-3);
   padding: var(--space-3) var(--space-4);
   border-left: 3px solid var(--accent);
-  background: var(--state-suggested-bg);
+  background: #dbeafe;
   border-radius: var(--radius-sm);
   color: var(--h2);
 }

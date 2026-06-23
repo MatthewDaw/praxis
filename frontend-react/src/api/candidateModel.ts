@@ -30,7 +30,6 @@ const KNOWN_KEYS = new Set([
 
 const KNOWN_STATES = new Set<CandidateState>([
   "proposed",
-  "suggested",
   "active",
   "decayed",
 ]);
@@ -51,8 +50,6 @@ export function nextPromotionState(
 ): CandidateState | null {
   switch (current) {
     case "proposed":
-      return "suggested";
-    case "suggested":
       return "active";
     case "active":
     case "decayed":
@@ -100,8 +97,6 @@ export function candidateStateStyle(state: CandidateState): CandidateStateStyle 
   switch (state) {
     case "proposed":
       return { bg: "#fef3c7", text: "#92400e", border: "#fcd34d" };
-    case "suggested":
-      return { bg: "#dbeafe", text: "#1e40af", border: "#93c5fd" };
     case "active":
       return { bg: "#dcfce7", text: "#166534", border: "#86efac" };
     case "decayed":
@@ -118,8 +113,6 @@ export function candidateStateClass(state: CandidateState): string {
   switch (state) {
     case "proposed":
       return "state-badge--proposed";
-    case "suggested":
-      return "state-badge--suggested";
     case "active":
       return "state-badge--active";
     case "decayed":

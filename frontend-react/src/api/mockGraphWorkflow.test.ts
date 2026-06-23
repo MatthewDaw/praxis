@@ -44,7 +44,7 @@ describe("mock graph workflow", () => {
     await provider.promote("cand_1");
     const graph = await provider.getGraph();
     const node = graph.nodes.find((n) => n.id === "cand_1");
-    expect(node?.state).toBe("suggested");
+    expect(node?.state).toBe("active");
   });
 
   it("resolve removes contradiction edge and decays loser", async () => {

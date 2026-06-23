@@ -27,10 +27,10 @@ describe("mock gate workflow", () => {
     expect(candidates.length).toBeGreaterThanOrEqual(18);
   });
 
-  it("promotes proposed to suggested", async () => {
+  it("promotes proposed to active", async () => {
     const provider = createMockDataProviderWithRows(loadMockCandidates());
     const updated = await provider.promote("cand_1");
-    expect(updated.state).toBe("suggested");
+    expect(updated.state).toBe("active");
   });
 
   it("exposes contradiction pair cand_9 and cand_16", async () => {
@@ -41,8 +41,7 @@ describe("mock gate workflow", () => {
   });
 
   it("chains promotion states", () => {
-    expect(nextPromotionState("proposed")).toBe("suggested");
-    expect(nextPromotionState("suggested")).toBe("active");
+    expect(nextPromotionState("proposed")).toBe("active");
     expect(nextPromotionState("active")).toBeNull();
   });
 
@@ -53,13 +52,11 @@ describe("mock gate workflow", () => {
     expect(updated?.state).toBe("decayed");
   });
 
-  it("promotes suggested to active", async () => {
+  it("treats already-active candidates as terminal for promotion", async () => {
     const provider = createMockDataProviderWithRows(loadMockCandidates());
     const before = await provider.getCandidate("cand_2");
-    expect(before?.state).toBe("suggested");
-    const updated = await provider.promote("cand_2");
-    expect(updated.state).toBe("active");
-    expect(nextPromotionState(updated.state)).toBeNull();
+    expect(before?.state).toBe("active");
+    expect(nextPromotionState(before!.state)).toBeNull();
   });
 
   it("resolves contradiction by keeping primary", async () => {

@@ -12,7 +12,7 @@
     {
       "id": "cand_2",
       "label": "React useEffect Cleanup",
-      "state": "suggested",
+      "state": "active",
       "confidence": 0.92,
       "provenance": "logs/session_20260614.jsonl:214",
       "scope": "frontend/react",
@@ -39,7 +39,7 @@
     {
       "id": "cand_5",
       "label": "React Client State Persistence",
-      "state": "suggested",
+      "state": "active",
       "confidence": 0.88,
       "provenance": "logs/session_20260617.jsonl:33",
       "scope": "frontend/react",
@@ -62,7 +62,7 @@
     {
       "id": "cand_8",
       "label": "Interrupt-Safe from json Streaming",
-      "state": "suggested",
+      "state": "active",
       "confidence": 0.79,
       "provenance": "logs/nushell_contrib_20260614.jsonl:301"
     },
@@ -78,14 +78,14 @@
     {
       "id": "cand_10",
       "label": "ls Hidden Directory Glob Display",
-      "state": "suggested",
+      "state": "active",
       "confidence": 0.88,
       "provenance": "logs/nushell_contrib_20260511.jsonl:178"
     },
     {
       "id": "cand_11",
       "label": "any/all Row Conditions vs Closures",
-      "state": "suggested",
+      "state": "active",
       "confidence": 0.86,
       "provenance": "logs/nushell_contrib_20260605.jsonl:224"
     },
@@ -106,7 +106,7 @@
     {
       "id": "cand_14",
       "label": "Guard stdout/stderr on Parent Exit",
-      "state": "suggested",
+      "state": "active",
       "confidence": 0.81,
       "provenance": "logs/nushell_contrib_20260617.jsonl:193"
     },
@@ -145,7 +145,7 @@
     {
       "id": "cand_19",
       "label": "Docstring and Test Policy Before Merge",
-      "state": "suggested",
+      "state": "active",
       "confidence": 0.89,
       "provenance": "logs/session_poison_demo.jsonl:14",
       "scope": "backend/python",

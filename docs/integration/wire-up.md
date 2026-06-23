@@ -27,9 +27,9 @@ npm run dev
 
 Rehearse Act 2 per [`../monica/DEMO_SCRIPT.md`](../monica/DEMO_SCRIPT.md):
 
-1. Filter **suggested** candidates
+1. Filter **active** candidates
 2. Inspect provenance on **cand_2**
-3. Promote **cand_1** proposed → suggested
+3. Promote **cand_1** proposed → active
 4. Resolve contradiction **cand_9** ↔ **cand_16**
 
 ## 3. Live API (when Matthew's server is up)

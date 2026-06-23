@@ -108,12 +108,16 @@ class PostgresVectorGraph(SearchableGraph):
             used += len(fact.text)
         return "\n\n".join(parts)
 
-    def write(self, content: str) -> None:
-        """Run the write-policy pipeline over ``content``, then persist."""
+    def write(self, content: str, *, state: str = "proposed") -> None:
+        """Run the write-policy pipeline over ``content``, then persist.
+
+        ``state`` ("active" for a direct user approval, "proposed" for a passive
+        system add) is the lifecycle state a freshly-added fact lands in.
+        """
         content = content.strip()
         if not content:
             return
-        decision = WriteDecision(text=content)
+        decision = WriteDecision(text=content, state="active" if state == "active" else "proposed")
         for step in self.policy:
             step.apply(decision, self)
         if decision.dropped:
@@ -138,7 +142,7 @@ class PostgresVectorGraph(SearchableGraph):
         qvec = _fit(self._embed(query))
         sql = (
             "SELECT id, text, source, confidence, scope, category, "
-            "observation_count, 1 - (embedding <=> %s) AS score "
+            "observation_count, state, 1 - (embedding <=> %s) AS score "
             "FROM facts "
             "WHERE org_id = %s AND (shared OR user_id = %s) "
             "AND embedding IS NOT NULL"
@@ -163,8 +167,9 @@ class PostgresVectorGraph(SearchableGraph):
                     scope=r[4],
                     category=r[5],
                     observation_count=r[6],
+                    state=r[7],
                 ),
-                score=float(r[7]),
+                score=float(r[8]),
             )
             for r in rows
         ]
@@ -182,7 +187,7 @@ class PostgresVectorGraph(SearchableGraph):
 
     def _recent(self, limit: int) -> list[Fact]:
         rows = self._conn.execute(
-            "SELECT id, text, source, confidence, scope, category, observation_count "
+            "SELECT id, text, source, confidence, scope, category, observation_count, state "
             "FROM facts WHERE org_id = %s AND (shared OR user_id = %s) "
             "ORDER BY created_at DESC LIMIT %s",
             (self.org_id, self.user_id, limit),
@@ -196,6 +201,7 @@ class PostgresVectorGraph(SearchableGraph):
                 scope=r[4],
                 category=r[5],
                 observation_count=r[6],
+                state=r[7],
             )
             for r in rows
         ]
@@ -205,8 +211,8 @@ class PostgresVectorGraph(SearchableGraph):
         embedding = _fit(self._embed(decision.text))
         self._conn.execute(
             "INSERT INTO facts (id, org_id, user_id, text, source, confidence, "
-            "scope, category, embedding) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            "scope, category, state, embedding) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 uuid.uuid4().hex,
                 self.org_id,
@@ -216,6 +222,7 @@ class PostgresVectorGraph(SearchableGraph):
                 1.0,
                 getattr(decision, "scope", None),
                 getattr(decision, "category", None),
+                decision.state,
                 embedding,
             ),
         )
@@ -231,17 +238,18 @@ class PostgresVectorGraph(SearchableGraph):
 
     def _overwrite(self, decision: WriteDecision) -> None:
         # Forced upsert: the new approved truth replaces the nearest conflicting
-        # fact in place, then any other contradictions are deleted (their edges
-        # cascade), so no contradictory pair lingers.
+        # fact in place (landing at the decision's state), then any other
+        # contradictions decay, so no contradictory pair lingers.
         embedding = _fit(self._embed(decision.text))
         self._conn.execute(
-            "UPDATE facts SET text = %s, embedding = %s, source = %s, "
+            "UPDATE facts SET text = %s, embedding = %s, source = %s, state = %s, "
             "confidence = 1.0, observation_count = observation_count + 1 "
             "WHERE org_id = %s AND user_id = %s AND id = %s",
             (
                 decision.text,
                 embedding,
                 getattr(decision, "source", None),
+                decision.state,
                 self.org_id,
                 self.user_id,
                 decision.update_target_id,
@@ -249,6 +257,7 @@ class PostgresVectorGraph(SearchableGraph):
         )
         for sid in decision.supersede_ids:
             self._conn.execute(
-                "DELETE FROM facts WHERE org_id = %s AND user_id = %s AND id = %s",
+                "UPDATE facts SET state = 'decayed' "
+                "WHERE org_id = %s AND user_id = %s AND id = %s",
                 (self.org_id, self.user_id, sid),
             )

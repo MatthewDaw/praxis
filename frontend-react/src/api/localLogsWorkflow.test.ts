@@ -39,9 +39,9 @@ describe("local logs workflow", () => {
     const candidates = await provider.listCandidates();
     const first = candidates[0];
     const updated = await provider.promote(first.id);
-    expect(updated.state).toBe("suggested");
+    expect(updated.state).toBe("active");
     const graph = await provider.getGraph();
     const node = graph.nodes.find((n) => n.id === first.id);
-    expect(node?.state).toBe("suggested");
+    expect(node?.state).toBe("active");
   });
 });

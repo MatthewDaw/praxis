@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+# A fact's lifecycle state in the graph:
+#   * "proposed" -- passively added by the system (e.g. distilled by the
+#     ingestor); staged, not yet endorsed.
+#   * "active"   -- the user directly approved this write; it is live knowledge.
+#   * "decayed"  -- superseded/retired (e.g. lost a contradiction to a newer
+#     approved fact); kept for provenance but no longer authoritative.
+FactState = Literal["proposed", "active", "decayed"]
 
 
 class Fact(BaseModel):
@@ -20,6 +30,7 @@ class Fact(BaseModel):
     scope: str | None = None
     category: str | None = None
     observation_count: int = 1
+    state: FactState = "proposed"  # set by the write decision; see FactState
     embedding: list[float] | None = None
     flags: list[str] = Field(default_factory=list)  # e.g. ["contradiction:<id>"]
 

@@ -39,7 +39,7 @@ def test_live_list_candidates(provider: ApiDataProvider) -> None:
     assert first.provenance
 
 
-def test_live_promote_proposed_to_suggested(provider: ApiDataProvider) -> None:
+def test_live_promote_proposed_to_active(provider: ApiDataProvider) -> None:
     proposed = next(
         (c for c in provider.list_candidates() if c.state is CandidateState.PROPOSED),
         None,
@@ -47,7 +47,7 @@ def test_live_promote_proposed_to_suggested(provider: ApiDataProvider) -> None:
     if proposed is None:
         pytest.skip("no proposed candidates available for promote smoke")
     updated = provider.promote(proposed.id)
-    assert updated.state is CandidateState.SUGGESTED
+    assert updated.state is CandidateState.ACTIVE
 
 
 def test_live_reject_decays(provider: ApiDataProvider) -> None:

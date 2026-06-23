@@ -88,7 +88,7 @@ describe("graphModel", () => {
       id: "cand_1",
       title: "New title",
       content: "body",
-      state: "suggested",
+      state: "active",
       confidence: 0.9,
       provenance: "logs/test.jsonl:1",
       createdAt: "2026-06-01T00:00:00Z",
@@ -97,7 +97,7 @@ describe("graphModel", () => {
     });
     const merged = mergeGraphWithCandidates(snapshot, [candidate]);
     expect(merged.nodes[0].label).toBe("New title");
-    expect(merged.nodes[0].state).toBe("suggested");
+    expect(merged.nodes[0].state).toBe("active");
     expect(merged.nodes[0].scope).toBe("frontend/react");
   });
 

@@ -42,7 +42,7 @@ class DataProvider(Protocol):
         ...
 
     def promote(self, candidate_id: str) -> Candidate:
-        """Advance proposed → suggested → active."""
+        """Advance proposed → active."""
         ...
 
     def reject(self, candidate_id: str, reason: str | None = None) -> None:

@@ -249,8 +249,27 @@ def partition_by_capability(
 # --------------------------------------------------------------------------- #
 # M7/M8 — orchestration
 # --------------------------------------------------------------------------- #
+def _ingest_llm_for(case: EvalCase, llm):
+    """Resolve the ingestor's distillation LLM.
+
+    Honors an explicit ``llm`` if given; otherwise, when the case sets
+    ``ingest_model``, build a real OpenRouter model so ``PromptIngestor.synthesis``
+    actually distills (instead of the passthrough line-split). ``PromptIngestor``
+    wants a plain ``str -> str`` callable, so adapt ``OpenRouterLlm.complete`` with
+    a one-user-message wrapper. None (no llm, no ingest_model) => passthrough.
+    """
+    if llm is not None or not case.ingest_model:
+        return llm
+    from knowledge.llm.llm_def import ChatMessage
+    from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
+
+    model = OpenRouterLlm(model=case.ingest_model)
+    return lambda prompt: model.complete([ChatMessage(role="user", content=prompt)])
+
+
 def _build_trio_for(case: EvalCase, llm=None):
-    """Wire the trio honoring the case's reader/embedder axes (§ retrieving reader)."""
+    """Wire the trio honoring the case's reader/embedder/ingest_model axes."""
+    llm = _ingest_llm_for(case, llm)
     embedder = _eval_embedder(case)
     graph = None
     if case.substrate == "vector" and case.embedder != "fake":
@@ -278,10 +297,13 @@ def _seed_knowledge(case: EvalCase, llm=None):
     The graph initializes itself (in-memory for the MVP) — no path, no file.
     """
     graph, ingestor, reader = _build_trio_for(case, llm=llm)
+    # Channel encodes the write intent -> the state the fact lands in:
+    #   * direct_to_graph -> "active": simulates a direct user approval.
+    #   * via_ingestor    -> "proposed": the system passively distilling raw input.
     for text in case.seeded_insight.direct_to_graph:
-        graph.write(text)
+        graph.write(text, state="active")
     for text in case.seeded_insight.via_ingestor:
-        ingestor.ingest(text)
+        ingestor.ingest(text, state="proposed")
     return reader
 
 

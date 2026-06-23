@@ -23,12 +23,18 @@ class Ingestor(ABC):
     def synthesis(self, raw_input: str) -> list[Insight]:
         """Transform raw input into structured insights. Variant-defined."""
 
-    def ingest(self, raw_input: str) -> str:
+    def ingest(self, raw_input: str, *, state: str = "proposed") -> str:
         """Synthesize insights from ``raw_input`` and write each to the graph.
 
         Concrete and final for the MVP — runs every time. Returns the graph
         content after ingestion for inspection/testing.
+
+        ``state`` is the lifecycle state distilled facts land in. It defaults to
+        "proposed": ingestion is a *passive* add (the system distilling raw
+        input), so its output is staged, not endorsed. A caller enacting a direct
+        user approval passes ``state="active"``.
         """
-        for insight in self.synthesis(raw_input):
-            self.graph.write(insight.raw_text)
+        insights = self.synthesis(raw_input)
+        for insight in insights:
+            self.graph.write(insight.raw_text, state=state)
         return self.graph.read()

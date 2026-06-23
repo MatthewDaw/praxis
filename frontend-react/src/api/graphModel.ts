@@ -52,7 +52,6 @@ function parseNodeState(raw: unknown): GraphNode["state"] {
   const label = String(raw ?? "proposed");
   if (
     label === "proposed" ||
-    label === "suggested" ||
     label === "active" ||
     label === "decayed" ||
     label === "unrecognized"

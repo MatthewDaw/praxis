@@ -31,8 +31,12 @@ class InMemoryGraph(KnowledgeGraph):
         """Return the full content (``context`` is ignored for the MVP)."""
         return self._content
 
-    def write(self, content: str) -> None:
-        """Append ``content`` as a new block."""
+    def write(self, content: str, *, state: str = "proposed") -> None:
+        """Append ``content`` as a new block.
+
+        ``state`` is accepted for contract parity but ignored: this MVP string
+        graph stores no per-fact metadata, so it can't track lifecycle state.
+        """
         content = content.strip()
         if not content:
             return
