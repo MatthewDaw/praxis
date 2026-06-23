@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import {
   buildConfigFromPreset,
+  DATA_SOURCE_PRESETS,
   DATA_SOURCE_STORAGE_KEY,
   persistConfig,
   PRESET_IDS,
@@ -40,33 +41,23 @@ describe("dataSource config", () => {
     vi.stubEnv("VITE_PRAXIS_API_TOKEN", "");
   });
 
-  it("builds local-logs preset config", () => {
-    const config = buildConfigFromPreset(PRESET_IDS.localLogs);
-    expect(config.mode).toBe("local-logs");
-    expect(config.presetId).toBe(PRESET_IDS.localLogs);
-    expect(config.label).toBe("Local Claude logs");
-    expect(config.apiBaseUrl).toBeUndefined();
-  });
-
-  it("persists and restores local-logs config", () => {
-    const localLogs = buildConfigFromPreset(PRESET_IDS.localLogs);
-    persistConfig(localLogs);
-    const restored = resolveInitialConfig();
-    expect(restored.mode).toBe("local-logs");
-    expect(restored.presetId).toBe(PRESET_IDS.localLogs);
-  });
-
-  it("builds mock preset config", () => {
-    const config = buildConfigFromPreset(PRESET_IDS.mock);
-    expect(config.mode).toBe("mock");
-    expect(config.presetId).toBe(PRESET_IDS.mock);
-    expect(config.label).toBe("Mock fixtures (evals)");
-    expect(config.apiBaseUrl).toBeUndefined();
+  it("exposes exactly two live presets", () => {
+    expect(DATA_SOURCE_PRESETS).toHaveLength(2);
+    expect(DATA_SOURCE_PRESETS.map((p) => p.label)).toEqual([
+      "Local Postgres",
+      "Remote Postgres",
+    ]);
+    expect(DATA_SOURCE_PRESETS.every((p) => p.mode === "live")).toBe(true);
+    expect(DATA_SOURCE_PRESETS.map((p) => p.id)).toEqual([
+      PRESET_IDS.local,
+      PRESET_IDS.postgres,
+    ]);
   });
 
   it("builds local live preset", () => {
     const config = buildConfigFromPreset(PRESET_IDS.local);
     expect(config.mode).toBe("live");
+    expect(config.label).toBe("Local Postgres");
     expect(config.apiBaseUrl).toBe("http://localhost:8000");
   });
 
@@ -107,16 +98,18 @@ describe("dataSource config", () => {
     expect(config.apiBaseUrl).toBe("https://postgres.example.com");
   });
 
-  it("custom preset requires URL", () => {
-    const empty = buildConfigFromPreset(PRESET_IDS.custom);
-    expect(empty.mode).toBe("mock");
+  it("defaults to local postgres preset when no env URL is set", () => {
+    const config = resolveInitialConfig();
+    expect(config.mode).toBe("live");
+    expect(config.presetId).toBe(PRESET_IDS.local);
+    expect(config.apiBaseUrl).toBe("http://localhost:8000");
+  });
 
-    const custom = buildConfigFromPreset(
-      PRESET_IDS.custom,
-      "https://custom.api.test",
-    );
-    expect(custom.mode).toBe("live");
-    expect(custom.apiBaseUrl).toBe("https://custom.api.test");
+  it("falls back to local preset for an unknown preset id", () => {
+    const config = buildConfigFromPreset("nonexistent-preset");
+    expect(config.mode).toBe("live");
+    expect(config.presetId).toBe(PRESET_IDS.local);
+    expect(config.apiBaseUrl).toBe("http://localhost:8000");
   });
 
   it("localStorage round-trip omits token", () => {
@@ -128,18 +121,13 @@ describe("dataSource config", () => {
 });
 
 describe("resolveDataProvider", () => {
-  it("returns mock provider for mock config", () => {
-    const provider = resolveDataProvider(buildConfigFromPreset(PRESET_IDS.mock));
-    expect(provider.listCandidates).toBeTypeOf("function");
-  });
-
-  it("returns api provider for live config", () => {
+  it("returns api provider for local live config", () => {
     const provider = resolveDataProvider(buildConfigFromPreset(PRESET_IDS.local));
     expect(provider.listCandidates).toBeTypeOf("function");
   });
 
-  it("returns empty local provider for local-logs without session", () => {
-    const provider = resolveDataProvider(buildConfigFromPreset(PRESET_IDS.localLogs));
+  it("returns api provider for remote postgres config", () => {
+    const provider = resolveDataProvider(buildConfigFromPreset(PRESET_IDS.postgres));
     expect(provider.listCandidates).toBeTypeOf("function");
   });
 });

@@ -7,8 +7,8 @@ import {
 import { buildLocalLogSession } from "./api/localLogsProvider";
 import { CandidateCards } from "./components/CandidateCards";
 import { CandidateDetail } from "./components/CandidateDetail";
-import { EvalRunner } from "./components/EvalRunner";
 import { GraphDataLoader } from "./components/GraphDataLoader";
+import { SnapshotManager } from "./components/SnapshotManager";
 import { CandidateTable } from "./components/CandidateTable";
 import {
   ContradictionsReview,
@@ -366,7 +366,11 @@ export default function App() {
 
       {mode === "live" && config.apiBaseUrl ? (
         <>
-          <EvalRunner apiBaseUrl={config.apiBaseUrl} auth={auth} />
+          <SnapshotManager
+            apiBaseUrl={config.apiBaseUrl}
+            auth={auth}
+            onLoaded={handleRefresh}
+          />
           <GraphDataLoader
             apiBaseUrl={config.apiBaseUrl}
             auth={auth}

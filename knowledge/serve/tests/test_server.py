@@ -1,233 +1,163 @@
-"""Offline tests for the candidate API server (TestClient over a temp store).
+"""Integration tests for the candidate API server over the facts spine.
 
-Auth is disabled via conftest (PRAXIS_AUTH_DISABLED=1) so routes flow with a dev
-principal. The in-memory store has no OrgsStore, so the X-Praxis-Org header is
-accepted without a membership check; we send one anyway to exercise the path.
+The server is Postgres-only and writes through the facade's REAL embedder
+(``create_app`` injects no fake), so these tests require both a Postgres DSN and
+an OPENROUTER_API_KEY — POST /insights and POST /candidates embed for real.
+
+Auth is bypassed via conftest (PRAXIS_AUTH_DISABLED=1 -> principal sub="dev-user").
+``active_org`` always checks org membership, so each test gets a unique throwaway
+org with "dev-user" added as a member and sends it via the X-Praxis-Org header.
 """
+
+from __future__ import annotations
 
 import os
 
 import pytest
+from dotenv import load_dotenv
 from fastapi.testclient import TestClient
 
-from knowledge.serve import db
-from knowledge.serve.app import create_app
-from knowledge.serve.store import CandidateStore, SEED_FIXTURE, contradiction_ids
+# Load the repo-root .env so PRAXIS_DB_URL / OPENROUTER_API_KEY resolve at
+# import time (the module-level skipif below reads them).
+load_dotenv()
 
-ORG_HEADERS = {"X-Praxis-Org": "test-org"}
+from knowledge.serve import db  # noqa: E402
+from knowledge.serve.app import create_app  # noqa: E402
+from knowledge.serve.orgs_store import OrgsStore  # noqa: E402
 
-
-def _client(tmp_path):
-    store = CandidateStore(path=tmp_path / "candidates.json", seed=SEED_FIXTURE)
-    return TestClient(create_app(store), headers=ORG_HEADERS), store
-
-
-def test_health_and_list(tmp_path):
-    client, store = _client(tmp_path)
-    health = client.get("/health").json()
-    assert health["status"] == "ok"
-    assert health["store"] == "json"
-    cands = client.get("/candidates").json()
-    assert isinstance(cands, list) and len(cands) > 0
-
-
-def test_contradictions_endpoint_returns_pairs(tmp_path):
-    client, _ = _client(tmp_path)
-    pairs = client.get("/contradictions").json()
-    assert len(pairs) >= 1  # the seed fixture has contradiction links
-    pair = pairs[0]
-    assert pair["a"]["id"] and pair["b"]["id"] and "__" in pair["id"]
-
-
-def test_graph_endpoint_derives_snapshot_from_candidates(tmp_path):
-    client, store = _client(tmp_path)
-    graph = client.get("/graph").json()["graph"]
-    assert len(graph["nodes"]) == len(store.list())
-    assert graph["nodes"][0]["id"]
-    assert "edges" in graph
-
-
-def test_regenerate_evals_replaces_pipeline_rows_only(tmp_path):
-    client, store = _client(tmp_path)
-    created = client.post(
-        "/candidates",
-        json={
-            "title": "Manual candidate",
-            "content": "Keep manually-created candidates across regeneration.",
-            "confidence": 0.7,
-        },
-    ).json()
-
-    first = client.post("/evals/regenerate", json={"preset": "offline-fake"})
-    assert first.status_code == 200
-    first_body = first.json()
-    assert first_body["cases_run"] > 0
-    assert first_body["insights_generated"] > 0
-    assert first_body["candidates_inserted"] > 0
-
-    after_first = store.list()
-    assert any(c["id"] == created["id"] for c in after_first)
-    assert sum(1 for c in after_first if c["id"].startswith("pipe_")) == first_body["candidates_inserted"]
-
-    second = client.post("/evals/regenerate", json={"preset": "offline-fake"})
-    assert second.status_code == 200
-    after_second = store.list()
-    assert any(c["id"] == created["id"] for c in after_second)
-    assert sum(1 for c in after_second if c["id"].startswith("pipe_")) == second.json()["candidates_inserted"]
-
-    graph = client.get("/graph").json()["graph"]
-    assert len(graph["nodes"]) == len(after_second)
-
-
-def test_regenerate_evals_rejects_unsupported_preset(tmp_path):
-    client, _ = _client(tmp_path)
-    res = client.post("/evals/regenerate", json={"preset": "expensive-live"})
-    assert res.status_code == 400
-
-
-def test_regenerate_evals_openrouter_is_explicitly_guarded(tmp_path):
-    client, _ = _client(tmp_path)
-    res = client.post("/evals/regenerate", json={"preset": "openrouter"})
-    assert res.status_code == 503
-    assert "PRAXIS_REGENERATE_OPENROUTER" in res.json()["detail"]
-
-
-def test_promote_advances_state(tmp_path):
-    client, store = _client(tmp_path)
-    proposed = next(c for c in store.list() if c.get("state") == "proposed")
-    res = client.post(f"/candidates/{proposed['id']}/promote", json={})
-    assert res.status_code == 200
-    assert res.json()["state"] == "active"  # proposed -> active (one-step funnel)
-
-
-def test_reject_decays(tmp_path):
-    client, store = _client(tmp_path)
-    cid = store.list()[0]["id"]
-    assert client.post(f"/candidates/{cid}/reject", json={"reason": "noise"}).status_code == 200
-    assert store.get(cid=cid)["state"] == "decayed"
-
-
-def test_create_update_delete_candidate(tmp_path):
-    client, _ = _client(tmp_path)
-    created = client.post(
-        "/candidates",
-        json={
-            "title": "New lesson",
-            "content": "Use typed payloads at API boundaries.",
-            "confidence": 0.55,
-        },
-    )
-    assert created.status_code == 200
-    cid = created.json()["id"]
-    updated = client.patch(
-        f"/candidates/{cid}",
-        json={"title": "New lesson (edited)"},
-    )
-    assert updated.status_code == 200
-    assert updated.json()["title"] == "New lesson (edited)"
-    deleted = client.delete(f"/candidates/{cid}")
-    assert deleted.status_code == 200
-    assert client.get(f"/candidates/{cid}").status_code == 404
-
-
-def test_resolve_keeps_one_and_drops_link(tmp_path):
-    client, store = _client(tmp_path)
-    pair = client.get("/contradictions").json()[0]
-    keep_id = pair["a"]["id"]
-    res = client.post(f"/contradictions/{pair['id']}/resolve", json={"resolution": "keep_a", "keepId": keep_id})
-    assert res.status_code == 200 and res.json()["id"] == keep_id
-    # the link between the pair is gone from the kept side
-    assert pair["b"]["id"] not in contradiction_ids(store.get(cid=keep_id))
-
-
-def test_resolve_promotes_kept_newcomer_to_active(tmp_path):
-    # A held newcomer (proposed) that wins its contradiction is promoted into the
-    # active graph; the losing side decays.
-    client, store = _client(tmp_path)
-    a = store.create(body={"title": "A", "content": "Use tabs."})
-    b = store.create(body={"title": "B", "content": "Use spaces."})
-    a["contradiction_ids"] = [b["id"]]
-    b["contradiction_ids"] = [a["id"]]
-    store._persist()
-    pair_id = f"{a['id']}__{b['id']}"
-    assert store.get(cid=a["id"])["state"] == "proposed"  # newcomer starts held
-    res = client.post(f"/contradictions/{pair_id}/resolve", json={"keepId": a["id"]})
-    assert res.status_code == 200
-    assert store.get(cid=a["id"])["state"] == "active"  # winner enters the graph
-    assert store.get(cid=b["id"])["state"] == "decayed"  # loser retired
-
-
-def test_resolve_custom_decays_both_and_creates_active(tmp_path):
-    # A custom resolution is neither side: both originals decay and a fresh active
-    # candidate carrying the user's text takes their place.
-    client, store = _client(tmp_path)
-    a = store.create(body={"title": "A", "content": "Use tabs."})
-    b = store.create(body={"title": "B", "content": "Use spaces."})
-    a["contradiction_ids"] = [b["id"]]
-    b["contradiction_ids"] = [a["id"]]
-    store._persist()
-    pair_id = f"{a['id']}__{b['id']}"
-    res = client.post(
-        f"/contradictions/{pair_id}/resolve",
-        json={"customText": "Use tabs for indentation, spaces for alignment."},
-    )
-    assert res.status_code == 200
-    new = res.json()
-    assert new["state"] == "active"
-    assert new["id"] not in (a["id"], b["id"])
-    assert store.get(cid=a["id"])["state"] == "decayed"
-    assert store.get(cid=b["id"])["state"] == "decayed"
-
-
-def test_promote_unknown_is_404(tmp_path):
-    client, _ = _client(tmp_path)
-    assert client.post("/candidates/nope/promote", json={}).status_code == 404
-
-
-def test_me_returns_principal(tmp_path):
-    client, _ = _client(tmp_path)
-    me = client.get("/me").json()
-    assert me["sub"] == "dev-user"
-    assert me["orgs"] == []  # no OrgsStore in the in-memory path
-
-
-def test_orgs_create_requires_db(tmp_path):
-    client, _ = _client(tmp_path)
-    res = client.post("/orgs", json={"orgId": "acme", "password": "pw"})
-    assert res.status_code == 503  # orgs require a database
-
-
-def test_insights_and_context_require_db(tmp_path):
-    # The graph endpoints only work on the Postgres path; the in-memory store has
-    # no OrgsStore, so both degrade to 503 (like the orgs routes).
-    client, _ = _client(tmp_path)
-    assert client.post("/insights", json={"insight": "use uv"}).status_code == 503
-    assert client.get("/context", params={"query": "deps"}).status_code == 503
-
-
-@pytest.mark.skipif(
+pytestmark = pytest.mark.skipif(
     db.resolve_dsn() is None or not os.getenv("OPENROUTER_API_KEY"),
     reason=(
         "needs a Postgres DSN (PRAXIS_DB_URL / AWS secret) AND OPENROUTER_API_KEY — "
-        "POST /insights runs the real ingest, which embeds the insight via OpenRouter"
+        "the HTTP write path embeds candidates/insights via the real embedder"
     ),
 )
-def test_insight_then_context_round_trips(unique_org):
-    # Real Postgres path: seed an org + membership for the dev principal, then
-    # assert POST /insights lands a fact and GET /context retrieves it.
-    from knowledge.serve.app import create_app as _create_app
-    from knowledge.serve.orgs_store import OrgsStore
 
-    app = _create_app()  # picks the Postgres store (DSN resolved)
+USER = "dev-user"
+
+
+@pytest.fixture
+def client(unique_org):
+    """A TestClient over a fresh throwaway tenant (org + dev-user membership)."""
+    db.bootstrap()
     conn = db.connect()
-    # Deterministic org id (from the test name) — clean any prior run so the
-    # create + membership + facts start fresh and reruns stay isolated.
-    conn.execute("DELETE FROM facts WHERE org_id = %s", (unique_org,))
-    conn.execute("DELETE FROM org_members WHERE org_id = %s", (unique_org,))
-    conn.execute("DELETE FROM orgs WHERE org_id = %s", (unique_org,))
-    OrgsStore(conn).create_org(unique_org, unique_org, "pw", "dev-user")
-    client = TestClient(app, headers={"X-Praxis-Org": unique_org})
+    org = unique_org
+    # Start clean so create + membership + facts begin fresh and reruns isolate.
+    conn.execute("DELETE FROM fact_edges WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM cached_facts WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM org_members WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM orgs WHERE org_id = %s", (org,))
+    OrgsStore(conn).create_org(org, org, "pw", USER)
+    app = create_app(conn)
+    yield TestClient(app, headers={"X-Praxis-Org": org})
+    conn.execute("DELETE FROM fact_edges WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM cached_facts WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM org_members WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM orgs WHERE org_id = %s", (org,))
+    conn.close()
 
+
+def _create(client, title="A lesson", content="Use typed payloads at API boundaries."):
+    res = client.post("/candidates", json={"title": title, "content": content})
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def test_health_reports_postgres(client):
+    health = client.get("/health").json()
+    assert health["status"] == "ok"
+    assert health["store"] == "postgres"
+
+
+def test_create_list_get_candidate(client):
+    created = _create(client)
+    cid = created["id"]
+    assert created["state"] == "proposed"
+
+    listed = client.get("/candidates").json()
+    assert any(c["id"] == cid for c in listed)
+
+    got = client.get(f"/candidates/{cid}")
+    assert got.status_code == 200
+    assert got.json()["title"] == "A lesson"
+
+
+def test_promote_advances_proposed_to_active(client):
+    cid = _create(client)["id"]
+    res = client.post(f"/candidates/{cid}/promote", json={})
+    assert res.status_code == 200
+    assert res.json()["state"] == "active"
+
+
+def test_reject_decays(client):
+    cid = _create(client)["id"]
+    res = client.post(f"/candidates/{cid}/reject", json={"reason": "noise"})
+    assert res.status_code == 200
+    assert res.json()["state"] == "decayed"
+
+
+def test_patch_updates_candidate(client):
+    cid = _create(client, title="New lesson")["id"]
+    res = client.patch(f"/candidates/{cid}", json={"title": "New lesson (edited)"})
+    assert res.status_code == 200
+    assert res.json()["title"] == "New lesson (edited)"
+
+
+def test_delete_then_get_is_404(client):
+    cid = _create(client)["id"]
+    assert client.delete(f"/candidates/{cid}").status_code == 200
+    assert client.get(f"/candidates/{cid}").status_code == 404
+
+
+def test_promote_unknown_is_404(client):
+    assert client.post("/candidates/nope/promote", json={}).status_code == 404
+
+
+def test_graph_reflects_active_facts(client):
+    cid = _create(client, content="Prefer dependency injection at boundaries.")["id"]
+    # Proposed facts are not in the active graph.
+    before = client.get("/graph").json()["graph"]
+    assert not any(n["id"] == cid for n in before["nodes"])
+    # Promote -> it becomes an active node.
+    client.post(f"/candidates/{cid}/promote", json={})
+    after = client.get("/graph").json()["graph"]
+    assert any(n["id"] == cid for n in after["nodes"])
+    assert "edges" in after
+
+
+def test_snapshots_save_list_load_delete_round_trip(client):
+    cid = _create(client, content="A fact worth snapshotting in the graph.")["id"]
+    client.post(f"/candidates/{cid}/promote", json={})
+
+    saved = client.post("/snapshots", json={"name": "snap1"})
+    assert saved.status_code == 200
+    assert saved.json()["count"] >= 1
+
+    listed = client.get("/snapshots").json()["snapshots"]
+    assert any(s["name"] == "snap1" for s in listed)
+
+    loaded = client.post("/snapshots/snap1/load")
+    assert loaded.status_code == 200
+    assert loaded.json()["loaded"] >= 1
+
+    deleted = client.delete("/snapshots/snap1")
+    assert deleted.status_code == 200
+    assert not any(s["name"] == "snap1" for s in client.get("/snapshots").json()["snapshots"])
+
+
+def test_load_unknown_snapshot_is_404(client):
+    assert client.post("/snapshots/nope/load").status_code == 404
+
+
+def test_evals_cached_shape(client):
+    body = client.get("/evals/cached").json()
+    assert "cached" in body
+    assert isinstance(body["cached"], list)
+
+
+def test_insight_then_context_round_trips(client):
     res = client.post("/insights", json={"insight": "use uv, not pip, in this repo"})
     assert res.status_code == 200
     assert res.json()["action"] in {"added", "merged", "overwrote"}

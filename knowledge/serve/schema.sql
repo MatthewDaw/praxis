@@ -20,22 +20,6 @@ CREATE EXTENSION IF NOT EXISTS vector;
 -- (org_id, user_id, id). A bare id PK would let one tenant's seed clobber
 -- another's via ON CONFLICT.
 
--- Dashboard candidate store: dashboard JSON shape kept verbatim in `doc`,
--- with id/org_id/user_id/state lifted out for indexing and filtering.
-CREATE TABLE IF NOT EXISTS candidates (
-    id         text NOT NULL,
-    org_id     text NOT NULL DEFAULT 'default',
-    user_id    text NOT NULL DEFAULT 'default',
-    shared     boolean NOT NULL DEFAULT false,
-    state      text NOT NULL DEFAULT 'proposed',
-    doc        jsonb NOT NULL,
-    updated_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (org_id, user_id, id)
-);
-
-CREATE INDEX IF NOT EXISTS candidates_tenant
-    ON candidates (org_id, shared, user_id, state);
-
 -- Knowledge-graph foundation (facts + edges + embeddings).
 CREATE TABLE IF NOT EXISTS facts (
     id                text NOT NULL,
@@ -100,4 +84,54 @@ CREATE TABLE IF NOT EXISTS fact_edges (
         REFERENCES facts (org_id, user_id, id) ON DELETE CASCADE,
     FOREIGN KEY (org_id, user_id, dst_id)
         REFERENCES facts (org_id, user_id, id) ON DELETE CASCADE
+);
+
+-- Graph cache: saved graph states kept strictly separate from the live `facts`
+-- retrieval path so cached data can never leak into MCP get_context. Same column
+-- shape as `facts` plus a `cache_key` that names the saved state:
+--   * 'eval:<case_id>'  -- a distilled eval case (file), cached so re-loads are free
+--   * 'snapshot:<name>' -- a user snapshot of the live graph at a moment in time
+-- Loading a cache entry truncates `facts` and inserts the entry's rows; saving a
+-- snapshot copies `facts` into here. A PostgresVectorGraph pointed at these tables
+-- (with a bound cache_key) reuses all graph code for the eval-distillation path.
+CREATE TABLE IF NOT EXISTS cached_facts (
+    id                text NOT NULL,
+    org_id            text NOT NULL DEFAULT 'default',
+    user_id           text NOT NULL DEFAULT 'default',
+    shared            boolean NOT NULL DEFAULT false,
+    text              text NOT NULL,
+    source            text,
+    confidence        double precision,
+    scope             text,
+    category          text,
+    observation_count integer NOT NULL DEFAULT 1,
+    state             text NOT NULL DEFAULT 'proposed',
+    embedding         vector(1536),
+    meta              jsonb NOT NULL DEFAULT '{}'::jsonb,
+    cache_key         text NOT NULL,
+    created_at        timestamptz NOT NULL DEFAULT now(),
+    -- cache_key is part of the PK so the same fact id can live under multiple
+    -- saved states (e.g. two snapshots) without colliding.
+    PRIMARY KEY (org_id, user_id, cache_key, id)
+);
+
+CREATE INDEX IF NOT EXISTS cached_facts_tenant ON cached_facts (org_id, shared, user_id, scope);
+
+CREATE INDEX IF NOT EXISTS cached_facts_embedding_hnsw
+    ON cached_facts USING hnsw (embedding vector_cosine_ops);
+
+CREATE INDEX IF NOT EXISTS cached_facts_key ON cached_facts (org_id, user_id, cache_key);
+
+CREATE TABLE IF NOT EXISTS cached_fact_edges (
+    org_id text NOT NULL DEFAULT 'default',
+    user_id text NOT NULL DEFAULT 'default',
+    cache_key text NOT NULL,
+    src_id text NOT NULL,
+    dst_id text NOT NULL,
+    kind   text NOT NULL DEFAULT 'contradiction',
+    PRIMARY KEY (org_id, user_id, cache_key, src_id, dst_id, kind),
+    FOREIGN KEY (org_id, user_id, cache_key, src_id)
+        REFERENCES cached_facts (org_id, user_id, cache_key, id) ON DELETE CASCADE,
+    FOREIGN KEY (org_id, user_id, cache_key, dst_id)
+        REFERENCES cached_facts (org_id, user_id, cache_key, id) ON DELETE CASCADE
 );

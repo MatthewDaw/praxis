@@ -12,7 +12,17 @@ from __future__ import annotations
 from typing import Any
 
 from knowledge.knowledge_graph.knowledge_graph_variants.vector_graph import VectorGraph
-from knowledge.serve.store import Candidate, _cid, contradiction_ids
+
+Candidate = dict[str, Any]
+
+
+def _cid(c: Candidate) -> str:
+    return str(c.get("id", ""))
+
+
+def contradiction_ids(c: Candidate) -> list[str]:
+    raw = c.get("contradiction_ids") or c.get("contradictions") or []
+    return [str(x.get("id") if isinstance(x, dict) else x) for x in raw]
 
 
 def _summary(c: Candidate) -> dict[str, Any]:

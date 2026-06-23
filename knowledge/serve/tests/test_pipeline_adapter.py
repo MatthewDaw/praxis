@@ -23,10 +23,27 @@ def test_fact_to_candidate_shapes_contract_fields():
         observation_count=7,
     )
     candidate = fact_to_candidate(fact)
-    assert candidate["id"] == "pipe_abc123"
+    # The candidate id IS the raw fact id now (no pipe_ namespace).
+    assert candidate["id"] == "abc123"
     assert candidate["provenance"] == "logs/session_20260616.jsonl:201"
     assert candidate["confidenceBreakdown"]["frequency"] == 0.7
     assert candidate["auditTrail"][0]["actor"] == "pipeline"
+
+
+def test_fact_to_candidate_honors_meta_title_and_audit_trail():
+    fact = Fact(
+        id="m1",
+        text="some content",
+        created_at="2026-06-23T00:00:00Z",
+        meta={
+            "title": "Custom title",
+            "auditTrail": [{"action": "created", "actor": "human-gate"}],
+        },
+    )
+    candidate = fact_to_candidate(fact)
+    assert candidate["title"] == "Custom title"
+    assert candidate["createdAt"] == "2026-06-23T00:00:00Z"
+    assert candidate["auditTrail"] == [{"action": "created", "actor": "human-gate"}]
 
 
 def test_export_pipeline_candidates_writes_json(tmp_path: Path):
@@ -56,10 +73,9 @@ def test_candidates_from_graph_links_contradictions():
     flagged.flags.append(f"contradiction:{graph.facts[1].id}")
     candidates = candidates_from_graph(graph)
     assert len(candidates) == 2
-    linked = next(c for c in candidates if c["id"] == f"pipe_{flagged.id[:12]}")
-    # The rival must be referenced by its candidate id (pipe_<12>), not the raw
-    # fact id — otherwise the dashboard can't resolve the pair and shows nothing.
-    rival_cid = f"pipe_{graph.facts[1].id[:12]}"
+    linked = next(c for c in candidates if c["id"] == flagged.id)
+    # Rivals are referenced by raw fact id now (candidate id == fact id).
+    rival_cid = graph.facts[1].id
     assert linked["contradiction_ids"] == [rival_cid]
     assert any(c["id"] == rival_cid for c in candidates)
 

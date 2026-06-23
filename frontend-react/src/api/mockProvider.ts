@@ -184,6 +184,22 @@ export function createMockDataProviderWithRows(
     async getTranscript() {
       return null;
     },
+
+    async listSnapshots() {
+      return [];
+    },
+
+    async saveSnapshot() {
+      throw new Error("Snapshots are not supported in mock mode");
+    },
+
+    async loadSnapshot(_name: string, _mode?: "add" | "replace") {
+      throw new Error("Snapshots are not supported in mock mode");
+    },
+
+    async deleteSnapshot() {
+      throw new Error("Snapshots are not supported in mock mode");
+    },
   };
 }
 
@@ -257,6 +273,22 @@ export function createMockDataProvider(): DataProvider {
 
     async getTranscript() {
       return null;
+    },
+
+    async listSnapshots() {
+      return (await load()).listSnapshots();
+    },
+
+    async saveSnapshot(name) {
+      return (await load()).saveSnapshot(name);
+    },
+
+    async loadSnapshot(name, mode) {
+      return (await load()).loadSnapshot(name, mode);
+    },
+
+    async deleteSnapshot(name) {
+      return (await load()).deleteSnapshot(name);
     },
   };
 }

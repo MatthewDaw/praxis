@@ -49,21 +49,21 @@ def _confidence_breakdown(fact: Fact) -> dict[str, Any]:
 def fact_to_candidate(
     fact: Fact,
     *,
-    state: str = "proposed",
+    state: str | None = None,
     rival_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Map a stored ``Fact`` to the dashboard candidate read model."""
+    """Map a stored ``Fact`` to the dashboard candidate read model.
+
+    The candidate id IS the raw fact id — the candidate/contradiction routes now
+    project directly off the facts spine, so there is no separate id namespace to
+    translate. Contradiction rival ids are likewise raw fact ids.
+    """
     provenance = fact.source or f"pipeline/fact:{fact.id}"
-    candidate: dict[str, Any] = {
-        "id": f"pipe_{fact.id[:12]}",
-        "title": _title_from_text(fact.text),
-        "content": fact.text,
-        "state": state,
-        "confidence": round(min(1.0, max(0.0, fact.confidence)), 2),
-        "provenance": provenance,
-        "createdAt": _now(),
-        "confidenceBreakdown": _confidence_breakdown(fact),
-        "auditTrail": [
+    meta = fact.meta or {}
+    if "auditTrail" in meta:
+        audit_trail = meta["auditTrail"]
+    else:
+        audit_trail = [
             {
                 "action": "distilled",
                 "timestamp": _now(),
@@ -76,15 +76,20 @@ def fact_to_candidate(
                 "provenance": provenance,
                 "actor": "pipeline",
             },
-        ],
+        ]
+    candidate: dict[str, Any] = {
+        "id": fact.id,
+        "title": meta.get("title") or _title_from_text(fact.text),
+        "content": fact.text,
+        "state": state if state is not None else fact.state,
+        "confidence": round(min(1.0, max(0.0, fact.confidence)), 2),
+        "provenance": provenance,
+        "createdAt": fact.created_at or _now(),
+        "confidenceBreakdown": _confidence_breakdown(fact),
+        "auditTrail": audit_trail,
     }
     if rival_ids:
-        # Rival ids must be in the SAME namespace as candidate ids (``pipe_<12>``),
-        # not raw fact ids — the dashboard resolves a contradiction's rival by
-        # matching this against another candidate's ``id``. Emitting the raw fact id
-        # here leaves every rival unresolvable, so the Contradictions tab shows
-        # nothing even when links exist.
-        candidate["contradiction_ids"] = sorted({f"pipe_{rid[:12]}" for rid in rival_ids})
+        candidate["contradiction_ids"] = sorted(set(rival_ids))
     if fact.category:
         candidate["category"] = fact.category
     if fact.scope:

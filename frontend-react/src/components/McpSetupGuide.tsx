@@ -75,10 +75,20 @@ export function McpSetupGuide() {
             <code>COGNITO_REGION</code> in <code>.env</code> (already present).
           </li>
           <li>
+            <strong>A Postgres DSN</strong> (<code>PRAXIS_DB_URL</code>, or a resolvable
+            AWS secret) — <code>praxis_get_context</code> and{" "}
+            <code>praxis_add_insight</code> require it. Without a DSN the backend starts
+            in JSON/offline mode and both tools return{" "}
+            <code>503 "requires a database"</code>. Confirm with{" "}
+            <code>GET /health</code> showing <code>"store":"postgres"</code>.
+          </li>
+          <li>
             <code>PRAXIS_API_BASE_URL</code> — the backend the tools call. Use{" "}
             <code>http://localhost:8000</code> for local dev (run the backend with{" "}
             <code>uv run python -m knowledge.serve</code>), or the deployed App Runner
-            URL. Tenant is derived from your login, <em>not</em> this var.
+            URL <em>once it has the <code>/insights</code> + <code>/context</code>{" "}
+            endpoints deployed</em>. Tenant is derived from your login, <em>not</em> this
+            var.
           </li>
         </ul>
         <CommandBlock command="uv sync" label="Install dependencies (repo root)" />
@@ -181,16 +191,20 @@ export function McpSetupGuide() {
               </td>
               <td>
                 Pull the active facts most similar to <code>query</code> into the session
-                (an empty query returns recent facts).
+                (an empty query returns recent facts). <code>top_k</code> is advisory —
+                the returned context is similarity-ranked and token-bounded server-side.
               </td>
             </tr>
             <tr>
               <td>
-                <code>praxis_add_insight(insight, scope?, category?, source?)</code>
+                <code>praxis_add_insight(insight)</code>
               </td>
               <td>
                 Store a single fully-approved fact (confidence 1.0). Re-adds merge;
-                conflicts force-overwrite the nearest contradicting fact.
+                conflicts force-overwrite the nearest contradicting fact. (The optional{" "}
+                <code>scope</code> / <code>category</code> / <code>source</code> args are
+                accepted but not yet honored by the backend — scope and category are
+                derived during ingestion.)
               </td>
             </tr>
           </tbody>
@@ -203,7 +217,7 @@ export function McpSetupGuide() {
           In a Claude session (ask Claude to log you in first), add a fact and read it
           back:
         </p>
-        <CommandBlock command={'praxis_add_insight("use uv, not pip, in this repo", scope="global", category="constraint")'} />
+        <CommandBlock command={'praxis_add_insight("use uv, not pip, in this repo")'} />
         <CommandBlock command={'praxis_get_context("how do I install deps in this repo?")'} />
       </div>
     </section>

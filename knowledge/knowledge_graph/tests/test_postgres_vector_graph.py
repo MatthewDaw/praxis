@@ -95,6 +95,24 @@ def test_contradiction_overwrites_in_place(unique_org):
     assert row[1] == 1.0
 
 
+def test_active_facts_is_the_retrieval_graph(unique_org):
+    conn = db.connect()
+    graph, ingestor, reader = _trio(conn, unique_org, "u1")
+    ingestor.ingest("use uv, not pip, in this repo", state="active")
+    # Only "active" facts are "in the graph"; a staged (proposed) row must not show.
+    # Inserted raw so the overwrite-happy test stub can't fold it into the active one.
+    conn.execute(
+        "INSERT INTO facts (id, org_id, user_id, text, state) VALUES (%s, %s, %s, %s, 'proposed')",
+        ("staged1", unique_org, "u1", "staged note awaiting review"),
+    )
+
+    facts = graph.active_facts()
+    assert [f.text for f in facts] == ["use uv, not pip, in this repo"]
+    assert all(f.state == "active" for f in facts)
+    # No edges are written yet, so the edge snapshot is empty (but reads cleanly).
+    assert graph.active_edges() == []
+
+
 @pytest.fixture
 def unique_org(request):
     # Unique per test node so reruns and parallel tenants never collide.

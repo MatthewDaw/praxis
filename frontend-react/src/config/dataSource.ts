@@ -19,57 +19,27 @@ export interface DataSourceConfig {
 export const DATA_SOURCE_STORAGE_KEY = "praxis-data-source-v1";
 
 export const PRESET_IDS = {
-  mock: "mock-fixtures",
+  // Retained for App.tsx local-log handling (no longer surfaced in the menu).
   localLogs: "local-claude-logs",
   local: "live-local",
   postgres: "live-postgres-aws",
-  deployed: "live-deployed",
-  custom: "live-custom",
 } as const;
 
 export const DATA_SOURCE_PRESETS: DataSourcePreset[] = [
   {
-    id: PRESET_IDS.mock,
-    label: "Mock fixtures (evals)",
-    mode: "mock",
-    helpText:
-      "Local JSON fixtures synced from frontend/mock_data.py — portfolio-safe demo.",
-  },
-  {
-    id: PRESET_IDS.localLogs,
-    label: "Local Claude logs",
-    mode: "local-logs",
-    helpText:
-      "Upload .jsonl session files in the browser — heuristic candidate preview; optional API distillation when Matthew's ingest endpoint exists.",
-  },
-  {
     id: PRESET_IDS.local,
-    label: "Local API (Matthew)",
+    label: "Local Postgres",
     mode: "live",
     defaultApiBaseUrl: "http://localhost:8000",
     helpText:
-      "knowledge/serve FastAPI on localhost — JSON or Postgres depending on PRAXIS_DB_URL on the API.",
+      "knowledge/serve FastAPI on localhost:8000 — Postgres-backed candidate API.",
   },
   {
     id: PRESET_IDS.postgres,
-    label: "Live API (PostgreSQL on AWS)",
+    label: "Remote Postgres",
     mode: "live",
     helpText:
-      "Matthew's candidate API backed by AWS RDS (praxis_kg). Set PRAXIS_DB_URL on the API — dashboard uses API URL only.",
-  },
-  {
-    id: PRESET_IDS.deployed,
-    label: "Deployed API (Render)",
-    mode: "live",
-    helpText:
-      "Build-time VITE_PRAXIS_API_BASE_URL — praxis-candidate-api on Render; ephemeral JSON unless PRAXIS_DB_URL is set on the API service.",
-  },
-  {
-    id: PRESET_IDS.custom,
-    label: "Custom API URL",
-    mode: "live",
-    helpText:
-      "Any candidate-api-v1 server. API must allow CORS from this origin.",
+      "Remote candidate API from VITE_PRAXIS_POSTGRES_API_BASE_URL (falls back to VITE_PRAXIS_API_BASE_URL, then localhost:8000).",
   },
 ];
 
@@ -105,42 +75,21 @@ export function buildConfigFromPreset(
   presetId: string,
   customApiBaseUrl?: string,
 ): DataSourceConfig {
+  void customApiBaseUrl;
   const preset = getPresetById(presetId);
   if (!preset) {
-    return buildConfigFromPreset(PRESET_IDS.mock);
-  }
-
-  if (preset.mode === "mock") {
-    return {
-      mode: "mock",
-      presetId: preset.id,
-      label: preset.label,
-      apiToken: envApiToken(),
-    };
-  }
-
-  if (preset.mode === "local-logs") {
-    return {
-      mode: "local-logs",
-      presetId: preset.id,
-      label: preset.label,
-      apiToken: envApiToken(),
-    };
+    return buildConfigFromPreset(PRESET_IDS.local);
   }
 
   let apiBaseUrl: string | undefined;
-  if (preset.id === PRESET_IDS.custom) {
-    apiBaseUrl = customApiBaseUrl?.trim();
-  } else if (preset.id === PRESET_IDS.deployed) {
-    apiBaseUrl = envApiBaseUrl();
-  } else if (preset.id === PRESET_IDS.postgres) {
+  if (preset.id === PRESET_IDS.postgres) {
     apiBaseUrl = envPostgresApiBaseUrl() ?? "http://localhost:8000";
   } else {
     apiBaseUrl = preset.defaultApiBaseUrl;
   }
 
   if (!apiBaseUrl) {
-    return buildConfigFromPreset(PRESET_IDS.mock);
+    apiBaseUrl = "http://localhost:8000";
   }
 
   const normalized = apiBaseUrl.replace(/\/$/, "");
@@ -159,11 +108,7 @@ function isValidStoredConfig(value: unknown): value is DataSourceConfig {
     return false;
   }
   const record = value as Record<string, unknown>;
-  return (
-    record.mode === "mock" ||
-    record.mode === "local-logs" ||
-    (record.mode === "live" && typeof record.apiBaseUrl === "string")
-  );
+  return record.mode === "live" && typeof record.apiBaseUrl === "string";
 }
 
 export function resolveInitialConfig(): DataSourceConfig {
@@ -173,22 +118,6 @@ export function resolveInitialConfig(): DataSourceConfig {
       const parsed = JSON.parse(raw) as unknown;
       if (isValidStoredConfig(parsed)) {
         const stored = parsed as DataSourceConfig;
-        if (stored.mode === "mock") {
-          return {
-            mode: "mock",
-            presetId: stored.presetId || PRESET_IDS.mock,
-            label: stored.label || "Mock fixtures (evals)",
-            apiToken: envApiToken(),
-          };
-        }
-        if (stored.mode === "local-logs") {
-          return {
-            mode: "local-logs",
-            presetId: stored.presetId || PRESET_IDS.localLogs,
-            label: stored.label || "Local Claude logs",
-            apiToken: envApiToken(),
-          };
-        }
         const apiBaseUrl = stored.apiBaseUrl!.replace(/\/$/, "");
         return {
           mode: "live",
@@ -207,12 +136,7 @@ export function resolveInitialConfig(): DataSourceConfig {
     return buildConfigFromPreset(PRESET_IDS.postgres);
   }
 
-  const deployedUrl = envApiBaseUrl();
-  if (deployedUrl) {
-    return buildConfigFromPreset(PRESET_IDS.postgres);
-  }
-
-  return buildConfigFromPreset(PRESET_IDS.mock);
+  return buildConfigFromPreset(PRESET_IDS.local);
 }
 
 export function persistConfig(config: DataSourceConfig): void {

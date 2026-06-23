@@ -2947,6 +2947,16 @@ code,
   flex: 1;
   word-break: break-word;
 }
+.eval-runner__cache-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--danger);
+}
+.eval-runner__cache-dot.is-cached {
+  background: var(--success);
+}
 .eval-runner__entry-count {
   background: var(--state-muted-bg);
   color: var(--state-muted-text);
