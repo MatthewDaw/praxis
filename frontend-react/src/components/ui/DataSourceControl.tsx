@@ -13,8 +13,6 @@ interface DataSourceControlProps {
   storeType?: ApiStoreType;
   localSession?: { files: { name: string; lineCount: number }[] } | null;
   onLoad: (presetId: string, customApiBaseUrl?: string) => void;
-  onRegenerate?: (presetId: string) => void;
-  regeneratePending?: boolean;
   onLoadLocalLogs?: (files: LocalLogFileInput[]) => void;
   onClearLocalLogs?: () => void;
 }
@@ -24,13 +22,10 @@ export function DataSourceControl({
   storeType,
   localSession,
   onLoad,
-  onRegenerate,
-  regeneratePending = false,
   onLoadLocalLogs,
   onClearLocalLogs,
 }: DataSourceControlProps) {
   const [presetId, setPresetId] = useState(config.presetId);
-  const [regeneratePreset, setRegeneratePreset] = useState("offline-fake");
   const [customUrl, setCustomUrl] = useState(
     config.presetId === PRESET_IDS.custom ? config.apiBaseUrl ?? "" : "",
   );
@@ -47,7 +42,6 @@ export function DataSourceControl({
   const deployedUrl = getDeployedApiBaseUrl();
   const deployedDisabled = presetId === PRESET_IDS.deployed && !deployedUrl;
   const isLocalLogsPreset = presetId === PRESET_IDS.localLogs;
-  const canRegenerate = config.mode === "live" && Boolean(config.apiBaseUrl) && Boolean(onRegenerate);
   const showJsonFallbackHint =
     config.mode === "live" &&
     storeType === "json" &&
@@ -127,27 +121,6 @@ export function DataSourceControl({
           Load data
         </button>
       </div>
-      {canRegenerate ? (
-        <div className="data-source-control__row data-source-control__regenerate">
-          <select
-            className="data-source-control__select"
-            value={regeneratePreset}
-            onChange={(event) => setRegeneratePreset(event.target.value)}
-            aria-label="Eval regeneration preset"
-          >
-            <option value="offline-fake">Offline fake</option>
-            <option value="openrouter">OpenRouter</option>
-          </select>
-          <button
-            type="button"
-            className="btn secondary data-source-control__load"
-            onClick={() => onRegenerate?.(regeneratePreset)}
-            disabled={regeneratePending}
-          >
-            {regeneratePending ? "Regenerating" : "Regenerate evals"}
-          </button>
-        </div>
-      ) : null}
       {presetId === PRESET_IDS.custom ? (
         <input
           type="url"

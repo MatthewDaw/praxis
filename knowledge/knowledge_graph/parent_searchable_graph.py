@@ -27,5 +27,13 @@ class SearchableGraph(KnowledgeGraph):
         top_k: int = 10,
         filters: dict | None = None,
         scope: str | None = None,
+        state: str | None = "active",
     ) -> list[SearchHit]:
-        """Return the most relevant stored facts for ``query`` (best first)."""
+        """Return the most relevant stored facts for ``query`` (best first).
+
+        ``state`` gates which lifecycle state is retrievable and defaults to
+        ``"active"``: only endorsed facts are surfaced, so ``proposed`` (staged)
+        and ``decayed`` (retired) facts stay out of retrieval. Pass ``state=None``
+        to search across all states — used by the write-policy's dedup/conflict
+        lookup (``most_similar``), which must see pending facts.
+        """

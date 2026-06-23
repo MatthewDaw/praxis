@@ -348,6 +348,43 @@ def create_app(store: Any | None = None) -> FastAPI:
             "eval_results": result.eval_results,
         }
 
+    @app.get("/evals/scopes")
+    def list_eval_scopes(
+        principal: Principal = Depends(current_user),
+    ) -> dict[str, Any]:
+        """List selectable case folders (scopes) and their case counts."""
+        from knowledge.serve.eval_runner import OVERRIDE_FIELDS, VALID_BACKENDS, list_scopes
+
+        return {
+            "scopes": list_scopes(),
+            "backends": list(VALID_BACKENDS),
+            "overrideFields": {k: (list(v) if v else None) for k, v in OVERRIDE_FIELDS.items()},
+        }
+
+    @app.post("/evals/run")
+    def run_eval_scope(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+    ) -> dict[str, Any]:
+        """Run every case under the selected scopes (seed -> agent -> grade)."""
+        from knowledge.serve.eval_runner import run_scopes
+
+        raw_scopes = body.get("scopes")
+        if isinstance(raw_scopes, list):
+            scopes = [str(s) for s in raw_scopes if str(s).strip()]
+        elif body.get("scope"):
+            scopes = [str(body.get("scope"))]
+        else:
+            scopes = None
+        backend = str(body.get("backend") or "openrouter").strip()
+        overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
+        limit = body.get("limit")
+        force = bool(body.get("force"))
+        try:
+            return run_scopes(scopes, backend, overrides, int(limit) if limit else None, force)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     @app.post("/insights")
     def add_insight(
         body: dict[str, Any] = Body(default={}),
@@ -373,9 +410,11 @@ def create_app(store: Any | None = None) -> FastAPI:
             policy=[Redactor(), Deduper(), ConflictOverwriter(llm=OpenRouterLlm())],
         )
         _, ingestor, _ = build_trio(graph=graph, llm=None)
-        before = graph.search(insight, top_k=1)
+        # state=None: detect a merge/overwrite against any prior fact, including a
+        # pending (proposed) one the approved insight supersedes — not just active.
+        before = graph.search(insight, top_k=1, state=None)
         ingestor.ingest(insight, state="active")  # human-gated -> live knowledge
-        after = graph.search(insight, top_k=1)
+        after = graph.search(insight, top_k=1, state=None)
         # Read back the outcome: a stable id with a higher observation_count means
         # a merge/overwrite; a fresh id (or text change) means an add/overwrite.
         prior = before[0].fact if before else None

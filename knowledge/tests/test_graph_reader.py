@@ -47,7 +47,7 @@ class _StubEmbedder(Embedder):
 def _vector_graph_with(*lines):
     graph = VectorGraph(embedder=_StubEmbedder(), policy=[])  # store verbatim, no dedup/redact
     for line in lines:
-        graph.write(line)
+        graph.write(line, state="active")  # only active facts are retrievable
     return graph
 
 
