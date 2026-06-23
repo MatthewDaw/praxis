@@ -48,6 +48,7 @@ BASELINE_PATH = RESULTS_DIR / "baseline.jsonl"
 RUNS_DIR = RESULTS_DIR / "runs"  # verbose per-run transcripts (gitignored)
 EMBED_CACHE_DIR = HERE / "fixtures" / "embeddings"  # committed real-vector caches
 VERDICT_CACHE_DIR = HERE / "fixtures" / "verdicts"  # committed judge-verdict cassettes
+INGEST_CACHE_DIR = HERE / "fixtures" / "ingestion"  # committed ingestion replay cassettes
 
 # Overall verdict threshold for a rubric-only case.
 PASS_THRESHOLD = 0.5
@@ -182,6 +183,13 @@ def harness_capabilities() -> set[str]:
     aspect_dir = VERDICT_CACHE_DIR / "aspect"
     if os.getenv("OPENROUTER_API_KEY") or (aspect_dir.exists() and any(aspect_dir.glob("*.json"))):
         caps.add("tag_verdicts")
+    # Ingestion replay: a committed ingestion cassette replays the distilled text
+    # offline; a live key can record it. Either way an ingest_model case can run
+    # faithfully (rather than mis-running on the passthrough line-split).
+    if os.getenv("OPENROUTER_API_KEY") or (
+        INGEST_CACHE_DIR.exists() and any(INGEST_CACHE_DIR.glob("*.json"))
+    ):
+        caps.add("ingest_replay")
     return caps
 
 
@@ -225,6 +233,11 @@ def case_needs(case: EvalCase) -> set[str]:
     # Tier-B implicit-contradiction cases need an aspect-tag verdict source too.
     if case.tag_model:
         needs.add("tag_verdicts")
+    # Cases that distill via a real ingest model need the ingestion cassette (or a
+    # key) to replay deterministically, else they'd silently mis-run on the
+    # passthrough line-split -> SKIP instead.
+    if case.ingest_model:
+        needs.add("ingest_replay")
     return needs
 
 
@@ -284,15 +297,24 @@ def _ingest_llm_for(case: EvalCase, llm):
     ``ingest_model``, build a real OpenRouter model so ``PromptIngestor.synthesis``
     actually distills (instead of the passthrough line-split). ``PromptIngestor``
     wants a plain ``str -> str`` callable, so adapt ``OpenRouterLlm.complete`` with
-    a one-user-message wrapper. None (no llm, no ingest_model) => passthrough.
+    a one-user-message wrapper, then wrap that in an ``IngestionCassette`` so the
+    distilled text replays from the committed fixture offline (parallel to
+    ``_eval_embedder``'s ``cached`` branch). None (no llm, no ingest_model) => passthrough.
     """
     if llm is not None or not case.ingest_model:
         return llm
-    from knowledge.llm.llm_def import ChatMessage
-    from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
+    from knowledge.llm.ingestion_cassette import IngestionCassette
 
-    model = OpenRouterLlm(model=case.ingest_model)
-    return lambda prompt: model.complete([ChatMessage(role="user", content=prompt)])
+    has_key = bool(os.getenv("OPENROUTER_API_KEY"))
+    inner = None
+    if has_key:
+        from knowledge.llm.llm_def import ChatMessage
+        from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
+
+        model = OpenRouterLlm(model=case.ingest_model)
+        inner = lambda prompt: model.complete([ChatMessage(role="user", content=prompt)])
+    cache = INGEST_CACHE_DIR / f"{_slug(case.ingest_model)}.json"
+    return IngestionCassette(cache, model_id=case.ingest_model, inner=inner, allow_compute=has_key)
 
 
 def _merge_judge_for(case: EvalCase):
