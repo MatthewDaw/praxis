@@ -116,7 +116,7 @@ class VectorGraph(SearchableGraph):
         self,
         query: str,
         *,
-        top_k: int = 10,
+        top_k: int | None = 10,
         filters: dict | None = None,
         scope: str | None = None,
         state: str | None = "active",

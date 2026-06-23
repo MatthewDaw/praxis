@@ -18,6 +18,6 @@ class ReadRequest(BaseModel):
     """
 
     query: str = ""
-    top_k: int = 10  # max results to retrieve for this request
+    top_k: int | None = 10  # max results to retrieve; None => unbounded (no cap)
     filters: dict = Field(default_factory=dict)  # e.g. {"category": "constraint"}
     scope: str | None = None  # restrict to a scope (service / directory / global)
