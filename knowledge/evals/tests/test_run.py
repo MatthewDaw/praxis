@@ -262,6 +262,7 @@ def test_real_embedding_cases_skip_without_cache_or_key(monkeypatch, tmp_path):
 
     monkeypatch.setattr(run_mod, "EMBED_CACHE_DIR", tmp_path)  # empty -> no committed fixture
     monkeypatch.setattr(run_mod, "VERDICT_CACHE_DIR", tmp_path)  # empty -> no merge cassette
+    monkeypatch.setattr(run_mod, "INGEST_CACHE_DIR", tmp_path)  # empty -> no ingestion cassette
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_EMBED_MODEL", raising=False)
 
@@ -292,13 +293,52 @@ def test_key_provides_both_embedding_capabilities(monkeypatch, tmp_path):
 
     monkeypatch.setattr(run_mod, "EMBED_CACHE_DIR", tmp_path)
     monkeypatch.setattr(run_mod, "VERDICT_CACHE_DIR", tmp_path)  # isolate; the key still provides merge/conflict verdicts
+    monkeypatch.setattr(run_mod, "INGEST_CACHE_DIR", tmp_path)  # isolate; the key still provides ingest_replay
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     assert run_mod.harness_capabilities() == {
         "real_embeddings",
         "live_embeddings",
         "merge_verdicts",
         "conflict_verdicts",
+        "tag_verdicts",
+        "ingest_replay",
     }
+
+
+def test_ingest_model_axis_auto_derives_ingest_replay():
+    # A case that distills via a real ingest model needs the ingestion cassette
+    # (or a key) to replay deterministically -> derive ingest_replay so it SKIPs
+    # (not mis-runs on the passthrough line-split) where neither is available.
+    assert "ingest_replay" in case_needs(_case(ingest_model="openai/gpt-4o-mini"))
+    assert "ingest_replay" not in case_needs(_case())  # no ingest_model -> nothing extra
+
+
+def test_ingest_model_cases_skip_without_cassette_or_key(monkeypatch, tmp_path):
+    import knowledge.evals.run as run_mod
+
+    monkeypatch.setattr(run_mod, "EMBED_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(run_mod, "VERDICT_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(run_mod, "INGEST_CACHE_DIR", tmp_path)  # empty -> no committed cassette
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    assert "ingest_replay" not in run_mod.harness_capabilities()
+    case = _case(ingest_model="openai/gpt-4o-mini")
+    assert unmet_needs(case, FakeRunner()) == {"ingest_replay"}
+    runnable, skipped = partition_by_capability([case], FakeRunner())
+    assert runnable == [] and len(skipped) == 1
+
+
+def test_committed_ingestion_cassette_provides_ingest_replay(monkeypatch, tmp_path):
+    import knowledge.evals.run as run_mod
+
+    monkeypatch.setattr(run_mod, "EMBED_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(run_mod, "VERDICT_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(run_mod, "INGEST_CACHE_DIR", tmp_path)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    (tmp_path / "openai_gpt-4o-mini.json").write_text("{}", encoding="utf-8")  # cassette present
+
+    assert "ingest_replay" in run_mod.harness_capabilities()
+    assert unmet_needs(_case(ingest_model="openai/gpt-4o-mini"), FakeRunner()) == set()
 
 
 def test_eval_embedder_resolves_per_axis(monkeypatch, tmp_path):

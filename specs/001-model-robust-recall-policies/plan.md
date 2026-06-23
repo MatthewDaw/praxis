@@ -34,7 +34,7 @@ Technical approach reuses existing praxis patterns verbatim: the LLM-in-write-po
 
 **Scale/Scope**: ~90 eval cases; write path is per-insight (many per ingest). Numeric defaults calibrated against the committed `text-embedding-3-small` cache.
 
-**Dependency / sequencing note**: FR-030/SC-013 (application-suite validation) require **deterministic ingestion**, tracked separately in [`docs/proposals/2026-06-22-deterministic-ingestion-cassette.md`](../../docs/proposals/2026-06-22-deterministic-ingestion-cassette.md). That cassette is a **prerequisite** for relying on the application suite as a measurement instrument but is **out of scope** for this plan. The component-level cases (reader-isolation, dedup, conflict) are deterministic today via seeded text + committed cassettes and are the primary verification surface here.
+**Dependency / sequencing note**: FR-030/SC-013 (application-suite validation) require **deterministic ingestion**, tracked separately in [`docs/proposals/completed/2026-06-22-deterministic-ingestion-cassette.md`](../../docs/proposals/completed/2026-06-22-deterministic-ingestion-cassette.md). That cassette is a **prerequisite** for relying on the application suite as a measurement instrument but is **out of scope** for this plan. The component-level cases (reader-isolation, dedup, conflict) are deterministic today via seeded text + committed cassettes and are the primary verification surface here.
 
 ## Constitution Check
 

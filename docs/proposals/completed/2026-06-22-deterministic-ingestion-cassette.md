@@ -1,7 +1,7 @@
 # Proposal: deterministic ingestion via a replay cassette (and a unified keyed-replay surface)
 
 **Owner:** Dominic Antonelli — eval harness / knowledge graph
-**Status:** Proposed
+**Status:** Implemented — see [`specs/002-deterministic-ingestion-cassette/`](../../../specs/002-deterministic-ingestion-cassette/spec.md) (`IngestionCassette` + the `ingest_replay` gate + the `ingestion_cache --refresh` regenerator). The **unified keyed-replay surface** sketched in §5 remains deferred, and only the **first** of the two `model-robust-recall-policies` FR-030/SC-013 prerequisites lands here — the second, active-fact retrievability (`ingest_state: active`), is the explicit next follow-up.
 **Date:** 2026-06-22
 **Scope:** the eval `ingest_model` path (`PromptIngestor`'s injected LLM), a committed ingestion cassette, the application eval suite's embedder axis, and the relationship to the existing embedding cache + the proposed merge/conflict verdict cassettes
 **Relates to:** [`2026-06-22-semantic-dedup-recall-gate-llm-judge.md`](2026-06-22-semantic-dedup-recall-gate-llm-judge.md) and [`2026-06-22-unified-dedup-conflict-recall.md`](2026-06-22-unified-dedup-conflict-recall.md) (which add merge/conflict verdict cassettes), and the `model-robust-recall-policies` spec (FR-015/SC-007, FR-030/SC-013)

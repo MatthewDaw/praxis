@@ -118,11 +118,11 @@ Single Python package at repo root: `knowledge/...`. Tests live in per-package `
 
 ### Implementation for User Story 3 — Tier B (gated experiment)
 
-- [ ] T036 [US3] Implement `AspectTagger` in `knowledge/knowledge_graph/write_policy/write_step_variants/aspect_tagger.py`: write-time controlled-vocab tags on `Fact.tags`; seed/normalize step to limit fragmentation
-- [ ] T037 [US3] Union `same-tag` candidates into the **conflict** recall path only, bounded (cap same-tag candidates per write) in `vector_graph.py`/`conflict_flagger.py`
-- [ ] T038 [P] [US3] Build the implicit-contradiction eval set (the 0.454 pair + ~5–10 disjoint-vocab/no-negation-cue siblings) under `knowledge/evals/cases/` (marked provisional)
-- [ ] T039 [US3] Report the Tier-B gate metrics (tag co-assignment recall + end-to-end flag rate) and **surface them to the feature owner for an explicit keep/kill decision** (no pre-pinned threshold, per FR-022); record the decision in the spec/research
-- [ ] T040 [US3] Gate outcome — **kill**: leave implicit cases as documented XFAIL (honest, no per-case-tuned pass) and drop the tag key; **keep**: promote the implicit cases to PASS
+- [X] T036 [US3] `AspectTagger` + `AspectJudge` in `aspect_tagger.py` (controlled `ASPECT_VOCAB`, structured `{tags}`, cassette-replayed, graceful skip); `Fact.tags` field. Write-time tags on the incoming note.
+- [X] T037 [US3] Union `same-tag` candidates into the **conflict** recall path only, bounded by `tag_recall_k` (`vector_graph._recall` builds `decision.tag_candidates`; `conflict_flagger` unions cosine ∪ same-tag, deduped — the Deduper still sees cosine only).
+- [X] T038 [P] [US3] Built the implicit-contradiction eval set (`implicit_conflict_*`, 8 disjoint-vocab/no-negation pairs, all below the 0.45 floor) + `tag_model` axis / `_aspect_tagger_for` / `tag_verdicts` capability wiring; committed aspect+conflict cassettes + embeddings.
+- [X] T039 [US3] `tier_b_metrics.py` reports co-assignment + end-to-end flag + cosine-only baseline + rescued-by-tags; strengthened the set to genuine below-floor pairs (first set skewed above-floor); surfaced to owner. Decision recorded in spec SC-010 + research R8.
+- [X] T040 [US3] Gate outcome — **KEEP** (owner, 2026-06-23): promoted the 7 rescued cases to PASS, kept `documentation_policy` as a documented XFAIL residual (FR-023); tag mechanism kept opt-in (not in production `default_write_policy`).
 
 **Checkpoint**: US3 Tier A hardens + unifies the write path; Tier B is measured and decided; Tier C (batch backstop) remains documented-only per spec FR-023.
 
@@ -130,9 +130,9 @@ Single Python package at repo root: `knowledge/...`. Tests live in per-package `
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T041 [P] Run `quickstart.md` validation: offline `--structured` run confirms the expected flips (dedup XFAIL→PASS, reader cluster reconciled) with zero live calls
-- [ ] T042 [P] Update `docs/CHANGELOG`/proposals status (mark the three source proposals implemented; cross-link the cassette follow-on)
-- [ ] T043 Verify full-suite offline determinism: cassettes committed, stale fixture surfaces a loud miss, no live calls in CI
+- [X] T041 [P] Ran `quickstart.md` validation offline (`--fake`; the doc's `--structured` is a live backend, so `--fake` is the truly-offline runner for the deterministic component flips): dedup XFAIL→PASS, reader cluster reconciled (`lost_in_middle_reader` PASS, `reader_returns_all_before`/`scattered_multifact_near` XFAIL), conflict PASS, implicit 7 PASS + 1 XFAIL — zero live calls. Mechanism-isolation pytest subsets (graph_reader/knowledge_graph/llm) green.
+- [X] T042 [P] Marked the three source proposals Implemented (`reader-cutoff-policy`, `semantic-dedup-recall-gate-llm-judge`, `unified-dedup-conflict-recall`) with the spec/Tier cross-references; cross-linked the deterministic-ingestion cassette follow-on. (De-linked a few pre-existing rotted/bot-blocked external citations the link-checker flagged.)
+- [X] T043 Verified full-suite offline determinism: committed cassettes (merge/conflict/aspect) + embeddings replay with zero live calls (`OPENROUTER_API_KEY=`); stale/uncached fixture surfaces a loud `RuntimeError` (covered by `test_verdict_cassette` + conflict/aspect loud-miss tests).
 - [ ] T044 Follow-on (separate spec, NOT this feature): deterministic-ingestion cassette is required before relying on the application suite for FR-030/SC-013 — link `docs/proposals/2026-06-22-deterministic-ingestion-cassette.md`
 
 ---

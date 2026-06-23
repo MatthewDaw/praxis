@@ -135,8 +135,10 @@ class EvalCase(BaseModel):
     reader_abs_floor: float | None = None  # override RetrievingReader.abs_floor (existence floor); 0 disables it (isolation). None => default
     reader_rel_ratio: float | None = None  # override RetrievingReader.rel_ratio (keep within X% of top); 0 disables it (isolation). None => default
     ingest_model: str | None = None  # OpenRouter chat model for ingestion distillation (PromptIngestor's LLM); None => passthrough line-split. Needs OPENROUTER_API_KEY
+    ingest_state: Literal["proposed", "active"] = "proposed"  # lifecycle state for via_ingestor facts (mirrors write_policy SeedState). "proposed" (default) = staged, gated out of retrieval; "active" = endorsed/retrievable (e.g. an applicant's established background)
     merge_model: str | None = None  # OpenRouter chat model for the dedup MergeJudge; None => exact-dedup only. Replayed from a committed merge verdict cassette (or a live key)
     conflict_model: str | None = None  # OpenRouter chat model for the ConflictFlagger's ConflictJudge; None => no conflict flagging. Replayed from a committed conflict verdict cassette (or a live key)
+    tag_model: str | None = None  # Tier-B (gated): OpenRouter chat model for the AspectTagger's AspectJudge; None => no aspect tags. Replayed from a committed aspect verdict cassette (or a live key)
     seeded_insight: SeededInsight = Field(default_factory=SeededInsight)
     deterministic_checks: list[DeterministicCheckRef] = Field(default_factory=list)
     rubric: Rubric | None = None

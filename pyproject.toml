@@ -34,6 +34,10 @@ dev = [
     "httpx>=0.28.1",
     "pytest>=9.1.0",
     "opentelemetry-sdk>=1.20",
+    # Pair the exporter with the SDK so the default dev env can actually export
+    # traces when PHOENIX_COLLECTOR_ENDPOINT is set; the SDK alone can't. Tracing
+    # stays gated on that env var, so installing this never turns tracing on by itself.
+    "opentelemetry-exporter-otlp-proto-http>=1.20",
 ]
 
 [tool.pytest.ini_options]

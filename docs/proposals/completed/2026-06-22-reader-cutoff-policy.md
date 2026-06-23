@@ -1,7 +1,7 @@
 # Proposal: `RetrievingReader` cutoff policy (top-k + relative cutoff + absolute floor)
 
 **Owner:** Dominic Antonelli — eval harness / retrieval
-**Status:** Proposed
+**Status:** Implemented — `specs/001-model-robust-recall-policies` US1 (floor→relative→cap; defaults `abs_floor=0.30` / `rel_ratio=0.60` / `top_k=8`, calibrated against the committed `text-embedding-3-small` cache). Reader cluster reconciled & green offline.
 **Date:** 2026-06-22
 **Scope:** `knowledge/graph_reader` (`RetrievingReader`), and the reader-dependent eval cases it settles
 **Builds on:** [2026-06-21-retrieving-reader-semantic-retrieval.md](2026-06-21-retrieving-reader-semantic-retrieval.md) (implemented)
@@ -178,7 +178,7 @@ bugs are still caught.
 - **Absolute thresholds are widely considered brittle** and need careful per-corpus
   tuning, motivating dynamic approaches
   ([RAG score thresholds](https://nickberens.me/blog/understanding-rag-score-thresholds/),
-  [similarity-with-threshold](https://meisinlee.medium.com/better-rag-retrieval-similarity-with-threshold-a6dbb535ef9e)).
+  and "better RAG retrieval similarity with threshold", Mei-Sin Lee, Medium — link since rotted).
 - **Quantity-based adaptive lowering** — relax the threshold in steps until *N* results
   return ("never come up empty"); a different axis we could layer on later if empties
   become a problem
@@ -186,7 +186,7 @@ bugs are still caught.
 - **Sign-convention gotcha:** LangChain's `score_threshold` is cosine **distance**, not
   similarity — don't copy a threshold value from those examples. Our
   `VectorGraph.search` returns similarity (higher = better)
-  ([LangChain discussion](https://github.com/langchain-ai/langchain/discussions/19227)).
+  (LangChain discussion #19227 — link since rotted).
 
 "Keep within X% of the top" ≡ max-normalize the scores then threshold at X — a standard
 normalized-thresholding framing.

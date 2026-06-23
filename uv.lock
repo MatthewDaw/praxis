@@ -756,6 +756,7 @@ observability = [
 [package.dev-dependencies]
 dev = [
     { name = "httpx" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
     { name = "pytest" },
 ]
@@ -784,6 +785,7 @@ provides-extras = ["observability"]
 [package.metadata.requires-dev]
 dev = [
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.20" },
     { name = "opentelemetry-sdk", specifier = ">=1.20" },
     { name = "pytest", specifier = ">=9.1.0" },
 ]

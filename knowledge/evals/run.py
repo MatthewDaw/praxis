@@ -48,6 +48,7 @@ BASELINE_PATH = RESULTS_DIR / "baseline.jsonl"
 RUNS_DIR = RESULTS_DIR / "runs"  # verbose per-run transcripts (gitignored)
 EMBED_CACHE_DIR = HERE / "fixtures" / "embeddings"  # committed real-vector caches
 VERDICT_CACHE_DIR = HERE / "fixtures" / "verdicts"  # committed judge-verdict cassettes
+INGEST_CACHE_DIR = HERE / "fixtures" / "ingestion"  # committed ingestion replay cassettes
 
 # Overall verdict threshold for a rubric-only case.
 PASS_THRESHOLD = 0.5
@@ -177,6 +178,18 @@ def harness_capabilities() -> set[str]:
     conflict_dir = VERDICT_CACHE_DIR / "conflict"
     if os.getenv("OPENROUTER_API_KEY") or (conflict_dir.exists() and any(conflict_dir.glob("*.json"))):
         caps.add("conflict_verdicts")
+    # Tier-B aspect-tag verdicts: same shape — committed aspect cassette replays
+    # offline; a live key can compute them.
+    aspect_dir = VERDICT_CACHE_DIR / "aspect"
+    if os.getenv("OPENROUTER_API_KEY") or (aspect_dir.exists() and any(aspect_dir.glob("*.json"))):
+        caps.add("tag_verdicts")
+    # Ingestion replay: a committed ingestion cassette replays the distilled text
+    # offline; a live key can record it. Either way an ingest_model case can run
+    # faithfully (rather than mis-running on the passthrough line-split).
+    if os.getenv("OPENROUTER_API_KEY") or (
+        INGEST_CACHE_DIR.exists() and any(INGEST_CACHE_DIR.glob("*.json"))
+    ):
+        caps.add("ingest_replay")
     return caps
 
 
@@ -217,6 +230,14 @@ def case_needs(case: EvalCase) -> set[str]:
     # else the ConflictFlagger can't decide and the case mis-grades -> SKIP instead.
     if case.conflict_model:
         needs.add("conflict_verdicts")
+    # Tier-B implicit-contradiction cases need an aspect-tag verdict source too.
+    if case.tag_model:
+        needs.add("tag_verdicts")
+    # Cases that distill via a real ingest model need the ingestion cassette (or a
+    # key) to replay deterministically, else they'd silently mis-run on the
+    # passthrough line-split -> SKIP instead.
+    if case.ingest_model:
+        needs.add("ingest_replay")
     return needs
 
 
@@ -276,15 +297,24 @@ def _ingest_llm_for(case: EvalCase, llm):
     ``ingest_model``, build a real OpenRouter model so ``PromptIngestor.synthesis``
     actually distills (instead of the passthrough line-split). ``PromptIngestor``
     wants a plain ``str -> str`` callable, so adapt ``OpenRouterLlm.complete`` with
-    a one-user-message wrapper. None (no llm, no ingest_model) => passthrough.
+    a one-user-message wrapper, then wrap that in an ``IngestionCassette`` so the
+    distilled text replays from the committed fixture offline (parallel to
+    ``_eval_embedder``'s ``cached`` branch). None (no llm, no ingest_model) => passthrough.
     """
     if llm is not None or not case.ingest_model:
         return llm
-    from knowledge.llm.llm_def import ChatMessage
-    from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
+    from knowledge.llm.ingestion_cassette import IngestionCassette
 
-    model = OpenRouterLlm(model=case.ingest_model)
-    return lambda prompt: model.complete([ChatMessage(role="user", content=prompt)])
+    has_key = bool(os.getenv("OPENROUTER_API_KEY"))
+    inner = None
+    if has_key:
+        from knowledge.llm.llm_def import ChatMessage
+        from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
+
+        model = OpenRouterLlm(model=case.ingest_model)
+        inner = lambda prompt: model.complete([ChatMessage(role="user", content=prompt)])
+    cache = INGEST_CACHE_DIR / f"{_slug(case.ingest_model)}.json"
+    return IngestionCassette(cache, model_id=case.ingest_model, inner=inner, allow_compute=has_key)
 
 
 def _merge_judge_for(case: EvalCase):
@@ -339,15 +369,45 @@ def _conflict_judge_for(case: EvalCase):
     return ConflictJudge(llm=llm, cassette=cassette)
 
 
+def _aspect_tagger_for(case: EvalCase):
+    """Build the Tier-B ``AspectTagger`` for a case's ``tag_model`` axis (None => none).
+
+    Mirrors ``_conflict_judge_for``: a live OpenRouter judge when a key is set, plus
+    a committed aspect verdict cassette for offline replay. With neither, returns
+    None so no tagger is wired (the case SKIPs via ``tag_verdicts``).
+    """
+    if not case.tag_model:
+        return None
+    from knowledge.knowledge_graph.write_policy.write_step_variants import (
+        AspectJudge,
+        AspectTagger,
+    )
+    from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
+    from knowledge.llm.verdict_cassette import VerdictCassette
+
+    has_key = bool(os.getenv("OPENROUTER_API_KEY"))
+    llm = OpenRouterLlm(model=case.tag_model) if has_key else None
+    cache = VERDICT_CACHE_DIR / "aspect" / f"{_slug(case.tag_model)}.json"
+    cassette = (
+        VerdictCassette(cache, model_id=case.tag_model, allow_compute=has_key)
+        if (cache.exists() or has_key)
+        else None
+    )
+    if llm is None and cassette is None:
+        return None
+    return AspectTagger(judge=AspectJudge(llm=llm, cassette=cassette))
+
+
 def _build_trio_for(case: EvalCase, llm=None):
-    """Wire the trio honoring reader/embedder/ingest_model/merge_model/conflict_model axes."""
+    """Wire the trio honoring reader/embedder/ingest_model/merge/conflict/tag axes."""
     llm = _ingest_llm_for(case, llm)
     embedder = _eval_embedder(case)
     graph = None
     if case.substrate == "vector" and case.embedder != "fake":
-        # Real-embedder cases seed with redact + dedup, plus the ConflictFlagger only
-        # when the case opts into a conflict_model (its cassette replays offline);
-        # otherwise the per-write conflict LLM call is dropped so seeding stays cheap.
+        # Real-embedder cases seed with redact + dedup; the Tier-B AspectTagger
+        # (before dedup, so tags are assigned ahead of recall) and the ConflictFlagger
+        # are added only when the case opts into tag_model / conflict_model (their
+        # cassettes replay offline), so seeding stays cheap by default.
         from knowledge.knowledge_graph.knowledge_graph_variants.vector_graph import VectorGraph
         from knowledge.knowledge_graph.write_policy.write_step_variants import (
             ConflictFlagger,
@@ -355,7 +415,11 @@ def _build_trio_for(case: EvalCase, llm=None):
             Redactor,
         )
 
-        policy = [Redactor(), Deduper(judge=_merge_judge_for(case))]
+        policy = [Redactor()]
+        aspect_tagger = _aspect_tagger_for(case)
+        if aspect_tagger is not None:
+            policy.append(aspect_tagger)
+        policy.append(Deduper(judge=_merge_judge_for(case)))
         conflict_judge = _conflict_judge_for(case)
         if conflict_judge is not None:
             policy.append(ConflictFlagger(judge=conflict_judge))
@@ -399,6 +463,9 @@ def _seed_signature(case: EvalCase) -> str:
         "substrate": case.substrate,
         "embedder": case.embedder,
         "ingest_model": case.ingest_model,
+        # Seed state changes what's retrievable, so two cases differing only in
+        # ingest_state must not share a cached seeded reader.
+        "ingest_state": case.ingest_state,
         "reader": case.reader,
         "reader_top_k": case.reader_top_k,
         "reader_abs_floor": case.reader_abs_floor,
@@ -407,6 +474,7 @@ def _seed_signature(case: EvalCase) -> str:
         # so two cases differing only in a judge model must not share a cached seed.
         "merge_model": case.merge_model,
         "conflict_model": case.conflict_model,
+        "tag_model": case.tag_model,
         "via_ingestor": list(case.seeded_insight.via_ingestor),
         "direct_to_graph": list(case.seeded_insight.direct_to_graph),
     }
@@ -427,11 +495,14 @@ def _seed_knowledge(case: EvalCase, llm=None):
     graph, ingestor, reader = _build_trio_for(case, llm=llm)
     # Channel encodes the write intent -> the state the fact lands in:
     #   * direct_to_graph -> "active": simulates a direct user approval.
-    #   * via_ingestor    -> "proposed": the system passively distilling raw input.
+    #   * via_ingestor    -> case.ingest_state ("proposed" default): the system
+    #     passively distilling raw input. A case whose seeded docs are established
+    #     background (e.g. matt/applications) sets ingest_state: active so the
+    #     distilled facts are retrievable rather than staged out of the reader.
     for text in case.seeded_insight.direct_to_graph:
         graph.write(text, state="active")
     for text in case.seeded_insight.via_ingestor:
-        ingestor.ingest(text, state="proposed")
+        ingestor.ingest(text, state=case.ingest_state)
 
     if _SEED_CACHE_ENABLED:
         _SEED_CACHE[sig] = reader

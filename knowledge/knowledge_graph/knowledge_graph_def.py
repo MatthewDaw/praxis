@@ -42,6 +42,9 @@ class Fact(BaseModel):
     # Free-form per-fact metadata (e.g. dashboard auditTrail), persisted in the
     # ``facts.meta`` jsonb column.
     meta: dict[str, Any] = Field(default_factory=dict)
+    # Controlled-vocabulary aspect labels assigned at write time (Tier-B gated
+    # experiment): a second, non-similarity recall key for the conflict path.
+    tags: list[str] = Field(default_factory=list)
 
 
 class SearchHit(BaseModel):

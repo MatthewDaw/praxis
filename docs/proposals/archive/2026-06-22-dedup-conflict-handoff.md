@@ -2,8 +2,8 @@
 
 > **Status: FOLDED IN — closed 2026-06-22.** The open agenda (§4) and findings here have been
 > carried into two proposals:
-> [dedup recall-gate + merge-judge](../2026-06-22-semantic-dedup-recall-gate-llm-judge.md) and
-> [unified dedup + contradiction recall](../2026-06-22-unified-dedup-conflict-recall.md).
+> [dedup recall-gate + merge-judge](../completed/2026-06-22-semantic-dedup-recall-gate-llm-judge.md) and
+> [unified dedup + contradiction recall](../completed/2026-06-22-unified-dedup-conflict-recall.md).
 > Archived; retained only as the canonical home for the §1 cosine measurement table.
 
 **Purpose:** carry the dedup/contradiction discussion into a fresh chat with clean

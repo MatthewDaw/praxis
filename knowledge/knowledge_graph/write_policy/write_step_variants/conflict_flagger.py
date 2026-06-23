@@ -28,7 +28,14 @@ class ConflictFlagger(WriteStep):
     def apply(self, decision: WriteDecision) -> None:
         if self.judge is None or decision.dropped or decision.action == "update":
             return
-        for hit in decision.candidates:
+        # Conflict-path recall = cosine candidates ∪ same-tag candidates (Tier-B,
+        # gated; tag_candidates is empty unless an AspectTagger ran). Dedup by id so
+        # a fact recalled by both keys is judged once.
+        seen: set[str] = set()
+        for hit in [*decision.candidates, *decision.tag_candidates]:
+            if hit.fact.id in seen:
+                continue
+            seen.add(hit.fact.id)
             try:
                 verdict = self.judge.contradicts(decision.text, hit.fact.text)
             except Exception:

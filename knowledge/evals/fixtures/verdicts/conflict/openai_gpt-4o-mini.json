@@ -1,11 +1,53 @@
 {
+"16acf32c6eaa652b62bae27d522168a1d326b5bbdec9747518c6004b8b08a136": {
+"contradicts": true
+},
+"2f10df176c9d044ecd4ad55b9b5d83f266eb329cf26e3bad5564740a645f3d77": {
+"contradicts": true
+},
+"307a9a1df57d0c9aad908b5ac3e65c3c5ddc0d7f59f6b9888c0bbd2134408463": {
+"contradicts": true
+},
+"366b34c73f334a7749bc8a7fc7a5d310d2a025b4fcd88dc7391f80d62ea9672f": {
+"contradicts": true
+},
+"390b0212169f45f6424df58a82e81140ee1eb370c3b105b3390acc84bd18c007": {
+"contradicts": true
+},
+"4fffe916239298e70f60fcfb376f23e24cd10a25aadf6be42c10d71aae55d488": {
+"contradicts": true
+},
+"508c4791a29fc8c99fe353604d144b5c0f66ffd6896a6eb9e4f6563f96cf5f44": {
+"contradicts": true
+},
+"59627e66e1eae0b2ccf655f1561e2f212986cc9144bc7b83cab7af6b01b601fa": {
+"contradicts": true
+},
 "6d7852e660ba207ad22e55111f50ba2da7974a8aafa8473d605ef54f06860e4d": {
+"contradicts": true
+},
+"9e181ee03cb576f96758296d2eaac4634669236d052dcc490b5ca3977bb15d14": {
+"contradicts": true
+},
+"a1e444e1814eb71f3c78f926c3cab507fb09504c17d90521bee02a15c502c2b8": {
+"contradicts": true
+},
+"af00e584c679dc3b825c1cd3cf49a9db40da73239ad5363ef3676694b7645377": {
+"contradicts": true
+},
+"b7bc8ab613ac73a8057f5918a162b597c6e37df2498ace363d96355e1aeadfd8": {
+"contradicts": true
+},
+"be5f64bee40631996e86e5f6abd842c554a5c4c5ed4c50c2e417d32cce7a0223": {
 "contradicts": true
 },
 "cfb729d856a532f85cddb5ebee47d5f0b7471ab0699c04ea442bf21e3eb334df": {
 "contradicts": false
 },
 "da8b3b76660601272c2120554bcfef604b749a53a3828f2e4e0ab0ee2cfab763": {
+"contradicts": true
+},
+"e1de518d0eb543a90b6a05a47afe97f688619aa35f9b95083510d19111073975": {
 "contradicts": true
 }
 }

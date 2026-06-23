@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from knowledge.knowledge_graph.knowledge_graph_variants.vector_graph import VectorGraph
 from knowledge.knowledge_graph.write_policy.write_step_variants import (
+    AspectJudge,
+    AspectTagger,
     ConflictFlagger,
     ConflictJudge,
     Deduper,
@@ -93,3 +95,54 @@ def test_merged_dup_triggers_zero_conflict_checks():
     g.write("run the suite with uv run pytest", state="active")  # paraphrase -> merge
     assert any(f.observation_count == 2 for f in g._facts)  # merged into the survivor
     assert conflict_llm.calls == []  # conflict judge skipped on a merge
+
+
+# --- Tier B (gated): same-tag recall on the conflict path ---------------------
+_PERF_TAG = '{"tags": ["performance-vs-readability"]}'
+_A = "favor raw execution speed above all"
+_B = "keep code readable over micro-optimizations"  # ~0.45 cosine vs _A, disjoint vocab
+
+
+def test_same_tag_recall_surfaces_below_floor_conflict():
+    # Disjoint-vocab pair (FakeEmbedder ~0 cosine, below the default 0.45 floor) but a
+    # shared aspect tag: the conflict path recalls the pair via the tag and flags it,
+    # at the default recall_floor (cosine alone would never surface it).
+    policy = [
+        AspectTagger(judge=AspectJudge(llm=FakeLlm(default=_PERF_TAG))),
+        Deduper(),
+        ConflictFlagger(judge=ConflictJudge(llm=FakeLlm(default='{"contradicts": true}'))),
+    ]
+    g = VectorGraph(policy=policy)  # default recall_floor 0.45
+    g.write(_A, state="active")
+    g.write(_B, state="active")
+    assert len(g._facts) == 2  # not merged
+    assert g._facts[0].tags == ["performance-vs-readability"]  # persisted to Fact.tags
+    pairs = g.contradictions()
+    assert len(pairs) == 1  # surfaced via the shared tag, not cosine
+
+
+def test_without_tags_below_floor_conflict_not_surfaced():
+    # Baseline: same pair, no AspectTagger -> cosine can't surface it, so the
+    # conflict judge is never even consulted. (This is what Tier B is trying to fix.)
+    conflict_llm = FakeLlm(default='{"contradicts": true}')
+    policy = [Deduper(), ConflictFlagger(judge=ConflictJudge(llm=conflict_llm))]
+    g = VectorGraph(policy=policy)  # default recall_floor 0.45
+    g.write(_A, state="active")
+    g.write(_B, state="active")
+    assert g.contradictions() == []
+    assert conflict_llm.calls == []  # below cosine floor, no tag key -> never recalled
+
+
+def test_same_tag_candidates_do_not_reach_the_deduper():
+    # Tag recall is conflict-path only: a merge judge must not be consulted on a
+    # same-tag (below-cosine-floor) candidate, or distinct ideas could over-merge.
+    merge_llm = FakeLlm(default='{"same_lesson": true}')
+    policy = [
+        AspectTagger(judge=AspectJudge(llm=FakeLlm(default=_PERF_TAG))),
+        Deduper(judge=MergeJudge(llm=merge_llm)),
+    ]
+    g = VectorGraph(policy=policy)  # default recall_floor 0.45
+    g.write(_A, state="active")
+    g.write(_B, state="active")
+    assert len(g._facts) == 2  # not merged
+    assert merge_llm.calls == []  # Deduper saw only cosine candidates (none above floor)

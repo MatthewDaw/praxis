@@ -1,0 +1,30 @@
+# Tier-B implicit-contradiction case (FR-021), kept as the HONEST RESIDUAL after
+# the gate (FR-023). Two contradictory documentation preferences phrased with
+# disjoint vocabulary; the pair sits below the cosine floor (cosine ~0.35), so
+# similarity recall can't pair them — and the AspectTagger does NOT co-assign a
+# shared aspect to both sides (one side reads as documentation-policy, the other
+# does not), so the same-tag recall never surfaces the pair either. This is the
+# mechanism's real failure mode: disjoint phrasing can defeat tag co-assignment.
+#
+# XFAIL = documented known limitation (NOT a tuned pass). The owner judged the
+# Tier-B gate cleared overall (7/8 rescued), but this specific pair stays an honest
+# unrecalled case rather than being reworded into a fake pass. See research R8.
+id: implicit_conflict_documentation_policy
+component: knowledge_graph
+substrate: vector
+embedder: cached  # real vectors; the pair sits below the cosine floor by design
+tag_model: openai/gpt-4o-mini  # AspectTagger; replayed from the committed aspect cassette
+conflict_model: openai/gpt-4o-mini  # ConflictJudge; replayed from the committed conflict cassette
+xfail: "honest residual (FR-023): the AspectTagger does not co-assign a shared aspect to this disjoint-phrasing pair, so same-tag recall never surfaces it — a documented unrecalled limitation, not a tuned pass"
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "Capture the reasoning behind each module in a written guide before shipping."
+    - "Lean on expressive naming so the source needs no extra hand-holding."
+
+deterministic_checks:
+  - name: implicit_contradiction_flagged
+    ref: "knowledge.evals.deterministic_checks.text:regex_matches"
+    params:
+      pattern: "(?i)CONTRADICTION"

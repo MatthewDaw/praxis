@@ -19,10 +19,11 @@ Filter to specific cases (substring match against the case id):
 Backends:
 
     --fake        offline FakeRunner (no agent, no credit). The application
-                  cases are full-pipeline sandbox cases, so --fake SKIPS them.
-                  The intent_gating cases are graph_reader *component* cases that
-                  run deterministically with no sandbox, so --fake DOES grade
-                  them (handy for fast iteration on the no-leak checks).
+                  cases are full-pipeline file_io cases needing a text-producing
+                  agent, so --fake SKIPS them. The intent_gating cases are
+                  graph_reader *component* cases that run deterministically with
+                  no agent, so --fake DOES grade them (handy for fast iteration
+                  on the no-leak checks).
     (default)     real Claude Code (subscription): ingest -> agent fills -> grade.
 
 Good breakpoint spots for stepping through one case:
@@ -48,7 +49,7 @@ from knowledge.evals.run import main as run_main
 # keeps this entry point to exactly the suites we want.
 #
 # Two sibling suites run here:
-#   - applications/  — resume-filling cases (full pipeline, need a real sandbox).
+#   - applications/  — resume-filling cases (full pipeline, need a file-producing agent).
 #   - intent_gating/ — distractor / no-leak retrieval cases (graph_reader
 #     component, no sandbox). They are the acceptance test for intent-aware
 #     retrieval, so they belong next to the application evals that motivate them.

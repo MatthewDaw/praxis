@@ -60,6 +60,7 @@ class VectorGraph(SearchableGraph):
         *,
         recall_floor: float = 0.45,
         recall_k: int = 5,
+        tag_recall_k: int = 5,
     ) -> None:
         # Deterministic offline default; inject OpenRouterEmbedder for real runs.
         self.embedder = embedder or FakeEmbedder()
@@ -68,6 +69,8 @@ class VectorGraph(SearchableGraph):
         # per-write candidate pass keeps facts scoring >= recall_floor (top recall_k).
         self.recall_floor = recall_floor
         self.recall_k = recall_k
+        # Tier-B (gated): bound on the same-tag candidates added for the conflict path.
+        self.tag_recall_k = tag_recall_k
         self._facts: list[Fact] = []
 
     # --- KnowledgeGraph contract -------------------------------------------
@@ -113,7 +116,7 @@ class VectorGraph(SearchableGraph):
         self,
         query: str,
         *,
-        top_k: int = 10,
+        top_k: int | None = 10,
         filters: dict | None = None,
         scope: str | None = None,
         state: str | None = "active",
@@ -172,6 +175,18 @@ class VectorGraph(SearchableGraph):
         ]
         hits.sort(key=lambda h: h.score, reverse=True)
         decision.candidates = [h for h in hits if h.score >= self.recall_floor][: self.recall_k]
+        # Tier-B (gated): a second recall key for the conflict path only. Existing
+        # facts that share an aspect tag with the incoming note — even below the
+        # cosine floor — surface as candidates (bounded, best cosine first), unioned
+        # into the conflict judge but never the deduper.
+        if decision.tags:
+            chosen = {h.fact.id for h in decision.candidates}
+            tagset = set(decision.tags)
+            decision.tag_candidates = [
+                h
+                for h in hits
+                if h.fact.id not in chosen and tagset.intersection(h.fact.tags)
+            ][: self.tag_recall_k]
 
     @property
     def facts(self) -> list[Fact]:
@@ -187,6 +202,7 @@ class VectorGraph(SearchableGraph):
                 state=decision.state,
                 embedding=decision.embedding,  # reuse the vector embedded in _recall
                 flags=list(decision.flags),
+                tags=list(decision.tags),
             )
         )
 
@@ -211,5 +227,6 @@ class VectorGraph(SearchableGraph):
                 fact.observation_count += 1
                 fact.confidence = 1.0
                 fact.embedding = decision.embedding  # reuse the vector from _recall
+                fact.tags = list(decision.tags)
             elif fact.id in targets:
                 fact.state = "decayed"

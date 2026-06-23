@@ -65,5 +65,7 @@ uv run python -m knowledge.evals.run $( \
    Select-String '^id:' ).Line -replace 'id:\s*','' )
 ```
 
-These are full-pipeline cases that need a real sandbox + agent, so the offline
-`--fake` backend **skips** them (it can't run the agent or mount a box).
+These are full-pipeline cases that need a file-producing agent (`file_io`), so the
+offline `--fake` backend **skips** them (no agent to write the answer). They grade
+the answer text, mount no fixture, and run no code, so they don't require a full
+`sandbox` — the structured backend can grade them too.
