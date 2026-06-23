@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import type { ViewTab } from "../../types/view";
 
 interface FilterBarProps {
@@ -23,6 +24,21 @@ export function FilterBar({
   onViewTabChange,
   onAddEval,
 }: FilterBarProps) {
+  const [showViewMenu, setShowViewMenu] = useState(false);
+  const viewMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (viewMenuRef.current && !viewMenuRef.current.contains(event.target as Node)) {
+        setShowViewMenu(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const isViewTab = viewTab === "table" || viewTab === "cards" || viewTab === "graph";
+
   return (
     <section className="filter-bar" aria-label="Candidate filters">
       <div className="filter-bar__fields" hidden={viewTab === "setup"}>
@@ -63,24 +79,43 @@ export function FilterBar({
           </span>
         ) : null}
         <div className="view-toggle" role="tablist" aria-label="View mode">
-          <button
-            type="button"
-            role="tab"
-            className={viewTab === "table" ? "view-toggle__tab active" : "view-toggle__tab"}
-            aria-selected={viewTab === "table"}
-            onClick={() => onViewTabChange("table")}
-          >
-            Table view
-          </button>
-          <button
-            type="button"
-            role="tab"
-            className={viewTab === "cards" ? "view-toggle__tab active" : "view-toggle__tab"}
-            aria-selected={viewTab === "cards"}
-            onClick={() => onViewTabChange("cards")}
-          >
-            Card view
-          </button>
+          <div ref={viewMenuRef} className="view-toggle__group">
+            <button
+              type="button"
+              role="tab"
+              className={isViewTab ? "view-toggle__tab active" : "view-toggle__tab"}
+              aria-selected={isViewTab}
+              aria-haspopup="true"
+              aria-expanded={showViewMenu}
+              onClick={() => setShowViewMenu((prev) => !prev)}
+            >
+              View ▾
+            </button>
+            {showViewMenu && (
+              <div className="view-toggle__menu" role="menu">
+                {(
+                  [
+                    { tab: "table", label: "Table view" },
+                    { tab: "cards", label: "Card view" },
+                    { tab: "graph", label: "Graph" },
+                  ] as const
+                ).map(({ tab, label }) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    role="menuitem"
+                    className={viewTab === tab ? "view-toggle__menu-item active" : "view-toggle__menu-item"}
+                    onClick={() => {
+                      onViewTabChange(tab);
+                      setShowViewMenu(false);
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button
             type="button"
             role="tab"
@@ -92,15 +127,6 @@ export function FilterBar({
           >
             Contradictions
             {contradictionCount > 0 ? ` (${contradictionCount})` : ""}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            className={viewTab === "graph" ? "view-toggle__tab active" : "view-toggle__tab"}
-            aria-selected={viewTab === "graph"}
-            onClick={() => onViewTabChange("graph")}
-          >
-            Graph
           </button>
           <button
             type="button"

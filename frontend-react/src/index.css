@@ -287,6 +287,44 @@ code,
   outline-offset: -2px;
 }
 
+.view-toggle__group {
+  position: relative;
+}
+
+.view-toggle__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 100;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.10);
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  overflow: hidden;
+}
+
+.view-toggle__menu-item {
+  border: none;
+  background: transparent;
+  padding: 0.5rem 1rem;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.view-toggle__menu-item:hover {
+  background: #f0f4ff;
+}
+
+.view-toggle__menu-item.active {
+  background: var(--accent);
+  color: #fff;
+}
+
 .count-chip {
   display: inline-flex;
   align-items: center;
