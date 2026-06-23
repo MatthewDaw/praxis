@@ -156,7 +156,12 @@ def token() -> str:
         user_pool_region=region,
         refresh_token=tenant.refresh_token,
     )
-    cog.check_token()  # renews via the refresh token when expired
+    # Renew straight from the refresh token. ``check_token()`` can't be used
+    # here: it inspects an existing access token to decide whether to renew, and
+    # this object only carries a refresh token, so it raises "Access Token
+    # Required to Check Token". ``renew_access_token`` mints fresh id/access
+    # tokens from the refresh token unconditionally.
+    cog.renew_access_token()
     return cog.id_token
 
 

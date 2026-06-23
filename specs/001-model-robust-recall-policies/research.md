@@ -66,6 +66,8 @@ Decisions consolidated from the three source proposals, the spec clarifications,
 
 **Alternatives**: HyDE/counter-claim generation — directly tested in the literature and failed catastrophically (semantic collapse); NegEx negation-cue filter — needs explicit negation markers the 0.454 case lacks; better embedder — the pair has genuinely low topical proximity. All ruled out (unified §1).
 
+**Gate outcome (2026-06-23) — KEPT.** Built `AspectTagger`/`AspectJudge` (controlled `ASPECT_VOCAB`, structured output, cassette-replayed) + bounded same-tag conflict recall in `VectorGraph` (conflict path only). Measured on an 8-pair implicit set (`implicit_conflict_*`, all below the 0.45 cosine floor — cosine-only baseline 0/8) via `knowledge/evals/tier_b_metrics.py`: **tag co-assignment recall 7/8, end-to-end flag rate 7/8, rescued-by-tags 7/8** — every catch is a real below-floor rescue cosine structurally cannot make. The owner judged the gate **cleared** and promoted the 7 rescued cases to PASS. The 1 residual (`documentation_policy`, cosine 0.35) is a genuine co-assignment miss, kept as a documented XFAIL (FR-023), not a tuned pass. The tag mechanism stays opt-in (`tag_model` eval axis); it is **not** in the production `default_write_policy` (adds one LLM call per write). First measurement on a vocab-aligned but partly above-floor set gave only 2/7 rescued — an artifact of an easy set; the strengthened below-floor set is the basis for the decision.
+
 ## R9 — Tier-C residual: documented, not built (P3)
 
 **Decision**: Name the residual (some implicit contradictions remain unrecalled, field-wide unsolved); the honest backstop is an offline/async batch compaction pass. Document only; do **not** build in this feature.

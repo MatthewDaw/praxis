@@ -39,7 +39,7 @@ export function DashboardHeader({
           <GitHubRepoLink />
         </div>
         <p className="dashboard-header__subtitle">
-          Review and promote AI-learned knowledge candidates from agent sessions.
+          Review and approve AI-learned knowledge facts from agent sessions.
         </p>
       </div>
       <div className="dashboard-header__meta">

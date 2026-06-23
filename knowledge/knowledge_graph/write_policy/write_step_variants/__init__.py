@@ -1,5 +1,9 @@
 """Concrete write-policy steps."""
 
+from knowledge.knowledge_graph.write_policy.write_step_variants.aspect_tagger import (
+    AspectJudge,
+    AspectTagger,
+)
 from knowledge.knowledge_graph.write_policy.write_step_variants.conflict_flagger import (
     ConflictFlagger,
 )
@@ -20,4 +24,6 @@ __all__ = [
     "ConflictFlagger",
     "ConflictJudge",
     "ConflictOverwriter",
+    "AspectTagger",
+    "AspectJudge",
 ]

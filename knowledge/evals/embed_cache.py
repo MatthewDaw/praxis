@@ -46,8 +46,14 @@ def refresh() -> int:
         # A key is set, so each case's CachedEmbedder records misses and saves to
         # the shared fixture. Driving seed + read embeds writes and the query.
         graph, ingestor, reader = _build_trio_for(case)
+        # Seed exactly as the runtime producers do (see run._seed_knowledge /
+        # _produce_graph_reader): direct_to_graph lands "active", via_ingestor
+        # "proposed". Retrieval is gated to active facts and ``search`` returns
+        # early on no active candidates *before* embedding the query, so a
+        # proposed-only seed would never record the reader query — replaying it
+        # offline would then be a loud cache miss.
         for text in case.seeded_insight.direct_to_graph:
-            graph.write(text)
+            graph.write(text, state="active")
         for text in case.seeded_insight.via_ingestor:
             ingestor.ingest(text)
         if case.seed_prompt:

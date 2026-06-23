@@ -62,6 +62,108 @@ def _is_real_fact(text: str) -> bool:
 
 
 @dataclass(frozen=True)
+class FactSeed:
+    """A pure fact-seed the eval-cache orchestrator writes into the eval graph.
+
+    Carries only what ``graph.write`` needs; embedding + contradiction edges are
+    the graph's job. ``state`` is ``"proposed"`` (via_ingestor) or ``"active"``
+    (direct_to_graph), mirroring the channel-to-state mapping used elsewhere.
+    """
+
+    text: str
+    state: str
+    source: str | None = None
+    scope: str | None = None
+    category: str | None = None
+
+
+def case_ids_for(scopes: list[str], case_ids: list[str]) -> list[str]:
+    """Resolve folder scopes and/or explicit case ids into a deduped, ordered list.
+
+    A scope is a cases-subdir relative to ``CASES_ROOT`` (e.g. ``"matt/applications"``,
+    or ``"."`` for the whole tree). When both ``scopes`` and ``case_ids`` are empty,
+    return every case id under ``CASES_ROOT``. When explicit ``case_ids`` are given,
+    the result is restricted to those (intersected with the scope-resolved set).
+    """
+    # A bare ``graph:<dir>`` preset string is tolerated as a scope too (mapped via
+    # ``_graph_scope``); plain relative dirs pass through unchanged. Default to the
+    # whole cases tree when no folder scopes are given.
+    scope_dirs = [(_graph_scope(s) or s) for s in scopes] or ["."]
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for relative in scope_dirs:
+        for case in load_cases(_resolve_cases_dir(relative)):
+            if case.id not in seen:
+                seen.add(case.id)
+                resolved.append(case.id)
+    if case_ids:
+        wanted = set(case_ids)
+        return [cid for cid in resolved if cid in wanted]
+    return resolved
+
+
+def distill_case(case_id: str, *, distill: bool) -> list[FactSeed]:
+    """Load a single case by id and return its fact seeds (no DB, no embedding).
+
+    Each ``via_ingestor`` row maps to state ``"proposed"``; each ``direct_to_graph``
+    row maps to state ``"active"``. ``source`` is ``f"evals/{case_id}"``;
+    ``scope``/``category`` are left ``None`` (cases don't provide them today).
+
+    ``distill=False`` (fast): passthrough — split each seed source into lines, keep
+    only ``_is_real_fact`` lines, one ``FactSeed`` per kept line.
+    ``distill=True``: run the real distillation via ``gpt-4o-mini`` over an
+    ``InMemoryGraph`` ingestor and collect the resulting distilled fact texts.
+    Raises ``RegenerateUnavailableError`` if ``OPENROUTER_API_KEY`` is unset.
+    """
+    from knowledge.knowledge_graph.knowledge_graph_variants.in_memory_graph import InMemoryGraph
+    from knowledge.injestion.injestor_variants.prompt_injestor import PromptIngestor
+
+    case = next((c for c in load_cases(CASES_ROOT) if c.id == case_id), None)
+    if case is None:
+        raise ValueError(f"no such eval case: {case_id!r}")
+
+    source = f"evals/{case_id}"
+    # (source_text, state) per seeded channel, in channel order.
+    raw_seeds: list[tuple[str, str]] = []
+    for state, rows in (
+        ("proposed", case.seeded_insight.via_ingestor),
+        ("active", case.seeded_insight.direct_to_graph),
+    ):
+        for text in rows:
+            normalized = str(text).strip()
+            if normalized:
+                raw_seeds.append((text, state))
+
+    seeds: list[FactSeed] = []
+    if distill:
+        if not os.getenv("OPENROUTER_API_KEY"):
+            raise RegenerateUnavailableError(
+                "distillation needs OPENROUTER_API_KEY set on the API"
+            )
+        from knowledge.llm.llm_def import ChatMessage
+        from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
+
+        llm = OpenRouterLlm(model="openai/gpt-4o-mini")
+        distiller = PromptIngestor(
+            InMemoryGraph(),
+            llm=lambda prompt: llm.complete([ChatMessage(role="user", content=prompt)]),
+        )
+        for text, state in raw_seeds:
+            for insight in distiller.synthesis(text):
+                fact_text = " ".join(insight.raw_text.split())
+                if fact_text:
+                    seeds.append(FactSeed(text=fact_text, state=state, source=source))
+    else:
+        splitter = PromptIngestor(InMemoryGraph())  # no llm => line split
+        for text, state in raw_seeds:
+            for insight in splitter.synthesis(text):
+                fact_text = " ".join(insight.raw_text.split())
+                if _is_real_fact(fact_text):
+                    seeds.append(FactSeed(text=fact_text, state=state, source=source))
+    return seeds
+
+
+@dataclass(frozen=True)
 class PipelineConfig:
     """API-facing regeneration config.
 

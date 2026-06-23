@@ -12,6 +12,8 @@ interface CandidateDetailProps {
   candidates: Candidate[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  onPromote: (id: string) => Promise<void>;
+  onReject: (id: string, reason?: string) => Promise<void>;
   onRefreshCandidate: (id: string) => Promise<void>;
   refreshingId?: string | null;
   onResolve: (
@@ -29,6 +31,8 @@ export function CandidateDetail({
   candidates,
   selectedId,
   onSelect,
+  onPromote,
+  onReject,
   onRefreshCandidate,
   refreshingId,
   onResolve,
@@ -133,11 +137,7 @@ export function CandidateDetail({
         {candidate.auditTrail.length > 0 ? (
           <AuditTimeline entries={candidate.auditTrail} />
         ) : (
-          <p className="muted">
-            Created {candidate.createdAt} · Source log line{" "}
-            <code>{candidate.provenance}</code>. Full audit events arrive from
-            Matthew&apos;s API in live mode.
-          </p>
+          <p className="muted">Full audit events arrive from Matthew&apos;s API in live mode.</p>
         )}
       </div>
 
@@ -154,6 +154,8 @@ export function CandidateDetail({
         <ContradictionPanel
           candidate={candidate}
           peersById={idToCandidate}
+          onPromote={onPromote}
+          onReject={onReject}
           onResolve={onResolve}
           onDefer={onDefer}
         />

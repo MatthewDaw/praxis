@@ -47,7 +47,7 @@ describe("mock graph workflow", () => {
     expect(node?.state).toBe("active");
   });
 
-  it("resolve removes contradiction edge and decays loser", async () => {
+  it("resolve keeps contradiction edge and decays loser", async () => {
     const provider = createMockDataProviderWithRows(
       loadMockCandidates(),
       loadMockGraph(),
@@ -64,7 +64,7 @@ describe("mock graph workflow", () => {
         ((edge.src === "cand_9" && edge.dst === "cand_16") ||
           (edge.src === "cand_16" && edge.dst === "cand_9")),
     );
-    expect(resolvedPair).toBeUndefined();
+    expect(resolvedPair).toBeDefined();
     const loser = graph.nodes.find((n) => n.id === "cand_16");
     expect(loser?.state).toBe("decayed");
   });

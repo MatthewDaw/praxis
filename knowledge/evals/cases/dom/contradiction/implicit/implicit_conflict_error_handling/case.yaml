@@ -1,0 +1,29 @@
+# Tier-B implicit-contradiction case (FR-021). Two genuinely contradictory
+# engineering preferences phrased with DISJOINT vocabulary and NO shared key noun,
+# so they sit below the cosine recall floor (cosine << 0.45) — cosine recall never
+# pairs them. The AspectTagger assigns both the controlled-vocab aspect
+# "error-handling-strategy"; the conflict path's same-tag recall surfaces the pair for the
+# ConflictJudge, which flags the contradiction. Replays offline from the committed
+# aspect + conflict cassettes.
+#
+# PROMOTED to a real PASS assertion: the owner judged the Tier-B gate CLEARED
+# (FR-022, 2026-06-23) — all implicit pairs sit below the cosine floor (cosine
+# catches 0/8) and the tag key rescues 7/8. See specs research R8 + tier_b_metrics.
+id: implicit_conflict_error_handling
+component: knowledge_graph
+substrate: vector
+embedder: cached  # real vectors; the pair sits below the cosine floor by design
+tag_model: openai/gpt-4o-mini  # AspectTagger; replayed from the committed aspect cassette
+conflict_model: openai/gpt-4o-mini  # ConflictJudge; replayed from the committed conflict cassette
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "The moment something looks wrong, halt loudly and surface it."
+    - "Swallow the hiccup and hand back a safe default so the flow keeps moving."
+
+deterministic_checks:
+  - name: implicit_contradiction_flagged
+    ref: "knowledge.evals.deterministic_checks.text:regex_matches"
+    params:
+      pattern: "(?i)CONTRADICTION"

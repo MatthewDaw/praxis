@@ -35,8 +35,14 @@ export function useGraph(
   }, [refreshGraph, refreshKey]);
 
   const graph = useMemo(() => {
-    const base = graphSnapshot ?? deriveGraphFromCandidates(candidates);
-    return mergeGraphWithCandidates(base, candidates);
+    // A real snapshot from the API IS the graph (the active facts retrieval
+    // reads), shown one-to-one — never merged with the candidate review set,
+    // which is a separate store. Only the offline path, with no snapshot,
+    // derives the graph from candidates.
+    if (graphSnapshot) {
+      return graphSnapshot;
+    }
+    return mergeGraphWithCandidates(deriveGraphFromCandidates(candidates), candidates);
   }, [graphSnapshot, candidates]);
 
   return {

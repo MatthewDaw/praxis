@@ -4,50 +4,51 @@ from __future__ import annotations
 
 from typing import Any
 
-from knowledge.serve.store import Candidate, contradiction_ids
+from knowledge.knowledge_graph.knowledge_graph_def import Fact
 
 
-def graph_from_candidates(candidates: list[Candidate]) -> dict[str, Any]:
-    """Build a graph payload from the currently served candidate rows."""
+def graph_from_facts(
+    facts: list[Fact], edges: list[tuple[str, str, str]]
+) -> dict[str, Any]:
+    """Build the graph snapshot from active facts — the store retrieval reads.
+
+    Keeps the dashboard graph one-to-one with what MCP ``get_context`` recalls:
+    the nodes are exactly the ``active`` facts, the edges are their persisted
+    ``fact_edges``, and scope groups mirror the candidate-derived shape.
+    """
     nodes: list[dict[str, Any]] = []
-    edges: list[dict[str, str]] = []
-    seen_edges: set[str] = set()
     scope_members: dict[str, list[str]] = {}
 
-    for candidate in candidates:
-        cid = str(candidate.get("id", ""))
-        if not cid:
+    for fact in facts:
+        if not fact.id:
             continue
-
         node: dict[str, Any] = {
-            "id": cid,
-            "label": str(candidate.get("title") or cid),
-            "state": str(candidate.get("state") or "proposed"),
-            "confidence": float(candidate.get("confidence") or 0),
+            "id": fact.id,
+            "label": fact.text or fact.id,
+            "state": fact.state,
+            "confidence": float(fact.confidence or 0),
         }
-        for key in ("scope", "category", "provenance"):
-            value = candidate.get(key)
-            if value is not None:
-                node[key] = str(value)
-        if candidate.get("cluster_id") is not None:
-            node["cluster_id"] = int(candidate["cluster_id"])
-        if candidate.get("cluster_label"):
-            node["cluster_label"] = str(candidate["cluster_label"])
+        if fact.scope:
+            node["scope"] = fact.scope
+        if fact.category:
+            node["category"] = fact.category
+        if fact.source:
+            node["provenance"] = fact.source
         nodes.append(node)
+        if fact.scope:
+            scope_members.setdefault(fact.scope, []).append(fact.id)
 
-        scope = candidate.get("scope")
-        if scope:
-            scope_members.setdefault(str(scope), []).append(cid)
-
-        for rival_id in contradiction_ids(candidate):
-            if not rival_id:
-                continue
-            a, b = sorted((cid, rival_id))
-            key = f"contradiction:{a}__{b}"
-            if key in seen_edges:
-                continue
-            seen_edges.add(key)
-            edges.append({"src": cid, "dst": rival_id, "kind": "contradiction"})
+    edge_list: list[dict[str, str]] = []
+    seen_edges: set[str] = set()
+    for src, dst, kind in edges:
+        if not src or not dst:
+            continue
+        a, b = sorted((src, dst))
+        key = f"{kind}:{a}__{b}"
+        if key in seen_edges:
+            continue
+        seen_edges.add(key)
+        edge_list.append({"src": src, "dst": dst, "kind": kind})
 
     scope_groups = [
         {
@@ -59,7 +60,7 @@ def graph_from_candidates(candidates: list[Candidate]) -> dict[str, Any]:
         for scope, member_ids in sorted(scope_members.items())
     ]
 
-    graph: dict[str, Any] = {"nodes": nodes, "edges": edges}
+    graph: dict[str, Any] = {"nodes": nodes, "edges": edge_list}
     if scope_groups:
         graph["scopeGroups"] = scope_groups
     return graph

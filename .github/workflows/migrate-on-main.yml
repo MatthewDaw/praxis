@@ -1,0 +1,102 @@
+# Apply database migrations on merges into main.
+#
+# Runs the idempotent schema bootstrap followed by every one-off migration module
+# under migrations/. Both the bootstrap and the migrations are
+# written to be safe to re-run, so re-running this workflow is harmless.
+#
+# Triggers:
+#   - push to main, scoped to migration-relevant paths (schema + migrations dir
+#     + the dependency/lock files that affect how migrations install/run).
+#   - workflow_dispatch, for unconditional manual runs.
+#
+# Required GitHub secrets (configure under Settings -> Secrets and variables -> Actions):
+#   - PRAXIS_DB_URL  (preferred)  — a libpq/SQLAlchemy-style Postgres DSN. When set,
+#                                   db.py uses it directly and AWS is not consulted.
+#   OR, as a fallback, the AWS trio so db.py can resolve the DSN from Secrets Manager
+#   (secret name PRAXIS_DB_SECRET, default "praxis/knowledge-graph/db"):
+#   - AWS_ACCESS_KEY_ID
+#   - AWS_SECRET_ACCESS_KEY
+#   - AWS_REGION     (e.g. us-east-1)
+#
+# SCHEMA-SYNC SEMANTICS (important — read before relying on this for "full sync"):
+#   * `python -m knowledge.serve.db` (bootstrap) applies schema.sql, which is
+#     ADDITIVE-ONLY: every statement is CREATE/ADD ... IF NOT EXISTS. It can add
+#     missing tables/columns/indexes but never DROPs or ALTERs existing objects.
+#   * Destructive or transforming changes (drop a table/column, change a type,
+#     re-tenant rows) MUST be expressed as an idempotent m*.py migration module —
+#     the migration loop below runs those after bootstrap. Example: dropping the
+#     dead `candidates` table happens in m2026_06_23_unify_facts.py, NOT schema.sql.
+#   => Remote ends up matching local only insofar as every local schema change is
+#      captured either as additive DDL in schema.sql OR as an m*.py migration.
+#      There is no automatic schema-diffing; parity depends on authoring migrations.
+#
+# Some migrations may need extra secrets when they have rows to process (e.g.
+# m2026_06_23_unify_facts re-embeds via OpenRouter and would need OPENROUTER_API_KEY
+# if `candidates` still has rows). Add such secrets to env: below as needed; the
+# migrations no-op safely when there is nothing to process.
+#
+# KNOWN LIMITATION (not solved here): the RDS instance must be reachable from the
+# GitHub-hosted runner. Runner egress IPs are large and dynamic, so the DB security
+# group generally won't allow them. To make this work you'll need an alternative
+# network path — e.g. a self-hosted runner inside the VPC, an SSM/SSH bastion tunnel,
+# RDS Data API, or temporarily allowing the runner's egress range. Until then this
+# workflow will fail at the connection step.
+
+name: migrate-on-main
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'knowledge/serve/schema.sql'
+      - 'migrations/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/migrate-on-main.yml'
+  workflow_dispatch: {}
+
+# Serialize migration runs so concurrent merges never apply migrations at the same
+# time. Queue (don't cancel) so every merged change still gets its migrations run.
+concurrency:
+  group: db-migrate
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    env:
+      # Connection config consumed by knowledge/serve/db.py. PRAXIS_DB_URL takes
+      # precedence; the AWS trio is the Secrets Manager fallback path.
+      PRAXIS_DB_URL: ${{ secrets.PRAXIS_DB_URL }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install project + deps
+        run: uv sync --frozen
+
+      - name: Bootstrap schema (idempotent)
+        run: uv run python -m knowledge.serve.db
+
+      - name: Run migrations
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in migrations/m*.py; do
+            mod="migrations.$(basename "$f" .py)"
+            echo "== Running migration: $mod =="
+            uv run python -m "$mod"
+          done

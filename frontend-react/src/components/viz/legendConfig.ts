@@ -34,24 +34,24 @@ export const LIFECYCLE_LEGEND: LifecycleLegendEntry[] = [
   },
   {
     state: "active",
-    label: "Active",
+    label: "Approved",
     description: "Approved for knowledge injection",
   },
   {
     state: "decayed",
-    label: "Decayed",
+    label: "Rejected",
     description: "Rejected or superseded",
   },
 ];
 
 export const FLOW_STRIP_STEPS: FlowStep[] = [
   { state: "proposed", label: "Proposed" },
-  { state: "active", label: "Active" },
+  { state: "active", label: "Approved" },
 ];
 
 export const FLOW_DECAYED_STEP: FlowStep = {
   state: "decayed",
-  label: "Decayed",
+  label: "Rejected",
 };
 
 export const EDGE_LEGEND: EdgeLegendEntry[] = [

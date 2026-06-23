@@ -1,14 +1,14 @@
 # Proposal: unified dedup + contradiction recall (and the implicit-contradiction limit)
 
 **Owner:** Dominic Antonelli — knowledge graph / write policy
-**Status:** Proposed
+**Status:** Implemented — `specs/001-model-robust-recall-policies` US3. Tier A: embed-once / one shared recall pass, structured `ConflictJudge` + cassette, merge-before-conflict. Tier B (gated experiment, owner KEPT 2026-06-23): `AspectTagger` + same-tag conflict recall, 7/8 below-floor implicit pairs rescued. Tier C (batch backstop) remains documented-only. Deterministic-ingestion follow-on: see [the cassette proposal](2026-06-22-deterministic-ingestion-cassette.md).
 **Date:** 2026-06-22
 **Scope:** the `Deduper` + `ConflictFlagger` write-policy steps, their shared candidate-recall
 pass, a contradiction-specific recall key (experiment), and a documented residual + batch backstop
 
 > Companion to [`2026-06-22-semantic-dedup-recall-gate-llm-judge.md`](2026-06-22-semantic-dedup-recall-gate-llm-judge.md)
 > (the dedup recall-gate + merge-judge) and successor to the open agenda (§4) in
-> [`2026-06-22-dedup-conflict-handoff.md`](archive/2026-06-22-dedup-conflict-handoff.md). The dedup
+> [`2026-06-22-dedup-conflict-handoff.md`](../archive/2026-06-22-dedup-conflict-handoff.md). The dedup
 > proposal is **not** superseded — it is endorsed and reused. This doc (1) unifies
 > `ConflictFlagger` onto the same two-stage machinery, (2) adds the one recall key with a
 > plausible shot at *implicit* contradictions, and (3) names — honestly — the case the field
@@ -139,7 +139,7 @@ Tier B's gate decides them — we assert real shipped behavior, not a per-case-t
   [ASDC, ACIT 2025 (IEEE 11185903)](https://ieeexplore.ieee.org/abstract/document/11185903/);
   [CLAIMSPECT (arXiv 2506.10728)](https://arxiv.org/pdf/2506.10728).
 - Multi-key blocking is a mature, recall-measured discipline:
-  [Blocking & Filtering for ER: A Survey (ACM CSUR 2020)](https://dl.acm.org/doi/abs/10.1145/3377455).
+  "Blocking and Filtering Techniques for Entity Resolution: A Survey" (ACM CSUR 2020, doi:10.1145/3377455 — link blocks automated checks).
 - 2026 production memory does atomic-fact + entity normalization (validates the upstream half of
   canonicalization; conflict still open): [mem0 State of AI Agent Memory 2026](https://mem0.ai/blog/state-of-ai-agent-memory-2026).
 - (Two-stage recall→verify standard, model-dependent thresholds, SemDeDup batch shape — see the

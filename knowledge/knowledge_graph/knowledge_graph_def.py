@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -37,6 +37,14 @@ class Fact(BaseModel):
     cluster_label: str | None = None
     embedding: list[float] | None = None
     flags: list[str] = Field(default_factory=list)  # e.g. ["contradiction:<id>"]
+    # Wall-clock the row was first persisted (ISO 8601), set by the store on read.
+    created_at: str | None = None
+    # Free-form per-fact metadata (e.g. dashboard auditTrail), persisted in the
+    # ``facts.meta`` jsonb column.
+    meta: dict[str, Any] = Field(default_factory=dict)
+    # Controlled-vocabulary aspect labels assigned at write time (Tier-B gated
+    # experiment): a second, non-similarity recall key for the conflict path.
+    tags: list[str] = Field(default_factory=list)
 
 
 class SearchHit(BaseModel):

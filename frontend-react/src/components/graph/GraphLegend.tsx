@@ -40,7 +40,7 @@ export function GraphLegend({ className }: GraphLegendProps) {
         <div id="graph-legend-body">
           <LegendSection
             title="Human gate flow"
-            description="Proposed lessons advance through review; decayed items leave the active queue."
+            description="Proposed facts move through review; rejected items leave the approved queue."
           >
             <LegendFlowStrip />
           </LegendSection>

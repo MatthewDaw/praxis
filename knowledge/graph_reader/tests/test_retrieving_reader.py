@@ -80,6 +80,15 @@ def test_cap_bounds_volume():
     assert len(_texts(reader.read("q"))) == 3
 
 
+def test_top_k_zero_disables_the_cap():
+    # top_k=0 turns the volume cap OFF (search all, keep everything above
+    # floor/relative) — mirroring abs_floor=0 / rel_ratio=0 disabling their own
+    # mechanisms. 12 facts all within the ratio → all 12 survive, none capped.
+    graph = _StubGraph([(f"f{i}", 0.90 - i * 0.01) for i in range(12)])
+    reader = RetrievingReader(graph, top_k=0, abs_floor=0.0, rel_ratio=0.75)
+    assert len(_texts(reader.read("q"))) == 12  # 0.75*0.90=0.675; weakest 0.79 kept
+
+
 def test_relative_split_is_model_robust_under_scaling():
     # The same relative structure at a different score scale (a "model swap")
     # yields the same partition with the SAME rel_ratio — no precise value retune.

@@ -1,7 +1,7 @@
 # Proposal: semantic dedup via a recall gate + LLM merge-judge
 
 **Owner:** Dominic Antonelli — knowledge graph / write policy
-**Status:** Proposed
+**Status:** Implemented — `specs/001-model-robust-recall-policies` US2 (`VerdictCassette` + `MergeJudge` + recall-gate `Deduper`, `threshold`→`recall_floor`). Paraphrase-dedup cases flip XFAIL→PASS, replayed from a committed merge cassette.
 **Date:** 2026-06-22
 **Scope:** `knowledge/knowledge_graph/write_policy` (the `Deduper` step), the two paraphrase-dedup eval cases, and an offline merge-verdict cassette
 
@@ -130,7 +130,7 @@ documented recall gate, not the precision knob.
   (LSH) ([Noise-Robust De-Duplication at Scale](https://arxiv.org/pdf/2210.04261),
   [Dual vs Cross-Encoder](https://dev.to/krunalkanojiya/dual-encoder-vs-cross-encoder-why-your-rag-pipeline-needs-both-4bd)).
 - **Fixed cosine thresholds are model-dependent** — optimal paraphrase thresholds span
-  0.33–0.87 ([MDPI paraphrase study](https://www.mdpi.com/2073-431X/14/9/385)).
+  0.33–0.87 (MDPI paraphrase study, Computers 14(9):385 — link blocks automated checks).
 - **Threshold-in-cluster batch dedup** is the alternative shape (offline curation), not
   incremental write-time ([NVIDIA SemDeDup](https://docs.nvidia.com/nemo-framework/user-guide/24.09/datacuration/semdedup.html)).
 - **Lexical MinHash/LSH** is the scale gold-standard but lexical-only — misses paraphrases

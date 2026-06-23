@@ -1,4 +1,9 @@
-import { candidateFromMapping, parseCandidateList } from "./candidateModel";
+import {
+  canDeleteCandidate,
+  candidateFromMapping,
+  candidateStateLabel,
+  parseCandidateList,
+} from "./candidateModel";
 import {
   cloneGraphSnapshot,
   deriveGraphFromCandidates,
@@ -28,21 +33,6 @@ function syncGraphNodeState(
   }
 }
 
-function removeContradictionEdges(
-  graph: KnowledgeGraphSnapshot,
-  idA: string,
-  idB: string,
-): void {
-  graph.edges = graph.edges.filter(
-    (edge) =>
-      edge.kind !== "contradiction" ||
-      !(
-        (edge.src === idA && edge.dst === idB) ||
-        (edge.src === idB && edge.dst === idA)
-      ),
-  );
-}
-
 export function createMockDataProviderWithRows(
   rows: RawCandidate[],
   graphSnapshot?: KnowledgeGraphSnapshot,
@@ -57,7 +47,7 @@ export function createMockDataProviderWithRows(
       if (!state) {
         return [...candidates];
       }
-      return candidates.filter((c) => c.displayState === state);
+      return candidates.filter((c) => c.state === state);
     },
 
     async getCandidate(id) {
@@ -74,7 +64,7 @@ export function createMockDataProviderWithRows(
       const updated: Candidate = {
         ...current,
         state: body.targetState as Candidate["state"],
-        displayState: body.targetState,
+        displayState: candidateStateLabel(body.targetState as Candidate["state"]),
         auditTrail: [
           ...current.auditTrail,
           {
@@ -99,7 +89,7 @@ export function createMockDataProviderWithRows(
       candidates[index] = {
         ...current,
         state: "decayed",
-        displayState: "decayed",
+        displayState: candidateStateLabel("decayed"),
         auditTrail: [
           ...current.auditTrail,
           {
@@ -137,7 +127,15 @@ export function createMockDataProviderWithRows(
       if (index < 0) {
         throw new Error(`Unknown candidate id: ${id}`);
       }
-      candidates = candidates.filter((c) => c.id !== id);
+      if (!canDeleteCandidate(candidates[index])) {
+        throw new Error("Reject this fact before deleting it.");
+      }
+      candidates = candidates
+        .filter((c) => c.id !== id)
+        .map((candidate) => ({
+          ...candidate,
+          contradictionIds: candidate.contradictionIds.filter((cid) => cid !== id),
+        }));
       graph = refreshGraphFromCandidates(graph, candidates);
     },
 
@@ -150,26 +148,25 @@ export function createMockDataProviderWithRows(
       const [primaryId, rivalId] = contradictionId.split("__");
       candidates = candidates.map((candidate) => {
         if (candidate.id === primaryId || candidate.id === rivalId) {
+          const otherId = candidate.id === primaryId ? rivalId : primaryId;
+          const contradictionIds = Array.from(
+            new Set([...candidate.contradictionIds, otherId]),
+          );
           if (candidate.id !== keepId) {
             return {
               ...candidate,
               state: "decayed",
-              displayState: "decayed",
-              contradictionIds: candidate.contradictionIds.filter(
-                (cid) => cid !== primaryId && cid !== rivalId,
-              ),
+              displayState: candidateStateLabel("decayed"),
+              contradictionIds,
             };
           }
           return {
             ...candidate,
-            contradictionIds: candidate.contradictionIds.filter(
-              (cid) => cid !== primaryId && cid !== rivalId,
-            ),
+            contradictionIds,
           };
         }
         return candidate;
       });
-      removeContradictionEdges(graph, primaryId, rivalId);
       const loserId = keepId === primaryId ? rivalId : primaryId;
       syncGraphNodeState(graph, loserId, "decayed");
       syncGraphNodeState(graph, keepId, kept.state);
@@ -183,6 +180,22 @@ export function createMockDataProviderWithRows(
 
     async getTranscript() {
       return null;
+    },
+
+    async listSnapshots() {
+      return [];
+    },
+
+    async saveSnapshot() {
+      throw new Error("Snapshots are not supported in mock mode");
+    },
+
+    async loadSnapshot(_name: string, _mode?: "add" | "replace") {
+      throw new Error("Snapshots are not supported in mock mode");
+    },
+
+    async deleteSnapshot() {
+      throw new Error("Snapshots are not supported in mock mode");
     },
   };
 }
@@ -257,6 +270,22 @@ export function createMockDataProvider(): DataProvider {
 
     async getTranscript() {
       return null;
+    },
+
+    async listSnapshots() {
+      return (await load()).listSnapshots();
+    },
+
+    async saveSnapshot(name) {
+      return (await load()).saveSnapshot(name);
+    },
+
+    async loadSnapshot(name, mode) {
+      return (await load()).loadSnapshot(name, mode);
+    },
+
+    async deleteSnapshot(name) {
+      return (await load()).deleteSnapshot(name);
     },
   };
 }

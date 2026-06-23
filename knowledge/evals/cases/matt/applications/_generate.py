@@ -237,15 +237,33 @@ def main() -> None:
                 # vector substrate -> _build_trio_for builds a VectorGraph (real
                 # write policy: redact/dedup) instead of the InMemoryGraph stub.
                 "substrate": "vector",
-                # live embedder -> real OpenRouter embeddings (semantic dedup), not
-                # the offline FakeEmbedder. Needs OPENROUTER_API_KEY; skips without.
-                "embedder": "live",
+                # cached embedder -> committed real vectors (semantic dedup) that
+                # replay offline. Usable now that the ingestion cassette stabilizes
+                # the distilled text the vectors key on (FR-008). Skips offline only
+                # when neither the embedding cache nor the ingestion cassette exists.
+                "embedder": "cached",
                 # ingest_model -> PromptIngestor.synthesis runs a real LLM (distills
                 # the sources into facts) instead of the passthrough line-split.
                 "ingest_model": "openai/gpt-4o-mini",
+                # ingest_state: active -> the applicant's distilled background is
+                # established/endorsed knowledge, so it lands "active" and is
+                # retrievable (the default "proposed" would be gated out of the
+                # reader, leaving the agent with an empty knowledge prompt).
+                "ingest_state": "active",
+                # retrieving reader (001 relevance cutoff) with the volume cap OFF
+                # (reader_top_k: 0): rank all active background facts against the
+                # question, keep whatever the existence floor + relative-to-best admit
+                # — no fixed top-N starvation. abs_floor/rel_ratio stay at the tuned
+                # defaults (0.30 / 0.60).
+                "reader": "retrieving",
+                "reader_top_k": 0,
                 "seed_prompt": seed_prompt(company, role, question),
                 "target_commit": "0" * 40,
-                "needs": ["sandbox"],
+                # file_io, not sandbox: the checks grade answer text (output_nonempty
+                # + regex_matches over ctx.output) and mount no fixture, so a file-
+                # producing runner suffices. This lets the cheaper structured backend
+                # grade them, not just full Claude Code.
+                "needs": ["file_io"],
                 "seeded_insight": {"via_ingestor": SOURCES},
                 "deterministic_checks": [NONEMPTY]
                 + [regex_check(n, p) for n, p in checks],

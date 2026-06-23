@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  canDeleteCandidate,
   formatCandidateDate,
   nextPromotionState,
   promoteUnavailableReason,
@@ -16,8 +17,6 @@ interface CandidateCardsProps {
   onSelect: (id: string) => void;
   onPromote: (id: string) => Promise<void>;
   onReject: (id: string, reason?: string) => Promise<void>;
-  onRefreshCandidate: (id: string) => Promise<void>;
-  refreshingId?: string | null;
   onEdit: (candidate: Candidate) => void;
   onDelete: (id: string) => Promise<void>;
 }
@@ -28,8 +27,6 @@ export function CandidateCards({
   onSelect,
   onPromote,
   onReject,
-  onRefreshCandidate,
-  refreshingId,
   onEdit,
   onDelete,
 }: CandidateCardsProps) {
@@ -88,18 +85,6 @@ export function CandidateCards({
     }
   }
 
-  async function runRefresh(id: string) {
-    setPendingId(id);
-    try {
-      await onRefreshCandidate(id);
-    } finally {
-      setPendingId(null);
-      setConfirmPromote(null);
-      setConfirmReject(null);
-      setConfirmDelete(null);
-    }
-  }
-
   return (
     <div className="card-grid">
       {candidates.map((candidate) => {
@@ -137,14 +122,14 @@ export function CandidateCards({
             {confirmPromote === candidate.id ? (
               <div className="card-actions">
                 <p className="info-banner">
-                  Promote <strong>{candidate.title}</strong> from{" "}
+                  Approve <strong>{candidate.title}</strong> from{" "}
                   <strong>{candidate.displayState}</strong> to{" "}
-                  <strong>{nextState}</strong>?
+                  <strong>Approved</strong>?
                 </p>
                 {candidate.confidence < LOW_CONFIDENCE_THRESHOLD ? (
                   <p className="warning-banner" role="alert" aria-live="assertive">
                     Low confidence ({(candidate.confidence * 100).toFixed(0)}%) — confirm
-                    promote?
+                    approve?
                   </p>
                 ) : null}
                 <button
@@ -153,7 +138,7 @@ export function CandidateCards({
                   disabled={pendingId === candidate.id}
                   onClick={() => void runPromote(candidate.id)}
                 >
-                  Confirm promote
+                  Confirm approve
                 </button>
                 <button
                   type="button"
@@ -166,12 +151,12 @@ export function CandidateCards({
             ) : confirmReject === candidate.id ? (
               <div className="card-actions">
                 <label className="reject-reason full">
-                  Decay reason (optional)
+                  Reject reason (optional)
                   <input
                     type="text"
                     value={rejectReason}
                     onChange={(event) => setRejectReason(event.target.value)}
-                    aria-label="Decay reason"
+                    aria-label="Reject reason"
                   />
                 </label>
                 <button
@@ -180,7 +165,7 @@ export function CandidateCards({
                   disabled={pendingId === candidate.id}
                   onClick={() => void runReject(candidate.id)}
                 >
-                  Confirm decay
+                  Confirm reject
                 </button>
                 <button
                   type="button"
@@ -238,13 +223,13 @@ export function CandidateCards({
                           setConfirmReject(null);
                           setConfirmDelete(null);
                         }}
-                        aria-label={`Promote ${candidate.title}`}
+                        aria-label={`Approve ${candidate.title}`}
                       >
-                        Promote
+                        Approve
                       </button>
                     ) : (
                       <button type="button" className="btn" disabled>
-                        Promote
+                        Approve
                       </button>
                     )}
                     <button
@@ -256,9 +241,9 @@ export function CandidateCards({
                         setConfirmPromote(null);
                         setConfirmDelete(null);
                       }}
-                      aria-label={`Decay ${candidate.title}`}
+                      aria-label={`Reject ${candidate.title}`}
                     >
-                      Decay
+                      Reject
                     </button>
                   </div>
                   <div className="card-action-row">
@@ -278,27 +263,23 @@ export function CandidateCards({
                     </button>
                     <button
                       type="button"
-                      className="btn secondary"
-                      disabled={pendingId === candidate.id || refreshingId === candidate.id}
-                      onClick={() => {
-                        onSelect(candidate.id);
-                        void runRefresh(candidate.id);
-                      }}
-                      aria-label={`Refresh only ${candidate.title}`}
-                      title="Refresh only this candidate from the current data source"
-                    >
-                      {refreshingId === candidate.id ? "Refreshing" : "Refresh"}
-                    </button>
-                    <button
-                      type="button"
                       className="btn delete"
+                      disabled={!canDeleteCandidate(candidate)}
                       onClick={() => {
+                        if (!canDeleteCandidate(candidate)) {
+                          return;
+                        }
                         onSelect(candidate.id);
                         setConfirmDelete(candidate.id);
                         setConfirmPromote(null);
                         setConfirmReject(null);
                       }}
                       aria-label={`Delete ${candidate.title}`}
+                      title={
+                        canDeleteCandidate(candidate)
+                          ? "Remove fact permanently"
+                          : "Reject before deleting"
+                      }
                     >
                       Delete
                     </button>

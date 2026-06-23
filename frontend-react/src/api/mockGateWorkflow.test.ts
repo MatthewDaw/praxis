@@ -66,9 +66,10 @@ describe("mock gate workflow", () => {
       "keep_primary",
       "cand_9",
     );
-    expect(updated.contradictionIds).not.toContain("cand_16");
+    expect(updated.contradictionIds).toContain("cand_16");
     const rival = await provider.getCandidate("cand_16");
     expect(rival?.state).toBe("decayed");
+    expect(rival?.contradictionIds).toContain("cand_9");
     const keeper = await provider.getCandidate("cand_9");
     expect(keeper).not.toBeNull();
   });

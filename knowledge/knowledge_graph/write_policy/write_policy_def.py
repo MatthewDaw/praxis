@@ -49,3 +49,8 @@ class WriteDecision:
     # Shared per-write recall (filled by the store before the steps run).
     embedding: list[float] | None = None
     candidates: list[SearchHit] = field(default_factory=list)
+    # Tier-B (gated): controlled-vocabulary aspect tags assigned to the incoming
+    # note by AspectTagger, persisted to Fact.tags; and the bounded same-tag recall
+    # (existing facts sharing a tag) the store adds for the conflict path only.
+    tags: list[str] = field(default_factory=list)
+    tag_candidates: list[SearchHit] = field(default_factory=list)

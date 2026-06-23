@@ -27,15 +27,16 @@ def refresh() -> int:
         )
         return 1
 
-    cases = [c for c in load_cases() if c.merge_model or c.conflict_model]
+    cases = [c for c in load_cases() if c.merge_model or c.conflict_model or c.tag_model]
     if not cases:
-        print("no `merge_model` / `conflict_model` cases to record")
+        print("no `merge_model` / `conflict_model` / `tag_model` cases to record")
         return 0
 
     for case in cases:
-        # Seeding drives graph.write -> Deduper -> MergeJudge and ConflictFlagger ->
-        # ConflictJudge, so the recording cassettes capture each merge/conflict
-        # verdict (and the embed cache captures misses).
+        # Seeding drives graph.write -> AspectTagger -> AspectJudge, Deduper ->
+        # MergeJudge, and ConflictFlagger -> ConflictJudge, so the recording
+        # cassettes capture each aspect/merge/conflict verdict (and the embed cache
+        # captures misses).
         graph, ingestor, _ = _build_trio_for(case)
         for text in case.seeded_insight.direct_to_graph:
             graph.write(text)

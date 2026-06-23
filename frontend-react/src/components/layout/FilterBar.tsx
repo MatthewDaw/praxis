@@ -53,9 +53,9 @@ export function FilterBar({
             aria-label="Filter by state"
           >
             <option>All</option>
-            <option>proposed</option>
-            <option>active</option>
-            <option>decayed</option>
+            <option value="proposed">Proposed</option>
+            <option value="active">Approved</option>
+            <option value="decayed">Rejected</option>
           </select>
         </label>
         {isKnowledgeView ? (

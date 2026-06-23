@@ -85,7 +85,7 @@ export function useCandidates(options: UseCandidatesOptions) {
     async (id: string) => {
       const updated = await provider.promote(id);
       applyCandidate(updated);
-      setLastAction(`Promoted ${updated.title} to ${updated.displayState}.`);
+      setLastAction(`Approved ${updated.title}.`);
       return updated;
     },
     [provider, applyCandidate],
@@ -96,7 +96,7 @@ export function useCandidates(options: UseCandidatesOptions) {
       await provider.reject(id, reason);
       const updated = await refreshCandidateFromProvider(id);
       const note = reason ? ` (reason: ${reason})` : "";
-      setLastAction(`Decayed eval "${updated?.title ?? id}"${note}.`);
+      setLastAction(`Rejected fact "${updated?.title ?? id}"${note}.`);
     },
     [provider, refreshCandidateFromProvider],
   );
@@ -214,7 +214,7 @@ export function filterCandidates(
     );
   }
   if (stateFilter !== "All") {
-    filtered = filtered.filter((c) => c.displayState === stateFilter);
+    filtered = filtered.filter((c) => c.state === stateFilter);
   }
   return filtered;
 }

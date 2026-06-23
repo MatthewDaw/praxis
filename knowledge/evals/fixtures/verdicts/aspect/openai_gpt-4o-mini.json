@@ -1,0 +1,153 @@
+{
+"046b87a13b89b80cce615c7caee0ed654c9ff7c40f5b56535bbcc1550bc641f8": {
+"tags": [
+"comment-density",
+"documentation-policy"
+]
+},
+"0cacd200f08357ab9de08f13ff9f1f44c7be3999f78c22a10d0ee51f0b33e39d": {
+"tags": [
+"dependency-strategy"
+]
+},
+"0de4ab1c92e4a9215a0a385880d3a54f088d6fcc66620d15be844b27bbac64b5": {
+"tags": [
+"performance-vs-readability"
+]
+},
+"18de9bb8995416d246068ba7d3466bc320277d7fb63cd60d31e1fcef8096183d": {
+"tags": [
+"abstraction-vs-directness"
+]
+},
+"1b67ea1fb57dadd19e81fc26837986b18977a88c243b724dc350d5e4948f8f87": {
+"tags": [
+"documentation-policy"
+]
+},
+"24cf9ae9ee79bcf60db3b2d98f82baa877cbd82089b75567fb7d05b2c594a7ab": {
+"tags": [
+"documentation-policy"
+]
+},
+"257e66221f0c0609e0e38d6e50f31c12675362cc27479aa451d085d2ecb2cc25": {
+"tags": [
+"error-handling-strategy"
+]
+},
+"370f0e749d4ca40ae7ac7f4d68ada95e6fb61e9d0d8f37184f41aff031ca835f": {
+"tags": [
+"abstraction-vs-directness"
+]
+},
+"3bc58bde0af174d1d1f1609d52a4fd7d49576c1a50c63c430f312e992b104b10": {
+"tags": [
+"config-organization"
+]
+},
+"49d24cac2cd990de355d4f468c9387d82cffe283d78ac9496e50b87b8386716d": {
+"tags": [
+"config-organization"
+]
+},
+"580e5b1a038f1cdce6dfd65928719ca70286194ec50d2c29a5ff50b28488efd1": {
+"tags": [
+"logging-verbosity"
+]
+},
+"71fdd7c49d1d2eb899646bb156efea1a2ba93c322f15070b76df191ea6bd5cb8": {
+"tags": [
+"error-handling-strategy"
+]
+},
+"75cd5792539510b7c3fb5bfa1957eb68ed212482a3b553aee987b3553e5aad74": {
+"tags": [
+"abstraction-vs-directness"
+]
+},
+"7ccca18bd761d641412a032b6ba74648443f6a68c46eeaab77fdc6426357a7e1": {
+"tags": [
+"testing-rigor-vs-speed"
+]
+},
+"7e0f0700f115b054911dc9a660dcb98f13182c33d6f2a4633a89c0954f29a3e8": {
+"tags": [
+"dependency-strategy"
+]
+},
+"7f4c129274f2acc604c8c62a608ff4b5cdc030f0a8ba1877a2b26ddef6eaeff9": {
+"tags": [
+"performance-vs-readability"
+]
+},
+"a59e82963a0c4565bca0324327c7a7911887af28784552aca08c3671e0be65f0": {
+"tags": [
+"abstraction-vs-directness"
+]
+},
+"b15e847a80e25c67464846828e9f2c8235eb88294fd63e67dfb42730a64b1790": {
+"tags": [
+"logging-verbosity"
+]
+},
+"b60269ef130eb0de9fb9fab7642d165cef21db8ba6e69693da85125bd30d9fc1": {
+"tags": [
+"config-organization"
+]
+},
+"ba7fc69eb47504eb19e10b7287e411d1c727dfcd00678dd3f1495ab9a99ee3ec": {
+"tags": [
+"dependency-strategy"
+]
+},
+"bff7d59a60db46973c6d1e19624954c614f33f9258f1c9edfa98f775e92ed99e": {
+"tags": [
+"abstraction-vs-directness"
+]
+},
+"c8c7441fcc73a4798cf478eafefaf4fa00653187c6d855e7e7bde0de20a046a0": {
+"tags": [
+"config-organization"
+]
+},
+"c9b42c180fe2f4db049a30688938dd60de2aa208f81b1842e6090710635b43ee": {
+"tags": [
+"logging-verbosity"
+]
+},
+"d2af528b48a7de8888f9fec61aef6d7db1baedd08fa0c6698ac946ee94e8e553": {
+"tags": [
+"testing-rigor-vs-speed"
+]
+},
+"d9d83240d6b28137258369566fd8e7e0313dcb3300ed42291fd826e585c800a0": {
+"tags": [
+"error-handling-strategy"
+]
+},
+"db51f54e335789a5dcfe4f4bd0e981c27177e9ea86f819b7d13a9a4248d0b8e5": {
+"tags": [
+"error-handling-strategy"
+]
+},
+"dd60967a2e63bb5ffff41d3c49ea7d2fbecba160c7ac03914654db596a605d68": {
+"tags": [
+"performance-vs-readability"
+]
+},
+"ddc4b9b511f083514b4b4fa3044710b91cf3ce4582713e87e3e223c40f7d9fb3": {
+"tags": [
+"dependency-strategy"
+]
+},
+"e3521c1a1f031806f560d94fd0284a7f2aba4b8ae53c0ca1456361606297cfea": {
+"tags": [
+"performance-vs-readability"
+]
+},
+"e611751de832ae933509ccf5a58517c667aefb91046f3937598a1074e187dfef": {
+"tags": [
+"logging-verbosity"
+]
+}
+}

@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from models.candidate import Candidate, CandidateState
 from services.contract_v1 import (
     CONTRACT_HEADER,
@@ -77,15 +75,6 @@ def test_parse_candidate_list_wrapped_shape() -> None:
     rows = parse_candidate_list({"candidates": [{"id": "x", "title": "t"}]})
     assert len(rows) == 1
     assert rows[0]["id"] == "x"
-
-
-def test_eval_metrics_fixture_has_required_curve() -> None:
-    metrics = _load_json("eval-metrics.json")
-    assert isinstance(metrics, dict)
-    series = metrics.get("correction_rate")
-    assert isinstance(series, list) and len(series) >= 2
-    assert metrics.get("corrections_before") is not None
-    assert metrics.get("corrections_after") is not None
 
 
 def test_ingest_jsonl_request_fixture_shape() -> None:

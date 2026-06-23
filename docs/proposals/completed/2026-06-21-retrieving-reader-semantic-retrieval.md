@@ -23,7 +23,7 @@ nothing to how they're *retrieved*. Retrieval is entirely the reader's job, and
 the only reader wired is `WholeFileReader`, whose `read()` calls
 `graph.read(query)` — which on `VectorGraph` returns **all** fact texts
 concatenated, query ignored ("context ignored; reader filters",
-[vector_graph.py](../../knowledge/knowledge_graph/knowledge_graph_variants/vector_graph.py)).
+[vector_graph.py](../../../knowledge/knowledge_graph/knowledge_graph_variants/vector_graph.py)).
 So:
 
 - **`lost_in_middle_reader`** (component `graph_reader`, `substrate: vector`) asserts

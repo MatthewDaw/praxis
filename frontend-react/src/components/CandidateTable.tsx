@@ -1,5 +1,6 @@
 import { Fragment, useState, type MouseEvent } from "react";
 import {
+  canDeleteCandidate,
   formatCandidateDate,
   nextPromotionState,
   promoteUnavailableReason,
@@ -16,8 +17,6 @@ interface CandidateTableProps {
   onSelect: (id: string) => void;
   onPromote: (id: string) => Promise<void>;
   onReject: (id: string, reason?: string) => Promise<void>;
-  onRefreshCandidate: (id: string) => Promise<void>;
-  refreshingId?: string | null;
   onEdit: (candidate: Candidate) => void;
   onDelete: (id: string) => Promise<void>;
 }
@@ -28,8 +27,6 @@ export function CandidateTable({
   onSelect,
   onPromote,
   onReject,
-  onRefreshCandidate,
-  refreshingId,
   onEdit,
   onDelete,
 }: CandidateTableProps) {
@@ -93,16 +90,6 @@ export function CandidateTable({
     }
   }
 
-  async function runRefresh(id: string) {
-    setPendingId(id);
-    try {
-      await onRefreshCandidate(id);
-    } finally {
-      setPendingId(null);
-      clearConfirmations();
-    }
-  }
-
   function handlePromoteClick(event: MouseEvent, candidate: Candidate) {
     event.stopPropagation();
     onSelect(candidate.id);
@@ -131,6 +118,9 @@ export function CandidateTable({
 
   function handleDeleteClick(event: MouseEvent, candidate: Candidate) {
     event.stopPropagation();
+    if (!canDeleteCandidate(candidate)) {
+      return;
+    }
     onSelect(candidate.id);
     setConfirmDelete(candidate.id);
     setConfirmPromote(null);
@@ -149,15 +139,15 @@ export function CandidateTable({
           {isPromote && nextState ? (
             <>
               <p className="info-banner">
-                Promote <strong>{candidate.title}</strong> from{" "}
+                Approve <strong>{candidate.title}</strong> from{" "}
                 <strong>{candidate.displayState}</strong> to{" "}
-                <strong>{nextState}</strong>?
+                <strong>Approved</strong>?
               </p>
               {candidate.confidence < LOW_CONFIDENCE_THRESHOLD ? (
                 <p className="warning-banner" role="alert" aria-live="assertive">
                   Confidence is {(candidate.confidence * 100).toFixed(0)}% (below{" "}
                   {(LOW_CONFIDENCE_THRESHOLD * 100).toFixed(0)}%) — confirm you want to
-                  promote a low-confidence lesson.
+                  approve a low-confidence lesson.
                 </p>
               ) : null}
               <div className="action-buttons">
@@ -166,9 +156,9 @@ export function CandidateTable({
                   className="btn primary"
                   disabled={pendingId === candidate.id}
                   onClick={() => void runPromote(candidate.id)}
-                  aria-label={`Confirm promote ${candidate.title}`}
+                  aria-label={`Confirm approve ${candidate.title}`}
                 >
-                  Confirm promote
+                  Confirm approve
                 </button>
                 <button
                   type="button"
@@ -183,12 +173,12 @@ export function CandidateTable({
           {isReject ? (
             <>
               <label className="reject-reason">
-                Decay reason (optional)
+                Reject reason (optional)
                 <input
                   type="text"
                   value={rejectReason}
                   onChange={(event) => setRejectReason(event.target.value)}
-                  aria-label="Decay reason"
+                  aria-label="Reject reason"
                 />
               </label>
               <div className="action-buttons">
@@ -197,9 +187,9 @@ export function CandidateTable({
                   className="btn decay"
                   disabled={pendingId === candidate.id}
                   onClick={() => void runReject(candidate.id)}
-                  aria-label={`Confirm decay ${candidate.title}`}
+                  aria-label={`Confirm reject ${candidate.title}`}
                 >
-                  Confirm decay
+                  Confirm reject
                 </button>
                 <button
                   type="button"
@@ -217,7 +207,7 @@ export function CandidateTable({
           {isDelete ? (
             <>
               <p className="warning-banner" role="alert">
-                Delete <strong>{candidate.title}</strong> permanently? This removes the eval
+                Delete <strong>{candidate.title}</strong> permanently? This removes the fact
                 from the review queue.
               </p>
               <div className="action-buttons">
@@ -296,10 +286,10 @@ export function CandidateTable({
                               type="button"
                               className="btn primary"
                               onClick={(event) => handlePromoteClick(event, candidate)}
-                              aria-label={`Promote ${candidate.title}`}
-                              title="Advance proposed → active"
+                              aria-label={`Approve ${candidate.title}`}
+                              title="Approve proposed fact"
                             >
-                              Promote
+                              Approve
                             </button>
                           ) : (
                             <button
@@ -309,17 +299,17 @@ export function CandidateTable({
                               title={promoteBlocked ?? undefined}
                               onClick={(event) => event.stopPropagation()}
                             >
-                              Promote
+                              Approve
                             </button>
                           )}
                           <button
                             type="button"
                             className="btn decay"
                             onClick={(event) => handleRejectClick(event, candidate)}
-                            aria-label={`Decay ${candidate.title}`}
-                            title="Mark eval as decayed"
+                            aria-label={`Reject ${candidate.title}`}
+                            title="Reject this fact"
                           >
-                            Decay
+                            Reject
                           </button>
                         </div>
                         <div className="actions-cell__row">
@@ -333,24 +323,15 @@ export function CandidateTable({
                           </button>
                           <button
                             type="button"
-                            className="btn secondary"
-                            disabled={pendingId === candidate.id || refreshingId === candidate.id}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onSelect(candidate.id);
-                              void runRefresh(candidate.id);
-                            }}
-                            aria-label={`Refresh only ${candidate.title}`}
-                            title="Refresh only this candidate from the current data source"
-                          >
-                            {refreshingId === candidate.id ? "Refreshing" : "Refresh"}
-                          </button>
-                          <button
-                            type="button"
                             className="btn delete"
+                            disabled={!canDeleteCandidate(candidate)}
                             onClick={(event) => handleDeleteClick(event, candidate)}
                             aria-label={`Delete ${candidate.title}`}
-                            title="Remove eval permanently"
+                            title={
+                              canDeleteCandidate(candidate)
+                                ? "Remove fact permanently"
+                                : "Reject before deleting"
+                            }
                           >
                             Delete
                           </button>

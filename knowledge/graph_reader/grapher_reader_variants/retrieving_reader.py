@@ -17,8 +17,10 @@ reader's system contract:
 3. ``top_k`` (volume): a backstop cap. The search pool is ``top_k``, so the cap is
    enforced by retrieval and floor/relative only trim within it.
 
-Set ``abs_floor=0`` or ``rel_ratio=0`` to disable a mechanism (used by tests to
-isolate the other).
+Set ``abs_floor=0``, ``rel_ratio=0``, or ``top_k=0`` to disable a mechanism (used
+to isolate the others). ``top_k=0`` turns the cap OFF entirely: the search pool
+becomes unbounded and no volume trim is applied, so the result is whatever
+floor + relative-to-best admit — pure model-robust relevance, no fixed-N ceiling.
 
 Default calibration (``abs_floor=0.30``, ``rel_ratio=0.60``, ``top_k=8``) is tuned
 against ``openai/text-embedding-3-small``. Two reader cases pin ``rel_ratio`` from
@@ -61,7 +63,8 @@ class RetrievingReader(GraphReader):
         self.rel_ratio = rel_ratio
 
     def synthesis(self, context: str | None = None) -> list[ReadRequest]:
-        return [ReadRequest(query=context or "", top_k=self.top_k)]
+        # top_k=0 -> unbounded: search the full pool (None), no fixed-N ceiling.
+        return [ReadRequest(query=context or "", top_k=self.top_k or None)]
 
     def _cutoff(self, hits: list[SearchHit]) -> list[SearchHit]:
         """Apply floor → relative → cap (operates on existing scores only)."""
@@ -69,7 +72,7 @@ class RetrievingReader(GraphReader):
         if hits and self.rel_ratio > 0:
             top = max(h.score for h in hits)
             hits = [h for h in hits if h.score >= self.rel_ratio * top]  # 2. shape
-        return hits[: self.top_k]  # 3. volume cap
+        return hits[: self.top_k or None]  # 3. volume cap (0 => no cap)
 
     def read(self, context: str | None = None) -> str:
         """Search per request, apply the cutoff, concatenate the survivors.

@@ -31,7 +31,7 @@ where it came from**. Consequences:
   agent wrote `def add` into `calculator.py` or merely typed it in a chat message.
 - When the agent never writes the expected file, `ClaudeCodeRunner` silently falls
   back to a box-sweep or the assistant's final text
-  (`_collect_output`, [claude_code.py:226-253](../../knowledge/evals/claude_code.py)),
+  (`_collect_output`, [claude_code.py:226-253](../../../knowledge/evals/claude_code.py)),
   so "no artifact produced" is **not** distinguishable from "correct artifact
   produced" at grading time.
 - **The box-sweep grades the fixture too.** For a code case the runner can't find
@@ -53,7 +53,7 @@ adds:
 
 The box is a `tempfile.TemporaryDirectory` whose `return EvalContext(...)` happens
 **inside** the `with` block
-([claude_code.py:174-224](../../knowledge/evals/claude_code.py)). The directory is
+([claude_code.py:174-224](../../../knowledge/evals/claude_code.py)). The directory is
 deleted as `run()` returns — *before* `run_case_full` calls `run_checks`. So a
 check **cannot** stat the filesystem post-hoc; the box no longer exists.
 
@@ -217,7 +217,7 @@ Two ways to keep that honest:
   checks. Simple, no magic. Risk: forget it → the case FAILs on OpenRouter
   instead of SKIPping.
 - **Auto-derive (recommended safeguard):** extend `case_needs`
-  ([run.py:124-140](../../knowledge/evals/run.py)) to add `"sandbox"` when any
+  ([run.py:124-140](../../../knowledge/evals/run.py)) to add `"sandbox"` when any
   deterministic check ref ends in `:writes_file` or `:modifies_file`. Removes the
   footgun at the cost of a small name-coupling in `case_needs`.
 
@@ -244,7 +244,7 @@ fixtures→sandbox auto-derivation.
 All offline via the injected `run_cli`. The fake CLI writes (or doesn't write)
 files into the box, exactly as the existing
 `test_runner_copies_fixture_into_box` does
-([test_claude_code.py:72-91](../../knowledge/evals/tests/test_claude_code.py)).
+([test_claude_code.py:72-91](../../../knowledge/evals/tests/test_claude_code.py)).
 
 - **Runner records created file**: fake CLI writes a new `answer.txt` →
   `ctx.artifacts == [Artifact("answer.txt", "created")]`.

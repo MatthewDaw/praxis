@@ -40,9 +40,27 @@ export function parseCandidateState(raw: unknown): {
 } {
   const label = String(raw ?? "proposed");
   if (KNOWN_STATES.has(label as CandidateState)) {
-    return { state: label as CandidateState, displayState: label };
+    const state = label as CandidateState;
+    return { state, displayState: candidateStateLabel(state) };
   }
   return { state: "unrecognized", displayState: label };
+}
+
+export function candidateStateLabel(state: CandidateState): string {
+  switch (state) {
+    case "proposed":
+      return "Proposed";
+    case "active":
+      return "Approved";
+    case "decayed":
+      return "Rejected";
+    case "unrecognized":
+      return "Unrecognized";
+    default: {
+      const _exhaustive: never = state;
+      throw new Error(`Unhandled candidate state: ${_exhaustive}`);
+    }
+  }
 }
 
 export function nextPromotionState(
@@ -62,14 +80,18 @@ export function nextPromotionState(
   }
 }
 
+export function canDeleteCandidate(candidate: Pick<Candidate, "state">): boolean {
+  return candidate.state === "proposed" || candidate.state === "decayed";
+}
+
 export function promoteUnavailableReason(candidate: Candidate): string {
   if (nextPromotionState(candidate.state)) {
     return "";
   }
   if (candidate.state === "decayed") {
-    return `${candidate.title} is decayed — restore via pipeline before promoting.`;
+    return `${candidate.title} is rejected - restore via pipeline before approving.`;
   }
-  return `${candidate.title} is already ${candidate.displayState} — no further promotion.`;
+  return `${candidate.title} is already ${candidate.displayState} - no further approval.`;
 }
 
 export function formatCandidateDate(iso: string): string {

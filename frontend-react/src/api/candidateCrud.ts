@@ -1,4 +1,5 @@
 import { deriveGraphFromCandidates, cloneGraphSnapshot } from "./graphModel";
+import { candidateStateLabel } from "./candidateModel";
 import type { Candidate } from "../types/candidate";
 import type { KnowledgeGraphSnapshot } from "../types/graph";
 
@@ -18,7 +19,7 @@ export function buildNewCandidate(input: CandidateWriteInput, id?: string): Cand
     title: input.title.trim(),
     content: input.content.trim(),
     state: "proposed",
-    displayState: "proposed",
+    displayState: candidateStateLabel("proposed"),
     confidence: clampConfidence(input.confidence ?? 0.5),
     provenance,
     createdAt: now,

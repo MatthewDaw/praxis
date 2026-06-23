@@ -1,4 +1,8 @@
-import { candidateFromMapping } from "./candidateModel";
+import {
+  canDeleteCandidate,
+  candidateFromMapping,
+  candidateStateLabel,
+} from "./candidateModel";
 import { distillCandidatesFromTranscript } from "./heuristicDistiller";
 import {
   cloneGraphSnapshot,
@@ -28,21 +32,6 @@ function syncGraphNodeState(
   }
 }
 
-function removeContradictionEdges(
-  graph: KnowledgeGraphSnapshot,
-  idA: string,
-  idB: string,
-): void {
-  graph.edges = graph.edges.filter(
-    (edge) =>
-      edge.kind !== "contradiction" ||
-      !(
-        (edge.src === idA && edge.dst === idB) ||
-        (edge.src === idB && edge.dst === idA)
-      ),
-  );
-}
-
 export function buildLocalLogSession(files: LocalLogFileInput[]): ParsedLogSession {
   return parseJsonlFiles(files);
 }
@@ -58,7 +47,7 @@ export function createLocalLogsDataProvider(session: ParsedLogSession): DataProv
       if (!state) {
         return [...candidates];
       }
-      return candidates.filter((c) => c.displayState === state);
+      return candidates.filter((c) => c.state === state);
     },
 
     async getCandidate(id) {
@@ -75,7 +64,7 @@ export function createLocalLogsDataProvider(session: ParsedLogSession): DataProv
       const updated: Candidate = {
         ...current,
         state: body.targetState as Candidate["state"],
-        displayState: body.targetState,
+        displayState: candidateStateLabel(body.targetState as Candidate["state"]),
         auditTrail: [
           ...current.auditTrail,
           {
@@ -100,7 +89,7 @@ export function createLocalLogsDataProvider(session: ParsedLogSession): DataProv
       candidates[index] = {
         ...current,
         state: "decayed",
-        displayState: "decayed",
+        displayState: candidateStateLabel("decayed"),
         auditTrail: [
           ...current.auditTrail,
           {
@@ -138,7 +127,15 @@ export function createLocalLogsDataProvider(session: ParsedLogSession): DataProv
       if (index < 0) {
         throw new Error(`Unknown candidate id: ${id}`);
       }
-      candidates = candidates.filter((c) => c.id !== id);
+      if (!canDeleteCandidate(candidates[index])) {
+        throw new Error("Reject this fact before deleting it.");
+      }
+      candidates = candidates
+        .filter((c) => c.id !== id)
+        .map((candidate) => ({
+          ...candidate,
+          contradictionIds: candidate.contradictionIds.filter((cid) => cid !== id),
+        }));
       graph = refreshGraphFromCandidates(graph, candidates);
     },
 
@@ -151,26 +148,25 @@ export function createLocalLogsDataProvider(session: ParsedLogSession): DataProv
       const [primaryId, rivalId] = contradictionId.split("__");
       candidates = candidates.map((candidate) => {
         if (candidate.id === primaryId || candidate.id === rivalId) {
+          const otherId = candidate.id === primaryId ? rivalId : primaryId;
+          const contradictionIds = Array.from(
+            new Set([...candidate.contradictionIds, otherId]),
+          );
           if (candidate.id !== keepId) {
             return {
               ...candidate,
               state: "decayed",
-              displayState: "decayed",
-              contradictionIds: candidate.contradictionIds.filter(
-                (cid) => cid !== primaryId && cid !== rivalId,
-              ),
+              displayState: candidateStateLabel("decayed"),
+              contradictionIds,
             };
           }
           return {
             ...candidate,
-            contradictionIds: candidate.contradictionIds.filter(
-              (cid) => cid !== primaryId && cid !== rivalId,
-            ),
+            contradictionIds,
           };
         }
         return candidate;
       });
-      removeContradictionEdges(graph, primaryId, rivalId);
       const loserId = keepId === primaryId ? rivalId : primaryId;
       syncGraphNodeState(graph, loserId, "decayed");
       syncGraphNodeState(graph, keepId, kept.state);
@@ -184,6 +180,22 @@ export function createLocalLogsDataProvider(session: ParsedLogSession): DataProv
 
     async getTranscript() {
       return session;
+    },
+
+    async listSnapshots() {
+      return [];
+    },
+
+    async saveSnapshot() {
+      throw new Error("Snapshots are not supported for local logs");
+    },
+
+    async loadSnapshot(_name: string, _mode?: "add" | "replace") {
+      throw new Error("Snapshots are not supported for local logs");
+    },
+
+    async deleteSnapshot() {
+      throw new Error("Snapshots are not supported for local logs");
     },
   };
 }
@@ -233,6 +245,22 @@ export function createEmptyLocalLogsProvider(): DataProvider {
 
     async getTranscript() {
       return null;
+    },
+
+    async listSnapshots() {
+      return [];
+    },
+
+    async saveSnapshot() {
+      throw new Error("Snapshots are not supported for local logs");
+    },
+
+    async loadSnapshot(_name: string, _mode?: "add" | "replace") {
+      throw new Error("Snapshots are not supported for local logs");
+    },
+
+    async deleteSnapshot() {
+      throw new Error("Snapshots are not supported for local logs");
     },
   };
 }

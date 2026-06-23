@@ -16,7 +16,7 @@ import {
   deriveGraphFromCandidates,
   parseGraphPayload,
 } from "./graphModel";
-import type { DataProvider } from "./dataProvider";
+import type { DataProvider, Snapshot } from "./dataProvider";
 import type { CandidateWriteInput } from "../types/candidate";
 
 class ApiConflictError extends Error {
@@ -71,6 +71,23 @@ export interface EvalRegenerateResult {
   casesRun: number;
   casesSkipped: number;
   insightsGenerated: number;
+  candidatesInserted: number;
+  ranAt: string;
+}
+
+/** Result of `POST /evals/regenerate` (cache-only, does not change the live graph). */
+export interface EvalCacheResult {
+  casesCached: number;
+  regenerated: string[];
+  fromCache: string[];
+  ranAt: string;
+}
+
+/** Result of `POST /evals/load` (puts cached eval data into the live graph). */
+export interface EvalLoadResult {
+  mode: "add" | "replace";
+  regenerated: string[];
+  fromCache: string[];
   candidatesInserted: number;
   ranAt: string;
 }
@@ -136,6 +153,39 @@ function normalizeGraphIngestResult(payload: unknown): GraphIngestResult {
   };
 }
 
+function toStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === "string");
+}
+
+function normalizeEvalCacheResult(payload: unknown): EvalCacheResult {
+  const row =
+    payload && typeof payload === "object"
+      ? (payload as Record<string, unknown>)
+      : {};
+  return {
+    casesCached: Number(row.cases_cached ?? row.casesCached ?? 0),
+    regenerated: toStringArray(row.regenerated),
+    fromCache: toStringArray(row.from_cache ?? row.fromCache),
+    ranAt: typeof row.ran_at === "string" ? row.ran_at : String(row.ranAt ?? ""),
+  };
+}
+
+function normalizeEvalLoadResult(payload: unknown): EvalLoadResult {
+  const row =
+    payload && typeof payload === "object"
+      ? (payload as Record<string, unknown>)
+      : {};
+  const mode = row.mode === "replace" ? "replace" : "add";
+  return {
+    mode,
+    regenerated: toStringArray(row.regenerated),
+    fromCache: toStringArray(row.from_cache ?? row.fromCache),
+    candidatesInserted: Number(row.candidates_inserted ?? row.candidatesInserted ?? 0),
+    ranAt: typeof row.ran_at === "string" ? row.ran_at : String(row.ranAt ?? ""),
+  };
+}
+
 function normalizeEvalRegenerateResult(payload: unknown): EvalRegenerateResult {
   const row =
     payload && typeof payload === "object"
@@ -149,6 +199,32 @@ function normalizeEvalRegenerateResult(payload: unknown): EvalRegenerateResult {
     candidatesInserted: Number(row.candidates_inserted ?? row.candidatesInserted ?? 0),
     ranAt: typeof row.ran_at === "string" ? row.ran_at : String(row.ranAt ?? ""),
   };
+}
+
+function normalizeSnapshot(payload: unknown): Snapshot {
+  const row =
+    payload && typeof payload === "object"
+      ? (payload as Record<string, unknown>)
+      : {};
+  return {
+    name: typeof row.name === "string" ? row.name : "",
+    count: Number(row.count ?? 0),
+    createdAt:
+      typeof row.createdAt === "string"
+        ? row.createdAt
+        : typeof row.created_at === "string"
+          ? row.created_at
+          : "",
+  };
+}
+
+function normalizeSnapshotList(payload: unknown): Snapshot[] {
+  const row =
+    payload && typeof payload === "object"
+      ? (payload as Record<string, unknown>)
+      : {};
+  const list = Array.isArray(row.snapshots) ? row.snapshots : [];
+  return list.map(normalizeSnapshot);
 }
 
 export interface ApiDataProviderAuth {
@@ -324,6 +400,41 @@ export function createApiDataProvider(
     async getTranscript() {
       return null;
     },
+
+    async listSnapshots() {
+      const payload = await request("GET", "/snapshots");
+      return normalizeSnapshotList(payload);
+    },
+
+    async saveSnapshot(name: string) {
+      const payload = await request("POST", "/snapshots", { name });
+      return normalizeSnapshot(payload);
+    },
+
+    async loadSnapshot(name: string, mode: "add" | "replace" = "replace") {
+      const payload = await request(
+        "POST",
+        `/snapshots/${encodeURIComponent(name)}/load`,
+        { mode },
+      );
+      const row =
+        payload && typeof payload === "object"
+          ? (payload as Record<string, unknown>)
+          : {};
+      return { loaded: Number(row.loaded ?? 0) };
+    },
+
+    async deleteSnapshot(name: string) {
+      const payload = await request(
+        "DELETE",
+        `/snapshots/${encodeURIComponent(name)}`,
+      );
+      const row =
+        payload && typeof payload === "object"
+          ? (payload as Record<string, unknown>)
+          : {};
+      return { deleted: typeof row.deleted === "string" ? row.deleted : name };
+    },
   };
 }
 
@@ -436,27 +547,6 @@ export interface EvalScopesResponse {
   overrideFields: Record<string, string[] | null>;
 }
 
-export interface EvalCaseResult {
-  caseId: string;
-  status: string;
-  passed?: boolean;
-  rubricScore?: number | null;
-  checks?: { name: string; passed: boolean; evidence: string }[];
-  output?: string;
-  injectedKnowledge?: string | null;
-  skipReasons?: string[];
-  xfailReason?: string | null;
-  error?: string;
-}
-
-export interface EvalRunResponse {
-  scopes: string[];
-  backend: string;
-  overrides: Record<string, unknown>;
-  casesRun: number;
-  results: EvalCaseResult[];
-}
-
 async function resolveToken(
   auth?: string | ApiDataProviderAuth,
 ): Promise<{ token?: string; orgId?: string }> {
@@ -490,43 +580,63 @@ export async function listEvalScopes(
   };
 }
 
-export async function runEvalScopes(
+export async function listCachedEvalCases(
   apiBaseUrl: string,
-  scopes: string[],
-  backend: string,
-  overrides: Record<string, unknown>,
-  force: boolean,
   auth?: string | ApiDataProviderAuth,
-): Promise<EvalRunResponse> {
+): Promise<string[]> {
   const root = apiBaseUrl.replace(/\/$/, "");
   const { token, orgId } = await resolveToken(auth);
-  const response = await fetch(`${root}/evals/run`, {
-    method: "POST",
+  const response = await fetch(`${root}/evals/cached`, {
     headers: contractHeaders(token, orgId),
-    body: JSON.stringify({ scopes, backend, overrides, force }),
   });
   if (!response.ok) {
     const message = responseDetail(await response.text(), response.statusText);
     throw new ApiClientError(
-      `API POST /evals/run failed (${response.status}): ${message}`,
+      `API GET /evals/cached failed (${response.status}): ${message}`,
       response.status,
     );
   }
-  return (await parseJsonResponse(response)) as EvalRunResponse;
+  const payload = await parseJsonResponse(response);
+  const cached =
+    payload && typeof payload === "object"
+      ? (payload as { cached?: unknown }).cached
+      : payload;
+  if (!Array.isArray(cached)) return [];
+  return cached.filter((c): c is string => typeof c === "string");
 }
 
-export async function regenerateGraphFromScopes(
+export interface EvalCachePayload {
+  caseIds?: string[];
+  scopes?: string[];
+  distill?: boolean;
+}
+
+export interface EvalLoadPayload {
+  caseIds?: string[];
+  scopes?: string[];
+  mode: "add" | "replace";
+  distill?: boolean;
+}
+
+/**
+ * `POST /evals/regenerate` — create/update the eval CACHE ONLY.
+ * Does NOT change the live graph.
+ */
+export async function regenerateEvalCache(
   apiBaseUrl: string,
-  scopes: string[],
-  distill: boolean,
+  { caseIds, scopes, distill }: EvalCachePayload,
   auth?: string | ApiDataProviderAuth,
-): Promise<EvalRegenerateResult> {
+): Promise<EvalCacheResult> {
   const root = apiBaseUrl.replace(/\/$/, "");
   const { token, orgId } = await resolveToken(auth);
+  const body: Record<string, unknown> = {};
+  if (caseIds) body.caseIds = caseIds;
+  if (scopes) body.scopes = scopes;
+  if (distill !== undefined) body.distill = distill;
   const response = await fetch(`${root}/evals/regenerate`, {
     method: "POST",
     headers: contractHeaders(token, orgId),
-    body: JSON.stringify({ scopes, distill }),
+    body: JSON.stringify(body),
   });
   if (!response.ok) {
     const message = responseDetail(await response.text(), response.statusText);
@@ -538,7 +648,122 @@ export async function regenerateGraphFromScopes(
       response.status,
     );
   }
-  return normalizeEvalRegenerateResult(await parseJsonResponse(response));
+  return normalizeEvalCacheResult(await parseJsonResponse(response));
+}
+
+/**
+ * `POST /evals/load` — put cached eval data into the live graph
+ * (regenerating cache misses first). `mode:"add"` additively upserts each
+ * eval's nodes; `mode:"replace"` truncates the whole live graph then inserts.
+ */
+export async function loadEvals(
+  apiBaseUrl: string,
+  { caseIds, scopes, mode, distill }: EvalLoadPayload,
+  auth?: string | ApiDataProviderAuth,
+): Promise<EvalLoadResult> {
+  const root = apiBaseUrl.replace(/\/$/, "");
+  const { token, orgId } = await resolveToken(auth);
+  const body: Record<string, unknown> = { mode };
+  if (caseIds) body.caseIds = caseIds;
+  if (scopes) body.scopes = scopes;
+  if (distill !== undefined) body.distill = distill;
+  const response = await fetch(`${root}/evals/load`, {
+    method: "POST",
+    headers: contractHeaders(token, orgId),
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const message = responseDetail(await response.text(), response.statusText);
+    if (response.status === 404 || response.status === 405 || response.status === 503) {
+      throw new EvalRegenerateUnavailableError(message, response.status);
+    }
+    throw new ApiClientError(
+      `API POST /evals/load failed (${response.status}): ${message}`,
+      response.status,
+    );
+  }
+  return normalizeEvalLoadResult(await parseJsonResponse(response));
+}
+
+async function snapshotRequest(
+  apiBaseUrl: string,
+  method: string,
+  path: string,
+  auth?: string | ApiDataProviderAuth,
+  body?: Record<string, unknown>,
+): Promise<unknown> {
+  const root = apiBaseUrl.replace(/\/$/, "");
+  const { token, orgId } = await resolveToken(auth);
+  const response = await fetch(`${root}${path}`, {
+    method,
+    headers: contractHeaders(token, orgId),
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!response.ok) {
+    const message = responseDetail(await response.text(), response.statusText);
+    throw new ApiClientError(
+      `API ${method} ${path} failed (${response.status}): ${message}`,
+      response.status,
+    );
+  }
+  return parseJsonResponse(response);
+}
+
+export async function listSnapshots(
+  apiBaseUrl: string,
+  auth?: string | ApiDataProviderAuth,
+): Promise<Snapshot[]> {
+  return normalizeSnapshotList(
+    await snapshotRequest(apiBaseUrl, "GET", "/snapshots", auth),
+  );
+}
+
+export async function saveSnapshot(
+  apiBaseUrl: string,
+  name: string,
+  auth?: string | ApiDataProviderAuth,
+): Promise<Snapshot> {
+  return normalizeSnapshot(
+    await snapshotRequest(apiBaseUrl, "POST", "/snapshots", auth, { name }),
+  );
+}
+
+export async function loadSnapshot(
+  apiBaseUrl: string,
+  name: string,
+  mode: "add" | "replace" = "replace",
+  auth?: string | ApiDataProviderAuth,
+): Promise<{ loaded: number }> {
+  const payload = await snapshotRequest(
+    apiBaseUrl,
+    "POST",
+    `/snapshots/${encodeURIComponent(name)}/load`,
+    auth,
+    { mode },
+  );
+  const row =
+    payload && typeof payload === "object"
+      ? (payload as Record<string, unknown>)
+      : {};
+  return { loaded: Number(row.loaded ?? 0) };
+}
+
+export async function deleteSnapshot(
+  apiBaseUrl: string,
+  name: string,
+  auth?: string | ApiDataProviderAuth,
+): Promise<{ deleted: string }> {
+  const payload = await snapshotRequest(
+    apiBaseUrl,
+    "DELETE",
+    `/snapshots/${encodeURIComponent(name)}`,
+    auth,
+  );
+  const row =
+    payload && typeof payload === "object"
+      ? (payload as Record<string, unknown>)
+      : {};
+  return { deleted: typeof row.deleted === "string" ? row.deleted : name };
 }
 
 export {

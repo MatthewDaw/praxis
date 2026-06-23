@@ -17,10 +17,12 @@ interface ScopePickerProps {
   scopes: EvalScope[];
   selected: string[];
   onChange: (next: string[]) => void;
+  /** Case ids (file scopes) that currently have cached eval data. */
+  cached?: Set<string>;
 }
 
 /** A file-tree style folder browser with multi-select (folders and/or cases). */
-export function ScopePicker({ scopes, selected, onChange }: ScopePickerProps) {
+export function ScopePicker({ scopes, selected, onChange, cached }: ScopePickerProps) {
   const [scope, setScope] = useState("."); // navigation cursor (current folder)
 
   const currentCount = useMemo(
@@ -119,6 +121,21 @@ export function ScopePicker({ scopes, selected, onChange }: ScopePickerProps) {
                       {isDir ? "📁" : "📄"}
                     </span>
                     <span className="eval-runner__entry-name">{leafName(c.scope)}</span>
+                    {!isDir && cached ? (
+                      // The cache is keyed by the bare case id (eval:<case_id>),
+                      // which is the path's leaf — not the full folder path. Match
+                      // on leafName so nested cases (e.g. matt/foo) light up too.
+                      (() => {
+                        const isCached = cached.has(leafName(c.scope));
+                        return (
+                          <span
+                            className={`eval-runner__cache-dot${isCached ? " is-cached" : ""}`}
+                            title={isCached ? "cached" : "not cached"}
+                            aria-label={isCached ? "cached" : "not cached"}
+                          />
+                        );
+                      })()
+                    ) : null}
                     {isDir ? <span className="eval-runner__entry-count">{c.caseCount}</span> : null}
                     {isDir ? <span className="eval-runner__entry-caret">›</span> : null}
                   </button>

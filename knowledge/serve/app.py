@@ -1,14 +1,20 @@
-"""FastAPI server implementing the candidate-api-v1 contract over the store.
+"""FastAPI server implementing the candidate-api-v1 contract over the facts spine.
 
-Closes the loop: the React dashboard (with VITE_PRAXIS_API_BASE_URL pointed
-here) reads/mutates real, persisted candidates instead of a static fixture, and
-its Contradictions tab is fed by the live store via the contradiction adapter.
+Single source of truth: the ``facts`` table (one tenant graph per
+``(org_id, user_id)``), reached through :class:`PostgresVectorGraph`. The
+dashboard "candidate" read model is a projection of facts via
+:class:`knowledge.serve.facts_candidates.FactsCandidates`; the graph view, the
+MCP ``get_context`` retrieval, and the Contradictions tab all read the same rows.
+
+Saved graph states (user snapshots + cached eval cases) live in the
+``cached_facts`` table keyed by ``cache_key`` (``snapshot:<name>`` /
+``eval:<case_id>``); loading one truncates the live graph and inserts the saved
+rows, and snapshotting copies the live graph into the cache.
 
 Every data route hard-requires a valid Cognito JWT (the ``current_user``
 dependency) and resolves the active org from the ``X-Praxis-Org`` header; the
-caller must be a member of that org. ``/health`` stays open. When no DSN
-resolves the in-memory JSON store is used and there is no orgs store, so the
-membership check is skipped (offline/dev mode).
+caller must be a member of that org. ``/health`` stays open. A Postgres DSN is
+required (no JSON/offline fallback).
 
 Run: uv run python -m knowledge.serve   (serves on http://localhost:8000)
 """
@@ -16,30 +22,40 @@ Run: uv run python -m knowledge.serve   (serves on http://localhost:8000)
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 
-from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+# Load the repo-root ``.env`` (OPENROUTER/COGNITO/PRAXIS_DB_URL ...) before any
+# ``knowledge.*`` import reads the environment. Without this the server starts
+# with an empty env: no DB, no Cognito ("invalid token"), no embedder key.
+load_dotenv()
+
+from fastapi import Body, Depends, FastAPI, Header, HTTPException  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (  # noqa: E402
     PostgresVectorGraph,
+    default_write_policy,
 )
-from knowledge.knowledge_graph.write_policy.write_step_variants import (
+from knowledge.knowledge_graph.write_policy.write_step_variants import (  # noqa: E402
     ConflictOverwriter,
     Deduper,
     Redactor,
 )
-from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
-from knowledge.serve import contradiction_adapter, db, graph_adapter
-from knowledge.serve.auth import Principal, current_user
-from knowledge.serve.orgs_store import OrgsStore
-from knowledge.serve.regenerate import (
+from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm  # noqa: E402
+from knowledge.serve import db, graph_adapter  # noqa: E402
+from knowledge.serve.auth import Principal, current_user  # noqa: E402
+from knowledge.serve.facts_candidates import FactsCandidates, PromotionError  # noqa: E402
+from knowledge.serve.orgs_store import OrgsStore  # noqa: E402
+from knowledge.serve.regenerate import (  # noqa: E402
     PipelineConfig,
     RegenerateUnavailableError,
-    regenerate_candidates,
+    case_ids_for,
+    distill_case,
 )
-from knowledge.serve.store import CandidateStore, PromotionError, contradiction_ids
-from knowledge.wiring import build_trio
+from knowledge.wiring import build_trio  # noqa: E402
 
 _DEFAULT_CORS_REGEX = (
     r"(http://(localhost|127\.0\.0\.1):\d+|https://[\w-]+\.onrender\.com"
@@ -53,33 +69,26 @@ def _cors_origin_regex() -> str:
     return custom or _DEFAULT_CORS_REGEX
 
 
-def _store_type(store: Any) -> str:
-    from knowledge.serve.postgres_store import PostgresCandidateStore
-
-    return "postgres" if isinstance(store, PostgresCandidateStore) else "json"
+def _now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def default_store() -> Any:
-    """Pick a backing store: Postgres when a DSN resolves, else the JSON file.
+def create_app(conn: Any | None = None) -> FastAPI:
+    """Build the app over a single shared Postgres connection.
 
-    Tenancy is now per-request (resolved from the verified principal + the
-    ``X-Praxis-Org`` header), so the Postgres store is built without tenant
-    context and serves all users from a single connection.
+    The connection is opened once per process (autocommit) and shared by the
+    orgs store and every per-request tenant graph. A resolvable DSN is required.
     """
-    if db.resolve_dsn() is not None:
-        from knowledge.serve.postgres_store import PostgresCandidateStore
+    conn = conn if conn is not None else db.connect()
+    orgs_store = OrgsStore(conn)
 
-        return PostgresCandidateStore()
-    return CandidateStore()
+    def candidates_for(org: str, sub: str) -> FactsCandidates:
+        """The candidate facade for one requester's tenant graph."""
+        return FactsCandidates(conn, org, sub)
 
-
-def create_app(store: Any | None = None) -> FastAPI:
-    store = store if store is not None else default_store()
-    # An OrgsStore only exists for the Postgres path (it shares the connection);
-    # without one the routes skip the membership check (offline/dev mode).
-    orgs_store: OrgsStore | None = None
-    if _store_type(store) == "postgres":
-        orgs_store = OrgsStore(store._conn)
+    def live_graph(org: str, sub: str) -> PostgresVectorGraph:
+        """The live facts graph for one requester (no write policy needed for reads)."""
+        return PostgresVectorGraph(conn, org, sub)
 
     app = FastAPI(title="Praxis Candidate API", version="1")
 
@@ -96,44 +105,36 @@ def create_app(store: Any | None = None) -> FastAPI:
         cors_kwargs["allow_origins"] = explicit_origins
     else:
         cors_kwargs["allow_origin_regex"] = _cors_origin_regex()
-
     app.add_middleware(CORSMiddleware, **cors_kwargs)
 
     def active_org(
         principal: Principal = Depends(current_user),
         x_praxis_org: str | None = Header(default=None),
     ) -> str:
-        """Resolve + authorize the requester's active org for a data route.
-
-        The org comes from the ``X-Praxis-Org`` header. When an OrgsStore is
-        present (Postgres path) the principal must be a member, else 403. With
-        no orgs store (in-memory/offline) any org string is accepted as-is.
-        """
+        """Resolve + authorize the requester's active org (from ``X-Praxis-Org``)."""
         org = x_praxis_org or "default"
-        if orgs_store is not None:
-            if not orgs_store.is_member(org, principal.sub):
-                raise HTTPException(status_code=403, detail=f"not a member of org {org!r}")
+        if not orgs_store.is_member(org, principal.sub):
+            raise HTTPException(status_code=403, detail=f"not a member of org {org!r}")
         return org
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        return {
-            "status": "ok",
-            "store": _store_type(store),
-        }
+        return {"status": "ok", "store": "postgres"}
 
     @app.get("/me")
     def me(principal: Principal = Depends(current_user)) -> dict[str, Any]:
-        orgs = orgs_store.list_orgs(principal.sub) if orgs_store is not None else []
-        return {"sub": principal.sub, "email": principal.email, "orgs": orgs}
+        return {
+            "sub": principal.sub,
+            "email": principal.email,
+            "orgs": orgs_store.list_orgs(principal.sub),
+        }
 
+    # --- orgs --------------------------------------------------------------
     @app.post("/orgs")
     def create_org(
         body: dict[str, Any] = Body(default={}),
         principal: Principal = Depends(current_user),
     ) -> dict[str, Any]:
-        if orgs_store is None:
-            raise HTTPException(status_code=503, detail="orgs require a database")
         org_id, name, password = body.get("orgId"), body.get("name"), body.get("password")
         if not org_id or not password:
             raise HTTPException(status_code=400, detail="orgId and password required")
@@ -148,8 +149,6 @@ def create_app(store: Any | None = None) -> FastAPI:
         body: dict[str, Any] = Body(default={}),
         principal: Principal = Depends(current_user),
     ) -> dict[str, Any]:
-        if orgs_store is None:
-            raise HTTPException(status_code=503, detail="orgs require a database")
         org_id, password = body.get("orgId"), body.get("password")
         if not org_id or not password:
             raise HTTPException(status_code=400, detail="orgId and password required")
@@ -164,8 +163,6 @@ def create_app(store: Any | None = None) -> FastAPI:
         body: dict[str, Any] = Body(default={}),
         principal: Principal = Depends(current_user),
     ) -> dict[str, Any]:
-        if orgs_store is None:
-            raise HTTPException(status_code=503, detail="orgs require a database")
         org_id = body.get("orgId")
         current, new = body.get("currentPassword"), body.get("newPassword")
         if not org_id or not current or not new:
@@ -179,13 +176,14 @@ def create_app(store: Any | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc))
         return {"orgId": org_id, "status": "password_changed"}
 
+    # --- candidates (projection of the facts spine) ------------------------
     @app.get("/candidates")
     def list_candidates(
         state: str | None = None,
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> list[dict[str, Any]]:
-        return store.list(org, principal.sub, state)
+        return candidates_for(org, principal.sub).list(state)
 
     @app.get("/candidates/{cid}")
     def get_candidate(
@@ -193,7 +191,7 @@ def create_app(store: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        c = store.get(org, principal.sub, cid)
+        c = candidates_for(org, principal.sub).get(cid)
         if c is None:
             raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
         return c
@@ -206,7 +204,7 @@ def create_app(store: Any | None = None) -> FastAPI:
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
         try:
-            return store.promote(org, principal.sub, cid, body.get("targetState"))
+            return candidates_for(org, principal.sub).promote(cid, body.get("targetState"))
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
         except PromotionError as exc:
@@ -220,7 +218,7 @@ def create_app(store: Any | None = None) -> FastAPI:
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
         try:
-            return store.reject(org, principal.sub, cid, body.get("reason"))
+            return candidates_for(org, principal.sub).reject(cid, body.get("reason"))
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
 
@@ -231,7 +229,7 @@ def create_app(store: Any | None = None) -> FastAPI:
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
         try:
-            return store.create(org, principal.sub, body)
+            return candidates_for(org, principal.sub).create(body)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
@@ -243,7 +241,7 @@ def create_app(store: Any | None = None) -> FastAPI:
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
         try:
-            return store.update(org, principal.sub, cid, body)
+            return candidates_for(org, principal.sub).update(cid, body)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
         except ValueError as exc:
@@ -256,25 +254,18 @@ def create_app(store: Any | None = None) -> FastAPI:
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
         try:
-            store.delete(org, principal.sub, cid)
+            candidates_for(org, principal.sub).delete(cid)
             return {"deleted": cid}
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
 
+    # --- contradictions ----------------------------------------------------
     @app.get("/contradictions")
     def contradictions(
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> list[dict[str, Any]]:
-        return contradiction_adapter.serialize_pairs(store.list(org, principal.sub))
-
-    @app.get("/graph")
-    def graph(
-        principal: Principal = Depends(current_user),
-        org: str = Depends(active_org),
-    ) -> dict[str, Any]:
-        """Return a graph snapshot derived from the currently served candidates."""
-        return {"graph": graph_adapter.graph_from_candidates(store.list(org, principal.sub))}
+        return candidates_for(org, principal.sub).contradictions()
 
     @app.post("/contradictions/{pair_id}/resolve")
     def resolve(
@@ -283,11 +274,11 @@ def create_app(store: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        # A custom resolution supersedes BOTH sides with new, user-authored text.
+        facade = candidates_for(org, principal.sub)
         custom_text = body.get("customText")
         if custom_text is not None and str(custom_text).strip():
             try:
-                return store.resolve_custom(org, principal.sub, pair_id, str(custom_text))
+                return facade.resolve_custom(pair_id, str(custom_text))
             except KeyError:
                 raise HTTPException(status_code=404, detail=f"unknown contradiction {pair_id}")
             except ValueError as exc:
@@ -296,35 +287,139 @@ def create_app(store: Any | None = None) -> FastAPI:
         if not keep_id:
             raise HTTPException(status_code=400, detail="keepId or customText required")
         try:
-            return store.resolve(org, principal.sub, pair_id, str(keep_id))
+            return facade.resolve(pair_id, str(keep_id))
         except KeyError:
-            raise HTTPException(status_code=404, detail=f"unknown candidate {keep_id}")
+            raise HTTPException(status_code=404, detail=f"unknown contradiction {pair_id}")
 
-    @app.post("/contradictions/detect")
-    def detect(
+    # --- graph snapshot (the dashboard graph view) -------------------------
+    @app.get("/graph")
+    def graph(
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        """Re-run live contradiction detection over the store (best-effort)."""
-        listed = store.list(org, principal.sub)
-        pairs = contradiction_adapter.detect(listed)
-        by_id = {c["id"]: c for c in listed}
-        touched: set[str] = set()
-        for a, b in pairs:
-            for x, y in ((a, b), (b, a)):
-                c = by_id.get(x)
-                if c is not None:
-                    links = set(contradiction_ids(c))
-                    links.add(y)
-                    c["contradiction_ids"] = sorted(links)
-                    touched.add(x)
-        # Persist the new links: per-row upsert for Postgres, file flush for JSON.
-        if hasattr(store, "_upsert"):
-            for x in touched:
-                store._upsert(org, principal.sub, by_id[x])
-        elif hasattr(store, "_persist"):
-            store._persist()
-        return {"detected_pairs": len(pairs)}
+        """The live graph: active facts + their edges, the same rows retrieval reads."""
+        g = live_graph(org, principal.sub)
+        return {"graph": graph_adapter.graph_from_facts(g.active_facts(), g.active_edges())}
+
+    # --- snapshots (saved live-graph states in the cache) ------------------
+    @app.get("/snapshots")
+    def list_snapshots(
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        entries = live_graph(org, principal.sub).list_caches("snapshot:")
+        return {
+            "snapshots": [
+                {
+                    "name": e["key"].split("snapshot:", 1)[1],
+                    "count": e["count"],
+                    "createdAt": e["created_at"],
+                }
+                for e in entries
+            ]
+        }
+
+    @app.post("/snapshots")
+    def save_snapshot(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Save the current live graph under ``name`` (create or overwrite)."""
+        name = str(body.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name required")
+        count = live_graph(org, principal.sub).save_cache(f"snapshot:{name}")
+        return {"name": name, "count": count}
+
+    @app.post("/snapshots/{name}/load")
+    def load_snapshot(
+        name: str,
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Put a snapshot into the live graph.
+
+        ``mode="replace"`` (default) truncates the whole live graph then inserts
+        the snapshot. ``mode="add"`` additively merges the snapshot into the
+        current graph (replacing only nodes the snapshot shares by id), keeping
+        other live facts.
+        """
+        mode = str(body.get("mode") or "replace").strip().lower()
+        if mode not in ("add", "replace"):
+            raise HTTPException(status_code=400, detail="mode must be 'add' or 'replace'")
+        g = live_graph(org, principal.sub)
+        key = f"snapshot:{name}"
+        if g.cache_count(key) == 0:
+            raise HTTPException(status_code=404, detail=f"unknown snapshot {name!r}")
+        loaded = g.merge_caches_into_live([key]) if mode == "add" else g.load_caches([key])
+        return {"loaded": loaded, "mode": mode}
+
+    @app.delete("/snapshots/{name}")
+    def delete_snapshot(
+        name: str,
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        live_graph(org, principal.sub).delete_cache(f"snapshot:{name}")
+        return {"deleted": name}
+
+    # --- eval cache (per case) + loading into the live graph ---------------
+    @app.get("/evals/cached")
+    def cached_eval_cases(
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Eval case ids that currently have cached data (drives the UI status dots)."""
+        entries = live_graph(org, principal.sub).list_caches("eval:")
+        return {"cached": [e["key"].split("eval:", 1)[1] for e in entries]}
+
+    def _selected_case_ids(body: dict[str, Any]) -> list[str]:
+        """Resolve the requested scopes/caseIds into concrete eval case ids."""
+        config = PipelineConfig.from_body(body)
+        case_ids = case_ids_for(list(config.scopes), list(config.case_ids))
+        if not case_ids:
+            raise HTTPException(status_code=400, detail="no eval cases selected")
+        return case_ids
+
+    def _ensure_cached(
+        org: str, sub: str, case_ids: list[str], *, distill: bool, force: bool
+    ) -> tuple[list[str], list[str]]:
+        """Make sure each case has a cache entry; (re)generate misses (or all, if force).
+
+        Returns (regenerated_case_ids, from_cache_case_ids). Writes only the
+        cache (``cached_facts``); the live graph is untouched here.
+        """
+        live = live_graph(org, sub)
+        regenerated: list[str] = []
+        from_cache: list[str] = []
+        for cid in case_ids:
+            key = f"eval:{cid}"
+            if not force and live.cache_count(key) > 0:
+                from_cache.append(cid)
+                continue
+            seeds = distill_case(cid, distill=distill)
+            eval_graph = PostgresVectorGraph(
+                conn,
+                org,
+                sub,
+                facts_table="cached_facts",
+                edges_table="cached_fact_edges",
+                cache_key=key,
+                policy=default_write_policy(),
+            )
+            eval_graph.wipe_cache()  # clean slate for a (re)generated case
+            for seed in seeds:
+                eval_graph.write(
+                    seed.text,
+                    state=seed.state,
+                    source=seed.source,
+                    scope=seed.scope,
+                    category=seed.category,
+                )
+            regenerated.append(cid)
+        return regenerated, from_cache
 
     @app.post("/evals/regenerate")
     def regenerate_evals(
@@ -332,28 +427,76 @@ def create_app(store: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        """Run eval-backed regeneration and replace pipeline-owned candidates."""
+        """Run pipeline: create/update the eval CACHE only — never touch the graph.
+
+        Force-upserts the cache for the selected cases (distillation by default).
+        The live graph is not changed; use ``/evals/load`` to put cached eval data
+        into the graph.
+        """
+        body = body or {}
         try:
-            config = PipelineConfig.from_body(body)
-            result = regenerate_candidates(config)
+            case_ids = _selected_case_ids(body)
+            regenerated, from_cache = _ensure_cached(
+                org,
+                principal.sub,
+                case_ids,
+                distill=bool(body.get("distill", True)),
+                force=True,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except RegenerateUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+        return {
+            "cases_cached": len(regenerated),
+            "regenerated": regenerated,
+            "from_cache": from_cache,
+            "ran_at": _now(),
+        }
+
+    @app.post("/evals/load")
+    def load_evals(
+        body: dict[str, Any] | None = Body(default=None),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Put cached eval data into the live graph.
+
+        ``mode="add"`` (default) additively merges each eval's nodes into the
+        graph (replacing only that eval's own nodes if already present), keeping
+        other live facts. ``mode="replace"`` truncates the whole live graph first,
+        then inserts the selected eval(s). Cache misses are (re)generated first.
+        """
+        body = body or {}
+        mode = str(body.get("mode") or "add").strip().lower()
+        if mode not in ("add", "replace"):
+            raise HTTPException(status_code=400, detail="mode must be 'add' or 'replace'")
+        try:
+            case_ids = _selected_case_ids(body)
+            regenerated, from_cache = _ensure_cached(
+                org,
+                principal.sub,
+                case_ids,
+                distill=bool(body.get("distill", False)),
+                force=False,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except RegenerateUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
 
-        # A scope-based load means "show exactly this dataset", so reset all rows
-        # (clearing demo seeds / prior loads); preset regenerate keeps manual rows.
-        inserted = store.replace_pipeline_candidates(
-            org, principal.sub, result.candidates, reset=bool(config.scopes)
-        )
+        keys = [f"eval:{cid}" for cid in case_ids]
+        live = live_graph(org, principal.sub)
+        if mode == "replace":
+            facts_in_graph = live.load_caches(keys)
+        else:
+            facts_in_graph = live.merge_caches_into_live(keys)
         return {
-            "preset": result.preset,
-            "cases_run": result.cases_run,
-            "cases_skipped": result.cases_skipped,
-            "insights_generated": len(result.insights),
-            "candidates_inserted": inserted,
-            "ran_at": result.ran_at,
-            "eval_results": result.eval_results,
+            "mode": mode,
+            "regenerated": regenerated,
+            "from_cache": from_cache,
+            "candidates_inserted": facts_in_graph,
+            "ran_at": _now(),
         }
 
     @app.get("/evals/scopes")
@@ -369,62 +512,32 @@ def create_app(store: Any | None = None) -> FastAPI:
             "overrideFields": {k: (list(v) if v else None) for k, v in OVERRIDE_FIELDS.items()},
         }
 
-    @app.post("/evals/run")
-    def run_eval_scope(
-        body: dict[str, Any] = Body(default={}),
-        principal: Principal = Depends(current_user),
-    ) -> dict[str, Any]:
-        """Run every case under the selected scopes (seed -> agent -> grade)."""
-        from knowledge.serve.eval_runner import run_scopes
-
-        raw_scopes = body.get("scopes")
-        if isinstance(raw_scopes, list):
-            scopes = [str(s) for s in raw_scopes if str(s).strip()]
-        elif body.get("scope"):
-            scopes = [str(body.get("scope"))]
-        else:
-            scopes = None
-        backend = str(body.get("backend") or "openrouter").strip()
-        overrides = body.get("overrides") if isinstance(body.get("overrides"), dict) else {}
-        limit = body.get("limit")
-        force = bool(body.get("force"))
-        try:
-            return run_scopes(scopes, backend, overrides, int(limit) if limit else None, force)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-
+    # --- insights + context (MCP read/write path) --------------------------
     @app.post("/insights")
     def add_insight(
         body: dict[str, Any] = Body(default={}),
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        """Ingest a fully-approved insight into the active ``facts`` store.
+        """Ingest a fully-approved insight into the live ``facts`` store.
 
-        Runs the eval write path (``ingestor.ingest`` -> ``graph.write``) with the
-        force-overwrite policy, so a contradicting add supersedes the conflicting
+        Force-overwrite policy: a contradicting add supersedes the conflicting
         fact in place. The in-chat confirmation is the human gate, so the insight
-        enters ``active`` at full credibility (``confidence`` defaults to 1.0).
+        enters ``active`` at full credibility.
         """
-        if orgs_store is None:
-            raise HTTPException(status_code=503, detail="insights require a database")
         insight = (body.get("insight") or "").strip()
         if not insight:
             raise HTTPException(status_code=400, detail="insight required")
         graph = PostgresVectorGraph(
-            store._conn,
+            conn,
             org,
             principal.sub,
             policy=[Redactor(), Deduper(), ConflictOverwriter(llm=OpenRouterLlm())],
         )
         _, ingestor, _ = build_trio(graph=graph, llm=None)
-        # state=None: detect a merge/overwrite against any prior fact, including a
-        # pending (proposed) one the approved insight supersedes — not just active.
         before = graph.search(insight, top_k=1, state=None)
         ingestor.ingest(insight, state="active")  # human-gated -> live knowledge
         after = graph.search(insight, top_k=1, state=None)
-        # Read back the outcome: a stable id with a higher observation_count means
-        # a merge/overwrite; a fresh id (or text change) means an add/overwrite.
         prior = before[0].fact if before else None
         top = after[0].fact if after else None
         if prior is not None and top is not None and prior.id == top.id:
@@ -445,9 +558,7 @@ def create_app(store: Any | None = None) -> FastAPI:
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
         """Return active-fact context relevant to ``query`` (the eval read path)."""
-        if orgs_store is None:
-            raise HTTPException(status_code=503, detail="context requires a database")
-        graph = PostgresVectorGraph(store._conn, org, principal.sub)
+        graph = live_graph(org, principal.sub)
         _, _, reader = build_trio(graph=graph, llm=None)
         hits = graph.search(query, top_k=top_k) if query.strip() else []
         return {
