@@ -21,7 +21,7 @@ import uuid
 import psycopg
 from pgvector import Vector
 
-from knowledge.knowledge_graph.knowledge_graph_def import Fact, SearchHit
+from knowledge.knowledge_graph.knowledge_graph_def import Claim, Fact, SearchHit
 from knowledge.knowledge_graph.parent_searchable_graph import SearchableGraph
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
 from knowledge.knowledge_graph.write_policy.write_policy_def import WriteDecision
@@ -57,6 +57,12 @@ _ALLOWED_EDGES_TABLES = {"fact_edges", "cached_fact_edges"}
 _FACT_COPY_COLS = (
     "id, org_id, user_id, shared, text, source, confidence, scope, category, "
     "observation_count, state, embedding, meta, created_at"
+)
+
+# Columns copied verbatim between `claims` and `cached_claims` (cache_key stamped
+# per copy). Keeps extracted claims in snapshots/eval cache losslessly.
+_CLAIM_COPY_COLS = (
+    "org_id, user_id, fact_id, seq, subject, attribute, value, functional, created_at"
 )
 
 
@@ -117,6 +123,10 @@ class PostgresVectorGraph(SearchableGraph):
             raise ValueError("cache_key must be None for the live facts tables")
         self._facts_table = facts_table
         self._edges_table = edges_table
+        # The claims table tracks the facts table: live facts -> `claims`,
+        # cached facts -> `cached_claims`. Not caller-controlled, so no allowlist
+        # check is needed beyond the facts_table validation above.
+        self._claims_table = "cached_claims" if is_cache else "claims"
         self._cache_key = cache_key
         self._conn = conn
         self.org_id = org_id
@@ -222,6 +232,52 @@ class PostgresVectorGraph(SearchableGraph):
             conflict_id = flag.split(":", 1)[1]
             if conflict_id and conflict_id != fact_id:
                 self.add_edge(fact_id, conflict_id, "contradiction")
+
+    def _persist_claims(self, fact_id: str, claims: list[Claim]) -> None:
+        """Replace the stored claims for ``fact_id`` with ``claims``.
+
+        Delete-then-insert so a rewritten fact's claims stay in sync. Subject and
+        attribute are stored normalized (the slot index matches on them); value is
+        raw. Cache-bound graphs stamp the bound ``cache_key``.
+        """
+        cache_cols = ["cache_key"] if self._cache_key is not None else []
+        del_sql = (
+            f"DELETE FROM {self._claims_table} "
+            "WHERE org_id=%s AND user_id=%s AND fact_id=%s"
+        )
+        del_params: list[object] = [self.org_id, self.user_id, fact_id]
+        if self._cache_key is not None:
+            del_sql += " AND cache_key=%s"
+            del_params.append(self._cache_key)
+        self._conn.execute(del_sql, del_params)
+        for seq, c in enumerate(claims):
+            cols = ["org_id", "user_id", *cache_cols, "fact_id", "seq",
+                    "subject", "attribute", "value", "functional"]
+            vals: list[object] = [self.org_id, self.user_id]
+            if self._cache_key is not None:
+                vals.append(self._cache_key)
+            vals += [fact_id, seq, Claim.norm(c.subject), Claim.norm(c.attribute),
+                     c.value, c.functional]
+            placeholders = ", ".join(["%s"] * len(vals))
+            self._conn.execute(
+                f"INSERT INTO {self._claims_table} ({', '.join(cols)}) "
+                f"VALUES ({placeholders}) ON CONFLICT DO NOTHING",
+                vals,
+            )
+
+    def claims_for(self, fact_id: str) -> list[Claim]:
+        """Stored claims for one fact, in seq order."""
+        sql = (
+            f"SELECT subject, attribute, value, functional FROM {self._claims_table} "
+            "WHERE org_id=%s AND user_id=%s AND fact_id=%s"
+        )
+        params: list[object] = [self.org_id, self.user_id, fact_id]
+        if self._cache_key is not None:
+            sql += " AND cache_key=%s"
+            params.append(self._cache_key)
+        sql += " ORDER BY seq"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [Claim(subject=r[0], attribute=r[1], value=r[2], functional=r[3]) for r in rows]
 
     # --- SearchableGraph contract ------------------------------------------
     def search(
@@ -510,6 +566,9 @@ class PostgresVectorGraph(SearchableGraph):
             "DELETE FROM cached_fact_edges WHERE org_id=%s AND user_id=%s AND cache_key=%s", tenant
         )
         self._conn.execute(
+            "DELETE FROM cached_claims WHERE org_id=%s AND user_id=%s AND cache_key=%s", tenant
+        )
+        self._conn.execute(
             "DELETE FROM cached_facts WHERE org_id=%s AND user_id=%s AND cache_key=%s", tenant
         )
         self._conn.execute(
@@ -521,6 +580,11 @@ class PostgresVectorGraph(SearchableGraph):
             "INSERT INTO cached_fact_edges (org_id, user_id, cache_key, src_id, dst_id, kind) "
             "SELECT org_id, user_id, %s, src_id, dst_id, kind FROM fact_edges "
             "WHERE org_id=%s AND user_id=%s",
+            (cache_key, self.org_id, self.user_id),
+        )
+        self._conn.execute(
+            f"INSERT INTO cached_claims ({_CLAIM_COPY_COLS}, cache_key) "
+            f"SELECT {_CLAIM_COPY_COLS}, %s FROM claims WHERE org_id=%s AND user_id=%s",
             (cache_key, self.org_id, self.user_id),
         )
         row = self._conn.execute(
@@ -548,6 +612,9 @@ class PostgresVectorGraph(SearchableGraph):
             "DELETE FROM fact_edges WHERE org_id=%s AND user_id=%s", (self.org_id, self.user_id)
         )
         self._conn.execute(
+            "DELETE FROM claims WHERE org_id=%s AND user_id=%s", (self.org_id, self.user_id)
+        )
+        self._conn.execute(
             "DELETE FROM facts WHERE org_id=%s AND user_id=%s", (self.org_id, self.user_id)
         )
         if keys:
@@ -560,6 +627,12 @@ class PostgresVectorGraph(SearchableGraph):
             self._conn.execute(
                 "INSERT INTO fact_edges (org_id, user_id, src_id, dst_id, kind) "
                 "SELECT org_id, user_id, src_id, dst_id, kind FROM cached_fact_edges "
+                "WHERE org_id=%s AND user_id=%s AND cache_key = ANY(%s)",
+                (self.org_id, self.user_id, keys),
+            )
+            self._conn.execute(
+                f"INSERT INTO claims ({_CLAIM_COPY_COLS}) "
+                f"SELECT {_CLAIM_COPY_COLS} FROM cached_claims "
                 "WHERE org_id=%s AND user_id=%s AND cache_key = ANY(%s)",
                 (self.org_id, self.user_id, keys),
             )
@@ -606,6 +679,14 @@ class PostgresVectorGraph(SearchableGraph):
         self._conn.execute(
             "INSERT INTO fact_edges (org_id, user_id, src_id, dst_id, kind) "
             "SELECT org_id, user_id, src_id, dst_id, kind FROM cached_fact_edges "
+            "WHERE org_id=%s AND user_id=%s AND cache_key = ANY(%s)",
+            tenant_keys,
+        )
+        # Claims for the dropped fact ids cascaded on the facts delete above; refill
+        # them from the cache (a re-added eval replaces its own claim rows).
+        self._conn.execute(
+            f"INSERT INTO claims ({_CLAIM_COPY_COLS}) "
+            f"SELECT {_CLAIM_COPY_COLS} FROM cached_claims "
             "WHERE org_id=%s AND user_id=%s AND cache_key = ANY(%s)",
             tenant_keys,
         )
@@ -715,6 +796,7 @@ class PostgresVectorGraph(SearchableGraph):
             f"INSERT INTO {self._facts_table} ({', '.join(cols)}) VALUES ({placeholders})",
             vals,
         )
+        self._persist_claims(fact_id, decision.claims)
         return fact_id
 
     def _merge(self, decision: WriteDecision) -> None:
@@ -747,6 +829,7 @@ class PostgresVectorGraph(SearchableGraph):
                 decision.update_target_id,
             ),
         )
+        self._persist_claims(decision.update_target_id, decision.claims)
         for sid in decision.supersede_ids:
             self._conn.execute(
                 f"UPDATE {self._facts_table} SET state = 'decayed' "

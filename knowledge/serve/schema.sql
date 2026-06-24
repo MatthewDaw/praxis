@@ -86,6 +86,35 @@ CREATE TABLE IF NOT EXISTS fact_edges (
         REFERENCES facts (org_id, user_id, id) ON DELETE CASCADE
 );
 
+-- Atomic claims extracted from a fact's text at write time, in the form
+-- (subject, attribute, value). `functional` marks single-valued attributes (an
+-- event's year, a person's birth year) where two differing values for the same
+-- (subject, attribute) slot is a contradiction; multi-valued attributes (a
+-- person's discoveries) never conflict on value difference. `subject` and
+-- `attribute` are stored normalized (lowercased, whitespace-collapsed) so the
+-- slot index can match across surface variation; `value` keeps its raw form.
+-- `seq` distinguishes the several claims a single fact yields.
+CREATE TABLE IF NOT EXISTS claims (
+    org_id     text NOT NULL DEFAULT 'default',
+    user_id    text NOT NULL DEFAULT 'default',
+    fact_id    text NOT NULL,
+    seq        integer NOT NULL,
+    subject    text NOT NULL,
+    attribute  text NOT NULL,
+    value      text NOT NULL,
+    functional boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, user_id, fact_id, seq),
+    FOREIGN KEY (org_id, user_id, fact_id)
+        REFERENCES facts (org_id, user_id, id) ON DELETE CASCADE
+);
+
+-- Slot lookup for the contradiction path: find other facts asserting the same
+-- functional (subject, attribute) slot. Partial index — only functional claims
+-- can produce a contradiction, so only they need fast slot recall.
+CREATE INDEX IF NOT EXISTS claims_slot
+    ON claims (org_id, user_id, subject, attribute) WHERE functional;
+
 -- Graph cache: saved graph states kept strictly separate from the live `facts`
 -- retrieval path so cached data can never leak into MCP get_context. Same column
 -- shape as `facts` plus a `cache_key` that names the saved state:
@@ -135,3 +164,24 @@ CREATE TABLE IF NOT EXISTS cached_fact_edges (
     FOREIGN KEY (org_id, user_id, cache_key, dst_id)
         REFERENCES cached_facts (org_id, user_id, cache_key, id) ON DELETE CASCADE
 );
+
+-- Snapshot twin of `claims` (mirrors the facts/cached_facts split) so saved and
+-- eval-cached graphs carry their extracted claims losslessly.
+CREATE TABLE IF NOT EXISTS cached_claims (
+    org_id     text NOT NULL DEFAULT 'default',
+    user_id    text NOT NULL DEFAULT 'default',
+    cache_key  text NOT NULL,
+    fact_id    text NOT NULL,
+    seq        integer NOT NULL,
+    subject    text NOT NULL,
+    attribute  text NOT NULL,
+    value      text NOT NULL,
+    functional boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, user_id, cache_key, fact_id, seq),
+    FOREIGN KEY (org_id, user_id, cache_key, fact_id)
+        REFERENCES cached_facts (org_id, user_id, cache_key, id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS cached_claims_slot
+    ON cached_claims (org_id, user_id, cache_key, subject, attribute) WHERE functional;

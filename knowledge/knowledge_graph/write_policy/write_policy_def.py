@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from knowledge.knowledge_graph.knowledge_graph_def import SearchHit
+from knowledge.knowledge_graph.knowledge_graph_def import Claim, SearchHit
 
 Action = Literal["add", "noop", "update", "overwrite"]
 
@@ -54,3 +54,23 @@ class WriteDecision:
     # (existing facts sharing a tag) the store adds for the conflict path only.
     tags: list[str] = field(default_factory=list)
     tag_candidates: list[SearchHit] = field(default_factory=list)
+    # Structural contradiction path: atomic (subject, attribute, value) claims
+    # extracted from the incoming text by ClaimExtractor (persisted alongside the
+    # fact), and the claim-keyed recall the store fills for ClaimConflictDetector —
+    # existing facts sharing a functional (subject, attribute) slot with this write.
+    claims: list[Claim] = field(default_factory=list)
+    claim_candidates: list["ClaimHit"] = field(default_factory=list)
+
+
+@dataclass
+class ClaimHit:
+    """An existing fact that shares a functional slot with the incoming write.
+
+    Carries the matched slot plus the existing fact's value(s) on it, so the
+    conflict detector can compare values without re-deriving the slot.
+    """
+
+    fact: SearchHit
+    subject: str  # normalized slot subject
+    attribute: str  # normalized slot attribute
+    value: str  # the existing fact's raw value on this slot

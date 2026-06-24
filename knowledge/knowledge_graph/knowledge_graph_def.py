@@ -15,6 +15,35 @@ from pydantic import BaseModel, Field
 FactState = Literal["proposed", "active", "decayed"]
 
 
+class Claim(BaseModel):
+    """An atomic (subject, attribute, value) assertion extracted from a fact.
+
+    The unit the structural contradiction detector reasons over: two facts whose
+    claims share a ``subject`` and a *functional* ``attribute`` but hold
+    incompatible ``value``s contradict each other. ``subject`` and ``attribute``
+    are stored normalized (lowercased, whitespace-collapsed) so slot matching is
+    robust to surface variation; ``value`` keeps its raw form.
+    """
+
+    subject: str
+    attribute: str
+    value: str
+    # True when the attribute is single-valued for this subject (an event's year,
+    # a birth year) -> a differing value is a contradiction. False for naturally
+    # multi-valued attributes (discoveries, list members) -> values coexist.
+    functional: bool = False
+
+    @staticmethod
+    def norm(s: str) -> str:
+        """Normalize a subject/attribute for slot matching."""
+        return " ".join(s.lower().split())
+
+    @property
+    def slot(self) -> tuple[str, str]:
+        """The normalized (subject, attribute) key this claim occupies."""
+        return (self.norm(self.subject), self.norm(self.attribute))
+
+
 class Fact(BaseModel):
     """A stored unit of knowledge with its metadata.
 
@@ -45,6 +74,10 @@ class Fact(BaseModel):
     # Controlled-vocabulary aspect labels assigned at write time (Tier-B gated
     # experiment): a second, non-similarity recall key for the conflict path.
     tags: list[str] = Field(default_factory=list)
+    # Atomic (subject, attribute, value) claims extracted from ``text`` at write
+    # time; the structural contradiction detector reasons over these. Persisted to
+    # the ``claims`` table (Postgres) or held on the fact (in-memory).
+    claims: list["Claim"] = Field(default_factory=list)
 
 
 class SearchHit(BaseModel):

@@ -203,6 +203,7 @@ class VectorGraph(SearchableGraph):
                 embedding=decision.embedding,  # reuse the vector embedded in _recall
                 flags=list(decision.flags),
                 tags=list(decision.tags),
+                claims=list(decision.claims),
             )
         )
 
@@ -228,5 +229,6 @@ class VectorGraph(SearchableGraph):
                 fact.confidence = 1.0
                 fact.embedding = decision.embedding  # reuse the vector from _recall
                 fact.tags = list(decision.tags)
+                fact.claims = list(decision.claims)
             elif fact.id in targets:
                 fact.state = "decayed"
