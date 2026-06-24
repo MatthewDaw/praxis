@@ -112,7 +112,7 @@ def test_org_sources_lists_members_and_snapshots(ctx):
     assert by_user[USER]["isSelf"] is True
     assert by_user[USER_B]["isSelf"] is False
     assert by_user[USER]["role"] == "owner"
-    assert "snapB" in by_user[USER_B]["snapshots"]
+    assert "snapB" in {s["name"] for s in by_user[USER_B]["snapshots"]}
 
 
 # --- GET /org/sources/{user_id}/snapshots/{name}/facts ---------------------
