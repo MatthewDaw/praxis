@@ -50,7 +50,7 @@ description: "Task list for REJECTED state + retained-contradiction lifecycle"
 - [X] T008 [P] Update the fixture state strings `decayed`→`rejected` in `knowledge/serve/data/candidates.json`.
 - [X] T009 [P] Replace the `'decayed'` literal in the `_overwrite` SQL in `knowledge/knowledge_graph/knowledge_graph_variants/postgres_vector_graph.py` (string only here; the non-destructive rewrite is T016).
 - [X] T010 [P] Update existing backend tests that assert `"decayed"` to `"rejected"` in `knowledge/serve/tests/test_server.py`, `knowledge/serve/tests/test_facts_candidates.py`, and `knowledge/knowledge_graph/tests/test_postgres_vector_graph.py` / `test_vector_graph.py`.
-- [ ] T011 **(DEFERRED — handle deliberately, not in the rename pass)** Rename the eval cases `decayed_lesson_ignored` and `decayed_lesson_ignored_reader` → `rejected_lesson_ignored*` (directory names, `case.yaml` ids + embedded state strings, and the README) under `knowledge/evals/cases/`; keep them asserting real shipped behavior (Principle I), not a tuned constant. *Note: these cases seed insights as `active` (no runtime `state="decayed"`), so deferring does not break the suite; the rename entangles the `DECAYED_RIVAL_MARKER` and reader decay-filter naming, which is a separate concern.*
+- [X] T011 Renamed the eval cases `decayed_lesson_ignored`/`_reader` → `rejected_lesson_ignored`/`_reader` (dirs, ids, REJECTED_RIVAL_MARKER, check names, README, MATTHEW_HANDOFF, test refs). The `decay filter` mechanism name (PC-9) is intentionally left — it's an architecture concept, not the lifecycle state value.
 
 ### Edge-kind write plumbing (FR-004, FR-007)
 

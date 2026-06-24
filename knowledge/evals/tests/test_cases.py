@@ -238,15 +238,15 @@ def test_promote_then_rerun_fails_offline_by_default():
     assert result.passed is False
 
 
-def test_decayed_lesson_ignored_registered():
+def test_rejected_lesson_ignored_registered():
     cases = load_cases()
-    assert any(c.id == "decayed_lesson_ignored" for c in cases)
+    assert any(c.id == "rejected_lesson_ignored" for c in cases)
 
 
-def test_decayed_lesson_ignored_passes_with_scripted_output():
-    case = load_case(CASES_DIR / "decayed_lesson_ignored")
+def test_rejected_lesson_ignored_passes_with_scripted_output():
+    case = load_case(CASES_DIR / "rejected_lesson_ignored")
     scripted = {
-        "decayed_lesson_ignored": (
+        "rejected_lesson_ignored": (
             "from pathlib import Path\n\n"
             "def read_config(path: str) -> str:\n"
             '    """Read config file contents."""\n'
@@ -254,12 +254,12 @@ def test_decayed_lesson_ignored_passes_with_scripted_output():
         )
     }
     result = run_case(case, FakeRunner(scripted=scripted))
-    assert result.case_id == "decayed_lesson_ignored"
+    assert result.case_id == "rejected_lesson_ignored"
     assert result.passed is True
 
 
-def test_decayed_lesson_ignored_fails_offline_by_default():
-    case = load_case(CASES_DIR / "decayed_lesson_ignored")
+def test_rejected_lesson_ignored_fails_offline_by_default():
+    case = load_case(CASES_DIR / "rejected_lesson_ignored")
     result = run_case(case, FakeRunner())
     assert result.passed is False
 

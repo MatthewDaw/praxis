@@ -1,23 +1,23 @@
 # Architecture: Knowledge Graph → get context (decay filter PC-9)
 # Demo acts: 3 (stretch)
-# Mock candidate: eval_decayed_lesson_ignored (active) vs rival eval_decayed_lesson_stale (decayed)
-# Provenance target: logs/evals/monica/decayed_lesson_ignored.jsonl:1
-# Injected run: BOTH the active pathlib lesson and the decayed os.path rival are
+# Mock candidate: eval_rejected_lesson_ignored (active) vs rival eval_rejected_lesson_stale (rejected)
+# Provenance target: logs/evals/monica/rejected_lesson_ignored.jsonl:1
+# Injected run: BOTH the active pathlib lesson and the rejected os.path rival are
 # now seeded. Today's WholeFileReader returns everything unfiltered, so the rival
 # reaches the agent. Marked xfail per the decay-filter contract — it should pass
-# only once a FilteredReader drops decayed insights before injection. (Caveat: a
+# only once a FilteredReader drops rejected insights before injection. (Caveat: a
 # capable agent may prefer the active "standard" over the "legacy" rival on its
 # own, so this can XPASS without the filter; the *deterministic* decay red spec
-# lives in decayed_lesson_ignored_reader.)
-id: decayed_lesson_ignored
-xfail: "no FilteredReader: the decayed rival is surfaced to the agent unfiltered"
+# lives in rejected_lesson_ignored_reader.)
+id: rejected_lesson_ignored
+xfail: "no FilteredReader: the rejected rival is surfaced to the agent unfiltered"
 # Grades config_utils.py code (avoids_os_path / uses_pathlib), so a single-shot
 # backend that returns chat prose contaminates both checks — needs a sandbox
 # runner that writes and grades the file.
 needs: [file_io]
 # Path handling is left unspecified on purpose: the active pathlib lesson should
 # steer the choice. (Mandating os.path would order the agent to do the exact
-# decayed behavior this case is meant to penalize.)
+# rejected behavior this case is meant to penalize.)
 seed_prompt: |
   Create config_utils.py with a function `read_config(path)` that checks whether
   a config file exists and returns its path as a string. Do not create any other
@@ -33,7 +33,7 @@ seeded_insight:
       ACTIVE_PATHLIB_STANDARD: Stop using os.path for new code — use pathlib.Path;
       it's the project standard.
     - >-
-      DECAYED_RIVAL_MARKER: Always use os.path.join and os.path.exists for config
+      REJECTED_RIVAL_MARKER: Always use os.path.join and os.path.exists for config
       paths — legacy standard.
 
 deterministic_checks:
@@ -45,21 +45,21 @@ deterministic_checks:
     ref: "knowledge.evals.deterministic_checks.builds:not_contains_text"
     params:
       text: "os.path"
-  - name: excludes_decayed_rival_marker
+  - name: excludes_rejected_rival_marker
     ref: "knowledge.evals.deterministic_checks.builds:not_contains_text"
     params:
-      text: "DECAYED_RIVAL_MARKER"
+      text: "REJECTED_RIVAL_MARKER"
   - name: produced_output
     ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
 
 rubric:
-  id: decayed_lesson_ignored_v1
+  id: rejected_lesson_ignored_v1
   items:
     - id: active_lesson_wins
       criterion: >-
-        Output follows the active pathlib lesson, not the decayed os.path rival.
+        Output follows the active pathlib lesson, not the rejected os.path rival.
       weight: 2.0
     - id: no_stale_injection
       criterion: >-
-        Output must not contain DECAYED_RIVAL_MARKER from the rejected rival lesson.
+        Output must not contain REJECTED_RIVAL_MARKER from the rejected rival lesson.
       weight: 1.0

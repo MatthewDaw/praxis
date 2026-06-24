@@ -1,13 +1,13 @@
 # Component eval: graph_reader only — the deterministic decay-filter red spec.
 # Diagram node: get context + decay filter (PC-9)
-# Provenance target: logs/evals/monica/decayed_lesson_ignored.jsonl:1
-# Both the active lesson and the decayed rival are seeded. Today's WholeFileReader
-# returns the whole graph, so excludes_decayed_rival_marker FAILS (the rival's
+# Provenance target: logs/evals/monica/rejected_lesson_ignored.jsonl:1
+# Both the active lesson and the rejected rival are seeded. Today's WholeFileReader
+# returns the whole graph, so excludes_rejected_rival_marker FAILS (the rival's
 # marker is in the reader output) — hence xfail. When a FilteredReader drops
-# decayed insights at read time, the marker disappears and this XPASSes.
-id: decayed_lesson_ignored_reader
+# rejected insights at read time, the marker disappears and this XPASSes.
+id: rejected_lesson_ignored_reader
 component: graph_reader
-xfail: "no FilteredReader: the reader returns all insights, decayed rival included"
+xfail: "no FilteredReader: the reader returns all insights, rejected rival included"
 seed_prompt: "What is the project standard for config path handling?"
 
 seeded_insight:
@@ -16,7 +16,7 @@ seeded_insight:
       ACTIVE_PATHLIB_STANDARD: Stop using os.path for new code — use pathlib.Path;
       it's the project standard.
     - >-
-      DECAYED_RIVAL_MARKER: Always use os.path.join and os.path.exists for config
+      REJECTED_RIVAL_MARKER: Always use os.path.join and os.path.exists for config
       paths — legacy standard.
 
 deterministic_checks:
@@ -24,7 +24,7 @@ deterministic_checks:
     ref: "knowledge.evals.deterministic_checks.builds:contains_text"
     params:
       text: "ACTIVE_PATHLIB_STANDARD"
-  - name: excludes_decayed_rival_marker
+  - name: excludes_rejected_rival_marker
     ref: "knowledge.evals.deterministic_checks.builds:not_contains_text"
     params:
-      text: "DECAYED_RIVAL_MARKER"
+      text: "REJECTED_RIVAL_MARKER"
