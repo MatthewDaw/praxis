@@ -417,21 +417,19 @@ def create_app(conn: Any | None = None) -> FastAPI:
             "text": fact.text,
             "scope": fact.scope,
             "clusterLabel": fact.cluster_label,
-            "source": fact.source,
             "state": fact.state,
         }
 
     def _group_facts(facts: list[Any]) -> list[dict[str, Any]]:
-        """Group facts into skills for the browse view.
+        """Group facts into folders for the browse view.
 
-        Grouping key prefers the persisted ``cluster_label`` (the skill name once
-        the clustering pass has run), falls back to ``scope`` (the namespace the
-        dashboard already groups by today), then a stable "ungrouped" bucket.
+        Grouping key is the fact ``scope`` (the folder concept the dashboard
+        already groups by today), falling back to a stable "ungrouped" bucket.
         """
         groups: dict[str, dict[str, Any]] = {}
         order: list[str] = []
         for fact in facts:
-            key = fact.cluster_label or fact.scope or "ungrouped"
+            key = fact.scope or "ungrouped"
             if key not in groups:
                 groups[key] = {"key": key, "label": key, "facts": []}
                 order.append(key)
@@ -466,41 +464,31 @@ def create_app(conn: Any | None = None) -> FastAPI:
             )
         return {"sources": sources}
 
-    def _resolve_source(source: str) -> str | None:
-        """Map a ``source`` query value to a cache_key (None == the live graph)."""
-        source = (source or "live").strip()
-        if source == "live":
-            return None
-        if source.startswith("snapshot:"):
-            return source
-        raise HTTPException(
-            status_code=400, detail="source must be 'live' or 'snapshot:<name>'"
-        )
-
-    @app.get("/org/sources/{user_id}/facts")
-    def org_source_facts(
+    @app.get("/org/sources/{user_id}/snapshots/{name}/facts")
+    def org_source_snapshot_facts(
         user_id: str,
-        source: str = "live",
+        name: str,
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        """Browse one member's facts (live graph or a snapshot), grouped by skill.
+        """Browse one member's snapshot facts, grouped by folder (``scope``).
 
         ``active_org`` already proved the caller is a member of ``org``; full
         within-org trust means any member is a valid ``user_id`` target. The
         org-scoped reader pins ``org_id`` so no other org's rows are reachable.
+        404 if ``user_id`` is not a member or the snapshot holds no facts.
         """
         if not orgs_store.is_member(org, user_id):
             raise HTTPException(
                 status_code=404, detail=f"{user_id!r} is not a member of org {org!r}"
             )
-        cache_key = _resolve_source(source)
-        reader = OrgSourceReader(conn, org, user_id, cache_key=cache_key)
-        facts = reader.all_facts()
+        if live_graph(org, user_id).cache_count(f"snapshot:{name}") == 0:
+            raise HTTPException(status_code=404, detail=f"unknown snapshot {name!r}")
+        reader = OrgSourceReader(conn, org, user_id, cache_key=f"snapshot:{name}")
         return {
             "userId": user_id,
-            "source": source,
-            "groups": _group_facts(facts),
+            "snapshot": name,
+            "groups": _group_facts(reader.all_facts()),
         }
 
     @app.post("/fold-in")
@@ -509,7 +497,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        """Copy selected facts from a source into the caller's live graph.
+        """Copy selected snapshot facts from a source into the caller's live graph.
 
         Each selected fact is written through a distillation-free policy
         (``Deduper`` then ``ConflictFlagger`` — no ``Redactor``, no LLM
@@ -518,23 +506,38 @@ def create_app(conn: Any | None = None) -> FastAPI:
         ``active`` (an explicit user action) and carry provenance in ``meta``.
         Edges whose both endpoints are in the selection are carried with the
         copy, remapped to the caller's new fact ids.
+
+        ``mode="replace"`` truncates the caller's own live graph before copying
+        (so the caller ends up holding exactly the folded facts); ``mode="add"``
+        (default) merges the selection into the existing graph.
         """
         source_user = str(body.get("sourceUser") or "").strip()
-        source = str(body.get("source") or "live").strip()
+        snapshot = str(body.get("snapshot") or "").strip()
+        mode = str(body.get("mode") or "add").strip().lower()
         fact_ids = body.get("factIds") or []
         if not source_user:
             raise HTTPException(status_code=400, detail="sourceUser required")
+        if not snapshot:
+            raise HTTPException(status_code=400, detail="snapshot required")
+        if mode not in ("add", "replace"):
+            raise HTTPException(status_code=400, detail="mode must be 'add' or 'replace'")
         if not isinstance(fact_ids, list) or not fact_ids:
             raise HTTPException(status_code=400, detail="factIds must be a non-empty list")
         if not orgs_store.is_member(org, source_user):
             raise HTTPException(
                 status_code=404, detail=f"{source_user!r} is not a member of org {org!r}"
             )
-        cache_key = _resolve_source(source)
+        cache_key = f"snapshot:{snapshot}"
         reader = OrgSourceReader(conn, org, source_user, cache_key=cache_key)
         src_facts = reader.get_facts([str(i) for i in fact_ids])
         if not src_facts:
             raise HTTPException(status_code=404, detail="no matching facts in source")
+
+        # mode=replace: truncate the caller's live graph before copying (same
+        # zero-cache-load truncation as /graph/clear). Dedup/conflict are then
+        # moot on the now-empty graph, but the policy stays identical.
+        if mode == "replace":
+            live_graph(org, principal.sub).load_caches([])
 
         # Distillation-free fold-in policy: dedup the already-atomic facts, then
         # the structural claim path (extract -> detect) flags genuine value
@@ -557,7 +560,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         deduped = 0
         for fact in src_facts:
             meta = dict(fact.meta or {})
-            meta["foldedFrom"] = {"userId": source_user, "source": source}
+            meta["foldedFrom"] = {"userId": source_user, "source": cache_key}
             meta["foldedFromFactId"] = fact.id
             if fact.cluster_label:
                 meta.setdefault("sourceClusterLabel", fact.cluster_label)
@@ -595,6 +598,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
             "folded": len(id_map) - deduped,
             "deduped": deduped,
             "conflicts": new_conflicts,
+            "mode": mode,
         }
 
     # --- eval cache (per case) + loading into the live graph ---------------

@@ -92,6 +92,16 @@ def _seed_b_cached(conn, org, key, fid, text, *, scope=None, state="active"):
     )
 
 
+def _seed_b_cached_edge(conn, org, key, src, dst, kind="contradiction"):
+    conn.execute(
+        """
+        INSERT INTO cached_fact_edges (org_id, user_id, cache_key, src_id, dst_id, kind)
+        VALUES (%s,%s,%s,%s,%s,%s)
+        """,
+        (org, USER_B, key, src, dst, kind),
+    )
+
+
 # --- GET /org/sources ------------------------------------------------------
 def test_org_sources_lists_members_and_snapshots(ctx):
     client, conn, org = ctx
@@ -105,15 +115,15 @@ def test_org_sources_lists_members_and_snapshots(ctx):
     assert "snapB" in by_user[USER_B]["snapshots"]
 
 
-# --- GET /org/sources/{user_id}/facts --------------------------------------
-def test_browse_member_facts_grouped(ctx):
+# --- GET /org/sources/{user_id}/snapshots/{name}/facts ---------------------
+def test_browse_member_snapshot_facts_grouped(ctx):
     client, conn, org = ctx
-    _seed_b_fact(conn, org, "b1", "skill one in alpha", scope="alpha")
-    _seed_b_fact(conn, org, "b2", "skill two in alpha", scope="alpha")
-    _seed_b_fact(conn, org, "b3", "lonely skill", scope="beta")
-    body = client.get(f"/org/sources/{USER_B}/facts").json()
+    _seed_b_cached(conn, org, "snapshot:snapB", "b1", "skill one in alpha", scope="alpha")
+    _seed_b_cached(conn, org, "snapshot:snapB", "b2", "skill two in alpha", scope="alpha")
+    _seed_b_cached(conn, org, "snapshot:snapB", "b3", "lonely skill", scope="beta")
+    body = client.get(f"/org/sources/{USER_B}/snapshots/snapB/facts").json()
     assert body["userId"] == USER_B
-    assert body["source"] == "live"
+    assert body["snapshot"] == "snapB"
     groups = {g["key"]: g for g in body["groups"]}
     assert set(groups) == {"alpha", "beta"}
     assert {f["text"] for f in groups["alpha"]["facts"]} == {
@@ -124,12 +134,19 @@ def test_browse_member_facts_grouped(ctx):
 
 def test_browse_non_member_target_is_404(ctx):
     client, _conn, _org = ctx
-    assert client.get("/org/sources/stranger/facts").status_code == 404
+    assert client.get("/org/sources/stranger/snapshots/x/facts").status_code == 404
+
+
+def test_browse_unknown_snapshot_is_404(ctx):
+    client, _conn, _org = ctx
+    assert client.get(f"/org/sources/{USER_B}/snapshots/nope/facts").status_code == 404
 
 
 def test_browse_non_member_org_header_is_403(ctx):
     client, _conn, _org = ctx
-    res = client.get(f"/org/sources/{USER_B}/facts", headers={"X-Praxis-Org": "not-my-org"})
+    res = client.get(
+        f"/org/sources/{USER_B}/snapshots/x/facts", headers={"X-Praxis-Org": "not-my-org"}
+    )
     assert res.status_code == 403
 
 
@@ -137,9 +154,7 @@ def test_browse_snapshot_reads_cached_not_live(ctx):
     client, conn, org = ctx
     _seed_b_fact(conn, org, "b1", "live only fact")
     _seed_b_cached(conn, org, "snapshot:snapB", "c1", "snapshot only fact")
-    body = client.get(
-        f"/org/sources/{USER_B}/facts", params={"source": "snapshot:snapB"}
-    ).json()
+    body = client.get(f"/org/sources/{USER_B}/snapshots/snapB/facts").json()
     texts = {f["text"] for g in body["groups"] for f in g["facts"]}
     assert texts == {"snapshot only fact"}
 
@@ -153,20 +168,25 @@ def _caller_facts(conn, org):
     return rows
 
 
+SNAP = "snapB"
+SNAP_KEY = "snapshot:snapB"
+
+
 def test_fold_in_copies_facts_with_provenance_active(ctx):
     client, conn, org = ctx
-    _seed_b_fact(conn, org, "b1", "always run the linter before committing")
+    _seed_b_cached(conn, org, SNAP_KEY, "b1", "always run the linter before committing")
     res = client.post(
-        "/fold-in", json={"sourceUser": USER_B, "source": "live", "factIds": ["b1"]}
+        "/fold-in", json={"sourceUser": USER_B, "snapshot": SNAP, "factIds": ["b1"]}
     )
     assert res.status_code == 200, res.text
     assert res.json()["folded"] == 1
+    assert res.json()["mode"] == "add"
     rows = _caller_facts(conn, org)
     assert len(rows) == 1
     _id, text, state, meta = rows[0]
     assert text == "always run the linter before committing"
     assert state == "active"  # explicit user action lands active
-    assert meta["foldedFrom"] == {"userId": USER_B, "source": "live"}
+    assert meta["foldedFrom"] == {"userId": USER_B, "source": SNAP_KEY}
     assert meta["foldedFromFactId"] == "b1"
 
 
@@ -177,9 +197,9 @@ def test_fold_in_dedups_identical_fact_caller_already_holds(ctx):
     client.post("/insights", json={"insight": text})
     before = len(_caller_facts(conn, org))
     assert before == 1
-    _seed_b_fact(conn, org, "b1", text)
+    _seed_b_cached(conn, org, SNAP_KEY, "b1", text)
     res = client.post(
-        "/fold-in", json={"sourceUser": USER_B, "factIds": ["b1"]}
+        "/fold-in", json={"sourceUser": USER_B, "snapshot": SNAP, "factIds": ["b1"]}
     ).json()
     assert res["deduped"] >= 1
     assert res["folded"] == 0
@@ -197,9 +217,9 @@ def test_fold_in_contradiction_reports_conflict_without_overwrite(ctx):
     # ConflictOverwriter path and does not extract claims.)
     caller_graph = PostgresVectorGraph(conn, org, USER, policy=default_write_policy())
     caller_graph.write(held, state="active")
-    _seed_b_fact(conn, org, "b1", rival)
+    _seed_b_cached(conn, org, SNAP_KEY, "b1", rival)
     res = client.post(
-        "/fold-in", json={"sourceUser": USER_B, "factIds": ["b1"]}
+        "/fold-in", json={"sourceUser": USER_B, "snapshot": SNAP, "factIds": ["b1"]}
     ).json()
     # The conflicting fact is added (flagged), not silently merged/overwritten.
     assert res["conflicts"], res
@@ -211,13 +231,13 @@ def test_fold_in_contradiction_reports_conflict_without_overwrite(ctx):
 
 def test_fold_in_carries_edge_between_two_selected_facts(ctx):
     client, conn, org = ctx
-    _seed_b_fact(conn, org, "b1", "prefer composition over inheritance for reuse")
-    _seed_b_fact(conn, org, "b2", "keep modules small and focused on one job")
-    _seed_b_fact(conn, org, "b3", "an unrelated outside fact not selected")
-    _seed_b_edge(conn, org, "b1", "b2", kind="related")  # both selected -> carried
-    _seed_b_edge(conn, org, "b2", "b3", kind="related")  # b3 outside -> skipped
+    _seed_b_cached(conn, org, SNAP_KEY, "b1", "prefer composition over inheritance for reuse")
+    _seed_b_cached(conn, org, SNAP_KEY, "b2", "keep modules small and focused on one job")
+    _seed_b_cached(conn, org, SNAP_KEY, "b3", "an unrelated outside fact not selected")
+    _seed_b_cached_edge(conn, org, SNAP_KEY, "b1", "b2", kind="related")  # both -> carried
+    _seed_b_cached_edge(conn, org, SNAP_KEY, "b2", "b3", kind="related")  # b3 out -> skipped
     res = client.post(
-        "/fold-in", json={"sourceUser": USER_B, "factIds": ["b1", "b2"]}
+        "/fold-in", json={"sourceUser": USER_B, "snapshot": SNAP, "factIds": ["b1", "b2"]}
     )
     assert res.status_code == 200, res.text
     # New caller fact ids, then check the 'related' edge was remapped onto them.
@@ -236,10 +256,10 @@ def test_fold_in_carries_edge_between_two_selected_facts(ctx):
 def test_fold_in_from_snapshot_reads_cached_not_live(ctx):
     client, conn, org = ctx
     _seed_b_fact(conn, org, "shared1", "this is the LIVE version of the fact")
-    _seed_b_cached(conn, org, "snapshot:snapB", "shared1", "this is the SNAPSHOT version")
+    _seed_b_cached(conn, org, SNAP_KEY, "shared1", "this is the SNAPSHOT version")
     res = client.post(
         "/fold-in",
-        json={"sourceUser": USER_B, "source": "snapshot:snapB", "factIds": ["shared1"]},
+        json={"sourceUser": USER_B, "snapshot": SNAP, "factIds": ["shared1"]},
     )
     assert res.status_code == 200, res.text
     texts = {r[1] for r in _caller_facts(conn, org)}
@@ -247,13 +267,41 @@ def test_fold_in_from_snapshot_reads_cached_not_live(ctx):
     assert "this is the LIVE version of the fact" not in texts
 
 
+def test_fold_in_replace_mode_truncates_caller_graph_first(ctx):
+    client, conn, org = ctx
+    # Caller already holds two unrelated facts.
+    caller_graph = PostgresVectorGraph(conn, org, USER, policy=default_write_policy())
+    caller_graph.write("an old fact the caller already had", state="active")
+    caller_graph.write("a second old caller fact", state="active")
+    assert len(_caller_facts(conn, org)) == 2
+    _seed_b_cached(conn, org, SNAP_KEY, "b1", "the only fact after a replace fold-in")
+    res = client.post(
+        "/fold-in",
+        json={"sourceUser": USER_B, "snapshot": SNAP, "factIds": ["b1"], "mode": "replace"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["mode"] == "replace"
+    texts = {r[1] for r in _caller_facts(conn, org)}
+    assert texts == {"the only fact after a replace fold-in"}
+
+
 def test_fold_in_unknown_source_user_is_404(ctx):
     client, _conn, _org = ctx
-    res = client.post("/fold-in", json={"sourceUser": "stranger", "factIds": ["x"]})
+    res = client.post(
+        "/fold-in", json={"sourceUser": "stranger", "snapshot": SNAP, "factIds": ["x"]}
+    )
     assert res.status_code == 404
 
 
 def test_fold_in_empty_fact_ids_is_400(ctx):
     client, _conn, _org = ctx
-    res = client.post("/fold-in", json={"sourceUser": USER_B, "factIds": []})
+    res = client.post(
+        "/fold-in", json={"sourceUser": USER_B, "snapshot": SNAP, "factIds": []}
+    )
+    assert res.status_code == 400
+
+
+def test_fold_in_missing_snapshot_is_400(ctx):
+    client, _conn, _org = ctx
+    res = client.post("/fold-in", json={"sourceUser": USER_B, "factIds": ["b1"]})
     assert res.status_code == 400

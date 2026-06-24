@@ -3,6 +3,9 @@
 Skipped unless a database is reachable (PRAXIS_DB_URL or a resolvable Secrets
 Manager DSN). Each test uses a unique org_id so runs never collide. Rows are
 inserted raw (no embedder needed) since the reader only does scoped SELECTs.
+
+Sources are snapshots only: every read goes through a ``snapshot:<name>``
+cache_key against ``cached_facts``/``cached_fact_edges``.
 """
 
 from __future__ import annotations
@@ -16,6 +19,8 @@ pytestmark = pytest.mark.skipif(
     reason="no Postgres DSN available (set PRAXIS_DB_URL or configure AWS secret)",
 )
 
+KEY = "snapshot:s1"
+
 
 @pytest.fixture
 def unique_org(request):
@@ -23,24 +28,7 @@ def unique_org(request):
     return "test_" + request.node.name
 
 
-def _insert_fact(conn, org, user, fid, text, *, scope=None, state="active", shared=False):
-    conn.execute(
-        """
-        INSERT INTO facts (id, org_id, user_id, shared, text, scope, state)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """,
-        (fid, org, user, shared, text, scope, state),
-    )
-
-
-def _insert_edge(conn, org, user, src, dst, kind="contradiction"):
-    conn.execute(
-        "INSERT INTO fact_edges (org_id, user_id, src_id, dst_id, kind) VALUES (%s,%s,%s,%s,%s)",
-        (org, user, src, dst, kind),
-    )
-
-
-def _insert_cached_fact(conn, org, user, key, fid, text, *, scope=None, state="active"):
+def _insert_fact(conn, org, user, fid, text, *, key=KEY, scope=None, state="active"):
     conn.execute(
         """
         INSERT INTO cached_facts (id, org_id, user_id, cache_key, text, scope, state)
@@ -50,9 +38,17 @@ def _insert_cached_fact(conn, org, user, key, fid, text, *, scope=None, state="a
     )
 
 
+def _insert_edge(conn, org, user, src, dst, *, key=KEY, kind="contradiction"):
+    conn.execute(
+        """
+        INSERT INTO cached_fact_edges (org_id, user_id, cache_key, src_id, dst_id, kind)
+        VALUES (%s,%s,%s,%s,%s,%s)
+        """,
+        (org, user, key, src, dst, kind),
+    )
+
+
 def _cleanup(conn, org):
-    conn.execute("DELETE FROM fact_edges WHERE org_id = %s", (org,))
-    conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM cached_fact_edges WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM cached_facts WHERE org_id = %s", (org,))
 
@@ -65,20 +61,18 @@ def conn(unique_org):
     _cleanup(c, unique_org)
 
 
-def _reader(conn, org, user, **kw):
+def _reader(conn, org, user, *, cache_key=KEY):
     from knowledge.knowledge_graph.knowledge_graph_variants.org_source_reader import (
         OrgSourceReader,
     )
 
-    return OrgSourceReader(conn, org, user, **kw)
+    return OrgSourceReader(conn, org, user, cache_key=cache_key)
 
 
-def test_reads_member_private_unshared_facts(conn, unique_org):
-    # A member's PRIVATE (shared=False) facts are still browsable through the
-    # org reader — that's the whole point of skill sharing.
-    _insert_fact(conn, unique_org, "userB", "b1", "B private skill", shared=False)
+def test_reads_member_snapshot_facts(conn, unique_org):
+    _insert_fact(conn, unique_org, "userB", "b1", "B snapshot skill")
     facts = _reader(conn, unique_org, "userB").all_facts()
-    assert [f.text for f in facts] == ["B private skill"]
+    assert [f.text for f in facts] == ["B snapshot skill"]
 
 
 def test_org_isolation_never_returns_other_org_rows(conn, unique_org):
@@ -107,14 +101,14 @@ def test_all_facts_filters_by_state(conn, unique_org):
     assert texts == {"active fact"}
 
 
-def test_snapshot_reads_cached_not_live(conn, unique_org):
-    # Same id "lives" both in live facts and the snapshot, with different text.
-    _insert_fact(conn, unique_org, "userB", "b1", "live text")
-    _insert_cached_fact(conn, unique_org, "userB", "snapshot:s1", "b1", "snapshot text")
-    live = _reader(conn, unique_org, "userB").all_facts()
-    snap = _reader(conn, unique_org, "userB", cache_key="snapshot:s1").all_facts()
-    assert [f.text for f in live] == ["live text"]
-    assert [f.text for f in snap] == ["snapshot text"]
+def test_snapshot_key_scopes_reads(conn, unique_org):
+    # Same id under two snapshot keys, with different text — reads are scoped.
+    _insert_fact(conn, unique_org, "userB", "b1", "s1 text", key="snapshot:s1")
+    _insert_fact(conn, unique_org, "userB", "b1", "s2 text", key="snapshot:s2")
+    s1 = _reader(conn, unique_org, "userB", cache_key="snapshot:s1").all_facts()
+    s2 = _reader(conn, unique_org, "userB", cache_key="snapshot:s2").all_facts()
+    assert [f.text for f in s1] == ["s1 text"]
+    assert [f.text for f in s2] == ["s2 text"]
 
 
 def test_get_facts_filters_by_id(conn, unique_org):

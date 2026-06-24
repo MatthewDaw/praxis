@@ -4,8 +4,8 @@ The live :class:`PostgresVectorGraph` is bound to a single ``(org_id, user_id)``
 tenant and gates every read with ``org_id = %s AND (shared OR user_id = %s)`` —
 a member can never see another member's *private* facts through it. Skill
 sharing needs exactly that: within an org (the trust boundary), any member may
-browse any other member's graph, or any saved snapshot, and cherry-pick facts to
-fold into their own graph.
+browse any other member's saved snapshot and cherry-pick facts to fold into
+their own graph.
 
 This class is the read path for that. It is deliberately **read-only and
 write-free**: it owns no ``write``/``add``/``delete``/cache-mutation method, so
@@ -15,9 +15,9 @@ user, no ``shared`` clause) can never leak into a mutation. Authorization —
 ``active_org`` dependency; this class only pins ``org_id`` so a reader scoped to
 org X never observes any other org's rows.
 
-``cache_key`` selects the source: ``None`` reads the target user's live
-``facts``/``fact_edges``; a ``"snapshot:<name>"`` key reads their saved state in
-``cached_facts``/``cached_fact_edges``.
+Sources are snapshots only: ``cache_key`` is required (always a
+``"snapshot:<name>"`` key) and reads the target user's saved state in
+``cached_facts``/``cached_fact_edges``. The live graph is never browsed.
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph im
 # Same fixed-name allowlist discipline as PostgresVectorGraph: table names are
 # interpolated into SQL (psycopg can't parametrize identifiers), so they are
 # chosen here from constants and never user-controlled.
-_LIVE_FACTS, _LIVE_EDGES = "facts", "fact_edges"
 _CACHE_FACTS, _CACHE_EDGES = "cached_facts", "cached_fact_edges"
 
 _FACT_COLS = (
@@ -42,7 +41,7 @@ _FACT_COLS = (
 
 
 class OrgSourceReader:
-    """Read-only access to one org member's facts/edges (live or a snapshot)."""
+    """Read-only access to one org member's snapshot facts/edges."""
 
     def __init__(
         self,
@@ -50,30 +49,24 @@ class OrgSourceReader:
         org_id: str,
         target_user_id: str,
         *,
-        cache_key: str | None = None,
+        cache_key: str,
     ) -> None:
         self._conn = conn
         self.org_id = org_id
         self.target_user_id = target_user_id
         self._cache_key = cache_key
-        if cache_key is None:
-            self._facts_table, self._edges_table = _LIVE_FACTS, _LIVE_EDGES
-        else:
-            self._facts_table, self._edges_table = _CACHE_FACTS, _CACHE_EDGES
 
     def _where(self) -> tuple[str, list[object]]:
-        """The org+target-user predicate (plus cache_key for snapshot sources)."""
-        sql = "org_id = %s AND user_id = %s"
-        params: list[object] = [self.org_id, self.target_user_id]
-        if self._cache_key is not None:
-            sql += " AND cache_key = %s"
-            params.append(self._cache_key)
-        return sql, params
+        """The org+target-user+snapshot predicate."""
+        return (
+            "org_id = %s AND user_id = %s AND cache_key = %s",
+            [self.org_id, self.target_user_id, self._cache_key],
+        )
 
     def all_facts(self, state: str | None = None) -> list[Fact]:
-        """Every fact in the source (optionally filtered by ``state``), newest first."""
+        """Every fact in the snapshot (optionally filtered by ``state``), newest first."""
         where, params = self._where()
-        sql = f"SELECT {_FACT_COLS} FROM {self._facts_table} WHERE {where}"
+        sql = f"SELECT {_FACT_COLS} FROM {_CACHE_FACTS} WHERE {where}"
         if state is not None:
             sql += " AND state = %s"
             params.append(state)
@@ -82,12 +75,12 @@ class OrgSourceReader:
         return [PostgresVectorGraph._row_to_fact(r) for r in rows]
 
     def get_facts(self, fact_ids: list[str]) -> list[Fact]:
-        """Fetch the named facts from the source (order not guaranteed)."""
+        """Fetch the named facts from the snapshot (order not guaranteed)."""
         ids = list(fact_ids)
         if not ids:
             return []
         where, params = self._where()
-        sql = f"SELECT {_FACT_COLS} FROM {self._facts_table} WHERE {where} AND id = ANY(%s)"
+        sql = f"SELECT {_FACT_COLS} FROM {_CACHE_FACTS} WHERE {where} AND id = ANY(%s)"
         params.append(ids)
         rows = self._conn.execute(sql, params).fetchall()
         return [PostgresVectorGraph._row_to_fact(r) for r in rows]
@@ -103,7 +96,7 @@ class OrgSourceReader:
             return []
         where, params = self._where()
         sql = (
-            f"SELECT src_id, dst_id, kind FROM {self._edges_table} "
+            f"SELECT src_id, dst_id, kind FROM {_CACHE_EDGES} "
             f"WHERE {where} AND src_id = ANY(%s) AND dst_id = ANY(%s)"
         )
         params.extend([ids, ids])
