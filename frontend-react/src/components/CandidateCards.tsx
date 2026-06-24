@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useState, type KeyboardEvent, type MouseEvent } from "react";
 import {
   canDeleteCandidate,
   formatCandidateDate,
@@ -7,9 +7,12 @@ import {
 } from "../api/candidateModel";
 import type { Candidate } from "../types/candidate";
 import { EmptyState } from "./ui/EmptyState";
+import { PaginationControls } from "./ui/PaginationControls";
 import { StateBadge } from "./StateBadge";
 
 const LOW_CONFIDENCE_THRESHOLD = 0.5;
+const DEFAULT_PAGE_SIZE = 10;
+const PAGE_SIZE_OPTIONS = [10, 25, 50];
 
 /** Topic-cluster label for a candidate, if the define-pass assigned one. */
 function clusterLabel(candidate: Candidate): string | null {
@@ -48,6 +51,30 @@ export function CandidateCards({
   const [confirmReject, setConfirmReject] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(candidates.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      return;
+    }
+    const selectedIndex = candidates.findIndex((candidate) => candidate.id === selectedId);
+    if (selectedIndex < 0) {
+      return;
+    }
+    const selectedPage = Math.floor(selectedIndex / pageSize) + 1;
+    if (selectedPage !== page) {
+      setPage(selectedPage);
+    }
+  }, [candidates, page, pageSize, selectedId]);
 
   if (candidates.length === 0) {
     return (
@@ -62,13 +89,23 @@ export function CandidateCards({
     );
   }
 
+  const pageStart = (currentPage - 1) * pageSize;
+  const visibleCandidates = candidates.slice(pageStart, pageStart + pageSize);
+
+  function clearConfirmations() {
+    setConfirmPromote(null);
+    setConfirmReject(null);
+    setConfirmDelete(null);
+    setRejectReason("");
+  }
+
   async function runPromote(id: string) {
     setPendingId(id);
     try {
       await onPromote(id);
     } finally {
       setPendingId(null);
-      setConfirmPromote(null);
+      clearConfirmations();
     }
   }
 
@@ -79,10 +116,7 @@ export function CandidateCards({
       await onReject(id, reason);
     } finally {
       setPendingId(null);
-      setConfirmPromote(null);
-      setConfirmReject(null);
-      setConfirmDelete(null);
-      setRejectReason("");
+      clearConfirmations();
     }
   }
 
@@ -92,9 +126,25 @@ export function CandidateCards({
       await onDelete(id);
     } finally {
       setPendingId(null);
-      setConfirmPromote(null);
-      setConfirmReject(null);
-      setConfirmDelete(null);
+      clearConfirmations();
+    }
+  }
+
+  function handlePageChange(nextPage: number) {
+    clearConfirmations();
+    setPage(nextPage);
+    const nextCandidate = candidates[(nextPage - 1) * pageSize];
+    if (nextCandidate) {
+      onSelect(nextCandidate.id);
+    }
+  }
+
+  function handlePageSizeChange(nextPageSize: number) {
+    clearConfirmations();
+    setPageSize(nextPageSize);
+    setPage(1);
+    if (candidates[0]) {
+      onSelect(candidates[0].id);
     }
   }
 
@@ -115,8 +165,9 @@ export function CandidateCards({
   }
 
   return (
-    <div className="card-grid">
-      {candidates.map((candidate) => {
+    <>
+      <div className="card-grid">
+        {visibleCandidates.map((candidate) => {
         const nextState = nextPromotionState(candidate.state);
         const promoteBlocked = promoteUnavailableReason(candidate);
         const canReject = candidate.state !== "rejected";
@@ -317,7 +368,16 @@ export function CandidateCards({
             )}
           </article>
         );
-      })}
-    </div>
+        })}
+      </div>
+      <PaginationControls
+        page={currentPage}
+        pageSize={pageSize}
+        pageSizeOptions={PAGE_SIZE_OPTIONS}
+        totalItems={candidates.length}
+        onPageChange={handlePageChange}
+        onPageSizeChange={handlePageSizeChange}
+      />
+    </>
   );
 }

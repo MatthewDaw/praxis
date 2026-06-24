@@ -366,28 +366,7 @@ code,
 }
 
 .table-wrap {
-  overflow-x: hidden;
-  overflow-y: auto;
-  max-height: min(62vh, 560px);
-  scrollbar-width: thin;
-  scrollbar-gutter: stable;
-}
-
-.table-wrap::-webkit-scrollbar {
-  width: 10px;
-}
-
-.table-wrap::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 999px;
-}
-
-.table-wrap::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
-}
-
-.table-wrap::-webkit-scrollbar-track {
-  background: #f1f5f9;
+  overflow: visible;
 }
 
 .data-table {
@@ -479,6 +458,63 @@ code,
 .row-expand td {
   padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--line);
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--line);
+  background: #f8fafc;
+}
+
+.card-grid + .pagination-controls {
+  margin-top: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+}
+
+.pagination-controls__summary {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.pagination-controls__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-1);
+}
+
+.pagination-controls__buttons .btn {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.82rem;
+}
+
+.pagination-controls__page {
+  min-width: 2.1rem;
+}
+
+.pagination-controls__size {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--muted);
+  font-size: 0.88rem;
+  white-space: nowrap;
+}
+
+.pagination-controls__size select {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  padding: 0.35rem 0.5rem;
 }
 
 /* ==========================================================================
@@ -1808,6 +1844,16 @@ code,
 
   .filter-bar__fields {
     grid-template-columns: 1fr;
+  }
+
+  .pagination-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .pagination-controls__summary,
+  .pagination-controls__size {
+    justify-content: center;
   }
 
   .dashboard-header {
