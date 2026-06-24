@@ -25,7 +25,7 @@ export function GraphDataLoader({ apiBaseUrl, auth, onLoaded }: GraphDataLoaderP
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
-  const [cached, setCached] = useState<Set<string>>(new Set());
+  const [cached, setCached] = useState<Map<string, number>>(new Map());
 
   const loadScopes = useCallback(async () => {
     try {
@@ -38,7 +38,7 @@ export function GraphDataLoader({ apiBaseUrl, auth, onLoaded }: GraphDataLoaderP
 
   const loadCached = useCallback(async () => {
     try {
-      setCached(new Set(await listCachedEvalCases(apiBaseUrl, auth)));
+      setCached(await listCachedEvalCases(apiBaseUrl, auth));
     } catch {
       /* cached-status is best-effort; ignore failures */
     }

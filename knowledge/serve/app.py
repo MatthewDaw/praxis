@@ -294,12 +294,43 @@ def create_app(conn: Any | None = None) -> FastAPI:
     # --- graph snapshot (the dashboard graph view) -------------------------
     @app.get("/graph")
     def graph(
+        state: str = "active",
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        """The live graph: active facts + their edges, the same rows retrieval reads."""
+        """The live graph for the requester.
+
+        ``state`` selects which facts to include:
+        - ``"active"`` (default) — only active facts + edges, the exact rows
+          retrieval reads (keeps the default view one-to-one with recall).
+        - ``"all"`` — every fact regardless of lifecycle (active, proposed,
+          decayed), with all edges between the included nodes.
+        - a specific state (``proposed`` / ``active`` / ``decayed``) — only facts
+          in that state, with edges between them.
+        """
         g = live_graph(org, principal.sub)
-        return {"graph": graph_adapter.graph_from_facts(g.active_facts(), g.active_edges())}
+        if state == "active":
+            return {"graph": graph_adapter.graph_from_facts(g.active_facts(), g.active_edges())}
+        facts = g.all_facts(None if state == "all" else state)
+        node_ids = {f.id for f in facts}
+        edges = [e for e in g.all_edges() if e[0] in node_ids and e[1] in node_ids]
+        return {"graph": graph_adapter.graph_from_facts(facts, edges)}
+
+    @app.post("/graph/clear")
+    def clear_graph(
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Truncate the requester's live graph only (scoped to org_id + user_id).
+
+        Deletes every fact/edge owned by ``principal.sub`` in this org; other
+        users' rows (including their shared facts) are untouched. Implemented as
+        a load of zero cache keys, which truncates without refilling.
+        """
+        g = live_graph(org, principal.sub)
+        removed = len(g.all_facts())
+        g.load_caches([])
+        return {"cleared": removed}
 
     # --- snapshots (saved live-graph states in the cache) ------------------
     @app.get("/snapshots")
@@ -371,9 +402,17 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        """Eval case ids that currently have cached data (drives the UI status dots)."""
+        """Eval case ids with cached data + node counts (drives the UI status dots).
+
+        ``counts`` maps each cached case id to how many nodes its cached
+        distillation holds — what the dashboard shows inside the green dot.
+        """
         entries = live_graph(org, principal.sub).list_caches("eval:")
-        return {"cached": [e["key"].split("eval:", 1)[1] for e in entries]}
+        ids = [e["key"].split("eval:", 1)[1] for e in entries]
+        counts = {
+            e["key"].split("eval:", 1)[1]: int(e.get("count", 0)) for e in entries
+        }
+        return {"cached": ids, "counts": counts}
 
     def _selected_case_ids(body: dict[str, Any]) -> list[str]:
         """Resolve the requested scopes/caseIds into concrete eval case ids."""

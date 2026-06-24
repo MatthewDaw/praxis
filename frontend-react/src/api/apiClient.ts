@@ -377,9 +377,10 @@ export function createApiDataProvider(
       return candidateFromMapping(payload as Record<string, unknown>);
     },
 
-    async getGraph() {
+    async getGraph(state = "active") {
       try {
-        const payload = await request("GET", "/graph");
+        const path = state && state !== "active" ? `/graph?state=${encodeURIComponent(state)}` : "/graph";
+        const payload = await request("GET", path);
         return parseGraphPayload(payload, "api");
       } catch (error) {
         if (
@@ -395,6 +396,13 @@ export function createApiDataProvider(
         }
         throw error;
       }
+    },
+
+    async clearGraph() {
+      const payload = await request("POST", "/graph/clear");
+      const row =
+        payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+      return { cleared: Number(row.cleared ?? 0) };
     },
 
     async getTranscript() {
@@ -580,10 +588,14 @@ export async function listEvalScopes(
   };
 }
 
+/**
+ * Cached eval cases as a map of case id → cached node count. Membership in the
+ * map means "cached" (green dot); the value is the node count shown inside it.
+ */
 export async function listCachedEvalCases(
   apiBaseUrl: string,
   auth?: string | ApiDataProviderAuth,
-): Promise<string[]> {
+): Promise<Map<string, number>> {
   const root = apiBaseUrl.replace(/\/$/, "");
   const { token, orgId } = await resolveToken(auth);
   const response = await fetch(`${root}/evals/cached`, {
@@ -597,12 +609,18 @@ export async function listCachedEvalCases(
     );
   }
   const payload = await parseJsonResponse(response);
-  const cached =
-    payload && typeof payload === "object"
-      ? (payload as { cached?: unknown }).cached
-      : payload;
-  if (!Array.isArray(cached)) return [];
-  return cached.filter((c): c is string => typeof c === "string");
+  const obj = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  const cached = Array.isArray(obj.cached)
+    ? obj.cached.filter((c): c is string => typeof c === "string")
+    : [];
+  const counts =
+    obj.counts && typeof obj.counts === "object" ? (obj.counts as Record<string, unknown>) : {};
+  const out = new Map<string, number>();
+  for (const id of cached) {
+    const n = counts[id];
+    out.set(id, typeof n === "number" ? n : 0);
+  }
+  return out;
 }
 
 export interface EvalCachePayload {

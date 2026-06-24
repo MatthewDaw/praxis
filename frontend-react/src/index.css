@@ -1295,8 +1295,20 @@ code,
 .metric-head {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-2);
   margin-bottom: var(--space-1);
   font-size: 0.85rem;
+}
+
+.metric-head strong {
+  min-width: 0;
+}
+
+.metric-head .mono {
+  flex-shrink: 0;
+  white-space: nowrap;
+  overflow-wrap: normal;
 }
 
 .metric-rationale {
@@ -2947,14 +2959,36 @@ code,
   flex: 1;
   word-break: break-word;
 }
-.eval-runner__cache-dot {
+/* Both the red dot and the green count badge occupy the same 20px square so
+   they share a center axis when right-aligned in the entry row. */
+.eval-runner__cache-dot,
+.eval-runner__node-badge {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+}
+.eval-runner__cache-dot::before {
+  content: "";
   width: 8px;
   height: 8px;
   border-radius: 999px;
   background: var(--danger);
 }
-.eval-runner__cache-dot.is-cached {
+.eval-runner__node-badge {
+  min-width: 20px;
+  width: auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1;
+}
+.eval-runner__node-badge.is-cached {
   background: var(--success);
 }
 .eval-runner__entry-count {

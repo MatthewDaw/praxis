@@ -11,6 +11,7 @@ export function useGraph(
   provider: DataProvider,
   candidates: Candidate[],
   refreshKey: number,
+  state = "active",
 ) {
   const [graphSnapshot, setGraphSnapshot] = useState<KnowledgeGraphSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -20,7 +21,7 @@ export function useGraph(
     setLoading(true);
     setError(null);
     try {
-      const snapshot = await provider.getGraph();
+      const snapshot = await provider.getGraph(state);
       setGraphSnapshot(snapshot);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -28,7 +29,7 @@ export function useGraph(
     } finally {
       setLoading(false);
     }
-  }, [provider]);
+  }, [provider, state]);
 
   useEffect(() => {
     void refreshGraph();

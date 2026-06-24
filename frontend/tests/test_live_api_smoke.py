@@ -62,9 +62,9 @@ def test_live_reject_decays(provider: ApiDataProvider) -> None:
     if target is None:
         pytest.skip("no spare proposed candidate for reject smoke")
     provider.reject(target.id, reason="live smoke test")
-    decayed = provider.get_candidate(target.id)
-    assert decayed is not None
-    assert decayed.state is CandidateState.DECAYED
+    rejected = provider.get_candidate(target.id)
+    assert rejected is not None
+    assert rejected.state is CandidateState.REJECTED
 
 
 def test_live_resolve_contradiction_if_pair_present(provider: ApiDataProvider) -> None:
@@ -82,6 +82,6 @@ def test_live_resolve_contradiction_if_pair_present(provider: ApiDataProvider) -
     assert updated.id == "cand_9"
     assert "cand_16" not in updated.contradiction_ids
     assert rival.id == "cand_16"
-    decayed = provider.get_candidate("cand_16")
-    assert decayed is not None
-    assert decayed.state is CandidateState.DECAYED
+    rejected = provider.get_candidate("cand_16")
+    assert rejected is not None
+    assert rejected.state is CandidateState.REJECTED

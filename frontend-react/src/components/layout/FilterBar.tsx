@@ -16,6 +16,7 @@ interface FilterBarProps {
   onStateFilterChange: (value: string) => void;
   onViewTabChange: (tab: ViewTab) => void;
   onAddEval?: () => void;
+  onClearGraph?: () => void;
 }
 
 export function FilterBar({
@@ -28,6 +29,7 @@ export function FilterBar({
   onStateFilterChange,
   onViewTabChange,
   onAddEval,
+  onClearGraph,
 }: FilterBarProps) {
   const isKnowledgeView = viewTab === "table" || viewTab === "cards" || viewTab === "graph";
 
@@ -84,6 +86,11 @@ export function FilterBar({
         ) : null}
       </div>
       <div className="filter-bar__controls">
+        {onClearGraph && viewTab !== "setup" ? (
+          <button type="button" className="btn delete" onClick={onClearGraph}>
+            Truncate graph
+          </button>
+        ) : null}
         {onAddEval && viewTab !== "setup" ? (
           <button type="button" className="btn secondary" onClick={onAddEval}>
             Add eval

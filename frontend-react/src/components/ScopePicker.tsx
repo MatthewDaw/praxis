@@ -17,8 +17,8 @@ interface ScopePickerProps {
   scopes: EvalScope[];
   selected: string[];
   onChange: (next: string[]) => void;
-  /** Case ids (file scopes) that currently have cached eval data. */
-  cached?: Set<string>;
+  /** Cached case ids → cached node count. Membership = cached (green dot). */
+  cached?: Map<string, number>;
 }
 
 /** A file-tree style folder browser with multi-select (folders and/or cases). */
@@ -121,18 +121,32 @@ export function ScopePicker({ scopes, selected, onChange, cached }: ScopePickerP
                       {isDir ? "📁" : "📄"}
                     </span>
                     <span className="eval-runner__entry-name">{leafName(c.scope)}</span>
-                    {!isDir && cached ? (
+                    {!isDir ? (
                       // The cache is keyed by the bare case id (eval:<case_id>),
                       // which is the path's leaf — not the full folder path. Match
                       // on leafName so nested cases (e.g. matt/foo) light up too.
                       (() => {
-                        const isCached = cached.has(leafName(c.scope));
+                        const isCached = cached?.has(leafName(c.scope)) ?? false;
+                        // Not cached → keep the plain red dot (no count). Cached →
+                        // a green circle showing the cached node count.
+                        if (!isCached) {
+                          return (
+                            <span
+                              className="eval-runner__cache-dot"
+                              title="not cached"
+                              aria-label="not cached"
+                            />
+                          );
+                        }
+                        const nodes = cached?.get(leafName(c.scope)) ?? 0;
                         return (
                           <span
-                            className={`eval-runner__cache-dot${isCached ? " is-cached" : ""}`}
-                            title={isCached ? "cached" : "not cached"}
-                            aria-label={isCached ? "cached" : "not cached"}
-                          />
+                            className="eval-runner__node-badge is-cached"
+                            title={`${nodes} node${nodes === 1 ? "" : "s"} · cached`}
+                            aria-label={`${nodes} node${nodes === 1 ? "" : "s"}, cached`}
+                          >
+                            {nodes}
+                          </span>
                         );
                       })()
                     ) : null}

@@ -127,7 +127,7 @@ describe("graphModel", () => {
         id: "cand_16",
         title: "B",
         content: "b",
-        state: "decayed",
+        state: "rejected",
         confidence: 0.7,
         provenance: "logs/test.jsonl:2",
         createdAt: "2026-06-01T00:00:00Z",

@@ -32,10 +32,8 @@ export function DataSourceControl({
 
   function handlePresetChange(nextId: string) {
     setPresetId(nextId);
-  }
-
-  function handleLoad() {
-    onLoad(presetId);
+    // Selecting a source switches servers immediately — no separate load step.
+    onLoad(nextId);
   }
 
   function helpText(): string {
@@ -61,13 +59,6 @@ export function DataSourceControl({
             </option>
           ))}
         </select>
-        <button
-          type="button"
-          className="btn secondary data-source-control__load"
-          onClick={handleLoad}
-        >
-          Load data
-        </button>
       </div>
       <p className="data-source-control__hint" id="data-source-help">
         {helpText()}

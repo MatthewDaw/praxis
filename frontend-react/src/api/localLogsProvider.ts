@@ -178,6 +178,10 @@ export function createLocalLogsDataProvider(session: ParsedLogSession): DataProv
       return cloneGraphSnapshot(graph);
     },
 
+    async clearGraph() {
+      throw new Error("Clearing the graph is not supported for local logs");
+    },
+
     async getTranscript() {
       return session;
     },
@@ -241,6 +245,10 @@ export function createEmptyLocalLogsProvider(): DataProvider {
         edges: [],
         source: "derived",
       };
+    },
+
+    async clearGraph() {
+      throw new Error("Clearing the graph is not supported for local logs");
     },
 
     async getTranscript() {

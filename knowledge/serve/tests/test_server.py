@@ -155,6 +155,27 @@ def test_evals_cached_shape(client):
     body = client.get("/evals/cached").json()
     assert "cached" in body
     assert isinstance(body["cached"], list)
+    assert isinstance(body.get("counts", {}), dict)
+
+
+def test_graph_state_all_includes_proposed(client):
+    # A proposed candidate is staged out of the active graph...
+    client.post("/candidates", json={"title": "t", "content": "staged proposed fact here"})
+    assert client.get("/graph").json()["graph"]["nodes"] == []  # active-only default
+    # ...but state=all surfaces it.
+    nodes = client.get("/graph", params={"state": "all"}).json()["graph"]["nodes"]
+    assert any(n["state"] == "proposed" for n in nodes)
+
+
+def test_clear_graph_empties_the_users_graph(client):
+    client.post("/insights", json={"insight": "deploy on fridays is fine here"})
+    assert client.get("/graph").json()["graph"]["nodes"]  # non-empty before
+
+    res = client.post("/graph/clear")
+    assert res.status_code == 200
+    assert res.json()["cleared"] >= 1
+
+    assert client.get("/graph").json()["graph"]["nodes"] == []
 
 
 def test_insight_then_context_round_trips(client):

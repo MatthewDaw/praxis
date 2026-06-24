@@ -25,13 +25,24 @@ export interface DataProvider {
   /**
    * Resolve a contradiction with a brand-new, user-authored fact that is neither
    * side. Optional: offline fixture providers may not support it. Returns the
-   * newly created candidate (both original sides are decayed server-side).
+   * newly created candidate (both original sides are rejected server-side).
    */
   resolveContradictionCustom?(
     contradictionId: string,
     customText: string,
   ): Promise<Candidate>;
-  getGraph(): Promise<KnowledgeGraphSnapshot>;
+  /**
+   * The live graph. ``state`` selects which facts to include: ``"active"``
+   * (default, what retrieval reads), ``"all"`` (every lifecycle state), or a
+   * specific state (``proposed`` / ``active`` / ``rejected``).
+   */
+  getGraph(state?: string): Promise<KnowledgeGraphSnapshot>;
+  /**
+   * DESTRUCTIVE: truncate the current user's live graph (all their facts +
+   * edges). Scoped to the requester's tenant only — never touches other users.
+   * Returns how many facts were removed.
+   */
+  clearGraph(): Promise<{ cleared: number }>;
   getTranscript(): Promise<ParsedLogSession | null>;
   /** List saved snapshots of the live graph. */
   listSnapshots(): Promise<Snapshot[]>;

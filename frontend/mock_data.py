@@ -380,7 +380,7 @@ def get_demo_candidate_dicts() -> list[dict]:
             "id": "cand_12",
             "title": "Non-Blocking Reedline Completions",
             "content": "REPL completions must not block the main input thread. When touching Reedline completion paths, add timeout guards and verify the prompt stays interactive under slow filesystem or network-backed path providers.",
-            "state": "decayed",
+            "state": "rejected",
             "confidence": 0.68,
             "provenance": "logs/nushell_contrib_20260603.jsonl:412",
             "createdAt": "2026-06-03T08:30:00Z",
@@ -392,7 +392,7 @@ def get_demo_candidate_dicts() -> list[dict]:
                     "actor": "pipeline",
                 },
                 {
-                    "action": "decayed",
+                    "action": "rejected",
                     "timestamp": "2026-06-17T12:00:00Z",
                     "provenance": "logs/nushell_contrib_20260603.jsonl:412",
                     "actor": "pipeline",

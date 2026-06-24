@@ -92,7 +92,7 @@
     {
       "id": "cand_12",
       "label": "Non-Blocking Reedline Completions",
-      "state": "decayed",
+      "state": "rejected",
       "confidence": 0.68,
       "provenance": "logs/nushell_contrib_20260603.jsonl:412"
     },
@@ -224,20 +224,20 @@
       "category": "eval_fixture"
     },
     {
-      "id": "eval_decayed_lesson_ignored",
-      "label": "Decayed Lesson Ignored",
+      "id": "eval_rejected_lesson_ignored",
+      "label": "Rejected Lesson Ignored",
       "state": "proposed",
       "confidence": 0.78,
-      "provenance": "logs/evals/eval/decayed_lesson_ignored.jsonl:1",
+      "provenance": "logs/evals/eval/rejected_lesson_ignored.jsonl:1",
       "scope": "eval/eval",
       "category": "eval_fixture"
     },
     {
-      "id": "eval_decayed_lesson_ignored_reader",
-      "label": "Decayed Lesson Ignored Reader",
+      "id": "eval_rejected_lesson_ignored_reader",
+      "label": "Rejected Lesson Ignored Reader",
       "state": "proposed",
       "confidence": 0.78,
-      "provenance": "logs/evals/eval/decayed_lesson_ignored_reader.jsonl:1",
+      "provenance": "logs/evals/eval/rejected_lesson_ignored_reader.jsonl:1",
       "scope": "eval/eval",
       "category": "eval_fixture"
     },
@@ -849,8 +849,8 @@
         "eval_context_budget_overload",
         "eval_contradiction_should_flag",
         "eval_cross_session_rediscovery",
-        "eval_decayed_lesson_ignored",
-        "eval_decayed_lesson_ignored_reader",
+        "eval_rejected_lesson_ignored",
+        "eval_rejected_lesson_ignored_reader",
         "eval_docstring_policy",
         "eval_dom_fixture_test",
         "eval_empty_graph_no_harm",

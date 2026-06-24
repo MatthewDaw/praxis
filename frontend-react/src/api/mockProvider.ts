@@ -178,6 +178,10 @@ export function createMockDataProviderWithRows(
       return cloneGraphSnapshot(graph);
     },
 
+    async clearGraph() {
+      throw new Error("Clearing the graph is not supported in mock mode");
+    },
+
     async getTranscript() {
       return null;
     },
@@ -266,6 +270,10 @@ export function createMockDataProvider(): DataProvider {
 
     async getGraph() {
       return (await load()).getGraph();
+    },
+
+    async clearGraph() {
+      return (await load()).clearGraph();
     },
 
     async getTranscript() {

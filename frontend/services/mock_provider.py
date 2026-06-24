@@ -61,7 +61,7 @@ class MockDataProvider:
             actor="human-gate",
             note=reason or "",
         )
-        updated = _clone_candidate(candidate, state=CandidateState.DECAYED, extra=audit)
+        updated = _clone_candidate(candidate, state=CandidateState.REJECTED, extra=audit)
         self._candidates[candidate_id] = updated
 
     def resolve_contradiction(
@@ -90,7 +90,7 @@ class MockDataProvider:
             ]
             self._candidates[loser_id] = _clone_candidate(
                 loser,
-                state=CandidateState.DECAYED,
+                state=CandidateState.REJECTED,
                 contradiction_ids=cleared_loser_ids,
                 extra=loser_audit,
             )

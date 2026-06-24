@@ -31,7 +31,7 @@ const KNOWN_KEYS = new Set([
 const KNOWN_STATES = new Set<CandidateState>([
   "proposed",
   "active",
-  "decayed",
+  "rejected",
 ]);
 
 export function parseCandidateState(raw: unknown): {
@@ -52,7 +52,7 @@ export function candidateStateLabel(state: CandidateState): string {
       return "Proposed";
     case "active":
       return "Approved";
-    case "decayed":
+    case "rejected":
       return "Rejected";
     case "unrecognized":
       return "Unrecognized";
@@ -70,7 +70,7 @@ export function nextPromotionState(
     case "proposed":
       return "active";
     case "active":
-    case "decayed":
+    case "rejected":
     case "unrecognized":
       return null;
     default: {
@@ -81,14 +81,14 @@ export function nextPromotionState(
 }
 
 export function canDeleteCandidate(candidate: Pick<Candidate, "state">): boolean {
-  return candidate.state === "proposed" || candidate.state === "decayed";
+  return candidate.state === "proposed" || candidate.state === "rejected";
 }
 
 export function promoteUnavailableReason(candidate: Candidate): string {
   if (nextPromotionState(candidate.state)) {
     return "";
   }
-  if (candidate.state === "decayed") {
+  if (candidate.state === "rejected") {
     return `${candidate.title} is rejected - restore via pipeline before approving.`;
   }
   return `${candidate.title} is already ${candidate.displayState} - no further approval.`;
@@ -121,7 +121,7 @@ export function candidateStateStyle(state: CandidateState): CandidateStateStyle 
       return { bg: "#fef3c7", text: "#92400e", border: "#fcd34d" };
     case "active":
       return { bg: "#dcfce7", text: "#166534", border: "#86efac" };
-    case "decayed":
+    case "rejected":
     case "unrecognized":
       return { bg: "#f3f4f6", text: "#4b5563", border: "#d1d5db" };
     default: {
@@ -137,8 +137,8 @@ export function candidateStateClass(state: CandidateState): string {
       return "state-badge--proposed";
     case "active":
       return "state-badge--active";
-    case "decayed":
-      return "state-badge--decayed";
+    case "rejected":
+      return "state-badge--rejected";
     case "unrecognized":
       return "state-badge--unrecognized";
     default: {

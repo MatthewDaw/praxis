@@ -370,7 +370,7 @@
     "id": "cand_12",
     "title": "Non-Blocking Reedline Completions",
     "content": "REPL completions must not block the main input thread. When touching Reedline completion paths, add timeout guards and verify the prompt stays interactive under slow filesystem or network-backed path providers.",
-    "state": "decayed",
+    "state": "rejected",
     "confidence": 0.68,
     "provenance": "logs/nushell_contrib_20260603.jsonl:412",
     "createdAt": "2026-06-03T08:30:00Z",
@@ -382,7 +382,7 @@
         "actor": "pipeline"
       },
       {
-        "action": "decayed",
+        "action": "rejected",
         "timestamp": "2026-06-17T12:00:00Z",
         "provenance": "logs/nushell_contrib_20260603.jsonl:412",
         "actor": "pipeline",
@@ -889,14 +889,14 @@
     ]
   },
   {
-    "id": "eval_decayed_lesson_ignored",
-    "evalCaseId": "decayed_lesson_ignored",
+    "id": "eval_rejected_lesson_ignored",
+    "evalCaseId": "rejected_lesson_ignored",
     "evalCaseNamespace": "eval",
-    "title": "Decayed Lesson Ignored",
-    "content": "ACTIVE_PATHLIB_STANDARD: Stop using os.path for new code — use pathlib.Path; it's the project standard.\n\nDECAYED_RIVAL_MARKER: Always use os.path.join and os.path.exists for config paths — legacy standard.",
+    "title": "Rejected Lesson Ignored",
+    "content": "ACTIVE_PATHLIB_STANDARD: Stop using os.path for new code — use pathlib.Path; it's the project standard.\n\nREJECTED_RIVAL_MARKER: Always use os.path.join and os.path.exists for config paths — legacy standard.",
     "state": "proposed",
     "confidence": 0.78,
-    "provenance": "logs/evals/eval/decayed_lesson_ignored.jsonl:1",
+    "provenance": "logs/evals/eval/rejected_lesson_ignored.jsonl:1",
     "createdAt": "2026-06-18T12:00:00Z",
     "scope": "eval/eval",
     "category": "eval_fixture",
@@ -906,27 +906,27 @@
       "breadth": 0.76,
       "frequencyRationale": "Registered eval case under cases/",
       "recencyRationale": "Auto-generated from eval case registry for mock dashboard",
-      "breadthRationale": "Exercises eval harness case decayed_lesson_ignored"
+      "breadthRationale": "Exercises eval harness case rejected_lesson_ignored"
     },
     "auditTrail": [
       {
         "action": "distilled",
         "timestamp": "2026-06-18T12:00:00Z",
-        "provenance": "logs/evals/eval/decayed_lesson_ignored.jsonl:1",
+        "provenance": "logs/evals/eval/rejected_lesson_ignored.jsonl:1",
         "actor": "eval-mock-bridge"
       }
     ],
     "evalCaseInsightCount": 2
   },
   {
-    "id": "eval_decayed_lesson_ignored_reader",
-    "evalCaseId": "decayed_lesson_ignored_reader",
+    "id": "eval_rejected_lesson_ignored_reader",
+    "evalCaseId": "rejected_lesson_ignored_reader",
     "evalCaseNamespace": "eval",
-    "title": "Decayed Lesson Ignored Reader",
-    "content": "ACTIVE_PATHLIB_STANDARD: Stop using os.path for new code — use pathlib.Path; it's the project standard.\n\nDECAYED_RIVAL_MARKER: Always use os.path.join and os.path.exists for config paths — legacy standard.",
+    "title": "Rejected Lesson Ignored Reader",
+    "content": "ACTIVE_PATHLIB_STANDARD: Stop using os.path for new code — use pathlib.Path; it's the project standard.\n\nREJECTED_RIVAL_MARKER: Always use os.path.join and os.path.exists for config paths — legacy standard.",
     "state": "proposed",
     "confidence": 0.78,
-    "provenance": "logs/evals/eval/decayed_lesson_ignored_reader.jsonl:1",
+    "provenance": "logs/evals/eval/rejected_lesson_ignored_reader.jsonl:1",
     "createdAt": "2026-06-18T12:00:00Z",
     "scope": "eval/eval",
     "category": "eval_fixture",
@@ -936,13 +936,13 @@
       "breadth": 0.76,
       "frequencyRationale": "Registered eval case under cases/",
       "recencyRationale": "Auto-generated from eval case registry for mock dashboard",
-      "breadthRationale": "Exercises eval harness case decayed_lesson_ignored_reader"
+      "breadthRationale": "Exercises eval harness case rejected_lesson_ignored_reader"
     },
     "auditTrail": [
       {
         "action": "distilled",
         "timestamp": "2026-06-18T12:00:00Z",
-        "provenance": "logs/evals/eval/decayed_lesson_ignored_reader.jsonl:1",
+        "provenance": "logs/evals/eval/rejected_lesson_ignored_reader.jsonl:1",
         "actor": "eval-mock-bridge"
       }
     ],

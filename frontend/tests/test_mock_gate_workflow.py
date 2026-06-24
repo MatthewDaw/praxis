@@ -36,9 +36,9 @@ def test_mock_reject_decays_candidate() -> None:
     provider = MockDataProvider()
     assert provider.get_candidate("cand_3") is not None
     provider.reject("cand_3", reason="duplicate lesson")
-    decayed = provider.get_candidate("cand_3")
-    assert decayed is not None
-    assert decayed.state is CandidateState.DECAYED
+    rejected = provider.get_candidate("cand_3")
+    assert rejected is not None
+    assert rejected.state is CandidateState.REJECTED
 
 
 def test_mock_active_is_terminal_for_promotion() -> None:
@@ -63,5 +63,5 @@ def test_mock_resolve_contradiction_clears_rival() -> None:
     assert "cand_16" not in updated.contradiction_ids
     rival = provider.get_candidate("cand_16")
     assert rival is not None
-    assert rival.state is CandidateState.DECAYED
+    assert rival.state is CandidateState.REJECTED
     assert provider.get_candidate("cand_9") is not None

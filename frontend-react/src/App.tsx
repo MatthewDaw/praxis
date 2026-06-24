@@ -65,14 +65,19 @@ export default function App() {
     deleteCandidate,
   } = useCandidates({ config, localSession, auth });
 
+  const [searchQuery, setSearchQuery] = useState("");
+  const [stateFilter, setStateFilter] = useState("All");
+
+  // The graph mirrors the state filter: "All" → every lifecycle state, otherwise
+  // just the selected state. Default ("active") stays one-to-one with retrieval.
+  const graphState = stateFilter === "All" ? "all" : stateFilter;
   const { graph, loading: graphLoading, error: graphError } = useGraph(
     provider,
     candidates,
     graphRefreshKey,
+    graphState,
   );
 
-  const [searchQuery, setSearchQuery] = useState("");
-  const [stateFilter, setStateFilter] = useState("All");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [viewTab, setViewTab] = useState<ViewTab>("table");
   const [actionError, setActionError] = useState<string | null>(null);
@@ -167,7 +172,16 @@ export default function App() {
       setLocalSession(null);
       setLocalRawFiles([]);
     }
-    applyConfig(presetId, customApiBaseUrl);
+    const next = applyConfig(presetId, customApiBaseUrl);
+    // Switching to a different live server changes which backend owns auth and
+    // org membership. OrgGate validates membership against the base URL it
+    // resolved at mount, so a runtime swap would leave a stale org context
+    // (e.g. "member of org 'praxis'" on localhost but not on RDS → 403). The new
+    // config is already persisted, so reload to re-gate against the new server.
+    if (next.apiBaseUrl !== config.apiBaseUrl) {
+      window.location.reload();
+      return;
+    }
     setHealthRefreshKey((value) => value + 1);
     bumpGraphRefresh();
     refetchHealth();
@@ -238,6 +252,22 @@ export default function App() {
 
   function handleAddEval() {
     setEditorState({ mode: "add" });
+  }
+
+  async function handleClearGraph() {
+    const ok = window.confirm(
+      "Clear graph permanently removes every fact and edge in YOUR graph (this user only). This cannot be undone. Continue?",
+    );
+    if (!ok) return;
+    setActionError(null);
+    try {
+      const { cleared } = await provider.clearGraph();
+      setInfoMessage(`Cleared your graph — removed ${cleared} fact${cleared === 1 ? "" : "s"}.`);
+      await refresh();
+      setGraphRefreshKey((value) => value + 1);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function handleSaveCandidate(input: CandidateWriteInput) {
@@ -356,7 +386,6 @@ export default function App() {
         onDataSourceLoad={handleDataSourceLoad}
         onLoadLocalLogs={handleLoadLocalLogs}
         onClearLocalLogs={handleClearLocalLogs}
-        onRefresh={handleRefresh}
       />
 
       {mode === "local-logs" ? (
@@ -421,6 +450,7 @@ export default function App() {
         onStateFilterChange={setStateFilter}
         onViewTabChange={setViewTab}
         onAddEval={handleAddEval}
+        onClearGraph={handleClearGraph}
       />
 
       {viewTab === "setup" ? (

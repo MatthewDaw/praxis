@@ -15,7 +15,6 @@ interface DashboardHeaderProps {
   onDataSourceLoad: (presetId: string, customApiBaseUrl?: string) => void;
   onLoadLocalLogs?: (files: LocalLogFileInput[]) => void;
   onClearLocalLogs?: () => void;
-  onRefresh: () => void;
 }
 
 export function DashboardHeader({
@@ -28,7 +27,6 @@ export function DashboardHeader({
   onDataSourceLoad,
   onLoadLocalLogs,
   onClearLocalLogs,
-  onRefresh,
 }: DashboardHeaderProps) {
   return (
     <header className="dashboard-header">
@@ -58,9 +56,6 @@ export function DashboardHeader({
           onClearLocalLogs={onClearLocalLogs}
         />
         <div className="dashboard-header__actions">
-          <button type="button" className="btn primary" onClick={onRefresh}>
-            Refresh data
-          </button>
           <a
             className="contract-link"
             href="../docs/integration/candidate-api-v1.md"
