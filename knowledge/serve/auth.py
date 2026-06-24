@@ -27,6 +27,10 @@ _CLOCK_SKEW_LEEWAY = 300  # seconds
 class Principal:
     sub: str
     email: str | None
+    # When the request authenticated via an API key, the org that key is scoped
+    # to (else None for Cognito/dev principals). The org dependency enforces that
+    # the request's X-Praxis-Org matches this.
+    api_key_org: str | None = None
 
 
 @dataclass
@@ -93,8 +97,8 @@ def verify_token(token: str) -> dict:
     return claims
 
 
-def current_user(authorization: str = Header(None)) -> Principal:
-    """FastAPI dependency: resolve the caller's ``Principal`` from a Bearer JWT."""
+def _principal_from_jwt(authorization: str | None) -> Principal:
+    """Resolve a Principal from a Cognito Bearer JWT (or the dev seam)."""
     if os.environ.get("PRAXIS_AUTH_DISABLED") == "1":
         return Principal(sub="dev-user", email="dev@local")
 
@@ -108,3 +112,41 @@ def current_user(authorization: str = Header(None)) -> Principal:
         raise HTTPException(status_code=401, detail="invalid token") from exc
 
     return Principal(sub=claims["sub"], email=claims.get("email"))
+
+
+def current_user(authorization: str = Header(None)) -> Principal:
+    """FastAPI dependency: resolve the caller's ``Principal`` from a Bearer JWT.
+
+    Kept for callers (and tests) that don't need API-key auth. The server wires
+    :func:`make_current_user` instead so it can also accept ``X-Praxis-Key``.
+    """
+    return _principal_from_jwt(authorization)
+
+
+def make_current_user(conn):
+    """Build a ``current_user`` dependency that also accepts an API key.
+
+    A request authenticates EITHER via the existing Cognito Bearer JWT OR via the
+    ``X-Praxis-Key: pxk_...`` header. An API key resolves to a Principal whose
+    ``sub`` is the key's ``user_id`` (if set) else ``apikey:<id>``, and pins
+    ``api_key_org`` to the key's org so the org dependency can enforce a match.
+    The ``PRAXIS_AUTH_DISABLED=1`` dev seam still short-circuits to a dev
+    principal (checked first, so local runs need no key or token).
+    """
+    from knowledge.serve import apikeys
+
+    def current_user(
+        authorization: str = Header(None),
+        x_praxis_key: str | None = Header(default=None),
+    ) -> Principal:
+        if os.environ.get("PRAXIS_AUTH_DISABLED") == "1":
+            return Principal(sub="dev-user", email="dev@local")
+        if x_praxis_key:
+            record = apikeys.resolve_key(conn, x_praxis_key.strip())
+            if record is None:
+                raise HTTPException(status_code=401, detail="invalid API key")
+            sub = record.user_id or f"apikey:{record.id}"
+            return Principal(sub=sub, email=None, api_key_org=record.org_id)
+        return _principal_from_jwt(authorization)
+
+    return current_user

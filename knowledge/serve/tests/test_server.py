@@ -202,3 +202,41 @@ def test_insight_then_context_round_trips(client):
 
     ctx = client.get("/context", params={"query": "how do I install deps?"}).json()
     assert "uv" in ctx["context"]
+
+
+def test_context_hits_include_provenance_keys(client):
+    client.post("/insights", json={"insight": "use uv, not pip, in this repo"})
+    ctx = client.get("/context", params={"query": "deps install tool"}).json()
+    assert ctx["hits"], "expected at least one hit"
+    for hit in ctx["hits"]:
+        # Enriched provenance shape (null when absent, but keys always present).
+        assert set(hit) >= {"id", "text", "score", "source", "scope", "category"}
+
+
+def test_batch_ingest_happy_path(client):
+    body = {
+        "documents": [
+            {"text": "We deploy on Fridays here.", "source": "handbook"},
+            {"text": "Code review requires two approvals.", "source": "handbook"},
+        ],
+        "state": "active",
+    }
+    res = client.post("/ingest", json=body)
+    assert res.status_code == 200, res.text
+    payload = res.json()
+    assert payload["count"] == 2
+    assert len(payload["results"]) == 2
+    for r in payload["results"]:
+        assert r["action"] == "ingested"
+        assert "id" in r
+    # The ingested facts are now retrievable as active knowledge.
+    ctx = client.get("/context", params={"query": "when do we deploy?"}).json()
+    assert "Friday" in ctx["context"] or "friday" in ctx["context"].lower()
+
+
+def test_batch_ingest_rejects_empty_documents(client):
+    assert client.post("/ingest", json={"documents": []}).status_code == 400
+    assert client.post("/ingest", json={}).status_code == 400
+    assert (
+        client.post("/ingest", json={"documents": [{"text": "  "}]}).status_code == 400
+    )

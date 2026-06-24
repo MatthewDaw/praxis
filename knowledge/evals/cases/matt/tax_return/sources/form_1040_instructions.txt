@@ -1,0 +1,75 @@
+Form 1040 (Simplified) — Instructions for Tax Year 2025
+
+This guide explains how to fill out a simplified U.S. individual income tax
+return (Form 1040) for a wage earner whose only income is from one or more W-2
+jobs (no other income). Work the lines in order; each line tells you exactly
+what to enter.
+
+Line 1a — Wages, salaries, and tips.
+  Enter the amount from Box 1 of your W-2 ("Wages, tips, other compensation").
+  If a return has more than one W-2 (for example, a married couple filing
+  jointly with a W-2 each), add all the Box 1 amounts together.
+
+Line 9 — Total income.
+  For a return with only W-2 wages and no other income (no interest, dividends,
+  self-employment, or capital gains), Total income equals Line 1a.
+
+Line 11 — Adjusted gross income (AGI).
+  With no above-the-line adjustments, AGI equals Line 9.
+
+Line 12 — Standard deduction.
+  Most filers take the standard deduction. For tax year 2025 the standard
+  deduction by filing status is:
+    - Single ............................. $15,750
+    - Married filing jointly ............. $31,500
+    - Head of household .................. $23,625
+    - Married filing separately .......... $15,750
+  Enter the standard deduction for your filing status unless you are itemizing.
+
+Line 15 — Taxable income.
+  Subtract Line 12 (the standard deduction) from Line 11 (AGI). If the result is
+  zero or less, enter 0. This is your taxable income.
+
+Line 16 — Tax.
+  Compute the tax on your Line 15 taxable income using the 2025 tax-rate
+  schedule for your filing status. Apply each rate only to the portion of income
+  that falls in that bracket (marginal rates), then add the pieces together.
+  Round the final tax to the nearest whole dollar.
+
+  SINGLE (and married filing separately) 2025 brackets:
+    - 10% on taxable income from $0 to $11,925
+    - 12% on the amount over $11,925 up to $48,475
+    - 22% on the amount over $48,475 up to $103,350
+    - 24% on the amount over $103,350 up to $197,300
+
+  MARRIED FILING JOINTLY 2025 brackets:
+    - 10% on taxable income from $0 to $23,850
+    - 12% on the amount over $23,850 up to $96,950
+    - 22% on the amount over $96,950 up to $206,700
+    - 24% on the amount over $206,700 up to $394,600
+
+  HEAD OF HOUSEHOLD 2025 brackets:
+    - 10% on taxable income from $0 to $17,000
+    - 12% on the amount over $17,000 up to $64,850
+    - 22% on the amount over $64,850 up to $103,350
+    - 24% on the amount over $103,350 up to $197,300
+
+Line 25 — Federal income tax withheld.
+  Enter the amount from Box 2 of your W-2 ("Federal income tax withheld"). Add
+  the Box 2 amounts from all the W-2s on the return.
+
+Line 33 — Total payments.
+  For a wage-only return this equals Line 25.
+
+Line 34 — Overpayment / Refund.
+  If Line 33 (total payments) is MORE than Line 16 (tax), you overpaid. Subtract
+  Line 16 from Line 33 — that difference is your REFUND.
+
+Line 37 — Amount you owe.
+  If Line 16 (tax) is MORE than Line 33 (total payments), subtract Line 33 from
+  Line 16 — that difference is the amount you OWE. A return results in either a
+  refund (Line 34) or an amount owed (Line 37), never both.
+
+When you finish, the completed return should clearly state: filing status, total
+income, AGI, the standard deduction taken, taxable income, the computed tax,
+total federal tax withheld, and the final refund or amount owed.

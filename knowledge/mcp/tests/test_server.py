@@ -6,9 +6,17 @@ request, so we assert the tools hit the right endpoint with Bearer +
 X-Praxis-Org and surface the backend payload.
 """
 
+import json
+
 import httpx
 
 from knowledge.mcp import identity, server
+
+
+def _extract_json(out: str) -> dict:
+    """Pull the structured ```json block out of a tool's dual-format string."""
+    block = out.split("```json", 1)[1].split("```", 1)[0]
+    return json.loads(block)
 
 
 class _Resp:
@@ -47,7 +55,12 @@ def test_add_insight_posts_with_auth_and_returns_summary(monkeypatch):
 
     out = server.praxis_add_insight("use uv, not pip", scope="global", category="constraint")
 
-    assert out == "added"
+    # Structured output: a human summary line plus a consumable JSON block.
+    assert "added" in out
+    data = _extract_json(out)
+    assert data["action"] == "add"
+    assert data["id"] == "x"
+    assert data["summary"] == "added"
     assert captured["url"] == "http://api.test/insights"
     assert captured["json"] == {
         "insight": "use uv, not pip",
@@ -66,17 +79,46 @@ def test_get_context_gets_with_auth_and_returns_context(monkeypatch):
         captured["url"] = url
         captured["params"] = params
         captured["headers"] = headers
-        return _Resp({"context": "uv is the package manager here"})
+        return _Resp({"context": "uv is the package manager here", "hits": []})
 
     monkeypatch.setattr(server.httpx, "get", fake_get)
 
     out = server.praxis_get_context("how do I install deps?", top_k=3)
 
-    assert out == "uv is the package manager here"
+    assert "uv is the package manager here" in out
+    data = _extract_json(out)
+    assert data["context"] == "uv is the package manager here"
+    assert data["hits"] == []
     assert captured["url"] == "http://api.test/context"
     assert captured["params"] == {"query": "how do I install deps?", "top_k": 3}
     assert captured["headers"]["Authorization"] == "Bearer id-tok"
     assert captured["headers"]["X-Praxis-Org"] == "acme"
+
+
+def test_ingest_posts_documents_with_auth(monkeypatch):
+    _patch_identity(monkeypatch)
+    captured = {}
+
+    def fake_post(url, json, headers):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        return _Resp({"results": [{"id": "f1", "action": "ingested"}], "count": 1})
+
+    monkeypatch.setattr(server.httpx, "post", fake_post)
+
+    out = server.praxis_ingest("We deploy on Fridays.", source="handbook", state="active")
+
+    assert captured["url"] == "http://api.test/ingest"
+    assert captured["json"] == {
+        "documents": [{"text": "We deploy on Fridays.", "source": "handbook"}],
+        "state": "active",
+    }
+    assert captured["headers"]["Authorization"] == "Bearer id-tok"
+    assert captured["headers"]["X-Praxis-Org"] == "acme"
+    data = _extract_json(out)
+    assert data["count"] == 1
+    assert data["results"][0]["action"] == "ingested"
 
 
 def test_get_contradictions_formats_pairs(monkeypatch):

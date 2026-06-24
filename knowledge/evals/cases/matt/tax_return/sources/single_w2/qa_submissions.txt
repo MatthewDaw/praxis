@@ -1,0 +1,21 @@
+Taxpayer intake questionnaire — answers submitted by Jordan A. Rivera (Tax Year 2025)
+
+These are the taxpayer's own answers to the preparer's intake questions; they
+supply the details that are not printed on the W-2(s).
+
+Q: What is your filing status for 2025?
+A: Single.
+
+Q: Do you have any dependents?
+A: No dependents.
+
+Q: Did you have any income besides your W-2 wages — interest, dividends,
+   self-employment, capital gains, or anything else?
+A: Yes, that W-2 is my only income for the year.
+
+Q: Will you take the standard deduction or itemize?
+A: Take the standard deduction; we do not have enough deductible expenses to itemize.
+
+Q: Did you make any estimated tax payments, or are you claiming any credits?
+A: No estimated payments and no credits apply to us this year. The only federal
+   tax paid was the amount withheld from our paychecks (Box 2 of the W-2s).

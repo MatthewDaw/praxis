@@ -16,6 +16,8 @@ Then, in a session, ask Claude to log you in (it calls ``praxis_login``).
 
 from __future__ import annotations
 
+import json
+
 import httpx
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
@@ -69,6 +71,15 @@ def _not_ready() -> str | None:
     return None
 
 
+def _structured(summary: str, data: dict) -> str:
+    """A consumable result: a human summary line plus a fenced JSON block.
+
+    The external agent parses the ```json fence; humans read the first line. Kept
+    as a single string so it matches the other tools' ``-> str`` convention.
+    """
+    return f"{summary}\n\n```json\n{json.dumps(data, indent=2)}\n```"
+
+
 @mcp.tool()
 def praxis_get_context(query: str, top_k: int = 8) -> str:
     """Retrieve relevant stored knowledge for the current task.
@@ -76,6 +87,10 @@ def praxis_get_context(query: str, top_k: int = 8) -> str:
     Call this before answering questions about the user's preferences,
     conventions, or past decisions — it returns active facts from the user's
     knowledge graph most similar to ``query``.
+
+    Returns a human summary plus a structured JSON block with ``context`` and
+    per-hit ``hits`` (each with ``id``/``text``/``score``/``source``/``scope``/
+    ``category``) so callers can consume provenance without regex-parsing.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -88,7 +103,12 @@ def praxis_get_context(query: str, top_k: int = 8) -> str:
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
-    return resp.json().get("context", "")
+    payload = resp.json()
+    hits = payload.get("hits", [])
+    return _structured(
+        payload.get("context", "") or f"{len(hits)} hit(s).",
+        {"context": payload.get("context", ""), "hits": hits},
+    )
 
 
 @mcp.tool()
@@ -125,7 +145,51 @@ def praxis_add_insight(
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
-    return resp.json().get("summary", "")
+    payload = resp.json()
+    return _structured(
+        payload.get("summary", "") or "insight stored",
+        {
+            "summary": payload.get("summary", ""),
+            "action": payload.get("action"),
+            "id": payload.get("id"),
+        },
+    )
+
+
+@mcp.tool()
+def praxis_ingest(
+    text: str,
+    source: str | None = None,
+    state: str = "active",
+) -> str:
+    """Ingest a raw document through Praxis's distillation pipeline.
+
+    Unlike ``praxis_add_insight`` (one already-distilled fact), this hands a raw
+    document (a note, a transcript, a file's contents) to the backend, which
+    distills it into atomic facts, dedupes, and reconciles conflicts. ``state``
+    is "active" (live knowledge) or "proposed" (staged for review). Returns a
+    structured JSON block with per-document results (``id``/``action``).
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    body: dict[str, object] = {
+        "documents": [{"text": text, "source": source}],
+        "state": state,
+    }
+    try:
+        resp = httpx.post(
+            f"{identity.api_base()}/ingest",
+            json=body,
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    return _structured(
+        f"ingested {payload.get('count', 0)} document(s)",
+        payload,
+    )
 
 
 def _fmt_side(label: str, side: dict) -> str:

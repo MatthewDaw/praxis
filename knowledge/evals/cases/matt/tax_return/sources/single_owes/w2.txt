@@ -1,0 +1,16 @@
+Form W-2 — Wage and Tax Statement (Tax Year 2025)
+
+Employee: Priya N. Shah
+Employee SSN: XXX-XX-5567
+
+Employer: Northstar Analytics Inc.
+Employer EIN: 27-8890123
+
+Box 1  — Wages, tips, other compensation .......... 90,000.00
+Box 2  — Federal income tax withheld .............. 9,000.00
+Box 3  — Social Security wages .................... 90,000.00
+Box 4  — Social Security tax withheld ............. 5,580.00
+Box 5  — Medicare wages and tips ................. 90,000.00
+Box 6  — Medicare tax withheld .................... 1,305.00
+Box 13 — Retirement plan: not checked
+Box 15 — State: CA

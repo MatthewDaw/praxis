@@ -1,0 +1,16 @@
+Form W-2 — Wage and Tax Statement (Tax Year 2025)
+
+Employee: Dana R. Okafor
+Employee SSN: XXX-XX-1190
+
+Employer: Riverbend Health Partners
+Employer EIN: 45-2210087
+
+Box 1  — Wages, tips, other compensation .......... 40,000.00
+Box 2  — Federal income tax withheld .............. 3,200.00
+Box 3  — Social Security wages .................... 40,000.00
+Box 4  — Social Security tax withheld ............. 2,480.00
+Box 5  — Medicare wages and tips ................. 40,000.00
+Box 6  — Medicare tax withheld .................... 580.00
+Box 13 — Retirement plan: not checked
+Box 15 — State: OH

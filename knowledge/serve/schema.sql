@@ -81,6 +81,24 @@ CREATE TABLE IF NOT EXISTS org_members (
     FOREIGN KEY (org_id) REFERENCES orgs (org_id) ON DELETE CASCADE
 );
 
+-- Scoped API keys: a long-lived, org-scoped service token an automated agent
+-- uses instead of the Cognito SRP + per-request token mint. Only the sha256 hex
+-- of the raw key (`pxk_<random>`) is stored; the raw key is shown once at mint.
+-- A key is scoped to one `org_id` (and optionally a specific `user_id`); a
+-- request authenticating with it must select that same org via X-Praxis-Org.
+CREATE TABLE IF NOT EXISTS api_keys (
+    id           text PRIMARY KEY,
+    key_hash     text NOT NULL UNIQUE,
+    org_id       text NOT NULL,
+    user_id      text,
+    label        text,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    last_used_at timestamptz,
+    revoked      boolean NOT NULL DEFAULT false
+);
+
+CREATE INDEX IF NOT EXISTS api_keys_hash ON api_keys (key_hash) WHERE NOT revoked;
+
 -- Edges connect two facts within the same tenant graph.
 CREATE TABLE IF NOT EXISTS fact_edges (
     org_id text NOT NULL DEFAULT 'default',

@@ -1,0 +1,16 @@
+Form W-2 — Wage and Tax Statement (Tax Year 2025)
+
+Employee: Samuel T. Okafor
+Employee SSN: XXX-XX-7732
+
+Employer: Greenfield School District
+Employer EIN: 31-6041550
+
+Box 1  — Wages, tips, other compensation .......... 35,000.00
+Box 2  — Federal income tax withheld .............. 2,600.00
+Box 3  — Social Security wages .................... 35,000.00
+Box 4  — Social Security tax withheld ............. 2,170.00
+Box 5  — Medicare wages and tips ................. 35,000.00
+Box 6  — Medicare tax withheld .................... 507.50
+Box 13 — Retirement plan: not checked
+Box 15 — State: OH
