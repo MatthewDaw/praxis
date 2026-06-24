@@ -20,7 +20,11 @@ import uuid
 from knowledge.knowledge_graph.knowledge_graph_def import Contradiction, Fact, SearchHit
 from knowledge.knowledge_graph.parent_searchable_graph import SearchableGraph
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
-from knowledge.knowledge_graph.write_policy.write_policy_def import ClaimHit, WriteDecision
+from knowledge.knowledge_graph.write_policy.write_policy_def import (
+    ClaimHit,
+    WriteDecision,
+    demote_active_contradiction,
+)
 from knowledge.knowledge_graph.write_policy.write_step_variants import (
     ClaimConflictDetector,
     ClaimExtractionJudge,
@@ -117,6 +121,9 @@ class VectorGraph(SearchableGraph):
             # No candidate-consuming step ran (e.g. a redact-only policy); still
             # embed once for persistence.
             decision.embedding = self.embedder.embed_one(decision.text)
+        # FR-005: never two active facts that contradict — a forced-active write
+        # flagged against an already-active fact lands "proposed" (pending).
+        demote_active_contradiction(decision)
         if decision.action == "update" and decision.update_target_id:
             self._merge(decision)
             return

@@ -24,8 +24,6 @@ from knowledge.injestion.image import hashing
 
 logger = logging.getLogger(__name__)
 
-# Bump PROMPT_VERSION whenever CAPTION_PROMPT changes so cached captions invalidate.
-PROMPT_VERSION = "v1"
 CAPTION_PROMPT = (
     "You are describing a single visual asset for a knowledge graph. In one or two "
     "plain sentences, state concretely what the image depicts: its subject, art style "

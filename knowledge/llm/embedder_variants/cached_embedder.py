@@ -24,6 +24,7 @@ import struct
 import threading
 from pathlib import Path
 
+from knowledge.llm.atomic_write import atomic_write_text
 from knowledge.llm.llm_def import Vector
 from knowledge.llm.parent_embedder import Embedder
 
@@ -92,10 +93,9 @@ class CachedEmbedder(Embedder):
         with _FILE_LOCK:
             merged = self._load()  # re-read: may include a peer's concurrent writes
             merged.update(self._cache)
-            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
             packed = {k: _pack(v) for k, v in merged.items()}
-            self.cache_path.write_text(
-                json.dumps(packed, indent=0, sort_keys=True) + "\n", encoding="utf-8"
+            atomic_write_text(
+                self.cache_path, json.dumps(packed, indent=0, sort_keys=True) + "\n"
             )
             self._cache = merged  # adopt peers' keys so later hits resolve
             self._dirty = False

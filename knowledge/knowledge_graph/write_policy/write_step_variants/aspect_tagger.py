@@ -82,15 +82,18 @@ class AspectJudge:
 
     def tags(self, note: str) -> list[str] | None:
         """Tags for ``note`` if a source is available; None to skip (no cassette, no llm)."""
+        prompt = _PROMPT.format(vocab=", ".join(ASPECT_VOCAB), note=note)
         if self.cassette is not None:
-            return self.cassette.verdict(note, lambda: self._compute(note))["tags"]
+            # Key on the rendered prompt so the vocabulary (carried in the prompt) is
+            # part of the key, not just the note -- a vocab edit is a clean miss.
+            return self.cassette.verdict(prompt, lambda: self._compute(prompt))["tags"]
         if self.llm is not None:
-            return self._compute(note)["tags"]
+            return self._compute(prompt)["tags"]
         return None  # no source -> skip
 
-    def _compute(self, note: str) -> dict:
+    def _compute(self, prompt: str) -> dict:
         raw = self.llm.complete(
-            [ChatMessage(role="user", content=_PROMPT.format(vocab=", ".join(ASPECT_VOCAB), note=note))],
+            [ChatMessage(role="user", content=prompt)],
             response_format=_SCHEMA,
         )
         tags = json.loads(raw)["tags"]

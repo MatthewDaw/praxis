@@ -37,6 +37,17 @@ deterministic_checks:
     ref: "knowledge.evals.deterministic_checks.text:regex_matches"
     params:
       pattern: "(?i)conflict|contradict|ambiguous"
+  # FR-005: the two seeded rules contradict, so they must never BOTH be active in
+  # the graph the agent reads — the write policy demotes the loser to proposed.
+  # The first seed (tabs) wins the tie and stays active. Live-run check: the offline
+  # FakeRunner injects no knowledge, so this is not applicable (passes) offline.
+  - name: only_one_rule_active
+    ref: "knowledge.evals.deterministic_checks.graph:at_most_one_active"
+    params:
+      texts:
+        - "ALWAYS use tabs for indentation in this project. Spaces are forbidden."
+        - "ALWAYS use spaces for indentation in this project. Tabs are forbidden."
+      winner: "ALWAYS use tabs for indentation in this project. Spaces are forbidden."
 
 rubric:
   id: contradiction_should_flag_v1

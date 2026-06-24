@@ -24,6 +24,8 @@ import threading
 from pathlib import Path
 from typing import Callable
 
+from knowledge.llm.atomic_write import atomic_write_text
+
 # Guards the read-modify-write in ``save`` so parallel cases (the runner's
 # ``--workers``) recording to the same cassette can't clobber each other's keys.
 _FILE_LOCK = threading.Lock()
@@ -78,10 +80,7 @@ class IngestionCassette:
         with _FILE_LOCK:
             merged = self._load()  # re-read: may include a peer's concurrent writes
             merged.update(self._cache)
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(
-                json.dumps(merged, indent=0, sort_keys=True) + "\n", encoding="utf-8"
-            )
+            atomic_write_text(self.path, json.dumps(merged, indent=0, sort_keys=True) + "\n")
             self._cache = merged
             self._dirty = False
 

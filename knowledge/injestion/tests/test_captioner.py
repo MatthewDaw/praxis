@@ -39,7 +39,7 @@ def test_cassette_hit_skips_live_call(tmp_path):
     from knowledge.injestion.image import hashing
 
     cas = CaptionCassette(
-        tmp_path / "c.json", model_id="m/vlm", prompt_version="v1", allow_compute=True
+        tmp_path / "c.json", model_id="m/vlm", prompt="caption prompt", allow_compute=True
     )
     cas.caption(hashing.content_hash(png), lambda: "cached caption")
 

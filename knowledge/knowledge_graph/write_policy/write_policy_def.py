@@ -74,3 +74,28 @@ class ClaimHit:
     subject: str  # normalized slot subject
     attribute: str  # normalized slot attribute
     value: str  # the existing fact's raw value on this slot
+
+
+def demote_active_contradiction(decision: WriteDecision) -> None:
+    """Enforce FR-005 in place: a forced-``active`` write that the policy flagged
+    as contradicting an already-``active`` fact is dropped to ``proposed``.
+
+    Two contradicting facts are never both active; the newcomer becomes a pending
+    contradiction (the reviewer resolves it) instead of a second active side. The
+    contradiction edge is still recorded by the store, so the pair stays linked.
+    No-op unless the write is active and a ``contradiction:<id>`` flag targets a
+    recall candidate that is itself active.
+    """
+    if decision.state != "active":
+        return
+    contradicted = {
+        f.split(":", 1)[1] for f in decision.flags if f.startswith("contradiction:")
+    }
+    if not contradicted:
+        return
+    by_id = {
+        hit.fact.id: hit.fact
+        for hit in (*decision.candidates, *decision.tag_candidates)
+    }
+    if any(cid in by_id and by_id[cid].state == "active" for cid in contradicted):
+        decision.state = "proposed"

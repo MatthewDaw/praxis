@@ -436,7 +436,7 @@ def _caption_captioner_for(case: EvalCase):
     """
     if not case.caption_model:
         return None
-    from knowledge.injestion.image.captioner import PROMPT_VERSION, make_captioner
+    from knowledge.injestion.image.captioner import CAPTION_PROMPT, make_captioner
     from knowledge.llm.caption_cassette import CaptionCassette
 
     has_key = bool(os.getenv("OPENROUTER_API_KEY"))
@@ -445,7 +445,7 @@ def _caption_captioner_for(case: EvalCase):
         CaptionCassette(
             cache,
             model_id=case.caption_model,
-            prompt_version=PROMPT_VERSION,
+            prompt=CAPTION_PROMPT,
             allow_compute=has_key,
         )
         if (cache.exists() or has_key)

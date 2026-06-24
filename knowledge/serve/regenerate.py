@@ -326,50 +326,62 @@ def _regenerate_from_cases(relative_dirs: list[str], config: PipelineConfig) -> 
         wanted = set(config.case_ids)
         cases = [c for c in cases if c.id in wanted]
 
-    # Collect each unique seeded source once, tagged with the state its channel
-    # implies: via_ingestor -> proposed, direct_to_graph -> active.
+    # Collect each unique seeded source once, split by channel. Mirrors a real run
+    # (and ``distill_case``): ``direct_to_graph`` seeds are written VERBATIM as active
+    # facts (never distilled/split — that corrupts curated text and can split one
+    # "A or B" line into two facts that then false-flag as contradictory); only
+    # ``via_ingestor`` goes through the ingestor and lands proposed.
     seen: set[str] = set()
-    seeds: list[tuple[str, str]] = []  # (source_text, state)
+    direct_seeds: list[str] = []  # -> graph.write(text, state="active"), verbatim
+    via_seeds: list[str] = []  # -> ingestor, state="proposed"
     for case in cases:
-        for state, rows in (
-            ("proposed", case.seeded_insight.via_ingestor),
-            ("active", case.seeded_insight.direct_to_graph),
+        for bucket, rows in (
+            (direct_seeds, case.seeded_insight.direct_to_graph),
+            (via_seeds, case.seeded_insight.via_ingestor),
         ):
             for text in rows:
                 normalized = str(text).strip()
                 if normalized and normalized not in seen:
                     seen.add(normalized)
-                    seeds.append((text, state))
+                    bucket.append(text)
 
-    # One graph-construction path for both modes: real embedder + ConflictFlagger
-    # when a key is present (so contradictions actually land on the candidates the
-    # UI reads), else the offline FakeEmbedder. ``distill`` only changes how the
-    # seed *text* enters the graph (LLM-distilled vs. verbatim line-split).
+    # Real embedder + ConflictFlagger when a key is present (so contradictions land on
+    # the candidates the UI reads), else the offline FakeEmbedder.
     graph, ingest_llm = _seed_write_graph()
-    if config.distill:
-        if ingest_llm is None:
-            raise RegenerateUnavailableError(
-                "distillation needs OPENROUTER_API_KEY set on the API"
+
+    # direct_to_graph: one verbatim active fact per seed entry (collapse whitespace only).
+    for source in direct_seeds:
+        text = " ".join(str(source).split())
+        if text:
+            graph.write(text, state="active")
+
+    # via_ingestor: the real distillation path. ``distill`` only changes how the seed
+    # *text* enters the graph (LLM-distilled vs. verbatim line-split); both land proposed.
+    if via_seeds:
+        if config.distill:
+            if ingest_llm is None:
+                raise RegenerateUnavailableError(
+                    "distillation needs OPENROUTER_API_KEY set on the API"
+                )
+            from knowledge.llm.llm_def import ChatMessage
+
+            ingestor = PromptIngestor(
+                graph,
+                llm=lambda prompt: ingest_llm.complete([ChatMessage(role="user", content=prompt)]),
             )
-        from knowledge.llm.llm_def import ChatMessage
+            for source in via_seeds:
+                ingestor.ingest(source, state="proposed")
+        else:
+            from knowledge.knowledge_graph.knowledge_graph_variants.in_memory_graph import InMemoryGraph
 
-        ingestor = PromptIngestor(
-            graph,
-            llm=lambda prompt: ingest_llm.complete([ChatMessage(role="user", content=prompt)]),
-        )
-        for source, state in seeds:
-            ingestor.ingest(source, state=state)
-    else:
-        from knowledge.knowledge_graph.knowledge_graph_variants.in_memory_graph import InMemoryGraph
-
-        # Passthrough split, but drop header/fragment lines (e.g. "Cohorts:",
-        # "Relevant Skills") so the graph holds real facts, not section headers.
-        splitter = PromptIngestor(InMemoryGraph())  # no llm => line split
-        for source, state in seeds:
-            for insight in splitter.synthesis(source):
-                text = " ".join(insight.raw_text.split())
-                if _is_real_fact(text):
-                    graph.write(text, state=state)
+            # Passthrough split, but drop header/fragment lines (e.g. "Cohorts:",
+            # "Relevant Skills") so the graph holds real facts, not section headers.
+            splitter = PromptIngestor(InMemoryGraph())  # no llm => line split
+            for source in via_seeds:
+                for insight in splitter.synthesis(source):
+                    text = " ".join(insight.raw_text.split())
+                    if _is_real_fact(text):
+                        graph.write(text, state="proposed")
 
     # Tag facts with topic clusters (embed -> reduce -> HDBSCAN -> LLM labels) so the
     # graph view can group them into labeled super-nodes. Best-effort: degrades to

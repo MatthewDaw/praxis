@@ -123,6 +123,58 @@ def test_contradiction_keeps_both_nondestructively(unique_org):
     assert graph.all_edges("contradiction") == []
 
 
+def test_active_active_contradiction_demotes_newcomer_to_proposed(unique_org):
+    """FR-005: a forced-active write whose functional claim clashes with an already-
+    active fact lands ``proposed`` -- a pending contradiction -- never a second active
+    side. The pair stays linked. Exercises the structural detector on the postgres store."""
+    from knowledge.knowledge_graph.knowledge_graph_def import Claim
+    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+        PostgresVectorGraph,
+    )
+    from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
+    from knowledge.knowledge_graph.write_policy.write_step_variants import (
+        ClaimConflictDetector,
+        Deduper,
+        Redactor,
+    )
+    from knowledge.llm.embedder_variants.fake_embedder import FakeEmbedder
+
+    class _Claims(WriteStep):
+        """Stand-in for ClaimExtractor: assigns claims by exact text match."""
+
+        consumes_candidates = False
+
+        def __init__(self, mapping):
+            self._m = mapping
+
+        def apply(self, decision):
+            decision.claims = list(self._m.get(decision.text, []))
+
+    mapping = {
+        "the deploy timeout is 30 seconds": [
+            Claim(subject="deploy", attribute="timeout", value="30", functional=True)
+        ],
+        "the deploy timeout is 60 seconds": [
+            Claim(subject="deploy", attribute="timeout", value="60", functional=True)
+        ],
+    }
+    conn = db.connect()
+    # Fresh tenant each run (org id is derived from the test name), mirroring _trio.
+    conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (unique_org, "u1"))
+    graph = PostgresVectorGraph(
+        conn, unique_org, "u1", embedder=FakeEmbedder(), recall_floor=-1.0,
+        policy=[Redactor(), _Claims(mapping), Deduper(), ClaimConflictDetector()],
+    )
+    graph.write("the deploy timeout is 30 seconds", state="active")
+    graph.write("the deploy timeout is 60 seconds", state="active")  # 60 != 30 -> contradiction
+
+    states = _states_by_text(conn, unique_org, "u1")
+    assert states["the deploy timeout is 30 seconds"] == "active"     # first stays live
+    assert states["the deploy timeout is 60 seconds"] == "proposed"   # FR-005: not a 2nd active
+    # Still linked, as a pending (unresolved) contradiction.
+    assert len(graph.all_edges("contradiction")) == 1
+
+
 def test_overwrite_rejects_all_conflicts_without_destroying_text(unique_org):
     """US1 #2: approving over several conflicts rejects+links each loser, none
     overwritten. Drives _overwrite directly with multiple conflicts."""

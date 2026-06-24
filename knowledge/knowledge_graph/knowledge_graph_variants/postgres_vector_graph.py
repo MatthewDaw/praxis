@@ -24,7 +24,11 @@ from pgvector import Vector
 from knowledge.knowledge_graph.knowledge_graph_def import Claim, Fact, SearchHit
 from knowledge.knowledge_graph.parent_searchable_graph import SearchableGraph
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
-from knowledge.knowledge_graph.write_policy.write_policy_def import ClaimHit, WriteDecision
+from knowledge.knowledge_graph.write_policy.write_policy_def import (
+    ClaimHit,
+    WriteDecision,
+    demote_active_contradiction,
+)
 from knowledge.knowledge_graph.write_policy.write_step_variants import (
     ClaimConflictDetector,
     ClaimExtractionJudge,
@@ -221,6 +225,10 @@ class PostgresVectorGraph(SearchableGraph):
         if decision.embedding is None:
             # No candidate-consuming step ran; still embed once for persistence.
             decision.embedding = self._embed(decision.text)
+        # FR-005: never two active facts that contradict. A forced-active write
+        # flagged against an already-active fact lands "proposed" (a pending
+        # contradiction); the contradiction edge is still persisted below.
+        demote_active_contradiction(decision)
         if decision.action == "update" and decision.update_target_id:
             self._merge(decision)
             fact_id = decision.update_target_id

@@ -168,23 +168,29 @@ class ClaimExtractionJudge:
 
     def extract(self, note: str) -> list[Claim] | None:
         """Claims for ``note`` if a source is available; None to skip (no cassette, no llm)."""
+        # Two focused calls: free-form atomic claims, plus a single-task stance
+        # classifier (enum-constrained axis). Key the cassette on the exact rendered
+        # prompts (both calls), so editing either prompt or the axes vocabulary is a
+        # clean miss, not a stale replay.
+        claim_prompt = _PROMPT.format(note=note)
+        stance_prompt = _STANCE_PROMPT.format(axes=_AXES_BLOCK, note=note)
         if self.cassette is not None:
-            raw = self.cassette.verdict(note, lambda: self._compute(note))
+            payload = f"{claim_prompt}\n||\n{stance_prompt}"
+            raw = self.cassette.verdict(
+                payload, lambda: self._compute(claim_prompt, stance_prompt)
+            )
             return self._to_claims(raw)
         if self.llm is not None:
-            return self._to_claims(self._compute(note))
+            return self._to_claims(self._compute(claim_prompt, stance_prompt))
         return None  # no source -> skip
 
-    def _compute(self, note: str) -> dict:
-        # Two focused calls: free-form atomic claims, plus a single-task stance
-        # classifier (enum-constrained axis). Keeping stance separate is what makes
-        # its recall reliable. Both persist in the cassette under one note key.
+    def _compute(self, claim_prompt: str, stance_prompt: str) -> dict:
         claims_raw = self.llm.complete(
-            [ChatMessage(role="user", content=_PROMPT.format(note=note))],
+            [ChatMessage(role="user", content=claim_prompt)],
             response_format=_SCHEMA,
         )
         stance_raw = self.llm.complete(
-            [ChatMessage(role="user", content=_STANCE_PROMPT.format(axes=_AXES_BLOCK, note=note))],
+            [ChatMessage(role="user", content=stance_prompt)],
             response_format=_STANCE_SCHEMA,
         )
         return {"claims": json.loads(claims_raw)["claims"], "stance": json.loads(stance_raw)}

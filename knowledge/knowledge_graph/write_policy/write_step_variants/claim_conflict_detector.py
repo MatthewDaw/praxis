@@ -76,19 +76,18 @@ class ClaimValueJudge:
 
     def incompatible(self, subject: str, attribute: str, a: str, b: str) -> bool | None:
         """True/False if a verdict is available; None to skip (no cassette, no llm)."""
+        # Key the cassette on the exact rendered prompt, so editing the prompt (or the
+        # inputs) is a clean miss, not a stale replay.
+        prompt = _PROMPT.format(subject=subject, attribute=attribute, a=a, b=b)
         if self.cassette is not None:
-            payload = f"{subject}\n{attribute}\n{a}\n||\n{b}"
-            return self.cassette.verdict(
-                payload, lambda: self._compute(subject, attribute, a, b)
-            )["incompatible"]
+            return self.cassette.verdict(prompt, lambda: self._compute(prompt))["incompatible"]
         if self.llm is not None:
-            return self._compute(subject, attribute, a, b)["incompatible"]
+            return self._compute(prompt)["incompatible"]
         return None
 
-    def _compute(self, subject: str, attribute: str, a: str, b: str) -> dict:
+    def _compute(self, prompt: str) -> dict:
         raw = self.llm.complete(
-            [ChatMessage(role="user",
-                         content=_PROMPT.format(subject=subject, attribute=attribute, a=a, b=b))],
+            [ChatMessage(role="user", content=prompt)],
             response_format=_SCHEMA,
         )
         return {"incompatible": bool(json.loads(raw)["incompatible"])}

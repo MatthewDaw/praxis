@@ -53,19 +53,18 @@ class MergeJudge:
 
     def same_lesson(self, incoming: str, existing: str) -> bool | None:
         """True/False if a verdict is available; None to skip (no cassette, no llm)."""
+        prompt = _PROMPT.format(existing=existing, new=incoming)
         if self.cassette is not None:
-            # Ordered pair as the payload, so the key is stable across runs.
-            payload = f"{existing}\n||\n{incoming}"
-            return self.cassette.verdict(payload, lambda: self._compute(incoming, existing))[
-                "same_lesson"
-            ]
+            # Key on the exact rendered prompt: a prompt edit or different texts is a
+            # clean miss, never a stale replay.
+            return self.cassette.verdict(prompt, lambda: self._compute(prompt))["same_lesson"]
         if self.llm is not None:
-            return self._compute(incoming, existing)["same_lesson"]
+            return self._compute(prompt)["same_lesson"]
         return None  # no verdict source -> skip
 
-    def _compute(self, incoming: str, existing: str) -> dict:
+    def _compute(self, prompt: str) -> dict:
         raw = self.llm.complete(
-            [ChatMessage(role="user", content=_PROMPT.format(existing=existing, new=incoming))],
+            [ChatMessage(role="user", content=prompt)],
             response_format=_SCHEMA,
         )
         return {"same_lesson": bool(json.loads(raw)["same_lesson"])}

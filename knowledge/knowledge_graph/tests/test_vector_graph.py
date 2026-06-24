@@ -104,3 +104,26 @@ def test_merged_dup_triggers_zero_conflict_checks():
     g.write("run the suite with uv run pytest", state="active")  # paraphrase -> merge
     assert any(f.observation_count == 2 for f in g._facts)  # merged into the survivor
     assert g.contradictions() == []  # detector skipped on a merge
+
+
+def test_active_active_contradiction_demotes_newcomer_to_proposed():
+    # FR-005: two active facts whose functional claims clash on the same slot must
+    # not both stay active. The structural detector flags the conflict and the second
+    # write is demoted to "proposed" (a pending contradiction); the first stays active.
+    merge_llm = FakeLlm(default='{"same_lesson": false}')  # distinct facts -> no merge
+    mapping = {
+        "the deploy timeout is 30 seconds": [
+            Claim(subject="deploy", attribute="timeout", value="30", functional=True)
+        ],
+        "the deploy timeout is 60 seconds": [
+            Claim(subject="deploy", attribute="timeout", value="60", functional=True)
+        ],
+    }
+    policy = [_Claims(mapping), Deduper(judge=MergeJudge(llm=merge_llm)), ClaimConflictDetector()]
+    g = VectorGraph(policy=policy, recall_floor=-1.0)
+    g.write("the deploy timeout is 30 seconds", state="active")
+    g.write("the deploy timeout is 60 seconds", state="active")  # 60 != 30 -> contradiction
+    by_text = {f.text: f.state for f in g._facts}
+    assert by_text["the deploy timeout is 30 seconds"] == "active"     # first stays live
+    assert by_text["the deploy timeout is 60 seconds"] == "proposed"   # FR-005: demoted, not active
+    assert len(g.contradictions()) == 1  # still linked as a pending contradiction

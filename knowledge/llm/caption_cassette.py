@@ -5,8 +5,9 @@ verdicts, so we reuse the :class:`CachedEmbedder` / :class:`VerdictCassette`
 pattern: record a real caption once (locally, with a key) and replay it
 everywhere else, letting CI exercise real captions offline and deterministically.
 
-The cache key includes the model id **and** a prompt version, so swapping the
-caption model or editing the prompt is a clean miss — never silent staleness.
+The cache key includes the model id **and** the caption prompt text itself, so
+swapping the caption model or editing the prompt is a clean miss — never silent
+staleness, and with no version tag to remember to hand-bump.
 
 A miss with recording disabled is a **loud error**, not a silent fallback: it
 means an asset's canonical image or the caption model/prompt changed without a
@@ -25,6 +26,8 @@ import threading
 from pathlib import Path
 from typing import Callable
 
+from knowledge.llm.atomic_write import atomic_write_text
+
 # Guards the read-modify-write in ``save`` so parallel cases recording to the same
 # cassette can't clobber each other's keys.
 _FILE_LOCK = threading.Lock()
@@ -34,11 +37,11 @@ class CaptionCassette:
     """Serves VLM captions from a committed cassette, recording misses when allowed."""
 
     def __init__(
-        self, path: Path | str, *, model_id: str, prompt_version: str, allow_compute: bool
+        self, path: Path | str, *, model_id: str, prompt: str, allow_compute: bool
     ) -> None:
         self.path = Path(path)
         self.model_id = model_id
-        self.prompt_version = prompt_version
+        self.prompt = prompt
         self.allow_compute = allow_compute
         self._cache: dict[str, str] = self._load()
         self._dirty = False
@@ -49,9 +52,10 @@ class CaptionCassette:
         if key in self._cache:
             return self._cache[key]
         if not self.allow_compute:
+            prompt_fp = hashlib.sha256(self.prompt.encode("utf-8")).hexdigest()[:8]
             raise RuntimeError(
-                f"caption cassette miss under model {self.model_id!r} / prompt "
-                f"{self.prompt_version!r} (payload {payload[:16]!r}…). An asset's "
+                f"caption cassette miss under model {self.model_id!r} / prompt#"
+                f"{prompt_fp} (payload {payload[:16]!r}…). An asset's "
                 "canonical image or the caption model/prompt changed — refresh the "
                 "cassette locally with OPENROUTER_API_KEY set "
                 "(`uv run python -m knowledge.evals.caption_cache --refresh`) and commit "
@@ -70,10 +74,7 @@ class CaptionCassette:
         with _FILE_LOCK:
             merged = self._load()  # re-read: may include a peer's concurrent writes
             merged.update(self._cache)
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(
-                json.dumps(merged, indent=0, sort_keys=True) + "\n", encoding="utf-8"
-            )
+            atomic_write_text(self.path, json.dumps(merged, indent=0, sort_keys=True) + "\n")
             self._cache = merged
             self._dirty = False
 
@@ -84,5 +85,5 @@ class CaptionCassette:
 
     def _key(self, payload: str) -> str:
         return hashlib.sha256(
-            f"{self.model_id}\n{self.prompt_version}\n{payload}".encode("utf-8")
+            f"{self.model_id}\n{self.prompt}\n{payload}".encode("utf-8")
         ).hexdigest()

@@ -7,9 +7,9 @@ import pytest
 from knowledge.llm.caption_cassette import CaptionCassette
 
 
-def _cassette(tmp_path, *, allow_compute, model="m/vlm", pv="v1"):
+def _cassette(tmp_path, *, allow_compute, model="m/vlm", pv="prompt-a"):
     return CaptionCassette(
-        tmp_path / "caps.json", model_id=model, prompt_version=pv, allow_compute=allow_compute
+        tmp_path / "caps.json", model_id=model, prompt=pv, allow_compute=allow_compute
     )
 
 
@@ -33,15 +33,15 @@ def test_miss_computes_and_records(tmp_path):
 
 
 def test_model_or_prompt_change_is_a_miss(tmp_path):
-    _cassette(tmp_path, allow_compute=True, model="m/a", pv="v1").caption("h", lambda: "cap-a")
+    _cassette(tmp_path, allow_compute=True, model="m/a", pv="prompt-a").caption("h", lambda: "cap-a")
     # same payload, different model id -> miss
-    other_model = _cassette(tmp_path, allow_compute=False, model="m/b", pv="v1")
+    other_model = _cassette(tmp_path, allow_compute=False, model="m/b", pv="prompt-a")
     with pytest.raises(RuntimeError):
         other_model.caption("h", lambda: "x")
-    # same payload+model, different prompt version -> miss
-    other_pv = _cassette(tmp_path, allow_compute=False, model="m/a", pv="v2")
+    # same payload+model, different prompt text -> miss
+    other_prompt = _cassette(tmp_path, allow_compute=False, model="m/a", pv="prompt-b")
     with pytest.raises(RuntimeError):
-        other_pv.caption("h", lambda: "x")
+        other_prompt.caption("h", lambda: "x")
 
 
 def test_miss_without_compute_raises_loud(tmp_path):
