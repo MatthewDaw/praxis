@@ -17,6 +17,9 @@ COPY knowledge/ ./knowledge/
 RUN uv sync --frozen --no-dev
 
 # App Runner sends traffic to 8080 and health-checks /health; uvicorn binds 0.0.0.0.
+# Secrets (OPENROUTER_API_KEY, DB creds) are NOT baked here — they'd persist in the
+# published image layers. App Runner injects OPENROUTER_API_KEY at runtime from the
+# backend stack (fed by a GitHub secret in the deploy workflow).
 ENV PRAXIS_API_HOST=0.0.0.0 \
     PORT=8080 \
     PATH="/app/.venv/bin:$PATH" \

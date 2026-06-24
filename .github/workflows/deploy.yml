@@ -10,7 +10,7 @@
 # Backend runs first; when both change the frontend is built against the freshly
 # deployed backend URL. If only one side changed, the other job is skipped.
 #
-# Required repo secrets:   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# Required repo secrets:   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, OPENROUTER_API_KEY
 # Required repo variable:  AWS_DEFAULT_REGION (us-east-1)
 
 name: deploy
@@ -76,6 +76,9 @@ jobs:
       - run: aws sts get-caller-identity
       - name: Deploy backend stack
         working-directory: infra
+        env:
+          # Injected as an App Runner runtime env var by the backend stack.
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           npm ci
           npx cdk deploy PraxisBackendServiceStack --require-approval never --outputs-file cdk-web-out.json

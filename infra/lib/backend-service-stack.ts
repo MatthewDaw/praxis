@@ -14,6 +14,8 @@ export interface BackendServiceStackProps extends cdk.StackProps {
   readonly cognitoClientId?: string;
   /** Cognito region. Defaults to `us-east-1`. */
   readonly cognitoRegion?: string;
+  /** OpenRouter API key. Defaults to the `OPENROUTER_API_KEY` env var / `openrouterApiKey` context. */
+  readonly openrouterApiKey?: string;
 }
 
 /**
@@ -47,6 +49,15 @@ export class BackendServiceStack extends cdk.Stack {
       props.cognitoRegion ??
       this.node.tryGetContext('cognitoRegion') ??
       COGNITO.region;
+
+    // OpenRouter key for the runtime embed/judge/distillation paths. Injected at
+    // deploy time from the `OPENROUTER_API_KEY` env var (fed by a GitHub secret in
+    // the deploy workflow); omitted from the service when unset so a local `cdk
+    // deploy` without it doesn't push an empty value.
+    const openrouterApiKey =
+      props.openrouterApiKey ??
+      this.node.tryGetContext('openrouterApiKey') ??
+      process.env.OPENROUTER_API_KEY;
 
     // Build the backend image from the repo-root Dockerfile and publish it to
     // the CDK assets ECR repo.
@@ -87,6 +98,9 @@ export class BackendServiceStack extends cdk.Stack {
               { name: 'COGNITO_USER_POOL_ID', value: cognitoUserPoolId },
               { name: 'COGNITO_CLIENT_ID', value: cognitoClientId },
               { name: 'COGNITO_REGION', value: cognitoRegion },
+              ...(openrouterApiKey
+                ? [{ name: 'OPENROUTER_API_KEY', value: openrouterApiKey }]
+                : []),
             ],
           },
         },
