@@ -1,0 +1,35 @@
+# Monica pillar: Contradiction review metadata
+# Source docs: DEMO_SCRIPT.md Beat 3; candidate-api-v1 contradiction id format
+# Mock pair: cand_9 winner path and cand_16 rival.
+id: monica_contradiction_pair_metadata
+component: knowledge_graph
+
+seeded_insight:
+  direct_to_graph:
+    - |-
+      {
+        "id": "cand_9",
+        "evalCaseId": "quirky_config_load_order",
+        "title": "experimental_options Before Config Load",
+        "state": "proposed",
+        "confidence": 0.87,
+        "provenance": "logs/nushell_contrib_20260611.jsonl:56",
+        "contradictionIds": ["cand_16"]
+      }
+    - |-
+      {
+        "id": "cand_16",
+        "evalCaseId": "quirky_config_load_order",
+        "title": "Experimental Flags in config.nu",
+        "state": "proposed",
+        "confidence": 0.64,
+        "provenance": "logs/nushell_contrib_20260611.jsonl:61",
+        "contradictionIds": ["cand_9"]
+      }
+
+deterministic_checks:
+  - name: contradiction_pair_contract
+    ref: "knowledge.evals.cases.monica.checks:contradiction_pair_contract"
+    params:
+      primary_id: "cand_9"
+      rival_id: "cand_16"

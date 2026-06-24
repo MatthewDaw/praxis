@@ -1,0 +1,24 @@
+# Monica pillar: Human gate lifecycle invariant
+# Source docs: proposal-praxis.md human gate; DEMO_SCRIPT.md Beat 4
+# Proves passive distillation remains proposed/staged until human approval.
+id: monica_human_gate_staged_not_injected
+component: graph_reader
+substrate: vector
+seed_prompt: "What knowledge should be injected into the next agent run?"
+
+seeded_insight:
+  via_ingestor:
+    - "UNAPPROVED_AUTO_PROMOTE_SENTINEL: a passively distilled candidate must stay out of injected context until a human promotes it."
+  direct_to_graph:
+    - "ACTIVE_HUMAN_APPROVED_SENTINEL: a human-approved candidate may be injected into future agent context."
+
+deterministic_checks:
+  - name: active_context_visible
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "ACTIVE_HUMAN_APPROVED_SENTINEL"
+  - name: proposed_context_hidden
+    ref: "knowledge.evals.deterministic_checks.text:forbids_substring"
+    params:
+      text: "UNAPPROVED_AUTO_PROMOTE_SENTINEL"
