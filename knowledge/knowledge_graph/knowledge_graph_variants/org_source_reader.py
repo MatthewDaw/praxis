@@ -37,7 +37,7 @@ _CACHE_FACTS, _CACHE_EDGES = "cached_facts", "cached_fact_edges"
 
 _FACT_COLS = (
     "id, text, source, confidence, scope, category, observation_count, "
-    "state, created_at, meta"
+    "state, created_at, meta, cluster_id, cluster_label"
 )
 
 

@@ -19,6 +19,10 @@ from fastapi.testclient import TestClient
 
 load_dotenv()
 
+from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (  # noqa: E402
+    PostgresVectorGraph,
+    default_write_policy,
+)
 from knowledge.serve import db  # noqa: E402
 from knowledge.serve.app import create_app  # noqa: E402
 from knowledge.serve.orgs_store import OrgsStore  # noqa: E402
@@ -185,9 +189,15 @@ def test_fold_in_dedups_identical_fact_caller_already_holds(ctx):
 
 def test_fold_in_contradiction_reports_conflict_without_overwrite(ctx):
     client, conn, org = ctx
-    held = "always deploy on fridays in this repo"
-    client.post("/insights", json={"insight": held})
-    _seed_b_fact(conn, org, "b1", "never deploy on fridays in this repo")
+    held = "the deploy day for this repo is friday"
+    rival = "the deploy day for this repo is monday"
+    # Seed the caller's held fact through the claim-extracting pipeline so it has
+    # rows in the `claims` table — the structural ClaimConflictDetector only flags
+    # a clash against a fact that has extracted claims. (/insights uses the
+    # ConflictOverwriter path and does not extract claims.)
+    caller_graph = PostgresVectorGraph(conn, org, USER, policy=default_write_policy())
+    caller_graph.write(held, state="active")
+    _seed_b_fact(conn, org, "b1", rival)
     res = client.post(
         "/fold-in", json={"sourceUser": USER_B, "factIds": ["b1"]}
     ).json()
@@ -196,7 +206,7 @@ def test_fold_in_contradiction_reports_conflict_without_overwrite(ctx):
     texts = {r[1] for r in _caller_facts(conn, org)}
     # Both the original and the folded contradicting fact survive (no overwrite).
     assert held in texts
-    assert "never deploy on fridays in this repo" in texts
+    assert rival in texts
 
 
 def test_fold_in_carries_edge_between_two_selected_facts(ctx):

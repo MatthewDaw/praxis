@@ -43,8 +43,10 @@ from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph im
     default_write_policy,
 )
 from knowledge.knowledge_graph.write_policy.write_step_variants import (  # noqa: E402
-    ConflictFlagger,
-    ConflictJudge,
+    ClaimConflictDetector,
+    ClaimExtractionJudge,
+    ClaimExtractor,
+    ClaimValueJudge,
     ConflictOverwriter,
     Deduper,
     Redactor,
@@ -534,11 +536,20 @@ def create_app(conn: Any | None = None) -> FastAPI:
         if not src_facts:
             raise HTTPException(status_code=404, detail="no matching facts in source")
 
+        # Distillation-free fold-in policy: dedup the already-atomic facts, then
+        # the structural claim path (extract -> detect) flags genuine value
+        # conflicts as contradiction edges. No Redactor (source facts are already
+        # vetted) and no LLM re-distillation of the text itself.
+        base_llm = OpenRouterLlm()
         graph = PostgresVectorGraph(
             conn,
             org,
             principal.sub,
-            policy=[Deduper(), ConflictFlagger(judge=ConflictJudge(llm=OpenRouterLlm()))],
+            policy=[
+                Deduper(),
+                ClaimExtractor(judge=ClaimExtractionJudge(llm=base_llm)),
+                ClaimConflictDetector(judge=ClaimValueJudge(llm=base_llm)),
+            ],
         )
         before_edges = set(graph.all_edges("contradiction"))
         existing_ids = {f.id for f in graph.all_facts()}
