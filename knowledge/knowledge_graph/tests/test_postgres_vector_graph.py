@@ -159,6 +159,8 @@ def test_active_active_contradiction_demotes_newcomer_to_proposed(unique_org):
         ],
     }
     conn = db.connect()
+    # Fresh tenant each run (org id is derived from the test name), mirroring _trio.
+    conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (unique_org, "u1"))
     graph = PostgresVectorGraph(
         conn, unique_org, "u1", embedder=FakeEmbedder(), recall_floor=-1.0,
         policy=[Redactor(), _Claims(mapping), Deduper(), ClaimConflictDetector()],
