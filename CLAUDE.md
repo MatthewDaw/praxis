@@ -3,6 +3,6 @@
 <!-- SPECKIT START -->
 ## Active feature
 
-- Plan: [specs/004-grounding-aware-rubric-judge/plan.md](specs/004-grounding-aware-rubric-judge/plan.md)
-- Spec: [specs/004-grounding-aware-rubric-judge/spec.md](specs/004-grounding-aware-rubric-judge/spec.md)
+- Plan: [specs/003-fact-rejection-lifecycle/plan.md](specs/003-fact-rejection-lifecycle/plan.md)
+- Spec: [specs/003-fact-rejection-lifecycle/spec.md](specs/003-fact-rejection-lifecycle/spec.md)
 <!-- SPECKIT END -->
