@@ -55,11 +55,16 @@ def main() -> None:
     print("migration complete.")
 
 
-try:  # present whenever yoyo imports this file as a migration
+# yoyo's loader execs this file with a "current migration" context bound, so the
+# module-level ``step()`` call registers ``_apply`` as this migration's step.
+# Importing the module any other way (e.g. a unit test pulling in
+# ``_rename_state``) has no such context — ``step()`` then raises, which we
+# swallow: the step list is only needed when yoyo actually applies the file.
+try:
     from yoyo import step
 
     steps = [step(_apply)]
-except ImportError:  # pragma: no cover - yoyo is always installed in the migrate env
+except (ImportError, AttributeError):  # pragma: no cover - no yoyo migration context
     pass
 
 
