@@ -166,9 +166,11 @@ export function ContradictionsReview({
     });
 
   /**
-   * Keep one member of the cluster: resolve every underlying pair, keeping the
-   * chosen fact wherever it appears (so it stays active and all rivals decay)
-   * and clearing the remaining rival↔rival edges. Each call hits the existing
+   * Keep one member of the cluster: resolve only the pairs that include the kept
+   * fact, keeping it (so it stays active and each of its rivals decays). Pairs
+   * between two rivals are skipped — resolving them would re-activate a rival via
+   * keep_primary/keep_rival, leaving a contradictory pair live; once both rivals
+   * decay, that rival↔rival edge no longer surfaces. Each call hits the existing
    * per-pair resolve endpoint — resolution semantics are unchanged.
    */
   const keepMember = async (cluster: ContradictionCluster, keep: Candidate) => {
@@ -177,12 +179,14 @@ export function ContradictionsReview({
       for (const pair of cluster.pairs) {
         const a = pair.primary;
         const b = pair.rival;
+        // Only resolve pairs the kept fact is part of; rival↔rival pairs are left
+        // alone (both rivals decay through their pair with the kept fact).
+        if (a.id !== keep.id && b.id !== keep.id) continue;
         const pairId = contradictionPairId(a.id, b.id);
-        const keepId = a.id === keep.id || b.id === keep.id ? keep.id : a.id;
         const resolution: "keep_primary" | "keep_rival" =
-          keepId === a.id ? "keep_primary" : "keep_rival";
-        const discardedTitle = keepId === a.id ? b.title : a.title;
-        await onResolve(pairId, resolution, keepId, discardedTitle);
+          keep.id === a.id ? "keep_primary" : "keep_rival";
+        const discardedTitle = keep.id === a.id ? b.title : a.title;
+        await onResolve(pairId, resolution, keep.id, discardedTitle);
       }
     } finally {
       setPending(null);
