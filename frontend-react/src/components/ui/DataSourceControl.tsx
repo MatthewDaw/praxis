@@ -60,9 +60,11 @@ export function DataSourceControl({
           ))}
         </select>
       </div>
-      <p className="data-source-control__hint" id="data-source-help">
-        {helpText()}
-      </p>
+      {helpText() ? (
+        <p className="data-source-control__hint" id="data-source-help">
+          {helpText()}
+        </p>
+      ) : null}
       {showJsonFallbackHint ? (
         <p className="data-source-control__hint data-source-control__hint--warn">
           API is using JSON fallback — set PRAXIS_DB_URL on the API for RDS persistence.

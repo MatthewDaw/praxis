@@ -1093,6 +1093,16 @@ code,
   text-align: right;
 }
 
+.env-badge__detail-code {
+  font-weight: 600;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: bottom;
+}
+
 .env-badge-detail {
   font-size: 0.78rem;
   color: var(--muted);
