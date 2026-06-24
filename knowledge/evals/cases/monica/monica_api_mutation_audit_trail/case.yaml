@@ -1,0 +1,50 @@
+# Monica pillar: API mutation and audit trail
+# Source docs: DEMO_SCRIPT.md Beat 3/4; INTEGRATION_SMOKE.md live API smoke; candidate-api-v1 mutations.
+# Proves a human gate action leaves visible state-transition evidence for the dashboard.
+id: monica_api_mutation_audit_trail
+component: knowledge_graph
+
+seeded_insight:
+  direct_to_graph:
+    - |-
+      {
+        "id": "cand_1",
+        "evalCaseId": "quirky_exhaustive_switch",
+        "title": "TypeScript Exhaustive Switch Pattern",
+        "state": "active",
+        "confidence": 0.85,
+        "provenance": "logs/session_20260615.jsonl:88",
+        "auditTrail": [
+          {
+            "action": "distilled",
+            "actor": "pipeline",
+            "provenance": "logs/session_20260615.jsonl:88"
+          },
+          {
+            "action": "promoted",
+            "actor": "human",
+            "fromState": "proposed",
+            "toState": "suggested",
+            "provenance": "logs/session_20260615.jsonl:88",
+            "note": "Reviewer accepted candidate for demo Act 2."
+          },
+          {
+            "action": "promoted",
+            "actor": "human",
+            "fromState": "suggested",
+            "toState": "active",
+            "provenance": "logs/session_20260615.jsonl:88",
+            "note": "Reviewer approved injection into future context."
+          }
+        ]
+      }
+
+deterministic_checks:
+  - name: mutation_audit_contract
+    ref: "knowledge.evals.cases.monica.checks:mutation_audit_contract"
+    params:
+      candidate_id: "cand_1"
+      expected_state: "active"
+      required_actions:
+        - "distilled"
+        - "promoted"

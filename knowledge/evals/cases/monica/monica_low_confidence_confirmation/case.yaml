@@ -1,0 +1,27 @@
+# Monica pillar: Low-confidence promotion confirmation
+# Source docs: DEMO_SCRIPT.md Beat 4; monica-wireframes.md low-confidence review behavior
+# Mock candidate: cand_12 low-confidence warning path.
+id: monica_low_confidence_confirmation
+component: knowledge_graph
+
+seeded_insight:
+  direct_to_graph:
+    - |-
+      {
+        "id": "cand_12",
+        "title": "Low-confidence stale lesson",
+        "state": "proposed",
+        "confidence": 0.37,
+        "provenance": "logs/nushell_contrib_20260522.jsonl:117",
+        "reviewPolicy": {
+          "requiresConfirmation": true,
+          "warning": "Low-confidence candidates require explicit human confirmation before promotion."
+        }
+      }
+
+deterministic_checks:
+  - name: low_confidence_confirmation
+    ref: "knowledge.evals.cases.monica.checks:low_confidence_confirmation"
+    params:
+      candidate_id: "cand_12"
+      threshold: 0.5

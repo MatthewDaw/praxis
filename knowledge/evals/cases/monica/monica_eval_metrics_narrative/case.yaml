@@ -1,0 +1,24 @@
+# Monica pillar: Eval metrics embed narrative
+# Source docs: DEMO_SCRIPT.md Beat 5; proposal-praxis.md success criterion
+# Proves the demo metrics object can support the >=50% fewer corrections claim.
+id: monica_eval_metrics_narrative
+component: knowledge_graph
+
+seeded_insight:
+  direct_to_graph:
+    - |-
+      {
+        "kind": "eval_metrics",
+        "scope": "monica-human-gate-demo",
+        "coldCorrections": 10,
+        "injectedCorrections": 4,
+        "coldSuccessRate": 0.80,
+        "injectedSuccessRate": 0.82,
+        "claim": "Promoted knowledge reduces correction count without lowering success rate."
+      }
+
+deterministic_checks:
+  - name: metrics_show_compounding_gain
+    ref: "knowledge.evals.cases.monica.checks:metrics_show_compounding_gain"
+    params:
+      min_reduction: 0.5

@@ -1,0 +1,25 @@
+# Monica pillar: Promote then rerun support case
+# Source docs: DEMO_SCRIPT.md Beat 4; PLAN_ALIGNMENT_GAP_CHECKLIST.md P0 quirky_exhaustive_switch
+# Mock candidate: cand_1 after explicit human promotion.
+id: monica_promotion_context_cand1
+component: graph_reader
+substrate: vector
+seed_prompt: "Create a TypeScript switch over a discriminated union."
+
+seeded_insight:
+  direct_to_graph:
+    - >-
+      PROMOTED cand_1 from logs/session_20260615.jsonl:88:
+      When using a switch statement on a discriminated union or enum, include a
+      default case that assigns the value to a variable of type `never` so a new
+      variant fails compilation until it is handled.
+
+deterministic_checks:
+  - name: promoted_candidate_context
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "PROMOTED cand_1"
+        - "logs/session_20260615.jsonl:88"
+        - "switch statement"
+        - "`never`"

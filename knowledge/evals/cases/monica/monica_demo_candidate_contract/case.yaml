@@ -1,0 +1,41 @@
+# Monica pillar: Dashboard candidate contract
+# Source docs: docs/monica/DEMO_SCRIPT.md Beat 1/2; PRAXIS_Project_Plan.html dashboard box
+# Mock candidate: cand_1, TypeScript Exhaustive Switch Pattern.
+id: monica_demo_candidate_contract
+component: knowledge_graph
+
+seeded_insight:
+  direct_to_graph:
+    - |-
+      {
+        "id": "cand_1",
+        "evalCaseId": "quirky_exhaustive_switch",
+        "title": "TypeScript Exhaustive Switch Pattern",
+        "content": "When using a switch statement on a discriminated union or enum, include a default case that assigns the value to a variable of type never.",
+        "state": "proposed",
+        "confidence": 0.85,
+        "provenance": "logs/session_20260615.jsonl:88",
+        "confidenceBreakdown": {
+          "frequency": 0.82,
+          "recency": 0.88,
+          "breadth": 0.76
+        },
+        "auditTrail": [
+          {
+            "action": "distilled",
+            "actor": "pipeline",
+            "provenance": "logs/session_20260615.jsonl:88"
+          },
+          {
+            "action": "scored",
+            "actor": "pipeline",
+            "provenance": "logs/session_20260615.jsonl:88"
+          }
+        ]
+      }
+
+deterministic_checks:
+  - name: candidate_contract
+    ref: "knowledge.evals.cases.monica.checks:candidate_contract"
+    params:
+      candidate_id: "cand_1"

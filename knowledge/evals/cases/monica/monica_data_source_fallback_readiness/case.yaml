@@ -1,0 +1,29 @@
+# Monica pillar: Mock/live data-source readiness
+# Source docs: DEMO_SCRIPT.md setup; INTEGRATION_SMOKE.md mock and live API smoke; candidate-api-v1 headers.
+# Proves the demo can explain provider mode and contract routing without database coupling.
+id: monica_data_source_fallback_readiness
+component: knowledge_graph
+
+seeded_insight:
+  direct_to_graph:
+    - |-
+      {
+        "kind": "dashboard_data_source_status",
+        "provider": "mock",
+        "apiBaseUrl": null,
+        "evalMetricsUrl": null,
+        "contractVersion": "1",
+        "fallback": {
+          "mockWhenApiBaseMissing": true,
+          "liveApiWhenConfigured": true
+        },
+        "headers": {
+          "X-Praxis-Contract": "1",
+          "X-Praxis-Org": "default"
+        },
+        "dashboardScope": "frontend-react uses VITE_PRAXIS_API_BASE_URL only; Monica's UI does not connect to Matthew's database."
+      }
+
+deterministic_checks:
+  - name: data_source_status_contract
+    ref: "knowledge.evals.cases.monica.checks:data_source_status_contract"
