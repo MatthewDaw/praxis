@@ -68,6 +68,22 @@ def occurs_at_most(ctx: EvalContext, *, text: str, n: int) -> CheckResult:
     )
 
 
+def occurs_exactly(ctx: EvalContext, *, text: str, n: int) -> CheckResult:
+    """Pass iff ``text`` occurs exactly ``n`` times in the produced output.
+
+    The structural-contradiction cases render one ``CONTRADICTION:`` line per
+    flagged pair (see ``_contradictions_summary``), so asserting "exactly one
+    contradiction" is a count of that prefix — distinguishing the single real
+    conflict from zero (suppressed) or many (fragmented false positives).
+    """
+    count = ctx.output.count(text)
+    return CheckResult(
+        name="occurs_exactly",
+        passed=count == n,
+        evidence=f"{text!r} occurs {count} times (expected {n})",
+    )
+
+
 def ordered_substrings(ctx: EvalContext, *, texts: list[str]) -> CheckResult:
     """Pass iff every string in ``texts`` appears AND in the given order.
 

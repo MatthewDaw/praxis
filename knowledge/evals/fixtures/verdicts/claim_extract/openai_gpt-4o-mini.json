@@ -1,0 +1,82 @@
+{
+"4640ddb656837654529ebedfb34159734b257c76742c48e1d6ed8366c076cad1": {
+"claims": [
+{
+"attribute": "is first electric battery",
+"functional": true,
+"subject": "voltaic pile",
+"value": "true"
+}
+]
+},
+"46e2264444fb1c31fccae589aad408c4856467770eff0bd49d7918822b0272ac": {
+"claims": [
+{
+"attribute": "discovery",
+"functional": true,
+"subject": "Luigi Galvani",
+"value": "animal electricity"
+}
+]
+},
+"5f24f1c0ba2c372896af8d791ecaee54f09d8c1ce1a6ba5c708de3695df35a86": {
+"claims": [
+{
+"attribute": "type",
+"functional": true,
+"subject": "voltaic pile",
+"value": "electric battery"
+}
+]
+},
+"65328c3f4f978de972672fdb820d3dc57e9303a56c2a37266e224ba59ee94e81": {
+"claims": [
+{
+"attribute": "discovery",
+"functional": true,
+"subject": "electrophorus",
+"value": "Alessandro Volta"
+}
+]
+},
+"764710aba4ba989119e4793d31687a07e969ad9ad3e23a5ad4f452d5e6a9c6f6": {
+"claims": [
+{
+"attribute": "disproved theory",
+"functional": true,
+"subject": "Alessandro Volta",
+"value": "animal electricity"
+}
+]
+},
+"964ee5c9664894ba649371d0c8ae163ededc9f552104d2bd0a6b5d033f4f4164": {
+"claims": [
+{
+"attribute": "invention year",
+"functional": true,
+"subject": "voltaic pile",
+"value": "1799"
+}
+]
+},
+"a1ffdbb8153f210bc268c9608c34b20fd24ed3b5f4e5c473577b9df443ac6481": {
+"claims": [
+{
+"attribute": "discovered by",
+"functional": true,
+"subject": "voltaic pile",
+"value": "Alessandro Volta"
+}
+]
+},
+"c72b9ac84cc2cc0b67e8fba6aa0ff1f83b7d6830ca2e3d4c5ff60669e3dd3f83": {
+"claims": [
+{
+"attribute": "invention year",
+"functional": true,
+"subject": "voltaic pile",
+"value": "1800"
+}
+]
+}
+}

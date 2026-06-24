@@ -1,0 +1,39 @@
+# AE1 — functional-dependency year conflict. Two facts assert the SAME subject's
+# (the voltaic pile's) invention year with INCOMPATIBLE values: 1799 vs 1800.
+# Subject + functional attribute (invention year) + different value = exactly one
+# structural contradiction. The claim extractor canonicalizes both facts onto the
+# same (voltaic pile, invention year) slot; the detector sees clashing year tokens
+# and records one contradiction:<id> edge -> one CONTRADICTION line.
+#
+# This is the positive arm of the structural suite. Component eval (no agent);
+# vector substrate runs the real write policy (Redactor -> Deduper -> ClaimExtractor
+# -> ClaimConflictDetector). Replays from the committed claim_extract + conflict
+# verdict cassettes + embedding fixture offline (no live calls).
+#
+# Desired behavior: exactly one contradiction flagged; both facts kept verbatim.
+id: claim_fd_year_conflict
+component: knowledge_graph
+substrate: vector
+embedder: cached
+conflict_model: openai/gpt-4o-mini
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "Alessandro Volta invented the voltaic pile in 1799."
+    - "The voltaic pile was invented in 1800."
+
+deterministic_checks:
+  # Exactly one structural contradiction: same subject + functional slot, clashing year.
+  - name: exactly_one_contradiction
+    ref: "knowledge.evals.deterministic_checks.text:occurs_exactly"
+    params:
+      text: "CONTRADICTION:"
+      n: 1
+  # Flag-don't-drop: both competing facts survive verbatim as distinct stored facts.
+  - name: both_facts_kept
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "Alessandro Volta invented the voltaic pile in 1799."
+        - "The voltaic pile was invented in 1800."

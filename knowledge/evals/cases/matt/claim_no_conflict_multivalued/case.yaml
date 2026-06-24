@@ -1,0 +1,36 @@
+# AE3/AE4 — multi-valued attribute, no contradiction. The same subject (Alessandro
+# Volta) holds two values on a NON-functional attribute: he made multiple discoveries
+# (the electrophorus and the voltaic pile). A multi-valued slot admits many values at
+# once, so two different values are NOT a contradiction (R2). The claim extractor tags
+# "discovery" non-functional; the detector never flags differing values on a
+# non-functional slot.
+#
+# This is the multi-valued precision case. Component eval (no agent); vector substrate
+# runs the real write policy. Replays from the committed claim_extract + conflict
+# verdict cassettes + embedding fixture offline (no live calls).
+#
+# Desired behavior: NO contradiction flagged; both facts kept verbatim.
+id: claim_no_conflict_multivalued
+component: knowledge_graph
+substrate: vector
+embedder: cached
+conflict_model: openai/gpt-4o-mini
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "Alessandro Volta discovered the electrophorus."
+    - "Alessandro Volta discovered the voltaic pile."
+
+deterministic_checks:
+  # Precision: a multi-valued attribute admits both values -> no contradiction.
+  - name: no_contradiction_flagged
+    ref: "knowledge.evals.deterministic_checks.text:regex_absent"
+    params:
+      pattern: "(?i)CONTRADICTION"
+  - name: both_facts_kept
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "Alessandro Volta discovered the electrophorus."
+        - "Alessandro Volta discovered the voltaic pile."
