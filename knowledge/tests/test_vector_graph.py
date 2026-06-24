@@ -66,17 +66,28 @@ def test_empty_write_is_noop():
 
 
 def test_contradictions_exporter_surfaces_flagged_pairs():
-    from knowledge.knowledge_graph.write_policy.write_step_variants import (
-        ConflictFlagger,
-        ConflictJudge,
-    )
-    from knowledge.llm.llm_variants.fake_llm import FakeLlm
+    # Structural path: two facts on the same functional slot with different numeric
+    # values are flagged (the numeric clash needs no LLM).
+    from knowledge.knowledge_graph.knowledge_graph_def import Claim
+    from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
+    from knowledge.knowledge_graph.write_policy.write_step_variants import ClaimConflictDetector
 
-    # Conflict-only policy with a yes-saying judge; recall_floor=-1.0 opts the
-    # low-similarity (FakeEmbedder) candidate into the recall pass, so the second
-    # (contradictory) write is reliably flagged against the first.
-    policy = [ConflictFlagger(judge=ConflictJudge(llm=FakeLlm(default='{"contradicts": true}')))]
-    g = VectorGraph(policy=policy, recall_floor=-1.0)
+    class _Claims(WriteStep):
+        consumes_candidates = False
+
+        def __init__(self, mapping):
+            self._m = mapping
+
+        def apply(self, decision):
+            decision.claims = list(self._m.get(decision.text, []))
+
+    mapping = {
+        "Use tabs for indentation": [Claim(subject="style", attribute="indent size",
+                                           value="4", functional=True)],
+        "Use spaces for indentation": [Claim(subject="style", attribute="indent size",
+                                             value="2", functional=True)],
+    }
+    g = VectorGraph(policy=[_Claims(mapping), ClaimConflictDetector()])
     g.write("Use tabs for indentation")
     g.write("Use spaces for indentation")
 
@@ -87,18 +98,17 @@ def test_contradictions_exporter_surfaces_flagged_pairs():
 
 
 def test_conflict_detection_is_best_effort_when_llm_unavailable():
+    # Extraction failure must not break the write; with no claims, nothing is flagged.
     from knowledge.knowledge_graph.write_policy.write_step_variants import (
-        ConflictFlagger,
-        ConflictJudge,
+        ClaimExtractionJudge,
+        ClaimExtractor,
     )
 
     class _BoomLlm:
         def complete(self, messages, **_):
             raise RuntimeError("no API key")
 
-    g = VectorGraph(
-        policy=[ConflictFlagger(judge=ConflictJudge(llm=_BoomLlm()))], recall_floor=-1.0
-    )
+    g = VectorGraph(policy=[ClaimExtractor(judge=ClaimExtractionJudge(llm=_BoomLlm()))])
     g.write("a fact")
     g.write("another fact")  # must not raise despite the failing LLM
-    assert g.contradictions() == []  # error swallowed -> nothing flagged
+    assert g.contradictions() == []  # error swallowed -> no claims -> nothing flagged

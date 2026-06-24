@@ -22,8 +22,10 @@ from knowledge.knowledge_graph.parent_searchable_graph import SearchableGraph
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
 from knowledge.knowledge_graph.write_policy.write_policy_def import ClaimHit, WriteDecision
 from knowledge.knowledge_graph.write_policy.write_step_variants import (
-    ConflictFlagger,
-    ConflictJudge,
+    ClaimConflictDetector,
+    ClaimExtractionJudge,
+    ClaimExtractor,
+    ClaimValueJudge,
     Deduper,
     Redactor,
 )
@@ -41,13 +43,21 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 def default_write_policy(llm: Llm | None = None) -> list[WriteStep]:
-    """The baseline pipeline: redact, then dedup, then conflict-flag.
+    """The baseline pipeline: redact, dedup, extract claims, then detect conflicts.
 
-    ``llm`` powers the contradiction check; defaults to OpenRouter. Detection is
-    best-effort — ``ConflictFlagger`` skips silently if the LLM is unavailable
-    (e.g. no API key offline), so this is safe to leave on by default.
+    The structural contradiction path: ``ClaimExtractor`` decomposes the write into
+    (subject, attribute, value) claims and ``ClaimConflictDetector`` flags
+    same-functional-slot value clashes. ``llm`` powers extraction and the gray-zone
+    value judge; both skip silently when the LLM is unavailable (offline), so this
+    is safe to leave on by default.
     """
-    return [Redactor(), Deduper(), ConflictFlagger(judge=ConflictJudge(llm=llm or OpenRouterLlm()))]
+    base = llm or OpenRouterLlm()
+    return [
+        Redactor(),
+        Deduper(),
+        ClaimExtractor(judge=ClaimExtractionJudge(llm=base)),
+        ClaimConflictDetector(judge=ClaimValueJudge(llm=base)),
+    ]
 
 
 class VectorGraph(SearchableGraph):

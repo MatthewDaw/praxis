@@ -273,27 +273,22 @@ def _seed_write_graph() -> tuple[VectorGraph, Any]:
     """The graph that seed-loading writes into, plus the ingest LLM (None offline).
 
     With ``OPENROUTER_API_KEY`` set, use the real embedder (so semantically-related
-    seeds clear the recall floor and reach the judge) and a ``ConflictFlagger`` on
-    ``gpt-4o-mini`` -- mirroring the vector store's ``default_write_policy``. The
-    contradiction flags it records become the candidates' ``contradiction_ids``,
+    seeds clear the recall floor and reach dedup) and the structural contradiction
+    path on ``gpt-4o-mini`` -- mirroring the vector store's ``default_write_policy``.
+    The contradiction flags it records become the candidates' ``contradiction_ids``,
     which is exactly what the dashboard's Contradictions tab renders. Without a key,
     fall back to the deterministic offline ``FakeEmbedder`` and no judge (no network,
     and hence no contradiction flags -- fake vectors can't surface recall candidates).
     """
-    from knowledge.knowledge_graph.write_policy.write_step_variants import (
-        ConflictFlagger,
-        ConflictJudge,
-    )
-
     if os.getenv("OPENROUTER_API_KEY"):
+        from knowledge.knowledge_graph.knowledge_graph_variants.vector_graph import (
+            default_write_policy,
+        )
         from knowledge.llm.embedder_variants.openrouter_embedder import OpenRouterEmbedder
         from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
 
         llm = OpenRouterLlm(model="openai/gpt-4o-mini")
-        graph = VectorGraph(
-            embedder=OpenRouterEmbedder(),
-            policy=[Redactor(), Deduper(), ConflictFlagger(judge=ConflictJudge(llm=llm))],
-        )
+        graph = VectorGraph(embedder=OpenRouterEmbedder(), policy=default_write_policy(llm))
         return graph, llm
 
     from knowledge.llm.embedder_variants.fake_embedder import FakeEmbedder

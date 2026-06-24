@@ -83,19 +83,36 @@ def test_candidates_from_graph_links_contradictions():
 def _contradicting_graph(state_first: str, state_second: str) -> VectorGraph:
     """Two contradictory facts written at the given lifecycle states.
 
-    ``recall_floor=-1.0`` surfaces every candidate so the FakeLlm conflict judge is
-    always consulted; it always votes "contradicts", flagging the second write.
+    Uses the structural detector: both facts claim the same functional slot
+    (timestamp timezone) with incompatible values, so the second write is flagged.
     """
+    from knowledge.knowledge_graph.knowledge_graph_def import Claim
+    from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
     from knowledge.knowledge_graph.write_policy.write_step_variants import (
-        ConflictFlagger,
-        ConflictJudge,
+        ClaimConflictDetector,
+        ClaimValueJudge,
     )
     from knowledge.llm.llm_variants.fake_llm import FakeLlm
 
-    judge = ConflictJudge(llm=FakeLlm(default='{"contradicts": true}'))
-    graph = VectorGraph(policy=[ConflictFlagger(judge=judge)], recall_floor=-1.0)
-    graph.write("All timestamps are stored in UTC.", state=state_first)
-    graph.write("Timestamps in the events table use the server's local time.", state=state_second)
+    class _Claims(WriteStep):
+        consumes_candidates = False
+
+        def __init__(self, mapping):
+            self._m = mapping
+
+        def apply(self, decision):
+            decision.claims = list(self._m.get(decision.text, []))
+
+    utc = "All timestamps are stored in UTC."
+    local = "Timestamps in the events table use the server's local time."
+    mapping = {
+        utc: [Claim(subject="timestamps", attribute="timezone", value="UTC", functional=True)],
+        local: [Claim(subject="timestamps", attribute="timezone", value="local", functional=True)],
+    }
+    judge = ClaimValueJudge(llm=FakeLlm(default='{"incompatible": true}'))
+    graph = VectorGraph(policy=[_Claims(mapping), ClaimConflictDetector(judge=judge)])
+    graph.write(utc, state=state_first)
+    graph.write(local, state=state_second)
     return graph
 
 

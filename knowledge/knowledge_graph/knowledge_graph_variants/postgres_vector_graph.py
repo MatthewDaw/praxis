@@ -26,8 +26,10 @@ from knowledge.knowledge_graph.parent_searchable_graph import SearchableGraph
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
 from knowledge.knowledge_graph.write_policy.write_policy_def import ClaimHit, WriteDecision
 from knowledge.knowledge_graph.write_policy.write_step_variants import (
-    ConflictFlagger,
-    ConflictJudge,
+    ClaimConflictDetector,
+    ClaimExtractionJudge,
+    ClaimExtractor,
+    ClaimValueJudge,
     Deduper,
     Redactor,
 )
@@ -67,12 +69,20 @@ _CLAIM_COPY_COLS = (
 
 
 def default_write_policy(llm: Llm | None = None) -> list[WriteStep]:
-    """The baseline pipeline: redact, then dedup, then conflict-flag.
+    """The baseline pipeline: redact, dedup, extract claims, then detect conflicts.
 
-    Mirrors ``VectorGraph``'s default; the forced-overwrite add path injects a
-    ``ConflictOverwriter`` policy instead.
+    The structural contradiction path: ``ClaimExtractor`` decomposes the write into
+    (subject, attribute, value) claims and ``ClaimConflictDetector`` flags
+    same-functional-slot value clashes. Mirrors ``VectorGraph``'s default; the
+    forced-overwrite add path injects a ``ConflictOverwriter`` policy instead.
     """
-    return [Redactor(), Deduper(), ConflictFlagger(judge=ConflictJudge(llm=llm or OpenRouterLlm()))]
+    base = llm or OpenRouterLlm()
+    return [
+        Redactor(),
+        Deduper(),
+        ClaimExtractor(judge=ClaimExtractionJudge(llm=base)),
+        ClaimConflictDetector(judge=ClaimValueJudge(llm=base)),
+    ]
 
 
 def _fit(vec: list[float]) -> Vector:

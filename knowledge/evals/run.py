@@ -186,6 +186,11 @@ def harness_capabilities() -> set[str]:
     conflict_dir = VERDICT_CACHE_DIR / "conflict"
     if os.getenv("OPENROUTER_API_KEY") or (conflict_dir.exists() and any(conflict_dir.glob("*.json"))):
         caps.add("conflict_verdicts")
+    # Claim-extraction replay for the structural contradiction path: a committed
+    # claim cassette replays offline; a live key can record it.
+    claim_dir = VERDICT_CACHE_DIR / "claim_extract"
+    if os.getenv("OPENROUTER_API_KEY") or (claim_dir.exists() and any(claim_dir.glob("*.json"))):
+        caps.add("claim_verdicts")
     # Tier-B aspect-tag verdicts: same shape — committed aspect cassette replays
     # offline; a live key can compute them.
     aspect_dir = VERDICT_CACHE_DIR / "aspect"
@@ -240,9 +245,11 @@ def case_needs(case: EvalCase) -> set[str]:
     # else they'd silently fall back to exact-dedup and mis-grade -> SKIP instead.
     if case.merge_model:
         needs.add("merge_verdicts")
-    # Conflict cases need a conflict verdict source (committed cassette or a key),
-    # else the ConflictFlagger can't decide and the case mis-grades -> SKIP instead.
+    # Conflict cases need claim-extraction replay (the structural detector's front)
+    # plus a value-verdict source; without the claim cassette the detector extracts
+    # nothing and the case mis-grades -> SKIP instead.
     if case.conflict_model:
+        needs.add("claim_verdicts")
         needs.add("conflict_verdicts")
     # Tier-B implicit-contradiction cases need an aspect-tag verdict source too.
     if case.tag_model:
@@ -364,16 +371,45 @@ def _merge_judge_for(case: EvalCase):
     return MergeJudge(llm=llm, cassette=cassette)
 
 
-def _conflict_judge_for(case: EvalCase):
-    """Build the ``ConflictJudge`` for a case's ``conflict_model`` axis (None => none).
+def _claim_extractor_for(case: EvalCase):
+    """Build the ``ClaimExtractor`` for a case's ``conflict_model`` axis (None => none).
 
-    Mirrors ``_merge_judge_for``: a live OpenRouter judge when a key is set, plus a
-    committed conflict verdict cassette for offline replay. With neither, returns
-    None so the ``ConflictFlagger`` is inert (the case SKIPs via ``conflict_verdicts``).
+    The structural contradiction path's front: extracts (subject, attribute, value)
+    claims, replayed offline from a committed claim cassette. With neither cassette
+    nor key, returns None so the extractor is inert (the case SKIPs via
+    ``conflict_verdicts``).
     """
     if not case.conflict_model:
         return None
-    from knowledge.knowledge_graph.write_policy.write_step_variants import ConflictJudge
+    from knowledge.knowledge_graph.write_policy.write_step_variants import (
+        ClaimExtractionJudge,
+        ClaimExtractor,
+    )
+    from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
+    from knowledge.llm.verdict_cassette import VerdictCassette
+
+    has_key = bool(os.getenv("OPENROUTER_API_KEY"))
+    llm = OpenRouterLlm(model=case.conflict_model) if has_key else None
+    cache = VERDICT_CACHE_DIR / "claim_extract" / f"{_slug(case.conflict_model)}.json"
+    cassette = (
+        VerdictCassette(cache, model_id=case.conflict_model, allow_compute=has_key)
+        if (cache.exists() or has_key)
+        else None
+    )
+    if llm is None and cassette is None:
+        return None
+    return ClaimExtractor(judge=ClaimExtractionJudge(llm=llm, cassette=cassette))
+
+
+def _claim_value_judge_for(case: EvalCase):
+    """Build the ``ClaimValueJudge`` for the gray-zone value check (None => none).
+
+    Mirrors ``_claim_extractor_for`` but for the narrow same-slot value-incompatibility
+    decision, with its own committed verdict cassette (the ``conflict`` dir).
+    """
+    if not case.conflict_model:
+        return None
+    from knowledge.knowledge_graph.write_policy.write_step_variants import ClaimValueJudge
     from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
     from knowledge.llm.verdict_cassette import VerdictCassette
 
@@ -385,9 +421,9 @@ def _conflict_judge_for(case: EvalCase):
         if (cache.exists() or has_key)
         else None
     )
-    if llm is None and cassette is None:
-        return None
-    return ConflictJudge(llm=llm, cassette=cassette)
+    # The value judge may legitimately be absent (numeric clashes need no LLM);
+    # precision-first suppression handles a missing judge.
+    return ClaimValueJudge(llm=llm, cassette=cassette)
 
 
 def _caption_captioner_for(case: EvalCase):
@@ -480,7 +516,7 @@ def _build_trio_for(case: EvalCase, llm=None):
         # cassettes replay offline), so seeding stays cheap by default.
         from knowledge.knowledge_graph.knowledge_graph_variants.vector_graph import VectorGraph
         from knowledge.knowledge_graph.write_policy.write_step_variants import (
-            ConflictFlagger,
+            ClaimConflictDetector,
             Deduper,
             Redactor,
         )
@@ -490,9 +526,12 @@ def _build_trio_for(case: EvalCase, llm=None):
         if aspect_tagger is not None:
             policy.append(aspect_tagger)
         policy.append(Deduper(judge=_merge_judge_for(case)))
-        conflict_judge = _conflict_judge_for(case)
-        if conflict_judge is not None:
-            policy.append(ConflictFlagger(judge=conflict_judge))
+        # Structural contradiction path (replaces ConflictFlagger): extract claims,
+        # then detect same-functional-slot value clashes. Both opt in via conflict_model.
+        claim_extractor = _claim_extractor_for(case)
+        if claim_extractor is not None:
+            policy.append(claim_extractor)
+            policy.append(ClaimConflictDetector(judge=_claim_value_judge_for(case)))
         graph = VectorGraph(embedder=embedder, policy=policy)
     return build_trio(
         substrate=case.substrate,
