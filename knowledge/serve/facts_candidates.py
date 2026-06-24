@@ -4,7 +4,7 @@ This replaces the deleted candidate stores (``store.py`` /
 ``postgres_store.py``). Instead of a separate ``candidates`` table, the
 dashboard "candidate" surface is now a projection of the tenant's facts graph
 (:class:`PostgresVectorGraph`). The ``facts.state`` column carries the
-proposed/active/decayed lifecycle, ``facts.meta`` carries dashboard-only fields
+proposed/active/rejected lifecycle, ``facts.meta`` carries dashboard-only fields
 (``title``, ``auditTrail``, ``supersedes``), and contradiction links live in
 the ``fact_edges`` table.
 
@@ -30,7 +30,7 @@ from knowledge.serve.pipeline_adapter import fact_to_candidate
 Candidate = dict[str, Any]
 
 # Human-gate promotion funnel: a proposed candidate is approved straight to
-# active (the intermediate "suggested" step was removed). "active" and "decayed"
+# active (the intermediate "suggested" step was removed). "active" and "rejected"
 # are terminal — not in this map, so promoting from them raises.
 _NEXT_STATE = {"proposed": "active"}
 
@@ -174,7 +174,7 @@ class FactsCandidates:
         fact = self.graph.get_fact(cid)
         if fact is None:
             raise KeyError(cid)
-        self.graph.set_state(cid, "decayed")
+        self.graph.set_state(cid, "rejected")
         self._append_audit(fact, "rejected", note=reason)
         candidate = self.get(cid)
         assert candidate is not None
@@ -233,12 +233,12 @@ class FactsCandidates:
             raise KeyError(keep_id)
         loser = self.graph.get_fact(loser_id)
         # Drop the a<->b contradiction edge; the kept side wins the dispute and
-        # (re)enters the active graph, the loser is decayed.
+        # (re)enters the active graph, the loser is rejected.
         self.graph.remove_edge(keep_id, loser_id, "contradiction")
         self.graph.set_state(keep_id, "active")
         self._append_audit(kept, "kept_over_contradiction", note=f"superseded {loser_id}")
         if loser is not None:
-            self.graph.set_state(loser_id, "decayed")
+            self.graph.set_state(loser_id, "rejected")
             self._append_audit(
                 loser, "superseded", note=f"lost contradiction to {keep_id}"
             )
@@ -260,7 +260,7 @@ class FactsCandidates:
         for fid, fact in ((a, fact_a), (b, fact_b)):
             if fact is None:
                 continue
-            self.graph.set_state(fid, "decayed")
+            self.graph.set_state(fid, "rejected")
             self._append_audit(fact, "superseded", note="resolved by custom resolution")
         provenance = f"human-gate/custom-resolution:{_now()}"
         meta: dict[str, Any] = {

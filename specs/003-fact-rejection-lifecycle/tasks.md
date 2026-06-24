@@ -26,7 +26,7 @@ description: "Task list for REJECTED state + retained-contradiction lifecycle"
 
 **Purpose**: Confirm the Postgres-backed test environment (the only supported path post-refactor).
 
-- [ ] T001 Confirm a Postgres 16 + pgvector instance is reachable (`PRAXIS_DB_URL` set) and bootstrap the schema: `uv run python -m knowledge.serve.db`, per [quickstart.md](quickstart.md). Backend lifecycle/server tests require it.
+- [X] T001 Confirm a Postgres 16 + pgvector instance is reachable (`PRAXIS_DB_URL` set) and bootstrap the schema: `uv run python -m knowledge.serve.db`, per [quickstart.md](quickstart.md). Backend lifecycle/server tests require it.
 
 ---
 
@@ -38,23 +38,23 @@ description: "Task list for REJECTED state + retained-contradiction lifecycle"
 
 ### Tests (write first, must fail)
 
-- [ ] T002 [P] Write a failing migration read-back test (seed a fact with `state='decayed'`, run the rename migration, assert it reads back `rejected`) in `knowledge/serve/tests/test_reject_migration.py`.
+- [X] T002 [P] Write a failing migration read-back test (seed a fact with `state='decayed'`, run the rename migration, assert it reads back `rejected`) in `knowledge/serve/tests/test_reject_migration.py`.
 
 ### Rename `decayed` → `rejected` (FR-001, FR-002, SC-006)
 
-- [ ] T003 Change `FactState = Literal["proposed", "active", "rejected"]` (was `"decayed"`) and update the doc-comment block in `knowledge/knowledge_graph/knowledge_graph_def.py`.
-- [ ] T004 [P] Create the idempotent data migration `migrations/m2026_06_23_reject_rename.py`: `UPDATE facts SET state='rejected' WHERE state='decayed'` and the same for `cached_facts` (mirror the structure/guards of `migrations/m2026_06_23_unify_facts.py`).
-- [ ] T005 [P] Replace the `'decayed'` state strings with `'rejected'` in `knowledge/knowledge_graph/knowledge_graph_variants/vector_graph.py` (in-memory `fact.state = "decayed"`).
-- [ ] T006 [P] Replace the `'decayed'` state strings with `'rejected'` in `knowledge/serve/facts_candidates.py` (`reject`, `resolve`, `resolve_custom` — string only; behavioral changes come in later phases).
-- [ ] T007 [P] Update the `state` column comment in `knowledge/serve/schema.sql` and the retirement-state comment in `knowledge/knowledge_graph/write_policy/write_policy_def.py` (`decayed`→`rejected`).
-- [ ] T008 [P] Update the fixture state strings `decayed`→`rejected` in `knowledge/serve/data/candidates.json`.
-- [ ] T009 [P] Replace the `'decayed'` literal in the `_overwrite` SQL in `knowledge/knowledge_graph/knowledge_graph_variants/postgres_vector_graph.py` (string only here; the non-destructive rewrite is T016).
-- [ ] T010 [P] Update existing backend tests that assert `"decayed"` to `"rejected"` in `knowledge/serve/tests/test_server.py`, `knowledge/serve/tests/test_facts_candidates.py`, and `knowledge/knowledge_graph/tests/test_postgres_vector_graph.py` / `test_vector_graph.py`.
-- [ ] T011 Rename the eval cases `decayed_lesson_ignored` and `decayed_lesson_ignored_reader` → `rejected_lesson_ignored*` (directory names, `case.yaml` ids + embedded state strings, and the README) under `knowledge/evals/cases/`; keep them asserting real shipped behavior (Principle I), not a tuned constant.
+- [X] T003 Change `FactState = Literal["proposed", "active", "rejected"]` (was `"decayed"`) and update the doc-comment block in `knowledge/knowledge_graph/knowledge_graph_def.py`.
+- [X] T004 [P] Create the idempotent data migration `migrations/m2026_06_23_reject_rename.py`: `UPDATE facts SET state='rejected' WHERE state='decayed'` and the same for `cached_facts` (mirror the structure/guards of `migrations/m2026_06_23_unify_facts.py`).
+- [X] T005 [P] Replace the `'decayed'` state strings with `'rejected'` in `knowledge/knowledge_graph/knowledge_graph_variants/vector_graph.py` (in-memory `fact.state = "decayed"`).
+- [X] T006 [P] Replace the `'decayed'` state strings with `'rejected'` in `knowledge/serve/facts_candidates.py` (`reject`, `resolve`, `resolve_custom` — string only; behavioral changes come in later phases).
+- [X] T007 [P] Update the `state` column comment in `knowledge/serve/schema.sql` and the retirement-state comment in `knowledge/knowledge_graph/write_policy/write_policy_def.py` (`decayed`→`rejected`).
+- [X] T008 [P] Update the fixture state strings `decayed`→`rejected` in `knowledge/serve/data/candidates.json`.
+- [X] T009 [P] Replace the `'decayed'` literal in the `_overwrite` SQL in `knowledge/knowledge_graph/knowledge_graph_variants/postgres_vector_graph.py` (string only here; the non-destructive rewrite is T016).
+- [X] T010 [P] Update existing backend tests that assert `"decayed"` to `"rejected"` in `knowledge/serve/tests/test_server.py`, `knowledge/serve/tests/test_facts_candidates.py`, and `knowledge/knowledge_graph/tests/test_postgres_vector_graph.py` / `test_vector_graph.py`.
+- [ ] T011 **(DEFERRED — handle deliberately, not in the rename pass)** Rename the eval cases `decayed_lesson_ignored` and `decayed_lesson_ignored_reader` → `rejected_lesson_ignored*` (directory names, `case.yaml` ids + embedded state strings, and the README) under `knowledge/evals/cases/`; keep them asserting real shipped behavior (Principle I), not a tuned constant. *Note: these cases seed insights as `active` (no runtime `state="decayed"`), so deferring does not break the suite; the rename entangles the `DECAYED_RIVAL_MARKER` and reader decay-filter naming, which is a separate concern.*
 
 ### Edge-kind write plumbing (FR-004, FR-007)
 
-- [ ] T012 Add a `contradicted_by` edge flip/upsert helper to `knowledge/knowledge_graph/knowledge_graph_variants/postgres_vector_graph.py` (flip the canonical pair row `kind='contradiction'`→`'contradicted_by'` idempotently; `add_edge`/`remove_edge` already exist). Used by both the `/insights` resolve path (US1) and the reviewer resolve path (US1/US2).
+- [X] T012 Add a `contradicted_by` edge flip/upsert helper to `knowledge/knowledge_graph/knowledge_graph_variants/postgres_vector_graph.py` (flip the canonical pair row `kind='contradiction'`→`'contradicted_by'` idempotently; `add_edge`/`remove_edge` already exist). Used by both the `/insights` resolve path (US1) and the reviewer resolve path (US1/US2).
 
 **Checkpoint**: `uv run pytest knowledge -q` is green except the still-unimplemented behavior tests; the term `decayed` is gone from backend code/state values.
 

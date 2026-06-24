@@ -91,11 +91,11 @@ def test_promote_advances_proposed_to_active(client):
     assert res.json()["state"] == "active"
 
 
-def test_reject_decays(client):
+def test_reject_rejects(client):
     cid = _create(client)["id"]
     res = client.post(f"/candidates/{cid}/reject", json={"reason": "noise"})
     assert res.status_code == 200
-    assert res.json()["state"] == "decayed"
+    assert res.json()["state"] == "rejected"
 
 
 def test_patch_updates_candidate(client):

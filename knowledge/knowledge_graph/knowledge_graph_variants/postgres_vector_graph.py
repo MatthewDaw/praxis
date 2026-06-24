@@ -461,6 +461,26 @@ class PostgresVectorGraph(SearchableGraph):
             params.append(self._cache_key)
         self._conn.execute(sql, params)
 
+    def flip_edge_kind(
+        self,
+        a_id: str,
+        b_id: str,
+        *,
+        from_kind: str = "contradiction",
+        to_kind: str = "contradicted_by",
+    ) -> None:
+        """Re-label the edge between two facts (undirected, idempotent).
+
+        Used when a contradiction is resolved: the pair stays linked but the edge
+        kind changes (``contradiction`` -> ``contradicted_by``), so the resolved
+        relationship is preserved and reversible rather than deleted. Drops the
+        old-kind row in either direction and writes a single canonical-ordered
+        row at the new kind.
+        """
+        self.remove_edge(a_id, b_id, from_kind)
+        src, dst = sorted((a_id, b_id))
+        self.add_edge(src, dst, to_kind)
+
     def all_edges(self, kind: str | None = None) -> list[tuple[str, str, str]]:
         """All (src, dst, kind) edges for the tenant, regardless of fact state."""
         sql = (
@@ -729,7 +749,7 @@ class PostgresVectorGraph(SearchableGraph):
     def _overwrite(self, decision: WriteDecision) -> None:
         # Forced upsert: the new approved truth replaces the nearest conflicting
         # fact in place (landing at the decision's state), then any other
-        # contradictions decay, so no contradictory pair lingers.
+        # contradictions are rejected, so no contradictory pair lingers.
         embedding = _fit(decision.embedding)  # reuse the vector from _recall
         meta = getattr(decision, "meta", None) or {}
         self._conn.execute(
@@ -749,7 +769,7 @@ class PostgresVectorGraph(SearchableGraph):
         )
         for sid in decision.supersede_ids:
             self._conn.execute(
-                f"UPDATE {self._facts_table} SET state = 'decayed' "
+                f"UPDATE {self._facts_table} SET state = 'rejected' "
                 "WHERE org_id = %s AND user_id = %s AND id = %s",
                 (self.org_id, self.user_id, sid),
             )

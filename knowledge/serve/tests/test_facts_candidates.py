@@ -79,11 +79,11 @@ def test_promote_unknown_raises_keyerror(facade):
         facade.promote("nope")
 
 
-def test_reject_decays(facade):
+def test_reject_rejects(facade):
     cid = facade.create({"title": "T", "content": "Some noisy candidate text."})["id"]
     rejected = facade.reject(cid, reason="noise")
-    assert rejected["state"] == "decayed"
-    assert facade.get(cid)["state"] == "decayed"
+    assert rejected["state"] == "rejected"
+    assert facade.get(cid)["state"] == "rejected"
 
 
 def test_update_changes_title_and_content(facade):
@@ -118,12 +118,12 @@ def test_contradiction_edge_surfaces_pair_and_resolves(facade):
     kept = facade.resolve(pair["id"], a)
     assert kept["id"] == a
     assert kept["state"] == "active"
-    assert facade.get(b)["state"] == "decayed"
+    assert facade.get(b)["state"] == "rejected"
     # The edge is gone, so no pair remains.
     assert facade.contradictions() == []
 
 
-def test_resolve_custom_decays_both_and_creates_active(facade):
+def test_resolve_custom_rejects_both_and_creates_active(facade):
     a = facade.create({"title": "A", "content": "Store timestamps in UTC."})["id"]
     b = facade.create({"title": "B", "content": "Store timestamps in local time."})["id"]
     facade.graph.add_edge(a, b, "contradiction")
@@ -133,6 +133,6 @@ def test_resolve_custom_decays_both_and_creates_active(facade):
     assert new["state"] == "active"
     assert new["id"] not in (a, b)
     assert new["content"] == "Store timestamps in UTC, render in local time."
-    assert facade.get(a)["state"] == "decayed"
-    assert facade.get(b)["state"] == "decayed"
+    assert facade.get(a)["state"] == "rejected"
+    assert facade.get(b)["state"] == "rejected"
     assert facade.contradictions() == []

@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS facts (
     category          text,
     observation_count integer NOT NULL DEFAULT 1,
     -- Lifecycle state: 'proposed' (passive system add, staged), 'active' (user
-    -- directly approved -- live knowledge), 'decayed' (superseded/retired).
+    -- directly approved -- live knowledge), 'rejected' (superseded/retired;
+    -- formerly 'decayed', renamed in specs/003-fact-rejection-lifecycle).
     state             text NOT NULL DEFAULT 'proposed',
     embedding         vector(1536),
     meta              jsonb NOT NULL DEFAULT '{}'::jsonb,

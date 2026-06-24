@@ -33,7 +33,7 @@ class SearchableGraph(KnowledgeGraph):
 
         ``state`` gates which lifecycle state is retrievable and defaults to
         ``"active"``: only endorsed facts are surfaced, so ``proposed`` (staged)
-        and ``decayed`` (retired) facts stay out of retrieval. Pass ``state=None``
+        and ``rejected`` (retired) facts stay out of retrieval. Pass ``state=None``
         to search across all states — used by the write-policy's dedup/conflict
         lookup (``most_similar``), which must see pending facts.
         """

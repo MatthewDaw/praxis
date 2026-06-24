@@ -18,7 +18,7 @@ Action = Literal["add", "noop", "update", "overwrite"]
 
 # The state a freshly-written fact is persisted with. Set by the caller of
 # ``write`` (not by a policy step): "active" when the user directly approved the
-# insertion, "proposed" when the system added it passively. ("decayed" is a
+# insertion, "proposed" when the system added it passively. ("rejected" is a
 # retirement state the store assigns to superseded facts, never an entry state.)
 SeedState = Literal["proposed", "active"]
 

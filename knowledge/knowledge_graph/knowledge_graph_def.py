@@ -10,9 +10,10 @@ from pydantic import BaseModel, Field
 #   * "proposed" -- passively added by the system (e.g. distilled by the
 #     ingestor); staged, not yet endorsed.
 #   * "active"   -- the user directly approved this write; it is live knowledge.
-#   * "decayed"  -- superseded/retired (e.g. lost a contradiction to a newer
+#   * "rejected" -- superseded/retired (e.g. lost a contradiction to a newer
 #     approved fact); kept for provenance but no longer authoritative.
-FactState = Literal["proposed", "active", "decayed"]
+#     (Renamed from the former "decayed" value; see specs/003-fact-rejection-lifecycle.)
+FactState = Literal["proposed", "active", "rejected"]
 
 
 class Fact(BaseModel):
