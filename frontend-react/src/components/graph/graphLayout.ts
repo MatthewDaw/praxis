@@ -19,7 +19,7 @@ export function stateNodeColors(state: CandidateState): {
         text: "var(--state-active-text)",
         border: "var(--state-active-border)",
       };
-    case "decayed":
+    case "rejected":
     case "unrecognized":
       return {
         bg: "var(--state-muted-bg)",

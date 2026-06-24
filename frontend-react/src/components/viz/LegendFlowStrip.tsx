@@ -1,5 +1,5 @@
 import { stateNodeColors } from "../graph/graphLayout";
-import { FLOW_DECAYED_STEP, FLOW_STRIP_STEPS } from "./legendConfig";
+import { FLOW_REJECTED_STEP, FLOW_STRIP_STEPS } from "./legendConfig";
 
 export function LegendFlowStrip() {
   return (
@@ -27,14 +27,14 @@ export function LegendFlowStrip() {
       <div className="legend-flow-strip__branch">
         <span className="legend-flow-strip__arrow legend-flow-strip__arrow--down">↳</span>
         <span
-          className="legend-flow-strip__node legend-flow-strip__node--decayed"
+          className="legend-flow-strip__node legend-flow-strip__node--rejected"
           style={{
-            background: stateNodeColors(FLOW_DECAYED_STEP.state).bg,
-            borderColor: stateNodeColors(FLOW_DECAYED_STEP.state).border,
-            color: stateNodeColors(FLOW_DECAYED_STEP.state).text,
+            background: stateNodeColors(FLOW_REJECTED_STEP.state).bg,
+            borderColor: stateNodeColors(FLOW_REJECTED_STEP.state).border,
+            color: stateNodeColors(FLOW_REJECTED_STEP.state).text,
           }}
         >
-          {FLOW_DECAYED_STEP.label}
+          {FLOW_REJECTED_STEP.label}
         </span>
       </div>
     </div>

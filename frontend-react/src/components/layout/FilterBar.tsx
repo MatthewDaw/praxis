@@ -57,7 +57,7 @@ export function FilterBar({
             <option>All</option>
             <option value="proposed">Proposed</option>
             <option value="active">Approved</option>
-            <option value="decayed">Rejected</option>
+            <option value="rejected">Rejected</option>
           </select>
         </label>
         {isKnowledgeView ? (

@@ -45,11 +45,11 @@ describe("mock gate workflow", () => {
     expect(nextPromotionState("active")).toBeNull();
   });
 
-  it("marks rejected candidates as decayed", async () => {
+  it("marks rejected candidates as rejected", async () => {
     const provider = createMockDataProviderWithRows(loadMockCandidates());
     await provider.reject("cand_3", "duplicate lesson");
     const updated = await provider.getCandidate("cand_3");
-    expect(updated?.state).toBe("decayed");
+    expect(updated?.state).toBe("rejected");
   });
 
   it("treats already-active candidates as terminal for promotion", async () => {
@@ -68,7 +68,7 @@ describe("mock gate workflow", () => {
     );
     expect(updated.contradictionIds).toContain("cand_16");
     const rival = await provider.getCandidate("cand_16");
-    expect(rival?.state).toBe("decayed");
+    expect(rival?.state).toBe("rejected");
     expect(rival?.contradictionIds).toContain("cand_9");
     const keeper = await provider.getCandidate("cand_9");
     expect(keeper).not.toBeNull();

@@ -1084,7 +1084,7 @@ code,
   border-color: var(--state-active-border);
 }
 
-.state-badge--decayed,
+.state-badge--rejected,
 .state-badge--unrecognized {
   background: var(--state-muted-bg);
   color: var(--state-muted-text);
@@ -1956,7 +1956,7 @@ code,
   background: var(--state-active-border);
 }
 
-.state-funnel__bar--decayed {
+.state-funnel__bar--rejected {
   background: var(--state-muted-border);
 }
 

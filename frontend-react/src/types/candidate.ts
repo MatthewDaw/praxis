@@ -1,7 +1,7 @@
 export type CandidateState =
   | "proposed"
   | "active"
-  | "decayed"
+  | "rejected"
   | "unrecognized";
 
 export interface ConfidenceBreakdown {

@@ -137,8 +137,8 @@ description: "Task list for REJECTED state + retained-contradiction lifecycle"
 
 ### Implementation — rename (FR-001, SC-006)
 
-- [ ] T033 [US2] Rename `decayed`→`rejected` (state value, class/label maps) in `frontend-react/src/types/candidate.ts`, `frontend-react/src/api/candidateModel.ts`, `frontend-react/src/components/StateBadge.tsx`, `frontend-react/src/components/layout/FilterBar.tsx`, `frontend-react/src/components/viz/legendConfig.ts`, `frontend-react/src/api/mockProvider.ts`, and `frontend-react/src/api/localLogsProvider.ts`.
-- [ ] T034 [P] [US2] Update affected frontend tests for the rename (`frontend-react/src/components/viz/legendConfig.test.ts` and any provider/model tests asserting `decayed`).
+- [X] T033 [US2] Rename `decayed`→`rejected` (state value, class/label maps) in `frontend-react/src/types/candidate.ts`, `frontend-react/src/api/candidateModel.ts`, `frontend-react/src/components/StateBadge.tsx`, `frontend-react/src/components/layout/FilterBar.tsx`, `frontend-react/src/components/viz/legendConfig.ts`, `frontend-react/src/api/mockProvider.ts`, and `frontend-react/src/api/localLogsProvider.ts`.
+- [X] T034 [P] [US2] Update affected frontend tests for the rename (`frontend-react/src/components/viz/legendConfig.test.ts` and any provider/model tests asserting `decayed`).
 
 ### Implementation — contradiction review UX
 

@@ -65,7 +65,7 @@ function parseNodeState(raw: unknown): GraphNode["state"] {
   if (
     label === "proposed" ||
     label === "active" ||
-    label === "decayed" ||
+    label === "rejected" ||
     label === "unrecognized"
   ) {
     return label;

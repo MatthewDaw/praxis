@@ -74,7 +74,7 @@ export function ContradictionPanel({
                   Approve this fact
                 </button>
               ) : null}
-              {candidate.state !== "decayed" ? (
+              {candidate.state !== "rejected" ? (
                 <button
                   type="button"
                   className="btn decay"
@@ -102,7 +102,7 @@ export function ContradictionPanel({
                   Approve rival
                 </button>
               ) : null}
-              {rival.state !== "decayed" ? (
+              {rival.state !== "rejected" ? (
                 <button
                   type="button"
                   className="btn decay"

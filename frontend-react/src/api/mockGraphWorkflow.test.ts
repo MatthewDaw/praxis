@@ -66,6 +66,6 @@ describe("mock graph workflow", () => {
     );
     expect(resolvedPair).toBeDefined();
     const loser = graph.nodes.find((n) => n.id === "cand_16");
-    expect(loser?.state).toBe("decayed");
+    expect(loser?.state).toBe("rejected");
   });
 });

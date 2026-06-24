@@ -88,8 +88,8 @@ export function createMockDataProviderWithRows(
       const current = candidates[index];
       candidates[index] = {
         ...current,
-        state: "decayed",
-        displayState: candidateStateLabel("decayed"),
+        state: "rejected",
+        displayState: candidateStateLabel("rejected"),
         auditTrail: [
           ...current.auditTrail,
           {
@@ -101,7 +101,7 @@ export function createMockDataProviderWithRows(
           },
         ],
       };
-      syncGraphNodeState(graph, id, "decayed");
+      syncGraphNodeState(graph, id, "rejected");
     },
 
     async createCandidate(input: CandidateWriteInput) {
@@ -155,8 +155,8 @@ export function createMockDataProviderWithRows(
           if (candidate.id !== keepId) {
             return {
               ...candidate,
-              state: "decayed",
-              displayState: candidateStateLabel("decayed"),
+              state: "rejected",
+              displayState: candidateStateLabel("rejected"),
               contradictionIds,
             };
           }
@@ -168,7 +168,7 @@ export function createMockDataProviderWithRows(
         return candidate;
       });
       const loserId = keepId === primaryId ? rivalId : primaryId;
-      syncGraphNodeState(graph, loserId, "decayed");
+      syncGraphNodeState(graph, loserId, "rejected");
       syncGraphNodeState(graph, keepId, kept.state);
       const updated = candidates.find((c) => c.id === keepId);
       return updated ?? kept;

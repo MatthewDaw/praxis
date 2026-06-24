@@ -1,7 +1,7 @@
 import type { CandidateState } from "../../types/candidate";
 import type { GraphEdgeKind } from "../../types/graph";
 
-export const FUNNEL_STATES = ["proposed", "active", "decayed"] as const;
+export const FUNNEL_STATES = ["proposed", "active", "rejected"] as const;
 
 export type FunnelState = (typeof FUNNEL_STATES)[number];
 
@@ -38,7 +38,7 @@ export const LIFECYCLE_LEGEND: LifecycleLegendEntry[] = [
     description: "Approved for knowledge injection",
   },
   {
-    state: "decayed",
+    state: "rejected",
     label: "Rejected",
     description: "Rejected or superseded",
   },
@@ -49,8 +49,8 @@ export const FLOW_STRIP_STEPS: FlowStep[] = [
   { state: "active", label: "Approved" },
 ];
 
-export const FLOW_DECAYED_STEP: FlowStep = {
-  state: "decayed",
+export const FLOW_REJECTED_STEP: FlowStep = {
+  state: "rejected",
   label: "Rejected",
 };
 
