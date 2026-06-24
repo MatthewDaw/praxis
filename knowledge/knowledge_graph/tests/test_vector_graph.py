@@ -97,6 +97,19 @@ def test_merged_dup_triggers_zero_conflict_checks():
     assert conflict_llm.calls == []  # conflict judge skipped on a merge
 
 
+def test_active_active_contradiction_demotes_newcomer_to_proposed():
+    # FR-005: a second forced-active write that the flagger marks as contradicting
+    # an already-active fact lands "proposed" (a pending contradiction), never a
+    # second active side. The first fact stays active.
+    policy = [ConflictFlagger(judge=ConflictJudge(llm=FakeLlm(default='{"contradicts": true}')))]
+    g = VectorGraph(policy=policy, recall_floor=-1.0)
+    g.write("ALWAYS use tabs; spaces forbidden", state="active")
+    g.write("ALWAYS use spaces; tabs forbidden", state="active")  # contradicts the active fact
+    by_text = {f.text: f.state for f in g._facts}
+    assert by_text["ALWAYS use tabs; spaces forbidden"] == "active"    # first stays live
+    assert by_text["ALWAYS use spaces; tabs forbidden"] == "proposed"  # FR-005: demoted, not active
+
+
 # --- Tier B (gated): same-tag recall on the conflict path ---------------------
 _PERF_TAG = '{"tags": ["performance-vs-readability"]}'
 _A = "favor raw execution speed above all"

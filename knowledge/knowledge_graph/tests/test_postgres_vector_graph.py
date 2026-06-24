@@ -123,6 +123,43 @@ def test_contradiction_keeps_both_nondestructively(unique_org):
     assert graph.all_edges("contradiction") == []
 
 
+def test_active_active_contradiction_demotes_newcomer_to_proposed(unique_org):
+    """FR-005: with the flag-only policy (the eval-seed path), a forced-active write
+    that contradicts an already-active fact lands ``proposed`` -- a pending
+    contradiction -- never a second active side. The pair is still linked."""
+    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+        PostgresVectorGraph,
+    )
+    from knowledge.knowledge_graph.write_policy.write_step_variants import (
+        ConflictFlagger,
+        Deduper,
+        Redactor,
+    )
+    from knowledge.knowledge_graph.write_policy.write_step_variants.conflict_judge import (
+        ConflictJudge,
+    )
+    from knowledge.llm.embedder_variants.fake_embedder import FakeEmbedder
+    from knowledge.llm.llm_variants.fake_llm import FakeLlm
+
+    conn = db.connect()
+    graph = PostgresVectorGraph(
+        conn, unique_org, "u1", embedder=FakeEmbedder(), recall_floor=-1.0,
+        policy=[
+            Redactor(),
+            Deduper(),
+            ConflictFlagger(judge=ConflictJudge(llm=FakeLlm(default='{"contradicts": true}'))),
+        ],
+    )
+    graph.write("ALWAYS use tabs; spaces forbidden", state="active")
+    graph.write("ALWAYS use spaces; tabs forbidden", state="active")  # contradicts the active fact
+
+    states = _states_by_text(conn, unique_org, "u1")
+    assert states["ALWAYS use tabs; spaces forbidden"] == "active"     # first stays live
+    assert states["ALWAYS use spaces; tabs forbidden"] == "proposed"   # FR-005: not a 2nd active
+    # Still linked, as a pending (unresolved) contradiction.
+    assert len(graph.all_edges("contradiction")) == 1
+
+
 def test_overwrite_rejects_all_conflicts_without_destroying_text(unique_org):
     """US1 #2: approving over several conflicts rejects+links each loser, none
     overwritten. Drives _overwrite directly with multiple conflicts."""

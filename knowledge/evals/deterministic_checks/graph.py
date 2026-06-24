@@ -53,6 +53,47 @@ def min_active_asset_cards(ctx: EvalContext, *, minimum: int = 1) -> CheckResult
     )
 
 
+def at_most_one_active(
+    ctx: EvalContext, *, texts: list[str], winner: str | None = None
+) -> CheckResult:
+    """FR-005 guard: of a mutually-contradictory ``texts`` pair, never more than one
+    is active.
+
+    Active facts are read from ``injected_knowledge`` (the reader's output). The
+    offline ``FakeRunner`` injects nothing, so with no injected knowledge the check
+    is not applicable and passes -- it bites only on a real run that shows the agent
+    the seeded graph, where the write policy's FR-005 enforcement should have
+    demoted the losing side to ``proposed`` (hence out of the active read). With
+    ``winner`` set, a single active side must be that text (the seed that wins the
+    tie / stays live).
+    """
+    blocks = _active_blocks(ctx)
+    if not blocks:
+        return CheckResult(
+            name="at_most_one_active",
+            passed=True,
+            evidence="no injected knowledge (live-run check; not applicable offline)",
+        )
+    live = [t for t in texts if any(t.strip() in b for b in blocks)]
+    if len(live) > 1:
+        return CheckResult(
+            name="at_most_one_active",
+            passed=False,
+            evidence=f"FR-005 violated: {len(live)} contradictory facts are both active: {live!r}",
+        )
+    if winner is not None and live and live != [winner]:
+        return CheckResult(
+            name="at_most_one_active",
+            passed=False,
+            evidence=f"the live side is {live!r}, expected the winner {winner!r}",
+        )
+    return CheckResult(
+        name="at_most_one_active",
+        passed=True,
+        evidence=f"<= 1 of the contradictory pair is active: {live!r}",
+    )
+
+
 def min_non_seed_facts(
     ctx: EvalContext, *, minimum: int = 1, seed_texts: list[str] | None = None
 ) -> CheckResult:
