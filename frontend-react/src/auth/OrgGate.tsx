@@ -29,6 +29,12 @@ export interface MeResponse {
 export interface OrgContextValue {
   /** The active org id (sent as X-Praxis-Org on data calls). */
   orgId: string;
+  /** The active org's display name, when one is set (falls back to orgId). */
+  orgName?: string;
+  /** The logged-in user's id (Cognito sub). */
+  userId: string;
+  /** The logged-in user's email, when present on the token. */
+  email?: string;
   /** Resolve a currently-valid Cognito ID token. */
   getToken: () => Promise<string | undefined>;
   /** Sign the user out of Amplify. */
@@ -160,6 +166,7 @@ export function OrgGate({ children }: OrgGateProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [memberships, setMemberships] = useState<OrgMembership[]>([]);
+  const [identity, setIdentity] = useState<{ sub: string; email?: string }>({ sub: "" });
   const [activeOrg, setActiveOrg] = useState<string | null>(() =>
     localStorage.getItem(ACTIVE_ORG_STORAGE_KEY),
   );
@@ -176,6 +183,7 @@ export function OrgGate({ children }: OrgGateProps) {
     try {
       const me = await fetchMe(baseUrl, getToken);
       setMemberships(me.orgs);
+      setIdentity({ sub: me.sub, email: me.email });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setMemberships([]);
@@ -258,8 +266,17 @@ export function OrgGate({ children }: OrgGateProps) {
     if (memberships.length > 0 && !memberships.some((m) => m.orgId === activeOrg)) {
       return null;
     }
-    return { orgId: activeOrg, getToken, signOut: handleSignOut, switchOrg };
-  }, [activeOrg, memberships, getToken, handleSignOut, switchOrg]);
+    const orgName = memberships.find((m) => m.orgId === activeOrg)?.name;
+    return {
+      orgId: activeOrg,
+      orgName,
+      userId: identity.sub,
+      email: identity.email,
+      getToken,
+      signOut: handleSignOut,
+      switchOrg,
+    };
+  }, [activeOrg, memberships, identity, getToken, handleSignOut, switchOrg]);
 
   if (loading) {
     return <div className="org-gate org-gate--loading">Loading your workspace…</div>;

@@ -17,6 +17,8 @@ interface DashboardHeaderProps {
   onClearLocalLogs?: () => void;
   /** Compact action buttons rendered under the subtitle (e.g. modal openers). */
   tools?: React.ReactNode;
+  /** Primary section navigation rendered inside the header box. */
+  tabs?: React.ReactNode;
 }
 
 export function DashboardHeader({
@@ -30,6 +32,7 @@ export function DashboardHeader({
   onLoadLocalLogs,
   onClearLocalLogs,
   tools,
+  tabs,
 }: DashboardHeaderProps) {
   return (
     <header className="dashboard-header">
@@ -43,6 +46,7 @@ export function DashboardHeader({
           Review and approve AI-learned knowledge facts from agent sessions.
         </p>
         {tools ? <div className="dashboard-header__tools">{tools}</div> : null}
+        {tabs ? <div className="dashboard-header__tabs">{tabs}</div> : null}
       </div>
       <div className="dashboard-header__meta">
         <EnvironmentBadge
@@ -59,16 +63,6 @@ export function DashboardHeader({
           onLoadLocalLogs={onLoadLocalLogs}
           onClearLocalLogs={onClearLocalLogs}
         />
-        <div className="dashboard-header__actions">
-          <a
-            className="contract-link"
-            href="../docs/integration/candidate-api-v1.md"
-            target="_blank"
-            rel="noreferrer"
-          >
-            Contract: candidate-api-v1
-          </a>
-        </div>
       </div>
     </header>
   );

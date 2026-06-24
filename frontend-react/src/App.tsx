@@ -23,6 +23,7 @@ import { AppShell } from "./components/layout/AppShell";
 import { ContentSplit } from "./components/layout/ContentSplit";
 import { DashboardHeader } from "./components/layout/DashboardHeader";
 import { FilterBar } from "./components/layout/FilterBar";
+import { SectionTabs } from "./components/layout/SectionTabs";
 import { CandidateEditorModal } from "./components/ui/CandidateEditorModal";
 import { Modal } from "./components/ui/Modal";
 import { TranscriptPanel } from "./components/transcript/TranscriptPanel";
@@ -43,7 +44,7 @@ export default function App() {
     null,
   );
   const [localRawFiles, setLocalRawFiles] = useState<LocalLogFileInput[]>([]);
-  const { getToken, orgId, signOut, switchOrg } = useOrg();
+  const { getToken, orgId, orgName, userId, signOut, switchOrg } = useOrg();
   const auth = useMemo(() => ({ getToken, orgId }), [getToken, orgId]);
   const { config, mode, label, detail, ingestApiBaseUrl, applyConfig } =
     useDataSource(localSession, auth);
@@ -283,10 +284,6 @@ export default function App() {
     setEditorState({ mode: "edit", candidate });
   }
 
-  function handleAddEval() {
-    setEditorState({ mode: "add" });
-  }
-
   async function handleClearGraph() {
     const ok = window.confirm(
       "Clear graph permanently removes every fact and edge in YOUR graph (this user only). This cannot be undone. Continue?",
@@ -429,7 +426,7 @@ export default function App() {
         className="header-tools__btn"
         onClick={() => setActivePanel("foldin")}
       >
-        Fold in skills
+        Add facts from snapshot
       </button>
       <button
         type="button"
@@ -461,6 +458,13 @@ export default function App() {
         onLoadLocalLogs={handleLoadLocalLogs}
         onClearLocalLogs={handleClearLocalLogs}
         tools={mode === "live" && config.apiBaseUrl ? headerTools : undefined}
+        tabs={
+          <SectionTabs
+            viewTab={viewTab}
+            contradictionCount={contradictionCount}
+            onViewTabChange={setViewTab}
+          />
+        }
       />
 
       {mode === "local-logs" ? (
@@ -551,18 +555,18 @@ export default function App() {
         />
       ) : null}
 
-      <FilterBar
-        searchQuery={searchQuery}
-        stateFilter={stateFilter}
-        viewTab={viewTab}
-        candidateCount={filtered.length}
-        contradictionCount={contradictionCount}
-        onSearchChange={setSearchQuery}
-        onStateFilterChange={setStateFilter}
-        onViewTabChange={setViewTab}
-        onAddEval={handleAddEval}
-        onClearGraph={handleClearGraph}
-      />
+      {viewTab !== "setup" && viewTab !== "contradictions" ? (
+        <FilterBar
+          searchQuery={searchQuery}
+          stateFilter={stateFilter}
+          viewTab={viewTab}
+          candidateCount={filtered.length}
+          onSearchChange={setSearchQuery}
+          onStateFilterChange={setStateFilter}
+          onViewTabChange={setViewTab}
+          onClearGraph={handleClearGraph}
+        />
+      ) : null}
 
       {viewTab === "setup" ? (
         <McpSetupGuide />
@@ -605,14 +609,22 @@ export default function App() {
       />
 
       <footer className="page-footer">
-        React Knowledge Graph Dashboard · Data source: {footerModeLabel} · Org:{" "}
-        <code>{orgId}</code> · candidate-api-v1 contract ·{" "}
-        <button type="button" className="link-button" onClick={switchOrg}>
-          Switch workspace
-        </button>{" "}
-        <button type="button" className="link-button" onClick={() => void signOut()}>
-          Sign out
-        </button>
+        <div>
+          React Knowledge Graph Dashboard · Data source: {footerModeLabel} ·
+          candidate-api-v1 contract
+        </div>
+        <div className="page-footer__account">
+          User: <code>{userId || "—"}</code> · Org:{" "}
+          <code>{orgName && orgName !== orgId ? `${orgName} (${orgId})` : orgId}</code>
+        </div>
+        <div className="page-footer__actions">
+          <button type="button" className="link-button" onClick={switchOrg}>
+            Switch workspace
+          </button>{" "}
+          <button type="button" className="link-button" onClick={() => void signOut()}>
+            Sign out
+          </button>
+        </div>
       </footer>
     </AppShell>
   );

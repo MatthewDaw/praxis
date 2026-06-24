@@ -38,8 +38,6 @@ export const DATA_SOURCE_PRESETS: DataSourcePreset[] = [
     id: PRESET_IDS.postgres,
     label: "Remote Postgres",
     mode: "live",
-    helpText:
-      "Remote candidate API from VITE_PRAXIS_POSTGRES_API_BASE_URL (falls back to VITE_PRAXIS_API_BASE_URL, then localhost:8000).",
   },
 ];
 

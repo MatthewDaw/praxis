@@ -11,11 +11,9 @@ interface FilterBarProps {
   stateFilter: string;
   viewTab: ViewTab;
   candidateCount: number;
-  contradictionCount: number;
   onSearchChange: (value: string) => void;
   onStateFilterChange: (value: string) => void;
   onViewTabChange: (tab: ViewTab) => void;
-  onAddEval?: () => void;
   onClearGraph?: () => void;
 }
 
@@ -24,11 +22,9 @@ export function FilterBar({
   stateFilter,
   viewTab,
   candidateCount,
-  contradictionCount,
   onSearchChange,
   onStateFilterChange,
   onViewTabChange,
-  onAddEval,
   onClearGraph,
 }: FilterBarProps) {
   const isKnowledgeView = viewTab === "table" || viewTab === "cards" || viewTab === "graph";
@@ -91,50 +87,11 @@ export function FilterBar({
             Truncate graph
           </button>
         ) : null}
-        {onAddEval && viewTab !== "setup" ? (
-          <button type="button" className="btn secondary" onClick={onAddEval}>
-            Add eval
-          </button>
-        ) : null}
         {viewTab !== "setup" ? (
           <span className="count-chip" aria-live="polite">
             {candidateCount} candidates
           </span>
         ) : null}
-        <div className="view-toggle" role="tablist" aria-label="Dashboard section">
-          <button
-            type="button"
-            role="tab"
-            className={isKnowledgeView ? "view-toggle__tab active" : "view-toggle__tab"}
-            aria-selected={isKnowledgeView}
-            onClick={() => {
-              if (!isKnowledgeView) {
-                onViewTabChange("table");
-              }
-            }}
-          >
-            Knowledge
-          </button>
-          <button
-            type="button"
-            role="tab"
-            className={viewTab === "contradictions" ? "view-toggle__tab active" : "view-toggle__tab"}
-            aria-selected={viewTab === "contradictions"}
-            onClick={() => onViewTabChange("contradictions")}
-          >
-            Contradictions
-            {contradictionCount > 0 ? ` (${contradictionCount})` : ""}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            className={viewTab === "setup" ? "view-toggle__tab active" : "view-toggle__tab"}
-            aria-selected={viewTab === "setup"}
-            onClick={() => onViewTabChange("setup")}
-          >
-            MCP Setup
-          </button>
-        </div>
       </div>
     </section>
   );

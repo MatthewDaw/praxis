@@ -35,6 +35,8 @@ export function EnvironmentBadge({
   const storeLabel = isLive ? storeSuffix(storeType) : undefined;
   const titleParts = [detail, storeLabel].filter(Boolean);
 
+  const pillDetail = isLive ? detail : undefined;
+
   return (
     <div className="env-badge-wrap">
       <span
@@ -43,19 +45,10 @@ export function EnvironmentBadge({
         title={titleParts.length > 0 ? titleParts.join(" · ") : label}
       >
         {modeText}
-      </span>
-      <span className="env-badge-detail">
-        {label}
-        {detail ? (
+        {pillDetail ? (
           <>
             {" · "}
-            <code>{detail}</code>
-          </>
-        ) : null}
-        {storeLabel ? (
-          <>
-            {" · "}
-            {storeLabel}
+            <code className="env-badge__detail-code">{pillDetail}</code>
           </>
         ) : null}
       </span>
