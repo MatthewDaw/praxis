@@ -123,6 +123,22 @@ class OrgsStore:
         ).fetchall()
         return [{"org_id": r[0], "name": r[1], "role": r[2]} for r in rows]
 
+    def members(self, org_id: str) -> list[dict]:
+        """Return every member of ``org_id`` as ``{user_id, role}`` (owners first).
+
+        Used by skill sharing to enumerate the org members whose graphs a caller
+        may browse. Emails are not stored app-side (they live in Cognito), so
+        only the Cognito ``sub`` (``user_id``) and role are returned.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT user_id, role FROM org_members WHERE org_id = %s
+            ORDER BY (role = 'owner') DESC, user_id
+            """,
+            (org_id,),
+        ).fetchall()
+        return [{"user_id": r[0], "role": r[1]} for r in rows]
+
     def is_member(self, org_id: str, user_id: str) -> bool:
         """Return True if ``user_id`` is a member of ``org_id``."""
         row = self._conn.execute(
