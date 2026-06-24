@@ -971,6 +971,113 @@ export async function foldIn(
   );
 }
 
+/** A scoped API key as listed by `GET /apikeys` (never includes the raw key). */
+export interface ApiKey {
+  id: string;
+  label: string | null;
+  userId: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revoked: boolean;
+}
+
+/** Result of `POST /apikeys`: the raw `pxk_...` key is returned exactly ONCE. */
+export interface CreatedApiKey {
+  id: string;
+  key: string;
+  label: string | null;
+  createdAt: string;
+}
+
+function normalizeApiKey(payload: unknown): ApiKey {
+  const row =
+    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  return {
+    id: typeof row.id === "string" ? row.id : String(row.id ?? ""),
+    label: typeof row.label === "string" ? row.label : null,
+    userId: typeof row.userId === "string" ? row.userId : String(row.user_id ?? ""),
+    createdAt:
+      typeof row.createdAt === "string"
+        ? row.createdAt
+        : typeof row.created_at === "string"
+          ? row.created_at
+          : "",
+    lastUsedAt:
+      typeof row.lastUsedAt === "string"
+        ? row.lastUsedAt
+        : typeof row.last_used_at === "string"
+          ? row.last_used_at
+          : null,
+    revoked: Boolean(row.revoked),
+  };
+}
+
+function normalizeApiKeyList(payload: unknown): ApiKey[] {
+  const list = Array.isArray(payload)
+    ? payload
+    : payload && typeof payload === "object" && Array.isArray((payload as Record<string, unknown>).apikeys)
+      ? ((payload as Record<string, unknown>).apikeys as unknown[])
+      : [];
+  return list.map(normalizeApiKey);
+}
+
+function normalizeCreatedApiKey(payload: unknown): CreatedApiKey {
+  const row =
+    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  return {
+    id: typeof row.id === "string" ? row.id : String(row.id ?? ""),
+    key: typeof row.key === "string" ? row.key : String(row.key ?? ""),
+    label: typeof row.label === "string" ? row.label : null,
+    createdAt:
+      typeof row.createdAt === "string"
+        ? row.createdAt
+        : typeof row.created_at === "string"
+          ? row.created_at
+          : "",
+  };
+}
+
+/** `GET /apikeys` — list this user's scoped API keys (raw keys never returned). */
+export async function listApiKeys(
+  apiBaseUrl: string,
+  auth?: string | ApiDataProviderAuth,
+): Promise<ApiKey[]> {
+  return normalizeApiKeyList(
+    await snapshotRequest(apiBaseUrl, "GET", "/apikeys", auth),
+  );
+}
+
+/** `POST /apikeys` — mint a new key. The raw `pxk_...` key is returned ONCE. */
+export async function createApiKey(
+  apiBaseUrl: string,
+  label: string | null,
+  auth?: string | ApiDataProviderAuth,
+): Promise<CreatedApiKey> {
+  return normalizeCreatedApiKey(
+    await snapshotRequest(apiBaseUrl, "POST", "/apikeys", auth, { label }),
+  );
+}
+
+/** `POST /apikeys/{id}/revoke` — revoke a key by id. */
+export async function revokeApiKey(
+  apiBaseUrl: string,
+  id: string,
+  auth?: string | ApiDataProviderAuth,
+): Promise<{ id: string; revoked: boolean }> {
+  const payload = await snapshotRequest(
+    apiBaseUrl,
+    "POST",
+    `/apikeys/${encodeURIComponent(id)}/revoke`,
+    auth,
+  );
+  const row =
+    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  return {
+    id: typeof row.id === "string" ? row.id : id,
+    revoked: Boolean(row.revoked),
+  };
+}
+
 export {
   ApiClientError,
   ApiConflictError,

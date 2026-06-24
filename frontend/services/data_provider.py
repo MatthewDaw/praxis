@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 from typing import Protocol, runtime_checkable
 
+from models.api_key import ApiKey, CreatedApiKey
 from models.candidate import Candidate, CandidateState
 
 
@@ -57,6 +58,18 @@ class DataProvider(Protocol):
         keep_id: str,
     ) -> Candidate:
         """Resolve a contradiction pair; keep_id is the winning candidate."""
+        ...
+
+    def list_api_keys(self) -> list[ApiKey]:
+        """Return the caller's API keys (raw key is never included)."""
+        ...
+
+    def create_api_key(self, label: str | None = None) -> CreatedApiKey:
+        """Create an API key; the raw ``pxk_`` key is returned exactly once."""
+        ...
+
+    def revoke_api_key(self, key_id: str) -> ApiKey:
+        """Revoke an API key by id; returns the revoked key."""
         ...
 
 

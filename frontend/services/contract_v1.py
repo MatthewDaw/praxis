@@ -87,6 +87,23 @@ def build_reject_body(*, reason: str | None = None) -> dict[str, str]:
     return body
 
 
+def build_create_api_key_body(*, label: str | None = None) -> dict[str, Any]:
+    """Body for ``POST /apikeys``. Always sends ``label`` (null when omitted)."""
+    normalized = label.strip() if isinstance(label, str) else label
+    return {"label": normalized or None}
+
+
+def parse_api_key_list(payload: Any) -> list[dict[str, Any]]:
+    """Pull the API-key rows out of a ``GET /apikeys`` response."""
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if isinstance(payload, dict):
+        rows = payload.get("apiKeys") or payload.get("keys") or []
+        if isinstance(rows, list):
+            return [row for row in rows if isinstance(row, dict)]
+    return []
+
+
 def contradiction_pair_id(primary_id: str, rival_id: str) -> str:
     """Canonical contradiction id: {primaryId}__{rivalId}."""
     return f"{primary_id}__{rival_id}"

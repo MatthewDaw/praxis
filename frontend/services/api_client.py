@@ -29,13 +29,16 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from models.api_key import ApiKey, CreatedApiKey
 from models.candidate import Candidate, CandidateState
 from services.contract_v1 import (
+    build_create_api_key_body,
     build_promote_body,
     build_promote_body_implicit,
     build_reject_body,
     build_resolve_body,
     contract_headers,
+    parse_api_key_list,
     parse_candidate_list,
 )
 
@@ -155,6 +158,32 @@ class ApiDataProvider:
         if not isinstance(payload, dict):
             raise ValueError("Resolve response must include the kept candidate")
         return Candidate.from_mapping(payload)
+
+    def list_api_keys(self) -> list[ApiKey]:
+        payload = self._request("GET", "/apikeys")
+        rows = parse_api_key_list(payload)
+        return [ApiKey.from_mapping(row) for row in rows]
+
+    def create_api_key(self, label: str | None = None) -> CreatedApiKey:
+        payload = self._request(
+            "POST",
+            "/apikeys",
+            body=build_create_api_key_body(label=label),
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("Create API key response must be an object")
+        return CreatedApiKey.from_mapping(payload)
+
+    def revoke_api_key(self, key_id: str) -> ApiKey:
+        encoded = urllib.parse.quote(key_id, safe="")
+        payload = self._request("POST", f"/apikeys/{encoded}/revoke")
+        if not isinstance(payload, dict):
+            raise ValueError("Revoke API key response must be an object")
+        # The revoke endpoint returns a minimal {"id","revoked":true}; merge it
+        # over the current row so callers still get a complete ApiKey.
+        merged = {"id": key_id, "revoked": True}
+        merged.update(payload)
+        return ApiKey.from_mapping(merged)
 
     def _headers(self) -> dict[str, str]:
         return contract_headers(token=self._token, org_id=self._org_id)

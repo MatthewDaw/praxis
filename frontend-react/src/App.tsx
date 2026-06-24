@@ -10,6 +10,7 @@ import { CandidateCards } from "./components/CandidateCards";
 import { CandidateDetail } from "./components/CandidateDetail";
 import { GraphDataLoader } from "./components/GraphDataLoader";
 import { SnapshotManager } from "./components/SnapshotManager";
+import { ApiKeysPanel } from "./components/ApiKeysPanel";
 import { SourceFoldIn } from "./components/SourceFoldIn";
 import { CandidateTable } from "./components/CandidateTable";
 import {
@@ -449,6 +450,7 @@ export default function App() {
             auth={auth}
             onLoaded={handleRefresh}
           />
+          <ApiKeysPanel apiBaseUrl={config.apiBaseUrl} auth={auth} />
         </>
       ) : null}
 

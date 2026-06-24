@@ -15,11 +15,15 @@ OPERATIONAL:
 
 from __future__ import annotations
 
+import secrets
 from datetime import datetime, timezone
 from typing import Any
 
+from models.api_key import ApiKey, CreatedApiKey
 from models.candidate import Candidate, CandidateState, next_promotion_state
 from mock_data import get_mock_candidate_dicts
+
+_MOCK_USER_ID = "mock-user"
 
 
 class MockDataProvider:
@@ -29,6 +33,8 @@ class MockDataProvider:
         self._candidates: dict[str, Candidate] = {
             c.id: c for c in (Candidate.from_mapping(row) for row in get_mock_candidate_dicts())
         }
+        self._api_keys: dict[str, ApiKey] = {}
+        self._api_key_seq = 0
 
     def list_candidates(self, state: CandidateState | None = None) -> list[Candidate]:
         items = list(self._candidates.values())
@@ -105,6 +111,49 @@ class MockDataProvider:
         updated = _clone_candidate(keeper, contradiction_ids=cleared_ids, extra=audit)
         self._candidates[keep_id] = updated
         return updated
+
+    def list_api_keys(self) -> list[ApiKey]:
+        return sorted(
+            self._api_keys.values(),
+            key=lambda k: k.created_at,
+            reverse=True,
+        )
+
+    def create_api_key(self, label: str | None = None) -> CreatedApiKey:
+        self._api_key_seq += 1
+        key_id = f"key_{self._api_key_seq}"
+        raw_key = f"pxk_{secrets.token_hex(16)}"
+        normalized = label.strip() if isinstance(label, str) else label
+        created_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._api_keys[key_id] = ApiKey(
+            id=key_id,
+            label=normalized or None,
+            user_id=_MOCK_USER_ID,
+            created_at=created_at,
+            last_used_at=None,
+            revoked=False,
+        )
+        return CreatedApiKey(
+            id=key_id,
+            key=raw_key,
+            label=normalized or None,
+            created_at=created_at,
+        )
+
+    def revoke_api_key(self, key_id: str) -> ApiKey:
+        existing = self._api_keys.get(key_id)
+        if existing is None:
+            raise KeyError(f"Unknown API key id: {key_id!r}")
+        revoked = ApiKey(
+            id=existing.id,
+            label=existing.label,
+            user_id=existing.user_id,
+            created_at=existing.created_at,
+            last_used_at=existing.last_used_at,
+            revoked=True,
+        )
+        self._api_keys[key_id] = revoked
+        return revoked
 
     def _require_candidate(self, candidate_id: str) -> Candidate:
         candidate = self._candidates.get(candidate_id)

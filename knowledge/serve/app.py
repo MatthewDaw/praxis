@@ -199,6 +199,68 @@ def create_app(conn: Any | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc))
         return {"orgId": org_id, "status": "password_changed"}
 
+    # --- API keys (in-page key management, scoped to the active org) -------
+    def _apikey_view(rec: dict[str, Any]) -> dict[str, Any]:
+        """Public read model for one key (camelCase, never the raw key/hash)."""
+        return {
+            "id": rec["id"],
+            "label": rec["label"],
+            "userId": rec["user_id"],
+            "createdAt": rec["created_at"],
+            "lastUsedAt": rec["last_used_at"],
+            "revoked": rec["revoked"],
+        }
+
+    @app.post("/apikeys")
+    def create_apikey(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Mint a key for the active org, scoped to the caller's user id.
+
+        The raw ``pxk_`` key is returned exactly once here and never persisted in
+        clear; only its hash lives in the DB.
+        """
+        from knowledge.serve import apikeys
+
+        label = body.get("label")
+        label = str(label) if label is not None else None
+        key_id, raw_key = apikeys.mint_key(conn, org, user_id=principal.sub, label=label)
+        # Read back the freshly-minted row to source the canonical createdAt.
+        rows = [k for k in apikeys.list_keys(conn, org) if k["id"] == key_id]
+        created_at = rows[0]["created_at"] if rows else None
+        return {
+            "id": key_id,
+            "key": raw_key,
+            "label": label,
+            "createdAt": created_at,
+        }
+
+    @app.get("/apikeys")
+    def list_apikeys(
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> list[dict[str, Any]]:
+        """List the active org's keys (camelCase, never the raw key or hash)."""
+        from knowledge.serve import apikeys
+
+        return [_apikey_view(k) for k in apikeys.list_keys(conn, org)]
+
+    @app.post("/apikeys/{key_id}/revoke")
+    def revoke_apikey(
+        key_id: str,
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Revoke a key, but only if it belongs to the active org (else 404)."""
+        from knowledge.serve import apikeys
+
+        if not any(k["id"] == key_id for k in apikeys.list_keys(conn, org)):
+            raise HTTPException(status_code=404, detail=f"unknown key {key_id}")
+        apikeys.revoke_key(conn, key_id)
+        return {"id": key_id, "revoked": True}
+
     # --- candidates (projection of the facts spine) ------------------------
     @app.get("/candidates")
     def list_candidates(
