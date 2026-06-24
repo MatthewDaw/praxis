@@ -12,7 +12,12 @@ Safe to re-run.
 
 from __future__ import annotations
 
-from knowledge.serve.db import connect
+# NOTE: no top-level ``knowledge`` import. yoyo loads this file with
+# ``importlib.exec_module`` in a context where the repo root isn't on
+# ``sys.path``, so a module-scope ``from knowledge...`` would fail to import
+# (ModuleNotFoundError) before the step ever runs. ``_apply``/``_rename_state``
+# are pure SQL; only the local CLI ``main()`` needs ``connect``, so it imports
+# lazily there.
 
 
 def _table_exists(conn, name: str) -> bool:
@@ -47,6 +52,8 @@ def _apply(conn) -> None:
 
 def main() -> None:
     from dotenv import load_dotenv
+
+    from knowledge.serve.db import connect
 
     load_dotenv()
 
