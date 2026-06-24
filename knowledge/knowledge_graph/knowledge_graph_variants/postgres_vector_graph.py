@@ -56,7 +56,7 @@ _ALLOWED_EDGES_TABLES = {"fact_edges", "cached_fact_edges"}
 # save/load (everything except the cache_key, which is stamped per copy).
 _FACT_COPY_COLS = (
     "id, org_id, user_id, shared, text, source, confidence, scope, category, "
-    "observation_count, state, embedding, meta, created_at"
+    "observation_count, state, embedding, cluster_id, cluster_label, meta, created_at"
 )
 
 
@@ -302,7 +302,7 @@ class PostgresVectorGraph(SearchableGraph):
         """
         rows = self._conn.execute(
             "SELECT id, text, source, confidence, scope, category, observation_count, "
-            "state, created_at, meta "
+            "state, created_at, meta, cluster_id, cluster_label "
             f"FROM {self._facts_table} WHERE org_id = %s AND (shared OR user_id = %s) "
             "AND state = 'active' ORDER BY created_at DESC",
             (self.org_id, self.user_id),
@@ -321,15 +321,60 @@ class PostgresVectorGraph(SearchableGraph):
         ).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
 
+    # --- clustering (navigation-only topic super-nodes) --------------------
+    def recluster(self, *, min_cluster_size: int | None = None) -> int:
+        """Define-pass: (re)assign topic clusters over this graph's facts, persisted.
+
+        Runs the embed -> reduce -> HDBSCAN -> label pipeline over every fact in
+        this partition (the live tenant graph, or one ``cache_key`` slice) and
+        writes the resulting ``cluster_id``/``cluster_label`` back to each row.
+        This is the slow, write-time "define" side (used by the pipeline /
+        snapshot paths), NOT a per-render call: the assignments are persisted so
+        retrieval never re-clusters and the cache copy carries them verbatim.
+
+        Cluster ids are not stable across runs — a settled design decision; the
+        graph view groups by whatever ids/labels are current. Returns the number
+        of clusters found (0 when there are too few facts or no embedding key, in
+        which case every fact is cleared to unclustered).
+        """
+        from knowledge.knowledge_graph.clustering import MIN_CLUSTER_SIZE, assign_clusters
+
+        facts = self.all_facts()
+        if not facts:
+            return 0
+        n = assign_clusters(
+            facts, min_cluster_size=min_cluster_size or MIN_CLUSTER_SIZE
+        )
+        sql = (
+            f"UPDATE {self._facts_table} SET cluster_id = %s, cluster_label = %s "
+            "WHERE org_id = %s AND user_id = %s AND id = %s"
+        )
+        cache_clause = ""
+        if self._cache_key is not None:
+            cache_clause = " AND cache_key = %s"
+        for fact in facts:
+            params: list[object] = [
+                fact.cluster_id,
+                fact.cluster_label,
+                self.org_id,
+                self.user_id,
+                fact.id,
+            ]
+            if self._cache_key is not None:
+                params.append(self._cache_key)
+            self._conn.execute(sql + cache_clause, params)
+        return n
+
     # --- full-lifecycle reads (candidate-facade surface) -------------------
     @staticmethod
     def _row_to_fact(r: tuple) -> Fact:
         """Build a Fact from a row of (id,text,source,confidence,scope,category,
-        observation_count,state[,created_at[,meta]]).
+        observation_count,state[,created_at[,meta[,cluster_id,cluster_label]]]).
 
-        ``created_at``/``meta`` are optional trailing columns; when present,
-        ``created_at`` is serialized to ISO 8601 and ``meta`` is normalized to a
-        dict (psycopg returns jsonb as a dict already, but tolerate strings).
+        ``created_at``/``meta``/``cluster_id``/``cluster_label`` are optional
+        trailing columns; when present, ``created_at`` is serialized to ISO 8601
+        and ``meta`` is normalized to a dict (psycopg returns jsonb as a dict
+        already, but tolerate strings).
         """
         created_at = None
         meta: dict = {}
@@ -337,6 +382,8 @@ class PostgresVectorGraph(SearchableGraph):
             created_at = r[8].isoformat() if hasattr(r[8], "isoformat") else str(r[8])
         if len(r) > 9 and r[9] is not None:
             meta = r[9] if isinstance(r[9], dict) else json.loads(r[9])
+        cluster_id = r[10] if len(r) > 10 else None
+        cluster_label = r[11] if len(r) > 11 else None
         return Fact(
             id=r[0],
             text=r[1],
@@ -346,6 +393,8 @@ class PostgresVectorGraph(SearchableGraph):
             category=r[5],
             observation_count=r[6],
             state=r[7],
+            cluster_id=cluster_id,
+            cluster_label=cluster_label,
             created_at=created_at,
             meta=meta,
         )
@@ -354,7 +403,7 @@ class PostgresVectorGraph(SearchableGraph):
         """Every fact for this tenant (optionally filtered by ``state``), newest first."""
         sql = (
             "SELECT id, text, source, confidence, scope, category, observation_count, "
-            "state, created_at, meta "
+            "state, created_at, meta, cluster_id, cluster_label "
             f"FROM {self._facts_table} WHERE org_id = %s AND (shared OR user_id = %s)"
         )
         params: list[object] = [self.org_id, self.user_id]
@@ -371,7 +420,7 @@ class PostgresVectorGraph(SearchableGraph):
     def get_fact(self, fact_id: str) -> Fact | None:
         rows = self._conn.execute(
             "SELECT id, text, source, confidence, scope, category, observation_count, "
-            "state, created_at, meta "
+            "state, created_at, meta, cluster_id, cluster_label "
             f"FROM {self._facts_table} WHERE org_id = %s AND user_id = %s AND id = %s",
             (self.org_id, self.user_id, fact_id),
         ).fetchall()

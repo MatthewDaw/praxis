@@ -463,6 +463,15 @@ def create_app(conn: Any | None = None) -> FastAPI:
                     scope=seed.scope,
                     category=seed.category,
                 )
+            # Define-pass: tag the cached facts with topic clusters so the graph
+            # view can collapse them into labeled super-nodes. Persisted into the
+            # cache, so a later /evals/load carries the labels into the live graph
+            # verbatim (no re-clustering). Best-effort: a flat graph still loads if
+            # embeddings/clustering deps are unavailable.
+            try:
+                eval_graph.recluster()
+            except Exception:
+                pass
             regenerated.append(cid)
         return regenerated, from_cache
 

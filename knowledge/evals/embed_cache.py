@@ -7,6 +7,11 @@ runtime (post-redaction, post-dedup, plus the reader's query) â€” then comm
 file. Starting from empty drops orphaned keys left by edited/removed texts.
 
     uv run python -m knowledge.evals.embed_cache --refresh
+
+For image-asset (``caption_model``) cases, refresh the caption cassette *first*
+(``knowledge.evals.caption_cache --refresh``) so the card texts embedded here
+replay the same captions the runtime does; otherwise the recorded vectors key off
+captions that won't match at replay time and seeding is a loud miss.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from knowledge.evals.run import (
     EMBED_CACHE_DIR,
     _build_trio_for,
     _embed_model,
+    _seed_image_assets,
     _slug,
     load_cases,
     load_env,
@@ -56,6 +62,10 @@ def refresh() -> int:
             graph.write(text, state="active")
         for text in case.seeded_insight.via_ingestor:
             ingestor.ingest(text)
+        # Image-asset cards land "active" too (run._seed_knowledge does this last),
+        # and they flow through the same CachedEmbedder — so their card texts must be
+        # recorded here, else seeding a `cached` image case is a loud miss at runtime.
+        _seed_image_assets(case, graph)
         if case.seed_prompt:
             reader.read(case.seed_prompt)
         print(f"recorded {case.id}")

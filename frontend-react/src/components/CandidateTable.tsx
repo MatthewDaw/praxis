@@ -11,6 +11,12 @@ import { StateBadge } from "./StateBadge";
 
 const LOW_CONFIDENCE_THRESHOLD = 0.5;
 
+/** Topic-cluster label for a candidate, if the define-pass assigned one. */
+function clusterLabel(candidate: Candidate): string | null {
+  const label = candidate.extra.cluster_label;
+  return typeof label === "string" && label.trim() ? label : null;
+}
+
 interface CandidateTableProps {
   candidates: Candidate[];
   selectedId: string | null;
@@ -135,7 +141,7 @@ export function CandidateTable({
 
     return (
       <tr className="row-expand">
-        <td colSpan={4}>
+        <td colSpan={5}>
           {isPromote && nextState ? (
             <>
               <p className="info-banner">
@@ -242,6 +248,7 @@ export function CandidateTable({
           <thead>
             <tr>
               <th scope="col">Title</th>
+              <th scope="col">Topic</th>
               <th scope="col">State</th>
               <th scope="col">Created</th>
               <th scope="col">Actions</th>
@@ -273,6 +280,15 @@ export function CandidateTable({
                       <span className="title-cell" title={candidate.title}>
                         {candidate.title}
                       </span>
+                    </td>
+                    <td>
+                      {clusterLabel(candidate) ? (
+                        <span className="topic-chip" title="Topic cluster">
+                          {clusterLabel(candidate)}
+                        </span>
+                      ) : (
+                        <span className="muted small">—</span>
+                      )}
                     </td>
                     <td>
                       <StateBadge state={candidate.state} label={candidate.displayState} />

@@ -3183,6 +3183,23 @@ li.eval-runner__entry.is-checked {
   font-weight: 600;
 }
 
+/* Topic-cluster label chip, shown in the table + card candidate views. */
+.topic-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--accent-dark);
+  border: 1px solid #c7d2fe;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* --- Graph drill-in: back button + uniform card height ------------------- */
 .graph-back-btn {
   position: absolute;

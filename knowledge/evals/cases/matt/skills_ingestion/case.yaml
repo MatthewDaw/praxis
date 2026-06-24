@@ -1,0 +1,124 @@
+# Full-pipeline ingestion + retrieval case. Ingests 10 mutually-similar
+# developer-workflow skills from skills.sh (the "code quality / dev workflow"
+# cluster) through the ingestor (active => retrievable), then asks the agent to
+# recommend the right skill(s) for a concrete task using ONLY the ingested
+# knowledge. The cluster is intentionally overlapping (two TDD skills, two
+# debugging skills, three review skills) so the case tests retrieval precision
+# and grounding, not just "did the text land".
+#
+# Provenance for each skill lives under sources/skills/; the canonical ingested
+# text is the via_ingestor block below.
+id: matt_skills_ingestion
+substrate: vector
+embedder: cached
+reader: retrieving
+reader_top_k: 6
+ingest_model: openai/gpt-4o-mini
+ingest_state: active
+seed_prompt: "You are a skill-router for an AI coding agent. Your knowledge base has been\
+  \ seeded with a catalog of reusable agent \"skills\" (each has a name, an author, a\
+  \ when-to-use trigger, and a workflow). Using ONLY the skills you have been given\
+  \ knowledge of, answer the request below. Do not invent skills that are not in your\
+  \ knowledge base, and refer to skills by their exact name.\n\n\
+  Request: A developer is about to start a new feature. They want to (1) work on it in\
+  \ an isolated branch without disturbing their main checkout, (2) build it test-first,\
+  \ and (3) get the change reviewed before merging. Recommend which seeded skill(s)\
+  \ apply to each of those three steps, name them exactly, and briefly justify each\
+  \ choice. Where two seeded skills cover the same need, name BOTH and note that they\
+  \ overlap rather than picking only one. Write your answer to a file named answer.md\
+  \ and create no other files."
+target_commit: '0000000000000000000000000000000000000000'
+needs:
+- file_io
+seeded_insight:
+  via_ingestor:
+  - |
+    Skill: requesting-code-review (author: obra/superpowers).
+    Dispatch a code-reviewer subagent to catch issues before they cascade, with focused context for evaluation.
+    When to use: mandatory after each task in subagent workflows, after major features, and before merging to main; optionally when stuck, before refactoring, or after fixing a complex bug.
+    Workflow: dispatch a specialized review agent with precise implementation details, requirements, and the commit range but NOT session history, so the reviewer focuses on the work product. Categorize feedback into Critical (fix now), Important (resolve before proceeding), and Minor (note for later). Core principle: early and frequent review prevents issues from compounding.
+  - |
+    Skill: receiving-code-review (author: obra/superpowers).
+    Evaluate code-review feedback with technical rigor before implementing; avoid performative agreement and blind implementation.
+    When to use: you receive review comments on your pull request, feedback is unclear or potentially problematic, you must prioritize multiple review items, or you want to push back with technical reasoning.
+    Workflow: verify feedback against actual codebase behavior and tests before acting; ask for clarification on ambiguous items; challenge suggestions that would break functionality or violate principles; implement multi-item feedback in priority order (blocking first), testing each fix individually; acknowledge correct feedback by describing the specific change made, not with generic gratitude.
+  - |
+    Skill: caveman-review (author: juliusbrussee/caveman).
+    Ultra-compressed code-review comments that strip filler and deliver location, problem, and fix on one line each.
+    When to use: auto-activates on "review this PR", "code review", "/review", or "/caveman-review".
+    Workflow: enforce the terse format "L<line>: <problem>. <fix>." with optional severity prefixes (bug, risk, nit, question); eliminate throat-clearing; use exact line numbers, symbol names, and concrete solutions; output PR-ready comments while preserving why a change matters when it is not obvious. Revert to fuller explanations for security, architectural disagreements, or onboarding.
+  - |
+    Skill: test-driven-development (author: obra/superpowers).
+    Write tests first, watch them fail, then implement the minimal code to pass.
+    When to use: new features, bug fixes, refactoring, behavior changes.
+    Workflow: red-green-refactor. Write a failing test to establish the requirement; verify it fails correctly ("If you didn't watch the test fail, you don't know if it tests the right thing"); write only the minimal code to pass; refactor while keeping tests green. Rebuts common workarounds (testing afterward, manual verification, sunk-cost reasoning) and includes a verification checklist.
+  - |
+    Skill: tdd (author: mattpocock/skills).
+    Test-driven development emphasizing behavior-focused tests through public APIs, with vertical slicing and incremental red-green-refactor cycles.
+    When to use: new features where tests are specifications, refactoring safely, systems whose implementation details change frequently.
+    Workflow: (1) plan interface changes and prioritize behaviors, designing for testability; (2) vertical slicing: write one test, implement, repeat; (3) test behavior through public interfaces, not implementation details; (4) refactor only after green (extraction, deeper modules, SOLID); (5) avoid horizontal slicing (all tests first), which produces brittle suites coupled to implementation.
+  - |
+    Skill: systematic-debugging (author: obra/superpowers).
+    A structured methodology requiring root-cause investigation before attempting any fix, to prevent symptom-based patching.
+    When to use: debugging produces recurring failures, quick fixes keep creating new problems, you need the underlying issue rather than a band-aid, or multi-component systems with complex error traces.
+    Workflow: four phases. Phase 1 (mandatory first): evidence gathering, error analysis, data-flow tracing to find root cause. Then pattern analysis, hypothesis testing, and implementation with mandatory test cases only after Phase 1. Core principle: "ALWAYS find root cause before attempting fixes. Symptom fixes are failure." Mandates architectural review after three failed fix attempts.
+  - |
+    Skill: diagnose (author: mattpocock/skills).
+    A structured debugging workflow for reproducing, minimizing, and fixing difficult bugs and performance regressions.
+    When to use: hard-to-reproduce bugs, performance regressions, non-deterministic failures.
+    Workflow: core principle is to build a fast feedback loop before hypothesis testing. (1) Build a deterministic pass/fail signal (failing test, curl script, CLI fixture, browser automation); (2) confirm reproduction, rank falsifiable hypotheses, add targeted instrumentation tied to predictions; (3) specialized techniques: stress-test non-deterministic bugs, baseline plus bisection for performance regressions; (4) quality gates: regression test at the right layer, clean up debug instrumentation, post-mortem. Once you have a reliable signal, everything else is mechanical.
+  - |
+    Skill: using-git-worktrees (author: obra/superpowers).
+    Isolated git worktrees with smart directory selection and safety verification.
+    When to use: setting up isolated workspaces for feature branches or experimental work, agent-driven workflows needing parallel environments, or needing automatic project setup detection and baseline testing.
+    Workflow: (1) detection first: check for existing isolation before creating a worktree; (2) smart directory selection (.worktrees, CLAUDE.md preference, or user input; local or global storage); (3) safety verification that project-local worktree dirs are git-ignored; (4) auto-setup detects project type and runs init (npm install, cargo build, pip install, go mod download); (5) baseline testing to establish a clean state. Prefer platform-native isolation; fall back to manual git worktrees only when necessary.
+  - |
+    Skill: finishing-a-development-branch (author: obra/superpowers).
+    Structured workflow for completing development branches with test verification and merge/PR options.
+    When to use: you've finished coding on a feature branch and need to integrate the work (merge locally, open a PR, preserve, or discard).
+    Workflow: (1) verify tests pass before proceeding; (2) detect the environment and base branch automatically; (3) present exactly four options: merge locally, create a pull request, keep the branch, or discard with confirmation; (4) execute the choice and clean up temporary resources. Integrates with subagent-driven-development and executing-plans.
+  - |
+    Skill: improve-codebase-architecture (author: mattpocock/skills).
+    Analyze a codebase to identify architectural friction and propose refactors that deepen modules for better testability.
+    When to use: codebases feel hard to test or navigate, modules have shallow interfaces with tightly-coupled components, you want better AI-navigability through clearer boundaries, or you are planning refactors informed by domain-specific design principles.
+    Workflow: explore organically; surface shallow modules and untested seams; apply Ousterhout's deep-module principle (small interfaces hiding large implementations). Steps: read the domain glossary and architecture decisions; explore friction points with sub-agents; generate multiple radically different interface designs in parallel; document findings as GitHub-issue RFCs with trade-off analysis. Use precise vocabulary (module, interface, depth, seam, adapter) over vague terms like "component" or "service".
+deterministic_checks:
+- name: produced_answer
+  ref: knowledge.evals.deterministic_checks.builds:output_nonempty
+  params: {}
+- name: names_worktree_skill
+  ref: knowledge.evals.deterministic_checks.text:regex_matches
+  params:
+    pattern: using-git-worktrees
+- name: names_review_skill
+  ref: knowledge.evals.deterministic_checks.text:regex_matches
+  params:
+    pattern: requesting-code-review
+- name: names_both_tdd_skills
+  ref: knowledge.evals.deterministic_checks.text:requires_all_substrings
+  params:
+    texts:
+    - test-driven-development
+    - tdd
+- name: no_invented_skill
+  ref: knowledge.evals.deterministic_checks.text:regex_absent
+  params:
+    pattern: (?i)pair-programming|commit-message-writer|auto-refactor
+rubric:
+  id: matt_skills_ingestion_v1
+  items:
+  - id: isolation_step
+    criterion: For the "isolated branch" step, recommends using-git-worktrees (and may also note finishing-a-development-branch for integration). The named skill genuinely fits the step.
+    weight: 1.5
+  - id: test_first_step
+    criterion: For the "test-first" step, names BOTH overlapping TDD skills (test-driven-development and tdd) and notes that they cover the same need rather than silently picking one.
+    weight: 2.0
+  - id: review_step
+    criterion: For the "review before merging" step, recommends the relevant review skill(s) — at minimum requesting-code-review — and correctly distinguishes the reviewer-dispatch side from receiving-code-review / caveman-review.
+    weight: 1.5
+  - id: grounded
+    criterion: Every skill named exists in the seeded catalog; no skills are invented, and skill names are reproduced exactly as ingested.
+    weight: 2.0
+  - id: overlap_aware
+    criterion: Explicitly surfaces the overlap among near-duplicate skills (the two TDD skills, and the multiple debugging/review skills) instead of treating the catalog as if each need had exactly one skill.
+    weight: 1.0

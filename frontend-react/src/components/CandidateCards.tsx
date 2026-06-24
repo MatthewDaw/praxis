@@ -11,6 +11,12 @@ import { StateBadge } from "./StateBadge";
 
 const LOW_CONFIDENCE_THRESHOLD = 0.5;
 
+/** Topic-cluster label for a candidate, if the define-pass assigned one. */
+function clusterLabel(candidate: Candidate): string | null {
+  const label = candidate.extra.cluster_label;
+  return typeof label === "string" && label.trim() ? label : null;
+}
+
 interface CandidateCardsProps {
   candidates: Candidate[];
   selectedId: string | null;
@@ -103,6 +109,11 @@ export function CandidateCards({
               <h3>{candidate.title}</h3>
               <StateBadge state={candidate.state} label={candidate.displayState} />
             </div>
+            {clusterLabel(candidate) ? (
+              <span className="topic-chip" title="Topic cluster">
+                {clusterLabel(candidate)}
+              </span>
+            ) : null}
             {candidate.content.trim() !== candidate.title.trim() && (
               <p className="card-excerpt">{candidate.content}</p>
             )}

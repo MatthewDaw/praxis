@@ -1,6 +1,9 @@
 """Tests for the PromptIngestor variant of Ingestor."""
 
-from knowledge.injestion.injestor_variants.prompt_injestor import PromptIngestor
+from knowledge.injestion.injestor_variants.prompt_injestor import (
+    PromptIngestor,
+    segment_passthrough,
+)
 from knowledge.knowledge_graph.knowledge_graph_variants.in_memory_graph import (
     InMemoryGraph,
 )
@@ -12,6 +15,37 @@ def test_ingest_without_llm_writes_raw_input():
     out = ingestor.ingest("prefer pathlib")
     assert "prefer pathlib" in out
     assert "prefer pathlib" in graph.read()
+
+
+def test_passthrough_strips_doc_noise_and_segments_sentences():
+    # A wiki-style chunk: a multi-sentence paragraph, a Markdown header, and a
+    # trailing apparatus section with nav links and a citation.
+    article = (
+        "Volta invented the voltaic pile in 1799. He demonstrated it to Napoleon.\n"
+        "\n"
+        "== See also ==\n"
+        "History of the battery\n"
+        "Lemon battery\n"
+        "\n"
+        "== References ==\n"
+        'Chisholm, Hugh, ed. (1911). "Volta, Alessandro". Encyclopaedia Britannica.\n'
+    )
+    facts = segment_passthrough(article)
+    # The paragraph becomes two atomic sentences...
+    assert facts == [
+        "Volta invented the voltaic pile in 1799.",
+        "He demonstrated it to Napoleon.",
+    ]
+    # ...and no header, nav-link, or citation line survives.
+    joined = "\n".join(facts)
+    assert "==" not in joined
+    assert "History of the battery" not in joined
+    assert "Chisholm" not in joined
+
+
+def test_passthrough_keeps_short_standalone_insight():
+    # A short insight with no sentence punctuation must NOT be dropped as noise.
+    assert segment_passthrough("prefer pathlib") == ["prefer pathlib"]
 
 
 def test_synthesis_splits_llm_response_into_insights():

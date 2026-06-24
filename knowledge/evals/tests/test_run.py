@@ -275,6 +275,7 @@ def test_real_embedding_cases_skip_without_cache_or_key(monkeypatch, tmp_path):
     monkeypatch.setattr(run_mod, "EMBED_CACHE_DIR", tmp_path)  # empty -> no committed fixture
     monkeypatch.setattr(run_mod, "VERDICT_CACHE_DIR", tmp_path)  # empty -> no merge cassette
     monkeypatch.setattr(run_mod, "INGEST_CACHE_DIR", tmp_path)  # empty -> no ingestion cassette
+    monkeypatch.setattr(run_mod, "CAPTION_CACHE_DIR", tmp_path)  # empty -> no caption cassette
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_EMBED_MODEL", raising=False)
 

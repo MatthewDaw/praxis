@@ -106,7 +106,15 @@ def main() -> None:
         # `uv run python -m knowledge.evals.caption_cache --refresh`.
         "substrate": "vector",
         "embedder": "cached",
-        "caption_model": "google/gemini-flash-1.5-8b",
+        "caption_model": "google/gemini-2.5-flash-lite",
+        # The seed prompt promises the Wikipedia article as retrievable factual
+        # content (and the factual_grounding rubric item checks claims trace to
+        # it), so the ingested article must land *active* — established
+        # background, not a pending candidate. Without this, all 36 Wikipedia
+        # facts land "proposed" and the active-gated reader hides them, leaving
+        # the agent ungrounded (the same fix as the matt/applications/* suite;
+        # see docs/proposals/completed/2026-06-23-active-fact-retrievability.md).
+        "ingest_state": "active",
         "seed_prompt": SEED_PROMPT,
         "target_commit": "0" * 40,
         "needs": ["sandbox"],
@@ -138,6 +146,21 @@ def main() -> None:
                 "name": "references_assets",
                 "ref": "knowledge.evals.deterministic_checks.text:regex_matches",
                 "params": {"pattern": "assets/"},
+            },
+            # Ingestion guardrails: assert the seed actually populated the graph,
+            # so a no-op ingestor (zero active asset cards / zero retrievable
+            # Wikipedia facts) FAILS the eval instead of slipping through on the
+            # artifact-only checks above. These read ctx.injected_knowledge (the
+            # active facts the reader surfaced to the agent).
+            {
+                "name": "active_asset_cards_present",
+                "ref": "knowledge.evals.deterministic_checks.graph:min_active_asset_cards",
+                "params": {"minimum": 1},
+            },
+            {
+                "name": "active_wikipedia_facts_present",
+                "ref": "knowledge.evals.deterministic_checks.graph:min_non_seed_facts",
+                "params": {"minimum": 3, "seed_texts": VOLTA_FACTS + STYLE_PROFILE},
             },
         ],
         "rubric": {

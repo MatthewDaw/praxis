@@ -34,6 +34,12 @@ def graph_from_facts(
             node["category"] = fact.category
         if fact.source:
             node["provenance"] = fact.source
+        # Topic cluster (navigation-only): lets the view collapse facts into
+        # labeled super-nodes. NULL cluster_id => an unclustered/noise node.
+        if fact.cluster_id is not None:
+            node["clusterId"] = fact.cluster_id
+        if fact.cluster_label:
+            node["clusterLabel"] = fact.cluster_label
         nodes.append(node)
         if fact.scope:
             scope_members.setdefault(fact.scope, []).append(fact.id)

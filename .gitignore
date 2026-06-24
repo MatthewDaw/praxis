@@ -36,3 +36,4 @@ knowledge/assets/
 knowledge/**/*.mp4
 knowledge/**/*.webp
 knowledge/**/*.vtt
+.worktrees

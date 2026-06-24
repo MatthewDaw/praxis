@@ -7,7 +7,8 @@
 id: matt_volta_video_mock
 substrate: vector
 embedder: cached
-caption_model: google/gemini-flash-1.5-8b
+caption_model: google/gemini-2.5-flash-lite
+ingest_state: active
 seed_prompt: 'You are producing a single self-contained HTML mockup, volta.html, that reproduces the visual and narrative STYLE of a specific YouTube explainer channel (TheAlchemist) applied to NEW content about Alessandro Volta.
 
 
@@ -84,6 +85,41 @@ deterministic_checks:
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
     pattern: assets/
+- name: active_asset_cards_present
+  ref: knowledge.evals.deterministic_checks.graph:min_active_asset_cards
+  params:
+    minimum: 1
+- name: active_wikipedia_facts_present
+  ref: knowledge.evals.deterministic_checks.graph:min_non_seed_facts
+  params:
+    minimum: 3
+    seed_texts:
+    - Alessandro Volta is the namesake of the 'volt', the unit of electric potential.
+    - Volta was a late talker as a child and was not expected to be exceptional.
+    - Volta was largely a self-taught amateur who rejected a career in law for science.
+    - Volta published his first paper on electricity at age 22.
+    - Volta taught for roughly 40 years at the University of Pavia.
+    - Volta was inducted into the Royal Society of London.
+    - Luigi Galvani was Volta's rival; Galvani's twitching-frog-leg experiments suggested 'animal electricity'.
+    - Galvani's demos of making dead frog legs twitch were a viral dinner-party spectacle ('raising the dead').
+    - Volta disproved Galvani's 'animal electricity', showing the electricity came from the metals, not the living tissue.
+    - After about a decade of work Volta invented the voltaic pile — the first electric battery — in 1801.
+    - Volta demonstrated the battery to Napoleon, then Emperor.
+    - Volta's battery laid the foundation for the electrical revolution.
+    - '[channel-constant] visual: the whole piece is a collage on a flat cyan background; bg.color=#7FFFE0.'
+    - '[channel-constant] visual: assets are cut-out PNGs composited on the background, 2-4 elements on screen at once; almost no full-frame footage.'
+    - '[channel-constant] visual: a recurring pixel-art mascot (''Alchemist guy'' — blue body, green cap, green ''A'') is the narrator stand-in, present in nearly every scene as connective tissue.'
+    - '[channel-constant] editing: hard cuts only, no crossfades; a new visual roughly every 10 seconds (cut=1 per 10s), faster during joke runs.'
+    - '[channel-constant] editing: deliberately low-fi finish; a meme/reaction image is inserted as the punchline for each joke beat.'
+    - '[channel-constant] voice: single first-person narrator, fast, dry, sarcastic; one historical fact then one anachronistic joke; direct address to the viewer and fourth-wall asides.'
+    - '[channel-constant] voice: anachronism is the core comedic engine (modern slang over 18th-century content, e.g. ''went viral'', ''academic big leagues'').'
+    - '[channel-constant] structure: a fake ''happily ever after'' ending head-fake, then yank back to the real conflict.'
+    - '[channel-constant] structure: outro CTA = like/subscribe + name the next scientist episode + vote in the comments.'
+    - '[channel-constant] arc (7 beats, in order): 1 cold-open hook (the unit named after them) -> 2 origins (late talker, rejects law) -> 3 rise (first paper, Pavia, Royal Society) -> 4 fake ending -> 5 rival/conflict (Galvani, frog legs) -> 6 triumph (disproves Galvani, invents the 1801 battery, shows Napoleon) -> 7 legacy + CTA.'
+    - '[channel-constant] audio: dry voice throughout; a music sting only over the outro.'
+    - '[episode-variable] subject: Alessandro Volta; cold-open unit gag = the ''volt''; rival = Galvani; invention = the voltaic pile (1801); cameo = Napoleon.'
+    - 'on-style line (good): ''So most of you have probably met this little guy on a battery — the volt. Cute. Anyway, let me tell you about the nerd it''s named after.'''
+    - 'off-style line (bad, too formal): ''Alessandro Volta was an esteemed Italian physicist whose contributions to science remain influential to this day.'''
 rubric:
   id: matt_volta_video_mock_v1
   items:
