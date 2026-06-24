@@ -3,7 +3,6 @@ import {
   canDeleteCandidate,
   formatCandidateDate,
   nextPromotionState,
-  promoteUnavailableReason,
 } from "../api/candidateModel";
 import type { Candidate } from "../types/candidate";
 import { EmptyState } from "./ui/EmptyState";
@@ -257,8 +256,8 @@ export function CandidateTable({
           <tbody>
             {candidates.map((candidate) => {
               const isSelected = candidate.id === selected?.id;
-              const promoteBlocked = promoteUnavailableReason(candidate);
               const canPromote = !!nextPromotionState(candidate.state);
+              const canReject = candidate.state !== "rejected";
 
               return (
                 <Fragment key={candidate.id}>
@@ -296,38 +295,32 @@ export function CandidateTable({
                     <td>{formatCandidateDate(candidate.createdAt)}</td>
                     <td className="actions-cell">
                       <div className="actions-cell__group">
-                        <div className="actions-cell__row">
-                          {canPromote ? (
-                            <button
-                              type="button"
-                              className="btn primary"
-                              onClick={(event) => handlePromoteClick(event, candidate)}
-                              aria-label={`Approve ${candidate.title}`}
-                              title="Approve proposed fact"
-                            >
-                              Approve
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              className="btn"
-                              disabled
-                              title={promoteBlocked ?? undefined}
-                              onClick={(event) => event.stopPropagation()}
-                            >
-                              Approve
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className="btn decay"
-                            onClick={(event) => handleRejectClick(event, candidate)}
-                            aria-label={`Reject ${candidate.title}`}
-                            title="Reject this fact"
-                          >
-                            Reject
-                          </button>
-                        </div>
+                        {canPromote || canReject ? (
+                          <div className="actions-cell__row">
+                            {canPromote ? (
+                              <button
+                                type="button"
+                                className="btn primary"
+                                onClick={(event) => handlePromoteClick(event, candidate)}
+                                aria-label={`Approve ${candidate.title}`}
+                                title="Approve proposed fact"
+                              >
+                                Approve
+                              </button>
+                            ) : null}
+                            {canReject ? (
+                              <button
+                                type="button"
+                                className="btn decay"
+                                onClick={(event) => handleRejectClick(event, candidate)}
+                                aria-label={`Reject ${candidate.title}`}
+                                title="Reject this fact"
+                              >
+                                Reject
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
                         <div className="actions-cell__row">
                           <button
                             type="button"
@@ -337,20 +330,17 @@ export function CandidateTable({
                           >
                             Edit
                           </button>
-                          <button
-                            type="button"
-                            className="btn delete"
-                            disabled={!canDeleteCandidate(candidate)}
-                            onClick={(event) => handleDeleteClick(event, candidate)}
-                            aria-label={`Delete ${candidate.title}`}
-                            title={
-                              canDeleteCandidate(candidate)
-                                ? "Remove fact permanently"
-                                : "Reject before deleting"
-                            }
-                          >
-                            Delete
-                          </button>
+                          {canDeleteCandidate(candidate) ? (
+                            <button
+                              type="button"
+                              className="btn delete"
+                              onClick={(event) => handleDeleteClick(event, candidate)}
+                              aria-label={`Delete ${candidate.title}`}
+                              title="Remove fact permanently"
+                            >
+                              Delete
+                            </button>
+                          ) : null}
                         </div>
                       </div>
                     </td>
