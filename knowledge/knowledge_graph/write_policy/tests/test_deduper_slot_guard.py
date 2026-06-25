@@ -1,9 +1,10 @@
 """Slot-guard tests for the Deduper (loss point B: over-merging sibling rows).
 
-The deduper's tabular slot-guard sits ahead of the stage-2 MergeJudge loop and
-keys on the full functional ``(subject, attribute)`` slot. It makes a three-way
-decision per candidate (distinct / contradiction / duplicate) plus a missing-claim
-fail-safe. These tests drive the whole write pipeline offline:
+The deduper's slot-guard sits ahead of the stage-2 MergeJudge loop and keys on the
+full functional ``(subject, attribute)`` slot. It makes a three-way decision per
+candidate (distinct / contradiction / duplicate) plus a tabular missing-claim
+fail-safe, and engages for any write with a functional claim (prose and tabular).
+These tests drive the whole write pipeline offline:
 
 * ``recall_floor=-1.0`` forces sibling rows into the shared recall set despite the
   ``FakeEmbedder``'s ~0 cosine (the hash embedder can't surface them otherwise);
@@ -169,15 +170,63 @@ def test_missing_claim_demotes_to_proposed():
     assert len(g.facts) == 2  # the orphan is kept as a distinct (proposed) row
 
 
-# --- Regression guard: prose dedup is unchanged ------------------------------
+# --- Prose loss-point B: distinct functional slots must not merge ------------
 
-def test_non_tabular_write_still_merges_via_judge():
-    # No tabular flag -> the guard is a no-op and the judge merges as before.
+def test_non_tabular_distinct_slots_not_merged():
+    # Loss point B (prose): two notes on DIFFERENT functional slots share enough
+    # vocabulary that the (always-yes) judge would fold them — the guard now engages
+    # for prose too (any write with a functional claim), so they stay distinct.
     mapping = {
         "a": [Claim(subject="x", attribute="y", value="1", functional=True)],
         "b": [Claim(subject="p", attribute="q", value="2", functional=True)],
     }
     g = _graph(mapping, tabular=False)
     g.write("a", state="active")
+    g.write("b", state="active")  # judge would merge; guard blocks (different slot)
+    assert len(_active(g)) == 2
+
+
+def test_non_tabular_no_functional_claim_still_merges_via_judge():
+    # A prose write with NO functional claim (the additive-preference case) does not
+    # engage the guard -> the judge merges as before. This is what keeps the Mem0-style
+    # additive-merge path working (the guard targets distinct *functional* facts only).
+    mapping = {"a": [], "b": []}  # extractor found no functional claim on either
+    g = _graph(mapping, tabular=False)
+    g.write("a", state="active")
     g.write("b", state="active")  # judge says same_lesson -> merged into "a"
     assert len(_active(g)) == 1
+
+
+# --- Live repro (2026-06-25): two distinct requirements sharing vocabulary ----
+
+def test_distinct_requirements_sharing_vocabulary_not_merged():
+    # Live repro: two distinct requirements written as separate prose insights came
+    # back action:"merged" (a Deduper same-lesson over-merge) because they share heavy
+    # vocabulary (participation %, threshold, streak, day) and sit at high cosine —
+    # collapsing two requirements into one fact and losing R3's identity. They are
+    # about DIFFERENT subjects (a day's team-participation-percentage vs the team
+    # streak), so their functional claims occupy different slots and the slot-guard
+    # keeps them as two distinct facts even though the same-lesson judge says "merge".
+    r2 = (
+        "Team participation percentage for a date = active athletes who completed "
+        "divided by the active roster, times 100."
+    )
+    r3 = (
+        "Team streak is the consecutive run of days where participation percentage "
+        "meets the threshold; a miss resets the streak to 0."
+    )
+    mapping = {
+        r2: [Claim(subject="team participation percentage", attribute="definition",
+                   value="completed / roster * 100", functional=True)],
+        r3: [Claim(subject="team streak", attribute="definition",
+                   value="consecutive days at or above threshold; miss resets to 0",
+                   functional=True)],
+    }
+    g = _graph(mapping, tabular=False)  # prose path, no tabular flag (like add_insight)
+    g.write(r2, state="active")
+    g.write(r3, state="active")  # same-lesson judge says merge; guard blocks (distinct slot)
+    actives = _active(g)
+    assert len(actives) == 2  # both requirements survive as distinct facts
+    texts = " || ".join(f.text for f in actives)
+    assert "participation percentage for a date" in texts  # R2's identity preserved
+    assert "consecutive run of days" in texts  # R3's identity preserved

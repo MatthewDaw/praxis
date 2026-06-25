@@ -54,6 +54,10 @@ class WriteDecision:
     supersede_ids: list[str] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)  # e.g. ["contradiction:<id>"]
     dropped: bool = False  # a step suppressed this write entirely
+    # Candidate fact ids the slot-guard ruled distinct (different functional slot) or
+    # conflicting (same slot, different value) from this write — so a later merge step
+    # (Augmenter) must NOT fold this write into them. Filled by the Deduper's slot-guard.
+    no_merge_ids: list[str] = field(default_factory=list)
     # Shared per-write recall (filled by the store before the steps run).
     embedding: list[float] | None = None
     candidates: list[SearchHit] = field(default_factory=list)

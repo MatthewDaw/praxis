@@ -52,8 +52,17 @@ deterministic_checks:
       texts:
         - "admitted to a plan only if it carries a binary acceptance condition"
         - "complete only when every requirement has a binary acceptance condition and no contradiction remains unresolved"
+  # ...AND as two SEPARATE facts, not one concatenated block (substring presence alone
+  # would still pass on a silent over-merge that joins both rules into one fact).
+  - name: two_distinct_facts
+    ref: "knowledge.evals.deterministic_checks.graph:distinct_fact_blocks"
+    params:
+      min_blocks: 2
   # They are compatible (admission gate vs completion gate), not a contradiction.
+  # Match only the flagged-pair summary prefix the harness renders ("CONTRADICTION: ...
+  # contradicts ..."), NOT the literal word — rule B's own text says "no contradiction
+  # remains unresolved", so a case-insensitive bare-word match would false-positive.
   - name: no_contradiction_flagged
     ref: "knowledge.evals.deterministic_checks.text:regex_absent"
     params:
-      pattern: "(?i)CONTRADICTION"
+      pattern: "CONTRADICTION:"

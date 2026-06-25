@@ -49,7 +49,14 @@ class Augmenter(WriteStep):
             return
         if not decision.candidates or self.judge is None:
             return
+        # The Deduper's slot-guard already ruled these candidates distinct (different
+        # functional slot) or conflicting (same slot, different value); never fold an
+        # additive merge into them, or we'd reintroduce the silent over-merge the guard
+        # blocked one stage earlier.
+        no_merge = set(decision.no_merge_ids)
         for hit in decision.candidates:
+            if hit.fact.id in no_merge:
+                continue
             # An exact dup would have been collapsed by the Deduper already; skip it
             # defensively so the judge never merges a fact into its own twin.
             if hit.fact.text.strip() == decision.text.strip():

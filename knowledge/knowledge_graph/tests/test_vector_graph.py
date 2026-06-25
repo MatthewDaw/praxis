@@ -90,12 +90,15 @@ def test_below_floor_candidate_is_not_judged():
 def test_merged_dup_triggers_zero_conflict_checks():
     # Merge runs before the conflict detector: when the merge judge collapses the
     # write into an existing fact (action == "update"), the structural detector is
-    # skipped, so no contradiction is recorded even with conflicting claims.
+    # skipped, so no contradiction is recorded. The two paraphrases carry only
+    # NON-functional claims (multi-valued), so the slot-guard does not engage and the
+    # merge-judge path is what collapses them (a same-slot/different-value pair would
+    # instead be held back by the slot-guard and routed to the conflict detector).
     merge_llm = FakeLlm(default='{"same_lesson": true}')
     mapping = {
-        "use uv run pytest": [Claim(subject="cmd", attribute="version", value="1", functional=True)],
+        "use uv run pytest": [Claim(subject="cmd", attribute="examples", value="a", functional=False)],
         "run the suite with uv run pytest": [
-            Claim(subject="cmd", attribute="version", value="2", functional=True)
+            Claim(subject="cmd", attribute="examples", value="b", functional=False)
         ],
     }
     policy = [_Claims(mapping), Deduper(judge=MergeJudge(llm=merge_llm)), ClaimConflictDetector()]

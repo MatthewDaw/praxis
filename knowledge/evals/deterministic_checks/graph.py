@@ -132,6 +132,34 @@ def single_merged_fact(
     return CheckResult(name="single_merged_fact", passed=ok, evidence=evidence)
 
 
+def distinct_fact_blocks(
+    ctx: EvalContext, *, min_blocks: int = 2
+) -> CheckResult:
+    """Slot-guard guard (loss point B): distinct facts must NOT collapse into one.
+
+    Mirror of :func:`single_merged_fact`. For the knowledge_graph component,
+    ``ctx.output`` is every stored fact text joined by blank lines (plus any
+    ``CONTRADICTION:`` summary lines). Two distinct-but-overlapping rules must
+    survive as SEPARATE fact blocks — a silent over-merge concatenates them into one
+    block, which ``requires_all_substrings`` alone would not catch (both fragments
+    still appear in the merged text). Passes iff at least ``min_blocks`` non-
+    contradiction fact blocks remain.
+    """
+    blocks = [b.strip() for b in ctx.output.split("\n\n") if b.strip()]
+    fact_blocks = [b for b in blocks if not b.startswith("CONTRADICTION:")]
+    ok = len(fact_blocks) >= min_blocks
+    return CheckResult(
+        name="distinct_fact_blocks",
+        passed=ok,
+        evidence=(
+            f"{len(fact_blocks)} distinct fact block(s) (need >= {min_blocks})"
+            if ok
+            else f"only {len(fact_blocks)} fact block(s) (need >= {min_blocks}); "
+            f"distinct facts were over-merged into one: {fact_blocks!r}"
+        ),
+    )
+
+
 def retrieves_fact_for_query(
     ctx: EvalContext,
     *,

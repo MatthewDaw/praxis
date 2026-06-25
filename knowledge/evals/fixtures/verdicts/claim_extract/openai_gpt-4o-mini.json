@@ -116,6 +116,20 @@
 "pole": ""
 }
 },
+"27d77e5590e38c0aae64424918b2f52447ab0d855b9808483ba18fdb3aa170d3": {
+"claims": [
+{
+"attribute": "acceptance condition",
+"functional": true,
+"subject": "requirement",
+"value": "binary"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "295b4ff20c9927ee963daa965ad981e187b7698e5e3c0e73f1c70d807ff44b77": {
 "claims": [
 {
@@ -485,6 +499,26 @@
 "stance": {
 "axis": "axis:logging-verbose-vs-minimal",
 "pole": "verbose"
+}
+},
+"af817b50ff894fda60c931f9252987b9e3fa8c9df547ca5590aa3206fac2c27c": {
+"claims": [
+{
+"attribute": "completeness condition",
+"functional": true,
+"subject": "plan",
+"value": "every requirement has a binary acceptance condition"
+},
+{
+"attribute": "completeness condition",
+"functional": true,
+"subject": "plan",
+"value": "no contradiction remains unresolved"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
 }
 },
 "b8d8f949f5f9be3bde2114c3e272368a1c526c1b2a29c53ebf32a26c923639ec": {

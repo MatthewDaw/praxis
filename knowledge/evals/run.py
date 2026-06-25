@@ -593,6 +593,14 @@ def _build_trio_for(case: EvalCase, llm=None):
         aspect_tagger = _aspect_tagger_for(case)
         if aspect_tagger is not None:
             policy.append(aspect_tagger)
+        # ClaimExtractor runs BEFORE Deduper so the deduper's slot-guard (and the
+        # Augmenter, which honors its no_merge_ids) can read decision.claims — the
+        # functional (subject, attribute) slots that keep distinct-but-overlapping
+        # facts from merging. Mirrors the store's default_write_policy ordering.
+        # Opt-in via conflict_model; its cassette replays offline.
+        claim_extractor = _claim_extractor_for(case)
+        if claim_extractor is not None:
+            policy.append(claim_extractor)
         policy.append(Deduper(judge=_merge_judge_for(case)))
         # Mem0-style UPDATE/merge: opt-in via augment_model (cassette replays
         # offline). Runs after Deduper, before the conflict path — mirrors the
@@ -600,11 +608,9 @@ def _build_trio_for(case: EvalCase, llm=None):
         augment_judge = _augment_judge_for(case)
         if augment_judge is not None:
             policy.append(Augmenter(judge=augment_judge))
-        # Structural contradiction path (replaces ConflictFlagger): extract claims,
-        # then detect same-functional-slot value clashes. Both opt in via conflict_model.
-        claim_extractor = _claim_extractor_for(case)
+        # Structural contradiction path (replaces ConflictFlagger): detect
+        # same-functional-slot value clashes over the claims extracted above.
         if claim_extractor is not None:
-            policy.append(claim_extractor)
             policy.append(ClaimConflictDetector(judge=_claim_value_judge_for(case)))
             # Second-pass semantic fallback (Graphiti two-stage): paraphrase
             # contradictions among cosine-recalled neighbours with no shared slot.
