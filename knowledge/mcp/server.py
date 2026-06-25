@@ -101,7 +101,12 @@ def _structured(summary: str, data: dict) -> str:
 
 
 @mcp.tool()
-def praxis_get_context(query: str, top_k: int = 8) -> str:
+def praxis_get_context(
+    query: str,
+    top_k: int = 8,
+    include_episodic: bool = False,
+    as_of: str | None = None,
+) -> str:
     """Retrieve relevant stored knowledge for the current task.
 
     Call this before answering questions about the user's preferences,
@@ -113,13 +118,24 @@ def praxis_get_context(query: str, top_k: int = 8) -> str:
     ``category``) so callers can consume provenance without regex-parsing. If you
     have mounted snapshots (``praxis_mount_snapshot``), their facts are included
     too and flagged with ``mounted``/``owner``/``snapshot`` on the hit.
+
+    Episodic decision logs (``category="episodic"``) are excluded by default (H2)
+    so "why we decided" notes never pollute recall; pass ``include_episodic=True``
+    to include them. ``as_of`` (an ISO-8601 timestamp, e.g. ``2024-01-01T00:00:00Z``)
+    rewinds retrieval to that instant — facts written later are excluded — for
+    point-in-time recall.
     """
     if (hint := _not_ready()) is not None:
         return hint
+    params: dict[str, object] = {"query": query, "top_k": top_k}
+    if include_episodic:
+        params["include_episodic"] = True
+    if as_of is not None:
+        params["as_of"] = as_of
     try:
         resp = httpx.get(
             f"{identity.api_base()}/context",
-            params={"query": query, "top_k": top_k},
+            params=params,
             headers=_headers(),
             timeout=_READ_TIMEOUT,
         )
@@ -131,6 +147,106 @@ def praxis_get_context(query: str, top_k: int = 8) -> str:
     return _structured(
         payload.get("context", "") or f"{len(hits)} hit(s).",
         {"context": payload.get("context", ""), "hits": hits},
+    )
+
+
+@mcp.tool()
+def praxis_get_stale_derivations() -> str:
+    """List learnings flagged stale because a fact they derive from was invalidated (H5).
+
+    When a source fact is invalidated (e.g. rejected via ``praxis_reject_fact``),
+    Praxis flags every learning transitively derived from it for review — it does
+    NOT auto-reject them (precision-first). Call this to surface those suspect
+    learnings, then confirm with the user before re-checking or rejecting each.
+
+    Returns a human summary plus a structured JSON block with ``stale`` — one entry
+    per flagged learning (``id``/``text``/``state``/``source``/``scope``/
+    ``category``/``meta``).
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/derivations/stale",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    stale = payload.get("stale", [])
+    return _structured(
+        f"{len(stale)} stale derived learning(s) flagged for review."
+        if stale
+        else "No stale derived learnings are currently flagged.",
+        {"stale": stale},
+    )
+
+
+@mcp.tool()
+def praxis_dependents(fact_id: str) -> str:
+    """List the learnings transitively derived from ``fact_id`` (its dependents).
+
+    Walks the ``derived_from`` chain to find every learning that depends on this
+    fact, so you can see what would be affected if it changed or were invalidated.
+    Find the id via ``praxis_list_graph`` / ``praxis_get_context``.
+
+    Returns a human summary plus a structured JSON block with ``dependents`` — one
+    entry per dependent learning (``id``/``text``/``state``/``source``/``scope``/
+    ``category``/``meta``).
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/facts/{fact_id}/dependents",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    deps = payload.get("dependents", [])
+    return _structured(
+        f"{len(deps)} learning(s) derive from {fact_id}."
+        if deps
+        else f"No learnings derive from {fact_id}.",
+        {"factId": fact_id, "dependents": deps},
+    )
+
+
+@mcp.tool()
+def praxis_get_fact(cid: str) -> str:
+    """Fetch one fact's full detail, including its writer-supplied ``meta``.
+
+    ``praxis_get_context`` hits carry ``source``/``scope``/``category`` but not the
+    free-form ``meta`` object (kept off the lean recall path). Use this to read a
+    fact's ``meta`` (e.g. ``{"requirement_id": "R4"}``) and full audit trail back.
+    Find the id via ``praxis_list_graph`` / ``praxis_get_context``.
+
+    Returns a human summary plus a structured JSON block with the full candidate
+    detail (``id``/``title``/``content``/``state``/``source``/``scope``/
+    ``category``/``meta``/``auditTrail``...).
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/candidates/{cid}",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return f"Unknown fact {cid} — list ids with praxis_list_graph."
+        return _friendly(exc)
+    fact = resp.json()
+    return _structured(
+        f"fact {fact.get('id')} ({fact.get('state', '')})",
+        fact,
     )
 
 

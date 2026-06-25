@@ -1166,11 +1166,54 @@ def create_app(conn: Any | None = None) -> FastAPI:
             })
         return {"results": results, "count": len(results)}
 
+    # --- derivation / staleness traversal (H5) -----------------------------
+    def _derivation_view(fact: Any) -> dict[str, Any]:
+        """Compact read model for a derivation/staleness hit (incl. ``meta``)."""
+        return {
+            "id": fact.id,
+            "text": fact.text,
+            "state": fact.state,
+            "source": getattr(fact, "source", None),
+            "scope": getattr(fact, "scope", None),
+            "category": getattr(fact, "category", None),
+            "meta": dict(fact.meta or {}),
+        }
+
+    @app.get("/derivations/stale")
+    def stale_derivations(
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Active learnings flagged stale because a fact they derive from was invalidated (H5).
+
+        When a source fact is invalidated (e.g. rejected), the H5 hook stamps a
+        review edge on every transitive ``derived_from`` dependent. This surfaces
+        those suspect learnings for human/agent review (precision-first: flagged,
+        never auto-rejected).
+        """
+        stale = live_graph(org, principal.sub).stale_derived()
+        return {"stale": [_derivation_view(f) for f in stale]}
+
+    @app.get("/facts/{fact_id}/dependents")
+    def fact_dependents(
+        fact_id: str,
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Transitive derivation dependents of ``fact_id`` (the learnings derived from it).
+
+        Walks ``derived_from`` edges (src=dependent -> dst=basis) up the chain,
+        cycle-guarded and depth-bounded, newest first.
+        """
+        deps = live_graph(org, principal.sub).dependents(fact_id)
+        return {"factId": fact_id, "dependents": [_derivation_view(f) for f in deps]}
+
     @app.get("/context")
     def get_context(
         query: str = "",
         top_k: int = 8,
         include_episodic: bool = False,
+        as_of: str | None = None,
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
@@ -1183,13 +1226,26 @@ def create_app(conn: Any | None = None) -> FastAPI:
         Episodic decision logs (``category="episodic"``) are excluded by default (H2)
         so "why we decided" notes never pollute semantic recall; pass
         ``include_episodic=true`` to include them.
+
+        ``as_of`` (ISO-8601, e.g. ``2024-01-01T00:00:00Z``) rewinds retrieval to a
+        point in time: only facts whose validity window covers that instant are
+        returned, so a later-written fact is excluded. Applies to the live-graph
+        ``hits``; the mounted-snapshot union is not point-in-time aware.
         """
+        as_of_dt: datetime | None = None
+        if as_of is not None and as_of.strip():
+            try:
+                as_of_dt = datetime.fromisoformat(as_of.strip().replace("Z", "+00:00"))
+            except ValueError:
+                raise HTTPException(
+                    status_code=400, detail="as_of must be an ISO-8601 timestamp"
+                )
         live = live_graph(org, principal.sub)
         mounts = mounted_store.list(org, principal.sub)
         graph = OverlayGraph(live, mounts) if mounts else live
         exclude = None if include_episodic else [EPISODIC_CATEGORY]
         hits = (
-            graph.search(query, top_k=top_k, exclude_categories=exclude)
+            graph.search(query, top_k=top_k, exclude_categories=exclude, as_of=as_of_dt)
             if query.strip() else []
         )
         return {
