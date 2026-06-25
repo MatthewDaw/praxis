@@ -398,13 +398,6 @@ def create_app(conn: Any | None = None) -> FastAPI:
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
         facade = candidates_for(org, principal.sub)
-        # H11: dismiss / keep-both — a false-positive contradiction (two facts that
-        # both actually hold). Non-lossy: drops the pending edge, leaves both active.
-        if bool(body.get("dismiss")):
-            try:
-                return {"dismissed": True, "facts": facade.resolve_dismiss(pair_id)}
-            except KeyError:
-                raise HTTPException(status_code=404, detail=f"unknown contradiction {pair_id}")
         custom_text = body.get("customText")
         if custom_text is not None and str(custom_text).strip():
             try:
@@ -413,13 +406,21 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail=f"unknown contradiction {pair_id}")
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
-        keep_id = body.get("keepId")
-        if not keep_id:
-            raise HTTPException(status_code=400, detail="keepId, customText, or dismiss required")
+        # H11: a cluster is settled by saying which members to keep. ``keep`` is
+        # "all" (every member holds — a dismissed false positive), "none" (reject
+        # all), or a list of fact ids to keep (reject the rest). This one primitive
+        # subsumes keep-both, reject-all, and pick-a-winner.
+        if "keep" not in body:
+            raise HTTPException(
+                status_code=400,
+                detail="keep ('all', 'none', or a list of ids) or customText required",
+            )
         try:
-            return facade.resolve(pair_id, str(keep_id))
+            return facade.resolve_keep(pair_id, body["keep"])
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown contradiction {pair_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     # --- graph snapshot (the dashboard graph view) -------------------------
     @app.get("/graph")

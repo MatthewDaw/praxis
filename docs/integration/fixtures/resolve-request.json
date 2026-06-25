@@ -1,4 +1,3 @@
 {
-  "resolution": "keep_a",
-  "keepId": "cand_9"
+  "keep": ["cand_9"]
 }

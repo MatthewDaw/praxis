@@ -74,72 +74,58 @@ class MockDataProvider:
         self,
         contradiction_id: str,
         *,
-        resolution: str,
-        keep_id: str | None = None,
+        keep: str | list[str] | None = None,
+        custom_text: str | None = None,
     ) -> Candidate:
-        if resolution == "defer":
+        """H11: settle a cluster by which members to ``keep`` — "all" (every member
+        holds; keep all active), "none" (reject all), or a list of ids to keep
+        (reject the rest). Cross-links among cluster members are cleared either way.
+        Returns the primary surviving candidate (first kept, else first member)."""
+        if keep == "defer":
             raise ValueError("Defer is a UI-only action — no mutation performed.")
+        if custom_text and custom_text.strip():
+            raise ValueError("custom_text resolution is not supported by the mock provider.")
 
-        if resolution == "dismiss":
-            return self._dismiss_contradiction(contradiction_id)
+        member_ids = _parse_cluster_members(contradiction_id)
+        members = [(mid, self._require_candidate(mid)) for mid in member_ids]
+        member_set = set(member_ids)
 
-        if not keep_id:
-            raise ValueError("keep_id is required unless resolution is 'dismiss'.")
+        if keep == "all":
+            keep_set = set(member_ids)
+        elif keep == "none":
+            keep_set = set()
+        elif isinstance(keep, (list, tuple)):
+            keep_set = {str(k) for k in keep}
+            unknown = keep_set - member_set
+            if unknown:
+                raise ValueError(f"keep ids not in cluster: {sorted(unknown)}")
+        else:
+            raise ValueError("keep must be 'all', 'none', or a list of fact ids.")
 
-        primary_id, rival_id = _parse_contradiction_pair(contradiction_id, keep_id)
-        keeper = self._require_candidate(keep_id)
-        loser_id = rival_id if keep_id == primary_id else primary_id
-        loser = self._candidates.get(loser_id)
-        if loser is not None:
-            loser_audit = _append_audit(
-                loser,
-                action="superseded",
-                actor="human-gate",
-                note=f"lost contradiction to {keep_id}",
-            )
-            cleared_loser_ids = [
-                cid for cid in loser.contradiction_ids if cid != keep_id
-            ]
-            self._candidates[loser_id] = _clone_candidate(
-                loser,
-                state=CandidateState.REJECTED,
-                contradiction_ids=cleared_loser_ids,
-                extra=loser_audit,
-            )
+        for mid, cand in members:
+            cleared = [cid for cid in cand.contradiction_ids if cid not in member_set]
+            if mid in keep_set:
+                audit = _append_audit(
+                    cand, action="kept", actor="human-gate",
+                    note="contradiction resolved (kept)",
+                )
+                self._candidates[mid] = _clone_candidate(
+                    cand, contradiction_ids=cleared, extra=audit
+                )
+            else:
+                audit = _append_audit(
+                    cand, action="rejected", actor="human-gate",
+                    note="contradiction resolved (rejected)",
+                )
+                self._candidates[mid] = _clone_candidate(
+                    cand,
+                    state=CandidateState.REJECTED,
+                    contradiction_ids=cleared,
+                    extra=audit,
+                )
 
-        cleared_ids = [cid for cid in keeper.contradiction_ids if cid != loser_id]
-        audit = _append_audit(
-            keeper,
-            action="contradiction_resolved",
-            actor="human-gate",
-            note=f"Kept {keep_id} over {loser_id} ({resolution})",
-        )
-        updated = _clone_candidate(keeper, contradiction_ids=cleared_ids, extra=audit)
-        self._candidates[keep_id] = updated
-        return updated
-
-    def _dismiss_contradiction(self, contradiction_id: str) -> Candidate:
-        """H11: dismiss a false-positive contradiction — both facts hold. Keep
-        BOTH active and just clear the cross-link flag from each; nothing is
-        superseded. Returns the primary (first) member."""
-        primary_id, rival_id = _parse_contradiction_pair(contradiction_id, "")
-        primary = self._require_candidate(primary_id)
-        rival = self._require_candidate(rival_id)
-        for cand, cand_id, other_id in (
-            (primary, primary_id, rival_id),
-            (rival, rival_id, primary_id),
-        ):
-            cleared = [cid for cid in cand.contradiction_ids if cid != other_id]
-            audit = _append_audit(
-                cand,
-                action="contradiction_dismissed",
-                actor="human-gate",
-                note=f"dismissed contradiction with {other_id} (both hold)",
-            )
-            self._candidates[cand_id] = _clone_candidate(
-                cand, contradiction_ids=cleared, extra=audit
-            )
-        return self._candidates[primary_id]
+        primary = next((mid for mid in member_ids if mid in keep_set), member_ids[0])
+        return self._candidates[primary]
 
     def list_api_keys(self) -> list[ApiKey]:
         return sorted(
@@ -191,11 +177,13 @@ class MockDataProvider:
         return candidate
 
 
-def _parse_contradiction_pair(contradiction_id: str, keep_id: str) -> tuple[str, str]:
-    if "__" in contradiction_id:
-        left, right = contradiction_id.split("__", 1)
-        return left, right
-    raise ValueError(f"Invalid contradiction id: {contradiction_id!r}")
+def _parse_cluster_members(contradiction_id: str) -> list[str]:
+    """A contradiction/cluster id is its member fact ids joined by ``"__"`` (a
+    plain 2-fact pair is the 2-member case). Returns them in order."""
+    members = [m for m in contradiction_id.split("__") if m]
+    if len(members) < 2:
+        raise ValueError(f"Invalid contradiction id: {contradiction_id!r}")
+    return members
 
 
 def _append_audit(

@@ -54,14 +54,16 @@ class DataProvider(Protocol):
         self,
         contradiction_id: str,
         *,
-        resolution: str,
-        keep_id: str | None = None,
+        keep: str | list[str] | None = None,
+        custom_text: str | None = None,
     ) -> Candidate:
-        """Resolve a contradiction pair; keep_id is the winning candidate.
+        """Resolve a contradiction cluster (H11).
 
-        With ``resolution="dismiss"`` (H11) the pair is a false positive — both
-        facts hold — so no ``keep_id`` is needed: both stay active and the flag
-        is cleared.
+        ``keep`` is the single resolution primitive: ``"all"`` (every member holds
+        — a false positive; keep them all active), ``"none"`` (reject every
+        member), or a list of fact ids to keep (reject the rest). Or pass
+        ``custom_text`` to replace the cluster with one reconciled fact. Returns the
+        primary surviving candidate.
         """
         ...
 

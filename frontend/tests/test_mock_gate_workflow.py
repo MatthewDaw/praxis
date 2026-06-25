@@ -57,8 +57,7 @@ def test_mock_resolve_contradiction_clears_rival() -> None:
 
     updated = provider.resolve_contradiction(
         "cand_9__cand_16",
-        resolution="keep_primary",
-        keep_id="cand_9",
+        keep=["cand_9"],
     )
     assert "cand_16" not in updated.contradiction_ids
     rival = provider.get_candidate("cand_16")

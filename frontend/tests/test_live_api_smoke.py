@@ -76,8 +76,7 @@ def test_live_resolve_contradiction_if_pair_present(provider: ApiDataProvider) -
         pytest.skip("contradiction link already resolved in live store")
     updated = provider.resolve_contradiction(
         "cand_9__cand_16",
-        resolution="keep_primary",
-        keep_id="cand_9",
+        keep=["cand_9"],
     )
     assert updated.id == "cand_9"
     assert "cand_16" not in updated.contradiction_ids

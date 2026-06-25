@@ -260,20 +260,17 @@ def test_insights_surface_mode_keeps_both_and_surfaces_contradiction(client):
     assert states, "both rate-limit facts should still exist"
     assert "rejected" not in states.values(), f"surface must not reject a side: {states}"
 
-    # resolve_contradiction then settles it: keep the 500 rps side, retire 100 rps.
+    # resolve then settles it: keep the 500 rps side, retire 100 rps.
     pair = clusters[0]["pairs"][0]
     keep = next(s["id"] for s in (pair["a"], pair["b"]) if "500" in s["content"])
-    res = client.post(f"/contradictions/{pair['id']}/resolve", json={"keepId": keep})
+    res = client.post(f"/contradictions/{pair['id']}/resolve", json={"keep": [keep]})
     assert res.status_code == 200, res.text
     ctx = client.get("/context", params={"query": "rate limit"}).json()
     assert "500" in ctx["context"] and "100 requests per second" not in ctx["context"]
 
 
-def test_resolve_dismiss_keeps_both_active_and_clears_pending(client):
-    # H11: when a surfaced contradiction is a FALSE POSITIVE (two facts that both
-    # actually hold), dismiss clears the flag non-lossily — neither side is
-    # superseded (keepId) nor replaced (customText). Both stay active; the pending
-    # pair drops out of /contradictions.
+def _surface_rate_limit_pair(client):
+    """Seed two conflicting rate-limit facts in surface mode; return the pending pair."""
     first = client.post(
         "/insights",
         json={"insight": "The factory's default rate limit is 100 requests per second."},
@@ -287,28 +284,90 @@ def test_resolve_dismiss_keeps_both_active_and_clears_pending(client):
         },
     )
     assert second.status_code == 200, second.text
-
     clusters = client.get("/contradictions").json()
     assert clusters, "surface mode should leave a pending contradiction"
-    pair = clusters[0]["pairs"][0]
+    return clusters[0]["pairs"][0]
 
-    res = client.post(f"/contradictions/{pair['id']}/resolve", json={"dismiss": True})
+
+def test_resolve_keep_all_keeps_both_active_and_clears_pending(client):
+    # H11: keep="all" — a FALSE POSITIVE (two facts that both actually hold).
+    # Non-lossy: neither side is rejected or merged; both stay active and the
+    # pending pair drops out of /contradictions.
+    pair = _surface_rate_limit_pair(client)
+
+    res = client.post(f"/contradictions/{pair['id']}/resolve", json={"keep": "all"})
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["dismissed"] is True
-    assert {f["state"] for f in body["facts"]} == {"active"}
+    assert {f["state"] for f in body["kept"]} == {"active"}
+    assert body["rejected"] == []
 
-    # The pending pair is gone...
     assert client.get("/contradictions").json() == []
-
-    # ...and BOTH facts remain active (nothing rejected, nothing merged).
     states = {
         c["content"]: c["state"]
         for c in client.get("/candidates").json()
         if "rate limit" in c["content"]
     }
     assert len(states) == 2, f"both rate-limit facts should still exist: {states}"
-    assert set(states.values()) == {"active"}, f"dismiss must keep both active: {states}"
+    assert set(states.values()) == {"active"}, f"keep=all must keep both active: {states}"
+
+
+def test_resolve_keep_none_rejects_all_and_clears_pending(client):
+    # H11: keep="none" — reject every member of the cluster.
+    pair = _surface_rate_limit_pair(client)
+
+    res = client.post(f"/contradictions/{pair['id']}/resolve", json={"keep": "none"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["kept"] == []
+    assert {f["state"] for f in body["rejected"]} == {"rejected"}
+
+    assert client.get("/contradictions").json() == []
+    # Neither rate-limit fact is in active recall any more.
+    ctx = client.get("/context", params={"query": "rate limit"}).json()
+    assert "100 requests per second" not in ctx["context"]
+    assert "500 requests per second" not in ctx["context"]
+
+
+def test_resolve_keep_subset_of_three(client):
+    # H11: a 3-way contradiction (three mutually-conflicting numeric facts on the
+    # same slot). Surface all three, then keep two and reject the third in one call.
+    client.post("/insights", json={"insight": "The factory's default rate limit is 100 requests per second."})
+    client.post("/insights", json={"insight": "The factory's default rate limit is 500 requests per second.", "onConflict": "surface"})
+    client.post("/insights", json={"insight": "The factory's default rate limit is 900 requests per second.", "onConflict": "surface"})
+
+    # All three are mutually flagged (three pending pairwise edges). Address the
+    # whole 3-member cluster in one resolve by joining the member ids.
+    by_val = {
+        next(v for v in ("100", "500", "900") if v in c["content"]): c["id"]
+        for c in client.get("/candidates").json()
+        if "rate limit" in c["content"]
+    }
+    assert set(by_val) == {"100", "500", "900"}, by_val
+    cluster_id = "__".join(sorted(by_val.values()))
+    keep_ids = [by_val["100"], by_val["500"]]
+    drop_id = by_val["900"]
+
+    res = client.post(f"/contradictions/{cluster_id}/resolve", json={"keep": keep_ids})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert {f["id"] for f in body["kept"]} == set(keep_ids)
+    assert [f["id"] for f in body["rejected"]] == [drop_id]
+    assert {f["state"] for f in body["kept"]} == {"active"}
+
+    # Cluster fully settled — every pairwise edge cleared, nothing left pending.
+    assert client.get("/contradictions").json() == []
+    states = {c["id"]: c["state"] for c in client.get("/candidates").json()}
+    assert states[drop_id] == "rejected"
+    for kid in keep_ids:
+        assert states[kid] == "active"
+
+
+def test_resolve_rejects_bad_keep_id(client):
+    pair = _surface_rate_limit_pair(client)
+    res = client.post(
+        f"/contradictions/{pair['id']}/resolve", json={"keep": ["nonexistent_id"]}
+    )
+    assert res.status_code == 400, res.text
 
 
 def test_context_hits_include_provenance_keys(client):
@@ -347,3 +406,4 @@ def test_batch_ingest_rejects_empty_documents(client):
     assert (
         client.post("/ingest", json={"documents": [{"text": "  "}]}).status_code == 400
     )
+

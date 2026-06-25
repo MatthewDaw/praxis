@@ -223,22 +223,40 @@ def test_get_contradictions_empty(monkeypatch):
     assert "No contradictions" in server.praxis_get_contradictions()
 
 
-def test_resolve_contradiction_keep_id(monkeypatch):
+def test_resolve_contradiction_keep_ids(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
 
     def fake_post(url, json, headers, timeout=None):
         captured["url"] = url
         captured["json"] = json
-        return _Resp({"kept": "a", "removed": "b"})
+        return _Resp({"kept": [{"id": "a"}], "rejected": [{"id": "b"}]})
 
     monkeypatch.setattr(server.httpx, "post", fake_post)
 
-    out = server.praxis_resolve_contradiction("a__b", keep_id="a")
-
+    # space- or comma-separated ids parse into a keep list (pick-a-winner is one id).
+    out = server.praxis_resolve_contradiction("a__b", keep="a")
     assert captured["url"] == "http://api.test/contradictions/a__b/resolve"
-    assert captured["json"] == {"keepId": "a"}
+    assert captured["json"] == {"keep": ["a"]}
     assert "a__b" in out
+
+    server.praxis_resolve_contradiction("a__b__c", keep="a, b")
+    assert captured["json"] == {"keep": ["a", "b"]}
+
+
+def test_resolve_contradiction_keep_all_and_none(monkeypatch):
+    _patch_identity(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        server.httpx,
+        "post",
+        lambda url, json, headers, timeout=None: captured.update(json=json) or _Resp({"ok": True}),
+    )
+
+    server.praxis_resolve_contradiction("a__b", keep="all")
+    assert captured["json"] == {"keep": "all"}
+    server.praxis_resolve_contradiction("a__b", keep="none")
+    assert captured["json"] == {"keep": "none"}
 
 
 def test_resolve_contradiction_custom_text(monkeypatch):
@@ -258,7 +276,7 @@ def test_resolve_contradiction_custom_text(monkeypatch):
 def test_resolve_contradiction_requires_a_choice(monkeypatch):
     _patch_identity(monkeypatch)
     out = server.praxis_resolve_contradiction("a__b")
-    assert "keep_id" in out and "custom_text" in out
+    assert "keep" in out and "custom_text" in out
 
 
 def test_list_graph_returns_all_facts_with_state_filter(monkeypatch):
