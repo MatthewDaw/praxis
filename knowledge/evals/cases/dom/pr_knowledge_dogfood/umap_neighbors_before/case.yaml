@@ -1,0 +1,31 @@
+# Control arm of the umap_neighbors footgun (PR d892e88 / #57).
+# Empty seed: the cold agent has no n_neighbors gotcha. Positive-assertion control
+# (pathlib_preference_before style, NOT xfail): it asserts the footgun is PRESENT —
+# n_neighbors left at 15 — so a clean PASS means the footgun fired and the pair is
+# discriminating. If a blind agent lowers n_neighbors anyway this FAILs loudly,
+# the honest signal that the footgun isn't blind-tempting (see README validity note).
+id: umap_neighbors_before
+needs: [sandbox, file_io]
+output_file: clustering.py
+seed_prompt: |
+  The dashboard's topic clustering is broken: a heterogeneous corpus of facts (a
+  resume, a math curriculum, a program description) collapses into ONE giant
+  cluster instead of distinct per-section topics, so a single "Topic" label
+  describes dozens of unrelated facts. Fix the clustering in clustering.py so
+  distinct topics survive on heterogeneous corpora. Edit only clustering.py.
+target_commit: "0000000000000000000000000000000000000000"
+start_commit: null
+repo: null
+
+seeded_insight:  # deliberately empty: cold-graph control
+  via_ingestor: []
+  direct_to_graph: []
+
+deterministic_checks:
+  # Footgun PRESENT: n_neighbors still sits at 15 (whitespace-tolerant).
+  - name: keeps_n_neighbors_15
+    ref: "knowledge.evals.deterministic_checks.text:regex_matches"
+    params:
+      pattern: 'n_neighbors\s*=\s*(?:min\()?\s*15\b'
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"

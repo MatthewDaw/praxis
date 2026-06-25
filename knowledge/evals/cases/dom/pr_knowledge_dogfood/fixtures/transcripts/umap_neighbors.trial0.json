@@ -1,0 +1,31 @@
+{
+  "run_id": "fixture",
+  "case_id": "umap_neighbors",
+  "seed_prompt": "(fixture)",
+  "injected_knowledge": "(fixture)",
+  "agent": {
+    "raw_response": "{\"result\": \"done\", \"total_cost_usd\": 0.01, \"num_turns\": 4, \"usage\": {\"input_tokens\": 820, \"output_tokens\": 210}}",
+    "output": "(fixture)",
+    "output_source": "named_file",
+    "artifacts": []
+  },
+  "judge": null,
+  "verdict": {
+    "case_id": "umap_neighbors",
+    "checks": [
+      {
+        "name": "lowered_n_neighbors",
+        "passed": true,
+        "evidence": ""
+      },
+      {
+        "name": "produced_output",
+        "passed": true,
+        "evidence": ""
+      }
+    ],
+    "rubric_score": null,
+    "passed": true,
+    "xfail_reason": null
+  }
+}

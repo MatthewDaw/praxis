@@ -1,0 +1,31 @@
+{
+  "run_id": "fixture",
+  "case_id": "phoenix_tracing",
+  "seed_prompt": "(fixture)",
+  "injected_knowledge": "(fixture)",
+  "agent": {
+    "raw_response": "{\"result\": \"done\", \"total_cost_usd\": 0.01, \"num_turns\": 5, \"usage\": {\"input_tokens\": 880, \"output_tokens\": 240}}",
+    "output": "(fixture)",
+    "output_source": "named_file",
+    "artifacts": []
+  },
+  "judge": null,
+  "verdict": {
+    "case_id": "phoenix_tracing",
+    "checks": [
+      {
+        "name": "tracing_at_module_scope",
+        "passed": true,
+        "evidence": ""
+      },
+      {
+        "name": "produced_output",
+        "passed": true,
+        "evidence": ""
+      }
+    ],
+    "rubric_score": null,
+    "passed": true,
+    "xfail_reason": null
+  }
+}

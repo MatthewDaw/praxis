@@ -1,0 +1,88 @@
+# Treatment arm of supersedes_edge (PR f3eecfe). Convention task, not a load-bearing
+# footgun: it primarily carries the token/turn signal; its convention check is a
+# secondary, medium-validity binary signal. Fact #3 names the replacement edge
+# `supersedes`. The seed_prompt deliberately avoids that word so the control isn't
+# handed the answer. Paired with supersedes_edge_before (empty seed).
+id: supersedes_edge
+needs: [sandbox, file_io]
+output_file: supersede_fact.py
+seed_prompt: |
+  Write supersede_fact.py with a function
+  `supersede_fact(graph, old_fact_id, new_fact)` that records that `new_fact`
+  replaces the fact identified by `old_fact_id`: add the new fact to the graph, then
+  create a directional edge from the new fact to the old one capturing the
+  replacement relationship. Name the edge / relationship type the way this codebase
+  names a replacement relationship. Edit only supersede_fact.py.
+target_commit: "0000000000000000000000000000000000000000"
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - >-
+      In `knowledge/knowledge_graph/clustering.py` `_reduce`, keep UMAP `n_neighbors`
+      low — use `min(10, n - 1)`, not 15. A high `n_neighbors` over-weights global
+      structure and collapses a heterogeneous corpus into one mega-cluster (a
+      114-fact corpus melted into two blobs at 15; 10 recovers ~14 coherent topics).
+    - >-
+      Call `setup_tracing()` at module-import scope in the serve entrypoint
+      (`knowledge/serve/app.py`), never inside `if __name__ == "__main__"`. uvicorn
+      imports the app by string and never executes the `__main__` block, so tracing
+      set up there never runs. It is a no-op unless `PHOENIX_COLLECTOR_ENDPOINT` is set.
+    - >-
+      When a new fact replaces old ones, link them with a directional `supersedes`
+      edge — not a `contradicted_by` edge. Custom resolution is modeled as
+      supersession (reject every member of the slot-cluster, write the new fact as a
+      normal add), not as a fabricated contradiction.
+    - >-
+      Contradiction is per-slot, not transitive: pending contradictions cluster by
+      the `(subject, attribute)` slot each edge was detected on, not by connected
+      component. A chained A–B–C conflict splits into two slot-clusters and must
+      never fabricate an A–C link.
+    - >-
+      Write policy enforces FR-005: the graph must never hold two
+      mutually-contradicting facts both in the `active` state.
+    - >-
+      The DB DSN resolver (`knowledge/serve/db.py`) only falls back to the AWS
+      Secrets Manager (production RDS) secret when `PRAXIS_DB_ALLOW_REMOTE=1` (set in
+      App Runner + CI). Local scripts must load `.env` (`PRAXIS_DB_URL`) — otherwise
+      they get no DB rather than silently connecting to prod.
+    - >-
+      Everything in the knowledge graph is partitioned by `(org_id, user_id)`.
+      Snapshot save/load/delete are scoped to the caller's own partition; org
+      snapshot browse/fold-in can read any org member's snapshots, but fold-in
+      writes only into the caller's graph.
+    - >-
+      MCP tools are thin authenticated wrappers over existing backend routes — an
+      agent can perform every graph/snapshot edit the dashboard UI can, with
+      authorization inherited from the backend (no separate authz in the tool layer).
+    - >-
+      yoyo migrations must import the `knowledge` package lazily (inside the
+      migration step, not at module load), so a migration module like
+      `reject_rename` can be imported outside yoyo's loader.
+    - >-
+      Slot-granular dedup and conflict resolution live in the ingestion path
+      (`ingest_dump` / `/ingest`), which distills each fact into a granular
+      `(subject, attribute, value)` claim. `graph.write(...)` is a direct write with
+      no dedup — don't expect it to reconcile slots.
+    - >-
+      Eval seeding: `seeded_insight.direct_to_graph` writes facts `active`
+      (simulating user approval); `via_ingestor` writes them `proposed` (gated out of
+      retrieval) unless the case sets `ingest_state: active`.
+    - >-
+      Claim/verdict cassettes are keyed on the rendered prompt text. If you change a
+      prompt, re-record the cassette or offline replay misses loudly.
+    - >-
+      Clustering regression guards run the production `_reduce` + HDBSCAN over a
+      frozen real-embedding matrix offline (no network, no labeling LLM) and assert
+      segmentation (more than two clusters, no single cluster owning half the corpus).
+
+deterministic_checks:
+  # Convention present: the replacement edge is named `supersedes`.
+  - name: uses_supersedes_edge
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "supersedes"
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"

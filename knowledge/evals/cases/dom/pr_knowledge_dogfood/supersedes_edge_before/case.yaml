@@ -1,0 +1,31 @@
+# Control arm of supersedes_edge (PR f3eecfe). Empty seed. Positive-assertion
+# control: asserts the convention is ABSENT — the cold agent names the replacement
+# edge something other than `supersedes` (e.g. replaces / replaced_by / supersededBy).
+# A PASS means the cold default missed the project convention. A FAIL means the blind
+# agent happened to pick "supersedes" anyway (medium-validity signal — see README).
+id: supersedes_edge_before
+needs: [sandbox, file_io]
+output_file: supersede_fact.py
+seed_prompt: |
+  Write supersede_fact.py with a function
+  `supersede_fact(graph, old_fact_id, new_fact)` that records that `new_fact`
+  replaces the fact identified by `old_fact_id`: add the new fact to the graph, then
+  create a directional edge from the new fact to the old one capturing the
+  replacement relationship. Name the edge / relationship type the way this codebase
+  names a replacement relationship. Edit only supersede_fact.py.
+target_commit: "0000000000000000000000000000000000000000"
+start_commit: null
+repo: null
+
+seeded_insight:  # deliberately empty: cold-graph control
+  via_ingestor: []
+  direct_to_graph: []
+
+deterministic_checks:
+  # Convention absent: the cold agent did not name the edge `supersedes`.
+  - name: lacks_supersedes_edge
+    ref: "knowledge.evals.deterministic_checks.builds:not_contains_text"
+    params:
+      text: "supersedes"
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
