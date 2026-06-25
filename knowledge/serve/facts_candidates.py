@@ -51,6 +51,20 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _invalidate(graph: Any, loser_id: str, winner_id: str | None = None) -> None:
+    """Close a superseded fact's bi-temporal validity window (additive helper).
+
+    Delegates to ``graph.invalidate`` (set ``invalid_at`` to the winner's
+    ``valid_at``, falling back to ``now()``) on top of the existing ``rejected``
+    state. Guarded with ``hasattr`` so a graph facade lacking the method (e.g. an
+    overlay wrapper) degrades to the prior state-only behavior rather than
+    failing — invalidation is purely additive.
+    """
+    invalidate = getattr(graph, "invalidate", None)
+    if callable(invalidate):
+        invalidate(loser_id, winner_id)
+
+
 def _audit_entry(
     provenance: str,
     action: str,
@@ -208,6 +222,9 @@ class FactsCandidates:
             if rival is None or rival.state != "active":
                 continue
             self.graph.set_state(rival_id, "rejected")
+            # Bi-temporal invalidation (additive): the re-approved fact wins, so
+            # close each demoted rival's validity window at the winner's valid_at.
+            _invalidate(self.graph, rival_id, cid)
             self.graph.flip_edge_kind(
                 cid, rival_id, from_kind="contradiction", to_kind="contradicted_by"
             )
@@ -348,6 +365,10 @@ class FactsCandidates:
         self._append_audit(kept, "kept_over_contradiction", note=f"superseded {loser_id}")
         if loser is not None:
             self.graph.set_state(loser_id, "rejected")
+            # Bi-temporal invalidation (additive to the rejected state): close the
+            # loser's validity window at the winner's valid_at so it drops out of
+            # default recall but remains for point-in-time `as_of` queries.
+            _invalidate(self.graph, loser_id, keep_id)
             self.graph.flip_edge_kind(
                 keep_id, loser_id, from_kind="contradiction", to_kind="contradicted_by"
             )
@@ -416,8 +437,12 @@ class FactsCandidates:
         if new_id is None:
             raise ValueError("failed to create custom resolution candidate")
         # Link the new fact to each superseded fact (directional: new supersedes old).
+        # Bi-temporal invalidation (additive): close each superseded member's
+        # validity window at the new fact's valid_at, keeping the rows for
+        # point-in-time recall.
         for fid in present:
             self.graph.add_edge(new_id, fid, "supersedes")
+            _invalidate(self.graph, fid, new_id)
         candidate = self.get(new_id)
         assert candidate is not None
         return candidate

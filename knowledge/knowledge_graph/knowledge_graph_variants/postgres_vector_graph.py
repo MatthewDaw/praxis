@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timezone
 
 import psycopg
 from pgvector import Vector
@@ -62,7 +63,8 @@ _ALLOWED_EDGES_TABLES = {"fact_edges", "cached_fact_edges"}
 # save/load (everything except the cache_key, which is stamped per copy).
 _FACT_COPY_COLS = (
     "id, org_id, user_id, shared, text, source, confidence, scope, category, "
-    "observation_count, state, embedding, cluster_id, cluster_label, meta, created_at"
+    "observation_count, state, embedding, cluster_id, cluster_label, "
+    "valid_at, invalid_at, meta, created_at"
 )
 
 # Columns copied verbatim between `claims` and `cached_claims` (cache_key stamped
@@ -309,6 +311,7 @@ class PostgresVectorGraph(SearchableGraph):
         filters: dict | None = None,
         scope: str | None = None,
         state: str | None = "active",
+        as_of: datetime | None = None,
     ) -> list[SearchHit]:
         return self._search_vec(
             _fit(self._embed(query)),
@@ -316,6 +319,7 @@ class PostgresVectorGraph(SearchableGraph):
             filters=filters,
             scope=scope,
             state=state,
+            as_of=as_of,
         )
 
     def _search_vec(
@@ -326,6 +330,7 @@ class PostgresVectorGraph(SearchableGraph):
         filters: dict | None = None,
         scope: str | None = None,
         state: str | None = "active",
+        as_of: datetime | None = None,
     ) -> list[SearchHit]:
         sql = (
             "SELECT id, text, source, confidence, scope, category, "
@@ -335,6 +340,18 @@ class PostgresVectorGraph(SearchableGraph):
             "AND embedding IS NOT NULL"
         )
         params: list[object] = [qvec, self.org_id, self.user_id]
+        # Bi-temporal validity (Graphiti/Zep). By default return only currently
+        # valid facts; `as_of` rewinds to point-in-time recall (valid window
+        # straddling T). Legacy rows with NULL valid_at are treated as having
+        # always been valid, so they survive both predicates.
+        if as_of is not None:
+            sql += (
+                " AND (valid_at IS NULL OR valid_at <= %s) "
+                "AND (invalid_at IS NULL OR invalid_at > %s)"
+            )
+            params.extend([as_of, as_of])
+        else:
+            sql += " AND (invalid_at IS NULL OR invalid_at > now())"
         if self._cache_key is not None:
             # A cache-bound graph only ever sees its own partition, so recall /
             # dedup / conflict stay within the one eval case (and contradiction
@@ -512,6 +529,34 @@ class PostgresVectorGraph(SearchableGraph):
             "WHERE org_id = %s AND user_id = %s AND id = %s",
             (state, self.org_id, self.user_id, fact_id),
         )
+
+    def invalidate(self, fact_id: str, winner_id: str | None = None) -> None:
+        """Close a fact's bi-temporal validity window (Graphiti/Zep model).
+
+        Sets ``invalid_at`` to the winner's ``valid_at`` when a superseding
+        ``winner_id`` is given (falling back to ``now()``), marking the fact no
+        longer currently true while keeping the row for point-in-time recall.
+        This is additive to the ``rejected`` state set on the resolve paths;
+        callers still flip ``state`` separately. Idempotent-safe to call on an
+        already-invalidated row (it just re-stamps the window close).
+        """
+        if winner_id is not None:
+            self._conn.execute(
+                f"UPDATE {self._facts_table} AS loser "
+                "SET invalid_at = COALESCE("
+                f"  (SELECT winner.valid_at FROM {self._facts_table} AS winner "
+                "    WHERE winner.org_id = loser.org_id "
+                "      AND winner.user_id = loser.user_id AND winner.id = %s), "
+                "  now()) "
+                "WHERE loser.org_id = %s AND loser.user_id = %s AND loser.id = %s",
+                (winner_id, self.org_id, self.user_id, fact_id),
+            )
+        else:
+            self._conn.execute(
+                f"UPDATE {self._facts_table} SET invalid_at = now() "
+                "WHERE org_id = %s AND user_id = %s AND id = %s",
+                (self.org_id, self.user_id, fact_id),
+            )
 
     def update_fact(
         self,
@@ -897,9 +942,17 @@ class PostgresVectorGraph(SearchableGraph):
         embedding = _fit(decision.embedding)  # reuse the vector from _recall
         fact_id = uuid.uuid4().hex
         meta = getattr(decision, "meta", None) or {}
+        # Bi-temporal validity: a new fact becomes valid now and stays valid
+        # (invalid_at NULL) until something supersedes it. Callers may backdate
+        # world-time validity by supplying meta["valid_at"] (ISO string or a
+        # datetime); fall back to SQL now() otherwise.
+        valid_at = meta.get("valid_at")
+        if valid_at is None:
+            valid_at = datetime.now(timezone.utc)
         # cache_key only exists on cached_facts; meta exists on both tables.
         cols = ["id", "org_id", "user_id", "text", "source", "confidence",
-                "scope", "category", "state", "embedding", "meta"]
+                "scope", "category", "state", "embedding",
+                "valid_at", "invalid_at", "meta"]
         vals: list[object] = [
             fact_id,
             self.org_id,
@@ -911,6 +964,8 @@ class PostgresVectorGraph(SearchableGraph):
             getattr(decision, "category", None),
             decision.state,
             embedding,
+            valid_at,
+            None,
             json.dumps(meta),
         ]
         if self._cache_key is not None:
@@ -950,10 +1005,20 @@ class PostgresVectorGraph(SearchableGraph):
         for loser_id in losers:
             if not loser_id or loser_id == fact_id:
                 continue
+            # Bi-temporal invalidation (additive to the existing `rejected`
+            # state): the loser stopped being true when the winner became true,
+            # so close its validity window at the winner's valid_at (falling
+            # back to now()). The row and its text are kept for point-in-time
+            # recall — an `as_of` before the winner still recovers the loser.
             self._conn.execute(
-                f"UPDATE {self._facts_table} SET state = 'rejected' "
-                "WHERE org_id = %s AND user_id = %s AND id = %s",
-                (self.org_id, self.user_id, loser_id),
+                f"UPDATE {self._facts_table} AS loser SET state = 'rejected', "
+                "invalid_at = COALESCE("
+                f"  (SELECT winner.valid_at FROM {self._facts_table} AS winner "
+                "    WHERE winner.org_id = loser.org_id "
+                "      AND winner.user_id = loser.user_id AND winner.id = %s), "
+                "  now()) "
+                "WHERE loser.org_id = %s AND loser.user_id = %s AND loser.id = %s",
+                (fact_id, self.org_id, self.user_id, loser_id),
             )
             src, dst = sorted((fact_id, loser_id))
             self.add_edge(src, dst, "contradicted_by")

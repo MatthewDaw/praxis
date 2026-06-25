@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS facts (
     -- super-nodes. NULL == unclustered (HDBSCAN noise, or not yet clustered).
     cluster_id        integer,
     cluster_label     text,
+    -- Bi-temporal world-time validity (Graphiti/Zep model). `valid_at` is when
+    -- the fact became true in the world (defaults to insert time); `invalid_at`
+    -- is when it stopped being true. `invalid_at IS NULL` == currently valid.
+    -- Invalidated rows are kept (never deleted), enabling point-in-time recall:
+    -- a fact is valid "as of" T when valid_at <= T < invalid_at. This is
+    -- orthogonal to the proposed/active/rejected lifecycle `state` (a workflow
+    -- status), which is retained unchanged.
+    valid_at          timestamptz,
+    invalid_at        timestamptz,
     meta              jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at        timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (org_id, user_id, id)
@@ -52,6 +61,8 @@ CREATE TABLE IF NOT EXISTS facts (
 ALTER TABLE facts ADD COLUMN IF NOT EXISTS state text NOT NULL DEFAULT 'proposed';
 ALTER TABLE facts ADD COLUMN IF NOT EXISTS cluster_id integer;
 ALTER TABLE facts ADD COLUMN IF NOT EXISTS cluster_label text;
+ALTER TABLE facts ADD COLUMN IF NOT EXISTS valid_at timestamptz;
+ALTER TABLE facts ADD COLUMN IF NOT EXISTS invalid_at timestamptz;
 
 CREATE INDEX IF NOT EXISTS facts_tenant ON facts (org_id, shared, user_id, scope);
 
@@ -167,6 +178,10 @@ CREATE TABLE IF NOT EXISTS cached_facts (
     -- snapshot or eval cache restores its topic super-nodes without re-clustering.
     cluster_id        integer,
     cluster_label     text,
+    -- Mirrors `facts`: bi-temporal validity copied verbatim on save/load so a
+    -- snapshot or eval cache restores point-in-time recall losslessly.
+    valid_at          timestamptz,
+    invalid_at        timestamptz,
     meta              jsonb NOT NULL DEFAULT '{}'::jsonb,
     cache_key         text NOT NULL,
     created_at        timestamptz NOT NULL DEFAULT now(),
@@ -178,6 +193,8 @@ CREATE TABLE IF NOT EXISTS cached_facts (
 -- Backfill for pre-existing `cached_facts` tables created before clustering landed.
 ALTER TABLE cached_facts ADD COLUMN IF NOT EXISTS cluster_id integer;
 ALTER TABLE cached_facts ADD COLUMN IF NOT EXISTS cluster_label text;
+ALTER TABLE cached_facts ADD COLUMN IF NOT EXISTS valid_at timestamptz;
+ALTER TABLE cached_facts ADD COLUMN IF NOT EXISTS invalid_at timestamptz;
 
 CREATE INDEX IF NOT EXISTS cached_facts_tenant ON cached_facts (org_id, shared, user_id, scope);
 
