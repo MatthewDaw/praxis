@@ -7,12 +7,17 @@ from knowledge.injestion.injestor_variants.image_injestor import ImageIngestor
 
 
 class SpyGraph:
-    """Records every (content, state) write so tests can assert lifecycle + payload."""
+    """Records every (content, state) write so tests can assert lifecycle + payload.
+
+    Accepts (and ignores) the optional provenance/metadata kwargs the ingestor
+    threads through (``source``/``scope``/``category``/``meta``/``tabular``) so the
+    double matches the real graph's ``write`` signature.
+    """
 
     def __init__(self):
         self.writes: list[tuple[str, str]] = []
 
-    def write(self, content: str, *, state: str = "proposed") -> None:
+    def write(self, content: str, *, state: str = "proposed", **_: object) -> None:
         self.writes.append((content, state))
 
     def read(self, context=None) -> str:

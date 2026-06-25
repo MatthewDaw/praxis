@@ -84,6 +84,42 @@ def test_create_list_get_candidate(client):
     assert got.json()["title"] == "A lesson"
 
 
+def test_insight_persists_writer_metadata(client):
+    """H12: writer-supplied source/scope/category/meta round-trip unchanged.
+
+    A value written via POST /insights must come back on /context hits
+    (source/scope/category) and on /candidates (meta) — today they are dropped.
+    """
+    r = client.post("/insights", json={
+        "insight": "The team day resets at 03:00 local time.",
+        "source": "prd-team-app", "scope": "prd-team-app",
+        "category": "requirement", "meta": {"requirement_id": "R4"}})
+    assert r.status_code == 200, r.text
+    hit = next(h for h in client.get("/context", params={"query": "team day reset"}).json()["hits"]
+               if "03:00" in h["text"])
+    assert hit["source"] == "prd-team-app"          # RED today: null
+    assert hit["scope"] == "prd-team-app"
+    assert hit["category"] == "requirement"
+    cand = next(c for c in client.get("/candidates").json() if "03:00" in c["content"])
+    assert cand.get("meta", {}).get("requirement_id") == "R4"
+
+
+def test_insight_derived_fills_unset_metadata(client):
+    """H12 precedence: writer value wins; a field left unset is not clobbered.
+
+    Omitting category lets ingestion-derived values fill it (or stay null) — the
+    point is the explicit fields still round-trip and the omitted one never
+    overwrites a writer-set sibling.
+    """
+    r = client.post("/insights", json={
+        "insight": "Backups run nightly at 02:00 UTC.",
+        "scope": "ops"})
+    assert r.status_code == 200, r.text
+    hit = next(h for h in client.get("/context", params={"query": "backups nightly"}).json()["hits"]
+               if "02:00" in h["text"])
+    assert hit["scope"] == "ops"
+
+
 def test_promote_advances_proposed_to_active(client):
     cid = _create(client)["id"]
     res = client.post(f"/candidates/{cid}/promote", json={})

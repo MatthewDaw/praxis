@@ -32,13 +32,23 @@ class InMemoryGraph(KnowledgeGraph):
         return self._content
 
     def write(
-        self, content: str, *, state: str = "proposed", tabular: bool = False
+        self,
+        content: str,
+        *,
+        state: str = "proposed",
+        tabular: bool = False,
+        source: str | None = None,
+        scope: str | None = None,
+        category: str | None = None,
+        meta: dict | None = None,
     ) -> None:
         """Append ``content`` as a new block.
 
-        ``state`` and ``tabular`` are accepted for contract parity but ignored:
-        this MVP string graph stores no per-fact metadata and runs no write policy,
-        so it tracks no lifecycle state and has no slot-guard to engage.
+        ``state``/``tabular`` and the provenance/metadata kwargs
+        (``source``/``scope``/``category``/``meta``) are accepted for contract
+        parity but ignored: this MVP string graph stores no per-fact metadata and
+        runs no write policy, so it tracks no lifecycle state and has no slot-guard
+        to engage.
         """
         content = content.strip()
         if not content:

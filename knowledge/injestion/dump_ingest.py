@@ -260,6 +260,9 @@ def ingest_dump(
     *,
     state: str = "active",
     source: str | None = None,
+    scope: str | None = None,
+    category: str | None = None,
+    meta: dict[str, Any] | None = None,
     external_top_k: int = 5,
     on_conflict: str = "auto_resolve",
 ) -> dict[str, Any]:
@@ -292,8 +295,19 @@ def ingest_dump(
     est_claim = {f.id: (f.meta or {}).get("claim") for f in established}
     established_ids = set(est_claim)
 
+    # H12: writer-supplied scope/category/meta are stamped onto every distilled
+    # fact (document-level metadata applies to all rows it distills into). The
+    # per-fact ``claim`` slot is internal to dedup/conflict resolution, so it is
+    # merged into — not overwritten by — the writer's meta.
     new_ids: list[str | None] = [
-        graph.write(d["text"], state=state, source=source, meta={"claim": claims[i]})
+        graph.write(
+            d["text"],
+            state=state,
+            source=source,
+            scope=scope,
+            category=category,
+            meta={**(meta or {}), "claim": claims[i]},
+        )
         for i, d in enumerate(distilled)
     ]
 

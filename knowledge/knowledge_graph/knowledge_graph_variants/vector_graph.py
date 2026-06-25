@@ -116,12 +116,24 @@ class VectorGraph(SearchableGraph):
         return "\n\n".join(f.text for f in self._facts if f.state == "active")
 
     def write(
-        self, content: str, *, state: str = "proposed", tabular: bool = False
+        self,
+        content: str,
+        *,
+        state: str = "proposed",
+        tabular: bool = False,
+        source: str | None = None,
+        scope: str | None = None,
+        category: str | None = None,
+        meta: dict | None = None,
     ) -> WriteDecision | None:
         """Run the write-policy pipeline over ``content``, then persist.
 
         ``state`` ("active" for a direct user approval, "proposed" for a passive
         system add) is the lifecycle state a freshly-added fact lands in.
+
+        ``source``/``scope``/``category``/``meta`` are writer-supplied metadata
+        (gap H12) carried onto the freshly-added fact, mirroring the Postgres store
+        so the in-memory baseline round-trips the same fields.
 
         ``tabular`` marks a write distilled from detected tabular input: it stamps
         ``TABULAR_FLAG`` on the decision so the Deduper's slot-guard engages (sibling
@@ -140,6 +152,12 @@ class VectorGraph(SearchableGraph):
         decision = WriteDecision(text=content, state="active" if state == "active" else "proposed")
         if tabular:
             decision.flags.append(TABULAR_FLAG)
+        # H12: stash writer metadata on the decision so _add persists it (the
+        # Postgres store reads these off the decision the same way).
+        decision.source = source
+        decision.scope = scope
+        decision.category = category
+        decision.meta = meta or {}
         claim_recalled = False
         semantic_recalled = False
         for step in self.policy:
@@ -354,6 +372,10 @@ class VectorGraph(SearchableGraph):
                 flags=list(decision.flags),
                 tags=list(decision.tags),
                 claims=list(decision.claims),
+                source=getattr(decision, "source", None),
+                scope=getattr(decision, "scope", None),
+                category=getattr(decision, "category", None),
+                meta=getattr(decision, "meta", None) or {},
             )
         )
 

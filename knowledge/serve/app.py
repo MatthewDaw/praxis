@@ -982,6 +982,16 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 status_code=400,
                 detail="onConflict must be 'auto_resolve' or 'surface'",
             )
+        # H12: writer-supplied metadata is persisted onto the resulting fact and
+        # returned on reads. ``source``/``scope``/``category`` go into their facts
+        # columns; ``meta`` (jsonb) carries arbitrary writer fields. A value the
+        # writer sets wins over any ingestion-derived default (see Ingestor.ingest).
+        source = body.get("source")
+        scope = body.get("scope")
+        category = body.get("category")
+        meta = body.get("meta")
+        if meta is not None and not isinstance(meta, dict):
+            raise HTTPException(status_code=400, detail="meta must be an object")
         # auto_resolve: ConflictOverwriter turns a confirmed contradiction into a
         # force-overwrite (loser rejected). surface: the structural+semantic detector
         # pipeline only *flags* the clash, so the store persists a pending
@@ -995,7 +1005,14 @@ def create_app(conn: Any | None = None) -> FastAPI:
         _, ingestor, _ = build_trio(graph=graph, llm=None)
         before = graph.search(insight, top_k=1, state=None)
         before_contradictions = set(graph.all_edges("contradiction"))
-        ingestor.ingest(insight, state="active")  # human-gated -> live knowledge
+        ingestor.ingest(  # human-gated -> live knowledge
+            insight,
+            state="active",
+            source=source,
+            scope=scope,
+            category=category,
+            meta=meta,
+        )
         after = graph.search(insight, top_k=1, state=None)
         new_contradictions = set(graph.all_edges("contradiction")) - before_contradictions
         prior = before[0].fact if before else None
@@ -1078,12 +1095,22 @@ def create_app(conn: Any | None = None) -> FastAPI:
             if not text:
                 raise HTTPException(status_code=400, detail="each document needs non-empty text")
             source = doc.get("source")
+            # H12: per-document writer metadata is persisted onto every fact the
+            # document distills into.
+            scope = doc.get("scope")
+            category = doc.get("category")
+            meta = doc.get("meta")
+            if meta is not None and not isinstance(meta, dict):
+                raise HTTPException(status_code=400, detail="meta must be an object")
             summary = ingest_dump(
                 graph,
                 ingest_llm,
                 text,
                 state=state,
                 source=str(source) if source else None,
+                scope=str(scope) if scope else None,
+                category=str(category) if category else None,
+                meta=meta,
                 on_conflict=on_conflict,
             )
             # Best-effort provenance back to the caller: the top fact the just-
