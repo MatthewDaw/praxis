@@ -1,0 +1,30 @@
+# Control arm of the yoyo_lazy_import footgun (PR 1fdb8be / #48).
+# Empty seed: the cold agent doesn't know yoyo's loader constraint. Positive-assertion
+# control: asserts the footgun is PRESENT — a top-level `from knowledge...` import (the
+# universal Python default). A clean PASS means the footgun fired. A FAIL means the blind
+# agent deferred the import anyway (footgun not blind-tempting — see README validity note).
+id: yoyo_lazy_import_before
+needs: [sandbox, file_io]
+output_file: 0002_backfill_fact_source.py
+seed_prompt: |
+  Write a yoyo migration file `0002_backfill_fact_source.py` that backfills the
+  `source` column on the `facts` table: for every row with a NULL/empty source, set
+  it by calling `derive_source(text)` from the project's
+  `knowledge.knowledge_graph.provenance` module. Use yoyo's `step()` API — the step
+  function receives a psycopg connection `conn`. Edit only 0002_backfill_fact_source.py.
+target_commit: "0000000000000000000000000000000000000000"
+start_commit: null
+repo: null
+
+seeded_insight:  # deliberately empty: cold-graph control
+  via_ingestor: []
+  direct_to_graph: []
+
+deterministic_checks:
+  # Footgun PRESENT: a top-level (column-0) `import knowledge` / `from knowledge ...`.
+  - name: top_level_knowledge_import
+    ref: "knowledge.evals.deterministic_checks.text:regex_matches"
+    params:
+      pattern: '(?m)^(?:from|import)\s+knowledge\b'
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"

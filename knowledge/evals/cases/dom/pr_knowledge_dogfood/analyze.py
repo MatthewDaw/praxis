@@ -1,20 +1,21 @@
-"""Trial orchestration, aggregation, and the R8 go-gate for the PR-knowledge dogfood experiment.
+"""Cost-to-correct orchestration + go-gate for the PR-knowledge dogfood experiment (v2).
 
-Runs N trials/arm of the paired cases through the **real** ``ClaudeCodeRunner``
-*in-process* (``run_case_full``), then aggregates tokens/turns and the footgun
-outcome per arm and emits a go/no-go verdict.
+v1 gated on first-pass token *volume*, which is biased toward the no-knowledge control:
+it credits the control's *wrong* output as free. v2 gates on **cost-to-correct** instead —
+knowledge delivered upfront (treatment, one pass) vs the same knowledge delivered late as
+review feedback (control's first pass **+** a corrective rework turn when its output is
+wrong) — scored in ``cost_usd``, alongside the footgun-flip signal.
 
   uv run python knowledge/evals/cases/dom/pr_knowledge_dogfood/analyze.py --trials 3
 
-Why in-process and not ``python -m knowledge.evals.run <case_id>``: the CLI calls
-``write_baseline`` on every invocation, which would clobber the committed
-``results/baseline.jsonl`` scoreboard with just these cases. ``run_case_full`` gives
-the identical real-agent path (same ``select_runner("claude")`` wiring) without that
-side effect.
+Per task, per trial, it runs the treatment, the control, and (for footgun/convention tasks
+whose control came out wrong) a rework turn that mounts the control's wrong file and supplies
+the fact as review feedback. The pure functions (:func:`aggregate`, :func:`evaluate_gate`)
+operate on plain per-trial records, so they unit-test offline against committed fixtures.
 
-The pure functions (:func:`aggregate`, :func:`evaluate_gate`) operate on the
-``RunTranscript`` JSON shape, so they unit-test offline against committed fixture
-transcripts — the live ``results/runs/`` dir is gitignored, so fixtures can't live there.
+Orchestration runs the real ``ClaudeCodeRunner`` in-process (``run_case_full``) — not the
+``python -m knowledge.evals.run`` CLI, which calls ``write_baseline`` and would clobber the
+committed ``results/baseline.jsonl``.
 """
 
 from __future__ import annotations
@@ -23,15 +24,14 @@ import argparse
 import json
 import statistics
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
 
 def _ensure_repo_on_path() -> None:
-    """Allow ``python <suite>/analyze.py`` (run-by-path) to import the ``knowledge``
-    package: the suite dir is not on the package path, so add the repo root (nearest
-    ancestor with ``pyproject.toml``) before the package import below."""
+    """Allow ``python <suite>/analyze.py`` (run-by-path) to import ``knowledge``."""
     for parent in HERE.parents:
         if (parent / "pyproject.toml").exists():
             if str(parent) not in sys.path:
@@ -43,155 +43,162 @@ _ensure_repo_on_path()
 
 from knowledge.evals.claude_code import _claude_usage  # noqa: E402
 
-# task name -> is this a footgun task whose control->treatment flip is REQUIRED for GO?
-# supersedes_edge is a convention/quantitative task: it carries the token/turn signal
-# and reports a (medium-validity) convention flip, but its flip is not gating.
-TASKS: dict[str, bool] = {
-    "umap_neighbors": True,
-    "phoenix_tracing": True,
-    "supersedes_edge": False,
+# Each task: its kind, the check that PASSES on a CORRECT artifact (footgun-absent /
+# convention-present; None for a pure quantitative task), the late "review feedback"
+# prompt used to rework a wrong control output, and the graded output file.
+TASKS: dict[str, dict] = {
+    "umap_neighbors": {
+        "kind": "footgun",
+        "correct_check": ("knowledge.evals.deterministic_checks.text:regex_absent",
+                          {"pattern": r"n_neighbors\s*=\s*(?:min\()?\s*15\b"}),
+        "rework_prompt": "Code review feedback: the topic-collapse bug is UMAP's n_neighbors — "
+                         "at 15 it over-weights global structure and melts heterogeneous corpora "
+                         "into one cluster. Lower it to min(10, n - 1) in clustering.py. Edit only "
+                         "clustering.py.",
+        "output_file": "clustering.py",
+    },
+    "yoyo_lazy_import": {
+        "kind": "footgun",
+        "correct_check": ("knowledge.evals.deterministic_checks.text:regex_absent",
+                          {"pattern": r"(?m)^(?:from|import)\s+knowledge\b"}),
+        "rework_prompt": "Code review feedback: yoyo execs migration files with the repo root off "
+                         "sys.path, so a top-level `from knowledge...` import raises ModuleNotFoundError "
+                         "before the step runs. Move the knowledge import inside the step function. "
+                         "Edit only 0002_backfill_fact_source.py.",
+        "output_file": "0002_backfill_fact_source.py",
+    },
+    "supersedes_edge": {
+        "kind": "convention",
+        "correct_check": ("knowledge.evals.deterministic_checks.builds:contains_text",
+                          {"text": "supersedes"}),
+        "rework_prompt": "Code review feedback: in this codebase the directional replacement edge "
+                         "MUST be named `supersedes` (project convention), not whatever name you "
+                         "chose. Update supersede_fact.py to use the `supersedes` edge name. Edit "
+                         "only supersede_fact.py.",
+        "output_file": "supersede_fact.py",
+    },
+    "repo_mounted_dsn": {
+        "kind": "quantitative",  # exploration-savings; no wrong-artifact footgun -> no rework
+        "correct_check": None,
+        "rework_prompt": None,
+        "output_file": "count_active_facts.py",
+    },
 }
-
-_BEFORE = "_before"
 
 
 def control_id(task: str) -> str:
-    return f"{task}{_BEFORE}"
+    return f"{task}_before"
 
 
-def arm_and_task(case_id: str) -> tuple[str, str]:
-    """('control', task) for ``<task>_before``; ('treatment', task) otherwise."""
-    if case_id.endswith(_BEFORE):
-        return "control", case_id[: -len(_BEFORE)]
-    return "treatment", case_id
+# A footgun "flips" only if the control reliably EXHIBITS it. The README's validity
+# discipline sets that bar at ~2/3 (a control that dodges the footgun blind proves
+# nothing). At n=3 this equals "majority"; the constant keeps it honest at n>=4.
+_EXHIBIT_BAR = 2 / 3
 
 
-# --------------------------------------------------------------------------- #
-# Pure aggregation over the RunTranscript JSON shape
-# --------------------------------------------------------------------------- #
-def _usage(transcript: dict) -> dict:
-    """tokens/turns from a transcript's ``agent.raw_response`` (the claude CLI stdout)."""
-    raw = (transcript.get("agent") or {}).get("raw_response")
-    return _claude_usage(raw or "")
+def _should_rework(correct_check, control_correct) -> bool:
+    """Charge a rework turn iff the task has a correctness notion AND the control got it wrong.
 
-
-def total_tokens(transcript: dict) -> int | None:
-    u = _usage(transcript)
-    i, o = u.get("input_tokens"), u.get("output_tokens")
-    if i is None and o is None:
-        return None
-    return (i or 0) + (o or 0)
-
-
-def num_turns(transcript: dict) -> int | None:
-    return _usage(transcript).get("num_turns")
-
-
-def footgun_passed(transcript: dict) -> bool | None:
-    """Did the footgun/convention check pass? (the lone non-``produced_output`` check).
-
-    For a treatment arm a pass means the agent AVOIDED the footgun / followed the
-    convention; for a control arm a pass means the agent EXHIBITED the footgun.
-    Returns ``None`` when no such check is present.
+    ``is False`` is identity-strict on purpose: a quantitative task (``correct_check is None``)
+    and a correct *or* indeterminate control (``True`` / ``None``) all skip the rework.
     """
-    checks = (transcript.get("verdict") or {}).get("checks") or []
-    fg = [c for c in checks if c.get("name") != "produced_output"]
-    return bool(fg[0]["passed"]) if fg else None
+    return correct_check is not None and control_correct is False
+
+
+# --------------------------------------------------------------------------- #
+# Pure aggregation over per-trial records
+# --------------------------------------------------------------------------- #
+# A record is: {task, kind,
+#   treat:   {cost, turns, tokens, correct|None},
+#   control: {cost, turns, tokens, correct|None},
+#   rework:  {cost} | None}      # present only when the control was wrong (=> charged)
 
 
 def _mean_sd(values: list[float]) -> tuple[float | None, float | None]:
     if not values:
         return None, None
-    mean = statistics.fmean(values)
-    sd = statistics.stdev(values) if len(values) > 1 else 0.0
-    return mean, sd
+    return statistics.fmean(values), (statistics.stdev(values) if len(values) > 1 else 0.0)
 
 
-def _arm_summary(transcripts: list[dict]) -> dict:
-    """Per-arm rollup: token/turn mean±sd and footgun pass-rate, plus a usable count.
-
-    A transcript with no parseable usage is recorded in ``missing`` (surfaced, never
-    silently averaged in) rather than dropped without trace.
-    """
-    tokens = [t for t in (total_tokens(x) for x in transcripts) if t is not None]
-    turns = [t for t in (num_turns(x) for x in transcripts) if t is not None]
-    fg = [f for f in (footgun_passed(x) for x in transcripts) if f is not None]
-    tok_mean, tok_sd = _mean_sd([float(t) for t in tokens])
-    turn_mean, turn_sd = _mean_sd([float(t) for t in turns])
-    return {
-        "trials": len(transcripts),
-        "missing_usage": len(transcripts) - len(tokens),
-        "tokens_mean": tok_mean,
-        "tokens_sd": tok_sd,
-        "turns_mean": turn_mean,
-        "turns_sd": turn_sd,
-        "footgun_pass_rate": (sum(fg) / len(fg)) if fg else None,
-        "footgun_n": len(fg),
-    }
+def _rate(flags: list[bool | None]) -> float | None:
+    present = [bool(f) for f in flags if f is not None]
+    return (sum(present) / len(present)) if present else None
 
 
-def aggregate(transcripts: list[dict]) -> dict:
-    """Group transcripts by (task, arm) and compute per-task deltas + the footgun flip.
-
-    Returns ``{tasks: {<task>: {...}}, errors: [...]}``. A task missing an arm or with
-    no usable usage in an arm is recorded in ``errors`` (and excluded from the gate),
-    never reported as a clean result.
-    """
-    by_task: dict[str, dict[str, list[dict]]] = {}
-    for t in transcripts:
-        case_id = t.get("case_id", "")
-        arm, task = arm_and_task(case_id)
-        by_task.setdefault(task, {}).setdefault(arm, []).append(t)
+def aggregate(records: list[dict]) -> dict:
+    """Per-task cost-to-correct deltas + footgun flips. Errors force NO-GO downstream."""
+    by_task: dict[str, list[dict]] = {}
+    for r in records:
+        by_task.setdefault(r["task"], []).append(r)
 
     tasks: dict[str, dict] = {}
     errors: list[str] = []
-    for task, is_footgun in TASKS.items():
-        arms = by_task.get(task, {})
-        treat = arms.get("treatment", [])
-        control = arms.get("control", [])
-        if not treat or not control:
-            errors.append(f"{task}: missing arm(s) (treatment={len(treat)}, control={len(control)})")
+    for task, cfg in TASKS.items():
+        trials = by_task.get(task, [])
+        if not trials:
+            errors.append(f"{task}: no trials")
             continue
-        ts, cs = _arm_summary(treat), _arm_summary(control)
 
-        def _delta(a: float | None, b: float | None) -> float | None:
-            return None if a is None or b is None else a - b  # treatment - control
+        treat_costs = [t["treat"]["cost"] for t in trials if t["treat"]["cost"] is not None]
+        # cost-to-correct: control first-pass + rework (when the control was charged for a fix)
+        ctc_costs = [
+            t["control"]["cost"] + ((t.get("rework") or {}).get("cost") or 0.0)
+            for t in trials if t["control"]["cost"] is not None
+        ]
+        if not treat_costs or not ctc_costs:
+            errors.append(f"{task}: missing cost data in an arm")
+            continue
 
-        token_delta = _delta(ts["tokens_mean"], cs["tokens_mean"])
-        turn_delta = _delta(ts["turns_mean"], cs["turns_mean"])
-        if token_delta is None or turn_delta is None:
-            errors.append(f"{task}: no usable token/turn data in an arm")
+        treat_cost_mean, treat_cost_sd = _mean_sd(treat_costs)
+        ctc_cost_mean, ctc_cost_sd = _mean_sd(ctc_costs)
+        treat_turns_mean, _ = _mean_sd([float(t["treat"]["turns"]) for t in trials if t["treat"]["turns"] is not None])
+        ctrl_turns_mean, _ = _mean_sd([float(t["control"]["turns"]) for t in trials if t["control"]["turns"] is not None])
 
-        # Flip: treatment mostly avoids the footgun AND control mostly exhibits it.
-        t_rate, c_rate = ts["footgun_pass_rate"], cs["footgun_pass_rate"]
-        flip = bool(t_rate is not None and c_rate is not None and t_rate >= 0.5 and c_rate >= 0.5)
+        kind = cfg["kind"]
+        # Footgun tasks always carry a correct_check, so these rates are defined for them;
+        # only the quantitative task (no check) yields None, and it is never a footgun.
+        treat_correct_rate = _rate([t["treat"]["correct"] for t in trials])
+        control_correct_rate = _rate([t["control"]["correct"] for t in trials])
+        # "exhibits the footgun" = the control's output is NOT correct
+        control_exhibit_rate = None if control_correct_rate is None else 1.0 - control_correct_rate
+
+        is_footgun = kind == "footgun"
+        flip = bool(
+            is_footgun and treat_correct_rate is not None and control_exhibit_rate is not None
+            and treat_correct_rate >= 0.5 and control_exhibit_rate >= _EXHIBIT_BAR
+        )
 
         tasks[task] = {
+            "kind": kind,
             "is_footgun": is_footgun,
-            "treatment": ts,
-            "control": cs,
-            "token_delta": token_delta,  # negative = treatment used fewer tokens
-            "turn_delta": turn_delta,
-            "token_reduced": (token_delta is not None and token_delta < 0),
-            "turn_reduced": (turn_delta is not None and turn_delta < 0),
+            "treat_cost_mean": treat_cost_mean,
+            "treat_cost_sd": treat_cost_sd,
+            "ctc_cost_mean": ctc_cost_mean,
+            "ctc_cost_sd": ctc_cost_sd,
+            "cost_delta": treat_cost_mean - ctc_cost_mean,  # negative => treatment cheaper to-correct
+            "cost_reduced": treat_cost_mean < ctc_cost_mean,
+            "treat_turns_mean": treat_turns_mean,
+            "control_turns_mean": ctrl_turns_mean,
+            "treat_correct_rate": treat_correct_rate,
+            "control_exhibit_rate": control_exhibit_rate,
             "flip": flip,
+            "trials": len(trials),
+            "reworked": sum(1 for t in trials if t.get("rework")),
         }
     return {"tasks": tasks, "errors": errors}
 
 
 def evaluate_gate(report: dict) -> dict:
-    """The R8 go-gate: directional token/turn reduction on MOST tasks AND footgun flip.
-
-    GO iff (every footgun task flips control->treatment) AND (a token-or-turn reduction
-    shows on a majority of all tasks). Errors (missing data) force NO-GO with the reason.
-    """
-    tasks = report["tasks"]
-    errors = list(report["errors"])
+    """GO iff every footgun task flips AND cost-to-correct drops on a majority of tasks."""
+    tasks, errors = report["tasks"], list(report["errors"])
     footgun_tasks = [n for n, t in tasks.items() if t["is_footgun"]]
     flips = {n: tasks[n]["flip"] for n in footgun_tasks}
     all_flip = bool(footgun_tasks) and all(flips.values())
 
-    reduced = {n: (t["token_reduced"] or t["turn_reduced"]) for n, t in tasks.items()}
+    # Cost-reduction is scored over ALL tasks, including the quantitative repo-mounted one:
+    # it is a task where knowledge was *supposed* to cut cost, so an honest null there counts
+    # against the bet rather than being excluded to make the gate easier.
+    reduced = {n: t["cost_reduced"] for n, t in tasks.items()}
     n_reduced = sum(reduced.values())
     most_reduced = bool(tasks) and n_reduced > len(tasks) / 2
 
@@ -202,7 +209,7 @@ def evaluate_gate(report: dict) -> dict:
     if footgun_tasks and not all_flip:
         reasons.append("footgun did not flip on: " + ", ".join(n for n, f in flips.items() if not f))
     if not most_reduced:
-        reasons.append(f"token/turn reduction on only {n_reduced}/{len(tasks)} tasks (need a majority)")
+        reasons.append(f"cost-to-correct dropped on only {n_reduced}/{len(tasks)} tasks (need a majority)")
     if errors:
         reasons.append("data errors: " + "; ".join(errors))
     return {
@@ -211,7 +218,6 @@ def evaluate_gate(report: dict) -> dict:
         "flips": flips,
         "tasks_reduced": n_reduced,
         "tasks_total": len(tasks),
-        "most_reduced": most_reduced,
         "reasons": reasons if not go else [],
     }
 
@@ -219,129 +225,147 @@ def evaluate_gate(report: dict) -> dict:
 # --------------------------------------------------------------------------- #
 # Live orchestration (real Claude Code, in-process)
 # --------------------------------------------------------------------------- #
-def run_trials(case_ids: list[str], trials: int, workers: int = 1) -> list[dict]:
-    """Run each case ``trials`` times through the real ClaudeCodeRunner; return transcript dicts."""
-    # Imported lazily so the pure functions above stay importable without a live env.
-    from knowledge.evals.run import build_transcript, load_cases, run_case_full, select_runner
+def _usage(ctx) -> dict:
+    return _claude_usage(getattr(ctx, "raw_response", None) or "")
 
-    cases_by_id = {c.id: c for c in load_cases()}
-    missing = [cid for cid in case_ids if cid not in cases_by_id]
+
+def _cost(ctx) -> float | None:
+    return _usage(ctx).get("cost_usd")
+
+
+def _turns(ctx) -> int | None:
+    return _usage(ctx).get("num_turns")
+
+
+def _tokens(ctx) -> int | None:
+    u = _usage(ctx)
+    i, o = u.get("input_tokens"), u.get("output_tokens")
+    return None if i is None and o is None else (i or 0) + (o or 0)
+
+
+def _check_passes(ctx, correct_check) -> bool | None:
+    if correct_check is None:
+        return None
+    from knowledge.evals.eval_def import DeterministicCheckRef
+    from knowledge.evals.run import resolve_check
+    ref_str, params = correct_check
+    ref = DeterministicCheckRef(name="correct", ref=ref_str, params=params)
+    return resolve_check(ref)(ctx, **ref.params).passed
+
+
+def _measure(ctx, cfg) -> dict:
+    return {"cost": _cost(ctx), "turns": _turns(ctx), "tokens": _tokens(ctx),
+            "correct": _check_passes(ctx, cfg["correct_check"])}
+
+
+def _rework_case(task: str, cfg: dict, wrong_output: str):
+    from knowledge.evals.eval_def import DeterministicCheckRef, EvalCase
+    ref_str, params = cfg["correct_check"]
+    tmp = Path(tempfile.mkdtemp(prefix=f"rework-{task}-"))
+    (tmp / "fixtures").mkdir()
+    (tmp / "fixtures" / cfg["output_file"]).write_text(wrong_output, encoding="utf-8")
+    return EvalCase(
+        id=f"{task}_rework", needs=["sandbox", "file_io"], seed_prompt=cfg["rework_prompt"],
+        target_commit="0" * 40, output_file=cfg["output_file"],
+        deterministic_checks=[DeterministicCheckRef(name="correct", ref=ref_str, params=params)],
+        source_dir=str(tmp),
+    )
+
+
+def run_experiment(trials: int, workers: int = 1, tasks: dict | None = None) -> list[dict]:
+    """Run treatment + control (+ rework when the control is wrong) for each task/trial."""
+    from knowledge.evals.run import load_cases, run_case_full, select_runner
+
+    tasks = tasks or TASKS
+    cases = {c.id: c for c in load_cases()}
+    missing = [cid for t in tasks for cid in (t, control_id(t)) if cid not in cases]
     if missing:
         raise SystemExit(f"unknown case id(s): {missing}")
     runner, judge = select_runner("claude")
-
-    jobs = [(cid, n) for cid in case_ids for n in range(trials)]
+    jobs = [(t, n) for t in tasks for n in range(trials)]
 
     def _one(job: tuple[str, int]) -> dict:
-        cid, n = job
-        case = cases_by_id[cid]
-        ctx, judge_result, verdict = run_case_full(case, runner, judge=judge)
-        t = build_transcript(case, ctx, judge_result, verdict, run_id=f"trial-{n}")
-        print(f"  ran {cid} trial {n + 1}/{trials}: {'PASS' if verdict.passed else 'FAIL'}", flush=True)
-        return t.model_dump()
+        task, n = job
+        cfg = tasks[task]
+        tctx, _, tverdict = run_case_full(cases[task], runner, judge=judge)
+        treat = _measure(tctx, cfg)
+        cctx, _, _ = run_case_full(cases[control_id(task)], runner, judge=judge)
+        control = _measure(cctx, cfg)
+        rework = None
+        if _should_rework(cfg["correct_check"], control["correct"]):
+            rctx, _, _ = run_case_full(_rework_case(task, cfg, cctx.output), runner, judge=judge)
+            rework = {"cost": _cost(rctx), "fixed": _check_passes(rctx, cfg["correct_check"])}
+        print(f"  {task} trial {n + 1}/{trials}: treat_ok={treat['correct']} "
+              f"ctrl_ok={control['correct']} reworked={bool(rework)}", flush=True)
+        return {"task": task, "kind": cfg["kind"], "treat": treat, "control": control, "rework": rework}
 
     if workers > 1:
         from concurrent.futures import ThreadPoolExecutor
-
         with ThreadPoolExecutor(max_workers=workers) as pool:
             return list(pool.map(_one, jobs))
     return [_one(job) for job in jobs]
 
 
-def _compact(transcripts: list[dict]) -> list[dict]:
-    """Per-trial rows for the committed results artifact (no bulky raw_response/output)."""
-    rows = []
-    for t in transcripts:
-        arm, task = arm_and_task(t.get("case_id", ""))
-        rows.append({
-            "task": task,
-            "arm": arm,
-            "case_id": t.get("case_id"),
-            "tokens": total_tokens(t),
-            "turns": num_turns(t),
-            "footgun_passed": footgun_passed(t),
-            "verdict_passed": (t.get("verdict") or {}).get("passed"),
-        })
-    return rows
+# --------------------------------------------------------------------------- #
+# Reporting
+# --------------------------------------------------------------------------- #
+def _f(v, money: bool = False) -> str:
+    if v is None:
+        return "n/a"
+    if isinstance(v, bool):
+        return str(v)
+    return f"${v:.4f}" if money else (f"{v:.2f}" if isinstance(v, float) else str(v))
 
 
 def format_report(report: dict, gate: dict) -> str:
-    lines = ["=== PR-knowledge dogfood — aggregation ===", ""]
+    lines = ["=== PR-knowledge dogfood v2 - cost-to-correct ===", ""]
     for task, t in report["tasks"].items():
-        tag = "footgun" if t["is_footgun"] else "convention"
-        tr, ct = t["treatment"], t["control"]
-        lines.append(f"[{task}] ({tag})")
+        lines.append(f"[{task}] ({t['kind']}; {t['trials']} trials, {t['reworked']} control reworks)")
         lines.append(
-            f"  tokens  treat={_fmt(tr['tokens_mean'])}±{_fmt(tr['tokens_sd'])}  "
-            f"control={_fmt(ct['tokens_mean'])}±{_fmt(ct['tokens_sd'])}  "
-            f"delta={_fmt(t['token_delta'])} ({'reduced' if t['token_reduced'] else 'no reduction'})"
+            f"  cost    treat={_f(t['treat_cost_mean'], 1)}+/-{_f(t['treat_cost_sd'], 1)}  "
+            f"control_to_correct={_f(t['ctc_cost_mean'], 1)}+/-{_f(t['ctc_cost_sd'], 1)}  "
+            f"delta={_f(t['cost_delta'], 1)} ({'cheaper' if t['cost_reduced'] else 'NOT cheaper'})"
         )
-        lines.append(
-            f"  turns   treat={_fmt(tr['turns_mean'])}±{_fmt(tr['turns_sd'])}  "
-            f"control={_fmt(ct['turns_mean'])}±{_fmt(ct['turns_sd'])}  "
-            f"delta={_fmt(t['turn_delta'])} ({'reduced' if t['turn_reduced'] else 'no reduction'})"
-        )
-        lines.append(
-            f"  footgun treat_avoid_rate={_fmt(tr['footgun_pass_rate'])}  "
-            f"control_exhibit_rate={_fmt(ct['footgun_pass_rate'])}  flip={t['flip']}"
-        )
+        lines.append(f"  turns   treat={_f(t['treat_turns_mean'])}  control={_f(t['control_turns_mean'])}")
+        if t["is_footgun"]:
+            lines.append(f"  footgun treat_avoid_rate={_f(t['treat_correct_rate'])}  "
+                         f"control_exhibit_rate={_f(t['control_exhibit_rate'])}  flip={t['flip']}")
         lines.append("")
     if report["errors"]:
-        lines.append("ERRORS: " + "; ".join(report["errors"]))
-        lines.append("")
+        lines.append("ERRORS: " + "; ".join(report["errors"]) + "\n")
     lines.append(f"VERDICT: {gate['verdict']}")
-    lines.append(
-        f"  footgun flips: {gate['flips']}  |  token/turn reduced on "
-        f"{gate['tasks_reduced']}/{gate['tasks_total']} tasks"
-    )
+    lines.append(f"  footgun flips: {gate['flips']}  |  cost-to-correct cheaper on "
+                 f"{gate['tasks_reduced']}/{gate['tasks_total']} tasks")
     for r in gate["reasons"]:
         lines.append(f"  - {r}")
     return "\n".join(lines)
 
 
-def _fmt(v) -> str:
-    if v is None:
-        return "n/a"
-    if isinstance(v, bool):
-        return str(v)
-    return f"{v:.2f}" if isinstance(v, float) else str(v)
-
-
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="analyze", description="dogfood experiment trial runner + gate")
-    parser.add_argument("--trials", type=int, default=3, help="trials per arm (default 3)")
-    parser.add_argument("--workers", type=int, default=1, help="concurrent runs (default 1; threads)")
-    parser.add_argument(
-        "--from-transcripts",
-        type=Path,
-        default=None,
-        help="aggregate committed transcript JSON files in this dir instead of running the agent",
-    )
-    parser.add_argument(
-        "--out",
-        type=Path,
-        default=HERE / "RESULTS.data.json",
-        help="where to write the compact per-trial results + verdict",
-    )
+    parser = argparse.ArgumentParser(prog="analyze", description="dogfood v2 cost-to-correct runner + gate")
+    parser.add_argument("--trials", type=int, default=3, help="trials per task (default 3)")
+    parser.add_argument("--workers", type=int, default=1, help="concurrent trial jobs (default 1; threads)")
+    parser.add_argument("--from-records", type=Path, default=None,
+                        help="aggregate a committed records JSON file instead of running the agent")
+    parser.add_argument("--out", type=Path, default=HERE / "RESULTS.data.json",
+                        help="where to write records + report + verdict")
     args = parser.parse_args(argv)
 
-    if args.from_transcripts is not None:
-        transcripts = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(args.from_transcripts.glob("*.json"))]
+    if args.from_records is not None:
+        records = json.loads(args.from_records.read_text(encoding="utf-8"))
+        records = records["records"] if isinstance(records, dict) else records
     else:
-        case_ids = [cid for task in TASKS for cid in (task, control_id(task))]
-        print(f"running {len(case_ids)} cases x {args.trials} trials through real Claude Code...")
-        transcripts = run_trials(case_ids, args.trials, workers=args.workers)
+        print(f"running {len(TASKS)} tasks x {args.trials} trials (treatment + control + rework) "
+              "through real Claude Code...")
+        records = run_experiment(args.trials, workers=args.workers)
 
-    report = aggregate(transcripts)
+    report = aggregate(records)
     gate = evaluate_gate(report)
-    text = format_report(report, gate)
-    print("\n" + text)
+    print("\n" + format_report(report, gate))
 
     if args.out is not None:
-        args.out.write_text(
-            json.dumps({"rows": _compact(transcripts), "report": report, "gate": gate}, indent=2),
-            encoding="utf-8",
-        )
+        args.out.write_text(json.dumps({"records": records, "report": report, "gate": gate}, indent=2),
+                            encoding="utf-8")
         print(f"\nwrote results -> {args.out}")
     return 0
 

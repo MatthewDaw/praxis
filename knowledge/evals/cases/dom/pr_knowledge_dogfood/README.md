@@ -3,110 +3,115 @@
 The cheapest experiment that proves or kills the bet behind
 [the PR-ingestion proposal](../../../../../docs/proposals/2026-06-24-ingest-commits-and-prs.md):
 hand-curate high-signal facts from recent merged Praxis PRs, push the whole set into a coding
-agent's context, and A/B a handful of real Praxis tasks — including seeded footguns — on the
-**existing** `ClaudeCodeRunner` eval harness.
+agent's context, and A/B real Praxis tasks — including seeded footguns — on the **existing**
+`ClaudeCodeRunner` eval harness.
 
 Plan: [docs/plans/2026-06-24-001-feat-pr-knowledge-dogfood-experiment-plan.md](../../../../../docs/plans/2026-06-24-001-feat-pr-knowledge-dogfood-experiment-plan.md).
+Findings: [RESULTS.md](RESULTS.md).
+
+> **v2 (iterated apparatus).** v1's strict gate was NO-GO but apparatus-attributed (see RESULTS.md
+> history). v2 acts on that diagnosis: it replaces the invalid `phoenix_tracing` footgun with a valid
+> one (`yoyo_lazy_import`), adds a **repo-mounted** task to exercise the exploration-savings lever the
+> sealed box couldn't, and gates on **cost-to-correct** (`cost_usd`) instead of biased first-pass token
+> volume.
 
 ## Hypothesis
 
 If knowledge from merged PRs helps an agent work better in this repo, then an agent **with** the
 curated facts in context will (a) avoid a documented footgun a **without**-facts agent hits, and
-(b) trend toward fewer tokens/turns on the same tasks. A null on either signal means the bet is not
-proven and the ingestion pipeline does **not** get built yet.
+(b) be cheaper **to a correct result** than the same knowledge delivered late as review feedback.
 
 ## How the A/B works
 
 Each task is a **paired** set of cases that are byte-identical except for the seeded facts:
 
-| Arm | Case id | `seeded_insight.direct_to_graph` | Footgun check asserts |
-|-----|---------|----------------------------------|-----------------------|
-| treatment | `<task>` | the full curated fact set ([facts.md](facts.md)) | footgun **absent** |
-| control | `<task>_before` | empty | footgun **present** |
+| Arm | Case id | `seeded_insight.direct_to_graph` |
+|-----|---------|----------------------------------|
+| treatment | `<task>` | the full curated fact set ([facts.md](facts.md)) |
+| control | `<task>_before` | empty |
 
 Both arms share an identical `seed_prompt`, the default **whole-file reader** (so *all* curated facts
 reach the agent unranked — no retrieval variable), the all-zeros `target_commit` placeholder, and
-`needs: [sandbox, file_io]` (only `ClaudeCodeRunner` serves them). Tokens/turns are recorded for both
-arms by the harness (`_claude_usage`), so every task carries the quantitative signal regardless of
-whether it has a footgun.
+`needs: [sandbox, file_io]` (only `ClaudeCodeRunner` serves them). `cost_usd` / `num_turns` are
+recorded for both arms by the harness (`_claude_usage`).
 
 ### Control polarity — positive assertion, not `xfail`
 
-The plan's KTD described the control as an `xfail` case carrying the footgun-**absence** check (a
-failing control = XFAIL). This suite instead uses the **positive-assertion** control shape of
-`knowledge/evals/cases/pathlib_preference_before/`: the control asserts the footgun is **present**
-(a clean PASS when the blind default fires), and the treatment asserts it is **absent**. Reason: an
-`xfail` control on the absence check silently **XPASSes** whenever agent nondeterminism happens to
-avoid the footgun blind — reading as a meaningful green when it actually means the footgun never
-triggered. The positive control instead **FAILs** loudly in that case, which is the honest signal
-that the footgun isn't blind-tempting. This is the same correction the follow-on auto-distill plan
-(002) adopted. The "flip" the go-gate looks for is therefore: control exhibits the footgun
-(footgun-present PASS) **and** treatment avoids it (footgun-absent PASS).
+Controls use the **positive-assertion** shape of `knowledge/evals/cases/pathlib_preference_before/`:
+the control asserts the footgun is **present** (a clean PASS when the blind default fires), and the
+treatment asserts it is **absent**. An `xfail` control on the absence check would silently **XPASS**
+whenever agent nondeterminism avoids the footgun — a false win. The positive control instead **FAILs**
+loudly in that case (the honest signal that the footgun isn't blind-tempting — exactly what killed the
+v1 `phoenix_tracing` task). The "flip" the gate looks for: control exhibits the footgun **and**
+treatment avoids it.
 
-> **Validity discipline (R8):** before trusting any treatment PASS, confirm the matching control
-> actually exhibits the footgun (its footgun-present check PASSes). A control that avoids the footgun
-> blind proves nothing — demote or redesign that task.
+> **Validity discipline (R8):** before trusting any treatment win, confirm the matching control
+> actually exhibits the footgun (control exhibit-rate ≥ ~2/3). A control that avoids the footgun blind
+> proves nothing — demote or redesign that task. (This is the gate v1's phoenix task failed.)
+
+### Cost-to-correct (the gate's cost metric)
+
+First-pass token volume is biased toward the control: it credits the control's *wrong* output as free.
+The gate scores **cost-to-correct** instead — knowledge upfront (treatment, one pass) vs the *same*
+knowledge delivered late as review feedback (control's first pass **+** a rework turn that mounts the
+control's wrong file and supplies the fact). `analyze.py` runs all three (treatment, control, rework)
+and gates on `cost_usd`. The sealed box also forbids Bash/web and mounts no repo, so the parent
+proposal's "fewer exploration turns" lever barely exists — `repo_mounted_dsn` is the one task that
+exercises it.
 
 ## Tasks
 
-All three tasks are sealed-box file-writes: the agent has only `seed_prompt` + injected facts +
-(for two tasks) a mounted fixture, with Bash/web disallowed and no repo mounted. So the token/turn
-signal reflects how directly the agent reaches the right answer, not repo-exploration savings.
+All four are sealed-box file-writes (Bash/web disallowed). Treatment carries the 13 curated facts;
+control is empty.
 
 ### 1. `umap_neighbors` — footgun (strong)
 
-- **Source PR:** `d892e88` *fix(clustering): lower UMAP n_neighbors so topics don't collapse to a blob (#57)*.
-- **Fixture:** a `clustering.py` whose `_reduce` sets `n_neighbors=min(15, n - 1)` (the pre-fix value).
-- **Task:** a heterogeneous corpus collapses into one mega-cluster; fix the dimensionality-reduction
-  step so distinct topics survive. (`output_file: clustering.py` scopes the check to the agent's file.)
-- **Blind default:** leave `n_neighbors` at 15 (the umap-learn default; high → over-weights global
-  structure → mega-cluster). **Neutralizing fact:** lower it to `min(10, n-1)` (facts.md #1).
-- **Check (regex, value-tolerant of whitespace):** `n_neighbors\s*=\s*(?:min\()?\s*15\b`.
-  Control asserts it matches (footgun present); treatment asserts it is absent.
+- **Source PR:** `d892e88` *fix(clustering): lower UMAP n_neighbors so topics don't collapse to a blob*.
+- Fixture `clustering.py` sets `n_neighbors=min(15, n - 1)`; task: fix the heterogeneous-corpus collapse.
+- Blind default: leave it at 15 (the umap-learn default). Fact: lower to `min(10, n-1)` (facts.md #1).
+- Check (regex): `n_neighbors\s*=\s*(?:min\()?\s*15\b` — control asserts present, treatment absent.
 
-### 2. `phoenix_tracing` — footgun (medium validity)
+### 2. `yoyo_lazy_import` — footgun (strong; replaces phoenix)
 
-- **Source PR:** `22db05f` *chore(serve): set up Phoenix tracing at app import time*.
-- **Fixture:** an `app.py` FastAPI entrypoint with an `if __name__ == "__main__":` block that runs
-  `uvicorn.run("app:api", ...)`.
-- **Task:** wire up Phoenix/OpenTelemetry tracing so spans export when the app runs under uvicorn.
-- **Blind default:** put `setup_tracing()` inside the `__main__` block (the instinctive "startup
-  code" home) — dead, because uvicorn string-imports the app and never runs `__main__`.
-  **Neutralizing fact:** call `setup_tracing()` at module-import scope (facts.md #2).
-- **Check (regex):** `\nsetup_tracing\(\)` — a call at column 0 (module scope). Control asserts it is
-  absent (call indented under `__main__`, or absent); treatment asserts it is present.
-- **Caveat:** weaker construct validity than `umap_neighbors` — a blind agent may place the call at
-  module scope anyway. Confirm the control exhibits the footgun before counting this pair; if it
-  reliably doesn't, treat it as a non-footgun quantitative task.
+- **Source PR:** `1fdb8be` *fix(migrations): defer knowledge import*; real precedent
+  `migrations/m2026_06_23_reject_rename.py` and `migrations/0001_reembed_candidates.py`.
+- Create task: write a yoyo migration that calls a function from the `knowledge` package.
+- Blind default: a **top-level** `from knowledge... import ...` — the universal Python instinct. yoyo
+  execs migration files with the repo root off `sys.path`, so that import raises `ModuleNotFoundError`
+  before the step runs. Fact: import `knowledge` **lazily inside the step** (facts.md #9).
+- Check (regex): `(?m)^(?:from|import)\s+knowledge\b` (a column-0 import) — control present, treatment
+  absent (the import is indented inside the step function).
 
-### 3. `supersedes_edge` — convention task (token/turn + convention signal)
+### 3. `supersedes_edge` — convention task
 
-- **Source PR:** `f3eecfe` *feat(contradictions): cluster by slot and supersede on custom resolution*.
-- **Task (no fixture, create from scratch):** write a `supersede_fact(old_fact_id, new_fact)` helper
-  that records that a new fact replaces an old one, naming the relationship/edge type the way this
-  codebase does.
-- **Convention:** the project names the directional replacement edge `supersedes` (not
-  `contradicted_by`, not `replaces`) — facts.md #3.
-- **Check:** `contains_text "supersedes"` (treatment) / `not_contains_text "supersedes"` (control).
-- **Role:** primarily the quantitative (token/turn) task; its convention check is a *secondary*,
-  medium-validity binary signal (a blind agent may pick the word "supersedes" by chance), not a
-  load-bearing footgun.
+- **Source PR:** `f3eecfe` *cluster by slot and supersede on custom resolution*.
+- Create task: a `supersede_fact(...)` helper; name the replacement edge the project's way.
+- Convention: the edge is named `supersedes` (facts.md #3). Check: `contains_text "supersedes"`
+  (treatment) / `not_contains_text` (control). Not a load-bearing footgun (a blind agent may pick the
+  word by chance) — carries cost-to-correct signal + a secondary convention flip.
+
+### 4. `repo_mounted_dsn` — repo-mounted quantitative task (exploration savings)
+
+- **Source:** the real `knowledge/serve/db.py` (DSN resolution + `PRAXIS_DB_ALLOW_REMOTE` gate, from
+  `dcd99d4`) is mounted in the box.
+- Task: write a standalone script that connects to the Praxis DB and counts active facts.
+- A cold agent must **read** the mounted `db.py` to learn the DSN convention; the treatment carries
+  facts #6/#11 so it can skip that reading. Signal: the `cost_usd`/`num_turns` delta — the parent
+  proposal's exploration-savings lever, which the no-repo tasks can't show. Soft check:
+  `contains_text "load_dotenv"` (scoped to the agent's file via `output_file`). No footgun flip.
 
 ## Files
 
 ```text
-README.md            # this file (U1)
-facts.md             # U2: the curated fact set + per-fact provenance (fact -> source PR/commit)
-umap_neighbors/         { case.yaml, fixtures/clustering.py }   # treatment
-umap_neighbors_before/  { case.yaml, fixtures/clustering.py }   # control
-phoenix_tracing/        { case.yaml, fixtures/app.py }          # treatment
-phoenix_tracing_before/ { case.yaml, fixtures/app.py }          # control
-supersedes_edge/        { case.yaml }                           # treatment
-supersedes_edge_before/ { case.yaml }                           # control
-analyze.py           # U4: trial aggregation + R8 go-gate
-tests/               # U4: aggregator tests over committed fixture transcripts
-fixtures/transcripts/# U4: committed sample transcripts (runs/ is gitignored, so fixtures live here)
-RESULTS.md           # U5: per-arm numbers, footgun outcomes, go/no-go verdict
+README.md            # this file
+facts.md             # the 13 curated facts + per-fact provenance (fact -> source PR/commit)
+<task>/                 { case.yaml [, fixtures/...] }   # treatment
+<task>_before/          { case.yaml [, fixtures/...] }   # control
+  tasks: umap_neighbors, yoyo_lazy_import, supersedes_edge, repo_mounted_dsn
+analyze.py           # cost-to-correct orchestration (treatment + control + rework) + R8 gate
+test_analyze.py      # offline tests over the pure aggregate/gate functions
+fixtures/trials.sample.json  # committed records fixture (a worked GO example)
+RESULTS.md / RESULTS.data.json  # findings + verdict, and the raw run data
 ```
 
 ## Running it
@@ -115,7 +120,7 @@ RESULTS.md           # U5: per-arm numbers, footgun outcomes, go/no-go verdict
 # one case, real Claude Code (needs the `claude` CLI logged in; no ANTHROPIC_API_KEY)
 uv run python -m knowledge.evals.run umap_neighbors
 
-# the whole experiment, N trials/arm + aggregation + verdict
+# the whole experiment: N trials x (treatment + control + rework), cost-to-correct gate
 uv run python knowledge/evals/cases/dom/pr_knowledge_dogfood/analyze.py --trials 3
 ```
 

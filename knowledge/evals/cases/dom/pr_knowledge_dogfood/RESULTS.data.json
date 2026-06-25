@@ -1,253 +1,294 @@
 {
-  "rows": [
+  "records": [
     {
       "task": "umap_neighbors",
-      "arm": "treatment",
-      "case_id": "umap_neighbors",
-      "tokens": 1212,
-      "turns": 4,
-      "footgun_passed": true,
-      "verdict_passed": true
-    },
-    {
-      "task": "umap_neighbors",
-      "arm": "treatment",
-      "case_id": "umap_neighbors",
-      "tokens": 1193,
-      "turns": 4,
-      "footgun_passed": true,
-      "verdict_passed": true
-    },
-    {
-      "task": "umap_neighbors",
-      "arm": "treatment",
-      "case_id": "umap_neighbors",
-      "tokens": 1207,
-      "turns": 5,
-      "footgun_passed": true,
-      "verdict_passed": true
+      "kind": "footgun",
+      "treat": {
+        "cost": 0.0433325,
+        "turns": 3,
+        "tokens": 1241,
+        "correct": true
+      },
+      "control": {
+        "cost": 0.0740499,
+        "turns": 9,
+        "tokens": 3017,
+        "correct": true
+      },
+      "rework": null
     },
     {
       "task": "umap_neighbors",
-      "arm": "control",
-      "case_id": "umap_neighbors_before",
-      "tokens": 2333,
-      "turns": 5,
-      "footgun_passed": true,
-      "verdict_passed": true
+      "kind": "footgun",
+      "treat": {
+        "cost": 0.049883,
+        "turns": 5,
+        "tokens": 1219,
+        "correct": true
+      },
+      "control": {
+        "cost": 0.050226999999999994,
+        "turns": 4,
+        "tokens": 2021,
+        "correct": true
+      },
+      "rework": null
     },
     {
       "task": "umap_neighbors",
-      "arm": "control",
-      "case_id": "umap_neighbors_before",
-      "tokens": 2807,
-      "turns": 9,
-      "footgun_passed": false,
-      "verdict_passed": false
+      "kind": "footgun",
+      "treat": {
+        "cost": 0.045635100000000005,
+        "turns": 4,
+        "tokens": 1098,
+        "correct": true
+      },
+      "control": {
+        "cost": 0.09594430000000001,
+        "turns": 7,
+        "tokens": 6995,
+        "correct": true
+      },
+      "rework": null
     },
     {
-      "task": "umap_neighbors",
-      "arm": "control",
-      "case_id": "umap_neighbors_before",
-      "tokens": 3340,
-      "turns": 4,
-      "footgun_passed": true,
-      "verdict_passed": true
+      "task": "yoyo_lazy_import",
+      "kind": "footgun",
+      "treat": {
+        "cost": 0.0576613,
+        "turns": 2,
+        "tokens": 3874,
+        "correct": true
+      },
+      "control": {
+        "cost": 0.046361900000000004,
+        "turns": 2,
+        "tokens": 2495,
+        "correct": false
+      },
+      "rework": {
+        "cost": 0.0376253,
+        "fixed": true
+      }
     },
     {
-      "task": "phoenix_tracing",
-      "arm": "treatment",
-      "case_id": "phoenix_tracing",
-      "tokens": 1299,
-      "turns": 5,
-      "footgun_passed": true,
-      "verdict_passed": true
+      "task": "yoyo_lazy_import",
+      "kind": "footgun",
+      "treat": {
+        "cost": 0.05528400000000001,
+        "turns": 6,
+        "tokens": 1700,
+        "correct": true
+      },
+      "control": {
+        "cost": 0.0506422,
+        "turns": 7,
+        "tokens": 1752,
+        "correct": false
+      },
+      "rework": {
+        "cost": 0.0424774,
+        "fixed": true
+      }
     },
     {
-      "task": "phoenix_tracing",
-      "arm": "treatment",
-      "case_id": "phoenix_tracing",
-      "tokens": 1184,
-      "turns": 5,
-      "footgun_passed": true,
-      "verdict_passed": true
-    },
-    {
-      "task": "phoenix_tracing",
-      "arm": "treatment",
-      "case_id": "phoenix_tracing",
-      "tokens": 1339,
-      "turns": 5,
-      "footgun_passed": true,
-      "verdict_passed": true
-    },
-    {
-      "task": "phoenix_tracing",
-      "arm": "control",
-      "case_id": "phoenix_tracing_before",
-      "tokens": 900,
-      "turns": 3,
-      "footgun_passed": false,
-      "verdict_passed": false
-    },
-    {
-      "task": "phoenix_tracing",
-      "arm": "control",
-      "case_id": "phoenix_tracing_before",
-      "tokens": 978,
-      "turns": 3,
-      "footgun_passed": false,
-      "verdict_passed": false
-    },
-    {
-      "task": "phoenix_tracing",
-      "arm": "control",
-      "case_id": "phoenix_tracing_before",
-      "tokens": 1046,
-      "turns": 3,
-      "footgun_passed": false,
-      "verdict_passed": false
-    },
-    {
-      "task": "supersedes_edge",
-      "arm": "treatment",
-      "case_id": "supersedes_edge",
-      "tokens": 1601,
-      "turns": 5,
-      "footgun_passed": true,
-      "verdict_passed": true
+      "task": "yoyo_lazy_import",
+      "kind": "footgun",
+      "treat": {
+        "cost": 0.0460293,
+        "turns": 2,
+        "tokens": 2202,
+        "correct": true
+      },
+      "control": {
+        "cost": 0.049572899999999996,
+        "turns": 5,
+        "tokens": 1622,
+        "correct": false
+      },
+      "rework": {
+        "cost": 0.045904900000000005,
+        "fixed": true
+      }
     },
     {
       "task": "supersedes_edge",
-      "arm": "treatment",
-      "case_id": "supersedes_edge",
-      "tokens": 1623,
-      "turns": 5,
-      "footgun_passed": true,
-      "verdict_passed": true
+      "kind": "convention",
+      "treat": {
+        "cost": 0.061745499999999995,
+        "turns": 7,
+        "tokens": 2119,
+        "correct": true
+      },
+      "control": {
+        "cost": 0.0417787,
+        "turns": 4,
+        "tokens": 975,
+        "correct": false
+      },
+      "rework": {
+        "cost": 0.06062880000000001,
+        "fixed": true
+      }
     },
     {
       "task": "supersedes_edge",
-      "arm": "treatment",
-      "case_id": "supersedes_edge",
-      "tokens": 1381,
-      "turns": 5,
-      "footgun_passed": true,
-      "verdict_passed": true
+      "kind": "convention",
+      "treat": {
+        "cost": 0.060694,
+        "turns": 8,
+        "tokens": 1960,
+        "correct": true
+      },
+      "control": {
+        "cost": 0.05007690000000001,
+        "turns": 6,
+        "tokens": 1278,
+        "correct": true
+      },
+      "rework": null
     },
     {
       "task": "supersedes_edge",
-      "arm": "control",
-      "case_id": "supersedes_edge_before",
-      "tokens": 1187,
-      "turns": 6,
-      "footgun_passed": true,
-      "verdict_passed": true
+      "kind": "convention",
+      "treat": {
+        "cost": 0.056766800000000006,
+        "turns": 6,
+        "tokens": 1874,
+        "correct": true
+      },
+      "control": {
+        "cost": 0.038506,
+        "turns": 4,
+        "tokens": 951,
+        "correct": false
+      },
+      "rework": {
+        "cost": 0.0659271,
+        "fixed": true
+      }
     },
     {
-      "task": "supersedes_edge",
-      "arm": "control",
-      "case_id": "supersedes_edge_before",
-      "tokens": 666,
-      "turns": 4,
-      "footgun_passed": true,
-      "verdict_passed": true
+      "task": "repo_mounted_dsn",
+      "kind": "quantitative",
+      "treat": {
+        "cost": 0.0484025,
+        "turns": 5,
+        "tokens": 1170,
+        "correct": null
+      },
+      "control": {
+        "cost": 0.0414109,
+        "turns": 3,
+        "tokens": 935,
+        "correct": null
+      },
+      "rework": null
     },
     {
-      "task": "supersedes_edge",
-      "arm": "control",
-      "case_id": "supersedes_edge_before",
-      "tokens": 994,
-      "turns": 5,
-      "footgun_passed": true,
-      "verdict_passed": true
+      "task": "repo_mounted_dsn",
+      "kind": "quantitative",
+      "treat": {
+        "cost": 0.0438543,
+        "turns": 3,
+        "tokens": 1014,
+        "correct": null
+      },
+      "control": {
+        "cost": 0.0419121,
+        "turns": 3,
+        "tokens": 1016,
+        "correct": null
+      },
+      "rework": null
+    },
+    {
+      "task": "repo_mounted_dsn",
+      "kind": "quantitative",
+      "treat": {
+        "cost": 0.0437978,
+        "turns": 3,
+        "tokens": 1013,
+        "correct": null
+      },
+      "control": {
+        "cost": 0.0419372,
+        "turns": 3,
+        "tokens": 1000,
+        "correct": null
+      },
+      "rework": null
     }
   ],
   "report": {
     "tasks": {
       "umap_neighbors": {
+        "kind": "footgun",
         "is_footgun": true,
-        "treatment": {
-          "trials": 3,
-          "missing_usage": 0,
-          "tokens_mean": 1204.0,
-          "tokens_sd": 9.848857801796104,
-          "turns_mean": 4.333333333333333,
-          "turns_sd": 0.5773502691896257,
-          "footgun_pass_rate": 1.0,
-          "footgun_n": 3
-        },
-        "control": {
-          "trials": 3,
-          "missing_usage": 0,
-          "tokens_mean": 2826.6666666666665,
-          "tokens_sd": 503.78798450671025,
-          "turns_mean": 6.0,
-          "turns_sd": 2.6457513110645907,
-          "footgun_pass_rate": 0.6666666666666666,
-          "footgun_n": 3
-        },
-        "token_delta": -1622.6666666666665,
-        "turn_delta": -1.666666666666667,
-        "token_reduced": true,
-        "turn_reduced": true,
-        "flip": true
+        "treat_cost_mean": 0.04628353333333333,
+        "treat_cost_sd": 0.0033230425671864797,
+        "ctc_cost_mean": 0.07340706666666667,
+        "ctc_cost_sd": 0.022865428179750617,
+        "cost_delta": -0.027123533333333345,
+        "cost_reduced": true,
+        "treat_turns_mean": 4.0,
+        "control_turns_mean": 6.666666666666667,
+        "treat_correct_rate": 1.0,
+        "control_exhibit_rate": 0.0,
+        "flip": false,
+        "trials": 3,
+        "reworked": 0
       },
-      "phoenix_tracing": {
+      "yoyo_lazy_import": {
+        "kind": "footgun",
         "is_footgun": true,
-        "treatment": {
-          "trials": 3,
-          "missing_usage": 0,
-          "tokens_mean": 1274.0,
-          "tokens_sd": 80.46738469715541,
-          "turns_mean": 5.0,
-          "turns_sd": 0.0,
-          "footgun_pass_rate": 1.0,
-          "footgun_n": 3
-        },
-        "control": {
-          "trials": 3,
-          "missing_usage": 0,
-          "tokens_mean": 974.6666666666666,
-          "tokens_sd": 73.05705532892311,
-          "turns_mean": 3.0,
-          "turns_sd": 0.0,
-          "footgun_pass_rate": 0.0,
-          "footgun_n": 3
-        },
-        "token_delta": 299.33333333333337,
-        "turn_delta": 2.0,
-        "token_reduced": false,
-        "turn_reduced": false,
-        "flip": false
+        "treat_cost_mean": 0.05299153333333334,
+        "treat_cost_sd": 0.006145519389224423,
+        "ctc_cost_mean": 0.09086153333333334,
+        "ctc_cost_sd": 0.006068988457175813,
+        "cost_delta": -0.03787,
+        "cost_reduced": true,
+        "treat_turns_mean": 3.3333333333333335,
+        "control_turns_mean": 4.666666666666667,
+        "treat_correct_rate": 1.0,
+        "control_exhibit_rate": 1.0,
+        "flip": true,
+        "trials": 3,
+        "reworked": 3
       },
       "supersedes_edge": {
+        "kind": "convention",
         "is_footgun": false,
-        "treatment": {
-          "trials": 3,
-          "missing_usage": 0,
-          "tokens_mean": 1535.0,
-          "tokens_sd": 133.82077566656082,
-          "turns_mean": 5.0,
-          "turns_sd": 0.0,
-          "footgun_pass_rate": 1.0,
-          "footgun_n": 3
-        },
-        "control": {
-          "trials": 3,
-          "missing_usage": 0,
-          "tokens_mean": 949.0,
-          "tokens_sd": 263.39893697583517,
-          "turns_mean": 5.0,
-          "turns_sd": 1.0,
-          "footgun_pass_rate": 1.0,
-          "footgun_n": 3
-        },
-        "token_delta": 586.0,
-        "turn_delta": 0.0,
-        "token_reduced": false,
-        "turn_reduced": false,
-        "flip": true
+        "treat_cost_mean": 0.05973543333333333,
+        "treat_cost_sd": 0.0026241190832988702,
+        "ctc_cost_mean": 0.08563916666666667,
+        "ctc_cost_sd": 0.03081447503517354,
+        "cost_delta": -0.02590373333333334,
+        "cost_reduced": true,
+        "treat_turns_mean": 7.0,
+        "control_turns_mean": 4.666666666666667,
+        "treat_correct_rate": 1.0,
+        "control_exhibit_rate": 0.6666666666666667,
+        "flip": false,
+        "trials": 3,
+        "reworked": 2
+      },
+      "repo_mounted_dsn": {
+        "kind": "quantitative",
+        "is_footgun": false,
+        "treat_cost_mean": 0.04535153333333333,
+        "treat_cost_sd": 0.002642365656629177,
+        "ctc_cost_mean": 0.041753399999999996,
+        "ctc_cost_sd": 0.00029687908312981586,
+        "cost_delta": 0.0035981333333333365,
+        "cost_reduced": false,
+        "treat_turns_mean": 3.6666666666666665,
+        "control_turns_mean": 3.0,
+        "treat_correct_rate": null,
+        "control_exhibit_rate": null,
+        "flip": false,
+        "trials": 3,
+        "reworked": 0
       }
     },
     "errors": []
@@ -256,15 +297,13 @@
     "verdict": "NO-GO",
     "all_footgun_flip": false,
     "flips": {
-      "umap_neighbors": true,
-      "phoenix_tracing": false
+      "umap_neighbors": false,
+      "yoyo_lazy_import": true
     },
-    "tasks_reduced": 1,
-    "tasks_total": 3,
-    "most_reduced": false,
+    "tasks_reduced": 3,
+    "tasks_total": 4,
     "reasons": [
-      "footgun did not flip on: phoenix_tracing",
-      "token/turn reduction on only 1/3 tasks (need a majority)"
+      "footgun did not flip on: umap_neighbors"
     ]
   }
 }

@@ -1,0 +1,29 @@
+# Control arm of repo_mounted_dsn. Empty seed: the cold agent must READ the mounted
+# db.py to learn the DSN convention before writing the script — that reading is the
+# exploration cost the treatment's facts let it skip. Same prompt as the treatment;
+# only the seeded facts differ, so the token/turn/cost delta is the exploration-savings
+# signal. The `loads_dotenv` check is the same soft correctness check (not a flip).
+id: repo_mounted_dsn_before
+needs: [sandbox, file_io]
+output_file: count_active_facts.py
+seed_prompt: |
+  Write `count_active_facts.py`, a standalone script that connects to the Praxis
+  Postgres database and prints how many facts are in the `active` state (the `facts`
+  table has a `state` column). Resolve the DB connection the way this project does for
+  a local/standalone script — `db.py`, the serve-layer DB module, is in the working
+  directory if you need it. Edit only count_active_facts.py.
+target_commit: "0000000000000000000000000000000000000000"
+start_commit: null
+repo: null
+
+seeded_insight:  # deliberately empty: cold-graph control (must read db.py to learn the convention)
+  via_ingestor: []
+  direct_to_graph: []
+
+deterministic_checks:
+  - name: loads_dotenv
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "load_dotenv"
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"

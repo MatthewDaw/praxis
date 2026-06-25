@@ -1,0 +1,93 @@
+# Treatment arm of repo_mounted_dsn — a QUANTITATIVE exploration-savings task (not a
+# footgun). The real serve-layer db.py is mounted in the box. A cold agent must READ it
+# to learn the DSN convention (PRAXIS_DB_URL, the PRAXIS_DB_ALLOW_REMOTE gate, load .env);
+# the treatment carries facts #6/#11 so it can write the script with less/no reading.
+# The signal is the cost/turn delta (the parent proposal's "fewer exploration turns"
+# lever, which the no-repo sealed-box tasks could not exercise). No footgun flip; the
+# check just confirms a real attempt. Paired with repo_mounted_dsn_before (empty seed).
+id: repo_mounted_dsn
+needs: [sandbox, file_io]
+output_file: count_active_facts.py
+seed_prompt: |
+  Write `count_active_facts.py`, a standalone script that connects to the Praxis
+  Postgres database and prints how many facts are in the `active` state (the `facts`
+  table has a `state` column). Resolve the DB connection the way this project does for
+  a local/standalone script — `db.py`, the serve-layer DB module, is in the working
+  directory if you need it. Edit only count_active_facts.py.
+target_commit: "0000000000000000000000000000000000000000"
+start_commit: null
+repo: null
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - >-
+      In `knowledge/knowledge_graph/clustering.py` `_reduce`, keep UMAP `n_neighbors`
+      low — use `min(10, n - 1)`, not 15. A high `n_neighbors` over-weights global
+      structure and collapses a heterogeneous corpus into one mega-cluster (a
+      114-fact corpus melted into two blobs at 15; 10 recovers ~14 coherent topics).
+    - >-
+      Call `setup_tracing()` at module-import scope in the serve entrypoint
+      (`knowledge/serve/app.py`), never inside `if __name__ == "__main__"`. uvicorn
+      imports the app by string and never executes the `__main__` block, so tracing
+      set up there never runs. It is a no-op unless `PHOENIX_COLLECTOR_ENDPOINT` is set.
+    - >-
+      When a new fact replaces old ones, link them with a directional `supersedes`
+      edge — not a `contradicted_by` edge. Custom resolution is modeled as
+      supersession (reject every member of the slot-cluster, write the new fact as a
+      normal add), not as a fabricated contradiction.
+    - >-
+      Contradiction is per-slot, not transitive: pending contradictions cluster by
+      the `(subject, attribute)` slot each edge was detected on, not by connected
+      component. A chained A–B–C conflict splits into two slot-clusters and must
+      never fabricate an A–C link.
+    - >-
+      Write policy enforces FR-005: the graph must never hold two
+      mutually-contradicting facts both in the `active` state.
+    - >-
+      The DB DSN resolver (`knowledge/serve/db.py`) only falls back to the AWS
+      Secrets Manager (production RDS) secret when `PRAXIS_DB_ALLOW_REMOTE=1` (set in
+      App Runner + CI). Local scripts must load `.env` (`PRAXIS_DB_URL`) — otherwise
+      they get no DB rather than silently connecting to prod. Use
+      `knowledge.serve.db.connect()` / `resolve_dsn()`.
+    - >-
+      Everything in the knowledge graph is partitioned by `(org_id, user_id)`.
+      Snapshot save/load/delete are scoped to the caller's own partition; org
+      snapshot browse/fold-in can read any org member's snapshots, but fold-in
+      writes only into the caller's graph.
+    - >-
+      MCP tools are thin authenticated wrappers over existing backend routes — an
+      agent can perform every graph/snapshot edit the dashboard UI can, with
+      authorization inherited from the backend (no separate authz in the tool layer).
+    - >-
+      yoyo migrations must import the `knowledge` package lazily (inside the
+      migration step function, not at module load), because yoyo execs the file with
+      the repo root off `sys.path` — a top-level `from knowledge...` raises
+      ModuleNotFoundError before the step runs. (See migrations/m2026_06_23_reject_rename.py.)
+    - >-
+      Slot-granular dedup and conflict resolution live in the ingestion path
+      (`ingest_dump` / `/ingest`), which distills each fact into a granular
+      `(subject, attribute, value)` claim. `graph.write(...)` is a direct write with
+      no dedup — don't expect it to reconcile slots.
+    - >-
+      Eval seeding: `seeded_insight.direct_to_graph` writes facts `active`
+      (simulating user approval); `via_ingestor` writes them `proposed` (gated out of
+      retrieval) unless the case sets `ingest_state: active`.
+    - >-
+      Claim/verdict cassettes are keyed on the rendered prompt text. If you change a
+      prompt, re-record the cassette or offline replay misses loudly.
+    - >-
+      Clustering regression guards run the production `_reduce` + HDBSCAN over a
+      frozen real-embedding matrix offline (no network, no labeling LLM) and assert
+      segmentation (more than two clusters, no single cluster owning half the corpus).
+
+deterministic_checks:
+  # Soft correctness (not a footgun flip): the script loads .env per the project DSN
+  # convention. Scoped to count_active_facts.py via output_file, so the mounted db.py
+  # (which only mentions ".env" in a comment) is not what's graded.
+  - name: loads_dotenv
+    ref: "knowledge.evals.deterministic_checks.builds:contains_text"
+    params:
+      text: "load_dotenv"
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"

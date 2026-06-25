@@ -1,18 +1,19 @@
-# Treatment arm of the phoenix_tracing footgun (commit 22db05f).
-# Fact #2 tells the agent to call setup_tracing() at module-import scope (uvicorn
-# string-imports the app and never runs __main__). With it, the module-scope call
-# is present, so the footgun-present (=module-scope-call-absent) inverse PASSes.
-# Paired with phoenix_tracing_before (empty seed). MEDIUM construct validity — see README.
-id: phoenix_tracing
+# Treatment arm of the yoyo_lazy_import footgun (PR 1fdb8be / #48; real precedent:
+# migrations/m2026_06_23_reject_rename.py and migrations/0001_reembed_candidates.py).
+# yoyo execs migration files with importlib in a context where the repo root is NOT on
+# sys.path, so a module-scope `from knowledge...` import fails (ModuleNotFoundError)
+# before the step runs. Fact #9 tells the agent to import `knowledge` lazily inside the
+# step. With it, there is no top-level knowledge import -> footgun-absent check PASSes.
+# Paired with yoyo_lazy_import_before (empty seed, asserts the top-level import is present).
+id: yoyo_lazy_import
 needs: [sandbox, file_io]
-output_file: app.py
+output_file: 0002_backfill_fact_source.py
 seed_prompt: |
-  Wire up Phoenix / OpenTelemetry tracing for this FastAPI service so that LLM and
-  embedding spans are exported when the app runs under uvicorn (which imports the
-  app by string, e.g. `uvicorn app:api`). A helper is available as
-  `from knowledge.observability.tracing import setup_tracing` — it is a no-op unless
-  PHOENIX_COLLECTOR_ENDPOINT is set. Import it and call it in the right place so the
-  spans actually export when served. Edit only app.py.
+  Write a yoyo migration file `0002_backfill_fact_source.py` that backfills the
+  `source` column on the `facts` table: for every row with a NULL/empty source, set
+  it by calling `derive_source(text)` from the project's
+  `knowledge.knowledge_graph.provenance` module. Use yoyo's `step()` API — the step
+  function receives a psycopg connection `conn`. Edit only 0002_backfill_fact_source.py.
 target_commit: "0000000000000000000000000000000000000000"
 start_commit: null
 repo: null
@@ -59,8 +60,9 @@ seeded_insight:
       authorization inherited from the backend (no separate authz in the tool layer).
     - >-
       yoyo migrations must import the `knowledge` package lazily (inside the
-      migration step, not at module load), so a migration module like
-      `reject_rename` can be imported outside yoyo's loader.
+      migration step function, not at module load), because yoyo execs the file with
+      the repo root off `sys.path` — a top-level `from knowledge...` raises
+      ModuleNotFoundError before the step runs. (See migrations/m2026_06_23_reject_rename.py.)
     - >-
       Slot-granular dedup and conflict resolution live in the ingestion path
       (`ingest_dump` / `/ingest`), which distills each fact into a granular
@@ -79,11 +81,10 @@ seeded_insight:
       segmentation (more than two clusters, no single cluster owning half the corpus).
 
 deterministic_checks:
-  # Footgun ABSENT: a setup_tracing() call exists at module scope (col 0), not only
-  # indented inside the __main__ block.
-  - name: tracing_at_module_scope
-    ref: "knowledge.evals.deterministic_checks.text:regex_matches"
+  # Footgun ABSENT: no top-level (column-0) `import knowledge` / `from knowledge ...`.
+  - name: lazy_knowledge_import
+    ref: "knowledge.evals.deterministic_checks.text:regex_absent"
     params:
-      pattern: '(?m)^setup_tracing\(\)'
+      pattern: '(?m)^(?:from|import)\s+knowledge\b'
   - name: produced_output
     ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"

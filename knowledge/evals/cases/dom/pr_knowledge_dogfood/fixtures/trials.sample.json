@@ -1,0 +1,152 @@
+{
+  "records": [
+    {
+      "task": "umap_neighbors",
+      "kind": "footgun",
+      "treat": {
+        "cost": 0.04,
+        "turns": 4,
+        "tokens": 1000,
+        "correct": true
+      },
+      "control": {
+        "cost": 0.052,
+        "turns": 7,
+        "tokens": 1500,
+        "correct": false
+      },
+      "rework": {
+        "cost": 0.03
+      }
+    },
+    {
+      "task": "yoyo_lazy_import",
+      "kind": "footgun",
+      "treat": {
+        "cost": 0.038,
+        "turns": 4,
+        "tokens": 1000,
+        "correct": true
+      },
+      "control": {
+        "cost": 0.045,
+        "turns": 6,
+        "tokens": 1500,
+        "correct": false
+      },
+      "rework": {
+        "cost": 0.028
+      }
+    },
+    {
+      "task": "supersedes_edge",
+      "kind": "convention",
+      "treat": {
+        "cost": 0.05,
+        "turns": 5,
+        "tokens": 1000,
+        "correct": true
+      },
+      "control": {
+        "cost": 0.03,
+        "turns": 4,
+        "tokens": 1500,
+        "correct": false
+      },
+      "rework": {
+        "cost": 0.041
+      }
+    },
+    {
+      "task": "repo_mounted_dsn",
+      "kind": "quantitative",
+      "treat": {
+        "cost": 0.028,
+        "turns": 3,
+        "tokens": 1000,
+        "correct": null
+      },
+      "control": {
+        "cost": 0.049,
+        "turns": 5,
+        "tokens": 1500,
+        "correct": null
+      },
+      "rework": null
+    },
+    {
+      "task": "umap_neighbors",
+      "kind": "footgun",
+      "treat": {
+        "cost": 0.04,
+        "turns": 4,
+        "tokens": 1000,
+        "correct": true
+      },
+      "control": {
+        "cost": 0.052,
+        "turns": 7,
+        "tokens": 1500,
+        "correct": false
+      },
+      "rework": {
+        "cost": 0.03
+      }
+    },
+    {
+      "task": "yoyo_lazy_import",
+      "kind": "footgun",
+      "treat": {
+        "cost": 0.038,
+        "turns": 4,
+        "tokens": 1000,
+        "correct": true
+      },
+      "control": {
+        "cost": 0.045,
+        "turns": 6,
+        "tokens": 1500,
+        "correct": false
+      },
+      "rework": {
+        "cost": 0.028
+      }
+    },
+    {
+      "task": "supersedes_edge",
+      "kind": "convention",
+      "treat": {
+        "cost": 0.05,
+        "turns": 5,
+        "tokens": 1000,
+        "correct": true
+      },
+      "control": {
+        "cost": 0.03,
+        "turns": 4,
+        "tokens": 1500,
+        "correct": false
+      },
+      "rework": {
+        "cost": 0.041
+      }
+    },
+    {
+      "task": "repo_mounted_dsn",
+      "kind": "quantitative",
+      "treat": {
+        "cost": 0.028,
+        "turns": 3,
+        "tokens": 1000,
+        "correct": null
+      },
+      "control": {
+        "cost": 0.049,
+        "turns": 5,
+        "tokens": 1500,
+        "correct": null
+      },
+      "rework": null
+    }
+  ]
+}

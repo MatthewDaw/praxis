@@ -1,122 +1,103 @@
-# RESULTS — PR-knowledge dogfood experiment
+# RESULTS — PR-knowledge dogfood experiment (v2)
 
-**Verdict (R8 go-gate): NO-GO — *not proven yet; iterate the apparatus*, not *knowledge doesn't help*.**
-The strict gate (first-pass token/turn + footgun-flip) fails on apparatus weakness, but the
-[cost-to-correct](#cost-to-correct--the-first-pass-metric-understates-the-control) measurement points
-GO-ward — knowledge-upfront was cheaper than knowledge-as-rework on every task measured.
+**Verdict (R8 go-gate): NO-GO — but the bet is better-supported than v1.** A *valid* footgun
+(`yoyo_lazy_import`) flipped cleanly, and the cost-to-correct metric favors knowledge on **3 of 4
+tasks**. The NO-GO is driven by footgun-construct variance (`umap`) and one null (the repo-exploration
+lever), not by evidence that knowledge is unhelpful.
 
-Run: 6 cases × 3 trials (18 real Claude Code sessions, subscription, `whole_file` reader, sealed box,
-no repo, Bash/web disallowed). Raw per-trial numbers: [RESULTS.data.json](RESULTS.data.json). Re-run
-with `uv run python knowledge/evals/cases/dom/pr_knowledge_dogfood/analyze.py --trials 3`.
+Run: 4 tasks × 3 trials × (treatment + control + rework-when-control-wrong) on the real
+`ClaudeCodeRunner` (subscription, `whole_file` reader, sealed box). Raw per-trial data:
+[RESULTS.data.json](RESULTS.data.json). Re-run:
+`uv run python knowledge/evals/cases/dom/pr_knowledge_dogfood/analyze.py --trials 3`.
 
-## Per-task results
+## What changed from v1
 
-| Task | Type | Footgun flip | Treat tokens | Control tokens | Token Δ | Treat turns | Control turns |
-|------|------|:---:|---|---|---|---|---|
-| `umap_neighbors`  | footgun (strong) | ✅ **yes** | 1204 ± 10 | **2827 ± 504** | **−1623** | 4.3 | 6.0 |
-| `phoenix_tracing` | footgun (invalid) | ❌ no | 1274 ± 80 | 975 ± 73 | +299 | 5.0 | 3.0 |
-| `supersedes_edge` | convention | ✅ yes | 1535 ± 134 | 949 ± 263 | +586 | 5.0 | 5.0 |
+v1 (commit history) was a strict NO-GO, apparatus-attributed. v2 acted on that diagnosis:
 
-- **Footgun "avoid" rates** (treatment avoided / control exhibited the footgun, over 3 trials each):
-  `umap_neighbors` 3/3 vs 2/3 · `phoenix_tracing` 3/3 vs **0/3** · `supersedes_edge` 3/3 vs 3/3.
-- "Tokens" = `input_tokens + output_tokens`, but the appended-knowledge block is **cache-read** and not
-  counted in `input_tokens` (~tens of tokens/run), so the figure reflects **output volume**, not full
-  prompt cost. See limitations.
+- **Replaced the invalid `phoenix_tracing` footgun** (its control never hit the footgun) with
+  **`yoyo_lazy_import`**, grounded in the repo's real migration convention.
+- **Added `repo_mounted_dsn`**, a repo-mounted task (real `db.py` in the box) to exercise the parent
+  proposal's "fewer exploration turns" lever, which the no-repo sealed-box tasks can't.
+- **Re-gated on cost-to-correct** (`cost_usd`: treatment vs control-first-pass + rework) instead of
+  first-pass token volume, which v1 showed is biased toward the control (it credits the control's wrong
+  output as free).
+
+## Per-task results (cost-to-correct, USD)
+
+| Task | Type | Footgun flip | Treat cost | Control cost-to-correct | Δ | Treat turns | Ctrl turns |
+|------|------|:---:|---:|---:|---:|---:|---:|
+| `umap_neighbors`  | footgun (variance-prone) | ❌ no | **0.046** ± .003 | 0.073 ± .023 | **−0.027** | 4.0 | 6.7 |
+| `yoyo_lazy_import`| footgun (strong) | ✅ **yes** | **0.053** ± .006 | 0.091 ± .006 | **−0.038** | 3.3 | 4.7 |
+| `supersedes_edge` | convention | — | **0.060** ± .003 | 0.086 ± .031 | **−0.026** | 7.0 | 4.7 |
+| `repo_mounted_dsn`| quantitative | — | 0.045 ± .003 | **0.042** ± .000 | +0.004 | 3.7 | 3.0 |
+
+Footgun exhibit rates (control exhibited / treatment avoided, 3 trials): `umap` **0/3** vs 3/3 ·
+`yoyo` **3/3** vs 3/3.
 
 ## What each task showed
 
-### `umap_neighbors` — a clean, textbook win (both signals)
+### `yoyo_lazy_import` — the clean win (valid footgun, both signals)
 
-The one task where the footgun was genuinely blind-tempting **and** the curated fact was decisive:
+The footgun that v1's phoenix wasn't. All 3 control trials wrote a **top-level `from knowledge...`
+import** (the universal Python instinct) — which raises `ModuleNotFoundError` under yoyo's loader; all
+3 treatment trials deferred the import inside the step, as the curated fact instructs. A clean **flip**
+(control exhibit 3/3, treatment avoid 3/3), and treatment was **cheaper to-correct** ($0.053 vs $0.091
+once each wrong control is charged for its rework). This is the textbook dual-signal result, on a
+footgun whose control reliably fires.
 
-- **Flip:** all 3 treatment trials lowered `n_neighbors` off 15; 2 of 3 control trials left it at 15
-  (the 3rd found the fix blind). The agent avoided a documented footgun it otherwise hits.
-- **Cost:** the control burned **~2.3× the output tokens** (2827 vs 1204) and more turns (6.0 vs 4.3)
-  flailing through the clustering code without the fact — one blind trial ran 9 turns / 2807 tokens and
-  *still* didn't fix it. With the fact, the agent went straight to the one-line change.
+### `umap_neighbors` — footgun validity is variance-prone (demote), but cost still favors knowledge
 
-This is exactly the "watched footgun-avoidance **and** measurable token/turn reduction" R8 asks for.
+This run the blind control lowered `n_neighbors` **every time** (exhibit 0/3) — so no flip. In v1 it
+exhibited 2/3. The footgun is real but only sometimes blind-tempting; at n=3 the flip is a coin-flip,
+which fails the validity discipline (exhibit-rate ≥ ~2/3). **Demote it** (or redesign the fixture so the
+blind fix is less reachable). Notably, the **cost signal survives the non-flip**: the blind control
+flailed far more even when it eventually got it right — one control trial burned 6995 tokens / 7 turns
+to reach the same one-line fix the treatment made in 4 turns / 1098 tokens — so treatment was still
+~37% cheaper to-correct.
 
-### `phoenix_tracing` — an invalid footgun construct (proves nothing)
+### `supersedes_edge` — knowledge cheaper to-correct
 
-The control exhibited the footgun **0 / 3 times**: every blind agent already placed `setup_tracing()`
-at module-import scope. The "put startup wiring in `__main__`" trap simply isn't tempting to a competent
-agent here. So there was no footgun for the treatment to "avoid," and no flip. The treatment also cost
-*more* (1274 vs 975 tokens; 5 vs 3 turns) — on an already-easy task, the 13-fact block is pure overhead.
+Control chose the wrong edge name 2/3 (reworked); treatment used `supersedes` 3/3. Cheaper to-correct
+($0.060 vs $0.086). Convention knowledge both corrects the artifact and pays for itself once the
+control's rework is counted.
 
-This is a **measurement-construct failure flagged in advance** (see the README validity caveat), not
-evidence about knowledge value. The positive-assertion control surfaced it loudly as 3× control FAIL;
-under the plan's original `xfail` control these would have been silent XPASSes masquerading as wins.
+### `repo_mounted_dsn` — the exploration-savings lever did **not** show (honest null)
 
-### `supersedes_edge` — knowledge corrects behavior, and is cheaper *to-correct*
+The one task that mounts real repo code (`db.py`). The hypothesis: a cold agent must *read* it to learn
+the DSN convention, while the fact-equipped treatment skips that. It didn't pan out — treatment was
+**not** cheaper ($0.045 vs $0.042) and took *more* turns (3.7 vs 3.0). One mounted ~100-line file isn't
+enough read-cost for a 13-fact context block to save against; the treatment paid for the larger prompt
+without a big enough reading shortcut. The lever may need a heavier mount (several files, answer not in
+the obvious one) or may simply be marginal in a Read-only box.
 
-Knowledge reliably installed the project's `supersedes` edge name (treatment 3/3; control 0/3 — blind
-agents chose `replaces` / `replaced_by` / etc.). A clean **correctness** flip. On *first-pass* tokens the
-treatment looked more expensive (1535 vs 949). **But that comparison is unfair** — the control's cheap
-first pass produced a *wrong* artifact, whose cost is the downstream review-and-fix loop, which the
-first-pass number bills to nobody. Counting it flips the result: see *Cost-to-correct* below.
+## Diagnosis
 
-## Cost-to-correct — the first-pass metric understates the control
-
-The 18-run table measures **first-pass** tokens. But a control that produces a *wrong* artifact isn't
-done — the error gets caught and fixed, and that rework is a real cost the first-pass number hides. The
-honest comparison is **cost-to-correct**: knowledge delivered *upfront* (treatment, one pass) vs the
-*same* knowledge delivered *late* as review feedback (control's wrong first pass **+** a corrective
-fix turn). Measured directly (`rework_cost.py`, 2 trials/task; the fix turn mounts the control's wrong
-file and supplies the fact as review feedback):
-
-| Task | Treatment (upfront) | Control first-pass | + rework to fix | **Control total** | Winner |
-|------|---:|---:|---:|---:|---|
-| `supersedes_edge` | **1862** | 935 / 857 | +1314 / +1624 | **2249 / 2481** | treatment ~20–30% cheaper |
-| `umap_neighbors`  | **1496** | 2409 / 3169 | +895 / +662 | **3304 / 3831** | treatment ~2.2–2.6× cheaper |
-
-Every fix turn succeeded (the late fact fixed the artifact), so this is a fair like-for-like: same
-knowledge, only the *timing* differs. **Once rework is counted, knowledge-upfront is cheaper on every
-task measured** — including `supersedes_edge`, which the first-pass metric had scored as knowledge
-*costing more*. The first-pass token comparison is not just noisy in the sealed box; it is **biased
-toward the control**, because it credits the control's wrong output as if it were free.
-
-Reproduce: `uv run python knowledge/evals/cases/dom/pr_knowledge_dogfood/rework_cost.py`.
-
-## Diagnosis (per plan U5: weak curation vs. genuinely-unhelpful knowledge?)
-
-**Neither.** The gap is not weak curation (the facts are accurate and the neutralizing facts were
-present and injected — verified) and not genuinely-unhelpful knowledge (where the construct was valid —
-`umap_neighbors` — knowledge was *decisively* helpful on both signals). The NO-GO is driven by two
-**apparatus** weaknesses:
-
-1. **Two of three task constructs were weak.** `phoenix_tracing` was not blind-tempting (invalid
-   footgun); `supersedes_edge` measures output correctness, not cost. Only `umap_neighbors` was a valid
-   dual-signal footgun — and it cleanly passed.
-2. **The first-pass token metric is biased toward the control (now measured, not just suspected).**
-   The parent proposal's savings lever is *fewer repo-exploration turns*, but these cases mount no repo
-   and forbid Bash/web — there is little exploration to shortcut, so absent a footgun-induced flail
-   (umap) the injected fact block tends to *add* first-pass output rather than remove it. Worse, the
-   first-pass count credits the control's *wrong* output as free: the cost-to-correct measurement above
-   shows knowledge-upfront is actually **cheaper on every task once rework is counted** — the gate's
-   metric scored `supersedes_edge` exactly backwards. Re-score on `cost_usd` / `num_turns` /
-   footgun-flips / cost-to-correct.
+- **The cost-to-correct metric works** and favors knowledge on 3/4 tasks — the v1 methodological fix
+  landed. It is robust to the first-pass bias that scored v1's `supersedes` backwards.
+- **A valid footgun now flips cleanly** (`yoyo`), which v1 never achieved — the bet's core "watched
+  footgun-avoidance" signal is demonstrated on a reliable construct.
+- **Two gaps remain, both apparatus:** (1) `umap`'s footgun is too variance-prone at n=3 to gate on;
+  (2) the repo-exploration lever isn't demonstrated by a single-file mount.
 
 ## Recommendation
 
-**Do not start the ingestion pipeline on this result — but do not kill the bet either.** Iterate the
-apparatus, then re-decide:
+**Trending toward GO, not yet clean-green.** The bet now has a valid-footgun flip *and* a working
+cost-to-correct signal favoring knowledge broadly — materially stronger than v1. Before declaring GO:
 
-- Replace `phoenix_tracing` with a second *genuinely blind-tempting* footgun (validity-gate it: confirm
-  control exhibit-rate ≥ ~2/3 before counting it).
-- Add at least one **repo-mounted** task (clone a real Praxis subdir, allow Read/Grep) so the
-  exploration-savings lever the parent proposal actually bets on is exercised — the sealed box can't
-  show it.
-- Make **cost-to-correct** the primary cost metric (control first-pass + rework vs treatment), with
-  `cost_usd` for the per-run figure (it captures cache-read input the token count misses) and
-  `num_turns` / footgun-flip as co-signals. The first-pass token count is biased toward the control and
-  should not gate the decision.
-- Keep `umap_neighbors` as the proven-valid template for what a discriminating footgun task looks like.
+- **Demote `umap_neighbors`** to a non-gating cost task (keep it for the cost signal; stop counting its
+  flip), and add **one more reliably-blind-tempting footgun** alongside `yoyo` so the gate rests on ≥2
+  valid flips, not one.
+- **Strengthen `repo_mounted_dsn`** (mount several files; make the answer require reading) or accept
+  that the sealed Read-only box understates the exploration lever and test it in a repo-mounted agent
+  with Grep/Bash instead.
+- With those, re-run; if the cost-to-correct + ≥2 valid flips hold, that is a GO for the
+  [auto-distill slice](../../../../../docs/proposals/2026-06-24-pr-knowledge-auto-distill-slice.md).
 
 ## Limitations
 
-- n = 3 trials/arm; the `umap` dual-signal is one valid task, not a suite. `umap` control variance is
-  high (σ ≈ 504 tokens) — directionally unambiguous here, but a re-run should raise the trial count.
-- `input_tokens` excludes the cache-read knowledge block, so "tokens" ≈ output volume (see above).
-- No rubric judge was used (deterministic footgun/convention checks + token/turn carried both signals),
-  so output *quality* beyond the specific checked pattern is unmeasured.
+- n = 3 trials/arm. `umap` and `supersedes` control costs are high-variance (σ up to $0.03); `yoyo`
+  is tight. A gating re-run should raise the trial count on the cost comparison.
+- `cost_usd` is the per-run subscription cost the CLI reports; it captures the cache-read prompt the raw
+  token count misses, which is why it (not first-pass tokens) is the gate metric.
+- No rubric judge — deterministic footgun/convention checks + cost carried the signals; output quality
+  beyond the checked pattern is unmeasured.
