@@ -3,6 +3,10 @@
 "merge": false,
 "merged_text": ""
 },
+"730976ca2b559ba6286394296dcf9582f126515fd8a82a55959bda27cb7c03e1": {
+"merge": true,
+"merged_text": "Daily completion: a submission for date D is completed when the daily rep is submitted and all three check-in ratings are submitted; the habit checklist does not affect completion, and this is implemented as team_app/completion.py:completion_status(submission), returning True only when the rep is present and all three ratings are non-None, verified green by tests/test_completion.py."
+},
 "beed7e66eb521981b23e434928ac4cfb9eb25bc0f44ff110262deba999a114cb": {
 "merge": true,
 "merged_text": "The user likes cheese pizza and loves chicken pizza."
