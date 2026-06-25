@@ -7,7 +7,6 @@ id: episodic_reserved_tag_integrity
 component: knowledge_graph
 substrate: vector
 embedder: cached
-xfail: "H4 not built — category='episodic' is not reserved; a non-episode write can silently use it"
 
 seeded_insight:
   via_ingestor: []

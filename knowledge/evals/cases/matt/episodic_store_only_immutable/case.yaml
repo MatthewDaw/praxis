@@ -8,7 +8,6 @@ id: episodic_store_only_immutable
 component: knowledge_graph
 substrate: vector
 embedder: cached
-xfail: "H4 not built — no store-only episode lane (record_episode); episodes atomize/merge/contradict like semantic facts"
 
 seeded_insight:
   via_ingestor: []

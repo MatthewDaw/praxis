@@ -7,7 +7,6 @@ id: context_excludes_episodic
 component: knowledge_graph
 substrate: vector
 embedder: cached
-xfail: "H2 not built — search()/_where is include-only; no exclude_categories predicate"
 
 seeded_insight:
   via_ingestor: []

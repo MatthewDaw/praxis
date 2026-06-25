@@ -8,7 +8,6 @@ id: episodic_stale_not_in_context
 component: knowledge_graph
 substrate: vector
 embedder: cached
-xfail: "H4/H2 not built — no store-only episode producer and no exclude_categories on search"
 
 seeded_insight:
   via_ingestor: []

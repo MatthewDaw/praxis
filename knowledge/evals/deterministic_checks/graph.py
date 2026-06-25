@@ -526,7 +526,7 @@ def context_excludes_episodic(
     graph, conn, org = _episodic_graph()
     try:
         graph.write(semantic_text, state="active")
-        graph.write(episode_text, state="active", category="episodic")
+        graph.record_episode(episode_text)
         try:
             cos = graph.search(query, top_k=5, exclude_categories=["episodic"])
             kw = graph.search(query, top_k=5, exclude_categories=["episodic"], hybrid=True)

@@ -98,6 +98,12 @@ DERIVED_FROM_EDGE = "derived_from"
 STALE_DERIVED_EDGE = "derived_source_invalidated"
 _MAX_DERIVATION_DEPTH = 25
 
+# Episodic memory (gap H4). The reserved category that routes a write down the
+# store-only lane (whole, append-only, immutable — never distilled/deduped/
+# contradicted) and out of semantic recall (H2). Load-bearing: a non-episode write
+# may NOT use it (see `write`), and episodes are produced only via `record_episode`.
+EPISODIC_CATEGORY = "episodic"
+
 # Columns copied verbatim between `facts` and `cached_facts` for snapshot
 # save/load (everything except the cache_key, which is stamped per copy).
 _FACT_COPY_COLS = (
@@ -325,6 +331,14 @@ class PostgresVectorGraph(SearchableGraph):
         content = content.strip()
         if not content:
             return None
+        # Reserved-tag integrity (H4 §1c): the episodic category routes to the
+        # store-only lane and out of recall, so a normal semantic write must never
+        # use it — else the fact silently vanishes from retrieval. Episodes are
+        # produced only via record_episode (which bypasses this path).
+        if category == EPISODIC_CATEGORY:
+            raise ValueError(
+                f"category {EPISODIC_CATEGORY!r} is reserved for episodes; use record_episode()"
+            )
         decision = WriteDecision(text=content, state="active" if state == "active" else "proposed")
         if tabular:
             decision.flags.append(TABULAR_FLAG)
@@ -366,6 +380,47 @@ class PostgresVectorGraph(SearchableGraph):
         else:
             fact_id = self._add(decision)
         self._persist_contradictions(fact_id, decision)
+        if derived_from:
+            self.record_derivation(fact_id, derived_from)
+        return fact_id
+
+    def record_episode(
+        self,
+        text: str,
+        *,
+        alternatives: list[str] | None = None,
+        outcome: str = "pending",
+        derived_from: list[str] | None = None,
+        decided_at: str | None = None,
+    ) -> str | None:
+        """Append an episode (a decision + its rationale) — store-only (gap H4).
+
+        An episode is the *storage shape* of a fact but must NOT run the semantic
+        write pipeline: no distillation (stored whole, one row), no dedup/merge
+        (decisions are a timeline), no contradiction/supersession (a decision stays
+        true forever; reversal is recorded as ``outcome``). So this writes the row
+        directly via ``_add`` — bypassing the policy entirely — tagged
+        ``category="episodic"`` with a ``meta.episode`` block, plus ``derived_from``
+        edges (H5) to the facts the decision was based on.
+
+        Empty text is a no-op (returns ``None``). Returns the new fact id.
+        """
+        text = text.strip()
+        if not text:
+            return None
+        decision = WriteDecision(text=text, state="active")
+        decision.source = None
+        decision.scope = None
+        decision.category = EPISODIC_CATEGORY
+        decision.meta = {
+            "episode": {
+                "decided_at": decided_at or datetime.now(timezone.utc).isoformat(),
+                "alternatives": list(alternatives or []),
+                "outcome": outcome,
+            }
+        }
+        decision.embedding = self._embed(text)
+        fact_id = self._add(decision)  # store-only: no distill/dedup/augment/conflict
         if derived_from:
             self.record_derivation(fact_id, derived_from)
         return fact_id
@@ -555,9 +610,14 @@ class PostgresVectorGraph(SearchableGraph):
         state: str | None = "active",
         as_of: datetime | None = None,
         hybrid: bool = False,
+        exclude_categories: list[str] | None = None,
     ) -> list[SearchHit]:
         """Retrieve relevant facts. Pure pgvector cosine by default; ``hybrid=True``
         additionally fuses a BM25 keyword branch.
+
+        ``exclude_categories`` (gap H2) omits rows whose ``category`` is in the list
+        (NULL category is never excluded), applied to BOTH branches via ``_where`` —
+        e.g. ``["episodic"]`` keeps decision logs out of semantic recall.
 
         Borrows Graphiti/Zep's search stack. Two indexed branches run over the same
         tenant/state/scope/filter predicate:
@@ -591,13 +651,16 @@ class PostgresVectorGraph(SearchableGraph):
         qvec = _fit(self._embed(query))
         if not hybrid:
             return self._search_vec(
-                qvec, top_k=top_k, filters=filters, scope=scope, state=state, as_of=as_of
+                qvec, top_k=top_k, filters=filters, scope=scope, state=state, as_of=as_of,
+                exclude_categories=exclude_categories,
             )
         sem = self._search_vec(
-            qvec, top_k=_FUSION_BRANCH_N, filters=filters, scope=scope, state=state, as_of=as_of
+            qvec, top_k=_FUSION_BRANCH_N, filters=filters, scope=scope, state=state, as_of=as_of,
+            exclude_categories=exclude_categories,
         )
         kw = self._search_keyword(
-            query, top_k=_FUSION_BRANCH_N, filters=filters, scope=scope, state=state, as_of=as_of
+            query, top_k=_FUSION_BRANCH_N, filters=filters, scope=scope, state=state, as_of=as_of,
+            exclude_categories=exclude_categories,
         )
         return _rrf_fuse(sem, kw, top_k=top_k)
 
@@ -608,6 +671,7 @@ class PostgresVectorGraph(SearchableGraph):
         scope: str | None,
         state: str | None,
         as_of: datetime | None = None,
+        exclude_categories: list[str] | None = None,
     ) -> tuple[str, list[object]]:
         """The shared tenant/cache/state/scope/filter predicate for a search branch.
 
@@ -643,6 +707,10 @@ class PostgresVectorGraph(SearchableGraph):
         for key, value in (filters or {}).items():
             sql += f" AND {key} = %s"
             params.append(value)
+        # H2 exclusion: omit listed categories (NULL category is never excluded).
+        if exclude_categories:
+            sql += " AND (category IS NULL OR category <> ALL(%s))"
+            params.append(list(exclude_categories))
         return sql, params
 
     def _search_vec(
@@ -654,8 +722,12 @@ class PostgresVectorGraph(SearchableGraph):
         scope: str | None = None,
         state: str | None = "active",
         as_of: datetime | None = None,
+        exclude_categories: list[str] | None = None,
     ) -> list[SearchHit]:
-        where, where_params = self._where(filters=filters, scope=scope, state=state, as_of=as_of)
+        where, where_params = self._where(
+            filters=filters, scope=scope, state=state, as_of=as_of,
+            exclude_categories=exclude_categories,
+        )
         # Outcome/trust weighting: rank on cosine similarity scaled by a per-fact
         # utility multiplier derived from recorded outcomes (mirrors Fact.utility) —
         # neutral 1.0 until outcomes exist (no behavior change for un-scored facts),
@@ -699,6 +771,7 @@ class PostgresVectorGraph(SearchableGraph):
         scope: str | None = None,
         state: str | None = "active",
         as_of: datetime | None = None,
+        exclude_categories: list[str] | None = None,
     ) -> list[SearchHit]:
         """BM25-style keyword branch: IDF-weighted full-text match over ``text_tsv``.
 
@@ -717,7 +790,10 @@ class PostgresVectorGraph(SearchableGraph):
         the cosine branch alone). Score is the summed IDF; fusion ranks on position,
         so its scale never needs to match cosine.
         """
-        where, where_params = self._where(filters=filters, scope=scope, state=state, as_of=as_of)
+        where, where_params = self._where(
+            filters=filters, scope=scope, state=state, as_of=as_of,
+            exclude_categories=exclude_categories,
+        )
         sql = (
             "WITH params AS (SELECT tsvector_to_array(to_tsvector('english', %s)) AS qlex), "
             "docs AS ("
@@ -1349,7 +1425,13 @@ class PostgresVectorGraph(SearchableGraph):
         conflict both see pending facts, so this searches all states.
         """
         decision.embedding = self._embed(decision.text)
-        hits = self._search_vec(_fit(decision.embedding), top_k=self.recall_k, state=None)
+        # H2/H4 write-side: a semantic write must never recall an episode as a
+        # candidate (so it is never merged-with or contradiction-flagged against a
+        # decision log). Episodes run no recall of their own (store-only lane).
+        hits = self._search_vec(
+            _fit(decision.embedding), top_k=self.recall_k, state=None,
+            exclude_categories=[EPISODIC_CATEGORY],
+        )
         decision.candidates = [h for h in hits if h.score >= self.recall_floor]
 
     def _recall_semantic(self, decision: WriteDecision) -> None:
@@ -1364,7 +1446,8 @@ class PostgresVectorGraph(SearchableGraph):
         if decision.embedding is None:
             decision.embedding = self._embed(decision.text)
         hits = self._search_vec(
-            _fit(decision.embedding), top_k=self.semantic_recall_k, state=None
+            _fit(decision.embedding), top_k=self.semantic_recall_k, state=None,
+            exclude_categories=[EPISODIC_CATEGORY],  # never recall an episode (see _recall)
         )
         decision.semantic_candidates = [
             h for h in hits if h.score >= self.semantic_recall_floor
