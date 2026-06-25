@@ -637,6 +637,32 @@
 "pole": "testing-rigor"
 }
 },
+"86997572aa5e90a3458238fd62b57dd571751058451dd68a6176e78369a2984a": {
+"claims": [
+{
+"attribute": "tax rate",
+"functional": true,
+"subject": "single filers",
+"value": "22"
+},
+{
+"attribute": "tax range lower limit",
+"functional": true,
+"subject": "income",
+"value": "48475"
+},
+{
+"attribute": "tax range upper limit",
+"functional": true,
+"subject": "income",
+"value": "103350"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "8733919c65308908efb7ddb7d2d0ae3d76368528592e24760207ed05a02732c0": {
 "claims": [
 {
@@ -713,6 +739,38 @@
 "pole": "tabs"
 }
 },
+"9286663d9a9d817890d314f380b167bc52a3c81040fae396e6434f8887184b7e": {
+"claims": [
+{
+"attribute": "tax rate",
+"functional": true,
+"subject": "income",
+"value": "12"
+},
+{
+"attribute": "tax range lower limit",
+"functional": true,
+"subject": "income",
+"value": "11925"
+},
+{
+"attribute": "tax range upper limit",
+"functional": true,
+"subject": "income",
+"value": "48475"
+},
+{
+"attribute": "tax range",
+"functional": false,
+"subject": "single filers",
+"value": "income between $11925 and $48475"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "9710910be22216754fa4d3edfe6eb21dd66f99e1dbc7b0c4541585ebfd98e090": {
 "claims": [
 {
@@ -720,6 +778,38 @@
 "functional": true,
 "subject": "user",
 "value": "chicken pizza"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"9b25a02d91283dc835303700b5ecfefe6d4b933fb881e3f546f7be68e3715cc7": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "single"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "10%"
+},
+{
+"attribute": "income threshold",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "11925"
 }
 ],
 "stance": {
