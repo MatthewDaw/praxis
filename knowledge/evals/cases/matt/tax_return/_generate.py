@@ -485,25 +485,34 @@ RULESET_DOCS = [
 ]
 
 
+def _one_sentence(*terms: str) -> str:
+    """Regex matching a single sentence (no ``.``/newline within) that contains every
+    TERM, in ANY order. Each term is a regex fragment; zero-width lookaheads from the
+    sentence start assert each appears before the next period, so the match is
+    order-independent. This is essential because the distiller phrases the same fact
+    many ways — "Single filers are taxed at 22% on $48,475-..." (label first) and "The
+    22% rate applies to ... for single filers" (label last) must both match — without
+    that, a present-and-correct fact fails the check purely on word order.
+    """
+    lookaheads = "".join(rf"(?=[^.\n]*?(?:{t}))" for t in terms)
+    return rf"(?is)(?:^|[.\n])\s*{lookaheads}[^.\n]*"
+
+
 def labeled_bracket(label_alt: str, rate_pct: int, figure: int) -> str:
-    """Regex for one distilled bracket fact binding a filing-status LABEL to a
-    RATE and a characteristic dollar FIGURE, within a single sentence (``[^.]``).
+    """Regex for one distilled bracket fact binding a filing-status LABEL to a RATE
+    and a characteristic dollar FIGURE within a single sentence, order-independent.
     Binding the status word is essential: a bracket's *numbers* survive via a
     same-range twin in another status even when this status's fact is dropped, so
     only a label-bound check catches the silent collapse.
     """
-    num = comma_optional(figure)
-    return (
-        rf"(?is)(?:{label_alt})[^.]{{0,200}}?{rate_pct}\s*(?:%|percent)"
-        rf"[^.]{{0,110}}?{num}"
-    )
+    return _one_sentence(label_alt, rf"{rate_pct}\s*(?:%|percent)", comma_optional(figure))
 
 
 def labeled_deduction(label_alt: str, amount: int) -> str:
     """Regex binding a filing-status LABEL to its standard-deduction AMOUNT in one
-    sentence. Single and MFS are both $15,750, so the label binding is what keeps
-    a collision from passing on the bare number."""
-    return rf"(?is)deduction[^.]{{0,80}}?(?:{label_alt})[^.]{{0,40}}?{comma_optional(amount)}"
+    sentence (order-independent). Single and MFS are both $15,750, so the label
+    binding is what keeps a collision from passing on the bare number."""
+    return _one_sentence("deduction", label_alt, comma_optional(amount))
 
 
 # Status label alternations, and the full TY2025 ladders as
@@ -514,7 +523,7 @@ def labeled_deduction(label_alt: str, amount: int) -> str:
 # so each row is a collision candidate and each status's row is asserted distinctly.
 STATUS_LABELS_RE = {
     "single": r"single",
-    "mfj": r"married filing jointly|\bmfj\b",
+    "mfj": r"married filing jointly|filing jointly|\bmfj\b",
     "mfs": r"married filing separately|filing separately|\bmfs\b",
     "hoh": r"head of household|\bhoh\b",
 }
@@ -594,6 +603,15 @@ def build_ruleset_distillation_case() -> dict:
         "conflict_model": "openai/gpt-4o-mini",
         "reader": "retrieving",
         "reader_top_k": 0,
+        # This is a RECALL-integrity case: the prompt asks for the COMPLETE ruleset, so
+        # every salient fact must surface, not just those nearest the single best hit.
+        # The default rel_ratio=0.60 shape filter is a precision tool — it drops a fact
+        # scoring under 60% of the top hit even when it is plainly on-topic (e.g.
+        # "Taxable income is never less than zero." scores 0.317 vs a 0.68 top, so the
+        # 0.41 cutoff drops it). Disable rel_ratio and let the abs_floor=0.30 existence
+        # gate (kept at default) be the relevance guard; the case has no negative
+        # control to protect, and every check is a must-be-present recall assertion.
+        "reader_rel_ratio": 0.0,
         "seed_prompt": (
             "Give the complete TY2025 federal Form 1040 rules: the standard "
             "deduction and the full 10%-37% ordinary-income bracket schedule for "

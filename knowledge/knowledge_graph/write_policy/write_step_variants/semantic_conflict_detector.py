@@ -30,6 +30,9 @@ import json
 
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
 from knowledge.knowledge_graph.write_policy.write_policy_def import WriteDecision
+from knowledge.knowledge_graph.write_policy.write_step_variants.filing_status import (
+    distinct_tax_facts,
+)
 from knowledge.llm.llm_def import ChatMessage
 from knowledge.llm.parent_llm import Llm
 from knowledge.llm.verdict_cassette import VerdictCassette
@@ -136,6 +139,11 @@ class SemanticConflictDetector(WriteStep):
         for hit in decision.semantic_candidates:
             fact = hit.fact
             if fact.id in flagged:
+                continue
+            # Tax-identity guard: never let the paraphrase judge rule two distinct
+            # tax-bracket rungs a contradiction (adjacent rungs, or a rate mapped to
+            # different ranges across statuses, read as a clash but are independent facts).
+            if distinct_tax_facts(decision.text, fact.text):
                 continue
             if incoming_slots and any(
                 c.functional and c.slot in incoming_slots for c in fact.claims

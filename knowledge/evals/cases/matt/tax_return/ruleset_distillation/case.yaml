@@ -16,6 +16,7 @@ merge_model: openai/gpt-4o-mini
 conflict_model: openai/gpt-4o-mini
 reader: retrieving
 reader_top_k: 0
+reader_rel_ratio: 0.0
 seed_prompt: 'Give the complete TY2025 federal Form 1040 rules: the standard deduction and the full 10%-37% ordinary-income bracket schedule for every filing status (Single, Married filing jointly, Married filing separately, Head of household), how the per-bracket tax is summed, which W-2 boxes map to which 1040 lines, and the line-by-line flow from wages through taxable income to the refund or amount owed.'
 seeded_insight:
   via_ingestor:
@@ -49,131 +50,131 @@ deterministic_checks:
 - name: recall_std_deduction_single
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)deduction[^.]{0,80}?(?:single)[^.]{0,40}?\$?15[,]?750
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:deduction))(?=[^.\n]*?(?:single))(?=[^.\n]*?(?:\$?15[,]?750))[^.\n]*
 - name: recall_std_deduction_mfj
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)deduction[^.]{0,80}?(?:married filing jointly|\bmfj\b)[^.]{0,40}?\$?31[,]?500
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:deduction))(?=[^.\n]*?(?:married filing jointly|filing jointly|\bmfj\b))(?=[^.\n]*?(?:\$?31[,]?500))[^.\n]*
 - name: recall_std_deduction_mfs
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)deduction[^.]{0,80}?(?:married filing separately|filing separately|\bmfs\b)[^.]{0,40}?\$?15[,]?750
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:deduction))(?=[^.\n]*?(?:married filing separately|filing separately|\bmfs\b))(?=[^.\n]*?(?:\$?15[,]?750))[^.\n]*
 - name: recall_std_deduction_hoh
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)deduction[^.]{0,80}?(?:head of household|\bhoh\b)[^.]{0,40}?\$?23[,]?625
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:deduction))(?=[^.\n]*?(?:head of household|\bhoh\b))(?=[^.\n]*?(?:\$?23[,]?625))[^.\n]*
 - name: recall_bracket_single_10pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:single)[^.]{0,200}?10\s*(?:%|percent)[^.]{0,110}?\$?11[,]?925
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:single))(?=[^.\n]*?(?:10\s*(?:%|percent)))(?=[^.\n]*?(?:\$?11[,]?925))[^.\n]*
 - name: recall_bracket_single_12pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:single)[^.]{0,200}?12\s*(?:%|percent)[^.]{0,110}?\$?48[,]?475
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:single))(?=[^.\n]*?(?:12\s*(?:%|percent)))(?=[^.\n]*?(?:\$?48[,]?475))[^.\n]*
 - name: recall_bracket_single_22pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:single)[^.]{0,200}?22\s*(?:%|percent)[^.]{0,110}?\$?103[,]?350
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:single))(?=[^.\n]*?(?:22\s*(?:%|percent)))(?=[^.\n]*?(?:\$?103[,]?350))[^.\n]*
 - name: recall_bracket_single_24pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:single)[^.]{0,200}?24\s*(?:%|percent)[^.]{0,110}?\$?197[,]?300
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:single))(?=[^.\n]*?(?:24\s*(?:%|percent)))(?=[^.\n]*?(?:\$?197[,]?300))[^.\n]*
 - name: recall_bracket_single_32pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:single)[^.]{0,200}?32\s*(?:%|percent)[^.]{0,110}?\$?250[,]?525
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:single))(?=[^.\n]*?(?:32\s*(?:%|percent)))(?=[^.\n]*?(?:\$?250[,]?525))[^.\n]*
 - name: recall_bracket_single_35pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:single)[^.]{0,200}?35\s*(?:%|percent)[^.]{0,110}?\$?626[,]?350
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:single))(?=[^.\n]*?(?:35\s*(?:%|percent)))(?=[^.\n]*?(?:\$?626[,]?350))[^.\n]*
 - name: recall_bracket_single_37pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:single)[^.]{0,200}?37\s*(?:%|percent)[^.]{0,110}?\$?626[,]?350
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:single))(?=[^.\n]*?(?:37\s*(?:%|percent)))(?=[^.\n]*?(?:\$?626[,]?350))[^.\n]*
 - name: recall_bracket_mfj_10pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:married filing jointly|\bmfj\b)[^.]{0,200}?10\s*(?:%|percent)[^.]{0,110}?\$?23[,]?850
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:married filing jointly|filing jointly|\bmfj\b))(?=[^.\n]*?(?:10\s*(?:%|percent)))(?=[^.\n]*?(?:\$?23[,]?850))[^.\n]*
 - name: recall_bracket_mfj_12pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:married filing jointly|\bmfj\b)[^.]{0,200}?12\s*(?:%|percent)[^.]{0,110}?\$?96[,]?950
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:married filing jointly|filing jointly|\bmfj\b))(?=[^.\n]*?(?:12\s*(?:%|percent)))(?=[^.\n]*?(?:\$?96[,]?950))[^.\n]*
 - name: recall_bracket_mfj_22pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:married filing jointly|\bmfj\b)[^.]{0,200}?22\s*(?:%|percent)[^.]{0,110}?\$?206[,]?700
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:married filing jointly|filing jointly|\bmfj\b))(?=[^.\n]*?(?:22\s*(?:%|percent)))(?=[^.\n]*?(?:\$?206[,]?700))[^.\n]*
 - name: recall_bracket_mfj_24pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:married filing jointly|\bmfj\b)[^.]{0,200}?24\s*(?:%|percent)[^.]{0,110}?\$?394[,]?600
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:married filing jointly|filing jointly|\bmfj\b))(?=[^.\n]*?(?:24\s*(?:%|percent)))(?=[^.\n]*?(?:\$?394[,]?600))[^.\n]*
 - name: recall_bracket_mfj_32pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:married filing jointly|\bmfj\b)[^.]{0,200}?32\s*(?:%|percent)[^.]{0,110}?\$?501[,]?050
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:married filing jointly|filing jointly|\bmfj\b))(?=[^.\n]*?(?:32\s*(?:%|percent)))(?=[^.\n]*?(?:\$?501[,]?050))[^.\n]*
 - name: recall_bracket_mfj_35pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:married filing jointly|\bmfj\b)[^.]{0,200}?35\s*(?:%|percent)[^.]{0,110}?\$?751[,]?600
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:married filing jointly|filing jointly|\bmfj\b))(?=[^.\n]*?(?:35\s*(?:%|percent)))(?=[^.\n]*?(?:\$?751[,]?600))[^.\n]*
 - name: recall_bracket_mfj_37pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:married filing jointly|\bmfj\b)[^.]{0,200}?37\s*(?:%|percent)[^.]{0,110}?\$?751[,]?600
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:married filing jointly|filing jointly|\bmfj\b))(?=[^.\n]*?(?:37\s*(?:%|percent)))(?=[^.\n]*?(?:\$?751[,]?600))[^.\n]*
 - name: recall_bracket_mfs_10pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:married filing separately|filing separately|\bmfs\b)[^.]{0,200}?10\s*(?:%|percent)[^.]{0,110}?\$?11[,]?925
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:married filing separately|filing separately|\bmfs\b))(?=[^.\n]*?(?:10\s*(?:%|percent)))(?=[^.\n]*?(?:\$?11[,]?925))[^.\n]*
 - name: recall_bracket_mfs_12pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:married filing separately|filing separately|\bmfs\b)[^.]{0,200}?12\s*(?:%|percent)[^.]{0,110}?\$?48[,]?475
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:married filing separately|filing separately|\bmfs\b))(?=[^.\n]*?(?:12\s*(?:%|percent)))(?=[^.\n]*?(?:\$?48[,]?475))[^.\n]*
 - name: recall_bracket_mfs_22pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:married filing separately|filing separately|\bmfs\b)[^.]{0,200}?22\s*(?:%|percent)[^.]{0,110}?\$?103[,]?350
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:married filing separately|filing separately|\bmfs\b))(?=[^.\n]*?(?:22\s*(?:%|percent)))(?=[^.\n]*?(?:\$?103[,]?350))[^.\n]*
 - name: recall_bracket_mfs_24pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:married filing separately|filing separately|\bmfs\b)[^.]{0,200}?24\s*(?:%|percent)[^.]{0,110}?\$?197[,]?300
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:married filing separately|filing separately|\bmfs\b))(?=[^.\n]*?(?:24\s*(?:%|percent)))(?=[^.\n]*?(?:\$?197[,]?300))[^.\n]*
 - name: recall_bracket_mfs_32pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:married filing separately|filing separately|\bmfs\b)[^.]{0,200}?32\s*(?:%|percent)[^.]{0,110}?\$?250[,]?525
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:married filing separately|filing separately|\bmfs\b))(?=[^.\n]*?(?:32\s*(?:%|percent)))(?=[^.\n]*?(?:\$?250[,]?525))[^.\n]*
 - name: recall_bracket_mfs_35pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:married filing separately|filing separately|\bmfs\b)[^.]{0,200}?35\s*(?:%|percent)[^.]{0,110}?\$?375[,]?800
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:married filing separately|filing separately|\bmfs\b))(?=[^.\n]*?(?:35\s*(?:%|percent)))(?=[^.\n]*?(?:\$?375[,]?800))[^.\n]*
 - name: recall_bracket_mfs_37pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:married filing separately|filing separately|\bmfs\b)[^.]{0,200}?37\s*(?:%|percent)[^.]{0,110}?\$?375[,]?800
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:married filing separately|filing separately|\bmfs\b))(?=[^.\n]*?(?:37\s*(?:%|percent)))(?=[^.\n]*?(?:\$?375[,]?800))[^.\n]*
 - name: recall_bracket_hoh_10pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:head of household|\bhoh\b)[^.]{0,200}?10\s*(?:%|percent)[^.]{0,110}?\$?17[,]?000
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:head of household|\bhoh\b))(?=[^.\n]*?(?:10\s*(?:%|percent)))(?=[^.\n]*?(?:\$?17[,]?000))[^.\n]*
 - name: recall_bracket_hoh_12pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:head of household|\bhoh\b)[^.]{0,200}?12\s*(?:%|percent)[^.]{0,110}?\$?64[,]?850
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:head of household|\bhoh\b))(?=[^.\n]*?(?:12\s*(?:%|percent)))(?=[^.\n]*?(?:\$?64[,]?850))[^.\n]*
 - name: recall_bracket_hoh_22pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:head of household|\bhoh\b)[^.]{0,200}?22\s*(?:%|percent)[^.]{0,110}?\$?103[,]?350
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:head of household|\bhoh\b))(?=[^.\n]*?(?:22\s*(?:%|percent)))(?=[^.\n]*?(?:\$?103[,]?350))[^.\n]*
 - name: recall_bracket_hoh_24pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:head of household|\bhoh\b)[^.]{0,200}?24\s*(?:%|percent)[^.]{0,110}?\$?197[,]?300
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:head of household|\bhoh\b))(?=[^.\n]*?(?:24\s*(?:%|percent)))(?=[^.\n]*?(?:\$?197[,]?300))[^.\n]*
 - name: recall_bracket_hoh_32pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:head of household|\bhoh\b)[^.]{0,200}?32\s*(?:%|percent)[^.]{0,110}?\$?250[,]?500
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:head of household|\bhoh\b))(?=[^.\n]*?(?:32\s*(?:%|percent)))(?=[^.\n]*?(?:\$?250[,]?500))[^.\n]*
 - name: recall_bracket_hoh_35pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:head of household|\bhoh\b)[^.]{0,200}?35\s*(?:%|percent)[^.]{0,110}?\$?626[,]?350
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:head of household|\bhoh\b))(?=[^.\n]*?(?:35\s*(?:%|percent)))(?=[^.\n]*?(?:\$?626[,]?350))[^.\n]*
 - name: recall_bracket_hoh_37pct
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:head of household|\bhoh\b)[^.]{0,200}?37\s*(?:%|percent)[^.]{0,110}?\$?626[,]?350
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:head of household|\bhoh\b))(?=[^.\n]*?(?:37\s*(?:%|percent)))(?=[^.\n]*?(?:\$?626[,]?350))[^.\n]*
 - name: recall_sum_of_brackets_rule
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:

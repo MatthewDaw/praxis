@@ -19,6 +19,32 @@
 "pole": ""
 }
 },
+"04e6b4ab9f2dd8804baf9a8f5badd36fa43ca8b645b68bb303612b199367d9ed": {
+"claims": [
+{
+"attribute": "tax rate",
+"functional": true,
+"subject": "income",
+"value": "32"
+},
+{
+"attribute": "lower threshold",
+"functional": true,
+"subject": "income",
+"value": "197300"
+},
+{
+"attribute": "upper threshold",
+"functional": true,
+"subject": "income",
+"value": "250525"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "05569fafeda4ced77d158b44a60520f1e4de3a59bdf826de7d20c4b96d6c6859": {
 "claims": [
 {
@@ -159,6 +185,124 @@
 "pole": "diy"
 }
 },
+"0806ce4396f516726ecbfaa88df816a7170571ec26957e90da10f2d6dcd69270": {
+"claims": [
+{
+"attribute": "amounts rounding",
+"functional": true,
+"subject": "Form 1040",
+"value": "whole dollars"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"130d154deff70e19687ade12f479a9a846356a614ef2a03f3a3351d18126bb96": {
+"claims": [
+{
+"attribute": "payment status",
+"functional": true,
+"subject": "federal income tax",
+"value": "counts as a payment toward the year's tax"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"18f752ca5812ec65efedb4a0626d7bd7c7af465aeb834c70641c4eb7c07c75e4": {
+"claims": [
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "married couples",
+"value": "jointly"
+},
+{
+"attribute": "income reporting",
+"functional": true,
+"subject": "married couples",
+"value": "combined"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"19daa34ffb415d90582874c61e782a83778f447f5bb9c5cd860ecf3884d4b7fb": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "married individuals filing separately"
+},
+{
+"attribute": "starting rate",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "10%"
+},
+{
+"attribute": "income threshold",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "11925"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"1b90baa5b5d2b7d23a6f53cfd4289a4fd42428e7802047edfadadcf801cd8e61": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "Head of household"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "24%"
+},
+{
+"attribute": "income range lower limit",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "103350"
+},
+{
+"attribute": "income range upper limit",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "197300"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "1c5544465829a01a773b3c1bc12c6e30b5981b6e81a9c66c6b208c66500fad92": {
 "claims": [
 {
@@ -166,6 +310,20 @@
 "functional": true,
 "subject": "theory of animal electricity",
 "value": "Alessandro Volta"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"1c94d497dad0d7d44132bc1781bc0f29ac3be7fb3f83ab477319a9c5bcefc98b": {
+"claims": [
+{
+"attribute": "reports",
+"functional": true,
+"subject": "W-2 box 1",
+"value": "taxable wages, tips, and other compensation"
 }
 ],
 "stance": {
@@ -192,6 +350,20 @@
 "functional": true,
 "subject": "standard deduction",
 "value": "15750"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"1ef3b70a845fccc464152745293e5d747279f4c646a2851b63d294dc03e380fa": {
+"claims": [
+{
+"attribute": "calculation method",
+"functional": true,
+"subject": "adjusted gross income",
+"value": "total income minus adjustments to income from Schedule 1"
 }
 ],
 "stance": {
@@ -302,6 +474,20 @@
 "pole": ""
 }
 },
+"2677347f2c9ea09ce8021c15f57442bf7027352d7f3e6db11da4a897b3a67701": {
+"claims": [
+{
+"attribute": "qualifying status",
+"functional": true,
+"subject": "dependent child",
+"value": "true"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "277eb3c3e3efe49615104f0a00cf6a8750efa2374d4da96424ba98524217dfe6": {
 "claims": [
 {
@@ -344,6 +530,20 @@
 "pole": "centralized"
 }
 },
+"29b5e41fce05dc1b8a810e96b75edf17330edc3ce2ce913f4dd88aff5783cf19": {
+"claims": [
+{
+"attribute": "rounding rule",
+"functional": true,
+"subject": "amounts",
+"value": "next dollar"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "2af0bc8232d2536feca032991d4f859f64be106c8a6eb397146de7eb9670f3ae": {
 "claims": [
 {
@@ -384,6 +584,72 @@
 "pole": ""
 }
 },
+"3179ac45041f67c0b53e694b68ba34b44ee15480c32b8c95068c1a077bf28526": {
+"claims": [
+{
+"attribute": "tax rate",
+"functional": true,
+"subject": "single filers",
+"value": "37"
+},
+{
+"attribute": "threshold",
+"functional": true,
+"subject": "income",
+"value": "626350"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"346d764e7195d03abe58824c653d52562b62f0a56440646d28154e7e51a30bae": {
+"claims": [
+{
+"attribute": "equals",
+"functional": true,
+"subject": "adjusted gross income",
+"value": "total income"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"3533eb402865970e5903ac0a6b3e9275151ec551759bfbda907b6837e2735ef9": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "Head of household"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "10%"
+},
+{
+"attribute": "income threshold",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "17000"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "35d7c03b83a9e5e61e0af3813be26c667c2b459e0df6765cb3148ab4bfaf9e43": {
 "claims": [
 {
@@ -404,6 +670,110 @@
 "pole": ""
 }
 },
+"3743f81e04965e3cfae856530bff6c44e469e815ffe4d577585b7b044e337c0b": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "married individuals filing separately"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "12%"
+},
+{
+"attribute": "income range lower limit",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "11925"
+},
+{
+"attribute": "income range upper limit",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "48475"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"38ca7ff1baf6050f00f247f9783d2f8911b498c1c3570d891222883fa5589d5d": {
+"claims": [
+{
+"attribute": "tax outcome",
+"functional": true,
+"subject": "filing status",
+"value": "lower"
+},
+{
+"attribute": "type",
+"functional": true,
+"subject": "filing status",
+"value": "MFJ"
+},
+{
+"attribute": "type",
+"functional": true,
+"subject": "filing status",
+"value": "MFS"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"3931c5c03e55fd307e855f15676318659ca007b89bc332b52c42132f1372ba48": {
+"claims": [
+{
+"attribute": "tax rate",
+"functional": true,
+"subject": "income",
+"value": "35"
+},
+{
+"attribute": "lower limit",
+"functional": true,
+"subject": "income",
+"value": "250525"
+},
+{
+"attribute": "upper limit",
+"functional": true,
+"subject": "income",
+"value": "626350"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"3b2137cf123e64135b079e7c0cb12be6e6b6734ee26545d3c55944ac51c328a5": {
+"claims": [
+{
+"attribute": "indicated by",
+"functional": true,
+"subject": "total payments",
+"value": "Line 33 of Form 1040"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "3b94581ffbfdb4eba285173b49f592f0ec5d517a2b2654d8f82997cd5a5363ae": {
 "claims": [
 {
@@ -417,6 +787,26 @@
 "functional": true,
 "subject": "agent factory",
 "value": "Praxis knowledge graph"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"3bdebef54e4f7770387a17b716e7f84b6115420df27865fee90362f16c3d2b0b": {
+"claims": [
+{
+"attribute": "tax rate",
+"functional": true,
+"subject": "married couples filing jointly",
+"value": "37"
+},
+{
+"attribute": "threshold",
+"functional": true,
+"subject": "income",
+"value": "751600"
 }
 ],
 "stance": {
@@ -459,11 +849,65 @@
 "pole": ""
 }
 },
+"47986d3134d6928949472a333fc31f82333282a623e4460f6f8c461b19d7cd40": {
+"claims": [
+{
+"attribute": "tax thresholds",
+"functional": true,
+"subject": "married individuals filing separately",
+"value": "match those for single filers"
+},
+{
+"attribute": "top two tax brackets",
+"functional": true,
+"subject": "married individuals filing separately",
+"value": "different from single filers"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "4a14ec44a9d885a7cf6686c942b47facfdeb7b512bc212b2fe43ec789c0b3809": {
 "claims": [],
 "stance": {
 "axis": "axis:logging-verbose-vs-minimal",
 "pole": "minimal"
+}
+},
+"4c21cb68f125b299a2651ab11a75dec11b91b00503a4830509cb93aea00965e9": {
+"claims": [
+{
+"attribute": "cost of keeping up a home",
+"functional": true,
+"subject": "unmarried taxpayer",
+"value": "more than half"
+},
+{
+"attribute": "qualifying person",
+"functional": true,
+"subject": "unmarried taxpayer",
+"value": "true"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"4c43b2a0da4a8c12a52f8677eacc7e56b6cffb9c92ac1f75340924b5fcd8b552": {
+"claims": [
+{
+"attribute": "calculation method",
+"functional": true,
+"subject": "taxable income",
+"value": "AGI from line 11 minus the deduction on line 12"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
 }
 },
 "4cdb5e39d6b753bd91e0aa68e4bc0cb6a41c8381ef854a7225bb5a37115d8e61": {
@@ -473,6 +917,122 @@
 "functional": true,
 "subject": "voltaic pile",
 "value": "Alessandro Volta"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"4d210c7500ab52a7e0838ce84da678a80acfdfe824b039966ab59526d0737037": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "Head of household"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "37%"
+},
+{
+"attribute": "income threshold",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "626350"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"4e31bf706c51daadaad0e89b1cd65218ca9a77044423d51405e275f2b5308dcf": {
+"claims": [
+{
+"attribute": "withheld",
+"functional": true,
+"subject": "federal income tax",
+"value": "W-2 box 2"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"4f6cbd33f2b9948d5182c0f00adb6c98535ef54c11fa53f6d9c8a93533676101": {
+"claims": [
+{
+"attribute": "tax representation",
+"functional": true,
+"subject": "taxable income",
+"value": "Form 1040 line 16"
+},
+{
+"attribute": "IRS Tax Table applicability",
+"functional": true,
+"subject": "taxable income",
+"value": "under 100000"
+},
+{
+"attribute": "Tax Computation Worksheet usage",
+"functional": true,
+"subject": "taxable income",
+"value": "100000 and above"
+},
+{
+"attribute": "marginal brackets",
+"functional": true,
+"subject": "IRS Tax Table",
+"value": "same as Tax Computation Worksheet"
+},
+{
+"attribute": "marginal brackets",
+"functional": true,
+"subject": "Tax Computation Worksheet",
+"value": "same as IRS Tax Table"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"502208f0e1a39d2496004271f0be74631cfdd44442334be10992cba6a9325c8d": {
+"claims": [
+{
+"attribute": "represents",
+"functional": true,
+"subject": "Form 1040 line 1a",
+"value": "total W-2 box 1 wages"
+},
+{
+"attribute": "includes",
+"functional": false,
+"subject": "Form 1040",
+"value": "other income"
+},
+{
+"attribute": "indicates",
+"functional": true,
+"subject": "Form 1040 line 9",
+"value": "total income"
+},
+{
+"attribute": "is the sum of",
+"functional": true,
+"subject": "total income",
+"value": "all income lines"
 }
 ],
 "stance": {
@@ -507,6 +1067,58 @@
 "pole": "performance"
 }
 },
+"55d8aeb318d450c551ab0ed0eb0ae14fe958f4d0f5a50a5f8b0e660640d1f3f3": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "Head of household"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "22%"
+},
+{
+"attribute": "income range lower limit",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "64850"
+},
+{
+"attribute": "income range upper limit",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "103350"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"566b9bcb5c84669a9b6e40104c73117ac2b9a03cb218560152c2210e3e24d513": {
+"claims": [
+{
+"attribute": "federal income tax withheld",
+"functional": true,
+"subject": "W-2 box 2",
+"value": "true"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "5fadc2a9e0c092b2095d3b4ea5386174997268341c7b0d4efe6cfd1c9ace23ae": {
 "claims": [
 {
@@ -520,6 +1132,90 @@
 "functional": true,
 "subject": "knowledge graph",
 "value": "none"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"62c51c4ee935b2cf25b167111bc3320506af2e4fa54b24256e7b627a4bf015c0": {
+"claims": [
+{
+"attribute": "includes",
+"functional": false,
+"subject": "total payments",
+"value": "withholding"
+},
+{
+"attribute": "includes",
+"functional": false,
+"subject": "total payments",
+"value": "credits"
+},
+{
+"attribute": "includes",
+"functional": false,
+"subject": "total payments",
+"value": "estimated payments"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"66f9b12fb030a8a2d48ee9d72db8b3156d69e4a4cfc3d94c270d11409316f054": {
+"claims": [
+{
+"attribute": "line number",
+"functional": true,
+"subject": "Form 1040",
+"value": "11"
+},
+{
+"attribute": "shows",
+"functional": true,
+"subject": "Form 1040",
+"value": "adjusted gross income"
+},
+{
+"attribute": "abbreviation",
+"functional": true,
+"subject": "adjusted gross income",
+"value": "AGI"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"67df85e6744a126662f2ac8b27e78f7ac9c8ac01d40f655d9ec4ef95f9544a49": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "married individuals filing separately"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "37%"
+},
+{
+"attribute": "income threshold",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "375800"
 }
 ],
 "stance": {
@@ -583,6 +1279,20 @@
 "pole": "self-documenting"
 }
 },
+"75cb435dece8aaf0e1ad37b549e492b92dd492649c1a288f7ebd7281b849b6bf": {
+"claims": [
+{
+"attribute": "applicability",
+"functional": true,
+"subject": "head of household",
+"value": "unmarried taxpayer"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "76419b95acac17e008887cc17a4b38a47b3c5ee298c5a926295a953ccf9d38c2": {
 "claims": [
 {
@@ -596,6 +1306,44 @@
 "functional": true,
 "subject": "federal income tax brackets",
 "value": "marginal"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"7aa3c5ec37157eaedd1d08d834225c0c21a0f7e2e3a403cc9f73fffacd5d525a": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "Head of household"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "12%"
+},
+{
+"attribute": "income range lower limit",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "17000"
+},
+{
+"attribute": "income range upper limit",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "64850"
 }
 ],
 "stance": {
@@ -635,6 +1383,38 @@
 "stance": {
 "axis": "axis:testing-rigor-vs-speed",
 "pole": "testing-rigor"
+}
+},
+"84cb317d8fc847e72879cc76f306040c3e10a121e39eb2535f11ee29bdea8457": {
+"claims": [
+{
+"attribute": "approval status",
+"functional": true,
+"subject": "captain's posted message",
+"value": "pending"
+},
+{
+"attribute": "approval requirement",
+"functional": true,
+"subject": "captain's posted message",
+"value": "required"
+},
+{
+"attribute": "approval requirement",
+"functional": true,
+"subject": "team's approval setting",
+"value": "true"
+},
+{
+"attribute": "approval actor",
+"functional": true,
+"subject": "captain's posted message",
+"value": "coach"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
 }
 },
 "86997572aa5e90a3458238fd62b57dd571751058451dd68a6176e78369a2984a": {
@@ -705,6 +1485,32 @@
 "pole": ""
 }
 },
+"89edc2c83a5a9677774fe110c2f23da61937537eb188d49966ca937e09f7c949": {
+"claims": [
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "taxpayer",
+"value": "single"
+},
+{
+"attribute": "legal separation",
+"functional": true,
+"subject": "taxpayer",
+"value": "true"
+},
+{
+"attribute": "last day of tax year",
+"functional": true,
+"subject": "taxpayer",
+"value": "true"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "8a656f362c07c10fcde13c73dd26339657cba7cadc73f3b2c9fa0de7936508e4": {
 "claims": [
 {
@@ -739,6 +1545,66 @@
 "pole": "tabs"
 }
 },
+"8e194b6d54d837067f42f2c89393798f3f29520c1d49313f34c81715de2295b5": {
+"claims": [
+{
+"attribute": "applicability",
+"functional": true,
+"subject": "tax rate",
+"value": "35%"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "married couples",
+"value": "jointly"
+},
+{
+"attribute": "range",
+"functional": false,
+"subject": "income",
+"value": "501050-751600"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"8f9d312fd7f33428df609673fb82c81d1069c2afd5c5e81e77e992538c9acd72": {
+"claims": [
+{
+"attribute": "tax brackets",
+"functional": true,
+"subject": "head of household status",
+"value": "wider"
+},
+{
+"attribute": "tax brackets",
+"functional": true,
+"subject": "single status",
+"value": "narrower"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"90bb3342b6dbaf2540d90e4f6aa73817efc9212f84d7a1b8f1ccd36e4b76c55e": {
+"claims": [
+{
+"attribute": "standard deduction",
+"functional": true,
+"subject": "Form 1040",
+"value": "Line 12"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "9286663d9a9d817890d314f380b167bc52a3c81040fae396e6434f8887184b7e": {
 "claims": [
 {
@@ -771,6 +1637,46 @@
 "pole": ""
 }
 },
+"93a892a00b7102c903a2683f309770b63e779a5ce90a90007d9226e055980812": {
+"claims": [
+{
+"attribute": "tax type",
+"functional": true,
+"subject": "federal income tax brackets",
+"value": "marginal"
+},
+{
+"attribute": "application",
+"functional": true,
+"subject": "tax rate",
+"value": "portion of taxable income within bracket range"
+},
+{
+"attribute": "calculation method",
+"functional": true,
+"subject": "total tax",
+"value": "summing tax from each bracket"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"95fc888904dac5e8036b1d140add2917b3b4243792ceb3b726e367643480f74f": {
+"claims": [
+{
+"attribute": "represents",
+"functional": true,
+"subject": "Form 1040 line 11",
+"value": "adjusted gross income (AGI)"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "9710910be22216754fa4d3edfe6eb21dd66f99e1dbc7b0c4541585ebfd98e090": {
 "claims": [
 {
@@ -778,6 +1684,64 @@
 "functional": true,
 "subject": "user",
 "value": "chicken pizza"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"9757461af8b72f16e92f4d54bf4a6eac19bcbb0363f3dd27bff41aab09a881a4": {
+"claims": [
+{
+"attribute": "tax rate",
+"functional": true,
+"subject": "income",
+"value": "24"
+},
+{
+"attribute": "tax range lower limit",
+"functional": true,
+"subject": "income",
+"value": "206700"
+},
+{
+"attribute": "tax range upper limit",
+"functional": true,
+"subject": "income",
+"value": "394600"
+},
+{
+"attribute": "type",
+"functional": true,
+"subject": "filing status",
+"value": "married filing jointly"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"99f30986f4f5d0aa558598295bf99ea3eb159e44d6cc9a4dcdf9b4d6afab0167": {
+"claims": [
+{
+"attribute": "refund",
+"functional": true,
+"subject": "Form 1040",
+"value": "line 34"
+},
+{
+"attribute": "amount owed",
+"functional": true,
+"subject": "Form 1040",
+"value": "line 37"
+},
+{
+"attribute": "greater than",
+"functional": false,
+"subject": "line 33",
+"value": "line 24"
 }
 ],
 "stance": {
@@ -851,6 +1815,38 @@
 "pole": "abstraction"
 }
 },
+"9c5b9e6e8e15b7b099647c10a61a83995de9f0d2285dbf937f85ab8c08b76dff": {
+"claims": [
+{
+"attribute": "value",
+"functional": true,
+"subject": "W-2 box 1",
+"value": "lower"
+},
+{
+"attribute": "value",
+"functional": true,
+"subject": "W-2 box 3",
+"value": "higher"
+},
+{
+"attribute": "value",
+"functional": true,
+"subject": "W-2 box 5",
+"value": "higher"
+},
+{
+"attribute": "type",
+"functional": true,
+"subject": "pre-tax contributions",
+"value": "401(k)"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "a3934e6f6a418541d507a419d6f1f0e905aeb1a39bb253e9cd2bc2b6f5e9ecab": {
 "claims": [
 {
@@ -884,6 +1880,90 @@
 "functional": true,
 "subject": "standard deduction",
 "value": "31500"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"a5fd8241a96cdb5561365d4813e0a480494aee93ea1f3f4236cf575573e873e9": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "Head of household"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "32%"
+},
+{
+"attribute": "income range lower limit",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "197300"
+},
+{
+"attribute": "income range upper limit",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "250500"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"a6886c1e77328cb47fa94bd40ba662111f6119d206cd41dfe6121101204b9605": {
+"claims": [
+{
+"attribute": "indication",
+"functional": true,
+"subject": "total tax owed",
+"value": "Form 1040 line 24"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"a76e42a66209bf48fd3b29b2122abece7aea681dc1ceea83a016ca771c5f96ec": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "married individuals filing separately"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "22%"
+},
+{
+"attribute": "income range",
+"functional": false,
+"subject": "ordinary income tax brackets",
+"value": "48475-103350"
 }
 ],
 "stance": {
@@ -945,6 +2025,20 @@
 "pole": ""
 }
 },
+"ad390e89aa53a2853bb1def23bd41dc4d7225cb917cbbf92c02efe3dbe2fe7b2": {
+"claims": [
+{
+"attribute": "minimum value",
+"functional": true,
+"subject": "taxable income",
+"value": "0"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "aebda16483512fa090b68d3a0cd29175c1824298321c4a11a20af68e6986ea6c": {
 "claims": [
 {
@@ -979,6 +2073,26 @@
 "pole": ""
 }
 },
+"b0063c46be2f9acb35549e1b8bde3c746f8c586aa3a00be166b8c3d2caa22fce": {
+"claims": [
+{
+"attribute": "tax rate",
+"functional": true,
+"subject": "married couples filing jointly",
+"value": "22"
+},
+{
+"attribute": "income range",
+"functional": false,
+"subject": "married couples filing jointly",
+"value": "96950-206700"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "b09a7c83107a21826cd2cc3f3f6162763c2242bcc0a67b10f59dbf7d33599395": {
 "claims": [
 {
@@ -986,6 +2100,64 @@
 "functional": true,
 "subject": "Head of household",
 "value": "23625"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"b26f2b667187d07a2a31eb8598d980834857991a7e3e0153931416bc67d12b80": {
+"claims": [
+{
+"attribute": "calculation method",
+"functional": true,
+"subject": "taxable income",
+"value": "line 11 minus line 12"
+},
+{
+"attribute": "minimum value",
+"functional": true,
+"subject": "taxable income",
+"value": "0"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"b86df094b46610912ad0e2db69a7f9b3001ea692688ffe034d5c209bff360b9f": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "married individuals filing separately"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "32%"
+},
+{
+"attribute": "income range lower limit",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "197300"
+},
+{
+"attribute": "income range upper limit",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "250525"
 }
 ],
 "stance": {
@@ -1007,6 +2179,44 @@
 "pole": ""
 }
 },
+"b9dd80a3717a56749d39178e2023db8574d50bb68b6cda2e9038e53f8396d658": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "married individuals filing separately"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "35%"
+},
+{
+"attribute": "income range lower limit",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "250525"
+},
+{
+"attribute": "income range upper limit",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "375800"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "bae998c4fb948ad9b61b0c08802e8ff71c76bd349a808582827bafb1df344cbf": {
 "claims": [
 {
@@ -1014,6 +2224,84 @@
 "functional": true,
 "subject": "Head of Household",
 "value": "Form 1040 line 12"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"bd7773b88791d078947a4d8fc570e81fabcc0fb2fa0816fd9a2127b96a66c7bf": {
+"claims": [
+{
+"attribute": "total payments",
+"functional": false,
+"subject": "tax",
+"value": "total tax"
+},
+{
+"attribute": "difference owed",
+"functional": true,
+"subject": "tax",
+"value": "line 37"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"bef2de823c6a2160923b3e05f864c389cd37e7c93ae4da0c8f9c476aeb415695": {
+"claims": [
+{
+"attribute": "tax rate",
+"functional": true,
+"subject": "income",
+"value": "24"
+},
+{
+"attribute": "tax range lower limit",
+"functional": true,
+"subject": "income",
+"value": "103350"
+},
+{
+"attribute": "tax range upper limit",
+"functional": true,
+"subject": "income",
+"value": "197300"
+},
+{
+"attribute": "tax rate",
+"functional": true,
+"subject": "single filers",
+"value": "24"
+},
+{
+"attribute": "tax range lower limit",
+"functional": true,
+"subject": "single filers",
+"value": "103350"
+},
+{
+"attribute": "tax range upper limit",
+"functional": true,
+"subject": "single filers",
+"value": "197300"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"bfe7a49b29899f52be35b4dcec783838568a3db6b2ea0c759aad8978f434a179": {
+"claims": [
+{
+"attribute": "reflects",
+"functional": true,
+"subject": "Line 25a of Form 1040",
+"value": "federal income tax withheld from W-2 box 2"
 }
 ],
 "stance": {
@@ -1055,6 +2343,26 @@
 "pole": ""
 }
 },
+"c2771b9faedf1896eeeb552f7ecc3361a10d72e113a6b5c0b199adebc83cb347": {
+"claims": [
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "taxpayer",
+"value": "single"
+},
+{
+"attribute": "qualification for head of household",
+"functional": true,
+"subject": "taxpayer",
+"value": "does not qualify"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "c374f292c3cc611af2cdf0e7ed582060b68680f1e2ccc6d3bd891c90799957cc": {
 "claims": [
 {
@@ -1074,6 +2382,52 @@
 "functional": true,
 "subject": "itemized deductions",
 "value": "smaller than standard deduction"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"c76d1cec3505a78ddc3cfdcd573b9ec3cd860dd1e7eac0aad08ea5509536d5a7": {
+"claims": [
+{
+"attribute": "rounding threshold",
+"functional": true,
+"subject": "amounts",
+"value": "50"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"cb256b94357390b67a90f9fe9ebaef7d48572a4f2a9c79914dcbfea157296f60": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "married filing jointly"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "10%"
+},
+{
+"attribute": "income threshold",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "23850"
 }
 ],
 "stance": {
@@ -1101,6 +2455,58 @@
 "pole": ""
 }
 },
+"d4093e58cd1d276b007188ecc9757d75c08bfec5dc88ccf45a68f672abf97301": {
+"claims": [
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "married couples",
+"value": "jointly"
+},
+{
+"attribute": "tax rate",
+"functional": true,
+"subject": "income",
+"value": "32"
+},
+{
+"attribute": "tax range lower limit",
+"functional": true,
+"subject": "income",
+"value": "394600"
+},
+{
+"attribute": "tax range upper limit",
+"functional": true,
+"subject": "income",
+"value": "501050"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"d60ff9bc1fa06f5762eba5b556d1dcb17d1640ec53ba056cd121b6609bf06d87": {
+"claims": [
+{
+"attribute": "format",
+"functional": true,
+"subject": "deduction",
+"value": "standard"
+},
+{
+"attribute": "format",
+"functional": true,
+"subject": "deduction",
+"value": "itemized"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "d67f62a576b91c8d88da67c3baed15b5efa119dea889e0f0ea02f54aca637141": {
 "claims": [
 {
@@ -1108,6 +2514,20 @@
 "functional": true,
 "subject": "electrophorus",
 "value": "Alessandro Volta"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"d6ecb33e23f49e6c6a11d42515f88f9e5e62d2298d2ebc7110170f37f60b8e38": {
+"claims": [
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "married couples",
+"value": "MFS"
 }
 ],
 "stance": {
@@ -1129,8 +2549,56 @@
 "pole": "explicit"
 }
 },
+"d9904020ec7dbfacd387a2e78a1fd1db5b573b0c2433cc30959d3ee79b6be5b3": {
+"claims": [
+{
+"attribute": "visibility",
+"functional": true,
+"subject": "coach's messages",
+"value": "immediate"
+},
+{
+"attribute": "impact on visibility of coach's messages",
+"functional": true,
+"subject": "team's approval setting",
+"value": "none"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "da225f7493360bc9b3eef1db67a10e8b78b9d8d717cede44964174273267d620": {
 "claims": [],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"dbb07d1d77be8bd503642826d6f35e4b114c48cbe7bbf46e5d434a5540071daf": {
+"claims": [
+{
+"attribute": "represents",
+"functional": true,
+"subject": "Line 1a of Form 1040",
+"value": "total W-2 box 1 wages"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"dc9ad29ffaf7fc264ee31b91aa7fcc99d07439e770e64ed67dac3b9bff0ba4c5": {
+"claims": [
+{
+"attribute": "representation",
+"functional": true,
+"subject": "total tax",
+"value": "Form 1040 line 24"
+}
+],
 "stance": {
 "axis": "none",
 "pole": ""
@@ -1150,6 +2618,50 @@
 "pole": "fail-safe"
 }
 },
+"e102b34e21f1ed1cee9fd4dd9fcccf6479345e3f0f508be1ccc606ddb24cdc4d": {
+"claims": [
+{
+"attribute": "age limit",
+"functional": true,
+"subject": "taxpayer",
+"value": "65"
+},
+{
+"attribute": "filing year",
+"functional": true,
+"subject": "taxpayer",
+"value": "2025"
+},
+{
+"attribute": "gross income threshold",
+"functional": true,
+"subject": "taxpayer",
+"value": "15750"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "taxpayer",
+"value": "Single"
+},
+{
+"attribute": "filing requirement",
+"functional": true,
+"subject": "taxpayer",
+"value": "must file"
+},
+{
+"attribute": "refund claim",
+"functional": true,
+"subject": "taxpayer",
+"value": "worthwhile"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "e230681d89d4a05919b48857b421864b8281d309ac922947d3d55c91fb57c038": {
 "claims": [
 {
@@ -1157,6 +2669,44 @@
 "functional": true,
 "subject": "tax",
 "value": "nearest whole dollar"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"e279973f0e15b1d38be92b97e61ec558d5fb0ee90a2b306e576efe0998aa5250": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "Head of household"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "35%"
+},
+{
+"attribute": "income range lower limit",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "250500"
+},
+{
+"attribute": "income range upper limit",
+"functional": true,
+"subject": "ordinary income tax bracket",
+"value": "626350"
 }
 ],
 "stance": {
@@ -1177,6 +2727,20 @@
 "functional": true,
 "subject": "company headquarters",
 "value": "2019"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"e5de1f83cbe9eb1cb53270e8499fd9885b482a991f570e5dbd5437d6ae97a2f6": {
+"claims": [
+{
+"attribute": "representation",
+"functional": true,
+"subject": "total payments",
+"value": "Form 1040 line 33"
 }
 ],
 "stance": {
@@ -1228,6 +2792,120 @@
 "stance": {
 "axis": "axis:abstraction-vs-directness",
 "pole": "directness"
+}
+},
+"edf059540f74452a04678e2c4b876e6d453e99e654692c8d07df20f5f2835616": {
+"claims": [
+{
+"attribute": "representation",
+"functional": true,
+"subject": "taxable income",
+"value": "Form 1040 line 15"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"f13c8c0db832c7a78179a6220a06e60983a64d0381e451f550cca5c66c9086ac": {
+"claims": [
+{
+"attribute": "duration requirement",
+"functional": true,
+"subject": "head of household status",
+"value": "more than half the year"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"f22458dda00da80382007e4caa9768b82d23343dcd4b3c59a63ab82691f4772b": {
+"claims": [
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "taxpayer",
+"value": "single"
+},
+{
+"attribute": "marital status",
+"functional": true,
+"subject": "taxpayer",
+"value": "unmarried"
+},
+{
+"attribute": "last day of tax year",
+"functional": true,
+"subject": "taxpayer",
+"value": "unmarried"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"f294c07f2a4ecaec6d130daf3060cb02e25e43dbe07d8b201a472ed6cd8853c3": {
+"claims": [
+{
+"attribute": "calculation",
+"functional": true,
+"subject": "refund",
+"value": "total payments minus total tax"
+},
+{
+"attribute": "location",
+"functional": true,
+"subject": "refund",
+"value": "line 34"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"f9086520fa07f8b9758d4b0d3e38b2a6c1fba4e69bfc97302206426d6071aa29": {
+"claims": [
+{
+"attribute": "total tax",
+"functional": true,
+"subject": "Form 1040",
+"value": "Line 22"
+},
+{
+"attribute": "total tax",
+"functional": true,
+"subject": "Form 1040",
+"value": "Line 24"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"f9ef2c66c663887505e21e5bdec83e0937de150c1d8baf895575d2bc96239633": {
+"claims": [
+{
+"attribute": "W-2 box",
+"functional": true,
+"subject": "federal income tax",
+"value": "2"
+},
+{
+"attribute": "Form 1040 line",
+"functional": true,
+"subject": "federal income tax",
+"value": "25a"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
 }
 },
 "fa793642edc48f72f9da5087c192741f3a4232f5c7cfd86a34a0699e6846b37b": {
@@ -1327,6 +3005,170 @@
 "functional": true,
 "subject": "MFS tax bracket 7",
 "value": "over 375800"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"fa9c120bc16ab576529ebf7f91b55d3ef064c4c126be3b1431ac6fc7755ff0c9": {
+"claims": [
+{
+"attribute": "applicability",
+"functional": true,
+"subject": "single filing status",
+"value": "divorced"
+},
+{
+"attribute": "status on last day of tax year",
+"functional": true,
+"subject": "taxpayer",
+"value": "divorced"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"fb2248becd601bebeeb288998b0e921d99c3bee7af80061c854385d5be0743cb": {
+"claims": [
+{
+"attribute": "indicated by",
+"functional": true,
+"subject": "total income",
+"value": "Line 9 of Form 1040"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"fdb4184076fb8034059e2e54d127f4a19cda31892b68c0b39178c67d5db54188": {
+"claims": [
+{
+"attribute": "standard deduction",
+"functional": true,
+"subject": "head of household status",
+"value": "larger"
+},
+{
+"attribute": "standard deduction",
+"functional": true,
+"subject": "single status",
+"value": "smaller"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"fdc8c40984f0e3a74118259d05986aa50f59aef9fa5813c38afc8633b4835aac": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "married individuals filing separately"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "24%"
+},
+{
+"attribute": "income range lower limit",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "103350"
+},
+{
+"attribute": "income range upper limit",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "197300"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"fe5ec685dc5d8cfd4f9c46c756f3af1d2a87adbf8d4bb70d0e294db6f8af90a9": {
+"claims": [
+{
+"attribute": "on taxable income",
+"functional": true,
+"subject": "tax computed",
+"value": "Line 16 of Form 1040"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"ff4e8d51aa482720be1d0871eda95ff5fe8dbbf40dc1854e7d3201c7db785d90": {
+"claims": [
+{
+"attribute": "tax rate",
+"functional": true,
+"subject": "income",
+"value": "12"
+},
+{
+"attribute": "tax range lower limit",
+"functional": true,
+"subject": "income",
+"value": "23850"
+},
+{
+"attribute": "tax range upper limit",
+"functional": true,
+"subject": "income",
+"value": "96950"
+},
+{
+"attribute": "tax range",
+"functional": false,
+"subject": "married couples filing jointly",
+"value": "23850 to 96950"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"ff92a7c57e5ab3f8dd0d386a1f6473e74ed75708cba51de0f27e8769a5d62cf6": {
+"claims": [
+{
+"attribute": "used in box",
+"functional": true,
+"subject": "Form 1040 line 1a",
+"value": "1"
+},
+{
+"attribute": "not used in box",
+"functional": true,
+"subject": "Form 1040 line 1a",
+"value": "3"
+},
+{
+"attribute": "not used in box",
+"functional": true,
+"subject": "Form 1040 line 1a",
+"value": "5"
 }
 ],
 "stance": {
