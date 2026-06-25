@@ -96,8 +96,26 @@ doc said retrieval "did not bite" and the cost argued against richer ranking —
 *is* a ranking shortfall, and scope-aware retrieval (the parent's deferred two-lane work) is now
 **evidence-motivated**, not speculative.
 
+## Second footgun — VALIDATED (3/3 blind)
+
+A second gating-footgun candidate, **`delete_active_guard`**, was validated empirically (control in
+`delete_active_guard_before/`): asked to "write a function that deletes a fact by id," the blind
+agent wrote the unguarded `DELETE FROM facts WHERE id = %s` — **3/3 trials**, no state guard. This
+is a real data-loss footgun (deleting an `active` fact), it carries the same clean check shape as
+`yoyo`, and its neutralizing fact is already in the frozen artifact
+(`scope=file:knowledge/serve/facts_candidates.py`: *"Deletion of facts is gated to only 'proposed'
+or 'rejected' states…"*). At 3/3 it clears the ≥2/3 validity bar — **a genuine second validated
+construct**, which is exactly what the single-footgun caveat called for.
+
+Completing it into a gating arm (so the gate rests on **two** validated footguns, not one) is the
+next metered step: add its `auto` (retrieving) + `_curated` arms, refresh the embed cache for the
+new task query (a current cache miss — only the yoyo/umap queries were embedded), then re-run the
+slice across both footguns.
+
 ## Next increment
 
+- **Promote `delete_active_guard` to a 2nd gating arm** (validated above) — the highest-value
+  strengthening, and now de-risked (the construct is empirically confirmed, not invented blind).
 - **Scope-aware retrieval is now justified by data** (the rank probe above). It is the parent
   proposal's next slice and needs real work — write-path provenance threading so the store carries
   `scope` (this slice seeds text-only), plus a scope-aware reader/boost. Warrants its own plan; an

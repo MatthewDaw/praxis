@@ -1,0 +1,34 @@
+# CANDIDATE second footgun — control arm (validation probe).
+# Footgun: deletion must be gated to 'proposed'/'rejected' states (deleting an 'active'
+# fact is real data loss). The universal instinct for "delete a row by id" is an
+# unguarded `DELETE ... WHERE id = %s`, which would delete active facts.
+# Neutralizing fact (already in facts.insights.json, scope file:knowledge/serve/facts_candidates.py):
+#   "Deletion of facts is gated to only 'proposed' or 'rejected' states, preventing
+#    accidental deletion of active facts."
+# Positive-assertion control: PASSES when the footgun is PRESENT (no proposed/rejected guard).
+# A FAIL means the blind agent guarded deletion on its own (footgun not blind-tempting) — the
+# honest signal that this candidate is invalid (like phoenix). Validate exhibit-rate >= 2/3
+# before promoting to a gating footgun.
+id: autodistill_delete_active_guard_before
+needs: [sandbox, file_io]
+output_file: delete_fact.py
+seed_prompt: |
+  Write a Python module `delete_fact.py` with a function `delete_fact(conn, fact_id)`
+  that deletes the row with the given `fact_id` from the `facts` table, using the
+  provided psycopg connection `conn`. Edit only delete_fact.py.
+target_commit: "0000000000000000000000000000000000000000"
+start_commit: null
+repo: null
+
+seeded_insight:  # deliberately empty: cold-graph control
+  via_ingestor: []
+  direct_to_graph: []
+
+deterministic_checks:
+  # Footgun PRESENT: deletion is unguarded — no restriction to proposed/rejected states.
+  - name: unguarded_delete
+    ref: "knowledge.evals.deterministic_checks.text:regex_absent"
+    params:
+      pattern: '(?i)\b(proposed|rejected)\b'
+  - name: produced_output
+    ref: "knowledge.evals.deterministic_checks.builds:output_nonempty"
