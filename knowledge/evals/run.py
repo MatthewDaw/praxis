@@ -426,6 +426,36 @@ def _claim_value_judge_for(case: EvalCase):
     return ClaimValueJudge(llm=llm, cassette=cassette)
 
 
+def _semantic_conflict_judge_for(case: EvalCase):
+    """Build the ``SemanticConflictJudge`` for the paraphrase fallback (None => none).
+
+    Mirrors ``_claim_value_judge_for`` but for the second-pass, free-text "does A
+    contradict B?" decision, with its own committed verdict cassette (the
+    ``semantic`` dir). Gated by the same ``conflict_model`` axis as the structural
+    path. Returns None when neither a cassette nor a live key is available, so the
+    detector stays inert (precision-first suppression).
+    """
+    if not case.conflict_model:
+        return None
+    from knowledge.knowledge_graph.write_policy.write_step_variants import (
+        SemanticConflictJudge,
+    )
+    from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
+    from knowledge.llm.verdict_cassette import VerdictCassette
+
+    has_key = bool(os.getenv("OPENROUTER_API_KEY"))
+    llm = OpenRouterLlm(model=case.conflict_model) if has_key else None
+    cache = VERDICT_CACHE_DIR / "semantic" / f"{_slug(case.conflict_model)}.json"
+    cassette = (
+        VerdictCassette(cache, model_id=case.conflict_model, allow_compute=has_key)
+        if (cache.exists() or has_key)
+        else None
+    )
+    if llm is None and cassette is None:
+        return None
+    return SemanticConflictJudge(llm=llm, cassette=cassette)
+
+
 def _caption_captioner_for(case: EvalCase):
     """Build the image ``Captioner`` for a case's ``caption_model`` axis (None => none).
 
@@ -519,6 +549,7 @@ def _build_trio_for(case: EvalCase, llm=None):
             ClaimConflictDetector,
             Deduper,
             Redactor,
+            SemanticConflictDetector,
         )
 
         policy = [Redactor()]
@@ -532,6 +563,11 @@ def _build_trio_for(case: EvalCase, llm=None):
         if claim_extractor is not None:
             policy.append(claim_extractor)
             policy.append(ClaimConflictDetector(judge=_claim_value_judge_for(case)))
+            # Second-pass semantic fallback (Graphiti two-stage): paraphrase
+            # contradictions among cosine-recalled neighbours with no shared slot.
+            policy.append(
+                SemanticConflictDetector(judge=_semantic_conflict_judge_for(case))
+            )
         graph = VectorGraph(embedder=embedder, policy=policy)
     return build_trio(
         substrate=case.substrate,

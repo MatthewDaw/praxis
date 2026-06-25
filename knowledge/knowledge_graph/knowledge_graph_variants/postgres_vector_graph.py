@@ -36,6 +36,8 @@ from knowledge.knowledge_graph.write_policy.write_step_variants import (
     ClaimValueJudge,
     Deduper,
     Redactor,
+    SemanticConflictDetector,
+    SemanticConflictJudge,
 )
 from knowledge.llm.embedder_variants.openrouter_embedder import OpenRouterEmbedder
 from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
@@ -86,6 +88,9 @@ def default_write_policy(llm: Llm | None = None) -> list[WriteStep]:
         Deduper(),
         ClaimExtractor(judge=ClaimExtractionJudge(llm=base)),
         ClaimConflictDetector(judge=ClaimValueJudge(llm=base)),
+        # Second-pass semantic fallback (Graphiti two-stage): catches paraphrase
+        # contradictions among cosine-recalled neighbours that share no slot.
+        SemanticConflictDetector(judge=SemanticConflictJudge(llm=base)),
     ]
 
 

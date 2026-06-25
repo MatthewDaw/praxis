@@ -75,6 +75,13 @@
 "pole": ""
 }
 },
+"2646fb7f5100c227eee3ba2cd6a21d627eb25ccf87b5311cf85cbd0873d5624c": {
+"claims": [],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "295b4ff20c9927ee963daa965ad981e187b7698e5e3c0e73f1c70d807ff44b77": {
 "claims": [
 {
@@ -432,6 +439,13 @@
 "stance": {
 "axis": "axis:documentation-explicit-vs-self-documenting",
 "pole": "explicit"
+}
+},
+"da225f7493360bc9b3eef1db67a10e8b78b9d8d717cede44964174273267d620": {
+"claims": [],
+"stance": {
+"axis": "none",
+"pole": ""
 }
 },
 "e0ec4511d38a7bdea79dbd691a78a19e3f11ac6ba00298b2d7e1b1d68f6d3718": {

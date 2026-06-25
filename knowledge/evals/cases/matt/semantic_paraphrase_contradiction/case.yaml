@@ -1,0 +1,47 @@
+# AE6 — semantic (paraphrase) contradiction with NO shared functional slot.
+# Two facts paraphrase opposite attitudes toward the outdoors:
+#   "I love working outdoors." vs "I can't stand being outside."
+# The claim extractor canonicalizes these onto DIFFERENT (subject, attribute)
+# slots (e.g. "I -> attitude toward working outdoors" vs "I -> attitude toward
+# being outside"), so the STRUCTURAL ClaimConflictDetector never sees a shared
+# functional slot and flags nothing. They are, however, cosine-near-neighbors,
+# so they land on each other's `decision.candidates`.
+#
+# The borrowed Graphiti two-stage fallback (embedding-narrow -> LLM judge) closes
+# the gap: SemanticConflictDetector runs AFTER the structural detector, takes the
+# recalled candidates that were neither structurally flagged nor share a slot, and
+# asks an LLM "does A logically contradict B?". A clear "yes" -> a contradiction
+# edge, exactly as the structural path would have.
+#
+# Component eval (no agent); vector substrate runs the real write policy. Replays
+# from the committed claim_extract + conflict + semantic verdict cassettes +
+# embedding fixture offline (no live calls).
+#
+# Desired behavior: exactly one contradiction flagged; both facts kept verbatim.
+# On UNMODIFIED code (no semantic fallback) this is RED — no CONTRADICTION line.
+id: semantic_paraphrase_contradiction
+component: knowledge_graph
+substrate: vector
+embedder: cached
+conflict_model: openai/gpt-4o-mini
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "I love working outdoors."
+    - "I can't stand being outside."
+
+deterministic_checks:
+  # The fallback fires: a semantic (no-shared-slot) contradiction is flagged.
+  - name: exactly_one_contradiction
+    ref: "knowledge.evals.deterministic_checks.text:occurs_exactly"
+    params:
+      text: "CONTRADICTION:"
+      n: 1
+  # Flag-don't-drop: both competing facts survive verbatim as distinct stored facts.
+  - name: both_facts_kept
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "I love working outdoors."
+        - "I can't stand being outside."

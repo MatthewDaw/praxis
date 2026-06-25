@@ -18,6 +18,10 @@ from knowledge.knowledge_graph.write_policy.write_step_variants.conflict_overwri
 from knowledge.knowledge_graph.write_policy.write_step_variants.deduper import Deduper
 from knowledge.knowledge_graph.write_policy.write_step_variants.merge_judge import MergeJudge
 from knowledge.knowledge_graph.write_policy.write_step_variants.redactor import Redactor
+from knowledge.knowledge_graph.write_policy.write_step_variants.semantic_conflict_detector import (
+    SemanticConflictDetector,
+    SemanticConflictJudge,
+)
 
 __all__ = [
     "Redactor",
@@ -30,4 +34,6 @@ __all__ = [
     "ClaimExtractionJudge",
     "ClaimConflictDetector",
     "ClaimValueJudge",
+    "SemanticConflictDetector",
+    "SemanticConflictJudge",
 ]
