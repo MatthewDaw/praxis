@@ -14,7 +14,7 @@ import { COGNITO, DB_SECRET_NAME } from './config';
  * well above any legitimate single-client rate — the fine-grained per-principal
  * throttle is the app-layer limiter (knowledge/serve/rate_limit.py).
  */
-const WAF_IP_RATE_LIMIT_PER_5MIN = 1000;
+const WAF_IP_RATE_LIMIT_PER_5MIN = 3000;
 
 export interface BackendServiceStackProps extends cdk.StackProps {
   /** Cognito user pool id. Defaults to the deployed pool `us-east-1_4nAMe6bPK`. */

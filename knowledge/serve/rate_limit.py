@@ -29,11 +29,13 @@ from starlette.requests import Request
 
 # Tight bucket for the LLM-cost / paid routes (each fires OpenRouter calls):
 # /insights, /ingest, /ingest/session, /fold-in, /evals/regenerate, /evals/load,
-# /context. A handful per minute per principal.
-LLM_RATE_LIMIT = "10/minute"
+# /context. Kept generous for now: the deployment is small/low-profile and
+# OpenRouter has a $10/day hard cap, so the cost blast radius is bounded — these
+# limits exist mainly to stop runaway loops, not to ration normal iteration.
+LLM_RATE_LIMIT = "30/minute"
 
 # Looser global default for every other (cheap) route.
-GLOBAL_RATE_LIMIT = "60/minute"
+GLOBAL_RATE_LIMIT = "180/minute"
 
 
 def principal_key(request: Request) -> str:
