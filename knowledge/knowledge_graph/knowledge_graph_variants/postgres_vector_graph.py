@@ -79,12 +79,14 @@ def default_write_policy(llm: Llm | None = None) -> list[WriteStep]:
     (subject, attribute, value) claims and ``ClaimConflictDetector`` flags
     same-functional-slot value clashes. Mirrors ``VectorGraph``'s default; the
     forced-overwrite add path injects a ``ConflictOverwriter`` policy instead.
+    ``ClaimExtractor`` runs before ``Deduper`` so the deduper's tabular slot-guard
+    can read ``decision.claims``.
     """
     base = llm or OpenRouterLlm()
     return [
         Redactor(),
-        Deduper(),
         ClaimExtractor(judge=ClaimExtractionJudge(llm=base)),
+        Deduper(),
         ClaimConflictDetector(judge=ClaimValueJudge(llm=base)),
     ]
 

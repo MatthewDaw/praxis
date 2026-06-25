@@ -54,12 +54,16 @@ def default_write_policy(llm: Llm | None = None) -> list[WriteStep]:
     same-functional-slot value clashes. ``llm`` powers extraction and the gray-zone
     value judge; both skip silently when the LLM is unavailable (offline), so this
     is safe to leave on by default.
+
+    ``ClaimExtractor`` runs **before** ``Deduper`` so the deduper's tabular slot-guard
+    can read ``decision.claims`` (the functional (subject, attribute) slots) when
+    deciding whether two sibling rows are a duplicate, a contradiction, or distinct.
     """
     base = llm or OpenRouterLlm()
     return [
         Redactor(),
-        Deduper(),
         ClaimExtractor(judge=ClaimExtractionJudge(llm=base)),
+        Deduper(),
         ClaimConflictDetector(judge=ClaimValueJudge(llm=base)),
     ]
 
