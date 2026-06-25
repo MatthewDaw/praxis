@@ -142,6 +142,7 @@ def praxis_add_insight(
     source: str | None = None,
     meta: dict | None = None,
     on_conflict: str = "auto_resolve",
+    derived_from: list[str] | None = None,
 ) -> str:
     """Store a durable insight in the user's knowledge graph.
 
@@ -163,6 +164,11 @@ def praxis_add_insight(
     contradiction for human review (see ``praxis_get_contradictions`` /
     ``praxis_resolve_contradiction``) instead of silently deciding. Use ``"surface"``
     when a human should adjudicate conflicts rather than the newest write winning.
+
+    ``derived_from`` records derivation provenance (gap H5): pass the ids of the
+    facts this insight was derived from and the backend links a ``derived_from``
+    edge (this fact -> each source) so an invalidated source can later surface
+    this fact as suspect.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -177,6 +183,8 @@ def praxis_add_insight(
         body["source"] = source
     if meta is not None:
         body["meta"] = meta
+    if derived_from:
+        body["derivedFrom"] = derived_from
     try:
         resp = httpx.post(
             f"{identity.api_base()}/insights",
@@ -215,6 +223,7 @@ def praxis_ingest(
     source: str | None = None,
     state: str = "active",
     on_conflict: str = "auto_resolve",
+    derived_from: list[str] | None = None,
 ) -> str:
     """Ingest a raw document through Praxis's distillation pipeline.
 
@@ -227,6 +236,10 @@ def praxis_ingest(
     rejects the losing side of a detected clash; ``"surface"`` keeps both facts and
     raises a *pending* contradiction for human review. Returns a structured JSON
     block with per-document results (``id``/``action``/``surfaced``).
+
+    ``derived_from`` records derivation provenance (gap H5): the ids of the facts
+    this document was derived from; the backend links a ``derived_from`` edge from
+    each distilled fact to those sources.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -237,6 +250,8 @@ def praxis_ingest(
         "state": state,
         "onConflict": on_conflict,
     }
+    if derived_from:
+        body["derivedFrom"] = derived_from
     try:
         resp = httpx.post(
             f"{identity.api_base()}/ingest",
@@ -253,6 +268,93 @@ def praxis_ingest(
     return _structured(
         f"ingested {payload.get('count', 0)} document(s)",
         payload,
+    )
+
+
+@mcp.tool()
+def praxis_record_outcome(fact_id: str, outcome: str) -> str:
+    """Feed a downstream verification result back into a fact's trust (gap H1).
+
+    Records whether acting on a fact actually worked. ``outcome`` is
+    ``"succeeded"`` / ``"failed"`` (``"success"``/``"failure"``/``"true"``/
+    ``"false"`` and a bare bool are also accepted). A success increments the fact's
+    success count and a failure its failure count — retrieval folds these into a
+    utility weighting so a repeatedly-failed fact sinks in ranking and a proven one
+    holds. Find the fact id via ``praxis_get_context`` / ``praxis_list_graph``.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    token = str(outcome).strip().lower()
+    if token in ("succeeded", "success", "succeed", "true", "ok", "pass", "passed"):
+        success = True
+    elif token in ("failed", "failure", "fail", "false", "error", "no"):
+        success = False
+    else:
+        return "outcome must be 'succeeded' or 'failed'."
+    try:
+        resp = httpx.post(
+            f"{identity.api_base()}/facts/{fact_id}/outcome",
+            json={"success": success},
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    return f"Recorded {'success' if success else 'failure'} on fact id={fact_id}."
+
+
+@mcp.tool()
+def praxis_record_episode(
+    text: str,
+    alternatives: list[str] | None = None,
+    outcome: str = "pending",
+    derived_from: list[str] | None = None,
+    decided_at: str | None = None,
+) -> str:
+    """Record a decision-log episode — store-only, out of semantic recall (gap H4).
+
+    An episode is a "why we decided X" note: it is stored whole and append-only,
+    bypassing distillation/dedup/contradiction, and is excluded from
+    ``praxis_get_context`` by default so rationale never pollutes semantic recall.
+    Use this (rather than ``praxis_add_insight(category="episodic")``) for decision
+    journals. ``alternatives`` are the options considered but not chosen;
+    ``outcome`` tracks how the decision turned out (e.g. ``"pending"`` /
+    ``"succeeded"`` / ``"failed"``); ``derived_from`` links the facts the decision
+    was based on (H5); ``decided_at`` is an ISO timestamp (defaults to now).
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    if not text.strip():
+        return "Pass non-empty episode text."
+    episode: dict[str, object] = {"outcome": outcome}
+    if alternatives:
+        episode["alternatives"] = alternatives
+    if decided_at is not None:
+        episode["decided_at"] = decided_at
+    body: dict[str, object] = {
+        "insight": text,
+        "category": "episodic",
+        "meta": {"episode": episode},
+    }
+    if derived_from:
+        body["derivedFrom"] = derived_from
+    try:
+        resp = httpx.post(
+            f"{identity.api_base()}/insights",
+            json=body,
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.TimeoutException:
+        return _timeout_note("record_episode")
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    return _structured(
+        payload.get("summary", "") or "recorded episode",
+        {"summary": payload.get("summary", ""), "action": payload.get("action"), "id": payload.get("id")},
     )
 
 

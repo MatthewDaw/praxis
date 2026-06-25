@@ -78,6 +78,46 @@ def test_context_excludes_episodic_by_default(client):
     assert _EPISODE["insight"] in (opted_in.get("context") or "")
 
 
+def _episode(text):
+    return {
+        "insight": text,
+        "category": "episodic",
+        "meta": {"episode": {"outcome": "pending"}},
+    }
+
+
+def _episodic_texts(client):
+    nodes = client.get("/graph", params={"state": "all"}).json()["graph"]["nodes"]
+    return [n["label"] for n in nodes if n.get("category") == "episodic"]
+
+
+def test_two_episodes_same_topic_survive_unmerged(client):
+    """H4 store-only: two episodes on the same topic both persist, never deduped/merged."""
+    first = "Chose Redis for the rate-limiter because it was already in the stack."
+    second = "Chose Redis again for the session cache to keep ops surface small."
+    assert client.post("/insights", json=_episode(first)).status_code == 200
+    assert client.post("/insights", json=_episode(second)).status_code == 200
+    texts = _episodic_texts(client)
+    assert any(first in t for t in texts)
+    assert any(second in t for t in texts)
+    assert len(texts) == 2  # both rows kept, no merge
+
+
+def test_contradicting_episode_does_not_supersede_earlier(client):
+    """H4: a later contradicting decision never rejects/supersedes the earlier one —
+    the decision timeline is append-only and immutable."""
+    earlier = "Decided to store timestamps in UTC across all services."
+    later = "Decided to store timestamps in local time, reversing the UTC decision."
+    assert client.post("/insights", json=_episode(earlier)).status_code == 200
+    assert client.post("/insights", json=_episode(later)).status_code == 200
+    nodes = client.get("/graph", params={"state": "all"}).json()["graph"]["nodes"]
+    episodic = [n for n in nodes if n.get("category") == "episodic"]
+    assert len(episodic) == 2
+    # The earlier decision is still active (not rejected/superseded).
+    earlier_node = next(n for n in episodic if earlier in n["label"])
+    assert earlier_node.get("state") == "active"
+
+
 def test_context_excludes_episodic_from_mounted_overlay(client):
     """A mounted snapshot's episodes must also be excluded from /context (the exclude
     predicate must apply to the live+mounted UNION, not just the live branch)."""

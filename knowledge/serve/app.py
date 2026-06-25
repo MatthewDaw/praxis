@@ -1045,6 +1045,12 @@ def create_app(conn: Any | None = None) -> FastAPI:
         new_contradictions = set(graph.all_edges("contradiction")) - before_contradictions
         prior = before[0].fact if before else None
         top = after[0].fact if after else None
+        # H5: link derivation provenance from the resulting fact to its sources, so
+        # an invalidated source can later surface this fact as suspect. (The episode
+        # branch above already records derivedFrom via record_episode.)
+        derived_from = body.get("derivedFrom")
+        if derived_from and top is not None:
+            graph.record_derivation(top.id, [str(s) for s in derived_from])
         # surface mode that flagged a clash: report it as a pending contradiction so
         # the caller knows to go adjudicate it (the fact still landed, possibly
         # demoted to proposed by FR-005).
@@ -1115,6 +1121,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
             principal.sub,
             policy=[Redactor(), Deduper()],
         )
+        # H5: body-level derivation provenance — each distilled fact links back to
+        # these source ids via a ``derived_from`` edge.
+        derived_from = body.get("derivedFrom")
         results: list[dict[str, Any]] = []
         for doc in documents:
             if not isinstance(doc, dict):
@@ -1145,6 +1154,8 @@ def create_app(conn: Any | None = None) -> FastAPI:
             # ingested text now matches (ids are per-fact, a doc distills to many).
             hits = graph.search(text, top_k=1, state=None)
             top_id = hits[0].fact.id if hits else None
+            if derived_from and top_id is not None:
+                graph.record_derivation(top_id, [str(s) for s in derived_from])
             results.append({
                 "id": top_id,
                 "action": "ingested",
