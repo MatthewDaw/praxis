@@ -73,6 +73,55 @@ def test_add_insight_posts_with_auth_and_returns_summary(monkeypatch):
     assert captured["headers"]["X-Praxis-Org"] == "acme"
 
 
+def test_add_insights_batch_posts_list_and_summarizes(monkeypatch):
+    _patch_identity(monkeypatch)
+    captured = {}
+
+    def fake_post(url, json, headers, timeout=None):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        return _Resp({
+            "count": 2,
+            "results": [
+                {"ok": True, "id": "f1", "action": "added", "retrievable": True,
+                 "contradictionsSurfaced": 0},
+                {"ok": True, "id": "f2", "action": "added", "retrievable": True,
+                 "contradictionsSurfaced": 0},
+            ],
+        })
+
+    monkeypatch.setattr(server.httpx, "post", fake_post)
+
+    out = server.praxis_add_insights([
+        {"insight": "use uv, not pip", "category": "constraint"},
+        {"insight": "deploy on Fridays", "scope": "ops"},
+    ])
+
+    assert "stored 2/2" in out
+    data = _extract_json(out)
+    assert data["count"] == 2
+    assert [r["id"] for r in data["results"]] == ["f1", "f2"]
+    assert captured["url"] == "http://api.test/insights/batch"
+    assert captured["json"] == {
+        "insights": [
+            {"insight": "use uv, not pip", "category": "constraint"},
+            {"insight": "deploy on Fridays", "scope": "ops"},
+        ],
+        "onConflict": "auto_resolve",
+    }
+    assert captured["headers"]["Authorization"] == "Bearer id-tok"
+    assert captured["headers"]["X-Praxis-Org"] == "acme"
+
+
+def test_add_insights_batch_rejects_empty_list(monkeypatch):
+    _patch_identity(monkeypatch)
+    monkeypatch.setattr(
+        server.httpx, "post", lambda *a, **k: pytest.fail("must not POST on empty list")
+    )
+    assert "non-empty list" in server.praxis_add_insights([])
+
+
 def test_get_context_gets_with_auth_and_returns_context(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}

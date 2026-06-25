@@ -210,6 +210,64 @@ def praxis_add_insight(
 
 
 @mcp.tool()
+def praxis_add_insights(
+    insights: list[dict],
+    on_conflict: str = "auto_resolve",
+) -> str:
+    """Store many already-distilled insights in ONE call (bulk sibling of praxis_add_insight).
+
+    Use this when you have several confirmed, self-contained insights to persist
+    at once (e.g. the learnings from a whole session) instead of calling
+    ``praxis_add_insight`` repeatedly — it's one round-trip and the backend writes
+    them serially, which is both faster and gentler on the write path than firing
+    many concurrent single-insight calls.
+
+    ``insights`` is a list of objects, each shaped like a ``praxis_add_insight``
+    call: ``{"insight": str, "scope"?: str, "category"?: str, "source"?: str,
+    "meta"?: object}``. As with the single tool, confirm the exact wording of each
+    insight with the user first — that confirmation is the human approval gate.
+
+    ``on_conflict`` is batch-level and mirrors ``praxis_add_insight``:
+    ``"auto_resolve"`` (default) overwrites a conflicting fact; ``"surface"`` keeps
+    both and raises a pending contradiction for human review.
+
+    Returns a structured JSON block with one result per insight (in order), each
+    carrying ``ok``/``id``/``action``/``retrievable`` (read-your-writes confirmed)
+    and, on a per-item failure, an ``error`` — a bad item never aborts the rest.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    if on_conflict not in ("auto_resolve", "surface"):
+        return "on_conflict must be 'auto_resolve' or 'surface'."
+    if not isinstance(insights, list) or not insights:
+        return "insights must be a non-empty list of insight objects."
+    body = {"insights": insights, "onConflict": on_conflict}
+    try:
+        resp = httpx.post(
+            f"{identity.api_base()}/insights/batch",
+            json=body,
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.TimeoutException:
+        return _timeout_note("add_insights")
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    results = payload.get("results", [])
+    ok = sum(1 for r in results if r.get("ok"))
+    surfaced = sum(r.get("contradictionsSurfaced") or 0 for r in results)
+    summary = f"stored {ok}/{payload.get('count', len(results))} insight(s)"
+    if surfaced:
+        summary += (
+            f" — {surfaced} pending contradiction(s) raised; "
+            "review with praxis_get_contradictions"
+        )
+    return _structured(summary, {"count": payload.get("count"), "results": results})
+
+
+@mcp.tool()
 def praxis_ingest(
     text: str,
     source: str | None = None,

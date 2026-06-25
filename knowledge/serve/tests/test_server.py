@@ -120,6 +120,57 @@ def test_insight_derived_fills_unset_metadata(client):
     assert hit["scope"] == "ops"
 
 
+def test_insights_batch_writes_all_and_confirms_retrievable(client):
+    """H8: one round-trip writes many shaped facts, each confirmed read-back-able.
+
+    The batch endpoint returns one result per item (in order), each persisting its
+    H12 metadata and carrying a ``retrievable`` flag that proves read-your-writes —
+    the just-written fact is immediately found by /context.
+    """
+    r = client.post("/insights/batch", json={
+        "insights": [
+            {"insight": "The deploy pipeline runs on push to main.",
+             "source": "ops-runbook", "category": "pattern"},
+            {"insight": "Staging mirrors prod but uses a seeded database.",
+             "scope": "staging", "meta": {"doc": "D2"}},
+            {"insight": "Secrets are sourced from AWS Secrets Manager at boot."},
+        ]})
+    assert r.status_code == 200, r.text
+    payload = r.json()
+    assert payload["count"] == 3
+    assert all(res["ok"] for res in payload["results"])
+    assert all(res["retrievable"] for res in payload["results"])
+    assert all(res["id"] for res in payload["results"])
+
+    # Read-your-writes: every batched fact is immediately retrievable + metadata stuck.
+    hit = next(h for h in client.get("/context", params={"query": "deploy pipeline push"}).json()["hits"]
+               if "push to main" in h["text"])
+    assert hit["source"] == "ops-runbook"
+    assert hit["category"] == "pattern"
+    cand = next(c for c in client.get("/candidates").json() if "seeded database" in c["content"])
+    assert cand.get("meta", {}).get("doc") == "D2"
+
+
+def test_insights_batch_bad_item_does_not_abort_batch(client):
+    """H8: a single malformed item fails cleanly; the good items still land."""
+    r = client.post("/insights/batch", json={
+        "insights": [
+            {"insight": "Rate limits reset at the top of each minute."},
+            {"insight": "   "},  # empty -> per-item error, not a 500
+            {"insight": "The cache TTL is five minutes."},
+        ]})
+    assert r.status_code == 200, r.text
+    results = r.json()["results"]
+    assert results[0]["ok"] is True and results[0]["retrievable"]
+    assert results[1]["ok"] is False and "insight required" in results[1]["error"]
+    assert results[2]["ok"] is True and results[2]["retrievable"]
+
+
+def test_insights_batch_requires_nonempty_list(client):
+    assert client.post("/insights/batch", json={"insights": []}).status_code == 400
+    assert client.post("/insights/batch", json={}).status_code == 400
+
+
 def test_promote_advances_proposed_to_active(client):
     cid = _create(client)["id"]
     res = client.post(f"/candidates/{cid}/promote", json={})

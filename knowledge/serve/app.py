@@ -96,6 +96,102 @@ def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+# --- shared insight-write helpers (single + batch paths, gap H8) -------------
+# The single POST /insights and the bulk POST /insights/batch run the exact same
+# per-insight write, so the logic lives here once and both endpoints call it. The
+# batch path constructs the policy graph + ingestor ONCE and loops these helpers
+# over the items, so N facts cost one HTTP/auth round-trip and one graph/embedder/
+# connection setup — and the writes are serialized within the single request
+# (avoiding the concurrent-write-burst 500s the local loop otherwise has to skirt).
+
+
+def _insight_write_policy(on_conflict: str) -> list:
+    """The write policy for a confirmed insight, keyed on conflict handling.
+
+    ``surface`` flags a clash as a pending contradiction (keeps both); the default
+    ``auto_resolve`` force-overwrites the loser. Mirrors the single-insight path.
+    """
+    if on_conflict == "surface":
+        return default_write_policy()
+    return [Redactor(), Deduper(), ConflictOverwriter(llm=OpenRouterLlm())]
+
+
+def _record_episode(graph: PostgresVectorGraph, insight: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Store an episodic (decision-log) insight whole, bypassing the semantic pipeline (H4).
+
+    ``retrievable`` confirms the read-your-writes contract (gap H8): the just-
+    written fact is fetchable immediately, since writes commit on autocommit.
+    """
+    ep = (body.get("meta") or {}).get("episode") or {}
+    fid = graph.record_episode(
+        insight,
+        alternatives=ep.get("alternatives"),
+        outcome=ep.get("outcome", "pending"),
+        decided_at=ep.get("decided_at"),
+        derived_from=body.get("derivedFrom"),
+    )
+    return {
+        "summary": "recorded episode",
+        "action": "episode",
+        "id": fid,
+        "onConflict": "n/a",
+        "contradictionsSurfaced": 0,
+        "retrievable": graph.get_fact(fid) is not None,
+    }
+
+
+def _write_insight(
+    graph: PostgresVectorGraph,
+    ingestor: Any,
+    *,
+    insight: str,
+    source: str | None,
+    scope: str | None,
+    category: str | None,
+    meta: dict | None,
+    on_conflict: str,
+) -> dict[str, Any]:
+    """Ingest one confirmed insight into ``graph`` and report what happened.
+
+    Returns the same shape the single ``POST /insights`` returns, plus
+    ``retrievable`` (gap H8): True when the written fact is found by an immediate
+    read-back — a confirmable read-your-writes signal so a caller need not poll.
+    """
+    before = graph.search(insight, top_k=1, state=None)
+    before_contradictions = set(graph.all_edges("contradiction"))
+    ingestor.ingest(  # human-gated -> live knowledge
+        insight,
+        state="active",
+        source=source,
+        scope=scope,
+        category=category,
+        meta=meta,
+    )
+    after = graph.search(insight, top_k=1, state=None)
+    new_contradictions = set(graph.all_edges("contradiction")) - before_contradictions
+    prior = before[0].fact if before else None
+    top = after[0].fact if after else None
+    # surface mode that flagged a clash: report it as a pending contradiction so
+    # the caller knows to go adjudicate it (the fact still landed, possibly
+    # demoted to proposed by FR-005).
+    if new_contradictions:
+        action = "surfaced"
+    elif prior is not None and top is not None and prior.id == top.id:
+        # Same-id top means a dedup merge bumped the existing fact; otherwise the
+        # insight was added (auto_resolve may have rejected + linked conflicts).
+        action = "merged"
+    else:
+        action = "added"
+    return {
+        "summary": f"{action} insight",
+        "action": action,
+        "id": top.id if top is not None else None,
+        "onConflict": on_conflict,
+        "contradictionsSurfaced": len(new_contradictions),
+        "retrievable": top is not None,
+    }
+
+
 def create_app(conn: Any | None = None) -> FastAPI:
     """Build the app over a single shared Postgres connection.
 
@@ -989,21 +1085,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         # whole, append-only, immutable (no distill/dedup/contradiction) and out of
         # semantic recall. Routed to the store-only producer.
         if (body.get("category") or "").strip() == EPISODIC_CATEGORY:
-            ep = (body.get("meta") or {}).get("episode") or {}
-            fid = live_graph(org, principal.sub).record_episode(
-                insight,
-                alternatives=ep.get("alternatives"),
-                outcome=ep.get("outcome", "pending"),
-                decided_at=ep.get("decided_at"),
-                derived_from=body.get("derivedFrom"),
-            )
-            return {
-                "summary": "recorded episode",
-                "action": "episode",
-                "id": fid,
-                "onConflict": "n/a",
-                "contradictionsSurfaced": 0,
-            }
+            return _record_episode(live_graph(org, principal.sub), insight, body)
         on_conflict = str(body.get("onConflict") or "auto_resolve").strip().lower()
         if on_conflict not in ("auto_resolve", "surface"):
             raise HTTPException(
@@ -1014,9 +1096,6 @@ def create_app(conn: Any | None = None) -> FastAPI:
         # returned on reads. ``source``/``scope``/``category`` go into their facts
         # columns; ``meta`` (jsonb) carries arbitrary writer fields. A value the
         # writer sets wins over any ingestion-derived default (see Ingestor.ingest).
-        source = body.get("source")
-        scope = body.get("scope")
-        category = body.get("category")
         meta = body.get("meta")
         if meta is not None and not isinstance(meta, dict):
             raise HTTPException(status_code=400, detail="meta must be an object")
@@ -1024,45 +1103,96 @@ def create_app(conn: Any | None = None) -> FastAPI:
         # force-overwrite (loser rejected). surface: the structural+semantic detector
         # pipeline only *flags* the clash, so the store persists a pending
         # contradiction edge instead of rejecting a side.
-        policy = (
-            default_write_policy()
-            if on_conflict == "surface"
-            else [Redactor(), Deduper(), ConflictOverwriter(llm=OpenRouterLlm())]
+        graph = PostgresVectorGraph(
+            conn, org, principal.sub, policy=_insight_write_policy(on_conflict)
         )
-        graph = PostgresVectorGraph(conn, org, principal.sub, policy=policy)
         _, ingestor, _ = build_trio(graph=graph, llm=None)
-        before = graph.search(insight, top_k=1, state=None)
-        before_contradictions = set(graph.all_edges("contradiction"))
-        ingestor.ingest(  # human-gated -> live knowledge
-            insight,
-            state="active",
-            source=source,
-            scope=scope,
-            category=category,
+        return _write_insight(
+            graph,
+            ingestor,
+            insight=insight,
+            source=body.get("source"),
+            scope=body.get("scope"),
+            category=body.get("category"),
             meta=meta,
+            on_conflict=on_conflict,
         )
-        after = graph.search(insight, top_k=1, state=None)
-        new_contradictions = set(graph.all_edges("contradiction")) - before_contradictions
-        prior = before[0].fact if before else None
-        top = after[0].fact if after else None
-        # surface mode that flagged a clash: report it as a pending contradiction so
-        # the caller knows to go adjudicate it (the fact still landed, possibly
-        # demoted to proposed by FR-005).
-        if new_contradictions:
-            action = "surfaced"
-        elif prior is not None and top is not None and prior.id == top.id:
-            # Same-id top means a dedup merge bumped the existing fact; otherwise the
-            # insight was added (auto_resolve may have rejected + linked conflicts).
-            action = "merged"
-        else:
-            action = "added"
-        return {
-            "summary": f"{action} insight",
-            "action": action,
-            "id": top.id if top is not None else None,
-            "onConflict": on_conflict,
-            "contradictionsSurfaced": len(new_contradictions),
-        }
+
+    @app.post("/insights/batch")
+    def add_insights_batch(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Bulk-write many fully-approved insights in one synchronous round-trip (H8).
+
+        Body: ``{"insights": [{"insight": str, "source"?, "scope"?, "category"?,
+        "meta"?, "derivedFrom"?}, ...], "onConflict": "auto_resolve"|"surface"}``.
+        Each item is the same shape ``POST /insights`` accepts; ``onConflict`` is
+        batch-level (one policy for the whole call). This is the **shaped-fact**
+        lane — no LLM distillation — so it stays fast and lower-loss; for raw
+        documents that need distilling use ``POST /ingest``.
+
+        Why it exists (gap H8): the local loop accumulates many learnings per
+        session. Writing them one-MCP-call-at-a-time pays N HTTP/auth/graph
+        setups and, if fired concurrently, can overwhelm the conflict-checked
+        write path. This endpoint does ONE round-trip, builds the policy graph +
+        ingestor ONCE, and writes the items **serially** within the request.
+
+        Returns ``{"results": [...], "count": int}`` — one result per input item,
+        in order, each carrying ``id``/``action``/``contradictionsSurfaced`` and a
+        ``retrievable`` flag confirming the fact is immediately read-back-able
+        (read-your-writes), so the caller doesn't have to poll. Each result also
+        carries ``ok`` and, on a per-item failure, an ``error`` string — one bad
+        item fails cleanly without aborting the rest of the batch.
+        """
+        insights = body.get("insights")
+        if not isinstance(insights, list) or not insights:
+            raise HTTPException(status_code=400, detail="insights must be a non-empty list")
+        on_conflict = str(body.get("onConflict") or "auto_resolve").strip().lower()
+        if on_conflict not in ("auto_resolve", "surface"):
+            raise HTTPException(
+                status_code=400, detail="onConflict must be 'auto_resolve' or 'surface'"
+            )
+        # One policy graph + ingestor for the whole batch (the throughput win); the
+        # episodic store-only path needs no policy, so it reuses the same instance.
+        graph = PostgresVectorGraph(
+            conn, org, principal.sub, policy=_insight_write_policy(on_conflict)
+        )
+        _, ingestor, _ = build_trio(graph=graph, llm=None)
+        results: list[dict[str, Any]] = []
+        for i, item in enumerate(insights):
+            if not isinstance(item, dict):
+                results.append({"ok": False, "error": "each insight must be an object", "index": i})
+                continue
+            text = (item.get("insight") or "").strip()
+            if not text:
+                results.append({"ok": False, "error": "insight required", "index": i})
+                continue
+            item_meta = item.get("meta")
+            if item_meta is not None and not isinstance(item_meta, dict):
+                results.append({"ok": False, "error": "meta must be an object", "index": i})
+                continue
+            # A single bad/edge-case item must not poison the rest of the batch.
+            try:
+                if (item.get("category") or "").strip() == EPISODIC_CATEGORY:
+                    res = _record_episode(graph, text, item)
+                else:
+                    res = _write_insight(
+                        graph,
+                        ingestor,
+                        insight=text,
+                        source=item.get("source"),
+                        scope=item.get("scope"),
+                        category=item.get("category"),
+                        meta=item_meta,
+                        on_conflict=on_conflict,
+                    )
+                res["ok"] = True
+            except Exception as exc:  # noqa: BLE001 - report, don't abort the batch
+                res = {"ok": False, "error": str(exc), "index": i}
+            results.append(res)
+        return {"results": results, "count": len(results)}
 
     @app.post("/ingest")
     def ingest_documents(
