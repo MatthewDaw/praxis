@@ -82,7 +82,11 @@ def _reduce(vecs: np.ndarray) -> np.ndarray:
         import umap  # umap-learn
 
         reducer = umap.UMAP(
-            n_neighbors=min(15, n - 1),
+            # n_neighbors trades local vs global structure. The old 15 favored
+            # global structure so hard that heterogeneous corpora collapsed into
+            # one mega-cluster (e.g. a 114-fact resume/curriculum melted to two
+            # blobs); 10 recovers per-section topics without fragmenting.
+            n_neighbors=min(10, n - 1),
             n_components=min(5, n - 2),
             metric="cosine",
             random_state=42,
