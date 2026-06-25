@@ -4,8 +4,17 @@ import * as apprunner from 'aws-cdk-lib/aws-apprunner';
 import * as ecrAssets from 'aws-cdk-lib/aws-ecr-assets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import { Construct } from 'constructs';
 import { COGNITO, DB_SECRET_NAME } from './config';
+
+/**
+ * Edge-layer flood ceiling: max requests per source IP over WAF's fixed 5-minute
+ * window before the rate-based rule blocks that IP. A blunt anti-flood ceiling set
+ * well above any legitimate single-client rate — the fine-grained per-principal
+ * throttle is the app-layer limiter (knowledge/serve/rate_limit.py).
+ */
+const WAF_IP_RATE_LIMIT_PER_5MIN = 3000;
 
 export interface BackendServiceStackProps extends cdk.StackProps {
   /** Cognito user pool id. Defaults to the deployed pool `us-east-1_4nAMe6bPK`. */
@@ -118,6 +127,45 @@ export class BackendServiceStack extends cdk.Stack {
         path: '/health',
         protocol: 'HTTP',
       },
+    });
+
+    // Edge-layer WAF: defense-in-depth complementing the app-layer per-principal
+    // limiter. App Runner enforces no per-IP flood ceiling on its own and the app
+    // limiter buckets per authenticated principal, so an unauthenticated flood (no
+    // valid principal to bucket on) could still hammer the service. A WAFv2
+    // rate-based rule blocks any single source IP that exceeds the 5-minute ceiling
+    // before the request reaches the container.
+    const webAcl = new wafv2.CfnWebACL(this, 'BackendWebAcl', {
+      scope: 'REGIONAL', // App Runner is a regional resource (not CloudFront).
+      defaultAction: { allow: {} },
+      visibilityConfig: {
+        cloudWatchMetricsEnabled: true,
+        metricName: 'PraxisBackendWebAcl',
+        sampledRequestsEnabled: true,
+      },
+      rules: [
+        {
+          name: 'PerIpRateLimit',
+          priority: 0,
+          action: { block: {} },
+          statement: {
+            rateBasedStatement: {
+              limit: WAF_IP_RATE_LIMIT_PER_5MIN,
+              aggregateKeyType: 'IP',
+            },
+          },
+          visibilityConfig: {
+            cloudWatchMetricsEnabled: true,
+            metricName: 'PerIpRateLimit',
+            sampledRequestsEnabled: true,
+          },
+        },
+      ],
+    });
+
+    new wafv2.CfnWebACLAssociation(this, 'BackendWebAclAssociation', {
+      resourceArn: this.service.attrServiceArn,
+      webAclArn: webAcl.attrArn,
     });
 
     new cdk.CfnOutput(this, 'ServiceUrl', {

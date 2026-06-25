@@ -21,6 +21,7 @@ dependencies = [
     "psd-tools>=1.10",
     "imagehash>=4.3",
     "yoyo-migrations>=9.0.0",
+    "slowapi>=0.1.10",
 ]
 
 [project.scripts]

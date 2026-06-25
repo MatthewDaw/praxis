@@ -40,8 +40,11 @@ from knowledge.observability.tracing import setup_tracing  # noqa: E402
 
 setup_tracing()
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException  # noqa: E402
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from slowapi import _rate_limit_exceeded_handler  # noqa: E402
+from slowapi.errors import RateLimitExceeded  # noqa: E402
+from slowapi.middleware import SlowAPIMiddleware  # noqa: E402
 
 from knowledge.knowledge_graph.knowledge_graph_variants.org_source_reader import (  # noqa: E402
     OrgSourceReader,
@@ -73,6 +76,10 @@ from knowledge.serve.facts_candidates import (  # noqa: E402
 )
 from knowledge.serve.mounted_store import MountedStore  # noqa: E402
 from knowledge.serve.orgs_store import OrgsStore  # noqa: E402
+from knowledge.serve.rate_limit import (  # noqa: E402
+    LLM_RATE_LIMIT,
+    build_limiter,
+)
 from knowledge.serve.regenerate import (  # noqa: E402
     PipelineConfig,
     RegenerateUnavailableError,
@@ -91,6 +98,12 @@ _DEFAULT_CORS_REGEX = (
 def _cors_origin_regex() -> str:
     custom = os.getenv("PRAXIS_CORS_ORIGIN_REGEX", "").strip()
     return custom or _DEFAULT_CORS_REGEX
+
+
+# Max accepted request-body text size for the LLM-cost write routes (/ingest,
+# /insights, /ingest/session), returning 413 above it. One shared ceiling so the
+# paid surface has a uniform cap.
+_MAX_BODY_BYTES = 128 * 1024
 
 
 def _now() -> str:
@@ -295,6 +308,17 @@ def create_app(conn: Any | None = None) -> FastAPI:
         cors_kwargs["allow_origin_regex"] = _cors_origin_regex()
     app.add_middleware(CORSMiddleware, **cors_kwargs)
 
+    # Per-principal rate limiting (see knowledge/serve/rate_limit.py). Built here,
+    # like CORS, because create_app() constructs the app inside the function. The
+    # global default applies to every route; the LLM-cost routes layer a tighter
+    # per-route limit via @limiter.limit below, and /health is exempted. Storage is
+    # slowapi's in-memory store: per-instance only — fine for the single App Runner
+    # instance today, but would need a shared backend (Redis) if it scales out.
+    limiter = build_limiter()
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_middleware(SlowAPIMiddleware)
+
     def active_org(
         principal: Principal = Depends(current_user),
         x_praxis_org: str | None = Header(default=None),
@@ -315,6 +339,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         return org
 
     @app.get("/health")
+    @limiter.exempt  # App Runner health check — never rate-limited.
     def health() -> dict[str, Any]:
         return {"status": "ok", "store": "postgres"}
 
@@ -844,7 +869,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
         }
 
     @app.post("/fold-in")
+    @limiter.limit(LLM_RATE_LIMIT)
     def fold_in(
+        request: Request,
         body: dict[str, Any] = Body(default={}),
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
@@ -1027,7 +1054,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
         return regenerated, from_cache
 
     @app.post("/evals/regenerate")
+    @limiter.limit(LLM_RATE_LIMIT)
     def regenerate_evals(
+        request: Request,
         body: dict[str, Any] | None = Body(default=None),
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
@@ -1060,7 +1089,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
         }
 
     @app.post("/evals/load")
+    @limiter.limit(LLM_RATE_LIMIT)
     def load_evals(
+        request: Request,
         body: dict[str, Any] | None = Body(default=None),
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
@@ -1119,7 +1150,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
 
     # --- insights + context (MCP read/write path) --------------------------
     @app.post("/insights")
+    @limiter.limit(LLM_RATE_LIMIT)
     def add_insight(
+        request: Request,
         body: dict[str, Any] = Body(default={}),
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
@@ -1144,6 +1177,10 @@ def create_app(conn: Any | None = None) -> FastAPI:
         insight = (body.get("insight") or "").strip()
         if not insight:
             raise HTTPException(status_code=400, detail="insight required")
+        # Body-size cap (mirrors /ingest/session): reject oversized input before any
+        # LLM call. 128 KB matches the session-ingest ceiling.
+        if len(insight.encode("utf-8")) > _MAX_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="insight too large")
         # Episodic (H4): a decision log entry bypasses the semantic pipeline — stored
         # whole, append-only, immutable (no distill/dedup/contradiction) and out of
         # semantic recall. Routed to the store-only producer.
@@ -1260,7 +1297,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
         return {"results": results, "count": len(results)}
 
     @app.post("/ingest")
+    @limiter.limit(LLM_RATE_LIMIT)
     def ingest_documents(
+        request: Request,
         body: dict[str, Any] = Body(default={}),
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
@@ -1285,6 +1324,15 @@ def create_app(conn: Any | None = None) -> FastAPI:
         documents = body.get("documents")
         if not isinstance(documents, list) or not documents:
             raise HTTPException(status_code=400, detail="documents must be a non-empty list")
+        # Body-size cap (mirrors /ingest/session): reject oversized input — the sum of
+        # the documents' text — before any LLM call. 128 KB matches that ceiling.
+        total_bytes = sum(
+            len(str((doc or {}).get("text") or "").encode("utf-8"))
+            for doc in documents
+            if isinstance(doc, dict)
+        )
+        if total_bytes > _MAX_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="documents too large")
         state = str(body.get("state") or "active").strip().lower()
         if state not in ("active", "proposed"):
             raise HTTPException(status_code=400, detail="state must be 'active' or 'proposed'")
@@ -1356,7 +1404,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
         return {"results": results, "count": len(results)}
 
     @app.post("/ingest/session")
+    @limiter.limit(LLM_RATE_LIMIT)
     def ingest_session(
+        request: Request,
         body: dict[str, Any] = Body(default={}),
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
@@ -1381,13 +1431,12 @@ def create_app(conn: Any | None = None) -> FastAPI:
             SessionIngestor,
         )
 
-        max_narrative_bytes = 128 * 1024
         source_re = re.compile(r"session/[A-Za-z0-9_-]{1,64}")
 
         narrative = (body.get("narrative") or "").strip()
         if not narrative:
             raise HTTPException(status_code=400, detail="narrative must be non-empty")
-        if len(narrative.encode("utf-8")) > max_narrative_bytes:
+        if len(narrative.encode("utf-8")) > _MAX_BODY_BYTES:
             raise HTTPException(status_code=413, detail="narrative too large")
         source = body.get("source")
         if source is not None:
@@ -1477,7 +1526,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
         return {"factId": fact_id, "dependents": [_derivation_view(f) for f in deps]}
 
     @app.get("/context")
+    @limiter.limit(LLM_RATE_LIMIT)
     def get_context(
+        request: Request,
         query: str = "",
         top_k: int = 8,
         include_episodic: bool = False,
