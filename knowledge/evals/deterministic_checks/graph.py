@@ -94,6 +94,42 @@ def at_most_one_active(
     )
 
 
+def single_merged_fact(
+    ctx: EvalContext, *, mentions: list[str], max_blocks: int = 1
+) -> CheckResult:
+    """Mem0 UPDATE/merge guard: the graph ends as ONE fact mentioning every term.
+
+    For the knowledge_graph component, ``ctx.output`` is every stored fact text
+    joined by blank lines (plus any ``CONTRADICTION:`` summary lines). Two related-
+    additive notes should collapse to a SINGLE merged fact whose text contains all
+    of ``mentions`` (e.g. both "cheese" and "chicken") — not two separate facts and
+    not a flagged contradiction. Passes iff: at most ``max_blocks`` non-contradiction
+    fact blocks exist, no ``CONTRADICTION:`` line is present, and exactly one block
+    mentions all the required terms.
+    """
+    blocks = [b.strip() for b in ctx.output.split("\n\n") if b.strip()]
+    fact_blocks = [b for b in blocks if not b.startswith("CONTRADICTION:")]
+    has_contradiction = any("CONTRADICTION:" in b for b in blocks)
+    merged = [b for b in fact_blocks if all(m.lower() in b.lower() for m in mentions)]
+    ok = (
+        not has_contradiction
+        and len(fact_blocks) <= max_blocks
+        and len(merged) == 1
+    )
+    if ok:
+        evidence = f"single merged fact mentions {mentions!r}: {merged[0]!r}"
+    elif has_contradiction:
+        evidence = "a CONTRADICTION was flagged (expected an additive merge, not a clash)"
+    elif len(fact_blocks) > max_blocks:
+        evidence = (
+            f"{len(fact_blocks)} fact blocks remain (expected <= {max_blocks}); "
+            f"the additive notes were not merged: {fact_blocks!r}"
+        )
+    else:
+        evidence = f"no single fact mentions all of {mentions!r}; blocks={fact_blocks!r}"
+    return CheckResult(name="single_merged_fact", passed=ok, evidence=evidence)
+
+
 def min_non_seed_facts(
     ctx: EvalContext, *, minimum: int = 1, seed_texts: list[str] | None = None
 ) -> CheckResult:

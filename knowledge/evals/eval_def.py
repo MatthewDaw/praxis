@@ -173,6 +173,7 @@ class EvalCase(BaseModel):
     ingest_model: str | None = None  # OpenRouter chat model for ingestion distillation (PromptIngestor's LLM); None => passthrough line-split. Needs OPENROUTER_API_KEY
     ingest_state: Literal["proposed", "active"] = "proposed"  # lifecycle state for via_ingestor facts (mirrors write_policy SeedState). "proposed" (default) = staged, gated out of retrieval; "active" = endorsed/retrievable (e.g. an applicant's established background)
     merge_model: str | None = None  # OpenRouter chat model for the dedup MergeJudge; None => exact-dedup only. Replayed from a committed merge verdict cassette (or a live key)
+    augment_model: str | None = None  # OpenRouter chat model for the Mem0-style Augmenter's AugmentJudge; None => no additive merge. Replayed from a committed augment verdict cassette (or a live key)
     conflict_model: str | None = None  # OpenRouter chat model for the ConflictFlagger's ConflictJudge; None => no conflict flagging. Replayed from a committed conflict verdict cassette (or a live key)
     tag_model: str | None = None  # Tier-B (gated): OpenRouter chat model for the AspectTagger's AspectJudge; None => no aspect tags. Replayed from a committed aspect verdict cassette (or a live key)
     caption_model: str | None = None  # OpenRouter VLM for image asset captions (ImageIngestor); None => deterministic-only cards. Replayed from a committed caption cassette (or a live key)

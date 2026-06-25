@@ -149,6 +149,50 @@ def _slot_claim(subject: str, attribute: str, value: str) -> Claim:
     return Claim(subject=subject, attribute=attribute, value=value, functional=True)
 
 
+def test_auto_resolve_settles_high_confidence_numeric_clash(facade):
+    # A deterministic numeric clash on a shared functional slot is high-confidence:
+    # auto-resolution supersedes the older fact (b) in favor of the newer (a).
+    b = facade.create({"title": "B", "content": "Voltaic pile invented in 1800."})["id"]
+    a = facade.create({"title": "A", "content": "Voltaic pile invented in 1799."})["id"]
+    facade.graph._persist_claims(b, [_slot_claim("Voltaic pile", "invention year", "1800")])
+    facade.graph._persist_claims(a, [_slot_claim("Voltaic pile", "invention year", "1799")])
+    facade.graph.add_edge(a, b, "contradiction")
+
+    resolved = facade.auto_resolve_high_confidence(prefer_id=a)
+    assert resolved == [_pair(a, b)]
+    assert facade.get(a)["state"] == "active"  # newest add wins
+    assert facade.get(b)["state"] == "rejected"  # loser superseded, text intact
+    assert facade.get(b)["content"] == "Voltaic pile invented in 1800."
+    assert facade.contradictions() == []  # no longer pending
+    assert _edge_pairs(facade, "contradicted_by") == {frozenset((a, b))}
+
+
+def test_auto_resolve_leaves_gray_zone_contradiction_pending(facade):
+    # A free-text (non-numeric, non-stance) clash is gray-zone / low-confidence:
+    # auto-resolution must NOT settle it; it stays pending for manual review.
+    a = facade.create({"title": "A", "content": "Use tabs for indentation."})["id"]
+    b = facade.create({"title": "B", "content": "Use spaces for indentation."})["id"]
+    facade.graph._persist_claims(a, [_slot_claim("indentation", "style", "tabs")])
+    facade.graph._persist_claims(b, [_slot_claim("indentation", "style", "spaces")])
+    facade.graph.add_edge(a, b, "contradiction")
+
+    resolved = facade.auto_resolve_high_confidence(prefer_id=a)
+    assert resolved == []
+    assert len(facade.contradictions()) == 1  # still pending
+    assert _edge_pairs(facade, "contradiction") == {frozenset((a, b))}
+
+
+def test_auto_resolve_is_off_by_default_in_create(facade, monkeypatch):
+    # The create() hook only auto-resolves when the opt-in flag is set; default off
+    # means a wired contradiction edge stays pending.
+    monkeypatch.delenv("PRAXIS_AUTO_RESOLVE_CONTRADICTIONS", raising=False)
+    from knowledge.serve.facts_candidates import auto_resolve_enabled
+
+    assert auto_resolve_enabled() is False
+    monkeypatch.setenv("PRAXIS_AUTO_RESOLVE_CONTRADICTIONS", "1")
+    assert auto_resolve_enabled() is True
+
+
 def test_three_facts_on_one_slot_form_one_cluster(facade):
     a = facade.create({"title": "A", "content": "Voltaic pile invented in 1799."})["id"]
     b = facade.create({"title": "B", "content": "Voltaic pile invented in 1800."})["id"]

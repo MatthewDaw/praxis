@@ -31,6 +31,8 @@ from knowledge.knowledge_graph.write_policy.write_policy_def import (
     demote_active_contradiction,
 )
 from knowledge.knowledge_graph.write_policy.write_step_variants import (
+    AugmentJudge,
+    Augmenter,
     ClaimConflictDetector,
     ClaimExtractionJudge,
     ClaimExtractor,
@@ -88,6 +90,10 @@ def default_write_policy(llm: Llm | None = None) -> list[WriteStep]:
     return [
         Redactor(),
         Deduper(),
+        # Mem0-style UPDATE/merge: fold a related-but-additive note into an existing
+        # fact. Runs after Deduper (dups already collapsed) and before the conflict
+        # detector (a genuine clash is still flagged, not silently merged).
+        Augmenter(judge=AugmentJudge(llm=base)),
         ClaimExtractor(judge=ClaimExtractionJudge(llm=base)),
         ClaimConflictDetector(judge=ClaimValueJudge(llm=base)),
         # Second-pass semantic fallback (Graphiti two-stage): catches paraphrase
@@ -238,6 +244,9 @@ class PostgresVectorGraph(SearchableGraph):
         demote_active_contradiction(decision)
         if decision.action == "update" and decision.update_target_id:
             self._merge(decision)
+            fact_id = decision.update_target_id
+        elif decision.action == "augment" and decision.update_target_id:
+            self._augment(decision)
             fact_id = decision.update_target_id
         elif decision.action == "overwrite" and decision.update_target_id:
             fact_id = self._overwrite(decision)
@@ -1089,6 +1098,24 @@ class PostgresVectorGraph(SearchableGraph):
             "confidence = LEAST(1.0, COALESCE(confidence, 1.0) + 0.05) "
             "WHERE org_id = %s AND user_id = %s AND id = %s",
             (self.org_id, self.user_id, decision.update_target_id),
+        )
+
+    def _augment(self, decision: WriteDecision) -> None:
+        """Mem0 UPDATE/merge: rewrite the target fact's text to the merged survivor.
+
+        Keeps a single fact: the existing fact (``update_target_id``) absorbs the
+        incoming note's content (``augment_text``), is re-embedded so retrieval
+        tracks the merged text, and bumps observation_count/confidence. The
+        incoming note is not inserted as a separate row. Claims are left as-is on
+        the surviving fact (the merged text is additive, not a slot conflict).
+        """
+        merged = (decision.augment_text or decision.text).strip()
+        self._conn.execute(
+            f"UPDATE {self._facts_table} SET text = %s, embedding = %s, "
+            "observation_count = observation_count + 1, "
+            "confidence = LEAST(1.0, COALESCE(confidence, 1.0) + 0.05) "
+            "WHERE org_id = %s AND user_id = %s AND id = %s",
+            (merged, _fit(self._embed(merged)), self.org_id, self.user_id, decision.update_target_id),
         )
 
     def _overwrite(self, decision: WriteDecision) -> str:

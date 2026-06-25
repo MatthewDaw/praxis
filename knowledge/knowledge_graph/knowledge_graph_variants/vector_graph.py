@@ -132,6 +132,9 @@ class VectorGraph(SearchableGraph):
         if decision.action == "update" and decision.update_target_id:
             self._merge(decision)
             return
+        if decision.action == "augment" and decision.update_target_id:
+            self._augment(decision)
+            return
         if decision.action == "overwrite" and decision.update_target_id:
             self._overwrite(decision)
             return
@@ -264,6 +267,23 @@ class VectorGraph(SearchableGraph):
                 fact.observation_count += 1
                 fact.confidence = min(1.0, fact.confidence + 0.05)
                 fact.flags.extend(decision.flags)
+                return
+
+    def _augment(self, decision: WriteDecision) -> None:
+        """Mem0 UPDATE/merge: rewrite the target fact's text to the merged survivor.
+
+        Keeps a single fact: the existing fact identified by ``update_target_id``
+        absorbs the new note's content (``augment_text``), re-embeds so retrieval
+        tracks the merged text, bumps observation_count, and nudges confidence.
+        The incoming note is *not* added as a separate fact.
+        """
+        merged = (decision.augment_text or decision.text).strip()
+        for fact in self._facts:
+            if fact.id == decision.update_target_id:
+                fact.text = merged
+                fact.embedding = self.embedder.embed_one(merged)
+                fact.observation_count += 1
+                fact.confidence = min(1.0, fact.confidence + 0.05)
                 return
 
     def _overwrite(self, decision: WriteDecision) -> None:

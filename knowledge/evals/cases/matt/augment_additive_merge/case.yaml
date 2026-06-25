@@ -1,0 +1,36 @@
+# Mem0-style UPDATE/merge (augment). Two notes are related-but-additive: they are
+# about the same subject (the user's pizza preference) but neither the SAME lesson
+# (the Deduper skips them) nor a CONTRADICTION (no incompatible functional-slot
+# clash). Today Praxis keeps two facts; Mem0 would fold them into one merged memory.
+#
+# Desired behavior: the Augmenter (after Deduper, before the conflict detector)
+# asks the AugmentJudge whether the new note should be merged into the existing one
+# and synthesizes a single merged fact mentioning BOTH toppings — so the graph ends
+# with ONE fact ("...cheese and chicken...") and NO contradiction flag.
+#
+# Component eval (no agent); vector substrate runs the real write policy. Replays
+# from the committed augment + claim_extract + conflict verdict cassettes and the
+# embedding fixture offline (no live calls).
+id: augment_additive_merge
+component: knowledge_graph
+substrate: vector
+embedder: cached
+augment_model: openai/gpt-4o-mini
+conflict_model: openai/gpt-4o-mini
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "The user likes cheese pizza."
+    - "The user loves chicken pizza."
+
+deterministic_checks:
+  # Mem0 UPDATE/merge: the two additive notes collapse to a single merged fact that
+  # mentions both toppings — not two facts, and not a flagged contradiction.
+  - name: single_merged_fact
+    ref: "knowledge.evals.deterministic_checks.graph:single_merged_fact"
+    params:
+      mentions:
+        - "cheese"
+        - "chicken"
+      max_blocks: 1

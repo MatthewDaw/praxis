@@ -186,6 +186,11 @@ def harness_capabilities() -> set[str]:
     conflict_dir = VERDICT_CACHE_DIR / "conflict"
     if os.getenv("OPENROUTER_API_KEY") or (conflict_dir.exists() and any(conflict_dir.glob("*.json"))):
         caps.add("conflict_verdicts")
+    # Augment (Mem0 UPDATE/merge) verdicts: same shape as merge — a committed
+    # augment cassette replays offline; a live key can compute them.
+    augment_dir = VERDICT_CACHE_DIR / "augment"
+    if os.getenv("OPENROUTER_API_KEY") or (augment_dir.exists() and any(augment_dir.glob("*.json"))):
+        caps.add("augment_verdicts")
     # Claim-extraction replay for the structural contradiction path: a committed
     # claim cassette replays offline; a live key can record it.
     claim_dir = VERDICT_CACHE_DIR / "claim_extract"
@@ -245,6 +250,10 @@ def case_needs(case: EvalCase) -> set[str]:
     # else they'd silently fall back to exact-dedup and mis-grade -> SKIP instead.
     if case.merge_model:
         needs.add("merge_verdicts")
+    # Augment (Mem0 UPDATE/merge) cases need an augment verdict source (committed
+    # cassette or a key), else the Augmenter is inert and the case mis-grades -> SKIP.
+    if case.augment_model:
+        needs.add("augment_verdicts")
     # Conflict cases need claim-extraction replay (the structural detector's front)
     # plus a value-verdict source; without the claim cassette the detector extracts
     # nothing and the case mis-grades -> SKIP instead.
@@ -369,6 +378,32 @@ def _merge_judge_for(case: EvalCase):
     if llm is None and cassette is None:
         return None
     return MergeJudge(llm=llm, cassette=cassette)
+
+
+def _augment_judge_for(case: EvalCase):
+    """Build the Mem0-style ``AugmentJudge`` for a case's ``augment_model`` axis (None => none).
+
+    Mirrors ``_merge_judge_for``: a live OpenRouter judge when a key is set, plus a
+    committed augment verdict cassette for offline replay. With neither, returns None
+    so the ``Augmenter`` is a no-op (the case SKIPs via ``augment_verdicts``).
+    """
+    if not case.augment_model:
+        return None
+    from knowledge.knowledge_graph.write_policy.write_step_variants import AugmentJudge
+    from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
+    from knowledge.llm.verdict_cassette import VerdictCassette
+
+    has_key = bool(os.getenv("OPENROUTER_API_KEY"))
+    llm = OpenRouterLlm(model=case.augment_model) if has_key else None
+    cache = VERDICT_CACHE_DIR / "augment" / f"{_slug(case.augment_model)}.json"
+    cassette = (
+        VerdictCassette(cache, model_id=case.augment_model, allow_compute=has_key)
+        if (cache.exists() or has_key)
+        else None
+    )
+    if llm is None and cassette is None:
+        return None
+    return AugmentJudge(llm=llm, cassette=cassette)
 
 
 def _claim_extractor_for(case: EvalCase):
@@ -546,6 +581,7 @@ def _build_trio_for(case: EvalCase, llm=None):
         # cassettes replay offline), so seeding stays cheap by default.
         from knowledge.knowledge_graph.knowledge_graph_variants.vector_graph import VectorGraph
         from knowledge.knowledge_graph.write_policy.write_step_variants import (
+            Augmenter,
             ClaimConflictDetector,
             Deduper,
             Redactor,
@@ -557,6 +593,12 @@ def _build_trio_for(case: EvalCase, llm=None):
         if aspect_tagger is not None:
             policy.append(aspect_tagger)
         policy.append(Deduper(judge=_merge_judge_for(case)))
+        # Mem0-style UPDATE/merge: opt-in via augment_model (cassette replays
+        # offline). Runs after Deduper, before the conflict path — mirrors the
+        # store's default_write_policy ordering.
+        augment_judge = _augment_judge_for(case)
+        if augment_judge is not None:
+            policy.append(Augmenter(judge=augment_judge))
         # Structural contradiction path (replaces ConflictFlagger): extract claims,
         # then detect same-functional-slot value clashes. Both opt in via conflict_model.
         claim_extractor = _claim_extractor_for(case)
@@ -618,6 +660,7 @@ def _seed_signature(case: EvalCase) -> str:
         # Judge axes change the seeded graph (merge collapses dups; conflict flags),
         # so two cases differing only in a judge model must not share a cached seed.
         "merge_model": case.merge_model,
+        "augment_model": case.augment_model,
         "conflict_model": case.conflict_model,
         "tag_model": case.tag_model,
         "caption_model": case.caption_model,

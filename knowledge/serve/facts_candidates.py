@@ -17,6 +17,8 @@ translation.
 
 from __future__ import annotations
 
+import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -33,6 +35,41 @@ Candidate = dict[str, Any]
 # active (the intermediate "suggested" step was removed). "active" and "rejected"
 # are terminal — not in this map, so promoting from them raises.
 _NEXT_STATE = {"proposed": "active"}
+
+
+# Opt-in auto-resolution (Mem0-style): when enabled, a freshly-detected
+# contradiction whose underlying slot clash is *high confidence* (a deterministic
+# numeric or stance clash — the same signal ClaimConflictDetector resolves without
+# an LLM) is auto-resolved via the existing supersede path (newest fact wins, loser
+# rejected, edge flipped to contradicted_by) instead of being left PENDING for a
+# human. Low-confidence (gray-zone judge) contradictions always stay pending. Off
+# by default so existing behavior/tests are unchanged.
+_AUTO_RESOLVE_ENV = "PRAXIS_AUTO_RESOLVE_CONTRADICTIONS"
+
+_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def auto_resolve_enabled() -> bool:
+    """True iff the opt-in auto-resolution flag is set (default off)."""
+    return os.getenv(_AUTO_RESOLVE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _deterministic_clash(attribute: str, a: str, b: str) -> bool:
+    """High-confidence clash test mirroring ClaimConflictDetector._incompatible.
+
+    A stance attribute with two different poles, or two values that both carry
+    numbers and disagree, is a deterministic (no-LLM) contradiction — i.e. high
+    confidence. Everything else (free-text / synonym gray zone) is NOT, so it stays
+    pending for manual review.
+    """
+    an = " ".join(a.lower().split())
+    bn = " ".join(b.lower().split())
+    if an == bn:
+        return False
+    if attribute.strip().lower() == "stance":
+        return True
+    na, nb = _NUM_RE.findall(a), _NUM_RE.findall(b)
+    return bool(na and nb and na != nb)
 
 
 class PromotionError(ValueError):
@@ -184,6 +221,11 @@ class FactsCandidates:
         )
         if fid is None:
             raise ValueError("failed to create candidate")
+        # Opt-in: auto-resolve any high-confidence contradiction this add tripped
+        # (deterministic numeric/stance clash) so it never lands pending. Low-
+        # confidence (gray-zone) contradictions are left for manual review.
+        if auto_resolve_enabled():
+            self.auto_resolve_high_confidence(prefer_id=fid)
         candidate = self.get(fid)
         if candidate is None:
             raise ValueError(f"candidate {fid} not found after create")
@@ -349,6 +391,48 @@ class FactsCandidates:
         )
         slot_info = self._slot_info_multi(member_ids)
         return serialize_clusters(candidates, slot_info, status_filter="pending")
+
+    def auto_resolve_high_confidence(self, *, prefer_id: str | None = None) -> list[str]:
+        """Auto-resolve pending contradictions that are high-confidence clashes.
+
+        Opt-in (caller gates on :func:`auto_resolve_enabled`). For every pending
+        contradiction whose two facts share a functional slot with a *deterministic*
+        clash (numeric/stance — the same high-confidence signal the structural
+        detector resolves without an LLM), settle it through the existing
+        :meth:`resolve` supersede path: the winner stays active, the loser is
+        rejected, and the edge is flipped to ``contradicted_by`` (reversible).
+
+        The winner is ``prefer_id`` when it is one of the pair (a fresh add wins
+        over the stale fact it contradicts, FR-005-style "newest approved truth");
+        otherwise the newer fact (``all_facts`` is newest-first). Gray-zone
+        (free-text) contradictions are left pending. Returns the resolved pair ids.
+        """
+        facts = self.graph.all_facts()  # newest-first
+        order = {f.id: i for i, f in enumerate(facts)}  # lower index == newer
+        slot_info = self._slot_info_multi(list(order))
+        candidates = self.list()
+        resolved: list[str] = []
+        for pair in serialize_pairs(candidates, status_filter="pending"):
+            a, b = pair["a"]["id"], pair["b"]["id"]
+            shared = {s for s, _ in slot_info.get(a, [])} & {
+                s for s, _ in slot_info.get(b, [])
+            }
+            val_a = dict(slot_info.get(a, []))
+            val_b = dict(slot_info.get(b, []))
+            high = any(
+                _deterministic_clash(slot[1], val_a[slot], val_b[slot])
+                for slot in shared
+                if slot in val_a and slot in val_b
+            )
+            if not high:
+                continue  # gray-zone -> leave pending for manual review
+            if prefer_id in (a, b):
+                keep = prefer_id
+            else:
+                keep = a if order.get(a, 1 << 30) <= order.get(b, 1 << 30) else b
+            self.resolve(pair["id"], keep)
+            resolved.append(pair["id"])
+        return resolved
 
     def resolve(self, pair_id: str, keep_id: str) -> Candidate:
         a, _, b = pair_id.partition("__")

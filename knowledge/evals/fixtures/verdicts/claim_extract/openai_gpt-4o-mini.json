@@ -323,6 +323,20 @@
 "pole": "tabs"
 }
 },
+"9710910be22216754fa4d3edfe6eb21dd66f99e1dbc7b0c4541585ebfd98e090": {
+"claims": [
+{
+"attribute": "favorite food",
+"functional": true,
+"subject": "user",
+"value": "chicken pizza"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "9b65f093a36fd0f4da204321249d765d5e21f09463d4e848c4740ed4d746477b": {
 "claims": [
 {
@@ -355,6 +369,20 @@
 "stance": {
 "axis": "axis:abstraction-vs-directness",
 "pole": "abstraction"
+}
+},
+"a3934e6f6a418541d507a419d6f1f0e905aeb1a39bb253e9cd2bc2b6f5e9ecab": {
+"claims": [
+{
+"attribute": "type",
+"functional": true,
+"subject": "pizza",
+"value": "cheese"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
 }
 },
 "ab73b7aad82e52c942e0dec0a9ccb62e0db140db1a86b931190c9c45527038c9": {

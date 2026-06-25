@@ -14,7 +14,7 @@ from typing import Literal
 
 from knowledge.knowledge_graph.knowledge_graph_def import Claim, SearchHit
 
-Action = Literal["add", "noop", "update", "overwrite"]
+Action = Literal["add", "noop", "update", "overwrite", "augment"]
 
 # The state a freshly-written fact is persisted with. Set by the caller of
 # ``write`` (not by a policy step): "active" when the user directly approved the
@@ -40,8 +40,12 @@ class WriteDecision:
     text: str
     state: SeedState = "proposed"
     action: Action = "add"
-    # Fact to act on for action == "update" (bump) or "overwrite" (replace in place).
+    # Fact to act on for action == "update" (bump), "overwrite" (replace in place),
+    # or "augment" (rewrite the target's text with a Mem0-style merged survivor).
     update_target_id: str | None = None
+    # Synthesized merged survivor text for action == "augment" (set by Augmenter):
+    # the existing fact identified by update_target_id is rewritten to this.
+    augment_text: str | None = None
     # Extra contradicting facts to decay when action == "overwrite" (force-upsert).
     supersede_ids: list[str] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)  # e.g. ["contradiction:<id>"]
