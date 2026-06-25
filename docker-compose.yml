@@ -1,0 +1,30 @@
+# Local Postgres (pgvector) for running the DSN-backed tests and evals without
+# touching production RDS. Bring it up with `just db-up`, then point the app at it:
+#
+#   export PRAXIS_DB_URL=postgresql://praxis:praxis@localhost:5432/praxis
+#
+# The DSN-gated cases (e.g. hybrid_keyword_retrieval) and serve tests resolve
+# PRAXIS_DB_URL first, so this never reaches AWS Secrets Manager / prod RDS.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: praxis-db
+    environment:
+      POSTGRES_USER: praxis
+      POSTGRES_PASSWORD: praxis
+      POSTGRES_DB: praxis
+    ports:
+      - "5432:5432"
+    volumes:
+      - praxis-db-data:/var/lib/postgresql/data
+      # Pre-create the pgvector extension before the first app connection so the
+      # psycopg vector adapter registers (it skips silently if the type is absent).
+      - ./infra/local/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U praxis -d praxis"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  praxis-db-data:

@@ -21,6 +21,15 @@ install-frontend:
 health:
     curl -s http://localhost:8000/health
 
+# Start a local Postgres (pgvector) for DSN-backed tests/evals — never touches prod RDS.
+db-up:
+    docker compose up -d --wait db
+    @echo 'export PRAXIS_DB_URL=postgresql://praxis:praxis@localhost:5432/praxis'
+
+# Stop and remove the local Postgres container and its data volume.
+db-down:
+    docker compose down -v
+
 # Start the local observability UI (Arize Phoenix) on http://localhost:6006 (Docker)
 observability:
     docker start phoenix 2>/dev/null || docker run -d --name phoenix -p 6006:6006 arizephoenix/phoenix:version-17.9.0
