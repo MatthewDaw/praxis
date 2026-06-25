@@ -88,6 +88,16 @@ _KEYWORD_MAX_DF_RATIO = 0.5
 _ALLOWED_FACTS_TABLES = {"facts", "cached_facts"}
 _ALLOWED_EDGES_TABLES = {"fact_edges", "cached_fact_edges"}
 
+# Derivation provenance (gap H5). ``derived_from`` is written learning -> basis:
+# ``add_edge(L, F, DERIVED_FROM_EDGE)`` means "L was derived from F" (src=L, dst=F),
+# so the dependents of F (suspect when F flips) are the edges where dst_id = F.
+# When a source is invalidated, the propagation hook stamps the review edge
+# ``STALE_DERIVED_EDGE`` from each transitive dependent -> the rejected source, and
+# ``stale_derived()`` reads those (one writer, one reader).
+DERIVED_FROM_EDGE = "derived_from"
+STALE_DERIVED_EDGE = "derived_source_invalidated"
+_MAX_DERIVATION_DEPTH = 25
+
 # Columns copied verbatim between `facts` and `cached_facts` for snapshot
 # save/load (everything except the cache_key, which is stamped per copy).
 _FACT_COPY_COLS = (
@@ -288,6 +298,7 @@ class PostgresVectorGraph(SearchableGraph):
         category: str | None = None,
         meta: dict | None = None,
         tabular: bool = False,
+        derived_from: list[str] | None = None,
     ) -> str | None:
         """Run the write-policy pipeline over ``content``, then persist.
 
@@ -300,6 +311,10 @@ class PostgresVectorGraph(SearchableGraph):
         ``source``/``scope``/``category``/``meta`` are carried into persistence.
         Cache writes are stamped with this graph's bound ``cache_key``; ``meta``
         persists into the ``meta`` jsonb column.
+
+        ``derived_from`` records derivation provenance (gap H5): one
+        ``derived_from`` edge (this fact -> each source id) so an invalidated source
+        can later surface the learnings built on it via ``stale_derived``.
 
         Side effect: for every existing fact the policy flagged as a
         contradiction (``decision.flags`` entries of the form
@@ -351,7 +366,95 @@ class PostgresVectorGraph(SearchableGraph):
         else:
             fact_id = self._add(decision)
         self._persist_contradictions(fact_id, decision)
+        if derived_from:
+            self.record_derivation(fact_id, derived_from)
         return fact_id
+
+    def record_derivation(self, fact_id: str, source_ids: list[str]) -> None:
+        """Record that ``fact_id`` was derived from each id in ``source_ids``.
+
+        Writes one ``derived_from`` edge (fact_id -> source) per source, so an
+        invalidated source can surface ``fact_id`` as suspect (see ``stale_derived``).
+        Idempotent (``add_edge`` is ``ON CONFLICT DO NOTHING``); self-edges skipped.
+        """
+        for src in source_ids:
+            if src and src != fact_id:
+                self.add_edge(fact_id, src, DERIVED_FROM_EDGE)
+
+    def dependents(
+        self, fact_id: str, kind: str = DERIVED_FROM_EDGE, max_depth: int = _MAX_DERIVATION_DEPTH
+    ) -> list[Fact]:
+        """Transitive dependents of ``fact_id`` along ``kind`` edges (newest first).
+
+        A ``kind`` edge is src=dependent -> dst=basis, so the dependents of
+        ``fact_id`` are the rows where ``dst_id = fact_id``; their ``src_id`` is the
+        dependent, recursed as the next ``dst``. Cycle-guarded (a fact never revisits
+        an id already on its path) and depth-bounded.
+        """
+        ids = self._dependent_ids(fact_id, kind, max_depth)
+        if not ids:
+            return []
+        return [f for f in self.all_facts() if f.id in ids]
+
+    def _dependent_ids(self, fact_id: str, kind: str, max_depth: int) -> set[str]:
+        cache = ""
+        params: list[object] = [self.org_id, self.user_id, kind, fact_id]
+        if self._cache_key is not None:
+            cache = " AND cache_key = %s"
+        # Recursive walk up the derivation chain (dst -> src), carrying the visited
+        # path to break cycles, bounded by ``max_depth``.
+        base_params = [self.org_id, self.user_id, kind]
+        sql = (
+            "WITH RECURSIVE deps(id, depth, path) AS ("
+            f"  SELECT src_id, 1, ARRAY[src_id] FROM {self._edges_table} "
+            f"   WHERE org_id=%s AND user_id=%s AND kind=%s AND dst_id=%s{cache} "
+            "  UNION ALL "
+            "  SELECT e.src_id, d.depth+1, d.path || e.src_id "
+            f"   FROM {self._edges_table} e JOIN deps d ON e.dst_id = d.id "
+            f"   WHERE e.org_id=%s AND e.user_id=%s AND e.kind=%s{cache} "
+            "     AND d.depth < %s AND NOT (e.src_id = ANY(d.path))"
+            ") SELECT DISTINCT id FROM deps"
+        )
+        anchor = [*base_params, fact_id]
+        if self._cache_key is not None:
+            anchor.append(self._cache_key)
+        recur = [*base_params]
+        if self._cache_key is not None:
+            recur.append(self._cache_key)
+        recur.append(max_depth)
+        rows = self._conn.execute(sql, [*anchor, *recur]).fetchall()
+        return {r[0] for r in rows}
+
+    def _flag_stale_dependents(self, fact_id: str) -> None:
+        """Propagation hook: a fact was invalidated — flag its transitive derivation
+        dependents for review (precision-first: flag, never auto-reject).
+
+        Stamps a ``STALE_DERIVED_EDGE`` review edge (dependent -> the invalidated
+        source) on every transitive ``derived_from`` dependent, so ``stale_derived``
+        surfaces the whole closure even where an intermediate link is flagged (not
+        itself rejected).
+        """
+        for dep_id in self._dependent_ids(fact_id, DERIVED_FROM_EDGE, _MAX_DERIVATION_DEPTH):
+            self.add_edge(dep_id, fact_id, STALE_DERIVED_EDGE)
+
+    def stale_derived(self) -> list[Fact]:
+        """Active facts flagged stale because a fact they derive from was invalidated.
+
+        Reads the ``STALE_DERIVED_EDGE`` review edges set by ``_flag_stale_dependents``
+        (one reader, one writer). Returns the suspect learnings for human/agent review.
+        """
+        cache = ""
+        params: list[object] = [self.org_id, self.user_id, STALE_DERIVED_EDGE]
+        if self._cache_key is not None:
+            cache = " AND cache_key = %s"
+            params.append(self._cache_key)
+        rows = self._conn.execute(
+            f"SELECT DISTINCT src_id FROM {self._edges_table} "
+            f"WHERE org_id=%s AND user_id=%s AND kind=%s{cache}",
+            params,
+        ).fetchall()
+        ids = {r[0] for r in rows}
+        return [f for f in self.all_facts(state="active") if f.id in ids]
 
     def _persist_contradictions(self, fact_id: str, decision: WriteDecision) -> None:
         """Materialize the policy's ``contradiction:<id>`` flags as edges.
@@ -393,6 +496,7 @@ class PostgresVectorGraph(SearchableGraph):
             (self.org_id, self.user_id, loser_id),
         )
         self.add_edge(winner_id, loser_id, "supersedes")
+        self._flag_stale_dependents(loser_id)  # H5: propagate to derived learnings
 
     def _persist_claims(self, fact_id: str, claims: list[Claim]) -> None:
         """Replace the stored claims for ``fact_id`` with ``claims``.
@@ -890,6 +994,10 @@ class PostgresVectorGraph(SearchableGraph):
             "WHERE org_id = %s AND user_id = %s AND id = %s",
             (state, self.org_id, self.user_id, fact_id),
         )
+        # Derivation propagation (H5): retiring a fact flags the learnings derived
+        # from it for review. This is the candidate-reject / promote-rival chokepoint.
+        if state == "rejected":
+            self._flag_stale_dependents(fact_id)
 
     def invalidate(self, fact_id: str, winner_id: str | None = None) -> None:
         """Close a fact's bi-temporal validity window (Graphiti/Zep model).
@@ -1419,4 +1527,5 @@ class PostgresVectorGraph(SearchableGraph):
             )
             src, dst = sorted((fact_id, loser_id))
             self.add_edge(src, dst, "contradicted_by")
+            self._flag_stale_dependents(loser_id)  # H5: propagate to derived learnings
         return fact_id

@@ -1,0 +1,39 @@
+# H5 (derivation edges) — RED SPEC proving the gap.
+#
+# A learning is derived from a source fact; the source later turns out to be wrong
+# and is retired. The compounding promise (praxis-gaps.md H5) is that Praxis can then
+# name every downstream learning that is now suspect. Today it cannot: there is no
+# derivation traversal and no stale-derived surface, so the learning stays active and
+# untraced after its source is rejected.
+#
+#   SOURCE:  "The agent factory stores durable knowledge under the per-project principal."
+#   DERIVED: "Because project facts live under the per-project principal, the executor
+#             queries that principal to load a project's plan."
+#
+# The check records the derivation as a `derived_from` edge (fact_edges already stores
+# arbitrary edge kinds via add_edge), rejects the source, then asserts the learning is
+# returned by graph.stale_derived(). RED now (no such surface); GREEN once H5 adds the
+# derivation traversal + stale-derived query (design:
+# ../../../../docs/proposals/2026-06-25-derivation-edges-h5.md).
+#
+# Component eval; drives the REAL Postgres path via the check's own isolated tenant.
+# Needs a Postgres DSN (embedder: cached / substrate: vector) — `just db-up` provides
+# one — else the harness SKIPs. Marked xfail: capability not built yet.
+id: derivation_stale_source
+component: knowledge_graph
+substrate: vector
+embedder: cached
+
+seeded_insight:
+  via_ingestor: []
+  # Seeded by the check into its own tenant; listed here for visibility.
+  direct_to_graph:
+    - "The agent factory stores durable knowledge under the per-project principal."
+    - "Because project facts live under the per-project principal, the executor queries that principal to load a project's plan."
+
+deterministic_checks:
+  - name: stale_derived_surfaced
+    ref: "knowledge.evals.deterministic_checks.graph:derivation_surfaces_stale_when_source_invalidated"
+    params:
+      source_text: "The agent factory stores durable knowledge under the per-project principal."
+      derived_text: "Because project facts live under the per-project principal, the executor queries that principal to load a project's plan."

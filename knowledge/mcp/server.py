@@ -26,6 +26,16 @@ from knowledge.mcp import identity
 
 mcp = FastMCP("praxis-knowledge")
 
+# httpx's default per-request timeout (5s) is too low for the write path. A write
+# whose new fact is a cosine-near-neighbor of an existing one triggers the inline
+# SemanticConflictDetector — a synchronous LLM round-trip (plus embedding) inside
+# the request — which can push total latency well past 5s. The backend still
+# commits, but the client gives up first and surfaces a spurious "timed out".
+# So: a short budget for reads (keeps /context, /health snappy) and a long one
+# for writes/ingest (the conflict-checked path). Per-call, not one global bump.
+_READ_TIMEOUT = 30.0
+_WRITE_TIMEOUT = 120.0
+
 _AUTH_HINT = (
     "authentication failed — ask me to log in again with `praxis_login`, or check "
     "you are a member of the active org."
@@ -44,6 +54,15 @@ def _friendly(exc: httpx.HTTPStatusError) -> str:
     if exc.response.status_code in (401, 403):
         return _AUTH_HINT
     raise exc
+
+
+def _timeout_note(what: str) -> str:
+    """A clearer message than a bare 'timed out' for a write that may have committed."""
+    return (
+        f"The {what} request exceeded the client timeout ({int(_WRITE_TIMEOUT)}s). "
+        "The write may still have committed on the backend — read it back with "
+        "praxis_list_graph / praxis_get_context before retrying to avoid a duplicate."
+    )
 
 
 def _not_ready() -> str | None:
@@ -101,6 +120,7 @@ def praxis_get_context(query: str, top_k: int = 8) -> str:
             f"{identity.api_base()}/context",
             params={"query": query, "top_k": top_k},
             headers=_headers(),
+            timeout=_READ_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -151,8 +171,11 @@ def praxis_add_insight(
             f"{identity.api_base()}/insights",
             json=body,
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
+    except httpx.TimeoutException:
+        return _timeout_note("add_insight")
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
     payload = resp.json()
@@ -208,8 +231,11 @@ def praxis_ingest(
             f"{identity.api_base()}/ingest",
             json=body,
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
+    except httpx.TimeoutException:
+        return _timeout_note("ingest")
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
     payload = resp.json()
@@ -237,7 +263,11 @@ def praxis_get_contradictions() -> str:
     if (hint := _not_ready()) is not None:
         return hint
     try:
-        resp = httpx.get(f"{identity.api_base()}/contradictions", headers=_headers())
+        resp = httpx.get(
+            f"{identity.api_base()}/contradictions",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
@@ -290,6 +320,7 @@ def praxis_resolve_contradiction(
             f"{identity.api_base()}/contradictions/{pair_id}/resolve",
             json=body,
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -311,7 +342,10 @@ def praxis_list_graph(state: str | None = None) -> str:
     params = {"state": state} if state else {}
     try:
         resp = httpx.get(
-            f"{identity.api_base()}/candidates", params=params, headers=_headers()
+            f"{identity.api_base()}/candidates",
+            params=params,
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -344,7 +378,10 @@ def praxis_insert_fact(title: str, content: str, provenance: str | None = None) 
         body["provenance"] = provenance
     try:
         resp = httpx.post(
-            f"{identity.api_base()}/candidates", json=body, headers=_headers()
+            f"{identity.api_base()}/candidates",
+            json=body,
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -379,7 +416,10 @@ def praxis_edit_fact(
         return "Nothing to edit — pass title, content, and/or provenance."
     try:
         resp = httpx.patch(
-            f"{identity.api_base()}/candidates/{cid}", json=body, headers=_headers()
+            f"{identity.api_base()}/candidates/{cid}",
+            json=body,
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -407,6 +447,7 @@ def praxis_promote_fact(cid: str, target_state: str | None = None) -> str:
             f"{identity.api_base()}/candidates/{cid}/promote",
             json=body,
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -433,6 +474,7 @@ def praxis_reject_fact(cid: str, reason: str | None = None) -> str:
             f"{identity.api_base()}/candidates/{cid}/reject",
             json=body,
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -454,7 +496,9 @@ def praxis_delete_fact(cid: str) -> str:
         return hint
     try:
         resp = httpx.delete(
-            f"{identity.api_base()}/candidates/{cid}", headers=_headers()
+            f"{identity.api_base()}/candidates/{cid}",
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -475,7 +519,11 @@ def praxis_clear_graph() -> str:
     if (hint := _not_ready()) is not None:
         return hint
     try:
-        resp = httpx.post(f"{identity.api_base()}/graph/clear", headers=_headers())
+        resp = httpx.post(
+            f"{identity.api_base()}/graph/clear",
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
@@ -492,7 +540,11 @@ def praxis_list_snapshots() -> str:
     if (hint := _not_ready()) is not None:
         return hint
     try:
-        resp = httpx.get(f"{identity.api_base()}/snapshots", headers=_headers())
+        resp = httpx.get(
+            f"{identity.api_base()}/snapshots",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
@@ -524,6 +576,7 @@ def praxis_save_snapshot(name: str) -> str:
             f"{identity.api_base()}/snapshots",
             json={"name": name.strip()},
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -551,6 +604,7 @@ def praxis_load_snapshot(name: str, mode: str = "replace") -> str:
             f"{identity.api_base()}/snapshots/{name}/load",
             json={"mode": mode},
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -571,7 +625,9 @@ def praxis_delete_snapshot(name: str) -> str:
         return hint
     try:
         resp = httpx.delete(
-            f"{identity.api_base()}/snapshots/{name}", headers=_headers()
+            f"{identity.api_base()}/snapshots/{name}",
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -591,7 +647,11 @@ def praxis_list_org_sources() -> str:
     if (hint := _not_ready()) is not None:
         return hint
     try:
-        resp = httpx.get(f"{identity.api_base()}/org/sources", headers=_headers())
+        resp = httpx.get(
+            f"{identity.api_base()}/org/sources",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
@@ -626,6 +686,7 @@ def praxis_browse_snapshot(user_id: str, name: str) -> str:
         resp = httpx.get(
             f"{identity.api_base()}/org/sources/{user_id}/snapshots/{name}/facts",
             headers=_headers(),
+            timeout=_READ_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -673,6 +734,7 @@ def praxis_fold_in(
                 "mode": mode,
             },
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -699,7 +761,11 @@ def praxis_list_mounts() -> str:
     if (hint := _not_ready()) is not None:
         return hint
     try:
-        resp = httpx.get(f"{identity.api_base()}/mounts", headers=_headers())
+        resp = httpx.get(
+            f"{identity.api_base()}/mounts",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
@@ -731,7 +797,10 @@ def praxis_mount_snapshot(snapshot: str, source_user: str | None = None) -> str:
         body["sourceUser"] = source_user
     try:
         resp = httpx.post(
-            f"{identity.api_base()}/mounts", json=body, headers=_headers()
+            f"{identity.api_base()}/mounts",
+            json=body,
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -764,6 +833,7 @@ def praxis_unmount_snapshot(snapshot: str, source_user: str | None = None) -> st
             f"{identity.api_base()}/mounts",
             json=body,
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -819,6 +889,7 @@ def _org_action(path: str, payload: dict, org_id: str) -> str:
             f"{identity.api_base()}/{path}",
             json=payload,
             headers={"Authorization": f"Bearer {identity.token()}"},
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:

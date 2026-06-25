@@ -290,6 +290,77 @@ def retrieval_prefers_proven_over_failed(
         conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
 
 
+def derivation_surfaces_stale_when_source_invalidated(
+    ctx: EvalContext,
+    *,
+    source_text: str,
+    derived_text: str,
+) -> CheckResult:
+    """H5 (derivation edges) red spec: when a source fact is invalidated, a learning
+    derived from it must surface as suspect.
+
+    Seeds a source fact and a learning derived from it (both ``active``) in a fresh
+    isolated tenant, records the derivation as a ``derived_from`` edge (the
+    ``fact_edges`` storage already supports arbitrary edge kinds via ``add_edge``),
+    then rejects the source. The learning is now built on retired knowledge.
+
+    Asserts the graph can name it: ``graph.stale_derived()`` returns the learning.
+
+    RED today: there is no derivation traversal / propagation — ``stale_derived``
+    does not exist (treated here as "nothing surfaced"), so the learning stays active
+    and untraced after its source is rejected. GREEN once H5 adds the traversal +
+    the stale-derived surface.
+
+    Requires a Postgres DSN (``embedder: cached`` / ``substrate: vector``); the
+    harness SKIPs the case without one.
+    """
+    from knowledge.evals.run import _eval_embedder
+    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+        PostgresVectorGraph,
+    )
+    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
+    from knowledge.serve import db
+
+    class _CachedAxis:
+        embedder = "cached"
+
+    embedder = _eval_embedder(_CachedAxis())
+    conn = db.connect()
+    db.bootstrap()
+    org = "eval_deriv_" + uuid.uuid4().hex[:12]
+    user = "u1"
+    graph = PostgresVectorGraph(
+        conn, org, user, embedder=embedder, policy=[Redactor(), Deduper()]
+    )
+    try:
+        source_id = graph.write(source_text, state="active")
+        derived_id = graph.write(derived_text, state="active")
+        # Record the derivation (fact_edges already supports arbitrary kinds).
+        graph.add_edge(derived_id, source_id, "derived_from")
+        # The source is found to be wrong and retired — through the reject chokepoint
+        # (set_state), which fires the H5 propagation hook.
+        graph.set_state(source_id, "rejected")
+        # H5 surface: learnings whose derivation source was invalidated.
+        try:
+            stale_ids = [f.id for f in graph.stale_derived()]
+        except AttributeError:
+            stale_ids = []  # not implemented yet -> nothing surfaced -> RED
+        ok = derived_id in stale_ids
+        return CheckResult(
+            name="derivation_surfaces_stale_when_source_invalidated",
+            passed=ok,
+            evidence=(
+                "derived learning surfaced as stale after its source was rejected"
+                if ok
+                else "source rejected but the derived learning was NOT surfaced as stale "
+                "(no derivation traversal / stale-derived surface — H5 gap)"
+            ),
+        )
+    finally:
+        conn.execute("DELETE FROM fact_edges WHERE org_id = %s AND user_id = %s", (org, user))
+        conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
+
+
 def min_non_seed_facts(
     ctx: EvalContext, *, minimum: int = 1, seed_texts: list[str] | None = None
 ) -> CheckResult:

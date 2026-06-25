@@ -46,7 +46,7 @@ def test_add_insight_posts_with_auth_and_returns_summary(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
 
-    def fake_post(url, json, headers):
+    def fake_post(url, json, headers, timeout=None):
         captured["url"] = url
         captured["json"] = json
         captured["headers"] = headers
@@ -77,7 +77,7 @@ def test_get_context_gets_with_auth_and_returns_context(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
 
-    def fake_get(url, params, headers):
+    def fake_get(url, params, headers, timeout=None):
         captured["url"] = url
         captured["params"] = params
         captured["headers"] = headers
@@ -101,7 +101,7 @@ def test_ingest_posts_documents_with_auth(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
 
-    def fake_post(url, json, headers):
+    def fake_post(url, json, headers, timeout=None):
         captured["url"] = url
         captured["json"] = json
         captured["headers"] = headers
@@ -128,7 +128,7 @@ def test_add_insight_surface_mode_plumbs_on_conflict(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
 
-    def fake_post(url, json, headers):
+    def fake_post(url, json, headers, timeout=None):
         captured["json"] = json
         return _Resp(
             {
@@ -166,7 +166,7 @@ def test_ingest_surface_mode_plumbs_on_conflict(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
 
-    def fake_post(url, json, headers):
+    def fake_post(url, json, headers, timeout=None):
         captured["json"] = json
         return _Resp({"results": [{"id": "f1", "action": "ingested", "surfaced": 1}], "count": 1})
 
@@ -180,7 +180,7 @@ def test_get_contradictions_formats_pairs(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
 
-    def fake_get(url, headers):
+    def fake_get(url, headers, timeout=None):
         captured["url"] = url
         captured["headers"] = headers
         return _Resp(
@@ -219,7 +219,7 @@ def test_get_contradictions_formats_pairs(monkeypatch):
 
 def test_get_contradictions_empty(monkeypatch):
     _patch_identity(monkeypatch)
-    monkeypatch.setattr(server.httpx, "get", lambda url, headers: _Resp([]))
+    monkeypatch.setattr(server.httpx, "get", lambda url, headers, timeout=None: _Resp([]))
     assert "No contradictions" in server.praxis_get_contradictions()
 
 
@@ -227,7 +227,7 @@ def test_resolve_contradiction_keep_id(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
 
-    def fake_post(url, json, headers):
+    def fake_post(url, json, headers, timeout=None):
         captured["url"] = url
         captured["json"] = json
         return _Resp({"kept": "a", "removed": "b"})
@@ -247,7 +247,7 @@ def test_resolve_contradiction_custom_text(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "post",
-        lambda url, json, headers: captured.update(json=json) or _Resp({"ok": True}),
+        lambda url, json, headers, timeout=None: captured.update(json=json) or _Resp({"ok": True}),
     )
 
     server.praxis_resolve_contradiction("a__b", custom_text="logs verbose in dev, terse in prod")
@@ -265,7 +265,7 @@ def test_list_graph_returns_all_facts_with_state_filter(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
 
-    def fake_get(url, params, headers):
+    def fake_get(url, params, headers, timeout=None):
         captured["url"] = url
         captured["params"] = params
         captured["headers"] = headers
@@ -293,7 +293,7 @@ def test_list_graph_no_filter_sends_no_params(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "get",
-        lambda url, params, headers: captured.update(params=params) or _Resp([]),
+        lambda url, params, headers, timeout=None: captured.update(params=params) or _Resp([]),
     )
     out = server.praxis_list_graph()
     assert captured["params"] == {}
@@ -304,7 +304,7 @@ def test_insert_fact_posts_to_candidates(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
 
-    def fake_post(url, json, headers):
+    def fake_post(url, json, headers, timeout=None):
         captured["url"] = url
         captured["json"] = json
         return _Resp({"id": "new1", "state": "proposed"})
@@ -326,7 +326,7 @@ def test_edit_fact_patches_only_given_fields(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
 
-    def fake_patch(url, json, headers):
+    def fake_patch(url, json, headers, timeout=None):
         captured["url"] = url
         captured["json"] = json
         return _Resp({"id": "f1", "state": "active"})
@@ -350,7 +350,7 @@ def test_promote_fact_posts_target_state(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
 
-    def fake_post(url, json, headers):
+    def fake_post(url, json, headers, timeout=None):
         captured["url"] = url
         captured["json"] = json
         return _Resp({"id": "f1", "state": "active"})
@@ -369,7 +369,7 @@ def test_promote_fact_without_target_sends_empty_body(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "post",
-        lambda url, json, headers: captured.update(json=json) or _Resp({"id": "f1", "state": "active"}),
+        lambda url, json, headers, timeout=None: captured.update(json=json) or _Resp({"id": "f1", "state": "active"}),
     )
     server.praxis_promote_fact("f1")
     assert captured["json"] == {}
@@ -381,7 +381,7 @@ def test_reject_fact_posts_reason(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "post",
-        lambda url, json, headers: captured.update(url=url, json=json)
+        lambda url, json, headers, timeout=None: captured.update(url=url, json=json)
         or _Resp({"id": "f1", "state": "rejected"}),
     )
     out = server.praxis_reject_fact("f1", reason="stale")
@@ -396,7 +396,7 @@ def test_delete_fact_issues_delete(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "delete",
-        lambda url, headers: captured.update(url=url, headers=headers) or _Resp({"deleted": "f1"}),
+        lambda url, headers, timeout=None: captured.update(url=url, headers=headers) or _Resp({"deleted": "f1"}),
     )
     out = server.praxis_delete_fact("f1")
     assert captured["url"] == "http://api.test/candidates/f1"
@@ -411,7 +411,7 @@ def test_delete_fact_conflict_reports_reason(monkeypatch):
         text = "fact is referenced"
 
     monkeypatch.setattr(
-        server.httpx, "delete", lambda url, headers: _RespText({}, status_code=409)
+        server.httpx, "delete", lambda url, headers, timeout=None: _RespText({}, status_code=409)
     )
     out = server.praxis_delete_fact("f1")
     assert "Cannot delete" in out and "referenced" in out
@@ -423,7 +423,7 @@ def test_clear_graph_posts_and_reports_count(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "post",
-        lambda url, headers: captured.update(url=url) or _Resp({"cleared": 7}),
+        lambda url, headers, timeout=None: captured.update(url=url) or _Resp({"cleared": 7}),
     )
     out = server.praxis_clear_graph()
     assert captured["url"] == "http://api.test/graph/clear"
@@ -436,7 +436,7 @@ def test_list_snapshots_formats_entries(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "get",
-        lambda url, headers: captured.update(url=url)
+        lambda url, headers, timeout=None: captured.update(url=url)
         or _Resp({"snapshots": [{"name": "wip", "count": 5, "createdAt": "2026-06-24"}]}),
     )
     out = server.praxis_list_snapshots()
@@ -446,7 +446,7 @@ def test_list_snapshots_formats_entries(monkeypatch):
 
 def test_list_snapshots_empty(monkeypatch):
     _patch_identity(monkeypatch)
-    monkeypatch.setattr(server.httpx, "get", lambda url, headers: _Resp({"snapshots": []}))
+    monkeypatch.setattr(server.httpx, "get", lambda url, headers, timeout=None: _Resp({"snapshots": []}))
     assert "No snapshots" in server.praxis_list_snapshots()
 
 
@@ -456,7 +456,7 @@ def test_save_snapshot_posts_name(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "post",
-        lambda url, json, headers: captured.update(url=url, json=json)
+        lambda url, json, headers, timeout=None: captured.update(url=url, json=json)
         or _Resp({"name": "wip", "count": 5}),
     )
     out = server.praxis_save_snapshot("  wip  ")
@@ -477,7 +477,7 @@ def test_load_snapshot_posts_mode(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "post",
-        lambda url, json, headers: captured.update(url=url, json=json)
+        lambda url, json, headers, timeout=None: captured.update(url=url, json=json)
         or _Resp({"loaded": 5, "mode": "add"}),
     )
     out = server.praxis_load_snapshot("wip", mode="add")
@@ -492,7 +492,7 @@ def test_load_snapshot_defaults_to_replace(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "post",
-        lambda url, json, headers: captured.update(json=json) or _Resp({"loaded": 1, "mode": "replace"}),
+        lambda url, json, headers, timeout=None: captured.update(json=json) or _Resp({"loaded": 1, "mode": "replace"}),
     )
     server.praxis_load_snapshot("wip")
     assert captured["json"] == {"mode": "replace"}
@@ -507,7 +507,7 @@ def test_load_snapshot_rejects_bad_mode(monkeypatch):
 def test_load_snapshot_unknown_is_friendly(monkeypatch):
     _patch_identity(monkeypatch)
     monkeypatch.setattr(
-        server.httpx, "post", lambda url, json, headers: _Resp({}, status_code=404)
+        server.httpx, "post", lambda url, json, headers, timeout=None: _Resp({}, status_code=404)
     )
     out = server.praxis_load_snapshot("nope")
     assert "Unknown snapshot" in out
@@ -519,7 +519,7 @@ def test_delete_snapshot_issues_delete(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "delete",
-        lambda url, headers: captured.update(url=url) or _Resp({"deleted": "wip"}),
+        lambda url, headers, timeout=None: captured.update(url=url) or _Resp({"deleted": "wip"}),
     )
     out = server.praxis_delete_snapshot("wip")
     assert captured["url"] == "http://api.test/snapshots/wip"
@@ -531,7 +531,7 @@ def test_list_org_sources_formats(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "get",
-        lambda url, headers: _Resp(
+        lambda url, headers, timeout=None: _Resp(
             {
                 "sources": [
                     {
@@ -555,7 +555,7 @@ def test_browse_snapshot_structured(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "get",
-        lambda url, headers: captured.update(url=url)
+        lambda url, headers, timeout=None: captured.update(url=url)
         or _Resp(
             {
                 "userId": "u1",
@@ -576,7 +576,7 @@ def test_fold_in_posts_selection(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "post",
-        lambda url, json, headers: captured.update(url=url, json=json)
+        lambda url, json, headers, timeout=None: captured.update(url=url, json=json)
         or _Resp({"folded": 2, "deduped": 1, "conflicts": [], "mode": "add"}),
     )
     out = server.praxis_fold_in("u1", "wip", ["f1", "f2"], mode="add")
@@ -602,7 +602,7 @@ def test_list_mounts_formats(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "get",
-        lambda url, headers: _Resp(
+        lambda url, headers, timeout=None: _Resp(
             {"mounts": [{"sourceUser": "u1", "snapshot": "wip", "isSelf": False, "count": 4}]}
         ),
     )
@@ -612,7 +612,7 @@ def test_list_mounts_formats(monkeypatch):
 
 def test_list_mounts_empty(monkeypatch):
     _patch_identity(monkeypatch)
-    monkeypatch.setattr(server.httpx, "get", lambda url, headers: _Resp({"mounts": []}))
+    monkeypatch.setattr(server.httpx, "get", lambda url, headers, timeout=None: _Resp({"mounts": []}))
     assert "No snapshots are mounted" in server.praxis_list_mounts()
 
 
@@ -622,7 +622,7 @@ def test_mount_snapshot_posts_self_by_default(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "post",
-        lambda url, json, headers: captured.update(url=url, json=json)
+        lambda url, json, headers, timeout=None: captured.update(url=url, json=json)
         or _Resp({"sourceUser": "dev", "snapshot": "wip", "mounted": True}),
     )
     out = server.praxis_mount_snapshot("wip")
@@ -637,7 +637,7 @@ def test_mount_snapshot_posts_source_user(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "post",
-        lambda url, json, headers: captured.update(json=json)
+        lambda url, json, headers, timeout=None: captured.update(json=json)
         or _Resp({"sourceUser": "u1", "snapshot": "wip", "mounted": True}),
     )
     server.praxis_mount_snapshot("wip", source_user="u1")
@@ -647,7 +647,7 @@ def test_mount_snapshot_posts_source_user(monkeypatch):
 def test_mount_snapshot_unknown_is_friendly(monkeypatch):
     _patch_identity(monkeypatch)
     monkeypatch.setattr(
-        server.httpx, "post", lambda url, json, headers: _Resp({}, status_code=404)
+        server.httpx, "post", lambda url, json, headers, timeout=None: _Resp({}, status_code=404)
     )
     out = server.praxis_mount_snapshot("nope")
     assert "Unknown member or snapshot" in out
@@ -657,7 +657,7 @@ def test_unmount_snapshot_sends_delete_with_body(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
 
-    def fake_request(method, url, json, headers):
+    def fake_request(method, url, json, headers, timeout=None):
         captured.update(method=method, url=url, json=json)
         return _Resp({"sourceUser": "dev", "snapshot": "wip", "mounted": False})
 
@@ -690,10 +690,48 @@ def test_praxis_login_auto_selects_single_org(monkeypatch):
     assert "acme" in out and "me@x.com" in out
 
 
+def test_write_uses_long_timeout_and_read_short(monkeypatch):
+    # The conflict-checked write path can run an inline LLM judge, so writes get a
+    # generous client timeout while reads stay snappy. Capture each call's timeout.
+    _patch_identity(monkeypatch)
+    seen = {}
+    monkeypatch.setattr(
+        server.httpx,
+        "post",
+        lambda url, json, headers, timeout=None: seen.update(write=timeout)
+        or _Resp({"summary": "added"}),
+    )
+    monkeypatch.setattr(
+        server.httpx,
+        "get",
+        lambda url, params, headers, timeout=None: seen.update(read=timeout)
+        or _Resp({"context": "", "hits": []}),
+    )
+    server.praxis_add_insight("X is A")
+    server.praxis_get_context("X")
+    assert seen["write"] == server._WRITE_TIMEOUT
+    assert seen["read"] == server._READ_TIMEOUT
+    assert seen["write"] > seen["read"]
+
+
+def test_add_insight_timeout_returns_clear_note(monkeypatch):
+    # A client-side timeout on a write must not look like a server failure: tell the
+    # caller the write may have committed and to read it back.
+    _patch_identity(monkeypatch)
+
+    def fake_post(url, json, headers, timeout=None):
+        raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(server.httpx, "post", fake_post)
+    out = server.praxis_add_insight("X is A", on_conflict="surface")
+    assert "may still have committed" in out
+    assert "praxis_list_graph" in out
+
+
 def test_auth_failure_maps_to_friendly_message(monkeypatch):
     _patch_identity(monkeypatch)
 
-    def fake_get(url, params, headers):
+    def fake_get(url, params, headers, timeout=None):
         return _Resp({}, status_code=403)
 
     monkeypatch.setattr(server.httpx, "get", fake_get)
