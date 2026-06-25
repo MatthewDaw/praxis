@@ -139,6 +139,7 @@ def praxis_add_insight(
     scope: str | None = None,
     category: str | None = None,
     source: str | None = None,
+    meta: dict | None = None,
     on_conflict: str = "auto_resolve",
 ) -> str:
     """Store a durable insight in the user's knowledge graph.
@@ -147,6 +148,13 @@ def praxis_add_insight(
     insight (one that stands on its own without surrounding chat context), and
     confirm the *exact* wording with them first — that confirmation is the human
     approval gate. The insight is stored fully approved (full credibility).
+
+    ``scope``/``category``/``source`` and the free-form ``meta`` object are
+    persisted onto the stored fact and returned on later reads (``scope``/
+    ``category``/``source`` on ``praxis_get_context`` hits, ``meta`` on the
+    candidate detail) — a writer-set value always wins over an ingestion-derived
+    default. Use ``category`` to tag a fact's kind (e.g. ``"requirement"``) and
+    ``meta`` for structured provenance (e.g. ``{"requirement_id": "R4"}``).
 
     ``on_conflict`` controls what happens when the insight contradicts an existing
     fact: ``"auto_resolve"`` (default) overwrites the conflicting fact (newest wins,
@@ -166,6 +174,8 @@ def praxis_add_insight(
         body["category"] = category
     if source is not None:
         body["source"] = source
+    if meta is not None:
+        body["meta"] = meta
     try:
         resp = httpx.post(
             f"{identity.api_base()}/insights",

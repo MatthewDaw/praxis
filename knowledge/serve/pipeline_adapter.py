@@ -109,6 +109,12 @@ def fact_to_candidate(
         candidate["category"] = fact.category
     if fact.scope:
         candidate["scope"] = fact.scope
+    # H12: surface the persisted ``meta`` jsonb so writer-supplied fields round-trip
+    # on the candidate read model (``/context`` stays lean; ``/candidates`` is the
+    # detail view). ``meta`` already carries dashboard-internal keys (title,
+    # auditTrail, claim) alongside writer fields — expose it whole.
+    if meta:
+        candidate["meta"] = dict(meta)
     if fact.cluster_id is not None:
         candidate["cluster_id"] = fact.cluster_id
     if fact.cluster_label:
