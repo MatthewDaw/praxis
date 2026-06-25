@@ -32,11 +32,11 @@ import (
 //   - user / assistant rows nest the real payload under `message`. The
 //     `message.content` is EITHER a plain string (a user prompt) OR an ARRAY of
 //     content blocks. Each block has a `type`:
-//       text        → {type:"text", text:"…"}                 (user/assistant)
-//       thinking     → {type:"thinking", …}                   (assistant; skipped)
-//       tool_use     → {type:"tool_use", id, name, input:{…}} (assistant)
-//       tool_result  → {type:"tool_result", tool_use_id, content, is_error}
-//                                                              (carried on USER rows)
+//     text        → {type:"text", text:"…"}                 (user/assistant)
+//     thinking     → {type:"thinking", …}                   (assistant; skipped)
+//     tool_use     → {type:"tool_use", id, name, input:{…}} (assistant)
+//     tool_result  → {type:"tool_result", tool_use_id, content, is_error}
+//     (carried on USER rows)
 //   - assistant rows carry server usage at `message.usage` (input/output tokens).
 //
 // So a single assistant row may expand into multiple events (text + N tool_use),
@@ -57,8 +57,8 @@ type messageEnvelope struct {
 // block is one element of a `message.content` array. The union is wide; we read
 // the fields relevant to each block type and ignore the rest.
 type block struct {
-	Type string          `json:"type"`
-	Text string          `json:"text"` // text
+	Type string `json:"type"`
+	Text string `json:"text"` // text
 	// tool_use
 	Name  string          `json:"name"`
 	Input json.RawMessage `json:"input"`
