@@ -1,17 +1,23 @@
 # Migrations
 
-Schema changes are applied in two layers:
+**This directory is the single source of truth for the database schema.** There is
+no separate `schema.sql` baseline — `0000_initial.sql` creates the full schema, and
+every change after it is a new ordered migration in this directory.
 
-1. **`knowledge/serve/schema.sql`** — the additive baseline (`CREATE … IF NOT
-   EXISTS`). Applied by `python -m knowledge.serve.db`. Add new tables/columns/
-   indexes here; never put `DROP`/`ALTER`/data transforms here.
-2. **yoyo migrations in this directory** — anything destructive or
-   transforming (drop a table/column, change a type, re-tenant rows, backfill).
-   yoyo tracks applied migrations in its `_yoyo_migration` ledger, so each runs
-   exactly once per database.
+- A **fresh** database gets the whole schema by replaying every migration in order
+  (`0000_initial` first).
+- An **existing** database only gets what's new: yoyo records applied migrations in
+  its `_yoyo_migration` ledger and skips them on the next run.
 
-On merges to `main` the `migrate-on-main` workflow runs the bootstrap, then
-`yoyo apply` over this directory.
+`bootstrap()` (`knowledge/serve/db.py`, also `python -m knowledge.serve.db`) *is*
+`yoyo apply` over this directory, and the `migrate-on-main` workflow runs the same on
+merge to `main`. So there is exactly one place to change the schema: add a migration
+here. (`0000_initial.sql` stays idempotent — `CREATE … IF NOT EXISTS` — so applying it
+to the pre-existing prod DB, which predates this squash, is a safe no-op.)
+
+To change the schema: **add the next `NNNN_*` migration** — a new table/column, a drop,
+a type change, a backfill, all the same way. Never edit `0000_initial.sql` for an
+ongoing change (it's history); append a migration instead.
 
 ### What does *not* belong here
 

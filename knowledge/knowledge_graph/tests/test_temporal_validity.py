@@ -39,8 +39,8 @@ pytestmark = pytest.mark.skipif(
 
 def _graph(conn, org, user) -> PostgresVectorGraph:
     # Real embedder + default policy (redact, dedup, extract claims, detect
-    # conflicts) — the production wiring. Fresh tenant per run. bootstrap() runs
-    # schema.sql idempotently so the valid_at/invalid_at columns exist.
+    # conflicts) — the production wiring. Fresh tenant per run. bootstrap() applies
+    # the yoyo migrations idempotently so the valid_at/invalid_at columns exist.
     db.bootstrap()
     conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
     return PostgresVectorGraph(conn, org, user, policy=default_write_policy())

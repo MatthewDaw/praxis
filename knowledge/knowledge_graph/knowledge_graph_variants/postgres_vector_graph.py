@@ -5,7 +5,7 @@ same ``KnowledgeGraph``/``SearchableGraph`` contract and the same write-policy
 pipeline (redact -> dedup -> conflict), but every fact lives in Postgres under a
 single ``(org_id, user_id)`` tenant with a pgvector embedding. Retrieval is a
 pgvector cosine search; the read predicate ``org_id = %s AND (shared OR user_id
-= %s)`` matches the rest of the multi-tenant schema (see ``serve/schema.sql``).
+= %s)`` matches the rest of the multi-tenant schema (see ``migrations/``).
 
 It reuses a connection the caller already holds (the backend opens one shared
 autocommit connection per process and injects it), so this class never opens or

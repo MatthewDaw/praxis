@@ -4,7 +4,7 @@ Orgs are an app concept (not Cognito groups). A user creates an org and sets its
 password, or joins an existing org by supplying that password. Passwords are
 hashed with stdlib ``pbkdf2_hmac(sha256)`` using a per-org random salt; verify
 uses ``hmac.compare_digest`` for a constant-time comparison. Backed by the
-``orgs`` / ``org_members`` tables (see schema.sql), reusing a passed-in psycopg
+``orgs`` / ``org_members`` tables (see migrations/), reusing a passed-in psycopg
 connection (the same autocommit connection the candidate store uses).
 """
 

@@ -1,9 +1,8 @@
 # Apply database migrations on merges into main.
 #
-# Runs the idempotent schema bootstrap, then applies any unapplied yoyo
-# migrations under migrations/. yoyo records applied migrations in its
-# `_yoyo_migration` ledger so each runs exactly once; re-running this workflow
-# only applies what's new (and the bootstrap is additive), so it's harmless.
+# Applies the yoyo migrations under migrations/ — the single source of truth for
+# the schema. yoyo records applied migrations in its `_yoyo_migration` ledger so
+# each runs exactly once; re-running only applies what's new, so it's harmless.
 #
 # Triggers:
 #   - push to main, scoped to migration-relevant paths (schema + migrations dir
@@ -19,18 +18,15 @@
 #   - AWS_SECRET_ACCESS_KEY
 #   - AWS_REGION     (e.g. us-east-1)
 #
-# SCHEMA-SYNC SEMANTICS (important — read before relying on this for "full sync"):
-#   * `python -m knowledge.serve.db` (bootstrap) applies schema.sql, which is
-#     ADDITIVE-ONLY: every statement is CREATE/ADD ... IF NOT EXISTS. It can add
-#     missing tables/columns/indexes but never DROPs or ALTERs existing objects.
-#   * Destructive or transforming changes (drop a table/column, change a type,
-#     re-tenant rows) MUST be expressed as a yoyo migration under migrations/
-#     (NNNN_*.sql for pure SQL, NNNN_*.py for steps needing app code) — yoyo
-#     applies those after bootstrap. Example: dropping the dead `candidates`
-#     table happens in migrations/0003_drop_candidates.sql, NOT schema.sql.
-#   => Remote ends up matching local only insofar as every local schema change is
-#      captured either as additive DDL in schema.sql OR as a yoyo migration.
-#      There is no automatic schema-diffing; parity depends on authoring migrations.
+# SCHEMA SOURCE OF TRUTH:
+#   * migrations/ is the whole schema. `0000_initial.sql` creates everything; every
+#     later change (add a table/column, drop, type change, re-tenant, backfill) is a
+#     new ordered migration. `python -m knowledge.serve.db` (bootstrap) IS `yoyo
+#     apply` over this directory.
+#   * A fresh DB replays all migrations; an existing DB only gets what's new.
+#     `0000_initial` is idempotent (CREATE ... IF NOT EXISTS), so applying it to the
+#     pre-existing prod DB is a safe no-op. There is no schema-diffing; parity
+#     depends on every change being authored as a migration here.
 #
 # Some migrations may need extra secrets when they have rows to process (e.g.
 # 0001_reembed_candidates re-embeds via OpenRouter and needs OPENROUTER_API_KEY
@@ -50,7 +46,6 @@ on:
   push:
     branches: [main]
     paths:
-      - 'knowledge/serve/schema.sql'
       - 'migrations/**'
       - 'pyproject.toml'
       - 'uv.lock'
@@ -93,17 +88,11 @@ jobs:
       - name: Install project + deps
         run: uv sync --frozen
 
-      - name: Bootstrap schema (idempotent)
-        run: uv run python -m knowledge.serve.db
-
       - name: Apply migrations (yoyo)
         env:
           # The reembed migration embeds candidate text via OpenRouter when there
           # are rows to lift; no-ops (and so needs no key) once candidates is gone.
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        run: |
-          set -euo pipefail
-          # yoyo selects its backend from the DSN scheme; psycopg (v3) is what the
-          # project ships, exposed as the `postgresql+psycopg` scheme.
-          YOYO_DB="${PRAXIS_DB_URL/postgresql:\/\//postgresql+psycopg://}"
-          uv run yoyo apply --batch --database "$YOYO_DB" ./migrations
+        # bootstrap() == `yoyo apply` over migrations/ (the schema source of truth),
+        # converting the DSN scheme to postgresql+psycopg internally.
+        run: uv run python -m knowledge.serve.db

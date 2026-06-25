@@ -98,7 +98,7 @@ Response shape mirrors `mock-graph.json`:
 }
 ```
 
-Edge `kind` values: `contradiction`, `support`, `similarity`. Persistence target for edges: [`knowledge/serve/schema.sql`](../knowledge/serve/schema.sql) `fact_edges` table.
+Edge `kind` values: `contradiction`, `support`, `similarity`. Persistence target for edges: [`migrations/0000_initial.sql`](../migrations/0000_initial.sql) `fact_edges` table.
 
 **Live API fallback:** If `GET /graph` is missing (404) or fails, the client derives a minimal graph from `GET /candidates` (nodes + contradiction edges only). Support/similarity edges appear when the server or mock fixture supplies them.
 

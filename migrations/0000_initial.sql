@@ -1,8 +1,13 @@
--- PRAXIS knowledge-graph + dashboard schema (canonical).
+-- 0000_initial — the full Praxis schema. SINGLE SOURCE OF TRUTH for structure.
+--
+-- This is the first yoyo migration: `bootstrap()` (knowledge/serve/db.py) runs
+-- `yoyo apply` over this directory, so a fresh DB gets the whole schema here and
+-- later structural changes are added as ordered migrations after this one
+-- (NNNN_*.sql / NNNN_*.py). There is no separate schema.sql baseline anymore.
 --
 -- Target: AWS RDS PostgreSQL 16 with the pgvector extension available.
--- This file is idempotent: every statement uses IF NOT EXISTS so it can be
--- re-run safely as a migration (see knowledge/serve/db.py :: bootstrap()).
+-- Every statement uses IF NOT EXISTS, so applying it to an existing database
+-- (e.g. prod, which predates this squash) is a safe no-op.
 
 CREATE EXTENSION IF NOT EXISTS vector;
 

@@ -141,7 +141,9 @@ Record the stack outputs:
 
 ## 3. Bootstrap schema (pgvector + tables)
 
-From **repo root**, apply the idempotent schema in [`knowledge/serve/schema.sql`](../../knowledge/serve/schema.sql):
+From **repo root**, apply the schema by running the yoyo migrations in
+[`migrations/`](../../migrations/) (the schema source of truth; `bootstrap()` is
+`yoyo apply` over that directory):
 
 ```powershell
 # Uses Secrets Manager when PRAXIS_DB_URL is unset
@@ -149,7 +151,7 @@ $env:AWS_REGION = "us-east-1"
 python -m knowledge.serve.db
 ```
 
-Expected output: `bootstrap: applied schema.sql`
+Expected output: `bootstrap: applied N migration(s) from migrations/`
 
 This creates:
 
