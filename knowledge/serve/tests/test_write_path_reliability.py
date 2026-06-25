@@ -65,7 +65,10 @@ def test_per_thread_connections_are_isolated_and_reopen():
 
     t1 = threading.Thread(target=grab, args=("a",))
     t2 = threading.Thread(target=grab, args=("b",))
-    t1.start(); t2.start(); t1.join(); t2.join()
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
     try:
         # H13.2: two threads never share one connection.
         assert grabbed["a"] is not grabbed["b"]
