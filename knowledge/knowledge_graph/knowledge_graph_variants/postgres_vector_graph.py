@@ -205,6 +205,8 @@ class PostgresVectorGraph(SearchableGraph):
         policy: list[WriteStep] | None = None,
         recall_floor: float = 0.45,
         recall_k: int = 5,
+        semantic_recall_floor: float = 0.30,
+        semantic_recall_k: int = 10,
         facts_table: str = "facts",
         edges_table: str = "fact_edges",
         cache_key: str | None = None,
@@ -241,6 +243,9 @@ class PostgresVectorGraph(SearchableGraph):
         # per-write candidate pass keeps facts scoring >= recall_floor (top recall_k).
         self.recall_floor = recall_floor
         self.recall_k = recall_k
+        # Wider, lower-floor recall reserved for the semantic contradiction pass.
+        self.semantic_recall_floor = semantic_recall_floor
+        self.semantic_recall_k = semantic_recall_k
 
     # --- KnowledgeGraph contract -------------------------------------------
     def read(self, context: str | None = None) -> str:
@@ -302,9 +307,13 @@ class PostgresVectorGraph(SearchableGraph):
         decision.category = category
         decision.meta = meta or {}
         claim_recalled = False
+        semantic_recalled = False
         for step in self.policy:
             if step.consumes_candidates and decision.embedding is None:
                 self._recall(decision)  # embed once + one shared candidate pass
+            if step.consumes_semantic_candidates and not semantic_recalled:
+                self._recall_semantic(decision)  # wider recall for the semantic pass
+                semantic_recalled = True
             if step.consumes_claim_candidates and not claim_recalled:
                 self._recall_claims(decision)  # slot recall, after ClaimExtractor ran
                 claim_recalled = True
@@ -1171,6 +1180,24 @@ class PostgresVectorGraph(SearchableGraph):
         decision.embedding = self._embed(decision.text)
         hits = self._search_vec(_fit(decision.embedding), top_k=self.recall_k, state=None)
         decision.candidates = [h for h in hits if h.score >= self.recall_floor]
+
+    def _recall_semantic(self, decision: WriteDecision) -> None:
+        """Fill ``decision.semantic_candidates`` via a wider, lower-floor recall.
+
+        Reuses the already-computed ``decision.embedding`` (one embedding per write
+        still holds). Returns existing facts scoring >= ``semantic_recall_floor``
+        (well below the dedup/conflict floor), capped at ``semantic_recall_k``, so
+        the semantic LLM judge can see paraphrase contradictions the narrow pass
+        drops. Searches all states, like ``_recall``.
+        """
+        if decision.embedding is None:
+            decision.embedding = self._embed(decision.text)
+        hits = self._search_vec(
+            _fit(decision.embedding), top_k=self.semantic_recall_k, state=None
+        )
+        decision.semantic_candidates = [
+            h for h in hits if h.score >= self.semantic_recall_floor
+        ]
 
     def _recall_claims(self, decision: WriteDecision) -> None:
         """Fill ``decision.claim_candidates`` via the functional (subject, attribute) slot.

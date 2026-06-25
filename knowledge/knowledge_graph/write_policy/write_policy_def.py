@@ -53,6 +53,13 @@ class WriteDecision:
     # Shared per-write recall (filled by the store before the steps run).
     embedding: list[float] | None = None
     candidates: list[SearchHit] = field(default_factory=list)
+    # A WIDER cosine recall (lower floor, larger k) the store fills for the
+    # semantic contradiction fallback only. Paraphrase contradictions often sit
+    # just below the dedup/conflict ``recall_floor`` (cosine ~0.39-0.44), so the
+    # narrow ``candidates`` set misses them; this wider set is reserved for the
+    # semantic LLM judge (whose own gate supplies precision) without widening — and
+    # thus changing the cost/behavior of — the dedup/augment/structural paths.
+    semantic_candidates: list[SearchHit] = field(default_factory=list)
     # Tier-B (gated): controlled-vocabulary aspect tags assigned to the incoming
     # note by AspectTagger, persisted to Fact.tags; and the bounded same-tag recall
     # (existing facts sharing a tag) the store adds for the conflict path only.

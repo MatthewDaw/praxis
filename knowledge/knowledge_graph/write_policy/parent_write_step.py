@@ -29,6 +29,11 @@ class WriteStep(ABC):
     # happen AFTER ClaimExtractor has populated ``decision.claims``.
     consumes_claim_candidates: bool = False
 
+    # True if ``apply`` reads ``decision.semantic_candidates`` (the semantic
+    # contradiction fallback). The store fills a WIDER, lower-floor cosine recall
+    # before the first such step runs, reusing the already-computed embedding.
+    consumes_semantic_candidates: bool = False
+
     @abstractmethod
     def apply(self, decision: WriteDecision) -> None:
         """Mutate ``decision`` in place. Single responsibility per step."""

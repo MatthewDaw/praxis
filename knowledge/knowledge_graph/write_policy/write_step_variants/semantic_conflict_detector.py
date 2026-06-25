@@ -100,7 +100,9 @@ class SemanticConflictDetector(WriteStep):
     A clear yes appends a ``contradiction:<id>`` flag (precision-first otherwise).
     """
 
-    consumes_candidates = True
+    # Reads the WIDER ``semantic_candidates`` recall (lower floor) — paraphrase
+    # contradictions routinely fall just under the narrow dedup/conflict floor.
+    consumes_semantic_candidates = True
 
     def __init__(self, judge: SemanticConflictJudge | None = None) -> None:
         self.judge = judge
@@ -108,7 +110,7 @@ class SemanticConflictDetector(WriteStep):
     def apply(self, decision: WriteDecision) -> None:
         if decision.dropped or decision.action == "update":
             return
-        if self.judge is None or not decision.candidates:
+        if self.judge is None or not decision.semantic_candidates:
             return
         # Already-settled pairs: anything the structural detector flagged this write.
         flagged: set[str] = {
@@ -118,7 +120,7 @@ class SemanticConflictDetector(WriteStep):
         # these is the STRUCTURAL detector's domain, so we never second-guess it here
         # (it ruled the values compatible, or already flagged them).
         incoming_slots = {c.slot for c in decision.claims if c.functional}
-        for hit in decision.candidates:
+        for hit in decision.semantic_candidates:
             fact = hit.fact
             if fact.id in flagged:
                 continue
