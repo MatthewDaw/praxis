@@ -39,12 +39,14 @@ _TABLES = ("fact_edges", "facts", "cached_facts", "org_members", "orgs")
 
 
 class FakeLlm(Llm):
-    """Returns a per-instance canned distillation reply; records nothing."""
+    """Returns a per-instance canned distillation reply; records the prompt it saw."""
 
     def __init__(self) -> None:
         self.reply = json.dumps({"insights": []})
+        self.last_prompt: str | None = None
 
     def complete(self, messages, *, temperature=0.0, max_tokens=1024, response_format=None):
+        self.last_prompt = messages[-1].content
         return self.reply
 
 
@@ -105,6 +107,18 @@ def test_secret_in_narrative_not_stored_verbatim(client, fake_llm):
     assert res.status_code == 200
     dump = json.dumps(client.get("/candidates", params={"state": "proposed"}).json())
     assert secret not in dump
+
+
+def test_secret_in_narrative_redacted_before_llm(client, fake_llm):
+    # Pre-distill scrub: a secret in the narrative never reaches the (third-party) LLM.
+    secret = "sk-livesecret1234567890abcdef"
+    res = client.post(
+        "/ingest/session", json={"narrative": f"the deploy token is {secret} btw"}
+    )
+    assert res.status_code == 200
+    assert fake_llm.last_prompt is not None
+    assert secret not in fake_llm.last_prompt
+    assert "[REDACTED]" in fake_llm.last_prompt
 
 
 def test_oversized_narrative_rejected_before_llm(client):

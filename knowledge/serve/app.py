@@ -1144,9 +1144,18 @@ def create_app(conn: Any | None = None) -> FastAPI:
         else:
             source = f"session/{uuid.uuid4().hex[:16]}"
 
+        # Scrub secrets BEFORE the narrative reaches the third-party LLM — the write
+        # policy's Redactor only scrubs the stored fact text, not the prompt. Reuses
+        # the exact Redactor patterns (no duplication).
+        from knowledge.knowledge_graph.write_policy.write_step_variants.redactor import (
+            redact_text,
+        )
+
+        narrative = redact_text(narrative)
+
         # Distill via SessionIngestor directly (build_trio hardwires PromptIngestor and
         # /ingest is bound to ingest_dump). Redact+dedup policy mirrors /ingest so
-        # session narratives — which may carry secrets — are scrubbed on write.
+        # session narratives — which may carry secrets — are scrubbed on write too.
         graph = PostgresVectorGraph(
             conn, org, principal.sub, policy=[Redactor(), Deduper()]
         )
