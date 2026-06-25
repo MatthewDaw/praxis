@@ -3479,3 +3479,148 @@ li.eval-runner__entry.is-checked {
   text-align: left;
   padding: 4px 8px;
 }
+
+/* ------------------------------------------------------------------ *
+   Context explorer (compounding-loop operator surface) + utility badges
+ * ------------------------------------------------------------------ */
+.mcp-tools-table__group {
+  background: #f3f4f6;
+  font-size: 0.85rem;
+  color: #374151;
+}
+
+.context-explorer {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.context-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.context-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.8rem;
+  color: #4b5563;
+}
+
+.context-form__field--grow {
+  flex: 1 1 220px;
+}
+
+.context-form__field input {
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.context-form__check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: #4b5563;
+}
+
+.context-hits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.context-hit {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.context-hit__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.context-hit__text {
+  margin: 0;
+  font-weight: 500;
+}
+
+.context-hit__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.context-dependents {
+  list-style: none;
+  margin: 0;
+  padding: 8px 0 0;
+  border-top: 1px dashed #e5e7eb;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.context-dependents__item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.9rem;
+}
+
+.utility-badge {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.utility-badge__counts {
+  font-weight: 400;
+  font-size: 0.75rem;
+  opacity: 0.8;
+}
+
+.utility-badge--trusted {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.utility-badge--neutral {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.utility-badge--risky {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.stale-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}

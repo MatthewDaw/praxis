@@ -71,8 +71,17 @@ export function McpSetupGuide() {
           <strong>mount snapshots as read-only overlays</strong> that are recalled at
           read time without being merged in or carried over on save
           (<code>praxis_mount_snapshot</code>, <code>praxis_unmount_snapshot</code>,{" "}
-          <code>praxis_list_mounts</code>) — plus the login/org tools. This is full
-          parity with the dashboard&apos;s graph and Snapshots actions. Your tenant{" "}
+          <code>praxis_list_mounts</code>) — plus the login/org tools. They also drive
+          the <strong>compounding loop</strong>: record H1 outcomes that tune fact
+          trust/utility (<code>praxis_record_outcome</code>), append immutable H4
+          episodes (<code>praxis_record_episode</code>), express and traverse H5
+          derivations (<code>derived_from</code> on{" "}
+          <code>praxis_add_insight</code>/<code>praxis_ingest</code>,{" "}
+          <code>praxis_dependents</code>, <code>praxis_get_stale_derivations</code>),
+          recall point-in-time or episodic context (<code>as_of</code> /{" "}
+          <code>include_episodic</code> on <code>praxis_get_context</code>), and read a
+          fact&apos;s full <code>meta</code> (<code>praxis_get_fact</code>). This is full
+          parity with the dashboard&apos;s graph, Snapshots, and Context actions. Your tenant{" "}
           <code>(org_id, user_id)</code> is resolved
           from a cached Cognito login, so the local process never holds database
           credentials.
@@ -206,21 +215,29 @@ export function McpSetupGuide() {
             </tr>
             <tr>
               <td>
-                <code>praxis_get_context(query, top_k=8)</code>
+                <code>praxis_get_context(query, top_k=8, as_of?, include_episodic=false)</code>
               </td>
               <td>
                 Pull the active facts most similar to <code>query</code> into the session
                 (an empty query returns recent facts). <code>top_k</code> is advisory —
-                the returned context is similarity-ranked and token-bounded server-side.
+                the returned context is similarity-ranked and token-bounded server-side.{" "}
+                <code>as_of</code> is an ISO-8601 timestamp for point-in-time recall (the
+                graph as it stood then); <code>include_episodic=true</code> opts episodes
+                back into the results (category <code>episodic</code> is excluded by
+                default). Hits do not include <code>meta</code> — use{" "}
+                <code>praxis_get_fact</code> for that.
               </td>
             </tr>
             <tr>
               <td>
-                <code>praxis_add_insight(insight)</code>
+                <code>praxis_add_insight(insight, derived_from?)</code>
               </td>
               <td>
                 Store a single fully-approved fact (confidence 1.0). Re-adds merge;
-                conflicts force-overwrite the nearest contradicting fact. (The optional{" "}
+                conflicts force-overwrite the nearest contradicting fact. Pass{" "}
+                <code>derived_from</code> (a list of source fact ids) to record H5{" "}
+                <code>derived_from</code> edges so the new learning is traceable to — and
+                invalidated with — its sources. (The optional{" "}
                 <code>scope</code> / <code>category</code> / <code>source</code> args are
                 accepted but not yet honored by the backend — scope and category are
                 derived during ingestion.)
@@ -294,6 +311,74 @@ export function McpSetupGuide() {
               </td>
               <td>
                 Permanently remove a fact from the graph (unlike reject, the row is gone).
+              </td>
+            </tr>
+            <tr>
+              <td colSpan={2} className="mcp-tools-table__group">
+                <strong>Compounding loop (H1 / H4 / H5)</strong>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>praxis_record_outcome(fact_id, outcome)</code>
+              </td>
+              <td>
+                <strong>H1 trust.</strong> Record whether acting on a fact{" "}
+                <code>succeeded</code> or <code>failed</code> (bool-ish synonyms
+                accepted). Outcomes feed each fact&apos;s Laplace-smoothed utility so
+                verified facts rank higher in recall and repeatedly-failed ones drop.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>
+                  praxis_record_episode(text, alternatives?, outcome=&quot;pending&quot;,
+                  derived_from?, decided_at?)
+                </code>
+              </td>
+              <td>
+                <strong>H4 episodes.</strong> Append an immutable entry to the episodic
+                log (a decision, its alternatives, and how it turned out). Append-only —
+                it skips the dedup/contradiction pipeline and is excluded from{" "}
+                <code>praxis_get_context</code> unless <code>include_episodic=true</code>.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>praxis_ingest(..., derived_from?)</code>
+              </td>
+              <td>
+                The full ingestion path also accepts <code>derived_from</code> (source
+                fact ids), recording the same H5 <code>derived_from</code> edges as{" "}
+                <code>praxis_add_insight</code>.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>praxis_dependents(fact_id)</code>
+              </td>
+              <td>
+                <strong>H5 traversal.</strong> List the downstream learnings derived from
+                a fact (the other end of its <code>derived_from</code> edges).
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>praxis_get_stale_derivations()</code>
+              </td>
+              <td>
+                <strong>H5 staleness.</strong> List facts whose derivation source was
+                invalidated, so a stale learning can be re-derived or retired.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>praxis_get_fact(cid)</code>
+              </td>
+              <td>
+                Full candidate detail for one fact, including its <code>meta</code> — the
+                meta read path, since <code>praxis_get_context</code> hits omit{" "}
+                <code>meta</code>.
               </td>
             </tr>
             <tr>

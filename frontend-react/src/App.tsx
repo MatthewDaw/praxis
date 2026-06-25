@@ -4,10 +4,12 @@ import {
   GraphIngestUnavailableError,
   postInsight,
 } from "./api/apiClient";
+import { recordFactOutcome } from "./api/contextClient";
 import { canDeleteCandidate } from "./api/candidateModel";
 import { buildLocalLogSession } from "./api/localLogsProvider";
 import { CandidateCards } from "./components/CandidateCards";
 import { CandidateDetail } from "./components/CandidateDetail";
+import { ContextExplorer } from "./components/ContextExplorer";
 import { GraphDataLoader } from "./components/GraphDataLoader";
 import { SnapshotManager } from "./components/SnapshotManager";
 import { ApiKeysPanel } from "./components/ApiKeysPanel";
@@ -128,6 +130,7 @@ export default function App() {
   const [refreshingCandidateId, setRefreshingCandidateId] = useState<string | null>(
     null,
   );
+  const [recordingOutcomeId, setRecordingOutcomeId] = useState<string | null>(null);
   const [editorState, setEditorState] = useState<
     { mode: "add" } | { mode: "edit"; candidate: Candidate } | null
   >(null);
@@ -291,6 +294,25 @@ export default function App() {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setRefreshingCandidateId(null);
+    }
+  }
+
+  async function handleRecordOutcome(id: string, success: boolean) {
+    if (mode !== "live" || !config.apiBaseUrl) {
+      return;
+    }
+    setActionError(null);
+    setRecordingOutcomeId(id);
+    try {
+      await recordFactOutcome(config.apiBaseUrl, id, success, auth);
+      await refreshCandidate(id);
+      setInfoMessage(
+        `Recorded ${success ? "success" : "failure"} outcome for the fact.`,
+      );
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRecordingOutcomeId(null);
     }
   }
 
@@ -612,7 +634,7 @@ export default function App() {
         />
       ) : null}
 
-      {viewTab !== "setup" && viewTab !== "contradictions" ? (
+      {viewTab !== "setup" && viewTab !== "contradictions" && viewTab !== "context" ? (
         <FilterBar
           searchQuery={searchQuery}
           stateFilter={stateFilter}
@@ -627,6 +649,16 @@ export default function App() {
 
       {viewTab === "setup" ? (
         <McpSetupGuide />
+      ) : viewTab === "context" ? (
+        mode === "live" && config.apiBaseUrl ? (
+          <ContextExplorer apiBaseUrl={config.apiBaseUrl} auth={auth} />
+        ) : (
+          <p className="muted">
+            Context recall reads the live knowledge graph — switch the data source to a
+            live API to query <code>/context</code>, record outcomes, and trace
+            derivations.
+          </p>
+        )
       ) : graphViewLoading ? (
         <LoadingSkeleton />
       ) : viewTab === "contradictions" ? (
@@ -649,6 +681,10 @@ export default function App() {
               refreshingId={refreshingCandidateId}
               onResolve={handleResolve}
               onDelete={handleDelete}
+              onRecordOutcome={
+                mode === "live" && config.apiBaseUrl ? handleRecordOutcome : undefined
+              }
+              recordingOutcomeId={recordingOutcomeId}
               dataSourceMode={mode}
             />
           }

@@ -44,6 +44,15 @@ export function SectionTabs({
       <button
         type="button"
         role="tab"
+        className={viewTab === "context" ? "view-toggle__tab active" : "view-toggle__tab"}
+        aria-selected={viewTab === "context"}
+        onClick={() => onViewTabChange("context")}
+      >
+        Context
+      </button>
+      <button
+        type="button"
+        role="tab"
         className={viewTab === "setup" ? "view-toggle__tab active" : "view-toggle__tab"}
         aria-selected={viewTab === "setup"}
         onClick={() => onViewTabChange("setup")}
