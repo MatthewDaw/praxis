@@ -41,6 +41,20 @@ const DESKTOP_CONFIG = `{
   }
 }`;
 
+// One praxis MCP server per agent, each pinned to its own identity cache via
+// PRAXIS_MCP_CACHE — so the two agents drive different orgs without clobbering
+// each other's active-org file.
+const MULTI_AGENT_CONFIG = `{
+  "mcpServers": {
+    "praxis": {
+      "command": "uv",
+      "args": ["run", "--directory", "C:/Users/mattd/Documents/gauntlet/praxis",
+               "python", "-m", "knowledge.mcp"],
+      "env": { "PRAXIS_MCP_CACHE": "C:/Users/mattd/.praxis/agentA.json" }
+    }
+  }
+}`;
+
 /**
  * Standalone documentation tab: how to install and use the Praxis MCP server
  * (the local knowledge-graph client for Claude Code / Desktop).
@@ -157,6 +171,42 @@ export function McpSetupGuide() {
           <code>praxis_select_org</code>. No org yet? Use <code>praxis_create_org</code>{" "}
           (you set its join password) or <code>praxis_join_org</code>. Check state any
           time with <code>praxis_whoami</code>.
+        </p>
+      </div>
+
+      <div className="mcp-guide__step">
+        <h3>
+          Run multiple agents on separate orgs (<code>PRAXIS_MCP_CACHE</code>)
+        </h3>
+        <p>
+          The login + selected org are cached to a single file
+          (<code>~/.praxis/mcp.json</code>) shared by <em>every</em> Praxis MCP server
+          on the machine. So two agents that both use the default cache share one
+          active org — whichever calls <code>praxis_select_org</code> last wins, and the
+          other agent&apos;s writes silently land in the wrong tenant. (Tenancy itself is
+          fully isolated server-side by <code>(org_id, user_id)</code>; the only shared
+          thing is this client-side cache.)
+        </p>
+        <p>
+          To drive a <strong>different org per agent at the same time</strong>, give each
+          agent&apos;s <code>praxis</code> server its <strong>own</strong> cache file via the{" "}
+          <code>PRAXIS_MCP_CACHE</code> environment variable. Point agent A at{" "}
+          <code>agentA.json</code> and agent B at <code>agentB.json</code> (any paths):
+        </p>
+        <CommandBlock
+          command={MULTI_AGENT_CONFIG}
+          label="Agent A — .mcp.json / ~/.claude.json (Agent B: set agentB.json)"
+        />
+        <p className="muted small">
+          Set it however your client passes env to an MCP server: the <code>env</code>{" "}
+          block above (Claude Desktop / <code>~/.claude.json</code>), or{" "}
+          <code>claude mcp add praxis --env PRAXIS_MCP_CACHE=C:/Users/mattd/.praxis/agentA.json -- uv run python -m knowledge.mcp</code>{" "}
+          for Claude Code. Then, in each agent: <code>praxis_login</code> →{" "}
+          <code>praxis_create_org</code> / <code>praxis_select_org</code> for that
+          agent&apos;s org (the same user can belong to both — isolation is by org) →{" "}
+          <code>praxis_whoami</code> to confirm. <strong>Reconnect <code>/mcp</code></strong>{" "}
+          after editing the config so the new env takes effect. Each agent&apos;s caches start
+          empty, so each logs in independently and pins its own org.
         </p>
       </div>
 

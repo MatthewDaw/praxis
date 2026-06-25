@@ -1,0 +1,1 @@
+Amounts on Form 1040 may be rounded to whole dollars: drop amounts under 50 cents and increase amounts from 50 to 99 cents to the next dollar.

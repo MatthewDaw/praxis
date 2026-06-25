@@ -22,9 +22,22 @@ from pycognito import Cognito
 from knowledge.serve.auth import verify_token
 
 DEFAULT_API_BASE = "http://localhost:8000"
-CACHE_PATH = Path.home() / ".praxis" / "mcp.json"
+_DEFAULT_CACHE_PATH = Path.home() / ".praxis" / "mcp.json"
 
 _LOGIN_HINT = "not logged in — ask Claude to log in (the praxis_login tool)"
+
+
+def cache_path() -> Path:
+    """Where the cached identity (login + active org) lives.
+
+    Defaults to ``~/.praxis/mcp.json`` but is overridable per process via the
+    ``PRAXIS_MCP_CACHE`` env var. This is what lets two MCP servers on one machine
+    each pin a DIFFERENT active org (and even a different login): point each at its
+    own cache file and the ``X-Praxis-Org`` header they send diverges, so each agent
+    drives its own ``(org_id, user_id)`` tenant without clobbering the other's org.
+    """
+    override = os.environ.get("PRAXIS_MCP_CACHE", "").strip()
+    return Path(override).expanduser() if override else _DEFAULT_CACHE_PATH
 
 
 @dataclass
@@ -59,9 +72,10 @@ def _cognito(username: str | None = None) -> Cognito:
 
 
 def save_identity(tenant: Tenant) -> None:
-    """Persist the tenant to ``~/.praxis/mcp.json`` with owner-only perms."""
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CACHE_PATH.write_text(
+    """Persist the tenant to the active cache path (see :func:`cache_path`) mode 600."""
+    path = cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps(
             {
                 "refresh_token": tenant.refresh_token,
@@ -73,14 +87,15 @@ def save_identity(tenant: Tenant) -> None:
         ),
         encoding="utf-8",
     )
-    os.chmod(CACHE_PATH, 0o600)
+    os.chmod(path, 0o600)
 
 
 def load_identity() -> Tenant:
     """Load the cached tenant; raise a clear hint if the user hasn't logged in."""
-    if not CACHE_PATH.exists():
+    path = cache_path()
+    if not path.exists():
         raise RuntimeError(_LOGIN_HINT)
-    data = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8"))
     return Tenant(
         refresh_token=data["refresh_token"],
         sub=data["sub"],
@@ -92,7 +107,7 @@ def load_identity() -> Tenant:
 
 def is_logged_in() -> bool:
     """True once a login has been cached."""
-    return CACHE_PATH.exists()
+    return cache_path().exists()
 
 
 def active_org() -> str:

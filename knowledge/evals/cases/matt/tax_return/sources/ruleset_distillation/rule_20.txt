@@ -1,0 +1,1 @@
+Form 1040 line 11 = adjusted gross income (AGI) = total income (line 9) minus adjustments to income from Schedule 1. With only W-2 wages and no adjustments, AGI equals total income.

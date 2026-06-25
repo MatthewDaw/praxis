@@ -1,0 +1,1 @@
+Compare Form 1040 line 33 (total payments) with line 24 (total tax). If payments exceed tax, the difference is your refund (line 34). If tax exceeds payments, you owe the difference (line 37).

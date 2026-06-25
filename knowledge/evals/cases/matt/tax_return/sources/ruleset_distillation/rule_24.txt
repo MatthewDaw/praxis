@@ -1,0 +1,1 @@
+Form 1040 line 24 = total tax. Line 25a = federal income tax withheld from W-2 box 2. Line 33 = total payments (withholding plus any credits and estimated payments).

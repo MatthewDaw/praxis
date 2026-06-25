@@ -19,6 +19,62 @@
 "pole": ""
 }
 },
+"05569fafeda4ced77d158b44a60520f1e4de3a59bdf826de7d20c4b96d6c6859": {
+"claims": [
+{
+"attribute": "age",
+"functional": true,
+"subject": "taxpayer",
+"value": "65"
+},
+{
+"attribute": "blind",
+"functional": true,
+"subject": "taxpayer",
+"value": "true"
+},
+{
+"attribute": "additional standard deduction",
+"functional": false,
+"subject": "taxpayer",
+"value": "true"
+},
+{
+"attribute": "basic standard deduction",
+"functional": false,
+"subject": "taxpayer",
+"value": "true"
+},
+{
+"attribute": "additional standard deduction for both age and blindness",
+"functional": true,
+"subject": "taxpayer",
+"value": "true"
+},
+{
+"attribute": "age",
+"functional": true,
+"subject": "filers",
+"value": "under 65"
+},
+{
+"attribute": "blind",
+"functional": true,
+"subject": "filers",
+"value": "false"
+},
+{
+"attribute": "basic standard deduction",
+"functional": true,
+"subject": "filers",
+"value": "true"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "0720e637579e8bd7757f9cdc2b019ef2b17c4801627c29f247bee12d016b0b89": {
 "claims": [
 {
@@ -26,6 +82,62 @@
 "functional": true,
 "subject": "voltaic pile",
 "value": "true"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"07eeb9053b5b784706d158c1d4f18aa464abcf1638e3e0e07250cd43ff890a52": {
+"claims": [
+{
+"attribute": "used for filing year",
+"functional": true,
+"subject": "Form 1040 (Simplified)",
+"value": "2025"
+},
+{
+"attribute": "10% tax on taxable income",
+"functional": false,
+"subject": "tax rate schedule for Single filers",
+"value": "0 to 11925"
+},
+{
+"attribute": "12% tax on taxable income",
+"functional": false,
+"subject": "tax rate schedule for Single filers",
+"value": "over 11925 up to 48475"
+},
+{
+"attribute": "22% tax on taxable income",
+"functional": false,
+"subject": "tax rate schedule for Single filers",
+"value": "over 48475 up to 103350"
+},
+{
+"attribute": "24% tax on taxable income",
+"functional": false,
+"subject": "tax rate schedule for Single filers",
+"value": "over 103350 up to 197300"
+},
+{
+"attribute": "32% tax on taxable income",
+"functional": false,
+"subject": "tax rate schedule for Single filers",
+"value": "over 197300 up to 250525"
+},
+{
+"attribute": "35% tax on taxable income",
+"functional": false,
+"subject": "tax rate schedule for Single filers",
+"value": "over 250525 up to 626350"
+},
+{
+"attribute": "37% tax on taxable income",
+"functional": false,
+"subject": "tax rate schedule for Single filers",
+"value": "over 626350"
 }
 ],
 "stance": {
@@ -54,6 +166,66 @@
 "functional": true,
 "subject": "theory of animal electricity",
 "value": "Alessandro Volta"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"1d4694e4a9a714c9c2a5ad1a3f080b7bc83476f68ba3b11452eee3bfd84cdb50": {
+"claims": [
+{
+"attribute": "tax year",
+"functional": true,
+"subject": "standard deduction",
+"value": "2025"
+},
+{
+"attribute": "filer type",
+"functional": true,
+"subject": "standard deduction",
+"value": "Single"
+},
+{
+"attribute": "amount",
+"functional": true,
+"subject": "standard deduction",
+"value": "15750"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"227ace6ea68532cac291a1ff7ae3e2e318a71aed766fcb9d036e5bf519f7aa06": {
+"claims": [
+{
+"attribute": "standard deduction",
+"functional": true,
+"subject": "Head of Household",
+"value": "23625"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"2281fe96879159aa8ccc8c83f8d5627e79f5f4b3b82018457af5a757c1a928da": {
+"claims": [
+{
+"attribute": "amount",
+"functional": true,
+"subject": "standard deduction",
+"value": "15750"
+},
+{
+"attribute": "standard deduction year",
+"functional": true,
+"subject": "Single filers",
+"value": "2025"
 }
 ],
 "stance": {
@@ -95,6 +267,20 @@
 "pole": ""
 }
 },
+"23be7522cb5a50e4127dc319e1f14005680d9450955f1f894578d4f1a9e15296": {
+"claims": [
+{
+"attribute": "standard deduction",
+"functional": true,
+"subject": "Married filing separately",
+"value": "15750"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "2611e65115d8b577b428c84aa731ea7c9853801d1954fc8549f9b48f48a9770c": {
 "claims": [
 {
@@ -111,6 +297,20 @@
 },
 "2646fb7f5100c227eee3ba2cd6a21d627eb25ccf87b5311cf85cbd0873d5624c": {
 "claims": [],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"277eb3c3e3efe49615104f0a00cf6a8750efa2374d4da96424ba98524217dfe6": {
+"claims": [
+{
+"attribute": "usage",
+"functional": true,
+"subject": "Form 1040 (Simplified)",
+"value": "computing tax from the brackets"
+}
+],
 "stance": {
 "axis": "none",
 "pole": ""
@@ -142,6 +342,46 @@
 "stance": {
 "axis": "axis:config-centralized-vs-colocated",
 "pole": "centralized"
+}
+},
+"2af0bc8232d2536feca032991d4f859f64be106c8a6eb397146de7eb9670f3ae": {
+"claims": [
+{
+"attribute": "standard deduction for Married filing separately",
+"functional": true,
+"subject": "Form 1040 line 12",
+"value": "reported"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"2cc8e5eae94217fa6f97fb3181cf703fb407ea90ab088d412f89b6b1f41deaa1": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "standard deduction",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "standard deduction",
+"value": "Married filing separately"
+},
+{
+"attribute": "amount",
+"functional": true,
+"subject": "standard deduction",
+"value": "15750"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
 }
 },
 "35d7c03b83a9e5e61e0af3813be26c667c2b459e0df6765cb3148ab4bfaf9e43": {
@@ -287,6 +527,20 @@
 "pole": ""
 }
 },
+"68db0c42bce168609ba582607fbc1c25d10f7fe094817793473fa7d782ad8876": {
+"claims": [
+{
+"attribute": "application method",
+"functional": true,
+"subject": "tax rate",
+"value": "portion of taxable income within bracket's range"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "6960a93b168c051a2b5f82ba35389d8fe010b1369ae0f6a1d30a8abb8b175954": {
 "claims": [],
 "stance": {
@@ -308,11 +562,45 @@
 "pole": ""
 }
 },
+"6e895824992007bbe49eb7d42f9fe5a62224d8b2e876100f4488d75a50f0ad8c": {
+"claims": [
+{
+"attribute": "calculation method",
+"functional": true,
+"subject": "team participation percentage",
+"value": "number of completed athletes divided by active roster size"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "733c8321dd61396d2478d481bdf70022d1a75a88a46170578069ba9bbeda3871": {
 "claims": [],
 "stance": {
 "axis": "axis:documentation-explicit-vs-self-documenting",
 "pole": "self-documenting"
+}
+},
+"76419b95acac17e008887cc17a4b38a47b3c5ee298c5a926295a953ccf9d38c2": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "federal income tax brackets",
+"value": "2025"
+},
+{
+"attribute": "type",
+"functional": true,
+"subject": "federal income tax brackets",
+"value": "marginal"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
 }
 },
 "7cbe70082f876b35fdb143b60628e5e7c43986e55d7f397137c0a0a153607724": {
@@ -349,6 +637,32 @@
 "pole": "testing-rigor"
 }
 },
+"86997572aa5e90a3458238fd62b57dd571751058451dd68a6176e78369a2984a": {
+"claims": [
+{
+"attribute": "tax rate",
+"functional": true,
+"subject": "single filers",
+"value": "22"
+},
+{
+"attribute": "tax range lower limit",
+"functional": true,
+"subject": "income",
+"value": "48475"
+},
+{
+"attribute": "tax range upper limit",
+"functional": true,
+"subject": "income",
+"value": "103350"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "8733919c65308908efb7ddb7d2d0ae3d76368528592e24760207ed05a02732c0": {
 "claims": [
 {
@@ -370,6 +684,20 @@
 "functional": true,
 "subject": "production deployments",
 "value": "manual"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"87e5ce1ac3162b762b3faf43210616ffc90918f2dbb2e22fb489a3fd194ddff8": {
+"claims": [
+{
+"attribute": "location",
+"functional": true,
+"subject": "standard deduction amount",
+"value": "Form 1040 line 12"
 }
 ],
 "stance": {
@@ -411,6 +739,38 @@
 "pole": "tabs"
 }
 },
+"9286663d9a9d817890d314f380b167bc52a3c81040fae396e6434f8887184b7e": {
+"claims": [
+{
+"attribute": "tax rate",
+"functional": true,
+"subject": "income",
+"value": "12"
+},
+{
+"attribute": "tax range lower limit",
+"functional": true,
+"subject": "income",
+"value": "11925"
+},
+{
+"attribute": "tax range upper limit",
+"functional": true,
+"subject": "income",
+"value": "48475"
+},
+{
+"attribute": "tax range",
+"functional": false,
+"subject": "single filers",
+"value": "income between $11925 and $48475"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "9710910be22216754fa4d3edfe6eb21dd66f99e1dbc7b0c4541585ebfd98e090": {
 "claims": [
 {
@@ -418,6 +778,38 @@
 "functional": true,
 "subject": "user",
 "value": "chicken pizza"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"9b25a02d91283dc835303700b5ecfefe6d4b933fb881e3f546f7be68e3715cc7": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "single"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "10%"
+},
+{
+"attribute": "income threshold",
+"functional": true,
+"subject": "ordinary income tax brackets",
+"value": "11925"
 }
 ],
 "stance": {
@@ -473,6 +865,58 @@
 "pole": ""
 }
 },
+"a3b919c8d98b0a485cb171847a3f14db410acc4559a2a791907433fb2faa8194": {
+"claims": [
+{
+"attribute": "tax year",
+"functional": true,
+"subject": "standard deduction",
+"value": "2025"
+},
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "standard deduction",
+"value": "Married filing jointly"
+},
+{
+"attribute": "amount",
+"functional": true,
+"subject": "standard deduction",
+"value": "31500"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"a91c358139f6e5fb3cb0593aa1f8f7b16a3ecb2323f05eee9c333a3210edfe35": {
+"claims": [
+{
+"attribute": "year",
+"functional": true,
+"subject": "standard deduction amount",
+"value": "2025"
+},
+{
+"attribute": "filer type",
+"functional": true,
+"subject": "standard deduction amount",
+"value": "Single"
+},
+{
+"attribute": "location",
+"functional": true,
+"subject": "standard deduction amount",
+"value": "Form 1040 line 12"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "ab73b7aad82e52c942e0dec0a9ccb62e0db140db1a86b931190c9c45527038c9": {
 "claims": [
 {
@@ -480,6 +924,20 @@
 "functional": true,
 "subject": "voltaic pile",
 "value": "1799"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"abf593d8aa39d218641cff6d523e24066ac9f92b6ae38098548b5f9064a35b3f": {
+"claims": [
+{
+"attribute": "line 12",
+"functional": true,
+"subject": "Form 1040",
+"value": "standard deduction amount"
 }
 ],
 "stance": {
@@ -521,6 +979,20 @@
 "pole": ""
 }
 },
+"b09a7c83107a21826cd2cc3f3f6162763c2242bcc0a67b10f59dbf7d33599395": {
+"claims": [
+{
+"attribute": "standard deduction",
+"functional": true,
+"subject": "Head of household",
+"value": "23625"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "b8d8f949f5f9be3bde2114c3e272368a1c526c1b2a29c53ebf32a26c923639ec": {
 "claims": [
 {
@@ -528,6 +1000,20 @@
 "functional": true,
 "subject": "timestamps",
 "value": "America/New_York"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"bae998c4fb948ad9b61b0c08802e8ff71c76bd349a808582827bafb1df344cbf": {
+"claims": [
+{
+"attribute": "standard deduction amount",
+"functional": true,
+"subject": "Head of Household",
+"value": "Form 1040 line 12"
 }
 ],
 "stance": {
@@ -562,6 +1048,52 @@
 "functional": true,
 "subject": "voltaic pile",
 "value": "1800"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"c374f292c3cc611af2cdf0e7ed582060b68680f1e2ccc6d3bd891c90799957cc": {
+"claims": [
+{
+"attribute": "claim method",
+"functional": true,
+"subject": "standard deduction",
+"value": "larger of standard deduction or total itemized deductions"
+},
+{
+"attribute": "deduction type",
+"functional": false,
+"subject": "W-2 wage earners",
+"value": "standard deduction"
+},
+{
+"attribute": "size comparison",
+"functional": true,
+"subject": "itemized deductions",
+"value": "smaller than standard deduction"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"ce90cca8089774c3c05efdb25960254609f05b248787d6b87b6318dbcb1cea3a": {
+"claims": [
+{
+"attribute": "increment condition",
+"functional": true,
+"subject": "team streak",
+"value": "team's participation meets the streak threshold"
+},
+{
+"attribute": "reset condition",
+"functional": true,
+"subject": "team streak",
+"value": "day misses the threshold"
 }
 ],
 "stance": {
@@ -618,6 +1150,20 @@
 "pole": "fail-safe"
 }
 },
+"e230681d89d4a05919b48857b421864b8281d309ac922947d3d55c91fb57c038": {
+"claims": [
+{
+"attribute": "rounding method",
+"functional": true,
+"subject": "tax",
+"value": "nearest whole dollar"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "e4b911413031b6db93f129daf1a991a7d53bee6d3448d585f811b70c0b5a572e": {
 "claims": [
 {
@@ -631,6 +1177,20 @@
 "functional": true,
 "subject": "company headquarters",
 "value": "2019"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"e72725f130cdbc0916b86ab7cc1e58bd4942f7ebb1a3ed1b1114fd5f775112ac": {
+"claims": [
+{
+"attribute": "calculation method",
+"functional": true,
+"subject": "total tax",
+"value": "sum of tax from each bracket"
 }
 ],
 "stance": {
@@ -668,6 +1228,136 @@
 "stance": {
 "axis": "axis:abstraction-vs-directness",
 "pole": "directness"
+}
+},
+"fa793642edc48f72f9da5087c192741f3a4232f5c7cfd86a34a0699e6846b37b": {
+"claims": [
+{
+"attribute": "used for tax filing in",
+"functional": true,
+"subject": "Form 1040 (Simplified)",
+"value": "2025"
+},
+{
+"attribute": "specified for",
+"functional": true,
+"subject": "Married Filing Separately (MFS) tax-rate schedule",
+"value": "2025"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "MFS tax bracket 1",
+"value": "10%"
+},
+{
+"attribute": "taxable income range",
+"functional": true,
+"subject": "MFS tax bracket 1",
+"value": "0 to 11925"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "MFS tax bracket 2",
+"value": "12%"
+},
+{
+"attribute": "taxable income range",
+"functional": true,
+"subject": "MFS tax bracket 2",
+"value": "over 11925 up to 48475"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "MFS tax bracket 3",
+"value": "22%"
+},
+{
+"attribute": "taxable income range",
+"functional": true,
+"subject": "MFS tax bracket 3",
+"value": "over 48475 up to 103350"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "MFS tax bracket 4",
+"value": "24%"
+},
+{
+"attribute": "taxable income range",
+"functional": true,
+"subject": "MFS tax bracket 4",
+"value": "over 103350 up to 197300"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "MFS tax bracket 5",
+"value": "32%"
+},
+{
+"attribute": "taxable income range",
+"functional": true,
+"subject": "MFS tax bracket 5",
+"value": "over 197300 up to 250525"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "MFS tax bracket 6",
+"value": "35%"
+},
+{
+"attribute": "taxable income range",
+"functional": true,
+"subject": "MFS tax bracket 6",
+"value": "over 250525 up to 375800"
+},
+{
+"attribute": "rate",
+"functional": true,
+"subject": "MFS tax bracket 7",
+"value": "37%"
+},
+{
+"attribute": "taxable income range",
+"functional": true,
+"subject": "MFS tax bracket 7",
+"value": "over 375800"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"ffbe8bae89d1e3b38e8ea52f96f66ff93f1dbf379ed0f9ebdeb7ef7f25ac39b1": {
+"claims": [
+{
+"attribute": "filing status",
+"functional": true,
+"subject": "standard deduction",
+"value": "Married filing jointly"
+},
+{
+"attribute": "tax year",
+"functional": true,
+"subject": "standard deduction",
+"value": "2025"
+},
+{
+"attribute": "amount",
+"functional": true,
+"subject": "standard deduction",
+"value": "31500"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
 }
 }
 }

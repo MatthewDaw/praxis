@@ -1,0 +1,1 @@
+Form 1040 line 16 = tax on taxable income. The IRS Tax Table is used when taxable income is under $100,000; the Tax Computation Worksheet (the bracket schedule) is used at $100,000 and above. Both implement the same marginal brackets.

@@ -1,0 +1,1 @@
+Federal income tax brackets are marginal: each rate applies only to the portion of taxable income that falls within that bracket's range, not to the entire income. Sum the tax from each bracket to get total tax.

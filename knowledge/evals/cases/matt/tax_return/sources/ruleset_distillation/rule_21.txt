@@ -1,0 +1,1 @@
+Form 1040 line 15 = taxable income = AGI (line 11) minus the deduction on line 12 (standard or itemized). Taxable income is never less than zero.

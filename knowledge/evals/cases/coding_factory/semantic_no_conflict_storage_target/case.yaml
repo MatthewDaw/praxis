@@ -1,0 +1,63 @@
+# HARD-NEGATIVE for the SEMANTIC conflict detector (false-alarm trap). This is the
+# precision arm of `semantic_paraphrase_contradiction` -- same machinery, opposite
+# verdict. Two facts about where the agent factory puts things:
+#   "The agent factory stores its durable knowledge in the Praxis knowledge graph."
+#   "The agent factory keeps source code in git, never in the knowledge graph."
+#
+# They LOOK flatly contradictory on the surface -- "in the knowledge graph" vs
+# "never in the knowledge graph", same subject ("the agent factory"), heavy shared
+# vocabulary -- so they sit at high cosine and the recall gate surfaces the candidate.
+# They are NOT contradictory: each talks about a DIFFERENT payload going to a different
+# place (knowledge -> the graph; code -> git). "Knowledge belongs in the KG" and "code
+# does not belong in the KG" both hold at once. It's the same shape as
+# apparent_conflict_env_scoped (same action, different environment), but here it is the
+# same container (the KG) with a different payload (knowledge vs code).
+#
+# The claim extractor canonicalizes these onto DIFFERENT (subject, attribute) slots
+# (factory -> storage-location-of-knowledge vs factory -> storage-location-of-code), so
+# the STRUCTURAL detector correctly flags nothing. The failure is in the borrowed
+# two-stage SEMANTIC fallback (embedding-narrow -> LLM judge): a shallow judge keys on
+# the "X in the knowledge graph" / "never in the knowledge graph" polarity and cries
+# wolf; a careful one notices the storage TARGET (what is being stored) differs, which
+# reconciles them. This case asserts the SemanticConflictDetector does NOT misfire here.
+#
+# Observed live (2026-06-25, agent-factory org via MCP): seeding these two facts caused
+# the second to be silently auto-resolved into `rejected` -- i.e. a contradiction WAS
+# detected between them. That detection is the bug this case pins. (The separate
+# "auto-resolve instead of surface" routing issue is out of scope here; this case only
+# checks that NO contradiction is flagged in the first place.)
+#
+# Component eval (no agent); vector substrate runs the real write policy
+# (Redactor -> Deduper -> structural ClaimConflictDetector -> SemanticConflictDetector).
+# Replays from the committed claim_extract + conflict + semantic verdict cassettes +
+# embedding fixture offline (no live calls).
+#
+# Desired behavior: NO contradiction flagged; both facts kept verbatim.
+# On CURRENT code this is expected RED (the semantic fallback false-flags); it goes
+# GREEN once the semantic judge's precision is tightened.
+id: semantic_no_conflict_storage_target
+component: knowledge_graph
+substrate: vector
+embedder: cached  # real vectors so the recall gate surfaces the look-alike candidate
+conflict_model: openai/gpt-4o-mini  # structural + semantic judge verdicts replayed from the committed cassette
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "The agent factory stores its durable knowledge in the Praxis knowledge graph."
+    - "The agent factory keeps source code in git, never in the knowledge graph."
+
+deterministic_checks:
+  # Precision: compatible facts about different storage targets must NOT be flagged.
+  - name: no_contradiction_flagged
+    ref: "knowledge.evals.deterministic_checks.text:regex_absent"
+    params:
+      pattern: "(?i)CONTRADICTION"
+  # Flag-don't-drop would still keep both; here nothing should be flagged AND both
+  # facts survive verbatim as distinct stored facts (nothing merged/dropped).
+  - name: both_facts_kept
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "The agent factory stores its durable knowledge in the Praxis knowledge graph."
+        - "The agent factory keeps source code in git, never in the knowledge graph."
