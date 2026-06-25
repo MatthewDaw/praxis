@@ -290,6 +290,77 @@ def retrieval_prefers_proven_over_failed(
         conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
 
 
+def derivation_surfaces_stale_when_source_invalidated(
+    ctx: EvalContext,
+    *,
+    source_text: str,
+    derived_text: str,
+) -> CheckResult:
+    """H5 (derivation edges) red spec: when a source fact is invalidated, a learning
+    derived from it must surface as suspect.
+
+    Seeds a source fact and a learning derived from it (both ``active``) in a fresh
+    isolated tenant, records the derivation as a ``derived_from`` edge (the
+    ``fact_edges`` storage already supports arbitrary edge kinds via ``add_edge``),
+    then rejects the source. The learning is now built on retired knowledge.
+
+    Asserts the graph can name it: ``graph.stale_derived()`` returns the learning.
+
+    RED today: there is no derivation traversal / propagation — ``stale_derived``
+    does not exist (treated here as "nothing surfaced"), so the learning stays active
+    and untraced after its source is rejected. GREEN once H5 adds the traversal +
+    the stale-derived surface.
+
+    Requires a Postgres DSN (``embedder: cached`` / ``substrate: vector``); the
+    harness SKIPs the case without one.
+    """
+    from knowledge.evals.run import _eval_embedder
+    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+        PostgresVectorGraph,
+    )
+    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
+    from knowledge.serve import db
+
+    class _CachedAxis:
+        embedder = "cached"
+
+    embedder = _eval_embedder(_CachedAxis())
+    conn = db.connect()
+    db.bootstrap()
+    org = "eval_deriv_" + uuid.uuid4().hex[:12]
+    user = "u1"
+    graph = PostgresVectorGraph(
+        conn, org, user, embedder=embedder, policy=[Redactor(), Deduper()]
+    )
+    try:
+        source_id = graph.write(source_text, state="active")
+        derived_id = graph.write(derived_text, state="active")
+        # Record the derivation (fact_edges already supports arbitrary kinds).
+        graph.add_edge(derived_id, source_id, "derived_from")
+        # The source is found to be wrong and retired — through the reject chokepoint
+        # (set_state), which fires the H5 propagation hook.
+        graph.set_state(source_id, "rejected")
+        # H5 surface: learnings whose derivation source was invalidated.
+        try:
+            stale_ids = [f.id for f in graph.stale_derived()]
+        except AttributeError:
+            stale_ids = []  # not implemented yet -> nothing surfaced -> RED
+        ok = derived_id in stale_ids
+        return CheckResult(
+            name="derivation_surfaces_stale_when_source_invalidated",
+            passed=ok,
+            evidence=(
+                "derived learning surfaced as stale after its source was rejected"
+                if ok
+                else "source rejected but the derived learning was NOT surfaced as stale "
+                "(no derivation traversal / stale-derived surface — H5 gap)"
+            ),
+        )
+    finally:
+        conn.execute("DELETE FROM fact_edges WHERE org_id = %s AND user_id = %s", (org, user))
+        conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
+
+
 def min_non_seed_facts(
     ctx: EvalContext, *, minimum: int = 1, seed_texts: list[str] | None = None
 ) -> CheckResult:
@@ -318,3 +389,280 @@ def min_non_seed_facts(
             "text ingestion contributed no retrievable Wikipedia-derived facts"
         ),
     )
+
+
+# --- Episodic memory (H4) + query-time exclusion (H2) red-specs ----------------
+# These drive the real Postgres write/retrieval path via an isolated throwaway
+# tenant (mirrors retrieves_fact_for_query). Each targets the intended H4/H2 API;
+# until it exists the check fails cleanly (caught), so the case is a RED gate.
+# Needs a Postgres DSN (embedder: cached / substrate: vector) else the harness SKIPs.
+
+def _episodic_graph():
+    """A throwaway-tenant PostgresVectorGraph wired like the other DSN-backed checks."""
+    from knowledge.evals.run import _eval_embedder
+    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+        PostgresVectorGraph,
+    )
+    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
+    from knowledge.serve import db
+
+    class _CachedAxis:
+        embedder = "cached"
+
+    conn = db.connect()
+    db.bootstrap()
+    org = "eval_episodic_" + uuid.uuid4().hex[:12]
+    graph = PostgresVectorGraph(
+        conn, org, "u1", embedder=_eval_embedder(_CachedAxis()), policy=[Redactor(), Deduper()]
+    )
+    return graph, conn, org
+
+
+def _episodic_facts(graph):
+    """Active facts currently tagged category='episodic' in the tenant."""
+    return [f for f in graph.all_facts(state="active") if (f.category or "") == "episodic"]
+
+
+def episode_stored_whole_and_immutable(
+    ctx: EvalContext, *, episode_a: str, episode_b: str, semantic_text: str
+) -> CheckResult:
+    """H4 store-only lane + immutability: a decision log is whole, append-only, and
+    never merged/contradicted.
+
+    Records two decision-note episodes on one topic plus a semantic fact, then asserts:
+    each episode is stored WHOLE (one row, no atomization); both episodes persist (no
+    dedup/merge); neither is rejected/superseded (no contradiction); and a semantic
+    write on the topic is not contradiction-flagged against an episode. Uses
+    ``graph.record_episode`` (the store-only producer) — absent today, so RED until H4.
+    """
+    graph, conn, org = _episodic_graph()
+    try:
+        try:
+            graph.record_episode(episode_a)
+            graph.record_episode(episode_b)
+        except (AttributeError, TypeError):
+            return CheckResult(
+                name="episode_stored_whole_and_immutable",
+                passed=False,
+                evidence="record_episode (store-only episode lane) not available — H4 not built",
+            )
+        eps = _episodic_facts(graph)
+        whole = {e.text for e in eps}
+        both_whole = episode_a in whole and episode_b in whole  # not atomized
+        both_persist = len(eps) >= 2  # no dedup/merge collapse
+        none_retired = all(e.state == "active" for e in eps)  # no supersession/reject
+        graph.write(semantic_text, state="active")
+        eps_after = _episodic_facts(graph)
+        not_flagged = all(e.state == "active" for e in eps_after) and len(eps_after) >= 2
+        ok = both_whole and both_persist and none_retired and not_flagged
+        return CheckResult(
+            name="episode_stored_whole_and_immutable",
+            passed=ok,
+            evidence=(
+                "episodes stored whole, both persist, none retired, semantic write not flagged"
+                if ok
+                else f"whole={both_whole} persist={both_persist} active={none_retired} "
+                f"semantic_not_flagged={not_flagged} (H4 store-only/immutability gap)"
+            ),
+        )
+    finally:
+        conn.execute("DELETE FROM fact_edges WHERE org_id = %s", (org,))
+        conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
+
+
+def episodic_reserved_tag_integrity(
+    ctx: EvalContext, *, non_episode_text: str
+) -> CheckResult:
+    """H4 §1c: a NON-episode write must not silently land with category='episodic'.
+
+    Writes a plain semantic fact through the normal pipeline tagged 'episodic'. The
+    reserved tag is load-bearing (it routes to the store-only lane and out of recall),
+    so a non-episode using it must be rejected or namespaced. RED today: the normal
+    write accepts the tag and stores an episodic-category active fact with no
+    ``meta.episode`` — a stray fact that would silently vanish from recall.
+    """
+    graph, conn, org = _episodic_graph()
+    try:
+        try:
+            graph.write(non_episode_text, state="active", category="episodic")
+        except Exception:
+            # A hard reject is an acceptable integrity enforcement.
+            return CheckResult(
+                name="episodic_reserved_tag_integrity", passed=True,
+                evidence="non-episode write tagged 'episodic' was rejected",
+            )
+        # Integrity holds if no active 'episodic' fact lacking meta.episode exists.
+        strays = [
+            f for f in _episodic_facts(graph)
+            if not (isinstance(f.meta, dict) and f.meta.get("episode"))
+        ]
+        ok = not strays
+        return CheckResult(
+            name="episodic_reserved_tag_integrity",
+            passed=ok,
+            evidence=(
+                "reserved tag enforced (no stray episodic-tagged non-episode)"
+                if ok
+                else f"{len(strays)} non-episode fact(s) silently stored as category='episodic' "
+                "(reserved-tag integrity gap)"
+            ),
+        )
+    finally:
+        conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
+
+
+def context_excludes_episodic(
+    ctx: EvalContext, *, semantic_text: str, episode_text: str, query: str
+) -> CheckResult:
+    """H2: server-side exclusion keeps episodes out of semantic recall (cosine AND
+    keyword), while include-filters still reach them.
+
+    Seeds a semantic fact and an episode, then asserts ``search(exclude_categories=
+    ['episodic'])`` returns the semantic fact and omits the episode on BOTH the cosine
+    and the hybrid (keyword-fused) branch, and that an include filter
+    (``filters={'category':'episodic'}``) still returns the episode. RED today:
+    ``search`` has no ``exclude_categories`` param.
+    """
+    graph, conn, org = _episodic_graph()
+    try:
+        graph.write(semantic_text, state="active")
+        graph.record_episode(episode_text)
+        try:
+            cos = graph.search(query, top_k=5, exclude_categories=["episodic"])
+            kw = graph.search(query, top_k=5, exclude_categories=["episodic"], hybrid=True)
+        except TypeError:
+            return CheckResult(
+                name="context_excludes_episodic", passed=False,
+                evidence="search() has no exclude_categories param — H2 not built",
+            )
+        def texts(hits):
+            return {h.fact.text for h in hits}
+        excluded = (
+            semantic_text in texts(cos) and episode_text not in texts(cos)
+            and episode_text not in texts(kw)
+        )
+        incl = graph.search(query, top_k=5, filters={"category": "episodic"})
+        include_still_works = episode_text in texts(incl)
+        ok = excluded and include_still_works
+        return CheckResult(
+            name="context_excludes_episodic",
+            passed=ok,
+            evidence=(
+                "episode excluded on cosine+keyword; include-filter still returns it"
+                if ok
+                else f"excluded={excluded} include_works={include_still_works} (H2 exclusion gap)"
+            ),
+        )
+    finally:
+        conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
+
+
+def stale_episode_findable_not_in_context(
+    ctx: EvalContext, *, basis_text: str, episode_text: str, query: str
+) -> CheckResult:
+    """H4×H5×H2: a decision whose basis was invalidated stays in the episode log but
+    never re-enters semantic recall.
+
+    Seeds a basis fact and an episode derived from it, invalidates the basis (so H5
+    flags the episode stale), then asserts the episode is still findable via the
+    episode-log query AND still excluded from semantic search. RED until H4 tag +
+    H2 exclusion exist together.
+    """
+    graph, conn, org = _episodic_graph()
+    try:
+        basis_id = graph.write(basis_text, state="active")
+        try:
+            graph.record_episode(episode_text, derived_from=[basis_id])
+        except (AttributeError, TypeError):
+            return CheckResult(
+                name="stale_episode_findable_not_in_context", passed=False,
+                evidence="record_episode not available — H4 not built",
+            )
+        graph.set_state(basis_id, "rejected")  # H5 hook flags the episode stale
+        log = graph.search(query, top_k=5, filters={"category": "episodic"})
+        in_log = episode_text in {h.fact.text for h in log}
+        try:
+            ctx_hits = graph.search(query, top_k=5, exclude_categories=["episodic"])
+        except TypeError:
+            return CheckResult(
+                name="stale_episode_findable_not_in_context", passed=False,
+                evidence="search() has no exclude_categories param — H2 not built",
+            )
+        not_in_context = episode_text not in {h.fact.text for h in ctx_hits}
+        ok = in_log and not_in_context
+        return CheckResult(
+            name="stale_episode_findable_not_in_context",
+            passed=ok,
+            evidence=(
+                "stale episode still in episode-log, excluded from semantic context"
+                if ok
+                else f"in_log={in_log} excluded_from_context={not_in_context} (H4/H5/H2 gap)"
+            ),
+        )
+    finally:
+        conn.execute("DELETE FROM fact_edges WHERE org_id = %s", (org,))
+        conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
+
+
+def retrieval_prefers_recent_over_stale(
+    ctx: EvalContext,
+    *,
+    query: str,
+    stale_text: str,
+    recent_text: str,
+    stale_age_days: int = 400,
+) -> CheckResult:
+    """H3 (temporal decay) red spec: a stale, unconfirmed fact must not outrank a
+    fresh one on age alone.
+
+    Seeds two facts for the same query: ``stale_text`` (written to be *more*
+    query-similar, then backdated ~``stale_age_days``) and ``recent_text`` (the
+    current truth, just written). Asserts the recent fact ranks ABOVE the stale one.
+
+    Without time decay this FAILS: ``search`` ranks by similarity*utility only, so the
+    older-but-more-similar fact wins regardless of age. With a recency-decay factor
+    folded into ranking, the stale fact's weight decays and the fresh one wins.
+
+    Requires a Postgres DSN (``embedder: cached`` / ``substrate: vector``).
+    """
+    from knowledge.evals.run import _eval_embedder
+    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+        PostgresVectorGraph,
+    )
+    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
+    from knowledge.serve import db
+
+    class _CachedAxis:
+        embedder = "cached"
+
+    conn = db.connect()
+    db.bootstrap()
+    org = "eval_decay_" + uuid.uuid4().hex[:12]
+    graph = PostgresVectorGraph(
+        conn, org, "u1", embedder=_eval_embedder(_CachedAxis()), policy=[Redactor(), Deduper()]
+    )
+    try:
+        stale_id = graph.write(stale_text, state="active")
+        graph.write(recent_text, state="active")
+        # Backdate the stale fact so only age (not similarity/outcomes) differs.
+        conn.execute(
+            "UPDATE facts SET created_at = now() - make_interval(days => %s), "
+            "valid_at = now() - make_interval(days => %s) "
+            "WHERE id = %s AND org_id = %s",
+            (stale_age_days, stale_age_days, stale_id, org),
+        )
+        ranked = [h.fact.text for h in graph.search(query, top_k=5)]
+        recent_rank = ranked.index(recent_text) if recent_text in ranked else 1_000
+        stale_rank = ranked.index(stale_text) if stale_text in ranked else 1_000
+        ok = recent_rank < stale_rank
+        return CheckResult(
+            name="retrieval_prefers_recent_over_stale",
+            passed=ok,
+            evidence=(
+                f"recent fact ranks #{recent_rank} vs stale ({stale_age_days}d) "
+                f"#{stale_rank} for {query!r}"
+                + ("" if ok else " — stale fact wins on similarity; no recency decay (H3 gap)")
+            ),
+        )
+    finally:
+        conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))

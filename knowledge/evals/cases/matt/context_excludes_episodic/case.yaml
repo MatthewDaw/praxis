@@ -1,0 +1,23 @@
+# H2 red-spec: server-side exclusion keeps episodes out of semantic recall on BOTH the
+# cosine and the keyword (hybrid) branch, while an explicit include-filter still reaches
+# them. Asserts search(exclude_categories=["episodic"]) returns the semantic fact and
+# omits the episode (cosine + hybrid), and filters={"category":"episodic"} still returns
+# the episode. RED today: search() has no exclude_categories param. Needs a DSN (just db-up).
+id: context_excludes_episodic
+component: knowledge_graph
+substrate: vector
+embedder: cached
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "The daily habit counter resets to 0 at local midnight."
+    - "Chose reset-to-0 for the daily habit counter because the PRD was silent and 0 is the safe default."
+
+deterministic_checks:
+  - name: server_side_exclusion
+    ref: "knowledge.evals.deterministic_checks.graph:context_excludes_episodic"
+    params:
+      semantic_text: "The daily habit counter resets to 0 at local midnight."
+      episode_text: "Chose reset-to-0 for the daily habit counter because the PRD was silent and 0 is the safe default."
+      query: "How does the daily habit counter reset work?"

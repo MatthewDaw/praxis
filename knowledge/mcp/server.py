@@ -17,6 +17,7 @@ Then, in a session, ask Claude to log you in (it calls ``praxis_login``).
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 from dotenv import load_dotenv
@@ -25,6 +26,16 @@ from mcp.server.fastmcp import FastMCP
 from knowledge.mcp import identity
 
 mcp = FastMCP("praxis-knowledge")
+
+# httpx's default per-request timeout (5s) is too low for the write path. A write
+# whose new fact is a cosine-near-neighbor of an existing one triggers the inline
+# SemanticConflictDetector — a synchronous LLM round-trip (plus embedding) inside
+# the request — which can push total latency well past 5s. The backend still
+# commits, but the client gives up first and surfaces a spurious "timed out".
+# So: a short budget for reads (keeps /context, /health snappy) and a long one
+# for writes/ingest (the conflict-checked path). Per-call, not one global bump.
+_READ_TIMEOUT = 30.0
+_WRITE_TIMEOUT = 120.0
 
 _AUTH_HINT = (
     "authentication failed — ask me to log in again with `praxis_login`, or check "
@@ -44,6 +55,15 @@ def _friendly(exc: httpx.HTTPStatusError) -> str:
     if exc.response.status_code in (401, 403):
         return _AUTH_HINT
     raise exc
+
+
+def _timeout_note(what: str) -> str:
+    """A clearer message than a bare 'timed out' for a write that may have committed."""
+    return (
+        f"The {what} request exceeded the client timeout ({int(_WRITE_TIMEOUT)}s). "
+        "The write may still have committed on the backend — read it back with "
+        "praxis_list_graph / praxis_get_context before retrying to avoid a duplicate."
+    )
 
 
 def _not_ready() -> str | None:
@@ -81,7 +101,12 @@ def _structured(summary: str, data: dict) -> str:
 
 
 @mcp.tool()
-def praxis_get_context(query: str, top_k: int = 8) -> str:
+def praxis_get_context(
+    query: str,
+    top_k: int = 8,
+    include_episodic: bool = False,
+    as_of: str | None = None,
+) -> str:
     """Retrieve relevant stored knowledge for the current task.
 
     Call this before answering questions about the user's preferences,
@@ -93,14 +118,26 @@ def praxis_get_context(query: str, top_k: int = 8) -> str:
     ``category``) so callers can consume provenance without regex-parsing. If you
     have mounted snapshots (``praxis_mount_snapshot``), their facts are included
     too and flagged with ``mounted``/``owner``/``snapshot`` on the hit.
+
+    Episodic decision logs (``category="episodic"``) are excluded by default (H2)
+    so "why we decided" notes never pollute recall; pass ``include_episodic=True``
+    to include them. ``as_of`` (an ISO-8601 timestamp, e.g. ``2024-01-01T00:00:00Z``)
+    rewinds retrieval to that instant — facts written later are excluded — for
+    point-in-time recall.
     """
     if (hint := _not_ready()) is not None:
         return hint
+    params: dict[str, object] = {"query": query, "top_k": top_k}
+    if include_episodic:
+        params["include_episodic"] = True
+    if as_of is not None:
+        params["as_of"] = as_of
     try:
         resp = httpx.get(
             f"{identity.api_base()}/context",
-            params={"query": query, "top_k": top_k},
+            params=params,
             headers=_headers(),
+            timeout=_READ_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -114,12 +151,114 @@ def praxis_get_context(query: str, top_k: int = 8) -> str:
 
 
 @mcp.tool()
+def praxis_get_stale_derivations() -> str:
+    """List learnings flagged stale because a fact they derive from was invalidated (H5).
+
+    When a source fact is invalidated (e.g. rejected via ``praxis_reject_fact``),
+    Praxis flags every learning transitively derived from it for review — it does
+    NOT auto-reject them (precision-first). Call this to surface those suspect
+    learnings, then confirm with the user before re-checking or rejecting each.
+
+    Returns a human summary plus a structured JSON block with ``stale`` — one entry
+    per flagged learning (``id``/``text``/``state``/``source``/``scope``/
+    ``category``/``meta``).
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/derivations/stale",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    stale = payload.get("stale", [])
+    return _structured(
+        f"{len(stale)} stale derived learning(s) flagged for review."
+        if stale
+        else "No stale derived learnings are currently flagged.",
+        {"stale": stale},
+    )
+
+
+@mcp.tool()
+def praxis_dependents(fact_id: str) -> str:
+    """List the learnings transitively derived from ``fact_id`` (its dependents).
+
+    Walks the ``derived_from`` chain to find every learning that depends on this
+    fact, so you can see what would be affected if it changed or were invalidated.
+    Find the id via ``praxis_list_graph`` / ``praxis_get_context``.
+
+    Returns a human summary plus a structured JSON block with ``dependents`` — one
+    entry per dependent learning (``id``/``text``/``state``/``source``/``scope``/
+    ``category``/``meta``).
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/facts/{fact_id}/dependents",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    deps = payload.get("dependents", [])
+    return _structured(
+        f"{len(deps)} learning(s) derive from {fact_id}."
+        if deps
+        else f"No learnings derive from {fact_id}.",
+        {"factId": fact_id, "dependents": deps},
+    )
+
+
+@mcp.tool()
+def praxis_get_fact(cid: str) -> str:
+    """Fetch one fact's full detail, including its writer-supplied ``meta``.
+
+    ``praxis_get_context`` hits carry ``source``/``scope``/``category`` but not the
+    free-form ``meta`` object (kept off the lean recall path). Use this to read a
+    fact's ``meta`` (e.g. ``{"requirement_id": "R4"}``) and full audit trail back.
+    Find the id via ``praxis_list_graph`` / ``praxis_get_context``.
+
+    Returns a human summary plus a structured JSON block with the full candidate
+    detail (``id``/``title``/``content``/``state``/``source``/``scope``/
+    ``category``/``meta``/``auditTrail``...).
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/candidates/{cid}",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return f"Unknown fact {cid} — list ids with praxis_list_graph."
+        return _friendly(exc)
+    fact = resp.json()
+    return _structured(
+        f"fact {fact.get('id')} ({fact.get('state', '')})",
+        fact,
+    )
+
+
+@mcp.tool()
 def praxis_add_insight(
     insight: str,
     scope: str | None = None,
     category: str | None = None,
     source: str | None = None,
+    meta: dict | None = None,
     on_conflict: str = "auto_resolve",
+    derived_from: list[str] | None = None,
 ) -> str:
     """Store a durable insight in the user's knowledge graph.
 
@@ -128,12 +267,24 @@ def praxis_add_insight(
     confirm the *exact* wording with them first — that confirmation is the human
     approval gate. The insight is stored fully approved (full credibility).
 
+    ``scope``/``category``/``source`` and the free-form ``meta`` object are
+    persisted onto the stored fact and returned on later reads (``scope``/
+    ``category``/``source`` on ``praxis_get_context`` hits, ``meta`` on the
+    candidate detail) — a writer-set value always wins over an ingestion-derived
+    default. Use ``category`` to tag a fact's kind (e.g. ``"requirement"``) and
+    ``meta`` for structured provenance (e.g. ``{"requirement_id": "R4"}``).
+
     ``on_conflict`` controls what happens when the insight contradicts an existing
     fact: ``"auto_resolve"`` (default) overwrites the conflicting fact (newest wins,
     loser rejected); ``"surface"`` keeps BOTH facts and raises a *pending*
     contradiction for human review (see ``praxis_get_contradictions`` /
     ``praxis_resolve_contradiction``) instead of silently deciding. Use ``"surface"``
     when a human should adjudicate conflicts rather than the newest write winning.
+
+    ``derived_from`` records derivation provenance (gap H5): pass the ids of the
+    facts this insight was derived from and the backend links a ``derived_from``
+    edge (this fact -> each source) so an invalidated source can later surface
+    this fact as suspect.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -146,13 +297,20 @@ def praxis_add_insight(
         body["category"] = category
     if source is not None:
         body["source"] = source
+    if meta is not None:
+        body["meta"] = meta
+    if derived_from:
+        body["derivedFrom"] = derived_from
     try:
         resp = httpx.post(
             f"{identity.api_base()}/insights",
             json=body,
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
+    except httpx.TimeoutException:
+        return _timeout_note("add_insight")
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
     payload = resp.json()
@@ -176,11 +334,70 @@ def praxis_add_insight(
 
 
 @mcp.tool()
+def praxis_add_insights(
+    insights: list[dict],
+    on_conflict: str = "auto_resolve",
+) -> str:
+    """Store many already-distilled insights in ONE call (bulk sibling of praxis_add_insight).
+
+    Use this when you have several confirmed, self-contained insights to persist
+    at once (e.g. the learnings from a whole session) instead of calling
+    ``praxis_add_insight`` repeatedly — it's one round-trip and the backend writes
+    them serially, which is both faster and gentler on the write path than firing
+    many concurrent single-insight calls.
+
+    ``insights`` is a list of objects, each shaped like a ``praxis_add_insight``
+    call: ``{"insight": str, "scope"?: str, "category"?: str, "source"?: str,
+    "meta"?: object}``. As with the single tool, confirm the exact wording of each
+    insight with the user first — that confirmation is the human approval gate.
+
+    ``on_conflict`` is batch-level and mirrors ``praxis_add_insight``:
+    ``"auto_resolve"`` (default) overwrites a conflicting fact; ``"surface"`` keeps
+    both and raises a pending contradiction for human review.
+
+    Returns a structured JSON block with one result per insight (in order), each
+    carrying ``ok``/``id``/``action``/``retrievable`` (read-your-writes confirmed)
+    and, on a per-item failure, an ``error`` — a bad item never aborts the rest.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    if on_conflict not in ("auto_resolve", "surface"):
+        return "on_conflict must be 'auto_resolve' or 'surface'."
+    if not isinstance(insights, list) or not insights:
+        return "insights must be a non-empty list of insight objects."
+    body = {"insights": insights, "onConflict": on_conflict}
+    try:
+        resp = httpx.post(
+            f"{identity.api_base()}/insights/batch",
+            json=body,
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.TimeoutException:
+        return _timeout_note("add_insights")
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    results = payload.get("results", [])
+    ok = sum(1 for r in results if r.get("ok"))
+    surfaced = sum(r.get("contradictionsSurfaced") or 0 for r in results)
+    summary = f"stored {ok}/{payload.get('count', len(results))} insight(s)"
+    if surfaced:
+        summary += (
+            f" — {surfaced} pending contradiction(s) raised; "
+            "review with praxis_get_contradictions"
+        )
+    return _structured(summary, {"count": payload.get("count"), "results": results})
+
+
+@mcp.tool()
 def praxis_ingest(
     text: str,
     source: str | None = None,
     state: str = "active",
     on_conflict: str = "auto_resolve",
+    derived_from: list[str] | None = None,
 ) -> str:
     """Ingest a raw document through Praxis's distillation pipeline.
 
@@ -193,6 +410,10 @@ def praxis_ingest(
     rejects the losing side of a detected clash; ``"surface"`` keeps both facts and
     raises a *pending* contradiction for human review. Returns a structured JSON
     block with per-document results (``id``/``action``/``surfaced``).
+
+    ``derived_from`` records derivation provenance (gap H5): the ids of the facts
+    this document was derived from; the backend links a ``derived_from`` edge from
+    each distilled fact to those sources.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -203,13 +424,18 @@ def praxis_ingest(
         "state": state,
         "onConflict": on_conflict,
     }
+    if derived_from:
+        body["derivedFrom"] = derived_from
     try:
         resp = httpx.post(
             f"{identity.api_base()}/ingest",
             json=body,
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
+    except httpx.TimeoutException:
+        return _timeout_note("ingest")
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
     payload = resp.json()
@@ -256,6 +482,93 @@ def praxis_ingest_session(narrative: str, source: str | None = None) -> str:
     )
 
 
+@mcp.tool()
+def praxis_record_outcome(fact_id: str, outcome: str) -> str:
+    """Feed a downstream verification result back into a fact's trust (gap H1).
+
+    Records whether acting on a fact actually worked. ``outcome`` is
+    ``"succeeded"`` / ``"failed"`` (``"success"``/``"failure"``/``"true"``/
+    ``"false"`` and a bare bool are also accepted). A success increments the fact's
+    success count and a failure its failure count — retrieval folds these into a
+    utility weighting so a repeatedly-failed fact sinks in ranking and a proven one
+    holds. Find the fact id via ``praxis_get_context`` / ``praxis_list_graph``.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    token = str(outcome).strip().lower()
+    if token in ("succeeded", "success", "succeed", "true", "ok", "pass", "passed"):
+        success = True
+    elif token in ("failed", "failure", "fail", "false", "error", "no"):
+        success = False
+    else:
+        return "outcome must be 'succeeded' or 'failed'."
+    try:
+        resp = httpx.post(
+            f"{identity.api_base()}/facts/{fact_id}/outcome",
+            json={"success": success},
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    return f"Recorded {'success' if success else 'failure'} on fact id={fact_id}."
+
+
+@mcp.tool()
+def praxis_record_episode(
+    text: str,
+    alternatives: list[str] | None = None,
+    outcome: str = "pending",
+    derived_from: list[str] | None = None,
+    decided_at: str | None = None,
+) -> str:
+    """Record a decision-log episode — store-only, out of semantic recall (gap H4).
+
+    An episode is a "why we decided X" note: it is stored whole and append-only,
+    bypassing distillation/dedup/contradiction, and is excluded from
+    ``praxis_get_context`` by default so rationale never pollutes semantic recall.
+    Use this (rather than ``praxis_add_insight(category="episodic")``) for decision
+    journals. ``alternatives`` are the options considered but not chosen;
+    ``outcome`` tracks how the decision turned out (e.g. ``"pending"`` /
+    ``"succeeded"`` / ``"failed"``); ``derived_from`` links the facts the decision
+    was based on (H5); ``decided_at`` is an ISO timestamp (defaults to now).
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    if not text.strip():
+        return "Pass non-empty episode text."
+    episode: dict[str, object] = {"outcome": outcome}
+    if alternatives:
+        episode["alternatives"] = alternatives
+    if decided_at is not None:
+        episode["decided_at"] = decided_at
+    body: dict[str, object] = {
+        "insight": text,
+        "category": "episodic",
+        "meta": {"episode": episode},
+    }
+    if derived_from:
+        body["derivedFrom"] = derived_from
+    try:
+        resp = httpx.post(
+            f"{identity.api_base()}/insights",
+            json=body,
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.TimeoutException:
+        return _timeout_note("record_episode")
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    return _structured(
+        payload.get("summary", "") or "recorded episode",
+        {"summary": payload.get("summary", ""), "action": payload.get("action"), "id": payload.get("id")},
+    )
+
+
 def _fmt_side(label: str, side: dict) -> str:
     state = side.get("state", "")
     sid = side.get("id", "")
@@ -274,7 +587,11 @@ def praxis_get_contradictions() -> str:
     if (hint := _not_ready()) is not None:
         return hint
     try:
-        resp = httpx.get(f"{identity.api_base()}/contradictions", headers=_headers())
+        resp = httpx.get(
+            f"{identity.api_base()}/contradictions",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
@@ -304,29 +621,47 @@ def praxis_get_contradictions() -> str:
 @mcp.tool()
 def praxis_resolve_contradiction(
     pair_id: str,
-    keep_id: str | None = None,
+    keep: str | None = None,
     custom_text: str | None = None,
 ) -> str:
-    """Resolve a flagged contradiction pair (from ``praxis_get_contradictions``).
+    """Resolve a flagged contradiction cluster (from ``praxis_get_contradictions``).
 
-    Pass either ``keep_id`` — the id of the side to keep (the other is superseded)
-    — or ``custom_text`` to replace both sides with a single reconciled fact.
-    Confirm the choice with the user before calling; resolution mutates the graph.
+    A cluster is settled by saying which members to ``keep``:
+    - ``"all"`` — every member genuinely holds (a *false positive*, e.g. the facts
+      describe different actors/scopes). Keep them all active; nothing is lost.
+    - ``"none"`` — reject every member.
+    - one or more fact ids (space- or comma-separated, e.g. ``"f12 f34"``) — keep
+      those active and reject the rest. A single id keeps one side (the classic
+      pick-a-winner).
+
+    Or pass ``custom_text`` instead to replace the whole cluster with one reconciled
+    fact. Confirm the choice with the user before calling; resolution mutates the
+    graph.
     """
     if (hint := _not_ready()) is not None:
         return hint
-    if not keep_id and not (custom_text and custom_text.strip()):
-        return "Pass keep_id (the side to keep) or custom_text (a reconciled fact)."
+    has_custom = bool(custom_text and custom_text.strip())
+    has_keep = bool(keep and keep.strip())
+    if not has_custom and not has_keep:
+        return (
+            "Pass keep ('all', 'none', or fact ids to keep) or custom_text "
+            "(a reconciled fact)."
+        )
     body: dict[str, object] = {}
-    if custom_text and custom_text.strip():
+    if has_custom:
         body["customText"] = custom_text
     else:
-        body["keepId"] = keep_id
+        normalized = keep.strip().lower()
+        if normalized in ("all", "none"):
+            body["keep"] = normalized
+        else:
+            body["keep"] = [tok for tok in re.split(r"[,\s]+", keep.strip()) if tok]
     try:
         resp = httpx.post(
             f"{identity.api_base()}/contradictions/{pair_id}/resolve",
             json=body,
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -348,7 +683,10 @@ def praxis_list_graph(state: str | None = None) -> str:
     params = {"state": state} if state else {}
     try:
         resp = httpx.get(
-            f"{identity.api_base()}/candidates", params=params, headers=_headers()
+            f"{identity.api_base()}/candidates",
+            params=params,
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -381,7 +719,10 @@ def praxis_insert_fact(title: str, content: str, provenance: str | None = None) 
         body["provenance"] = provenance
     try:
         resp = httpx.post(
-            f"{identity.api_base()}/candidates", json=body, headers=_headers()
+            f"{identity.api_base()}/candidates",
+            json=body,
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -416,7 +757,10 @@ def praxis_edit_fact(
         return "Nothing to edit — pass title, content, and/or provenance."
     try:
         resp = httpx.patch(
-            f"{identity.api_base()}/candidates/{cid}", json=body, headers=_headers()
+            f"{identity.api_base()}/candidates/{cid}",
+            json=body,
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -444,6 +788,7 @@ def praxis_promote_fact(cid: str, target_state: str | None = None) -> str:
             f"{identity.api_base()}/candidates/{cid}/promote",
             json=body,
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -470,6 +815,7 @@ def praxis_reject_fact(cid: str, reason: str | None = None) -> str:
             f"{identity.api_base()}/candidates/{cid}/reject",
             json=body,
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -491,7 +837,9 @@ def praxis_delete_fact(cid: str) -> str:
         return hint
     try:
         resp = httpx.delete(
-            f"{identity.api_base()}/candidates/{cid}", headers=_headers()
+            f"{identity.api_base()}/candidates/{cid}",
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -512,7 +860,11 @@ def praxis_clear_graph() -> str:
     if (hint := _not_ready()) is not None:
         return hint
     try:
-        resp = httpx.post(f"{identity.api_base()}/graph/clear", headers=_headers())
+        resp = httpx.post(
+            f"{identity.api_base()}/graph/clear",
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
@@ -529,7 +881,11 @@ def praxis_list_snapshots() -> str:
     if (hint := _not_ready()) is not None:
         return hint
     try:
-        resp = httpx.get(f"{identity.api_base()}/snapshots", headers=_headers())
+        resp = httpx.get(
+            f"{identity.api_base()}/snapshots",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
@@ -561,6 +917,7 @@ def praxis_save_snapshot(name: str) -> str:
             f"{identity.api_base()}/snapshots",
             json={"name": name.strip()},
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -588,6 +945,7 @@ def praxis_load_snapshot(name: str, mode: str = "replace") -> str:
             f"{identity.api_base()}/snapshots/{name}/load",
             json={"mode": mode},
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -608,7 +966,9 @@ def praxis_delete_snapshot(name: str) -> str:
         return hint
     try:
         resp = httpx.delete(
-            f"{identity.api_base()}/snapshots/{name}", headers=_headers()
+            f"{identity.api_base()}/snapshots/{name}",
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -628,7 +988,11 @@ def praxis_list_org_sources() -> str:
     if (hint := _not_ready()) is not None:
         return hint
     try:
-        resp = httpx.get(f"{identity.api_base()}/org/sources", headers=_headers())
+        resp = httpx.get(
+            f"{identity.api_base()}/org/sources",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
@@ -663,6 +1027,7 @@ def praxis_browse_snapshot(user_id: str, name: str) -> str:
         resp = httpx.get(
             f"{identity.api_base()}/org/sources/{user_id}/snapshots/{name}/facts",
             headers=_headers(),
+            timeout=_READ_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -710,6 +1075,7 @@ def praxis_fold_in(
                 "mode": mode,
             },
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -736,7 +1102,11 @@ def praxis_list_mounts() -> str:
     if (hint := _not_ready()) is not None:
         return hint
     try:
-        resp = httpx.get(f"{identity.api_base()}/mounts", headers=_headers())
+        resp = httpx.get(
+            f"{identity.api_base()}/mounts",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
@@ -768,7 +1138,10 @@ def praxis_mount_snapshot(snapshot: str, source_user: str | None = None) -> str:
         body["sourceUser"] = source_user
     try:
         resp = httpx.post(
-            f"{identity.api_base()}/mounts", json=body, headers=_headers()
+            f"{identity.api_base()}/mounts",
+            json=body,
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -801,6 +1174,7 @@ def praxis_unmount_snapshot(snapshot: str, source_user: str | None = None) -> st
             f"{identity.api_base()}/mounts",
             json=body,
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -856,6 +1230,7 @@ def _org_action(path: str, payload: dict, org_id: str) -> str:
             f"{identity.api_base()}/{path}",
             json=payload,
             headers={"Authorization": f"Bearer {identity.token()}"},
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:

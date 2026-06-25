@@ -22,8 +22,9 @@ Run: uv run python -m knowledge.serve   (serves on http://localhost:8000)
 from __future__ import annotations
 
 import os
+import threading
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from dotenv import load_dotenv
 
@@ -49,6 +50,7 @@ from knowledge.knowledge_graph.knowledge_graph_variants.overlay_graph import (  
     OverlayGraph,
 )
 from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (  # noqa: E402
+    EPISODIC_CATEGORY,
     PostgresVectorGraph,
     default_write_policy,
 )
@@ -95,20 +97,176 @@ def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def create_app(conn: Any | None = None) -> FastAPI:
-    """Build the app over a single shared Postgres connection.
+# --- shared insight-write helpers (single + batch paths, gap H8) -------------
+# The single POST /insights and the bulk POST /insights/batch run the exact same
+# per-insight write, so the logic lives here once and both endpoints call it. The
+# batch path constructs the policy graph + ingestor ONCE and loops these helpers
+# over the items, so N facts cost one HTTP/auth round-trip and one graph/embedder/
+# connection setup — and the writes are serialized within the single request
+# (avoiding the concurrent-write-burst 500s the local loop otherwise has to skirt).
 
-    The connection is opened once per process (autocommit) and shared by the
-    orgs store and every per-request tenant graph. A resolvable DSN is required.
+
+def _insight_write_policy(on_conflict: str) -> list:
+    """The write policy for a confirmed insight, keyed on conflict handling.
+
+    ``surface`` flags a clash as a pending contradiction (keeps both); the default
+    ``auto_resolve`` force-overwrites the loser. Mirrors the single-insight path.
+    """
+    if on_conflict == "surface":
+        return default_write_policy()
+    return [Redactor(), Deduper(), ConflictOverwriter(llm=OpenRouterLlm())]
+
+
+def _record_episode(graph: PostgresVectorGraph, insight: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Store an episodic (decision-log) insight whole, bypassing the semantic pipeline (H4).
+
+    ``retrievable`` confirms the read-your-writes contract (gap H8): the just-
+    written fact is fetchable immediately, since writes commit on autocommit.
+    """
+    ep = (body.get("meta") or {}).get("episode") or {}
+    fid = graph.record_episode(
+        insight,
+        alternatives=ep.get("alternatives"),
+        outcome=ep.get("outcome", "pending"),
+        decided_at=ep.get("decided_at"),
+        derived_from=body.get("derivedFrom"),
+    )
+    return {
+        "summary": "recorded episode",
+        "action": "episode",
+        "id": fid,
+        "onConflict": "n/a",
+        "contradictionsSurfaced": 0,
+        "retrievable": graph.get_fact(fid) is not None,
+    }
+
+
+def _write_insight(
+    graph: PostgresVectorGraph,
+    ingestor: Any,
+    *,
+    insight: str,
+    source: str | None,
+    scope: str | None,
+    category: str | None,
+    meta: dict | None,
+    on_conflict: str,
+    derived_from: list | None = None,
+) -> dict[str, Any]:
+    """Ingest one confirmed insight into ``graph`` and report what happened.
+
+    Returns the same shape the single ``POST /insights`` returns, plus
+    ``retrievable`` (gap H8): True when the written fact is found by an immediate
+    read-back — a confirmable read-your-writes signal so a caller need not poll.
+    """
+    before = graph.search(insight, top_k=1, state=None)
+    before_contradictions = set(graph.all_edges("contradiction"))
+    ingestor.ingest(  # human-gated -> live knowledge
+        insight,
+        state="active",
+        source=source,
+        scope=scope,
+        category=category,
+        meta=meta,
+    )
+    after = graph.search(insight, top_k=1, state=None)
+    new_contradictions = set(graph.all_edges("contradiction")) - before_contradictions
+    prior = before[0].fact if before else None
+    top = after[0].fact if after else None
+    # H5: link derivation provenance from the resulting fact to its sources, so an
+    # invalidated source can later surface this fact as suspect. (The episode branch
+    # records derivedFrom via record_episode instead.)
+    if derived_from and top is not None:
+        graph.record_derivation(top.id, [str(s) for s in derived_from])
+    # surface mode that flagged a clash: report it as a pending contradiction so
+    # the caller knows to go adjudicate it (the fact still landed, possibly
+    # demoted to proposed by FR-005).
+    if new_contradictions:
+        action = "surfaced"
+    elif prior is not None and top is not None and prior.id == top.id:
+        # Same-id top means a dedup merge bumped the existing fact; otherwise the
+        # insight was added (auto_resolve may have rejected + linked conflicts).
+        action = "merged"
+    else:
+        action = "added"
+    return {
+        "summary": f"{action} insight",
+        "action": action,
+        "id": top.id if top is not None else None,
+        "onConflict": on_conflict,
+        "contradictionsSurfaced": len(new_contradictions),
+        "retrievable": top is not None,
+    }
+
+
+class _ConnProxy:
+    """A connection handle that forwards every access to *the calling thread's*
+    real connection (resolved fresh on each attribute access).
+
+    FastAPI runs sync endpoints in a thread pool, and a psycopg connection is not
+    meant for concurrent cross-thread use. The server used to share ONE connection
+    across the orgs store, auth, and every per-request graph: under a burst of
+    concurrent writes they serialized on (and could wedge) that single connection,
+    so one stuck/erroring write cascaded into 500s on all other writes *and* reads
+    until the process was restarted (H13.2) — and a wedged connection also broke
+    membership reads, so a user's orgs looked empty (H13.3, even though the rows
+    are durable in Postgres). This proxy lets the app keep one ``conn`` reference
+    while each worker thread transparently uses its own connection underneath.
+    """
+
+    __slots__ = ("_resolve",)
+
+    def __init__(self, resolve: Callable[[], Any]) -> None:
+        object.__setattr__(self, "_resolve", resolve)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._resolve(), name)
+
+
+def create_app(conn: Any | None = None) -> FastAPI:
+    """Build the app over per-thread Postgres connections.
+
+    A passed-in ``conn`` (tests) is used directly and unshared (sequential). In
+    production (``conn is None``) each worker thread lazily opens its own
+    autocommit connection, reopened transparently if the DB dropped it (so a DB
+    restart self-heals instead of needing an app restart). A resolvable DSN is
+    required.
     """
     # Tracing is set up once at module import (see top of file); setup_tracing is
     # idempotent, so no need to call it again here.
-    conn = conn if conn is not None else db.connect()
+    if conn is not None:
+        # Explicit single connection (tests): one tenant, sequential — use as-is.
+        # Bind to a separate name so the closure doesn't capture the ``conn`` var
+        # we rebind to the proxy below (which would make resolve return the proxy).
+        _explicit_conn = conn
+        resolve_conn: Callable[[], Any] = lambda: _explicit_conn  # noqa: E731
+    else:
+        dsn = db.resolve_dsn()
+        if dsn is None:
+            raise RuntimeError(
+                "No Postgres DSN available: set PRAXIS_DB_URL, or configure "
+                "PRAXIS_DB_SECRET with AWS credentials."
+            )
+        _tls = threading.local()
+
+        def resolve_conn() -> Any:
+            c = getattr(_tls, "conn", None)
+            if c is not None and not c.closed and not getattr(c, "broken", False):
+                return c
+            # First use on this thread, or the prior connection died (e.g. the DB
+            # restarted / dropped it) — open a fresh autocommit connection.
+            c = db.connect(dsn)
+            _tls.conn = c
+            return c
+
+    conn = _ConnProxy(resolve_conn)
     orgs_store = OrgsStore(conn)
     mounted_store = MountedStore(conn)
     # Bind the auth dependency to this connection so it can also resolve API keys
     # (X-Praxis-Key) in addition to the Cognito Bearer JWT / dev seam.
     current_user = make_current_user(conn)
+    # Test seam: lets reliability tests assert per-thread isolation + reopen.
+    app_get_conn = resolve_conn
 
     def candidates_for(org: str, sub: str) -> FactsCandidates:
         """The candidate facade for one requester's tenant graph."""
@@ -119,6 +277,8 @@ def create_app(conn: Any | None = None) -> FastAPI:
         return PostgresVectorGraph(conn, org, sub)
 
     app = FastAPI(title="Praxis Candidate API", version="1")
+    # Test seam (see _ConnProxy): resolve the calling thread's live connection.
+    app.state.get_conn = app_get_conn
 
     explicit_origins = [
         origin.strip()
@@ -406,13 +566,21 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail=f"unknown contradiction {pair_id}")
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc))
-        keep_id = body.get("keepId")
-        if not keep_id:
-            raise HTTPException(status_code=400, detail="keepId or customText required")
+        # H11: a cluster is settled by saying which members to keep. ``keep`` is
+        # "all" (every member holds — a dismissed false positive), "none" (reject
+        # all), or a list of fact ids to keep (reject the rest). This one primitive
+        # subsumes keep-both, reject-all, and pick-a-winner.
+        if "keep" not in body:
+            raise HTTPException(
+                status_code=400,
+                detail="keep ('all', 'none', or a list of ids) or customText required",
+            )
         try:
-            return facade.resolve(pair_id, str(keep_id))
+            return facade.resolve_keep(pair_id, body["keep"])
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown contradiction {pair_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     # --- graph snapshot (the dashboard graph view) -------------------------
     @app.get("/graph")
@@ -976,48 +1144,120 @@ def create_app(conn: Any | None = None) -> FastAPI:
         insight = (body.get("insight") or "").strip()
         if not insight:
             raise HTTPException(status_code=400, detail="insight required")
+        # Episodic (H4): a decision log entry bypasses the semantic pipeline — stored
+        # whole, append-only, immutable (no distill/dedup/contradiction) and out of
+        # semantic recall. Routed to the store-only producer.
+        if (body.get("category") or "").strip() == EPISODIC_CATEGORY:
+            return _record_episode(live_graph(org, principal.sub), insight, body)
         on_conflict = str(body.get("onConflict") or "auto_resolve").strip().lower()
         if on_conflict not in ("auto_resolve", "surface"):
             raise HTTPException(
                 status_code=400,
                 detail="onConflict must be 'auto_resolve' or 'surface'",
             )
+        # H12: writer-supplied metadata is persisted onto the resulting fact and
+        # returned on reads. ``source``/``scope``/``category`` go into their facts
+        # columns; ``meta`` (jsonb) carries arbitrary writer fields. A value the
+        # writer sets wins over any ingestion-derived default (see Ingestor.ingest).
+        meta = body.get("meta")
+        if meta is not None and not isinstance(meta, dict):
+            raise HTTPException(status_code=400, detail="meta must be an object")
         # auto_resolve: ConflictOverwriter turns a confirmed contradiction into a
         # force-overwrite (loser rejected). surface: the structural+semantic detector
         # pipeline only *flags* the clash, so the store persists a pending
         # contradiction edge instead of rejecting a side.
-        policy = (
-            default_write_policy()
-            if on_conflict == "surface"
-            else [Redactor(), Deduper(), ConflictOverwriter(llm=OpenRouterLlm())]
+        graph = PostgresVectorGraph(
+            conn, org, principal.sub, policy=_insight_write_policy(on_conflict)
         )
-        graph = PostgresVectorGraph(conn, org, principal.sub, policy=policy)
         _, ingestor, _ = build_trio(graph=graph, llm=None)
-        before = graph.search(insight, top_k=1, state=None)
-        before_contradictions = set(graph.all_edges("contradiction"))
-        ingestor.ingest(insight, state="active")  # human-gated -> live knowledge
-        after = graph.search(insight, top_k=1, state=None)
-        new_contradictions = set(graph.all_edges("contradiction")) - before_contradictions
-        prior = before[0].fact if before else None
-        top = after[0].fact if after else None
-        # surface mode that flagged a clash: report it as a pending contradiction so
-        # the caller knows to go adjudicate it (the fact still landed, possibly
-        # demoted to proposed by FR-005).
-        if new_contradictions:
-            action = "surfaced"
-        elif prior is not None and top is not None and prior.id == top.id:
-            # Same-id top means a dedup merge bumped the existing fact; otherwise the
-            # insight was added (auto_resolve may have rejected + linked conflicts).
-            action = "merged"
-        else:
-            action = "added"
-        return {
-            "summary": f"{action} insight",
-            "action": action,
-            "id": top.id if top is not None else None,
-            "onConflict": on_conflict,
-            "contradictionsSurfaced": len(new_contradictions),
-        }
+        return _write_insight(
+            graph,
+            ingestor,
+            insight=insight,
+            source=body.get("source"),
+            scope=body.get("scope"),
+            category=body.get("category"),
+            meta=meta,
+            on_conflict=on_conflict,
+            derived_from=body.get("derivedFrom"),
+        )
+
+    @app.post("/insights/batch")
+    def add_insights_batch(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Bulk-write many fully-approved insights in one synchronous round-trip (H8).
+
+        Body: ``{"insights": [{"insight": str, "source"?, "scope"?, "category"?,
+        "meta"?, "derivedFrom"?}, ...], "onConflict": "auto_resolve"|"surface"}``.
+        Each item is the same shape ``POST /insights`` accepts; ``onConflict`` is
+        batch-level (one policy for the whole call). This is the **shaped-fact**
+        lane — no LLM distillation — so it stays fast and lower-loss; for raw
+        documents that need distilling use ``POST /ingest``.
+
+        Why it exists (gap H8): the local loop accumulates many learnings per
+        session. Writing them one-MCP-call-at-a-time pays N HTTP/auth/graph
+        setups and, if fired concurrently, can overwhelm the conflict-checked
+        write path. This endpoint does ONE round-trip, builds the policy graph +
+        ingestor ONCE, and writes the items **serially** within the request.
+
+        Returns ``{"results": [...], "count": int}`` — one result per input item,
+        in order, each carrying ``id``/``action``/``contradictionsSurfaced`` and a
+        ``retrievable`` flag confirming the fact is immediately read-back-able
+        (read-your-writes), so the caller doesn't have to poll. Each result also
+        carries ``ok`` and, on a per-item failure, an ``error`` string — one bad
+        item fails cleanly without aborting the rest of the batch.
+        """
+        insights = body.get("insights")
+        if not isinstance(insights, list) or not insights:
+            raise HTTPException(status_code=400, detail="insights must be a non-empty list")
+        on_conflict = str(body.get("onConflict") or "auto_resolve").strip().lower()
+        if on_conflict not in ("auto_resolve", "surface"):
+            raise HTTPException(
+                status_code=400, detail="onConflict must be 'auto_resolve' or 'surface'"
+            )
+        # One policy graph + ingestor for the whole batch (the throughput win); the
+        # episodic store-only path needs no policy, so it reuses the same instance.
+        graph = PostgresVectorGraph(
+            conn, org, principal.sub, policy=_insight_write_policy(on_conflict)
+        )
+        _, ingestor, _ = build_trio(graph=graph, llm=None)
+        results: list[dict[str, Any]] = []
+        for i, item in enumerate(insights):
+            if not isinstance(item, dict):
+                results.append({"ok": False, "error": "each insight must be an object", "index": i})
+                continue
+            text = (item.get("insight") or "").strip()
+            if not text:
+                results.append({"ok": False, "error": "insight required", "index": i})
+                continue
+            item_meta = item.get("meta")
+            if item_meta is not None and not isinstance(item_meta, dict):
+                results.append({"ok": False, "error": "meta must be an object", "index": i})
+                continue
+            # A single bad/edge-case item must not poison the rest of the batch.
+            try:
+                if (item.get("category") or "").strip() == EPISODIC_CATEGORY:
+                    res = _record_episode(graph, text, item)
+                else:
+                    res = _write_insight(
+                        graph,
+                        ingestor,
+                        insight=text,
+                        source=item.get("source"),
+                        scope=item.get("scope"),
+                        category=item.get("category"),
+                        meta=item_meta,
+                        on_conflict=on_conflict,
+                        derived_from=item.get("derivedFrom"),
+                    )
+                res["ok"] = True
+            except Exception as exc:  # noqa: BLE001 - report, don't abort the batch
+                res = {"ok": False, "error": str(exc), "index": i}
+            results.append(res)
+        return {"results": results, "count": len(results)}
 
     @app.post("/ingest")
     def ingest_documents(
@@ -1070,6 +1310,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
             principal.sub,
             policy=[Redactor(), Deduper()],
         )
+        # H5: body-level derivation provenance — each distilled fact links back to
+        # these source ids via a ``derived_from`` edge.
+        derived_from = body.get("derivedFrom")
         results: list[dict[str, Any]] = []
         for doc in documents:
             if not isinstance(doc, dict):
@@ -1078,18 +1321,30 @@ def create_app(conn: Any | None = None) -> FastAPI:
             if not text:
                 raise HTTPException(status_code=400, detail="each document needs non-empty text")
             source = doc.get("source")
+            # H12: per-document writer metadata is persisted onto every fact the
+            # document distills into.
+            scope = doc.get("scope")
+            category = doc.get("category")
+            meta = doc.get("meta")
+            if meta is not None and not isinstance(meta, dict):
+                raise HTTPException(status_code=400, detail="meta must be an object")
             summary = ingest_dump(
                 graph,
                 ingest_llm,
                 text,
                 state=state,
                 source=str(source) if source else None,
+                scope=str(scope) if scope else None,
+                category=str(category) if category else None,
+                meta=meta,
                 on_conflict=on_conflict,
             )
             # Best-effort provenance back to the caller: the top fact the just-
             # ingested text now matches (ids are per-fact, a doc distills to many).
             hits = graph.search(text, top_k=1, state=None)
             top_id = hits[0].fact.id if hits else None
+            if derived_from and top_id is not None:
+                graph.record_derivation(top_id, [str(s) for s in derived_from])
             results.append({
                 "id": top_id,
                 "action": "ingested",
@@ -1179,10 +1434,57 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 )
         return {"source": source, "count": len(candidates), "candidates": candidates}
 
+    # --- derivation / staleness traversal (H5) -----------------------------
+    def _derivation_view(fact: Any) -> dict[str, Any]:
+        """Compact read model for a derivation/staleness hit (incl. ``meta``)."""
+        return {
+            "id": fact.id,
+            "text": fact.text,
+            "state": fact.state,
+            "source": getattr(fact, "source", None),
+            "scope": getattr(fact, "scope", None),
+            "category": getattr(fact, "category", None),
+            "meta": dict(fact.meta or {}),
+        }
+
+    @app.get("/derivations/stale")
+    def stale_derivations(
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Active learnings flagged stale because a fact they derive from was invalidated (H5).
+
+        When a source fact is invalidated (e.g. rejected), the H5 hook stamps a
+        review edge on every transitive ``derived_from`` dependent. This surfaces
+        those suspect learnings for human/agent review (precision-first: flagged,
+        never auto-rejected).
+        """
+        stale = live_graph(org, principal.sub).stale_derived()
+        return {"stale": [_derivation_view(f) for f in stale]}
+
+    @app.get("/facts/{fact_id}/dependents")
+    def fact_dependents(
+        fact_id: str,
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Transitive derivation dependents of ``fact_id`` (the learnings derived from it).
+
+        Walks ``derived_from`` edges (src=dependent -> dst=basis) up the chain,
+        cycle-guarded and depth-bounded, newest first.
+        """
+        deps = live_graph(org, principal.sub).dependents(fact_id)
+        return {"factId": fact_id, "dependents": [_derivation_view(f) for f in deps]}
+
     @app.get("/context")
     def get_context(
         query: str = "",
         top_k: int = 8,
+        include_episodic: bool = False,
+        as_of: str | None = None,
+        hybrid: bool = False,
+        keyword_weight: float | None = None,
+        char_budget: int | None = None,
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
@@ -1191,14 +1493,47 @@ def create_app(conn: Any | None = None) -> FastAPI:
         If the caller has mounted snapshots (read-only overlays), retrieval unions
         the live graph with those snapshots; overlay hits are flagged ``mounted``
         with their ``owner``/``snapshot``. Mounts never affect writes or saves.
+
+        Episodic decision logs (``category="episodic"``) are excluded by default (H2)
+        so "why we decided" notes never pollute semantic recall; pass
+        ``include_episodic=true`` to include them.
+
+        ``as_of`` (ISO-8601, e.g. ``2024-01-01T00:00:00Z``) rewinds retrieval to a
+        point in time: only facts whose validity window covers that instant are
+        returned, so a later-written fact is excluded. Applies to the live-graph
+        ``hits``; the mounted-snapshot union is not point-in-time aware.
+
+        Retrieval-tuning knobs (gap H7), all optional, defaulting to the calibrated
+        behavior: ``hybrid`` fuses a BM25 keyword branch into the cosine ranking;
+        ``keyword_weight`` biases that fusion toward exact/symbol matches (only with
+        ``hybrid=true``); ``char_budget`` caps the returned ``context`` size. Fusion
+        knobs apply to the live graph; the mounted-snapshot union is cosine-only.
         """
+        as_of_dt: datetime | None = None
+        if as_of is not None and as_of.strip():
+            try:
+                as_of_dt = datetime.fromisoformat(as_of.strip().replace("Z", "+00:00"))
+            except ValueError:
+                raise HTTPException(
+                    status_code=400, detail="as_of must be an ISO-8601 timestamp"
+                )
         live = live_graph(org, principal.sub)
         mounts = mounted_store.list(org, principal.sub)
         graph = OverlayGraph(live, mounts) if mounts else live
-        _, _, reader = build_trio(graph=graph, llm=None)
-        hits = graph.search(query, top_k=top_k) if query.strip() else []
+        exclude = None if include_episodic else [EPISODIC_CATEGORY]
+        hits = (
+            graph.search(
+                query,
+                top_k=top_k,
+                hybrid=hybrid,
+                keyword_weight=keyword_weight,
+                exclude_categories=exclude,
+                as_of=as_of_dt,
+            )
+            if query.strip() else []
+        )
         return {
-            "context": reader.read(query),
+            "context": graph.read(query, exclude_categories=exclude, char_budget=char_budget),
             "hits": [
                 {
                     "id": h.fact.id,

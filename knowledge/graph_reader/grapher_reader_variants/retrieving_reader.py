@@ -52,6 +52,7 @@ class RetrievingReader(GraphReader):
         top_k: int = 8,
         abs_floor: float = 0.30,
         rel_ratio: float = 0.60,
+        exclude_categories: list[str] | None = None,
     ) -> None:
         if not isinstance(graph, SearchableGraph):
             raise TypeError(
@@ -61,6 +62,9 @@ class RetrievingReader(GraphReader):
         self.top_k = top_k
         self.abs_floor = abs_floor
         self.rel_ratio = rel_ratio
+        # H2: categories to omit from retrieval (e.g. ["episodic"] so decision logs
+        # never pollute semantic recall). Forwarded to graph.search.
+        self.exclude_categories = exclude_categories
 
     def synthesis(self, context: str | None = None) -> list[ReadRequest]:
         # top_k=0 -> unbounded: search the full pool (None), no fixed-N ceiling.
@@ -87,6 +91,7 @@ class RetrievingReader(GraphReader):
                 top_k=req.top_k,
                 filters=req.filters or None,
                 scope=req.scope,
+                exclude_categories=self.exclude_categories,
             )
             parts.extend(h.fact.text for h in self._cutoff(hits))
         return "\n\n".join(parts)

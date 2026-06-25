@@ -13,7 +13,6 @@ from services.contract_v1 import (
     build_resolve_body,
     contract_headers,
     contradiction_pair_id,
-    normalize_resolution,
     parse_candidate_list,
 )
 
@@ -44,7 +43,7 @@ def test_promote_request_builder_targets_active() -> None:
 
 def test_resolve_request_fixture_matches_builder() -> None:
     expected = _load_json("resolve-request.json")
-    built = build_resolve_body(resolution="keep_primary", keep_id="cand_9")
+    built = build_resolve_body(keep=["cand_9"])
     assert built == expected
 
 
@@ -62,9 +61,11 @@ def test_contract_headers_omits_auth_and_org_when_absent() -> None:
     assert headers[CONTRACT_HEADER] == "1"
 
 
-def test_resolution_mapping_ui_to_api() -> None:
-    assert normalize_resolution("keep_primary") == "keep_a"
-    assert normalize_resolution("keep_rival") == "keep_b"
+def test_build_resolve_body_keep_variants() -> None:
+    assert build_resolve_body(keep="all") == {"keep": "all"}
+    assert build_resolve_body(keep="none") == {"keep": "none"}
+    assert build_resolve_body(keep=["a", "b"]) == {"keep": ["a", "b"]}
+    assert build_resolve_body(custom_text="reconciled") == {"customText": "reconciled"}
 
 
 def test_contradiction_pair_id_format() -> None:

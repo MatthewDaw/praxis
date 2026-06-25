@@ -32,8 +32,8 @@ Point at candidate list — note provenance on every row (`logs/...jsonl:line`).
 ## Beat 3 — Human gate promotion (30s)
 
 1. Filter **proposed**; pick any proposed candidate with low confidence if you want to show the warning.
-2. Click **Promote** → **confirmation dialog** → if confidence < 50%, note the low-confidence warning → **Confirm promote**.
-3. Success banner shows `proposed → active` (Act 2 climax).
+2. Click **Approve** → **confirmation dialog** → if confidence < 50%, note the low-confidence warning → **Confirm approve**.
+3. Success banner confirms approval; the row/detail state displays as approved (`active` in the API lifecycle).
 
 > "Nothing reaches the knowledge graph without an explicit human promotion."
 
@@ -41,15 +41,16 @@ Point at candidate list — note provenance on every row (`logs/...jsonl:line`).
 
 1. Select **experimental_options Before Config Load** (cand_9).
 2. Show side-by-side rival **Experimental Flags in config.nu**.
-3. Click **Keep this candidate** — rival leaves queue; audit entry appended.
-4. (Optional) Show **Defer** — both candidates remain for later review.
+3. Click **Keep this** on the choice you want to preserve — the resolved contradiction leaves the active review queue.
+4. If neither side is sufficient, use **Your own resolution** and click **Resolve with my answer**.
 
 > "Contradictions surface as pairs, not silent conflicts in memory."
 
 ## Beat 5 — Measurement handoff (20s)
 
-Expand **Eval metrics** — placeholder or live data from the `knowledge/serve`
-eval endpoints when a live API is configured.
+Click **Load eval data** to show the current eval handoff surface. The modal
+loads eval scopes from the `knowledge/serve` eval endpoints when a live API is
+configured.
 
 > "My dashboard is the gate. Matthew owns the pipeline that creates and stores these candidates, and Dominic owns the dumb-agent versus smart-agent eval proof that promoted knowledge improves future runs."
 

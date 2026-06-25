@@ -1,0 +1,20 @@
+# H4 red-spec (§1c): the reserved tag category="episodic" is load-bearing — it routes
+# to the store-only lane and out of recall. A NON-episode write must not silently land
+# with that tag (else a stray semantic fact vanishes from retrieval). The write must be
+# rejected or namespaced. RED today: the normal pipeline accepts category="episodic"
+# and stores a stray episodic-tagged fact with no meta.episode. Needs a DSN (just db-up).
+id: episodic_reserved_tag_integrity
+component: knowledge_graph
+substrate: vector
+embedder: cached
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "Use connection pooling for the analytics database."
+
+deterministic_checks:
+  - name: reserved_tag_enforced
+    ref: "knowledge.evals.deterministic_checks.graph:episodic_reserved_tag_integrity"
+    params:
+      non_episode_text: "Use connection pooling for the analytics database."

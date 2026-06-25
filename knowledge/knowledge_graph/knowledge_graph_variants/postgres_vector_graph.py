@@ -88,6 +88,31 @@ _KEYWORD_MAX_DF_RATIO = 0.5
 _ALLOWED_FACTS_TABLES = {"facts", "cached_facts"}
 _ALLOWED_EDGES_TABLES = {"fact_edges", "cached_fact_edges"}
 
+# Derivation provenance (gap H5). ``derived_from`` is written learning -> basis:
+# ``add_edge(L, F, DERIVED_FROM_EDGE)`` means "L was derived from F" (src=L, dst=F),
+# so the dependents of F (suspect when F flips) are the edges where dst_id = F.
+# When a source is invalidated, the propagation hook stamps the review edge
+# ``STALE_DERIVED_EDGE`` from each transitive dependent -> the rejected source, and
+# ``stale_derived()`` reads those (one writer, one reader).
+DERIVED_FROM_EDGE = "derived_from"
+STALE_DERIVED_EDGE = "derived_source_invalidated"
+_MAX_DERIVATION_DEPTH = 25
+
+# Episodic memory (gap H4). The reserved category that routes a write down the
+# store-only lane (whole, append-only, immutable — never distilled/deduped/
+# contradicted) and out of semantic recall (H2). Load-bearing: a non-episode write
+# may NOT use it (see `write`), and episodes are produced only via `record_episode`.
+EPISODIC_CATEGORY = "episodic"
+
+# Temporal decay (gap H3). Retrieval scales a fact's score by a recency factor
+# exp(-ln2 * age / half_life) on ``created_at`` (age = now - created_at), so a stale,
+# unconfirmed fact fades vs a fresh one. Neutral (~1.0) for fresh facts, so existing
+# behavior is unchanged for anything written recently. Applied to retrieval only —
+# NOT to write-time dedup/conflict recall (which must still find old near-dups) nor
+# to ``as_of`` point-in-time recall (decay-vs-now would be wrong there).
+_RECENCY_HALF_LIFE_DAYS = 90.0
+_LN2 = 0.6931471805599453
+
 # Columns copied verbatim between `facts` and `cached_facts` for snapshot
 # save/load (everything except the cache_key, which is stamped per copy).
 _FACT_COPY_COLS = (
@@ -171,7 +196,11 @@ def _row_to_hit(r: tuple) -> SearchHit:
 
 
 def _rrf_fuse(
-    semantic: list[SearchHit], keyword: list[SearchHit], *, top_k: int
+    semantic: list[SearchHit],
+    keyword: list[SearchHit],
+    *,
+    top_k: int,
+    keyword_weight: float = _RRF_KEYWORD_WEIGHT,
 ) -> list[SearchHit]:
     """Fuse two ranked branches with Reciprocal Rank Fusion, returning top ``top_k``.
 
@@ -182,11 +211,16 @@ def _rrf_fuse(
     keep meaningful numbers — and falls back to the keyword branch's ts_rank for a
     keyword-only hit. Ties (equal fused score) break toward the semantic branch's
     order, then keyword order, giving a stable, deterministic ranking.
+
+    ``keyword_weight`` (gap H7) is the per-call fusion bias: the semantic branch is
+    fixed at ``_RRF_SEMANTIC_WEIGHT`` (1.0) and the keyword branch is scaled by this
+    relative weight. Raising it biases toward exact/symbol matches (a concept-vs-symbol
+    query knob); the default keeps the calibrated semantic-dominant behavior.
     """
     fused: dict[str, float] = {}
     hit_by_id: dict[str, SearchHit] = {}
     order: dict[str, int] = {}  # first-seen position, for stable tie-breaking
-    for branch, weight in ((semantic, _RRF_SEMANTIC_WEIGHT), (keyword, _RRF_KEYWORD_WEIGHT)):
+    for branch, weight in ((semantic, _RRF_SEMANTIC_WEIGHT), (keyword, keyword_weight)):
         for rank, hit in enumerate(branch, start=1):
             fid = hit.fact.id
             fused[fid] = fused.get(fid, 0.0) + weight / (_RRF_K + rank)
@@ -258,21 +292,32 @@ class PostgresVectorGraph(SearchableGraph):
         self.semantic_recall_k = semantic_recall_k
 
     # --- KnowledgeGraph contract -------------------------------------------
-    def read(self, context: str | None = None) -> str:
+    def read(
+        self,
+        context: str | None = None,
+        *,
+        exclude_categories: list[str] | None = None,
+        char_budget: int | None = None,
+    ) -> str:
         """Retrieve tenant knowledge: top-k similar to ``context``, else recent.
 
         Score-ordered and token-bounded so the result is a usable reader prompt.
+        ``exclude_categories`` (H2) omits those categories (e.g. ["episodic"]).
+        ``char_budget`` (gap H7) is the per-call context size cap; ``None`` uses the
+        default ``_READ_CHAR_BUDGET``. A smaller budget keeps the reader prompt tight.
         """
         context = (context or "").strip()
+        excluded = set(exclude_categories or ())
+        budget = _READ_CHAR_BUDGET if char_budget is None else char_budget
         if context:
-            hits = self.search(context, top_k=12)
+            hits = self.search(context, top_k=12, exclude_categories=exclude_categories)
             facts = [h.fact for h in hits]
         else:
-            facts = self._recent(limit=50)
+            facts = [f for f in self._recent(limit=50) if f.category not in excluded]
         parts: list[str] = []
         used = 0
         for fact in facts:
-            if used + len(fact.text) > _READ_CHAR_BUDGET and parts:
+            if used + len(fact.text) > budget and parts:
                 break
             parts.append(fact.text)
             used += len(fact.text)
@@ -288,6 +333,7 @@ class PostgresVectorGraph(SearchableGraph):
         category: str | None = None,
         meta: dict | None = None,
         tabular: bool = False,
+        derived_from: list[str] | None = None,
     ) -> str | None:
         """Run the write-policy pipeline over ``content``, then persist.
 
@@ -301,6 +347,10 @@ class PostgresVectorGraph(SearchableGraph):
         Cache writes are stamped with this graph's bound ``cache_key``; ``meta``
         persists into the ``meta`` jsonb column.
 
+        ``derived_from`` records derivation provenance (gap H5): one
+        ``derived_from`` edge (this fact -> each source id) so an invalidated source
+        can later surface the learnings built on it via ``stale_derived``.
+
         Side effect: for every existing fact the policy flagged as a
         contradiction (``decision.flags`` entries of the form
         ``"contradiction:<id>"``), a ``contradiction`` edge is inserted from the
@@ -310,6 +360,14 @@ class PostgresVectorGraph(SearchableGraph):
         content = content.strip()
         if not content:
             return None
+        # Reserved-tag integrity (H4 §1c): the episodic category routes to the
+        # store-only lane and out of recall, so a normal semantic write must never
+        # use it — else the fact silently vanishes from retrieval. Episodes are
+        # produced only via record_episode (which bypasses this path).
+        if category == EPISODIC_CATEGORY:
+            raise ValueError(
+                f"category {EPISODIC_CATEGORY!r} is reserved for episodes; use record_episode()"
+            )
         decision = WriteDecision(text=content, state="active" if state == "active" else "proposed")
         if tabular:
             decision.flags.append(TABULAR_FLAG)
@@ -351,7 +409,136 @@ class PostgresVectorGraph(SearchableGraph):
         else:
             fact_id = self._add(decision)
         self._persist_contradictions(fact_id, decision)
+        if derived_from:
+            self.record_derivation(fact_id, derived_from)
         return fact_id
+
+    def record_episode(
+        self,
+        text: str,
+        *,
+        alternatives: list[str] | None = None,
+        outcome: str = "pending",
+        derived_from: list[str] | None = None,
+        decided_at: str | None = None,
+    ) -> str | None:
+        """Append an episode (a decision + its rationale) — store-only (gap H4).
+
+        An episode is the *storage shape* of a fact but must NOT run the semantic
+        write pipeline: no distillation (stored whole, one row), no dedup/merge
+        (decisions are a timeline), no contradiction/supersession (a decision stays
+        true forever; reversal is recorded as ``outcome``). So this writes the row
+        directly via ``_add`` — bypassing the policy entirely — tagged
+        ``category="episodic"`` with a ``meta.episode`` block, plus ``derived_from``
+        edges (H5) to the facts the decision was based on.
+
+        Empty text is a no-op (returns ``None``). Returns the new fact id.
+        """
+        text = text.strip()
+        if not text:
+            return None
+        decision = WriteDecision(text=text, state="active")
+        decision.source = None
+        decision.scope = None
+        decision.category = EPISODIC_CATEGORY
+        decision.meta = {
+            "episode": {
+                "decided_at": decided_at or datetime.now(timezone.utc).isoformat(),
+                "alternatives": list(alternatives or []),
+                "outcome": outcome,
+            }
+        }
+        decision.embedding = self._embed(text)
+        fact_id = self._add(decision)  # store-only: no distill/dedup/augment/conflict
+        if derived_from:
+            self.record_derivation(fact_id, derived_from)
+        return fact_id
+
+    def record_derivation(self, fact_id: str, source_ids: list[str]) -> None:
+        """Record that ``fact_id`` was derived from each id in ``source_ids``.
+
+        Writes one ``derived_from`` edge (fact_id -> source) per source, so an
+        invalidated source can surface ``fact_id`` as suspect (see ``stale_derived``).
+        Idempotent (``add_edge`` is ``ON CONFLICT DO NOTHING``); self-edges skipped.
+        """
+        for src in source_ids:
+            if src and src != fact_id:
+                self.add_edge(fact_id, src, DERIVED_FROM_EDGE)
+
+    def dependents(
+        self, fact_id: str, kind: str = DERIVED_FROM_EDGE, max_depth: int = _MAX_DERIVATION_DEPTH
+    ) -> list[Fact]:
+        """Transitive dependents of ``fact_id`` along ``kind`` edges (newest first).
+
+        A ``kind`` edge is src=dependent -> dst=basis, so the dependents of
+        ``fact_id`` are the rows where ``dst_id = fact_id``; their ``src_id`` is the
+        dependent, recursed as the next ``dst``. Cycle-guarded (a fact never revisits
+        an id already on its path) and depth-bounded.
+        """
+        ids = self._dependent_ids(fact_id, kind, max_depth)
+        if not ids:
+            return []
+        return [f for f in self.all_facts() if f.id in ids]
+
+    def _dependent_ids(self, fact_id: str, kind: str, max_depth: int) -> set[str]:
+        cache = ""
+        params: list[object] = [self.org_id, self.user_id, kind, fact_id]
+        if self._cache_key is not None:
+            cache = " AND cache_key = %s"
+        # Recursive walk up the derivation chain (dst -> src), carrying the visited
+        # path to break cycles, bounded by ``max_depth``.
+        base_params = [self.org_id, self.user_id, kind]
+        sql = (
+            "WITH RECURSIVE deps(id, depth, path) AS ("
+            f"  SELECT src_id, 1, ARRAY[src_id] FROM {self._edges_table} "
+            f"   WHERE org_id=%s AND user_id=%s AND kind=%s AND dst_id=%s{cache} "
+            "  UNION ALL "
+            "  SELECT e.src_id, d.depth+1, d.path || e.src_id "
+            f"   FROM {self._edges_table} e JOIN deps d ON e.dst_id = d.id "
+            f"   WHERE e.org_id=%s AND e.user_id=%s AND e.kind=%s{cache} "
+            "     AND d.depth < %s AND NOT (e.src_id = ANY(d.path))"
+            ") SELECT DISTINCT id FROM deps"
+        )
+        anchor = [*base_params, fact_id]
+        if self._cache_key is not None:
+            anchor.append(self._cache_key)
+        recur = [*base_params]
+        if self._cache_key is not None:
+            recur.append(self._cache_key)
+        recur.append(max_depth)
+        rows = self._conn.execute(sql, [*anchor, *recur]).fetchall()
+        return {r[0] for r in rows}
+
+    def _flag_stale_dependents(self, fact_id: str) -> None:
+        """Propagation hook: a fact was invalidated — flag its transitive derivation
+        dependents for review (precision-first: flag, never auto-reject).
+
+        Stamps a ``STALE_DERIVED_EDGE`` review edge (dependent -> the invalidated
+        source) on every transitive ``derived_from`` dependent, so ``stale_derived``
+        surfaces the whole closure even where an intermediate link is flagged (not
+        itself rejected).
+        """
+        for dep_id in self._dependent_ids(fact_id, DERIVED_FROM_EDGE, _MAX_DERIVATION_DEPTH):
+            self.add_edge(dep_id, fact_id, STALE_DERIVED_EDGE)
+
+    def stale_derived(self) -> list[Fact]:
+        """Active facts flagged stale because a fact they derive from was invalidated.
+
+        Reads the ``STALE_DERIVED_EDGE`` review edges set by ``_flag_stale_dependents``
+        (one reader, one writer). Returns the suspect learnings for human/agent review.
+        """
+        cache = ""
+        params: list[object] = [self.org_id, self.user_id, STALE_DERIVED_EDGE]
+        if self._cache_key is not None:
+            cache = " AND cache_key = %s"
+            params.append(self._cache_key)
+        rows = self._conn.execute(
+            f"SELECT DISTINCT src_id FROM {self._edges_table} "
+            f"WHERE org_id=%s AND user_id=%s AND kind=%s{cache}",
+            params,
+        ).fetchall()
+        ids = {r[0] for r in rows}
+        return [f for f in self.all_facts(state="active") if f.id in ids]
 
     def _persist_contradictions(self, fact_id: str, decision: WriteDecision) -> None:
         """Materialize the policy's ``contradiction:<id>`` flags as edges.
@@ -393,6 +580,7 @@ class PostgresVectorGraph(SearchableGraph):
             (self.org_id, self.user_id, loser_id),
         )
         self.add_edge(winner_id, loser_id, "supersedes")
+        self._flag_stale_dependents(loser_id)  # H5: propagate to derived learnings
 
     def _persist_claims(self, fact_id: str, claims: list[Claim]) -> None:
         """Replace the stored claims for ``fact_id`` with ``claims``.
@@ -451,9 +639,26 @@ class PostgresVectorGraph(SearchableGraph):
         state: str | None = "active",
         as_of: datetime | None = None,
         hybrid: bool = False,
+        keyword_weight: float | None = None,
+        exclude_categories: list[str] | None = None,
+        decay: bool = True,
     ) -> list[SearchHit]:
         """Retrieve relevant facts. Pure pgvector cosine by default; ``hybrid=True``
         additionally fuses a BM25 keyword branch.
+
+        ``keyword_weight`` (gap H7) tunes the RRF fusion bias per call (only meaningful
+        with ``hybrid=True``): the semantic branch stays at weight 1.0 and the keyword
+        branch is scaled by this value. ``None`` uses the calibrated default
+        (``_RRF_KEYWORD_WEIGHT``); raise it to favor exact/symbol matches for a
+        symbol-style query, lower it to lean more semantic.
+
+        ``exclude_categories`` (gap H2) omits rows whose ``category`` is in the list
+        (NULL category is never excluded), applied to BOTH branches via ``_where`` —
+        e.g. ``["episodic"]`` keeps decision logs out of semantic recall.
+
+        ``decay`` (gap H3, default on) scales the cosine score by a recency factor so a
+        stale fact fades vs a fresh one; it is suppressed for ``as_of`` recall (decay
+        relative to now() would distort point-in-time results).
 
         Borrows Graphiti/Zep's search stack. Two indexed branches run over the same
         tenant/state/scope/filter predicate:
@@ -485,17 +690,23 @@ class PostgresVectorGraph(SearchableGraph):
         pure-semantic — dedup/conflict want embedding recall, not keyword matching.
         """
         qvec = _fit(self._embed(query))
+        # Decay applies to retrieval ranking, but never to point-in-time (as_of) recall.
+        apply_decay = decay and as_of is None
         if not hybrid:
             return self._search_vec(
-                qvec, top_k=top_k, filters=filters, scope=scope, state=state, as_of=as_of
+                qvec, top_k=top_k, filters=filters, scope=scope, state=state, as_of=as_of,
+                exclude_categories=exclude_categories, apply_decay=apply_decay,
             )
         sem = self._search_vec(
-            qvec, top_k=_FUSION_BRANCH_N, filters=filters, scope=scope, state=state, as_of=as_of
+            qvec, top_k=_FUSION_BRANCH_N, filters=filters, scope=scope, state=state, as_of=as_of,
+            exclude_categories=exclude_categories, apply_decay=apply_decay,
         )
         kw = self._search_keyword(
-            query, top_k=_FUSION_BRANCH_N, filters=filters, scope=scope, state=state, as_of=as_of
+            query, top_k=_FUSION_BRANCH_N, filters=filters, scope=scope, state=state, as_of=as_of,
+            exclude_categories=exclude_categories,
         )
-        return _rrf_fuse(sem, kw, top_k=top_k)
+        kww = _RRF_KEYWORD_WEIGHT if keyword_weight is None else keyword_weight
+        return _rrf_fuse(sem, kw, top_k=top_k, keyword_weight=kww)
 
     def _where(
         self,
@@ -504,6 +715,7 @@ class PostgresVectorGraph(SearchableGraph):
         scope: str | None,
         state: str | None,
         as_of: datetime | None = None,
+        exclude_categories: list[str] | None = None,
     ) -> tuple[str, list[object]]:
         """The shared tenant/cache/state/scope/filter predicate for a search branch.
 
@@ -539,6 +751,10 @@ class PostgresVectorGraph(SearchableGraph):
         for key, value in (filters or {}).items():
             sql += f" AND {key} = %s"
             params.append(value)
+        # H2 exclusion: omit listed categories (NULL category is never excluded).
+        if exclude_categories:
+            sql += " AND (category IS NULL OR category <> ALL(%s))"
+            params.append(list(exclude_categories))
         return sql, params
 
     def _search_vec(
@@ -550,19 +766,29 @@ class PostgresVectorGraph(SearchableGraph):
         scope: str | None = None,
         state: str | None = "active",
         as_of: datetime | None = None,
+        exclude_categories: list[str] | None = None,
+        apply_decay: bool = False,
     ) -> list[SearchHit]:
-        where, where_params = self._where(filters=filters, scope=scope, state=state, as_of=as_of)
-        # Outcome/trust weighting: rank on cosine similarity scaled by a per-fact
-        # utility multiplier derived from recorded outcomes (mirrors Fact.utility) —
-        # neutral 1.0 until outcomes exist (no behavior change for un-scored facts),
-        # decaying toward 0 as a fact's action keeps failing. Ordering on the scaled
-        # score means we sort the matched partition rather than ride the HNSW index;
-        # fine for tenant-scoped recall, and what lets a proven fact beat a more
-        # similar but demonstrably-failed one.
+        where, where_params = self._where(
+            filters=filters, scope=scope, state=state, as_of=as_of,
+            exclude_categories=exclude_categories,
+        )
+        # Outcome/trust weighting (H1): cosine similarity scaled by a per-fact utility
+        # multiplier from recorded outcomes — neutral 1.0 until outcomes exist.
+        # Temporal decay (H3, ``apply_decay``): a recency factor exp(-ln2*age/half_life)
+        # so a stale fact fades vs a fresh one — neutral (~1.0) for recently-written
+        # facts, so un-aged facts are unaffected. Ordering on the scaled score sorts the
+        # matched partition rather than riding the HNSW index (fine for tenant recall).
+        decay_sql = (
+            " * CASE WHEN created_at IS NULL THEN 1.0 ELSE "
+            f"exp(- {_LN2} * EXTRACT(EPOCH FROM (now() - created_at)) "
+            f"/ (86400.0 * {_RECENCY_HALF_LIFE_DAYS})) END"
+        ) if apply_decay else ""
         sql = (
             "SELECT id, text, source, confidence, scope, category, observation_count, state, "
             "(1 - (embedding <=> %s)) * CASE WHEN success_count + failure_count = 0 THEN 1.0 "
-            "ELSE (success_count + 0.5) / (success_count + failure_count + 1.0) END AS score "
+            "ELSE (success_count + 0.5) / (success_count + failure_count + 1.0) END"
+            f"{decay_sql} AS score "
             f"FROM {self._facts_table} {where} AND embedding IS NOT NULL "
             "ORDER BY score DESC LIMIT %s"
         )
@@ -595,6 +821,7 @@ class PostgresVectorGraph(SearchableGraph):
         scope: str | None = None,
         state: str | None = "active",
         as_of: datetime | None = None,
+        exclude_categories: list[str] | None = None,
     ) -> list[SearchHit]:
         """BM25-style keyword branch: IDF-weighted full-text match over ``text_tsv``.
 
@@ -613,7 +840,10 @@ class PostgresVectorGraph(SearchableGraph):
         the cosine branch alone). Score is the summed IDF; fusion ranks on position,
         so its scale never needs to match cosine.
         """
-        where, where_params = self._where(filters=filters, scope=scope, state=state, as_of=as_of)
+        where, where_params = self._where(
+            filters=filters, scope=scope, state=state, as_of=as_of,
+            exclude_categories=exclude_categories,
+        )
         sql = (
             "WITH params AS (SELECT tsvector_to_array(to_tsvector('english', %s)) AS qlex), "
             "docs AS ("
@@ -656,6 +886,7 @@ class PostgresVectorGraph(SearchableGraph):
         mounts: list[tuple[str, str]],
         *,
         top_k: int = 10,
+        exclude_categories: list[str] | None = None,
     ) -> list[SearchHit]:
         """Vector-search the live graph unioned with mounted snapshots, in one query.
 
@@ -679,14 +910,18 @@ class PostgresVectorGraph(SearchableGraph):
         cols = (
             "id, text, source, confidence, scope, category, observation_count, state"
         )
+        # H2: apply category exclusion to BOTH the live and mounted branches so a
+        # mounted snapshot's episodes don't leak into the unioned result.
+        excl = " AND (category IS NULL OR category <> ALL(%s))" if exclude_categories else ""
+        excl_param = [list(exclude_categories)] if exclude_categories else []
         live = (
             f"SELECT {cols}, NULL::text AS mount_user, NULL::text AS mount_key, "
             "1 - (embedding <=> %s) AS score FROM facts "
             "WHERE org_id = %s AND (shared OR user_id = %s) "
-            "AND state = 'active' AND embedding IS NOT NULL "
+            f"AND state = 'active' AND embedding IS NOT NULL{excl} "
             "ORDER BY embedding <=> %s LIMIT %s"
         )
-        params: list[object] = [qvec, self.org_id, self.user_id, qvec, top_k]
+        params: list[object] = [qvec, self.org_id, self.user_id, *excl_param, qvec, top_k]
         sql = f"SELECT * FROM ({live}) AS live"
         if mounts:
             ors = " OR ".join(["(user_id = %s AND cache_key = %s)"] * len(mounts))
@@ -694,14 +929,14 @@ class PostgresVectorGraph(SearchableGraph):
                 f"SELECT {cols}, user_id AS mount_user, cache_key AS mount_key, "
                 "1 - (embedding <=> %s) AS score FROM cached_facts "
                 f"WHERE org_id = %s AND ({ors}) "
-                "AND state = 'active' AND embedding IS NOT NULL "
+                f"AND state = 'active' AND embedding IS NOT NULL{excl} "
                 "ORDER BY embedding <=> %s LIMIT %s"
             )
             sql += f" UNION ALL SELECT * FROM ({mounted}) AS mounted"
             params += [qvec, self.org_id]
             for source_user_id, cache_key in mounts:
                 params += [source_user_id, cache_key]
-            params += [qvec, top_k]
+            params += [*excl_param, qvec, top_k]
         rows = self._conn.execute(sql, params).fetchall()
 
         # Each branch is capped at top_k, so this is at most ~2*top_k rows. Dedupe
@@ -890,6 +1125,10 @@ class PostgresVectorGraph(SearchableGraph):
             "WHERE org_id = %s AND user_id = %s AND id = %s",
             (state, self.org_id, self.user_id, fact_id),
         )
+        # Derivation propagation (H5): retiring a fact flags the learnings derived
+        # from it for review. This is the candidate-reject / promote-rival chokepoint.
+        if state == "rejected":
+            self._flag_stale_dependents(fact_id)
 
     def invalidate(self, fact_id: str, winner_id: str | None = None) -> None:
         """Close a fact's bi-temporal validity window (Graphiti/Zep model).
@@ -1241,7 +1480,13 @@ class PostgresVectorGraph(SearchableGraph):
         conflict both see pending facts, so this searches all states.
         """
         decision.embedding = self._embed(decision.text)
-        hits = self._search_vec(_fit(decision.embedding), top_k=self.recall_k, state=None)
+        # H2/H4 write-side: a semantic write must never recall an episode as a
+        # candidate (so it is never merged-with or contradiction-flagged against a
+        # decision log). Episodes run no recall of their own (store-only lane).
+        hits = self._search_vec(
+            _fit(decision.embedding), top_k=self.recall_k, state=None,
+            exclude_categories=[EPISODIC_CATEGORY],
+        )
         decision.candidates = [h for h in hits if h.score >= self.recall_floor]
 
     def _recall_semantic(self, decision: WriteDecision) -> None:
@@ -1256,7 +1501,8 @@ class PostgresVectorGraph(SearchableGraph):
         if decision.embedding is None:
             decision.embedding = self._embed(decision.text)
         hits = self._search_vec(
-            _fit(decision.embedding), top_k=self.semantic_recall_k, state=None
+            _fit(decision.embedding), top_k=self.semantic_recall_k, state=None,
+            exclude_categories=[EPISODIC_CATEGORY],  # never recall an episode (see _recall)
         )
         decision.semantic_candidates = [
             h for h in hits if h.score >= self.semantic_recall_floor
@@ -1419,4 +1665,5 @@ class PostgresVectorGraph(SearchableGraph):
             )
             src, dst = sorted((fact_id, loser_id))
             self.add_edge(src, dst, "contradicted_by")
+            self._flag_stale_dependents(loser_id)  # H5: propagate to derived learnings
         return fact_id

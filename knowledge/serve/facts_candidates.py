@@ -469,6 +469,87 @@ class FactsCandidates:
         )
         return candidate
 
+    def resolve_keep(self, cluster_id: str, keep: str | list[str]) -> dict[str, Any]:
+        """H11: settle a contradiction cluster by saying which members to keep.
+
+        ``keep`` is the single resolution primitive for a cluster (a 2-fact pair is
+        the simplest cluster):
+        - ``"all"`` — every member genuinely holds (a false positive, e.g.
+          captain-approval vs. coach-immediate, different actors). Keep them all
+          active; this is the one intentional override of FR-005's
+          ≤1-active-contradictor rule, on explicit human judgement.
+        - ``"none"`` — reject every member.
+        - a list of fact ids — keep those active, reject the rest.
+
+        For every *existing* pending ``contradiction`` edge among the members, the
+        edge is re-labelled (never deleted, so the decision stays discoverable and
+        reversible — FR-004): a pair where **both** ends are kept becomes
+        ``dismissed`` (both hold); any pair touching a rejected member becomes
+        ``contradicted_by``. Neither kind is ``contradiction``, so the cluster drops
+        out of ``get_contradictions``. Edges are only flipped where one already
+        exists (``flip_edge_kind`` would otherwise fabricate one), so non-adjacent
+        members never gain a spurious link.
+        """
+        member_ids = [fid for fid in cluster_id.split("__") if fid]
+        present = {
+            fid: fact
+            for fid in member_ids
+            if (fact := self.graph.get_fact(fid)) is not None
+        }
+        if not present:
+            raise KeyError(cluster_id)
+        members = set(present)
+        if keep == "all":
+            keep_set = set(members)
+        elif keep == "none":
+            keep_set = set()
+        elif isinstance(keep, list):
+            keep_set = {str(k) for k in keep}
+            unknown = keep_set - members
+            if unknown:
+                raise ValueError(
+                    f"keep ids not in cluster {cluster_id}: {sorted(unknown)}"
+                )
+        else:
+            raise ValueError("keep must be 'all', 'none', or a list of fact ids")
+
+        # Re-label only edges that actually exist among the members.
+        edges = [
+            (a, b)
+            for a, b, _kind in self.graph.all_edges("contradiction")
+            if a in members and b in members
+        ]
+        for a, b in edges:
+            both_kept = a in keep_set and b in keep_set
+            self.graph.flip_edge_kind(
+                a,
+                b,
+                from_kind="contradiction",
+                to_kind="dismissed" if both_kept else "contradicted_by",
+            )
+
+        a_winner = next(iter(sorted(keep_set)), None)  # stable winner for invalidation
+        kept: list[Candidate] = []
+        rejected: list[Candidate] = []
+        for fid, fact in present.items():
+            if fid in keep_set:
+                if fact.state != "active":
+                    self.graph.set_state(fid, "active")
+                self._append_audit(fact, "kept", note="contradiction resolved (kept)")
+                candidate = self.get(fid)
+                assert candidate is not None
+                kept.append(candidate)
+            else:
+                self.graph.set_state(fid, "rejected")
+                _invalidate(self.graph, fid, a_winner)
+                self._append_audit(
+                    fact, "rejected", note="contradiction resolved (rejected)"
+                )
+                candidate = self.get(fid)
+                assert candidate is not None
+                rejected.append(candidate)
+        return {"kept": kept, "rejected": rejected, "facts": kept + rejected}
+
     def resolve_custom(self, cluster_id: str, custom_text: str) -> Candidate:
         """Settle a contradiction cluster by rejecting its members and adding a new,
         user-authored fact that *supersedes* them.

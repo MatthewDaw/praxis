@@ -1,0 +1,24 @@
+# H4 × H5 × H2 red-spec: a decision whose basis was invalidated stays in the episode
+# log (still findable, flagged stale via H5) but never re-enters semantic recall (H2).
+# Seeds a basis fact + an episode derived from it, rejects the basis (H5 flags the
+# episode stale), then asserts the episode is returned by the episode-log query AND
+# excluded from semantic search. RED until the H4 tag + store-only producer and the H2
+# exclusion exist together. Needs a DSN (just db-up).
+id: episodic_stale_not_in_context
+component: knowledge_graph
+substrate: vector
+embedder: cached
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "The PRD specifies the daily habit counter resets to 0 at midnight."
+    - "Chose reset-to-0 for the daily habit counter because the PRD specified a midnight reset."
+
+deterministic_checks:
+  - name: stale_episode_log_only
+    ref: "knowledge.evals.deterministic_checks.graph:stale_episode_findable_not_in_context"
+    params:
+      basis_text: "The PRD specifies the daily habit counter resets to 0 at midnight."
+      episode_text: "Chose reset-to-0 for the daily habit counter because the PRD specified a midnight reset."
+      query: "How does the daily habit counter reset work?"

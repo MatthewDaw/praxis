@@ -21,6 +21,9 @@ from fastapi.testclient import TestClient
 # import time (the module-level skipif below reads them).
 load_dotenv()
 
+from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (  # noqa: E402
+    PostgresVectorGraph,
+)
 from knowledge.serve import db  # noqa: E402
 from knowledge.serve.app import create_app  # noqa: E402
 from knowledge.serve.orgs_store import OrgsStore  # noqa: E402
@@ -82,6 +85,93 @@ def test_create_list_get_candidate(client):
     got = client.get(f"/candidates/{cid}")
     assert got.status_code == 200
     assert got.json()["title"] == "A lesson"
+
+
+def test_insight_persists_writer_metadata(client):
+    """H12: writer-supplied source/scope/category/meta round-trip unchanged.
+
+    A value written via POST /insights must come back on /context hits
+    (source/scope/category) and on /candidates (meta) — today they are dropped.
+    """
+    r = client.post("/insights", json={
+        "insight": "The team day resets at 03:00 local time.",
+        "source": "prd-team-app", "scope": "prd-team-app",
+        "category": "requirement", "meta": {"requirement_id": "R4"}})
+    assert r.status_code == 200, r.text
+    hit = next(h for h in client.get("/context", params={"query": "team day reset"}).json()["hits"]
+               if "03:00" in h["text"])
+    assert hit["source"] == "prd-team-app"          # RED today: null
+    assert hit["scope"] == "prd-team-app"
+    assert hit["category"] == "requirement"
+    cand = next(c for c in client.get("/candidates").json() if "03:00" in c["content"])
+    assert cand.get("meta", {}).get("requirement_id") == "R4"
+
+
+def test_insight_derived_fills_unset_metadata(client):
+    """H12 precedence: writer value wins; a field left unset is not clobbered.
+
+    Omitting category lets ingestion-derived values fill it (or stay null) — the
+    point is the explicit fields still round-trip and the omitted one never
+    overwrites a writer-set sibling.
+    """
+    r = client.post("/insights", json={
+        "insight": "Backups run nightly at 02:00 UTC.",
+        "scope": "ops"})
+    assert r.status_code == 200, r.text
+    hit = next(h for h in client.get("/context", params={"query": "backups nightly"}).json()["hits"]
+               if "02:00" in h["text"])
+    assert hit["scope"] == "ops"
+
+
+def test_insights_batch_writes_all_and_confirms_retrievable(client):
+    """H8: one round-trip writes many shaped facts, each confirmed read-back-able.
+
+    The batch endpoint returns one result per item (in order), each persisting its
+    H12 metadata and carrying a ``retrievable`` flag that proves read-your-writes —
+    the just-written fact is immediately found by /context.
+    """
+    r = client.post("/insights/batch", json={
+        "insights": [
+            {"insight": "The deploy pipeline runs on push to main.",
+             "source": "ops-runbook", "category": "pattern"},
+            {"insight": "Staging mirrors prod but uses a seeded database.",
+             "scope": "staging", "meta": {"doc": "D2"}},
+            {"insight": "Secrets are sourced from AWS Secrets Manager at boot."},
+        ]})
+    assert r.status_code == 200, r.text
+    payload = r.json()
+    assert payload["count"] == 3
+    assert all(res["ok"] for res in payload["results"])
+    assert all(res["retrievable"] for res in payload["results"])
+    assert all(res["id"] for res in payload["results"])
+
+    # Read-your-writes: every batched fact is immediately retrievable + metadata stuck.
+    hit = next(h for h in client.get("/context", params={"query": "deploy pipeline push"}).json()["hits"]
+               if "push to main" in h["text"])
+    assert hit["source"] == "ops-runbook"
+    assert hit["category"] == "pattern"
+    cand = next(c for c in client.get("/candidates").json() if "seeded database" in c["content"])
+    assert cand.get("meta", {}).get("doc") == "D2"
+
+
+def test_insights_batch_bad_item_does_not_abort_batch(client):
+    """H8: a single malformed item fails cleanly; the good items still land."""
+    r = client.post("/insights/batch", json={
+        "insights": [
+            {"insight": "Rate limits reset at the top of each minute."},
+            {"insight": "   "},  # empty -> per-item error, not a 500
+            {"insight": "The cache TTL is five minutes."},
+        ]})
+    assert r.status_code == 200, r.text
+    results = r.json()["results"]
+    assert results[0]["ok"] is True and results[0]["retrievable"]
+    assert results[1]["ok"] is False and "insight required" in results[1]["error"]
+    assert results[2]["ok"] is True and results[2]["retrievable"]
+
+
+def test_insights_batch_requires_nonempty_list(client):
+    assert client.post("/insights/batch", json={"insights": []}).status_code == 400
+    assert client.post("/insights/batch", json={}).status_code == 400
 
 
 def test_promote_advances_proposed_to_active(client):
@@ -181,6 +271,65 @@ def test_load_unknown_snapshot_is_404(client):
     assert client.post("/snapshots/nope/load").status_code == 404
 
 
+def _graph_for(client):
+    """A read-side graph over the same tenant the client writes to (H5/H1 edges)."""
+    org = client.headers["X-Praxis-Org"]
+    return PostgresVectorGraph(db.connect(), org, USER)
+
+
+def test_insight_derived_from_creates_edge(client):
+    """H5: POST /insights with derivedFrom=[F] links a derived_from edge to F."""
+    source_id = _create(client, content="Postgres is the system of record.")["id"]
+    r = client.post(
+        "/insights",
+        json={
+            "insight": "Read replicas serve analytics queries off the primary.",
+            "derivedFrom": [source_id],
+        },
+    )
+    assert r.status_code == 200, r.text
+    new_id = r.json()["id"]
+    edges = _graph_for(client).all_edges("derived_from")
+    assert (new_id, source_id, "derived_from") in edges
+
+
+def test_ingest_derived_from_creates_edge(client):
+    """H5: POST /ingest with derivedFrom links each distilled fact back to the sources."""
+    source_id = _create(client, content="The billing service owns invoice state.")["id"]
+    r = client.post(
+        "/ingest",
+        json={
+            "documents": [{"text": "Refunds are issued by the billing service within 24h."}],
+            "derivedFrom": [source_id],
+        },
+    )
+    assert r.status_code == 200, r.text
+    edges = _graph_for(client).all_edges("derived_from")
+    assert any(dst == source_id for (_src, dst, _k) in edges)
+
+
+def _score_for(graph, query, fact_id):
+    return next(h.score for h in graph.search(query, top_k=5) if h.fact.id == fact_id)
+
+
+def test_record_failure_demotes_fact_utility(client):
+    """H1: recording failures lowers a fact's utility, sinking its search score.
+
+    Measured on the *same* fact + query before vs after the failures, so only the
+    utility multiplier changes — a deterministic check that failed knowledge fades.
+    """
+    fid = client.post(
+        "/insights", json={"insight": "Restart the queue worker to clear stuck jobs."}
+    ).json()["id"]
+    graph = _graph_for(client)
+    query = "how to clear stuck jobs in the queue worker"
+    before = _score_for(graph, query, fid)
+    for _ in range(5):
+        assert client.post(f"/facts/{fid}/outcome", json={"success": False}).status_code == 200
+    after = _score_for(_graph_for(client), query, fid)
+    assert after < before  # the repeatedly-failed fact ranks lower than before
+
+
 def test_evals_cached_shape(client):
     body = client.get("/evals/cached").json()
     assert "cached" in body
@@ -260,13 +409,114 @@ def test_insights_surface_mode_keeps_both_and_surfaces_contradiction(client):
     assert states, "both rate-limit facts should still exist"
     assert "rejected" not in states.values(), f"surface must not reject a side: {states}"
 
-    # resolve_contradiction then settles it: keep the 500 rps side, retire 100 rps.
+    # resolve then settles it: keep the 500 rps side, retire 100 rps.
     pair = clusters[0]["pairs"][0]
     keep = next(s["id"] for s in (pair["a"], pair["b"]) if "500" in s["content"])
-    res = client.post(f"/contradictions/{pair['id']}/resolve", json={"keepId": keep})
+    res = client.post(f"/contradictions/{pair['id']}/resolve", json={"keep": [keep]})
     assert res.status_code == 200, res.text
     ctx = client.get("/context", params={"query": "rate limit"}).json()
     assert "500" in ctx["context"] and "100 requests per second" not in ctx["context"]
+
+
+def _surface_rate_limit_pair(client):
+    """Seed two conflicting rate-limit facts in surface mode; return the pending pair."""
+    first = client.post(
+        "/insights",
+        json={"insight": "The factory's default rate limit is 100 requests per second."},
+    )
+    assert first.status_code == 200, first.text
+    second = client.post(
+        "/insights",
+        json={
+            "insight": "The factory's default rate limit is 500 requests per second.",
+            "onConflict": "surface",
+        },
+    )
+    assert second.status_code == 200, second.text
+    clusters = client.get("/contradictions").json()
+    assert clusters, "surface mode should leave a pending contradiction"
+    return clusters[0]["pairs"][0]
+
+
+def test_resolve_keep_all_keeps_both_active_and_clears_pending(client):
+    # H11: keep="all" — a FALSE POSITIVE (two facts that both actually hold).
+    # Non-lossy: neither side is rejected or merged; both stay active and the
+    # pending pair drops out of /contradictions.
+    pair = _surface_rate_limit_pair(client)
+
+    res = client.post(f"/contradictions/{pair['id']}/resolve", json={"keep": "all"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert {f["state"] for f in body["kept"]} == {"active"}
+    assert body["rejected"] == []
+
+    assert client.get("/contradictions").json() == []
+    states = {
+        c["content"]: c["state"]
+        for c in client.get("/candidates").json()
+        if "rate limit" in c["content"]
+    }
+    assert len(states) == 2, f"both rate-limit facts should still exist: {states}"
+    assert set(states.values()) == {"active"}, f"keep=all must keep both active: {states}"
+
+
+def test_resolve_keep_none_rejects_all_and_clears_pending(client):
+    # H11: keep="none" — reject every member of the cluster.
+    pair = _surface_rate_limit_pair(client)
+
+    res = client.post(f"/contradictions/{pair['id']}/resolve", json={"keep": "none"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["kept"] == []
+    assert {f["state"] for f in body["rejected"]} == {"rejected"}
+
+    assert client.get("/contradictions").json() == []
+    # Neither rate-limit fact is in active recall any more.
+    ctx = client.get("/context", params={"query": "rate limit"}).json()
+    assert "100 requests per second" not in ctx["context"]
+    assert "500 requests per second" not in ctx["context"]
+
+
+def test_resolve_keep_subset_of_three(client):
+    # H11: a 3-way contradiction (three mutually-conflicting numeric facts on the
+    # same slot). Surface all three, then keep two and reject the third in one call.
+    client.post("/insights", json={"insight": "The factory's default rate limit is 100 requests per second."})
+    client.post("/insights", json={"insight": "The factory's default rate limit is 500 requests per second.", "onConflict": "surface"})
+    client.post("/insights", json={"insight": "The factory's default rate limit is 900 requests per second.", "onConflict": "surface"})
+
+    # All three are mutually flagged (three pending pairwise edges). Address the
+    # whole 3-member cluster in one resolve by joining the member ids.
+    by_val = {
+        next(v for v in ("100", "500", "900") if v in c["content"]): c["id"]
+        for c in client.get("/candidates").json()
+        if "rate limit" in c["content"]
+    }
+    assert set(by_val) == {"100", "500", "900"}, by_val
+    cluster_id = "__".join(sorted(by_val.values()))
+    keep_ids = [by_val["100"], by_val["500"]]
+    drop_id = by_val["900"]
+
+    res = client.post(f"/contradictions/{cluster_id}/resolve", json={"keep": keep_ids})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert {f["id"] for f in body["kept"]} == set(keep_ids)
+    assert [f["id"] for f in body["rejected"]] == [drop_id]
+    assert {f["state"] for f in body["kept"]} == {"active"}
+
+    # Cluster fully settled — every pairwise edge cleared, nothing left pending.
+    assert client.get("/contradictions").json() == []
+    states = {c["id"]: c["state"] for c in client.get("/candidates").json()}
+    assert states[drop_id] == "rejected"
+    for kid in keep_ids:
+        assert states[kid] == "active"
+
+
+def test_resolve_rejects_bad_keep_id(client):
+    pair = _surface_rate_limit_pair(client)
+    res = client.post(
+        f"/contradictions/{pair['id']}/resolve", json={"keep": ["nonexistent_id"]}
+    )
+    assert res.status_code == 400, res.text
 
 
 def test_context_hits_include_provenance_keys(client):
@@ -305,3 +555,39 @@ def test_batch_ingest_rejects_empty_documents(client):
     assert (
         client.post("/ingest", json={"documents": [{"text": "  "}]}).status_code == 400
     )
+
+
+def test_batch_ingest_persists_writer_metadata(client):
+    """H12: /ingest honors per-document source/scope/category/meta and rounds them
+    back — source/scope/category on /context hits, meta on /candidates — matching
+    the /insights behavior (see test_insight_persists_writer_metadata)."""
+    body = {
+        "documents": [
+            {
+                "text": "Production database backups run nightly at 02:30 UTC.",
+                "source": "ops-runbook",
+                "scope": "ops",
+                "category": "requirement",
+                "meta": {"requirement_id": "OPS-7"},
+            }
+        ],
+        "state": "active",
+    }
+    res = client.post("/ingest", json=body)
+    assert res.status_code == 200, res.text
+
+    hit = next(
+        h
+        for h in client.get("/context", params={"query": "database backup schedule"})
+        .json()["hits"]
+        if "backup" in h["text"].lower()
+    )
+    assert hit["source"] == "ops-runbook"
+    assert hit["scope"] == "ops"
+    assert hit["category"] == "requirement"
+
+    cand = next(
+        c for c in client.get("/candidates").json() if "backup" in c["content"].lower()
+    )
+    assert cand.get("meta", {}).get("requirement_id") == "OPS-7"
+

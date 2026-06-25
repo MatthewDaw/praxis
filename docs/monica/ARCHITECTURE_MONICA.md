@@ -430,7 +430,7 @@ Aligned with project plan Figure 1 ("Human Approval Gate" nested under Consolida
 | Control | UI manifestation |
 |---------|-------------------|
 | Approve credible ideas | Promote buttons with state-aware transitions |
-| Resolve contradictions | Side-by-side cards + keep-A / keep-B / defer (mock + API client) |
+| Resolve contradictions | Side-by-side cards + keep-A / keep-B / custom resolution (mock + API client) |
 | Reject bad distillations | Reject action with confirmation + optional reason |
 | Audit | Provenance links, timestamps, `auditTrail` panel in detail view |
 | Override | Low-confidence promote warning (threshold in React list/card components) |

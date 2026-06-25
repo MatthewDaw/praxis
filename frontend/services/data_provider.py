@@ -54,10 +54,17 @@ class DataProvider(Protocol):
         self,
         contradiction_id: str,
         *,
-        resolution: str,
-        keep_id: str,
+        keep: str | list[str] | None = None,
+        custom_text: str | None = None,
     ) -> Candidate:
-        """Resolve a contradiction pair; keep_id is the winning candidate."""
+        """Resolve a contradiction cluster (H11).
+
+        ``keep`` is the single resolution primitive: ``"all"`` (every member holds
+        — a false positive; keep them all active), ``"none"`` (reject every
+        member), or a list of fact ids to keep (reject the rest). Or pass
+        ``custom_text`` to replace the cluster with one reconciled fact. Returns the
+        primary surviving candidate.
+        """
         ...
 
     def list_api_keys(self) -> list[ApiKey]:

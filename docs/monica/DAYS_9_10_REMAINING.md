@@ -41,12 +41,12 @@ npm run build
 
 ## Accessibility pass
 
-Code improvements shipped 2026-06-19 and later (React): `aria-label` on promote/reject/inspect/defer, `role="alert"` + `aria-live="assertive"` on low-confidence promote warning, keyboard Enter/Space on table rows, rejected-state helper text.
+Code improvements shipped 2026-06-19 and later (React): `aria-label` on promote/reject/inspect/contradiction controls, `role="alert"` + `aria-live="assertive"` on low-confidence promote warning, keyboard Enter/Space on table rows, rejected-state helper text.
 
 Manual verification still required:
 
 - [ ] Tab through global selection, promote/reject confirmations, and contradiction buttons
-- [ ] Screen reader: verify button `aria-label` text reads for promote/reject/inspect/defer
+- [ ] Screen reader: verify button `aria-label` text reads for promote/reject/inspect/contradiction controls
 - [ ] Confirm low-confidence promote warning is announced when triggered
 - [ ] Confirm rejected-state helper text is readable when a rejected candidate is selected
 

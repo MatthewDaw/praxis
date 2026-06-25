@@ -49,26 +49,44 @@ class OverlayGraph(SearchableGraph):
         once and unions the live ``facts`` and ``cached_facts`` branches in one
         round trip. Mounted hits are tagged in ``fact.meta["mountedFrom"]``.
         """
+        # Forward the H2 exclusion only when present, so callers/doubles that don't
+        # take the kwarg are unaffected (the live overlay_search accepts it).
+        extra = {}
+        if kwargs.get("exclude_categories"):
+            extra["exclude_categories"] = kwargs["exclude_categories"]
         return self._live.overlay_search(
-            query, [(u, key) for (u, _name, key) in self._mounts], top_k=top_k
+            query, [(u, key) for (u, _name, key) in self._mounts], top_k=top_k, **extra
         )
 
     # --- KnowledgeGraph read ----------------------------------------------
-    def read(self, context: str | None = None) -> str:
+    def read(
+        self,
+        context: str | None = None,
+        *,
+        exclude_categories: list[str] | None = None,
+        char_budget: int | None = None,
+    ) -> str:
         """Concatenate retrieved fact text, mirroring ``PostgresVectorGraph.read``.
 
         Uses the composed ``search`` (with context) or recent active facts from
         the live graph and every mounted snapshot (without), budget-capped.
+        ``exclude_categories`` (H2) omits those categories from the union.
+        ``char_budget`` (gap H7) overrides the default context size cap per call.
         """
         context = (context or "").strip()
+        excluded = set(exclude_categories or ())
+        budget = _READ_CHAR_BUDGET if char_budget is None else char_budget
         if context:
-            facts = [h.fact for h in self.search(context, top_k=12)]
+            facts = [
+                h.fact
+                for h in self.search(context, top_k=12, exclude_categories=exclude_categories)
+            ]
         else:
-            facts = self._recent_union(limit=50)
+            facts = [f for f in self._recent_union(limit=50) if f.category not in excluded]
         parts: list[str] = []
         used = 0
         for fact in facts:
-            if used + len(fact.text) > _READ_CHAR_BUDGET and parts:
+            if used + len(fact.text) > budget and parts:
                 break
             parts.append(fact.text)
             used += len(fact.text)

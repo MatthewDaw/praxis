@@ -69,7 +69,7 @@ Lifecycle states: `proposed -> active` plus `rejected` and unrecognized API valu
 | Confidence | `ConfidenceBreakdown.tsx` — frequency/recency/breadth metrics + tooltips |
 | Audit trail | Renders `auditTrail` entries with JSONL provenance links |
 | Extra fields | Pipeline-only keys (excludes auditTrail duplicate) |
-| Contradictions | `ContradictionPanel.tsx` with keep primary / keep rival / defer actions |
+| Contradictions | `ContradictionPanel.tsx` with keep primary / keep rival / custom resolution actions |
 
 ## Screen 3: Eval metrics embed (Day 8 — shipped)
 
@@ -142,7 +142,7 @@ Run: `uv run pytest frontend/tests/ -q`. Sync JSON: `python scripts/export-mock-
 ## Design notes
 
 - React + CSS modules / index.css — custom layout and branding
-- Keyboard: Tab to selection controls; `aria-label` on promote/reject/inspect/defer
+- Keyboard: Tab to selection controls; `aria-label` on promote/reject/inspect/contradiction controls
 - Deploy: `frontend-react/render.yaml` — see [RENDER_DEPLOY.md](RENDER_DEPLOY.md)
 
 ## Remaining (Days 9–10)

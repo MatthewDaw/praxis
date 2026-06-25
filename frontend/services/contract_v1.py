@@ -16,13 +16,13 @@ CONTRACT_VERSION = "1"
 CONTRACT_HEADER = "X-Praxis-Contract"
 ORG_HEADER = "X-Praxis-Org"
 
-# UI / mock resolution labels → API enum (contradiction pair: primary = keep_a side).
-_RESOLUTION_TO_API: dict[str, str] = {
-    "keep_primary": "keep_a",
-    "keep_rival": "keep_b",
-    "keep_a": "keep_a",
-    "keep_b": "keep_b",
-}
+# H11: a contradiction cluster is settled by a single ``keep`` primitive —
+# "all" (every member holds: a dismissed false positive), "none" (reject all), or
+# a list of fact ids to keep (reject the rest). This subsumes keep-both,
+# reject-all, and pick-a-winner; ``customText`` (replace the cluster with one
+# reconciled fact) stays the only other shape.
+KEEP_ALL = "all"
+KEEP_NONE = "none"
 
 
 def contract_version() -> str:
@@ -62,22 +62,26 @@ def build_promote_body_implicit() -> dict[str, Any]:
     return {}
 
 
-def normalize_resolution(resolution: str) -> str:
-    """Map UI/mock labels to API resolution enum."""
-    mapped = _RESOLUTION_TO_API.get(resolution)
-    if mapped is None:
-        raise ValueError(
-            f"Unsupported resolution {resolution!r}; expected one of "
-            f"{sorted(_RESOLUTION_TO_API)}"
-        )
-    return mapped
+def build_resolve_body(
+    *, keep: str | list[str] | None = None, custom_text: str | None = None
+) -> dict[str, Any]:
+    """Body for ``POST /contradictions/{id}/resolve``.
 
-
-def build_resolve_body(*, resolution: str, keep_id: str) -> dict[str, str]:
-    return {
-        "resolution": normalize_resolution(resolution),
-        "keepId": keep_id,
-    }
+    Pass ``keep`` ("all" | "none" | list of ids to keep) or ``custom_text`` (a
+    reconciled fact that replaces the whole cluster).
+    """
+    if custom_text and custom_text.strip():
+        return {"customText": custom_text}
+    if isinstance(keep, str):
+        if keep not in (KEEP_ALL, KEEP_NONE):
+            raise ValueError(f"keep string must be {KEEP_ALL!r} or {KEEP_NONE!r}")
+        return {"keep": keep}
+    if isinstance(keep, (list, tuple)):
+        ids = [str(k) for k in keep]
+        if not ids:
+            raise ValueError("keep list must name at least one fact id (or use 'none')")
+        return {"keep": ids}
+    raise ValueError("keep ('all'/'none'/[ids]) or custom_text is required")
 
 
 def build_reject_body(*, reason: str | None = None) -> dict[str, str]:

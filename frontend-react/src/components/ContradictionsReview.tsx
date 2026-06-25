@@ -130,22 +130,16 @@ interface ContradictionsReviewProps {
   ) => Promise<void>;
   /** Resolve with a brand-new, user-authored answer (neither side). */
   onResolveCustom?: (contradictionId: string, customText: string) => Promise<void>;
-  onDefer: (primaryTitle: string, rivalTitle: string) => void;
 }
 
 export function ContradictionsReview({
   clusters,
   onResolve,
   onResolveCustom,
-  onDefer,
 }: ContradictionsReviewProps) {
   const [pending, setPending] = useState<string | null>(null);
   // Per-cluster draft text for the "write your own resolution" box.
   const [customDrafts, setCustomDrafts] = useState<Record<string, string>>({});
-  // Deferred cluster ids live in the tab itself: deferring moves a cluster into
-  // the Deferred section (no decision made, nothing persisted server-side) and
-  // restoring moves it straight back into the review queue.
-  const [deferred, setDeferred] = useState<Set<string>>(new Set());
 
   if (clusters.length === 0) {
     return (
@@ -154,21 +148,6 @@ export function ContradictionsReview({
       </p>
     );
   }
-
-  const activeClusters = clusters.filter((c) => !deferred.has(c.id));
-  const deferredClusters = clusters.filter((c) => deferred.has(c.id));
-
-  const defer = (cluster: ContradictionCluster) => {
-    setDeferred((prev) => new Set(prev).add(cluster.id));
-    const [first, second] = cluster.members;
-    onDefer(first?.title ?? "", second?.title ?? "");
-  };
-  const restore = (clusterId: string) =>
-    setDeferred((prev) => {
-      const next = new Set(prev);
-      next.delete(clusterId);
-      return next;
-    });
 
   /**
    * Keep one member of the cluster: resolve only the pairs that include the kept
@@ -277,17 +256,6 @@ export function ContradictionsReview({
             </div>
           </div>
         )}
-        <div className="action-buttons defer-row">
-          <button
-            type="button"
-            className="btn ghost"
-            disabled={busy}
-            onClick={() => defer(cluster)}
-            title="Move this contradiction to the Deferred list to decide later"
-          >
-            Defer — decide later
-          </button>
-        </div>
       </div>
     );
   };
@@ -295,35 +263,10 @@ export function ContradictionsReview({
   return (
     <div className="contradiction-review">
       <p className="muted">
-        {activeClusters.length} contradiction{activeClusters.length === 1 ? "" : "s"} awaiting
-        review. Keep one fact per slot or defer to decide later.
+        {clusters.length} contradiction{clusters.length === 1 ? "" : "s"} awaiting
+        review. Keep one fact per slot or resolve with your own answer.
       </p>
-      {activeClusters.length === 0 ? (
-        <p className="muted">All contradictions deferred — restore one below to review it.</p>
-      ) : (
-        activeClusters.map(renderCluster)
-      )}
-
-      {deferredClusters.length > 0 && (
-        <div className="deferred-section">
-          <h3 className="deferred-heading">Deferred ({deferredClusters.length})</h3>
-          {deferredClusters.map((c) => (
-            <div key={c.id} className="deferred-row">
-              <span className="deferred-titles">
-                {c.members.map((m) => m.title).join(" · ")}
-              </span>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => restore(c.id)}
-                title="Move this contradiction back into the review queue"
-              >
-                Move back to review
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+      {clusters.map(renderCluster)}
     </div>
   );
 }

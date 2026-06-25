@@ -167,7 +167,7 @@ Manual verification checklist:
 - Tab through promote and reject confirmation controls.
 - Tab through contradiction buttons.
 - Verify Enter/Space works on table rows.
-- Verify screen reader text for promote, reject, inspect, and defer controls.
+- Verify screen reader text for promote, reject, inspect, and contradiction controls.
 - Trigger low-confidence promote warning and verify alert announcement.
 - Select a rejected candidate and verify rejected-state helper text is readable.
 
@@ -267,7 +267,7 @@ Live smoke path:
 6. Reject a disposable candidate with a reason.
 7. Verify low-confidence promote warning.
 8. Verify card view behavior matches table behavior.
-9. Verify defer contradiction shows the non-mutating info banner.
+9. Verify contradiction custom resolution replaces the conflicting sides.
 
 Optional Python live smoke, only against a disposable local server:
 

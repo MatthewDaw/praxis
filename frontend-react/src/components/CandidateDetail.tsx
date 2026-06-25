@@ -7,6 +7,7 @@ import { MetadataGrid } from "./MetadataGrid";
 import { PhoenixTraces } from "./PhoenixTraces";
 import { StateBadge } from "./StateBadge";
 import { formatCandidateDate } from "../api/candidateModel";
+import { formatUtility, parseFactTrust, utilityTone } from "../api/contextClient";
 
 interface CandidateDetailProps {
   candidates: Candidate[];
@@ -23,6 +24,13 @@ interface CandidateDetailProps {
     rivalTitle: string,
   ) => Promise<void>;
   onDelete: (id: string) => Promise<void> | void;
+  /**
+   * Record an H1 outcome for a fact (POST /facts/{id}/outcome). Optional: only
+   * wired in live mode; absent in fixture/offline modes.
+   */
+  onRecordOutcome?: (id: string, success: boolean) => Promise<void>;
+  /** Fact id whose outcome write is in flight (disables its controls). */
+  recordingOutcomeId?: string | null;
   /** Current data-source mode — selects Phoenix proxy (live) vs fixture. */
   dataSourceMode?: DataSourceMode;
 }
@@ -37,6 +45,8 @@ export function CandidateDetail({
   refreshingId,
   onResolve,
   onDelete,
+  onRecordOutcome,
+  recordingOutcomeId,
   dataSourceMode = "mock",
 }: CandidateDetailProps) {
   const detailPanelId = "candidate-detail-panel";
@@ -59,6 +69,7 @@ export function CandidateDetail({
   const pipelineExtra = Object.fromEntries(
     Object.entries(candidate.extra).filter(([key]) => key !== "auditTrail"),
   );
+  const trust = parseFactTrust(candidate.extra);
 
   return (
     <section
@@ -119,8 +130,58 @@ export function CandidateDetail({
             label: "Confidence",
             value: <span className="mono">{candidate.confidence.toFixed(2)}</span>,
           },
+          ...(trust
+            ? [
+                {
+                  label: "Utility",
+                  value: (
+                    <span
+                      className={`utility-badge utility-badge--${utilityTone(
+                        trust.utility,
+                        trust.successCount,
+                        trust.failureCount,
+                      )}`}
+                      title="Laplace-smoothed H1 utility"
+                    >
+                      {formatUtility(trust.utility)}
+                      <span className="utility-badge__counts">
+                        {" "}
+                        ({trust.successCount}✓ / {trust.failureCount}✗)
+                      </span>
+                    </span>
+                  ),
+                },
+              ]
+            : []),
         ]}
       />
+
+      {onRecordOutcome ? (
+        <div className="detail-section" aria-labelledby="detail-outcome-heading">
+          <h4 id="detail-outcome-heading">Record outcome (H1 trust)</h4>
+          <p className="muted small">
+            Did acting on this fact succeed? Outcomes feed its Laplace-smoothed utility.
+          </p>
+          <div className="context-hit__actions">
+            <button
+              type="button"
+              className="btn secondary"
+              disabled={recordingOutcomeId === candidate.id}
+              onClick={() => void onRecordOutcome(candidate.id, true)}
+            >
+              Mark worked
+            </button>
+            <button
+              type="button"
+              className="btn secondary"
+              disabled={recordingOutcomeId === candidate.id}
+              onClick={() => void onRecordOutcome(candidate.id, false)}
+            >
+              Mark failed
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <div className="detail-section" aria-labelledby="detail-content-heading">
         <h4 id="detail-content-heading">Content</h4>

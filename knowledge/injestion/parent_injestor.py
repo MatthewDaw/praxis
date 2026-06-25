@@ -29,7 +29,14 @@ class Ingestor(ABC):
         """
 
     def ingest(
-        self, raw_input: str, *, state: str = "proposed", source: str | None = None
+        self,
+        raw_input: str,
+        *,
+        state: str = "proposed",
+        source: str | None = None,
+        scope: str | None = None,
+        category: str | None = None,
+        meta: dict | None = None,
     ) -> str:
         """Synthesize insights from ``raw_input`` and write each to the graph.
 
@@ -43,6 +50,14 @@ class Ingestor(ABC):
 
         ``source`` is threaded both into ``synthesis`` (as distillation context)
         and onto each written fact's provenance.
+
+        ``scope``/``category``/``meta`` are writer-supplied metadata (gap H12)
+        stamped onto every fact this call writes. Precedence is **writer wins,
+        ingestion-derived fills unset**: a writer value overrides whatever
+        ``synthesis`` put on the insight; when the writer leaves a field unset the
+        per-insight value (if any) carries through, and only then does the store's
+        ingestion-derived default apply. ``meta`` is writer-only (insights carry
+        no meta of their own).
         """
         insights = self.synthesis(raw_input, source=source)
         for insight in insights:
@@ -51,8 +66,17 @@ class Ingestor(ABC):
             # is the persistent store's fact provenance; ``tabular`` flags a
             # table-derived write so the deduper's slot-guard engages downstream.
             kwargs: dict = {"state": state}
-            if source is not None:
-                kwargs["source"] = source
+            eff_source = source if source is not None else insight.source
+            if eff_source is not None:
+                kwargs["source"] = eff_source
+            eff_scope = scope if scope is not None else insight.scope
+            if eff_scope is not None:
+                kwargs["scope"] = eff_scope
+            eff_category = category if category is not None else insight.category
+            if eff_category is not None:
+                kwargs["category"] = eff_category
+            if meta:
+                kwargs["meta"] = meta
             if insight.tabular:
                 kwargs["tabular"] = True
             self.graph.write(insight.raw_text, **kwargs)

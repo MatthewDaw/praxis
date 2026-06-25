@@ -142,7 +142,6 @@ See [`fixtures/resolve-request.json`](fixtures/resolve-request.json).
 | Reject | `POST /candidates/{id}/reject` with optional `reason` |
 | Keep this candidate | `resolution: keep_a`, `keepId` = primary id |
 | Keep rival | `resolution: keep_b`, `keepId` = rival id |
-| Defer | No API call (UI-only) |
 
 Implementation:
 

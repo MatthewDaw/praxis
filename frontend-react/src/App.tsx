@@ -4,10 +4,12 @@ import {
   GraphIngestUnavailableError,
   postInsight,
 } from "./api/apiClient";
+import { recordFactOutcome } from "./api/contextClient";
 import { canDeleteCandidate } from "./api/candidateModel";
 import { buildLocalLogSession } from "./api/localLogsProvider";
 import { CandidateCards } from "./components/CandidateCards";
 import { CandidateDetail } from "./components/CandidateDetail";
+import { ContextExplorer } from "./components/ContextExplorer";
 import { GraphDataLoader } from "./components/GraphDataLoader";
 import { SnapshotManager } from "./components/SnapshotManager";
 import { ApiKeysPanel } from "./components/ApiKeysPanel";
@@ -123,12 +125,12 @@ export default function App() {
     null | "snapshots" | "foldin" | "eval" | "apikeys"
   >(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [deferMessage, setDeferMessage] = useState<string | null>(null);
   const [reviewNotice, setReviewNotice] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [refreshingCandidateId, setRefreshingCandidateId] = useState<string | null>(
     null,
   );
+  const [recordingOutcomeId, setRecordingOutcomeId] = useState<string | null>(null);
   const [editorState, setEditorState] = useState<
     { mode: "add" } | { mode: "edit"; candidate: Candidate } | null
   >(null);
@@ -295,6 +297,25 @@ export default function App() {
     }
   }
 
+  async function handleRecordOutcome(id: string, success: boolean) {
+    if (mode !== "live" || !config.apiBaseUrl) {
+      return;
+    }
+    setActionError(null);
+    setRecordingOutcomeId(id);
+    try {
+      await recordFactOutcome(config.apiBaseUrl, id, success, auth);
+      await refreshCandidate(id);
+      setInfoMessage(
+        `Recorded ${success ? "success" : "failure"} outcome for the fact.`,
+      );
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRecordingOutcomeId(null);
+    }
+  }
+
   function showReviewNotice() {
     setReviewNotice(
       "This retirement affects a fact with other contradictions — review it.",
@@ -396,11 +417,6 @@ export default function App() {
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     }
-  }
-
-  function handleDefer(primaryTitle: string, rivalTitle: string) {
-    setDeferMessage(`Deferred contradiction between ${primaryTitle} and ${rivalTitle}.`);
-    window.setTimeout(() => setDeferMessage(null), 5000);
   }
 
   async function handleResolve(
@@ -585,7 +601,6 @@ export default function App() {
       ) : null}
 
       {lastAction ? <div className="success-banner">{lastAction}</div> : null}
-      {deferMessage ? <div className="info-banner">{deferMessage}</div> : null}
       {reviewNotice ? (
         <div className="info-banner" role="status">
           {reviewNotice}
@@ -619,7 +634,7 @@ export default function App() {
         />
       ) : null}
 
-      {viewTab !== "setup" && viewTab !== "contradictions" ? (
+      {viewTab !== "setup" && viewTab !== "contradictions" && viewTab !== "context" ? (
         <FilterBar
           searchQuery={searchQuery}
           stateFilter={stateFilter}
@@ -634,6 +649,16 @@ export default function App() {
 
       {viewTab === "setup" ? (
         <McpSetupGuide />
+      ) : viewTab === "context" ? (
+        mode === "live" && config.apiBaseUrl ? (
+          <ContextExplorer apiBaseUrl={config.apiBaseUrl} auth={auth} />
+        ) : (
+          <p className="muted">
+            Context recall reads the live knowledge graph — switch the data source to a
+            live API to query <code>/context</code>, record outcomes, and trace
+            derivations.
+          </p>
+        )
       ) : graphViewLoading ? (
         <LoadingSkeleton />
       ) : viewTab === "contradictions" ? (
@@ -641,7 +666,6 @@ export default function App() {
           clusters={contradictionClusterList}
           onResolve={handleResolve}
           onResolveCustom={handleResolveCustom}
-          onDefer={handleDefer}
         />
       ) : (
         <ContentSplit
@@ -657,6 +681,10 @@ export default function App() {
               refreshingId={refreshingCandidateId}
               onResolve={handleResolve}
               onDelete={handleDelete}
+              onRecordOutcome={
+                mode === "live" && config.apiBaseUrl ? handleRecordOutcome : undefined
+              }
+              recordingOutcomeId={recordingOutcomeId}
               dataSourceMode={mode}
             />
           }

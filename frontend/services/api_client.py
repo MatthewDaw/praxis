@@ -149,14 +149,27 @@ class ApiDataProvider:
         self,
         contradiction_id: str,
         *,
-        resolution: str,
-        keep_id: str,
+        keep: str | list[str] | None = None,
+        custom_text: str | None = None,
     ) -> Candidate:
+        """Resolve a contradiction cluster (H11).
+
+        ``keep`` is "all" (every member holds), "none" (reject all), or a list of
+        fact ids to keep; or pass ``custom_text`` to replace the cluster with one
+        reconciled fact. Returns the primary surviving candidate.
+        """
         encoded = urllib.parse.quote(contradiction_id, safe="")
-        body = build_resolve_body(resolution=resolution, keep_id=keep_id)
+        body = build_resolve_body(keep=keep, custom_text=custom_text)
         payload = self._request("POST", f"/contradictions/{encoded}/resolve", body=body)
         if not isinstance(payload, dict):
-            raise ValueError("Resolve response must include the kept candidate")
+            raise ValueError("Resolve response must be an object")
+        # keep-resolutions return {"kept", "rejected", "facts"}; customText returns a
+        # single candidate. Surface the most relevant surviving candidate either way.
+        if "facts" in payload:
+            facts = payload.get("kept") or payload.get("facts") or []
+            if not facts:
+                raise ValueError("Resolve response included no facts")
+            return Candidate.from_mapping(facts[0])
         return Candidate.from_mapping(payload)
 
     def list_api_keys(self) -> list[ApiKey]:

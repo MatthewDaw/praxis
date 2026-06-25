@@ -1,0 +1,25 @@
+# H4 red-spec: episodes are stored WHOLE and are append-only/immutable.
+# The store-only lane (proposal §1b) must skip distillation (no atomization), dedup
+# (two decisions on a topic both survive), and contradiction/supersession (a later
+# decision never retires an earlier one; a semantic write is never flagged against an
+# episode). Drives the real Postgres path via the check's own throwaway tenant.
+# RED until record_episode (store-only producer) exists. Needs a DSN (just db-up).
+id: episodic_store_only_immutable
+component: knowledge_graph
+substrate: vector
+embedder: cached
+
+seeded_insight:
+  via_ingestor: []
+  # The check seeds these into its own isolated tenant via record_episode; listed for visibility.
+  direct_to_graph:
+    - "Chose reset-to-0 for the daily habit counter because the PRD was silent and 0 is the safe default."
+    - "Revised the daily counter to carry over streaks because retention testing favored continuity."
+
+deterministic_checks:
+  - name: episode_whole_and_immutable
+    ref: "knowledge.evals.deterministic_checks.graph:episode_stored_whole_and_immutable"
+    params:
+      episode_a: "Chose reset-to-0 for the daily habit counter because the PRD was silent and 0 is the safe default."
+      episode_b: "Revised the daily counter to carry over streaks because retention testing favored continuity."
+      semantic_text: "The daily habit counter resets to 0 at local midnight."

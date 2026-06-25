@@ -24,7 +24,7 @@ class _StubGraph(SearchableGraph):
             for i, (t, s) in enumerate(scored)
         ]
 
-    def search(self, query, *, top_k=10, filters=None, scope=None):
+    def search(self, query, *, top_k=10, filters=None, scope=None, exclude_categories=None):
         return sorted(self._hits, key=lambda h: h.score, reverse=True)[:top_k]
 
     def read(self, context=None):  # KnowledgeGraph contract (unused here)

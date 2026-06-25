@@ -1,0 +1,26 @@
+# H3 (temporal decay) red-spec: a stale, unconfirmed fact must not outrank a fresh
+# one on age alone. The stale fact is written to be MORE query-similar, then backdated
+# ~400 days; the recent fact is the current truth. Retrieval should prefer the recent
+# one. RED today (search ranks by similarity*utility only — no recency term, so the
+# older-but-more-similar fact wins); GREEN once a recency-decay factor folds into
+# ranking. Drives the real Postgres path via the check's own tenant; needs a DSN
+# (just db-up).
+id: recency_decay_stale_loses
+component: knowledge_graph
+substrate: vector
+embedder: cached
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "To fix flaky CI tests, increase the global test timeout."
+    - "Flaky CI is fixed by pinning the random seed and polling for readiness instead of fixed sleeps."
+
+deterministic_checks:
+  - name: recent_outranks_stale
+    ref: "knowledge.evals.deterministic_checks.graph:retrieval_prefers_recent_over_stale"
+    params:
+      query: "How do I fix flaky CI tests?"
+      stale_text: "To fix flaky CI tests, increase the global test timeout."
+      recent_text: "Flaky CI is fixed by pinning the random seed and polling for readiness instead of fixed sleeps."
+      stale_age_days: 400
