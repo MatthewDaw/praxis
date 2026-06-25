@@ -10,10 +10,12 @@ Contract (Praxis HTTP API):
 
   GET  /context?query=<q>&top_k=<n>
       -> {"context": str, "hits": [{"id","text","score","source","scope","category"}]}
-  POST /ingest   {"documents": [{"text": str, "source": str|null}], "state": "active"}
-      -> {"results": [{"id","action"}], "count": int}        (server-side distillation)
-  POST /insights {"insight": str, "scope": str|null, "category": str|null, "source": str|null}
-      -> {"summary","action","id"}
+  POST /ingest   {"documents": [{"text": str, "source": str|null}], "state": "active",
+                  "onConflict": "auto_resolve"|"surface"}
+      -> {"results": [{"id","action","surfaced"}], "count": int}  (server-side distillation)
+  POST /insights {"insight": str, "scope": str|null, "category": str|null, "source": str|null,
+                  "onConflict": "auto_resolve"|"surface"}
+      -> {"summary","action","id","onConflict","contradictionsSurfaced"}
 
 Dependency-light: uses ``httpx`` when available (it is a Praxis dependency), and
 falls back to the stdlib ``urllib`` so the module works when copied into a repo
@@ -100,27 +102,33 @@ class PraxisClient:
         text: str,
         source: str | None = None,
         state: str = "active",
+        on_conflict: str = "auto_resolve",
     ) -> dict[str, Any]:
         """Ingest a single document. Distillation runs server-side.
 
         Returns ``{"results": [{"id","action"}], "count": int}``.
         """
-        return self.ingest_batch([{"text": text, "source": source}], state=state)
+        return self.ingest_batch(
+            [{"text": text, "source": source}], state=state, on_conflict=on_conflict
+        )
 
     def ingest_batch(
         self,
         documents: list[dict[str, Any]],
         state: str = "active",
+        on_conflict: str = "auto_resolve",
     ) -> dict[str, Any]:
         """Ingest multiple documents in one call.
 
         Each document is ``{"text": str, "source": str | None}``. Distillation
-        runs server-side. Returns ``{"results": [...], "count": int}``.
+        runs server-side. ``on_conflict`` is ``"auto_resolve"`` (default; loser
+        rejected) or ``"surface"`` (keep both, raise a pending contradiction).
+        Returns ``{"results": [...], "count": int}``.
         """
         normalized = [
             {"text": doc["text"], "source": doc.get("source")} for doc in documents
         ]
-        body = {"documents": normalized, "state": state}
+        body = {"documents": normalized, "state": state, "onConflict": on_conflict}
         return self._request("POST", "/ingest", body=body)
 
     def add_insight(
@@ -130,16 +138,21 @@ class PraxisClient:
         scope: str | None = None,
         category: str | None = None,
         source: str | None = None,
+        on_conflict: str = "auto_resolve",
     ) -> dict[str, Any]:
         """Add a single explicit insight.
 
-        Returns ``{"summary","action","id"}``.
+        ``on_conflict`` is ``"auto_resolve"`` (default; a conflicting fact is
+        overwritten/rejected) or ``"surface"`` (keep both facts and raise a pending
+        contradiction for human review). Returns ``{"summary","action","id",
+        "onConflict","contradictionsSurfaced"}``.
         """
         body = {
             "insight": insight,
             "scope": scope,
             "category": category,
             "source": source,
+            "onConflict": on_conflict,
         }
         return self._request("POST", "/insights", body=body)
 

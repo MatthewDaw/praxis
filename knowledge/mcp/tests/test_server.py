@@ -9,6 +9,7 @@ X-Praxis-Org and surface the backend payload.
 import json
 
 import httpx
+import pytest
 
 from knowledge.mcp import identity, server
 
@@ -64,6 +65,7 @@ def test_add_insight_posts_with_auth_and_returns_summary(monkeypatch):
     assert captured["url"] == "http://api.test/insights"
     assert captured["json"] == {
         "insight": "use uv, not pip",
+        "onConflict": "auto_resolve",
         "scope": "global",
         "category": "constraint",
     }
@@ -113,12 +115,65 @@ def test_ingest_posts_documents_with_auth(monkeypatch):
     assert captured["json"] == {
         "documents": [{"text": "We deploy on Fridays.", "source": "handbook"}],
         "state": "active",
+        "onConflict": "auto_resolve",
     }
     assert captured["headers"]["Authorization"] == "Bearer id-tok"
     assert captured["headers"]["X-Praxis-Org"] == "acme"
     data = _extract_json(out)
     assert data["count"] == 1
     assert data["results"][0]["action"] == "ingested"
+
+
+def test_add_insight_surface_mode_plumbs_on_conflict(monkeypatch):
+    _patch_identity(monkeypatch)
+    captured = {}
+
+    def fake_post(url, json, headers):
+        captured["json"] = json
+        return _Resp(
+            {
+                "summary": "surfaced insight",
+                "action": "surfaced",
+                "id": "n1",
+                "onConflict": "surface",
+                "contradictionsSurfaced": 1,
+            }
+        )
+
+    monkeypatch.setattr(server.httpx, "post", fake_post)
+
+    out = server.praxis_add_insight("rate limit is 500 rps", on_conflict="surface")
+
+    assert captured["json"]["onConflict"] == "surface"
+    # The human line nudges the caller toward review when a contradiction is raised.
+    assert "pending contradiction" in out
+    data = _extract_json(out)
+    assert data["onConflict"] == "surface"
+    assert data["contradictionsSurfaced"] == 1
+
+
+def test_add_insight_rejects_bad_on_conflict(monkeypatch):
+    _patch_identity(monkeypatch)
+    # Should never hit the network on a bad arg.
+    monkeypatch.setattr(
+        server.httpx, "post", lambda *a, **k: pytest.fail("must not POST on invalid on_conflict")
+    )
+    out = server.praxis_add_insight("x", on_conflict="bogus")
+    assert "auto_resolve" in out and "surface" in out
+
+
+def test_ingest_surface_mode_plumbs_on_conflict(monkeypatch):
+    _patch_identity(monkeypatch)
+    captured = {}
+
+    def fake_post(url, json, headers):
+        captured["json"] = json
+        return _Resp({"results": [{"id": "f1", "action": "ingested", "surfaced": 1}], "count": 1})
+
+    monkeypatch.setattr(server.httpx, "post", fake_post)
+
+    server.praxis_ingest("doc text", on_conflict="surface")
+    assert captured["json"]["onConflict"] == "surface"
 
 
 def test_get_contradictions_formats_pairs(monkeypatch):

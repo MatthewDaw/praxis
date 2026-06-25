@@ -958,32 +958,56 @@ def create_app(conn: Any | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         """Ingest a fully-approved insight into the live ``facts`` store.
 
-        Non-destructive resolution: a contradicting add lands as a fresh ``active``
-        fact and each conflicting fact is rejected (its text preserved) and linked
-        back via a ``contradicted_by`` edge, rather than being overwritten in place.
+        ``onConflict`` selects how a detected contradiction is handled:
+
+        * ``"auto_resolve"`` (default, back-compat) — non-destructive resolution:
+          the contradicting add lands as a fresh ``active`` fact and each conflicting
+          fact is rejected (its text preserved) and linked via a ``contradicted_by``
+          edge. The newest approved truth silently wins.
+        * ``"surface"`` — retain BOTH facts and create a *pending* contradiction:
+          the conflict is flagged (a ``contradiction`` edge) rather than resolved, so
+          it shows up in ``GET /contradictions`` for a human/agent to adjudicate with
+          ``POST /contradictions/{id}/resolve``. Neither side is rejected; FR-005 only
+          demotes the newcomer to ``proposed`` so the pair is never both ``active``.
+
         The in-chat confirmation is the human gate, so the insight enters ``active``
-        at full credibility.
+        at full credibility (subject to the FR-005 demotion under ``surface``).
         """
         insight = (body.get("insight") or "").strip()
         if not insight:
             raise HTTPException(status_code=400, detail="insight required")
-        graph = PostgresVectorGraph(
-            conn,
-            org,
-            principal.sub,
-            policy=[Redactor(), Deduper(), ConflictOverwriter(llm=OpenRouterLlm())],
+        on_conflict = str(body.get("onConflict") or "auto_resolve").strip().lower()
+        if on_conflict not in ("auto_resolve", "surface"):
+            raise HTTPException(
+                status_code=400,
+                detail="onConflict must be 'auto_resolve' or 'surface'",
+            )
+        # auto_resolve: ConflictOverwriter turns a confirmed contradiction into a
+        # force-overwrite (loser rejected). surface: the structural+semantic detector
+        # pipeline only *flags* the clash, so the store persists a pending
+        # contradiction edge instead of rejecting a side.
+        policy = (
+            default_write_policy()
+            if on_conflict == "surface"
+            else [Redactor(), Deduper(), ConflictOverwriter(llm=OpenRouterLlm())]
         )
+        graph = PostgresVectorGraph(conn, org, principal.sub, policy=policy)
         _, ingestor, _ = build_trio(graph=graph, llm=None)
         before = graph.search(insight, top_k=1, state=None)
+        before_contradictions = set(graph.all_edges("contradiction"))
         ingestor.ingest(insight, state="active")  # human-gated -> live knowledge
         after = graph.search(insight, top_k=1, state=None)
+        new_contradictions = set(graph.all_edges("contradiction")) - before_contradictions
         prior = before[0].fact if before else None
         top = after[0].fact if after else None
-        # Non-destructive resolution: an approved contradiction is always a fresh
-        # add (the new fact gets a new id), so a same-id top means a dedup merge
-        # bumped the existing fact; otherwise the insight was added (possibly
-        # rejecting + linking conflicting facts).
-        if prior is not None and top is not None and prior.id == top.id:
+        # surface mode that flagged a clash: report it as a pending contradiction so
+        # the caller knows to go adjudicate it (the fact still landed, possibly
+        # demoted to proposed by FR-005).
+        if new_contradictions:
+            action = "surfaced"
+        elif prior is not None and top is not None and prior.id == top.id:
+            # Same-id top means a dedup merge bumped the existing fact; otherwise the
+            # insight was added (auto_resolve may have rejected + linked conflicts).
             action = "merged"
         else:
             action = "added"
@@ -991,6 +1015,8 @@ def create_app(conn: Any | None = None) -> FastAPI:
             "summary": f"{action} insight",
             "action": action,
             "id": top.id if top is not None else None,
+            "onConflict": on_conflict,
+            "contradictionsSurfaced": len(new_contradictions),
         }
 
     @app.post("/ingest")
@@ -1002,10 +1028,15 @@ def create_app(conn: Any | None = None) -> FastAPI:
         """Batch-ingest raw documents through the tenant's distillation pipeline.
 
         Body: ``{"documents": [{"text": str, "source": str|null}],
-        "state": "active"|"proposed"}`` (state defaults to "active"). Each
+        "state": "active"|"proposed", "onConflict": "auto_resolve"|"surface"}``
+        (state defaults to "active", onConflict to "auto_resolve"). Each
         document is run through the same ingestor that distills raw text into
         facts (``build_trio`` over the tenant's live graph), at the given state —
         this is the pipeline path, NOT the no-pipeline ``/candidates`` insert.
+
+        ``onConflict`` mirrors ``POST /insights``: ``"auto_resolve"`` (default)
+        rejects the losing side of a detected clash; ``"surface"`` keeps both facts
+        and records a *pending* contradiction (visible in ``GET /contradictions``).
 
         Returns ``{"results": [{"id": str|null, "action": str}], "count": int}``;
         one result per input document. ``id`` is the top matching fact after that
@@ -1017,6 +1048,12 @@ def create_app(conn: Any | None = None) -> FastAPI:
         state = str(body.get("state") or "active").strip().lower()
         if state not in ("active", "proposed"):
             raise HTTPException(status_code=400, detail="state must be 'active' or 'proposed'")
+        on_conflict = str(body.get("onConflict") or "auto_resolve").strip().lower()
+        if on_conflict not in ("auto_resolve", "surface"):
+            raise HTTPException(
+                status_code=400,
+                detail="onConflict must be 'auto_resolve' or 'surface'",
+            )
 
         from knowledge.injestion.dump_ingest import ingest_dump
 
@@ -1042,7 +1079,12 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 raise HTTPException(status_code=400, detail="each document needs non-empty text")
             source = doc.get("source")
             summary = ingest_dump(
-                graph, ingest_llm, text, state=state, source=str(source) if source else None
+                graph,
+                ingest_llm,
+                text,
+                state=state,
+                source=str(source) if source else None,
+                on_conflict=on_conflict,
             )
             # Best-effort provenance back to the caller: the top fact the just-
             # ingested text now matches (ids are per-fact, a doc distills to many).
@@ -1054,6 +1096,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 "facts": summary["facts"],
                 "merged": summary["merged"],
                 "conflicts": summary["conflicts"],
+                "surfaced": summary.get("surfaced", 0),
             })
         return {"results": results, "count": len(results)}
 

@@ -502,6 +502,74 @@ def test_b4_real_conflict_is_detected_and_resolved():
         _purge(conn, org, user)
 
 
+def test_b4b_real_conflict_surface_mode_keeps_both_pending():
+    """The SAME $31,500 -> $32,200 MFJ clash on the /ingest path with
+    ``on_conflict="surface"`` is NOT auto-resolved: both facts are kept (neither
+    rejected), the edge is a *pending* ``contradiction`` (not ``contradicted_by``),
+    and FR-005 holds (the incumbent stays active, the newcomer is demoted to
+    proposed). A human/agent then settles it via ``FactsCandidates.resolve``.
+
+    Reuses test_b4's recorded LLM fixtures: surface mode changes only the
+    (non-LLM) resolution action, so the distill/dedup/slot prompts replay identically.
+    """
+    _require_local_or_skip()
+    from knowledge.injestion.dump_ingest import ingest_dump
+    from knowledge.serve.facts_candidates import FactsCandidates
+
+    conn, org, user = _new_tenant()
+    graph = _dedup_only_graph(conn, org, user)
+    llm = _cassette_llm()
+    try:
+        _purge(conn, org, user)
+        ingest_dump(
+            graph,
+            llm,
+            "TY2025 standard deduction for Married filing jointly is $31,500 (Form 1040 line 12).",
+            state="active",
+            source="form_1040_ty2025:std_deduction_mfj",
+        )
+        summary = ingest_dump(
+            graph,
+            llm,
+            CONFLICTING_CORRECTION["text"],
+            state="active",
+            source=CONFLICTING_CORRECTION["source"],
+            on_conflict="surface",
+        )
+
+        # Surfaced, not auto-resolved: a PENDING contradiction edge, no contradicted_by.
+        assert summary["surfaced"] == 1
+        assert summary["conflicts"] == 0
+        assert list(graph.all_edges("contradiction")), "a pending contradiction edge should exist"
+        assert not list(graph.all_edges("contradicted_by")), "surface mode must not auto-resolve"
+
+        # Both facts are kept (neither rejected); FR-005: incumbent active, newcomer proposed.
+        all_texts = [f.text for f in graph.all_facts(state=None)]
+        assert any("31,500" in t for t in all_texts) and any("32,200" in t for t in all_texts)
+        rejected = [f.text for f in graph.all_facts(state="rejected")]
+        assert not rejected, f"surface mode must not reject either side, rejected: {rejected!r}"
+        active = _active_texts(graph)
+        assert any("31,500" in t for t in active), "the incumbent should stay active"
+        assert not any("32,200" in t for t in active), "the newcomer should be demoted to proposed"
+        assert any(
+            "32,200" in f.text for f in graph.all_facts(state="proposed")
+        ), "the newcomer should be held as proposed for review"
+
+        # The contradiction is surfaced for adjudication and then settles cleanly:
+        # keep the corrected $32,200, retire the stale $31,500.
+        facade = FactsCandidates(conn, org, user, embedder=_cached_embedder())
+        clusters = facade.contradictions()
+        assert clusters, "the pending contradiction should appear in the contradictions view"
+        pair = clusters[0]["pairs"][0]
+        keep = next(s["id"] for s in (pair["a"], pair["b"]) if "32,200" in s["content"])
+        facade.resolve(pair["id"], keep)
+        resolved_active = _active_texts(graph)
+        assert any("32,200" in t for t in resolved_active)
+        assert not any("31,500" in t for t in resolved_active)
+    finally:
+        _purge(conn, org, user)
+
+
 # --------------------------------------------------------------------------- #
 # Behavior 5 — bounded LLM call volume: O(documents), not O(facts x neighbors).
 # --------------------------------------------------------------------------- #

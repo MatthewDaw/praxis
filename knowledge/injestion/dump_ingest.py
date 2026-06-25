@@ -261,14 +261,26 @@ def ingest_dump(
     state: str = "active",
     source: str | None = None,
     external_top_k: int = 5,
+    on_conflict: str = "auto_resolve",
 ) -> dict[str, Any]:
     """Ingest one document: distill (granular claims), write, then resolve overlaps —
-    same-slot+same-value -> merge (dedup); same-slot+different-value -> conflict
-    (reject loser + contradicted_by edge). Returns a per-stage summary.
+    same-slot+same-value -> merge (dedup); same-slot+different-value -> conflict.
+
+    ``on_conflict`` controls what a same-slot, different-value clash does:
+
+    * ``"auto_resolve"`` (default) — reject the losing fact and link it to the
+      winner with a ``contradicted_by`` edge (newest approved truth wins).
+    * ``"surface"`` — keep BOTH facts and record a *pending* ``contradiction`` edge
+      so the clash shows up in ``GET /contradictions`` for human adjudication. The
+      later (losing) side is demoted to ``proposed`` so the pair is never both
+      ``active`` (FR-005); neither side is rejected.
+
+    Returns a per-stage summary (``surfaced`` counts pending contradictions raised).
     """
     raw_input = (raw_input or "").strip()
     if not raw_input:
-        return {"facts": 0, "merged": 0, "conflicts": 0, "rejected": []}
+        return {"facts": 0, "merged": 0, "conflicts": 0, "surfaced": 0, "rejected": []}
+    surface = on_conflict == "surface"
 
     distilled = _distill(llm, raw_input, source)
     facts = [d["text"] for d in distilled]
@@ -300,11 +312,25 @@ def ingest_dump(
         removed.add(drop_id)
         merged += 1
 
+    surfaced = 0
+
     def _conflict(win_id, lose_id):
         graph.set_state(lose_id, "rejected")
         graph.add_edge(win_id, lose_id, "contradicted_by")
         rejected.append(lose_id)
         removed.add(lose_id)
+
+    def _surface(active_id, demote_id):
+        # Surface mode: keep both facts and record a *pending* contradiction for
+        # human adjudication. The active incumbent keeps its place; the other side
+        # is demoted to proposed so the pair is never both active (FR-005). Nothing
+        # is rejected. ``demote_id`` is dropped from further in-dump pairing only.
+        nonlocal surfaced
+        graph.add_edge(active_id, demote_id, "contradiction")
+        if state == "active":
+            graph.set_state(demote_id, "proposed")
+        surfaced += 1
+        removed.add(demote_id)
 
     # 1) Internal (within-dump) same-slot pairs — phrasing is consistent within one
     #    distillation call, so match structurally on normalized (subject, attribute).
@@ -321,6 +347,8 @@ def ingest_dump(
                 continue
             if _same_value(claims[a]["value"], claims[j]["value"]):
                 _merge(new_ids[a], facts[a], new_ids[j], facts[j])
+            elif surface:
+                _surface(new_ids[a], new_ids[j])  # keep earlier active, demote later
             else:
                 _conflict(new_ids[a], new_ids[j])  # keep earlier, reject later
 
@@ -364,8 +392,16 @@ def ingest_dump(
             continue
         if _same_value(claims[ni]["value"], ec.get("value", "")):
             _merge(ei, et, nf, facts[ni])  # same slot + same value the dedup pass missed
+        elif surface:
+            _surface(ei, nf)  # incumbent stays active; demote the newcomer, keep both
         else:
             _conflict(nf, ei)  # newest wins: reject the established fact
             conflicts += 1
 
-    return {"facts": len(facts), "merged": merged, "conflicts": conflicts, "rejected": rejected}
+    return {
+        "facts": len(facts),
+        "merged": merged,
+        "conflicts": conflicts,
+        "surfaced": surfaced,
+        "rejected": rejected,
+    }

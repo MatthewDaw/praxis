@@ -61,6 +61,40 @@
 "pole": ""
 }
 },
+"22e7ee94c80670792a9c0f851070ae9a0841644ebdbe1dba1d3e69de31718850": {
+"claims": [
+{
+"attribute": "default",
+"functional": true,
+"subject": "rate limit",
+"value": "100"
+},
+{
+"attribute": "per second",
+"functional": true,
+"subject": "requests",
+"value": "1"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
+"22f0e44349dce603df72c5c4913a856b3ee4307875a55bc982a30537a517f84c": {
+"claims": [
+{
+"attribute": "default",
+"functional": true,
+"subject": "rate limit",
+"value": "500"
+}
+],
+"stance": {
+"axis": "none",
+"pole": ""
+}
+},
 "2611e65115d8b577b428c84aa731ea7c9853801d1954fc8549f9b48f48a9770c": {
 "claims": [
 {
