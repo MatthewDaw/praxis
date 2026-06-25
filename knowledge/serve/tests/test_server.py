@@ -217,6 +217,58 @@ def test_insight_then_context_round_trips(client):
     assert "uv" in ctx["context"]
 
 
+def test_insights_rejects_unknown_on_conflict(client):
+    res = client.post(
+        "/insights", json={"insight": "anything", "onConflict": "bogus"}
+    )
+    assert res.status_code == 400
+    assert "onConflict" in res.json()["detail"]
+
+
+def test_insights_surface_mode_keeps_both_and_surfaces_contradiction(client):
+    # auto_resolve (default) silently overwrites; surface keeps both facts and raises
+    # a PENDING contradiction for human adjudication (the factory plan-hardening loop).
+    first = client.post(
+        "/insights",
+        json={"insight": "The factory's default rate limit is 100 requests per second."},
+    )
+    assert first.status_code == 200, first.text
+
+    second = client.post(
+        "/insights",
+        json={
+            "insight": "The factory's default rate limit is 500 requests per second.",
+            "onConflict": "surface",
+        },
+    )
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["onConflict"] == "surface"
+    assert body["contradictionsSurfaced"] >= 1
+    assert body["action"] == "surfaced"
+
+    # The clash shows up for review (vs auto_resolve, where it would be empty)...
+    clusters = client.get("/contradictions").json()
+    assert clusters, "surface mode should leave a pending contradiction to adjudicate"
+
+    # ...and neither side was rejected (both kept; FR-005 only demotes to proposed).
+    states = {
+        c["content"]: c["state"]
+        for c in client.get("/candidates").json()
+        if "rate limit" in c["content"]
+    }
+    assert states, "both rate-limit facts should still exist"
+    assert "rejected" not in states.values(), f"surface must not reject a side: {states}"
+
+    # resolve_contradiction then settles it: keep the 500 rps side, retire 100 rps.
+    pair = clusters[0]["pairs"][0]
+    keep = next(s["id"] for s in (pair["a"], pair["b"]) if "500" in s["content"])
+    res = client.post(f"/contradictions/{pair['id']}/resolve", json={"keepId": keep})
+    assert res.status_code == 200, res.text
+    ctx = client.get("/context", params={"query": "rate limit"}).json()
+    assert "500" in ctx["context"] and "100 requests per second" not in ctx["context"]
+
+
 def test_context_hits_include_provenance_keys(client):
     client.post("/insights", json={"insight": "use uv, not pip, in this repo"})
     ctx = client.get("/context", params={"query": "deps install tool"}).json()

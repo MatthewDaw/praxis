@@ -1,0 +1,49 @@
+# SURFACE-mode contradiction (the agent-factory plan-hardening case). Two facts state
+# the SAME functional slot (the factory's default rate limit) with incompatible values
+# (100 rps vs 500 rps), so they cannot both hold. The factory wants such a clash
+# SURFACED for a human/agent to adjudicate, not silently auto-resolved to the newest
+# write. This case asserts the surface semantics at the graph layer: the contradiction
+# is flagged (a pending contradiction the dashboard/MCP get_contradictions reads), and
+# BOTH facts are kept verbatim (neither rejected) — FR-005 only keeps at most one
+# active, but the loser is held, not discarded.
+#
+# This mirrors subtle_contradiction_utc_local but on a plain numeric-value clash. The
+# end-to-end on_conflict="surface" write path (POST /insights, praxis_add_insight) is
+# asserted in pytest: knowledge/serve/tests/test_server.py
+#   ::test_insights_surface_mode_keeps_both_and_surfaces_contradiction
+# and the /ingest path in knowledge/injestion/tests/test_tax_ingestion_eval.py
+#   ::test_b4b_real_conflict_surface_mode_keeps_both_pending.
+# Component eval (no agent); vector substrate exercises the real write policy; replays
+# from the committed conflict cassette + embedding fixture offline (no live calls).
+id: contradiction_surface_rate_limit
+component: knowledge_graph
+substrate: vector
+embedder: cached  # real vectors so the recall gate surfaces the related candidate
+conflict_model: openai/gpt-4o-mini  # ConflictJudge decides contradicts; replayed from the committed cassette
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "The factory's default rate limit is 100 requests per second."
+    - "The factory's default rate limit is 500 requests per second."
+
+deterministic_checks:
+  # Surfaced for adjudication: the clash is flagged rather than silently resolved.
+  - name: contradiction_flagged
+    ref: "knowledge.evals.deterministic_checks.text:regex_matches"
+    params:
+      pattern: "(?i)CONTRADICTION"
+  # Keep-both: neither value is discarded; both rules survive verbatim.
+  - name: both_limits_kept
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "The factory's default rate limit is 100 requests per second."
+        - "The factory's default rate limit is 500 requests per second."
+  # FR-005: at most one of the contradictory pair is active (the other is held).
+  - name: at_most_one_active
+    ref: "knowledge.evals.deterministic_checks.graph:at_most_one_active"
+    params:
+      texts:
+        - "The factory's default rate limit is 100 requests per second."
+        - "The factory's default rate limit is 500 requests per second."

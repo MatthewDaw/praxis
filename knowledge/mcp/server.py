@@ -119,19 +119,27 @@ def praxis_add_insight(
     scope: str | None = None,
     category: str | None = None,
     source: str | None = None,
+    on_conflict: str = "auto_resolve",
 ) -> str:
     """Store a durable insight in the user's knowledge graph.
 
     Before calling, push the user to state a single specific, self-contained
     insight (one that stands on its own without surrounding chat context), and
     confirm the *exact* wording with them first — that confirmation is the human
-    approval gate. The insight is stored fully approved (full credibility) and
-    overwrites any conflicting fact already on record, so only state what the
-    user has explicitly approved.
+    approval gate. The insight is stored fully approved (full credibility).
+
+    ``on_conflict`` controls what happens when the insight contradicts an existing
+    fact: ``"auto_resolve"`` (default) overwrites the conflicting fact (newest wins,
+    loser rejected); ``"surface"`` keeps BOTH facts and raises a *pending*
+    contradiction for human review (see ``praxis_get_contradictions`` /
+    ``praxis_resolve_contradiction``) instead of silently deciding. Use ``"surface"``
+    when a human should adjudicate conflicts rather than the newest write winning.
     """
     if (hint := _not_ready()) is not None:
         return hint
-    body: dict[str, object] = {"insight": insight}
+    if on_conflict not in ("auto_resolve", "surface"):
+        return "on_conflict must be 'auto_resolve' or 'surface'."
+    body: dict[str, object] = {"insight": insight, "onConflict": on_conflict}
     if scope is not None:
         body["scope"] = scope
     if category is not None:
@@ -148,12 +156,21 @@ def praxis_add_insight(
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
     payload = resp.json()
+    summary = payload.get("summary", "") or "insight stored"
+    surfaced = payload.get("contradictionsSurfaced") or 0
+    if surfaced:
+        summary = (
+            f"{summary} — {surfaced} pending contradiction(s) raised; "
+            "review with praxis_get_contradictions"
+        )
     return _structured(
-        payload.get("summary", "") or "insight stored",
+        summary,
         {
             "summary": payload.get("summary", ""),
             "action": payload.get("action"),
             "id": payload.get("id"),
+            "onConflict": payload.get("onConflict"),
+            "contradictionsSurfaced": surfaced,
         },
     )
 
@@ -163,20 +180,28 @@ def praxis_ingest(
     text: str,
     source: str | None = None,
     state: str = "active",
+    on_conflict: str = "auto_resolve",
 ) -> str:
     """Ingest a raw document through Praxis's distillation pipeline.
 
     Unlike ``praxis_add_insight`` (one already-distilled fact), this hands a raw
     document (a note, a transcript, a file's contents) to the backend, which
     distills it into atomic facts, dedupes, and reconciles conflicts. ``state``
-    is "active" (live knowledge) or "proposed" (staged for review). Returns a
-    structured JSON block with per-document results (``id``/``action``).
+    is "active" (live knowledge) or "proposed" (staged for review).
+
+    ``on_conflict`` mirrors ``praxis_add_insight``: ``"auto_resolve"`` (default)
+    rejects the losing side of a detected clash; ``"surface"`` keeps both facts and
+    raises a *pending* contradiction for human review. Returns a structured JSON
+    block with per-document results (``id``/``action``/``surfaced``).
     """
     if (hint := _not_ready()) is not None:
         return hint
+    if on_conflict not in ("auto_resolve", "surface"):
+        return "on_conflict must be 'auto_resolve' or 'surface'."
     body: dict[str, object] = {
         "documents": [{"text": text, "source": source}],
         "state": state,
+        "onConflict": on_conflict,
     }
     try:
         resp = httpx.post(
