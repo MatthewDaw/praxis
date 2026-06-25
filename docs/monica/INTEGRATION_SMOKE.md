@@ -1,235 +1,232 @@
-# Integration smoke — Dashboard pillar (Monica)
+# Integration Smoke - Monica Dashboard & Human Gate
 
-Self-serve validation when Matthew's candidate API and Dominic's eval metrics are available. No pairing call required — follow [wire-up.md](../integration/wire-up.md).
+Updated: 2026-06-25
 
-Live smoke assumes Matthew's API is backed by **PostgreSQL** (Matthew owns `PRAXIS_DB_URL` / Secrets Manager and schema — see [RDS_KG_DEPLOY.md](RDS_KG_DEPLOY.md)); dashboard env vars remain API-only (`PRAXIS_API_BASE_URL`, not a DB connection string).
+Plan alignment: [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) names Monica as **Dashboard & Human Gate Lead**. Monica's deliverable is the React human-gate dashboard in `frontend-react/` plus the Python contract layer in `frontend/`: approval workflow, provenance display, confidence review, contradiction resolution UI, and dashboard evidence for the team demo.
 
-**Status:** Live candidate API at `knowledge/serve` (mock-seeded store + `/metrics` stub). React client aligned on Matthew API v1 (reject → decayed, promote 400 conflict UX). **Local smoke (2026-06-19):** `test_live_api_smoke.py` list ✅ against `127.0.0.1:8000`; promote/reject/resolve skipped when store has no spare proposed/contradiction rows. Render dual-service checklist in §8 — tick after deploy.
+Team boundaries from the plan:
 
-**Demo client:** React (`frontend-react/`) — static Render deploy, custom branding, a11y labels.
+| Owner | Pillar | Smoke responsibility |
+|---|---|---|
+| Matthew | ML & Knowledge Pipeline | Provides candidate API data, ingestion/distillation output, Knowledge Graph persistence, and provenance-bearing candidates. |
+| Monica | Dashboard & Human Gate | Verifies the dashboard can review candidates, show evidence, promote human-approved knowledge, reject bad candidates, and resolve contradictions. |
+| Dominic | Architecture, Eval & Integration | Provides eval/integration proof, replay metrics, hook/deploy architecture, and compounding-gain evidence. |
 
-**Contract layer:** Python (`frontend/`) — typed models, mock fixtures, pytest, and live API smoke tests (no UI runtime).
+Monica's smoke should prove the dashboard gate works. It should not become a backend, database, ingestion, or eval-harness ownership checklist.
 
----
+## Current Repo Assumptions
 
-## Prerequisites
+- Current dashboard lifecycle is `proposed -> active` plus `rejected`.
+- `frontend-react/src/config/dataSource.ts` defaults local startup to Local Postgres at `http://localhost:8000`; mock fixtures exist, but the selected data source must be confirmed before rehearsal.
+- `knowledge/serve/app.py` currently exposes `/candidates`, `/contradictions`, `/graph`, `/snapshots`, `/org/sources`, `/fold-in`, `/apikeys`, `/evals/*`, `/insights`, `/ingest`, and `/context`.
+- Live server routes require Cognito/API-key auth unless local dev auth is bypassed with `PRAXIS_AUTH_DISABLED=1` on the server and `VITE_PRAXIS_AUTH_DISABLED=1` in React.
+- Live mutation smoke must use disposable data only.
 
-```powershell
-cd frontend-react
-npm install
-```
-
-Python contract tests (from repo root):
-
-```powershell
-uv run pytest frontend/tests/ -q
-```
-
----
-
-## 1. Contract tests (offline — run anytime)
+## 0. Preflight
 
 From repo root:
 
 ```powershell
-uv run pytest frontend/tests/test_contract_fixtures.py frontend/tests/test_mock_gate_workflow.py -v
-cd frontend-react
-npm test
+git status --short
 ```
 
-**Pass criteria:** All pytest + Vitest green (14 tests each pillar — contract payloads + mock gate workflow including reject, promote chain, contradiction resolve).
+Confirm:
 
-**Mock data sync** (after editing `frontend/mock_data.py`):
+- You are on the intended branch.
+- You know whether the demo source is mock fixtures, local live API, or remote live API.
+- You are not about to mutate a shared production-like store.
+
+## 1. Offline Contract Gate
+
+Run this before recording or demo rehearsal:
 
 ```powershell
-python scripts/export-mock-candidates.py
-uv run pytest frontend/tests/test_mock_data_contract.py -q
-```
-
-Re-exports [`frontend-react/public/mock-candidates.json`](../../frontend-react/public/mock-candidates.json) — Matthew's API seeds from this file when Postgres/JSON store is empty.
-
----
-
-## 2. React mock smoke (primary demo path)
-
-```powershell
-cd frontend-react
-# Ensure VITE_PRAXIS_API_BASE_URL is unset in .env.local
-npm run dev
-```
-
-Open http://localhost:5173 and rehearse Act 2 per [DEMO_SCRIPT.md](DEMO_SCRIPT.md):
-
-| Step | Action | Expected |
-|------|--------|----------|
-| 1 | Filter **suggested** | List narrows; provenance visible on rows |
-| 2 | Select **cand_2** or **cand_1** | Detail shows confidence breakdown + audit trail |
-| 3 | Promote **cand_1** | Confirm dialog shows `proposed → suggested`; success banner |
-| 4 | Open **cand_9** contradictions | Side-by-side with **cand_16** |
-| 5 | Keep **cand_9** | Rival decayed; contradiction IDs cleared |
-| 6 | Expand eval metrics embed | Placeholder curve + scoreboard (no `VITE_PRAXIS_EVAL_METRICS_URL`) |
-| 7 | Inspect **cand_18** | pathlib eval-aligned lesson with provenance `logs/session_20260616.jsonl:201` |
-
-**Screenshot checklist (add to `docs/monica/screenshots/` when capturing):**
-
-- [ ] Mock mode banner
-- [ ] Candidate list with provenance column
-- [ ] Detail panel confidence breakdown
-- [ ] Promote confirmation (`proposed → suggested` copy)
-- [ ] Contradiction resolution (before/after)
-- [ ] Eval metrics embed expanded
-
----
-
-## 3. React live API smoke (when Matthew's server is up)
-
-Create `frontend-react/.env.local`:
-
-```env
-VITE_PRAXIS_API_BASE_URL=http://localhost:8000
-VITE_PRAXIS_API_TOKEN=
-VITE_PRAXIS_CONTRACT_VERSION=1
-VITE_PRAXIS_EVAL_METRICS_URL=http://localhost:8000/metrics
-```
-
-```powershell
-cd frontend-react
-npm test
-npm run dev
-```
-
-| Step | Action | Expected |
-|------|--------|----------|
-| 1 | Confirm live mode banner shows API URL | Not mock banner |
-| 2 | List loads from `GET /candidates` | Same shape as [fixtures/candidates-list.json](../integration/fixtures/candidates-list.json) |
-| 3 | Promote a proposed candidate | `POST /candidates/{id}/promote` returns updated state |
-| 4 | **Refresh only that candidate** after mutation | Row reflects server state without reloading the full list |
-| 5 | Promote same row again (409) | Error message; item refresh recovers |
-| 6 | Reject with optional reason | `POST /candidates/{id}/reject` with body |
-| 7 | Low-confidence promote (&lt;50%) | Warning on confirm step |
-
-Also verify:
-
-- Card view promote/reject matches table behavior
-- Table, card, and detail views can refresh one candidate without **Load data** / **Refresh data**
-- Defer contradiction shows info banner (no mutation)
-
-**Troubleshooting:** See [wire-up.md](../integration/wire-up.md) table (400/422, 409, empty list).
-
----
-
-## 4. Eval metrics live smoke (when Dominic's endpoint is up)
-
-```powershell
-# frontend-react/.env.local
-# VITE_PRAXIS_EVAL_METRICS_URL=http://localhost:8000/metrics
-cd frontend-react
-npm run dev
-```
-
-**Pass criteria:** Live chart + cold/after/reduction metrics per [eval-metrics-v1.md](../integration/eval-metrics-v1.md) and [eval-metrics.json](../integration/fixtures/eval-metrics.json).
-
----
-
-## 5. Automated rehearsal gate (CI-friendly)
-
-Run before Practice 1 (Wed Jun 25):
-
-```powershell
-uv run pytest knowledge/evals/tests/test_cases.py frontend/tests/ -q
+uv run pytest frontend/tests/ -q
 cd frontend-react
 npm test
 npm run lint
 npm run build
 ```
 
-All green = code path ready for timed Act 2 rehearsal.
+Pass criteria:
 
----
+- Python frontend contract tests pass.
+- Vitest dashboard tests pass.
+- Typecheck/lint pass.
+- Production build succeeds.
 
-## 6. Render dual-service smoke (live API + React static)
+If this fails in `frontend/` or `frontend-react/`, Monica owns the fix. If the failure is in `knowledge/` or `knowledge/evals/`, tag Matthew or Dominic before changing cross-pillar code.
 
-Blueprint: [`frontend-react/render.yaml`](../../frontend-react/render.yaml) — `praxis-candidate-api` + `praxis-react-human-gate` with `VITE_PRAXIS_API_BASE_URL` wired via `fromService`.
+## 2. Monica 2-Minute Demo Smoke
 
-**Local parity check** (before or after Render deploy):
+This is the primary dashboard rehearsal path. Keep it to about 2 minutes so Matthew and Dominic have time for their pillars.
 
 ```powershell
-# Terminal 1 — Matthew API
-uvicorn knowledge.serve.app:app --host 127.0.0.1 --port 8000
-
-# Terminal 2 — automated client smoke
-$env:PRAXIS_API_BASE_URL = "http://127.0.0.1:8000"
-$env:PYTHONPATH = "frontend"
-uv run pytest frontend/tests/test_live_api_smoke.py -v
-
-# Terminal 3 — React against local API
 cd frontend-react
-# .env.local: VITE_PRAXIS_API_BASE_URL=http://127.0.0.1:8000
 npm run dev
 ```
 
-**Render pass criteria** (tick when verified on deployed URLs):
+Open `http://localhost:5173`.
 
-- [ ] React shows live API badge (not mock fixtures banner)
-- [ ] `GET /candidates` loads seeded mock rows with provenance
-- [ ] Promote persists after browser refresh
-- [ ] Reject sets **decayed** (row remains, badge updates)
-- [ ] Resolve **cand_9** ↔ **cand_16** decays rival
-- [ ] Eval embed loads from `{API_URL}/metrics` (Matthew fixture until Dominic ships)
+Before timing:
 
-**Screenshot checklist** (add to `docs/monica/screenshots/` when capturing on Render):
+- Confirm data source banner/control state.
+- Use mock fixtures for the most stable portfolio demo, or a disposable local API store if the team wants live integration.
+- Do not spend time explaining Matthew's pipeline internals or Dominic's eval harness.
 
-- [ ] Live API mode banner with Render API URL
-- [ ] Post-promote refresh showing updated state
-- [ ] Eval metrics from `/metrics` endpoint
+| Time | Action | Expected proof |
+|---|---|---|
+| 0:00-0:15 | Show dashboard and source state | Audience sees this is the human approval surface. |
+| 0:15-0:40 | Select `cand_1` and open detail | Provenance, confidence, and audit trail are visible. |
+| 0:40-1:10 | Promote `cand_1` | Candidate moves `proposed -> active` only after human confirmation. |
+| 1:10-1:35 | Resolve `cand_9` / `cand_16` contradiction | Rival candidate becomes rejected or exits active review queue; contradiction state updates. |
+| 1:35-2:00 | Handoff | Monica states that Matthew owns candidate generation/KG persistence and Dominic owns eval/integration proof. |
 
----
+Pass criteria:
 
-## 7. Ingest + promote→graph smoke (opt-in, non-blocking)
+- Segment finishes in 2 minutes or less.
+- Promotion and contradiction actions are visible.
+- Dashboard language stays on Monica's pillar: provenance, confidence, approval, contradiction resolution.
+- Handoff explicitly leaves pipeline and eval proof to Matthew and Dominic.
 
-These tests are **not** part of the offline merge gate. They skip when endpoints are missing or the store has no spare rows.
+## 3. Live Candidate API Smoke
 
-**Contract fixtures (offline — always run):**
+Run only when Matthew's API target is available and safe to mutate.
+
+Start local server with dev auth bypass when doing local smoke:
 
 ```powershell
-uv run pytest frontend/tests/test_contract_fixtures.py -q
-cd frontend-react
-npm test -- src/api/ingestClient.test.ts src/api/contractFixtures.test.ts
+$env:PRAXIS_AUTH_DISABLED = "1"
+uvicorn knowledge.serve.app:app --host 127.0.0.1 --port 8000
 ```
 
-Fixtures: [`ingest-jsonl-request.json`](../integration/fixtures/ingest-jsonl-request.json), [`ingest-jsonl-response.json`](../integration/fixtures/ingest-jsonl-response.json) (proposed response shape for Matthew review).
+Create or update `frontend-react/.env.local`:
 
-**Live ingest smoke (manual opt-in):**
+```env
+VITE_PRAXIS_API_BASE_URL=http://localhost:8000
+VITE_PRAXIS_API_TOKEN=
+VITE_PRAXIS_CONTRACT_VERSION=1
+VITE_PRAXIS_AUTH_DISABLED=1
+```
+
+Then:
 
 ```powershell
-# Terminal 1 — Matthew API
-uvicorn knowledge.serve.app:app --host 127.0.0.1 --port 8000
+cd frontend-react
+npm test
+npm run dev
+```
 
-# Terminal 2 — opt-in smoke (skips on 404 until POST /ingest/jsonl lands)
+Manual live checks:
+
+| Step | Action | Expected |
+|---|---|---|
+| 1 | Confirm live source | Banner/control shows local API URL, not an accidental source. |
+| 2 | Load candidates | `GET /candidates` returns rows with provenance-compatible shape. |
+| 3 | Promote disposable proposed row | `POST /candidates/{id}/promote` returns or refreshes to `active`. |
+| 4 | Refresh one candidate | Updated row reflects server state without full data reload. |
+| 5 | Reject disposable row | `POST /candidates/{id}/reject` marks row `rejected`. |
+| 6 | Resolve disposable contradiction | `POST /contradictions/{id}/resolve` updates kept/rival state. |
+
+Pass criteria:
+
+- Dashboard handles API success and recoverable errors clearly.
+- Mutations persist after refresh.
+- Monica does not edit backend persistence or pipeline code to force this smoke green.
+
+## 4. Eval / Integration Visibility Smoke
+
+This is a UI visibility check for Dominic's pillar, not a Monica-owned eval proof.
+
+Use when an eval endpoint or fixture-backed eval panel is available:
+
+```powershell
+cd frontend-react
+npm run dev
+```
+
+Check:
+
+- Eval/evidence panel renders without layout break.
+- Empty/unavailable state is clear if Dominic's endpoint is not configured.
+- Monica can point to the eval area during handoff without claiming ownership of the metrics.
+
+Pass criteria:
+
+- Dashboard does not block the demo when eval data is unavailable.
+- Any missing eval proof is recorded as Dominic-owned follow-up, not a Monica blocker.
+
+## 5. Render / Hosted Smoke
+
+Use after the team decides which branch and deploy target are authoritative.
+
+Reference: [RENDER_DEPLOY.md](RENDER_DEPLOY.md).
+
+Hosted pass criteria:
+
+- Render branch/repo values match the current GitHub repo and intended deploy branch.
+- React static site loads.
+- API URL/auth variables are configured for live deploy, or the app clearly uses an intentional mock/demo source.
+- `GET /candidates` loads candidate rows.
+- Promote/reject/resolve actions work against disposable data.
+- Eval/evidence panel renders or shows a clear unavailable state.
+
+Screenshots to capture under `docs/monica/screenshots/`:
+
+- Data-source banner/control state.
+- Candidate detail with provenance/confidence.
+- Promote confirmation or post-promote active state.
+- Contradiction before/after.
+- Eval/evidence panel or unavailable state.
+
+## 6. Team Integration Smoke - Optional
+
+These are not Monica's offline gate and should not block her 2-minute dashboard demo.
+
+Run only when the team wants an end-to-end proof:
+
+```powershell
 $env:PRAXIS_API_BASE_URL = "http://127.0.0.1:8000"
 $env:PRAXIS_INGEST_SMOKE = "1"
 $env:PYTHONPATH = "frontend"
 uv run pytest frontend/tests/test_ingest_promote_smoke.py -v
 ```
 
-| Step | Action | Expected |
-|------|--------|----------|
-| 1 | Run contract fixture tests | All green offline |
-| 2 | Set `PRAXIS_INGEST_SMOKE=1` + live API URL | Tests run (not skipped for missing env) |
-| 3 | `POST /ingest/jsonl` with fixture payload | **Skip** if 404/405; **200** when Matthew ships endpoint |
-| 4 | Promote suggested → active | **Skip** if no spare rows; **200** when store has candidates |
-| 5 | Re-run eval case `promote_then_rerun` with `--fake` | Injected arm passes (simulates post-promote graph) |
+Expected ownership:
 
-**Pass criteria:** Offline contract tests always green. Live steps skip gracefully until Matthew wires `POST /ingest/jsonl` and promote→graph. Never add these live tests to CI merge gate without team agreement.
+| Area | Owner | Monica action |
+|---|---|---|
+| `/ingest` and candidate creation | Matthew | Verify resulting candidates are reviewable in UI. |
+| Promote to graph/store behavior | Matthew | Verify dashboard reflects the mutation. |
+| Eval replay / compounding curve | Dominic | Verify dashboard can show or link the evidence. |
+| Human approval UX | Monica | Verify provenance, confidence, promote, reject, contradiction flow. |
 
----
+## Reporting Template
+
+Use this after each smoke run:
+
+```text
+Monica dashboard smoke:
+- Source: mock fixtures / local API / hosted API
+- Offline gate: pass/fail/not run
+- 2-minute demo path: pass/fail, duration
+- Candidate review: pass/fail
+- Promote proposed -> active: pass/fail
+- Reject behavior: pass/fail
+- Contradiction resolution: pass/fail
+- Eval/evidence panel: pass/fail/unavailable
+- Cross-pillar blockers:
+  - Matthew:
+  - Dominic:
+```
 
 ## Related
 
 | Doc | Purpose |
-|-----|---------|
-| [wire-up.md](../integration/wire-up.md) | Full wire-up commands |
-| [candidate-api-v1.md](../integration/candidate-api-v1.md) | API contract |
-| [DEMO_SCRIPT.md](DEMO_SCRIPT.md) | Act 2 spoken beats |
-| [RENDER_DEPLOY.md](RENDER_DEPLOY.md) | Portfolio mock deploy |
-| [DAYS_9_10_REMAINING.md](DAYS_9_10_REMAINING.md) | Manual rehearsal + video checklist |
+|---|---|
+| [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) | Team pillar ownership and demo plan |
+| [wire-up.md](../integration/wire-up.md) | Full local wire-up commands |
+| [candidate-api-v1.md](../integration/candidate-api-v1.md) | Dashboard/API contract |
+| [DEMO_SCRIPT.md](DEMO_SCRIPT.md) | Monica spoken beats |
+| [REHEARSAL_LOG.md](REHEARSAL_LOG.md) | 2-minute Monica rehearsal plan |
+| [RENDER_DEPLOY.md](RENDER_DEPLOY.md) | Hosted dashboard/API deploy notes |

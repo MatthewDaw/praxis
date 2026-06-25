@@ -1,6 +1,6 @@
 # PRAXIS Dashboard & Human Gate — Dream Agent Team
 
-**Pillar owner:** Monica Peters · **Branch:** `monica/dashboard-human-gate` · **Scope:** `frontend-react/` React human-gate dashboard + `frontend/` Python contract/mock layer
+**Pillar owner:** Monica Peters · **Branch:** `dev/monica-dashboard` · **Scope:** `frontend-react/` React human-gate dashboard + `frontend/` Python contract/mock layer
 
 **Aligned sources:**
 
@@ -10,12 +10,12 @@
 | [monica-wireframes.md](../monica-wireframes.md) | As-built screens, candidate data contract |
 | [Monica-Peters-Dashboard-Plan.md](../Monica-Peters-Dashboard-Plan.md) | Sprint deliverables Days 1–10 |
 | [PRAXIS_Project_Plan.html](../../plans/PRAXIS_Project_Plan.html) | Team schedule, interview claim, system diagram |
-| [PRD.pdf](../../PRD.pdf) | Capstone framing: technically ambitious, demo what shipped |
+| [PRD.pdf](../../plans/PRD.pdf) | Capstone framing: technically ambitious, demo what shipped |
 | [proposal-praxis.md](../../plans/proposal-praxis.md) | Human gate lifecycle, provenance, ≥50% correction-reduction narrative |
 
 **Interview claim (project plan):** *"I led the design and built the human approval dashboard that enforces quality gates and makes knowledge promotion transparent and measurable."*
 
-**Governance invariant:** No autonomous promotion. All `proposed → suggested → active` transitions require explicit human action in the UI; agents assist build and review only.
+**Governance invariant:** No autonomous promotion. All `proposed -> active` transitions require explicit human action in the UI; agents assist build and review only.
 
 ---
 
@@ -66,7 +66,7 @@ A six-role council (mapped from [Agent Council Review (ACR)](../ARCHITECTURE_MON
 ### Team: `DT-001 — Human Gate Core Six`
 
 **Purpose:**  
-Default Cursor agent council for daily dashboard development on `monica/dashboard-human-gate` — balanced judgment on contracts, UX edge cases, and sprint alignment without scope creep into pipeline or eval codebases.
+Default Cursor agent council for daily dashboard development on `dev/monica-dashboard` — balanced judgment on contracts, UX edge cases, and sprint alignment without scope creep into pipeline or eval codebases.
 
 **Hypothesis:**  
 Routing sprint work through ACR-mapped roles yields reviewable MRs that preserve mock-mode local dev, provenance on every row, and API-first boundaries before Days 6–7 wire-up.
@@ -84,7 +84,7 @@ Routing sprint work through ACR-mapped roles yields reviewable MRs that preserve
 | Orchestrator | GateCoordinator | Composer 2.5 Fast or Gemini 3 Flash | Maps tasks to sprint days; enforces pillar scope; blocks `knowledge/`/`knowledge/evals/` edits; tracks mock + API dual-path | Medium |
 | Architect | BoundarySmith | Claude 4.6 Sonnet or GPT-5.4 | `DataProvider` protocol, module map, non-blocking integration checklist ([§17](../ARCHITECTURE_MONICA.md#17-integration-architecture--data-contracts)) | Medium-high |
 | Adversarial UX | EdgeCaseForge | Gemini 3 Flash | Empty states, API-down banner, 409 promote conflict, reject audit gap, unknown `state` values, contradiction stub without mutations | Low |
-| Verification | ContractGuard | Claude 4.6 Sonnet or GPT-5.4 | `Candidate` aliases (`provenance`/`source_log`, `confidenceBreakdown`); `X-Praxis-Contract: 1`; lifecycle `proposed → suggested → active` | Medium |
+| Verification | ContractGuard | Claude 4.6 Sonnet or GPT-5.4 | `Candidate` aliases (`provenance`/`source_log`, `confidenceBreakdown`); `X-Praxis-Contract: 1`; lifecycle `proposed -> active`, `rejected` | Medium |
 | Documentation | PillarScribe | GPT-5.4 or Claude 4.6 Sonnet | Syncs [monica-wireframes.md](../monica-wireframes.md) with as-built UI; conventional commits `feat(dashboard):` + `#<issue>` | Medium |
 | Security & Performance | TrustSentinel | Deterministic checklist + light model | Env secrets only; mock-mode banner when `PRAXIS_API_BASE_URL` unset; pagination trigger ~200 rows; no LLM calls from UI | High |
 
@@ -134,7 +134,7 @@ Routing sprint work through ACR-mapped roles yields reviewable MRs that preserve
 
 ### Team: `DT-003 — Demo Act Two Six` (Days 8–10)
 
-**Purpose:** Interview-ready demo — dashboard fills with scored candidates; one-click `suggested → active`; provenance visible; optional Dominic compounding curve embed.  
+**Purpose:** Interview-ready demo — dashboard fills with scored candidates; one-click `proposed -> active`; provenance visible; optional Dominic compounding curve embed.
 **Hypothesis:** Documentation + Adversarial UX drive the live narrative more than new features.  
 **Trigger:** End-to-end promote path works on staging API.
 

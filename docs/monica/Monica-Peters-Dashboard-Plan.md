@@ -3,7 +3,7 @@
 Pillar documentation: [ARCHITECTURE_MONICA.md](ARCHITECTURE_MONICA.md) · [monica-wireframes.md](monica-wireframes.md) (as-built spec).
 
 **Role:** Dashboard & Human Gate Lead · **Daily Scrum Master** (see [PLAN_ALIGNMENT_GAP_CHECKLIST.md](PLAN_ALIGNMENT_GAP_CHECKLIST.md))  
-**Focus:** React human-gate dashboard (`frontend-react/`) with Python contract/mock layer (`frontend/`) — human approval workflow (proposed→suggested→active), contradiction resolution UI, credibility metrics viz, injection controls. Matthew validates the candidate API against typed Python fixtures and pytest without running the React dev server unless desired.  
+**Focus:** React human-gate dashboard (`frontend-react/`) with Python contract/mock layer (`frontend/`) — human approval workflow (`proposed -> active`, `rejected`), contradiction resolution UI, credibility metrics viz, injection controls. Matthew validates the candidate API against typed Python fixtures and pytest without running the React dev server unless desired.
 **Interview Claim:** "I designed and built the human approval dashboard that enforces quality gates and makes knowledge promotion transparent and measurable."
 
 **Sprint Schedule Note:** 10 full work days (skipping Thursday June 18). Day 1 = Wednesday June 16. **Internal** Days 9–10 (June 26–27): project completion, hard freeze, and presentation practice. **Public** Gauntlet showcase: **Monday, June 29**. Team operating calendar: [PLAN_ALIGNMENT_GAP_CHECKLIST.md](PLAN_ALIGNMENT_GAP_CHECKLIST.md). All times EOD unless noted.
@@ -29,7 +29,7 @@ Pillar documentation: [ARCHITECTURE_MONICA.md](ARCHITECTURE_MONICA.md) · [monic
 - **Day 3 Deliverables:**
   - Candidate detail view + confidence score UI components.
 - **Day 4 Deliverables:**
-  - Human gate workflow UI (proposed → suggested → active states).
+  - Human gate workflow UI (`proposed -> active`, `rejected` states).
 - **Day 5 Deliverables:**
   - Contradiction resolution interface + credibility metrics visualization.
 - **Key Output:** Polished dashboard UI components for reviewing, scoring, and gating knowledge candidates.

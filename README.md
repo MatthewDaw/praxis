@@ -8,6 +8,7 @@
 [![API Contract](https://img.shields.io/badge/API-contract_v1-4CAF50.svg)](docs/integration/candidate-api-v1.md)
 
 - **Architecture source of truth:** [docs/plans/PRAXIS_Project_Plan.html](docs/plans/PRAXIS_Project_Plan.html)
+- **Current demo alignment:** [docs/monica/REHEARSAL_LOG.md](docs/monica/REHEARSAL_LOG.md), [docs/monica/INTEGRATION_SMOKE.md](docs/monica/INTEGRATION_SMOKE.md)
 - **Current GitHub remote:** [Antonelli-Tech-Solutions/praxis](https://github.com/Antonelli-Tech-Solutions/praxis)
 - **Original project history:** [GitLab - monicapeters/praxis](https://labs.gauntletai.com/monicapeters/praxis)
 - **License:** [MIT](LICENSE)
@@ -18,6 +19,7 @@
 
 - [What PRAXIS Does](#what-praxis-does)
 - [Current State](#current-state)
+- [Pillar Ownership](#pillar-ownership)
 - [Architecture](#architecture)
 - [Repository Layout](#repository-layout)
 - [Onboarding Paths](#onboarding-paths)
@@ -58,21 +60,35 @@ The intended business value is straightforward: when an agent learns a project-s
 
 ## Current State
 
-This README is aligned to the repository code and docs as of **2026-06-23**. The implementation is an active capstone/MVP codebase, not a hardened SaaS product.
+This README is aligned to the repository code and docs as of **2026-06-25**. The implementation is an active capstone/MVP codebase, not a hardened SaaS product.
 
 | Area | Paths | State |
 |------|-------|-------|
-| React human-gate dashboard | `frontend-react/` | Working Vite/React app with mock mode, live API mode, candidate CRUD, graph views, Phoenix trace links, auth/org UI, and local JSONL upload preview |
+| React human-gate dashboard | `frontend-react/` | Working Vite/React app with Local Postgres and Remote Postgres data-source presets, mock fixtures/provider support, candidate CRUD, graph views, Phoenix trace links, auth/org UI, and local JSONL upload preview |
 | Python dashboard contract layer | `frontend/` | Reference candidate models, mock provider, API client, contract fixtures, and smoke tests |
-| Candidate API | `knowledge/serve/` | FastAPI app with health, auth/org routes, candidate CRUD, promote/reject, contradiction routes, graph endpoint, `/insights`, `/context`, and fixture `/metrics` |
+| Candidate API | `knowledge/serve/` | FastAPI app with health, auth/org routes, API keys, candidate CRUD, promote/reject, contradiction routes, graph/snapshot/source/fold-in endpoints, eval routes, `/insights`, `/ingest`, and `/context` |
 | Knowledge substrate | `knowledge/` | Knowledge graph abstractions, in-memory/vector/Postgres graph variants, write policies, ingestor, readers, LLM/embedder seams, and wiring factory |
 | Eval harness | `knowledge/evals/` | YAML case registry, fake/Claude/OpenRouter runners, deterministic checks, repo task helpers, cached/live embedding support, and result writing |
 | MCP server | `knowledge/mcp/` | MCP entrypoint and identity tests for calling PRAXIS backend tools |
 | Session capture | `session-capture/` | Go `claude-trace` wrapper that tails local Claude Code JSONL and uploads S3 slices on push/PR signals when configured |
 | Cloud infrastructure | `infra/` | AWS CDK stacks for session slices, Cognito, RDS/Postgres/pgvector, App Runner backend, CloudFront frontend, Phoenix, and DNS helpers |
-| Docs and contracts | `docs/` | Project plan, integration contracts, proposal history, deployment notes, dashboard docs, smoke checks, eval design, and future-work notes |
+| Docs and contracts | `docs/` | Project plan, integration contracts, proposal history, deployment notes, dashboard docs, smoke checks, eval design, demo rehearsal notes, and future-work notes |
 
 Known product gaps are documented in [docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md](docs/monica/PLAN_ALIGNMENT_GAP_CHECKLIST.md), [docs/monica/MONICA_COMPLETION_PATH.md](docs/monica/MONICA_COMPLETION_PATH.md), and [AUDIT.md](AUDIT.md). Treat older audit entries as point-in-time history when they conflict with current code.
+
+---
+
+## Pillar Ownership
+
+The project plan assigns each contributor a clear pillar. Preserve those boundaries when reviewing, debugging, or extending the system.
+
+| Owner | Pillar | Primary paths | Responsibility |
+|-------|--------|---------------|----------------|
+| Matthew Daw | ML & Knowledge Pipeline | `knowledge/`, `knowledge/serve/`, `knowledge/knowledge_graph/`, `knowledge/injestion/`, `knowledge/llm/` | Ingestion, candidate generation, distillation, scoring, provenance, graph persistence, and backend data surfaces |
+| Monica Peters | Dashboard & Human Gate | `frontend-react/`, `frontend/`, `docs/monica/` | Human approval dashboard, Python contract layer, provenance/confidence UX, promote/reject flow, contradiction review, and demo evidence |
+| Dominic Antonelli | Architecture, Eval & Integration | `knowledge/evals/`, integration docs, deploy/eval automation | Eval harness, replay/measurement proof, integration architecture, hooks, deployment proof, and compounding-gain evidence |
+
+Current implementation note: some historical planning docs mention a `proposed -> suggested -> active` workflow. The current code and updated dashboard docs use `proposed -> active` plus `rejected`.
 
 ---
 
@@ -97,8 +113,8 @@ Claude Code JSONL sessions
 
 | Surface | Entry point | Purpose |
 |---------|-------------|---------|
-| Backend API | `uv run python -m knowledge.serve` | Candidate review API, org/auth routes, graph-backed `/insights` and `/context` |
-| React dashboard | `cd frontend-react; npm run dev` | Human gate for reviewing, promoting, rejecting, editing, and visualizing candidate knowledge |
+| Backend API | `uv run python -m knowledge.serve` | Candidate review API, org/auth routes, API keys, graph-backed `/insights`, `/ingest`, and `/context` |
+| React dashboard | `cd frontend-react; npm run dev` | Human gate for reviewing, promoting, rejecting, editing, resolving contradictions, and visualizing candidate knowledge |
 | Eval runner | `uv run python -m knowledge.evals.run <case_id>` | Runs one eval case with fake, Claude Code, or OpenRouter paths depending on flags/env |
 | Repo smoke runner | `uv run python run.py` | Root shim into `knowledge/run.py` for registered eval/dev smoke paths |
 | MCP server | `praxis-mcp` or `uv run python -m knowledge.mcp` | Tool surface for retrieving or writing PRAXIS knowledge through a configured backend |
@@ -204,7 +220,7 @@ Start with:
 
 ```powershell
 cd frontend-react
-npm install
+npm ci
 npm run dev
 npm test
 npm run lint
@@ -226,7 +242,7 @@ Start with:
 
 ```powershell
 cd infra
-npm install
+npm ci
 npm run build
 npm run synth
 ```
@@ -260,7 +276,7 @@ npm test
 |------|---------|--------------|
 | Python | 3.12+ | Backend, knowledge package, eval harness, Python contract tests |
 | uv | Current recommended | Python dependency sync and command runner |
-| Node.js | 20+ | React dashboard and AWS CDK |
+| Node.js | 20 | React dashboard and AWS CDK; dashboard pin is `frontend-react/.node-version` |
 | npm | Bundled with Node | Frontend and infra scripts |
 | Go | 1.22+ | `session-capture/wrapper` |
 | Docker | Current | Backend API container and App Runner image asset |
@@ -311,15 +327,21 @@ Graph-backed `/insights` and `/context` require the Postgres path. Without it, t
 
 ### 3. Run the React dashboard
 
-Mock/offline mode:
+Install and start the dashboard:
 
 ```powershell
 cd frontend-react
-npm install
+npm ci
 npm run dev
 ```
 
-Live API mode:
+Current local default:
+
+- The React app defaults to the **Local Postgres** data-source preset at `http://localhost:8000`.
+- Mock fixtures and mock providers still exist for stable demos/tests, but do not assume that leaving `VITE_PRAXIS_API_BASE_URL` unset forces a public mock-only build.
+- Confirm the selected data source in the dashboard before demoing or mutating data.
+
+Local live API mode:
 
 ```powershell
 # frontend-react/.env.local
@@ -327,6 +349,7 @@ VITE_PRAXIS_API_BASE_URL=http://localhost:8000
 VITE_PRAXIS_API_TOKEN=
 VITE_PRAXIS_ORG_ID=default
 VITE_PRAXIS_CONTRACT_VERSION=1
+VITE_PRAXIS_AUTH_DISABLED=1
 ```
 
 Then:
@@ -335,7 +358,7 @@ Then:
 npm run dev
 ```
 
-The dashboard intentionally falls back to mock fixtures when no API base URL is configured.
+Pair `VITE_PRAXIS_AUTH_DISABLED=1` with a backend started using `PRAXIS_AUTH_DISABLED=1`. Do not use auth bypass in hosted or shared environments.
 
 ### 4. Run evals
 
@@ -391,6 +414,8 @@ Copy [.env.example](.env.example) when you need a local reference, but do not co
 | `COGNITO_USER_POOL_ID` | If auth enabled | Cognito user pool for JWT verification |
 | `COGNITO_CLIENT_ID` | If auth enabled | Cognito app client id / audience |
 | `COGNITO_REGION` | No | Cognito region, default `us-east-1` |
+| `X-Praxis-Key` | Request header | Scoped API-key alternative to Cognito for API clients |
+| `X-Praxis-Org` | Request header | Active org context; defaults to `default` where supported |
 | `PRAXIS_DB_URL` | No | Direct Postgres DSN for candidate store and graph-backed routes |
 | `PRAXIS_DB_SECRET` | No | Secrets Manager secret name for database credentials |
 | `PRAXIS_API_HOST` | No | Uvicorn bind host |
@@ -405,12 +430,13 @@ Copy [.env.example](.env.example) when you need a local reference, but do not co
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `VITE_PRAXIS_API_BASE_URL` | No | Backend API URL; unset means mock mode |
-| `VITE_PRAXIS_POSTGRES_API_BASE_URL` | No | Postgres-backed API URL for live multi-tenant mode |
-| `VITE_PRAXIS_API_TOKEN` | If auth enabled | Bearer token for API calls |
+| `VITE_PRAXIS_API_BASE_URL` | No | Backend API URL; current local default resolves to `http://localhost:8000` through the Local Postgres preset |
+| `VITE_PRAXIS_POSTGRES_API_BASE_URL` | No | Remote Postgres-backed API URL; preferred over the generic API URL for the Remote Postgres preset |
+| `VITE_PRAXIS_API_TOKEN` | If auth enabled | Legacy/static Bearer token fallback for API calls |
 | `VITE_PRAXIS_ORG_ID` | No | Active org sent as `X-Praxis-Org` |
 | `VITE_PRAXIS_CONTRACT_VERSION` | No | Contract header, default `1` |
-| `VITE_PRAXIS_EVAL_METRICS_URL` | No | Eval metrics JSON endpoint |
+| `VITE_PRAXIS_AUTH_DISABLED` | No | Set `1` only for local React dev paired with backend `PRAXIS_AUTH_DISABLED=1` |
+| `VITE_PRAXIS_EVAL_METRICS_URL` | No | Optional eval/evidence panel endpoint |
 | `VITE_COGNITO_USER_POOL_ID` | If auth enabled | Cognito user pool id |
 | `VITE_COGNITO_CLIENT_ID` | If auth enabled | Cognito app client id |
 | `VITE_COGNITO_REGION` | No | Cognito region, default `us-east-1` |
@@ -464,6 +490,7 @@ uv run python -m knowledge.evals.run --fake <case_id>
 
 ```powershell
 cd frontend-react
+npm ci
 npm test
 npm run lint
 npm run build
@@ -577,7 +604,7 @@ Legacy Render manifests remain in the repo for reference only:
 - Update [docs/integration/candidate-api-v1.md](docs/integration/candidate-api-v1.md) before or with any candidate API shape change.
 - Update [docs/integration/fixtures/](docs/integration/fixtures/) when request/response examples change.
 - Keep Python and React contract clients aligned.
-- Preserve mock mode unless the replacement has an equivalent offline development path.
+- Preserve an explicit offline fixture path unless the replacement has an equivalent local development and demo path.
 
 ### Git and Review
 

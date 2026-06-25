@@ -9,16 +9,16 @@
 PROJECT ARCHITECTURE (PILLAR)
 ============================================================================
 Project Name:       PRAXIS — Dashboard & Human Gate
-Repository:         https://labs.gauntletai.com/monicapeters/praxis
+Repository:         https://github.com/Antonelli-Tech-Solutions/praxis.git
 Pillar Owner:       Monica Peters (monigarr@monigarr.com)
 Co-Leads:           Matthew Daw (ML Pipeline), Dominic Antonelli (Eval & Integration)
 Organization:       Gauntlet AI for America
-Branch:             monica/dashboard-human-gate
+Branch:             dev/monica-dashboard
 Version:            0.3.0 (Days 1–8 React dashboard complete; Python contract layer in frontend/)
-Status:             Active development — React UI on mock; awaiting Matthew's live API
+Status:             Active development — React UI and knowledge/serve live API path available
 Classification:     Internal — capstone sprint
 Created:            2026-06-18
-Last Updated:       2026-06-19 (React-only dashboard posture; frontend/ = contract/mock layer)
+Last Updated:       2026-06-25 (repo-aligned lifecycle, auth, data-source, and deploy notes)
 Source of Truth:    docs/plans/PRAXIS_Project_Plan.html
 License:            TBD — Gauntlet AI capstone (2026)
 ============================================================================
@@ -50,7 +50,7 @@ The dashboard UI is a **Vite + React + TypeScript** application under `frontend-
 
 The UI consumes candidate data from Matthew's pipeline via a **contract-first API boundary** (Days 6–7) and surfaces audit-friendly actions that Dominic's eval harness can measure. Monica's deploy target is **Render.com** (React static site + Matthew's API service); teammates retain full sovereignty over their own hosting choices.
 
-System-wide context and end-to-end loop: [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) and [README.md](../README.md).
+System-wide context and end-to-end loop: [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) and [README.md](../../README.md).
 
 ---
 
@@ -59,7 +59,7 @@ System-wide context and end-to-end loop: [PRAXIS_Project_Plan.html](../plans/PRA
 | Dimension | Monica's pillar contribution |
 |-----------|------------------------------|
 | **Primary problem addressed** | Auto-memory and opaque model saves have no quality gate. Humans must approve 100%-credible insertions and resolve contradictions before knowledge compounds. |
-| **Expected ROI** | Reviewers promote good lessons in a few clicks; every item shows evidence (`logs/<file>.jsonl:<line>`). Demo Act 2: dashboard fills with scored candidates linked to transcript lines; one click moves `suggested → active`. |
+| **Expected ROI** | Reviewers promote good lessons in a few clicks; every item shows evidence (`logs/<file>.jsonl:<line>`). Demo Act 2: dashboard fills with scored candidates linked to transcript lines; one click moves `proposed -> active`. |
 | **Strategic value** | Makes the "human in the loop" real, auditable, and interview-ready — the trust layer that backs the ≥50% correction-reduction claim. |
 | **Long-term intent** | A reusable, accessible review surface any future contributor can run locally, on Render, or embed beside other deployment stacks without forking the repo. |
 
@@ -214,8 +214,8 @@ Team-wide architecture lives in the confidential project plan and Dominic's eval
 
 A new contributor should be able to:
 
-1. Clone the repo, `cd frontend-react`, `npm install`, run the dashboard with mock data in under five minutes.
-2. Point `VITE_PRAXIS_API_BASE_URL` at Matthew's pipeline API when ready — no code fork required.
+1. Clone the repo, `cd frontend-react`, `npm ci`, run the dashboard in under five minutes.
+2. Use the dashboard data-source control for Local Postgres (`http://localhost:8000`) or Remote Postgres; mock fixtures still exist but are not the default initial config.
 3. Run `uv run pytest frontend/tests/ -q` to validate contract fixtures against Matthew's schema.
 4. Deploy to Render (Monica), Matthew's PostgreSQL-backed API host, or local (Dominic) using only pillar-specific config — see [§16 Deployment Architecture](#16-deployment-architecture).
 
@@ -228,7 +228,7 @@ A new contributor should be able to:
 | Area | Responsibility |
 |------|----------------|
 | **Human-gate UI** | React dashboard (`frontend-react/`): candidate list, detail view, filters, search, KG explorer |
-| **Lifecycle workflow** | `proposed → suggested → active` promotion and reject flows |
+| **Lifecycle workflow** | `proposed -> active` promotion and reject flows |
 | **Provenance display** | Every item shows `logs/<file>.jsonl:<line>` (or agreed canonical form) |
 | **Confidence UX** | Aggregate score now; freq/recency/breadth breakdown + tooltips (Days 3–5) |
 | **Contradiction resolution** | Side-by-side comparison cards + resolution actions (Day 5) |
@@ -279,7 +279,7 @@ A new contributor should be able to:
 ## Functional Goals
 
 1. **Transparent review** — Reviewers see title, content, state, confidence, provenance, and timestamps for every candidate.
-2. **Effortless promotion** — Two-step gate (`proposed → suggested → active`) with clear visual state badges and one-click actions.
+2. **Effortless promotion** — One explicit human gate (`proposed -> active`) with clear visual state badges and one-click actions.
 3. **Contradiction clarity** — Side-by-side cards with resolution actions that update state and notify backend (Day 5+).
 4. **Contract-stable integration** — UI reads/writes through typed DTOs matching Matthew's API schema; mocks conform to the same shape.
 5. **Demo-ready narrative** — Act 2 of the live demo: dashboard fills with evidence-linked candidates; human promotes in view of audience.
@@ -370,7 +370,7 @@ frontend/models/candidate.py  →  frontend/services/data_provider.py
 
 ---
 
-## Current Implementation (branch `monica/dashboard-human-gate`)
+## Current Implementation (branch `dev/monica-dashboard`)
 
 Delivered as of as-built alignment (2026-06-19):
 
@@ -394,12 +394,12 @@ Delivered as of as-built alignment (2026-06-19):
 **Lifecycle logic (mock + API client):**
 
 ```python
-proposed  --Promote (confirm)-->  suggested  --Promote (confirm)-->  active
-   |                                  |                              |
-   +-------- Reject (reason?) -------+-------- decayed (no promote) -+
+proposed  --Promote (confirm)-->  active
+   |
+   +-------- Reject (reason?) --> rejected
 ```
 
-Mock `reject` removes from queue and appends audit entry; live mode calls `POST /candidates/{id}/reject`. Contradiction resolve calls `POST /contradictions/{id}/resolve` via `contract_v1.py`.
+Mock `reject` marks the candidate rejected and appends an audit entry; live mode calls `POST /candidates/{id}/reject`. Contradiction resolve calls `POST /contradictions/{id}/resolve` via `contract_v1.py`.
 
 ---
 
@@ -465,11 +465,11 @@ The dashboard displays potentially sensitive session-derived content. Security i
 
 | Requirement | Approach |
 |-------------|----------|
-| Authentication | Defer to deployment wrapper (Render auth, reverse proxy, or SSO) — coordinate with Dominic if unified |
+| Authentication | Cognito JWT in production; API-key support via `X-Praxis-Key`; local bypass only with `PRAXIS_AUTH_DISABLED=1` |
 | Authorization | Role-based promote/reject — backend enforces; UI hides actions if unauthorized |
 | Audit logging | Log `{action, candidate_id, user, timestamp, old_state, new_state}` to backend |
-| Secrets | `PRAXIS_API_BASE_URL`, `PRAXIS_API_TOKEN` via environment only |
-| Dependency scanning | Root `pyproject.toml` + GitLab CI when live |
+| Secrets | `VITE_PRAXIS_API_BASE_URL`, optional token/auth vars, and server secrets via environment only |
+| Dependency scanning | Root `pyproject.toml` + GitHub CI when live |
 | Prompt injection | Display-only — dashboard does not send user free-text to LLM |
 | Data isolation | UI never writes directly to KG; all mutations via API |
 
@@ -479,7 +479,7 @@ The dashboard displays potentially sensitive session-derived content. Security i
 |--------|------------|
 | Unauthorized promotion | Backend auth on mutation endpoints |
 | Leaked session logs in UI | Deploy over HTTPS; restrict Render URL if needed |
-| Mock data mistaken for production | Clear "mock mode" banner when `PRAXIS_API_BASE_URL` unset |
+| Mock data mistaken for production | Clear data-source banner/control state; current app defaults to Local Postgres unless mock is explicitly selected |
 | XSS via candidate content | React default escaping; sanitize if rendering raw HTML |
 
 ---
@@ -589,8 +589,9 @@ USAGE:
     candidates = client.list_candidates(state="proposed")
 
 SECURITY:
-- Token via PRAXIS_API_TOKEN environment variable only
-- No session log content in client logs
+- Production data routes require Cognito Bearer JWT or scoped API key.
+- Local smoke can use PRAXIS_AUTH_DISABLED=1 on the server with VITE_PRAXIS_AUTH_DISABLED=1 in React.
+- No session log content in client logs.
 
 OPERATIONAL:
 - Swap MockDataProvider for ApiClient in app wiring (Days 6-7)
@@ -618,7 +619,7 @@ Each teammate deploys **their pillar** independently. Monica's dashboard is a **
 
 | Environment | Purpose | Monica config |
 |-------------|---------|---------------|
-| **Local** | Development | No API URL → mock mode (exported JSON) |
+| **Local** | Development | Local Postgres preset defaults to `http://localhost:8000`; mock fixtures require an explicit mock path |
 | **Dev** | Shared integration | `VITE_PRAXIS_API_BASE_URL=https://dev-api...` |
 | **Staging** | Pre-demo | Render preview + staging API |
 | **Production** | Live demo | Render production static site + API |
@@ -632,9 +633,9 @@ Blueprint: `frontend-react/render.yaml` — `praxis-candidate-api` + `praxis-rea
 | Setting | Value |
 |---------|-------|
 | **Static site root** | `frontend-react` |
-| **Build command** | `npm install && npm run build` |
+| **Build command** | `npm ci && npm run build` |
 | **Publish directory** | `dist` |
-| **Env vars (build-time)** | `VITE_PRAXIS_API_BASE_URL`, optional `VITE_PRAXIS_API_TOKEN`, `VITE_PRAXIS_EVAL_METRICS_URL` |
+| **Env vars (build-time)** | `VITE_PRAXIS_API_BASE_URL`, optional `VITE_PRAXIS_POSTGRES_API_BASE_URL`, `VITE_PRAXIS_API_TOKEN`, `VITE_COGNITO_*`, `VITE_PRAXIS_EVAL_METRICS_URL` |
 | **Health** | Static asset root |
 
 Teammates who do not use Render **ignore this section** — run `npm run dev` locally.
@@ -647,11 +648,11 @@ Teammates who do not use Render **ignore this section** — run `npm run dev` lo
 
 ```powershell
 cd frontend-react
-npm install
+npm ci
 npm run dev
 ```
 
-Open http://localhost:5173 — mock mode when `VITE_PRAXIS_API_BASE_URL` is unset.
+Open http://localhost:5173. Current initial config selects Local Postgres at `http://localhost:8000`; use mock fixtures only when that path is explicitly selected or restored.
 
 **Contract layer (pytest):**
 
@@ -669,7 +670,7 @@ python scripts/export-mock-candidates.py
 
 ## CI/CD Philosophy (pillar)
 
-- Dashboard lint/typecheck via shared GitLab CI when added — must pass before MR merge.
+- Dashboard lint/typecheck via shared GitHub CI when added — must pass before PR merge.
 - Monica's Render deploy is **decoupled** from Matthew's PostgreSQL-backed pipeline and Dominic's eval runner.
 
 ---
@@ -687,7 +688,7 @@ The dashboard and pipeline integrate **only** through agreed JSON shapes. **Cano
 | `id` | string | ✅ | Stable identifier |
 | `title` | string | ✅ | Distilled lesson title |
 | `content` | string | ✅ | Full lesson body |
-| `state` | enum | ✅ | `proposed` \| `suggested` \| `active` \| `decayed` |
+| `state` | enum | ✅ | `proposed` \| `active` \| `rejected` |
 | `confidence` | float | ✅ | 0–1 aggregate |
 | `confidenceBreakdown` | object | ✅ mock | `{ frequency, recency, breadth }` + optional rationale strings |
 | `provenance` | string | ✅ | `logs/<file>.jsonl:<line>` |
@@ -702,7 +703,7 @@ The dashboard and pipeline integrate **only** through agreed JSON shapes. **Cano
 
 | Action | Payload | Owner |
 |--------|---------|-------|
-| `POST /candidates/{id}/promote` | `{ "targetState": "suggested" \| "active" }` | Matthew API; Dominic webhook side-effect |
+| `POST /candidates/{id}/promote` | `{ "targetState": "active" }` or `{}` fallback | Matthew API; Dominic webhook side-effect |
 | `POST /candidates/{id}/reject` | `{ "reason": string? }` | Matthew API |
 | `POST /contradictions/{id}/resolve` | `{ "resolution": "keep_a" \| "keep_b", "keepId": string }` | Matthew API; `merge` stretch |
 
@@ -890,6 +891,6 @@ The dashboard connects them through contracts — not through shared mutable int
 | [RENDER_DEPLOY.md](RENDER_DEPLOY.md) | Render.com deploy notes + cold-start expectations |
 | [Matthew-Daw-ML-Pipeline-PlanDRAFT.md](../plans/Matthew-Daw-ML-Pipeline-PlanDRAFT.md) | Upstream data producer |
 | [Dominic-Antonelli-Architecture-Eval-PlanDRAFT.md](../plans/Dominic-Antonelli-Architecture-Eval-PlanDRAFT.md) | Downstream measurement |
-| [README.md](../README.md) | Repo overview and run instructions |
+| [README.md](../../README.md) | Repo overview and run instructions |
 | [.cursor/rules/praxis-dashboard.mdc](../../.cursor/rules/praxis-dashboard.mdc) | Editor/agent patterns |
 | [templates_temp/DREAM_AGENT_TEAM.md](templates_temp/DREAM_AGENT_TEAM.md) | ACR → Cursor agent team blueprint (`DT-001`–`DT-003`) |

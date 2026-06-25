@@ -67,7 +67,7 @@
 | **Practice 2** | Fri Jun 27 | Live API + eval metrics preferred |
 | **Practice 3** | Sun Jun 28 PM | Dress rehearsal; no code after unless P0 |
 
-**Act budget:** Act 1 ~2.5 min · Act 2 ~3.5 min · Act 3 ~3.5 min · close ~0.5 min  
+**Act budget:** Act 1 ~2.5 min · Act 2 ~2 min · Act 3/team eval proof ~4.5 min · close ~1 min
 **Act 2 script:** [DEMO_SCRIPT.md](DEMO_SCRIPT.md) · **Full 3-act:** Dominic Day 9 deliverable
 
 ---
@@ -124,7 +124,7 @@ Each new Monica case must cite which diagram node it exercises (Figure 1 in proj
 | P0 | `quirky_exhaustive_switch` | Learning moment + injection | 1 + 3 | ✅ landed + tests |
 | P0 | `quirky_config_load_order` | Contradiction / rival lessons | 2 | ✅ landed + tests |
 | P1 | `promote_then_rerun` | Human gate → KG → get context | 2 + 3 |
-| P1 | `decayed_lesson_ignored` | Decay rules | stretch |
+| P1 | `rejected_lesson_ignored` | Rejected-state exclusion rules | stretch |
 | P2 | `cross_session_rediscovery` | Learning moment detection | stretch |
 
 Dominic owns harness pairing (cold vs injected) and metrics; Monica owns **case YAML + dashboard/mock alignment**.
@@ -220,7 +220,7 @@ knowledge/knowledge_graph/knowledge_graph_variants/in_memory_graph.py
 knowledge/tests/test_injestor.py
 ```
 
-#### Monica — Human gate workflow (`proposed → suggested → active`)
+#### Monica — Human gate workflow (`proposed -> active`, `rejected`)
 
 | Planned artifact | Repo file(s) | Status | Notes |
 |------------------|--------------|--------|-------|
@@ -254,7 +254,7 @@ knowledge/tests/test_injestor.py
 | Planned artifact | Repo file(s) | Status | Notes |
 |------------------|--------------|--------|-------|
 | Freq / recency / breadth scoring | — | ❌ | |
-| Decay rules (`active → decayed`) | — | ❌ | Mock `decayed` in `mock_data.py` only |
+| Rejected-state rules (`active/proposed -> rejected`) | — | ⚠️ | Current code and fixtures use `rejected`; scheduled decay is no longer the dashboard contract |
 | `confidenceBreakdown` in API | Contract + mock | ⚠️ | `mock_data.py`, `ConfidenceBreakdown.tsx` |
 
 #### Monica — Contradiction resolution + credibility viz
@@ -411,7 +411,7 @@ knowledge/tests/test_injestor.py
 - [ ] Contradiction detection in pipeline (Matthew)
 - [ ] Confidence scorer (Matthew)
 - [ ] Token/time in eval results (Dominic)
-- [ ] GitLab CI pytest (team)
+- [ ] GitHub CI pytest (team)
 - [ ] Root `pyproject.toml` pythonpath fix (Monica)
 
 ---
@@ -421,7 +421,7 @@ knowledge/tests/test_injestor.py
 | Contract | Client | Server | Tests |
 |----------|--------|--------|-------|
 | Candidate API v1 | ✅ `api_client.py`, `frontend-react/src/api/apiClient.ts` | ✅ `knowledge/serve/app.py` | ✅ offline + optional live smoke |
-| Eval metrics v1 | ✅ `EvalMetricsEmbed.tsx` | ⚠️ `/metrics` fixture on Matthew API | ✅ fixture |
+| Eval metrics v1 | ✅ `EvalMetricsEmbed.tsx` | ⚠️ Current `knowledge/serve` eval endpoints or unavailable-state UI | ✅ fixture |
 | Wire-up | ✅ `wire-up.md` | — | — |
 
 ---

@@ -111,7 +111,7 @@ Deploy from repo root:
 
 ```powershell
 cd infra
-npm install
+npm ci
 npm run build
 
 # First deploy (open to all IPs — tighten immediately after):
@@ -249,7 +249,7 @@ Local wire-up: [wire-up.md](../integration/wire-up.md) §3.
 
    - Promote a proposed candidate via dashboard or `POST /candidates/{id}/promote`
    - Stop and restart the API
-   - Confirm state is still `suggested` (Postgres path) — JSON fallback would also persist to file, but Postgres survives across hosts
+   - Confirm state is still `proposed` before promotion or `active` after promotion (Postgres path) — JSON fallback would also persist to file, but Postgres survives across hosts
 
 3. **Postgres store tests**
 

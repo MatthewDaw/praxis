@@ -9,7 +9,7 @@
 # PROJECT ARCHITECTURE
 # ============================================================================
 # Project Name: PRAXIS
-# Repository: https://labs.gauntletai.com/monicapeters/praxis
+# Repository: https://github.com/Antonelli-Tech-Solutions/praxis.git
 # Version:
 # Status:
 # Classification:
@@ -97,7 +97,7 @@ Demo on Stage:
  Dumb agent: fresh repo with a couple of deliberate quirks; give the agent a task — it stumbles, gets corrected,
 retries. Capture the log.
 2. Distillation: run Praxis on that log; the dashboard fills with candidate lessons, each scored and linked to the
-exact transcript line. One click promotes suggested → active . (Bonus: surface and resolve a contradiction
+exact transcript line. One click promotes proposed -> active. (Bonus: surface and resolve a contradiction
 between two past sessions.)
 3. Smart agent: re-run a sibling task — nails the quirks first try. Side-by-side scoreboard (before: 5 corrections /
 12 min vs. after: 0 / 3 min), then the compounding curve across a pre-run batch to prove it’s a trend.

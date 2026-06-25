@@ -39,4 +39,4 @@ Dashboard human-gate: _mock / API-integrated / demo-ready_ — see [monica-wiref
 - [Monica-Peters-Dashboard-Plan.md](Monica-Peters-Dashboard-Plan.md)
 - [ARCHITECTURE_MONICA.md](ARCHITECTURE_MONICA.md) §19 sprint table
 - [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html) — architecture diagram
-- Branch: `monica/dashboard-human-gate`
+- Branch: `dev/monica-dashboard`

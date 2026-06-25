@@ -1,10 +1,10 @@
 # Monica Peters — Dashboard As-Built Spec
 
 **Author:** Monica Peters <monigarr@MoniGarr.com>  
-**Branch:** `monica/dashboard-human-gate`  
+**Branch:** `dev/monica-dashboard`
 **Created:** 2026-06-17  
 **Last updated:** 2026-06-19  
-**Status:** As-built through Day 8 on mock — React UI shipped; Python contract layer in `frontend/`; live E2E when Matthew publishes API endpoints.
+**Status:** React UI shipped; Python contract layer in `frontend/`; live API path exists through `knowledge/serve`.
 
 Architecture source of truth: [PRAXIS_Project_Plan.html](../plans/PRAXIS_Project_Plan.html).
 
@@ -33,7 +33,7 @@ frontend/  (contract + mock — no UI)
   → tests/
 ```
 
-Lifecycle states: `proposed → suggested → active` (plus `decayed` and unrecognized API values preserved for display).
+Lifecycle states: `proposed -> active` plus `rejected` and unrecognized API values preserved for display.
 
 ## Screen 1: Dashboard shell + candidate list (shipped)
 
@@ -45,18 +45,18 @@ Lifecycle states: `proposed → suggested → active` (plus `decayed` and unreco
 | Mode banner | Mock vs live API badge from `VITE_PRAXIS_API_BASE_URL` |
 | Sidebar / toolbar | **Refresh data** — reloads provider and candidate list |
 | Search | Text filter on title and content (case-insensitive) |
-| State filter | Select — All / proposed / suggested / active / decayed |
+| State filter | Select — All / proposed / active / rejected |
 | Global selection | Shared selection drives detail view + table/card actions |
 | Table view | Sortable columns; confidence progress; promote/reject with confirmations |
 | Card view | Grid layout; **Inspect in detail** sets global selection |
 | State badge | `StateBadge` — color-coded lifecycle states |
 | Confidence | Progress bar on cards; numeric column in table |
 | Provenance | Caption with `` `logs/<file>.jsonl:<line>` `` |
-| Actions | Confirm dialogs; optional **reject reason**; low-confidence promote warning below **50%**; success banner; decayed blocked from promote |
+| Actions | Confirm dialogs; optional **reject reason**; low-confidence promote warning below **50%**; success banner; rejected-state helper text |
 | Error states | Empty filter message; API load failure banner |
 | Footer | Pillar + integration note |
 
-**Mock data:** 17+ candidates in `frontend/mock_data.py`, exported to `frontend-react/public/mock-candidates.json`. Includes `confidenceBreakdown` on cand_1–3, contradiction pair cand_9 ↔ cand_16, and decayed cand_12.
+**Mock data:** 17+ candidates in `frontend/mock_data.py`, exported to `frontend-react/public/mock-candidates.json`. Includes `confidenceBreakdown` on cand_1-3, contradiction pair cand_9 <-> cand_16, and rejected cand_12.
 
 ## Screen 2: Candidate detail (Day 3 — shipped)
 
@@ -97,7 +97,7 @@ Lifecycle states: `proposed → suggested → active` (plus `decayed` and unreco
 | `id` | — | Stable identifier |
 | `title` | — | Distilled lesson title |
 | `content` | — | Full lesson body |
-| `state` | — | Known: `proposed`, `suggested`, `active`, `decayed`; unknown values shown as-is (gray badge) |
+| `state` | — | Known: `proposed`, `active`, `rejected`; unknown values shown as-is (gray badge) |
 | `confidence` | — | Float 0–1; defaults to `0.0` |
 | `provenance` | `source`, `source_log`, `sourceLog` | Canonical display: `logs/<file>.jsonl:<line>` |
 | `createdAt` | `created_at`, `updatedAt`, `updated_at` | ISO 8601 |
@@ -117,7 +117,7 @@ Lifecycle states: `proposed → suggested → active` (plus `decayed` and unreco
 
 | Action | Endpoint | Body |
 |--------|----------|------|
-| Promote | `POST /candidates/{id}/promote` | `{ "targetState": "suggested" \| "active" }` → updated candidate |
+| Promote | `POST /candidates/{id}/promote` | `{ "targetState": "active" }` or `{}` fallback -> updated candidate |
 | Reject | `POST /candidates/{id}/reject` | `{ "reason"?: string }` |
 | Resolve contradiction | `POST /contradictions/{id}/resolve` | `{ "resolution": "keep_a" \| "keep_b", "keepId": string }` → kept candidate |
 

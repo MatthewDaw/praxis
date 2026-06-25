@@ -9,7 +9,9 @@ cd frontend-react
 npm run dev
 ```
 
-Open http://localhost:5173 — confirm mock mode banner (no `VITE_PRAXIS_API_BASE_URL`).
+Open http://localhost:5173. For the current app, the default source is the Local
+Postgres live preset (`http://localhost:8000`). Use the dashboard data-source
+control to switch to mock fixtures if you are rehearsing without the local API.
 
 For live API rehearsal: set env vars per [INTEGRATION_SMOKE.md](INTEGRATION_SMOKE.md); reload the page after mutations.
 
@@ -38,15 +40,16 @@ Point at candidate list — note provenance on every row (`logs/...jsonl:line`).
 
 ## Beat 4 — Human gate promotion (45s)
 
-1. Filter **proposed**; pick any proposed candidate (or cand_12 with low confidence to show warning).
+1. Filter **proposed**; pick any proposed candidate with low confidence if you want to show the warning.
 2. Click **Promote** → **confirmation dialog** → if confidence < 50%, note the low-confidence warning → **Confirm promote**.
-3. Success banner shows `proposed → suggested`; promote again to **active** (Act 2 climax).
+3. Success banner shows `proposed → active` (Act 2 climax).
 
 > "Nothing reaches the knowledge graph without an explicit human promotion."
 
 ## Beat 5 — Measurement hook (25s)
 
-Expand **Eval metrics** — placeholder or live curve if `PRAXIS_EVAL_METRICS_URL` is set.
+Expand **Eval metrics** — placeholder or live data from the `knowledge/serve`
+eval endpoints when a live API is configured.
 
 > "Dominic's harness proves correction rate falls after promoted knowledge injects — this dashboard is where humans decide what counts."
 

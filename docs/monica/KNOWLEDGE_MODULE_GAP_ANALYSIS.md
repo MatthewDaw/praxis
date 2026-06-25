@@ -55,9 +55,9 @@ flowchart LR
 | Learning-moment detection (P0 minimum) | `HeuristicMomentIngestor` | Regex/heuristics on user corrections, failure→fix pairs; no ML required for demo |
 | LLM distillation → structured lesson (P0) | `StructuredDistillIngestor` extends `PromptIngestor` pattern | Prompt for `{when, lesson, scope, evidence}`; populate `Insight` fields; keep passthrough fallback for CI |
 | Provenance on every lesson (PC-1) | Fix **parent** `Ingestor.ingest()` + `KnowledgeGraph.write()` contract | Must pass full `Insight`/`Fact`, not `raw_text` only — blocked today at frozen `write(content: str)` |
-| `POST /ingest/jsonl` (frontend already calls it) | Thin handler in [`knowledge/serve/app.py`](../../knowledge/serve/app.py) that calls `build_trio().ingestor` | **Not** an ingestor change alone — needs API route |
+| `POST /ingest` (current server route) | Thin handler in [`knowledge/serve/app.py`](../../knowledge/serve/app.py) that calls the ingestion path | **Not** an ingestor change alone — route and store behavior must stay aligned |
 
-**Baseline doc explicitly defers structured LLM extraction** in the first “Minimal + safety” cut ([`2026-06-18-knowledge-baseline-requirements.md`](../../docs/brainstorms/2026-06-18-knowledge-baseline-requirements.md) line 29), but README P0 and gap checklist treat JSONL→structured candidates as **demo-critical**.
+**Baseline doc explicitly defers structured LLM extraction** in the first “Minimal + safety” cut ([`2026-06-18-knowledge-baseline-requirements.md`](../brainstorms/2026-06-18-knowledge-baseline-requirements.md) line 29), but README P0 and gap checklist treat JSONL→structured candidates as **demo-critical**.
 
 ### B. Extendable via **graph_reader** variants (high leverage)
 
@@ -75,7 +75,7 @@ flowchart LR
 |-------------|-----------|
 | Seeded eval cases (`via_ingestor`) | Already works for text passthrough |
 | Dedup / redaction / contradiction eval cases | Requires `substrate: vector` + metadata flow into `Fact` |
-| Poison negative control | Reader must **exclude** rejected/decayed facts — WholeFileReader fails this today |
+| Poison negative control | Reader must **exclude** rejected facts — WholeFileReader fails this today |
 | End-to-end: log → candidates → promote → eval | Needs ingestor variants **+** promote handler writing to same `VectorGraph` instance **+** reader filtering |
 
 ---
@@ -87,14 +87,14 @@ flowchart LR
 | Human gate UI (HG-1–HG-13) | [`frontend/`](../../frontend/), [`frontend-react/`](../../frontend-react/) | **Done (mock)** — separate pillar |
 | Promote → `KnowledgeGraph.write` (P0) | [`knowledge/serve/app.py`](../../knowledge/serve/app.py) `POST /candidates/{id}/promote` | Today promotes in `CandidateStore` only; no `build_trio()` call |
 | Cold vs injected paired eval (EV-2, EV-4) | [`knowledge/evals/run.py`](../../knowledge/evals/run.py) | Harness orchestration, not ingestor |
-| Compounding curve + real `/metrics` (EV-5, EV-10) | Dominic eval batch + serve | Measurement spine |
+| Compounding curve + live eval evidence (EV-5, EV-10) | Dominic eval batch + serve | Measurement spine |
 | Session logs → DynamoDB (ING-5) | [`session-capture/`](../../session-capture/) | **Done** — Go daemon; Python ingestor must consume exported JSONL |
 | HDBSCAN clustering (PC-6) | New consolidate module or write-policy step | Not in ingestor ABC today; `Deduper` is cosine-threshold, not HDBSCAN |
 | CLAUDE.md / skills file generation (ING-9) | New generator module | Complementary substrate; not a reader variant |
 | GitHub hook on promote (ING-4, EV-13) | Dominic integration | Outside knowledge packages |
 | RDS facts persistence (KG-8) | [`postgres_store`](../../knowledge/serve/postgres_store.py), infra | Candidate store shipped; KG `facts` table not written by app yet |
 | Real confidence scorer freq/recency/breadth (PC-2) | Scoring module + log replay | `pipeline_adapter` uses heuristics on mock JSON |
-| Decay rules `active → decayed` (PC-4) | Scheduled job or promote/reject policy | UI shows `decayed`; no pipeline enforcement |
+| Rejected-state rules | Promote/reject policy | UI shows `rejected`; scheduled decay is no longer the dashboard contract |
 | CI pipeline | Team | Not knowledge-module scope |
 
 ---
@@ -121,7 +121,7 @@ Keep `PromptIngestor` as the simple default for eval cases that only need passth
 
 ### 3. Implement `RetrievingReader` + wiring change
 
-Per [baseline requirements](../../docs/brainstorms/2026-06-18-knowledge-baseline-requirements.md):
+Per [baseline requirements](../brainstorms/2026-06-18-knowledge-baseline-requirements.md):
 
 ```python
 # knowledge/wiring.py (target state)
@@ -133,7 +133,7 @@ else:
 
 ### 4. Thin integration (not optional for “all requirements”)
 
-- **`serve/app.py`**: `POST /ingest/jsonl` → ingestor; promote → `graph.write(active_fact)`
+- **`serve/app.py`**: `POST /ingest` -> ingestor; promote -> active fact path
 - **`evals/run.py`**: paired cold/injected runs using same reader
 - **Shared graph instance**: API process must hold or reload `VectorGraph` / RDS-backed store — today eval and serve are separate lifecycles
 
@@ -161,7 +161,7 @@ For Jun 29, Act 2 (human gate) is **mock-ready** without extending ingestor/read
 | Best use of `injestor_variants` folder | Add JSONL + heuristic + structured distill variants; keep `PromptIngestor` for CI |
 | Best use of `graph_reader` variants | Build `RetrievingReader` + optional confidence/decay filter; wire `as_claude_tool` for get-context |
 
-**Monica-specific angle:** Dashboard pillar is largely complete on mock data. Extending ingestor/reader is Matthew’s critical path; highest-value Monica contribution to those modules is **eval cases** that specify provenance shape, injection behavior, and cold-vs-seeded prompts ([gap checklist eval authoring section](PLAN_ALIGNMENT_GAP_CHECKLIST.md)) — plus integration smoke once `POST /ingest/jsonl` and promote→graph land.
+**Monica-specific angle:** Dashboard pillar is largely complete for the React review surface. Extending ingestor/reader is Matthew’s critical path; highest-value Monica contribution to those modules is **eval cases** that specify provenance shape, injection behavior, and cold-vs-seeded prompts ([gap checklist eval authoring section](PLAN_ALIGNMENT_GAP_CHECKLIST.md)) — plus integration smoke against the current `/ingest` and promote paths.
 
 ---
 
@@ -170,6 +170,6 @@ For Jun 29, Act 2 (human gate) is **mock-ready** without extending ingestor/read
 - [ ] Extend `Ingestor.ingest()` and `KnowledgeGraph.write()` to pass `Insight`/`Fact` metadata (provenance, scope, confidence) — foundation for all other work
 - [ ] Add `JsonlIngestor` + `HeuristicLearningMomentIngestor` + `StructuredDistillIngestor` under `injestor_variants/`
 - [ ] Implement `RetrievingReader` + `retrieval/` pipeline; update `build_trio()` to select reader by substrate
-- [ ] Wire `knowledge/serve`: `POST /ingest/jsonl` and promote → `KnowledgeGraph.write` on shared graph store
+- [ ] Verify `knowledge/serve`: `POST /ingest` and promote -> active graph/store behavior on the selected backend
 - [ ] Dominic: cold vs injected paired runner + correction metrics using reader injection path
 - [ ] Monica: eval cases specifying provenance, decay filter, and cold-vs-seeded prompts for new variants

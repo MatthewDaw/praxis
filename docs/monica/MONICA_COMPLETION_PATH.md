@@ -12,7 +12,7 @@ Complete Monica-owned evidence for the human approval dashboard without blocking
 Completion means:
 
 - Offline automated gate is green and recorded.
-- Act 2 mock React demo is timed at 3.5 minutes or less.
+- Act 2 React demo is timed at 2 minutes or less so Matthew and Dominic have room for their pillar demos.
 - Accessibility evidence is captured manually.
 - Screenshots and a short user-flow video are captured.
 - Live API smoke is run only when an API is already available and safe to mutate.
@@ -25,7 +25,7 @@ Completion means:
 
 - React dashboard demo readiness in `frontend-react/`.
 - Python frontend contract/mock validation in `frontend/tests/`.
-- Human-gate UX evidence: provenance, confidence, promote flow, contradiction resolution, reject/decay behavior, and eval embed display.
+- Human-gate UX evidence: provenance, confidence, promote flow, contradiction resolution, reject behavior, and eval/evidence panel display.
 - Act 2 script timing and portfolio recording.
 - Accessibility verification for existing dashboard controls.
 - Self-serve smoke against an available candidate API.
@@ -37,7 +37,7 @@ Completion means:
 - Promote-to-knowledge-graph write behavior.
 - JSONL ingestion, distillation, dedup, clustering, or confidence scoring pipeline internals.
 - Dominic's cold-vs-injected paired eval runner or real metrics endpoint.
-- GitLab/GitHub CI setup unless the team explicitly assigns it.
+- GitHub CI setup unless the team explicitly assigns it.
 
 ## Non-Blocking Rules
 
@@ -54,9 +54,9 @@ Completion means:
 | Deliverable | Output | Done when |
 |---|---|---|
 | Green gate evidence | Rehearsal log entry with command results | Pytest, Vitest, lint, and build pass |
-| Timed mock demo | Rehearsal log entry | Act 2 completes in 3.5 minutes or less |
-| Accessibility evidence | Checklist notes | Keyboard, labels, alert, and decayed helper text verified |
-| Screenshots | Files under `docs/monica/screenshots/` | Required mock screenshots captured |
+| Timed demo | Rehearsal log entry | Act 2 completes in 2 minutes or less |
+| Accessibility evidence | Checklist notes | Keyboard, labels, alert, and rejected-state helper text verified |
+| Screenshots | Files or links under `docs/monica/screenshots/` / `REHEARSAL_LOG.md` | Required screenshots captured or explicitly marked pending |
 | User-flow video | File or link recorded in rehearsal log | Video is under 3 minutes |
 | Row-level refresh | Rehearsal log entry | One changed candidate refreshes without **Load data** / **Refresh data** |
 | Conditional live smoke | Rehearsal log entry | Run only when API URL exists and is safe |
@@ -70,7 +70,7 @@ Recommended local evidence layout:
 docs/monica/
   REHEARSAL_LOG.md
   screenshots/
-    2026-06-22-mock-mode-banner.png
+    2026-06-22-data-source-state.png
     2026-06-22-candidate-provenance.png
     2026-06-22-confidence-breakdown.png
     2026-06-22-promote-confirmation.png
@@ -121,9 +121,9 @@ If the gate fails:
 2. Do not edit teammate-owned pipeline or eval internals to force the gate green.
 3. If a failure is from a cross-pillar dependency, log it with owner and exact command output.
 
-## Phase 2 - Timed Mock Demo
+## Phase 2 - Timed Demo
 
-Start the React mock client:
+Start the React client:
 
 ```powershell
 cd frontend-react
@@ -132,8 +132,8 @@ npm run dev
 
 Before timing:
 
-- Confirm `VITE_PRAXIS_API_BASE_URL` is unset in `frontend-react/.env.local`.
-- Confirm the mock mode banner is visible.
+- Confirm the selected data source is intentional. Current React config defaults to Local Postgres at `http://localhost:8000`; switch to mock fixtures only if that path is exposed in the current build.
+- If using live/local API mode, confirm the target store is disposable or demo-safe.
 - Use [DEMO_SCRIPT.md](DEMO_SCRIPT.md) as the speaking script.
 
 Timed path:
@@ -146,16 +146,16 @@ Timed path:
 
 Pass criteria:
 
-- Full Act 2 completes in 3.5 minutes or less.
+- Full Act 2 completes in 2 minutes or less.
 - Promotion confirmation copy is visible.
 - Contradiction resolution is visible.
 - Eval metrics embed is visible.
-- No live API dependency is required for this pass.
+- No shared live API dependency is required for this pass.
 
 Record in `REHEARSAL_LOG.md`:
 
 - Duration.
-- Mock or live mode.
+- Data source used: mock fixtures, local live API, or remote live API.
 - Any UI hesitation or script edit needed.
 - Whether the closing line was delivered cleanly.
 
@@ -169,7 +169,7 @@ Manual verification checklist:
 - Verify Enter/Space works on table rows.
 - Verify screen reader text for promote, reject, inspect, and defer controls.
 - Trigger low-confidence promote warning and verify alert announcement.
-- Select `cand_12` and verify decayed promote helper text is readable.
+- Select a rejected candidate and verify rejected-state helper text is readable.
 
 Record evidence in `REHEARSAL_LOG.md`:
 
@@ -179,7 +179,7 @@ Record evidence in `REHEARSAL_LOG.md`:
 | Table row Enter/Space | Pending | Notes |
 | Button accessible names | Pending | Screen reader notes |
 | Low-confidence alert | Pending | Notes or screenshot |
-| Decayed helper text | Pending | Notes or screenshot |
+| Rejected-state helper text | Pending | Notes or screenshot |
 
 If an accessibility issue is found:
 
@@ -189,9 +189,9 @@ If an accessibility issue is found:
 
 ## Phase 4 - Screenshots
 
-Capture these from the mock React client:
+Capture these from the React client using mock fixtures or disposable local API data:
 
-- Mock mode banner.
+- Data-source banner or control state.
 - Candidate list with provenance column.
 - Candidate detail confidence breakdown.
 - Promote confirmation dialog showing state transition copy.
@@ -201,7 +201,7 @@ Capture these from the mock React client:
 Recommended naming:
 
 ```text
-docs/monica/screenshots/2026-06-22-01-mock-mode-banner.png
+docs/monica/screenshots/2026-06-22-01-data-source-state.png
 docs/monica/screenshots/2026-06-22-02-candidate-provenance.png
 docs/monica/screenshots/2026-06-22-03-confidence-breakdown.png
 docs/monica/screenshots/2026-06-22-04-promote-confirmation.png
@@ -245,7 +245,8 @@ Use `frontend-react/.env.local`, not root `.env`:
 VITE_PRAXIS_API_BASE_URL=http://localhost:8000
 VITE_PRAXIS_API_TOKEN=
 VITE_PRAXIS_CONTRACT_VERSION=1
-VITE_PRAXIS_EVAL_METRICS_URL=http://localhost:8000/metrics
+VITE_PRAXIS_EVAL_METRICS_URL=
+VITE_PRAXIS_AUTH_DISABLED=1
 ```
 
 Dashboard check:
@@ -282,14 +283,14 @@ Pass criteria:
 - Mutations persist after refresh.
 - Item refresh updates one candidate without reloading the full list.
 - Conflict/error UX is recoverable.
-- Reject maps to decayed behavior.
-- Eval embed loads from `/metrics` if the endpoint exists.
+- Reject maps to `rejected` behavior.
+- Eval/evidence panels load from the current API endpoints or show a clear unavailable state.
 
 If the API does not exist:
 
 - Do not start building backend functionality.
 - Mark live smoke as blocked in `REHEARSAL_LOG.md`.
-- Continue mock demo, screenshots, accessibility, and video.
+- Continue local/mock demo, screenshots, accessibility, and video.
 
 If the metrics endpoint does not exist:
 
@@ -303,7 +304,7 @@ Use this status language in standup:
 ```text
 Monica dashboard path:
 - Offline gate: pass/fail with command evidence.
-- Mock Act 2: duration and remaining script polish.
+- Demo Act 2: duration and remaining script polish.
 - A11y: verified items and any Monica-owned fixes.
 - Screenshots/video: captured or scheduled.
 - Live smoke: pass/fail/blocked by API availability.
@@ -313,7 +314,7 @@ Monica dashboard path:
 Before feature freeze:
 
 - Re-run the green gate after any Monica-owned frontend change.
-- Confirm mock demo still works without API.
+- Confirm the demo source path still works without mutating shared data.
 - Confirm live mode is isolated to `frontend-react/.env.local`.
 - Confirm no cross-pillar code was changed for Monica evidence.
 
@@ -328,7 +329,7 @@ Before hard freeze:
 ## Final Completion Checklist
 
 - [ ] Green gate recorded in `REHEARSAL_LOG.md`.
-- [ ] Mock Act 2 timed at 3.5 minutes or less.
+- [ ] Demo Act 2 timed at 2 minutes or less.
 - [ ] Accessibility checklist completed.
 - [ ] Required screenshots captured or linked.
 - [ ] User-flow video captured or linked.
