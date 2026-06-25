@@ -64,6 +64,55 @@ filing status, and the "standard deduction" concept. This grades the **retrieval
 set itself** (recall), not only the final answer, so retrieval can't be tuned on
 answer quality alone.
 
+## Bracket-collision recall case (`bracket_collision/`)
+
+`matt_tax_return_bracket_collision_recall` is a `component: graph_reader` case
+that **captures a real distillation failure** found by auditing the live graph.
+When two filing statuses share the same numeric bracket range, Praxis's
+near-duplicate / overwrite-conflict pass collapses them and **silently rejects**
+one — with no contradiction flagged. In TY2025 the Married-filing-separately
+ladder shares the 12% / 22% / 24% / 32% lower-bracket boundaries with Single
+("MFS thresholds match Single except in the top two brackets"). In the observed
+run, distillation kept all seven MFS brackets but dropped the **Single 12%
+($11,925–$48,475), 24% ($103,350–$197,300), and 35% ($250,525–$626,350)** facts,
+plus the computation rule **"sum the tax from each bracket"** — the 12% gap is
+exactly the bracket the flagship single-filer/~$40k case needs.
+
+The case ingests the Single ladder, MFS ladder, and computation rule as separate
+docs, runs them through the **full live-like write policy** (`merge_model` +
+`conflict_model` wire the LLM merge judge and the claim/semantic conflict
+detectors — the reject-the-loser path), then asserts the reader surfaces each
+Single bracket as a **distinct, status-labelled** fact, that the
+**sum-of-brackets rule** survives, and that the **MFS twin survives alongside**
+the Single one. Each check binds the *filing-status label* to the rate + bound,
+because the bracket *numbers* survive via the MFS twin even when the Single fact
+is dropped — only a label-bound check catches the silent rejection.
+`recall_single_32pct_control` anchors a Single bracket whose range is unique.
+
+### Status: GREEN — and what that revealed
+
+The case currently **passes**. The canonical write policy with `gpt-4o-mini`
+judges does the right thing: it keeps all 14 brackets distinct. The live
+silent-rejection **could not be reproduced** through this offline path — a
+combined doc, sequential docs, the full conflict+merge policy, and a double
+re-seed were all tried, and every variant keeps the brackets. So the live drop
+comes from something this case does not yet replicate. Two leading suspects:
+
+1. **Deployed judge config.** The running serve may use a different judge model
+   or a looser dedup/merge threshold than `gpt-4o-mini`, so a clash the eval
+   judge keeps, the live judge collapses.
+2. **Full-corpus collision pressure.** The live graph was seeded from the whole
+   26-doc `rules.py` set (standard deductions where Single == MFS == $15,750,
+   every status's brackets, W-2 + return facts) — far denser near-duplicate
+   pressure than these three docs.
+
+So this is committed as a **regression guard** that encodes the correct
+expectation and exercises the real write policy. To turn it RED against the
+actual defect, the next step is to seed the real `rules.py` `RULE_DOCUMENTS`
+corpus through this same policy, and/or pin the case's judge model/threshold to
+the deployed serve's. (An alternative is an integration test that drives the live
+`/ingest` with `auto_resolve` and asserts the Single brackets are not rejected.)
+
 ## Full-pipeline knobs (per scenario)
 
 Copied from `matt/applications`, with the same rationale:

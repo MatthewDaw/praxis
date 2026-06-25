@@ -1,0 +1,1 @@
+W-2 box 1 reports taxable wages, tips, and other compensation. It can be lower than boxes 3 and 5 when the employee made pre-tax contributions such as a 401(k). Use box 1 for Form 1040 line 1a, not box 3 or 5.

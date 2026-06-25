@@ -1,0 +1,61 @@
+# HARD-NEGATIVE for the SEMANTIC conflict detector (false-alarm trap) -- the
+# different-ACTORS sibling of semantic_no_conflict_storage_target. Two message-policy
+# rules about DIFFERENT subjects:
+#   A (captain): "A captain's posted message is subject to the team's approval setting;
+#       when approval is required it stays pending until a coach approves it."
+#   B (coach):   "A coach's own messages are always visible immediately, regardless of
+#       the team's approval setting."
+#
+# They share heavy vocabulary ("message", "approval setting", "visible", "coach", "team")
+# and have a surface polarity ("pending until approved" vs "always visible immediately"),
+# so they sit at high cosine and the recall gate surfaces them. They are NOT contradictory:
+# they govern DIFFERENT actors (a captain's posts vs a coach's own posts), so both hold at
+# once. Same shape as semantic_no_conflict_storage_target (compatible facts, different
+# subject) -- here the distinguishing axis is the actor, not the storage target.
+#
+# The claim extractor canonicalizes these onto DIFFERENT (subject, attribute) slots
+# (captain-message-visibility vs coach-message-visibility), so the STRUCTURAL detector
+# flags nothing. The failure is the two-stage SEMANTIC fallback (embedding-narrow -> LLM
+# judge) keying on the "pending/approval" vs "always immediate" polarity and crying wolf;
+# a careful judge notices the subjects differ (captain vs coach) and reconciles them.
+#
+# Observed live (2026-06-25, agent-factory roles cluster, on_conflict="surface"): seeding
+# the captain-approval rule and the coach-immediate rule raised a PENDING contradiction
+# between them. Surface mode correctly held both for review -- but the detection itself was
+# a false positive. This case pins that detection error (independent of the surface/auto
+# routing, which worked).
+#
+# Component eval (no agent); vector substrate runs the real write policy; replays from the
+# committed claim_extract + conflict + semantic verdict cassettes + embedding fixture
+# offline (no live calls).
+#
+# Desired behavior: NO contradiction flagged; both facts kept verbatim.
+# On CURRENT code this is expected RED (the semantic fallback false-flags); GREEN once the
+# semantic judge's precision is tightened (same fix family as semantic_no_conflict_storage_target).
+id: semantic_no_conflict_distinct_actors
+component: knowledge_graph
+substrate: vector
+embedder: cached  # real vectors so the recall gate surfaces the look-alike candidate
+conflict_model: openai/gpt-4o-mini  # structural + semantic judge verdicts replayed from the committed cassette
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "A captain's posted message is subject to the team's approval setting; when approval is required it stays pending until a coach approves it."
+    - "A coach's own messages are always visible immediately, regardless of the team's approval setting."
+
+deterministic_checks:
+  # Precision: rules about different actors (captain vs coach) must NOT be flagged.
+  # Match the harness's flagged-pair summary prefix ("CONTRADICTION: ... contradicts ..."),
+  # not a bare word.
+  - name: no_contradiction_flagged
+    ref: "knowledge.evals.deterministic_checks.text:regex_absent"
+    params:
+      pattern: "CONTRADICTION:"
+  # Both rules survive verbatim as distinct stored facts (nothing merged/dropped).
+  - name: both_rules_kept
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "A captain's posted message is subject to the team's approval setting"
+        - "A coach's own messages are always visible immediately"

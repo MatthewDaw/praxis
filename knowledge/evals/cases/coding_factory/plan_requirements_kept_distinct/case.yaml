@@ -1,0 +1,72 @@
+# CODING-FACTORY plan-hardening edge case: two DISTINCT requirements that share
+# vocabulary must NOT be over-merged into one fact.
+#
+# The agent factory's plan-hardening loop writes each settled PRD requirement as its
+# own fact (one-requirement-per-fact is the invariant the "facts-canonical plan" relies
+# on: each requirement is independently citable and carries its own acceptance condition,
+# and the requirement_id <-> fact mapping must survive). Two requirements from the
+# team-app PRD:
+#   R2 (participation): "Team participation percentage for a day equals the number of
+#       completed athletes divided by the active roster size."
+#   R3 (streak):        "The team streak increments when the team's participation meets
+#       the streak threshold and resets to zero on a day that misses the threshold."
+#
+# They share heavy vocabulary ("team", "participation", "threshold", "streak", "day") and
+# sit at high cosine, so the recall gate surfaces them as candidates. But they are
+# DIFFERENT requirements about DIFFERENT subjects (participation-of-a-day vs
+# streak-of-the-team) — NOT the same lesson and NOT additive notes about one subject
+# (unlike matt/augment_additive_merge, which SHOULD merge). They must both survive as two
+# distinct active facts.
+#
+# Observed live (2026-06-25, agent-factory org, plan-hardening dry-run, on_conflict="surface"):
+# writing R3 after R2 returned action="merged" — R3 was folded INTO R2's fact, producing a
+# conflated participation+streak hybrid and losing R3's identity. on_conflict="surface" did
+# not help (that governs the contradiction stage; the merge happens earlier in the
+# augment/dedup stage). The H6 slot-guard (keyed on the functional (subject, attribute)
+# claim slot: distinct slot -> block merge) is the fix. This case pins it.
+#
+# Sibling: coding_factory/augment_no_merge_distinct_rules (prose governance-rules version of
+# the same class). Counterpart-not-to-regress: matt/augment_additive_merge (additive notes about ONE
+# subject that SHOULD merge to one fact). The judge must tell "additive about one subject"
+# from "two different requirements sharing a term".
+#
+# Component eval (no agent); vector substrate runs the real write policy
+# (Redactor -> Deduper -> Augmenter -> conflict detectors). Replays from the committed
+# augment + claim_extract + conflict verdict cassettes + embedding fixture offline.
+#
+# Desired behavior: NO merge, NO contradiction — the graph ends with BOTH requirements as
+# two distinct active facts. RED before the H6 slot-guard; GREEN after.
+id: plan_requirements_kept_distinct
+component: knowledge_graph
+substrate: vector
+embedder: cached  # real vectors so the recall gate surfaces the look-alike candidate
+augment_model: openai/gpt-4o-mini  # AugmentJudge verdict replayed from the committed cassette
+conflict_model: openai/gpt-4o-mini
+
+seeded_insight:
+  via_ingestor: []
+  direct_to_graph:
+    - "Team participation percentage for a day equals the number of completed athletes divided by the active roster size."
+    - "The team streak increments when the team's participation meets the streak threshold and resets to zero on a day that misses the threshold."
+
+deterministic_checks:
+  # Both requirements survive verbatim — neither dropped nor merged away into a synthesized
+  # single fact. Distinctive, non-overlapping fragments of each must both be present.
+  - name: both_requirements_kept
+    ref: "knowledge.evals.deterministic_checks.text:requires_all_substrings"
+    params:
+      texts:
+        - "participation percentage for a day equals the number of completed athletes divided by the active roster size"
+        - "team streak increments when the team's participation meets the streak threshold and resets to zero"
+  # ...AND as two SEPARATE facts, not one concatenated block (substring presence alone would
+  # still pass on a silent over-merge that joins both rules into one fact).
+  - name: two_distinct_facts
+    ref: "knowledge.evals.deterministic_checks.graph:distinct_fact_blocks"
+    params:
+      min_blocks: 2
+  # They are compatible (a definition vs a rule), not a contradiction. Match the harness's
+  # flagged-pair summary prefix ("CONTRADICTION: ... contradicts ..."), not the bare word.
+  - name: no_contradiction_flagged
+    ref: "knowledge.evals.deterministic_checks.text:regex_absent"
+    params:
+      pattern: "CONTRADICTION:"

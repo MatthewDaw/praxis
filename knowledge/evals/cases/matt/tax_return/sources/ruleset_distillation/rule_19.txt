@@ -1,0 +1,1 @@
+Form 1040 line 1a = total W-2 box 1 wages. Other income (interest, etc.) is added on later lines; line 9 = total income (the sum of all income lines).

@@ -384,6 +384,230 @@ def build_recall_case() -> dict:
     return {"case": case, "dir": HERE / "retrieval_recall"}
 
 
+# --- Ruleset-distillation integrity case -------------------------------------
+# Ingests the EXACT harness corpus the live graph was seeded from — the 26
+# `app/rules.py` RULE_DOCUMENTS (verbatim copy below) — through the full
+# live-like write policy, then asserts the reader surfaces every salient fact an
+# agent needs to file a 1040 across all four filing statuses. This is the real
+# reproduction of the audit: distilling the whole rule set creates dense
+# cross-status near-duplicate pressure (Single==MFS==$15,750 standard deductions;
+# overlapping bracket ranges across Single/MFS/HoH), which is what makes the
+# status-blind dedup/merge drop a row.
+#
+# The defect this guards: cross-status range collisions silently collapse a
+# filing-status fact. Observed live BEFORE the H6 slot-guard fix: Single 12% /
+# 24% / 35% rejected. AFTER the fix + a clean re-seed: those three returned, but
+# Single 22% ($48,475-$103,350, the range it shares with MFS 22%) is now silently
+# merged into the MFS twin and absent from the Single ladder. So the checks below
+# are driven off the FULL ladders for all four statuses — they catch whichever
+# row the collision drops, not just yesterday's victims — plus the standard
+# deductions, the marginal/sum rule, the W-2 box mappings, and the Form 1040 line
+# flow, so the whole retrieval set is guarded, not only the brackets.
+
+# Verbatim copy of app/rules.py RULE_DOCUMENTS (the harness ingest source). Kept
+# inline so this praxis-repo eval stays self-contained; if the harness rule text
+# changes, re-copy it here and re-run _generate.py + embed_cache --add.
+RULESET_DOCS = [
+    "TY2025 Form 1040 standard deduction by filing status: Single $15,750; "
+    "Married filing jointly $31,500; Married filing separately $15,750; "
+    "Head of household $23,625. Enter on Form 1040 line 12.",
+    "TY2025 standard deduction for a Single filer is $15,750 (Form 1040 line 12).",
+    "TY2025 standard deduction for Married filing jointly is $31,500 (Form 1040 line 12).",
+    "TY2025 standard deduction for Married filing separately is $15,750 (Form 1040 line 12).",
+    "TY2025 standard deduction for Head of household is $23,625 (Form 1040 line 12).",
+    "A taxpayer who is age 65 or older OR blind gets an additional standard "
+    "deduction on top of the basic amount; a taxpayer who is both gets it twice. "
+    "Most filers under 65 and not blind use only the basic standard deduction.",
+    "On Form 1040 line 12 a taxpayer claims the LARGER of the standard deduction "
+    "or total itemized deductions (Schedule A). Most W-2 wage earners take the "
+    "standard deduction because their itemized deductions are smaller.",
+    "TY2025 ordinary income tax brackets, Single: 10% up to $11,925; "
+    "12% $11,925-$48,475; 22% $48,475-$103,350; 24% $103,350-$197,300; "
+    "32% $197,300-$250,525; 35% $250,525-$626,350; 37% above $626,350.",
+    "TY2025 ordinary income tax brackets, Married filing jointly: 10% up to "
+    "$23,850; 12% $23,850-$96,950; 22% $96,950-$206,700; 24% "
+    "$206,700-$394,600; 32% $394,600-$501,050; 35% $501,050-$751,600; "
+    "37% above $751,600.",
+    "TY2025 ordinary income tax brackets, Married filing separately: 10% up to "
+    "$11,925; 12% $11,925-$48,475; 22% $48,475-$103,350; 24% $103,350-$197,300; "
+    "32% $197,300-$250,525; 35% $250,525-$375,800; 37% above $375,800. "
+    "(MFS thresholds match Single except in the top two brackets.)",
+    "TY2025 ordinary income tax brackets, Head of household: 10% up to "
+    "$17,000; 12% $17,000-$64,850; 22% $64,850-$103,350; 24% "
+    "$103,350-$197,300; 32% $197,300-$250,500; 35% $250,500-$626,350; "
+    "37% above $626,350.",
+    "Federal income tax brackets are marginal: each rate applies only to the "
+    "portion of taxable income that falls within that bracket's range, not to "
+    "the entire income. Sum the tax from each bracket to get total tax.",
+    "Single filing status applies to a taxpayer who is unmarried, divorced, or "
+    "legally separated on the last day of the tax year and does not qualify for "
+    "head of household.",
+    "Married couples may file jointly (MFJ), combining both spouses' income on "
+    "one return, or separately (MFS) on two returns. MFJ usually yields a lower "
+    "combined tax than MFS.",
+    "Head of household applies to an unmarried taxpayer who paid more than half "
+    "the cost of keeping up a home for a qualifying person (such as a dependent "
+    "child) for more than half the year. It gives a larger standard deduction "
+    "and wider brackets than Single.",
+    "A taxpayer under 65 generally must file a 2025 federal return if their gross "
+    "income is at least the standard deduction for their filing status (e.g. "
+    "$15,750 for Single). Filing is also worthwhile to claim a refund of withheld tax.",
+    "W-2 box 1 reports taxable wages, tips, and other compensation. It can be lower "
+    "than boxes 3 and 5 when the employee made pre-tax contributions such as a "
+    "401(k). Use box 1 for Form 1040 line 1a, not box 3 or 5.",
+    "W-2 box 2 reports federal income tax already withheld from the employee's pay. "
+    "It is entered on Form 1040 line 25a and counts as a payment toward the year's tax.",
+    "Form 1040 line 1a = total W-2 box 1 wages. Other income (interest, etc.) is "
+    "added on later lines; line 9 = total income (the sum of all income lines).",
+    "Form 1040 line 11 = adjusted gross income (AGI) = total income (line 9) minus "
+    "adjustments to income from Schedule 1. With only W-2 wages and no adjustments, "
+    "AGI equals total income.",
+    "Form 1040 line 15 = taxable income = AGI (line 11) minus the deduction on "
+    "line 12 (standard or itemized). Taxable income is never less than zero.",
+    "Form 1040 line 16 = tax on taxable income. The IRS Tax Table is used when "
+    "taxable income is under $100,000; the Tax Computation Worksheet (the bracket "
+    "schedule) is used at $100,000 and above. Both implement the same marginal brackets.",
+    "Amounts on Form 1040 may be rounded to whole dollars: drop amounts under 50 "
+    "cents and increase amounts from 50 to 99 cents to the next dollar.",
+    "Form 1040 line 24 = total tax. Line 25a = federal income tax withheld from "
+    "W-2 box 2. Line 33 = total payments (withholding plus any credits and estimated "
+    "payments).",
+    "Compare Form 1040 line 33 (total payments) with line 24 (total tax). If "
+    "payments exceed tax, the difference is your refund (line 34). If tax exceeds "
+    "payments, you owe the difference (line 37).",
+    "Form 1040 line flow: Line 1a = total W-2 box 1 wages. Line 9 = total "
+    "income. Line 11 = adjusted gross income (AGI). Line 12 = standard "
+    "deduction. Line 15 = taxable income (line 11 minus line 12, not below "
+    "zero). Line 16 = tax computed on taxable income. Line 22/24 = total "
+    "tax. Line 25a = federal income tax withheld from W-2 box 2. Line 33 = "
+    "total payments. If line 33 > line 24, line 34 is the refund; otherwise "
+    "line 37 is the amount you owe.",
+]
+
+
+def labeled_bracket(label_alt: str, rate_pct: int, figure: int) -> str:
+    """Regex for one distilled bracket fact binding a filing-status LABEL to a
+    RATE and a characteristic dollar FIGURE, within a single sentence (``[^.]``).
+    Binding the status word is essential: a bracket's *numbers* survive via a
+    same-range twin in another status even when this status's fact is dropped, so
+    only a label-bound check catches the silent collapse.
+    """
+    num = comma_optional(figure)
+    return (
+        rf"(?is)(?:{label_alt})[^.]{{0,200}}?{rate_pct}\s*(?:%|percent)"
+        rf"[^.]{{0,110}}?{num}"
+    )
+
+
+def labeled_deduction(label_alt: str, amount: int) -> str:
+    """Regex binding a filing-status LABEL to its standard-deduction AMOUNT in one
+    sentence. Single and MFS are both $15,750, so the label binding is what keeps
+    a collision from passing on the bare number."""
+    return rf"(?is)deduction[^.]{{0,80}}?(?:{label_alt})[^.]{{0,40}}?{comma_optional(amount)}"
+
+
+# Status label alternations, and the full TY2025 ladders as
+# (rate%, characteristic figure that appears in that status's distilled fact):
+# 10% -> bracket top ("up to $X"); 37% -> threshold ("above $X"); middle -> upper
+# bound. Every status pair shares at least one range (Single/MFS share 10–32%;
+# Single/MFS/HoH share 24% $103,350-$197,300; Single/HoH share 35% top $626,350),
+# so each row is a collision candidate and each status's row is asserted distinctly.
+STATUS_LABELS_RE = {
+    "single": r"single",
+    "mfj": r"married filing jointly|\bmfj\b",
+    "mfs": r"married filing separately|filing separately|\bmfs\b",
+    "hoh": r"head of household|\bhoh\b",
+}
+LADDERS = {
+    "single": [(10, 11_925), (12, 48_475), (22, 103_350), (24, 197_300),
+               (32, 250_525), (35, 626_350), (37, 626_350)],
+    "mfj": [(10, 23_850), (12, 96_950), (22, 206_700), (24, 394_600),
+            (32, 501_050), (35, 751_600), (37, 751_600)],
+    "mfs": [(10, 11_925), (12, 48_475), (22, 103_350), (24, 197_300),
+            (32, 250_525), (35, 375_800), (37, 375_800)],
+    "hoh": [(10, 17_000), (12, 64_850), (22, 103_350), (24, 197_300),
+            (32, 250_500), (35, 626_350), (37, 626_350)],
+}
+DEDUCTIONS = {"single": 15_750, "mfj": 31_500, "mfs": 15_750, "hoh": 23_625}
+
+SUM_RULE = r"(?is)(?:sum|add|combin\w*|total)[^.\n]{0,90}each bracket"
+
+
+def build_ruleset_distillation_case() -> dict:
+    scn_dir = SRC / "ruleset_distillation"
+    scn_dir.mkdir(parents=True, exist_ok=True)
+    for i, text in enumerate(RULESET_DOCS, start=1):
+        (scn_dir / f"rule_{i:02d}.txt").write_text(text, encoding="utf-8")
+
+    checks: list[dict] = []
+    # 1) Standard deduction for every filing status survives, label-bound.
+    for status, amount in DEDUCTIONS.items():
+        checks.append(regex_check(
+            f"recall_std_deduction_{status}", labeled_deduction(STATUS_LABELS_RE[status], amount)))
+    # 2) Every bracket of every status's full ladder survives distinctly — this is
+    #    what the cross-status collapse breaks (whichever row it drops).
+    for status, ladder in LADDERS.items():
+        for rate, figure in ladder:
+            checks.append(regex_check(
+                f"recall_bracket_{status}_{rate}pct",
+                labeled_bracket(STATUS_LABELS_RE[status], rate, figure)))
+    # 3) The marginal/sum-of-brackets computation rule (without it the rows are
+    #    isolated with no rule stitching them into a total).
+    checks.append(regex_check("recall_sum_of_brackets_rule", SUM_RULE))
+    checks.append(regex_check(
+        "recall_brackets_are_marginal", r"(?is)marginal[^.]{0,80}(?:bracket|portion|rate)"))
+    # 4) W-2 box mappings the agent needs to read the W-2 into the 1040.
+    checks.append(regex_check(
+        "recall_w2_box1_to_line1a", r"(?is)(?:box\s*1[^.]{0,80}1a|1a[^.]{0,80}box\s*1)"))
+    checks.append(regex_check(
+        "recall_w2_box2_to_line25a", r"(?is)(?:box\s*2[^.]{0,80}25a|25a[^.]{0,80}box\s*2)"))
+    # 5) Form 1040 line flow: AGI, taxable income (floored), refund vs. owe.
+    checks.append(regex_check(
+        "recall_agi_line11", r"(?is)(?:AGI|adjusted gross income)[^.]{0,80}line\s*11|line\s*11[^.]{0,80}(?:AGI|adjusted gross)"))
+    checks.append(regex_check(
+        "recall_taxable_income_line15",
+        r"(?is)taxable income[^.]{0,140}(?:line\s*11[^.]{0,30}line\s*12|11 minus[^.]{0,20}12)"))
+    checks.append(regex_check(
+        "recall_taxable_income_floored", r"(?is)(?:never less than zero|not below zero)"))
+    checks.append(regex_check(
+        "recall_refund_line34", r"(?is)(?:refund[^.]{0,40}line\s*34|line\s*34[^.]{0,40}refund)"))
+    checks.append(regex_check(
+        "recall_owe_line37", r"(?is)(?:owe[^.]{0,40}line\s*37|line\s*37[^.]{0,40}owe)"))
+    # 6) Standard-vs-itemized "larger of" rule and the whole-dollar rounding rule.
+    checks.append(regex_check(
+        "recall_larger_of_std_or_itemized", r"(?is)larger[^.]{0,60}itemi"))
+    checks.append(regex_check(
+        "recall_rounding_whole_dollars", r"(?is)(?:50\s*cents|whole dollar|to the next dollar)"))
+
+    case = {
+        "id": "matt_tax_return_ruleset_distillation",
+        "component": "graph_reader",
+        "substrate": "vector",
+        "embedder": "cached",
+        "ingest_model": "openai/gpt-4o-mini",
+        "ingest_state": "active",
+        # FULL live-like write policy — the same collapse path the live /ingest
+        # ran. merge_model -> LLM MergeJudge in the Deduper; conflict_model ->
+        # ClaimExtractor + Claim/Semantic conflict detectors (reject-the-loser).
+        # Both replay from committed cassettes offline; a live key records them.
+        "merge_model": "openai/gpt-4o-mini",
+        "conflict_model": "openai/gpt-4o-mini",
+        "reader": "retrieving",
+        "reader_top_k": 0,
+        "seed_prompt": (
+            "Give the complete TY2025 federal Form 1040 rules: the standard "
+            "deduction and the full 10%-37% ordinary-income bracket schedule for "
+            "every filing status (Single, Married filing jointly, Married filing "
+            "separately, Head of household), how the per-bracket tax is summed, "
+            "which W-2 boxes map to which 1040 lines, and the line-by-line flow "
+            "from wages through taxable income to the refund or amount owed."
+        ),
+        "seeded_insight": {"via_ingestor": list(RULESET_DOCS)},
+        "deterministic_checks": checks,
+    }
+    return {"case": case, "dir": HERE / "ruleset_distillation"}
+
+
 def regex_check(name: str, pattern: str) -> dict:
     return {
         "name": name,
@@ -439,6 +663,26 @@ def main() -> None:
     out.write_text(
         recall_header
         + yaml.safe_dump(recall["case"], sort_keys=False, allow_unicode=True, width=4096),
+        encoding="utf-8",
+    )
+    written += 1
+
+    ruleset = build_ruleset_distillation_case()
+    out = ruleset["dir"] / "case.yaml"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    ruleset_header = (
+        "# GENERATED by _generate.py — edit that script, not this file.\n"
+        "# Ruleset-distillation integrity case (graph_reader): ingests the exact 26\n"
+        "# app/rules.py RULE_DOCUMENTS the live graph was seeded from, through the full\n"
+        "# merge+conflict write policy, then asserts the reader surfaces every salient\n"
+        "# fact distinctly — all four statuses' standard deductions and full bracket\n"
+        "# ladders, the marginal/sum rule, the W-2 box mappings, and the 1040 line\n"
+        "# flow. Guards against the cross-status collapse that silently drops a\n"
+        "# filing-status bracket (e.g. Single 22% merged into the MFS twin).\n"
+    )
+    out.write_text(
+        ruleset_header
+        + yaml.safe_dump(ruleset["case"], sort_keys=False, allow_unicode=True, width=4096),
         encoding="utf-8",
     )
     written += 1
