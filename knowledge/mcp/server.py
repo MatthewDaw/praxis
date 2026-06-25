@@ -446,6 +446,43 @@ def praxis_ingest(
 
 
 @mcp.tool()
+def praxis_ingest_session(narrative: str, source: str | None = None) -> str:
+    """Distill a solved-problem coding session into PROPOSED knowledge candidates.
+
+    Hand the rendered narrative of a session you just finished (the problem, what was
+    tried and failed, the fix, why it works, how to prevent recurrence) to Praxis. The
+    backend runs the session distiller and writes each durable insight as a
+    ``proposed`` candidate — staged for human review, NOT added active. This is the
+    ``/ce-compound``-style capture path; use ``praxis_add_insight`` instead for a
+    single, already-distilled fact you want stored at full confidence.
+
+    ``source`` is optional and, when given, must look like ``session/<id>``; omit it
+    and the backend generates one. Returns a human summary plus a JSON block with the
+    created candidates (``id``/``scope``/``category``).
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    body: dict[str, object] = {"narrative": narrative}
+    if source is not None:
+        body["source"] = source
+    try:
+        resp = httpx.post(
+            f"{identity.api_base()}/ingest/session",
+            json=body,
+            headers=_headers(),
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    return _structured(
+        f"distilled {payload.get('count', 0)} proposed candidate(s) "
+        f"from session {payload.get('source', '')}",
+        payload,
+    )
+
+
+@mcp.tool()
 def praxis_record_outcome(fact_id: str, outcome: str) -> str:
     """Feed a downstream verification result back into a fact's trust (gap H1).
 

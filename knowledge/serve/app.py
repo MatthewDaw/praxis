@@ -1355,6 +1355,85 @@ def create_app(conn: Any | None = None) -> FastAPI:
             })
         return {"results": results, "count": len(results)}
 
+    @app.post("/ingest/session")
+    def ingest_session(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Distill one solved-problem session narrative into ``proposed`` candidates.
+
+        Body: ``{"narrative": str, "source": str|null}``. Runs the structured
+        ``SessionIngestor`` distiller (NOT ``ingest_dump``, NOT ``/insights``' active
+        path) over the narrative and writes each insight as a ``proposed`` candidate
+        through the tenant graph's redact+dedup policy, preserving the insight's
+        ``scope``/``category`` (which the base ``Ingestor.ingest`` would drop).
+
+        ``source`` is validated to ``session/<id>`` when supplied and auto-generated
+        server-side (not caller-spoofable) when omitted. Oversized narratives are
+        rejected (413) before any LLM call. Returns
+        ``{"source", "count", "candidates": [{"id","scope","category"}]}``.
+        """
+        import re
+        import uuid
+
+        from knowledge.injestion.injestor_variants.session_injestor import (
+            SessionIngestor,
+        )
+
+        max_narrative_bytes = 128 * 1024
+        source_re = re.compile(r"session/[A-Za-z0-9_-]{1,64}")
+
+        narrative = (body.get("narrative") or "").strip()
+        if not narrative:
+            raise HTTPException(status_code=400, detail="narrative must be non-empty")
+        if len(narrative.encode("utf-8")) > max_narrative_bytes:
+            raise HTTPException(status_code=413, detail="narrative too large")
+        source = body.get("source")
+        if source is not None:
+            source = str(source)
+            if not source_re.fullmatch(source):
+                raise HTTPException(
+                    status_code=400, detail="source must match session/<id>"
+                )
+        else:
+            source = f"session/{uuid.uuid4().hex[:16]}"
+
+        # Scrub secrets BEFORE the narrative reaches the third-party LLM — the write
+        # policy's Redactor only scrubs the stored fact text, not the prompt. Reuses
+        # the exact Redactor patterns (no duplication).
+        from knowledge.knowledge_graph.write_policy.write_step_variants.redactor import (
+            redact_text,
+        )
+
+        narrative = redact_text(narrative)
+
+        # Distill via SessionIngestor directly (build_trio hardwires PromptIngestor and
+        # /ingest is bound to ingest_dump). Redact+dedup policy mirrors /ingest so
+        # session narratives — which may carry secrets — are scrubbed on write too.
+        graph = PostgresVectorGraph(
+            conn, org, principal.sub, policy=[Redactor(), Deduper()]
+        )
+        ingestor = SessionIngestor(graph, OpenRouterLlm())
+        insights = ingestor.synthesis(narrative, source=source)
+        candidates: list[dict[str, Any]] = []
+        for ins in insights:
+            # Write each insight with its scope/category (PostgresVectorGraph.write
+            # accepts them; the base Ingestor.ingest, bound to the frozen ABC write
+            # signature, would not). Lands "proposed" — the human-gated lifecycle.
+            fid = graph.write(
+                ins.raw_text,
+                state="proposed",
+                source=ins.source,
+                scope=ins.scope,
+                category=ins.category,
+            )
+            if fid:
+                candidates.append(
+                    {"id": fid, "scope": ins.scope, "category": ins.category}
+                )
+        return {"source": source, "count": len(candidates), "candidates": candidates}
+
     # --- derivation / staleness traversal (H5) -----------------------------
     def _derivation_view(fact: Any) -> dict[str, Any]:
         """Compact read model for a derivation/staleness hit (incl. ``meta``)."""

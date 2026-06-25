@@ -22,9 +22,19 @@ _PATTERNS = [
 ]
 
 
+def redact_text(text: str) -> str:
+    """Replace secret/PII-shaped substrings with ``[REDACTED]``.
+
+    Module-level so callers that need to scrub a raw string *before* it leaves the
+    process (e.g. before sending a session narrative to a third-party LLM) can reuse
+    the exact patterns the write-time :class:`Redactor` applies, rather than
+    duplicating them.
+    """
+    for pattern in _PATTERNS:
+        text = pattern.sub(_PLACEHOLDER, text)
+    return text
+
+
 class Redactor(WriteStep):
     def apply(self, decision: WriteDecision) -> None:
-        text = decision.text
-        for pattern in _PATTERNS:
-            text = pattern.sub(_PLACEHOLDER, text)
-        decision.text = text
+        decision.text = redact_text(decision.text)

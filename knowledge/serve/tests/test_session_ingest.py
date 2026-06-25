@@ -1,0 +1,145 @@
+"""U4: POST /ingest/session — distill a session narrative into proposed candidates.
+
+Mirrors test_server.py's convention: the write path embeds through the real embedder,
+so these tests need a Postgres DSN AND OPENROUTER_API_KEY and skip cleanly without
+them. The distiller LLM is faked (deterministic, no distill call) by monkeypatching
+``knowledge.serve.app.OpenRouterLlm``; the embedder stays real.
+
+Covers R3 and the security guards added in review: Redactor in the write policy,
+the size cap, and source validation.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+
+import pytest
+from dotenv import load_dotenv
+from fastapi.testclient import TestClient
+
+load_dotenv()  # resolve PRAXIS_DB_URL / OPENROUTER_API_KEY at import (skipif reads them)
+
+from knowledge.serve import app as app_module  # noqa: E402
+from knowledge.serve import db  # noqa: E402
+from knowledge.serve.orgs_store import OrgsStore  # noqa: E402
+from knowledge.llm.parent_llm import Llm  # noqa: E402
+
+pytestmark = pytest.mark.skipif(
+    db.resolve_dsn() is None or not os.getenv("OPENROUTER_API_KEY"),
+    reason=(
+        "needs a Postgres DSN (PRAXIS_DB_URL) AND OPENROUTER_API_KEY — the write path "
+        "embeds candidates via the real embedder"
+    ),
+)
+
+USER = "dev-user"
+_TABLES = ("fact_edges", "facts", "cached_facts", "org_members", "orgs")
+
+
+class FakeLlm(Llm):
+    """Returns a per-instance canned distillation reply; records the prompt it saw."""
+
+    def __init__(self) -> None:
+        self.reply = json.dumps({"insights": []})
+        self.last_prompt: str | None = None
+
+    def complete(self, messages, *, temperature=0.0, max_tokens=1024, response_format=None):
+        self.last_prompt = messages[-1].content
+        return self.reply
+
+
+@pytest.fixture
+def fake_llm():
+    return FakeLlm()
+
+
+@pytest.fixture
+def client(unique_org, monkeypatch, fake_llm):
+    # Fake the distiller (deterministic, no live distill); embedder stays real.
+    monkeypatch.setattr(app_module, "OpenRouterLlm", lambda *a, **k: fake_llm)
+    db.bootstrap()
+    conn = db.connect()
+    org = unique_org
+    for tbl in _TABLES:
+        conn.execute(f"DELETE FROM {tbl} WHERE org_id = %s", (org,))
+    OrgsStore(conn).create_org(org, org, "pw", USER)
+    app = app_module.create_app(conn)
+    yield TestClient(app, headers={"X-Praxis-Org": org})
+    for tbl in _TABLES:
+        conn.execute(f"DELETE FROM {tbl} WHERE org_id = %s", (org,))
+    conn.close()
+
+
+def test_happy_path_creates_proposed_candidates(client, fake_llm):
+    # Covers R3: a narrative distills to proposed candidates visible via /candidates.
+    fake_llm.reply = json.dumps({"insights": [
+        {"text": "Use uv, not pip, to install deps in this repo.",
+         "scope": "repo", "category": "convention"},
+        {"text": "yoyo execs migrations with the repo root off sys.path.",
+         "scope": "module:migrations", "category": "gotcha"},
+    ]})
+
+    res = client.post("/ingest/session", json={"narrative": "PROBLEM ...\nFIX ..."})
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["count"] == 2
+    assert body["source"].startswith("session/")
+    proposed = client.get("/candidates", params={"state": "proposed"}).json()
+    assert len(proposed) == 2
+    # scope/category provenance survived onto the candidates.
+    cats = {c.get("category") for c in proposed}
+    assert {"convention", "gotcha"} <= cats
+
+
+def test_secret_in_narrative_not_stored_verbatim(client, fake_llm):
+    # The Redactor in the write policy scrubs provider-key-shaped tokens before storage.
+    secret = "sk-livesecret1234567890abcdef"
+    fake_llm.reply = json.dumps({"insights": [
+        {"text": f"The deploy token is {secret} and must be rotated.",
+         "scope": "repo", "category": "gotcha"},
+    ]})
+
+    res = client.post("/ingest/session", json={"narrative": "leaked a token"})
+
+    assert res.status_code == 200
+    dump = json.dumps(client.get("/candidates", params={"state": "proposed"}).json())
+    assert secret not in dump
+
+
+def test_secret_in_narrative_redacted_before_llm(client, fake_llm):
+    # Pre-distill scrub: a secret in the narrative never reaches the (third-party) LLM.
+    secret = "sk-livesecret1234567890abcdef"
+    res = client.post(
+        "/ingest/session", json={"narrative": f"the deploy token is {secret} btw"}
+    )
+    assert res.status_code == 200
+    assert fake_llm.last_prompt is not None
+    assert secret not in fake_llm.last_prompt
+    assert "[REDACTED]" in fake_llm.last_prompt
+
+
+def test_oversized_narrative_rejected_before_llm(client):
+    # Guard fires before any LLM call: a >128KB narrative is a 413.
+    res = client.post("/ingest/session", json={"narrative": "x" * (200 * 1024)})
+    assert res.status_code == 413
+
+
+def test_bad_source_rejected(client):
+    res = client.post(
+        "/ingest/session", json={"narrative": "ok", "source": "not a valid source"}
+    )
+    assert res.status_code == 400
+
+
+def test_omitted_source_is_autogenerated(client, fake_llm):
+    # Covers the source auto-generation branch: omitted source -> server-generated id.
+    fake_llm.reply = json.dumps({"insights": [
+        {"text": "A durable fact.", "scope": "repo", "category": "decision"},
+    ]})
+
+    body = client.post("/ingest/session", json={"narrative": "x"}).json()
+
+    assert re.fullmatch(r"session/[A-Za-z0-9_-]{1,64}", body["source"])

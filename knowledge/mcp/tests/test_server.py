@@ -225,6 +225,49 @@ def test_ingest_surface_mode_plumbs_on_conflict(monkeypatch):
     assert captured["json"]["onConflict"] == "surface"
 
 
+def test_ingest_session_posts_narrative_as_proposed(monkeypatch):
+    _patch_identity(monkeypatch)
+    captured = {}
+
+    def fake_post(url, json, headers):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        return _Resp({
+            "source": "session/abc123",
+            "count": 2,
+            "candidates": [
+                {"id": "f1", "scope": "repo", "category": "convention"},
+                {"id": "f2", "scope": "module:migrations", "category": "gotcha"},
+            ],
+        })
+
+    monkeypatch.setattr(server.httpx, "post", fake_post)
+
+    out = server.praxis_ingest_session("PROBLEM ...\nFIX ...")
+
+    assert captured["url"] == "http://api.test/ingest/session"
+    assert captured["json"] == {"narrative": "PROBLEM ...\nFIX ..."}  # no source key when omitted
+    assert captured["headers"]["Authorization"] == "Bearer id-tok"
+    assert captured["headers"]["X-Praxis-Org"] == "acme"
+    assert "2 proposed candidate(s)" in out
+    data = _extract_json(out)
+    assert data["count"] == 2 and data["source"] == "session/abc123"
+
+
+def test_ingest_session_includes_source_when_given(monkeypatch):
+    _patch_identity(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        server.httpx,
+        "post",
+        lambda url, json, headers: captured.update(json=json)
+        or _Resp({"source": "session/x", "count": 0, "candidates": []}),
+    )
+    server.praxis_ingest_session("n", source="session/x")
+    assert captured["json"] == {"narrative": "n", "source": "session/x"}
+
+
 def test_get_contradictions_formats_pairs(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
