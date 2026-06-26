@@ -6,15 +6,18 @@
 #      into <target>/.claude/skills/ so edits to the canonical copies propagate live.
 #   2. Gitignores those junctions in the target (they are machine-local links).
 #   3. Appends a managed Praxis-knowledge block to <target>/CLAUDE.md (idempotent).
-#   4. Adds the praxis MCP server to <target>/.mcp.json (idempotent).
+#   4. Adds the praxis MCP server to <target>/.mcp.json, wired for the login-free
+#      auth-disabled bypass (PRAXIS_MCP_AUTH_DISABLED=1) (idempotent).
 #
 # Windows note: uses directory junctions (mklink /J) — no admin / Developer Mode
 # needed, unlike native symlinks (and git core.symlinks is false here anyway).
 #
 # Usage (from anywhere in the praxis repo):
-#   scripts/install-praxis-skill.sh ~/repos/bridge-bidding-bot
+#   scripts/install-praxis-skill.sh <target-repo> [org]
+#   scripts/install-praxis-skill.sh ~/repos/bridge-bidding-bot dom
 #
-# Re-running is safe: every step is idempotent.
+# [org] is the X-Praxis-Org sent in bypass mode (the dev principal must be a member of
+# it); defaults to "default". Re-running is safe: every step is idempotent.
 set -euo pipefail
 
 SKILLS=(praxis-up ce-compound-praxis)
@@ -32,8 +35,10 @@ if [[ ! -d "$TARGET_ARG" ]]; then
   exit 1
 fi
 TARGET="$(cd "$TARGET_ARG" && pwd)"
+ORG="${2:-default}"
 echo "praxis canon : $CANON"
 echo "target repo  : $TARGET"
+echo "bypass org   : $ORG"
 
 # --- 1. junction the skills ---------------------------------------------------
 echo "skills:"
@@ -94,9 +99,12 @@ not a runtime dependency.
 - **Before starting work** in a non-trivial or previously-touched area, call
   \`praxis_get_context\` with a query describing the task, and weave any returned
   active facts into your approach.
+- This repo's \`.mcp.json\` runs the praxis MCP in **auth-disabled bypass** mode
+  (\`PRAXIS_MCP_AUTH_DISABLED=1\`), so **no \`praxis_login\` is needed**: reads/writes go
+  to the local \`dev-user\` tenant (org \`$ORG\`). (Without the bypass, the MCP client
+  requires a one-time \`praxis_login\` regardless of backend auth mode.)
 - If a \`praxis_*\` tool reports a connection error or 503, run the **\`praxis-up\`**
-  skill to start the local backend (Postgres + FastAPI on :8000), then retry. The
-  backend runs auth-disabled, so no \`praxis_login\` is needed.
+  skill to start the local backend (Postgres + FastAPI on :8000), then retry.
 - **After solving** something non-trivial and verified, offer to capture it with the
   **\`ce-compound-praxis\`** skill (\`praxis_ingest_session\`) so future sessions can
   retrieve it.
@@ -106,9 +114,9 @@ fi
 
 # --- 4. register the praxis MCP server in .mcp.json (idempotent) --------------
 mj="$TARGET/.mcp.json"
-( cd "$CANON" && uv run python - "$mj" "$CANON_M" <<'PY'
+( cd "$CANON" && uv run python - "$mj" "$CANON_M" "$ORG" <<'PY'
 import json, os, sys
-path, canon = sys.argv[1], sys.argv[2]
+path, canon, org = sys.argv[1], sys.argv[2], sys.argv[3]
 data = {}
 if os.path.exists(path):
     try:
@@ -120,6 +128,13 @@ servers = data.setdefault("mcpServers", {})
 servers["praxis"] = {
     "command": "uv",
     "args": ["run", "--directory", canon, "python", "-m", "knowledge.mcp"],
+    # Login-free local dev: the MCP client honors PRAXIS_MCP_AUTH_DISABLED and the
+    # backend (started auth-disabled by the praxis-up skill) ignores the token.
+    "env": {
+        "PRAXIS_MCP_AUTH_DISABLED": "1",
+        "PRAXIS_API_BASE_URL": "http://127.0.0.1:8000",
+        "PRAXIS_MCP_ORG": org,
+    },
 }
 with open(path, "w") as f:
     json.dump(data, f, indent=2)

@@ -548,11 +548,12 @@ class PostgresVectorGraph(SearchableGraph):
         for dep_id in self._dependent_ids(fact_id, DERIVED_FROM_EDGE, _MAX_DERIVATION_DEPTH):
             self.add_edge(dep_id, fact_id, STALE_DERIVED_EDGE)
 
-    def stale_derived(self) -> list[Fact]:
-        """Active facts flagged stale because a fact they derive from was invalidated.
+    def _stale_flagged_ids(self) -> set[str]:
+        """Ids of facts carrying a ``STALE_DERIVED_EDGE`` review edge (flagged stale).
 
-        Reads the ``STALE_DERIVED_EDGE`` review edges set by ``_flag_stale_dependents``
-        (one reader, one writer). Returns the suspect learnings for human/agent review.
+        One source of truth for "which facts were flagged stale" — read by both
+        ``stale_derived`` (the review surface) and the completeness queries (a stale
+        requirement is incomplete: a dependency changed, it needs rework).
         """
         cache = ""
         params: list[object] = [self.org_id, self.user_id, STALE_DERIVED_EDGE]
@@ -564,7 +565,15 @@ class PostgresVectorGraph(SearchableGraph):
             f"WHERE org_id=%s AND user_id=%s AND kind=%s{cache}",
             params,
         ).fetchall()
-        ids = {r[0] for r in rows}
+        return {r[0] for r in rows}
+
+    def stale_derived(self) -> list[Fact]:
+        """Active facts flagged stale because a fact they derive from was invalidated.
+
+        Reads the ``STALE_DERIVED_EDGE`` review edges set by ``_flag_stale_dependents``
+        (one reader, one writer). Returns the suspect learnings for human/agent review.
+        """
+        ids = self._stale_flagged_ids()
         return [f for f in self.all_facts(state="active") if f.id in ids]
 
     def _persist_contradictions(self, fact_id: str, decision: WriteDecision) -> None:
@@ -831,12 +840,19 @@ class PostgresVectorGraph(SearchableGraph):
         fact whose suggested action repeatedly fails sinks in ranking and a proven
         one holds — the compounding signal (verified-good knowledge sharpens recall,
         verified-bad knowledge fades) the store otherwise lacks.
+
+        Also stamps ``last_outcome`` with the *latest* result ('succeeded'|'failed').
+        The cumulative counts can't tell a once-passing requirement that later
+        regressed from one still passing; the latest-outcome signal can, and the
+        derived-completeness queries (``incomplete_requirements``) read it to mark a
+        succeeded-then-failed requirement as regressed.
         """
         column = "success_count" if success else "failure_count"
+        outcome = "succeeded" if success else "failed"
         self._conn.execute(
-            f"UPDATE {self._facts_table} SET {column} = {column} + 1 "
+            f"UPDATE {self._facts_table} SET {column} = {column} + 1, last_outcome = %s "
             "WHERE id = %s AND org_id = %s AND user_id = %s",
-            (fact_id, self.org_id, self.user_id),
+            (outcome, fact_id, self.org_id, self.user_id),
         )
 
     def _search_keyword(
@@ -1524,6 +1540,143 @@ class PostgresVectorGraph(SearchableGraph):
         return {
             "uncoveredSurfaces": uncovered_surfaces,
             "uncoveredRequirements": uncovered_requirements,
+        }
+
+    @staticmethod
+    def _completeness_reasons(
+        success_count: int, last_outcome: str | None, is_stale: bool
+    ) -> list[str]:
+        """Why an active requirement is NOT verified-complete, derived from signals.
+
+        A requirement is incomplete when ANY holds (the model, all derived — never a
+        self-set 'done' flag):
+          * ``never-built`` — no successful outcome yet (``success_count == 0``);
+          * ``regressed``   — it succeeded before but its *latest* outcome was a
+            failure (``last_outcome == 'failed'`` with at least one prior success);
+          * ``stale``       — a fact it derives from was invalidated (carries a
+            ``STALE_DERIVED_EDGE``), so it needs rework.
+        Returns every applicable reason, primary first (``never-built`` > ``regressed``
+        > ``stale``); an empty list means COMPLETE (latest outcome succeeded, not
+        stale). The never-built / regressed branches are exclusive (a requirement with
+        zero successes is never-built, not regressed, even if its last outcome failed),
+        so the primary reason partitions the incomplete set cleanly for the summary.
+        """
+        reasons: list[str] = []
+        if success_count == 0:
+            reasons.append("never-built")
+        elif last_outcome == "failed":
+            reasons.append("regressed")
+        if is_stale:
+            reasons.append("stale")
+        return reasons
+
+    def _classify_project_requirements(self, project: str) -> list[dict]:
+        """Every active ``category='requirement'`` fact in ``prd-<project>``, each
+        annotated with its completeness reasons (empty list == complete), newest first.
+
+        The single read+classify pass both ``incomplete_requirements`` and
+        ``completeness_summary`` share — one requirements query plus one stale-edge
+        query, so the two public methods stay consistent and cheap. Project scoping
+        mirrors how the factory seeds a plan (requirement facts ingested with
+        ``source='prd-<project>'``) and respects the same tenancy / sharing visibility,
+        active-only filtering, and cache binding as the rest of the read surface.
+
+        Each entry::
+
+            {"fact": Fact, "reason": str | None, "reasons": list[str],
+             "success_count": int, "failure_count": int, "last_outcome": str | None}
+
+        ``reasons`` is every applicable cause (primary first); ``reason`` is the primary
+        cause, or ``None`` when the requirement is complete. See ``_completeness_reasons``.
+        """
+        source = f"prd-{project}"
+        cache = ""
+        params: list[object] = [
+            self.org_id, self.user_id, REQUIREMENT_CATEGORY, source
+        ]
+        if self._cache_key is not None:
+            cache = " AND cache_key = %s"
+            params.append(self._cache_key)
+        rows = self._conn.execute(
+            "SELECT id, text, source, confidence, scope, category, observation_count, "
+            "state, created_at, meta, cluster_id, cluster_label, "
+            "success_count, failure_count, last_outcome "
+            f"FROM {self._facts_table} "
+            "WHERE org_id = %s AND (shared OR user_id = %s) AND state = 'active' "
+            f"AND category = %s AND source = %s{cache} "
+            "ORDER BY created_at DESC",
+            params,
+        ).fetchall()
+        stale_ids = self._stale_flagged_ids()
+        out: list[dict] = []
+        for r in rows:
+            fact = self._row_to_fact(r[:12])
+            success_count = r[12] or 0
+            failure_count = r[13] or 0
+            last_outcome = r[14]
+            fact.success_count = success_count
+            fact.failure_count = failure_count
+            fact.last_outcome = last_outcome
+            reasons = self._completeness_reasons(
+                success_count, last_outcome, fact.id in stale_ids
+            )
+            out.append(
+                {
+                    "fact": fact,
+                    "reason": reasons[0] if reasons else None,
+                    "reasons": reasons,
+                    "success_count": success_count,
+                    "failure_count": failure_count,
+                    "last_outcome": last_outcome,
+                }
+            )
+        return out
+
+    def incomplete_requirements(self, project: str) -> list[dict]:
+        """Active requirement facts in ``prd-<project>`` that are NOT verified-complete.
+
+        The primary query the agent-factory loop calls to pick "the next unbuilt
+        requirement". Completeness is DERIVED from verification + staleness signals
+        only (``record_outcome`` results + ``_flag_stale_dependents`` flags) — there is
+        no agent-settable completeness column. A requirement is incomplete when it has
+        never succeeded (never-built), most-recently failed after a prior success
+        (regressed — the bug/ticket path), or is flagged stale (a dependency changed).
+
+        Returns one entry per incomplete requirement, newest first::
+
+            {"fact": Fact, "reason": str, "reasons": list[str],
+             "success_count": int, "failure_count": int, "last_outcome": str | None}
+
+        ``reason`` is the primary cause; ``reasons`` lists every cause that applies.
+        Complete requirements (latest outcome succeeded, not stale) are omitted; so are
+        rejected/superseded ones (active-only). See ``_completeness_reasons``.
+        """
+        return [
+            item
+            for item in self._classify_project_requirements(project)
+            if item["reasons"]
+        ]
+
+    def completeness_summary(self, project: str) -> dict:
+        """Done-of-definition counts for ``prd-<project>``'s active requirements.
+
+        ``{total_active_requirements, complete, incomplete, breakdown}`` where
+        ``breakdown`` counts incomplete requirements by primary reason
+        (``never_built`` / ``stale`` / ``regressed``) and sums to ``incomplete`` (the
+        primary reason partitions the set — see ``_completeness_reasons``). Derived
+        from the same verification + staleness signals as ``incomplete_requirements``.
+        """
+        classified = self._classify_project_requirements(project)
+        incomplete = [item for item in classified if item["reasons"]]
+        breakdown = {"never_built": 0, "stale": 0, "regressed": 0}
+        for item in incomplete:
+            breakdown[item["reason"].replace("-", "_")] += 1
+        total = len(classified)
+        return {
+            "total_active_requirements": total,
+            "complete": total - len(incomplete),
+            "incomplete": len(incomplete),
+            "breakdown": breakdown,
         }
 
     def wipe_cache(self) -> int:

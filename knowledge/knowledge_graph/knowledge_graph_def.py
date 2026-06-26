@@ -66,6 +66,11 @@ class Fact(BaseModel):
     # proven one holds. Both default 0 => neutral (utility 1.0, ranking unchanged).
     success_count: int = 0
     failure_count: int = 0
+    # The most recent verification outcome ('succeeded'|'failed'|None=never verified).
+    # The counts above are cumulative and can't distinguish a once-passing requirement
+    # that later regressed; this carries the *latest* signal so completeness queries can
+    # tell "succeeded then failed" (regressed) from "still passing". Set by record_outcome.
+    last_outcome: str | None = None
     state: FactState = "proposed"  # set by the write decision; see FactState
     # Topic cluster assigned by the clustering pass (embed -> reduce -> HDBSCAN).
     # None => unclustered (HDBSCAN noise). Ids are not stable across re-runs.

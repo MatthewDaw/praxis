@@ -1646,6 +1646,71 @@ def praxis_surface_coverage(project: str, scope: str | None = None) -> str:
     )
 
 
+@mcp.tool()
+def praxis_incomplete_requirements(project: str) -> str:
+    """List the project's requirements that are NOT yet built/verified-complete.
+
+    Completeness is DERIVED from verification signals, never a self-set flag: a
+    requirement is incomplete if it has never had a successful outcome (never-built),
+    its most recent outcome was a failure after a prior success (regressed — the
+    bug/ticket path), or a fact it derives from changed (stale — needs rework). Use
+    this to pick the next requirement to build and to re-find regressed ones after a
+    ticket records a failed outcome.
+
+    Returns a human summary plus a JSON block with ``incomplete`` — one entry per
+    requirement (``id``/``text``/``state``/``source``/``scope``/``category``/``meta``
+    plus ``reason``/``reasons``/``successCount``/``failureCount``/``lastOutcome``).
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/requirements/incomplete",
+            params={"project": project},
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    incomplete = payload.get("incomplete", [])
+    return _structured(
+        f"{len(incomplete)} incomplete requirement(s) in {project}."
+        if incomplete
+        else f"All active requirements in {project} are verified-complete.",
+        {"project": project, "incomplete": incomplete},
+    )
+
+
+@mcp.tool()
+def praxis_completeness_summary(project: str) -> str:
+    """Done-of-definition counts for a project's active requirements.
+
+    Returns totals (``total_active_requirements``/``complete``/``incomplete``) and a
+    ``breakdown`` of incomplete by reason (``never_built``/``stale``/``regressed``),
+    all derived from verification + staleness — no self-set completeness flag.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/requirements/completeness",
+            params={"project": project},
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    return _structured(
+        f"{payload.get('complete', 0)}/{payload.get('total_active_requirements', 0)} "
+        f"requirement(s) complete in {project}.",
+        payload,
+    )
+
+
 @mcp.prompt(title="Log in to Praxis")
 def login() -> str:
     """Log in to the Praxis knowledge graph (drives the praxis_login tool).

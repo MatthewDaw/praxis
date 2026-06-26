@@ -1,0 +1,46 @@
+# CODING-FACTORY done-of-definition edge: a requirement's completeness is DERIVED from
+# verification signals, never a self-set flag. The factory's "what should I build/fix next?"
+# surface lists the active category="requirement" facts in prd-<project> that are not yet
+# verified-complete -- computed from outcome history + staleness:
+#
+#   never-built: no successful outcome yet (success_count == 0)
+#   regressed:   a prior success, then the latest outcome failed (the bug/ticket path)
+#   stale:       a fact it derives_from was invalidated (needs rework)
+#
+# This case targets the regression/ticket path plus the never-built and complete cases:
+#
+#   REGRESSED requirement:    daily check-in submission must persist across a page reload --
+#                             succeeded once, then a later outcome failed (a ticket recorded a
+#                             regression), so it re-surfaces as incomplete (reason="regressed").
+#   NEVER-BUILT requirement:  the Roster screen must show each member's current streak -- no
+#                             successful outcome yet, so it surfaces (reason="never-built").
+#   COMPLETE requirement:     the app must require a signed-in user -- a single success, never
+#                             failed, so it does NOT surface.
+#
+# The check drives the REAL completeness path (incomplete_requirements) in an isolated tenant,
+# using FakeEmbedder (deterministic, offline -- no cached-embedding misses) with a plain
+# [Redactor, Deduper] policy and recall_floor=-1.0 so each seed coexists as its own active row.
+# It needs a Postgres DSN; the harness SKIPs without one.
+id: requirement_incomplete_when_unbuilt_or_regressed
+component: knowledge_graph
+substrate: vector
+embedder: cached
+
+seeded_insight:
+  via_ingestor: []
+  # Seeded by the check into its own tenant (with category="requirement", source="prd-team-app",
+  # and recorded outcomes, which direct_to_graph strings cannot express); listed here for
+  # visibility only.
+  direct_to_graph:
+    - "The daily check-in submission must persist across a page reload."
+    - "The Roster screen must show each team member's current streak."
+    - "The app must require a signed-in user before showing the dashboard."
+
+deterministic_checks:
+  - name: requirement_incomplete_when_unbuilt_or_regressed
+    ref: "knowledge.evals.deterministic_checks.graph:requirement_incomplete_when_unbuilt_or_regressed"
+    params:
+      project: "team-app"
+      requirement_text: "The daily check-in submission must persist across a page reload."
+      never_built_text: "The Roster screen must show each team member's current streak."
+      complete_text: "The app must require a signed-in user before showing the dashboard."
