@@ -873,6 +873,34 @@ def test_data_tool_when_not_logged_in_guides_to_login(monkeypatch):
     assert "praxis_login" in out and "not logged in" in out.lower()
 
 
+def test_mcp_auth_disabled_skips_login_gate(monkeypatch):
+    # The MCP client bypass (distinct from the backend's PRAXIS_AUTH_DISABLED) lets
+    # the tools run with no cached login, sending X-Praxis-Org and no bearer token.
+    monkeypatch.setenv("PRAXIS_MCP_AUTH_DISABLED", "1")
+    monkeypatch.setenv("PRAXIS_MCP_ORG", "myorg")
+    monkeypatch.setattr(identity, "is_logged_in", lambda: False)
+    assert server._not_ready() is None
+    assert server._headers() == {"X-Praxis-Org": "myorg"}
+
+
+def test_mcp_auth_disabled_defaults_org(monkeypatch):
+    monkeypatch.setenv("PRAXIS_MCP_AUTH_DISABLED", "1")
+    monkeypatch.delenv("PRAXIS_MCP_ORG", raising=False)
+    assert server._headers() == {"X-Praxis-Org": "default"}
+
+
+def test_api_base_from_env_when_mcp_auth_disabled(monkeypatch):
+    # In bypass mode api_base() must not require a cached login.
+    monkeypatch.setenv("PRAXIS_MCP_AUTH_DISABLED", "1")
+    monkeypatch.setenv("PRAXIS_API_BASE_URL", "http://here:9000")
+
+    def _boom():
+        raise AssertionError("load_identity should not be called in bypass mode")
+
+    monkeypatch.setattr(identity, "load_identity", _boom)
+    assert identity.api_base() == "http://here:9000"
+
+
 def test_praxis_login_auto_selects_single_org(monkeypatch):
     from knowledge.mcp.identity import Tenant
 

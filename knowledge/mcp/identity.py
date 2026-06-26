@@ -157,7 +157,14 @@ def authenticate(email: str, password: str) -> tuple[Tenant, list[dict]]:
 
 
 def api_base() -> str:
-    """The backend base URL: cached value, else the ``PRAXIS_API_BASE_URL`` env."""
+    """The backend base URL: cached value, else the ``PRAXIS_API_BASE_URL`` env.
+
+    In the MCP client's auth-disabled seam (``PRAXIS_MCP_AUTH_DISABLED=1``) there
+    may be no cached login, so fall back to the env/default base instead of
+    requiring one.
+    """
+    if os.environ.get("PRAXIS_MCP_AUTH_DISABLED") == "1":
+        return _api_base()
     return load_identity().api_base
 
 
