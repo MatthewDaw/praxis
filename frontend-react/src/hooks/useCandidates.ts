@@ -17,15 +17,16 @@ export function useCandidates(options: UseCandidatesOptions) {
   const { config, providerOverride, localSession, auth } = options;
   const getToken = auth?.getToken;
   const orgId = auth?.orgId;
+  const spaceId = auth?.spaceId;
   const provider = useMemo<DataProvider>(
     () =>
       providerOverride ??
       resolveDataProvider(
         config,
         localSession,
-        getToken ? { getToken, orgId } : undefined,
+        getToken ? { getToken, orgId, spaceId } : undefined,
       ),
-    [config, localSession, providerOverride, getToken, orgId],
+    [config, localSession, providerOverride, getToken, orgId, spaceId],
   );
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [loading, setLoading] = useState(true);
