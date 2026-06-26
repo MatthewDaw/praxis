@@ -128,6 +128,24 @@ def _load_instances(n: int, manifest_path: Path | None):
     return instances
 
 
+def _ensure_sympy_checkout(checkout: Path, *, repo_url: str = "https://github.com/sympy/sympy") -> None:
+    """Clone sympy into ``checkout`` if it isn't already a git repo (live-path setup).
+
+    The agent edits a *real* host working tree, so we need sympy checked out there;
+    :func:`knowledge.evals.swebench.runner.prepare_checkout` then resets it to the
+    instance's ``base_commit`` before each arm. A FULL clone is required (not shallow):
+    ``base_commit`` is an arbitrary historical commit a shallow clone wouldn't contain.
+    One clone per instance org-dir is simple-but-heavy; a shared clone + ``git worktree``
+    is the obvious optimization for a multi-instance run.
+    """
+    import subprocess
+
+    if (checkout / ".git").is_dir():
+        return
+    checkout.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "clone", repo_url, str(checkout)], check=True)
+
+
 def _seed_mcp_cache(org_id: str, *, base_url: str) -> str:
     """Write a per-instance MCP identity cache pinning ``org_id``; return its path.
 
@@ -194,6 +212,7 @@ def run_live(*, n_instances: int, trials: int, k_rework: int, manifest_path: Pat
             # (+ install_config venv, built by the orchestrator before the first arm) and a
             # per-instance MCP cache pinning the org for the treatment arm.
             checkout = (HERE / ".checkouts" / org_id_for(inst))
+            _ensure_sympy_checkout(checkout)  # clone sympy if absent so the agent edits a real tree
             checkouts[inst.instance_id] = checkout
             mcp_configs[inst.instance_id] = _seed_mcp_cache(org_id_for(inst), base_url=client.base_url)
     except Exception as exc:  # noqa: BLE001 — translate connection failures to a clear message
