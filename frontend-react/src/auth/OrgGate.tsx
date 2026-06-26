@@ -59,7 +59,7 @@ export function useOrg(): OrgContextValue {
 
 /** Resolve the live API base url that org/auth calls target. */
 export function orgApiBaseUrl(): string {
-  return resolveInitialConfig().apiBaseUrl ?? "http://localhost:8000";
+  return resolveInitialConfig().apiBaseUrl ?? "http://127.0.0.1:8000";
 }
 
 function normalizeMemberships(payload: unknown): OrgMembership[] {

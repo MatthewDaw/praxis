@@ -30,9 +30,9 @@ export const DATA_SOURCE_PRESETS: DataSourcePreset[] = [
     id: PRESET_IDS.local,
     label: "Local Postgres",
     mode: "live",
-    defaultApiBaseUrl: "http://localhost:8000",
+    defaultApiBaseUrl: "http://127.0.0.1:8000",
     helpText:
-      "knowledge/serve FastAPI on localhost:8000 — Postgres-backed candidate API.",
+      "knowledge/serve FastAPI on 127.0.0.1:8000 — Postgres-backed candidate API.",
   },
   {
     id: PRESET_IDS.postgres,
@@ -83,13 +83,13 @@ export function buildConfigFromPreset(
 
   let apiBaseUrl: string | undefined;
   if (preset.id === PRESET_IDS.postgres) {
-    apiBaseUrl = envPostgresApiBaseUrl() ?? "http://localhost:8000";
+    apiBaseUrl = envPostgresApiBaseUrl() ?? "http://127.0.0.1:8000";
   } else {
     apiBaseUrl = preset.defaultApiBaseUrl;
   }
 
   if (!apiBaseUrl) {
-    apiBaseUrl = "http://localhost:8000";
+    apiBaseUrl = "http://127.0.0.1:8000";
   }
 
   const normalized = apiBaseUrl.replace(/\/$/, "");

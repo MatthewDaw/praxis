@@ -58,14 +58,14 @@ describe("dataSource config", () => {
     const config = buildConfigFromPreset(PRESET_IDS.local);
     expect(config.mode).toBe("live");
     expect(config.label).toBe("Local Postgres");
-    expect(config.apiBaseUrl).toBe("http://localhost:8000");
+    expect(config.apiBaseUrl).toBe("http://127.0.0.1:8000");
   });
 
-  it("builds postgres preset with localhost fallback when env unset", () => {
+  it("builds postgres preset with 127.0.0.1 fallback when env unset", () => {
     const config = buildConfigFromPreset(PRESET_IDS.postgres);
     expect(config.mode).toBe("live");
     expect(config.presetId).toBe(PRESET_IDS.postgres);
-    expect(config.apiBaseUrl).toBe("http://localhost:8000");
+    expect(config.apiBaseUrl).toBe("http://127.0.0.1:8000");
   });
 
   it("postgres preset prefers VITE_PRAXIS_POSTGRES_API_BASE_URL over generic URL", () => {
@@ -80,7 +80,7 @@ describe("dataSource config", () => {
     persistConfig(live);
     const restored = resolveInitialConfig();
     expect(restored.mode).toBe("live");
-    expect(restored.apiBaseUrl).toBe("http://localhost:8000");
+    expect(restored.apiBaseUrl).toBe("http://127.0.0.1:8000");
   });
 
   it("defaults to postgres preset when env API URL is set", () => {
@@ -102,14 +102,14 @@ describe("dataSource config", () => {
     const config = resolveInitialConfig();
     expect(config.mode).toBe("live");
     expect(config.presetId).toBe(PRESET_IDS.local);
-    expect(config.apiBaseUrl).toBe("http://localhost:8000");
+    expect(config.apiBaseUrl).toBe("http://127.0.0.1:8000");
   });
 
   it("falls back to local preset for an unknown preset id", () => {
     const config = buildConfigFromPreset("nonexistent-preset");
     expect(config.mode).toBe("live");
     expect(config.presetId).toBe(PRESET_IDS.local);
-    expect(config.apiBaseUrl).toBe("http://localhost:8000");
+    expect(config.apiBaseUrl).toBe("http://127.0.0.1:8000");
   });
 
   it("localStorage round-trip omits token", () => {
