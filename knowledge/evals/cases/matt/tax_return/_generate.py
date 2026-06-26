@@ -485,31 +485,34 @@ RULESET_DOCS = [
 ]
 
 
-def _one_sentence(*token_patterns: str) -> str:
-    """Match a single distilled sentence that contains ALL ``token_patterns`` in
-    ANY order. Distillation freely reorders ("...12% ... for single filers" vs
-    "Single ... 12% ..."), so order-sensitive checks produce false negatives. We
-    anchor at a sentence/line boundary and use a lookahead per token, each bounded
-    to the same sentence via ``[^.\\n]`` (no period/newline crossed)."""
-    anchor = r"(?is)(?:^|[.\n])\s*"
-    lookaheads = "".join(rf"(?=[^.\n]*(?:{t}))" for t in token_patterns)
-    return anchor + lookaheads
+def _one_sentence(*terms: str) -> str:
+    """Regex matching a single sentence (no ``.``/newline within) that contains every
+    TERM, in ANY order. Each term is a regex fragment; zero-width lookaheads from the
+    sentence start assert each appears before the next period, so the match is
+    order-independent. This is essential because the distiller phrases the same fact
+    many ways — "Single filers are taxed at 22% on $48,475-..." (label first) and "The
+    22% rate applies to ... for single filers" (label last) must both match — without
+    that, a present-and-correct fact fails the check purely on word order.
+    """
+    lookaheads = "".join(rf"(?=[^.\n]*?(?:{t}))" for t in terms)
+    return rf"(?is)(?:^|[.\n])\s*{lookaheads}[^.\n]*"
 
 
 def labeled_bracket(label_alt: str, rate_pct: int, figure: int) -> str:
-    """Bind a filing-status LABEL to a bracket RATE and a characteristic dollar
-    FIGURE within one sentence (order-independent). Binding the status word is
-    essential: a bracket's *numbers* survive via a same-range twin in another
-    status even when this status's fact is dropped, so only a label-bound check
-    catches the silent collapse."""
+    """Regex for one distilled bracket fact binding a filing-status LABEL to a RATE
+    and a characteristic dollar FIGURE within a single sentence, order-independent.
+    Binding the status word is essential: a bracket's *numbers* survive via a
+    same-range twin in another status even when this status's fact is dropped, so
+    only a label-bound check catches the silent collapse.
+    """
     return _one_sentence(label_alt, rf"{rate_pct}\s*(?:%|percent)", comma_optional(figure))
 
 
 def labeled_deduction(label_alt: str, amount: int) -> str:
-    """Bind a filing-status LABEL to its standard-deduction AMOUNT in one sentence
-    (order-independent). Single and MFS are both $15,750, so the label binding is
-    what keeps a collision from passing on the bare number."""
-    return _one_sentence(r"deduction", label_alt, comma_optional(amount))
+    """Regex binding a filing-status LABEL to its standard-deduction AMOUNT in one
+    sentence (order-independent). Single and MFS are both $15,750, so the label
+    binding is what keeps a collision from passing on the bare number."""
+    return _one_sentence("deduction", label_alt, comma_optional(amount))
 
 
 # Status label alternations, and the full TY2025 ladders as
@@ -520,7 +523,7 @@ def labeled_deduction(label_alt: str, amount: int) -> str:
 # so each row is a collision candidate and each status's row is asserted distinctly.
 STATUS_LABELS_RE = {
     "single": r"single",
-    "mfj": r"married filing jointly|\bmfj\b",
+    "mfj": r"married filing jointly|filing jointly|\bmfj\b",
     "mfs": r"married filing separately|filing separately|\bmfs\b",
     "hoh": r"head of household|\bhoh\b",
 }
@@ -563,18 +566,22 @@ def build_ruleset_distillation_case() -> dict:
     checks.append(regex_check(
         "recall_brackets_are_marginal", r"(?is)marginal[^.]{0,80}(?:bracket|portion|rate)"))
     # 4) W-2 box mappings the agent needs to read the W-2 into the 1040.
-    checks.append(regex_check("recall_w2_box1_to_line1a", _one_sentence(r"box\s*1", r"\b1a\b")))
-    checks.append(regex_check("recall_w2_box2_to_line25a", _one_sentence(r"box\s*2", r"25a")))
+    checks.append(regex_check(
+        "recall_w2_box1_to_line1a", r"(?is)(?:box\s*1[^.]{0,80}1a|1a[^.]{0,80}box\s*1)"))
+    checks.append(regex_check(
+        "recall_w2_box2_to_line25a", r"(?is)(?:box\s*2[^.]{0,80}25a|25a[^.]{0,80}box\s*2)"))
     # 5) Form 1040 line flow: AGI, taxable income (floored), refund vs. owe.
     checks.append(regex_check(
-        "recall_agi_line11", _one_sentence(r"AGI|adjusted gross income", r"line\s*11")))
+        "recall_agi_line11", r"(?is)(?:AGI|adjusted gross income)[^.]{0,80}line\s*11|line\s*11[^.]{0,80}(?:AGI|adjusted gross)"))
     checks.append(regex_check(
         "recall_taxable_income_line15",
-        _one_sentence(r"taxable income", r"line\s*11", r"line\s*12")))
+        r"(?is)taxable income[^.]{0,140}(?:line\s*11[^.]{0,30}line\s*12|11 minus[^.]{0,20}12)"))
     checks.append(regex_check(
-        "recall_taxable_income_floored", r"(?is)(?:never less than zero|not below zero|not\s+below\s+0)"))
-    checks.append(regex_check("recall_refund_line34", _one_sentence(r"refund", r"line\s*34")))
-    checks.append(regex_check("recall_owe_line37", _one_sentence(r"\bowe", r"line\s*37")))
+        "recall_taxable_income_floored", r"(?is)(?:never less than zero|not below zero)"))
+    checks.append(regex_check(
+        "recall_refund_line34", r"(?is)(?:refund[^.]{0,40}line\s*34|line\s*34[^.]{0,40}refund)"))
+    checks.append(regex_check(
+        "recall_owe_line37", r"(?is)(?:owe[^.]{0,40}line\s*37|line\s*37[^.]{0,40}owe)"))
     # 6) Standard-vs-itemized "larger of" rule and the whole-dollar rounding rule.
     checks.append(regex_check(
         "recall_larger_of_std_or_itemized", r"(?is)larger[^.]{0,60}itemi"))
@@ -596,6 +603,15 @@ def build_ruleset_distillation_case() -> dict:
         "conflict_model": "openai/gpt-4o-mini",
         "reader": "retrieving",
         "reader_top_k": 0,
+        # This is a RECALL-integrity case: the prompt asks for the COMPLETE ruleset, so
+        # every salient fact must surface, not just those nearest the single best hit.
+        # The default rel_ratio=0.60 shape filter is a precision tool — it drops a fact
+        # scoring under 60% of the top hit even when it is plainly on-topic (e.g.
+        # "Taxable income is never less than zero." scores 0.317 vs a 0.68 top, so the
+        # 0.41 cutoff drops it). Disable rel_ratio and let the abs_floor=0.30 existence
+        # gate (kept at default) be the relevance guard; the case has no negative
+        # control to protect, and every check is a must-be-present recall assertion.
+        "reader_rel_ratio": 0.0,
         "seed_prompt": (
             "Give the complete TY2025 federal Form 1040 rules: the standard "
             "deduction and the full 10%-37% ordinary-income bracket schedule for "

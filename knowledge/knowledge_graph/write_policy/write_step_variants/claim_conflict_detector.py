@@ -24,6 +24,9 @@ import re
 from knowledge.knowledge_graph.knowledge_graph_def import Claim
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
 from knowledge.knowledge_graph.write_policy.write_policy_def import WriteDecision
+from knowledge.knowledge_graph.write_policy.write_step_variants.filing_status import (
+    distinct_tax_facts,
+)
 from knowledge.llm.llm_def import ChatMessage
 from knowledge.llm.parent_llm import Llm
 from knowledge.llm.verdict_cassette import VerdictCassette
@@ -110,8 +113,16 @@ class ClaimConflictDetector(WriteStep):
         }
         if not incoming or not decision.claim_candidates:
             return
+        # Tax-identity guard: distinct tax-bracket rungs are never a contradiction. A
+        # schedule is a ladder of coexisting (filing status, rate) facts — adjacent
+        # rungs (HoH 10% vs HoH 12%) only LOOK like a numeric clash on a shared
+        # "income range" slot, and same-rate cross-status twins map one rate to
+        # different ranges (Single 22% $48,475-$103,350 vs MFJ 22% $96,950-$206,700).
+        # Either way the loser would be wrongly rejected, dropping a status's ladder.
         flagged: set[str] = set()
         for hit in decision.claim_candidates:
+            if distinct_tax_facts(decision.text, hit.fact.fact.text):
+                continue
             slot = (Claim.norm(hit.subject), Claim.norm(hit.attribute))
             new_val = incoming.get(slot)
             if new_val is None:

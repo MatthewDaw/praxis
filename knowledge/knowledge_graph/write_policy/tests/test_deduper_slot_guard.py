@@ -229,3 +229,39 @@ def test_distinct_requirements_sharing_vocabulary_not_merged():
     texts = " || ".join(f.text for f in actives)
     assert "participation percentage for a date" in texts  # R2's identity preserved
     assert "consecutive run of days" in texts  # R3's identity preserved
+
+
+# --- Filing-status identity guard (tax-bracket cross-status collapse) ---------
+
+def test_same_value_across_filing_statuses_not_merged():
+    # The killer for tax brackets: Single 22% and MFS 22% are the SAME range
+    # ($48,475-$103,350), so their functional claims share slot AND value — the
+    # same-value branch would rule them a genuine duplicate and merge, dropping one
+    # status's row. The filing-status guard rules them distinct facts (different
+    # dominant status in the text) before the slot logic runs.
+    single = "Single filers are taxed at a 22% rate on income between $48,475 and $103,350."
+    mfs = "For Married filing separately (MFS), the 22% rate covers $48,475 to $103,350."
+    claim = Claim(subject="income", attribute="22% bracket range", value="48475-103350", functional=True)
+    mapping = {single: [claim], mfs: [claim]}
+    g = _graph(mapping, tabular=False)
+    g.write(single, state="active")
+    g.write(mfs, state="active")
+    assert len(_active(g)) == 2  # same slot+value but different status -> both survive
+
+
+def test_same_rate_different_range_across_statuses_not_a_contradiction():
+    # Single 22% ($48,475-$103,350) vs MFJ 22% ($96,950-$206,700): same rate, different
+    # range. Status-blind, the shared slot + different numeric value reads as a clash and
+    # the conflict detector would reject the loser. The guard rules the pair cross-status,
+    # so it is neither merged nor flagged — both ladders keep their 22% row.
+    single = "Single filers: 22% rate on income between $48,475 and $103,350."
+    mfj = "Married filing jointly: 22% rate on income between $96,950 and $206,700."
+    mapping = {
+        single: [Claim(subject="income", attribute="22% bracket upper bound", value="103350", functional=True)],
+        mfj: [Claim(subject="income", attribute="22% bracket upper bound", value="206700", functional=True)],
+    }
+    g = _graph(mapping, tabular=False)
+    g.write(single, state="active")
+    g.write(mfj, state="active")
+    assert len(g.contradictions()) == 0  # different status -> not a contradiction
+    assert len(_active(g)) == 2  # both 22% rows survive

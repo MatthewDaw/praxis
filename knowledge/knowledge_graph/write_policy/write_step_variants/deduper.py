@@ -57,6 +57,9 @@ from __future__ import annotations
 from knowledge.knowledge_graph.knowledge_graph_def import Claim
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
 from knowledge.knowledge_graph.write_policy.write_policy_def import WriteDecision
+from knowledge.knowledge_graph.write_policy.write_step_variants.filing_status import (
+    distinct_tax_facts,
+)
 from knowledge.knowledge_graph.write_policy.write_step_variants.merge_judge import MergeJudge
 
 # Flag set by the ingestion side on a write distilled from tabular/templated input.
@@ -124,6 +127,21 @@ class Deduper(WriteStep):
         so subject-only would never fire and the judge would fold the rows into one.
         Engages for any write with a functional claim (prose and tabular).
         """
+        # Tax-identity guard (runs first, independent of claim-extraction quality).
+        # A tax-bracket schedule is a ladder of coexisting facts keyed by (filing
+        # status, rate); two facts with different identities are distinct even when
+        # their numbers coincide or merely sit adjacent: Single 22% and MFS 22% are
+        # both $48,475-$103,350, and Single 22% vs Single 24% are neighbouring rungs,
+        # not duplicates. Block the same-lesson merge here AND the later Augmenter
+        # (no_merge_ids); ruling the pair cross-identity (not same-slot/different-value)
+        # also keeps it out of the contradiction path. This is what keeps every
+        # status's full ladder distinct and active.
+        cross_status: set[str] = {
+            hit.fact.id
+            for hit in decision.candidates
+            if distinct_tax_facts(decision.text, hit.fact.text)
+        }
+
         incoming = {c.slot: c.value for c in decision.claims if c.functional}
         if not incoming:
             if TABULAR_FLAG in decision.flags:
@@ -136,8 +154,11 @@ class Deduper(WriteStep):
                 decision.no_merge_ids = sorted(blocked)
                 return blocked
             # Prose with no functional claim is normal (e.g. additive preferences) —
-            # leave it to the MergeJudge/Augmenter; the guard does not engage.
-            return set()
+            # leave it to the MergeJudge/Augmenter; the guard does not engage, except
+            # the filing-status guard above (a status fact whose claims didn't extract
+            # still must not merge across statuses).
+            decision.no_merge_ids = sorted(cross_status)
+            return set(cross_status)
 
         # The cosine candidates carry no claims; the functional slots of existing facts
         # come from the slot-keyed recall (decision.claim_candidates), which both
@@ -146,9 +167,11 @@ class Deduper(WriteStep):
         for ch in decision.claim_candidates:
             existing_by_fact.setdefault(ch.fact.fact.id, {})[(ch.subject, ch.attribute)] = ch.value
 
-        guarded: set[str] = set()  # blocks THIS step's same-lesson judge loop
+        guarded: set[str] = set(cross_status)  # blocks THIS step's same-lesson judge loop
         conflicts: set[str] = set()  # same-slot/different-value -> also block the Augmenter
         for hit in decision.candidates:
+            if hit.fact.id in cross_status:
+                continue  # already ruled distinct by filing status (never merge/conflict)
             existing = existing_by_fact.get(hit.fact.id, {})
             shared = incoming.keys() & existing.keys()
             if not shared:
@@ -162,14 +185,14 @@ class Deduper(WriteStep):
                 # re-ingested table (or restated rule) stays idempotent (N facts, not 2N).
                 decision.action = "update"
                 decision.update_target_id = hit.fact.id
-                decision.no_merge_ids = sorted(conflicts)
+                decision.no_merge_ids = sorted(conflicts | cross_status)
                 return guarded
             # Same slot, DIFFERENT value -> a contradiction. Block the merge here AND in
             # the Augmenter (an additive merge would silence the conflict), and leave the
             # pair for ClaimConflictDetector to flag.
             guarded.add(hit.fact.id)
             conflicts.add(hit.fact.id)
-        decision.no_merge_ids = sorted(conflicts)
+        decision.no_merge_ids = sorted(conflicts | cross_status)
         return guarded
 
 
