@@ -35,6 +35,7 @@ reach it.
 from __future__ import annotations
 
 import json
+import os
 import platform
 from dataclasses import dataclass
 from pathlib import Path
@@ -188,6 +189,20 @@ def _run_evaluation(**kwargs) -> None:
     re_mod.main(**kwargs)
 
 
+def _use_wsl(backend: str) -> bool:
+    """Whether to bridge grading into WSL. ``auto`` picks WSL on any non-Linux host.
+
+    The swebench harness is Linux/Docker-only (``import resource``), but the agent +
+    ``run.py`` run on the Windows host. ``auto`` => grade in-process when already on Linux,
+    else shell out to WSL (the validated path on this Windows-ARM box).
+    """
+    if backend == "wsl":
+        return True
+    if backend == "inprocess":
+        return False
+    return platform.system() != "Linux"  # "auto"
+
+
 def grade(
     instance: "Instance",
     patch: str,
@@ -197,15 +212,20 @@ def grade(
     split: str = "test",
     timeout: int = 1800,
     predictions_path: str | Path | None = None,
+    backend: str = "auto",
     run_evaluation: Callable[..., None] = _run_evaluation,
+    wsl_grade: Callable[..., dict | None] | None = None,
 ) -> GradeResult:
     """Grade ``patch`` for ``instance`` end to end via the arm64-adapted swebench harness.
 
-    Orchestrates: ``prepare`` (arch patch + install_config injection) → write the
-    predictions file → invoke ``run_evaluation`` (Docker, ``cache_level="env"``,
-    ``max_workers=1``, ``namespace=None``) → locate + parse the per-instance ``report.json``.
-    An empty/whitespace patch short-circuits to ``resolved=False`` without shelling out.
-    The ``run_evaluation`` seam is injected so unit tests never reach Docker.
+    Orchestrates: write the predictions file → produce the per-instance ``report.json``
+    (in-process on Linux, or bridged into WSL on a Windows/macOS host — see ``backend``)
+    → parse it. An empty/whitespace patch short-circuits to ``resolved=False`` without
+    shelling out.
+
+    ``backend`` is ``"auto"`` (WSL off-Linux, in-process on Linux), ``"wsl"``, or
+    ``"inprocess"``. The in-process ``run_evaluation`` and the ``wsl_grade`` bridge are
+    both injectable seams so unit tests never reach Docker/WSL.
     """
     empty = not patch.strip()
 
@@ -215,29 +235,35 @@ def grade(
     if empty:
         return GradeResult(resolved=False, fail_to_pass={}, pass_to_pass={}, empty_patch=True)
 
-    prepare(instance)
-    run_evaluation(
-        dataset_name=dataset_name,
-        split=split,
-        instance_ids=[instance.instance_id],
-        predictions_path=str(pred_path),
-        max_workers=1,
-        force_rebuild=False,
-        cache_level="env",
-        clean=False,
-        open_file_limit=4096,
-        run_id=run_id,
-        timeout=timeout,
-        namespace=None,
-        rewrite_reports=False,
-        modal=False,
-    )
+    if _use_wsl(backend):
+        report = (wsl_grade or _wsl_grade)(
+            instance, pred_path, run_id=run_id, dataset_name=dataset_name,
+            split=split, timeout=timeout,
+        )
+    else:
+        prepare(instance)
+        run_evaluation(
+            dataset_name=dataset_name,
+            split=split,
+            instance_ids=[instance.instance_id],
+            predictions_path=str(pred_path),
+            max_workers=1,
+            force_rebuild=False,
+            cache_level="env",
+            clean=False,
+            open_file_limit=4096,
+            run_id=run_id,
+            timeout=timeout,
+            namespace=None,
+            rewrite_reports=False,
+            modal=False,
+        )
+        report = _locate_report(instance.instance_id, run_id)
 
-    report = _locate_report(instance.instance_id, run_id)
-    if report is None:
+    if not report:
         return GradeResult(
             resolved=False, fail_to_pass={}, pass_to_pass={}, empty_patch=False,
-            error="report.json not found after run_evaluation",
+            error="report.json not found after grading",
         )
     return parse_report(report, instance)
 
@@ -253,3 +279,66 @@ def _locate_report(instance_id: str, run_id: str) -> dict | None:
     if not matches:
         return None
     return json.loads(matches[-1].read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------- #
+# WSL bridge: grade from a Windows host by shelling into WSL where swebench lives.
+# --------------------------------------------------------------------------- #
+# This Windows-ARM box runs the agent on the host but the grader only in WSL. These
+# point at the lean WSL swebench venv + a writable WSL workdir for the harness's logs/;
+# override via env for a different machine.
+_WSL_PYTHON = os.environ.get("PRAXIS_WSL_PYTHON", "$HOME/swebench-smoke/.venv/bin/python")
+_WSL_WORKDIR = os.environ.get("PRAXIS_WSL_WORKDIR", "$HOME/swebench-smoke")
+
+
+def _win_to_wsl(path: str | Path) -> str:
+    """Translate a Windows path (``C:\\x\\y``) to its WSL mount form (``/mnt/c/x/y``)."""
+    p = str(path).replace("\\", "/")
+    if len(p) >= 2 and p[1] == ":":
+        return f"/mnt/{p[0].lower()}{p[2:]}"
+    return p
+
+
+def _wsl_grade(
+    instance: "Instance",
+    pred_path: str | Path,
+    *,
+    run_id: str,
+    dataset_name: str,
+    split: str,
+    timeout: int,
+) -> dict | None:
+    """Bridge grading into WSL: write meta, run the standalone worker, read the report back.
+
+    The worker (``_wsl_grade_worker.py``) imports ONLY swebench, so it runs in the lean WSL
+    venv that can't import the ``knowledge`` package. We pass the predictions file + a small
+    metadata JSON (repo/version/test_cmd/instance/dataset) as ``/mnt/c`` paths and read the
+    per-instance ``report.json`` back from a host temp file the worker writes into.
+    """
+    import subprocess
+    import tempfile
+
+    worker = Path(__file__).resolve().parent / "_wsl_grade_worker.py"
+    meta = {
+        "repo": instance.repo or "sympy/sympy",
+        "version": instance.version,
+        "test_cmd": instance.install_config.get("test_cmd", ""),
+        "instance_id": instance.instance_id,
+        "dataset_name": dataset_name,
+        "split": split,
+    }
+    tmp = Path(tempfile.mkdtemp(prefix="praxis-wslgrade-"))
+    meta_path = tmp / "meta.json"
+    out_path = tmp / "report.json"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    cmd = (
+        f"cd {_WSL_WORKDIR} && {_WSL_PYTHON} "
+        f'"{_win_to_wsl(worker)}" "{_win_to_wsl(Path(pred_path).resolve())}" '
+        f'"{_win_to_wsl(meta_path)}" {run_id} "{_win_to_wsl(out_path)}" {timeout}'
+    )
+    subprocess.run(["wsl", "-e", "bash", "-lc", cmd], check=True, timeout=timeout + 600)
+
+    if not out_path.exists():
+        return None
+    return json.loads(out_path.read_text(encoding="utf-8")) or None

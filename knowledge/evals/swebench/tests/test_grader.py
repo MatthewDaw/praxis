@@ -18,6 +18,8 @@ import pytest
 from knowledge.evals.swebench.grader import (
     GradeResult,
     _locate_report,
+    _use_wsl,
+    _win_to_wsl,
     grade,
     parse_report,
     prepare,
@@ -116,6 +118,54 @@ def test_locate_report_finds_instance_report(tmp_path, monkeypatch):
 def test_locate_report_missing_returns_none(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # no logs/ tree at all
     assert _locate_report("sympy__sympy-fake-0001", "praxis_eval") is None
+
+
+# ---- WSL bridge dispatch (pure; injected stub, no real WSL) -----------------------------
+
+
+def test_win_to_wsl_path_translation():
+    assert _win_to_wsl(r"C:\Users\x\preds.json") == "/mnt/c/Users/x/preds.json"
+    assert _win_to_wsl(r"D:\a\b") == "/mnt/d/a/b"
+    assert _win_to_wsl("/already/posix") == "/already/posix"  # passthrough on Linux paths
+
+
+def test_use_wsl_backend_selection():
+    import platform
+    assert _use_wsl("wsl") is True
+    assert _use_wsl("inprocess") is False
+    assert _use_wsl("auto") == (platform.system() != "Linux")
+
+
+def test_grade_wsl_backend_uses_bridge_not_inprocess(tmp_path):
+    # backend="wsl" must route through the injected wsl_grade bridge and NEVER call the
+    # in-process run_evaluation (which would import swebench / hit Docker).
+    inst = _instance()
+    report = json.loads((FIXTURES / "report_resolved.json").read_text(encoding="utf-8"))
+
+    def _fail_inprocess(**kwargs):
+        raise AssertionError("in-process run_evaluation must not run under backend='wsl'")
+
+    captured = {}
+
+    def _fake_wsl(instance, pred_path, **kw):
+        captured["instance_id"] = instance.instance_id
+        captured["kw"] = kw
+        return report
+
+    result = grade(inst, "diff --git a/x b/x\n+f\n", predictions_path=tmp_path / "p.json",
+                   backend="wsl", run_evaluation=_fail_inprocess, wsl_grade=_fake_wsl)
+
+    assert result.resolved is True
+    assert captured["instance_id"] == inst.instance_id
+    assert captured["kw"]["run_id"] and captured["kw"]["timeout"]
+
+
+def test_grade_wsl_backend_missing_report_is_error(tmp_path):
+    inst = _instance()
+    result = grade(inst, "diff --git a/x b/x\n+f\n", predictions_path=tmp_path / "p.json",
+                   backend="wsl", wsl_grade=lambda *a, **k: None)
+    assert result.resolved is False
+    assert "not found" in (result.error or "")
 
 
 def test_grade_empty_patch_unresolved_without_docker(tmp_path):
