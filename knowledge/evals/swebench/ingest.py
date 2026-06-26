@@ -1,14 +1,17 @@
-"""U3: per-instance org ingest — a point-in-time Praxis snapshot for one instance.
+"""U3: per-instance *space* ingest — a point-in-time Praxis snapshot for one instance.
 
-WHY a *fresh org per instance*: the org becomes a point-in-time snapshot holding
-only PRs merged before the instance's ``base_commit``. Ingesting **oldest-first**
-means any in-window contradictions resolve to the latest-as-of-``base_commit``
-value (the stock ingest path's ``auto_resolve`` keeps the newest writer). The
-instance's fix-PR — and any PR whose diff merely restates the gold diff — is
-**excluded**, and a leakage guard fails loudly if any ingested fact restates the
-gold diff, so the snapshot can never leak the answer into the treatment arm.
-Per-instance orgs also isolate instances from each other (R5): each ingest posts
-only its own PRs under its own ``X-Praxis-Org``.
+WHY a *space per instance* (within one fixed ``swebench_eval`` org): the space becomes
+a point-in-time snapshot holding only PRs merged before the instance's ``base_commit``.
+Ingesting **oldest-first** means any in-window contradictions resolve to the
+latest-as-of-``base_commit`` value (the stock ingest path's ``auto_resolve`` keeps the
+newest writer). The instance's fix-PR — and any PR whose diff merely restates the gold
+diff — is **excluded**, and a leakage guard fails loudly if any ingested fact restates
+the gold diff, so the snapshot can never leak the answer into the treatment arm.
+Spaces isolate instances from each other (R5): each ingest posts only its own PRs under
+its own ``X-Praxis-Space`` (effective tenant ``dev-user::space:<id>``). A stable space id
+also makes a **rerun reuse** the prior snapshot instead of re-distilling. Spaces are the
+right primitive — the eval is one tenant running many isolated working graphs, not many
+tenants — and far lighter than the org-per-instance it replaces.
 
 Two seams keep the whole pipeline offline-testable, mirroring ``pr_source.py``'s
 injected ``Fetcher``:
@@ -17,10 +20,10 @@ injected ``Fetcher``:
   :func:`knowledge.injestion.pr_source.default_fetcher` with
   :func:`make_repo_fetcher` so PRs are fetched from ``sympy/sympy`` (``gh -R``),
   not the cwd. Tests inject a fake that switches on argv and returns fixture JSON.
-* :class:`HttpClient` — a tiny injectable client for ``POST /orgs``,
-  ``POST /ingest`` and ``GET /context``. The default :class:`UrllibClient` uses
-  ``urllib`` (no extra dependency, mirrors the proven smoke driver); tests inject
-  a fake that records calls and returns canned responses. **No real HTTP in tests.**
+* :class:`HttpClient` — a tiny injectable client carrying the fixed eval ``org`` and
+  threading the per-instance ``space`` on ``POST /spaces`` / ``POST /ingest`` /
+  ``GET /context`` / ``GET /graph``. The default :class:`UrllibClient` uses ``urllib``
+  (no extra dependency); tests inject a fake. **No real HTTP in tests.**
 
 The cutoff date is :attr:`Instance.created_at` (the instance's issue/commit date) —
 the pragmatic point-in-time bound available offline; see :func:`select_window`.
@@ -44,6 +47,14 @@ from knowledge.evals.swebench.instances import Instance
 # Default dev backend (PRAXIS_AUTH_DISABLED=1 → no login needed); the org owner is
 # the dev tenant `dev-user`, who is the auto-member that `active_org` authorizes.
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
+
+# One fixed org holds the whole eval; per-instance isolation rides on SPACES (named
+# private working graphs within the org), not a fresh org per instance. A space is the
+# right primitive here — the eval is one tenant running many isolated point-in-time
+# graphs, exactly "different agents drive distinct live graphs concurrently". The
+# effective tenant user becomes `dev-user::space:<space_id>`, so facts never cross-bleed
+# between instances (R5) while staying far lighter than an org-per-instance.
+EVAL_ORG = "swebench_eval"
 
 # Dev-tenant org password (auth is disabled in dev; the value is required but unused
 # for membership since the creator is the auto-member).
@@ -79,26 +90,45 @@ def make_repo_fetcher(repo: str, base: Fetcher = default_fetcher) -> Fetcher:
 # Seam 2: the HTTP client for the Praxis backend.
 # ---------------------------------------------------------------------------
 class HttpClient(Protocol):
-    """The three backend calls U3 needs; a fake implements the same shape offline."""
+    """The backend calls U3 needs; a fake implements the same shape offline.
+
+    The client carries the fixed eval ``org`` (sent as ``X-Praxis-Org`` on every call);
+    per-instance isolation is the ``space`` argument (sent as ``X-Praxis-Space``).
+    """
+
+    org: str
 
     def post_orgs(self, body: dict) -> dict: ...
 
-    def post_ingest(self, org_id: str, body: dict) -> dict: ...
+    def post_spaces(self, space_id: str, name: str | None = None) -> dict: ...
 
-    def get_context(self, org_id: str, query: str, top_k: int) -> dict: ...
+    def post_ingest(self, space: str, body: dict) -> dict: ...
+
+    def get_context(self, space: str, query: str, top_k: int) -> dict: ...
+
+    def get_graph(self, space: str, state: str = "active") -> dict: ...
 
 
 class OrgConflict(Exception):
     """``POST /orgs`` returned 409 — the org already exists (idempotent create)."""
 
 
+class SpaceConflict(Exception):
+    """``POST /spaces`` returned 409 — the space already exists (idempotent create)."""
+
+
 @dataclass
 class UrllibClient:
-    """Default :class:`HttpClient` over ``urllib`` (mirrors the smoke driver)."""
+    """Default :class:`HttpClient` over ``urllib`` (mirrors the smoke driver).
+
+    ``org`` is the fixed eval org sent on every request; ``space`` (per call) selects the
+    instance's private working graph via ``X-Praxis-Space``.
+    """
 
     base_url: str = DEFAULT_BASE_URL
+    org: str = EVAL_ORG
 
-    def _call(self, method: str, path: str, *, org_id: str | None = None,
+    def _call(self, method: str, path: str, *, space: str | None = None,
               body: dict | None = None, params: dict | None = None) -> dict:
         url = self.base_url + path
         if params:
@@ -106,9 +136,9 @@ class UrllibClient:
 
             url += "?" + urlencode(params)
         data = json.dumps(body).encode() if body is not None else None
-        headers = {"Content-Type": "application/json"}
-        if org_id is not None:
-            headers["X-Praxis-Org"] = org_id
+        headers = {"Content-Type": "application/json", "X-Praxis-Org": self.org}
+        if space:
+            headers["X-Praxis-Space"] = space
         req = urllib.request.Request(url, data=data, method=method, headers=headers)
         with urllib.request.urlopen(req) as resp:
             return json.load(resp)
@@ -123,12 +153,25 @@ class UrllibClient:
                 raise OrgConflict(body.get("orgId", "")) from exc
             raise
 
-    def post_ingest(self, org_id: str, body: dict) -> dict:
-        return self._call("POST", "/ingest", org_id=org_id, body=body)
+    def post_spaces(self, space_id: str, name: str | None = None) -> dict:
+        import urllib.error
 
-    def get_context(self, org_id: str, query: str, top_k: int) -> dict:
-        return self._call("GET", "/context", org_id=org_id,
+        try:
+            return self._call("POST", "/spaces", body={"spaceId": space_id, "name": name})
+        except urllib.error.HTTPError as exc:
+            if exc.code == 409:
+                raise SpaceConflict(space_id) from exc
+            raise
+
+    def post_ingest(self, space: str, body: dict) -> dict:
+        return self._call("POST", "/ingest", space=space, body=body)
+
+    def get_context(self, space: str, query: str, top_k: int) -> dict:
+        return self._call("GET", "/context", space=space,
                           params={"query": query, "top_k": str(top_k)})
+
+    def get_graph(self, space: str, state: str = "active") -> dict:
+        return self._call("GET", "/graph", space=space, params={"state": state})
 
 
 # ---------------------------------------------------------------------------
@@ -146,9 +189,10 @@ class IngestResult:
     value). ``facts_ingested`` is the real signal /ingest does surface.
     """
 
-    org_id: str
+    space_id: str
     pr_numbers: list[int]
     ingested: int  # documents POSTed (one per selected PR)
+    reused: bool = False  # space already populated → ingest skipped (rerun reuse)
     ingestion_cost: float | None = None
     facts_ingested: int = 0
     actions: list[str] = field(default_factory=list)
@@ -157,7 +201,10 @@ class IngestResult:
 # ---------------------------------------------------------------------------
 # Pipeline functions.
 # ---------------------------------------------------------------------------
-_SANITIZE = re.compile(r"[^A-Za-z0-9]+")
+# A space_id is a slug: lowercase letters/digits/dash/underscore (the backend's
+# `_SPACE_SLUG_RE`). SWE-bench ids (`sympy__sympy-27904`) already qualify, so the slug is
+# human-readable — it names the repo + gold-PR. Anything out of set collapses to '-'.
+_SANITIZE = re.compile(r"[^a-z0-9_-]+")
 
 # SWE-bench instance ids are ``<owner>__<repo>-<gold PR number>``; the trailing number
 # is the PR that carries the gold fix, so it is the fix-PR to exclude from the window.
@@ -176,22 +223,45 @@ def fix_pr_number(instance: Instance) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def org_id_for(instance: Instance) -> str:
-    """Deterministic per-instance org id, e.g. ``swebench_sympy__sympy_12345``.
+def space_id_for(instance: Instance) -> str:
+    """Deterministic, human-readable per-instance space id (e.g. ``sympy__sympy-27904``).
 
-    Sanitized to the ``[A-Za-z0-9_]`` set so it's a safe org identifier; the
-    same instance always maps to the same org (idempotent create, R5 isolation).
+    Slugified from the instance id (lowercased, out-of-set chars → '-'); the same instance
+    always maps to the same space, so a **rerun reuses that space** (idempotent create +
+    populated-skip) rather than re-ingesting. R5 isolation holds: each space is a distinct
+    ``dev-user::space:<id>`` tenant graph.
     """
-    safe = _SANITIZE.sub("_", instance.instance_id).strip("_")
-    return f"swebench_{safe}"
+    return _SANITIZE.sub("-", instance.instance_id.lower()).strip("-")
 
 
-def create_org(client: HttpClient, org_id: str) -> None:
-    """``POST /orgs`` for ``org_id``; idempotent — a 409 (already exists) is swallowed."""
+def ensure_eval_org(client: HttpClient) -> None:
+    """``POST /orgs`` for the one fixed eval org; idempotent — a 409 is swallowed.
+
+    Spaces live inside an org and ``active_org`` proves membership, so the eval needs
+    exactly one org the dev tenant owns. Created once; every instance's space lives here.
+    """
     try:
-        client.post_orgs({"orgId": org_id, "name": None, "password": _ORG_PASSWORD})
+        client.post_orgs({"orgId": client.org, "name": "swebench eval", "password": _ORG_PASSWORD})
     except OrgConflict:
-        pass  # already created by a prior run — reuse it read-after-write
+        pass  # already created by a prior run
+
+
+def ensure_space(client: HttpClient, space_id: str) -> None:
+    """``POST /spaces`` for ``space_id`` in the eval org; idempotent — a 409 is swallowed."""
+    try:
+        client.post_spaces(space_id)
+    except SpaceConflict:
+        pass  # already created by a prior run — reuse it
+
+
+def space_is_populated(client: HttpClient, space_id: str) -> int:
+    """Active-fact count in ``space_id`` (the rerun-reuse signal; 0 ⇒ ingest needed).
+
+    Reads ``GET /graph`` for the space and counts active nodes. A populated space means a
+    prior run already ingested this instance's window, so the rerun reuses it as-is.
+    """
+    graph = client.get_graph(space_id, state="active").get("graph") or {}
+    return len(graph.get("nodes") or [])
 
 
 def _parse_ts(value: str):
@@ -305,9 +375,9 @@ def ingest_window(instance: Instance, client: HttpClient, fetch: Fetcher,
 
     For each in-window PR (oldest-first): build its document, drop it if its diff
     restates the gold diff, else ``POST /ingest`` (``state="active"``,
-    ``source="git/pr:<n>"``) scoped to the instance's org via ``X-Praxis-Org``.
+    ``source="git/pr:<n>"``) scoped to the instance's space via ``X-Praxis-Space``.
     """
-    org_id = org_id_for(instance)
+    space_id = space_id_for(instance)
     candidates = select_window(instance, fetch, limit=limit)
 
     ingested_numbers: list[int] = []
@@ -317,7 +387,7 @@ def ingest_window(instance: Instance, client: HttpClient, fetch: Fetcher,
         doc = build_pr_document(n, fetch=fetch)
         if _restates_gold(doc.diff, instance.patch):
             continue  # fix-restating PR — excluded so the snapshot can't leak the answer
-        res = client.post_ingest(org_id, {
+        res = client.post_ingest(space_id, {
             "documents": [{"text": doc.render(), "source": f"git/pr:{n}"}],
             "state": "active",
             "onConflict": "auto_resolve",
@@ -328,7 +398,7 @@ def ingest_window(instance: Instance, client: HttpClient, fetch: Fetcher,
         ingested_numbers.append(n)
 
     return IngestResult(
-        org_id=org_id,
+        space_id=space_id,
         pr_numbers=ingested_numbers,
         ingested=len(ingested_numbers),
         ingestion_cost=None,  # /ingest surfaces counts, not cost; see IngestResult docstring
@@ -344,13 +414,13 @@ class LeakageError(AssertionError):
 def leakage_guard(instance: Instance, client: HttpClient, *, top_k: int = 8) -> None:
     """Raise loudly if any retrievable fact restates the gold diff.
 
-    Queries ``GET /context`` over the instance's org using the gold-changed file
+    Queries ``GET /context`` over the instance's space using the gold-changed file
     paths + issue text, and raises :class:`LeakageError` if any returned fact's text
     contains a substantive gold change line. Otherwise returns ``None`` (passes).
     """
-    org_id = org_id_for(instance)
+    space_id = space_id_for(instance)
     query = " ".join(instance.gold_files) + " " + instance.problem_statement
-    ctx = client.get_context(org_id, query.strip(), top_k)
+    ctx = client.get_context(space_id, query.strip(), top_k)
     gold = _diff_changelines(instance.patch)
     if not gold:
         return
@@ -365,13 +435,27 @@ def leakage_guard(instance: Instance, client: HttpClient, *, top_k: int = 8) -> 
 
 
 def run_ingest(instance: Instance, *, client: HttpClient, fetch: Fetcher,
-               limit: int = DEFAULT_LIST_LIMIT) -> IngestResult:
-    """create_org → ingest_window → leakage_guard for one instance.
+               limit: int = DEFAULT_LIST_LIMIT, reuse: bool = True) -> IngestResult:
+    """ensure org+space → (reuse-skip OR ingest_window + leakage_guard) for one instance.
 
-    The single entry point a caller (U6 orchestration) uses per instance.
+    The single entry point a caller (U6 orchestration) uses per instance. With
+    ``reuse=True`` (default), a space already populated by a prior run is reused as-is —
+    no re-ingest, no re-distillation — which is the whole point of a stable per-instance
+    space id. ``reuse=False`` forces a fresh ingest into whatever the space already holds.
     """
-    org_id = org_id_for(instance)
-    create_org(client, org_id)
+    space_id = space_id_for(instance)
+    ensure_eval_org(client)
+    ensure_space(client, space_id)
+
+    if reuse:
+        existing = space_is_populated(client, space_id)
+        if existing > 0:
+            # Reuse the prior run's snapshot; still run the leakage guard (cheap, and it
+            # re-asserts the no-leak invariant against the reused facts).
+            leakage_guard(instance, client)
+            return IngestResult(space_id=space_id, pr_numbers=[], ingested=0,
+                                reused=True, facts_ingested=existing)
+
     result = ingest_window(instance, client, fetch, limit=limit)
     leakage_guard(instance, client)
     return result

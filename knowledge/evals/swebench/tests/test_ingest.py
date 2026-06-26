@@ -1,7 +1,8 @@
-"""Offline U3 tests: window selection, fix-restating exclusion, leakage guard, isolation.
+"""Offline U3 tests: window selection, fix-restating exclusion, leakage guard, space isolation.
 
 Runs fully offline — a fake fetcher serves fixture PR list/view/diff JSON and a fake
 HTTP client records calls + returns canned responses. No real ``gh``, no real HTTP.
+Per-instance isolation rides on SPACES within the fixed ``swebench_eval`` org.
 
     uv run pytest knowledge/evals/swebench/tests/test_ingest.py -q
 """
@@ -15,19 +16,26 @@ import pytest
 
 from knowledge.evals.swebench.instances import Instance, load_candidates
 from knowledge.evals.swebench.ingest import (
+    EVAL_ORG,
     IngestResult,
     LeakageError,
     OrgConflict,
-    create_org,
+    SpaceConflict,
+    ensure_eval_org,
+    ensure_space,
     fix_pr_number,
     ingest_window,
     leakage_guard,
-    org_id_for,
     run_ingest,
     select_window,
+    space_id_for,
+    space_is_populated,
 )
 
 FIX = Path(__file__).parent / "fixtures"
+
+# A space_id slug the backend accepts: lowercase letters/digits/dash/underscore.
+_SPACE_SLUG = __import__("re").compile(r"^[a-z0-9_-]+$")
 
 
 def _instances() -> dict[str, Instance]:
@@ -62,27 +70,63 @@ def make_fake_fetcher(list_name: str = "pr_list.json"):
 
 
 class FakeClient:
-    """Records every call; returns canned /ingest + /context responses per org."""
+    """Records every call; returns canned /ingest, /context, /graph responses per space.
 
-    def __init__(self, context_hits: dict | None = None, existing_orgs=()):
-        self.orgs: list[str] = list(existing_orgs)
-        self.ingests: list[tuple[str, dict]] = []  # (org_id, body)
-        self.context_hits = context_hits or {}  # org_id -> list[hit]
+    Tracks a fact count per space so ``get_graph`` reflects the reuse signal: a fresh space
+    reads 0 nodes (ingest needed), and each ingested doc bumps it (2 facts/doc), so a
+    second ``run_ingest`` sees it populated and reuses it.
+    """
+
+    org = EVAL_ORG
+
+    def __init__(self, context_hits: dict | None = None, existing_spaces=(), populated=None):
+        self.orgs: list[str] = []
+        self.spaces: list[str] = list(existing_spaces)
+        self.ingests: list[tuple[str, dict]] = []  # (space, body)
+        self.context_hits = context_hits or {}  # space -> list[hit]
+        self.facts: dict[str, int] = dict(populated or {})  # space -> active node count
 
     def post_orgs(self, body: dict) -> dict:
-        org_id = body["orgId"]
-        if org_id in self.orgs:
-            raise OrgConflict(org_id)
-        self.orgs.append(org_id)
-        return {"orgId": org_id, "role": "owner"}
+        org = body["orgId"]
+        if org in self.orgs:
+            raise OrgConflict(org)
+        self.orgs.append(org)
+        return {"orgId": org, "role": "owner"}
 
-    def post_ingest(self, org_id: str, body: dict) -> dict:
-        self.ingests.append((org_id, body))
+    def post_spaces(self, space_id: str, name: str | None = None) -> dict:
+        if space_id in self.spaces:
+            raise SpaceConflict(space_id)
+        self.spaces.append(space_id)
+        return {"spaceId": space_id, "name": name, "active": True}
+
+    def post_ingest(self, space: str, body: dict) -> dict:
+        self.ingests.append((space, body))
+        self.facts[space] = self.facts.get(space, 0) + 2  # canned 2 facts/doc
         return {"results": [{"id": "f1", "action": "ingested", "facts": 2,
                              "merged": 0, "conflicts": 0, "surfaced": 0}], "count": 1}
 
-    def get_context(self, org_id: str, query: str, top_k: int) -> dict:
-        return {"context": "", "hits": self.context_hits.get(org_id, [])}
+    def get_context(self, space: str, query: str, top_k: int) -> dict:
+        return {"context": "", "hits": self.context_hits.get(space, [])}
+
+    def get_graph(self, space: str, state: str = "active") -> dict:
+        n = self.facts.get(space, 0)
+        return {"graph": {"nodes": [{"id": f"n{i}"} for i in range(n)], "edges": []}}
+
+
+# ---------------------------------------------------------------------------
+# Space id slug.
+# ---------------------------------------------------------------------------
+def test_space_id_is_human_readable_valid_slug():
+    inst = _instances()["sympy__sympy-fake-0001"]
+    sid = space_id_for(inst)
+    assert sid == "sympy__sympy-fake-0001"  # the instance id is already a valid, readable slug
+    assert _SPACE_SLUG.fullmatch(sid)
+    # An id with out-of-set chars (uppercase, slashes) is slugified to the allowed set.
+    weird = Instance.from_record({"instance_id": "Foo/Bar.QUX", "repo": "x", "version": "1.13",
+                                  "base_commit": "c", "created_at": "2025-01-01T00:00:00Z",
+                                  "problem_statement": "", "patch": "", "test_patch": "",
+                                  "FAIL_TO_PASS": [], "PASS_TO_PASS": [], "install_config": {}})
+    assert _SPACE_SLUG.fullmatch(space_id_for(weird))
 
 
 # ---------------------------------------------------------------------------
@@ -143,9 +187,11 @@ def test_fix_restating_pr_is_dropped_from_ingest():
     result = ingest_window(inst, client, make_fake_fetcher())
     # 103's diff restates the gold empty-matrix guard → dropped; only 101, 102 ingested.
     assert result.pr_numbers == [101, 102]
-    posted = [body["documents"][0]["source"] for _org, body in client.ingests]
+    posted = [body["documents"][0]["source"] for _space, body in client.ingests]
     assert posted == ["git/pr:101", "git/pr:102"]
-    assert all(body["state"] == "active" for _org, body in client.ingests)
+    assert all(body["state"] == "active" for _space, body in client.ingests)
+    # Every ingest posted under the instance's space, never another.
+    assert {space for space, _ in client.ingests} == {space_id_for(inst)}
 
 
 # ---------------------------------------------------------------------------
@@ -153,8 +199,8 @@ def test_fix_restating_pr_is_dropped_from_ingest():
 # ---------------------------------------------------------------------------
 def test_leakage_guard_raises_when_fact_restates_gold():
     inst = _instances()["sympy__sympy-fake-0001"]
-    org = org_id_for(inst)
-    leaked = {org: [{"id": "bad", "text": "the fix: return self._new(self.rows, other.cols, lambda i, j: 0)"}]}
+    space = space_id_for(inst)
+    leaked = {space: [{"id": "bad", "text": "the fix: return self._new(self.rows, other.cols, lambda i, j: 0)"}]}
     client = FakeClient(context_hits=leaked)
     with pytest.raises(LeakageError):
         leakage_guard(inst, client)
@@ -162,27 +208,30 @@ def test_leakage_guard_raises_when_fact_restates_gold():
 
 def test_leakage_guard_passes_on_clean_facts():
     inst = _instances()["sympy__sympy-fake-0001"]
-    org = org_id_for(inst)
-    clean = {org: [{"id": "ok", "text": "Matrix slicing was sped up by caching the index."}]}
+    space = space_id_for(inst)
+    clean = {space: [{"id": "ok", "text": "Matrix slicing was sped up by caching the index."}]}
     client = FakeClient(context_hits=clean)
     leakage_guard(inst, client)  # must not raise
 
 
 # ---------------------------------------------------------------------------
-# create_org idempotency.
+# org/space create idempotency.
 # ---------------------------------------------------------------------------
-def test_create_org_swallows_409():
+def test_ensure_eval_org_and_space_swallow_409():
     inst = _instances()["sympy__sympy-fake-0001"]
-    org = org_id_for(inst)
-    client = FakeClient(existing_orgs=[org])
-    create_org(client, org)  # 409 swallowed, no raise
-    assert client.orgs.count(org) == 1
+    space = space_id_for(inst)
+    client = FakeClient(existing_spaces=[space])
+    ensure_eval_org(client)
+    ensure_eval_org(client)  # second create 409s internally — swallowed, no raise
+    assert client.orgs.count(EVAL_ORG) == 1
+    ensure_space(client, space)  # already exists → 409 swallowed
+    assert client.spaces.count(space) == 1
 
 
 # ---------------------------------------------------------------------------
-# Cross-instance isolation (R5) + ingestion-cost record present.
+# Cross-instance isolation (R5) via spaces + ingestion-cost record present.
 # ---------------------------------------------------------------------------
-def test_two_instances_ingest_into_distinct_orgs_no_bleed():
+def test_two_instances_ingest_into_distinct_spaces_no_bleed():
     insts = _instances()
     a = insts["sympy__sympy-fake-0001"]   # cutoff 2025-03-10
     b = insts["sympy__sympy-fake-0003"]   # cutoff 2025-04-20 (later window)
@@ -191,16 +240,35 @@ def test_two_instances_ingest_into_distinct_orgs_no_bleed():
     ra = run_ingest(a, client=client, fetch=make_fake_fetcher())
     rb = run_ingest(b, client=client, fetch=make_fake_fetcher())
 
-    assert ra.org_id != rb.org_id
-    # Each instance only ever posts under its own X-Praxis-Org — no cross bleed.
-    posted_for_a = [org for org, _ in client.ingests if org == ra.org_id]
-    posted_for_b = [org for org, _ in client.ingests if org == rb.org_id]
+    assert ra.space_id != rb.space_id
+    # Each instance only ever posts under its own X-Praxis-Space — no cross bleed.
+    posted_for_a = [s for s, _ in client.ingests if s == ra.space_id]
+    posted_for_b = [s for s, _ in client.ingests if s == rb.space_id]
     assert len(posted_for_a) == ra.ingested
     assert len(posted_for_b) == rb.ingested
-    # No ingest is posted to an org other than the two instance orgs.
-    assert {org for org, _ in client.ingests} == {ra.org_id, rb.org_id}
-    # b's later cutoff includes 104 too; both windows still drop the gold-restating PR
-    # only when it restates *that* instance's gold (103 restates 0001's gold, not 0003's).
+    # No ingest is posted to a space other than the two instance spaces — all under one org.
+    assert {s for s, _ in client.ingests} == {ra.space_id, rb.space_id}
+    assert client.orgs == [EVAL_ORG]  # the single fixed eval org, created once
+
+
+def test_rerun_reuses_populated_space_without_reingesting():
+    inst = _instances()["sympy__sympy-fake-0001"]
+    client = FakeClient()
+
+    first = run_ingest(inst, client=client, fetch=make_fake_fetcher())
+    assert first.reused is False and first.ingested > 0
+    posts_after_first = len(client.ingests)
+
+    second = run_ingest(inst, client=client, fetch=make_fake_fetcher())
+    assert second.reused is True
+    assert second.ingested == 0
+    assert second.facts_ingested == space_is_populated(client, space_id_for(inst))
+    assert len(client.ingests) == posts_after_first  # NO new ingest posts on the rerun
+
+    # reuse=False forces a fresh ingest even into a populated space.
+    forced = run_ingest(inst, client=client, fetch=make_fake_fetcher(), reuse=False)
+    assert forced.reused is False
+    assert len(client.ingests) > posts_after_first
 
 
 def test_ingestion_cost_field_present_per_instance():

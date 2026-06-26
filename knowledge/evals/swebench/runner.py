@@ -53,7 +53,7 @@ from knowledge.evals.claude_code import (
     _subscription_env,
 )
 from knowledge.evals.swebench.instances import Instance
-from knowledge.evals.swebench.ingest import org_id_for
+from knowledge.evals.swebench.ingest import space_id_for
 
 # A git runner: (argv, cwd) -> stdout. Injected so extract_patch tests run offline.
 GitRunner = Callable[[list[str], Path], str]
@@ -168,18 +168,18 @@ def build_prompt(
 
 
 # ---------------------------------------------------------------------------
-# Pure seam 3: arm MCP config (treatment pins the org; control omits it).
+# Pure seam 3: arm MCP config (treatment pins the space; control omits it).
 # ---------------------------------------------------------------------------
-def build_mcp_config(org_id: str, *, cache_path: str) -> dict:
-    """Treatment's ``--mcp-config`` payload, pinning the instance's org.
+def build_mcp_config(space_id: str, *, cache_path: str) -> dict:
+    """Treatment's ``--mcp-config`` payload, pinning the instance's space.
 
-    The Praxis MCP server (``uv run python -m knowledge.mcp``, stdio) resolves its
-    tenant from a cached login at :func:`knowledge.mcp.identity.cache_path`, which is
-    overridable per process via ``PRAXIS_MCP_CACHE``. So we point THIS agent's MCP at
-    an instance-specific cache file whose ``org_id`` is the instance's org — that
-    diverges the ``X-Praxis-Org`` header per agent without any other agent clobbering
-    it. ``org_id`` is carried for callers that build/seed the cache; the live pin is
-    the env var. Control never calls this — it gets no Praxis MCP entry at all.
+    The Praxis MCP server (``uv run python -m knowledge.mcp``, stdio) resolves its org
+    from a cached login at :func:`knowledge.mcp.identity.cache_path` (the fixed eval org,
+    via ``PRAXIS_MCP_CACHE``) and its **space** from the ``PRAXIS_SPACE`` env override
+    (:func:`knowledge.mcp.identity.active_space`), which takes precedence over the cache
+    and makes the MCP send ``X-Praxis-Space``. So pinning a per-instance space is just an
+    env var — every treatment agent reads its own instance's private graph without
+    touching org or login. Control never calls this — it gets no Praxis MCP entry at all.
     """
     return {
         "mcpServers": {
@@ -187,8 +187,8 @@ def build_mcp_config(org_id: str, *, cache_path: str) -> dict:
                 "command": "uv",
                 "args": ["run", "python", "-m", "knowledge.mcp"],
                 "env": {
-                    "PRAXIS_MCP_CACHE": cache_path,
-                    "PRAXIS_PINNED_ORG": org_id,  # informational; the cache file is the real pin
+                    "PRAXIS_MCP_CACHE": cache_path,  # carries the fixed eval org
+                    "PRAXIS_SPACE": space_id,        # the per-instance space pin (X-Praxis-Space)
                 },
             }
         }
@@ -286,12 +286,12 @@ def run_arm(
     ``run_cli`` and ``run_git`` are injected for the same reason.
     """
     treatment = arm == "treatment"
-    # Treatment wires the MCP pinned to the instance's org; control wires nothing.
+    # Treatment wires the MCP pinned to the instance's space; control wires nothing.
     if treatment and mcp_config_path is None:
-        # The caller (U6) normally seeds a per-instance cache and passes its path; in a
+        # The caller (U6) normally seeds a cache + space pin and passes its path; in a
         # stubbed unit test mcp_config_path is None and run_cli never reads it. We still
-        # surface that the org WOULD be pinned via org_id_for(instance) on the live path.
-        _ = org_id_for(instance)  # deterministic per-instance org; pinned via the cache file
+        # surface that the space WOULD be pinned via space_id_for(instance) on the live path.
+        _ = space_id_for(instance)  # deterministic per-instance space; pinned via PRAXIS_SPACE
     arm_mcp_path = mcp_config_path if treatment else None
 
     cost_usd: float | None = None

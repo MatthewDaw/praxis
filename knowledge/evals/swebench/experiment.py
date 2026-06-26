@@ -129,7 +129,7 @@ def run_experiment(
     Ingestion is attached **once per instance** (its ``ingestion_cost`` is the amortized
     line, not a per-trial charge), so ``instances`` has exactly one entry per instance
     regardless of ``trials``. Mirrors dogfood's optional ``ThreadPoolExecutor`` ``workers``
-    over the per-(instance, trial) jobs; ingest stays serial (one fresh org per instance)
+    over the per-(instance, trial) jobs; ingest stays serial (one space per instance)
     so it runs before any of that instance's trials.
     """
     instance_meta: list[dict] = []

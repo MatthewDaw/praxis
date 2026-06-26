@@ -2,7 +2,7 @@
 
 A feasibility-and-instrumentation A/B harness that measures whether Praxis helps an
 agent fix real GitHub issues. For each instance in a recent SWE-rebench sympy slice it
-ingests the pre-`base_commit` non-fix PR window into a fresh per-instance Praxis org,
+ingests the pre-`base_commit` non-fix PR window into a per-instance Praxis **space**,
 runs Sonnet to fix the issue **with** vs **without** Praxis (agentic MCP retrieval + a
 reproduction-test rework loop), grades with the WSL2 arm64 SWE-bench harness, and reads
 out cost-to-correct as an unconditioned ITT effect plus a pre-treatment
@@ -23,11 +23,15 @@ size. Specifically:
   memorization floor rather than a clean no-knowledge baseline. Strict post-cutoff
   decontamination is deferred (see the plan's scope boundaries).
 
-- **Per-instance-org mechanism.** Each instance gets a **fresh org** holding only PRs
-  merged before its `base_commit`, ingested oldest-first as active facts, with the
-  fix-PR (and any fix-restating PR) excluded and a leakage guard that fails loudly if an
-  ingested fact restates the gold diff. A fresh org per instance is a point-in-time
-  snapshot — immune to the temporal-contradiction problem on the stock ingest path.
+- **Per-instance-space mechanism.** Each instance gets a private **space** (named working
+  graph) inside one fixed `swebench_eval` org — effective tenant `dev-user::space:<id>` —
+  holding only PRs merged before its `base_commit`, ingested oldest-first as active facts,
+  with the fix-PR (and any fix-restating PR) excluded and a leakage guard that fails loudly
+  if an ingested fact restates the gold diff. A space per instance is a point-in-time
+  snapshot — immune to the temporal-contradiction problem on the stock ingest path — and
+  the stable space id makes a **rerun reuse** the prior snapshot instead of re-distilling.
+  (Spaces replaced the heavier org-per-instance: the eval is one tenant running many
+  isolated working graphs, which is exactly what spaces are for.)
 
 - **`install_config` grader adaptation.** The official swebench harness mis-grades
   SWE-rebench instances out of the box. The grader (U2) monkeypatches `arch="arm64"`

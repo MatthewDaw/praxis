@@ -135,13 +135,15 @@ def test_build_prompt_rework_includes_issue_and_prior_repro():
 # ---------------------------------------------------------------------------
 # Arm config: treatment pins the org via MCP; control has no Praxis MCP entry.
 # ---------------------------------------------------------------------------
-def test_treatment_mcp_config_pins_org():
-    cfg = build_mcp_config("swebench_sympy__sympy_fake_0001", cache_path="/tmp/c.json")
+def test_treatment_mcp_config_pins_space():
+    cfg = build_mcp_config("sympy__sympy-fake-0001", cache_path="/tmp/c.json")
     servers = cfg["mcpServers"]
     assert "praxis" in servers
-    # The org is pinned out-of-band via the per-agent cache file (PRAXIS_MCP_CACHE),
-    # which identity.cache_path() reads; the org_id lives in that cache.
-    assert servers["praxis"]["env"]["PRAXIS_MCP_CACHE"] == "/tmp/c.json"
+    env = servers["praxis"]["env"]
+    # The org rides in the cache file (PRAXIS_MCP_CACHE = the fixed eval org); the
+    # per-instance space is pinned via the PRAXIS_SPACE env override (X-Praxis-Space).
+    assert env["PRAXIS_MCP_CACHE"] == "/tmp/c.json"
+    assert env["PRAXIS_SPACE"] == "sympy__sympy-fake-0001"
 
 
 def test_control_has_no_praxis_mcp_entry():

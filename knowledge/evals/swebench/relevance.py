@@ -24,15 +24,15 @@ Retrieval reuses U3's injectable client seam (``HttpClient`` / ``UrllibClient`` 
 ``get_context``) so this stays offline-testable: the same ``GET /context`` handler
 already returns per-hit ``score`` values (see ``knowledge/serve/app.py``'s
 ``get_context``), so the oracle compares those scores against the floor directly
-rather than reimplementing ranking. ``org_id_for(instance)`` pins the query to the
-instance's own org.
+rather than reimplementing ranking. ``space_id_for(instance)`` pins the query to the
+instance's own space.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from knowledge.evals.swebench.ingest import HttpClient, org_id_for
+from knowledge.evals.swebench.ingest import HttpClient, space_id_for
 from knowledge.evals.swebench.instances import Instance
 
 # The existence floor reused from RetrievingReader.abs_floor (its default). A hit
@@ -81,17 +81,17 @@ def r_exist(
     top_k: int = DEFAULT_TOP_K,
     abs_floor: float = ABS_FLOOR,
 ) -> RelevanceResult:
-    """Decide whether relevant knowledge exists in ``instance``'s org.
+    """Decide whether relevant knowledge exists in ``instance``'s space.
 
-    Queries the org (``org_id_for(instance)``) via the injected client, takes the
+    Queries the space (``space_id_for(instance)``) via the injected client, takes the
     top-scoring hit, and sets ``r_exist`` iff its score clears ``abs_floor``.
-    Deterministic: a given org + instance yields the same verdict and score across
+    Deterministic: a given space + instance yields the same verdict and score across
     calls (no randomness; the floor comparison is pure). Computed independent of the
     treatment arm — it never observes whether the agent queried Praxis.
     """
-    org_id = org_id_for(instance)
+    space_id = space_id_for(instance)
     query = build_query(instance)
-    ctx = client.get_context(org_id, query, top_k)
+    ctx = client.get_context(space_id, query, top_k)
     hits = ctx.get("hits", []) or []
 
     top_hit: dict | None = None

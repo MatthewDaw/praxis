@@ -12,7 +12,7 @@ Wires U1–U7 into one entry point with two paths, mirroring
 
 * live run (``--instances N --trials K``) — orchestrates the full pipeline per the
   plan's High-Level Technical Design: select+screen instances (U1), per instance
-  build a fresh org and ingest the pre-``base_commit`` window (U3), compute the
+  ensure a per-instance space and ingest the pre-``base_commit`` window (U3), compute the
   pre-treatment ``R_exist`` oracle (U4), then run ``trials`` × (treatment + control)
   arms (U5) each graded by the arm64 swebench harness (U2) through U6's
   orchestration, and finally aggregate (U7). This path needs the Praxis backend up
@@ -146,30 +146,30 @@ def _ensure_sympy_checkout(checkout: Path, *, repo_url: str = "https://github.co
     subprocess.run(["git", "clone", repo_url, str(checkout)], check=True)
 
 
-def _seed_mcp_cache(org_id: str, *, base_url: str) -> str:
-    """Write a per-instance MCP identity cache pinning ``org_id``; return its path.
+def _seed_mcp_cache(space_id: str, *, org: str, base_url: str) -> str:
+    """Write a per-instance MCP identity cache (fixed eval org) + space-pinned config.
 
-    Live-path helper (manual). The Praxis MCP server resolves its tenant from the
-    cache file at ``PRAXIS_MCP_CACHE`` (see :func:`knowledge.mcp.identity.cache_path`);
-    by writing one cache file per instance whose ``org_id`` is the instance's org, each
-    treatment agent sends its own ``X-Praxis-Org`` without clobbering another agent. In
-    the dev tenant (auth disabled) the login fields are placeholders — the ``org_id`` is
-    the load-bearing pin. Returns the path to a ``--mcp-config`` JSON written alongside.
+    Live-path helper (manual). The Praxis MCP server resolves its **org** from the cache
+    file at ``PRAXIS_MCP_CACHE`` (the fixed eval org), and its **space** from the
+    ``PRAXIS_SPACE`` env override that :func:`build_mcp_config` sets — so each treatment
+    agent reads its own instance's private working graph (``X-Praxis-Space``) without
+    touching org or login. The cache's own ``space_id`` stays empty; ``PRAXIS_SPACE`` wins.
+    Returns the path to a ``--mcp-config`` JSON written alongside.
     """
     from knowledge.evals.swebench.runner import build_mcp_config
 
     cache_dir = HERE / ".mcp-cache"
     cache_dir.mkdir(exist_ok=True)
-    cache_file = cache_dir / f"{org_id}.json"
+    cache_file = cache_dir / f"{space_id}.json"
     cache_file.write_text(
         json.dumps(
             {"refresh_token": "", "sub": "dev-user", "email": None,
-             "org_id": org_id, "api_base": base_url}
+             "org_id": org, "space_id": "", "api_base": base_url}
         ),
         encoding="utf-8",
     )
-    mcp_config = build_mcp_config(org_id, cache_path=str(cache_file))
-    config_file = cache_dir / f"{org_id}.mcp.json"
+    mcp_config = build_mcp_config(space_id, cache_path=str(cache_file))
+    config_file = cache_dir / f"{space_id}.mcp.json"
     config_file.write_text(json.dumps(mcp_config), encoding="utf-8")
     return str(config_file)
 
@@ -180,10 +180,11 @@ def run_live(*, n_instances: int, trials: int, k_rework: int, manifest_path: Pat
     from knowledge.evals.swebench.experiment import run_experiment
     from knowledge.evals.swebench.grader import grade as grade_instance
     from knowledge.evals.swebench.ingest import (
+        EVAL_ORG,
         UrllibClient,
         make_repo_fetcher,
-        org_id_for,
         run_ingest,
+        space_id_for,
     )
     from knowledge.evals.swebench.relevance import r_exist
     from knowledge.evals.swebench.runner import prepare_checkout
@@ -210,11 +211,13 @@ def run_live(*, n_instances: int, trials: int, k_rework: int, manifest_path: Pat
             rexist_map[inst.instance_id] = {"r_exist": rel.r_exist, "top_score": rel.top_score}
             # Live arm wiring (manual path): a per-instance checkout reset to base_commit
             # (+ install_config venv, built by the orchestrator before the first arm) and a
-            # per-instance MCP cache pinning the org for the treatment arm.
-            checkout = (HERE / ".checkouts" / org_id_for(inst))
+            # per-instance MCP cache pinning the instance's SPACE for the treatment arm.
+            space_id = space_id_for(inst)
+            checkout = (HERE / ".checkouts" / space_id)
             _ensure_sympy_checkout(checkout)  # clone sympy if absent so the agent edits a real tree
             checkouts[inst.instance_id] = checkout
-            mcp_configs[inst.instance_id] = _seed_mcp_cache(org_id_for(inst), base_url=client.base_url)
+            mcp_configs[inst.instance_id] = _seed_mcp_cache(
+                space_id, org=EVAL_ORG, base_url=client.base_url)
     except Exception as exc:  # noqa: BLE001 — translate connection failures to a clear message
         if _is_connection_error(exc) or _is_connection_error(exc.__cause__ or exc):
             raise _friendly_backend_error(client.base_url) from exc
