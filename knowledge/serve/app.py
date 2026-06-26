@@ -66,6 +66,7 @@ from knowledge.knowledge_graph.write_policy.write_step_variants import (  # noqa
     Deduper,
     Redactor,
 )
+from knowledge.llm.embedder_variants.memoizing_embedder import MemoizingEmbedder  # noqa: E402
 from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm  # noqa: E402
 from knowledge.serve import db, graph_adapter  # noqa: E402
 from knowledge.serve.auth import Principal, make_current_user  # noqa: E402
@@ -1298,6 +1299,20 @@ def create_app(conn: Any | None = None) -> FastAPI:
         # episodic store-only path needs no policy, so it reuses the same instance.
         graph = PostgresVectorGraph(
             conn, org, principal.sub, policy=_insight_write_policy(on_conflict)
+        )
+        # Throughput: the serial loop below embeds each insight's text once, so N
+        # items would be N embedding round-trips. Memoize the graph's embedder and
+        # pre-embed every item's text in ONE batch call up front; each later
+        # per-insight embed then resolves from the memo. This only collapses the
+        # number of embedding calls — the conflict-checked policy is unchanged, and
+        # any text not pre-warmed still falls through to the inner embedder.
+        graph.embedder = MemoizingEmbedder(graph.embedder)
+        graph.embedder.prefetch(
+            [
+                (item.get("insight") or "").strip()
+                for item in insights
+                if isinstance(item, dict)
+            ]
         )
         _, ingestor, _ = build_trio(graph=graph, llm=None)
         results: list[dict[str, Any]] = []
