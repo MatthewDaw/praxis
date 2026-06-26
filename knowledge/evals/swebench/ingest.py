@@ -32,7 +32,7 @@ import json
 import re
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Callable, Protocol
+from typing import Protocol
 
 from knowledge.injestion.pr_source import (
     Fetcher,
