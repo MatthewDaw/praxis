@@ -16,6 +16,7 @@ import pytest
 
 from knowledge.evals.swebench.instances import Instance, load_candidates
 from knowledge.evals.swebench.runner import (
+    _default_run_cli,
     build_mcp_config,
     build_prompt,
     extract_patch,
@@ -28,6 +29,32 @@ FIX = Path(__file__).parent / "fixtures"
 def _instance() -> Instance:
     records = json.loads((FIX / "rebench_sample.json").read_text(encoding="utf-8"))
     return {i.instance_id: i for i in load_candidates(records)}["sympy__sympy-fake-0001"]
+
+
+class _FakeProc:
+    def __init__(self, returncode, stdout, stderr=""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+def test_run_cli_tolerates_error_max_turns(monkeypatch):
+    # claude exits 1 on error_max_turns but the envelope (with usage) is still valid and
+    # the tree may carry edits — the runner must return stdout, not raise (the live bug
+    # the n=1 shakedown surfaced).
+    import subprocess
+    envelope = json.dumps({"subtype": "error_max_turns", "is_error": True,
+                           "total_cost_usd": 0.46, "num_turns": 21, "usage": {"output_tokens": 7733}})
+    monkeypatch.setattr("knowledge.evals.swebench.runner._claude_path", lambda: "claude")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _FakeProc(1, envelope))
+    assert _default_run_cli(["-p", "x"], Path("."), {}, 10) == envelope
+
+
+def test_run_cli_raises_on_real_crash(monkeypatch):
+    # A non-zero exit with NO parseable result envelope is a genuine failure → raise.
+    import subprocess
+    monkeypatch.setattr("knowledge.evals.swebench.runner._claude_path", lambda: "claude")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _FakeProc(1, "segfault", "boom"))
+    with pytest.raises(RuntimeError, match="claude exited 1"):
+        _default_run_cli(["-p", "x"], Path("."), {}, 10)
 
 
 def _sample_stdout() -> str:

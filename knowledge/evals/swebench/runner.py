@@ -44,10 +44,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+import json
+
 from knowledge.evals.claude_code import (
     CliRunner,
+    _claude_path,
     _claude_usage,
-    _default_run_cli,
     _subscription_env,
 )
 from knowledge.evals.swebench.instances import Instance
@@ -209,6 +211,32 @@ def prepare_checkout(instance: Instance, checkout: Path, *, run_git: GitRunner =
 # ---------------------------------------------------------------------------
 # The arm runner + rework loop.
 # ---------------------------------------------------------------------------
+def _default_run_cli(args: list[str], cwd: Path, env: dict, timeout: int) -> str:
+    """Run ``claude`` and return stdout, TOLERATING a recoverable non-zero exit.
+
+    Unlike the sealed-box runner's ``_default_run_cli`` (which raises on any non-zero
+    exit), the agentic arm must treat ``error_max_turns`` as a NORMAL outcome: the CLI
+    exits 1, but it still emits a result envelope (with usage) and may have left edits in
+    the working tree — exactly the patch we want to grade. So we only raise when a
+    non-zero exit produced NO parseable result envelope (a real crash); an envelope with
+    a ``usage`` block is returned as-is, and the caller extracts whatever patch exists.
+    """
+    import subprocess
+
+    proc = subprocess.run([_claude_path(), *args], cwd=str(cwd), env=env,
+                          capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        out = proc.stdout.strip()
+        try:
+            envelope = json.loads(out)
+        except (json.JSONDecodeError, ValueError):
+            envelope = None
+        if not (isinstance(envelope, dict) and "usage" in envelope):
+            detail = (proc.stderr.strip() or out)[:500]
+            raise RuntimeError(f"claude exited {proc.returncode}: {detail}")
+    return proc.stdout
+
+
 def _agent_args(
     prompt: str, *, model: str, max_turns: int, mcp_config_path: str | None
 ) -> list[str]:
