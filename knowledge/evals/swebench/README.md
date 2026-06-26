@@ -62,7 +62,22 @@ uv run python -m knowledge.evals.swebench.run --instances 10 --trials 3 --order 
 # Least-contaminated slice: only instances merged on/after a date (nearest the training
 # cutoff). Composes with --order hard for the recent-and-hard corner:
 uv run python -m knowledge.evals.swebench.run --instances 10 --trials 3 --order hard --since 2025-02-01
+
+# Parallel: run 2 (instance, trial) jobs at once, capping concurrent Docker grades at 2.
+# Safe because each arm borrows an isolated git worktree; tune for your RAM (see below).
+uv run python -m knowledge.evals.swebench.run --instances 9 --trials 3 --order hard --since 2025-02-01 \
+  --workers 2 --grade-concurrency 2
 ```
+
+**Parallelism** (`--workers`, `--grade-concurrency`). The live run flattens work into
+`(instance, trial)` jobs and runs `--workers` of them at once (default 1, serial). Two
+guards make `>1` safe: each arm borrows an **isolated git worktree** from a pool sized to
+`--workers` (all worktrees share one sympy clone's object store, so they're cheap), so
+concurrent agents never edit the same files; and `--grade-concurrency` (default 2) caps how
+many WSL Docker grade containers run simultaneously — independent of `--workers` — since
+each grade builds + runs sympy's tests and is the memory-heavy stage. On a 16 GB box,
+`--workers 2 --grade-concurrency 2` roughly halves wall-clock; drop `--grade-concurrency 1`
+if WSL OOMs.
 
 **Instance selection** (`--order`, `--include-leaked`, `--since`). By default `select` takes
 the newest supported-version (sympy 1.12–1.14) instances and drops only **verbatim**-leaked
@@ -87,14 +102,14 @@ A **live run requires** the Praxis backend up (dev tenant) and **WSL2 Docker**:
   `Praxis backend not reachable at <url>; run the praxis-up skill` message, not a
   traceback. Per-instance orgs are created against the dev tenant.
 - **WSL2 + Docker Desktop** (WSL integration enabled) for the arm64 swebench grader. The
-  agent runs in a host checkout with an `install_config` venv; gold grading happens in
-  the canonical container.
+  agent runs in a host worktree; gold grading happens in the canonical container.
 
-The live path also builds, per instance: a checkout reset to `base_commit`, an
-`install_config` venv (so the agent's own repro test runs), and a per-instance MCP
-identity cache pinning the instance's org for the treatment arm. These live-orchestrator
-responsibilities are factored in `run.py` (`_load_instances`, `_seed_mcp_cache`, and the
-`run_arm_wired` wrapper) and are exercised manually outside CI.
+The live path builds one shared sympy clone with a worktree pool (each arm borrows an
+isolated tree, reset to the instance's `base_commit`), and per instance a MCP identity
+cache pinning that instance's **space** for the treatment arm. These live-orchestrator
+responsibilities are factored in `run.py` (`_load_instances`, `_build_worktree_pool`,
+`_seed_mcp_cache`, `make_grade_fn`, and the `run_arm_wired` wrapper) and are exercised
+manually outside CI.
 
 ## Outputs
 

@@ -121,3 +121,66 @@ def test_empty_selection_returns_nonzero(monkeypatch, capsys):
     rc = run.main(["--instances", "1", "--trials", "1"])
     assert rc == 1
     assert "no instances selected" in capsys.readouterr().err
+
+
+# --- parallel-safety: worktree pool + grade concurrency cap / dedup ---------- #
+
+class _Inst:  # minimal stand-in: only instance_id is read by the wrappers under test
+    def __init__(self, iid):
+        self.instance_id = iid
+
+
+def test_worktree_pool_hands_out_distinct_trees_and_reclaims():
+    paths = [Path("wt-0"), Path("wt-1")]
+    pool = run.WorktreePool(paths)
+    a = pool.acquire()
+    b = pool.acquire()
+    assert {a, b} == set(paths)  # two concurrent borrowers get distinct trees
+    pool.release(a)
+    assert pool.acquire() == a   # a released tree comes back out
+
+
+def test_make_grade_fn_dedupes_identical_patch_for_same_instance():
+    calls = []
+
+    def grader(instance, patch, *, run_id):
+        calls.append(run_id)
+        return f"result::{run_id}"
+
+    grade_fn = run.make_grade_fn(grader, concurrency=2)
+    inst = _Inst("sympy__sympy-1")
+    r1 = grade_fn(inst, "IDENTICAL PATCH")
+    r2 = grade_fn(inst, "IDENTICAL PATCH")  # byte-identical → cached, not re-graded
+    assert r1 == r2 and len(calls) == 1
+    grade_fn(inst, "A DIFFERENT PATCH")     # distinct patch → a real second grade
+    assert len(calls) == 2
+
+
+def test_make_grade_fn_caps_concurrent_grades():
+    import threading
+    import time
+
+    live = {"now": 0, "max": 0}
+    guard = threading.Lock()
+    hold = threading.Event()
+
+    def grader(instance, patch, *, run_id):
+        with guard:
+            live["now"] += 1
+            live["max"] = max(live["max"], live["now"])
+        hold.wait(2)  # keep the grade "open" so overlap is observable (bounded so no hang)
+        with guard:
+            live["now"] -= 1
+        return run_id
+
+    grade_fn = run.make_grade_fn(grader, concurrency=2)
+    # 4 DISTINCT patches (4 distinct run_ids) would all grade at once but the cap is 2.
+    threads = [threading.Thread(target=grade_fn, args=(_Inst("i"), f"patch-{i}"))
+               for i in range(4)]
+    for t in threads:
+        t.start()
+    time.sleep(0.25)  # let them pile against the semaphore
+    assert live["max"] == 2  # never more than the cap, and it did reach it
+    hold.set()
+    for t in threads:
+        t.join()

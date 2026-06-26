@@ -29,15 +29,21 @@ clear, actionable message — never a raw traceback.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import queue
+import subprocess
 import sys
+import threading
 import urllib.error
 from pathlib import Path
+from typing import Callable
 
 from knowledge.evals.swebench.analyze import aggregate, evaluate_gate, format_report
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_OUT = HERE / "RESULTS.data.json"
+DEFAULT_GRADE_CONCURRENCY = 2
 
 
 class BackendUnreachable(RuntimeError):
@@ -179,10 +185,97 @@ def _seed_mcp_cache(space_id: str, *, org: str, base_url: str) -> str:
     return str(config_file)
 
 
+# --------------------------------------------------------------------------- #
+# Parallel-safety: per-arm worktree isolation + a grade-concurrency cap.
+# These two make `--workers > 1` safe on a memory-bounded box — without them,
+# concurrent arms of the SAME instance would edit one shared checkout (corrupt
+# patches) and an unbounded number of heavy WSL Docker grades could OOM.
+# --------------------------------------------------------------------------- #
+class WorktreePool:
+    """A fixed set of git worktrees handed out to concurrent arms, one at a time.
+
+    Each concurrently-running arm needs its own working tree so two agents never edit
+    the same files. The pool is sized to the worker count, so disk stays bounded to a
+    handful of trees regardless of how many (instance, trial) jobs there are. The
+    worktrees all share ONE clone's object store, so adding them is cheap. ``acquire``
+    blocks until a tree is free (a plain thread-safe queue); the caller resets the tree
+    to its instance's ``base_commit`` (via ``prepare_checkout``) before using it.
+    """
+
+    def __init__(self, paths: list[Path]):
+        self.paths = list(paths)
+        self._free: "queue.Queue[Path]" = queue.Queue()
+        for p in self.paths:
+            self._free.put(p)
+
+    def acquire(self) -> Path:
+        return self._free.get()
+
+    def release(self, path: Path) -> None:
+        self._free.put(path)
+
+
+def _build_worktree_pool(base_clone: Path, root: Path, size: int) -> WorktreePool:
+    """Ensure ``size`` git worktrees off ``base_clone`` and return them as a pool.
+
+    Live-path setup (manual). One full sympy clone holds every instance's history, so a
+    single worktree can be reset to ANY instance's ``base_commit``; we make ``size`` of
+    them (= worker count) as reusable, instance-agnostic working trees. Idempotent: a
+    worktree that already exists is reused, and ``git worktree prune`` first clears any
+    registrations orphaned by a prior interrupted run.
+    """
+    _ensure_sympy_checkout(base_clone)  # one shared full clone (all instances' commits)
+    subprocess.run(["git", "worktree", "prune"], cwd=str(base_clone), check=False)
+    root.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for i in range(max(1, size)):
+        wt = root / f"wt-{i}"
+        if not (wt / ".git").exists():  # worktree .git is a gitdir-pointer FILE
+            subprocess.run(["git", "worktree", "add", "--detach", str(wt)],
+                           cwd=str(base_clone), check=True)
+        paths.append(wt)
+    return WorktreePool(paths)
+
+
+def make_grade_fn(grade_one: Callable[..., object], *, concurrency: int) -> Callable[..., object]:
+    """Wrap a ``(instance, patch, *, run_id) -> GradeResult`` grader for safe concurrency.
+
+    Two thread-safe guarantees layered on the raw grader so ``workers > 1`` is sound:
+
+    * **Concurrency cap** — at most ``concurrency`` DISTINCT grades run at once. Each grade
+      is a heavy WSL Docker container (builds + runs sympy's tests); on a 16 GB box more
+      than ~2 at a time risks OOM, so this semaphore is the throttle independent of the
+      agent worker count.
+    * **Identical-patch dedup, race-free** — two arms that produced a byte-identical patch
+      for the same instance share ONE grade (the original patch-hash ``run_id`` keying).
+      A per-``run_id`` lock makes the second caller wait and reuse the cached result rather
+      than racing to build the same swebench run directory.
+    """
+    sem = threading.Semaphore(max(1, concurrency))
+    cache: dict[str, object] = {}
+    key_locks: dict[str, threading.Lock] = {}
+    locks_guard = threading.Lock()
+
+    def grade_fn(instance, patch):
+        run_id = f"praxis_{instance.instance_id}_{hashlib.sha1(patch.encode('utf-8')).hexdigest()[:10]}"
+        with locks_guard:
+            lock = key_locks.setdefault(run_id, threading.Lock())
+        with lock:  # serialize identical (instance, patch); distinct run_ids never contend here
+            if run_id in cache:
+                return cache[run_id]
+            with sem:  # cap concurrent DISTINCT Docker grades
+                result = grade_one(instance, patch, run_id=run_id)
+            cache[run_id] = result
+            return result
+
+    return grade_fn
+
+
 def run_live(*, n_instances: int, trials: int, k_rework: int, manifest_path: Path | None,
              out_path: Path | None, workers: int = 1,
              order: str = "recent", exclude_leaked: bool = True,
-             since: str | None = None) -> int:
+             since: str | None = None,
+             grade_concurrency: int = DEFAULT_GRADE_CONCURRENCY) -> int:
     """Full pipeline. Raises :class:`BackendUnreachable` (not a traceback) if the backend is down."""
     from knowledge.evals.swebench.experiment import run_experiment
     from knowledge.evals.swebench.grader import grade as grade_instance
@@ -209,7 +302,6 @@ def run_live(*, n_instances: int, trials: int, k_rework: int, manifest_path: Pat
     # R_exist oracle. The FIRST backend call is where a down backend shows up — wrap it
     # so the user gets the praxis-up hint, not a stack trace.
     rexist_map: dict[str, dict] = {}
-    checkouts: dict[str, Path] = {}
     mcp_configs: dict[str, str] = {}
     ingest_results: dict[str, object] = {}
     try:
@@ -217,13 +309,10 @@ def run_live(*, n_instances: int, trials: int, k_rework: int, manifest_path: Pat
             ingest_results[inst.instance_id] = run_ingest(inst, client=client, fetch=fetch)
             rel = r_exist(inst, client)
             rexist_map[inst.instance_id] = {"r_exist": rel.r_exist, "top_score": rel.top_score}
-            # Live arm wiring (manual path): a per-instance checkout reset to base_commit
-            # (+ install_config venv, built by the orchestrator before the first arm) and a
-            # per-instance MCP cache pinning the instance's SPACE for the treatment arm.
+            # Per-instance MCP cache pinning the instance's SPACE for the treatment arm.
+            # (The checkout the agent edits is NOT per-instance any more — it's a shared
+            # worktree pool, see below — but the space pin still is, one private graph each.)
             space_id = space_id_for(inst)
-            checkout = (HERE / ".checkouts" / space_id)
-            _ensure_sympy_checkout(checkout)  # clone sympy if absent so the agent edits a real tree
-            checkouts[inst.instance_id] = checkout
             mcp_configs[inst.instance_id] = _seed_mcp_cache(
                 space_id, org=EVAL_ORG, base_url=client.base_url)
     except Exception as exc:  # noqa: BLE001 — translate connection failures to a clear message
@@ -231,32 +320,36 @@ def run_live(*, n_instances: int, trials: int, k_rework: int, manifest_path: Pat
             raise _friendly_backend_error(client.base_url) from exc
         raise
 
+    # One shared sympy clone + a worktree pool sized to the worker count, so concurrent
+    # arms each edit an isolated working tree (built AFTER the ingest guard so a down
+    # backend still short-circuits before any slow clone). The grade callback is wrapped
+    # for a concurrency cap + race-free dedup. Together these make workers>1 safe.
+    pool = _build_worktree_pool(
+        HERE / ".checkouts" / "_base", HERE / ".checkouts" / "worktrees", workers)
+    grade_fn = make_grade_fn(grade_instance, concurrency=grade_concurrency)
+
     def ingest_fn(inst):  # ingest already ran in the pre-loop; hand U6 the captured
         return ingest_results[inst.instance_id]  # IngestResult so facts_ingested reaches the meta
 
-    def grade_fn(inst, patch):
-        # Distinct run_id per (instance, patch): the swebench harness caches by run_id, so
-        # a shared id would let the control grade reuse the treatment grade's report. A
-        # patch hash also means two arms that produced the SAME patch correctly share one
-        # grade (identical patch ⇒ identical result).
-        import hashlib
-
-        tag = hashlib.sha1(patch.encode("utf-8")).hexdigest()[:10]
-        return grade_instance(inst, patch, run_id=f"praxis_{inst.instance_id}_{tag}")
-
     # U6 calls run_arm(instance, arm, grade=..., checkout=..., mcp_config_path=..., ...).
-    # The treatment arm reads mcp_config_path; the control arm ignores it (no Praxis MCP).
-    # checkout + mcp_config_path are per-instance, so we wrap run_arm to look them up.
+    # The treatment arm reads mcp_config_path; control ignores it. Each call borrows an
+    # isolated worktree from the pool (blocking until one is free), resets it to the
+    # instance's base_commit, runs, and returns the tree — so two concurrent arms, even of
+    # the same instance, never share a working tree.
     from knowledge.evals.swebench.runner import run_arm as _run_arm
 
     def run_arm_wired(instance, arm, **kw):
-        prepare_checkout(instance, checkouts[instance.instance_id])
-        return _run_arm(
-            instance, arm,
-            checkout=checkouts[instance.instance_id],
-            mcp_config_path=mcp_configs[instance.instance_id],
-            **kw,
-        )
+        worktree = pool.acquire()
+        try:
+            prepare_checkout(instance, worktree)
+            return _run_arm(
+                instance, arm,
+                checkout=worktree,
+                mcp_config_path=mcp_configs[instance.instance_id],
+                **kw,
+            )
+        finally:
+            pool.release(worktree)
 
     exp = run_experiment(
         instances,
@@ -291,7 +384,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--k-rework", type=int, default=1,
                         help="max repro-test rework rounds per arm (default 1)")
     parser.add_argument("--workers", type=int, default=1,
-                        help="concurrent (instance, trial) jobs on the live path (default 1)")
+                        help="concurrent (instance, trial) jobs on the live path (default 1); "
+                             "each arm gets an isolated git worktree so >1 is safe")
+    parser.add_argument("--grade-concurrency", type=int, default=DEFAULT_GRADE_CONCURRENCY,
+                        help=f"max concurrent WSL Docker grades regardless of --workers "
+                             f"(default {DEFAULT_GRADE_CONCURRENCY}; drop to 1 if WSL OOMs on 16 GB)")
     parser.add_argument("--from-records", type=Path, default=None,
                         help="OFFLINE: aggregate a committed records JSON instead of a live run")
     parser.add_argument("--manifest", type=Path, default=None,
@@ -323,6 +420,7 @@ def main(argv: list[str] | None = None) -> int:
             order=args.order,
             exclude_leaked=not args.include_leaked,
             since=args.since,
+            grade_concurrency=args.grade_concurrency,
         )
     except BackendUnreachable as exc:
         print(f"error: {exc}", file=sys.stderr)
