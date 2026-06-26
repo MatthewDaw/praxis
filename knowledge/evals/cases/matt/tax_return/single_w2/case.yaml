@@ -8,6 +8,8 @@ ingest_model: openai/gpt-4o-mini
 ingest_state: active
 reader: retrieving
 reader_top_k: 0
+reader_rel_ratio: 0.0
+reader_abs_floor: 0.0
 seed_prompt: 'You are a tax-preparation agent. Your knowledge base has been seeded with everything needed to prepare this taxpayer''s U.S. federal income tax return: the Form 1040 filling-out instructions, the W-2(s), and the taxpayer''s answers to an intake questionnaire. Using ONLY that ingested knowledge, fill out the federal income tax return. Work the Form 1040 lines in order, show the figure for each line, and do the arithmetic (taxable income and tax) yourself from the rules and amounts you were given — do not invent numbers that are not supported by the ingested knowledge, and do not ask the user for information that is already there. End with the bottom line: the taxpayer''s refund or the amount they owe. Write the completed return to a file named answer.md and create no other files.'
 target_commit: '0000000000000000000000000000000000000000'
 needs:

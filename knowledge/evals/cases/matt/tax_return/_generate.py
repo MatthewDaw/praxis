@@ -338,6 +338,20 @@ def build_scenario(scn: dict) -> dict:
         "ingest_state": "active",
         "reader": "retrieving",
         "reader_top_k": 0,
+        # Disable the rel_ratio shape filter (mirrors build_recall_case). The agent
+        # is told it has "everything needed" — Form 1040 rules, the W-2(s), AND the
+        # intake answers — but a non-default fact like the filing status ("Married
+        # filing jointly") scores under 60% of the top hit against the generic
+        # seed prompt, so the default rel_ratio=0.60 drops it before the agent ever
+        # sees it, silently forcing the Single default. The abs_floor=0.30 existence
+        # gate (kept at default) remains the relevance guard.
+        "reader_rel_ratio": 0.0,
+        # Also drop the abs_floor existence gate: the taxpayer's intake answer
+        # (e.g. "filing status: Married filing jointly") scores below 0.30 against
+        # the generic seed prompt, so abs_floor=0.30 still buries it and the agent
+        # falls back to the Single default. The prompt promises the agent has
+        # "everything needed", so surface the full seeded set and let the agent rank.
+        "reader_abs_floor": 0.0,
         "seed_prompt": SEED_PROMPT,
         "target_commit": "0" * 40,
         "needs": ["file_io"],
@@ -585,8 +599,19 @@ def build_ruleset_distillation_case() -> dict:
     # 6) Standard-vs-itemized "larger of" rule and the whole-dollar rounding rule.
     checks.append(regex_check(
         "recall_larger_of_std_or_itemized", r"(?is)larger[^.]{0,60}itemi"))
+    # The rounding rule has TWO halves that the distiller can split apart: drop
+    # amounts under 50c, AND round 50-99c up. Asserting them separately catches a
+    # partial collapse where only the round-up half survives (observed in the live
+    # audit) — a single combined check would pass on either half alone.
+    # Order-independent (lookaheads, like the bracket checks): the distiller freely
+    # reorders — "drop amounts under 50 cents" vs "amounts under 50 cents are dropped"
+    # must both match, so a fixed drop->50c word order produces false negatives.
     checks.append(regex_check(
-        "recall_rounding_whole_dollars", r"(?is)(?:50\s*cents|whole dollar|to the next dollar)"))
+        "recall_rounding_drop_under_50c",
+        r"(?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:drop|disregard|ignore|round\w*\s+down))(?=[^.\n]*?(?:under|less than|below)?[^.\n]*?50\s*cents)[^.\n]*"))
+    checks.append(regex_check(
+        "recall_rounding_round_50_to_99_up",
+        r"(?is)(?:50\s*(?:to|-|through)\s*99\s*cents|50\s*cents[^.\n]{0,40}next dollar|increase[^.\n]{0,40}next dollar|round\w*\s+up[^.\n]{0,40}(?:next dollar|50))"))
 
     case = {
         "id": "matt_tax_return_ruleset_distillation",

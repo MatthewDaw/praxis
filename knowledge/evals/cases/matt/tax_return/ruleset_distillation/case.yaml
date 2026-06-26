@@ -215,7 +215,11 @@ deterministic_checks:
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
     pattern: (?is)larger[^.]{0,60}itemi
-- name: recall_rounding_whole_dollars
+- name: recall_rounding_drop_under_50c
   ref: knowledge.evals.deterministic_checks.text:regex_matches
   params:
-    pattern: (?is)(?:50\s*cents|whole dollar|to the next dollar)
+    pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:drop|disregard|ignore|round\w*\s+down))(?=[^.\n]*?(?:under|less than|below)?[^.\n]*?50\s*cents)[^.\n]*
+- name: recall_rounding_round_50_to_99_up
+  ref: knowledge.evals.deterministic_checks.text:regex_matches
+  params:
+    pattern: (?is)(?:50\s*(?:to|-|through)\s*99\s*cents|50\s*cents[^.\n]{0,40}next dollar|increase[^.\n]{0,40}next dollar|round\w*\s+up[^.\n]{0,40}(?:next dollar|50))
