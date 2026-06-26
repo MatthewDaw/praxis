@@ -54,7 +54,20 @@ uv run python -m knowledge.evals.swebench.run \
 
 # Live: full pipeline (select -> ingest -> arms -> grade -> analyze).
 uv run python -m knowledge.evals.swebench.run --instances 10 --trials 3
+
+# Bias selection toward HARD bugs (biggest gold patch) where a no-knowledge control
+# plausibly fails — i.e. where Praxis has headroom to move the resolve rate, not just cost:
+uv run python -m knowledge.evals.swebench.run --instances 10 --trials 3 --order hard
 ```
+
+**Instance selection** (`--order`, `--include-leaked`). By default `select` takes the
+newest supported-version (sympy 1.12–1.14) instances and drops only **verbatim**-leaked
+ones (the issue literally pastes a fix line — ~8 of 101). It does *not* drop the far more
+common "issue names the changed function" cases, which aren't real leakage. `--order hard`
+instead picks the largest-gold-patch instances (more files / failing tests) — the bugs a
+contaminated control is least likely to one-shot. Caveat: the hardest instances skew older
+(more training-memorized), so `hard` trades recency for difficulty; pick per what you're
+probing.
 
 The `--from-records` path needs **neither** the backend nor Docker — it only runs U7's
 pure aggregate/gate/report over a committed records dict.

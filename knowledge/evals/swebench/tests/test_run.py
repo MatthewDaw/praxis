@@ -98,7 +98,7 @@ def test_missing_backend_yields_friendly_message_not_traceback(monkeypatch, caps
         instance_id = "sympy__sympy-12345"
         base_commit = "0" * 40
 
-    monkeypatch.setattr(run_mod, "_load_instances", lambda n, m: [_Inst()])
+    monkeypatch.setattr(run_mod, "_load_instances", lambda n, m, **kw: [_Inst()])
 
     # the first backend call (run_ingest, imported lazily inside run_live) refuses
     def _refuse(*_a, **_k):
@@ -117,7 +117,7 @@ def test_missing_backend_yields_friendly_message_not_traceback(monkeypatch, caps
 def test_empty_selection_returns_nonzero(monkeypatch, capsys):
     import knowledge.evals.swebench.run as run_mod
 
-    monkeypatch.setattr(run_mod, "_load_instances", lambda n, m: [])
+    monkeypatch.setattr(run_mod, "_load_instances", lambda n, m, **kw: [])
     rc = run.main(["--instances", "1", "--trials", "1"])
     assert rc == 1
     assert "no instances selected" in capsys.readouterr().err

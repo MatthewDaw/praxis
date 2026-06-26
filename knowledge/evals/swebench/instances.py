@@ -20,9 +20,11 @@ a live ``--refresh`` against ``nebius/SWE-rebench`` (real instance ids), then re
 This module provides the read/write/round-trip code; the fixture under ``tests/`` holds
 only fake SWE-rebench-shaped records for the offline tests.
 
-The leakage screen is deliberately conservative (see :func:`screen_leakage`): it records
-a verdict on *every* chosen instance and never silently drops a candidate — flagged
-instances are kept and marked so the manifest stays a complete, auditable set (R2).
+The leakage screen (see :func:`screen_leakage`) is two-tier: a STRONG verbatim-fix-line
+match (disqualifying) vs a WEAK changed-symbol mention (informational — issues normally
+name the broken function, so this fires on ~most instances and is NOT real leakage). Only
+verbatim leaks are excluded by :func:`select`; every screened instance keeps its verdict
+(R2). :func:`select` also takes ``order="recent"|"hard"`` to bias toward harder bugs.
 """
 
 from __future__ import annotations
@@ -61,7 +63,12 @@ class Instance:
     pass_to_pass: list[str]
     install_config: dict  # verbatim from the record (install, test_cmd, log_parser, python, ...)
     gold_files: list[str]  # b/ paths parsed from the gold ``patch``
-    leak_flag: bool = False
+    # Two leakage tiers (see screen_leakage). leak_verbatim is the DISQUALIFYING one — a
+    # gold fix line pasted into the issue. leak_symbol is INFORMATIONAL — the issue merely
+    # names a changed symbol (normal; issues name the broken function). Only leak_verbatim
+    # excludes from a run.
+    leak_verbatim: bool = False
+    leak_symbol: bool = False
     screen_reason: str = ""
     human_reviewed: bool = False
 
@@ -92,7 +99,8 @@ class Instance:
             "base_commit": self.base_commit,
             "created_at": self.created_at,
             "gold_files": list(self.gold_files),
-            "leak_flag": self.leak_flag,
+            "leak_verbatim": self.leak_verbatim,
+            "leak_symbol": self.leak_symbol,
             "screen_reason": self.screen_reason,
             "human_reviewed": self.human_reviewed,
         }
@@ -133,43 +141,54 @@ def version_supported(version: str, supported: tuple[str, ...] = SUPPORTED_VERSI
     return version in supported
 
 
-def screen_leakage(inst: Instance) -> tuple[bool, str]:
-    """Conservative solution-in-issue leakage heuristic → ``(leak_flag, reason)``.
+def screen_leakage(inst: Instance) -> tuple[bool, bool, str]:
+    """Solution-in-issue leakage screen → ``(leak_verbatim, leak_symbol, reason)``.
 
-    Two overlaps flag an instance, in priority order:
+    TWO tiers, very different in strength — the whole point of splitting them is that the
+    weak one fires constantly and must NOT disqualify an instance:
 
-    1. A changed *symbol name* introduced by the gold diff also appears (word-bounded)
-       in the issue text — the issue likely names the fix's new identifier.
-    2. A substantive *added line* of the gold diff (a stripped code line ≥12 chars,
-       skipping comments/blank/import noise) appears verbatim in the issue — the issue
-       likely pastes the fix.
+    * ``leak_verbatim`` (STRONG, disqualifying) — a substantive *added line* of the gold
+      diff (stripped code ≥12 chars, skipping comment/import/decorator noise) appears
+      verbatim in the issue. The issue literally pastes the fix; running it tests nothing.
+    * ``leak_symbol`` (WEAK, informational) — a *symbol* the fix changes is merely named
+      in the issue. This is NORMAL: an issue about a broken function names that function.
+      It is recorded for auditing but does **not** exclude the instance (empirically ~79%
+      of sympy instances trip it, vs ~1% for verbatim — treating it as leakage throws away
+      almost the whole pool for no validity gain).
 
-    Conservative by design: it harvests symbols only from *added* lines, requires word
-    boundaries, and ignores short/trivial lines, so it under-flags rather than over-flags.
-    A clean instance returns ``(False, "no problem_statement / gold overlap")``. The
-    verdict is always recorded (R2 — no silent inclusion); selection keeps flagged
-    instances and marks them.
+    Verbatim is checked first and wins (an instance that pastes a fix line is verbatim-
+    leaked regardless of symbol mentions). A clean instance returns
+    ``(False, False, "no problem_statement / gold overlap")``. The verdict is always
+    recorded (R2 — no silent inclusion).
     """
     issue = inst.problem_statement
     if not issue or not inst.patch:
-        return False, "no problem_statement / gold overlap"
+        return False, False, "no problem_statement / gold overlap"
 
     added = [m.group(1) for line in inst.patch.splitlines() if (m := _ADDED.match(line))]
 
-    # (1) a symbol introduced by the diff is named in the issue
+    # (1) STRONG: a substantive added code line is pasted verbatim in the issue.
+    for line in added:
+        stripped = line.strip()
+        if len(stripped) >= 12 and not _trivial_line(stripped) and stripped in issue:
+            return True, False, f"gold added line in problem_statement: {stripped[:60]!r}"
+
+    # (2) WEAK: a symbol introduced by the diff is named in the issue (not disqualifying).
     issue_idents = set(_IDENT.findall(issue))
     for line in added:
         for sym in _IDENT.findall(line):
             if sym in issue_idents and not _common_word(sym):
-                return True, f"changed symbol '{sym}' appears in problem_statement"
+                return False, True, f"changed symbol '{sym}' named in problem_statement (weak)"
 
-    # (2) a substantive added code line is pasted verbatim in the issue
-    for line in added:
-        stripped = line.strip()
-        if len(stripped) >= 12 and not _trivial_line(stripped) and stripped in issue:
-            return True, f"gold added line in problem_statement: {stripped[:60]!r}"
+    return False, False, "no problem_statement / gold overlap"
 
-    return False, "no problem_statement / gold overlap"
+
+def gold_patch_lines(inst: Instance) -> int:
+    """Count of changed (+/-) code lines in the gold patch — a rough fix-complexity proxy."""
+    return len([
+        ln for ln in inst.patch.splitlines()
+        if ln[:1] in "+-" and ln[:3] not in ("---", "+++")
+    ])
 
 
 # Identifiers too generic to count as a "changed symbol" leak on their own.
@@ -189,19 +208,37 @@ def _trivial_line(stripped: str) -> bool:
     return stripped.startswith(("#", "import ", "from ", "@", '"""', "'''"))
 
 
-def select(candidates: Iterable[Instance], n: int) -> list[Instance]:
-    """Filter to supported versions, sort by ``created_at`` desc, screen each, keep top ``n``.
+def select(
+    candidates: Iterable[Instance],
+    n: int,
+    *,
+    order: str = "recent",
+    exclude_leaked: bool = True,
+) -> list[Instance]:
+    """Filter to supported versions, screen every candidate, then order + keep top ``n``.
 
-    Flagged instances are **not** dropped — every kept instance gets its screen verdict
-    written onto it so the manifest is a complete, auditable set (R2). Sort is
-    deterministic: ``created_at`` desc, then ``instance_id`` asc as a stable tiebreak.
+    Every supported candidate is screened (its leak verdict written on, R2 — no silent
+    inclusion). With ``exclude_leaked`` (default), only **verbatim**-leaked instances are
+    dropped — NOT the weak symbol-mention tier, which fires on most instances and isn't
+    real leakage. ``order`` is ``"recent"`` (created_at desc — the default) or ``"hard"``
+    (gold-patch size desc, then files / failing-tests / recency), which biases toward the
+    harder bugs where a no-knowledge control plausibly fails and Praxis has headroom.
+    Deterministic tiebreaks throughout (instance_id).
     """
     supported = [c for c in candidates if version_supported(c.version)]
-    supported.sort(key=lambda c: (c.created_at, c.instance_id), reverse=True)
-    chosen = supported[:n]
-    for inst in chosen:
-        inst.leak_flag, inst.screen_reason = screen_leakage(inst)
-    return chosen
+    for inst in supported:
+        inst.leak_verbatim, inst.leak_symbol, inst.screen_reason = screen_leakage(inst)
+
+    pool = [c for c in supported if not (exclude_leaked and c.leak_verbatim)]
+    if order == "hard":
+        pool.sort(
+            key=lambda c: (gold_patch_lines(c), len(c.gold_files), len(c.fail_to_pass),
+                           c.created_at, c.instance_id),
+            reverse=True,
+        )
+    else:  # "recent"
+        pool.sort(key=lambda c: (c.created_at, c.instance_id), reverse=True)
+    return pool[:n]
 
 
 def write_manifest(instances: Iterable[Instance], path: str | Path) -> None:

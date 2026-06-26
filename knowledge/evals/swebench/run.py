@@ -98,14 +98,15 @@ def _write_results(out_path: Path, records, report, gate, rexist_map) -> None:
 REPO = "sympy/sympy"
 
 
-def _load_instances(n: int, manifest_path: Path | None):
+def _load_instances(n: int, manifest_path: Path | None, *,
+                    order: str = "recent", exclude_leaked: bool = True):
     """Select+screen ``n`` instances (U1). Re-load a committed manifest when present.
 
     A ``--manifest`` that exists is read and its rows re-loaded (deterministic rerun);
-    otherwise we fetch the SWE-rebench sympy slice and select+screen the top ``n``,
-    persisting the chosen set to the manifest for reproducibility. Kept deliberately
-    simple — the manifest path only carries the lean selection rows, so re-loading
-    fetches the full records again and intersects on the chosen ids.
+    otherwise we fetch the SWE-rebench sympy slice and select the top ``n`` by ``order``
+    (``recent``/``hard``), dropping verbatim-leaked instances when ``exclude_leaked``, and
+    persist the chosen set to the manifest. The manifest path only carries the lean
+    selection rows, so re-loading fetches the full records again and intersects on ids.
     """
     from knowledge.evals.swebench.instances import (
         fetch_rebench_sympy,
@@ -122,9 +123,9 @@ def _load_instances(n: int, manifest_path: Path | None):
 
     # Load ALL sympy candidates (no limit): SWE-rebench is ordered oldest-first, so a
     # limit would truncate to 2015-era instances whose versions `select` filters out —
-    # `select` itself sorts by created_at desc and keeps the recent supported-version top n.
+    # `select` itself orders and keeps the supported-version top n.
     candidates = load_candidates(fetch_rebench_sympy())
-    instances = select(candidates, n)
+    instances = select(candidates, n, order=order, exclude_leaked=exclude_leaked)
     if manifest_path is not None:
         write_manifest(instances, manifest_path)
     return instances
@@ -177,7 +178,8 @@ def _seed_mcp_cache(space_id: str, *, org: str, base_url: str) -> str:
 
 
 def run_live(*, n_instances: int, trials: int, k_rework: int, manifest_path: Path | None,
-             out_path: Path | None, workers: int = 1) -> int:
+             out_path: Path | None, workers: int = 1,
+             order: str = "recent", exclude_leaked: bool = True) -> int:
     """Full pipeline. Raises :class:`BackendUnreachable` (not a traceback) if the backend is down."""
     from knowledge.evals.swebench.experiment import run_experiment
     from knowledge.evals.swebench.grader import grade as grade_instance
@@ -194,7 +196,7 @@ def run_live(*, n_instances: int, trials: int, k_rework: int, manifest_path: Pat
     client = UrllibClient()
     fetch = make_repo_fetcher(REPO)
 
-    instances = _load_instances(n_instances, manifest_path)
+    instances = _load_instances(n_instances, manifest_path, order=order, exclude_leaked=exclude_leaked)
     if not instances:
         print("no instances selected (empty SWE-rebench sympy slice or manifest)", file=sys.stderr)
         return 1
@@ -292,6 +294,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="live: read/write the chosen-instance manifest for deterministic reruns")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT,
                         help="where to write records + report + gate (default RESULTS.data.json)")
+    parser.add_argument("--order", choices=("recent", "hard"), default="recent",
+                        help="instance selection order: 'recent' (newest) or 'hard' "
+                             "(biggest gold patch — biases toward bugs control may fail; default recent)")
+    parser.add_argument("--include-leaked", action="store_true",
+                        help="keep verbatim-leaked instances (issue pastes a fix line); "
+                             "excluded by default")
     args = parser.parse_args(argv)
 
     if args.from_records is not None:
@@ -305,6 +313,8 @@ def main(argv: list[str] | None = None) -> int:
             manifest_path=args.manifest,
             out_path=args.out,
             workers=args.workers,
+            order=args.order,
+            exclude_leaked=not args.include_leaked,
         )
     except BackendUnreachable as exc:
         print(f"error: {exc}", file=sys.stderr)
