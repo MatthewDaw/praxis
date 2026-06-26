@@ -85,6 +85,24 @@ def regex_check(name: str, pattern: str) -> dict:
     }
 
 
+def mentions_any(name: str, patterns: list[str]) -> dict:
+    """Pass iff ANY of the regexes matches — synonym/spelling tolerant."""
+    return {
+        "name": name,
+        "ref": "knowledge.evals.deterministic_checks.text:mentions_any",
+        "params": {"patterns": patterns},
+    }
+
+
+def line_with_all(name: str, patterns: list[str]) -> dict:
+    """Pass iff a single line matches every regex — proves dual-source co-citation."""
+    return {
+        "name": name,
+        "ref": "knowledge.evals.deterministic_checks.text:line_with_all",
+        "params": {"patterns": patterns},
+    }
+
+
 NONEMPTY = {
     "name": "produced_catalog",
     "ref": "knowledge.evals.deterministic_checks.builds:output_nonempty",
@@ -98,15 +116,52 @@ WROTE_FILE = {
 }
 
 
-# Capabilities that demonstrably recur across BOTH toolkits — a correct unified
-# catalog must still surface each one. Case-insensitive keyword probes.
-COVERAGE_CHECKS = [
-    ("covers_planning", "(?i)plan"),
-    ("covers_code_review", "(?i)code.?review|review"),
-    ("covers_design_review", "(?i)design.?review|design"),
-    ("covers_debugging", "(?i)debug|investigat"),
-    ("covers_commit_pr", "(?i)commit|pull request|\\bpr\\b"),
-    ("covers_ship_release", "(?i)ship|release|deploy"),
+# --- Strong, discriminating deterministic checks ---------------------------
+#
+# The original suite probed for bare English words ("plan", "review", "design",
+# ...). Every plausible catalog contains those, so the checks could never fail —
+# not even for the raw un-merged concatenation, nor for a catalog built after the
+# pipeline silently dropped half the corpus (observed: large skill files 500 on
+# ingest, so whole capability areas can vanish while these checks stay green).
+#
+# These replacements test the eval's actual thesis end-to-end:
+#   1. BOTH toolkits reach the catalog (fails if one toolkit's facts never
+#      ingested / retrieved — the corpus-truncation failure mode).
+#   2. At least one entry is a real cross-toolkit MERGE (one line citing both
+#      sources), not two stapled-together lists.
+#   3. Each recurring capability is represented by a NAMED skill from BOTH
+#      toolkits, so a hallucinated or half-empty catalog can't pass on generic
+#      vocabulary alone.
+
+# (1) Both toolkits must be present by name (provenance survived for each).
+BOTH_TOOLKITS = [
+    mentions_any("references_gstack", ["(?i)\\bgstack\\b"]),
+    mentions_any(
+        "references_compound_engineering",
+        ["(?i)compound[\\s-]?engineering", "(?i)\\bce-[a-z]"],
+    ),
+]
+
+# (2) A genuine merge: one provenance line that cites BOTH toolkits at once.
+# NB: line_with_all applies re.IGNORECASE itself, so these patterns must NOT
+# embed inline (?i) flags (a mid-expression (?i) is a regex error in Python).
+CROSS_TOOLKIT_MERGE = line_with_all(
+    "has_cross_toolkit_merge",
+    ["gstack", "compound[\\s-]?engineering|\\bce-[a-z]"],
+)
+
+# (3) Each overlapping capability, anchored to NAMED source skills from each
+# toolkit (gstack alternative | compound `ce-*` alternative). A capability only
+# passes if a real skill from at least one toolkit is named — and the BOTH_*
+# checks above force the other toolkit to appear somewhere too. This fails when
+# distillation drops the central skills (e.g. ce-code-review, review/devex-review).
+COVERAGE_CHECKS_NAMED = [
+    mentions_any("covers_planning", ["(?i)\\bce-plan\\b", "(?i)\\bautoplan\\b", "(?i)plan-eng-review", "(?i)\\bspec\\b"]),
+    mentions_any("covers_code_review", ["(?i)\\bce-code-review\\b", "(?i)devex-review", "(?i)\\breview\\b"]),
+    mentions_any("covers_design_review", ["(?i)design-review", "(?i)ce-doc-review", "(?i)plan-design-review"]),
+    mentions_any("covers_debugging", ["(?i)\\bce-debug\\b", "(?i)\\binvestigate\\b"]),
+    mentions_any("covers_commit_pr", ["(?i)ce-commit(-push-pr)?", "(?i)ce-resolve-pr-feedback", "(?i)\\bship\\b"]),
+    mentions_any("covers_ship_release", ["(?i)\\bship\\b", "(?i)land-and-deploy", "(?i)\\blfg\\b", "(?i)ce-work\\b"]),
 ]
 
 
@@ -199,7 +254,10 @@ def main() -> None:
         "output_file": "unified-skills.md",
         "seeded_insight": {"via_ingestor": sources},
         "deterministic_checks": (
-            [NONEMPTY, WROTE_FILE] + [regex_check(n, p) for n, p in COVERAGE_CHECKS]
+            [NONEMPTY, WROTE_FILE]
+            + BOTH_TOOLKITS
+            + [CROSS_TOOLKIT_MERGE]
+            + COVERAGE_CHECKS_NAMED
         ),
         "rubric": rubric(),
     }

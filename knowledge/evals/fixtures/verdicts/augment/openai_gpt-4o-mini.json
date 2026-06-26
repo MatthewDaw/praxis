@@ -7,6 +7,10 @@
 "merge": true,
 "merged_text": "Daily completion (R1): a submission for date D is completed when the daily rep is submitted AND all three check-in ratings (effort, focus, support) are submitted, and requires at least one habit-checklist item to be checked; a submission with the rep and all three ratings but zero checklist items checked is NOT counted as complete."
 },
+"470d75239fb6bd9c059e6182d44399904d0c1e1da841d76bd8cd4e16022bb8aa": {
+"merge": false,
+"merged_text": ""
+},
 "730976ca2b559ba6286394296dcf9582f126515fd8a82a55959bda27cb7c03e1": {
 "merge": true,
 "merged_text": "Daily completion: a submission for date D is completed when the daily rep is submitted and all three check-in ratings are submitted; the habit checklist does not affect completion, and this is implemented as team_app/completion.py:completion_status(submission), returning True only when the rep is present and all three ratings are non-None, verified green by tests/test_completion.py."

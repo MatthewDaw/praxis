@@ -633,17 +633,24 @@ def build_ruleset_distillation_case() -> dict:
         # The default rel_ratio=0.60 shape filter is a precision tool — it drops a fact
         # scoring under 60% of the top hit even when it is plainly on-topic (e.g.
         # "Taxable income is never less than zero." scores 0.317 vs a 0.68 top, so the
-        # 0.41 cutoff drops it). Disable rel_ratio and let the abs_floor=0.30 existence
-        # gate (kept at default) be the relevance guard; the case has no negative
-        # control to protect, and every check is a must-be-present recall assertion.
+        # 0.41 cutoff drops it). Disable rel_ratio; for the SAME reason also disable the
+        # abs_floor=0.30 existence gate. The two detail rounding facts ("amounts under 50
+        # cents are dropped", "50-99 cents round up") are produced and stored correctly by
+        # the distiller but score under 0.30 against this broad multi-topic prompt, so the
+        # floor silently drops a must-be-present fact (isolated in the spike case
+        # coding_factory/compound_rule_not_collapsed_in_distillation). Every check here is a
+        # must-be-present recall assertion and the case has no negative control to protect,
+        # so neither cutoff should gate retrieval.
         "reader_rel_ratio": 0.0,
+        "reader_abs_floor": 0.0,
         "seed_prompt": (
             "Give the complete TY2025 federal Form 1040 rules: the standard "
             "deduction and the full 10%-37% ordinary-income bracket schedule for "
             "every filing status (Single, Married filing jointly, Married filing "
-            "separately, Head of household), how the per-bracket tax is summed, "
-            "which W-2 boxes map to which 1040 lines, and the line-by-line flow "
-            "from wages through taxable income to the refund or amount owed."
+            "separately, Head of household), how the per-bracket tax is summed and "
+            "how amounts are rounded to whole dollars, which W-2 boxes map to which "
+            "1040 lines, and the line-by-line flow from wages through taxable income "
+            "to the refund or amount owed."
         ),
         "seeded_insight": {"via_ingestor": list(RULESET_DOCS)},
         "deterministic_checks": checks,

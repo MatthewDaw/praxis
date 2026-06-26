@@ -2189,30 +2189,66 @@ deterministic_checks:
   ref: knowledge.evals.deterministic_checks.builds:writes_file
   params:
     path: unified-skills.md
+- name: references_gstack
+  ref: knowledge.evals.deterministic_checks.text:mentions_any
+  params:
+    patterns:
+    - (?i)\bgstack\b
+- name: references_compound_engineering
+  ref: knowledge.evals.deterministic_checks.text:mentions_any
+  params:
+    patterns:
+    - (?i)compound[\s-]?engineering
+    - (?i)\bce-[a-z]
+- name: has_cross_toolkit_merge
+  ref: knowledge.evals.deterministic_checks.text:line_with_all
+  params:
+    patterns:
+    - gstack
+    - compound[\s-]?engineering|\bce-[a-z]
 - name: covers_planning
-  ref: knowledge.evals.deterministic_checks.text:regex_matches
+  ref: knowledge.evals.deterministic_checks.text:mentions_any
   params:
-    pattern: (?i)plan
+    patterns:
+    - (?i)\bce-plan\b
+    - (?i)\bautoplan\b
+    - (?i)plan-eng-review
+    - (?i)\bspec\b
 - name: covers_code_review
-  ref: knowledge.evals.deterministic_checks.text:regex_matches
+  ref: knowledge.evals.deterministic_checks.text:mentions_any
   params:
-    pattern: (?i)code.?review|review
+    patterns:
+    - (?i)\bce-code-review\b
+    - (?i)devex-review
+    - (?i)\breview\b
 - name: covers_design_review
-  ref: knowledge.evals.deterministic_checks.text:regex_matches
+  ref: knowledge.evals.deterministic_checks.text:mentions_any
   params:
-    pattern: (?i)design.?review|design
+    patterns:
+    - (?i)design-review
+    - (?i)ce-doc-review
+    - (?i)plan-design-review
 - name: covers_debugging
-  ref: knowledge.evals.deterministic_checks.text:regex_matches
+  ref: knowledge.evals.deterministic_checks.text:mentions_any
   params:
-    pattern: (?i)debug|investigat
+    patterns:
+    - (?i)\bce-debug\b
+    - (?i)\binvestigate\b
 - name: covers_commit_pr
-  ref: knowledge.evals.deterministic_checks.text:regex_matches
+  ref: knowledge.evals.deterministic_checks.text:mentions_any
   params:
-    pattern: (?i)commit|pull request|\bpr\b
+    patterns:
+    - (?i)ce-commit(-push-pr)?
+    - (?i)ce-resolve-pr-feedback
+    - (?i)\bship\b
 - name: covers_ship_release
-  ref: knowledge.evals.deterministic_checks.text:regex_matches
+  ref: knowledge.evals.deterministic_checks.text:mentions_any
   params:
-    pattern: (?i)ship|release|deploy
+    patterns:
+    - (?i)\bship\b
+    - (?i)land-and-deploy
+    - (?i)\blfg\b
+    - (?i)ce-work\b
 rubric:
   id: matt_skill_unification_v1
   items:

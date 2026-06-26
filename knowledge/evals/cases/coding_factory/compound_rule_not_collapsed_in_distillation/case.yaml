@@ -1,0 +1,75 @@
+# SPIKE — narrow isolation of the two failing checks in matt_tax_return_ruleset_distillation
+# (recall_rounding_drop_under_50c + recall_rounding_round_50_to_99_up).
+#
+# CONFIRMED ROOT CAUSE: RETRIEVAL, not distillation and not the write policy.
+# This spike seeds ONE source sentence and bisected the pipeline knob-by-knob:
+#   1. Seed alone, minimal policy        -> PASS 2/2. The distiller cleanly splits the colon
+#      sentence into THREE atomic facts: "...may be rounded to whole dollars.",
+#      "Amounts under 50 cents should be dropped.", "Amounts from 50 to 99 cents should be
+#      increased to the next dollar." So distillation does NOT collapse the rule.
+#   2. + merge_model + conflict_model (full write policy) -> PASS 2/2. The write policy does
+#      NOT merge the detail facts away either.
+#   3. + the BROAD ruleset_distillation seed_prompt, abs_floor at its 0.30 default -> FAIL 0/2.
+#      Only "Amounts on Form 1040 may be rounded to whole dollars." survives the reader; both
+#      detail facts are dropped.
+# Conclusion: the three rounding facts ARE in the graph. The two *detail* facts have low
+# cosine similarity to the broad, multi-topic ruleset prompt (which is about deductions,
+# brackets, W-2 boxes, line flow — it barely touches rounding), so they score under the
+# RetrievingReader abs_floor=0.30 existence gate and are filtered out before the checks see
+# them. This is the SAME failure family as matt_tax_return_mfj_two_w2 (abs_floor burying a
+# genuinely-present, low-scoring fact).
+#
+# THE FIX (not yet applied): ruleset_distillation is a RECALL-INTEGRITY case — every check is a
+# "must-be-present" assertion, and its own header says the abs_floor is meant to be "the
+# relevance guard". But here that guard drops a fact that IS present and IS required, so the
+# guard is wrong FOR THIS CASE. Set `reader_abs_floor: 0.0` on ruleset_distillation (it already
+# sets reader_rel_ratio: 0.0 for the same reason). Verified on this spike: with abs_floor
+# disabled all three rounding facts surface and it passes 2/2. Do NOT instead doctor the seed
+# or loosen the regexes.
+#
+# FALSIFIED (do not retry): "the distiller collapses compound sentences." A global SPLIT_PROMPT
+# rewrite to keep procedural steps REGRESSED ruleset_distillation's other recall checks
+# (42->35) and was reverted — it was attacking the wrong layer entirely.
+#
+# This spike file is intentionally left in its RED configuration (broad prompt, default
+# abs_floor) so it keeps reproducing the bug until the retrieval fix lands; flipping
+# reader_abs_floor to 0.0 here turns it GREEN and demonstrates the fix.
+#
+# Component graph_reader, real ingest_model: needs a Postgres DSN AND an OpenRouter key; the
+# harness SKIPs without them. RED today (by design — see above).
+id: compound_rule_not_collapsed_in_distillation
+component: graph_reader
+substrate: vector
+embedder: cached
+ingest_model: openai/gpt-4o-mini
+ingest_state: active
+# Match ruleset_distillation's FULL write policy (Deduper merge-judge + claim/semantic
+# conflict detectors). The single-sentence variant WITHOUT these passed 2/2, which falsified
+# the "distiller always collapses compound sentences" hypothesis — so the loss is downstream
+# of distillation, in the write policy and/or multi-doc batch interaction. These knobs turn
+# the spike toward that.
+merge_model: openai/gpt-4o-mini
+conflict_model: openai/gpt-4o-mini
+reader: retrieving
+reader_top_k: 0
+# rel_ratio off (matches ruleset_distillation), abs_floor KEPT at its 0.30 default — this is
+# the knob under test. With a generic prompt that does not name "cents", the two detail facts
+# ("under 50 cents dropped", "50-99 cents up") score below 0.30 and the abs_floor existence
+# gate drops them, even though the distiller produced all three rounding facts cleanly. THIS,
+# not distillation, is the real loss in ruleset_distillation's two rounding checks.
+reader_rel_ratio: 0.0
+seed_prompt: "Give the complete TY2025 federal Form 1040 rules: the standard deduction and the full 10%-37% ordinary-income bracket schedule for every filing status (Single, Married filing jointly, Married filing separately, Head of household), how the per-bracket tax is summed and how amounts are rounded to whole dollars, which W-2 boxes map to which 1040 lines, and the line-by-line flow from wages through taxable income to the refund or amount owed."
+seeded_insight:
+  via_ingestor:
+    - "Amounts on Form 1040 may be rounded to whole dollars: drop amounts under 50 cents and increase amounts from 50 to 99 cents to the next dollar."
+deterministic_checks:
+  # Both halves must survive distillation. Order-independent (lookaheads) because the
+  # distiller may reorder phrasing — a fixed word order would be a false negative.
+  - name: recall_rounding_drop_under_50c
+    ref: knowledge.evals.deterministic_checks.text:regex_matches
+    params:
+      pattern: (?is)(?:^|[.\n])\s*(?=[^.\n]*?(?:drop|disregard|ignore|round\w*\s+down))(?=[^.\n]*?(?:under|less than|below)?[^.\n]*?50\s*cents)[^.\n]*
+  - name: recall_rounding_round_50_to_99_up
+    ref: knowledge.evals.deterministic_checks.text:regex_matches
+    params:
+      pattern: (?is)(?:50\s*(?:to|-|through)\s*99\s*cents|50\s*cents[^.\n]{0,40}next dollar|increase[^.\n]{0,40}next dollar|round\w*\s+up[^.\n]{0,40}(?:next dollar|50))

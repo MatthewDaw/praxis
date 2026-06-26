@@ -32,11 +32,18 @@ A **full-pipeline case** (`component: null`), modeled on `../applications/`:
    `seed_prompt` instructs the boxed agent to read ONLY the injected graph and
    write a unified, merged skill catalog to `unified-skills.md`. Bash/WebFetch/
    WebSearch are off, so it cannot re-fetch the repos.
-3. **Grading.** `deterministic_checks` assert the catalog is non-empty, the file
-   was written, and the capabilities that recur across both toolkits (planning,
-   code review, design review, debugging, commit/PR, ship/release) all survive. A
-   `rubric` grades coverage, dedup/merge quality, provenance, grounding, and
-   structural coherence.
+3. **Grading.** `deterministic_checks` assert the catalog is non-empty and the
+   file was written, then test the eval's actual thesis: **both** toolkits reach
+   the catalog by name (`references_gstack` / `references_compound_engineering`),
+   at least one entry is a genuine cross-toolkit **merge** (one provenance line
+   citing both sources — `has_cross_toolkit_merge`), and each recurring
+   capability is anchored to a **named** source skill from the toolkits
+   (`ce-code-review`/`devex-review`, `ce-plan`/`autoplan`, …) rather than a
+   generic English word. This makes the suite fail the two real failure modes —
+   a raw un-merged concatenation, and a catalog built after the pipeline silently
+   dropped one toolkit's facts — which the earlier bare-keyword probes (`plan`,
+   `review`, `design`…) passed unconditionally. A `rubric` then grades coverage,
+   dedup/merge quality, provenance, grounding, and structural coherence.
 
 Chain under test: **85 skill files → ingest/distil/dedup → retrieve → agent
 synthesizes a unified catalog → graded.**

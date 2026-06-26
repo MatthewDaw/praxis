@@ -124,6 +124,32 @@ def mentions_any(ctx: EvalContext, *, patterns: list[str]) -> CheckResult:
     )
 
 
+def line_with_all(
+    ctx: EvalContext, *, patterns: list[str], case_insensitive: bool = True
+) -> CheckResult:
+    """Pass iff a SINGLE line matches every regex in ``patterns``.
+
+    Stronger than ``requires_all_substrings`` (which only needs each pattern to
+    appear *somewhere* in the output): here all patterns must co-occur on one
+    line. Useful to assert a real cross-source merge — e.g. one provenance line
+    that cites both source toolkits at once, rather than two separate lines that
+    each cite only one.
+    """
+    flags = re.IGNORECASE if case_insensitive else 0
+    for line in ctx.output.splitlines():
+        if all(re.search(p, line, flags) for p in patterns):
+            return CheckResult(
+                name="line_with_all",
+                passed=True,
+                evidence=f"line matches all {patterns!r}: {line.strip()[:120]!r}",
+            )
+    return CheckResult(
+        name="line_with_all",
+        passed=False,
+        evidence=f"no single line matches all of {patterns!r}",
+    )
+
+
 def regex_matches(ctx: EvalContext, *, pattern: str) -> CheckResult:
     """Pass iff ``re.search(pattern, output)`` finds a match."""
     found = re.search(pattern, ctx.output) is not None

@@ -17,7 +17,8 @@ conflict_model: openai/gpt-4o-mini
 reader: retrieving
 reader_top_k: 0
 reader_rel_ratio: 0.0
-seed_prompt: 'Give the complete TY2025 federal Form 1040 rules: the standard deduction and the full 10%-37% ordinary-income bracket schedule for every filing status (Single, Married filing jointly, Married filing separately, Head of household), how the per-bracket tax is summed, which W-2 boxes map to which 1040 lines, and the line-by-line flow from wages through taxable income to the refund or amount owed.'
+reader_abs_floor: 0.0
+seed_prompt: 'Give the complete TY2025 federal Form 1040 rules: the standard deduction and the full 10%-37% ordinary-income bracket schedule for every filing status (Single, Married filing jointly, Married filing separately, Head of household), how the per-bracket tax is summed and how amounts are rounded to whole dollars, which W-2 boxes map to which 1040 lines, and the line-by-line flow from wages through taxable income to the refund or amount owed.'
 seeded_insight:
   via_ingestor:
   - 'TY2025 Form 1040 standard deduction by filing status: Single $15,750; Married filing jointly $31,500; Married filing separately $15,750; Head of household $23,625. Enter on Form 1040 line 12.'
