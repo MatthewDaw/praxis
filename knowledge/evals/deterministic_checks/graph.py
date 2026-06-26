@@ -760,6 +760,112 @@ def derived_learning_not_merged_into_source(
         conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
 
 
+def surface_binding_governs_screen(
+    ctx: EvalContext,
+    *,
+    project: str,
+    screen_id: str,
+    requirement_text: str,
+    other_requirement_text: str,
+) -> CheckResult:
+    """A typed RENDERS binding makes a requirement *govern* a wireframe screen, and the
+    bidirectional coverage gate is exact and rejection-aware.
+
+    The agent factory's wireframe->code step asks "which requirements govern screen s-X?"
+    and runs a two-sided completeness gate ("every screen is covered by a requirement, and
+    every requirement renders some screen"). This drives the REAL ``renders`` edge path on
+    a fresh isolated tenant: two ``active`` ``category="requirement"`` facts are written, but
+    ONLY the first is bound to the surface via ``graph.bind_surface`` (which ``ensure_surface``s
+    a ``category="surface"`` fact and adds a ``renders`` edge).
+
+    Asserts:
+      (a) ``requirements_for_surface(project, screen_id)`` returns the bound requirement and
+          NOT the other (the binding governs the screen precisely);
+      (b) ``surface_coverage(project)`` reports the OTHER requirement in
+          ``uncoveredRequirements`` and reports NO uncovered surface for ``screen_id``
+          (the bound side covers its screen; the unbound side is flagged);
+      (c) after ``set_state(req_id, "rejected")`` the requirement drops from
+          ``requirements_for_surface`` AND the surface reappears in ``uncoveredSurfaces``
+          (active-only filtering: a rejected endpoint drops from every result, so the screen
+          is once again uncovered -- referential integrity via rejection, no stale hook).
+
+    Requires a Postgres DSN (``embedder: cached`` / ``substrate: vector``); the harness SKIPs
+    the case without one.
+    """
+    from knowledge.evals.run import _eval_embedder
+    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+        PostgresVectorGraph,
+    )
+    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
+    from knowledge.serve import db
+
+    class _CachedAxis:
+        embedder = "cached"
+
+    embedder = _eval_embedder(_CachedAxis())
+    conn = db.connect()
+    db.bootstrap()
+    org = "eval_surface_" + uuid.uuid4().hex[:12]
+    user = "u1"
+    graph = PostgresVectorGraph(
+        conn, org, user, embedder=embedder, policy=[Redactor(), Deduper()]
+    )
+    try:
+        req_id = graph.write(requirement_text, state="active", category="requirement")
+        other_id = graph.write(
+            other_requirement_text, state="active", category="requirement"
+        )
+        # Bind ONLY the first requirement to the surface (typed renders edge).
+        graph.bind_surface(req_id, screen_id, project, title="Today")
+
+        # (a) the binding governs the screen precisely.
+        governing = [f.id for f in graph.requirements_for_surface(project, screen_id)]
+        a_bound_only = req_id in governing and other_id not in governing
+
+        # (b) two-sided coverage gate: the unbound requirement is uncovered; the bound
+        # surface is NOT uncovered.
+        cov = graph.surface_coverage(project)
+        uncovered_reqs = {f.id for f in cov["uncoveredRequirements"]}
+        uncovered_surface_screens = {
+            (f.meta or {}).get("screen_id") for f in cov["uncoveredSurfaces"]
+        }
+        b_other_uncovered = other_id in uncovered_reqs
+        b_surface_covered = screen_id not in uncovered_surface_screens
+        b_ok = b_other_uncovered and b_surface_covered
+
+        # (c) rejection drops the endpoint from every result; the screen is uncovered again.
+        graph.set_state(req_id, "rejected")
+        governing_after = [
+            f.id for f in graph.requirements_for_surface(project, screen_id)
+        ]
+        c_req_dropped = req_id not in governing_after
+        cov_after = graph.surface_coverage(project)
+        uncovered_surface_screens_after = {
+            (f.meta or {}).get("screen_id") for f in cov_after["uncoveredSurfaces"]
+        }
+        c_surface_uncovered = screen_id in uncovered_surface_screens_after
+        c_ok = c_req_dropped and c_surface_uncovered
+
+        ok = a_bound_only and b_ok and c_ok
+        return CheckResult(
+            name="surface_binding_governs_screen",
+            passed=ok,
+            evidence=(
+                f"renders binding governs {screen_id!r}: bound req {req_id} governs and "
+                f"the other is flagged uncovered; rejecting the bound req drops it and "
+                f"re-uncovers the surface"
+                if ok
+                else f"surface binding/coverage gap "
+                f"[a bound-only={a_bound_only}; b other-uncovered={b_other_uncovered}, "
+                f"surface-covered={b_surface_covered}; c req-dropped={c_req_dropped}, "
+                f"surface-re-uncovered={c_surface_uncovered}]"
+            ),
+        )
+    finally:
+        conn.execute("DELETE FROM fact_edges WHERE org_id = %s AND user_id = %s", (org, user))
+        conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
+
+
 def requirement_not_fragmented_by_distillation(
     ctx: EvalContext,
     *,

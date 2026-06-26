@@ -1,0 +1,48 @@
+# CODING-FACTORY wireframe->code edge: a requirement GOVERNS a wireframe screen via a typed
+# `renders` binding, and the two-sided completeness gate is exact and rejection-aware.
+#
+# The factory's wireframe->code step asks "which requirements govern screen s-X?" before it
+# writes the screen, and runs a bidirectional completeness gate: every screen must be covered
+# by at least one requirement, AND every requirement must render some screen. A surface is
+# modeled AS A FACT (category="surface", scope=<project>) so it can be a `fact_edges` endpoint;
+# a requirement RENDERS a surface via a typed `renders` edge (reusing tenant scope, idempotency,
+# and ON DELETE CASCADE for free). Queries are active-only, so a rejected endpoint drops from
+# every result with no stale hook -- a surface does not "go stale" like a derived learning, it
+# simply becomes uncovered again once its governing requirement is rejected.
+#
+#   SCREEN s-today (project team-app): the Today screen.
+#   REQUIREMENT (bound):   the Today screen renders the user's daily check-in checklist with a
+#                          per-item complete/incomplete toggle.
+#   OTHER REQUIREMENT (unbound): the Roster screen lists every team member with their current
+#                          streak -- a real requirement that governs NO screen here.
+#
+# Only the first requirement is bound to s-today. The check asserts: (a) requirements_for_surface
+# returns the bound requirement and not the roster one; (b) surface_coverage flags the roster
+# requirement as uncovered while reporting s-today covered; (c) rejecting the bound requirement
+# drops it from requirements_for_surface AND re-surfaces s-today in uncoveredSurfaces (active-only
+# filtering / referential integrity via rejection).
+#
+# The check drives the REAL `renders` edge path (bind_surface / requirements_for_surface /
+# surface_coverage) in an isolated tenant -- so it needs a Postgres DSN; the harness SKIPs without
+# one. The binding methods are Postgres-only SQL, exercised here end to end.
+id: surface_requirement_binding
+component: knowledge_graph
+substrate: vector
+embedder: cached
+
+seeded_insight:
+  via_ingestor: []
+  # Seeded by the check into its own tenant (with category="requirement" and the surface
+  # binding, which direct_to_graph strings cannot express); listed here for visibility only.
+  direct_to_graph:
+    - "The Today screen renders the user's daily check-in checklist with a per-item complete/incomplete toggle."
+    - "The Roster screen lists every team member with their current streak."
+
+deterministic_checks:
+  - name: surface_binding_governs_screen
+    ref: "knowledge.evals.deterministic_checks.graph:surface_binding_governs_screen"
+    params:
+      project: "team-app"
+      screen_id: "s-today"
+      requirement_text: "The Today screen renders the user's daily check-in checklist with a per-item complete/incomplete toggle."
+      other_requirement_text: "The Roster screen lists every team member with their current streak."

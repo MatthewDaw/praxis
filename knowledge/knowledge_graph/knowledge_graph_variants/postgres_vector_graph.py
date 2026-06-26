@@ -98,6 +98,20 @@ DERIVED_FROM_EDGE = "derived_from"
 STALE_DERIVED_EDGE = "derived_source_invalidated"
 _MAX_DERIVATION_DEPTH = 25
 
+# Requirement->surface bindings (typed "renders" relation). A SURFACE is a screen
+# in the clickable wireframe, modeled AS A FACT (category="surface", scope=<project>,
+# text=title|screen_id, meta={"screen_id","title","file","states"}) so it can be an
+# endpoint of ``fact_edges`` (the FK requires both endpoints to be facts — no new
+# table, no migration). ``add_edge(R, S, RENDERS_EDGE)`` means "requirement R RENDERS
+# surface S" (src=requirement fact, dst=surface fact). It reuses the tenant scope,
+# idempotency (ON CONFLICT DO NOTHING) and ON DELETE CASCADE of fact_edges for free.
+# Queries are active-only (mirror ``active_edges``) so a rejected endpoint drops from
+# every result with NO stale hook: a surface does not "go stale" like a derived
+# learning, it simply stops being rendered when its requirement or itself is rejected.
+RENDERS_EDGE = "renders"            # src=requirement fact, dst=surface fact
+SURFACE_CATEGORY = "surface"
+REQUIREMENT_CATEGORY = "requirement"
+
 # Episodic memory (gap H4). The reserved category that routes a write down the
 # store-only lane (whole, append-only, immutable — never distilled/deduped/
 # contradicted) and out of semantic recall (H2). Load-bearing: a non-episode write
@@ -1284,6 +1298,233 @@ class PostgresVectorGraph(SearchableGraph):
             params.append(kind)
         rows = self._conn.execute(sql, params).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
+
+    # --- surface<->requirement bindings ------------------------------------
+    # A typed ``renders`` relation (RENDERS_EDGE) from a requirement fact to a
+    # SURFACE fact (a wireframe screen modeled as a fact, see RENDERS_EDGE). These
+    # reuse the fact_edges infrastructure directly (no new table): a binding is an
+    # edge add, an unbinding an edge remove, and every read is active-only (mirrors
+    # ``active_edges``) so a rejected endpoint silently drops from coverage with no
+    # stale hook. Surfaces are idempotent on (project, screen_id).
+    def _find_surface(self, project: str, screen_id: str) -> Fact | None:
+        """The (at most one) surface fact for ``(project, screen_id)`` — any state.
+
+        Idempotency key: scope=project, category="surface", meta->>'screen_id'=screen_id.
+        Honors ``cache_key`` like ``all_facts``; newest first if (defensively) more than one.
+        """
+        sql = (
+            "SELECT id, text, source, confidence, scope, category, observation_count, "
+            "state, created_at, meta, cluster_id, cluster_label "
+            f"FROM {self._facts_table} WHERE org_id = %s AND (shared OR user_id = %s) "
+            "AND category = %s AND scope = %s AND meta->>'screen_id' = %s"
+        )
+        params: list[object] = [self.org_id, self.user_id, SURFACE_CATEGORY, project, screen_id]
+        if self._cache_key is not None:
+            sql += " AND cache_key = %s"
+            params.append(self._cache_key)
+        sql += " ORDER BY created_at DESC LIMIT 1"
+        rows = self._conn.execute(sql, params).fetchall()
+        if not rows:
+            return None
+        return self._row_to_fact(rows[0])
+
+    def _active_renders_edges(self) -> list[tuple[str, str]]:
+        """``(src, dst)`` RENDERS edges where BOTH endpoint facts are ``active``.
+
+        Mirrors ``active_edges`` (the same active-on-both-ends join) with a
+        ``kind = RENDERS_EDGE`` filter, so a rejected requirement or surface drops
+        its edge from every coverage/read result with no stale hook.
+        """
+        rows = self._conn.execute(
+            f"SELECT e.src_id, e.dst_id FROM {self._edges_table} e "
+            f"JOIN {self._facts_table} s ON s.org_id = e.org_id AND s.user_id = e.user_id AND s.id = e.src_id "
+            f"JOIN {self._facts_table} d ON d.org_id = e.org_id AND d.user_id = e.user_id AND d.id = e.dst_id "
+            "WHERE e.org_id = %s AND (s.shared OR s.user_id = %s) "
+            "AND e.kind = %s AND s.state = 'active' AND d.state = 'active'",
+            (self.org_id, self.user_id, RENDERS_EDGE),
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def ensure_surface(
+        self,
+        project: str,
+        screen_id: str,
+        *,
+        title: str | None = None,
+        file: str | None = None,
+        states: list[str] | None = None,
+    ) -> str:
+        """Idempotently materialize the surface fact for ``(project, screen_id)``.
+
+        If one already exists (``_find_surface``), merge-update its meta (only when
+        the merged value actually changed) via ``set_meta`` and return its id; else
+        ``_add`` a fresh active surface fact (constructed via a WriteDecision exactly
+        like ``record_episode``) and return the new id. At most ONE surface fact per
+        ``(project, screen_id)``.
+        """
+        existing = self._find_surface(project, screen_id)
+        if existing is not None:
+            current = dict(existing.meta or {})
+            merged = dict(current)
+            merged["screen_id"] = screen_id
+            if title is not None:
+                merged["title"] = title
+            if file is not None:
+                merged["file"] = file
+            if states is not None:
+                merged["states"] = list(states)
+            merged.setdefault("title", None)
+            merged.setdefault("file", None)
+            merged.setdefault("states", [])
+            if merged != current:
+                self.set_meta(existing.id, merged)
+            return existing.id
+        text = title or screen_id
+        decision = WriteDecision(text=text, state="active")
+        decision.source = None
+        decision.scope = project
+        decision.category = SURFACE_CATEGORY
+        decision.meta = {
+            "screen_id": screen_id,
+            "title": title,
+            "file": file,
+            "states": list(states or []),
+        }
+        decision.embedding = self._embed(text)
+        return self._add(decision)  # store-only: a surface is not a semantic learning
+
+    def bind_surface(
+        self,
+        requirement_fact_id: str,
+        screen_id: str,
+        project: str,
+        *,
+        title: str | None = None,
+        file: str | None = None,
+        states: list[str] | None = None,
+    ) -> str:
+        """Bind ``requirement_fact_id`` -> the ``(project, screen_id)`` surface (RENDERS).
+
+        Ensures the surface exists, then writes the typed ``renders`` edge
+        (src=requirement, dst=surface). Idempotent (``add_edge`` is ON CONFLICT DO
+        NOTHING; ``ensure_surface`` is idempotent). Returns the surface id.
+        """
+        surface_id = self.ensure_surface(
+            project, screen_id, title=title, file=file, states=states
+        )
+        self.add_edge(requirement_fact_id, surface_id, RENDERS_EDGE)
+        return surface_id
+
+    def unbind_surface(self, requirement_fact_id: str, screen_id: str, project: str) -> None:
+        """Drop the RENDERS edge from ``requirement_fact_id`` to the surface (idempotent).
+
+        Looks up the surface for ``(project, screen_id)``; if found, removes the
+        ``renders`` edge. The surface fact itself is left intact. No-op if absent.
+        """
+        surface = self._find_surface(project, screen_id)
+        if surface is not None:
+            self.remove_edge(requirement_fact_id, surface.id, RENDERS_EDGE)
+
+    def requirements_for_surface(self, project: str, screen_id: str) -> list[Fact]:
+        """PRIMARY query: active requirement facts that RENDER ``(project, screen_id)``.
+
+        Joins ``fact_edges`` (kind=RENDERS_EDGE, dst=surface) to the source facts and
+        returns the ``active`` ones, newest first. Empty when the surface is unknown.
+        """
+        surface = self._find_surface(project, screen_id)
+        if surface is None:
+            return []
+        sql = (
+            "SELECT r.id, r.text, r.source, r.confidence, r.scope, r.category, "
+            "r.observation_count, r.state, r.created_at, r.meta, r.cluster_id, r.cluster_label "
+            f"FROM {self._edges_table} e "
+            f"JOIN {self._facts_table} r ON r.org_id = e.org_id AND r.user_id = e.user_id AND r.id = e.src_id "
+            "WHERE e.org_id = %s AND (r.shared OR r.user_id = %s) "
+            "AND e.kind = %s AND e.dst_id = %s AND r.state = 'active'"
+        )
+        params: list[object] = [self.org_id, self.user_id, RENDERS_EDGE, surface.id]
+        if self._cache_key is not None:
+            sql += " AND e.cache_key = %s"
+            params.append(self._cache_key)
+        sql += " ORDER BY r.created_at DESC"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_fact(r) for r in rows]
+
+    def surfaces_for_requirement(self, requirement_fact_id: str) -> list[Fact]:
+        """Active surface facts governed by ``requirement_fact_id`` (newest first).
+
+        The dst side of the RENDERS edges out of the requirement, restricted to
+        ``active`` surface facts.
+        """
+        sql = (
+            "SELECT d.id, d.text, d.source, d.confidence, d.scope, d.category, "
+            "d.observation_count, d.state, d.created_at, d.meta, d.cluster_id, d.cluster_label "
+            f"FROM {self._edges_table} e "
+            f"JOIN {self._facts_table} d ON d.org_id = e.org_id AND d.user_id = e.user_id AND d.id = e.dst_id "
+            "WHERE e.org_id = %s AND (d.shared OR d.user_id = %s) "
+            "AND e.kind = %s AND e.src_id = %s AND d.state = 'active' AND d.category = %s"
+        )
+        params: list[object] = [
+            self.org_id, self.user_id, RENDERS_EDGE, requirement_fact_id, SURFACE_CATEGORY
+        ]
+        if self._cache_key is not None:
+            sql += " AND e.cache_key = %s"
+            params.append(self._cache_key)
+        sql += " ORDER BY d.created_at DESC"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_fact(r) for r in rows]
+
+    def list_surface_bindings(self, project: str) -> list[dict]:
+        """Every RENDERS edge whose dst surface fact has ``scope = project`` (any state).
+
+        Returns ``{"requirementId","surfaceId","screenId"}`` per edge; ``screenId``
+        comes from the surface fact's ``meta->>'screen_id'``.
+        """
+        sql = (
+            "SELECT e.src_id, e.dst_id, d.meta->>'screen_id' "
+            f"FROM {self._edges_table} e "
+            f"JOIN {self._facts_table} d ON d.org_id = e.org_id AND d.user_id = e.user_id AND d.id = e.dst_id "
+            "WHERE e.org_id = %s AND (d.shared OR d.user_id = %s) "
+            "AND e.kind = %s AND d.category = %s AND d.scope = %s"
+        )
+        params: list[object] = [
+            self.org_id, self.user_id, RENDERS_EDGE, SURFACE_CATEGORY, project
+        ]
+        if self._cache_key is not None:
+            sql += " AND e.cache_key = %s"
+            params.append(self._cache_key)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [
+            {"requirementId": r[0], "surfaceId": r[1], "screenId": r[2]} for r in rows
+        ]
+
+    def surface_coverage(self, project: str, *, scope: str | None = None) -> dict:
+        """Bidirectional completeness gate for ``project``.
+
+        ``uncoveredSurfaces`` = active surface facts (scope=project) with ZERO active
+        RENDERS edge as dst. ``uncoveredRequirements`` = active requirement facts with
+        ZERO active RENDERS edge as src, optionally filtered to ``meta->>'scope' =
+        scope`` (e.g. scope="mvp"). Active-only on both ends (``_active_renders_edges``),
+        so a rejected endpoint re-opens coverage with no stale hook.
+        """
+        active = self._active_renders_edges()
+        covered_dst = {dst for _src, dst in active}
+        covered_src = {src for src, _dst in active}
+        uncovered_surfaces: list[Fact] = []
+        uncovered_requirements: list[Fact] = []
+        for fact in self.all_facts(state="active"):
+            if fact.category == SURFACE_CATEGORY and fact.scope == project:
+                if fact.id not in covered_dst:
+                    uncovered_surfaces.append(fact)
+            elif fact.category == REQUIREMENT_CATEGORY:
+                if scope is not None and (fact.meta or {}).get("scope") != scope:
+                    continue
+                if fact.id not in covered_src:
+                    uncovered_requirements.append(fact)
+        return {
+            "uncoveredSurfaces": uncovered_surfaces,
+            "uncoveredRequirements": uncovered_requirements,
+        }
 
     def wipe_cache(self) -> int:
         """Delete every cached fact under this graph's bound ``cache_key``.

@@ -1564,6 +1564,169 @@ def create_app(conn: Any | None = None) -> FastAPI:
         deps = live_graph(org, principal.sub).dependents(fact_id)
         return {"factId": fact_id, "dependents": [_derivation_view(f) for f in deps]}
 
+    # --- requirement RENDERS surface (factory completeness gate) ------------
+    @app.post("/surfaces")
+    def ensure_surface(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Idempotently ensure a surface fact exists for ``(project, screenId)``.
+
+        A surface is a screen in the clickable wireframe modeled as a fact
+        (``category="surface"``) so it can be a typed ``renders`` edge endpoint.
+        At most one surface fact per ``(project, screenId)``; re-calling merges
+        ``title``/``file``/``states`` into its meta.
+        """
+        project = str(body.get("project") or "").strip()
+        screen_id = str(body.get("screenId") or "").strip()
+        if not project or not screen_id:
+            raise HTTPException(
+                status_code=400, detail="body must include 'project' and 'screenId'"
+            )
+        g = live_graph(org, principal.sub)
+        surface_id = g.ensure_surface(
+            project,
+            screen_id,
+            title=body.get("title"),
+            file=body.get("file"),
+            states=body.get("states"),
+        )
+        return {"id": surface_id, "project": project, "screenId": screen_id}
+
+    @app.post("/surfaces/bind")
+    def bind_surface(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Bind a requirement fact to a surface via a typed ``renders`` edge (PRIMARY write).
+
+        Ensures the surface fact exists, then attaches ``requirement --renders--> surface``.
+        Idempotent (duplicate edges are ignored). 404 if the requirement fact is unknown.
+        """
+        requirement_fact_id = str(body.get("requirementFactId") or "").strip()
+        screen_id = str(body.get("screenId") or "").strip()
+        project = str(body.get("project") or "").strip()
+        if not requirement_fact_id or not screen_id or not project:
+            raise HTTPException(
+                status_code=400,
+                detail="body must include 'requirementFactId', 'screenId' and 'project'",
+            )
+        g = live_graph(org, principal.sub)
+        if g.get_fact(requirement_fact_id) is None:
+            raise HTTPException(
+                status_code=404, detail=f"unknown fact {requirement_fact_id}"
+            )
+        surface_id = g.bind_surface(
+            requirement_fact_id,
+            screen_id,
+            project,
+            title=body.get("title"),
+            file=body.get("file"),
+            states=body.get("states"),
+        )
+        return {
+            "requirementFactId": requirement_fact_id,
+            "surfaceId": surface_id,
+            "screenId": screen_id,
+        }
+
+    @app.post("/surfaces/unbind")
+    def unbind_surface(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Remove the ``renders`` edge between a requirement fact and a surface.
+
+        Idempotent: a no-op if no such edge (or surface) exists.
+        """
+        requirement_fact_id = str(body.get("requirementFactId") or "").strip()
+        screen_id = str(body.get("screenId") or "").strip()
+        project = str(body.get("project") or "").strip()
+        if not requirement_fact_id or not screen_id or not project:
+            raise HTTPException(
+                status_code=400,
+                detail="body must include 'requirementFactId', 'screenId' and 'project'",
+            )
+        g = live_graph(org, principal.sub)
+        g.unbind_surface(requirement_fact_id, screen_id, project)
+        return {
+            "requirementFactId": requirement_fact_id,
+            "screenId": screen_id,
+            "project": project,
+            "ok": True,
+        }
+
+    @app.get("/surfaces/{screen_id}/requirements")
+    def requirements_for_surface(
+        screen_id: str,
+        project: str = "",
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Active requirement facts that render the surface ``(project, screenId)`` (PRIMARY read).
+
+        Answers "which requirements govern screen s-X" for the wireframe->code step.
+        """
+        project = str(project or "").strip()
+        if not project:
+            raise HTTPException(status_code=400, detail="query param 'project' is required")
+        reqs = live_graph(org, principal.sub).requirements_for_surface(project, screen_id)
+        return {
+            "project": project,
+            "screenId": screen_id,
+            "requirements": [_derivation_view(f) for f in reqs],
+        }
+
+    @app.get("/facts/{fact_id}/surfaces")
+    def surfaces_for_requirement(
+        fact_id: str,
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Active surface facts governed by the requirement ``fact_id`` (which screens it renders)."""
+        surfaces = live_graph(org, principal.sub).surfaces_for_requirement(fact_id)
+        return {"factId": fact_id, "surfaces": [_derivation_view(f) for f in surfaces]}
+
+    @app.get("/surfaces/bindings")
+    def list_surface_bindings(
+        project: str = "",
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """All requirement<->surface ``renders`` bindings for ``project`` (any state)."""
+        project = str(project or "").strip()
+        if not project:
+            raise HTTPException(status_code=400, detail="query param 'project' is required")
+        bindings = live_graph(org, principal.sub).list_surface_bindings(project)
+        return {"project": project, "bindings": bindings}
+
+    @app.get("/surfaces/coverage")
+    def surface_coverage(
+        project: str = "",
+        scope: str | None = None,
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Bidirectional completeness gate for ``project``.
+
+        Reports surfaces with no governing requirement and requirements that render
+        no surface (optionally filtered to a requirement ``scope`` such as ``mvp``).
+        """
+        project = str(project or "").strip()
+        if not project:
+            raise HTTPException(status_code=400, detail="query param 'project' is required")
+        cov = live_graph(org, principal.sub).surface_coverage(project, scope=scope)
+        return {
+            "project": project,
+            "uncoveredSurfaces": [_derivation_view(f) for f in cov["uncoveredSurfaces"]],
+            "uncoveredRequirements": [
+                _derivation_view(f) for f in cov["uncoveredRequirements"]
+            ],
+        }
+
     @app.get("/context")
     @limiter.limit(LLM_RATE_LIMIT)
     def get_context(

@@ -1336,6 +1336,283 @@ def praxis_whoami() -> str:
     return f"{tenant.email} — active org: {org}; member of: {listing}."
 
 
+@mcp.tool()
+def praxis_ensure_surface(
+    project: str,
+    screen_id: str,
+    title: str | None = None,
+    file: str | None = None,
+    states: list[str] | None = None,
+) -> str:
+    """Ensure a wireframe *surface* (a screen) exists as a fact in the graph.
+
+    A surface is one screen of the clickable wireframe, modeled as a fact so it can
+    be an endpoint of a typed ``renders`` edge from a requirement. Idempotent on
+    ``(project, screen_id)`` — at most one surface fact per screen — so calling this
+    twice just merge-updates the title/file/states. Usually you call
+    ``praxis_bind_surface`` instead (which ensures + edges in one step); use this
+    directly only to register a screen with no requirement yet.
+
+    Returns ``{"id","project","screenId"}``.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    if not project or not screen_id:
+        return "Pass both a project and a screen_id."
+    body: dict[str, object] = {"project": project, "screenId": screen_id}
+    if title is not None:
+        body["title"] = title
+    if file is not None:
+        body["file"] = file
+    if states is not None:
+        body["states"] = states
+    try:
+        resp = httpx.post(
+            f"{identity.api_base()}/surfaces",
+            json=body,
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    s = resp.json()
+    return f"Ensured surface id={s.get('id')} (project={s.get('project')}, screen={s.get('screenId')})."
+
+
+@mcp.tool()
+def praxis_bind_surface(
+    requirement_fact_id: str,
+    screen_id: str,
+    project: str,
+    title: str | None = None,
+    file: str | None = None,
+    states: list[str] | None = None,
+) -> str:
+    """Bind a requirement fact to a wireframe surface via a typed ``renders`` edge.
+
+    This is the PRIMARY write of the requirement<->surface factory: it ensures the
+    surface fact for ``(project, screen_id)`` exists (creating/merge-updating it from
+    ``title``/``file``/``states``) and edges ``requirement_fact_id -> surface`` so the
+    screen is governed by that requirement. Idempotent. Use this to wire the clickable
+    wireframe to the requirements that drive each screen — the bidirectional
+    completeness gate (``praxis_surface_coverage``) reads these edges to find screens
+    with no requirement and requirements with no screen. The requirement fact must
+    already exist (find ids via ``praxis_list_graph`` / ``praxis_get_context``).
+
+    Returns ``{"requirementFactId","surfaceId","screenId"}``.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    if not requirement_fact_id or not screen_id or not project:
+        return "Pass a requirement_fact_id, screen_id, and project."
+    body: dict[str, object] = {
+        "requirementFactId": requirement_fact_id,
+        "screenId": screen_id,
+        "project": project,
+    }
+    if title is not None:
+        body["title"] = title
+    if file is not None:
+        body["file"] = file
+    if states is not None:
+        body["states"] = states
+    try:
+        resp = httpx.post(
+            f"{identity.api_base()}/surfaces/bind",
+            json=body,
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    b = resp.json()
+    return (
+        f"Bound requirement {b.get('requirementFactId')} -> surface {b.get('surfaceId')} "
+        f"(screen={b.get('screenId')})."
+    )
+
+
+@mcp.tool()
+def praxis_unbind_surface(requirement_fact_id: str, screen_id: str, project: str) -> str:
+    """Remove the ``renders`` edge between a requirement and a wireframe surface.
+
+    Detaches ``requirement_fact_id`` from the surface for ``(project, screen_id)`` so
+    that requirement no longer governs that screen. The surface fact itself is left
+    in place (other requirements may still render it). Idempotent — a no-op if no
+    such edge exists.
+
+    Returns ``{"requirementFactId","screenId","project","ok":true}``.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    if not requirement_fact_id or not screen_id or not project:
+        return "Pass a requirement_fact_id, screen_id, and project."
+    body = {
+        "requirementFactId": requirement_fact_id,
+        "screenId": screen_id,
+        "project": project,
+    }
+    try:
+        resp = httpx.post(
+            f"{identity.api_base()}/surfaces/unbind",
+            json=body,
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    u = resp.json()
+    return (
+        f"Unbound requirement {u.get('requirementFactId')} from screen "
+        f"{u.get('screenId')} (project={u.get('project')})."
+    )
+
+
+@mcp.tool()
+def praxis_requirements_for_surface(project: str, screen_id: str) -> str:
+    """List the requirements that govern a wireframe screen (PRIMARY read).
+
+    Answers "which requirements drive screen ``screen_id``?" — the factory query for
+    going from a clickable wireframe screen back to the active requirement facts edged
+    (``renders``) to it for ``(project, screen_id)``, newest first. Rejected endpoints
+    drop out automatically (active-only).
+
+    Returns a human summary plus a structured JSON block with ``requirements`` — one
+    fact view per governing requirement.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/surfaces/{screen_id}/requirements",
+            params={"project": project},
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    reqs = payload.get("requirements", [])
+    return _structured(
+        f"{len(reqs)} requirement(s) govern screen {screen_id}."
+        if reqs
+        else f"No requirements govern screen {screen_id}.",
+        {"project": project, "screenId": screen_id, "requirements": reqs},
+    )
+
+
+@mcp.tool()
+def praxis_surfaces_for_requirement(requirement_fact_id: str) -> str:
+    """List the wireframe screens a requirement governs (the reverse lookup).
+
+    Answers "which screens does requirement ``requirement_fact_id`` render?" — the
+    active surface facts edged (``renders``) from this requirement. Pairs with
+    ``praxis_requirements_for_surface`` to walk the requirement<->surface mapping in
+    both directions.
+
+    Returns a human summary plus a structured JSON block with ``surfaces`` — one fact
+    view per governed surface.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/facts/{requirement_fact_id}/surfaces",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    surfaces = payload.get("surfaces", [])
+    return _structured(
+        f"{len(surfaces)} surface(s) governed by {requirement_fact_id}."
+        if surfaces
+        else f"No surfaces governed by {requirement_fact_id}.",
+        {"factId": requirement_fact_id, "surfaces": surfaces},
+    )
+
+
+@mcp.tool()
+def praxis_list_surface_bindings(project: str) -> str:
+    """List every requirement<->surface binding in a project.
+
+    Returns all ``renders`` edges whose surface belongs to ``project`` — the full
+    wiring of the clickable wireframe to its requirements. Use it to audit or export
+    the mapping.
+
+    Returns a human summary plus a structured JSON block with ``bindings`` — one entry
+    per edge (``requirementId``/``surfaceId``/``screenId``).
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/surfaces/bindings",
+            params={"project": project},
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    bindings = payload.get("bindings", [])
+    return _structured(
+        f"{len(bindings)} requirement<->surface binding(s) in {project}."
+        if bindings
+        else f"No requirement<->surface bindings in {project}.",
+        {"project": project, "bindings": bindings},
+    )
+
+
+@mcp.tool()
+def praxis_surface_coverage(project: str, scope: str | None = None) -> str:
+    """Report the bidirectional completeness gate for a project's wireframe.
+
+    Cross-checks requirements against surfaces both ways: ``uncoveredSurfaces`` are
+    screens with no requirement governing them (built but unspecified), and
+    ``uncoveredRequirements`` are requirements with no screen rendering them (specified
+    but unbuilt). Pass ``scope`` (e.g. ``"mvp"``) to limit the requirement side to that
+    scope. Use this as the gate before declaring a wireframe complete against its PRD.
+
+    Returns a human summary plus a structured JSON block with ``uncoveredSurfaces`` and
+    ``uncoveredRequirements`` — fact views.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    params: dict[str, str] = {"project": project}
+    if scope is not None:
+        params["scope"] = scope
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/surfaces/coverage",
+            params=params,
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    surfaces = payload.get("uncoveredSurfaces", [])
+    reqs = payload.get("uncoveredRequirements", [])
+    return _structured(
+        f"{len(surfaces)} uncovered surface(s) and {len(reqs)} uncovered requirement(s) "
+        f"in {project}.",
+        {
+            "project": project,
+            "uncoveredSurfaces": surfaces,
+            "uncoveredRequirements": reqs,
+        },
+    )
+
+
 @mcp.prompt(title="Log in to Praxis")
 def login() -> str:
     """Log in to the Praxis knowledge graph (drives the praxis_login tool).
