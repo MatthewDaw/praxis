@@ -214,6 +214,7 @@ def select(
     *,
     order: str = "recent",
     exclude_leaked: bool = True,
+    since: str | None = None,
 ) -> list[Instance]:
     """Filter to supported versions, screen every candidate, then order + keep top ``n``.
 
@@ -223,6 +224,9 @@ def select(
     real leakage. ``order`` is ``"recent"`` (created_at desc — the default) or ``"hard"``
     (gold-patch size desc, then files / failing-tests / recency), which biases toward the
     harder bugs where a no-knowledge control plausibly fails and Praxis has headroom.
+    ``since`` (a ``YYYY-MM-DD`` date) keeps only instances created on or after it — the
+    least-contaminated, nearest-the-training-cutoff slice; it composes with ``order``
+    (e.g. ``order="hard", since="2025-02-01"`` = the recent-and-hard corner).
     Deterministic tiebreaks throughout (instance_id).
     """
     supported = [c for c in candidates if version_supported(c.version)]
@@ -230,6 +234,10 @@ def select(
         inst.leak_verbatim, inst.leak_symbol, inst.screen_reason = screen_leakage(inst)
 
     pool = [c for c in supported if not (exclude_leaked and c.leak_verbatim)]
+    if since is not None:
+        # created_at is naive 'YYYY-MM-DD ...' or RFC3339-Z; the date prefix compares
+        # lexically in both shapes, so a 10-char slice is enough for a date-only cutoff.
+        pool = [c for c in pool if c.created_at[:10] >= since]
     if order == "hard":
         pool.sort(
             key=lambda c: (gold_patch_lines(c), len(c.gold_files), len(c.fail_to_pass),

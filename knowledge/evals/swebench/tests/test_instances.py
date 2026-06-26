@@ -142,6 +142,25 @@ def test_hard_order_sorts_by_gold_patch_size():
     assert gold_patch_lines(select(cands, n=1, order="hard")[0]) == 20
 
 
+def test_since_filters_by_created_date_and_composes_with_order():
+    # Same three clean instances spanning Jan–Mar 2025; --since drops the older two, and
+    # the cutoff composes with order (the surviving pool still sorts hard = biggest patch).
+    cands = load_candidates([
+        _rec("sympy__sympy-jan", created="2025-01-15T00:00:00Z", added_lines=["    a = 1"]),
+        _rec("sympy__sympy-feb", created="2025-02-10T00:00:00Z",
+             added_lines=[f"    x{i} = {i}" for i in range(5)]),
+        _rec("sympy__sympy-mar", created="2025-03-20T00:00:00Z",
+             added_lines=[f"    y{i} = {i}" for i in range(20)]),
+    ])
+    since_feb = select(cands, n=10, since="2025-02-01")
+    assert {i.instance_id for i in since_feb} == {"sympy__sympy-feb", "sympy__sympy-mar"}
+    # Jan instance is gone; pool of 2 still honors hard order (mar's 20-line patch first).
+    by_hard = [i.instance_id for i in select(cands, n=10, order="hard", since="2025-02-01")]
+    assert by_hard == ["sympy__sympy-mar", "sympy__sympy-feb"]
+    # A cutoff after everything yields an empty selection (no crash).
+    assert select(cands, n=10, since="2025-12-01") == []
+
+
 # ---------------------------------------------------------------------------
 # Gold-file parse + manifest.
 # ---------------------------------------------------------------------------

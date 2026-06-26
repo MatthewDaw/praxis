@@ -58,16 +58,24 @@ uv run python -m knowledge.evals.swebench.run --instances 10 --trials 3
 # Bias selection toward HARD bugs (biggest gold patch) where a no-knowledge control
 # plausibly fails — i.e. where Praxis has headroom to move the resolve rate, not just cost:
 uv run python -m knowledge.evals.swebench.run --instances 10 --trials 3 --order hard
+
+# Least-contaminated slice: only instances merged on/after a date (nearest the training
+# cutoff). Composes with --order hard for the recent-and-hard corner:
+uv run python -m knowledge.evals.swebench.run --instances 10 --trials 3 --order hard --since 2025-02-01
 ```
 
-**Instance selection** (`--order`, `--include-leaked`). By default `select` takes the
-newest supported-version (sympy 1.12–1.14) instances and drops only **verbatim**-leaked
+**Instance selection** (`--order`, `--include-leaked`, `--since`). By default `select` takes
+the newest supported-version (sympy 1.12–1.14) instances and drops only **verbatim**-leaked
 ones (the issue literally pastes a fix line — ~8 of 101). It does *not* drop the far more
 common "issue names the changed function" cases, which aren't real leakage. `--order hard`
 instead picks the largest-gold-patch instances (more files / failing tests) — the bugs a
 contaminated control is least likely to one-shot. Caveat: the hardest instances skew older
 (more training-memorized), so `hard` trades recency for difficulty; pick per what you're
-probing.
+probing. `--since YYYY-MM-DD` keeps only instances created on/after that date — the
+least-contaminated slice nearest the model's training cutoff — and composes with `--order`.
+Note the corner is thin: `--order hard --since 2025-02-01` is only **9** instances (and just
+one, sympy-27797, is a genuinely large patch), so the recent-and-hard slice trades fleet
+size for decontamination.
 
 The `--from-records` path needs **neither** the backend nor Docker — it only runs U7's
 pure aggregate/gate/report over a committed records dict.
