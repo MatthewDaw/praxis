@@ -49,6 +49,31 @@ export async function listSpaces(
     .filter((s): s is Space => s !== null);
 }
 
+/**
+ * `DELETE /spaces/{spaceId}` — permanently delete one of the caller's spaces in
+ * the active org, purging its working knowledge graph (facts, snapshots, mounts).
+ * Owner-scoped server-side: deleting a space you do not own 404s.
+ */
+export async function deleteSpace(
+  baseUrl: string,
+  getToken: () => Promise<string | undefined>,
+  orgId: string,
+  spaceId: string,
+): Promise<void> {
+  const token = await getToken();
+  const response = await fetch(
+    `${baseUrl.replace(/\/$/, "")}/spaces/${encodeURIComponent(spaceId)}`,
+    {
+      method: "DELETE",
+      headers: contractHeaders(token, orgId),
+    },
+  );
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `DELETE /spaces/${spaceId} failed (${response.status})`);
+  }
+}
+
 /** `POST /spaces` — create a named space owned by the caller in the active org. */
 export async function createSpace(
   baseUrl: string,

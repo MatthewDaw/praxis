@@ -296,6 +296,28 @@ export function McpSetupGuide() {
             </tr>
             <tr>
               <td>
+                <code>praxis_delete_space(space_id)</code>
+              </td>
+              <td>
+                <strong>Destructive.</strong> Permanently delete one of your spaces and
+                its entire working graph (facts, snapshots, mounts). If you delete the
+                space you currently have selected, the cache falls back to the default
+                graph automatically.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>praxis_delete_org(org_id)</code>
+              </td>
+              <td>
+                <strong>Destructive &amp; owner-only.</strong> Permanently delete an org
+                and ALL of its data for <em>every</em> member (knowledge graphs,
+                snapshots, spaces, api keys, memberships). A non-owner member gets a
+                clear refusal; non-members 404.
+              </td>
+            </tr>
+            <tr>
+              <td>
                 <code>praxis_get_context(query, top_k=8, as_of?, include_episodic=false)</code>
               </td>
               <td>
@@ -311,22 +333,25 @@ export function McpSetupGuide() {
             </tr>
             <tr>
               <td>
-                <code>praxis_add_insight(insight, derived_from?)</code>
+                <code>praxis_add_insight(insight, derived_from?, raw=False)</code>
               </td>
               <td>
                 Store a single fully-approved fact (confidence 1.0). Re-adds merge;
                 conflicts force-overwrite the nearest contradicting fact. Pass{" "}
                 <code>derived_from</code> (a list of source fact ids) to record H5{" "}
                 <code>derived_from</code> edges so the new learning is traceable to — and
-                invalidated with — its sources. (The optional{" "}
-                <code>scope</code> / <code>category</code> / <code>source</code> args are
-                accepted but not yet honored by the backend — scope and category are
-                derived during ingestion.)
+                invalidated with — its sources. Set <code>raw=True</code> for a{" "}
+                <strong>fast trusted insert</strong> that skips dedup and the
+                conflict/LLM steps (redaction still runs, so secrets are scrubbed) —
+                ideal when you trust the input and per-item LLM checks would be too slow.
+                (The optional <code>scope</code> / <code>category</code> /{" "}
+                <code>source</code> args are accepted but not yet honored by the
+                backend — scope and category are derived during ingestion.)
               </td>
             </tr>
             <tr>
               <td>
-                <code>praxis_add_insights(insights, on_conflict?)</code>
+                <code>praxis_add_insights(insights, on_conflict?, raw=False)</code>
               </td>
               <td>
                 Bulk sibling of <code>praxis_add_insight</code>: store many
@@ -336,7 +361,11 @@ export function McpSetupGuide() {
                 objects; <code>on_conflict</code> is batch-level
                 (<code>auto_resolve</code> | <code>surface</code>). Returns one result per
                 item (<code>ok</code>/<code>id</code>/<code>action</code>/<code>retrievable</code>);
-                a bad item never aborts the rest.
+                a bad item never aborts the rest. Set <code>raw=True</code> for a{" "}
+                <strong>fast trusted bulk insert</strong> that skips dedup +
+                conflict/LLM for the whole batch (keeps redaction) — the fast lane for
+                large trusted loads that would otherwise time out on per-item LLM
+                conflict checks.
               </td>
             </tr>
             <tr>

@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { createSpace, listSpaces, type Space } from "../api/spaces";
+import { createSpace, deleteSpace, listSpaces, type Space } from "../api/spaces";
 import { orgApiBaseUrl, useOrg } from "./OrgGate";
 
 /**
@@ -29,6 +29,11 @@ export interface SpaceContextValue {
   selectSpace: (spaceId: string) => void;
   /** Create a space in the active org, then select it. */
   createAndSelectSpace: (spaceId: string, name?: string) => Promise<void>;
+  /**
+   * Permanently delete a space, refresh the list, and — if the deleted space was
+   * the active one — fall back to the default graph (selectSpace("")).
+   */
+  deleteAndDeselectSpace: (spaceId: string) => Promise<void>;
 }
 
 const SpaceContext = createContext<SpaceContextValue | null>(null);
@@ -108,9 +113,21 @@ export function SpaceGate({ children }: SpaceGateProps) {
     [baseUrl, getToken, orgId, refreshSpaces, selectSpace],
   );
 
+  const deleteAndDeselectSpace = useCallback(
+    async (targetSpaceId: string) => {
+      await deleteSpace(baseUrl, getToken, orgId, targetSpaceId);
+      await refreshSpaces();
+      // If the graph the user was viewing just vanished, return to the default.
+      if (targetSpaceId === spaceId) {
+        selectSpace("");
+      }
+    },
+    [baseUrl, getToken, orgId, refreshSpaces, selectSpace, spaceId],
+  );
+
   const value = useMemo<SpaceContextValue>(
-    () => ({ spaceId, spaces, selectSpace, createAndSelectSpace }),
-    [spaceId, spaces, selectSpace, createAndSelectSpace],
+    () => ({ spaceId, spaces, selectSpace, createAndSelectSpace, deleteAndDeselectSpace }),
+    [spaceId, spaces, selectSpace, createAndSelectSpace, deleteAndDeselectSpace],
   );
 
   return <SpaceContext.Provider value={value}>{children}</SpaceContext.Provider>;

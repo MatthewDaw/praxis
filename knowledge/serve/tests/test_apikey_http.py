@@ -88,3 +88,26 @@ def test_api_key_org_mismatch_is_403(ctx):
         headers={"X-Praxis-Key": ctx["raw_key"], "X-Praxis-Org": "some-other-org"},
     )
     assert res.status_code == 403
+
+
+def test_api_key_cannot_delete_a_sibling_org_it_owns(ctx):
+    # A key scoped to org A must not reach a DIFFERENT org B on the irreversible
+    # delete path, even when the key's bound user owns B. DELETE /orgs takes the
+    # org from the path (not X-Praxis-Org), so the scope match is enforced inline.
+    conn = ctx["conn"]
+    owner = "sibling-owner-sub"
+    _, raw_key = apikeys.mint_key(conn, ctx["org"], user_id=owner, label="scoped-A")
+    org_b = ctx["org"] + "-sibling"
+    conn.execute("DELETE FROM orgs WHERE org_id = %s", (org_b,))
+    OrgsStore(conn).create_org(org_b, org_b, "pw", owner)
+    try:
+        res = ctx["client"].delete(
+            f"/orgs/{org_b}",
+            headers={"X-Praxis-Key": raw_key, "X-Praxis-Org": ctx["org"]},
+        )
+        assert res.status_code == 403, res.text
+        assert OrgsStore(conn).is_member(org_b, owner)  # B survives
+    finally:
+        conn.execute("DELETE FROM api_keys WHERE org_id = %s AND user_id = %s", (ctx["org"], owner))
+        conn.execute("DELETE FROM org_members WHERE org_id = %s", (org_b,))
+        conn.execute("DELETE FROM orgs WHERE org_id = %s", (org_b,))

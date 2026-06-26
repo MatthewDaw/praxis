@@ -142,6 +142,31 @@ export async function joinOrg(
   }
 }
 
+/**
+ * `DELETE /orgs/{orgId}` — permanently delete an org and ALL of its data for
+ * every member (facts, cached snapshots, mounts, api keys, memberships, spaces).
+ * Owner-only server-side: a non-owner member gets a 403, a non-member a 404; the
+ * server's error text is surfaced so the caller can show why a delete was refused.
+ */
+export async function deleteOrg(
+  baseUrl: string,
+  getToken: () => Promise<string | undefined>,
+  orgId: string,
+): Promise<void> {
+  const token = await getToken();
+  const response = await fetch(
+    `${baseUrl.replace(/\/$/, "")}/orgs/${encodeURIComponent(orgId)}`,
+    {
+      method: "DELETE",
+      headers: contractHeaders(token),
+    },
+  );
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `DELETE /orgs/${orgId} failed (${response.status})`);
+  }
+}
+
 export async function changeOrgPassword(
   baseUrl: string,
   getToken: () => Promise<string | undefined>,
@@ -245,6 +270,34 @@ export function OrgGate({ children }: OrgGateProps) {
     }
   }
 
+  async function handleDeleteOrg(org: OrgMembership) {
+    const label = org.name ? `${org.name} (${org.orgId})` : org.orgId;
+    const ok = window.confirm(
+      `Delete organization "${label}"?\n\nThis permanently deletes the org and ALL ` +
+        `of its data for EVERY member — knowledge graphs, snapshots, spaces, and ` +
+        `access. This cannot be undone.`,
+    );
+    if (!ok) {
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await deleteOrg(baseUrl, getToken, org.orgId);
+      await loadMe();
+      // If we just deleted the org we were working in, drop back to the picker.
+      if (activeOrg === org.orgId) {
+        switchOrg();
+      }
+      setNotice(`Deleted ${label}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function handleChangePassword(event: React.FormEvent) {
     event.preventDefault();
     setSubmitting(true);
@@ -309,10 +362,21 @@ export function OrgGate({ children }: OrgGateProps) {
           <h2>Your organizations</h2>
           <ul>
             {memberships.map((m) => (
-              <li key={m.orgId}>
+              <li key={m.orgId} className="org-gate__pick-row">
                 <button type="button" onClick={() => chooseOrg(m.orgId)}>
                   {m.name ? `${m.name} (${m.orgId})` : m.orgId}
                 </button>
+                {m.role === "owner" ? (
+                  <button
+                    type="button"
+                    className="link-button link-button--danger org-gate__delete"
+                    onClick={() => void handleDeleteOrg(m)}
+                    disabled={submitting}
+                    title="Delete this organization and all its data"
+                  >
+                    Delete
+                  </button>
+                ) : null}
               </li>
             ))}
           </ul>

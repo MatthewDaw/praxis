@@ -49,6 +49,22 @@ class SpacesStore:
         if cur.rowcount == 0:
             raise ValueError(f"space {space_id!r} already exists")
 
+    def delete_space(self, org_id: str, owner_sub: str, space_id: str) -> bool:
+        """Remove the space registry row; return True if one was deleted.
+
+        Only the registry entry is touched here — the space's facts/edges/caches
+        (stored under the derived ``user_id``) are purged by the caller so a
+        re-created same-id space starts empty rather than resurrecting old data.
+        """
+        cur = self._conn.execute(
+            """
+            DELETE FROM spaces
+            WHERE org_id = %s AND owner_sub = %s AND space_id = %s
+            """,
+            (org_id, owner_sub, space_id),
+        )
+        return cur.rowcount > 0
+
     # --- reads -------------------------------------------------------------
     def list_spaces(self, org_id: str, owner_sub: str) -> list[dict]:
         """Return ``owner_sub``'s spaces in ``org_id`` ordered by ``space_id``.

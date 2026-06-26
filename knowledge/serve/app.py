@@ -435,6 +435,39 @@ def create_app(conn: Any | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc))
         return {"orgId": org_id, "status": "password_changed"}
 
+    @app.delete("/orgs/{org_id}")
+    def delete_org(
+        org_id: str,
+        principal: Principal = Depends(current_user),
+    ) -> dict[str, Any]:
+        """Permanently delete an org and EVERY member's data in it (owner-only).
+
+        Authorization is two-staged so the response never leaks org existence to a
+        non-member: a non-member gets 404 (indistinguishable from "no such org"),
+        a member who is not the owner gets 403. The owner's delete purges all
+        org-wide tenant storage (facts/cached/mounted/api keys across every member)
+        and then drops the ``orgs`` row, which cascades ``org_members`` + ``spaces``.
+        Destructive and irreversible — this wipes the org for everyone in it.
+        """
+        # API-key principals are scoped to exactly one org (see ``active_org``); a
+        # leaked key must not reach a sibling org its bound user happens to own —
+        # least of all on this irreversible path. Other org routes get this via
+        # ``Depends(active_org)``, but delete takes the org from the path (not the
+        # ``X-Praxis-Org`` header), so enforce the same scope match explicitly.
+        if principal.api_key_org is not None and principal.api_key_org != org_id:
+            raise HTTPException(
+                status_code=403, detail=f"API key is not scoped to org {org_id!r}"
+            )
+        if not orgs_store.is_member(org_id, principal.sub):
+            raise HTTPException(status_code=404, detail=f"unknown org {org_id!r}")
+        if not orgs_store.is_owner(org_id, principal.sub):
+            raise HTTPException(
+                status_code=403, detail="only an org owner can delete it"
+            )
+        _purge_org_storage(org_id)
+        orgs_store.delete_org(org_id)
+        return {"deleted": org_id}
+
     # --- spaces (a login's private, named working knowledge graphs) --------
     import re as _re
 
@@ -484,6 +517,71 @@ def create_app(conn: Any | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         """List the caller's private spaces in the active org (ordered by id)."""
         return {"spaces": spaces_store.list_spaces(org, principal.sub)}
+
+    # --- tenant/org storage purges (the data side of a delete) -------------
+    # These live here (not in a store) because they need the create_app-scoped
+    # ``conn`` proxy and span the whole facts spine — the same DELETEs whether a
+    # single space graph or an entire org is being torn down.
+    def _purge_tenant_graph(org_id: str, user_id: str) -> None:
+        """Hard-delete one tenant graph (``org_id``, ``user_id``): its live facts,
+        cached snapshots, and any mounted-snapshot rows it owns.
+
+        ``facts``/``cached_facts`` cascade their edges + claims via FK, so deleting
+        the parent fact rows removes the whole sub-graph. ``mounted_snapshots`` has
+        no such cascade and is deleted explicitly. Everything is scoped to exactly
+        this ``(org_id, user_id)`` pair, so purging a space never touches the
+        login's bare default graph (a different ``user_id``) or another member.
+        """
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM facts WHERE org_id=%s AND user_id=%s", (org_id, user_id)
+            )
+            cur.execute(
+                "DELETE FROM cached_facts WHERE org_id=%s AND user_id=%s",
+                (org_id, user_id),
+            )
+            cur.execute(
+                "DELETE FROM mounted_snapshots WHERE org_id=%s AND user_id=%s",
+                (org_id, user_id),
+            )
+
+    def _purge_org_storage(org_id: str) -> None:
+        """Hard-delete ALL of an org's tenant storage across every member, run just
+        before the ``orgs`` row itself is removed.
+
+        ``facts``/``cached_facts``/``mounted_snapshots``/``api_keys`` have NO FK to
+        ``orgs``, so dropping the org row would orphan them — they must be purged
+        explicitly here (org-wide, every ``user_id``). Deleting the ``orgs`` row
+        afterwards (``orgs_store.delete_org``) cascades ``org_members`` + ``spaces``.
+        """
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM facts WHERE org_id=%s", (org_id,))
+            cur.execute("DELETE FROM cached_facts WHERE org_id=%s", (org_id,))
+            cur.execute("DELETE FROM mounted_snapshots WHERE org_id=%s", (org_id,))
+            cur.execute("DELETE FROM api_keys WHERE org_id=%s", (org_id,))
+
+    @app.delete("/spaces/{space_id}")
+    def delete_space(
+        space_id: str,
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Permanently delete one of the caller's private spaces and its graph.
+
+        Spaces are private to the creating login, so ``owns`` is both the
+        existence and the authorization check: an unknown/unowned space is a 404.
+        The space's effective tenant ``user_id`` is ``"<sub>::space:<id>"``; its
+        whole working graph (facts/edges/claims, cached snapshots, mounts) is
+        hard-purged before the ``spaces`` row is dropped. Destructive and
+        irreversible — the default (no-space) graph is a different ``user_id`` and
+        is never touched.
+        """
+        if not spaces_store.owns(org, principal.sub, space_id):
+            raise HTTPException(status_code=404, detail=f"unknown space {space_id!r}")
+        space_uid = principal.sub + "::space:" + space_id
+        _purge_tenant_graph(org, space_uid)
+        spaces_store.delete_space(org, principal.sub, space_id)
+        return {"deleted": space_id}
 
     # --- API keys (in-page key management, scoped to the active org) -------
     def _apikey_view(rec: dict[str, Any]) -> dict[str, Any]:
@@ -1317,6 +1415,12 @@ def create_app(conn: Any | None = None) -> FastAPI:
 
         The in-chat confirmation is the human gate, so the insight enters ``active``
         at full credibility (subject to the FR-005 demotion under ``surface``).
+
+        ``raw`` (bool, default False) is the fast lane for trusted bulk inserts: it
+        keeps the cheap regex ``Redactor`` (secrets are still scrubbed) but SKIPS the
+        ``Deduper`` and the LLM-backed conflict/claim pipeline, so the per-item LLM
+        round-trips that make large batches time out are avoided. ``onConflict`` is
+        ignored when ``raw`` is set (there is no conflict step to configure).
         """
         insight = (body.get("insight") or "").strip()
         if not insight:
@@ -1343,13 +1447,17 @@ def create_app(conn: Any | None = None) -> FastAPI:
         meta = body.get("meta")
         if meta is not None and not isinstance(meta, dict):
             raise HTTPException(status_code=400, detail="meta must be an object")
+        # raw: trusted fast lane — redact only, no Deduper / LLM conflict steps.
         # auto_resolve: ConflictOverwriter turns a confirmed contradiction into a
         # force-overwrite (loser rejected). surface: the structural+semantic detector
         # pipeline only *flags* the clash, so the store persists a pending
         # contradiction edge instead of rejecting a side.
-        graph = PostgresVectorGraph(
-            conn, org, uid, policy=_insight_write_policy(on_conflict)
-        )
+        # Only a literal JSON ``true`` enables the fast lane; anything else (incl.
+        # the string "false") falls back to the SAFER reconciled write, since raw
+        # reduces write-time safety (skips dedup + the conflict/claim policy).
+        raw = body.get("raw", False) is True
+        policy = [Redactor()] if raw else _insight_write_policy(on_conflict)
+        graph = PostgresVectorGraph(conn, org, uid, policy=policy)
         _, ingestor, _ = build_trio(graph=graph, llm=None)
         return _write_insight(
             graph,
@@ -1391,6 +1499,14 @@ def create_app(conn: Any | None = None) -> FastAPI:
         (read-your-writes), so the caller doesn't have to poll. Each result also
         carries ``ok`` and, on a per-item failure, an ``error`` string — one bad
         item fails cleanly without aborting the rest of the batch.
+
+        ``raw`` (bool, default False) is the batch-level fast lane: it keeps the
+        cheap regex ``Redactor`` (secrets still scrubbed) but SKIPS the ``Deduper``
+        and the LLM conflict/claim steps for every item, so a large trusted bulk
+        insert (e.g. 71 items) that would otherwise time out on per-item LLM
+        conflict checks lands quickly. ``onConflict`` is ignored when ``raw`` is set.
+        The embedding prefetch below still runs, so the write stays cheap on the
+        embedder too.
         """
         insights = body.get("insights")
         if not isinstance(insights, list) or not insights:
@@ -1402,9 +1518,13 @@ def create_app(conn: Any | None = None) -> FastAPI:
             )
         # One policy graph + ingestor for the whole batch (the throughput win); the
         # episodic store-only path needs no policy, so it reuses the same instance.
-        graph = PostgresVectorGraph(
-            conn, org, uid, policy=_insight_write_policy(on_conflict)
-        )
+        # raw skips dedup + LLM conflict for the whole batch (redact-only fast lane).
+        # Only a literal JSON ``true`` enables the fast lane; anything else (incl.
+        # the string "false") falls back to the SAFER reconciled write, since raw
+        # reduces write-time safety (skips dedup + the conflict/claim policy).
+        raw = body.get("raw", False) is True
+        policy = [Redactor()] if raw else _insight_write_policy(on_conflict)
+        graph = PostgresVectorGraph(conn, org, uid, policy=policy)
         # Throughput: the serial loop below embeds each insight's text once, so N
         # items would be N embedding round-trips. Memoize the graph's embedder and
         # pre-embed every item's text in ONE batch call up front; each later

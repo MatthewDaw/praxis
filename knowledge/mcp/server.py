@@ -295,6 +295,7 @@ def praxis_add_insight(
     meta: dict | None = None,
     on_conflict: str = "auto_resolve",
     derived_from: list[str] | None = None,
+    raw: bool = False,
 ) -> str:
     """Store a durable insight in the user's knowledge graph.
 
@@ -321,12 +322,17 @@ def praxis_add_insight(
     facts this insight was derived from and the backend links a ``derived_from``
     edge (this fact -> each source) so an invalidated source can later surface
     this fact as suspect.
+
+    ``raw=True`` is the fast lane for a trusted insert: the backend skips dedup and
+    the LLM conflict/claim steps (so ``on_conflict`` no longer applies) while still
+    scrubbing secrets via redaction. Use it for bulk trusted writes that time out on
+    the per-item LLM conflict check; leave it ``False`` for normal reconciled writes.
     """
     if (hint := _not_ready()) is not None:
         return hint
     if on_conflict not in ("auto_resolve", "surface"):
         return "on_conflict must be 'auto_resolve' or 'surface'."
-    body: dict[str, object] = {"insight": insight, "onConflict": on_conflict}
+    body: dict[str, object] = {"insight": insight, "onConflict": on_conflict, "raw": raw}
     if scope is not None:
         body["scope"] = scope
     if category is not None:
@@ -373,6 +379,7 @@ def praxis_add_insight(
 def praxis_add_insights(
     insights: list[dict],
     on_conflict: str = "auto_resolve",
+    raw: bool = False,
 ) -> str:
     """Store many already-distilled insights in ONE call (bulk sibling of praxis_add_insight).
 
@@ -391,6 +398,12 @@ def praxis_add_insights(
     ``"auto_resolve"`` (default) overwrites a conflicting fact; ``"surface"`` keeps
     both and raises a pending contradiction for human review.
 
+    ``raw=True`` is the fast lane for a trusted bulk insert: the backend skips dedup
+    and the LLM conflict/claim steps (so ``on_conflict`` no longer applies) while
+    still scrubbing secrets via redaction. Use it for large trusted batches (e.g. 71
+    items) that time out on the per-item LLM conflict check; leave it ``False`` for
+    normal reconciled writes.
+
     Returns a structured JSON block with one result per insight (in order), each
     carrying ``ok``/``id``/``action``/``retrievable`` (read-your-writes confirmed)
     and, on a per-item failure, an ``error`` — a bad item never aborts the rest.
@@ -401,7 +414,7 @@ def praxis_add_insights(
         return "on_conflict must be 'auto_resolve' or 'surface'."
     if not isinstance(insights, list) or not insights:
         return "insights must be a non-empty list of insight objects."
-    body = {"insights": insights, "onConflict": on_conflict}
+    body = {"insights": insights, "onConflict": on_conflict, "raw": raw}
     try:
         resp = httpx.post(
             f"{identity.api_base()}/insights/batch",
@@ -1358,6 +1371,38 @@ def praxis_join_org(org_id: str, password: str) -> str:
 
 
 @mcp.tool()
+def praxis_delete_org(org_id: str) -> str:
+    """Permanently delete an entire org and ALL of its data — owner-only, destructive.
+
+    This wipes the org for EVERY member: all members' live graphs, cached snapshots,
+    mounts, and API keys are purged, then the org (and its memberships and spaces) is
+    removed. Only an org *owner* may do this. There is no undo. Confirm explicitly
+    with the user before calling — this is far more destructive than ``praxis_clear_graph``
+    (which only clears your own graph). Use ``praxis_select_org`` afterward to switch
+    to another org.
+    """
+    if not identity.is_logged_in():
+        return "Not logged in — call `praxis_login` first."
+    if not org_id.strip():
+        return "Pass a non-empty org_id (see praxis_whoami)."
+    org_id = org_id.strip()
+    try:
+        resp = httpx.delete(
+            f"{identity.api_base()}/orgs/{org_id}",
+            headers={"Authorization": f"Bearer {identity.token()}"},
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return f"Unknown org {org_id!r} — you are not a member (see praxis_whoami)."
+        if exc.response.status_code == 403:
+            return f"Only an owner can delete org {org_id!r} — you are not its owner."
+        return _friendly(exc)
+    return f"Deleted org {org_id!r} and all of its data. Select another org with praxis_select_org."
+
+
+@mcp.tool()
 def praxis_create_space(space_id: str, name: str | None = None) -> str:
     """Create a private working *space* in the active org and select it.
 
@@ -1447,6 +1492,42 @@ def praxis_select_space(space_id: str) -> str:
     if not space:
         return "Active space cleared back to the default space."
     return f"Active space set to {space!r}."
+
+
+@mcp.tool()
+def praxis_delete_space(space_id: str) -> str:
+    """Permanently delete one of your private spaces and its entire working graph.
+
+    This is destructive: it purges the space's live knowledge graph (every fact,
+    edge, claim, snapshot, and mount owned by that space) and removes the space
+    itself. The default graph and your other spaces are untouched. Only the space's
+    owning login can delete it. Confirm with the user before calling — there is no
+    undo (save a snapshot first if unsure). If the deleted space was the active one,
+    this falls back locally to the default space.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    if not space_id.strip():
+        return "Pass a non-empty space_id (see praxis_list_space)."
+    space_id = space_id.strip()
+    try:
+        resp = httpx.delete(
+            f"{identity.api_base()}/spaces/{space_id}",
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return f"Unknown space {space_id!r} — list your spaces with praxis_list_space."
+        return _friendly(exc)
+    if identity.active_space() == space_id:
+        identity.set_space("")
+        return (
+            f"Deleted space {space_id!r} and its working graph; "
+            "active space fell back to the default space."
+        )
+    return f"Deleted space {space_id!r} and its working graph."
 
 
 @mcp.tool()

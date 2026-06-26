@@ -108,6 +108,21 @@ class OrgsStore:
             (_hash_password(new_password, new_salt), new_salt, org_id),
         )
 
+    def delete_org(self, org_id: str) -> bool:
+        """Delete ``org_id`` outright; return True if a row was removed.
+
+        Dropping the ``orgs`` row cascades to ``org_members`` and ``spaces`` via
+        their ``ON DELETE CASCADE`` foreign keys, but the tenant graph storage
+        (``facts``/``cached_facts``/``mounted_snapshots``/``api_keys``) has no FK
+        back to ``orgs`` and must be purged by the caller. Authorization — that
+        the requester is an org *owner* — is the route's job, not this method's;
+        this is the raw delete.
+        """
+        cur = self._conn.execute(
+            "DELETE FROM orgs WHERE org_id = %s", (org_id,)
+        )
+        return cur.rowcount > 0
+
     # --- reads -------------------------------------------------------------
     def list_orgs(self, user_id: str) -> list[dict]:
         """Return the orgs ``user_id`` belongs to, with name and role."""
@@ -144,5 +159,17 @@ class OrgsStore:
         row = self._conn.execute(
             "SELECT 1 FROM org_members WHERE org_id = %s AND user_id = %s",
             (org_id, user_id),
+        ).fetchone()
+        return row is not None
+
+    def is_owner(self, org_id: str, user_id: str) -> bool:
+        """Return True if ``user_id`` is an *owner* of ``org_id``.
+
+        Distinct from :meth:`is_member`: only the ``role = 'owner'`` membership
+        row qualifies. Used to gate owner-only actions such as deleting the org.
+        """
+        row = self._conn.execute(
+            "SELECT 1 FROM org_members WHERE org_id = %s AND user_id = %s AND role = %s",
+            (org_id, user_id, "owner"),
         ).fetchone()
         return row is not None

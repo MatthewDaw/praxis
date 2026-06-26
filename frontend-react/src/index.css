@@ -1677,6 +1677,25 @@ code,
   outline-offset: 1px;
 }
 
+/* Destructive variant of the subtle pill button (delete a space / an org). */
+.link-button--danger {
+  color: var(--danger, #b42318);
+}
+.link-button--danger:hover {
+  background: #fef3f2;
+  border-color: var(--danger, #b42318);
+  color: var(--danger, #b42318);
+}
+.link-button--danger:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Keep the space switcher's Delete affordance from stretching the select row. */
+.space-switcher__delete {
+  flex: 0 0 auto;
+}
+
 /* ---- Org gate ("Choose a workspace") ---------------------------------- */
 .org-gate {
   max-width: 560px;
@@ -1743,6 +1762,20 @@ code,
 .org-gate__pick li button:hover {
   background: #eff4ff;
   border-color: var(--accent);
+}
+/* A pick row carrying an owner-only Delete: select button flexes, Delete hugs. */
+.org-gate__pick-row {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+.org-gate__pick-row > button:first-child {
+  flex: 1 1 auto;
+  width: auto;
+}
+.org-gate__pick-row .org-gate__delete {
+  flex: 0 0 auto;
+  align-self: stretch;
 }
 .org-gate form {
   display: flex;
@@ -2037,6 +2070,14 @@ code,
 
   .dashboard-header__meta {
     align-items: flex-start;
+  }
+
+  /* Once the header stacks, the brand column no longer needs to stretch to match
+     the taller meta column (which grew with the space switcher). Drop the
+     margin-top:auto that pushed the tabs to the bottom, which left a large empty
+     gap between the header tools and the section tabs at narrow widths. */
+  .dashboard-header__tabs {
+    margin-top: var(--space-4);
   }
 
   .confidence-grid,

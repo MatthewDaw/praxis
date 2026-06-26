@@ -89,3 +89,32 @@ def test_set_password_non_member_rejected(unique_org):
     s.create_org(unique_org, "Acme", "s3cret", "user-a")
     with pytest.raises(ValueError):
         s.set_password(unique_org, "s3cret", "n3wpass", "user-z")
+
+
+def test_is_owner_distinguishes_owner_from_member(unique_org):
+    # is_owner is stricter than is_member: only the role='owner' row qualifies, so
+    # a plain joined member is a member but NOT an owner.
+    s = _store()
+    s.create_org(unique_org, "Acme", "s3cret", "user-a")
+    s.join_org(unique_org, "s3cret", "user-b")
+    assert s.is_owner(unique_org, "user-a")
+    assert s.is_member(unique_org, "user-b")
+    assert not s.is_owner(unique_org, "user-b")
+    # A non-member is neither.
+    assert not s.is_owner(unique_org, "user-z")
+
+
+def test_delete_org_removes_row_and_cascades_members(unique_org):
+    # delete_org drops the orgs row (returning True) and its ON DELETE CASCADE FKs
+    # remove the membership rows with it.
+    s = _store()
+    s.create_org(unique_org, "Acme", "s3cret", "user-a")
+    s.join_org(unique_org, "s3cret", "user-b")
+    assert s.delete_org(unique_org) is True
+    # Gone everywhere: no membership, the deleted org is no longer listed, and a
+    # re-delete reports nothing. (Assert the deleted org is absent rather than that
+    # user-a owns zero orgs — sibling tests share that owner and don't clean up.)
+    assert not s.is_member(unique_org, "user-a")
+    assert not s.is_member(unique_org, "user-b")
+    assert unique_org not in {o["org_id"] for o in s.list_orgs("user-a")}
+    assert s.delete_org(unique_org) is False
