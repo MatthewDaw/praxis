@@ -227,7 +227,14 @@ def run_live(*, n_instances: int, trials: int, k_rework: int, manifest_path: Pat
         return ingest_results[inst.instance_id]  # IngestResult so facts_ingested reaches the meta
 
     def grade_fn(inst, patch):
-        return grade_instance(inst, patch)
+        # Distinct run_id per (instance, patch): the swebench harness caches by run_id, so
+        # a shared id would let the control grade reuse the treatment grade's report. A
+        # patch hash also means two arms that produced the SAME patch correctly share one
+        # grade (identical patch ⇒ identical result).
+        import hashlib
+
+        tag = hashlib.sha1(patch.encode("utf-8")).hexdigest()[:10]
+        return grade_instance(inst, patch, run_id=f"praxis_{inst.instance_id}_{tag}")
 
     # U6 calls run_arm(instance, arm, grade=..., checkout=..., mcp_config_path=..., ...).
     # The treatment arm reads mcp_config_path; the control arm ignores it (no Praxis MCP).
