@@ -1550,6 +1550,19 @@ def create_app(conn: Any | None = None) -> FastAPI:
             "meta": dict(fact.meta or {}),
         }
 
+    def _requirement_completeness_view(item: dict[str, Any]) -> dict[str, Any]:
+        view = _derivation_view(item["fact"])
+        view.update(
+            {
+                "reason": item["reason"],
+                "reasons": item["reasons"],
+                "successCount": item["success_count"],
+                "failureCount": item["failure_count"],
+                "lastOutcome": item["last_outcome"],
+            }
+        )
+        return view
+
     @app.get("/derivations/stale")
     def stale_derivations(
         principal: Principal = Depends(current_user),
@@ -1741,6 +1754,36 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 _derivation_view(f) for f in cov["uncoveredRequirements"]
             ],
         }
+
+    @app.get("/requirements/incomplete")
+    def incomplete_requirements(
+        project: str = "",
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Active requirements in ``prd-<project>`` not yet verified-complete (derived
+        from verification + staleness: never-built | regressed | stale)."""
+        project = str(project or "").strip()
+        if not project:
+            raise HTTPException(status_code=400, detail="query param 'project' is required")
+        items = live_graph(org, principal.sub).incomplete_requirements(project)
+        return {
+            "project": project,
+            "incomplete": [_requirement_completeness_view(i) for i in items],
+        }
+
+    @app.get("/requirements/completeness")
+    def completeness_summary(
+        project: str = "",
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Done-of-definition counts for ``prd-<project>``'s active requirements."""
+        project = str(project or "").strip()
+        if not project:
+            raise HTTPException(status_code=400, detail="query param 'project' is required")
+        summary = live_graph(org, principal.sub).completeness_summary(project)
+        return {"project": project, **summary}
 
     @app.get("/context")
     @limiter.limit(LLM_RATE_LIMIT)

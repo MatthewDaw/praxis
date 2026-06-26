@@ -866,6 +866,107 @@ def surface_binding_governs_screen(
         conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
 
 
+def requirement_incomplete_when_unbuilt_or_regressed(
+    ctx: EvalContext,
+    *,
+    project: str,
+    requirement_text: str,
+    never_built_text: str,
+    complete_text: str,
+) -> CheckResult:
+    """A requirement's completeness is DERIVED from verification signals, not self-set:
+    a regressed requirement (succeeded, then failed) re-surfaces as incomplete, a
+    never-built one surfaces, and a success-only one does NOT.
+
+    The agent factory's "what should I build/fix next?" surface lists the active
+    ``category="requirement"`` facts in ``prd-<project>`` that are not yet
+    verified-complete. Completeness is computed from outcome history + staleness, never
+    a flag: a requirement is incomplete if it has had no successful outcome
+    (never-built) or its latest outcome failed after a prior success (regressed -- the
+    bug/ticket path). This drives the REAL completeness path
+    (``incomplete_requirements``) on a fresh isolated tenant.
+
+    Seeds three ``active`` ``prd-<project>`` requirements:
+
+      * ``requirement_text`` -- recorded a success then a failing outcome (regressed):
+        must appear in ``incomplete_requirements`` with ``reason=="regressed"``.
+      * ``never_built_text`` -- no outcome recorded (never-built): must appear with
+        ``reason=="never-built"``.
+      * ``complete_text`` -- a single success, never failed (complete): must NOT appear.
+
+    Uses ``FakeEmbedder`` (deterministic, offline) so there are no cached-embedding
+    misses, with a plain ``[Redactor(), Deduper()]`` policy and ``recall_floor=-1.0`` so
+    each seed coexists as its own active row. Requires a Postgres DSN (``substrate:
+    vector``); the harness SKIPs the case without one.
+    """
+    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+        PostgresVectorGraph,
+    )
+    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
+    from knowledge.llm.embedder_variants.fake_embedder import FakeEmbedder
+    from knowledge.serve import db
+
+    conn = db.connect()
+    db.bootstrap()
+    org = "eval_complete_" + uuid.uuid4().hex[:12]
+    user = "u1"
+    graph = PostgresVectorGraph(
+        conn,
+        org,
+        user,
+        embedder=FakeEmbedder(),
+        policy=[Redactor(), Deduper()],
+        recall_floor=-1.0,
+    )
+    source = f"prd-{project}"
+    try:
+        regressed_id = graph.write(
+            requirement_text, state="active", category="requirement", source=source
+        )
+        never_built_id = graph.write(
+            never_built_text, state="active", category="requirement", source=source
+        )
+        complete_id = graph.write(
+            complete_text, state="active", category="requirement", source=source
+        )
+        # Regression / ticket path: a prior success, then a failing outcome.
+        graph.record_outcome(regressed_id, success=True)
+        graph.record_outcome(regressed_id, success=False)
+        # A success-only requirement stays complete.
+        graph.record_outcome(complete_id, success=True)
+
+        items = graph.incomplete_requirements(project)
+        by_id = {it["fact"].id: it for it in items}
+
+        regressed_ok = (
+            regressed_id in by_id and by_id[regressed_id]["reason"] == "regressed"
+        )
+        never_built_ok = (
+            never_built_id in by_id and by_id[never_built_id]["reason"] == "never-built"
+        )
+        complete_excluded = complete_id not in by_id
+        ok = regressed_ok and never_built_ok and complete_excluded
+        return CheckResult(
+            name="requirement_incomplete_when_unbuilt_or_regressed",
+            passed=ok,
+            evidence=(
+                "completeness derived from outcomes: the succeeded-then-failed requirement "
+                "re-surfaced as regressed, the never-built one surfaced, the success-only "
+                "one stayed complete"
+                if ok
+                else "completeness gap "
+                f"[regressed={regressed_ok} "
+                f"(reason={by_id.get(regressed_id, {}).get('reason')!r}); "
+                f"never-built={never_built_ok} "
+                f"(reason={by_id.get(never_built_id, {}).get('reason')!r}); "
+                f"success-only-excluded={complete_excluded}]"
+            ),
+        )
+    finally:
+        conn.execute("DELETE FROM fact_edges WHERE org_id = %s AND user_id = %s", (org, user))
+        conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
+
+
 def requirement_not_fragmented_by_distillation(
     ctx: EvalContext,
     *,

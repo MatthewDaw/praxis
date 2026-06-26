@@ -42,6 +42,10 @@ CREATE TABLE IF NOT EXISTS facts (
     -- action keeps failing sinks and a proven one holds. 0/0 => neutral (no change).
     success_count     integer NOT NULL DEFAULT 0,
     failure_count     integer NOT NULL DEFAULT 0,
+    -- Most recent verification outcome ('succeeded'|'failed'|NULL). The counts above
+    -- are cumulative; this carries the *latest* signal so derived-completeness queries
+    -- can tell a regressed (succeeded-then-failed) requirement from a still-passing one.
+    last_outcome      text,
     -- Lifecycle state: 'proposed' (passive system add, staged), 'active' (user
     -- directly approved -- live knowledge), 'rejected' (superseded/retired;
     -- formerly 'decayed', renamed in specs/003-fact-rejection-lifecycle).
@@ -71,6 +75,7 @@ CREATE TABLE IF NOT EXISTS facts (
 ALTER TABLE facts ADD COLUMN IF NOT EXISTS state text NOT NULL DEFAULT 'proposed';
 ALTER TABLE facts ADD COLUMN IF NOT EXISTS cluster_id integer;
 ALTER TABLE facts ADD COLUMN IF NOT EXISTS cluster_label text;
+ALTER TABLE facts ADD COLUMN IF NOT EXISTS last_outcome text;
 ALTER TABLE facts ADD COLUMN IF NOT EXISTS valid_at timestamptz;
 ALTER TABLE facts ADD COLUMN IF NOT EXISTS invalid_at timestamptz;
 
