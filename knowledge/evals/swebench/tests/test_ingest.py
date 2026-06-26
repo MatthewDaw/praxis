@@ -111,6 +111,32 @@ def test_fix_pr_excluded_by_number_even_without_restate():
     assert nums == [101, 103]  # 101+103 are pre-cutoff; 102 dropped; 104/105 post-cutoff
 
 
+def test_window_handles_mixed_timestamp_formats_at_boundary():
+    # The real bug a live shakedown surfaced: SWE-rebench created_at is naive + space-
+    # separated ("2025-03-10 13:52:59"), gh mergedAt is RFC3339 Z. A lexical compare
+    # mis-orders them on the shared date ('T' sorts after ' '); parsed datetimes don't.
+    inst = Instance.from_record({
+        "instance_id": "sympy__sympy-9999",
+        "repo": "sympy/sympy", "version": "1.13",
+        "base_commit": "deadbeef", "created_at": "2025-03-10 13:52:59",
+        "problem_statement": "bug", "patch": "", "test_patch": "",
+        "FAIL_TO_PASS": [], "PASS_TO_PASS": [], "install_config": {},
+    })
+
+    def fetch(argv):
+        if argv[:3] == ["gh", "pr", "list"]:
+            return json.dumps([
+                {"number": 201, "mergedAt": "2025-03-10T05:00:00Z", "title": "before cutoff (05:00 < 13:52)"},
+                {"number": 202, "mergedAt": "2025-03-10T18:00:00Z", "title": "after cutoff (18:00 > 13:52)"},
+            ])
+        raise AssertionError(argv)
+
+    nums = select_window(inst, fetch)
+    # 201 merged 05:00 same day is BEFORE the 13:52 cutoff → kept; 202 at 18:00 → excluded.
+    # A raw string compare would wrongly drop 201 ("...T05..." > "2025-03-10 13...").
+    assert nums == [201]
+
+
 def test_fix_restating_pr_is_dropped_from_ingest():
     inst = _instances()["sympy__sympy-fake-0001"]
     client = FakeClient()

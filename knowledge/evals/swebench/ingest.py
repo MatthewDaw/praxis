@@ -49,9 +49,11 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 # for membership since the creator is the auto-member).
 _ORG_PASSWORD = "swebench-eval"
 
-# How many merged PRs to pull from `gh pr list` before date-filtering to the window.
-# A generous cap so the pre-base_commit window isn't truncated by a too-small limit.
-DEFAULT_LIST_LIMIT = 200
+# Size of the pre-base_commit window: the N most-recent PRs merged before the cutoff
+# (the date-bounded `gh` search returns newest-first, so `limit` directly sizes the
+# window). The brainstorm's intent was the 30-50 most recent PRs; each PR is one
+# server-side LLM distillation, so this is also the per-instance ingestion-cost knob.
+DEFAULT_LIST_LIMIT = 50
 
 
 # ---------------------------------------------------------------------------
@@ -192,15 +194,43 @@ def create_org(client: HttpClient, org_id: str) -> None:
         pass  # already created by a prior run — reuse it read-after-write
 
 
-def _merged_pr_list(fetch: Fetcher, limit: int) -> list[dict]:
-    """`gh pr list --state merged --json number,mergedAt,title` → list of dicts.
+def _parse_ts(value: str):
+    """Parse a timestamp to a UTC-aware ``datetime``, tolerant of the two real formats.
+
+    SWE-rebench's ``created_at`` is naive space-separated (``2015-10-19 13:52:59``);
+    ``gh``'s ``mergedAt`` is RFC3339 (``2026-06-25T18:59:44Z``). A lexical compare of the
+    raw strings mis-orders them whenever the date matches but the format differs (``'T'``
+    sorts after ``' '``), so we parse both and normalize a naive value to UTC. Returns
+    ``None`` when the value is empty/unparseable (such a PR is then treated as outside
+    the window — we don't ingest something we can't place in time)."""
+    from datetime import datetime, timezone
+
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def _merged_pr_list(fetch: Fetcher, limit: int, before_date: str | None = None) -> list[dict]:
+    """`gh pr list --state merged [--search "merged:<=DATE"] --json number,mergedAt,title`.
 
     Extends ``pr_source.list_merged_prs`` (numbers only) — we need ``mergedAt`` to
-    date-filter the window.
+    date-filter the window. CRITICAL: ``gh pr list`` returns the ``limit`` *most recent*
+    merges, so without a date bound an instance whose ``base_commit`` predates the last
+    ``limit`` merges gets an EMPTY window (all recent merges post-date the cutoff). We
+    bound the query with GitHub search ``merged:<=<date>`` so it returns PRs merged up to
+    and including the cutoff day, newest-first — the actual pre-``base_commit`` window.
+    The day is inclusive here (date-granular search); :func:`select_window`'s precise
+    ``_parse_ts`` filter then drops any same-day PR merged after the exact cutoff time.
     """
-    raw = fetch(["gh", "pr", "list", "--state", "merged", "--limit", str(limit),
-                 "--json", "number,mergedAt,title"])
-    return json.loads(raw)
+    argv = ["gh", "pr", "list", "--state", "merged", "--limit", str(limit),
+            "--json", "number,mergedAt,title"]
+    if before_date:
+        argv += ["--search", f"merged:<={before_date}"]
+    return json.loads(fetch(argv))
 
 
 # Normalize a diff to its substantive +/- code lines (drop headers/hunk markers,
@@ -250,19 +280,22 @@ def select_window(instance: Instance, fetch: Fetcher,
     needs each PR's diff, so it's applied in :func:`ingest_window` (which already
     fetches diffs); this function does the date-window + ordering + fix-number drop.
     """
-    cutoff = instance.created_at
+    # gh's `mergedAt` (RFC3339, Z) and SWE-rebench's `created_at` (naive, space-separated)
+    # are DIFFERENT formats, so we parse both to UTC datetimes rather than compare strings.
+    cutoff = _parse_ts(instance.created_at)
     fix = fix_pr_number(instance)
-    rows = _merged_pr_list(fetch, limit)
-    # The string compare is correct only because both timestamps are Z-normalized
-    # RFC3339 (gh's `mergedAt` and SWE-rebench's `created_at` both are): lexical order
-    # then matches chronological order. A bare-date or differently-offset cutoff would
-    # mis-window — if that ever changes, parse to datetime before comparing.
+    # Bound the gh query by merge date so it reaches the pre-base_commit window (not just
+    # the latest `limit` merges). The date portion of created_at is the search granularity.
+    before_date = instance.created_at[:10] if instance.created_at else None
+    rows = _merged_pr_list(fetch, limit, before_date)
+    dated = [(r, _parse_ts(r.get("mergedAt", ""))) for r in rows]
     in_window = [
-        r for r in rows
-        if r.get("mergedAt") and str(r["mergedAt"]) < cutoff and int(r["number"]) != fix
+        r for r, merged in dated
+        if cutoff is not None and merged is not None
+        and merged < cutoff and int(r["number"]) != fix
     ]
     # Oldest-first: ascending mergedAt, number as a stable tiebreak.
-    in_window.sort(key=lambda r: (str(r.get("mergedAt", "")), int(r["number"])))
+    in_window.sort(key=lambda r: (_parse_ts(r.get("mergedAt", "")), int(r["number"])))
     return [int(r["number"]) for r in in_window]
 
 
