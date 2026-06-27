@@ -231,7 +231,7 @@ def test_ingest_session_posts_narrative_as_proposed(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
 
-    def fake_post(url, json, headers):
+    def fake_post(url, json, headers, timeout=None):
         captured["url"] = url
         captured["json"] = json
         captured["headers"] = headers
@@ -263,11 +263,28 @@ def test_ingest_session_includes_source_when_given(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "post",
-        lambda url, json, headers: captured.update(json=json)
+        lambda url, json, headers, timeout=None: captured.update(json=json)
         or _Resp({"source": "session/x", "count": 0, "candidates": []}),
     )
     server.praxis_ingest_session("n", source="session/x")
     assert captured["json"] == {"narrative": "n", "source": "session/x"}
+
+
+def test_ingest_session_timeout_returns_commit_hint(monkeypatch):
+    # The session distiller is the slowest write; a client timeout must use the long
+    # write budget and surface the "may have committed — read it back" guidance rather
+    # than a bare error (the backend often commits past the client deadline).
+    _patch_identity(monkeypatch)
+    seen = {}
+
+    def fake_post(url, json, headers, timeout=None):
+        seen["timeout"] = timeout
+        raise httpx.TimeoutException("timed out")
+
+    monkeypatch.setattr(server.httpx, "post", fake_post)
+    out = server.praxis_ingest_session("PROBLEM ...\nFIX ...")
+    assert seen["timeout"] == server._WRITE_TIMEOUT
+    assert "read it back" in out and "committed" in out
 
 
 def test_get_contradictions_formats_pairs(monkeypatch):

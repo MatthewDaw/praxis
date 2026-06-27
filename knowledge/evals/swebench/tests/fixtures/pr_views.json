@@ -1,0 +1,22 @@
+{
+  "101": {
+    "view": {"title": "Speed up matrix slicing", "body": "Caches the slice index.", "reviews": []},
+    "diff": "diff --git a/sympy/matrices/dense.py b/sympy/matrices/dense.py\n--- a/sympy/matrices/dense.py\n+++ b/sympy/matrices/dense.py\n@@ -50,3 +50,4 @@ class DenseMatrix:\n     def __getitem__(self, key):\n+        key = self._cache_key(key)\n         return self._mat[key]\n"
+  },
+  "102": {
+    "view": {"title": "Fix docstring typos in dense.py", "body": "Typo sweep.", "reviews": []},
+    "diff": "diff --git a/sympy/matrices/dense.py b/sympy/matrices/dense.py\n--- a/sympy/matrices/dense.py\n+++ b/sympy/matrices/dense.py\n@@ -1,2 +1,2 @@\n-# Dense matrix implmentation\n+# Dense matrix implementation\n"
+  },
+  "103": {
+    "view": {"title": "Add empty-matrix guard to mul", "body": "Guards _eval_matrix_mul against empty operands.", "reviews": []},
+    "diff": "diff --git a/sympy/matrices/dense.py b/sympy/matrices/dense.py\n--- a/sympy/matrices/dense.py\n+++ b/sympy/matrices/dense.py\n@@ -10,6 +10,8 @@ class DenseMatrix:\n     def _eval_matrix_mul(self, other):\n+        if self.cols == 0 or other.rows == 0:\n+            return self._new(self.rows, other.cols, lambda i, j: 0)\n         return super()._eval_matrix_mul(other)\n"
+  },
+  "104": {
+    "view": {"title": "Refactor printing internals", "body": "No behavior change.", "reviews": []},
+    "diff": "diff --git a/sympy/printing/str.py b/sympy/printing/str.py\n--- a/sympy/printing/str.py\n+++ b/sympy/printing/str.py\n@@ -5,3 +5,4 @@ class StrPrinter:\n     def _print_Rational(self, expr):\n+        expr = self._coerce(expr)\n         return str(expr)\n"
+  },
+  "105": {
+    "view": {"title": "Post-cutoff cleanup", "body": "Should never be ingested (merged after cutoff).", "reviews": []},
+    "diff": "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n"
+  }
+}

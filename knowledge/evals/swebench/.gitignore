@@ -1,0 +1,7 @@
+# Runtime artifacts written by a live `run.py` pipeline — never commit these.
+RESULTS.data.json
+.checkouts/
+.mcp-cache/
+# Grader artifacts when run from the package dir (also covered at repo root).
+logs/run_evaluation/
+preds_*.json

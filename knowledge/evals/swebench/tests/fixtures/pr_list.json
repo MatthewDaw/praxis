@@ -1,0 +1,7 @@
+[
+  {"number": 101, "mergedAt": "2025-01-05T10:00:00Z", "title": "Speed up matrix slicing"},
+  {"number": 102, "mergedAt": "2025-02-15T08:30:00Z", "title": "Fix docstring typos in dense.py"},
+  {"number": 103, "mergedAt": "2025-03-01T12:00:00Z", "title": "Add empty-matrix guard to mul"},
+  {"number": 104, "mergedAt": "2025-03-20T09:00:00Z", "title": "Refactor printing internals"},
+  {"number": 105, "mergedAt": "2025-04-10T14:00:00Z", "title": "Post-cutoff cleanup"}
+]

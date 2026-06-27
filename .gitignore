@@ -1,6 +1,7 @@
 .idea/
 .claude/
 .specify/
+.gstack/
 
 # Microsoft Office lock/temp files
 ~$*
@@ -38,3 +39,7 @@ knowledge/**/*.webp
 knowledge/**/*.vtt
 .worktrees
 scratch_graph.json
+
+# SWE-rebench eval pilot grader artifacts (written to cwd on a live run)
+logs/run_evaluation/
+preds_*.json
