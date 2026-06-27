@@ -150,19 +150,44 @@ class FactsCandidates:
         )
 
     # --- internal helpers --------------------------------------------------
+    # Edge kinds that make two facts rivals, and the status each implies.
+    _RIVAL_STATUS = {"contradiction": "pending", "contradicted_by": "resolved"}
+
     def _rival_map(self) -> dict[str, dict[str, str]]:
         """Map each fact id to ``{rival_id: status}`` over both edge kinds.
 
         ``status`` is ``pending`` for a ``contradiction`` edge (no winner chosen)
         and ``resolved`` for a ``contradicted_by`` edge (a winner is active, the
         loser rejected). Both directions are recorded so a fact sees every rival.
+
+        This scans every edge in the tenant — use it for the bulk ``list`` view.
+        For a single fact, prefer :meth:`_rivals_for` (one indexed lookup).
         """
         links: dict[str, dict[str, str]] = {}
-        for kind, status in (("contradiction", "pending"), ("contradicted_by", "resolved")):
+        for kind, status in self._RIVAL_STATUS.items():
             for src, dst, _kind in self.graph.all_edges(kind):
                 links.setdefault(src, {})[dst] = status
                 links.setdefault(dst, {})[src] = status
         return links
+
+    def _rivals_for(self, fact_id: str) -> dict[str, str]:
+        """One fact's ``{rival_id: status}`` without a full-tenant edge scan.
+
+        Equivalent to ``self._rival_map().get(fact_id, {})`` but driven by a single
+        ``edges_touching`` lookup, so ``get`` (and every mutation that re-reads one
+        candidate) costs one indexed query instead of scanning all the tenant's
+        edges twice. Falls back to the full map for a graph without the per-fact
+        accessor (e.g. an in-memory facade)."""
+        edges_touching = getattr(self.graph, "edges_touching", None)
+        if not callable(edges_touching):
+            return self._rival_map().get(fact_id, {})
+        rivals: dict[str, str] = {}
+        for src, dst, kind in edges_touching(fact_id):
+            status = self._RIVAL_STATUS.get(kind)
+            if status is None:
+                continue  # non-rival edge (derived_from / renders / supersedes / dismissed)
+            rivals[dst if src == fact_id else src] = status
+        return rivals
 
     def _to_candidate(
         self, fact: Any, rivals: dict[str, dict[str, str]] | None = None
@@ -199,7 +224,8 @@ class FactsCandidates:
         fact = self.graph.get_fact(cid)
         if fact is None:
             return None
-        return self._to_candidate(fact)
+        # Single-fact rivals via one indexed lookup, not a full-tenant edge scan.
+        return self._to_candidate(fact, {cid: self._rivals_for(cid)})
 
     # --- mutations ---------------------------------------------------------
     def create(self, body: dict[str, Any]) -> Candidate:

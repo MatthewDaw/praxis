@@ -1387,6 +1387,24 @@ class PostgresVectorGraph(SearchableGraph):
         rows = self._conn.execute(sql, params).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
 
+    def edges_touching(self, fact_id: str) -> list[tuple[str, str, str]]:
+        """All (src, dst, kind) edges with ``fact_id`` as either endpoint.
+
+        The per-fact counterpart to :meth:`all_edges`: one indexed lookup for a
+        single fact's edges instead of scanning the whole tenant. Used by the
+        candidate facade's single-fact rival lookup so ``get`` (and every mutation
+        that re-reads one candidate) does not pay a full-tenant edge scan."""
+        sql = (
+            f"SELECT src_id, dst_id, kind FROM {self._edges_table} "
+            "WHERE org_id = %s AND user_id = %s AND (src_id = %s OR dst_id = %s)"
+        )
+        params: list[object] = [self.org_id, self.user_id, fact_id, fact_id]
+        if self._cache_key is not None:
+            sql += " AND cache_key = %s"
+            params.append(self._cache_key)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
     # --- surface<->requirement bindings ------------------------------------
     # A typed ``renders`` relation (RENDERS_EDGE) from a requirement fact to a
     # SURFACE fact (a wireframe screen modeled as a fact, see RENDERS_EDGE). These
