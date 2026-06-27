@@ -83,13 +83,38 @@ class PraxisClient:
 
     # -- public API ---------------------------------------------------------
 
-    def get_context(self, query: str, top_k: int = 8) -> dict[str, Any]:
-        """Retrieve grounded context for ``query``.
+    def get_context(
+        self,
+        query: str,
+        top_k: int = 8,
+        *,
+        category: str | None = None,
+        categories: list[str] | None = None,
+        scope: str | None = None,
+        meta: dict | str | None = None,
+    ) -> dict[str, Any]:
+        """Retrieve grounded context for ``query`` (similarity-ranked).
 
         Returns the parsed JSON: ``{"context": str, "hits": [...]}`` where each
         hit has ``id, text, score, source, scope, category``.
+
+        Optional POSITIVE filters narrow the ranked results to a subset (still
+        ranked, not exhaustive): ``category`` (single) and/or ``categories`` (list)
+        keep only those categories; ``scope`` matches the top-level scope; ``meta``
+        (a dict, or a pre-encoded JSON string) filters the JSONB ``meta`` column by
+        scalar equality OR array-membership — e.g. ``category="check",
+        meta={"scope": "planning"}``. Omitting all of them is unchanged behavior.
         """
-        params = urllib.parse.urlencode({"query": query, "top_k": top_k})
+        q: dict[str, Any] = {"query": query, "top_k": top_k}
+        if category:
+            q["category"] = category
+        if categories:
+            q["categories"] = ",".join(categories)
+        if scope:
+            q["scope"] = scope
+        if meta is not None:
+            q["meta"] = meta if isinstance(meta, str) else json.dumps(meta)
+        params = urllib.parse.urlencode(q)
         return self._request("GET", f"/context?{params}")
 
     def context_text(self, query: str, top_k: int = 8) -> str:

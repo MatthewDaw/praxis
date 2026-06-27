@@ -49,11 +49,14 @@ class OverlayGraph(SearchableGraph):
         once and unions the live ``facts`` and ``cached_facts`` branches in one
         round trip. Mounted hits are tagged in ``fact.meta["mountedFrom"]``.
         """
-        # Forward the H2 exclusion only when present, so callers/doubles that don't
-        # take the kwarg are unaffected (the live overlay_search accepts it).
+        # Forward the optional read filters only when present, so callers/doubles that
+        # don't take a kwarg are unaffected (the live overlay_search accepts them).
+        # H2 exclusion plus the PR-#114 positive filters (category/scope/meta) — all
+        # applied to BOTH the live and mounted branches by overlay_search.
         extra = {}
-        if kwargs.get("exclude_categories"):
-            extra["exclude_categories"] = kwargs["exclude_categories"]
+        for k in ("exclude_categories", "categories", "scope", "meta_filter"):
+            if kwargs.get(k):
+                extra[k] = kwargs[k]
         return self._live.overlay_search(
             query, [(u, key) for (u, _name, key) in self._mounts], top_k=top_k, **extra
         )

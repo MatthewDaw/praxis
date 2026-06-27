@@ -1037,3 +1037,47 @@ def test_checks_for_surface_omits_scope_when_unset(monkeypatch):
     out = server.praxis_checks_for_surface("demo", "s-home")
     assert captured["params"] == {"project": "demo"}
     assert "No checks" in out
+
+
+def test_get_context_plumbs_positive_filters(monkeypatch):
+    _patch_identity(monkeypatch)
+    captured = {}
+
+    def fake_get(url, params, headers, timeout=None):
+        captured["url"] = url
+        captured["params"] = params
+        return _Resp({"context": "ctx", "hits": [{"id": "c1", "category": "check"}]})
+
+    monkeypatch.setattr(server.httpx, "get", fake_get)
+
+    out = server.praxis_get_context(
+        "a part",
+        category="check",
+        categories=["check", "requirement"],
+        scope="mvp",
+        meta_filter={"scope": "planning"},
+    )
+
+    assert captured["url"] == "http://api.test/context"
+    p = captured["params"]
+    assert p["query"] == "a part"
+    assert p["category"] == "check"
+    assert p["categories"] == "check,requirement"  # list -> CSV
+    assert p["scope"] == "mvp"
+    assert json.loads(p["meta"]) == {"scope": "planning"}  # dict -> JSON string
+    data = _extract_json(out)
+    assert data["hits"] == [{"id": "c1", "category": "check"}]
+
+
+def test_get_context_omits_filter_params_when_unset(monkeypatch):
+    _patch_identity(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(
+        server.httpx,
+        "get",
+        lambda url, params, headers, timeout=None: captured.update(params=params)
+        or _Resp({"context": "", "hits": []}),
+    )
+    server.praxis_get_context("just a query")
+    # Parity: no positive-filter params are sent when none are passed.
+    assert captured["params"] == {"query": "just a query", "top_k": 8}

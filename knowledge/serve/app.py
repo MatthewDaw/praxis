@@ -54,6 +54,7 @@ from knowledge.knowledge_graph.knowledge_graph_variants.overlay_graph import (  
     OverlayGraph,
 )
 from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (  # noqa: E402
+    _READ_CHAR_BUDGET,
     EPISODIC_CATEGORY,
     PostgresVectorGraph,
     default_write_policy,
@@ -2083,6 +2084,10 @@ def create_app(conn: Any | None = None) -> FastAPI:
         hybrid: bool = False,
         keyword_weight: float | None = None,
         char_budget: int | None = None,
+        category: str | None = None,
+        categories: str | None = None,
+        scope: str | None = None,
+        meta: str | None = None,
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
@@ -2107,6 +2112,14 @@ def create_app(conn: Any | None = None) -> FastAPI:
         ``keyword_weight`` biases that fusion toward exact/symbol matches (only with
         ``hybrid=true``); ``char_budget`` caps the returned ``context`` size. Fusion
         knobs apply to the live graph; the mounted-snapshot union is cosine-only.
+
+        Positive read filters (all optional) narrow the SIMILARITY ranking to a subset
+        without changing the ranking: ``category`` (single) and/or ``categories`` (a
+        comma-separated list) keep only those categories; ``scope`` matches the
+        top-level scope column; ``meta`` is a JSON object string (400 on bad JSON) —
+        e.g. ``{"scope":"planning"}`` — matched against the JSONB ``meta`` column by
+        scalar equality OR array-membership (same as ``/facts/by``). The filters apply
+        to BOTH the live graph and any mounted-snapshot union. Absent -> unchanged.
         """
         as_of_dt: datetime | None = None
         if as_of is not None and as_of.strip():
@@ -2116,6 +2129,26 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 raise HTTPException(
                     status_code=400, detail="as_of must be an ISO-8601 timestamp"
                 )
+        # Merge single ``category`` + CSV ``categories`` into one positive list
+        # (deduped, order-preserving); None when empty so _where skips the filter.
+        cats: list[str] = []
+        if category and category.strip():
+            cats.append(category.strip())
+        if categories and categories.strip():
+            cats.extend(c.strip() for c in categories.split(",") if c.strip())
+        cats_filter = list(dict.fromkeys(cats)) or None
+        scope_filter = scope.strip() if scope and scope.strip() else None
+        meta_filter: dict | None = None
+        if meta is not None and meta.strip():
+            try:
+                parsed = json.loads(meta)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"meta must be valid JSON: {exc}"
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise HTTPException(status_code=400, detail="meta must be a JSON object")
+            meta_filter = parsed
         live = live_graph(org, uid)
         # Mounts stay keyed on principal.sub for v1: spaces<->mounts interaction is
         # out of scope, so a space's live retrieval unions only with the default
@@ -2130,12 +2163,32 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 hybrid=hybrid,
                 keyword_weight=keyword_weight,
                 exclude_categories=exclude,
+                categories=cats_filter,
+                scope=scope_filter,
+                meta_filter=meta_filter,
                 as_of=as_of_dt,
             )
             if query.strip() else []
         )
+        # When a positive filter is active, derive the context blob from the filtered
+        # hits so it matches them (graph.read takes no positive filter). With no filter
+        # this stays the exact prior call, preserving byte-for-byte parity.
+        if cats_filter or scope_filter or meta_filter:
+            budget = _READ_CHAR_BUDGET if char_budget is None else char_budget
+            parts: list[str] = []
+            used = 0
+            for h in hits:
+                if used + len(h.fact.text) > budget and parts:
+                    break
+                parts.append(h.fact.text)
+                used += len(h.fact.text)
+            context_text = "\n\n".join(parts)
+        else:
+            context_text = graph.read(
+                query, exclude_categories=exclude, char_budget=char_budget
+            )
         return {
-            "context": graph.read(query, exclude_categories=exclude, char_budget=char_budget),
+            "context": context_text,
             "hits": [
                 {
                     "id": h.fact.id,
