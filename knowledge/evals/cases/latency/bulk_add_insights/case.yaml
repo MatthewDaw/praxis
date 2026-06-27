@@ -1,0 +1,34 @@
+# LATENCY: the bulk add path (praxis_add_insights / POST /insights/batch) is the
+# LLM-backed write -- in production each item embeds, recalls, and runs the dedup/
+# conflict judges. That work is read-only, which is why it was split into
+# parallel-decide / serial-commit (batch_writer.write_insights). This check drives
+# the REAL batch_writer over N distinct insights in one tenant, then the naive
+# serial `for item: graph.write` loop over the same N in a second tenant, and
+# reports both wall-clocks plus the speedup.
+#
+# Run offline with a FakeEmbedder + no-LLM policy, so there is no network work to
+# overlap -- this measures the ORCHESTRATION FLOOR (worker connections +
+# same-batch reconciliation), not the prod LLM win. Hence min_speedup defaults to
+# 0 (ceiling-gated only): the case must not fail merely because thread/connection
+# setup dominates the offline path. To assert a real speedup, run with a live
+# embedder (OPENROUTER_API_KEY) and raise min_speedup above 1 -- that is where the
+# parallelised embed+recall+judge actually pays off.
+#
+# The amortized per-op ceiling is the regression gate; the speedup ratio is the
+# headline number to watch when tuning PRAXIS_BATCH_WRITE_WORKERS.
+#
+# Component eval (no agent). embedder: cached gates the case on a reachable
+# Postgres store (SKIP otherwise); the check itself uses a FakeEmbedder.
+id: bulk_add_insights_throughput
+component: knowledge_graph
+substrate: vector
+embedder: cached
+
+deterministic_checks:
+  - name: bulk_add_insights_throughput
+    ref: "knowledge.evals.deterministic_checks.latency:bulk_add_insights_throughput"
+    params:
+      n: 40
+      per_op_ms: 250.0
+      max_workers: 4
+      min_speedup: 0.0

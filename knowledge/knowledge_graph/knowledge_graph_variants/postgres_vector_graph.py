@@ -112,6 +112,15 @@ RENDERS_EDGE = "renders"            # src=requirement fact, dst=surface fact
 SURFACE_CATEGORY = "surface"
 REQUIREMENT_CATEGORY = "requirement"
 
+# Coverage "check" facts (agent-factory coverage spine). A free-form category like
+# any other (no schema change): a check is a fact with category="check" carrying its
+# applicability/severity in ``meta`` (e.g. meta.scope="planning"|"validation",
+# meta.applies_to, meta.angle, meta.severity). The factory writes them via the RAW
+# insert path (``/candidates`` -> ``_add``) so distinct checks ACCUMULATE rather than
+# being deduped/merged by the write policy. Read back EXHAUSTIVELY (not top-k) via
+# ``facts_by`` / ``checks_for_surface`` so a completeness gate never silently drops one.
+CHECK_CATEGORY = "check"
+
 # Episodic memory (gap H4). The reserved category that routes a write down the
 # store-only lane (whole, append-only, immutable — never distilled/deduped/
 # contradicted) and out of semantic recall (H2). Load-bearing: a non-episode write
@@ -257,6 +266,28 @@ def _rrf_fuse(
     return ranked[:top_k]
 
 
+def _meta_predicate(meta_filter: dict | None, *, col: str = "meta") -> tuple[str, list[object]]:
+    """AND-clauses matching a JSONB ``col`` by scalar-equality OR array-membership.
+
+    For each ``{key: value}`` a row qualifies when ``col->>key = value`` (scalar) OR
+    — when ``col->key`` is a JSON array — ``value`` is a MEMBER of it. Identical
+    semantics to ``facts_by`` (PR #113), factored out so the single-table search
+    predicate (``_where``) and the live+mounted union (``overlay_search``) stay in
+    lockstep. ``col`` lets a union branch qualify the column if ever needed; each
+    overlay subquery is its own SELECT so the bare ``meta`` works there too. Returns
+    ``("", [])`` when ``meta_filter`` is empty, so callers can append unconditionally.
+    """
+    sql = ""
+    params: list[object] = []
+    for key, value in (meta_filter or {}).items():
+        sql += (
+            f" AND ({col}->>%s = %s OR (jsonb_typeof({col}->%s) = 'array' "
+            f"AND {col}->%s @> %s::jsonb))"
+        )
+        params.extend([key, value, key, key, json.dumps([value])])
+    return sql, params
+
+
 class PostgresVectorGraph(SearchableGraph):
     """A pgvector-backed fact store for one ``(org_id, user_id)`` tenant."""
 
@@ -378,6 +409,42 @@ class PostgresVectorGraph(SearchableGraph):
         newly-persisted fact to that conflicting fact, so the dashboard
         Contradictions tab works directly off the facts spine.
         """
+        decision = self.decide(
+            content,
+            state=state,
+            source=source,
+            scope=scope,
+            category=category,
+            meta=meta,
+            tabular=tabular,
+            derived_from=derived_from,
+        )
+        if decision is None:
+            return None
+        return self.persist(decision)
+
+    def decide(
+        self,
+        content: str,
+        *,
+        state: str = "proposed",
+        source: str | None = None,
+        scope: str | None = None,
+        category: str | None = None,
+        meta: dict | None = None,
+        tabular: bool = False,
+        derived_from: list[str] | None = None,
+    ) -> WriteDecision | None:
+        """Run the read-only half of ``write``: embed, recall, and the policy steps.
+
+        Returns the finished :class:`WriteDecision` (its ``action``/target/embedding
+        decided, ``demote_active_contradiction`` applied) ready for :meth:`persist`,
+        or ``None`` when the write is empty or a policy step dropped it. Performs **no
+        writes** — only ``SELECT``s — so it is safe to run concurrently (each caller
+        on its own connection). ``write`` = this then ``persist``; the batch writer
+        splits the two to decide in parallel and commit serially without losing
+        same-batch dedup (see ``knowledge/serve/batch_writer``).
+        """
         content = content.strip()
         if not content:
             return None
@@ -426,6 +493,17 @@ class PostgresVectorGraph(SearchableGraph):
         # flagged against an already-active fact lands "proposed" (a pending
         # contradiction); the contradiction edge is still persisted below.
         demote_active_contradiction(decision)
+        return decision
+
+    def persist(self, decision: WriteDecision) -> str | None:
+        """Enact a finished :class:`WriteDecision` (the write half of ``write``).
+
+        Writes through the action ``decide`` settled on (add/merge/augment/overwrite),
+        records contradiction edges, and stamps any declared ``derived_from``
+        provenance. Must run on a connection that owns the write — the batch writer
+        calls this serially on the base connection so each commit is visible to the
+        next item's recall.
+        """
         if decision.action == "update" and decision.update_target_id:
             self._merge(decision)
             fact_id = decision.update_target_id
@@ -437,9 +515,34 @@ class PostgresVectorGraph(SearchableGraph):
         else:
             fact_id = self._add(decision)
         self._persist_contradictions(fact_id, decision)
-        if derived_from:
-            self.record_derivation(fact_id, derived_from)
+        if decision.derived_from:
+            self.record_derivation(fact_id, decision.derived_from)
         return fact_id
+
+    def sibling(
+        self, conn: psycopg.Connection, *, policy: list[WriteStep] | None = None
+    ) -> "PostgresVectorGraph":
+        """A clone of this graph bound to ``conn`` (same tenant/embedder/recall config).
+
+        Used by the parallel batch writer to give each worker thread its own
+        connection — a psycopg connection is not safe for concurrent cross-thread
+        use — while preserving identical decide() behavior. ``policy`` defaults to a
+        SHARED reference to this graph's policy; pass a fresh policy list when the
+        steps hold per-call state. The embedder is shared (thread-safe memo)."""
+        return PostgresVectorGraph(
+            conn,
+            self.org_id,
+            self.user_id,
+            embedder=self.embedder,
+            policy=self.policy if policy is None else policy,
+            recall_floor=self.recall_floor,
+            recall_k=self.recall_k,
+            semantic_recall_floor=self.semantic_recall_floor,
+            semantic_recall_k=self.semantic_recall_k,
+            facts_table=self._facts_table,
+            edges_table=self._edges_table,
+            cache_key=self._cache_key,
+        )
 
     def record_episode(
         self,
@@ -677,10 +780,18 @@ class PostgresVectorGraph(SearchableGraph):
         hybrid: bool = False,
         keyword_weight: float | None = None,
         exclude_categories: list[str] | None = None,
+        categories: list[str] | None = None,
+        meta_filter: dict | None = None,
         decay: bool = True,
     ) -> list[SearchHit]:
         """Retrieve relevant facts. Pure pgvector cosine by default; ``hybrid=True``
         additionally fuses a BM25 keyword branch.
+
+        ``categories`` (positive category membership), ``scope``, and ``meta_filter``
+        (JSONB scalar-OR-array, like ``facts_by``) narrow the SIMILARITY ranking to a
+        subset — e.g. the ``check`` facts with ``meta.scope='planning'`` most similar
+        to ``query`` — without changing the ranking itself. Applied to both branches
+        via ``_where``; omitting them is identical to prior behavior.
 
         ``keyword_weight`` (gap H7) tunes the RRF fusion bias per call (only meaningful
         with ``hybrid=True``): the semantic branch stays at weight 1.0 and the keyword
@@ -731,15 +842,18 @@ class PostgresVectorGraph(SearchableGraph):
         if not hybrid:
             return self._search_vec(
                 qvec, top_k=top_k, filters=filters, scope=scope, state=state, as_of=as_of,
-                exclude_categories=exclude_categories, apply_decay=apply_decay,
+                exclude_categories=exclude_categories, categories=categories,
+                meta_filter=meta_filter, apply_decay=apply_decay,
             )
         sem = self._search_vec(
             qvec, top_k=_FUSION_BRANCH_N, filters=filters, scope=scope, state=state, as_of=as_of,
-            exclude_categories=exclude_categories, apply_decay=apply_decay,
+            exclude_categories=exclude_categories, categories=categories,
+            meta_filter=meta_filter, apply_decay=apply_decay,
         )
         kw = self._search_keyword(
             query, top_k=_FUSION_BRANCH_N, filters=filters, scope=scope, state=state, as_of=as_of,
-            exclude_categories=exclude_categories,
+            exclude_categories=exclude_categories, categories=categories,
+            meta_filter=meta_filter,
         )
         kww = _RRF_KEYWORD_WEIGHT if keyword_weight is None else keyword_weight
         return _rrf_fuse(sem, kw, top_k=top_k, keyword_weight=kww)
@@ -752,11 +866,19 @@ class PostgresVectorGraph(SearchableGraph):
         state: str | None,
         as_of: datetime | None = None,
         exclude_categories: list[str] | None = None,
+        categories: list[str] | None = None,
+        meta_filter: dict | None = None,
     ) -> tuple[str, list[object]]:
         """The shared tenant/cache/state/scope/filter predicate for a search branch.
 
         Returns ``(sql_fragment, params)`` so the cosine and keyword branches apply
         the exact same row gating — only their ranking expression differs.
+
+        ``categories`` (positive) keeps only rows whose ``category`` is in the list
+        (``= ANY``, served by the PR #113 ``(org_id,user_id,category)`` btree) — the
+        complement of ``exclude_categories``. ``meta_filter`` adds the same JSONB
+        scalar-OR-array predicate as ``facts_by`` (served by the ``(meta)`` GIN
+        index). Both are AND-combined with the rest; omitting them is unchanged.
         """
         sql = "WHERE org_id = %s AND (shared OR user_id = %s)"
         params: list[object] = [self.org_id, self.user_id]
@@ -787,10 +909,17 @@ class PostgresVectorGraph(SearchableGraph):
         for key, value in (filters or {}).items():
             sql += f" AND {key} = %s"
             params.append(value)
+        # Positive category membership (complement of exclude_categories below).
+        if categories:
+            sql += " AND category = ANY(%s)"
+            params.append(list(categories))
         # H2 exclusion: omit listed categories (NULL category is never excluded).
         if exclude_categories:
             sql += " AND (category IS NULL OR category <> ALL(%s))"
             params.append(list(exclude_categories))
+        meta_sql, meta_params = _meta_predicate(meta_filter)
+        sql += meta_sql
+        params.extend(meta_params)
         return sql, params
 
     def _search_vec(
@@ -803,11 +932,14 @@ class PostgresVectorGraph(SearchableGraph):
         state: str | None = "active",
         as_of: datetime | None = None,
         exclude_categories: list[str] | None = None,
+        categories: list[str] | None = None,
+        meta_filter: dict | None = None,
         apply_decay: bool = False,
     ) -> list[SearchHit]:
         where, where_params = self._where(
             filters=filters, scope=scope, state=state, as_of=as_of,
-            exclude_categories=exclude_categories,
+            exclude_categories=exclude_categories, categories=categories,
+            meta_filter=meta_filter,
         )
         # Outcome/trust weighting (H1): cosine similarity scaled by a per-fact utility
         # multiplier from recorded outcomes — neutral 1.0 until outcomes exist.
@@ -865,6 +997,8 @@ class PostgresVectorGraph(SearchableGraph):
         state: str | None = "active",
         as_of: datetime | None = None,
         exclude_categories: list[str] | None = None,
+        categories: list[str] | None = None,
+        meta_filter: dict | None = None,
     ) -> list[SearchHit]:
         """BM25-style keyword branch: IDF-weighted full-text match over ``text_tsv``.
 
@@ -885,7 +1019,8 @@ class PostgresVectorGraph(SearchableGraph):
         """
         where, where_params = self._where(
             filters=filters, scope=scope, state=state, as_of=as_of,
-            exclude_categories=exclude_categories,
+            exclude_categories=exclude_categories, categories=categories,
+            meta_filter=meta_filter,
         )
         sql = (
             "WITH params AS (SELECT tsvector_to_array(to_tsvector('english', %s)) AS qlex), "
@@ -930,6 +1065,9 @@ class PostgresVectorGraph(SearchableGraph):
         *,
         top_k: int = 10,
         exclude_categories: list[str] | None = None,
+        categories: list[str] | None = None,
+        scope: str | None = None,
+        meta_filter: dict | None = None,
     ) -> list[SearchHit]:
         """Vector-search the live graph unioned with mounted snapshots, in one query.
 
@@ -953,18 +1091,28 @@ class PostgresVectorGraph(SearchableGraph):
         cols = (
             "id, text, source, confidence, scope, category, observation_count, state"
         )
-        # H2: apply category exclusion to BOTH the live and mounted branches so a
-        # mounted snapshot's episodes don't leak into the unioned result.
+        # Apply the SAME row gating to BOTH the live and mounted branches so a
+        # mounted snapshot can't leak rows the filter should drop: H2 category
+        # exclusion, positive category membership, scope, and the JSONB meta filter
+        # (same semantics as the single-table _where / facts_by). Built once as a
+        # shared fragment + params, injected into each branch in declaration order.
         excl = " AND (category IS NULL OR category <> ALL(%s))" if exclude_categories else ""
-        excl_param = [list(exclude_categories)] if exclude_categories else []
+        excl_param: list[object] = [list(exclude_categories)] if exclude_categories else []
+        cat = " AND category = ANY(%s)" if categories else ""
+        cat_param: list[object] = [list(categories)] if categories else []
+        scope_sql = " AND scope = %s" if scope is not None else ""
+        scope_param: list[object] = [scope] if scope is not None else []
+        meta_sql, meta_param = _meta_predicate(meta_filter)
+        filt = f"{excl}{cat}{scope_sql}{meta_sql}"
+        filt_param: list[object] = [*excl_param, *cat_param, *scope_param, *meta_param]
         live = (
             f"SELECT {cols}, NULL::text AS mount_user, NULL::text AS mount_key, "
             "1 - (embedding <=> %s) AS score FROM facts "
             "WHERE org_id = %s AND (shared OR user_id = %s) "
-            f"AND state = 'active' AND embedding IS NOT NULL{excl} "
+            f"AND state = 'active' AND embedding IS NOT NULL{filt} "
             "ORDER BY embedding <=> %s LIMIT %s"
         )
-        params: list[object] = [qvec, self.org_id, self.user_id, *excl_param, qvec, top_k]
+        params: list[object] = [qvec, self.org_id, self.user_id, *filt_param, qvec, top_k]
         sql = f"SELECT * FROM ({live}) AS live"
         if mounts:
             ors = " OR ".join(["(user_id = %s AND cache_key = %s)"] * len(mounts))
@@ -972,14 +1120,14 @@ class PostgresVectorGraph(SearchableGraph):
                 f"SELECT {cols}, user_id AS mount_user, cache_key AS mount_key, "
                 "1 - (embedding <=> %s) AS score FROM cached_facts "
                 f"WHERE org_id = %s AND ({ors}) "
-                f"AND state = 'active' AND embedding IS NOT NULL{excl} "
+                f"AND state = 'active' AND embedding IS NOT NULL{filt} "
                 "ORDER BY embedding <=> %s LIMIT %s"
             )
             sql += f" UNION ALL SELECT * FROM ({mounted}) AS mounted"
             params += [qvec, self.org_id]
             for source_user_id, cache_key in mounts:
                 params += [source_user_id, cache_key]
-            params += [*excl_param, qvec, top_k]
+            params += [*filt_param, qvec, top_k]
         rows = self._conn.execute(sql, params).fetchall()
 
         # Each branch is capped at top_k, so this is at most ~2*top_k rows. Dedupe
@@ -1147,6 +1295,69 @@ class PostgresVectorGraph(SearchableGraph):
         if state is not None:
             sql += " AND state = %s"
             params.append(state)
+        sql += " ORDER BY created_at DESC"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._row_to_fact(r) for r in rows]
+
+    def facts_by(
+        self,
+        *,
+        category: str | None = None,
+        source: str | None = None,
+        scope: str | None = None,
+        state: str | None = "active",
+        meta_filter: dict | None = None,
+    ) -> list[Fact]:
+        """EXHAUSTIVE, server-side filtered enumeration of facts — no top-k, no ranking.
+
+        The completeness primitive the coverage spine needs: ``get_context`` is a
+        semantic top-k that *samples* (it can silently drop a match) and ``all_facts``
+        has no category/meta filter; this returns EVERY active fact matching the given
+        column/meta predicates in one indexed SQL query (not load-all-then-filter in
+        Python), newest first.
+
+        Column equality filters (each optional, AND-combined): ``category``, ``source``,
+        ``scope`` (the top-level scope COLUMN — distinct from ``meta.scope``).
+        ``state`` defaults to ``"active"``; pass ``state=None`` to enumerate across all
+        lifecycle states.
+
+        ``meta_filter`` matches the JSONB ``meta`` column: for each ``{key: value}`` the
+        fact qualifies when ``meta.key == value`` (scalar equality) OR — when
+        ``meta.key`` is a JSON array — ``value`` is a MEMBER of it. The array case lets
+        a check tagged ``meta.applies_to=["s-home","*"]`` match a query for ``"s-home"``
+        or ``"*"``. All keys must match (AND). Respects the same tenancy / sharing
+        visibility and ``cache_key`` binding as the rest of the read surface.
+        """
+        sql = (
+            "SELECT id, text, source, confidence, scope, category, observation_count, "
+            "state, created_at, meta, cluster_id, cluster_label "
+            f"FROM {self._facts_table} WHERE org_id = %s AND (shared OR user_id = %s)"
+        )
+        params: list[object] = [self.org_id, self.user_id]
+        if self._cache_key is not None:
+            sql += " AND cache_key = %s"
+            params.append(self._cache_key)
+        if state is not None:
+            sql += " AND state = %s"
+            params.append(state)
+        if category is not None:
+            sql += " AND category = %s"
+            params.append(category)
+        if source is not None:
+            sql += " AND source = %s"
+            params.append(source)
+        if scope is not None:
+            sql += " AND scope = %s"
+            params.append(scope)
+        for key, value in (meta_filter or {}).items():
+            # Scalar equality OR array-membership, in one indexed JSONB predicate:
+            #   meta->>key = value                      (scalar: "planning")
+            #   jsonb_typeof(meta->key)='array' AND meta->key @> [value]  (list: applies_to)
+            sql += (
+                " AND (meta->>%s = %s OR (jsonb_typeof(meta->%s) = 'array' "
+                "AND meta->%s @> %s::jsonb))"
+            )
+            params.extend([key, value, key, key, json.dumps([value])])
         sql += " ORDER BY created_at DESC"
         rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_fact(r) for r in rows]
@@ -1441,11 +1652,21 @@ class PostgresVectorGraph(SearchableGraph):
         if surface is not None:
             self.remove_edge(requirement_fact_id, surface.id, RENDERS_EDGE)
 
-    def requirements_for_surface(self, project: str, screen_id: str) -> list[Fact]:
-        """PRIMARY query: active requirement facts that RENDER ``(project, screen_id)``.
+    def _facts_for_surface(
+        self,
+        project: str,
+        screen_id: str,
+        *,
+        category: str | None = None,
+        meta_scope: str | None = None,
+    ) -> list[Fact]:
+        """Active facts bound (RENDERS) to ``(project, screen_id)``, newest first.
 
-        Joins ``fact_edges`` (kind=RENDERS_EDGE, dst=surface) to the source facts and
-        returns the ``active`` ones, newest first. Empty when the surface is unknown.
+        The shared join behind ``requirements_for_surface`` (no category filter -> the
+        governing requirements) and ``checks_for_surface`` (category="check", optional
+        ``meta_scope``). ``category``/``meta_scope`` are extra equality predicates on
+        the source fact; with both ``None`` the result is exactly the original
+        ``requirements_for_surface`` behavior. Empty when the surface is unknown.
         """
         surface = self._find_surface(project, screen_id)
         if surface is None:
@@ -1459,12 +1680,42 @@ class PostgresVectorGraph(SearchableGraph):
             "AND e.kind = %s AND e.dst_id = %s AND r.state = 'active'"
         )
         params: list[object] = [self.org_id, self.user_id, RENDERS_EDGE, surface.id]
+        if category is not None:
+            sql += " AND r.category = %s"
+            params.append(category)
+        if meta_scope is not None:
+            sql += " AND r.meta->>'scope' = %s"
+            params.append(meta_scope)
         if self._cache_key is not None:
             sql += " AND e.cache_key = %s"
             params.append(self._cache_key)
         sql += " ORDER BY r.created_at DESC"
         rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_fact(r) for r in rows]
+
+    def requirements_for_surface(self, project: str, screen_id: str) -> list[Fact]:
+        """PRIMARY query: active requirement facts that RENDER ``(project, screen_id)``.
+
+        Joins ``fact_edges`` (kind=RENDERS_EDGE, dst=surface) to the source facts and
+        returns the ``active`` ones, newest first. Empty when the surface is unknown.
+        """
+        return self._facts_for_surface(project, screen_id)
+
+    def checks_for_surface(
+        self, project: str, screen_id: str, scope: str | None = None
+    ) -> list[Fact]:
+        """All active ``check`` facts bound (RENDERS) to ``(project, screen_id)``.
+
+        The surface-scoped convenience over :meth:`facts_by` for the coverage spine:
+        the generalization of :meth:`requirements_for_surface` to ``category="check"``,
+        reusing the same ``renders``-edge binding. ``scope`` (optional) narrows to a
+        single coverage gate by matching ``meta.scope`` ("planning" | "validation").
+        EXHAUSTIVE (every bound check, no top-k) and active-only, so a rejected check
+        or surface drops out with no stale hook. Empty when the surface is unknown.
+        """
+        return self._facts_for_surface(
+            project, screen_id, category=CHECK_CATEGORY, meta_scope=scope
+        )
 
     def surfaces_for_requirement(self, requirement_fact_id: str) -> list[Fact]:
         """Active surface facts governed by ``requirement_fact_id`` (newest first).

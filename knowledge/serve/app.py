@@ -21,6 +21,7 @@ Run: uv run python -m knowledge.serve   (serves on http://localhost:8000)
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 from datetime import datetime, timezone
@@ -53,6 +54,7 @@ from knowledge.knowledge_graph.knowledge_graph_variants.overlay_graph import (  
     OverlayGraph,
 )
 from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (  # noqa: E402
+    _READ_CHAR_BUDGET,
     EPISODIC_CATEGORY,
     PostgresVectorGraph,
     default_write_policy,
@@ -68,7 +70,7 @@ from knowledge.knowledge_graph.write_policy.write_step_variants import (  # noqa
 )
 from knowledge.llm.embedder_variants.memoizing_embedder import MemoizingEmbedder  # noqa: E402
 from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm  # noqa: E402
-from knowledge.serve import db, graph_adapter  # noqa: E402
+from knowledge.serve import batch_writer, db, graph_adapter  # noqa: E402
 from knowledge.serve.auth import Principal, make_current_user  # noqa: E402
 from knowledge.serve.facts_candidates import (  # noqa: E402
     DeletionError,
@@ -221,6 +223,44 @@ def _write_insight(
     }
 
 
+def _batch_result_from_outcome(
+    outcome: "batch_writer.BatchOutcome", on_conflict: str, index: int
+) -> dict[str, Any]:
+    """Render a batch writer outcome into the per-item result shape ``_write_insight``
+    returns, derived from the WriteDecision instead of a before/after re-search.
+
+    ``action`` mirrors ``_write_insight``: a contradiction flag -> "surfaced"; a
+    dedup/augment merge into an existing fact -> "merged"; an add or force-overwrite
+    (a fresh row) -> "added". ``contradictionsSurfaced`` counts the decision's
+    ``contradiction:<id>`` flags (the edges ``persist`` records)."""
+    if outcome.error is not None:
+        return {"ok": False, "error": outcome.error, "index": index}
+    decision = outcome.decision
+    if decision is None:
+        # A policy step suppressed the write (empty text is filtered earlier);
+        # nothing landed, so it's ok but not retrievable.
+        return {
+            "ok": True, "summary": "added insight", "action": "added", "id": None,
+            "onConflict": on_conflict, "contradictionsSurfaced": 0, "retrievable": False,
+        }
+    contradictions = sum(1 for f in decision.flags if f.startswith("contradiction:"))
+    if contradictions:
+        action = "surfaced"
+    elif decision.action in ("update", "augment"):
+        action = "merged"
+    else:
+        action = "added"
+    return {
+        "ok": True,
+        "summary": f"{action} insight",
+        "action": action,
+        "id": outcome.fact_id,
+        "onConflict": on_conflict,
+        "contradictionsSurfaced": contradictions,
+        "retrievable": outcome.fact_id is not None,
+    }
+
+
 class _ConnProxy:
     """A connection handle that forwards every access to *the calling thread's*
     real connection (resolved fresh on each attribute access).
@@ -262,6 +302,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
         # we rebind to the proxy below (which would make resolve return the proxy).
         _explicit_conn = conn
         resolve_conn: Callable[[], Any] = lambda: _explicit_conn  # noqa: E731
+        # A single explicit connection (tests): no independent per-worker
+        # connections to hand out, so the batch writer runs serially on it.
+        make_worker_conn: Callable[[], Any] | None = None
     else:
         dsn = db.resolve_dsn()
         if dsn is None:
@@ -280,6 +323,11 @@ def create_app(conn: Any | None = None) -> FastAPI:
             c = db.connect(dsn)
             _tls.conn = c
             return c
+
+        # The batch writer decides items in parallel, each worker on its OWN
+        # connection (a psycopg connection is not safe for concurrent use). This
+        # opens a fresh autocommit connection the worker closes when done.
+        make_worker_conn = lambda: db.connect(dsn)  # noqa: E731
 
     conn = _ConnProxy(resolve_conn)
     orgs_store = OrgsStore(conn)
@@ -1490,8 +1538,11 @@ def create_app(conn: Any | None = None) -> FastAPI:
         Why it exists (gap H8): the local loop accumulates many learnings per
         session. Writing them one-MCP-call-at-a-time pays N HTTP/auth/graph
         setups and, if fired concurrently, can overwhelm the conflict-checked
-        write path. This endpoint does ONE round-trip, builds the policy graph +
-        ingestor ONCE, and writes the items **serially** within the request.
+        write path. This endpoint does ONE round-trip and builds the policy graph
+        ONCE. The conflict-checked semantic insights are **decided in parallel**
+        (each worker on its own connection) and **committed serially** with a
+        same-batch reconciliation pass, so dedup is preserved while the costly
+        recall+judge work overlaps (see ``knowledge/serve/batch_writer``).
 
         Returns ``{"results": [...], "count": int}`` — one result per input item,
         in order, each carrying ``id``/``action``/``contradictionsSurfaced`` and a
@@ -1516,8 +1567,10 @@ def create_app(conn: Any | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=400, detail="onConflict must be 'auto_resolve' or 'surface'"
             )
-        # One policy graph + ingestor for the whole batch (the throughput win); the
-        # episodic store-only path needs no policy, so it reuses the same instance.
+        # One policy graph for the whole batch (the throughput win). It is the serial
+        # "base": it commits each decision and is the connection a same-batch
+        # re-decide runs on. Worker graphs are cloned from it onto their own
+        # connections inside the batch writer.
         # raw skips dedup + LLM conflict for the whole batch (redact-only fast lane).
         # Only a literal JSON ``true`` enables the fast lane; anything else (incl.
         # the string "false") falls back to the SAFER reconciled write, since raw
@@ -1525,12 +1578,10 @@ def create_app(conn: Any | None = None) -> FastAPI:
         raw = body.get("raw", False) is True
         policy = [Redactor()] if raw else _insight_write_policy(on_conflict)
         graph = PostgresVectorGraph(conn, org, uid, policy=policy)
-        # Throughput: the serial loop below embeds each insight's text once, so N
-        # items would be N embedding round-trips. Memoize the graph's embedder and
-        # pre-embed every item's text in ONE batch call up front; each later
-        # per-insight embed then resolves from the memo. This only collapses the
-        # number of embedding calls — the conflict-checked policy is unchanged, and
-        # any text not pre-warmed still falls through to the inner embedder.
+        # Memoize + pre-embed every item's text in ONE batch call up front so the
+        # parallel decides (and any re-decide) resolve embeddings from the memo
+        # instead of paying N round-trips. The memo is lock-guarded so the workers
+        # share it safely; any text not pre-warmed falls through to the inner embedder.
         graph.embedder = MemoizingEmbedder(graph.embedder)
         graph.embedder.prefetch(
             [
@@ -1539,40 +1590,74 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 if isinstance(item, dict)
             ]
         )
-        _, ingestor, _ = build_trio(graph=graph, llm=None)
-        results: list[dict[str, Any]] = []
+
+        # Pass 1: validate + split. Episodic items are store-only (no recall, and
+        # semantic recall excludes them), so they neither see nor affect the
+        # semantic facts — handle them serially inline; collect the rest for the
+        # parallel decide. ``results[i]`` is filled in input order either way.
+        results: list[dict[str, Any] | None] = [None] * len(insights)
+        to_decide: list[dict[str, Any]] = []
+        decide_index: list[int] = []
         for i, item in enumerate(insights):
             if not isinstance(item, dict):
-                results.append({"ok": False, "error": "each insight must be an object", "index": i})
+                results[i] = {"ok": False, "error": "each insight must be an object", "index": i}
                 continue
             text = (item.get("insight") or "").strip()
             if not text:
-                results.append({"ok": False, "error": "insight required", "index": i})
+                results[i] = {"ok": False, "error": "insight required", "index": i}
                 continue
             item_meta = item.get("meta")
             if item_meta is not None and not isinstance(item_meta, dict):
-                results.append({"ok": False, "error": "meta must be an object", "index": i})
+                results[i] = {"ok": False, "error": "meta must be an object", "index": i}
                 continue
-            # A single bad/edge-case item must not poison the rest of the batch.
-            try:
-                if (item.get("category") or "").strip() == EPISODIC_CATEGORY:
+            if (item.get("category") or "").strip() == EPISODIC_CATEGORY:
+                try:
                     res = _record_episode(graph, text, item)
-                else:
-                    res = _write_insight(
-                        graph,
-                        ingestor,
-                        insight=text,
-                        source=item.get("source"),
-                        scope=item.get("scope"),
-                        category=item.get("category"),
-                        meta=item_meta,
-                        on_conflict=on_conflict,
-                        derived_from=item.get("derivedFrom"),
-                    )
-                res["ok"] = True
-            except Exception as exc:  # noqa: BLE001 - report, don't abort the batch
-                res = {"ok": False, "error": str(exc), "index": i}
-            results.append(res)
+                    res["ok"] = True
+                except Exception as exc:  # noqa: BLE001 - report, don't abort the batch
+                    res = {"ok": False, "error": str(exc), "index": i}
+                results[i] = res
+                continue
+            to_decide.append(
+                {
+                    "text": text,
+                    "state": "active",  # human-gated add -> live knowledge
+                    "source": item.get("source"),
+                    "scope": item.get("scope"),
+                    "category": item.get("category"),
+                    "meta": item_meta,
+                    "derived_from": item.get("derivedFrom"),
+                }
+            )
+            decide_index.append(i)
+
+        # Pass 2: parallel-decide / serial-commit the semantic insights. With an
+        # explicit single connection (tests) there are no independent connections,
+        # so fall back to one worker on the shared connection (still correct: all
+        # items decide before any commit, and the reconciliation pass dedups
+        # same-batch collisions). Don't close a connection we don't own.
+        if to_decide:
+            if make_worker_conn is not None:
+                connect_fn: Callable[[], Any] = make_worker_conn
+                close_fn: Callable[[Any], None] | None = None
+                workers = max(1, int(os.getenv(
+                    "PRAXIS_BATCH_WRITE_WORKERS", str(batch_writer.DEFAULT_MAX_WORKERS)
+                )))
+            else:
+                connect_fn = lambda: conn  # noqa: E731 - shared explicit connection
+                close_fn = lambda _c: None  # noqa: E731 - not ours to close
+                workers = 1
+            outcomes = batch_writer.write_insights(
+                to_decide,
+                base=graph,
+                connect=connect_fn,
+                close=close_fn,
+                policy_factory=lambda: _insight_write_policy(on_conflict),
+                max_workers=workers,
+            )
+            for idx, outcome in zip(decide_index, outcomes):
+                results[idx] = _batch_result_from_outcome(outcome, on_conflict, idx)
+
         return {"results": results, "count": len(results)}
 
     @app.post("/ingest")
@@ -1941,6 +2026,77 @@ def create_app(conn: Any | None = None) -> FastAPI:
             "requirements": [_derivation_view(f) for f in reqs],
         }
 
+    @app.get("/surfaces/{screen_id}/checks")
+    def checks_for_surface(
+        screen_id: str,
+        project: str = "",
+        scope: str | None = None,
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+        uid: str = Depends(active_user_id),
+    ) -> dict[str, Any]:
+        """Active ``check`` facts bound to the surface ``(project, screenId)`` (EXHAUSTIVE).
+
+        The coverage-spine convenience over ``/facts/by``: every check the
+        ``renders`` edge binds to this screen, optionally narrowed to one gate via
+        ``scope`` (matches ``meta.scope`` — "planning" | "validation"). Active-only.
+        """
+        project = str(project or "").strip()
+        if not project:
+            raise HTTPException(status_code=400, detail="query param 'project' is required")
+        checks = live_graph(org, uid).checks_for_surface(project, screen_id, scope=scope)
+        return {
+            "project": project,
+            "screenId": screen_id,
+            "scope": scope,
+            "checks": [_derivation_view(f) for f in checks],
+        }
+
+    @app.get("/facts/by")
+    def facts_by(
+        category: str | None = None,
+        source: str | None = None,
+        scope: str | None = None,
+        state: str = "active",
+        meta: str | None = None,
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+        uid: str = Depends(active_user_id),
+    ) -> dict[str, Any]:
+        """EXHAUSTIVE, server-side filtered fact enumeration (no top-k, no ranking).
+
+        The completeness primitive: returns EVERY active fact matching the column
+        filters (``category``/``source``/``scope`` — the top-level scope column) plus
+        the JSONB ``meta`` filter. ``state`` defaults to ``active``; pass
+        ``state=any`` (or empty) to enumerate across all lifecycle states. ``meta`` is
+        a JSON object string (e.g. ``{"scope":"validation","applies_to":"s-home"}``);
+        each key matches by scalar equality OR array-membership. 400 on invalid JSON.
+        """
+        state_filter: str | None = state
+        if state in ("", "any", "all"):
+            state_filter = None
+        meta_filter: dict | None = None
+        if meta is not None and meta.strip():
+            try:
+                parsed = json.loads(meta)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"meta must be valid JSON: {exc}"
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise HTTPException(
+                    status_code=400, detail="meta must be a JSON object"
+                )
+            meta_filter = parsed
+        facts = live_graph(org, uid).facts_by(
+            category=category,
+            source=source,
+            scope=scope,
+            state=state_filter,
+            meta_filter=meta_filter,
+        )
+        return {"facts": [_derivation_view(f) for f in facts]}
+
     @app.get("/facts/{fact_id}/surfaces")
     def surfaces_for_requirement(
         fact_id: str,
@@ -2034,6 +2190,10 @@ def create_app(conn: Any | None = None) -> FastAPI:
         hybrid: bool = False,
         keyword_weight: float | None = None,
         char_budget: int | None = None,
+        category: str | None = None,
+        categories: str | None = None,
+        scope: str | None = None,
+        meta: str | None = None,
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
@@ -2058,6 +2218,14 @@ def create_app(conn: Any | None = None) -> FastAPI:
         ``keyword_weight`` biases that fusion toward exact/symbol matches (only with
         ``hybrid=true``); ``char_budget`` caps the returned ``context`` size. Fusion
         knobs apply to the live graph; the mounted-snapshot union is cosine-only.
+
+        Positive read filters (all optional) narrow the SIMILARITY ranking to a subset
+        without changing the ranking: ``category`` (single) and/or ``categories`` (a
+        comma-separated list) keep only those categories; ``scope`` matches the
+        top-level scope column; ``meta`` is a JSON object string (400 on bad JSON) —
+        e.g. ``{"scope":"planning"}`` — matched against the JSONB ``meta`` column by
+        scalar equality OR array-membership (same as ``/facts/by``). The filters apply
+        to BOTH the live graph and any mounted-snapshot union. Absent -> unchanged.
         """
         as_of_dt: datetime | None = None
         if as_of is not None and as_of.strip():
@@ -2067,6 +2235,26 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 raise HTTPException(
                     status_code=400, detail="as_of must be an ISO-8601 timestamp"
                 )
+        # Merge single ``category`` + CSV ``categories`` into one positive list
+        # (deduped, order-preserving); None when empty so _where skips the filter.
+        cats: list[str] = []
+        if category and category.strip():
+            cats.append(category.strip())
+        if categories and categories.strip():
+            cats.extend(c.strip() for c in categories.split(",") if c.strip())
+        cats_filter = list(dict.fromkeys(cats)) or None
+        scope_filter = scope.strip() if scope and scope.strip() else None
+        meta_filter: dict | None = None
+        if meta is not None and meta.strip():
+            try:
+                parsed = json.loads(meta)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"meta must be valid JSON: {exc}"
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise HTTPException(status_code=400, detail="meta must be a JSON object")
+            meta_filter = parsed
         live = live_graph(org, uid)
         # Mounts stay keyed on principal.sub for v1: spaces<->mounts interaction is
         # out of scope, so a space's live retrieval unions only with the default
@@ -2081,12 +2269,32 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 hybrid=hybrid,
                 keyword_weight=keyword_weight,
                 exclude_categories=exclude,
+                categories=cats_filter,
+                scope=scope_filter,
+                meta_filter=meta_filter,
                 as_of=as_of_dt,
             )
             if query.strip() else []
         )
+        # When a positive filter is active, derive the context blob from the filtered
+        # hits so it matches them (graph.read takes no positive filter). With no filter
+        # this stays the exact prior call, preserving byte-for-byte parity.
+        if cats_filter or scope_filter or meta_filter:
+            budget = _READ_CHAR_BUDGET if char_budget is None else char_budget
+            parts: list[str] = []
+            used = 0
+            for h in hits:
+                if used + len(h.fact.text) > budget and parts:
+                    break
+                parts.append(h.fact.text)
+                used += len(h.fact.text)
+            context_text = "\n\n".join(parts)
+        else:
+            context_text = graph.read(
+                query, exclude_categories=exclude, char_budget=char_budget
+            )
         return {
-            "context": graph.read(query, exclude_categories=exclude, char_budget=char_budget),
+            "context": context_text,
             "hits": [
                 {
                     "id": h.fact.id,

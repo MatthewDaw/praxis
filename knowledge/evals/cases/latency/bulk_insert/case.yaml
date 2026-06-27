@@ -1,0 +1,26 @@
+# LATENCY: bulk insert (the praxis_insert_fact / POST /candidates path) must be
+# wicked fast -- it is an LLM-free, pure-DB mutation. The check drives the REAL
+# FactsCandidates.create N times in an isolated tenant with a FakeEmbedder + a
+# no-LLM [Redactor, Deduper] policy, so the measured time is pure store
+# round-trips (embed is instant/offline). It asserts an amortized per-op ceiling
+# and always reports the measured ms/op in its evidence (so a green case still
+# reads as a benchmark).
+#
+# NB FactsCandidates.create re-reads each fresh fact via get() -> a per-op
+# rival-map edge scan; if bulk insert is slow, this is a prime suspect (see the
+# companion bulk_insert_scaling case for the O(n^2) guard).
+#
+# Component eval (no agent). Declares embedder: cached so the harness SKIPs it
+# when neither a committed embedding cache nor a live key is present -- the same
+# proxy the other DSN-backed checks use for "a Postgres store is reachable here".
+id: bulk_insert_latency
+component: knowledge_graph
+substrate: vector
+embedder: cached
+
+deterministic_checks:
+  - name: bulk_insert_latency
+    ref: "knowledge.evals.deterministic_checks.latency:bulk_insert_latency"
+    params:
+      n: 50
+      per_op_ms: 200.0

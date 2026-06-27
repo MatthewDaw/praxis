@@ -1,8 +1,18 @@
 """Optional live smoke tests against Matthew's candidate API.
 
-Skipped unless PRAXIS_API_BASE_URL is set. Run with Matthew's server up:
+Skipped unless PRAXIS_API_BASE_URL and PRAXIS_API_TOKEN are both set. The server
+is auth-gated (Cognito bearer JWT), so a base URL alone is not enough — without a
+token every call 401s. Guarding on the token too means a deploy URL configured
+for the app (a common .env shape) skips these cleanly instead of false-failing.
+
+NB the credential signal is PRAXIS_API_TOKEN, NOT PRAXIS_AUTH_DISABLED: the
+backend test conftest sets PRAXIS_AUTH_DISABLED=1 session-wide for its in-process
+TestClient, which says nothing about whether the *remote* server here accepts
+unauthenticated calls — keying on it would make these run (and 401) under the
+full suite. Run against a live server with:
 
     $env:PRAXIS_API_BASE_URL = "http://localhost:8000"
+    $env:PRAXIS_API_TOKEN = "<bearer jwt>"
     $env:PYTHONPATH = "frontend"
     uv run pytest frontend/tests/test_live_api_smoke.py -v
 """
@@ -17,8 +27,14 @@ from models.candidate import CandidateState
 from services.api_client import ApiDataProvider
 
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("PRAXIS_API_BASE_URL", "").strip(),
-    reason="set PRAXIS_API_BASE_URL to run live API smoke tests",
+    not (
+        os.environ.get("PRAXIS_API_BASE_URL", "").strip()
+        and os.environ.get("PRAXIS_API_TOKEN", "").strip()
+    ),
+    reason=(
+        "set PRAXIS_API_BASE_URL and PRAXIS_API_TOKEN to run live API smoke tests "
+        "against the auth-gated server"
+    ),
 )
 
 

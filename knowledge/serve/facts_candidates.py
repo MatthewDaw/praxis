@@ -319,6 +319,11 @@ class FactsCandidates:
         confidence = None
         if "title" in body:
             title = str(body["title"]).strip()
+        # Only re-embed when the content actually changes. update_fact re-embeds
+        # whenever text is not None, so a title/meta-only edit (or a no-op content
+        # edit) must pass text=None — else a pure rename pays a full embedding (a
+        # network round-trip in prod) for nothing.
+        content_changed = "content" in body and str(body["content"]).strip() != text
         if "content" in body:
             text = str(body["content"]).strip()
         if "provenance" in body:
@@ -338,7 +343,7 @@ class FactsCandidates:
         meta["title"] = title
         self.graph.update_fact(
             cid,
-            text=text,
+            text=text if content_changed else None,  # None => skip the re-embed
             source=source,
             confidence=confidence,
             meta=meta,

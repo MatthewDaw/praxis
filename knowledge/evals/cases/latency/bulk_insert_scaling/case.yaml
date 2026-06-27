@@ -1,0 +1,23 @@
+# LATENCY: bulk insert must scale ~linearly with batch size. The check times N
+# inserts and 2N inserts in two fresh tenants and asserts time(2N) <= ratio *
+# time(N). A per-op rival-map / full-table scan whose cost grows with the tenant
+# (FactsCandidates.create re-reads each fact via get() -> _rival_map over all
+# edges) would bend the curve toward 4x (quadratic); a healthy linear path sits
+# near 2x. The ratio cap leaves headroom for fixed per-call overhead.
+#
+# This is the guard that turns "bulk insert feels slow at scale" into a hard
+# regression gate, distinct from the absolute per-op ceiling in bulk_insert.
+#
+# Component eval (no agent). embedder: cached gates the case on a reachable
+# Postgres store (SKIP otherwise); the check itself uses a FakeEmbedder.
+id: bulk_insert_scales_linearly
+component: knowledge_graph
+substrate: vector
+embedder: cached
+
+deterministic_checks:
+  - name: bulk_insert_scales_linearly
+    ref: "knowledge.evals.deterministic_checks.latency:bulk_insert_scales_linearly"
+    params:
+      n: 40
+      ratio: 2.6

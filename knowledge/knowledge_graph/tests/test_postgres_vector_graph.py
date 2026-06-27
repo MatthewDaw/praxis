@@ -295,6 +295,32 @@ def test_hybrid_search_lifts_exact_keyword_fact_above_pure_cosine(unique_org):
     )
 
 
+def test_decide_is_read_only_then_persist_writes(unique_org):
+    # The batch writer relies on this split: decide() must touch no rows, and
+    # persist() must be the only thing that writes.
+    conn = db.connect()
+    graph, _, _ = _trio(conn, unique_org, "u1")
+    decision = graph.decide("use uv, not pip, in this repo", state="active")
+    assert decision is not None and decision.action == "add"
+    assert _count(conn, unique_org, "u1") == 0  # decide() persisted nothing
+    fid = graph.persist(decision)
+    assert fid and _count(conn, unique_org, "u1") == 1
+
+
+def test_write_equals_decide_then_persist(unique_org):
+    # write() == decide() then persist(): a re-decided exact duplicate dedups into
+    # the persisted fact exactly as a plain write() would (the same-batch case the
+    # parallel writer hits when it re-decides on the base connection).
+    conn = db.connect()
+    graph, _, _ = _trio(conn, unique_org, "u2")
+    first = graph.write("ship behind a feature flag", state="active")
+    decision = graph.decide("ship behind a feature flag", state="active")  # exact dup
+    assert decision is not None and decision.action == "update"
+    assert decision.update_target_id == first
+    assert graph.persist(decision) == first
+    assert _count(conn, unique_org, "u2") == 1
+
+
 @pytest.fixture
 def unique_org(request):
     # Unique per test node so reruns and parallel tenants never collide.

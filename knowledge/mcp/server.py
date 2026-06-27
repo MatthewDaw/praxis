@@ -142,6 +142,10 @@ def praxis_get_context(
     top_k: int = 8,
     include_episodic: bool = False,
     as_of: str | None = None,
+    category: str | None = None,
+    categories: list[str] | None = None,
+    scope: str | None = None,
+    meta_filter: dict | None = None,
 ) -> str:
     """Retrieve relevant stored knowledge for the current task.
 
@@ -160,6 +164,15 @@ def praxis_get_context(
     to include them. ``as_of`` (an ISO-8601 timestamp, e.g. ``2024-01-01T00:00:00Z``)
     rewinds retrieval to that instant — facts written later are excluded — for
     point-in-time recall.
+
+    Optional POSITIVE filters narrow the similarity-ranked results to a subset
+    (still ranked by relevance, not exhaustive — use ``praxis_facts_by`` for an
+    exhaustive enumeration): ``category`` (single) and/or ``categories`` (a list)
+    keep only those categories; ``scope`` matches the top-level scope; ``meta_filter``
+    is a ``{key: value}`` object matched against the JSONB ``meta`` (scalar equality
+    OR array-membership) — e.g. category="check" with meta_filter={"scope":"planning"}
+    returns the planning checks most similar to ``query``. Filters apply to live and
+    mounted facts alike.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -168,6 +181,14 @@ def praxis_get_context(
         params["include_episodic"] = True
     if as_of is not None:
         params["as_of"] = as_of
+    if category:
+        params["category"] = category
+    if categories:
+        params["categories"] = ",".join(categories)
+    if scope:
+        params["scope"] = scope
+    if meta_filter:
+        params["meta"] = json.dumps(meta_filter)
     try:
         resp = httpx.get(
             f"{identity.api_base()}/context",
@@ -1716,6 +1737,107 @@ def praxis_requirements_for_surface(project: str, screen_id: str) -> str:
         if reqs
         else f"No requirements govern screen {screen_id}.",
         {"project": project, "screenId": screen_id, "requirements": reqs},
+    )
+
+
+@mcp.tool()
+def praxis_checks_for_surface(
+    project: str, screen_id: str, scope: str | None = None
+) -> str:
+    """List ALL coverage checks bound to a wireframe screen (EXHAUSTIVE, not a sample).
+
+    The surface-scoped completeness query for the coverage spine: every active
+    ``check`` fact edged (``renders``) to ``(project, screen_id)`` — the generalization
+    of ``praxis_requirements_for_surface`` to checks. Pass ``scope`` ("planning" |
+    "validation") to narrow to one gate (matches ``meta.scope``). Unlike
+    ``praxis_get_context`` (semantic top-k, which samples), this returns EVERY bound
+    check so a per-part coverage gate never silently drops one. Active-only.
+
+    Returns a human summary plus a structured JSON block with ``checks`` — one fact
+    view per bound check.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    params: dict[str, str] = {"project": project}
+    if scope is not None:
+        params["scope"] = scope
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/surfaces/{screen_id}/checks",
+            params=params,
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    checks = payload.get("checks", [])
+    return _structured(
+        f"{len(checks)} check(s) bound to screen {screen_id}."
+        if checks
+        else f"No checks bound to screen {screen_id}.",
+        {"project": project, "screenId": screen_id, "scope": scope, "checks": checks},
+    )
+
+
+@mcp.tool()
+def praxis_facts_by(
+    category: str | None = None,
+    source: str | None = None,
+    scope: str | None = None,
+    state: str = "active",
+    meta_filter: dict | None = None,
+) -> str:
+    """Enumerate ALL facts matching structured filters (EXHAUSTIVE — no top-k, no ranking).
+
+    The completeness primitive for "pull everything related to one part and enforce it".
+    ``praxis_get_context`` is a semantic top-k that SAMPLES (it can silently drop a
+    match) — unsafe for a forcing/completeness guarantee; this returns EVERY matching
+    fact in one server-side query. Filters (all optional, AND-combined): ``category``
+    (e.g. "check"), ``source``, ``scope`` (the top-level scope COLUMN — not
+    ``meta.scope``), ``state`` (default "active"; pass "any" to span all states), and
+    ``meta_filter`` — a ``{key: value}`` object matched against the JSONB ``meta``
+    column, each key by scalar equality OR array-membership (so ``applies_to`` may be a
+    single tag or a list). Example: ``category="check"`` with
+    ``meta_filter={"scope":"validation","applies_to":"auth"}``.
+
+    Returns a human summary plus a structured JSON block with ``facts`` — one fact view
+    per match.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    params: dict[str, str] = {"state": state}
+    if category is not None:
+        params["category"] = category
+    if source is not None:
+        params["source"] = source
+    if scope is not None:
+        params["scope"] = scope
+    if meta_filter:
+        params["meta"] = json.dumps(meta_filter)
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/facts/by",
+            params=params,
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    facts = payload.get("facts", [])
+    return _structured(
+        f"{len(facts)} fact(s) match." if facts else "No facts match the given filters.",
+        {
+            "category": category,
+            "source": source,
+            "scope": scope,
+            "state": state,
+            "metaFilter": meta_filter or {},
+            "facts": facts,
+        },
     )
 
 

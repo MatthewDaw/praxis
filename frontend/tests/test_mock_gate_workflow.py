@@ -4,24 +4,23 @@ from __future__ import annotations
 
 from knowledge.evals.run import load_cases
 from models.candidate import CandidateState, next_promotion_state
-from services.data_provider import get_data_provider
 from services.mock_provider import MockDataProvider
 
 
 def test_mock_provider_lists_candidates() -> None:
-    provider = get_data_provider()
+    provider = MockDataProvider()
     candidates = provider.list_candidates()
     assert len(candidates) >= len(load_cases())
 
 
 def test_mock_promote_proposed_to_active() -> None:
-    provider = get_data_provider()
+    provider = MockDataProvider()
     updated = provider.promote("cand_1")
     assert updated.state is CandidateState.ACTIVE
 
 
 def test_mock_contradiction_pair_exists() -> None:
-    provider = get_data_provider()
+    provider = MockDataProvider()
     primary = provider.get_candidate("cand_9")
     assert primary is not None
     assert "cand_16" in primary.contradiction_ids
