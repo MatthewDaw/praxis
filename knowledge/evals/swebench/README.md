@@ -8,6 +8,11 @@ reproduction-test rework loop), grades with the WSL2 arm64 SWE-bench harness, an
 out cost-to-correct as an unconditioned ITT effect plus a pre-treatment
 relevance-stratified secondary.
 
+> **Running it on your machine?** Start with the **[Operator's Guide](OPERATING.md)** —
+> prerequisites, the run command, instance selection, the three performance knobs +
+> hardware tuning, troubleshooting, and how to read the results. This README is the
+> architecture/reference; OPERATING.md is the runbook.
+
 ## Read this before reading any number
 
 This is a **feasibility study, not a quantitative verdict.** The deliverable is the
