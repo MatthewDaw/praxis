@@ -69,14 +69,36 @@ def _counting_embedder():
     return _Counting()
 
 
+class _CountingConn:
+    """Transparent wrapper that counts ``execute`` calls (DB round-trips).
+
+    Lets a check assert how many queries a code path issues -- deterministic and
+    noise-free, unlike wall-clock against a network DB. Everything other than the
+    counter passes through to the real connection (cleanup, pgvector adapter, …)."""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.queries = 0
+
+    def execute(self, *a, **k):
+        self.queries += 1
+        return self.inner.execute(*a, **k)
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
 def _candidates(policy, embedder=None):
-    """A FactsCandidates facade (the candidate CRUD path) on a fresh tenant."""
+    """A FactsCandidates facade (the candidate CRUD path) on a fresh tenant.
+
+    The connection is wrapped in :class:`_CountingConn` (exposed as ``conn.queries``)
+    so a check can assert DB round-trips, not just wall-clock."""
     from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
     from knowledge.llm.embedder_variants.fake_embedder import FakeEmbedder
     from knowledge.serve import db
     from knowledge.serve.facts_candidates import FactsCandidates
 
-    conn = db.connect()
+    conn = _CountingConn(db.connect())
     db.bootstrap()
     org = "eval_lat_" + uuid.uuid4().hex[:12]
     facade = FactsCandidates(
@@ -140,15 +162,28 @@ def _verdict(name: str, ok: bool, *, n: int, total_s: float, per_op_ms: float, c
 # Tier 1: LLM-free ops -- must be wicked fast.
 # --------------------------------------------------------------------------- #
 def bulk_insert_latency(
-    ctx: EvalContext, *, n: int = 50, per_op_ms: float = 200.0
+    ctx: EvalContext, *, n: int = 50, per_op_ms: float = 200.0, max_get_queries: int = 2
 ) -> CheckResult:
     """``n`` candidate inserts (the praxis_insert_fact / POST /candidates path) must
-    average under ``per_op_ms`` per op.
+    average under ``per_op_ms`` per op AND re-read each candidate without a
+    full-tenant edge scan.
 
     Drives the REAL :meth:`FactsCandidates.create` -- which writes through the policy
-    (one recall SELECT + insert) and then re-reads the candidate (a per-op rival-map
-    edge scan). No model call (FakeEmbedder + ``[Redactor(), Deduper()]``), so any
-    time here is pure DB round-trips: this is the floor the bulk-insert UX rides on.
+    (one recall SELECT + insert) and then re-reads the candidate. No model call
+    (FakeEmbedder + ``[Redactor(), Deduper()]``), so any time here is pure DB
+    round-trips: this is the floor the bulk-insert UX rides on.
+
+    Two gates, both required:
+
+      * amortized wall-clock under ``per_op_ms`` per op;
+      * an isolated ``get`` issues at most ``max_get_queries`` queries.
+
+    The query-count gate is the noise-free regression guard: ``create`` re-reads the
+    fresh fact via ``get`` -> its rivals must come from one indexed ``edges_touching``
+    lookup (so get = get_fact + 1), NOT the bulk ``_rival_map`` that scans every edge
+    in the tenant twice (get = get_fact + 2 full scans, cost growing with tenant
+    size). Wall-clock against a network DB is too jittery to catch that regression;
+    the query count is deterministic.
     """
     facade, conn, org = _candidates(policy=None)
     try:
@@ -157,8 +192,21 @@ def bulk_insert_latency(
             facade.create({"title": f"probe {i}", "content": _probe(i)})
         dt = perf_counter() - t0
         per = dt / n * 1000
-        return _verdict("bulk_insert_latency", per <= per_op_ms, n=n, total_s=dt,
-                        per_op_ms=per, ceiling_ms=per_op_ms)
+        # Isolate one get(): how many round-trips to fetch a single candidate?
+        cid = facade.create({"title": "probe-get", "content": _probe(n)})["id"]
+        before = conn.queries
+        facade.get(cid)
+        get_queries = conn.queries - before
+        ok = per <= per_op_ms and get_queries <= max_get_queries
+        return _verdict(
+            "bulk_insert_latency", ok, n=n, total_s=dt, per_op_ms=per, ceiling_ms=per_op_ms,
+            extra=(
+                f"get()={get_queries} queries (<= {max_get_queries}, no full-tenant edge scan)"
+                if get_queries <= max_get_queries
+                else f"get()={get_queries} queries (> {max_get_queries}) -- a full-tenant edge "
+                "scan crept back into the single-fact read path"
+            ),
+        )
     finally:
         _cleanup(conn, org)
 
