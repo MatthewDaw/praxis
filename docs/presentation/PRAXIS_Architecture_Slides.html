@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PRAXIS — Architecture Slides</title>
+<style>
+  /* ============================================================
+     PRAXIS Architecture Slides
+     - Style + chrome borrowed from PRAXIS_Demo_Presentation_Template.html
+     - Navigate: → / Space / click = next, ← = previous, Home = first.
+     ============================================================ */
+  :root{
+    --ink:#11151c; --muted:#5b6470; --faint:#8a929c;
+    --h1:#1F4E79; --h2:#2E75B6; --h3:#5B9BD5;
+    --accent:#c98a2e;      /* trigger / gate gold from architecture */
+    --good:#4f7d5a; --eval:#b03832; --gate:#3c3a66;
+    --bg:#0e1116; --slide-bg:#ffffff; --line:#d9dde3; --soft:#eef3f9;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:"Segoe UI",Arial,"Helvetica Neue",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .deck{height:100vh;width:100vw;overflow:hidden;position:relative;}
+  .slide{
+    position:absolute;inset:0;display:none;flex-direction:column;
+    padding:48px 72px 88px;background:var(--slide-bg);
+  }
+  .slide.active{display:flex;animation:fade .35s ease;}
+  @keyframes fade{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:none;}}
+
+  .kicker{font-size:.8rem;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--accent);font-weight:700;margin-bottom:12px;}
+  h2.slidehead{font-size:2.3rem;line-height:1.1;color:var(--h2);margin:0 0 4px;font-weight:800;}
+  .sub{font-size:1.15rem;color:var(--muted);margin:8px 0 0;line-height:1.4;max-width:80ch;}
+
+  /* ---- Title / cover slide ---- */
+  .slide.center{align-items:flex-start;justify-content:center;}
+  h1.title{font-size:5.5rem;line-height:1;color:var(--h1);margin:0;font-weight:800;letter-spacing:-.02em;}
+  .center .sub{font-size:1.35rem;max-width:60ch;}
+  .tagline{font-size:1.75rem;color:var(--ink);font-weight:600;margin:22px 0 0;max-width:48ch;line-height:1.3;}
+  .tagline .struck{position:relative;color:var(--muted);white-space:nowrap;}
+  .tagline .struck::after{content:"";position:absolute;left:-8%;right:-8%;top:52%;height:3px;
+    background:#e23b3b;border-radius:3px;transform:rotate(-8deg);
+    box-shadow:0 1px 1px rgba(226,48,59,.25);}
+  .repo{margin-top:34px;font-size:1.05rem;color:var(--muted);line-height:1.7;}
+  .repo a{color:var(--h2);text-decoration:none;border-bottom:1px solid var(--line);}
+  .badge{display:inline-block;font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;
+    font-weight:700;color:#1f6f43;border:1.5px solid #1f6f43;border-radius:4px;
+    padding:4px 10px;margin-left:10px;vertical-align:middle;}
+
+  /* ---- Cover team cards (stacked vertically) ---- */
+  .cover-row{display:grid;grid-template-columns:1.05fr .95fr;gap:52px;align-items:center;width:100%;}
+  .team-vertical{display:flex;flex-direction:column;gap:18px;width:100%;max-width:410px;justify-self:center;}
+  .team-vertical .member{border:1px solid var(--line);border-top:6px solid var(--h2);
+    border-radius:12px;padding:16px 20px;background:#fafcff;}
+  .team-vertical .member:nth-child(1){border-top-color:var(--h1);}
+  .team-vertical .member:nth-child(3){border-top-color:var(--h3);}
+  .team-vertical .name{font-size:1.3rem;font-weight:800;color:var(--h1);}
+  .team-vertical .pillar{font-size:.95rem;font-weight:700;color:var(--h2);margin:4px 0 8px;}
+  .team-vertical .desc{font-size:.9rem;color:var(--muted);line-height:1.4;}
+  .team-vertical .mail{display:block;margin-top:8px;font-size:.85rem;color:var(--faint);}
+
+  .grow{flex:1 1 auto;display:flex;flex-direction:column;justify-content:center;min-height:0;}
+  .diagram{width:100%;height:100%;display:flex;align-items:center;justify-content:center;}
+  .diagram svg{width:100%;height:100%;max-height:74vh;}
+
+  /* legend */
+  .legend{display:flex;gap:28px;flex-wrap:wrap;margin-top:10px;font-size:.95rem;color:var(--muted);}
+  .legend .item{display:flex;align-items:center;gap:8px;}
+  .legend .sw{width:26px;height:0;border-top-width:3px;border-top-style:solid;display:inline-block;}
+
+  /* ---- Per-slide footer ---------------------- */
+  .foot{position:absolute;left:72px;right:72px;bottom:26px;display:flex;
+    justify-content:space-between;align-items:center;
+    border-top:1px solid var(--line);padding-top:10px;font-size:.9rem;color:var(--muted);}
+  .foot .who b{color:var(--h1);}
+  .foot .mail{color:var(--muted);text-decoration:none;}
+  .foot .mail:hover{text-decoration:underline;}
+  .foot .brand{font-weight:800;letter-spacing:.08em;color:var(--h2);}
+
+  .hud{position:fixed;top:18px;right:24px;z-index:50;font-size:.85rem;color:#aeb6c0;
+    background:rgba(255,255,255,.06);padding:5px 12px;border-radius:20px;backdrop-filter:blur(4px);}
+  .progress{position:fixed;left:0;top:0;height:4px;background:var(--accent);z-index:50;transition:width .3s;}
+  .help{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:50;
+    font-size:.78rem;color:#7c8590;background:rgba(255,255,255,.05);padding:5px 14px;border-radius:16px;}
+  .help.hidden{display:none;}
+
+  /* ---- SVG diagram primitives ---- */
+  .stage-fill{fill:#fafcff;}
+  .stage-label{font-weight:800;fill:var(--ink);}
+  .stage-sub{fill:var(--muted);font-weight:600;}
+  .sub-box{fill:#ffffff;}
+  .sub-text{fill:var(--ink);font-weight:600;}
+  .conn-label{fill:var(--muted);font-weight:600;}
+  .agent-box{fill:#2a2940;}
+  .agent-text{fill:#ffffff;font-weight:800;}
+  .agent-sub{fill:#c7cbe0;font-weight:600;}
+
+  /* ---- Ingestion alignment table ---- */
+  .ing-table{width:100%;border-collapse:collapse;font-size:.92rem;line-height:1.35;}
+  .ing-table th,.ing-table td{border:1px solid var(--line);padding:10px 13px;text-align:left;vertical-align:top;}
+  .ing-table thead th{background:var(--h2);color:#fff;font-weight:800;font-size:.78rem;
+    letter-spacing:.05em;text-transform:uppercase;}
+  .ing-table tbody th{background:var(--soft);color:var(--h1);font-weight:800;white-space:nowrap;}
+  .ing-table tbody tr:nth-child(even) td,.ing-table tbody tr:nth-child(even) th{background:#fafcff;}
+  .ing-table code{font-family:"Consolas","SF Mono",monospace;font-size:.84em;color:var(--accent);
+    background:#faf4ea;padding:1px 5px;border-radius:4px;}
+  .ing-table .state{font-weight:800;white-space:nowrap;}
+  .ing-table .state.proposed{color:var(--accent);}
+  .ing-table .state.active{color:var(--good);}
+  .ing-table .note{color:var(--muted);font-weight:600;}
+
+  /* ---- Memory comparison table (Claude vs PRAXIS) ---- */
+  .cmp-table{table-layout:fixed;}
+  .cmp-table tbody th{width:15%;}
+  .cmp-table td{width:42.5%;}
+  .cmp-table thead th.col-claude{background:var(--gate);}
+  .cmp-table thead th.col-praxis{background:var(--h1);}
+  .cmp-table thead th .hsub{display:block;font-weight:600;font-size:.7rem;
+    letter-spacing:.02em;text-transform:none;opacity:.82;margin-top:4px;}
+  .cmp-table td b{color:var(--h1);}
+  .cmp-table .gate.human{color:var(--accent);font-weight:800;}
+  .cmp-table .gate.none{color:var(--gate);font-weight:800;}
+  .cmp-take{margin-top:14px;font-size:.95rem;color:var(--muted);line-height:1.4;}
+  .cmp-take b{color:var(--h2);}
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+<div class="hud" id="hud">1 / 1</div>
+
+<div class="deck" id="deck">
+
+  <!-- ============================================================
+       SLIDE — TITLE / COVER  (from demo presentation template)
+       ============================================================ -->
+  <section class="slide active center"
+           data-name="Dominic Antonelli" data-role="Architecture, Eval &amp; Integration Lead"
+           data-github="https://github.com/dantonel">
+    <div class="grow">
+      <div class="cover-row">
+        <div class="cover-left">
+          <div class="kicker">Gauntlet AI · Capstone · 2026</div>
+          <h1 class="title">PRAXIS</h1>
+          <p class="tagline">A human-gated knowledge loop for AI&nbsp;<span class="struck">Coding</span>&nbsp;agents.<span class="badge">MIT licensed</span></p>
+          <p class="repo">Public repos:<br/>
+            <a href="https://labs.gauntletai.com/monicapeters/praxis">labs.gauntletai.com/monicapeters/praxis</a><br/>
+            <a href="https://github.com/Antonelli-Tech-Solutions/praxis">github.com/Antonelli-Tech-Solutions/praxis</a>
+          </p>
+        </div>
+
+        <div class="team-vertical">
+          <div class="member">
+            <div class="name">Dominic Antonelli</div>
+            <div class="pillar">Speaker 1 · Architecture, Eval &amp; Integration Lead</div>
+            <span class="mail">github.com/dantonel</span>
+          </div>
+          <div class="member">
+            <div class="name">Monica Peters</div>
+            <div class="pillar">Speaker 2 · Dashboard &amp; Human Gate Lead</div>
+            <span class="mail">github.com/monigarr</span>
+          </div>
+          <div class="member">
+            <div class="name">Matthew Daw</div>
+            <div class="pillar">Speaker 3 · ML &amp; Knowledge Pipeline Lead</div>
+            <span class="mail">github.com/MatthewDaw</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE — MEMORY COMPARISON (Claude auto-memory vs PRAXIS)
+       ============================================================ -->
+  <section class="slide"
+           data-name="Dominic Antonelli" data-role="Architecture, Eval &amp; Integration Lead"
+           data-github="https://github.com/dantonel">
+    <div class="kicker">Memory, compared</div>
+    <h2 class="slidehead">Two takes on agent memory</h2>
+    <p class="sub">Both answer the same instinct — <b>remember what's worth reusing</b> — but with opposite trust
+      models: Claude lets the model self-curate; PRAXIS inserts a human gate and a retrieval pipeline.</p>
+
+    <div class="grow">
+      <table class="ing-table cmp-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th class="col-claude">Claude auto-memory<span class="hsub">model-curated · self-trusting</span></th>
+            <th class="col-praxis">PRAXIS memory<span class="hsub">human-gated · retrieval-ranked</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th>Captured by</th>
+            <td>The <b>model, mid-session</b> — writes a note when it judges something durable and not already
+              obvious in the codebase.</td>
+            <td><b>Ingestors</b> distill raw artifacts (prose, images, PRs, session narratives) into typed facts.</td>
+          </tr>
+          <tr>
+            <th>Selection gate</th>
+            <td><span class="gate none">None</span> — the model writes straight to file; selectivity is judgment only.</td>
+            <td><span class="gate human">Human gate</span> — every fact lands <code>proposed</code>; a reviewer
+              promotes <code>proposed → active</code> before it's retrievable.</td>
+          </tr>
+          <tr>
+            <th>Stored as</th>
+            <td>Flat <b>markdown</b>, one file per topic + a <code>MEMORY.md</code> index. Per-repo, machine-local,
+              single user.</td>
+            <td>Vector-indexed <b>knowledge graph</b>: facts + provenance, <code>scope</code>/<code>category</code>,
+              org/user multi-tenant.</td>
+          </tr>
+          <tr>
+            <th>Recalled by</th>
+            <td><code>MEMORY.md</code> injected at session start (first 200 lines / 25&nbsp;KB); topic files read
+              <b>on demand by model judgment</b> — no search.</td>
+            <td><b>Filtered similarity search</b>: embeddings + floor→relative→cap cutoff, trust weighting, recency
+              decay.</td>
+          </tr>
+          <tr>
+            <th>Change over time</th>
+            <td>Model edits or overwrites the file. <b>No</b> contradiction detection or state history.</td>
+            <td><b>Dedup + conflict detection + supersession</b>; bi-temporal validity windows give point-in-time
+              recall.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p class="cmp-take">PRAXIS trades Claude's zero-friction self-curation for an <b>auditable, multi-user knowledge
+        loop</b> — the human gate and ranked retrieval are the price of trust at team scale.</p>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE — CORE ARCHITECTURE DIAGRAM
+       ============================================================ -->
+  <section class="slide"
+           data-name="Dominic Antonelli" data-role="Architecture, Eval &amp; Integration Lead"
+           data-github="https://github.com/dantonel">
+    <div class="kicker">Core Architecture</div>
+    <h2 class="slidehead">How knowledge flows through PRAXIS</h2>
+    <p class="sub">An AI agent feeds raw artifacts in at <b>Ingestion</b> and pulls reviewed knowledge back out at
+      <b>Retrieval</b> — everything in between exists to keep the knowledge clean.</p>
+
+    <div class="grow">
+      <div class="diagram">
+        <svg viewBox="0 0 1220 520" preserveAspectRatio="xMidYMid meet" role="img"
+             aria-label="PRAXIS core pipeline: ingestion, deduplication and conflict detection, human gate, knowledge graph, retrieval.">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#5b6470"/>
+            </marker>
+            <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#2E75B6"/>
+            </marker>
+            <marker id="arrow-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#c98a2e"/>
+            </marker>
+          </defs>
+
+          <!-- ===================== AI AGENT BAR ===================== -->
+          <rect class="agent-box" x="40" y="18" width="1140" height="74" rx="14"/>
+          <text class="agent-text" x="610" y="63" text-anchor="middle" font-size="23">AI Agent</text>
+
+          <!-- ===================== AGENT ⇄ PIPELINE CONNECTIONS ===================== -->
+          <!-- writes IN at ingestion (down) -->
+          <line x1="185" y1="92" x2="185" y2="252" stroke="#2E75B6" stroke-width="2.5" marker-end="url(#arrow-blue)"/>
+          <rect x="92" y="150" width="186" height="22" rx="5" fill="#ffffff"/>
+          <text class="conn-label" x="185" y="166" text-anchor="middle" font-size="13">writes raw artifacts in</text>
+
+          <!-- reads OUT at retrieval (up) -->
+          <line x1="1127" y1="300" x2="1127" y2="92" stroke="#1F4E79" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <rect x="1040" y="150" width="174" height="22" rx="5" fill="#ffffff"/>
+          <text class="conn-label" x="1127" y="166" text-anchor="middle" font-size="13">pulls context out</text>
+
+          <!-- optional auto-gate to human gate (dashed, down) -->
+          <line x1="704" y1="92" x2="704" y2="300" stroke="#c98a2e" stroke-width="2.5"
+                stroke-dasharray="7 6" marker-end="url(#arrow-gold)"/>
+          <rect x="591" y="150" width="226" height="22" rx="5" fill="#ffffff"/>
+          <text x="704" y="166" text-anchor="middle" font-size="13" fill="#c98a2e" font-weight="700">optional: automatic gating</text>
+
+          <!-- ===================== PIPELINE STAGES ===================== -->
+
+          <!-- STAGE 1 — INGESTION (with example ingestors) -->
+          <rect class="stage-fill" x="40" y="252" width="290" height="222" rx="12" stroke="#2E75B6" stroke-width="2.5"/>
+          <rect x="40" y="252" width="290" height="34" rx="12" fill="#2E75B6"/>
+          <rect x="40" y="270" width="290" height="16" fill="#2E75B6"/>
+          <text x="185" y="275" text-anchor="middle" font-size="17" fill="#ffffff" font-weight="800">Ingestion</text>
+
+          <!-- example ingestor sub-boxes -->
+          <g font-size="13.5">
+            <rect class="sub-box" x="56" y="298" width="258" height="36" rx="7" stroke="#9cc0e6" stroke-width="1.5"/>
+            <text class="sub-text" x="185" y="321" text-anchor="middle">Raw Prose</text>
+
+            <rect class="sub-box" x="56" y="340" width="258" height="36" rx="7" stroke="#9cc0e6" stroke-width="1.5"/>
+            <text class="sub-text" x="185" y="363" text-anchor="middle">Images / screenshots</text>
+
+            <rect class="sub-box" x="56" y="382" width="258" height="36" rx="7" stroke="#9cc0e6" stroke-width="1.5"/>
+            <text class="sub-text" x="185" y="405" text-anchor="middle">Git commits / PRs</text>
+
+            <rect class="sub-box" x="56" y="424" width="258" height="36" rx="7" stroke="#9cc0e6" stroke-width="1.5"/>
+            <text class="sub-text" x="185" y="447" text-anchor="middle">Session narratives</text>
+          </g>
+
+          <!-- arrow 1 → 2 -->
+          <line x1="330" y1="379" x2="368" y2="379" stroke="#5b6470" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+          <!-- STAGE 2 — DEDUP / CONFLICT DETECTION -->
+          <rect class="stage-fill" x="372" y="300" width="190" height="126" rx="12" stroke="#5B9BD5" stroke-width="2.5"/>
+          <rect x="372" y="300" width="190" height="34" rx="12" fill="#5B9BD5"/>
+          <rect x="372" y="318" width="190" height="16" fill="#5B9BD5"/>
+          <text x="467" y="323" text-anchor="middle" font-size="16" fill="#ffffff" font-weight="800">Resolution</text>
+          <text x="467" y="368" text-anchor="middle" font-size="14" class="stage-label">Deduplication</text>
+          <text x="467" y="392" text-anchor="middle" font-size="14" class="stage-label">Conflict Detection</text>
+
+          <!-- arrow 2 → 3 -->
+          <line x1="562" y1="379" x2="600" y2="379" stroke="#5b6470" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+          <!-- STAGE 3 — HUMAN GATE + CONFLICT RESOLUTION -->
+          <rect class="stage-fill" x="604" y="300" width="200" height="126" rx="12" stroke="#c98a2e" stroke-width="2.5"/>
+          <rect x="604" y="300" width="200" height="34" rx="12" fill="#c98a2e"/>
+          <rect x="604" y="318" width="200" height="16" fill="#c98a2e"/>
+          <text x="704" y="323" text-anchor="middle" font-size="16" fill="#ffffff" font-weight="800">Human Gate</text>
+          <text x="704" y="358" text-anchor="middle" font-size="14" class="stage-label">Approval</text>
+          <text x="704" y="382" text-anchor="middle" font-size="14" class="stage-label">Conflict Resolution</text>
+          <text x="704" y="404" text-anchor="middle" font-size="11.5" class="stage-sub">proposed → active</text>
+
+          <!-- arrow 3 → 4 -->
+          <line x1="804" y1="379" x2="842" y2="379" stroke="#5b6470" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+          <!-- STAGE 4 — KNOWLEDGE GRAPH -->
+          <rect class="stage-fill" x="846" y="300" width="186" height="126" rx="12" stroke="#4f7d5a" stroke-width="2.5"/>
+          <rect x="846" y="300" width="186" height="34" rx="12" fill="#4f7d5a"/>
+          <rect x="846" y="318" width="186" height="16" fill="#4f7d5a"/>
+          <text x="939" y="323" text-anchor="middle" font-size="16" fill="#ffffff" font-weight="800">Knowledge Graph</text>
+          <text x="939" y="360" text-anchor="middle" font-size="14" class="stage-label">Storage</text>
+          <text x="939" y="384" text-anchor="middle" font-size="11.5" class="stage-sub">facts + provenance,</text>
+          <text x="939" y="399" text-anchor="middle" font-size="11.5" class="stage-sub">vector-indexed</text>
+
+          <!-- arrow 4 → 5 -->
+          <line x1="1032" y1="379" x2="1070" y2="379" stroke="#5b6470" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+          <!-- STAGE 5 — RETRIEVAL -->
+          <rect class="stage-fill" x="1074" y="300" width="106" height="126" rx="12" stroke="#1F4E79" stroke-width="2.5"/>
+          <rect x="1074" y="300" width="106" height="34" rx="12" fill="#1F4E79"/>
+          <rect x="1074" y="318" width="106" height="16" fill="#1F4E79"/>
+          <text x="1127" y="323" text-anchor="middle" font-size="16" fill="#ffffff" font-weight="800">Retrieval</text>
+          <text x="1127" y="360" text-anchor="middle" font-size="13" class="stage-label">get-context</text>
+          <text x="1127" y="384" text-anchor="middle" font-size="11.5" class="stage-sub">filtered</text>
+          <text x="1127" y="399" text-anchor="middle" font-size="11.5" class="stage-sub">similarity</text>
+        </svg>
+      </div>
+
+      <div class="legend">
+        <div class="item"><span class="sw" style="border-top-color:#2E75B6;"></span>agent → ingestion</div>
+        <div class="item"><span class="sw" style="border-top-color:#1F4E79;"></span>retrieval → agent</div>
+        <div class="item"><span class="sw" style="border-top-color:#c98a2e;border-top-style:dashed;"></span>optional automatic gating</div>
+        <div class="item"><span class="sw" style="border-top-color:#5b6470;"></span>pipeline flow</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE — EVALUATION (architecture diagram + test harness)
+       ============================================================ -->
+  <section class="slide"
+           data-name="Dominic Antonelli" data-role="Architecture, Eval &amp; Integration Lead"
+           data-github="https://github.com/dantonel">
+    <div class="kicker">Evaluation</div>
+    <h2 class="slidehead">Measuring whether knowledge helps</h2>
+    <p class="sub">A <b>Test Harness</b> drives fixed tasks through the same loop — seeding the graph directly or
+      feeding raw artifacts through ingestion — then grades the agent's output, <b>cold vs. knowledge-injected</b>.</p>
+
+    <div class="grow">
+      <div class="diagram">
+        <svg viewBox="0 0 1220 520" preserveAspectRatio="xMidYMid meet" role="img"
+             aria-label="PRAXIS evaluation: a test harness seeds the knowledge graph directly and via ingestion, and grades the AI agent's output.">
+          <defs>
+            <marker id="arrow-e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#5b6470"/>
+            </marker>
+            <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#b03832"/>
+            </marker>
+          </defs>
+
+          <!-- ===================== AI AGENT BAR ===================== -->
+          <rect class="agent-box" x="40" y="18" width="1140" height="74" rx="14"/>
+          <text class="agent-text" x="610" y="63" text-anchor="middle" font-size="23">AI Agent</text>
+
+          <!-- reads OUT at retrieval (up) -->
+          <line x1="1127" y1="300" x2="1127" y2="92" stroke="#1F4E79" stroke-width="2.5" marker-end="url(#arrow-e)"/>
+          <rect x="1040" y="150" width="174" height="22" rx="5" fill="#ffffff"/>
+          <text class="conn-label" x="1127" y="166" text-anchor="middle" font-size="13">pulls context out</text>
+
+          <!-- ===================== PIPELINE STAGES ===================== -->
+
+          <!-- STAGE 1 — INGESTION -->
+          <rect class="stage-fill" x="40" y="252" width="290" height="222" rx="12" stroke="#2E75B6" stroke-width="2.5"/>
+          <rect x="40" y="252" width="290" height="34" rx="12" fill="#2E75B6"/>
+          <rect x="40" y="270" width="290" height="16" fill="#2E75B6"/>
+          <text x="185" y="275" text-anchor="middle" font-size="17" fill="#ffffff" font-weight="800">Ingestion</text>
+
+          <g font-size="13.5">
+            <rect class="sub-box" x="56" y="298" width="258" height="36" rx="7" stroke="#9cc0e6" stroke-width="1.5"/>
+            <text class="sub-text" x="185" y="321" text-anchor="middle">Raw Prose</text>
+
+            <rect class="sub-box" x="56" y="340" width="258" height="36" rx="7" stroke="#9cc0e6" stroke-width="1.5"/>
+            <text class="sub-text" x="185" y="363" text-anchor="middle">Images / screenshots</text>
+
+            <rect class="sub-box" x="56" y="382" width="258" height="36" rx="7" stroke="#9cc0e6" stroke-width="1.5"/>
+            <text class="sub-text" x="185" y="405" text-anchor="middle">Git commits / PRs</text>
+
+            <rect class="sub-box" x="56" y="424" width="258" height="36" rx="7" stroke="#9cc0e6" stroke-width="1.5"/>
+            <text class="sub-text" x="185" y="447" text-anchor="middle">Session narratives</text>
+          </g>
+
+          <!-- arrow 1 → 2 -->
+          <line x1="330" y1="379" x2="368" y2="379" stroke="#5b6470" stroke-width="2.5" marker-end="url(#arrow-e)"/>
+
+          <!-- STAGE 2 — RESOLUTION -->
+          <rect class="stage-fill" x="372" y="300" width="190" height="126" rx="12" stroke="#5B9BD5" stroke-width="2.5"/>
+          <rect x="372" y="300" width="190" height="34" rx="12" fill="#5B9BD5"/>
+          <rect x="372" y="318" width="190" height="16" fill="#5B9BD5"/>
+          <text x="467" y="323" text-anchor="middle" font-size="16" fill="#ffffff" font-weight="800">Resolution</text>
+          <text x="467" y="368" text-anchor="middle" font-size="14" class="stage-label">Deduplication</text>
+          <text x="467" y="392" text-anchor="middle" font-size="14" class="stage-label">Conflict Detection</text>
+
+          <!-- arrow 2 → 3 -->
+          <line x1="562" y1="379" x2="600" y2="379" stroke="#5b6470" stroke-width="2.5" marker-end="url(#arrow-e)"/>
+
+          <!-- STAGE 3 — HUMAN GATE -->
+          <rect class="stage-fill" x="604" y="300" width="200" height="126" rx="12" stroke="#c98a2e" stroke-width="2.5"/>
+          <rect x="604" y="300" width="200" height="34" rx="12" fill="#c98a2e"/>
+          <rect x="604" y="318" width="200" height="16" fill="#c98a2e"/>
+          <text x="704" y="323" text-anchor="middle" font-size="16" fill="#ffffff" font-weight="800">Human Gate</text>
+          <text x="704" y="358" text-anchor="middle" font-size="14" class="stage-label">Approval</text>
+          <text x="704" y="382" text-anchor="middle" font-size="14" class="stage-label">Conflict Resolution</text>
+          <text x="704" y="404" text-anchor="middle" font-size="11.5" class="stage-sub">proposed → active</text>
+
+          <!-- arrow 3 → 4 -->
+          <line x1="804" y1="379" x2="842" y2="379" stroke="#5b6470" stroke-width="2.5" marker-end="url(#arrow-e)"/>
+
+          <!-- STAGE 4 — KNOWLEDGE GRAPH -->
+          <rect class="stage-fill" x="846" y="300" width="186" height="126" rx="12" stroke="#4f7d5a" stroke-width="2.5"/>
+          <rect x="846" y="300" width="186" height="34" rx="12" fill="#4f7d5a"/>
+          <rect x="846" y="318" width="186" height="16" fill="#4f7d5a"/>
+          <text x="939" y="323" text-anchor="middle" font-size="16" fill="#ffffff" font-weight="800">Knowledge Graph</text>
+          <text x="939" y="360" text-anchor="middle" font-size="14" class="stage-label">Storage</text>
+          <text x="939" y="384" text-anchor="middle" font-size="11.5" class="stage-sub">facts + provenance,</text>
+          <text x="939" y="399" text-anchor="middle" font-size="11.5" class="stage-sub">vector-indexed</text>
+
+          <!-- arrow 4 → 5 -->
+          <line x1="1032" y1="379" x2="1070" y2="379" stroke="#5b6470" stroke-width="2.5" marker-end="url(#arrow-e)"/>
+
+          <!-- STAGE 5 — RETRIEVAL -->
+          <rect class="stage-fill" x="1074" y="300" width="106" height="126" rx="12" stroke="#1F4E79" stroke-width="2.5"/>
+          <rect x="1074" y="300" width="106" height="34" rx="12" fill="#1F4E79"/>
+          <rect x="1074" y="318" width="106" height="16" fill="#1F4E79"/>
+          <text x="1127" y="323" text-anchor="middle" font-size="16" fill="#ffffff" font-weight="800">Retrieval</text>
+          <text x="1127" y="360" text-anchor="middle" font-size="13" class="stage-label">get-context</text>
+          <text x="1127" y="384" text-anchor="middle" font-size="11.5" class="stage-sub">filtered</text>
+          <text x="1127" y="399" text-anchor="middle" font-size="11.5" class="stage-sub">similarity</text>
+
+          <!-- ===================== TEST HARNESS (eval) ===================== -->
+          <!-- AI Agent → Test Harness (output to grade) -->
+          <line x1="610" y1="92" x2="610" y2="150" stroke="#b03832" stroke-width="2.5" marker-end="url(#arrow-red)"/>
+          <!-- Test Harness (bottom-left) → Ingestion (top-right corner) — raw artifacts -->
+          <line x1="522" y1="224" x2="320" y2="252" stroke="#b03832" stroke-width="2.5" marker-end="url(#arrow-red)"/>
+          <!-- Test Harness (bottom-right) → Knowledge Graph (top-left corner) — direct seeding -->
+          <line x1="698" y1="224" x2="858" y2="300" stroke="#b03832" stroke-width="2.5" marker-end="url(#arrow-red)"/>
+          <!-- Test Harness → Human Gate (bypass, dashed) -->
+          <line x1="610" y1="224" x2="688" y2="300" stroke="#b03832" stroke-width="2.5" stroke-dasharray="7 6" marker-end="url(#arrow-red)"/>
+
+          <!-- Test Harness box -->
+          <rect x="510" y="150" width="200" height="74" rx="12" fill="#fafcff" stroke="#b03832" stroke-width="2.5"/>
+          <rect x="510" y="150" width="200" height="34" rx="12" fill="#b03832"/>
+          <rect x="510" y="168" width="200" height="16" fill="#b03832"/>
+          <text x="610" y="173" text-anchor="middle" font-size="16" fill="#ffffff" font-weight="800">Test Harness</text>
+          <text x="610" y="207" text-anchor="middle" font-size="11.5" class="stage-sub">cold vs. injected</text>
+
+          <!-- harness arrow labels -->
+          <rect x="543" y="106" width="134" height="22" rx="5" fill="#ffffff"/>
+          <text x="610" y="122" text-anchor="middle" font-size="13" fill="#b03832" font-weight="700">output to grade</text>
+
+          <rect x="369" y="227" width="104" height="22" rx="5" fill="#ffffff"/>
+          <text x="421" y="243" text-anchor="middle" font-size="13" fill="#b03832" font-weight="700">raw artifacts</text>
+
+          <rect x="720" y="251" width="116" height="22" rx="5" fill="#ffffff"/>
+          <text x="778" y="267" text-anchor="middle" font-size="13" fill="#b03832" font-weight="700">direct seeding</text>
+
+          <rect x="616" y="251" width="66" height="22" rx="5" fill="#ffffff"/>
+          <text x="649" y="267" text-anchor="middle" font-size="13" fill="#b03832" font-weight="700">Bypass</text>
+
+          <!-- eval observation points (red eye = watched / graded) -->
+          <g transform="translate(351,366)">
+            <path d="M-12,0 Q0,-7 12,0 Q0,7 -12,0 Z" fill="#ffffff" stroke="#b03832" stroke-width="2.2"/>
+            <circle cx="0" cy="0" r="4" fill="#b03832"/>
+          </g>
+          <g transform="translate(583,366)">
+            <path d="M-12,0 Q0,-7 12,0 Q0,7 -12,0 Z" fill="#ffffff" stroke="#b03832" stroke-width="2.2"/>
+            <circle cx="0" cy="0" r="4" fill="#b03832"/>
+          </g>
+          <g transform="translate(1110,250)">
+            <path d="M-12,0 Q0,-7 12,0 Q0,7 -12,0 Z" fill="#ffffff" stroke="#b03832" stroke-width="2.2"/>
+            <circle cx="0" cy="0" r="4" fill="#b03832"/>
+          </g>
+        </svg>
+      </div>
+
+      <div class="legend">
+        <div class="item"><span class="sw" style="border-top-color:#b03832;"></span>test harness</div>
+        <div class="item"><span class="sw" style="border-top-color:#1F4E79;"></span>retrieval → agent</div>
+        <div class="item"><span class="sw" style="border-top-color:#5b6470;"></span>pipeline flow</div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<div class="help" id="help">→ / Space next · ← back · Home first · &nbsp;F&nbsp; hide this</div>
+
+<script>
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const hud = document.getElementById('hud');
+  const progress = document.getElementById('progress');
+  const help = document.getElementById('help');
+  let i = 0;
+
+  function injectFooter(s){
+    if (s.querySelector('.foot')) return;
+    const f = document.createElement('div');
+    f.className = 'foot';
+    f.innerHTML =
+      '<span class="who"><b>'+ s.dataset.name +'</b> &nbsp;·&nbsp; '+
+      '<span class="role">'+ s.dataset.role +'</span> &nbsp;·&nbsp; '+
+      '<a class="mail" href="'+ s.dataset.github +'" target="_blank" rel="noopener">'+ s.dataset.github.replace(/^https?:\/\//,'') +'</a></span>'+
+      '<span class="brand">PRAXIS</span>';
+    s.appendChild(f);
+  }
+  slides.forEach(injectFooter);
+
+  function show(n){
+    i = Math.max(0, Math.min(slides.length-1, n));
+    slides.forEach((s,k)=>s.classList.toggle('active', k===i));
+    hud.textContent = (i+1)+' / '+slides.length;
+    progress.style.width = ((i+1)/slides.length*100)+'%';
+  }
+  function next(){ show(i+1); }
+  function prev(){ show(i-1); }
+
+  document.addEventListener('keydown', e=>{
+    if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown'){ e.preventDefault(); next(); }
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){ e.preventDefault(); prev(); }
+    else if(e.key==='Home'){ show(0); }
+    else if(e.key==='End'){ show(slides.length-1); }
+    else if(e.key.toLowerCase()==='f'){ help.classList.toggle('hidden'); }
+  });
+  document.getElementById('deck').addEventListener('click', e=>{
+    if(e.target.closest('a')) return;
+    next();
+  });
+  show(0);
+  setTimeout(()=>help.classList.add('hidden'), 4500);
+</script>
+</body>
+</html>

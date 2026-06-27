@@ -1,6 +1,7 @@
 .idea/
 .claude/
 .specify/
+.gstack/
 
 # Microsoft Office lock/temp files
 ~$*
