@@ -266,6 +266,28 @@ def _rrf_fuse(
     return ranked[:top_k]
 
 
+def _meta_predicate(meta_filter: dict | None, *, col: str = "meta") -> tuple[str, list[object]]:
+    """AND-clauses matching a JSONB ``col`` by scalar-equality OR array-membership.
+
+    For each ``{key: value}`` a row qualifies when ``col->>key = value`` (scalar) OR
+    — when ``col->key`` is a JSON array — ``value`` is a MEMBER of it. Identical
+    semantics to ``facts_by`` (PR #113), factored out so the single-table search
+    predicate (``_where``) and the live+mounted union (``overlay_search``) stay in
+    lockstep. ``col`` lets a union branch qualify the column if ever needed; each
+    overlay subquery is its own SELECT so the bare ``meta`` works there too. Returns
+    ``("", [])`` when ``meta_filter`` is empty, so callers can append unconditionally.
+    """
+    sql = ""
+    params: list[object] = []
+    for key, value in (meta_filter or {}).items():
+        sql += (
+            f" AND ({col}->>%s = %s OR (jsonb_typeof({col}->%s) = 'array' "
+            f"AND {col}->%s @> %s::jsonb))"
+        )
+        params.extend([key, value, key, key, json.dumps([value])])
+    return sql, params
+
+
 class PostgresVectorGraph(SearchableGraph):
     """A pgvector-backed fact store for one ``(org_id, user_id)`` tenant."""
 
@@ -758,10 +780,18 @@ class PostgresVectorGraph(SearchableGraph):
         hybrid: bool = False,
         keyword_weight: float | None = None,
         exclude_categories: list[str] | None = None,
+        categories: list[str] | None = None,
+        meta_filter: dict | None = None,
         decay: bool = True,
     ) -> list[SearchHit]:
         """Retrieve relevant facts. Pure pgvector cosine by default; ``hybrid=True``
         additionally fuses a BM25 keyword branch.
+
+        ``categories`` (positive category membership), ``scope``, and ``meta_filter``
+        (JSONB scalar-OR-array, like ``facts_by``) narrow the SIMILARITY ranking to a
+        subset — e.g. the ``check`` facts with ``meta.scope='planning'`` most similar
+        to ``query`` — without changing the ranking itself. Applied to both branches
+        via ``_where``; omitting them is identical to prior behavior.
 
         ``keyword_weight`` (gap H7) tunes the RRF fusion bias per call (only meaningful
         with ``hybrid=True``): the semantic branch stays at weight 1.0 and the keyword
@@ -812,15 +842,18 @@ class PostgresVectorGraph(SearchableGraph):
         if not hybrid:
             return self._search_vec(
                 qvec, top_k=top_k, filters=filters, scope=scope, state=state, as_of=as_of,
-                exclude_categories=exclude_categories, apply_decay=apply_decay,
+                exclude_categories=exclude_categories, categories=categories,
+                meta_filter=meta_filter, apply_decay=apply_decay,
             )
         sem = self._search_vec(
             qvec, top_k=_FUSION_BRANCH_N, filters=filters, scope=scope, state=state, as_of=as_of,
-            exclude_categories=exclude_categories, apply_decay=apply_decay,
+            exclude_categories=exclude_categories, categories=categories,
+            meta_filter=meta_filter, apply_decay=apply_decay,
         )
         kw = self._search_keyword(
             query, top_k=_FUSION_BRANCH_N, filters=filters, scope=scope, state=state, as_of=as_of,
-            exclude_categories=exclude_categories,
+            exclude_categories=exclude_categories, categories=categories,
+            meta_filter=meta_filter,
         )
         kww = _RRF_KEYWORD_WEIGHT if keyword_weight is None else keyword_weight
         return _rrf_fuse(sem, kw, top_k=top_k, keyword_weight=kww)
@@ -833,11 +866,19 @@ class PostgresVectorGraph(SearchableGraph):
         state: str | None,
         as_of: datetime | None = None,
         exclude_categories: list[str] | None = None,
+        categories: list[str] | None = None,
+        meta_filter: dict | None = None,
     ) -> tuple[str, list[object]]:
         """The shared tenant/cache/state/scope/filter predicate for a search branch.
 
         Returns ``(sql_fragment, params)`` so the cosine and keyword branches apply
         the exact same row gating — only their ranking expression differs.
+
+        ``categories`` (positive) keeps only rows whose ``category`` is in the list
+        (``= ANY``, served by the PR #113 ``(org_id,user_id,category)`` btree) — the
+        complement of ``exclude_categories``. ``meta_filter`` adds the same JSONB
+        scalar-OR-array predicate as ``facts_by`` (served by the ``(meta)`` GIN
+        index). Both are AND-combined with the rest; omitting them is unchanged.
         """
         sql = "WHERE org_id = %s AND (shared OR user_id = %s)"
         params: list[object] = [self.org_id, self.user_id]
@@ -868,10 +909,17 @@ class PostgresVectorGraph(SearchableGraph):
         for key, value in (filters or {}).items():
             sql += f" AND {key} = %s"
             params.append(value)
+        # Positive category membership (complement of exclude_categories below).
+        if categories:
+            sql += " AND category = ANY(%s)"
+            params.append(list(categories))
         # H2 exclusion: omit listed categories (NULL category is never excluded).
         if exclude_categories:
             sql += " AND (category IS NULL OR category <> ALL(%s))"
             params.append(list(exclude_categories))
+        meta_sql, meta_params = _meta_predicate(meta_filter)
+        sql += meta_sql
+        params.extend(meta_params)
         return sql, params
 
     def _search_vec(
@@ -884,11 +932,14 @@ class PostgresVectorGraph(SearchableGraph):
         state: str | None = "active",
         as_of: datetime | None = None,
         exclude_categories: list[str] | None = None,
+        categories: list[str] | None = None,
+        meta_filter: dict | None = None,
         apply_decay: bool = False,
     ) -> list[SearchHit]:
         where, where_params = self._where(
             filters=filters, scope=scope, state=state, as_of=as_of,
-            exclude_categories=exclude_categories,
+            exclude_categories=exclude_categories, categories=categories,
+            meta_filter=meta_filter,
         )
         # Outcome/trust weighting (H1): cosine similarity scaled by a per-fact utility
         # multiplier from recorded outcomes — neutral 1.0 until outcomes exist.
@@ -946,6 +997,8 @@ class PostgresVectorGraph(SearchableGraph):
         state: str | None = "active",
         as_of: datetime | None = None,
         exclude_categories: list[str] | None = None,
+        categories: list[str] | None = None,
+        meta_filter: dict | None = None,
     ) -> list[SearchHit]:
         """BM25-style keyword branch: IDF-weighted full-text match over ``text_tsv``.
 
@@ -966,7 +1019,8 @@ class PostgresVectorGraph(SearchableGraph):
         """
         where, where_params = self._where(
             filters=filters, scope=scope, state=state, as_of=as_of,
-            exclude_categories=exclude_categories,
+            exclude_categories=exclude_categories, categories=categories,
+            meta_filter=meta_filter,
         )
         sql = (
             "WITH params AS (SELECT tsvector_to_array(to_tsvector('english', %s)) AS qlex), "
@@ -1011,6 +1065,9 @@ class PostgresVectorGraph(SearchableGraph):
         *,
         top_k: int = 10,
         exclude_categories: list[str] | None = None,
+        categories: list[str] | None = None,
+        scope: str | None = None,
+        meta_filter: dict | None = None,
     ) -> list[SearchHit]:
         """Vector-search the live graph unioned with mounted snapshots, in one query.
 
@@ -1034,18 +1091,28 @@ class PostgresVectorGraph(SearchableGraph):
         cols = (
             "id, text, source, confidence, scope, category, observation_count, state"
         )
-        # H2: apply category exclusion to BOTH the live and mounted branches so a
-        # mounted snapshot's episodes don't leak into the unioned result.
+        # Apply the SAME row gating to BOTH the live and mounted branches so a
+        # mounted snapshot can't leak rows the filter should drop: H2 category
+        # exclusion, positive category membership, scope, and the JSONB meta filter
+        # (same semantics as the single-table _where / facts_by). Built once as a
+        # shared fragment + params, injected into each branch in declaration order.
         excl = " AND (category IS NULL OR category <> ALL(%s))" if exclude_categories else ""
-        excl_param = [list(exclude_categories)] if exclude_categories else []
+        excl_param: list[object] = [list(exclude_categories)] if exclude_categories else []
+        cat = " AND category = ANY(%s)" if categories else ""
+        cat_param: list[object] = [list(categories)] if categories else []
+        scope_sql = " AND scope = %s" if scope is not None else ""
+        scope_param: list[object] = [scope] if scope is not None else []
+        meta_sql, meta_param = _meta_predicate(meta_filter)
+        filt = f"{excl}{cat}{scope_sql}{meta_sql}"
+        filt_param: list[object] = [*excl_param, *cat_param, *scope_param, *meta_param]
         live = (
             f"SELECT {cols}, NULL::text AS mount_user, NULL::text AS mount_key, "
             "1 - (embedding <=> %s) AS score FROM facts "
             "WHERE org_id = %s AND (shared OR user_id = %s) "
-            f"AND state = 'active' AND embedding IS NOT NULL{excl} "
+            f"AND state = 'active' AND embedding IS NOT NULL{filt} "
             "ORDER BY embedding <=> %s LIMIT %s"
         )
-        params: list[object] = [qvec, self.org_id, self.user_id, *excl_param, qvec, top_k]
+        params: list[object] = [qvec, self.org_id, self.user_id, *filt_param, qvec, top_k]
         sql = f"SELECT * FROM ({live}) AS live"
         if mounts:
             ors = " OR ".join(["(user_id = %s AND cache_key = %s)"] * len(mounts))
@@ -1053,14 +1120,14 @@ class PostgresVectorGraph(SearchableGraph):
                 f"SELECT {cols}, user_id AS mount_user, cache_key AS mount_key, "
                 "1 - (embedding <=> %s) AS score FROM cached_facts "
                 f"WHERE org_id = %s AND ({ors}) "
-                f"AND state = 'active' AND embedding IS NOT NULL{excl} "
+                f"AND state = 'active' AND embedding IS NOT NULL{filt} "
                 "ORDER BY embedding <=> %s LIMIT %s"
             )
             sql += f" UNION ALL SELECT * FROM ({mounted}) AS mounted"
             params += [qvec, self.org_id]
             for source_user_id, cache_key in mounts:
                 params += [source_user_id, cache_key]
-            params += [*excl_param, qvec, top_k]
+            params += [*filt_param, qvec, top_k]
         rows = self._conn.execute(sql, params).fetchall()
 
         # Each branch is capped at top_k, so this is at most ~2*top_k rows. Dedupe

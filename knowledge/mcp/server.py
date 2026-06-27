@@ -142,6 +142,10 @@ def praxis_get_context(
     top_k: int = 8,
     include_episodic: bool = False,
     as_of: str | None = None,
+    category: str | None = None,
+    categories: list[str] | None = None,
+    scope: str | None = None,
+    meta_filter: dict | None = None,
 ) -> str:
     """Retrieve relevant stored knowledge for the current task.
 
@@ -160,6 +164,15 @@ def praxis_get_context(
     to include them. ``as_of`` (an ISO-8601 timestamp, e.g. ``2024-01-01T00:00:00Z``)
     rewinds retrieval to that instant — facts written later are excluded — for
     point-in-time recall.
+
+    Optional POSITIVE filters narrow the similarity-ranked results to a subset
+    (still ranked by relevance, not exhaustive — use ``praxis_facts_by`` for an
+    exhaustive enumeration): ``category`` (single) and/or ``categories`` (a list)
+    keep only those categories; ``scope`` matches the top-level scope; ``meta_filter``
+    is a ``{key: value}`` object matched against the JSONB ``meta`` (scalar equality
+    OR array-membership) — e.g. category="check" with meta_filter={"scope":"planning"}
+    returns the planning checks most similar to ``query``. Filters apply to live and
+    mounted facts alike.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -168,6 +181,14 @@ def praxis_get_context(
         params["include_episodic"] = True
     if as_of is not None:
         params["as_of"] = as_of
+    if category:
+        params["category"] = category
+    if categories:
+        params["categories"] = ",".join(categories)
+    if scope:
+        params["scope"] = scope
+    if meta_filter:
+        params["meta"] = json.dumps(meta_filter)
     try:
         resp = httpx.get(
             f"{identity.api_base()}/context",
