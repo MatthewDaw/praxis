@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PRAXIS — Demo Presentation Template</title>
+<style>
+  /* ============================================================
+     PRAXIS Demo Presentation TEMPLATE
+     ------------------------------------------------------------
+     HOW TO USE
+     - Open in any browser. Present full-screen (F11 / browser
+       presentation mode).
+     - Navigate: → / Space / click = next, ← = previous,
+       Home = first slide, "f" = toggle footer help.
+     - Each slide is a <section class="slide">. Edit the text
+       inside. Replace every [[ BRACKETED ]] placeholder.
+     - The per-slide footer (speaker name / role / email) is set
+       with data- attributes on each <section>. Change those.
+     - Color palette is pulled from the PRAXIS Project Plan.
+     ============================================================ */
+  :root{
+    --ink:#11151c; --muted:#5b6470; --faint:#8a929c;
+    --h1:#1F4E79; --h2:#2E75B6; --h3:#5B9BD5;
+    --accent:#c98a2e;      /* trigger / gate gold from architecture */
+    --good:#4f7d5a; --eval:#b03832; --gate:#3c3a66;
+    --bg:#0e1116; --slide-bg:#ffffff; --line:#d9dde3; --soft:#eef3f9;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:"Segoe UI",Arial,"Helvetica Neue",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---- Slide shell -------------------------------------------------- */
+  .deck{height:100vh;width:100vw;overflow:hidden;position:relative;}
+  .slide{
+    position:absolute;inset:0;display:none;flex-direction:column;
+    padding:64px 84px 96px;background:var(--slide-bg);
+  }
+  .slide.active{display:flex;animation:fade .35s ease;}
+  @keyframes fade{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:none;}}
+
+  /* ---- Typography --------------------------------------------------- */
+  .kicker{font-size:.8rem;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--accent);font-weight:700;margin-bottom:18px;}
+  h1.title{font-size:5.5rem;line-height:1;color:var(--h1);margin:0;font-weight:800;letter-spacing:-.02em;}
+  h2.slidehead{font-size:2.5rem;line-height:1.1;color:var(--h2);margin:0 0 6px;font-weight:800;}
+  .sub{font-size:1.35rem;color:var(--muted);margin:14px 0 0;line-height:1.4;max-width:60ch;}
+  .body{font-size:1.25rem;line-height:1.55;color:var(--ink);max-width:62ch;}
+  .body ul{padding-left:1.3em;margin:.4em 0;}
+  .body li{margin:.5em 0;}
+  .ph{color:#9aa3ad;font-style:italic;}     /* placeholder hint text */
+  .hl{color:var(--h1);font-weight:700;}
+  code{background:var(--soft);padding:1px 7px;border-radius:5px;font-size:.92em;color:var(--gate);}
+
+  .grow{flex:1 1 auto;display:flex;flex-direction:column;justify-content:center;}
+
+  /* ---- Title slide -------------------------------------------------- */
+  .center{align-items:flex-start;justify-content:center;}
+  .tagline{font-size:1.75rem;color:var(--ink);font-weight:600;margin:22px 0 0;max-width:48ch;line-height:1.3;}
+  .repo{margin-top:34px;font-size:1.05rem;color:var(--muted);}
+  .repo a{color:var(--h2);text-decoration:none;border-bottom:1px solid var(--line);}
+  .badge{display:inline-block;font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;
+    font-weight:700;color:#1f6f43;border:1.5px solid #1f6f43;border-radius:4px;
+    padding:4px 10px;margin-left:10px;vertical-align:middle;}
+
+  /* ---- Team grid ---------------------------------------------------- */
+  .team{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin-top:8px;}
+  .member{border:1px solid var(--line);border-radius:12px;padding:24px 22px;background:#fafcff;
+    border-top:6px solid var(--h2);}
+  .member:nth-child(1){border-top-color:var(--h1);}
+  .member:nth-child(3){border-top-color:var(--h3);}
+  .member .name{font-size:1.5rem;font-weight:800;color:var(--h1);}
+  .member .pillar{font-size:1.05rem;font-weight:700;color:var(--h2);margin:6px 0 12px;}
+  .member .desc{font-size:1rem;color:var(--muted);line-height:1.45;}
+  .member .mail{display:block;margin-top:14px;font-size:.95rem;color:var(--faint);}
+
+  /* ---- Two-column content ------------------------------------------ */
+  .cols{display:grid;grid-template-columns:1.1fr .9fr;gap:48px;align-items:start;}
+  .panel{background:var(--soft);border-radius:12px;padding:26px 28px;font-size:1.1rem;line-height:1.5;}
+  .panel h3{margin:0 0 10px;color:var(--gate);font-size:1.15rem;}
+  .flow{font-size:1.05rem;color:var(--gate);font-weight:600;line-height:1.9;}
+  .flow .arrow{color:var(--accent);font-weight:800;padding:0 6px;}
+  .metric{font-size:3.2rem;font-weight:800;color:var(--eval);line-height:1;}
+  .metric small{display:block;font-size:1rem;font-weight:600;color:var(--muted);margin-top:8px;}
+  .metrics{display:flex;gap:46px;margin-top:10px;}
+
+  /* ---- Per-slide footer (speaker attribution) ---------------------- */
+  .foot{position:absolute;left:84px;right:84px;bottom:30px;display:flex;
+    justify-content:space-between;align-items:center;
+    border-top:1px solid var(--line);padding-top:12px;font-size:.92rem;color:var(--muted);}
+  .foot .who b{color:var(--h1);}
+  .foot .role{color:var(--muted);}
+  .foot .mail{color:var(--faint);}
+  .foot .brand{font-weight:800;letter-spacing:.08em;color:var(--h2);}
+
+  /* ---- HUD: counter + progress ------------------------------------- */
+  .hud{position:fixed;top:18px;right:24px;z-index:50;font-size:.85rem;color:#aeb6c0;
+    background:rgba(255,255,255,.06);padding:5px 12px;border-radius:20px;backdrop-filter:blur(4px);}
+  .progress{position:fixed;left:0;top:0;height:4px;background:var(--accent);z-index:50;transition:width .3s;}
+  .help{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:50;
+    font-size:.78rem;color:#7c8590;background:rgba(255,255,255,.05);padding:5px 14px;border-radius:16px;}
+  .help.hidden{display:none;}
+
+  @media (max-width:900px){
+    .slide{padding:40px 32px 88px;}
+    h1.title{font-size:3.2rem;} h2.slidehead{font-size:1.8rem;}
+    .team{grid-template-columns:1fr;} .cols{grid-template-columns:1fr;gap:22px;}
+    .foot{left:32px;right:32px;flex-wrap:wrap;gap:6px;}
+  }
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+<div class="hud" id="hud">1 / 9</div>
+
+<div class="deck" id="deck">
+
+  <!-- ============================================================
+       SLIDE 1 — INTRO  (Speaker 1)
+       ============================================================ -->
+  <section class="slide active center"
+           data-name="Matthew Daw" data-role="ML &amp; Knowledge Pipeline Lead"
+           data-github="https://github.com/MatthewDaw">
+    <div class="grow">
+      <div class="kicker">Gauntlet AI · Capstone · 2026</div>
+      <h1 class="title">PRAXIS</h1>
+      <p class="tagline">A human-gated knowledge loop for AI coding agents.<span class="badge">MIT licensed</span></p>
+      <p class="sub">Turning session logs and engineering artifacts into reviewed, graph-backed
+        knowledge — retrieved in future coding sessions and measured with evals.</p>
+      <p class="repo">Public repos: <br/>
+        <a href="https://labs.gauntletai.com/monicapeters/praxis">labs.gauntletai.com/monicapeters/praxis</a></br>
+        <a href="https://github.com/Antonelli-Tech-Solutions/praxis">github.com/Antonelli-Tech-Solutions/praxis</a>
+      </p>
+
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 2 — TEAM INTRO  (Speaker 1)
+       Edit each .member: name, pillar, desc, email.
+       ============================================================ -->
+  <section class="slide"
+           data-name="Matthew Daw" data-role="ML &amp; Knowledge Pipeline Lead"
+           data-github="https://github.com/MatthewDaw">
+    <div class="kicker">The Team</div>
+    <h2 class="slidehead">Three Fellows · Three Pillars</h2>
+    <div class="grow">
+      <div class="team">
+        <div class="member">
+          <div class="name">Matthew Daw</div>
+          <div class="pillar">Speaker 1 · ML &amp; Knowledge Pipeline Lead</div>
+          <div class="desc">Ingestion, learning-moment detection (ML classifier), LLM distillation,
+            consolidation / dedup / scoring, knowledge graph, provenance.</div>
+          <span class="github">GitHub.com/MatthewDaw</span>
+        </div>
+        <div class="member">
+          <div class="name">Monica Peters</div>
+          <div class="pillar">Speaker 2 · Dashboard &amp; Human Gate Lead</div>
+          <div class="desc">React human-gate dashboard + Python contract layer, approval workflow
+            (proposed → suggested → active), contradiction resolution, credibility viz.</div>
+          <span class="mail">monigarr@monigarr.com</span>
+        </div>
+        <div class="member">
+          <div class="name">Dominic Antonelli</div>
+          <div class="pillar">Speaker 3 · Architecture, Eval &amp; Integration Lead</div>
+          <div class="desc">System design, eval harness (fixed tasks + metrics), GitHub hook / PR
+            automation, deployment, live demo &amp; compounding-curve proof.</div>
+          <span class="github">GitHub.com/DominicAntonelli</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 3 — PROBLEM / THE LOOP  (Speaker 1)
+       ============================================================ -->
+  <section class="slide"
+           data-name="Matthew Daw" data-role="ML &amp; Knowledge Pipeline Lead"
+           data-github="https://github.com/MatthewDaw">
+    <div class="kicker">The Problem &amp; The Loop</div>
+    <h2 class="slidehead">Agents re-learn the same things</h2>
+    <div class="grow">
+      <div class="cols">
+        <div class="body">
+          <p>Claude Code's auto-memory is a black box: <span class="hl">no quality gate, no dedup,
+            no measurement</span>, per-repo only. Every session's full JSONL transcript — the real
+            record of mistakes, corrections, and fixes — is discarded as exhaust.</p>
+          <p><span class="hl">PRAXIS makes it a compounding asset.</span></p>
+          <p class="ph">[[ Speaker note: open with the "amnesiac agent" pain. 1 sentence. ]]</p>
+        </div>
+        <div class="panel">
+          <h3>The knowledge loop</h3>
+          <div class="flow">
+            raw logs <span class="arrow">→</span> extract lessons <span class="arrow">→</span>
+            consolidate / dedup <span class="arrow">→</span> confidence score
+            <span class="arrow">→</span> <b>human gate</b> <span class="arrow">→</span>
+            knowledge graph <span class="arrow">→</span> injected next session
+            <span class="arrow">→</span> measure <span class="arrow">↺</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 4 — SPEAKER 2 SECTION / PILLAR
+       ============================================================ -->
+  <section class="slide"
+           data-name="Monica Peters" data-role="Dashboard &amp; Human Gate Lead"
+           data-mail="monigarr@monigarr.com">
+    <div class="kicker">Pillar 2 · The Human Gate</div>
+    <h2 class="slidehead">Knowledge only ships if a human approves it</h2>
+    <div class="grow">
+      <div class="body">
+        <ul>
+          <li><span class="hl">Promotion lifecycle:</span> <code>proposed → suggested → active → decayed</code>.</li>
+          <li>Each candidate shows its <span class="hl">confidence score</span> and links to the exact transcript line (provenance).</li>
+          <li>One click promotes a credible lesson; contradictions are surfaced for human resolution.</li>
+          <li class="ph">[[ Speaker note: this is the trust layer — prevents "negative compounding". ]]</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 5 — SPEAKER 2 CONTENT  (live demo / screenshot)
+       ============================================================ -->
+  <section class="slide"
+           data-name="Monica Peters" data-role="Dashboard &amp; Human Gate Lead"
+           data-mail="monigarr@monigarr.com">
+    <div class="kicker">Live Demo · Review Dashboard</div>
+    <h2 class="slidehead">[[ Demo: distillation fills the dashboard ]]</h2>
+    <div class="grow">
+      <div class="cols">
+        <div class="panel" style="min-height:300px;display:flex;align-items:center;justify-content:center;color:#9aa3ad;font-style:italic;">
+          [[ Drop screenshot / live demo embed here ]]
+        </div>
+        <div class="body">
+          <p>Walk the room through:</p>
+          <ul>
+            <li>Candidate list, scored and ranked</li>
+            <li>Detail view + provenance line</li>
+            <li>Promote <code>suggested → active</code></li>
+            <li>Resolve a contradiction between two past sessions</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 6 — SPEAKER 2 CONTENT
+       ============================================================ -->
+  <section class="slide"
+           data-name="Monica Peters" data-role="Dashboard &amp; Human Gate Lead"
+           data-mail="monigarr@monigarr.com">
+    <div class="kicker">Why The Gate Matters</div>
+    <h2 class="slidehead">Transparent, measurable knowledge promotion</h2>
+    <div class="grow">
+      <div class="body">
+        <p>The central risk is <span class="hl">negative compounding</span> — one wrong, over-generalized
+          lesson degrades every future session.</p>
+        <ul>
+          <li>Human gate + provenance + thresholds + decay all exist to keep the well clean.</li>
+          <li>Credibility metrics make promotion <span class="hl">visible and auditable</span>.</li>
+          <li class="ph">[[ Hand-off line to Speaker 3: "…and here's how we prove it works." ]]</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 7 — SPEAKER 3 SECTION / ARCHITECTURE
+       ============================================================ -->
+  <section class="slide"
+           data-name="Dominic Antonelli" data-role="Architecture, Eval &amp; Integration Lead"
+           data-github="https://github.com/DominicAntonelli">
+    <div class="kicker">Pillar 3 · Architecture &amp; Eval</div>
+    <h2 class="slidehead">Built on a measurement spine</h2>
+    <div class="grow">
+      <div class="cols">
+        <div class="body">
+          <ul>
+            <li>Sessions + PRs stream into a DynamoDB log store; a <span class="hl">trigger</span> fires distillation.</li>
+            <li>Approved knowledge lands in the <span class="hl">Knowledge Graph</span>.</li>
+            <li>Future sessions pull context via a <code>get-context</code> tool call.</li>
+          </ul>
+        </div>
+        <div class="panel">
+          <h3>Eval harness</h3>
+          <p style="font-size:1.05rem;line-height:1.5;">Fixed tasks on a deliberately quirky repo,
+            run <b>cold</b> vs. <b>knowledge-injected</b>. Metrics: corrections, repeated failures,
+            tokens, time, success rate.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 8 — SPEAKER 3 RESULTS / COMPOUNDING CURVE
+       ============================================================ -->
+  <section class="slide"
+           data-name="Dominic Antonelli" data-role="Architecture, Eval &amp; Integration Lead"
+           data-github="https://github.com/DominicAntonelli">
+    <div class="kicker">Results · We Show The Curve</div>
+    <h2 class="slidehead">[[ Side-by-side: cold vs. injected ]]</h2>
+    <div class="grow">
+      <div class="metrics">
+        <div class="metric">≥50%<small>fewer user corrections vs. cold</small></div>
+        <div class="metric">0&nbsp;regression<small>in task success rate</small></div>
+        <div class="metric">↓ curve<small>correction-rate falls across sessions</small></div>
+      </div>
+      <p class="sub ph">[[ Replace with real before/after scoreboard + compounding-curve chart. ]]</p>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SLIDE 9 — SPEAKER 3 CLOSE
+       ============================================================ -->
+  <section class="slide"
+           data-name="Dominic Antonelli" data-role="Architecture, Eval &amp; Integration Lead"
+           data-github="https://github.com/DominicAntonelli">
+    <div class="kicker">Wrap-up</div>
+    <h2 class="slidehead">The agent makes a mistake once — never again</h2>
+    <div class="grow">
+      <div class="body">
+        <p>PRAXIS turns discarded logs into a <span class="hl">flywheel</span>: the more you use the
+          agent, the better the shared knowledge substrate gets — and we measure it, not assert it.</p>
+        <p class="repo">Explore it: · MIT licensed<br/>
+          <a href="https://labs.gauntletai.com/monicapeters/praxis">labs.gauntletai.com/monicapeters/praxis</a><br/>
+          <a href="https://github.com/Antonelli-Tech-Solutions/praxis">github.com/Antonelli-Tech-Solutions/praxis</a></p>
+        <p class="body">
+          Dominic Antonelli <a href="https://github.com/dantonel">github.com/dantonel</a><br/>
+          Matthew Daw <a href="https://github.com/MatthewDaw">github.com/MatthewDaw</a><br/>
+          Monica Peters <a href="https://github.com/monigarr">github.com/monigarr</a><br/>
+        </p>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<div class="help" id="help">→ / Space next · ← back · Home first · &nbsp;F&nbsp; hide this</div>
+
+<script>
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const hud = document.getElementById('hud');
+  const progress = document.getElementById('progress');
+  const help = document.getElementById('help');
+  let i = 0;
+
+  function injectFooter(s){
+    if (s.querySelector('.foot')) return;
+    const f = document.createElement('div');
+    f.className = 'foot';
+    f.innerHTML =
+      '<span class="who"><b>'+ s.dataset.name +'</b> &nbsp;·&nbsp; '+
+      '<span class="role">'+ s.dataset.role +'</span> &nbsp;·&nbsp; '+
+      '<span class="mail">'+ s.dataset.github +'</span></span>'+
+      '<span class="brand">PRAXIS</span>';
+    s.appendChild(f);
+  }
+  slides.forEach(injectFooter);
+
+  function show(n){
+    i = Math.max(0, Math.min(slides.length-1, n));
+    slides.forEach((s,k)=>s.classList.toggle('active', k===i));
+    hud.textContent = (i+1)+' / '+slides.length;
+    progress.style.width = ((i+1)/slides.length*100)+'%';
+  }
+  function next(){ show(i+1); }
+  function prev(){ show(i-1); }
+
+  document.addEventListener('keydown', e=>{
+    if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown'){ e.preventDefault(); next(); }
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){ e.preventDefault(); prev(); }
+    else if(e.key==='Home'){ show(0); }
+    else if(e.key==='End'){ show(slides.length-1); }
+    else if(e.key.toLowerCase()==='f'){ help.classList.toggle('hidden'); }
+  });
+  document.getElementById('deck').addEventListener('click', e=>{
+    if(e.target.closest('a')) return;        /* let links work */
+    next();
+  });
+  show(0);
+  setTimeout(()=>help.classList.add('hidden'), 4500);
+</script>
+</body>
+</html>

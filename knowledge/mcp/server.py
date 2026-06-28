@@ -540,8 +540,11 @@ def praxis_ingest_session(narrative: str, source: str | None = None) -> str:
             f"{identity.api_base()}/ingest/session",
             json=body,
             headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
+    except httpx.TimeoutException:
+        return _timeout_note("ingest_session")
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
     payload = resp.json()

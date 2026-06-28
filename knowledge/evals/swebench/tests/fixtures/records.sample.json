@@ -1,0 +1,26 @@
+{
+  "records": [
+    {"instance_id": "inst-A", "trial": 0, "arm": "treatment", "resolved": true,  "agent_cost": 1.0, "tokens": 40000, "turns": 10, "rework_rounds": 0, "retrieval_overhead": 0.01},
+    {"instance_id": "inst-A", "trial": 1, "arm": "treatment", "resolved": true,  "agent_cost": 2.0, "tokens": 50000, "turns": 12, "rework_rounds": 0, "retrieval_overhead": 0.01},
+    {"instance_id": "inst-A", "trial": 0, "arm": "control",   "resolved": false, "agent_cost": 3.0, "tokens": 60000, "turns": 14, "rework_rounds": 1, "retrieval_overhead": null},
+    {"instance_id": "inst-A", "trial": 1, "arm": "control",   "resolved": true,  "agent_cost": 5.0, "tokens": 80000, "turns": 18, "rework_rounds": 1, "retrieval_overhead": null},
+
+    {"instance_id": "inst-B", "trial": 0, "arm": "treatment", "resolved": true,  "agent_cost": 2.0, "tokens": 45000, "turns": 11, "rework_rounds": 0, "retrieval_overhead": 0.02},
+    {"instance_id": "inst-B", "trial": 1, "arm": "treatment", "resolved": false, "agent_cost": 4.0, "tokens": 70000, "turns": 16, "rework_rounds": 1, "retrieval_overhead": 0.02},
+    {"instance_id": "inst-B", "trial": 0, "arm": "control",   "resolved": false, "agent_cost": 4.0, "tokens": 65000, "turns": 15, "rework_rounds": 1, "retrieval_overhead": null},
+    {"instance_id": "inst-B", "trial": 1, "arm": "control",   "resolved": false, "agent_cost": 6.0, "tokens": 90000, "turns": 20, "rework_rounds": 1, "retrieval_overhead": null},
+
+    {"instance_id": "inst-C", "trial": 0, "arm": "treatment", "resolved": false, "agent_cost": 3.0, "tokens": 55000, "turns": 13, "rework_rounds": 1, "retrieval_overhead": 0.0},
+    {"instance_id": "inst-C", "trial": 0, "arm": "control",   "resolved": true,  "agent_cost": 2.0, "tokens": 42000, "turns": 10, "rework_rounds": 0, "retrieval_overhead": null}
+  ],
+  "rexist_map": {
+    "inst-A": {"r_exist": true,  "top_score": 0.51},
+    "inst-B": {"r_exist": true,  "top_score": 0.44},
+    "inst-C": {"r_exist": false, "top_score": 0.08}
+  },
+  "instances": [
+    {"instance_id": "inst-A", "ingestion_cost": null, "facts_ingested": 14},
+    {"instance_id": "inst-B", "ingestion_cost": null, "facts_ingested": 8},
+    {"instance_id": "inst-C", "ingestion_cost": null, "facts_ingested": 5}
+  ]
+}
