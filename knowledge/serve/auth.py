@@ -23,6 +23,19 @@ DEFAULT_REGION = "us-east-1"
 _CLOCK_SKEW_LEEWAY = 300  # seconds
 
 
+def _dev_principal() -> "Principal":
+    """The auth-bypass principal used when ``PRAXIS_AUTH_DISABLED=1``.
+
+    Defaults to the synthetic ``dev-user`` (what tests rely on). For local dev
+    against a real graph, set ``PRAXIS_DEV_USER_SUB`` to a real Cognito ``sub``
+    to impersonate that user — membership, ``/me``, and the tenant ``user_id``
+    all key off this, so the bypass then sees that user's real orgs and data.
+    """
+    sub = os.environ.get("PRAXIS_DEV_USER_SUB", "").strip() or "dev-user"
+    email = os.environ.get("PRAXIS_DEV_USER_EMAIL", "").strip() or "dev@local"
+    return Principal(sub=sub, email=email)
+
+
 @dataclass
 class Principal:
     sub: str
@@ -100,7 +113,7 @@ def verify_token(token: str) -> dict:
 def _principal_from_jwt(authorization: str | None) -> Principal:
     """Resolve a Principal from a Cognito Bearer JWT (or the dev seam)."""
     if os.environ.get("PRAXIS_AUTH_DISABLED") == "1":
-        return Principal(sub="dev-user", email="dev@local")
+        return _dev_principal()
 
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
@@ -140,7 +153,7 @@ def make_current_user(conn):
         x_praxis_key: str | None = Header(default=None),
     ) -> Principal:
         if os.environ.get("PRAXIS_AUTH_DISABLED") == "1":
-            return Principal(sub="dev-user", email="dev@local")
+            return _dev_principal()
         if x_praxis_key:
             record = apikeys.resolve_key(conn, x_praxis_key.strip())
             if record is None:
