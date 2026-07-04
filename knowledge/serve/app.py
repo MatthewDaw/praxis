@@ -485,6 +485,35 @@ def create_app(conn: Any | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc))
         return {"orgId": org_id, "status": "password_changed"}
 
+    @app.patch("/orgs/{org_id}")
+    def rename_org(
+        org_id: str,
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+    ) -> dict[str, Any]:
+        """Rename an org's display name (owner-only). Mirrors ``delete_org``'s auth.
+
+        Only ``name`` is mutable; ``org_id`` is the immutable tenant key. The same
+        two-staged auth as delete (404 to a non-member so existence never leaks,
+        403 to a member who is not the owner) plus the API-key scope guard, since
+        the org comes from the path rather than the ``X-Praxis-Org`` header.
+        """
+        if principal.api_key_org is not None and principal.api_key_org != org_id:
+            raise HTTPException(
+                status_code=403, detail=f"API key is not scoped to org {org_id!r}"
+            )
+        if not orgs_store.is_member(org_id, principal.sub):
+            raise HTTPException(status_code=404, detail=f"unknown org {org_id!r}")
+        if not orgs_store.is_owner(org_id, principal.sub):
+            raise HTTPException(
+                status_code=403, detail="only an org owner can rename it"
+            )
+        name = str(body.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name required")
+        orgs_store.rename_org(org_id, name)
+        return {"orgId": org_id, "name": name}
+
     @app.delete("/orgs/{org_id}")
     def delete_org(
         org_id: str,
@@ -632,6 +661,74 @@ def create_app(conn: Any | None = None) -> FastAPI:
         _purge_tenant_graph(org, space_uid)
         spaces_store.delete_space(org, principal.sub, space_id)
         return {"deleted": space_id}
+
+    @app.post("/spaces/copy-to-org")
+    def copy_space_to_org(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+        uid: str = Depends(active_user_id),
+    ) -> dict[str, Any]:
+        """Copy the caller's current working graph into a NEW space in another org.
+
+        Cross-org sharing for a single login: the active graph ``(org, uid)`` — the
+        default graph or the currently selected space — is copied wholesale into a
+        freshly created space ``targetSpace`` in ``targetOrg`` (which the caller
+        must also belong to). The target space is created fresh: 409 if a space
+        with that id already exists there (a copy never overwrites a graph). The
+        ``targetSpace`` slug is validated like ``create_space``. The space row is
+        created first, so a copy that fails mid-flight leaves an empty space the
+        caller can delete and retry — never invisible orphan facts.
+        """
+        target_org = str(body.get("targetOrg") or "").strip()
+        target_space = str(body.get("targetSpace") or "").strip()
+        name = body.get("name")
+        name = str(name) if name is not None else None
+        if not target_org:
+            raise HTTPException(status_code=400, detail="targetOrg required")
+        if not target_space or ":" in target_space or target_space == "default":
+            raise HTTPException(
+                status_code=400,
+                detail="targetSpace must be a non-'default' slug without ':'",
+            )
+        if not _SPACE_SLUG_RE.fullmatch(target_space):
+            raise HTTPException(
+                status_code=400,
+                detail="targetSpace must be lowercase letters, digits, '-' or '_'",
+            )
+        if not orgs_store.is_member(target_org, principal.sub):
+            raise HTTPException(
+                status_code=403, detail=f"not a member of org {target_org!r}"
+            )
+        try:
+            spaces_store.create_space(target_org, principal.sub, target_space, name)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        dst_uid = principal.sub + "::space:" + target_space
+        count = live_graph(target_org, dst_uid).copy_live_from(org, uid)
+        return {"targetOrg": target_org, "space": target_space, "count": count}
+
+    @app.patch("/spaces/{space_id}")
+    def rename_space(
+        space_id: str,
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Rename one of the caller's private spaces (display ``name`` only).
+
+        Spaces are private to the creating login, so ``owns`` is both the
+        existence and the authorization check (404 on unknown/unowned). Only
+        ``name`` changes; ``space_id`` is the immutable key the tenant graph is
+        derived from, so the working graph is untouched.
+        """
+        if not spaces_store.owns(org, principal.sub, space_id):
+            raise HTTPException(status_code=404, detail=f"unknown space {space_id!r}")
+        name = str(body.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name required")
+        spaces_store.rename_space(org, principal.sub, space_id, name)
+        return {"spaceId": space_id, "name": name}
 
     # --- API keys (in-page key management, scoped to the active org) -------
     def _apikey_view(rec: dict[str, Any]) -> dict[str, Any]:
@@ -1000,6 +1097,88 @@ def create_app(conn: Any | None = None) -> FastAPI:
         # scope): a no-op for space snapshots, which are never mountable yet.
         mounted_store.unmount(org, principal.sub, principal.sub, name)
         return {"deleted": name}
+
+    @app.post("/snapshots/{name}/copy-to-org")
+    def copy_snapshot_to_org(
+        name: str,
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+        uid: str = Depends(active_user_id),
+    ) -> dict[str, Any]:
+        """Copy one of the caller's snapshots into another org they belong to.
+
+        Cross-org sharing for a single login: the snapshot is read from the active
+        graph ``(org, uid)`` and copied into the caller's DEFAULT graph in
+        ``targetOrg`` under ``targetName`` (defaults to the source name). The
+        active-org dependency already proved source membership; the caller must
+        also be a member of ``targetOrg``. Ids/embeddings are preserved verbatim.
+        404 if the source snapshot is empty/unknown; 409 if ``targetOrg`` already
+        has a snapshot by that name (a copy never overwrites).
+        """
+        target_org = str(body.get("targetOrg") or "").strip()
+        target_name = str(body.get("targetName") or name).strip()
+        if not target_org:
+            raise HTTPException(status_code=400, detail="targetOrg required")
+        if not target_name:
+            raise HTTPException(status_code=400, detail="targetName required")
+        if not orgs_store.is_member(target_org, principal.sub):
+            raise HTTPException(
+                status_code=403, detail=f"not a member of org {target_org!r}"
+            )
+        src_key = f"snapshot:{name}"
+        if live_graph(org, uid).cache_count(src_key) == 0:
+            raise HTTPException(status_code=404, detail=f"unknown snapshot {name!r}")
+        dst_key = f"snapshot:{target_name}"
+        dst = live_graph(target_org, principal.sub)
+        if dst.cache_count(dst_key) != 0:
+            raise HTTPException(
+                status_code=409,
+                detail=f"snapshot {target_name!r} already exists in org {target_org!r}",
+            )
+        count = dst.copy_snapshot_from(org, uid, src_key, dst_key)
+        return {"targetOrg": target_org, "name": target_name, "count": count}
+
+    @app.patch("/snapshots/{name}")
+    def rename_snapshot(
+        name: str,
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+        uid: str = Depends(active_user_id),
+    ) -> dict[str, Any]:
+        """Rename a snapshot. Unlike orgs/spaces this re-keys, not relabels.
+
+        A snapshot's name *is* its ``cache_key`` (``snapshot:<name>``), so the new
+        name must be free (409 on collision) and the rename rewrites the key across
+        the snapshot's facts/edges/claims. Any self-mount of the old name is moved
+        to the new one so a mounted snapshot keeps being read after the rename.
+        """
+        new_name = str(body.get("name") or "").strip()
+        if not new_name:
+            raise HTTPException(status_code=400, detail="name required")
+        g = live_graph(org, uid)
+        old_key = f"snapshot:{name}"
+        new_key = f"snapshot:{new_name}"
+        if g.cache_count(old_key) == 0:
+            raise HTTPException(status_code=404, detail=f"unknown snapshot {name!r}")
+        if new_name != name and g.cache_count(new_key) > 0:
+            raise HTTPException(
+                status_code=409, detail=f"snapshot {new_name!r} already exists"
+            )
+        if new_name != name:
+            g.rename_cache(old_key, new_key)
+            # If the owner had this snapshot self-mounted, move the mount to the new
+            # name so it keeps being read (mounts key on principal.sub; space
+            # snapshots are not mountable yet, so this is a no-op for those).
+            was_mounted = any(
+                m["source_user_id"] == principal.sub and m["snapshot_name"] == name
+                for m in mounted_store.list(org, principal.sub)
+            )
+            if was_mounted:
+                mounted_store.unmount(org, principal.sub, principal.sub, name)
+                mounted_store.mount(org, principal.sub, principal.sub, new_name)
+        return {"name": new_name}
 
     # --- mounted snapshots (read-only overlay selection) -------------------
     def _validate_mount_target(org: str, source_user: str, name: str) -> None:

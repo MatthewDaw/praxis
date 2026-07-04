@@ -150,6 +150,27 @@ _CLAIM_COPY_COLS = (
     "org_id, user_id, fact_id, seq, subject, attribute, value, functional, created_at"
 )
 
+
+def _restamp_select(cols: str) -> str:
+    """``cols`` as a SELECT list with ``org_id``/``user_id`` swapped for ``%s``.
+
+    Cross-tenant copies (sharing a snapshot or space between orgs) reuse the
+    canonical copy column lists but must re-stamp the tenant keys to the
+    destination ``(org_id, user_id)`` instead of carrying the source's. The two
+    placeholders appear in column order, so callers bind ``(dst_org, dst_user)``
+    first (followed by any trailing literals like ``cache_key``).
+    """
+    return ", ".join(
+        "%s" if c.strip() in ("org_id", "user_id") else c.strip()
+        for c in cols.split(",")
+    )
+
+
+# SELECT projections for the copy column lists with the tenant keys re-stamped to
+# bound placeholders — see ``_restamp_select`` and the cross-org copy methods.
+_FACT_RESTAMP_SELECT = _restamp_select(_FACT_COPY_COLS)
+_CLAIM_RESTAMP_SELECT = _restamp_select(_CLAIM_COPY_COLS)
+
 # Multi-agent build-loop ticket lease (agent factory). A requirement fact carries
 # its build lifecycle + lease entirely on ``meta`` (no new table): ``build_state``
 # is ``incomplete`` -> ``in_progress`` -> ``finished``; a LIVE claim adds
@@ -2364,12 +2385,104 @@ class PostgresVectorGraph(SearchableGraph):
         )
         return cur.rowcount
 
+    def rename_cache(self, old_key: str, new_key: str) -> int:
+        """Re-key a saved cache entry from ``old_key`` to ``new_key`` in place.
+
+        A snapshot's name *is* its ``cache_key``, so renaming one means rewriting
+        ``cache_key`` across its facts, edges, and claims (all three carry it).
+        Pure metadata update — embeddings/ids/states are untouched. Returns the
+        number of fact rows moved (0 == ``old_key`` had no rows). The caller is
+        responsible for the collision check (``new_key`` already in use) and for
+        re-pointing any external references (e.g. ``mounted_snapshots``).
+        """
+        self._require_live("rename_cache")
+        for table in ("cached_fact_edges", "cached_claims", "cached_facts"):
+            self._conn.execute(
+                f"UPDATE {table} SET cache_key=%s "
+                "WHERE org_id=%s AND user_id=%s AND cache_key=%s",
+                (new_key, self.org_id, self.user_id, old_key),
+            )
+        row = self._conn.execute(
+            "SELECT count(*) FROM cached_facts WHERE org_id=%s AND user_id=%s AND cache_key=%s",
+            (self.org_id, self.user_id, new_key),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
     def cache_count(self, cache_key: str) -> int:
         """How many facts are cached under ``cache_key`` (0 == not cached)."""
         self._require_live("cache_count")
         row = self._conn.execute(
             "SELECT count(*) FROM cached_facts WHERE org_id=%s AND user_id=%s AND cache_key=%s",
             (self.org_id, self.user_id, cache_key),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    # --- cross-tenant copy (share a snapshot / space between orgs) ----------
+    def copy_snapshot_from(
+        self, src_org_id: str, src_user_id: str, src_cache_key: str, dst_cache_key: str
+    ) -> int:
+        """Copy a saved snapshot from another tenant's cache into this one's.
+
+        Cross-org sharing: the source rows under ``(src_org_id, src_user_id,
+        src_cache_key)`` are re-stamped with THIS graph's ``(org_id, user_id)``
+        and written under ``dst_cache_key``. Ids, embeddings, state and meta are
+        preserved verbatim (a pure SQL copy, no re-embedding), so a later
+        ``load_caches`` restores losslessly. The caller authorizes both tenants
+        and guarantees ``dst_cache_key`` is free here. Returns facts copied.
+        """
+        self._require_live("copy_snapshot_from")
+        dst = (self.org_id, self.user_id)
+        src = (src_org_id, src_user_id, src_cache_key)
+        self._conn.execute(
+            f"INSERT INTO cached_facts ({_FACT_COPY_COLS}, cache_key) "
+            f"SELECT {_FACT_RESTAMP_SELECT}, %s FROM cached_facts "
+            "WHERE org_id=%s AND user_id=%s AND cache_key=%s",
+            (*dst, dst_cache_key, *src),
+        )
+        self._conn.execute(
+            "INSERT INTO cached_fact_edges (org_id, user_id, cache_key, src_id, dst_id, kind) "
+            "SELECT %s, %s, %s, src_id, dst_id, kind FROM cached_fact_edges "
+            "WHERE org_id=%s AND user_id=%s AND cache_key=%s",
+            (*dst, dst_cache_key, *src),
+        )
+        self._conn.execute(
+            f"INSERT INTO cached_claims ({_CLAIM_COPY_COLS}, cache_key) "
+            f"SELECT {_CLAIM_RESTAMP_SELECT}, %s FROM cached_claims "
+            "WHERE org_id=%s AND user_id=%s AND cache_key=%s",
+            (*dst, dst_cache_key, *src),
+        )
+        return self.cache_count(dst_cache_key)
+
+    def copy_live_from(self, src_org_id: str, src_user_id: str) -> int:
+        """Copy another tenant's entire live graph into this (fresh) live graph.
+
+        Cross-org sharing of a whole space: the source ``(src_org_id,
+        src_user_id)`` facts/edges/claims are re-stamped with THIS graph's
+        ``(org_id, user_id)`` and inserted. Intended for a freshly created,
+        empty destination tenant (e.g. a brand-new space) — it does not truncate
+        first, so a non-empty destination risks primary-key collisions on shared
+        ids. The caller authorizes both tenants. Returns facts copied.
+        """
+        self._require_live("copy_live_from")
+        dst = (self.org_id, self.user_id)
+        src = (src_org_id, src_user_id)
+        self._conn.execute(
+            f"INSERT INTO facts ({_FACT_COPY_COLS}) "
+            f"SELECT {_FACT_RESTAMP_SELECT} FROM facts WHERE org_id=%s AND user_id=%s",
+            (*dst, *src),
+        )
+        self._conn.execute(
+            "INSERT INTO fact_edges (org_id, user_id, src_id, dst_id, kind) "
+            "SELECT %s, %s, src_id, dst_id, kind FROM fact_edges WHERE org_id=%s AND user_id=%s",
+            (*dst, *src),
+        )
+        self._conn.execute(
+            f"INSERT INTO claims ({_CLAIM_COPY_COLS}) "
+            f"SELECT {_CLAIM_RESTAMP_SELECT} FROM claims WHERE org_id=%s AND user_id=%s",
+            (*dst, *src),
+        )
+        row = self._conn.execute(
+            "SELECT count(*) FROM facts WHERE org_id=%s AND user_id=%s", dst
         ).fetchone()
         return int(row[0]) if row else 0
 

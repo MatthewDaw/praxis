@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ApiConflictError,
   GraphIngestUnavailableError,
   postInsight,
+  saveSnapshot,
 } from "./api/apiClient";
 import { recordFactOutcome } from "./api/contextClient";
 import { canDeleteCandidate } from "./api/candidateModel";
@@ -10,10 +11,7 @@ import { buildLocalLogSession } from "./api/localLogsProvider";
 import { CandidateCards } from "./components/CandidateCards";
 import { CandidateDetail } from "./components/CandidateDetail";
 import { ContextExplorer } from "./components/ContextExplorer";
-import { GraphDataLoader } from "./components/GraphDataLoader";
-import { SnapshotManager } from "./components/SnapshotManager";
 import { ApiKeysPanel } from "./components/ApiKeysPanel";
-import { SourceFoldIn } from "./components/SourceFoldIn";
 import { CandidateTable } from "./components/CandidateTable";
 import {
   ContradictionsReview,
@@ -31,6 +29,8 @@ import { FilterBar } from "./components/layout/FilterBar";
 import { SectionTabs } from "./components/layout/SectionTabs";
 import { CandidateEditorModal } from "./components/ui/CandidateEditorModal";
 import { Modal } from "./components/ui/Modal";
+import { MountSwitcher } from "./components/ui/MountSwitcher";
+import { SnapshotSwitcher } from "./components/ui/SnapshotSwitcher";
 import { TranscriptPanel } from "./components/transcript/TranscriptPanel";
 import { useApiHealth } from "./hooks/useApiHealth";
 import { useDataSource } from "./hooks/useDataSource";
@@ -82,11 +82,42 @@ export default function App() {
     null,
   );
   const [localRawFiles, setLocalRawFiles] = useState<LocalLogFileInput[]>([]);
-  const { getToken, orgId, orgName, userId, signOut, switchOrg } = useOrg();
+  const { getToken, orgId, orgName, userId, email, signOut, switchOrg } = useOrg();
   const { spaceId } = useSpace();
   const auth = useMemo(
     () => ({ getToken, orgId, spaceId }),
     [getToken, orgId, spaceId],
+  );
+
+  // --- Snapshot quick-switch state ---------------------------------------
+  // The snapshot the live graph was last loaded from / saved to, tracked per
+  // (org, space) so switching either never carries a stale name. `dirty` flips
+  // on any graph edit since that snapshot was loaded and powers the "pending
+  // save" light; it is session-only (a reload conservatively resets to clean).
+  const snapshotStorageKey = `praxis-active-snapshot:${orgId}:${spaceId}`;
+  const [activeSnapshot, setActiveSnapshot] = useState<string>(
+    () => localStorage.getItem(`praxis-active-snapshot:${orgId}:${spaceId}`) ?? "",
+  );
+  const [snapshotDirty, setSnapshotDirty] = useState(false);
+
+  useEffect(() => {
+    setActiveSnapshot(localStorage.getItem(`praxis-active-snapshot:${orgId}:${spaceId}`) ?? "");
+    setSnapshotDirty(false);
+  }, [orgId, spaceId]);
+
+  const markGraphDirty = useCallback(() => setSnapshotDirty(true), []);
+
+  const handleSnapshotSynced = useCallback(
+    (name: string) => {
+      setActiveSnapshot(name);
+      if (name) {
+        localStorage.setItem(snapshotStorageKey, name);
+      } else {
+        localStorage.removeItem(snapshotStorageKey);
+      }
+      setSnapshotDirty(false);
+    },
+    [snapshotStorageKey],
   );
   const { config, mode, label, detail, ingestApiBaseUrl, applyConfig } =
     useDataSource(localSession, auth);
@@ -126,9 +157,7 @@ export default function App() {
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [viewTab, setViewTab] = useState<ViewTab>("table");
-  const [activePanel, setActivePanel] = useState<
-    null | "snapshots" | "foldin" | "eval" | "apikeys"
-  >(null);
+  const [activePanel, setActivePanel] = useState<null | "apikeys">(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [reviewNotice, setReviewNotice] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
@@ -231,6 +260,7 @@ export default function App() {
       const idSuffix = result.id ? ` (${result.id})` : "";
       setInfoMessage(`Graph ingest via /insights: ${result.summary}${idSuffix}.`);
       bumpGraphRefresh();
+      markGraphDirty();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (err instanceof GraphIngestUnavailableError) {
@@ -311,6 +341,7 @@ export default function App() {
     try {
       await recordFactOutcome(config.apiBaseUrl, id, success, auth);
       await refreshCandidate(id);
+      markGraphDirty();
       setInfoMessage(
         `Recorded ${success ? "success" : "failure"} outcome for the fact.`,
       );
@@ -348,6 +379,7 @@ export default function App() {
     setActionError(null);
     try {
       const updated = await promote(id);
+      markGraphDirty();
       noticeFromResult(updated);
       await ingestActiveCandidate(updated);
     } catch (err) {
@@ -365,6 +397,7 @@ export default function App() {
       // provider.reject resolves to void (no Candidate body), so there is no
       // extra.hasOtherContradictions signal to surface on this path.
       await reject(id, reason);
+      markGraphDirty();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     }
@@ -385,6 +418,27 @@ export default function App() {
       setInfoMessage(`Cleared your graph — removed ${cleared} fact${cleared === 1 ? "" : "s"}.`);
       await refresh();
       setGraphRefreshKey((value) => value + 1);
+      markGraphDirty();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  // Save the live graph into the currently-selected snapshot. With no snapshot
+  // selected, prompt for a name and create a new one.
+  async function handleSaveSnapshot() {
+    if (!(mode === "live" && config.apiBaseUrl)) return;
+    let name = activeSnapshot;
+    if (!name) {
+      const entered = window.prompt("Save the current graph as a snapshot named:")?.trim();
+      if (!entered) return;
+      name = entered;
+    }
+    setActionError(null);
+    try {
+      await saveSnapshot(config.apiBaseUrl, name, auth);
+      handleSnapshotSynced(name);
+      setInfoMessage(`Saved graph to snapshot "${name}".`);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     }
@@ -401,6 +455,7 @@ export default function App() {
         const updated = await updateCandidate(editorState.candidate.id, input);
         await ingestActiveCandidate(updated);
       }
+      markGraphDirty();
       setEditorState(null);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
@@ -419,6 +474,7 @@ export default function App() {
     }
     try {
       await deleteCandidate(id);
+      markGraphDirty();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     }
@@ -438,6 +494,7 @@ export default function App() {
         keepId,
         rivalTitle,
       );
+      markGraphDirty();
       if (updated) {
         noticeFromResult(updated);
       }
@@ -450,6 +507,7 @@ export default function App() {
     setActionError(null);
     try {
       await resolveContradictionCustom(contradictionId, customText);
+      markGraphDirty();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     }
@@ -497,29 +555,25 @@ export default function App() {
         ? "Local Claude logs"
         : "Mock fixtures (evals)";
 
+  const snapshotControl =
+    mode === "live" && config.apiBaseUrl ? (
+      <SnapshotSwitcher
+        apiBaseUrl={config.apiBaseUrl}
+        auth={auth}
+        activeSnapshot={activeSnapshot}
+        dirty={snapshotDirty}
+        onSynced={handleSnapshotSynced}
+        onGraphReplaced={handleRefresh}
+      />
+    ) : undefined;
+
+  const mountControl =
+    mode === "live" && config.apiBaseUrl ? (
+      <MountSwitcher apiBaseUrl={config.apiBaseUrl} auth={auth} />
+    ) : undefined;
+
   const headerTools = (
     <div className="header-tools">
-      <button
-        type="button"
-        className="header-tools__btn"
-        onClick={() => setActivePanel("snapshots")}
-      >
-        Snapshots
-      </button>
-      <button
-        type="button"
-        className="header-tools__btn"
-        onClick={() => setActivePanel("foldin")}
-      >
-        Add facts from snapshot
-      </button>
-      <button
-        type="button"
-        className="header-tools__btn"
-        onClick={() => setActivePanel("eval")}
-      >
-        Load eval data
-      </button>
       <button
         type="button"
         className="header-tools__btn"
@@ -543,6 +597,7 @@ export default function App() {
         onLoadLocalLogs={handleLoadLocalLogs}
         onClearLocalLogs={handleClearLocalLogs}
         tools={mode === "live" && config.apiBaseUrl ? headerTools : undefined}
+        snapshot={snapshotControl}
         tabs={
           <SectionTabs
             viewTab={viewTab}
@@ -552,51 +607,13 @@ export default function App() {
         }
       />
 
+      {mountControl}
+
       {mode === "local-logs" ? (
         <div className="warning-banner">
           Heuristic preview — not Matthew&apos;s distillation pipeline. Upload .jsonl
           session files to explore transcripts and proposed candidates in the browser.
         </div>
-      ) : null}
-
-      {mode === "live" && config.apiBaseUrl && activePanel === "snapshots" ? (
-        <Modal title="Snapshots" onClose={() => setActivePanel(null)}>
-          <SnapshotManager
-            apiBaseUrl={config.apiBaseUrl}
-            auth={auth}
-            onLoaded={handleRefresh}
-            embedded
-          />
-        </Modal>
-      ) : null}
-
-      {mode === "live" && config.apiBaseUrl && activePanel === "foldin" ? (
-        <Modal
-          title="Browse snapshots & fold in skills"
-          onClose={() => setActivePanel(null)}
-        >
-          <SourceFoldIn
-            apiBaseUrl={config.apiBaseUrl}
-            auth={auth}
-            onFolded={handleRefresh}
-            onViewContradictions={() => {
-              setViewTab("contradictions");
-              setActivePanel(null);
-            }}
-            embedded
-          />
-        </Modal>
-      ) : null}
-
-      {mode === "live" && config.apiBaseUrl && activePanel === "eval" ? (
-        <Modal title="Load eval data into graph" onClose={() => setActivePanel(null)}>
-          <GraphDataLoader
-            apiBaseUrl={config.apiBaseUrl}
-            auth={auth}
-            onLoaded={handleRefresh}
-            embedded
-          />
-        </Modal>
       ) : null}
 
       {mode === "live" && config.apiBaseUrl && activePanel === "apikeys" ? (
@@ -649,11 +666,15 @@ export default function App() {
           onStateFilterChange={setStateFilter}
           onViewTabChange={setViewTab}
           onClearGraph={handleClearGraph}
+          onSaveSnapshot={
+            mode === "live" && config.apiBaseUrl ? handleSaveSnapshot : undefined
+          }
+          saveTarget={activeSnapshot}
         />
       ) : null}
 
       {viewTab === "setup" ? (
-        <McpSetupGuide />
+        <McpSetupGuide email={email} />
       ) : viewTab === "context" ? (
         mode === "live" && config.apiBaseUrl ? (
           <ContextExplorer apiBaseUrl={config.apiBaseUrl} auth={auth} />

@@ -49,6 +49,24 @@ class SpacesStore:
         if cur.rowcount == 0:
             raise ValueError(f"space {space_id!r} already exists")
 
+    def rename_space(
+        self, org_id: str, owner_sub: str, space_id: str, name: str | None
+    ) -> bool:
+        """Set the display ``name`` of ``owner_sub``'s space; True if it existed.
+
+        Only the human-facing ``name`` changes — ``space_id`` is the immutable key
+        the effective tenant ``user_id`` is derived from, so it is never touched.
+        Ownership (``owner_sub``) is both the existence and authorization scope.
+        """
+        cur = self._conn.execute(
+            """
+            UPDATE spaces SET name = %s
+            WHERE org_id = %s AND owner_sub = %s AND space_id = %s
+            """,
+            (name, org_id, owner_sub, space_id),
+        )
+        return cur.rowcount > 0
+
     def delete_space(self, org_id: str, owner_sub: str, space_id: str) -> bool:
         """Remove the space registry row; return True if one was deleted.
 

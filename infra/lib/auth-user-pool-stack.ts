@@ -33,11 +33,15 @@ export class AuthUserPoolStack extends cdk.Stack {
       selfSignUpEnabled: true,
       signInAliases: { email: true },
       autoVerify: { email: true },
+      // Relaxed policy: no character-class requirements (no uppercase, digit, or
+      // symbol needed), shortest length Cognito allows. Cognito's hard floor for
+      // minLength is 6 — CloudFormation rejects anything lower — so 6 is as short
+      // as this can go.
       passwordPolicy: {
-        minLength: 8,
-        requireLowercase: true,
-        requireUppercase: true,
-        requireDigits: true,
+        minLength: 6,
+        requireLowercase: false,
+        requireUppercase: false,
+        requireDigits: false,
         requireSymbols: false,
       },
       accountRecovery: cognito.AccountRecovery.EMAIL_ONLY,

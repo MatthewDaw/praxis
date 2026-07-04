@@ -45,6 +45,13 @@ export interface OrgContextValue {
   selectOrg: (orgId: string) => void;
   /** Clear the active org and return to the workspace picker (stays logged in). */
   switchOrg: () => void;
+  /**
+   * Permanently delete an org (owner-only, server-enforced), refresh memberships,
+   * and — if it was the active org — drop back to the workspace picker.
+   */
+  deleteAndSwitchOrg: (orgId: string) => Promise<void>;
+  /** Rename an org's display name (owner-only) and refresh memberships. */
+  renameAndRefreshOrg: (orgId: string, name: string) => Promise<void>;
 }
 
 const OrgContext = createContext<OrgContextValue | null>(null);
@@ -167,6 +174,31 @@ export async function deleteOrg(
   }
 }
 
+/**
+ * `PATCH /orgs/{orgId}` — rename an org's display name (owner-only, like delete;
+ * `orgId` is the immutable key). A non-owner member gets 403, a non-member 404.
+ */
+export async function renameOrg(
+  baseUrl: string,
+  getToken: () => Promise<string | undefined>,
+  orgId: string,
+  name: string,
+): Promise<void> {
+  const token = await getToken();
+  const response = await fetch(
+    `${baseUrl.replace(/\/$/, "")}/orgs/${encodeURIComponent(orgId)}`,
+    {
+      method: "PATCH",
+      headers: contractHeaders(token),
+      body: JSON.stringify({ name }),
+    },
+  );
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `PATCH /orgs/${orgId} failed (${response.status})`);
+  }
+}
+
 export async function changeOrgPassword(
   baseUrl: string,
   getToken: () => Promise<string | undefined>,
@@ -239,6 +271,25 @@ export function OrgGate({ children }: OrgGateProps) {
     localStorage.removeItem(ACTIVE_ORG_STORAGE_KEY);
     setActiveOrg(null);
   }, []);
+
+  const deleteAndSwitchOrg = useCallback(
+    async (orgId: string) => {
+      await deleteOrg(baseUrl, getToken, orgId);
+      await loadMe();
+      if (activeOrg === orgId) {
+        switchOrg();
+      }
+    },
+    [baseUrl, getToken, loadMe, activeOrg, switchOrg],
+  );
+
+  const renameAndRefreshOrg = useCallback(
+    async (orgId: string, name: string) => {
+      await renameOrg(baseUrl, getToken, orgId, name);
+      await loadMe();
+    },
+    [baseUrl, getToken, loadMe],
+  );
 
   async function handleCreate(event: React.FormEvent) {
     event.preventDefault();
@@ -334,8 +385,20 @@ export function OrgGate({ children }: OrgGateProps) {
       signOut: handleSignOut,
       selectOrg: chooseOrg,
       switchOrg,
+      deleteAndSwitchOrg,
+      renameAndRefreshOrg,
     };
-  }, [activeOrg, memberships, identity, getToken, handleSignOut, chooseOrg, switchOrg]);
+  }, [
+    activeOrg,
+    memberships,
+    identity,
+    getToken,
+    handleSignOut,
+    chooseOrg,
+    switchOrg,
+    deleteAndSwitchOrg,
+    renameAndRefreshOrg,
+  ]);
 
   if (loading) {
     return <div className="org-gate org-gate--loading">Loading your workspace…</div>;

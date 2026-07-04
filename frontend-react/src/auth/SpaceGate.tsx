@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { createSpace, deleteSpace, listSpaces, type Space } from "../api/spaces";
+import { createSpace, deleteSpace, listSpaces, renameSpace, type Space } from "../api/spaces";
 import { orgApiBaseUrl, useOrg } from "./OrgGate";
 
 /**
@@ -34,6 +34,8 @@ export interface SpaceContextValue {
    * the active one — fall back to the default graph (selectSpace("")).
    */
   deleteAndDeselectSpace: (spaceId: string) => Promise<void>;
+  /** Rename a space's display name (the spaceId key is unchanged) and refresh. */
+  renameAndRefreshSpace: (spaceId: string, name: string) => Promise<void>;
 }
 
 const SpaceContext = createContext<SpaceContextValue | null>(null);
@@ -125,9 +127,31 @@ export function SpaceGate({ children }: SpaceGateProps) {
     [baseUrl, getToken, orgId, refreshSpaces, selectSpace, spaceId],
   );
 
+  const renameAndRefreshSpace = useCallback(
+    async (targetSpaceId: string, name: string) => {
+      await renameSpace(baseUrl, getToken, orgId, targetSpaceId, name);
+      await refreshSpaces();
+    },
+    [baseUrl, getToken, orgId, refreshSpaces],
+  );
+
   const value = useMemo<SpaceContextValue>(
-    () => ({ spaceId, spaces, selectSpace, createAndSelectSpace, deleteAndDeselectSpace }),
-    [spaceId, spaces, selectSpace, createAndSelectSpace, deleteAndDeselectSpace],
+    () => ({
+      spaceId,
+      spaces,
+      selectSpace,
+      createAndSelectSpace,
+      deleteAndDeselectSpace,
+      renameAndRefreshSpace,
+    }),
+    [
+      spaceId,
+      spaces,
+      selectSpace,
+      createAndSelectSpace,
+      deleteAndDeselectSpace,
+      renameAndRefreshSpace,
+    ],
   );
 
   return <SpaceContext.Provider value={value}>{children}</SpaceContext.Provider>;

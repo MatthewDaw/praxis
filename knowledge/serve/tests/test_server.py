@@ -301,6 +301,43 @@ def test_load_unknown_snapshot_is_404(client):
     assert client.post("/snapshots/nope/load").status_code == 404
 
 
+def test_rename_snapshot_rekeys_and_preserves_count(client):
+    """PATCH /snapshots/{name} re-keys the snapshot: the old name stops listing,
+    the new name lists with the same node count, and it still loads."""
+    cid = _create(client, content="A fact worth renaming a snapshot over.")["id"]
+    client.post(f"/candidates/{cid}/promote", json={})
+    count = client.post("/snapshots", json={"name": "snap1"}).json()["count"]
+    assert count >= 1
+
+    res = client.patch("/snapshots/snap1", json={"name": "snap2"})
+    assert res.status_code == 200, res.text
+    assert res.json() == {"name": "snap2"}
+
+    listed = {s["name"]: s["count"] for s in client.get("/snapshots").json()["snapshots"]}
+    assert "snap1" not in listed
+    assert listed.get("snap2") == count
+    # The re-keyed snapshot still loads under its new name.
+    assert client.post("/snapshots/snap2/load").json()["loaded"] == count
+
+
+def test_rename_snapshot_onto_existing_name_is_409(client):
+    """Renaming onto a name already in use is a clean 409, not a silent merge."""
+    cid = _create(client, content="A fact for the snapshot collision test.")["id"]
+    client.post(f"/candidates/{cid}/promote", json={})
+    client.post("/snapshots", json={"name": "snapA"})
+    client.post("/snapshots", json={"name": "snapB"})
+
+    res = client.patch("/snapshots/snapA", json={"name": "snapB"})
+    assert res.status_code == 409, res.text
+    # Both originals survive the rejected rename.
+    names = {s["name"] for s in client.get("/snapshots").json()["snapshots"]}
+    assert {"snapA", "snapB"} <= names
+
+
+def test_rename_unknown_snapshot_is_404(client):
+    assert client.patch("/snapshots/nope", json={"name": "x"}).status_code == 404
+
+
 def _graph_for(client):
     """A read-side graph over the same tenant the client writes to (H5/H1 edges)."""
     org = client.headers["X-Praxis-Org"]

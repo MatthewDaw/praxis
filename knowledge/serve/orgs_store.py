@@ -108,6 +108,18 @@ class OrgsStore:
             (_hash_password(new_password, new_salt), new_salt, org_id),
         )
 
+    def rename_org(self, org_id: str, name: str) -> bool:
+        """Set ``org_id``'s display ``name``; return True if the row existed.
+
+        Only the human-facing ``name`` changes — ``org_id`` is the immutable key
+        every membership, fact, and snapshot is tenanted by, so it is never
+        touched. Authorization (owner-only) is the route's job, not this method's.
+        """
+        cur = self._conn.execute(
+            "UPDATE orgs SET name = %s WHERE org_id = %s", (name, org_id)
+        )
+        return cur.rowcount > 0
+
     def delete_org(self, org_id: str) -> bool:
         """Delete ``org_id`` outright; return True if a row was removed.
 

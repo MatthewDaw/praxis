@@ -99,6 +99,7 @@ code,
 }
 
 .dashboard-header {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: stretch;
@@ -135,11 +136,12 @@ code,
 }
 
 .dashboard-header__title {
-  margin: 0 0 var(--space-1);
-  font-size: 1.5rem;
-  font-weight: 700;
+  margin: 0;
+  font-size: 2.5rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
   color: var(--h1);
-  line-height: 1.25;
+  line-height: 1.1;
 }
 
 .github-repo-link {
@@ -183,24 +185,57 @@ code,
   flex-direction: column;
   align-items: flex-end;
   gap: var(--space-2);
+  /* Reserve room for the two-column switcher grid (otherwise the column would
+     shrink to a single control's width and the grid could never form two cols). */
+  flex: 1 1 520px;
+  min-width: 0;
 }
 
-/* Breathing room between the status badge and the data source control. */
-.dashboard-header__meta .org-switcher,
-.dashboard-header__meta .space-switcher,
-.dashboard-header__meta .data-source-control {
-  margin-top: var(--space-3);
+/* The four data/tenancy switchers (data source, org, space, snapshot) laid out
+   as a 2×2 grid below the status badge. Collapses to one column when the header
+   stacks (see the 960px media query). */
+.dashboard-header__switchers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, auto);
+  /* Column-first flow so the left column holds Data Source + Organization and the
+     right column holds Space + Snapshot (DOM order is data source, org, space,
+     snapshot). Row flow would instead split them data source/space | org/snapshot. */
+  grid-auto-flow: column;
+  gap: var(--space-3);
+  align-items: start;
+  width: 100%;
+  margin-top: 0;
+}
+
+/* Inside the grid each switcher fills its cell rather than holding the standalone
+   260–360px sizing it uses when stacked, and the per-item stacking margin is
+   replaced by the grid gap. */
+.dashboard-header__switchers > .data-source-control,
+.dashboard-header__switchers > .org-switcher,
+.dashboard-header__switchers > .space-switcher,
+.dashboard-header__switchers > .snapshot-switcher {
+  min-width: 0;
+  max-width: none;
+  margin-top: 0;
 }
 
 /* ---- Header tools (modal openers) ------------------------------------- */
+/* praxis title + the API keys button share the top row. */
+.dashboard-header__brand-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
 .dashboard-header__tools {
-  margin-top: var(--space-3);
+  margin-top: 0;
 }
 
 /* ---- Header section tabs --------------------------------------------- */
+/* Sit in normal flow directly below the praxis/API-keys row with a tight gap. */
 .dashboard-header__tabs {
-  margin-top: auto;
-  padding-top: var(--space-4);
+  margin-top: var(--space-3);
 }
 
 .header-tools {
@@ -329,48 +364,27 @@ code,
 .filter-bar {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-end;
-  gap: var(--space-4);
-  padding: var(--space-4);
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-panel);
 }
 
-.filter-bar__fields {
-  display: grid;
-  grid-template-columns: 2fr 1fr;
-  align-items: end;
-  gap: var(--space-4);
-  flex: 1 1 360px;
+.filter-bar__search {
+  flex: 1 1 280px;
+  min-width: 0;
 }
 
-.filter-bar__controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-3);
+.filter-bar__state {
+  flex: 0 0 auto;
 }
 
-.filter-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: var(--h3);
-}
-
-.filter-field__hint {
-  font-weight: 400;
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-
-.filter-field input,
-.filter-field select {
-  padding: 0.55rem 0.75rem;
+.filter-bar__search,
+.filter-bar__state {
+  padding: 0.5rem 0.75rem;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   font: inherit;
@@ -378,11 +392,20 @@ code,
   color: var(--ink);
 }
 
-.filter-field input:focus-visible,
-.filter-field select:focus-visible {
+.filter-bar__search:focus-visible,
+.filter-bar__state:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
   border-color: var(--accent);
+}
+
+/* Controls (truncate + count) hug the right edge of the single row. */
+.filter-bar__controls {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
 }
 
 .view-toggle {
@@ -415,7 +438,7 @@ code,
 }
 
 .knowledge-view-toggle {
-  grid-column: 1 / -1;
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -1250,6 +1273,282 @@ code,
   color: var(--danger, #b42318);
 }
 
+/* ---- Snapshot switcher (quick-switch + pending-save light) ------------- */
+.snapshot-switcher__save {
+  flex: 0 0 auto;
+}
+
+.snapshot-switcher__status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 1.6rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.snapshot-switcher__save {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.78rem;
+}
+
+.snapshot-switcher__pending,
+.snapshot-switcher__synced {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.snapshot-switcher__pending {
+  color: var(--warning, #b54708);
+  font-weight: 600;
+}
+
+.snapshot-switcher__dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--warning, #f79009);
+  box-shadow: 0 0 0 0 rgba(247, 144, 9, 0.5);
+  animation: snapshot-pulse 1.6s ease-out infinite;
+}
+
+.snapshot-switcher__dot--ok {
+  background: var(--success, #12b76a);
+  box-shadow: none;
+  animation: none;
+}
+
+@keyframes snapshot-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(247, 144, 9, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 0.4rem rgba(247, 144, 9, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(247, 144, 9, 0);
+  }
+}
+
+.snapshot-switcher__confirm p {
+  margin: 0 0 var(--space-4);
+}
+
+.snapshot-switcher__confirm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+/* ---- Mount switcher (extra read-only snapshots) ----------------------- */
+/* Standalone section between the header box and the search bar. */
+.mount-switcher {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+  margin-top: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+.mount-switcher__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+.mount-switcher__chevron {
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.mount-switcher__label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mount-switcher__count {
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.mount-switcher__empty {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.mount-switcher__chips {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.mount-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.3rem 0.25rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+
+.mount-chip__name {
+  font-weight: 600;
+}
+
+.mount-chip__owner {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.mount-chip__remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.mount-chip__remove:hover:not(:disabled) {
+  background: var(--danger-bg, #fee4e2);
+  color: var(--danger, #b42318);
+}
+
+.mount-chip__remove:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.mount-switcher__search {
+  position: relative;
+}
+
+.mount-switcher__input {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  font-size: 0.88rem;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.mount-switcher__results {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: var(--space-1);
+  list-style: none;
+  max-height: 16rem;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md, 0 8px 24px rgba(0, 0, 0, 0.12));
+}
+
+.mount-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: var(--ink);
+}
+
+.mount-result:hover:not(:disabled) {
+  background: var(--bg);
+}
+
+.mount-result:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.mount-result--empty {
+  padding: 0.5rem 0.55rem;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.mount-result__label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.mount-result__name {
+  font-size: 0.86rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mount-result__meta {
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.mount-result__action {
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent, #2563eb);
+}
+
+.mount-result--added .mount-result__action {
+  color: var(--success, #12b76a);
+}
+
+.mount-switcher__error {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--danger, #b42318);
+}
+
 .data-source-control__label {
   font-size: 0.78rem;
   font-weight: 600;
@@ -1691,9 +1990,56 @@ code,
   cursor: default;
 }
 
-/* Keep the space switcher's Delete affordance from stretching the select row. */
-.space-switcher__delete {
+/* Keep the switcher Rename/Delete affordances from stretching the select row. */
+.space-switcher__delete,
+.space-switcher__rename,
+.org-switcher__delete,
+.org-switcher__rename {
   flex: 0 0 auto;
+}
+
+/* The ✎ rename triggers are compact icon buttons sitting beside Delete. */
+.space-switcher__rename,
+.org-switcher__rename {
+  padding: 0.2rem 0.4rem;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+/* Inline rename editor that the dropdown is swapped for while renaming. */
+.inline-rename {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.inline-rename__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.inline-rename__input {
+  flex: 1 1 160px;
+  min-width: 0;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  font-size: 0.88rem;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.inline-rename__save,
+.inline-rename__cancel {
+  flex: 0 0 auto;
+}
+
+.inline-rename__error {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--danger, #b42318);
 }
 
 /* ---- Org gate ("Choose a workspace") ---------------------------------- */
@@ -1744,9 +2090,20 @@ code,
   flex-direction: column;
   gap: var(--space-2);
 }
-/* Pick-an-org rows read as selectable buttons. */
-.org-gate__pick li button {
-  width: 100%;
+/* A pick row carrying an owner-only Delete: the select button is the big card
+   that flexes to fill the row; the Delete is a small pill that hugs its content.
+   The card style is scoped to the FIRST button only — when it applied to every
+   button in the row it also full-width'd the Delete pill, whose flex-basis then
+   resolved to 100% and dominated the row, squeezing the name to its min-width. */
+.org-gate__pick-row {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+.org-gate__pick-row > button:first-child {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
   text-align: left;
   appearance: none;
   border: 1px solid var(--line);
@@ -1759,23 +2116,13 @@ code,
   cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease;
 }
-.org-gate__pick li button:hover {
+.org-gate__pick-row > button:first-child:hover {
   background: #eff4ff;
   border-color: var(--accent);
 }
-/* A pick row carrying an owner-only Delete: select button flexes, Delete hugs. */
-.org-gate__pick-row {
-  display: flex;
-  align-items: stretch;
-  gap: var(--space-2);
-}
-.org-gate__pick-row > button:first-child {
-  flex: 1 1 auto;
-  width: auto;
-}
 .org-gate__pick-row .org-gate__delete {
   flex: 0 0 auto;
-  align-self: stretch;
+  align-self: center;
 }
 .org-gate form {
   display: flex;
@@ -2050,10 +2397,6 @@ code,
     max-height: none;
   }
 
-  .filter-bar__fields {
-    grid-template-columns: 1fr;
-  }
-
   .pagination-controls {
     align-items: stretch;
     flex-direction: column;
@@ -2068,15 +2411,32 @@ code,
     flex-direction: column;
   }
 
+  /* Stacked: the flex basis (280px/520px) is read as a HEIGHT in column
+     direction and would force each column taller than its content, leaving a
+     large empty gap below the brand's tabs. Size to content instead. */
+  .dashboard-header__brand,
+  .dashboard-header__meta {
+    flex: 0 0 auto;
+  }
+
   .dashboard-header__meta {
     align-items: flex-start;
   }
 
-  /* Once the header stacks, the brand column no longer needs to stretch to match
-     the taller meta column (which grew with the space switcher). Drop the
-     margin-top:auto that pushed the tabs to the bottom, which left a large empty
-     gap between the header tools and the section tabs at narrow widths. */
+  /* Stacked header: the switcher grid returns to a single column so each control
+     keeps a comfortable width instead of being squeezed to half. Reset the
+     two-row column flow back to a single top-to-bottom stack (data source, org,
+     space, snapshot) — otherwise column flow would spill into implicit columns. */
+  .dashboard-header__switchers {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    grid-auto-flow: row;
+  }
+
+  /* Once the header stacks, return the tabs to normal flow directly below the
+     tools (they're absolutely pinned to the header bottom in the wide layout). */
   .dashboard-header__tabs {
+    position: static;
     margin-top: var(--space-4);
   }
 
@@ -2933,6 +3293,44 @@ code,
 }
 
 .mcp-command__copy {
+  flex: 0 0 auto;
+  align-self: flex-start;
+}
+
+/* Quick-start "paste into Claude" block — visually lifted above the reference. */
+.mcp-guide__step--highlight {
+  border-top: none;
+  padding: var(--space-4);
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel, transparent));
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: var(--radius-md);
+}
+
+.mcp-setup-prompt {
+  margin-bottom: var(--space-3);
+}
+
+.mcp-setup-prompt__row {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.mcp-setup-prompt__code {
+  flex: 1;
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+
+.mcp-setup-prompt__copy {
   flex: 0 0 auto;
   align-self: flex-start;
 }

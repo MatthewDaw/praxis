@@ -1,8 +1,6 @@
 import { DataSourceControl } from "../ui/DataSourceControl";
-import { EnvironmentBadge } from "../ui/EnvironmentBadge";
 import { OrgSwitcher } from "../ui/OrgSwitcher";
 import { SpaceSwitcher } from "../ui/SpaceSwitcher";
-import { GitHubRepoLink } from "../ui/GitHubRepoLink";
 import type { DataSourceConfig, DataSourceMode } from "../../config/dataSource";
 import type { ApiStoreType } from "../../hooks/useApiHealth";
 import type { LocalLogFileInput } from "../../types/transcript";
@@ -21,12 +19,11 @@ interface DashboardHeaderProps {
   tools?: React.ReactNode;
   /** Primary section navigation rendered inside the header box. */
   tabs?: React.ReactNode;
+  /** Snapshot quick-switch control, rendered directly below the space switcher. */
+  snapshot?: React.ReactNode;
 }
 
 export function DashboardHeader({
-  mode,
-  label,
-  detail,
   storeType,
   config,
   localSession,
@@ -35,38 +32,31 @@ export function DashboardHeader({
   onClearLocalLogs,
   tools,
   tabs,
+  snapshot,
 }: DashboardHeaderProps) {
   return (
     <header className="dashboard-header">
       <div className="dashboard-header__brand">
-        <p className="dashboard-header__eyebrow">PRAXIS</p>
-        <div className="dashboard-header__title-row">
-          <h1 className="dashboard-header__title">Candidate Review Gate</h1>
-          <GitHubRepoLink />
+        <div className="dashboard-header__brand-row">
+          <h1 className="dashboard-header__title">praxis</h1>
+          {tools ? <div className="dashboard-header__tools">{tools}</div> : null}
         </div>
-        <p className="dashboard-header__subtitle">
-          Review and approve AI-learned knowledge facts from agent sessions.
-        </p>
-        {tools ? <div className="dashboard-header__tools">{tools}</div> : null}
         {tabs ? <div className="dashboard-header__tabs">{tabs}</div> : null}
       </div>
       <div className="dashboard-header__meta">
-        <EnvironmentBadge
-          mode={mode}
-          label={label}
-          detail={detail}
-          storeType={storeType}
-        />
-        <DataSourceControl
-          config={config}
-          storeType={storeType}
-          localSession={localSession}
-          onLoad={onDataSourceLoad}
-          onLoadLocalLogs={onLoadLocalLogs}
-          onClearLocalLogs={onClearLocalLogs}
-        />
-        <OrgSwitcher />
-        <SpaceSwitcher />
+        <div className="dashboard-header__switchers">
+          <DataSourceControl
+            config={config}
+            storeType={storeType}
+            localSession={localSession}
+            onLoad={onDataSourceLoad}
+            onLoadLocalLogs={onLoadLocalLogs}
+            onClearLocalLogs={onClearLocalLogs}
+          />
+          <OrgSwitcher />
+          <SpaceSwitcher />
+          {snapshot}
+        </div>
       </div>
     </header>
   );

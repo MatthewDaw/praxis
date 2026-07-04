@@ -31,12 +31,83 @@ function CommandBlock({ command, label }: { command: string; label?: string }) {
   );
 }
 
+// Absolute path to THIS Praxis repo (the one containing the `knowledge` package).
+// The setup prompt registers the MCP server with `uv run --directory <REPO_DIR>`
+// so it works even when pasted into a Claude session running in a *different*
+// repo — a bare `uv run python -m knowledge.mcp` resolves against the current
+// project and fails to connect from anywhere but this repo.
+const REPO_DIR = "C:/Users/mattd/Documents/gauntlet/praxis";
+
+/**
+ * Build the natural-language prompt a user pastes into Claude to get set up:
+ * register (if needed) → log in → select the right org → select the right space
+ * → confirm. Org/space/email are threaded through from the live dashboard state
+ * The org is intentionally NOT pre-filled — Claude asks for it — so this prompt
+ * stays project-agnostic and never bakes a specific org into shared config. Only
+ * the login email (the user's own identity) is pre-filled when known.
+ */
+function buildSetupPrompt(opts: { email?: string }): string {
+  const email = opts.email?.trim() || "<your Praxis email>";
+
+  return `Set me up with Praxis, my local knowledge-graph MCP server. Follow these steps in order.
+
+STEP 1 — make sure the praxis tools are loaded in THIS session.
+- Try calling praxis_whoami. If it works, the server is loaded: skip to STEP 2.
+- If the praxis_* tools do not exist, register the server. IMPORTANT: the Praxis code lives in a specific repo, and \`uv run\` resolves against whatever repo you are currently in — so you MUST pass the absolute --directory below, even if we are in a different project. Do NOT run a bare \`uv run python -m knowledge.mcp\`; that only works from inside the Praxis repo and will "Failed to connect" from anywhere else.
+  Run:
+    claude mcp add praxis -- uv run --directory ${REPO_DIR} python -m knowledge.mcp
+  Then verify:
+    claude mcp list
+  It must show praxis as ✓ Connected. If it shows ✗ Failed to connect, the --directory path is wrong (it must point at the folder that contains the \`knowledge/\` package) or the backend deps aren't installed (\`uv sync\` in ${REPO_DIR}) — fix that and re-run, do not continue.
+- A newly-registered server does NOT load into the running session. Once \`claude mcp list\` shows ✓ Connected, STOP and tell me to reconnect (run /mcp or restart the session), then paste this prompt again. Do not try to continue in the current session.
+
+STEP 2 — log me in: call praxis_login with email "${email}" and my password. If you don't have my password, ask me for it — it is never stored.
+
+STEP 3 — ask me which org to use, then select it: praxis_select_org("<the org id I give you>"). Do NOT assume or hard-code an org — ask me for the id and wait for my answer before selecting. Confirm with praxis_whoami that the org is active.
+
+STEP 4 — make sure my two standard validation spaces exist. Create each one; if praxis_create_space reports it already exists, that is fine — treat it as success, not an error:
+    praxis_create_space("coding-validation", "Coding validation")
+    praxis_create_space("planning-validation", "Planning validation")
+  Do NOT force-select either one — leave the default graph selected. When we start a task, select the matching space with praxis_select_space: planning-validation for planning/intake work, coding-validation for building/verification.
+
+STEP 5 — confirm: call praxis_whoami() and praxis_list_space(), then tell me the active org and that both validation spaces (coding-validation, planning-validation) exist, in one or two lines.`;
+}
+
+/** Prominent, one-click "paste this into Claude" setup block. */
+function SetupPromptBlock({ prompt }: { prompt: string }) {
+  const [copied, setCopied] = useState(false);
+
+  function handleCopy() {
+    void navigator.clipboard?.writeText(prompt).then(() => {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    });
+  }
+
+  return (
+    <div className="mcp-setup-prompt">
+      <div className="mcp-setup-prompt__row">
+        <pre className="mcp-setup-prompt__code">
+          <code>{prompt}</code>
+        </pre>
+        <button
+          type="button"
+          className="btn primary mcp-setup-prompt__copy"
+          onClick={handleCopy}
+          aria-label="Copy Praxis setup prompt for Claude"
+        >
+          {copied ? "Copied" : "Copy prompt"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 const DESKTOP_CONFIG = `{
   "mcpServers": {
     "praxis": {
       "command": "uv",
-      "args": ["run", "python", "-m", "knowledge.mcp"],
-      "cwd": "C:/Users/mattd/Documents/gauntlet/praxis"
+      "args": ["run", "--directory", "${REPO_DIR}", "python", "-m", "knowledge.mcp"]
     }
   }
 }`;
@@ -48,7 +119,7 @@ const MULTI_AGENT_CONFIG = `{
   "mcpServers": {
     "praxis": {
       "command": "uv",
-      "args": ["run", "--directory", "C:/Users/mattd/Documents/gauntlet/praxis",
+      "args": ["run", "--directory", "${REPO_DIR}",
                "python", "-m", "knowledge.mcp"],
       "env": { "PRAXIS_MCP_CACHE": "C:/Users/mattd/.praxis/agentA.json" }
     }
@@ -59,7 +130,16 @@ const MULTI_AGENT_CONFIG = `{
  * Standalone documentation tab: how to install and use the Praxis MCP server
  * (the local knowledge-graph client for Claude Code / Desktop).
  */
-export function McpSetupGuide() {
+export interface McpSetupGuideProps {
+  /** Logged-in user's email, when known — the only value prefilled into the
+   * setup prompt. Org is intentionally left generic (Claude asks for it) so no
+   * specific project org leaks into this shared config. */
+  email?: string;
+}
+
+export function McpSetupGuide({ email }: McpSetupGuideProps = {}) {
+  const setupPrompt = buildSetupPrompt({ email });
+
   return (
     <section className="mcp-guide" aria-label="MCP server setup guide">
       <header className="mcp-guide__intro">
@@ -102,6 +182,23 @@ export function McpSetupGuide() {
         </p>
       </header>
 
+      <div className="mcp-guide__step mcp-guide__step--highlight">
+        <h3>Quick start — hand this prompt to Claude</h3>
+        <p>
+          Copy this and paste it into any Claude Code or Claude Desktop session — it
+          registers the server against the Praxis repo path, so it works even from a
+          different project. It logs you in, asks which org to use (so no specific
+          project is baked in), and provisions your two standard validation spaces —{" "}
+          <strong>coding-validation</strong> and <strong>planning-validation</strong>.
+          Claude will ask for your password (it is never stored).
+        </p>
+        <SetupPromptBlock prompt={setupPrompt} />
+        <p className="muted small">
+          First time on this machine? Do the one-time install below first (
+          <code>uv sync</code> + register the MCP server), then use this prompt.
+        </p>
+      </div>
+
       <div className="mcp-guide__step">
         <h3>0. Prerequisites</h3>
         <ul>
@@ -139,11 +236,14 @@ export function McpSetupGuide() {
       <div className="mcp-guide__step">
         <h3>1. Register with Claude Code</h3>
         <p>
-          Run this <strong>inside the repo</strong> so <code>uv</code> resolves the
-          project venv and <code>.env</code> loads. That is the only setup step — login
-          happens through the MCP tools, so there is no separate CLI login command.
+          The <code>--directory</code> flag pins the Praxis repo so <code>uv</code>{" "}
+          resolves the project venv and <code>.env</code> regardless of which folder you
+          run it from — a bare <code>uv run python -m knowledge.mcp</code> only works from
+          inside the repo and otherwise <code>✘ Failed to connect</code>. That is the only
+          setup step — login happens through the MCP tools, so there is no separate CLI
+          login command.
         </p>
-        <CommandBlock command="claude mcp add praxis -- uv run python -m knowledge.mcp" />
+        <CommandBlock command={`claude mcp add praxis -- uv run --directory ${REPO_DIR} python -m knowledge.mcp`} />
         <CommandBlock command="claude mcp list" label="Verify it registered" />
       </div>
 
@@ -240,9 +340,12 @@ export function McpSetupGuide() {
           <tbody>
             <tr>
               <td>
-                <code>claude mcp add praxis -- uv run python -m knowledge.mcp</code>
+                <code>claude mcp add praxis -- uv run --directory {REPO_DIR} python -m knowledge.mcp</code>
               </td>
-              <td>Register the server with Claude Code (run once, in the repo).</td>
+              <td>
+                Register the server with Claude Code (run once). The{" "}
+                <code>--directory</code> makes it work from any folder, not just the repo.
+              </td>
             </tr>
             <tr>
               <td>

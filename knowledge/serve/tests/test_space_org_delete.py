@@ -170,6 +170,40 @@ def test_delete_unknown_space_is_404(env):
     assert client.delete("/spaces/ghost").status_code == 404
 
 
+# --- (1b) RENAME A SPACE ---------------------------------------------------
+def test_rename_space_changes_name_not_id_or_graph(env):
+    """PATCH /spaces/{id} updates only the display name: the space_id key and its
+    working graph are untouched, so the facts still read under the same space."""
+    org = env.make_org()
+    client = env.client_for(org)
+    client.post("/spaces", json={"spaceId": "alpha", "name": "Alpha"})
+
+    fact = "the alpha space deploy target is the zebra cluster"
+    client.post("/insights", json={"insight": fact}, headers={"X-Praxis-Space": "alpha"})
+
+    res = client.patch("/spaces/alpha", json={"name": "Renamed Alpha"})
+    assert res.status_code == 200, res.text
+    assert res.json() == {"spaceId": "alpha", "name": "Renamed Alpha"}
+
+    rows = {s["space_id"]: s["name"] for s in client.get("/spaces").json()["spaces"]}
+    assert rows == {"alpha": "Renamed Alpha"}  # same id, new name, still the only one
+    # The graph still reads under the unchanged space_id.
+    assert fact in _candidate_texts(client, space="alpha")
+
+
+def test_rename_unknown_space_is_404(env):
+    org = env.make_org()
+    client = env.client_for(org)
+    assert client.patch("/spaces/ghost", json={"name": "x"}).status_code == 404
+
+
+def test_rename_space_empty_name_is_400(env):
+    org = env.make_org()
+    client = env.client_for(org)
+    client.post("/spaces", json={"spaceId": "alpha"})
+    assert client.patch("/spaces/alpha", json={"name": "  "}).status_code == 400
+
+
 # --- (2) DELETE AN ORG (owner-only) ----------------------------------------
 def test_delete_org_non_owner_member_forbidden(env):
     """A plain member (not the owner) gets 403 and the org survives."""
@@ -224,6 +258,41 @@ def test_delete_unknown_org_is_404(env):
     """A non-member can't tell an org apart from a non-existent one: both 404."""
     ghost = "test_sod_ghost_" + uuid.uuid4().hex[:12]
     res = env.client_for(ghost).delete(f"/orgs/{ghost}")
+    assert res.status_code == 404
+
+
+# --- (2b) RENAME AN ORG (owner-only) ---------------------------------------
+def test_rename_org_owner_updates_name_in_me(env):
+    """The owner renames the org; the new display name shows up in /me, the
+    org_id key is unchanged."""
+    org = env.make_org()  # dev principal is owner
+    client = env.client_for(org)
+
+    res = client.patch(f"/orgs/{org}", json={"name": "Renamed Org"})
+    assert res.status_code == 200, res.text
+    assert res.json() == {"orgId": org, "name": "Renamed Org"}
+
+    me = {o["org_id"]: o["name"] for o in client.get("/me").json()["orgs"]}
+    assert me[org] == "Renamed Org"
+
+
+def test_rename_org_non_owner_member_forbidden(env):
+    """A plain member (not the owner) gets 403 and the name is unchanged."""
+    org = env.make_org(owner="owner-x")
+    OrgsStore(env.conn).join_org(org, "pw", USER)
+
+    res = env.client_for(org).patch(f"/orgs/{org}", json={"name": "hijacked"})
+    assert res.status_code == 403, res.text
+    name = env.conn.execute(
+        "SELECT name FROM orgs WHERE org_id = %s", (org,)
+    ).fetchone()[0]
+    assert name == org  # make_org sets name == org_id
+
+
+def test_rename_unknown_org_is_404(env):
+    """A non-member can't tell an org apart from a non-existent one: both 404."""
+    ghost = "test_sod_ghost_" + uuid.uuid4().hex[:12]
+    res = env.client_for(ghost).patch(f"/orgs/{ghost}", json={"name": "x"})
     assert res.status_code == 404
 
 

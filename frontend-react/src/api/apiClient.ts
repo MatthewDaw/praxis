@@ -796,6 +796,31 @@ export async function deleteSnapshot(
   return { deleted: typeof row.deleted === "string" ? row.deleted : name };
 }
 
+/**
+ * `PATCH /snapshots/{name}` — rename a snapshot. A snapshot's name is its key,
+ * so this re-keys its cached facts/edges/claims server-side; a name already in
+ * use 409s. Returns the new name.
+ */
+export async function renameSnapshot(
+  apiBaseUrl: string,
+  name: string,
+  newName: string,
+  auth?: string | ApiDataProviderAuth,
+): Promise<{ name: string }> {
+  const payload = await snapshotRequest(
+    apiBaseUrl,
+    "PATCH",
+    `/snapshots/${encodeURIComponent(name)}`,
+    auth,
+    { name: newName },
+  );
+  const row =
+    payload && typeof payload === "object"
+      ? (payload as Record<string, unknown>)
+      : {};
+  return { name: typeof row.name === "string" ? row.name : newName };
+}
+
 /** A mounted snapshot: a read-only overlay added to retrieval reads. */
 export interface Mount {
   sourceUser: string;

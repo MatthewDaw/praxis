@@ -74,6 +74,32 @@ export async function deleteSpace(
   }
 }
 
+/**
+ * `PATCH /spaces/{spaceId}` — rename one of the caller's spaces (display name
+ * only; `spaceId` is the immutable key). Renaming a space you do not own 404s.
+ */
+export async function renameSpace(
+  baseUrl: string,
+  getToken: () => Promise<string | undefined>,
+  orgId: string,
+  spaceId: string,
+  name: string,
+): Promise<void> {
+  const token = await getToken();
+  const response = await fetch(
+    `${baseUrl.replace(/\/$/, "")}/spaces/${encodeURIComponent(spaceId)}`,
+    {
+      method: "PATCH",
+      headers: contractHeaders(token, orgId),
+      body: JSON.stringify({ name }),
+    },
+  );
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `PATCH /spaces/${spaceId} failed (${response.status})`);
+  }
+}
+
 /** `POST /spaces` — create a named space owned by the caller in the active org. */
 export async function createSpace(
   baseUrl: string,

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useSpace } from "../../auth/SpaceGate";
+import { InlineRename } from "./InlineRename";
 
 const DEFAULT_OPTION = "";
 const NEW_OPTION = "__new__";
@@ -11,9 +12,16 @@ const NEW_OPTION = "__new__";
  * place — the data providers key on it, so the dashboard refetches automatically.
  */
 export function SpaceSwitcher() {
-  const { spaceId, spaces, selectSpace, createAndSelectSpace, deleteAndDeselectSpace } =
-    useSpace();
+  const {
+    spaceId,
+    spaces,
+    selectSpace,
+    createAndSelectSpace,
+    deleteAndDeselectSpace,
+    renameAndRefreshSpace,
+  } = useSpace();
   const [creating, setCreating] = useState(false);
+  const [renaming, setRenaming] = useState(false);
   const [draftId, setDraftId] = useState("");
   const [draftName, setDraftName] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -30,6 +38,7 @@ export function SpaceSwitcher() {
       return;
     }
     setCreating(false);
+    setRenaming(false);
     selectSpace(value);
   }
 
@@ -86,37 +95,65 @@ export function SpaceSwitcher() {
       <label className="space-switcher__label" htmlFor="space-switcher-select">
         Space
       </label>
-      <div className="space-switcher__row">
-        <select
-          id="space-switcher-select"
-          className="space-switcher__select"
-          value={creating ? NEW_OPTION : spaceId}
-          onChange={(e) => handleSelect(e.target.value)}
-        >
-          <option value={DEFAULT_OPTION}>Default graph</option>
-          {spaces.map((space) => (
-            <option key={space.spaceId} value={space.spaceId}>
-              {space.name && space.name !== space.spaceId
-                ? `${space.name} (${space.spaceId})`
-                : space.spaceId}
-            </option>
-          ))}
-          <option value={NEW_OPTION}>New space…</option>
-        </select>
-        {/* Delete only the currently-selected, non-default space. */}
-        {spaceId && !creating ? (
-          <button
-            type="button"
-            className="link-button link-button--danger space-switcher__delete"
-            onClick={() => void handleDelete()}
-            disabled={deleting}
-            title="Delete this space"
+      {renaming && activeSpace ? (
+        <InlineRename
+          initialValue={activeSpace.name ?? activeSpace.spaceId}
+          label="New space name"
+          onSubmit={async (name) => {
+            await renameAndRefreshSpace(activeSpace.spaceId, name);
+            setRenaming(false);
+          }}
+          onCancel={() => setRenaming(false)}
+        />
+      ) : (
+        <div className="space-switcher__row">
+          <select
+            id="space-switcher-select"
+            className="space-switcher__select"
+            value={creating ? NEW_OPTION : spaceId}
+            onChange={(e) => handleSelect(e.target.value)}
           >
-            {deleting ? "Deleting…" : "Delete"}
-          </button>
-        ) : null}
-      </div>
-      {error && !creating ? <p className="space-switcher__error">{error}</p> : null}
+            <option value={DEFAULT_OPTION}>Default graph</option>
+            {spaces.map((space) => (
+              <option key={space.spaceId} value={space.spaceId}>
+                {space.name && space.name !== space.spaceId
+                  ? `${space.name} (${space.spaceId})`
+                  : space.spaceId}
+              </option>
+            ))}
+            <option value={NEW_OPTION}>New space…</option>
+          </select>
+          {/* Rename/delete only the currently-selected, non-default space. */}
+          {spaceId && !creating ? (
+            <>
+              <button
+                type="button"
+                className="link-button space-switcher__rename"
+                onClick={() => {
+                  setError(null);
+                  setRenaming(true);
+                }}
+                title="Rename this space"
+                aria-label="Rename this space"
+              >
+                ✎
+              </button>
+              <button
+                type="button"
+                className="link-button link-button--danger space-switcher__delete"
+                onClick={() => void handleDelete()}
+                disabled={deleting}
+                title="Delete this space"
+              >
+                {deleting ? "Deleting…" : "Delete"}
+              </button>
+            </>
+          ) : null}
+        </div>
+      )}
+      {error && !creating && !renaming ? (
+        <p className="space-switcher__error">{error}</p>
+      ) : null}
 
       {creating ? (
         <form className="space-switcher__create" onSubmit={handleCreate}>

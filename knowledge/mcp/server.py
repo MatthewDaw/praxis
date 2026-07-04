@@ -1115,6 +1115,60 @@ def praxis_delete_snapshot(name: str) -> str:
 
 
 @mcp.tool()
+def praxis_copy_snapshot_to_org(
+    name: str, target_org: str, target_name: str | None = None
+) -> str:
+    """Copy one of your snapshots into another org you belong to (cross-org share).
+
+    Shares a snapshot between two orgs the SAME login is a member of: the snapshot
+    ``name`` is read from your active org/space and copied into your default graph
+    in ``target_org`` under ``target_name`` (defaults to the same name). Ids and
+    embeddings are preserved, so the copy is identical — load it there with
+    ``praxis_load_snapshot`` after ``praxis_select_org(target_org)``. The copy
+    never overwrites: it fails if ``target_org`` already has a snapshot by that
+    name (rename via ``target_name``). See ``praxis_whoami`` for your orgs. To copy
+    an entire working graph instead of a snapshot, use ``praxis_copy_space_to_org``.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    if not name.strip():
+        return "Pass a non-empty snapshot name (see praxis_list_snapshots)."
+    if not target_org.strip():
+        return "Pass a target_org you belong to (see praxis_whoami)."
+    payload: dict[str, object] = {"targetOrg": target_org.strip()}
+    if target_name and target_name.strip():
+        payload["targetName"] = target_name.strip()
+    try:
+        resp = httpx.post(
+            f"{identity.api_base()}/snapshots/{name.strip()}/copy-to-org",
+            json=payload,
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return f"Unknown snapshot {name!r} — list them with praxis_list_snapshots."
+        if exc.response.status_code == 409:
+            return (
+                f"A snapshot by that name already exists in {target_org!r}. "
+                "Pass a different target_name (copies never overwrite)."
+            )
+        if exc.response.status_code == 403:
+            return (
+                f"You are not a member of org {target_org!r} — join it first "
+                "(praxis_join_org) or pick another (praxis_whoami)."
+            )
+        return _friendly(exc)
+    s = resp.json()
+    return (
+        f"Copied snapshot into org {s.get('targetOrg')!r} as {s.get('name')!r} "
+        f"with {s.get('count', 0)} node(s). Select that org and load it with "
+        "praxis_load_snapshot."
+    )
+
+
+@mcp.tool()
 def praxis_list_org_sources() -> str:
     """List org members and their snapshots you can fold in (the Sources panel).
 
@@ -1552,6 +1606,56 @@ def praxis_delete_space(space_id: str) -> str:
             "active space fell back to the default space."
         )
     return f"Deleted space {space_id!r} and its working graph."
+
+
+@mcp.tool()
+def praxis_copy_space_to_org(target_org: str, target_space: str) -> str:
+    """Copy your whole current working graph into a NEW space in another org.
+
+    Shares an entire graph between two orgs the SAME login belongs to: every fact,
+    edge, and claim of your ACTIVE graph (the default graph, or the space currently
+    selected via ``praxis_select_space``) is copied into a brand-new space
+    ``target_space`` in ``target_org``. ``target_space`` is a slug you pick
+    (lowercase letters/digits/dash/underscore; ``"default"`` / ``:`` reserved).
+    The copy never overwrites: it fails if that space already exists in
+    ``target_org``. After it succeeds, switch with ``praxis_select_org(target_org)``
+    then ``praxis_select_space(target_space)`` to work in the copy. To share a saved
+    snapshot instead of the live graph, use ``praxis_copy_snapshot_to_org``.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    if not target_org.strip():
+        return "Pass a target_org you belong to (see praxis_whoami)."
+    if not target_space.strip():
+        return "Pass a non-empty target_space (a slug you pick for the new space)."
+    try:
+        resp = httpx.post(
+            f"{identity.api_base()}/spaces/copy-to-org",
+            json={"targetOrg": target_org.strip(), "targetSpace": target_space.strip()},
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 409:
+            return (
+                f"Space {target_space!r} already exists in {target_org!r}. "
+                "Pick a new target_space (copies never overwrite a graph)."
+            )
+        if exc.response.status_code == 400:
+            return f"Invalid target_space {target_space!r}: {exc.response.text}"
+        if exc.response.status_code == 403:
+            return (
+                f"You are not a member of org {target_org!r} — join it first "
+                "(praxis_join_org) or pick another (praxis_whoami)."
+            )
+        return _friendly(exc)
+    s = resp.json()
+    return (
+        f"Copied your working graph into org {s.get('targetOrg')!r} as new space "
+        f"{s.get('space')!r} with {s.get('count', 0)} fact(s). Switch to it with "
+        "praxis_select_org then praxis_select_space."
+    )
 
 
 @mcp.tool()
