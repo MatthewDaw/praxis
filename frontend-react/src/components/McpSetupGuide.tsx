@@ -38,6 +38,11 @@ function CommandBlock({ command, label }: { command: string; label?: string }) {
 // project and fails to connect from anywhere but this repo.
 const REPO_DIR = "C:/Users/mattd/Documents/gauntlet/praxis";
 
+// The agent-factory plugin ships as a self-contained subdirectory of this repo
+// (imported under agent_factory/). Registering it as a *directory* marketplace
+// reads the live repo, so the /af- skills always reflect the working tree.
+const FACTORY_DIR = `${REPO_DIR}/agent_factory`;
+
 /**
  * Build the natural-language prompt a user pastes into Claude to get set up:
  * register (if needed) → log in → select the right org → select the right space
@@ -49,17 +54,22 @@ const REPO_DIR = "C:/Users/mattd/Documents/gauntlet/praxis";
 function buildSetupPrompt(opts: { email?: string }): string {
   const email = opts.email?.trim() || "<your Praxis email>";
 
-  return `Set me up with Praxis, my local knowledge-graph MCP server. Follow these steps in order.
+  return `Set me up with Praxis (my local knowledge-graph MCP server) AND the agent-factory plugin (the /af- plan → intake → build → verify skills). By the end I should be logged in with my org and validation spaces ready, and the /af-plan, /af-intake, /af-build, and /af-wireframe commands available. Follow these steps in order.
 
-STEP 1 — make sure the praxis tools are loaded in THIS session.
-- Try calling praxis_whoami. If it works, the server is loaded: skip to STEP 2.
-- If the praxis_* tools do not exist, register the server. IMPORTANT: the Praxis code lives in a specific repo, and \`uv run\` resolves against whatever repo you are currently in — so you MUST pass the absolute --directory below, even if we are in a different project. Do NOT run a bare \`uv run python -m knowledge.mcp\`; that only works from inside the Praxis repo and will "Failed to connect" from anywhere else.
-  Run:
-    claude mcp add praxis -- uv run --directory ${REPO_DIR} python -m knowledge.mcp
-  Then verify:
-    claude mcp list
-  It must show praxis as ✓ Connected. If it shows ✗ Failed to connect, the --directory path is wrong (it must point at the folder that contains the \`knowledge/\` package) or the backend deps aren't installed (\`uv sync\` in ${REPO_DIR}) — fix that and re-run, do not continue.
-- A newly-registered server does NOT load into the running session. Once \`claude mcp list\` shows ✓ Connected, STOP and tell me to reconnect (run /mcp or restart the session), then paste this prompt again. Do not try to continue in the current session.
+STEP 1 — one-time install. Make sure BOTH the praxis MCP tools and the agent-factory /af- skills are available in THIS session. All commands here are plain CLI you can run directly (they are non-interactive).
+
+  1a. Praxis MCP tools. Try calling praxis_whoami. If it works, the server is loaded — skip to 1b.
+      If the praxis_* tools do not exist, register the server. IMPORTANT: the Praxis code lives in a specific repo, and \`uv run\` resolves against whatever repo you are currently in — so you MUST pass the absolute --directory below, even if we are in a different project. Do NOT run a bare \`uv run python -m knowledge.mcp\`; that only works from inside the Praxis repo and will "Failed to connect" from anywhere else.
+        claude mcp add praxis -- uv run --directory ${REPO_DIR} python -m knowledge.mcp
+      Verify with \`claude mcp list\` — it must show praxis as ✓ Connected. If it shows ✗ Failed to connect, the --directory path is wrong (it must point at the folder that contains the \`knowledge/\` package) or the backend deps aren't installed (\`uv sync\` in ${REPO_DIR}) — fix that and re-run, do not continue.
+
+  1b. agent-factory /af- skills. Run \`claude plugin list\`. If it shows \`agent-factory@agent-factory-local\` as ✔ enabled, skip to 1c. Otherwise install the plugin — it ships as a self-contained subdirectory of the Praxis repo (agent_factory/):
+        claude plugin marketplace add EveryInc/compound-engineering-plugin
+        claude plugin marketplace add ${FACTORY_DIR}
+        claude plugin install agent-factory@agent-factory-local
+      The first line registers the compound-engineering review panel the factory depends on (the plugin auto-installs it); if \`claude plugin list\` already shows compound-engineering, that \`marketplace add\` will say it already exists — that is fine, continue. The second registers the factory as a live *directory* marketplace so the /af- skills track the repo. Confirm with \`claude plugin list\` — agent-factory must show ✔ enabled.
+
+  1c. Neither a newly-registered MCP server nor a newly-installed plugin loads into the RUNNING session — both need a fresh session. If you had to do 1a or 1b, STOP and tell me to restart the session (or run /mcp to reconnect the server), then paste this prompt again. Do not try to continue in the current session.
 
 STEP 2 — log me in: call praxis_login with email "${email}" and my password. If you don't have my password, ask me for it — it is never stored.
 
@@ -70,7 +80,7 @@ STEP 4 — make sure my two standard validation spaces exist. Create each one; i
     praxis_create_space("planning-validation", "Planning validation")
   Do NOT force-select either one — leave the default graph selected. When we start a task, select the matching space with praxis_select_space: planning-validation for planning/intake work, coding-validation for building/verification.
 
-STEP 5 — confirm: call praxis_whoami() and praxis_list_space(), then tell me the active org and that both validation spaces (coding-validation, planning-validation) exist, in one or two lines.`;
+STEP 5 — confirm end to end: call praxis_whoami() and praxis_list_space(), and check that the /af- skills are loaded (agent-factory shows ✔ enabled in \`claude plugin list\`, and /af-plan / /af-intake / /af-build / /af-wireframe are available). Then tell me, in one or two lines: the active org, that both validation spaces (coding-validation, planning-validation) exist, and that the /af- commands are ready to run.`;
 }
 
 /** Prominent, one-click "paste this into Claude" setup block. */
@@ -185,16 +195,22 @@ export function McpSetupGuide({ email }: McpSetupGuideProps = {}) {
       <div className="mcp-guide__step mcp-guide__step--highlight">
         <h3>Quick start — hand this prompt to Claude</h3>
         <p>
-          Copy this and paste it into any Claude Code or Claude Desktop session — it
-          registers the server against the Praxis repo path, so it works even from a
-          different project. It logs you in, asks which org to use (so no specific
-          project is baked in), and provisions your two standard validation spaces —{" "}
-          <strong>coding-validation</strong> and <strong>planning-validation</strong>.
-          Claude will ask for your password (it is never stored).
+          Copy this and paste it into any Claude Code session — it does the whole
+          setup end to end. It registers the MCP server against the Praxis repo path
+          (so it works even from a different project) <strong>and</strong> installs the{" "}
+          <strong>agent-factory</strong> plugin, so the{" "}
+          <code>/af-plan</code>, <code>/af-intake</code>, <code>/af-build</code>, and{" "}
+          <code>/af-wireframe</code> commands are ready to run. Then it logs you in,
+          asks which org to use (so no specific project is baked in), and provisions
+          your two standard validation spaces — <strong>coding-validation</strong> and{" "}
+          <strong>planning-validation</strong>. Claude will ask for your password (it is
+          never stored).
         </p>
         <SetupPromptBlock prompt={setupPrompt} />
         <p className="muted small">
-          First time on this machine? Do the one-time install below first (
+          Both the MCP server and the plugin only load in a fresh session, so if either
+          had to be installed, Claude will pause and ask you to restart, then re-paste
+          the prompt. First time on this machine? Do the one-time install below first (
           <code>uv sync</code> + register the MCP server), then use this prompt.
         </p>
       </div>
@@ -245,6 +261,33 @@ export function McpSetupGuide({ email }: McpSetupGuideProps = {}) {
         </p>
         <CommandBlock command={`claude mcp add praxis -- uv run --directory ${REPO_DIR} python -m knowledge.mcp`} />
         <CommandBlock command="claude mcp list" label="Verify it registered" />
+      </div>
+
+      <div className="mcp-guide__step">
+        <h3>
+          1b. Install the agent-factory plugin (the <code>/af-</code> commands)
+        </h3>
+        <p>
+          The <strong>agent-factory</strong> plugin ships as a self-contained
+          subdirectory of this repo (<code>agent_factory/</code>) and delivers the
+          plan → intake → build → verify loop as Claude Code skills:{" "}
+          <code>/af-plan</code>, <code>/af-intake</code>, <code>/af-build</code>, and{" "}
+          <code>/af-wireframe</code>. Register it as a <em>directory</em> marketplace
+          (so the skills track the live repo) and install it. It depends on{" "}
+          <strong>compound-engineering</strong> (the cold-eyes review panel), which
+          auto-installs once that marketplace is known — the first line below registers
+          it; if <code>claude plugin list</code> already shows it, that command just
+          reports it exists.
+        </p>
+        <CommandBlock command="claude plugin marketplace add EveryInc/compound-engineering-plugin" label="Dependency marketplace (idempotent)" />
+        <CommandBlock command={`claude plugin marketplace add ${FACTORY_DIR}`} label="Register the factory as a live directory marketplace" />
+        <CommandBlock command="claude plugin install agent-factory@agent-factory-local" label="Install the plugin" />
+        <CommandBlock command="claude plugin list" label="Verify agent-factory shows ✔ enabled" />
+        <p className="muted small">
+          A newly-installed plugin only loads in a <strong>fresh</strong> session —
+          restart Claude Code after installing so the <code>/af-</code> skills appear.
+          The quick-start prompt above handles this pause-and-restart automatically.
+        </p>
       </div>
 
       <div className="mcp-guide__step">
