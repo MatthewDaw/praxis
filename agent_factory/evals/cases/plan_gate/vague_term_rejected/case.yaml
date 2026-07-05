@@ -1,0 +1,19 @@
+# A requirement using an unquantified vague term ("fast") with no measurable
+# threshold must be REJECTED until the threshold is supplied.
+id: plan_gate_vague_term_rejected
+component: plan_gate
+input:
+  requirements:
+    - id: R9
+      text: "The daily flow screen must load fast for most users."
+      acceptance: "the screen feels quick."
+      defines: ["daily flow screen"]
+      references: []
+      source: "prd-team-app"
+  out_of_scope: []
+rule_ids: ["R-NO-VAGUE"]
+deterministic_checks:
+  - name: gate_rejects
+    ref: "evals.checks:gate_rejects"
+    params:
+      reason_contains: "vague term"

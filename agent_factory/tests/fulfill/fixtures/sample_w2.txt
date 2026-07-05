@@ -1,0 +1,33 @@
+2025 Form W-2  Wage and Tax Statement  (FAKE — synthetic test data only)
+
+Box a  Employee's SSA number ................ 123-45-6789
+Box b  Employer ID number (EIN) ............. 84-7654321
+Box c  Employer name, address, ZIP .......... Brightline Coffee Roasters, LLC
+                                               1450 Larimer Street, Suite 200, Denver, CO 80202
+Box d  Control number ........................ 00422-2025-BR
+Box e  Employee name ......................... Jordan Avery Rivera
+Box f  Employee address ...................... 2245 Glenarm Place, Apt 4B, Denver, CO 80205
+
+Box 1   Wages, tips, other compensation ...... 40,000.00
+Box 2   Federal income tax withheld .......... 3,200.00
+Box 3   Social security wages ................ 41,500.00
+Box 4   Social security tax withheld ......... 2,573.00
+Box 5   Medicare wages and tips .............. 41,500.00
+Box 6   Medicare tax withheld ................ 601.75
+Box 7   Social security tips ................. 0.00
+Box 8   Allocated tips ....................... 0.00
+Box 10  Dependent care benefits .............. 0.00
+Box 11  Nonqualified plans ................... 0.00
+Box 12a D  1,500.00   (401(k) elective deferral)
+Box 12b DD 6,800.00   (employer-sponsored health coverage)
+Box 13  Retirement plan ...................... X
+Box 14  Other ................................ CO PFML 84.00
+Box 15  State / Employer state ID ............ CO / CO-9981726
+Box 16  State wages, tips, etc. .............. 41,500.00
+Box 17  State income tax ..................... 1,100.00
+Box 18  Local wages, tips, etc. .............. 0.00
+Box 19  Local income tax ..................... 0.00
+Box 20  Locality name ........................
+
+Note: Box 1 (taxable wages, 40,000.00) is lower than Box 3/5 (41,500.00) because of
+the 1,500.00 401(k) deferral in Box 12a. Use Box 1 for Form 1040 wages.

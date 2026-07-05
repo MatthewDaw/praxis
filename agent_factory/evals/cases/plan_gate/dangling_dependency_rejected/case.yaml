@@ -1,0 +1,37 @@
+# R-NO-DANGLING-DEP. R2 declares depends_on R7, but there is no R7 in the plan — an unrealizable
+# prerequisite (it can never finish, so R2 could never become ready). af-build would only discover
+# this as a run-time stall; the plan gate rejects it up front, naming the bad edge. Everything else
+# in the plan closes cleanly, so ONLY the dangling-dependency rule fires.
+id: plan_gate_dangling_dependency_rejected
+component: plan_gate
+input:
+  project: team-app
+  requirements:
+    - id: R1
+      text: "A submission is completed when the daily rep AND all three ratings are submitted; the habit checklist does not affect completion."
+      acceptance: "completed=true iff rep present and effort/focus/support all non-None; checklist ignored."
+      defines: ["daily completion"]
+      references: []
+      source: "prd-team-app"
+      depends_on: []
+    - id: R3
+      text: "Active excludes athletes the coach marked inactive; coaches are not counted; captains count as athletes."
+      acceptance: "is_active_athlete=true iff role in {athlete, captain} and not marked inactive; coaches always false."
+      defines: ["active roster"]
+      references: []
+      source: "prd-team-app"
+      depends_on: []
+    - id: R2
+      text: "Participation% for date D = active athletes with completed=true / active athletes on roster * 100."
+      acceptance: "with N active and K completed, pct = round(K/N*100); N=0 -> None (no active roster), never 0."
+      defines: ["participation percentage"]
+      references: ["daily completion", "active roster"]
+      source: "prd-team-app"
+      depends_on: ["R1", "R3", "R7"]
+  out_of_scope: []
+rule_ids: ["R-NO-DANGLING-DEP"]
+deterministic_checks:
+  - name: gate_rejects
+    ref: "evals.checks:gate_rejects"
+    params:
+      reason_contains: "depends_on 'R7'"

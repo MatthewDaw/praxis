@@ -1,0 +1,9 @@
+{
+  "name": "agent-factory",
+  "version": "0.1.4",
+  "description": "A Praxis-backed agent factory: a single-agent plan -> execute -> verify loop with compounding memory, delivered as Claude Code skills. Coding-first behind a general task+oracle seam.",
+  "author": { "name": "Matt Daw" },
+  "dependencies": [
+    { "name": "compound-engineering", "marketplace": "compound-engineering-plugin" }
+  ]
+}

@@ -1,0 +1,32 @@
+# tax-1040-2025 — domain identity and file wiring.
+# af-intake reads `project` to name the Praxis graph (source = "prd-" + project).
+id: tax-1040-2025
+title: "2025 U.S. Federal Form 1040 (single W-2)"
+project: tax-1040-2025          # Praxis project; requirement facts get source: prd-tax-1040-2025
+tax_year: 2025
+version: 1
+
+# The actor af-fulfill drives. Generic field — not tax-specific.
+actor: end_user                 # the taxpayer, supplying facts (contrast: af-build drives an agent)
+
+# Wiring: the rest of the pack. Relative paths within this domain dir.
+files:
+  requirements: requirements.yaml
+  fields: fields.yaml
+  rules: rules.yaml
+  compute: compute.yaml
+  template: template.yaml
+  policy: policy.yaml
+
+# The deliverable this domain produces once completeness == 0 incomplete.
+deliverable:
+  kind: filled_pdf_form
+  surface_id: form-1040           # the single Praxis surface every requirement `renders` onto (D9)
+  produced_by: compute.yaml       # evaluator output...
+  rendered_by: template.yaml      # ...written into the official form by the form-fill seam
+  human_label: "Completed 2025 Form 1040 (PDF)"
+
+# Scope honesty (mirrors the harness's educational-prototype stance).
+scope_note: >
+  Educational prototype. A basic federal 1040 from a single W-2. Not e-filing, not tax advice,
+  test data only.

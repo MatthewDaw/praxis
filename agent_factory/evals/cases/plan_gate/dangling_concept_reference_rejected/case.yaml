@@ -1,0 +1,36 @@
+# H14 — DANGLING CONCEPT REFERENCE. The real prd-team-app defect: R2 references the
+# "team streak" (an N=0 day "neither advances nor breaks the team streak"), but NO
+# requirement defines what the streak is (no threshold, no advance/break rule). The
+# prose done-gate admitted R2 anyway. The coded gate must REJECT, naming the streak.
+#
+# Observed live (2026-06-25): factory-plan admitted R2 into prd-team-app with the
+# undefined "team streak" reference dangling. This case locks in the fix.
+id: plan_gate_dangling_concept_reference_rejected
+component: plan_gate
+input:
+  requirements:
+    - id: R2
+      text: "Participation% for date D = active athletes completed / active athletes * 100. An N=0 day neither advances nor breaks the team streak."
+      acceptance: "with N active and K completed, pct = round(K/N*100); N=0 -> None; N=0 day leaves the team streak unchanged."
+      defines: ["participation percentage"]
+      references: ["daily completion", "active roster", "team streak"]
+      source: "prd-team-app"
+    - id: R1
+      text: "A submission is completed when the daily rep AND all three ratings are submitted."
+      acceptance: "completed=true iff rep present and all three ratings non-None."
+      defines: ["daily completion"]
+      references: []
+      source: "prd-team-app"
+    - id: R3
+      text: "Active excludes athletes the coach marked inactive; captains count as athletes."
+      acceptance: "is_active_athlete=true iff role in {athlete, captain} and not inactive."
+      defines: ["active roster"]
+      references: []
+      source: "prd-team-app"
+  out_of_scope: []
+rule_ids: ["R-NO-DANGLING"]
+deterministic_checks:
+  - name: gate_rejects
+    ref: "evals.checks:gate_rejects"
+    params:
+      reason_contains: "team streak"

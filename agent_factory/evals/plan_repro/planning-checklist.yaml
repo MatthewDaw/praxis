@@ -1,0 +1,30 @@
+# Planning checklist the eval seeds into its OWN Praxis space at execution, then reads back
+# through the real Praxis retrieval path. These are GENERAL engineering lenses, NOT the golden
+# answer key: applying each to a specific PRD is what should surface the features a naive
+# planner misses (password reset, consent gate, empty/loading states, ...).
+#
+# This is the eval's controlled INPUT. It is exercised THROUGH Praxis (populate own space ->
+# read back -> apply), never injected straight into the planner — that is what makes the test
+# a real test of the Praxis-backed mechanism rather than a bypass.
+checks:
+  - "Authentication completeness: if the app has accounts, include credential recovery (password reset) and full session lifecycle (login, logout, current-user)."
+  - "Every user-facing screen needs its non-happy states: loading, empty/'nothing-yet', and error/fallback."
+  - "Apps touching minors or health-adjacent data need a consent/disclaimer gate and age capture/handling."
+  - "Any moderation or approval workflow needs an admin override and an audit trail."
+  - "Resolve live-vs-batch computation ambiguities explicitly (realtime vs nightly aggregation, late-sync handling)."
+  - "Push/notifications need device/token lifecycle (register, refresh, unsubscribe) and an in-app fallback when push is unavailable."
+  - "Define edit and idempotency semantics: can users edit after submit, and are write endpoints idempotent against retries/offline sync?"
+  - "Access control on every endpoint: authz checks, tenant/data scoping, and least-exposure for sensitive lists."
+  - "Offline/performance where the context implies it: local caching, offline action + later sync, and latency targets."
+  - "Admin/back-office tooling to manage the content the app depends on (no manual patching)."
+  - "Entry-path completeness: enumerate EVERY way an actor enters the system — first-user/self-registration that bootstraps the first account or organization, invited signup for a brand-new user, AND an already-existing/authenticated user redeeming an invite or joining an additional group/team."
+  - "Entity lifecycle (CRUD) completeness: for every user-created entity (messages, posts, submissions, authored content), specify the WHOLE lifecycle — create, list/history (view prior ones), edit, and delete/retract/undo — not just creation."
+  - "Authored content implies a viewer: for every piece of content or identity one role authors or configures (themes, prompts, branding/identity, culture/daily items), specify the read/view surface where the consuming role actually sees it."
+  - "Account & settings per role: every role that has an account needs its own account/profile surface to manage personal details, and every owner/admin role needs a settings surface to manage the entity/team configuration it owns."
+  - "Confirmation of consequential actions: every significant state-changing action (submit, finalize/complete, send, pay) needs an explicit success/confirmation result state, not a silent write."
+  - "Define every surfaced metric: for any metric, streak, score, percentage, or aggregate the product displays, specify its exact definition/formula and inputs — never leave a shown number (e.g. participation %) computationally undefined."
+  - "Commercial/monetization surfaces: if the product is a paid or SaaS offering, enumerate billing, subscription, and payment-management features even when they are post-MVP."
+  - "Explicit prohibitions / must-NOT rules: don't lose the product's negative guarantees (no public leaderboard or individual ranking, no sensitive-data collection, no shaming of non-completers) — but capture related ones as ONE coherent privacy/safety requirement, not one ticket per clause."
+  - "Exact rules, thresholds, and definitions: pin down named rules precisely (what counts as 'complete', streak threshold %, day-reset boundary, eligibility) — but fold each definition INTO the feature it governs, not as its own standalone ticket."
+  - "External-service / provider decisions: any capability that depends on an external service — email delivery (SMTP/transactional email), SMS, push, payments, object/file storage, geocoding — MUST name a CONCRETE provider/transport chosen during planning (e.g. 'transactional email via AWS SES'), including how it's configured/secret'd AND a working dev/local transport. Push the user to decide; if unresolved, pick and record a sensible default. A capability that calls an external service with no chosen provider is a planning failure (e.g. a password-reset link that is never delivered because no email transport was decided). Surface the managed-vs-custom fork: a managed platform may bundle the service (e.g. AWS Cognito ships password-reset/verification email built-in, removing the separate SMTP choice) vs custom auth + a standalone email provider — present this choice rather than silently defaulting."
+  - "Build-order dependencies: for every capability that requires another to exist first — a feature that reads data another produces, authorization that needs authentication, a screen that renders an entity another requirement defines, an aggregate that consumes a base metric — make the prerequisite relationship EXPLICIT (a depends_on edge) so there is a realizable build order, and ensure the dependency graph is acyclic (no A-needs-B-needs-A). A capability whose prerequisites are left implicit is a planning failure: the build loop can only pop a ticket whose prerequisites are finished, so an unmapped or circular dependency is a run-time stall."

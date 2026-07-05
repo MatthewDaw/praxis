@@ -1,0 +1,340 @@
+project: team-app
+features:
+- id: R1
+  text: A coach can self-register and bootstrap a brand-new team in one flow (creating
+    the first account plus the team with its name, timezone, day_reset_hour, and streak_threshold_pct).
+  meta:
+    scope: mvp
+- id: R2
+  text: A brand-new user can sign up with an invite code, which assigns them to the
+    team with the role the invite specifies (defaulting to athlete) and status=active,
+    and returns a clear error for an invalid or expired code.
+  meta:
+    scope: mvp
+- id: R3
+  text: An existing authenticated user can redeem an invite code to join an additional
+    team without creating a duplicate account.
+  meta:
+    scope: mvp
+- id: R4
+  text: A user can log in with email and password and receive a JWT access token.
+  meta:
+    scope: mvp
+- id: R5
+  text: A user can log in via an emailed magic link instead of a password.
+  meta:
+    scope: post-mvp
+- id: R6
+  text: A user can log out, ending their session.
+  meta:
+    scope: mvp
+- id: R7
+  text: A user can fetch their current profile, role, and team via an authenticated
+    'me' endpoint.
+  meta:
+    scope: mvp
+- id: R8
+  text: A user can reset a forgotten password via an emailed reset link.
+  meta:
+    scope: mvp
+- id: R9
+  text: The system maintains the JWT session lifecycle, refreshing/expiring access
+    tokens so sessions stay valid securely.
+  meta:
+    scope: mvp
+- id: R10
+  text: A coach can create an invite (code/link) specifying role and expiration for
+    athletes or captains.
+  meta:
+    scope: mvp
+- id: R11
+  text: A coach can list existing invites and see usage tracking (who redeemed each
+    invite and when).
+  meta:
+    scope: mvp
+- id: R12
+  text: A coach can revoke an outstanding invite so it can no longer be redeemed.
+  meta:
+    scope: mvp
+- id: R13
+  text: A user can view team details (name, logo, timezone, configured settings).
+  meta:
+    scope: mvp
+- id: R14
+  text: A coach can edit team configuration settings — timezone, day_reset_hour, streak_threshold_pct,
+    captain-approval toggle, coach individual-compliance visibility, and checklist-required
+    rule.
+  meta:
+    scope: mvp
+- id: R15
+  text: An athlete can load the full daily flow (theme, prompt, habits, message, team
+    stats, and their own submission state) in a single request.
+  meta:
+    scope: mvp
+- id: R16
+  text: The daily flow renders safe fallback states when the theme or prompt is unset
+    (latest/placeholder theme; 'prompt coming soon' with completion disabled).
+  meta:
+    scope: mvp
+- id: R17
+  text: An athlete can submit the daily prompt response, validated against the prompt's
+    response_type, saved to their submission for the day.
+  meta:
+    scope: mvp
+- id: R18
+  text: An athlete can toggle each team habit checklist item on/off, persisting which
+    items were checked.
+  meta:
+    scope: mvp
+- id: R19
+  text: An athlete can submit their three quick check-in ratings (effort/focus/support)
+    with required fields and range (1–10 default) enforced.
+  meta:
+    scope: mvp
+- id: R20
+  text: An athlete can tap 'Done for Today' to finalize completion (prompt + ratings
+    present) idempotently, getting a confirmation with updated streak, or a structured
+    error listing missing components.
+  meta:
+    scope: mvp
+- id: R21
+  text: An athlete can edit an already-submitted daily submission (partial update)
+    where team config allows post-submit editing.
+  meta:
+    scope: mvp
+- id: R22
+  text: An athlete can see the aggregate team participation snapshot (completion %,
+    completed/active counts, streak, trend) with no individual roster list exposed.
+  meta:
+    scope: mvp
+- id: R23
+  text: The app caches today's daily flow for offline use and allows offline completion
+    that syncs later without creating duplicates, using an idempotency key.
+  meta:
+    scope: mvp
+- id: R24
+  text: A coach can create a weekly theme (title, tagline, optional intro text/audio)
+    tied to a week_start_date, with only one theme per week (latest wins).
+  meta:
+    scope: mvp
+- id: R25
+  text: A coach can edit a weekly theme, with changes appearing on the athlete screen
+    immediately.
+  meta:
+    scope: mvp
+- id: R26
+  text: A coach can list/view the history of weekly themes over a date range.
+  meta:
+    scope: mvp
+- id: R27
+  text: A coach can delete a weekly theme.
+  meta:
+    scope: mvp
+- id: R28
+  text: An athlete can view the current weekly theme on a read-only theme screen.
+  meta:
+    scope: mvp
+- id: R29
+  text: A coach can create/schedule a daily prompt for a specific date with response
+    type and options.
+  meta:
+    scope: mvp
+- id: R30
+  text: A coach can edit a daily prompt, leaving existing submissions intact.
+  meta:
+    scope: mvp
+- id: R31
+  text: A coach can list/view scheduled prompts over a date range.
+  meta:
+    scope: mvp
+- id: R32
+  text: A coach can delete a scheduled daily prompt.
+  meta:
+    scope: mvp
+- id: R33
+  text: A coach can create a team habits checklist set (3–6 items) effective from
+    a start date.
+  meta:
+    scope: mvp
+- id: R34
+  text: A coach can edit a team habits set.
+  meta:
+    scope: mvp
+- id: R35
+  text: A coach can retrieve the active habits set for a given date (and list habit
+    sets).
+  meta:
+    scope: mvp
+- id: R36
+  text: A coach can delete a team habits set.
+  meta:
+    scope: mvp
+- id: R37
+  text: A coach can post a team message that appears on the daily flow immediately,
+    with an optional expiration window.
+  meta:
+    scope: mvp
+- id: R38
+  text: A captain can post a team message to their own team, defaulting to pending
+    approval when the approval toggle is on, else publishing immediately.
+  meta:
+    scope: mvp
+- id: R39
+  text: A user can view team messages — only published ones for athletes — including
+    message history.
+  meta:
+    scope: mvp
+- id: R40
+  text: A coach can edit a team message.
+  meta:
+    scope: mvp
+- id: R41
+  text: A coach can delete/retract a team message.
+  meta:
+    scope: mvp
+- id: R42
+  text: A coach can approve a pending captain message so it becomes published.
+  meta:
+    scope: mvp
+- id: R43
+  text: A coach can reject a pending captain message.
+  meta:
+    scope: mvp
+- id: R44
+  text: The system keeps an audit trail of message activity (who posted/approved/rejected
+    and when).
+  meta:
+    scope: mvp
+- id: R45
+  text: A coach can view the team roster with each member's role and active/inactive
+    status.
+  meta:
+    scope: mvp
+- id: R46
+  text: A coach can set an athlete active or inactive, excluding inactive athletes
+    from the participation denominator.
+  meta:
+    scope: mvp
+- id: R47
+  text: A coach can assign or change a user's captain role, reflected in permissions
+    immediately.
+  meta:
+    scope: mvp
+- id: R48
+  text: A coach can bulk-manage roster entries (bulk import/update).
+  meta:
+    scope: post-mvp
+- id: R49
+  text: The system keeps an audit log of role/status changes.
+  meta:
+    scope: post-mvp
+- id: R50
+  text: An athlete can view their personal progress — streak (consecutive days with
+    completion_status=true) and last-7-day completion count and percent.
+  meta:
+    scope: mvp
+- id: R51
+  text: 'A coach can view the team dashboard: completion_pct by day (last 14/30) and
+    adherence distribution buckets with up/down trend vs last week.'
+  meta:
+    scope: mvp
+- id: R52
+  text: A coach can view an individual-compliance list with per-athlete completion
+    counts, gated by the configurable visibility setting.
+  meta:
+    scope: mvp
+- id: R53
+  text: The system computes team participation % (completed/active roster) and team
+    streak (days where completion_pct ≥ streak_threshold_pct) on team-timezone days
+    that reset at day_reset_hour, with a defined live-vs-nightly recompute policy.
+  meta:
+    scope: mvp
+- id: R54
+  text: An athlete receives one daily reminder at their preferred (or default) time,
+    capped at one per day and suppressed if already complete.
+  meta:
+    scope: mvp
+- id: R55
+  text: An athlete receives a near-cutoff 'save your streak' reminder before the day-reset
+    boundary.
+  meta:
+    scope: mvp
+- id: R56
+  text: A coach can send a rate-limited broadcast push (max ~1/day) to all active-roster
+    devices.
+  meta:
+    scope: mvp
+- id: R57
+  text: The app registers, refreshes, and unsubscribes push device tokens (FCM/APNs)
+    and falls back to an in-app notice when push is unavailable.
+  meta:
+    scope: mvp
+- id: R58
+  text: A user can manage notification settings (daily reminder time, enable/disable).
+  meta:
+    scope: mvp
+- id: R59
+  text: An athlete/captain can manage their own account/profile (personal details,
+    email).
+  meta:
+    scope: mvp
+- id: R60
+  text: A coach can manage their own account/profile.
+  meta:
+    scope: mvp
+- id: R61
+  text: 'The product enforces team privacy guarantees as one coherent rule: athletes
+    see aggregate-only stats, never an individual completion list, no public leaderboards/rankings,
+    no shaming of non-completers, and no sensitive mental-health data fields are collected.'
+  meta:
+    scope: mvp
+- id: R62
+  text: For minors, the app gates onboarding with a parent/org-consent and coaching-not-therapy
+    disclaimer and captures/handles age appropriately.
+  meta:
+    scope: mvp
+- id: R63
+  text: A user must accept terms of service and the privacy policy before use.
+  meta:
+    scope: mvp
+- id: R64
+  text: Every endpoint enforces JWT auth, role-based access checks, and team-scoping
+    so no cross-team reads occur and athletes cannot reach compliance lists.
+  meta:
+    scope: mvp
+- id: R65
+  text: Every user-facing screen renders explicit loading, empty/'nothing-yet', and
+    error/fallback states.
+  meta:
+    scope: mvp
+- id: R66
+  text: The system logs analytics events from day one for activation, retention (Day
+    3/7/30), adherence (4+ days/week), participation distribution, and per-step drop-off.
+  meta:
+    scope: mvp
+- id: R67
+  text: A 'Culture Action of the Day' optional block can be configured and shown on
+    the daily flow.
+  meta:
+    scope: mvp
+- id: R68
+  text: A coach and athlete can use in-app 1:1 coach messaging (chat).
+  meta:
+    scope: post-mvp
+- id: R69
+  text: A coach can access advanced analytics and insights beyond the MVP dashboard.
+  meta:
+    scope: post-mvp
+- id: R70
+  text: Athletes can access a content library / 'emergency tools' hub.
+  meta:
+    scope: post-mvp
+- id: R71
+  text: A coach account can manage multiple teams.
+  meta:
+    scope: post-mvp
+- id: R72
+  text: An owner can manage billing, subscription, and payment methods (Stripe / App
+    Store IAP).
+  meta:
+    scope: post-mvp

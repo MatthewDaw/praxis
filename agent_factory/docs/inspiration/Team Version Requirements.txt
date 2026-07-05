@@ -1,0 +1,242 @@
+﻿Here’s exactly what you (and a developer) need to know.
+________________
+
+
+1) Roles & Permissions (who sees/does what)
+You must define these up front—everything depends on it.
+Roles
+* Athlete: completes daily rep + checklist + ratings; sees team participation % (not names)
+
+* Captain/Leader: same as athlete + can post leader message (optional approval)
+
+* Coach/Admin: creates weekly themes, daily prompts, team habits checklist, leader permissions, sees dashboards
+
+Permission rules (recommended)
+   * Athletes cannot see individual teammates’ completion status.
+
+   * Captains can post messages only to their team.
+
+   * Coach can view individual compliance (or anonymous-only if you want extra privacy).
+
+________________
+
+
+2) “One-Screen Daily Flow” Functional Requirements
+Your team daily screen is built from 6 blocks. Each block needs data inputs.
+A) Header
+      * Team name/logo
+
+      * Date (team timezone)
+
+      * Weekly theme title + short tagline
+
+B) Team Daily Rep Prompt
+         * Prompt text (1 only)
+
+         * Response type:
+
+            * text_short (1–2 sentences)
+
+            * multiple_choice
+
+            * rating_1_5 / rating_1_10
+
+               * Save response + completion timestamp
+
+C) Team Habit Checklist
+                  * 3–6 checklist items (team behaviors)
+
+                  * Each item is boolean (checked/unchecked)
+
+                  * Store which items completed (for patterns later)
+
+D) Quick Personal Check-In
+                     * 3 sliders/taps (e.g., effort, focus, teammate support)
+
+                     * Store numeric values + timestamp
+
+E) Team Consistency Snapshot
+                        * Team completion % for yesterday/today (choose one)
+
+                        * Team streak (consecutive days meeting a threshold)
+
+                        * Trend indicator (up/down vs last week)
+
+F) Coach/Captain Message
+                           * Message text
+
+                           * Author (coach/captain)
+
+                           * Optional expiration window (e.g., valid for 3 days)
+
+Bottom Button
+                              * “Done for Today” finalizes, locks streak credit, triggers confirmation.
+
+________________
+
+
+3) Team Logic Rules (this is the “code brain”)
+These rules determine what the app shows.
+Daily completion definition (pick one and be consistent)
+Recommended:
+                                 * Completion = Daily rep submitted AND check-in ratings submitted
+Checklist can be optional (or require 1 item checked)
+
+Team participation % definition
+                                    * # athletes completed today / # active athletes on roster
+
+                                    * Exclude injured/inactive athletes if coach marks them inactive
+
+Team streak definition
+Pick a threshold:
+                                       * Example: streak day counts only if ≥70% of active roster completes
+
+                                       * Store streak per team, update nightly or in real-time
+
+Timezone rule
+                                          * Team day resets at 3:00 AM local time (not midnight—reduces “late night” weirdness)
+
+________________
+
+
+4) Data Model (what tables/objects you need)
+A clean backend usually includes:
+Users
+                                             * id, name, email/phone, role, team_id, status(active/inactive)
+
+Teams
+                                                * id, name, timezone, streak_count, streak_threshold
+
+WeeklyThemes
+                                                   * team_id, week_start_date, title, tagline, intro_text/audio_url
+
+DailyPrompts
+                                                      * team_id, date, prompt_text, response_type, options_json (if multiple choice)
+
+DailySubmissions
+                                                         * user_id, team_id, date
+
+                                                         * prompt_response_text / prompt_response_value
+
+                                                         * ratings_json (effort/focus/support)
+
+                                                         * checklist_json (which items checked)
+
+                                                         * completed_at timestamp
+
+                                                         * completion_status (boolean)
+
+TeamMessages
+                                                            * team_id, author_id, message_text, created_at, expires_at, approved_by (optional)
+
+TeamHabits
+                                                               * team_id, start_date, items_json (3–6 habit items)
+
+                                                               * (can be weekly or daily)
+
+This makes the daily screen easy to render from one query.
+________________
+
+
+5) Privacy & Safety (non-negotiable for teams/minors)
+You need to decide what the app exposes.
+Must-have protections
+                                                                  * Show only aggregate team participation to athletes
+
+                                                                  * Never show “who didn’t do it”
+
+                                                                  * Limit message posting to coach/captains
+
+                                                                  * Audit trail for messages (who posted, when)
+
+If you work with minors
+                                                                     * Parent consent + school/org policy alignment may apply
+
+                                                                     * Avoid collecting sensitive mental health details
+
+                                                                     * Add clear disclaimers: coaching/education, not therapy
+
+(You’ll want proper terms/privacy policy before public launch.)
+________________
+
+
+6) Admin Tools (minimum coach controls)
+To run the team version, the coach needs a simple admin panel to:
+                                                                        * Create/edit weekly theme
+
+                                                                        * Create daily prompt (or schedule week prompts)
+
+                                                                        * Edit team habit checklist
+
+                                                                        * Manage roster (active/inactive)
+
+                                                                        * Assign captains/leader roles
+
+                                                                        * View completion dashboard (team + individuals)
+
+Without this, you’ll be stuck manually patching content.
+________________
+
+
+7) Notifications (team version needs guardrails)
+Notifications should reinforce habits without becoming noise.
+Recommended
+                                                                           * One daily reminder (custom time)
+
+                                                                           * One “streak/save it” reminder near cutoff
+
+                                                                           * Optional: coach broadcast push (rare)
+
+Avoid
+                                                                              * Multiple nudges/day
+
+                                                                              * Public reminders that imply noncompliance
+
+________________
+
+
+8) Metrics you should log from Day 1
+These guide iteration and retention:
+                                                                                 * Activation: completed Day 1
+
+                                                                                 * Retention: Day 3, Day 7 return
+
+                                                                                 * Adherence: % completing 4+ days/week
+
+                                                                                 * Team participation distribution
+
+                                                                                 * Drop-off point (prompt? checklist? ratings?)
+
+________________
+
+
+9) Offline + Reliability Requirements (practical)
+Teams will use this in buses/gyms.
+                                                                                    * Cache today’s prompt/theme locally
+
+                                                                                    * Allow submission offline, sync later
+
+                                                                                    * Prevent duplicate submissions (idempotency per user/date)
+
+________________
+
+
+10) Build Order (so coding doesn’t spiral)
+If you’re building team version first:
+                                                                                       1. Auth + roles
+
+                                                                                       2. Team + roster
+
+                                                                                       3. Weekly theme + daily prompt scheduler
+
+                                                                                       4. Daily submission endpoint + validation
+
+                                                                                       5. Team participation aggregation
+
+                                                                                       6. Message posting + moderation
+
+                                                                                       7. Coach admin dashboard
+
+                                                                                       8. Push notifications
+
+                                                                                       9. Analytics + retention events

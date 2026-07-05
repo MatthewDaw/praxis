@@ -1,0 +1,30 @@
+# R-NO-DEP-CYCLE. R1 depends_on R2 and R2 depends_on R1 — a cycle, so neither can ever be the
+# dependency-ready front (next_ready_ticket returns None while both remain), a permanent build
+# stall. Both edge targets exist (no dangling), so ONLY the cycle rule fires. The gate names the
+# cycle path so the planner can break it.
+id: plan_gate_dependency_cycle_rejected
+component: plan_gate
+input:
+  project: team-app
+  requirements:
+    - id: R1
+      text: "The nightly rollup writes each athlete's streak using yesterday's published team summary."
+      acceptance: "rollup(D) reads summary(D-1) and writes streak(D); with summary(D-1) present, streak(D) is non-None."
+      defines: ["athlete streak"]
+      references: []
+      source: "prd-team-app"
+      depends_on: ["R2"]
+    - id: R2
+      text: "The published team summary for a date is computed from that date's athlete streaks."
+      acceptance: "summary(D) aggregates streak(D) across the roster; with all streak(D) present, summary(D) is non-None."
+      defines: ["team summary"]
+      references: []
+      source: "prd-team-app"
+      depends_on: ["R1"]
+  out_of_scope: []
+rule_ids: ["R-NO-DEP-CYCLE"]
+deterministic_checks:
+  - name: gate_rejects
+    ref: "evals.checks:gate_rejects"
+    params:
+      reason_contains: "dependency cycle: R1 -> R2 -> R1"

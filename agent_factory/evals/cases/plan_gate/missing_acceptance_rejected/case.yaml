@@ -1,0 +1,19 @@
+# A requirement with no binary acceptance condition must be REJECTED (the core
+# done-gate rule: every requirement maps to >=1 binary acceptance condition).
+id: plan_gate_missing_acceptance_rejected
+component: plan_gate
+input:
+  requirements:
+    - id: R5
+      text: "Coaches can see a team dashboard."
+      acceptance: ""
+      defines: ["team dashboard"]
+      references: []
+      source: "prd-team-app"
+  out_of_scope: []
+rule_ids: ["R-ACCEPT-BINARY"]
+deterministic_checks:
+  - name: gate_rejects
+    ref: "evals.checks:gate_rejects"
+    params:
+      reason_contains: "no binary acceptance"

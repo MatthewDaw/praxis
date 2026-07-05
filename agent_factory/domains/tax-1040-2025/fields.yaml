@@ -1,0 +1,49 @@
+# Field schemas — the typed boundary (S6). af-fulfill validates every gathered value
+# against these before recording a succeeded outcome; invalid input is rejected with a
+# structured error, never coerced. Mirrors app/schemas.py exactly.
+
+fields:
+  filing_status:
+    type: enum
+    values: [single, married_filing_jointly, married_filing_separately, head_of_household]
+
+  box1_wages:
+    type: number
+    min: 0
+    max: 100000000
+    label: "W-2 Box 1 — wages, tips, other comp"
+
+  box2_withholding:
+    type: number
+    min: 0
+    max: 100000000
+    label: "W-2 Box 2 — federal income tax withheld"
+
+  other_income:
+    type: number
+    min: 0
+    default_when_absent: 0
+
+  dependents:
+    type: integer
+    min: 0
+    max: 20
+
+  confirmed_w2:
+    type: boolean
+
+  employer:
+    type: string
+    max_length: 200
+
+  employee_name:
+    type: string
+    max_length: 200
+
+# Cross-field invariants (closed predicate set; same as policy.yaml guardrails.invariants).
+cross_field:
+  - rule: "box2_withholding <= box1_wages"
+    op: lte
+    left: box2_withholding
+    right: box1_wages
+    error: "federal withholding (box 2) cannot exceed wages (box 1)"

@@ -1,0 +1,44 @@
+# Runtime policy: the generic knobs af-fulfill enforces, configured per domain as data.
+# These are NOT tax-specific mechanisms — every fulfillment domain sets the same shape.
+
+# S1 — the ask budget. af-fulfill gates the ONLY ask channel on this counter.
+# Inferring or defaulting a requirement is free; only resolving via=ask decrements.
+budget:
+  max_asks: 5
+  counts: ask          # 'ask' resolutions only; 'infer'/'default'/'cover_from_fact' cost nothing
+
+# S5 — defaults. When a requirement is closed by default (not a fact, not an ask),
+# af-fulfill records an assumption-receipt line citing the justifying rule.
+defaults:
+  filing_status:
+    value: single
+    justification: "not provided; Single is the default for a one-W-2 filer"
+  other_income:
+    value: 0
+    justification: "no non-W-2 income reported"
+  dependents:
+    value: 0
+    justification: "no dependents reported"
+
+# S4 — question strategy. af-fulfill computes Δ-bottom-line via provisional evaluator runs;
+# this only sets the posture, not a hardcoded ordering.
+ask_strategy:
+  mode: inference_first          # compute a provisional return, then ask only what moves the bottom line
+  rank_by: delta_bottom_line
+
+# S9 — guardrail scope. Stable rule ids; refusals emit a typed trace event and name the rule.
+# Enforced by the generic runtime; the domain supplies the predicates.
+guardrails:
+  out_of_scope:
+    - id: OUT_OF_SCOPE_1099
+      when: "non-W-2 income types (1099, self-employment, capital gains, K-1)"
+      reason: "This prototype handles a basic 1040 from W-2 wages only."
+    - id: SCOPE_NO_ADVICE
+      when: "request for tax advice, planning, or optimization"
+      reason: "This is an educational prototype, not tax advice."
+    - id: PII_REJECT
+      when: "an SSN or other sensitive PII appears in input"
+      action: redact          # redact and continue, don't refuse
+  invariants:                 # engine-level rejects (also enforced in fields.yaml validation)
+    - "wages must be >= 0"
+    - "withholding must not exceed wages"

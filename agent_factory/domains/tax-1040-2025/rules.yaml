@@ -1,0 +1,51 @@
+# Rule TABLES as data. The evaluator reads these; it never hardcodes a number.
+# Values are TY2025, identical to app/rules.py (returns filed 2026).
+
+standard_deduction:          # by filing status -> Form 1040 line 12
+  single: 15750
+  married_filing_jointly: 31500
+  married_filing_separately: 15750
+  head_of_household: 23625
+
+# Marginal ordinary-income brackets by filing status.
+# Each row: [upper_bound, rate]; the final row's upper bound is `inf`.
+# The `marginal_tax` op applies each rate only to the slice within that band.
+brackets:
+  single:
+    - [11925, 0.10]
+    - [48475, 0.12]
+    - [103350, 0.22]
+    - [197300, 0.24]
+    - [250525, 0.32]
+    - [626350, 0.35]
+    - [inf, 0.37]
+  married_filing_jointly:
+    - [23850, 0.10]
+    - [96950, 0.12]
+    - [206700, 0.22]
+    - [394600, 0.24]
+    - [501050, 0.32]
+    - [751600, 0.35]
+    - [inf, 0.37]
+  married_filing_separately:
+    - [11925, 0.10]
+    - [48475, 0.12]
+    - [103350, 0.22]
+    - [197300, 0.24]
+    - [250525, 0.32]
+    - [375800, 0.35]
+    - [inf, 0.37]
+  head_of_household:
+    - [17000, 0.10]
+    - [64850, 0.12]
+    - [103350, 0.22]
+    - [197300, 0.24]
+    - [250500, 0.32]
+    - [626350, 0.35]
+    - [inf, 0.37]
+
+filing_status_labels:
+  single: "Single"
+  married_filing_jointly: "Married filing jointly"
+  married_filing_separately: "Married filing separately"
+  head_of_household: "Head of household"

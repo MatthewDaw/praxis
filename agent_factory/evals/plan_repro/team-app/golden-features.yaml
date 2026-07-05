@@ -1,0 +1,336 @@
+# Golden feature set for the plan-reproduction (no-holes) eval.
+#
+# Extracted from the live Praxis `prd-team-app` graph on 2026-06-26 (the hand-refined plan
+# that resulted from the real planning/audit/review passes). This is the COVERAGE TARGET: a
+# plan reproduced from docs/inspiration/ must cover every feature here (variant wording OK).
+#
+# Fields per feature:
+#   id        - stable slug for this eval (NOT the Praxis id)
+#   req_id    - the prd-team-app requirement id where known (e.g. R7); omitted otherwise
+#   feature   - the feature statement (semantic target; candidates may paraphrase)
+#   scope     - mvp | post-mvp
+#   derived   - true when the raw docs/inspiration PRD did NOT state this; the refinement
+#               passes added it. These are the eval's TEETH — a naive planner misses them.
+#   why_derived - why it's a hole the raw PRD left (only on derived features)
+#
+# PASS = every feature covered by >=1 reproduced feature; zero holes, especially zero missed
+# derived features.
+
+project: team-app
+source_graph: prd-team-app
+captured: "2026-06-26"
+
+epics:
+
+  - name: Auth, Registration & Onboarding
+    features:
+      - id: AUTH-self-register
+        feature: "A user can self-register for free as a coach or an athlete; a coach registration creates the coach account plus a new team they own."
+        scope: mvp
+      - id: AUTH-login
+        feature: "A returning user logs in with email and password to receive a JWT and access their team content."
+        scope: mvp
+      - id: AUTH-logout
+        feature: "An authenticated user can log out, ending the session and returning to the welcome/login surface."
+        scope: mvp
+      - id: AUTH-me
+        feature: "GET /auth/me returns the authenticated user's profile together with their role and team."
+        scope: mvp
+      - id: AUTH-password-reset
+        feature: "A user can request a password reset and receive an emailed reset link to set a new password."
+        scope: mvp
+        derived: true
+        why_derived: "Raw PRD lists signup/login/logout/me only — no password-reset flow. The archetypal hole."
+      - id: ONBOARD-dob-capture
+        feature: "Signup captures the user's date of birth and flags users under 18 as minors."
+        scope: mvp
+        derived: true
+        why_derived: "Raw PRD only hints 'if you work with minors, parent consent may apply' — no DOB capture requirement."
+      - id: ONBOARD-minor-consent-gate
+        feature: "A minor (under-18) user is blocked from team content until a parental/guardian consent step completes and a consent record is stored."
+        scope: mvp
+        derived: true
+        why_derived: "Refinement turned the minors privacy note into an enforced consent gate."
+      - id: ONBOARD-consent-disclaimer
+        req_id: R7
+        feature: "Before entering the app a first-time user must acknowledge a consent/disclaimer stating the app is coaching/education and not therapy."
+        scope: mvp
+        derived: true
+        why_derived: "Raw PRD mentions a disclaimer as a privacy note, not a first-run acknowledgement gate screen."
+
+  - name: Invites & Team Join
+    features:
+      - id: INVITE-signup-redeem
+        feature: "A user can sign up and join a team by redeeming a valid invite code; on success they are assigned the invite's team_id and created with status=active."
+        scope: mvp
+      - id: INVITE-redeem-existing-user
+        feature: "An authenticated user with no active team membership can redeem an invite code to join a team, after which the team-scoped daily flow becomes available."
+        scope: mvp
+      - id: INVITE-default-role
+        feature: "A redeemed invite assigns role=athlete by default unless the invite explicitly specifies a different role."
+        scope: mvp
+      - id: INVITE-invalid-rejected
+        feature: "An invalid or expired invite code is rejected with a clear, user-visible error and no user/team assignment occurs."
+        scope: mvp
+      - id: INVITE-create
+        feature: "A coach can create an invite specifying its role and expiration."
+        scope: mvp
+      - id: INVITE-revoke
+        feature: "A coach can revoke an invite so it can no longer be redeemed."
+        scope: mvp
+      - id: INVITE-usage-tracked
+        feature: "Invite usage is tracked, recording who redeemed an invite and when."
+        scope: mvp
+
+  - name: Daily Flow (one screen)
+    features:
+      - id: FLOW-single-request
+        feature: "Opening the app loads today's full daily flow (theme, prompt, habits, message, my submission state, team stats) in a single request."
+        scope: mvp
+      - id: FLOW-team-identity
+        feature: "The daily-flow payload returns team identity (team name and optional logo) and the screen renders it as the top team-identity anchor."
+        scope: mvp
+      - id: FLOW-theme-fallback
+        feature: "When no weekly theme is set, the daily flow falls back to the latest theme or a placeholder rather than erroring."
+        scope: mvp
+      - id: FLOW-prompt-fallback
+        feature: "When the coach has not posted today's prompt, the daily flow shows a 'prompt not posted yet' fallback and completion is not possible."
+        scope: mvp
+      - id: FLOW-consistency-snapshot
+        feature: "The team consistency snapshot displays team completion percent (yesterday or today per config), the team streak count, and a trend indicator versus last week."
+        scope: mvp
+      - id: FLOW-edit-until-reset
+        feature: "An athlete can fully edit any daily-flow block until the team day reset; an edit made after 'Done for Today' re-evaluates completion and recomputes team stats."
+        scope: mvp
+        derived: true
+        why_derived: "Raw PRD does not specify post-completion editability or recompute semantics."
+      - id: FLOW-culture-action
+        req_id: R68
+        feature: "The daily flow optionally shows a single culture action of the day prompting one concrete team-culture behavior."
+        scope: mvp
+
+  - name: Daily Submission & Completion
+    features:
+      - id: SUB-prompt-response
+        feature: "An athlete submits the daily prompt response, validated against the prompt's response_type and saved to the day's submission (creating the row if needed)."
+        scope: mvp
+      - id: SUB-habits-toggle
+        feature: "An athlete can toggle each team habit item on/off, saved to checklist_json; the checklist by itself does not mark completion."
+        scope: mvp
+      - id: SUB-ratings
+        feature: "An athlete submits the quick check-in as exactly three ratings (effort, focus, support), each within 1-10, saved to ratings_json."
+        scope: mvp
+      - id: SUB-completion-rule
+        feature: "Completion is defined as the prompt response submitted AND all three ratings present; the habit checklist is recorded but does not gate completion (default config)."
+        scope: mvp
+      - id: SUB-done-finalizes
+        feature: "Tapping 'Done for Today' when a prompt response and all three ratings exist sets completion_status=true and completed_at=now for the day's submission."
+        scope: mvp
+      - id: SUB-done-missing-error
+        feature: "Tapping 'Done for Today' while required pieces are missing returns a structured error listing the missing components and does not finalize."
+        scope: mvp
+      - id: SUB-done-confirmation
+        feature: "After successful completion the app shows a confirmation and updates the streak indicator."
+        scope: mvp
+      - id: SUB-idempotent-complete
+        feature: "The completion endpoint is idempotent so re-tapping 'Done for Today' does not create duplicate completions."
+        scope: mvp
+      - id: SUB-idempotency-key
+        feature: "The completion endpoint accepts an Idempotency-Key so an offline submission synced more than once does not create duplicate completions."
+        scope: mvp
+
+  - name: Weekly Theme & Prompts (coach authoring)
+    features:
+      - id: THEME-create
+        feature: "A coach can create a weekly theme tied to a week_start_date, with at most one theme per team per week (latest wins)."
+        scope: mvp
+      - id: THEME-edit-immediate
+        feature: "Editing a weekly theme makes the change appear on the athlete daily-flow screen immediately."
+        scope: mvp
+      - id: THEME-view
+        req_id: R31
+        feature: "The athlete can view the current weekly theme read-only, including title, tagline, optional intro text, and optional intro audio playback."
+        scope: mvp
+      - id: PROMPT-create-edit
+        feature: "A coach can create and edit a daily prompt for a specific date with a response_type (text_short, multiple_choice, rating_1_5, rating_1_10) and options when applicable."
+        scope: mvp
+      - id: PROMPT-edit-preserves-submissions
+        feature: "Editing a prompt after submissions exist leaves existing submissions intact."
+        scope: mvp
+      - id: PROMPT-editor-empty-state
+        feature: "The admin prompts editor shows an empty/unscheduled state for dates that have no prompt yet."
+        scope: mvp
+        derived: true
+        why_derived: "Admin empty-state surface added during the wireframe/refinement pass, not in the raw PRD."
+
+  - name: Habits (coach authoring)
+    features:
+      - id: HABITS-edit
+        feature: "A coach can edit the team habit checklist as a set of 3 to 6 items."
+        scope: mvp
+
+  - name: Messages & Moderation
+    features:
+      - id: MSG-coach-post
+        feature: "A coach can post a team message that appears on the athlete daily flow immediately, with an optional expiration."
+        scope: mvp
+      - id: MSG-captain-approval-default
+        feature: "Captain-post approval defaults ON (a captain's post starts pending until a coach approves); a captain can disable their own approval requirement."
+        scope: mvp
+      - id: MSG-force-approval-override
+        feature: "The coach retains a team-wide force-approval override that, when enabled, holds all captain posts pending regardless of each captain's own setting."
+        scope: mvp
+        derived: true
+        why_derived: "Refinement added the coach override on top of the per-captain approval toggle; not in raw PRD."
+      - id: MSG-moderation-queue
+        feature: "A coach can approve or reject a pending captain message from a moderation queue."
+        scope: mvp
+      - id: MSG-published-only
+        feature: "Athletes see only published messages, so pending or rejected captain messages are not shown."
+        scope: mvp
+      - id: MSG-history
+        feature: "Athletes can view team message history, including opening an individual message in a read-only detail view."
+        scope: mvp
+      - id: MSG-retract-delete
+        feature: "A coach can retract or expire-now a published message and a captain can delete their own pending message, recorded in the audit trail."
+        scope: mvp
+      - id: MSG-audit-trail
+        feature: "An audit trail records message activity (who posted, approved, or rejected and when), viewable by the coach."
+        scope: mvp
+
+  - name: Roster & Roles
+    features:
+      - id: ROSTER-active-inactive
+        feature: "A coach can set an athlete active or inactive on the roster; inactive athletes are excluded from the participation denominator."
+        scope: mvp
+      - id: ROSTER-assign-captain
+        feature: "A coach can assign or remove the captain role for a user, and the permission change takes effect immediately."
+        scope: mvp
+
+  - name: Stats, Streaks & Dashboards
+    features:
+      - id: STATS-personal
+        feature: "An athlete can view their personal streak (consecutive days with completion) and their weekly completion count and percent for the last 7 days."
+        scope: mvp
+      - id: STATS-coach-dashboard
+        feature: "A coach can view a team dashboard showing completion_pct by day (last 14/30 days) and the distribution of athlete adherence."
+        scope: mvp
+      - id: STATS-individual-compliance
+        feature: "The coach dashboard can show an individual-compliance athlete list, gated by a configurable on/off setting."
+        scope: mvp
+      - id: STATS-participation-formula
+        feature: "Team participation percent is computed as completed_count divided by active_roster_count."
+        scope: mvp
+      - id: STATS-aggregate-only
+        feature: "The athlete-facing participation snapshot returns aggregate stats only and never an individual per-athlete completion list."
+        scope: mvp
+      - id: STATS-inactive-excluded
+        feature: "Inactive athletes are excluded from the participation denominator so active_roster_count counts only active athletes."
+        scope: mvp
+      - id: STREAK-threshold
+        feature: "A day at or above streak_threshold_pct (default 70) increments the team streak; a day below resets the team streak to 0."
+        scope: mvp
+      - id: STREAK-day-boundary
+        feature: "Team day boundaries use the team's timezone and reset at day_reset_hour (default 3:00 AM local), not midnight."
+        scope: mvp
+      - id: STREAK-hybrid-nightly
+        feature: "The team streak is computed in hybrid mode: shown live during the day and finalized by a nightly job that also absorbs late offline syncs."
+        scope: mvp
+        derived: true
+        why_derived: "Raw PRD says 'update nightly or real-time'; refinement resolved it to a hybrid model that absorbs late syncs."
+
+  - name: Notifications & Push
+    features:
+      - id: NOTIF-daily-reminder
+        feature: "An athlete receives at most one daily reminder at a preferred (or default) time, suppressed if the day is already complete."
+        scope: mvp
+      - id: NOTIF-streak-save
+        feature: "An athlete optionally receives one save-your-streak reminder near the team's daily cutoff when still incomplete."
+        scope: mvp
+      - id: NOTIF-broadcast
+        feature: "A coach can send a broadcast push to all active-roster devices, rate-limited to at most once per day."
+        scope: mvp
+      - id: NOTIF-push-subscription
+        feature: "The app registers and refreshes a per-device push subscription token, supports unsubscribe, and falls back to an in-app incomplete-day reminder banner when push is unavailable."
+        scope: mvp
+        derived: true
+        why_derived: "Push token lifecycle + in-app fallback is an engineering reality the raw PRD left implicit."
+
+  - name: Privacy, Safety & Security
+    features:
+      - id: SEC-no-leaderboard
+        req_id: R59
+        feature: "The product exposes no public leaderboards and never shows athletes which individuals did not complete."
+        scope: mvp
+      - id: SEC-no-sensitive-fields
+        req_id: R60
+        feature: "The app avoids collecting sensitive mental-health data fields beyond the effort/focus/support ratings."
+        scope: mvp
+      - id: SEC-team-scoped
+        feature: "All data access is team-scoped so no user can read another team's data."
+        scope: mvp
+      - id: SEC-athlete-no-compliance
+        feature: "Athletes cannot access roster or individual compliance lists through any endpoint."
+        scope: mvp
+      - id: SEC-rbac
+        feature: "Role-based access checks are enforced on every endpoint so a user cannot act outside their role."
+        scope: mvp
+      - id: SEC-jwt
+        feature: "JWT authentication is required on every API endpoint."
+        scope: mvp
+
+  - name: Offline, Performance & Reliability
+    features:
+      - id: PERF-offline-cache-sync
+        feature: "The app caches today's daily flow locally, allows completing the daily rep offline, and syncs the submission when connectivity returns."
+        scope: mvp
+      - id: PERF-daily-flow-latency
+        feature: "The daily-flow endpoint returns within 300ms p95 server-side and caches theme/prompt/habits per team and date."
+        scope: mvp
+
+  - name: UI States
+    features:
+      - id: STATE-loading-skeleton
+        req_id: R61
+        feature: "The daily flow shows a loading skeleton state while today's data is being fetched."
+        scope: mvp
+        derived: true
+        why_derived: "UI loading state surfaced by the wireframe pass; absent from the raw PRD."
+      - id: STATE-empty-nothing-yet
+        req_id: R62
+        feature: "The app shows an empty 'nothing yet' state when there is no daily content to display."
+        scope: mvp
+        derived: true
+        why_derived: "UI empty state surfaced by the wireframe pass; absent from the raw PRD."
+
+  - name: Account & Settings
+    features:
+      - id: ACCT-athlete-account
+        feature: "An athlete has an account screen exposing notification settings, an offline toggle, the consent/disclaimer, and logout."
+        scope: mvp
+      - id: ACCT-coach-team-settings
+        feature: "A coach can configure team settings including the completion rule (checklist optional vs require one), captain-approval defaults, permission toggles, and privacy settings."
+        scope: mvp
+
+  - name: Post-MVP
+    features:
+      - id: POST-coach-chat
+        req_id: R63
+        feature: "A coach and athlete can exchange 1:1 in-app messages via a coach chat surface."
+        scope: post-mvp
+      - id: POST-emergency-library
+        req_id: R64
+        feature: "Athletes can access an emergency-tools content library curated by the coach."
+        scope: post-mvp
+      - id: POST-analytics
+        req_id: R65
+        feature: "A coach can view advanced analytics and insights including a drop-off funnel and retention metrics."
+        scope: post-mvp
+      - id: POST-multi-team
+        req_id: R66
+        feature: "A coach account can manage and switch between multiple teams."
+        scope: post-mvp
+      - id: POST-billing
+        req_id: R67
+        feature: "A coach can manage billing and subscription for the team account."
+        scope: post-mvp

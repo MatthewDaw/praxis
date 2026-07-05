@@ -1,0 +1,91 @@
+# The calculation graph. An ORDERED, ACYCLIC list of steps the generic deterministic
+# evaluator runs once completeness == 0 incomplete (and, provisionally, mid-gather for the
+# S4 Δ-bottom-line ranking). The LLM never runs this — a deterministic evaluator does (S2/S10).
+#
+# Each step:
+#   id      result name (also the 1040 line key)
+#   label   human label (shown in trace + receipt)
+#   op      one of the CLOSED vocabulary: sum | add | subtract | copy | const
+#           | table_lookup | marginal_tax | clamp_min | round
+#   ...     op-specific inputs, referencing prior step ids, `field:<name>`, or `table:<name>`
+#   post    optional ordered post-ops applied to the result: clamp_min, round
+#
+# Worked check ($40k single, no other income): line_15 = 40000 - 15750 = 24250;
+# line_16 marginal_tax = 2672 (verified). Refund/owed then follows from box 2 withholding
+# (the documented sample W-2 yields a $528 refund). Matches app/tax_engine.py.
+
+steps:
+  - id: line_1a_wages
+    label: "1a — total W-2 box 1 wages"
+    op: sum
+    over: facts            # sum field across all gathered W-2 facts (one, here)
+    field: box1_wages
+
+  - id: line_8_other_income
+    label: "8 — additional income"
+    op: copy
+    from: { field: other_income }
+
+  - id: line_9_total_income
+    label: "9 — total income"
+    op: add
+    inputs: [line_1a_wages, line_8_other_income]
+
+  - id: line_11_agi
+    label: "11 — adjusted gross income"
+    op: copy
+    from: line_9_total_income      # no Schedule 1 adjustments in scope
+
+  - id: line_12_standard_deduction
+    label: "12 — standard deduction"
+    op: table_lookup
+    table: standard_deduction
+    key: { field: filing_status }
+
+  - id: line_15_taxable_income
+    label: "15 — taxable income"
+    op: subtract
+    inputs: [line_11_agi, line_12_standard_deduction]
+    post: [{ clamp_min: 0 }]       # taxable income is never below zero
+
+  - id: line_16_tax
+    label: "16 — tax"
+    op: marginal_tax
+    income: line_15_taxable_income
+    schedule: brackets
+    key: { field: filing_status }
+    post: [{ round: 1 }]           # whole dollars
+
+  - id: line_24_total_tax
+    label: "24 — total tax"
+    op: copy
+    from: line_16_tax
+
+  - id: line_25a_withholding
+    label: "25a — federal tax withheld"
+    op: sum
+    over: facts
+    field: box2_withholding
+
+  - id: line_33_total_payments
+    label: "33 — total payments"
+    op: copy
+    from: line_25a_withholding
+
+  - id: line_34_refund
+    label: "34 — refund"
+    op: subtract
+    inputs: [line_33_total_payments, line_24_total_tax]
+    post: [{ clamp_min: 0 }]
+
+  - id: line_37_amount_owed
+    label: "37 — amount you owe"
+    op: subtract
+    inputs: [line_24_total_tax, line_33_total_payments]
+    post: [{ clamp_min: 0 }]
+
+# The single human-facing result, selected from the lines above.
+bottom_line:
+  refund_when: { gt: [line_34_refund, 0] }
+  refund: line_34_refund
+  owed: line_37_amount_owed

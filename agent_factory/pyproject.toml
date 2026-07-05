@@ -1,0 +1,35 @@
+[project]
+name = "agent-factory"
+version = "0.1.0"
+requires-python = ">=3.12"
+# pyyaml is a RUNTIME dependency (KTD4): the af-fulfill domain loader parses the pack's YAML
+# files at runtime. It was previously dev-only (the planning/validation gates used it in tests).
+dependencies = [
+    "pyyaml>=6.0.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    # Mutation testing (U5; R8, SC1, AE3) — report-only, never in the default pytest
+    # run. Pinned to the 2.x line because evals/mutation.py parses the `mutmut results`
+    # section format that 2.x emits (3.x changed the output shape).
+    "mutmut>=2.4,<3",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+
+# Mutation testing config (U5, KTD7). Run OUT-OF-BAND, never as part of `pytest`:
+#   python -m mutmut run        # mutate the modules below, run the suite per mutant
+#   python -m mutmut results    # list survivors -> feed to evals/mutation.py
+# Report-first: kill-rate + a wanted-case worklist; it does NOT block CI this iteration.
+[tool.mutmut]
+paths_to_mutate = [
+    "src/agent_factory/plan_gate.py",
+    "src/agent_factory/gate.py",
+    "evals/checks.py",
+]
+tests_dir = "tests/"
+runner = "python -m pytest -q"

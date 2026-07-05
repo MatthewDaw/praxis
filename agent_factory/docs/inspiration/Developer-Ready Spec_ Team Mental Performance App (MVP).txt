@@ -1,0 +1,608 @@
+﻿Below is a developer-ready MVP specification for the Team Version Daily Screen (team culture + accountability) that you can hand to a contractor to bid accurately. It includes scope, roles, user stories, acceptance criteria, data model, and API endpoints.
+________________
+
+
+Developer-Ready Spec: Team Mental Performance App (MVP)
+1. Product Summary
+Goal
+A mobile app that helps teams build consistent mental performance habits through a one-screen daily flow:
+* Daily team prompt (shared language)
+
+* Team habits checklist (behaviors)
+
+* Quick personal ratings (effort/focus/support)
+
+* Team participation snapshot (aggregate only)
+
+* Coach/captain message
+
+* “Done for Today” completion loop + streaks
+
+MVP Success Metrics
+   * Activation: ≥70% users complete Day 1
+
+   * Retention: ≥40% users active Day 30
+
+   * Adherence: ≥60% users complete 4+ days/week in active teams
+
+________________
+
+
+2. Roles & Permissions
+Roles
+      * Athlete
+
+      * Captain (Athlete + can post team message if enabled)
+
+      * Coach/Admin (manages team content + roster + dashboards)
+
+Permission Rules (MVP)
+         * Athletes can view aggregate team participation only (no individual list).
+
+         * Captains can post messages only to their team (optionally requires coach approval).
+
+         * Coach can view team-wide stats and individual compliance (configurable: on/off).
+
+________________
+
+
+3. Platform & Tech Assumptions (for bidding)
+            * Mobile app: iOS + Android (React Native recommended) OR web-first responsive PWA
+
+            * Backend: REST API (Node/Express, Django, or similar)
+
+            * Database: Postgres (preferred)
+
+            * Auth: email/password + magic link (optional) + JWT access tokens
+
+            * Push notifications: Firebase Cloud Messaging + APNs
+
+________________
+
+
+4. Core MVP Screens (Mobile)
+               1. Daily Flow (Team Home)
+
+               2. Weekly Theme (read-only)
+
+               3. Progress (personal streak + weekly completion)
+
+               4. Messages (optional: message history)
+
+               5. Account/Settings
+
+Coach/Admin (Web dashboard is acceptable for MVP):
+                  * Theme + daily prompts editor/scheduler
+
+                  * Team habits editor
+
+                  * Roster management
+
+                  * Roles assignment
+
+                  * Participation dashboard
+
+________________
+
+
+5. Data Model (MVP Entities)
+Team
+                     * id (uuid)
+
+                     * name
+
+                     * timezone (IANA, e.g., America/Chicago)
+
+                     * day_reset_hour (default 3)
+
+                     * streak_threshold_pct (default 70)
+
+                     * created_at
+
+User
+                        * id
+
+                        * team_id
+
+                        * role enum: athlete|captain|coach
+
+                        * first_name, last_name
+
+                        * email
+
+                        * status enum: active|inactive
+
+                        * created_at
+
+WeeklyTheme
+                           * id
+
+                           * team_id
+
+                           * week_start_date (date)
+
+                           * title
+
+                           * tagline (short)
+
+                           * intro_text (optional)
+
+                           * intro_audio_url (optional)
+
+                           * created_at
+
+DailyPrompt
+                              * id
+
+                              * team_id
+
+                              * date (date in team timezone day)
+
+                              * prompt_text
+
+                              * response_type enum: text_short|multiple_choice|rating_1_5|rating_1_10
+
+                              * options_json (nullable)
+
+                              * created_at
+
+TeamHabits (weekly default; can support daily override later)
+                                 * id
+
+                                 * team_id
+
+                                 * start_date (date)
+
+                                 * items_json (array of 3–6 strings)
+
+                                 * created_at
+
+DailySubmission
+                                    * id
+
+                                    * team_id
+
+                                    * user_id
+
+                                    * date
+
+                                    * prompt_response_text (nullable)
+
+                                    * prompt_response_value (nullable numeric/string)
+
+                                    * ratings_json (e.g., {effort:7, focus:6, support:8})
+
+                                    * checklist_json (e.g., {0:true, 1:false, 2:true})
+
+                                    * completion_status boolean
+
+                                    * completed_at timestamp nullable
+
+                                    * unique constraint: (user_id, team_id, date)
+
+TeamMessage
+                                       * id
+
+                                       * team_id
+
+                                       * author_id
+
+                                       * author_role (redundant ok)
+
+                                       * message_text
+
+                                       * status enum: published|pending|rejected (pending if approval enabled)
+
+                                       * approved_by nullable
+
+                                       * created_at
+
+                                       * expires_at nullable
+
+TeamDailyStats (materialized or computed)
+                                          * team_id
+
+                                          * date
+
+                                          * active_roster_count
+
+                                          * completed_count
+
+                                          * completion_pct
+
+                                          * streak_count (stored on team is ok)
+
+                                          * created_at
+
+________________
+
+
+6. Definition of “Completed Today” (MVP Logic)
+A DailySubmission is complete when:
+                                             * Prompt response is submitted AND
+
+                                             * All 3 ratings are submitted
+Checklist is optional OR require at least 1 checked (config; default optional).
+
+Participation %
+completed_count / active_roster_count
+Team Streak Rule
+A day counts toward streak if:
+completion_pct >= streak_threshold_pct (default 70%)
+Team Day Reset
+Day boundaries use team.timezone and reset at day_reset_hour (default 3:00 AM).
+________________
+
+
+7. User Stories + Acceptance Criteria
+Epic A: Authentication & Team Join
+A1. User can sign up and join a team
+Story: As a user, I can sign up and join a team using an invite code so I can access team content.
+Acceptance Criteria:
+                                                * Given a valid invite code, user is assigned team_id
+
+                                                * User role defaults to athlete unless invite specifies role
+
+                                                * Invalid/expired invite code returns clear error
+
+                                                * User is created with status=active
+
+A2. Coach can invite users
+Story: As a coach, I can generate invite codes/links for athletes and captains.
+Acceptance Criteria:
+                                                   * Coach can create invite with role and expiration
+
+                                                   * Invite can be revoked
+
+                                                   * Invite usage is tracked (who used it, when)
+
+________________
+
+
+Epic B: Daily Flow Screen (Team Home)
+B1. App loads today’s daily flow in one request
+Story: As an athlete, when I open the app, I see today’s theme, prompt, habits, message, and my completion state.
+Acceptance Criteria:
+                                                      * Single endpoint returns all content required for screen render
+
+                                                      * If theme/prompt not set, fallback behavior:
+
+                                                         * Theme: show latest theme or placeholder
+
+                                                         * Prompt: show “Coach will post today’s prompt soon” (no completion possible)
+
+                                                            * App shows my existing submission state if already submitted (read-only or editable per config)
+
+B2. User can submit prompt response
+Story: As an athlete, I can answer the daily prompt so I can complete my mental rep.
+Acceptance Criteria:
+                                                               * Validates response based on response_type
+
+                                                               * Saves response to DailySubmission
+
+                                                               * Creates submission row if not existing
+
+                                                               * Prevents duplicates via (user_id, date) uniqueness
+
+                                                               * Returns updated submission + completion status
+
+B3. User can check off team habits
+Story: As an athlete, I can check off team habit items so I can reinforce behaviors.
+Acceptance Criteria:
+                                                                  * User can toggle each item on/off
+
+                                                                  * Saves checklist_json
+
+                                                                  * Does not mark completion by itself unless completion rule requires it
+
+B4. User can submit quick check-in ratings
+Story: As an athlete, I can rate effort/focus/support quickly so progress can be tracked.
+Acceptance Criteria:
+                                                                     * Ratings required fields enforced (3 values)
+
+                                                                     * Range enforced (1–10 default)
+
+                                                                     * Saves to ratings_json
+
+B5. “Done for Today” finalizes completion
+Story: As an athlete, I can tap “Done for Today” to finalize my daily rep and lock in my streak.
+Acceptance Criteria:
+                                                                        * If prompt response + ratings exist, sets completion_status=true and completed_at=now
+
+                                                                        * If missing required pieces, returns structured error listing missing components
+
+                                                                        * After completion, shows confirmation and updates streak indicator
+
+                                                                        * Re-tapping does not create duplicates (idempotent)
+
+B6. Team participation snapshot is aggregate only
+Story: As an athlete, I can see team completion percent but not individual status.
+Acceptance Criteria:
+                                                                           * Endpoint returns only aggregate stats for team (no user list)
+
+                                                                           * Completion percent uses active roster count
+
+                                                                           * Optionally shows “yesterday” and/or “today” as defined in config
+
+________________
+
+
+Epic C: Weekly Theme & Scheduled Prompts
+C1. Coach sets weekly theme
+Story: As a coach, I can create a weekly theme so the week has a consistent focus.
+Acceptance Criteria:
+                                                                              * Theme is tied to week_start_date
+
+                                                                              * Only one theme per team per week_start_date (or latest wins)
+
+                                                                              * Can edit theme; changes appear on athlete screen immediately
+
+C2. Coach schedules daily prompts
+Story: As a coach, I can create prompts for specific dates so athletes always have daily reps.
+Acceptance Criteria:
+                                                                                 * Prompt supports response types + options
+
+                                                                                 * Coach can create/edit prompt for a date
+
+                                                                                 * If prompt edited after submissions, existing submissions remain; prompt text shown is latest prompt (or preserve original via versioning—optional)
+
+________________
+
+
+Epic D: Messages (Coach/Captain Voice)
+D1. Coach posts team message
+Story: As a coach, I can post a message to reinforce focus.
+Acceptance Criteria:
+                                                                                    * Message appears on daily flow immediately
+
+                                                                                    * Can set expiration (optional)
+
+                                                                                    * Message history view optional; MVP can show latest only
+
+D2. Captain posts message (optional MVP toggle)
+Story: As a captain, I can post a message to encourage teammates.
+Acceptance Criteria:
+                                                                                       * If approval enabled, status defaults pending until coach approves
+
+                                                                                       * If approval disabled, captain message publishes immediately
+
+                                                                                       * Athletes see only published messages
+
+________________
+
+
+Epic E: Roster & Roles
+E1. Coach manages roster
+Story: As a coach, I can set athletes active/inactive so participation percent is accurate.
+Acceptance Criteria:
+                                                                                          * Inactive athletes excluded from participation denominator
+
+                                                                                          * Changes apply to stats immediately (or next nightly recompute)
+
+E2. Coach assigns captains
+Story: As a coach, I can assign captain role to users.
+Acceptance Criteria:
+                                                                                             * Role change reflected in permissions immediately
+
+                                                                                             * Audit log (optional)
+
+________________
+
+
+Epic F: Stats, Streaks, and Dashboards
+F1. App shows personal streak and weekly completion
+Story: As an athlete, I can see my streak and weekly completion so I’m motivated by consistency.
+Acceptance Criteria:
+                                                                                                * Streak counts consecutive days where completion_status=true
+
+                                                                                                * Weekly completion shows count and percent for last 7 days
+
+F2. Coach sees team dashboard
+Story: As a coach, I can view team participation trends and individual adherence so I can coach effectively.
+Acceptance Criteria:
+                                                                                                   * Dashboard shows:
+
+                                                                                                      * completion_pct by day (last 14/30 days)
+
+                                                                                                      * distribution of adherence (e.g., # athletes 0–1 days, 2–3 days, 4–7 days)
+
+                                                                                                         * Optional: list athletes with completion counts (coach-only)
+
+________________
+
+
+Epic G: Notifications (MVP)
+G1. Daily reminder
+Story: As an athlete, I get one daily reminder to complete my rep.
+Acceptance Criteria:
+                                                                                                            * User can set preferred time (or defaults)
+
+                                                                                                            * One reminder per day max
+
+                                                                                                            * If already complete, reminder is suppressed
+
+G2. Coach broadcast push (optional)
+Story: As a coach, I can send a broadcast push for important moments.
+Acceptance Criteria:
+                                                                                                               * Push is sent to all active roster devices
+
+                                                                                                               * Rate limited (e.g., max 1/day)
+
+________________
+
+
+8. API Endpoints (REST)
+Auth
+                                                                                                                  * POST /auth/signup {email, password, first_name, last_name, invite_code}
+
+                                                                                                                  * POST /auth/login {email, password}
+
+                                                                                                                  * POST /auth/logout
+
+                                                                                                                  * GET /auth/me -> user profile + role + team
+
+Team & Invites
+                                                                                                                     * POST /teams (coach only) {name, timezone, streak_threshold_pct?, day_reset_hour?}
+
+                                                                                                                     * GET /teams/{teamId}
+
+                                                                                                                     * POST /teams/{teamId}/invites (coach) {role, expires_at}
+
+                                                                                                                     * GET /teams/{teamId}/invites (coach)
+
+                                                                                                                     * POST /invites/{inviteCode}/redeem (if separate flow)
+
+Daily Flow (single payload)
+                                                                                                                        * GET /teams/{teamId}/daily-flow?date=YYYY-MM-DD
+ Returns:
+
+{
+ "date": "2026-03-01",
+ "theme": {"title":"Next Play","tagline":"Respond fast"},
+ "prompt": {"id":"...", "text":"...", "response_type":"text_short", "options":[]},
+ "habits": {"items":["Communicate early","Encourage a teammate","Next play response"]},
+ "message": {"text":"...", "author_role":"coach", "created_at":"..."},
+ "my_submission": { "completion_status": false, "prompt_response": null, "ratings": null, "checklist": null },
+ "team_stats": { "completion_pct": 0.74, "completed_count": 17, "active_roster_count": 23, "streak_count": 9 }
+}
+Daily Submissions
+                                                                                                                           * POST /teams/{teamId}/submissions
+ Body:
+
+{ "date":"YYYY-MM-DD", "prompt_response_text":"...", "prompt_response_value":null, "ratings":{...}, "checklist":{...} }
+                                                                                                                              * PATCH /teams/{teamId}/submissions/{submissionId} (partial updates)
+
+                                                                                                                              * POST /teams/{teamId}/submissions/{submissionId}/complete (idempotent)
+
+                                                                                                                              * GET /teams/{teamId}/submissions/me?start=YYYY-MM-DD&end=YYYY-MM-DD
+
+Themes & Prompts (coach/admin)
+                                                                                                                                 * POST /teams/{teamId}/themes {week_start_date, title, tagline, intro_text?, intro_audio_url?}
+
+                                                                                                                                 * PATCH /teams/{teamId}/themes/{themeId}
+
+                                                                                                                                 * GET /teams/{teamId}/themes?start=...&end=...
+
+                                                                                                                                 * POST /teams/{teamId}/prompts {date, prompt_text, response_type, options_json?}
+
+                                                                                                                                 * PATCH /teams/{teamId}/prompts/{promptId}
+
+                                                                                                                                 * GET /teams/{teamId}/prompts?start=...&end=...
+
+Habits (coach/admin)
+                                                                                                                                    * POST /teams/{teamId}/habits {start_date, items_json}
+
+                                                                                                                                    * PATCH /teams/{teamId}/habits/{habitsId}
+
+                                                                                                                                    * GET /teams/{teamId}/habits?date=YYYY-MM-DD (returns active set for date)
+
+Messages
+                                                                                                                                       * POST /teams/{teamId}/messages {message_text, expires_at?} (coach + captain)
+
+                                                                                                                                       * GET /teams/{teamId}/messages?limit=20 (athletes get published only)
+
+                                                                                                                                       * POST /teams/{teamId}/messages/{messageId}/approve (coach)
+
+                                                                                                                                       * POST /teams/{teamId}/messages/{messageId}/reject (coach)
+
+Roster & Roles (coach)
+                                                                                                                                          * GET /teams/{teamId}/roster
+
+                                                                                                                                          * PATCH /teams/{teamId}/roster/{userId} {status:"active|inactive", role?:"athlete|captain"}
+
+                                                                                                                                          * POST /teams/{teamId}/roster/bulk (optional)
+
+Stats
+                                                                                                                                             * GET /teams/{teamId}/stats/daily?start=YYYY-MM-DD&end=YYYY-MM-DD (coach)
+
+                                                                                                                                             * GET /teams/{teamId}/stats/summary (coach)
+
+                                                                                                                                             * GET /teams/{teamId}/stats/me (athlete personal streak + weekly completion)
+
+Notifications
+                                                                                                                                                * POST /users/me/notification-settings {daily_reminder_time:"HH:MM", enabled:true}
+
+                                                                                                                                                * POST /teams/{teamId}/push/broadcast {title, body} (coach, rate-limited)
+
+________________
+
+
+9. Non-Functional Requirements
+Performance
+                                                                                                                                                   * Daily flow endpoint should return within 300ms p95 (server-side)
+
+                                                                                                                                                   * Cache theme/prompt/habits for date/team
+
+Offline
+                                                                                                                                                      * App caches today’s daily flow and allows offline completion
+
+                                                                                                                                                      * Submissions sync when online
+
+                                                                                                                                                      * Duplicate prevention via idempotency key:
+
+                                                                                                                                                         * Suggested header Idempotency-Key for completion endpoint
+
+Security
+                                                                                                                                                            * JWT auth required
+
+                                                                                                                                                            * Role-based access checks on every endpoint
+
+                                                                                                                                                            * Athletes cannot access roster compliance lists
+
+                                                                                                                                                            * All data is team-scoped (no cross-team reads)
+
+Privacy (Team / Minors Safe Defaults)
+                                                                                                                                                               * Athletes see aggregate-only stats
+
+                                                                                                                                                               * No public leaderboards
+
+                                                                                                                                                               * Message moderation option for captain posts
+
+                                                                                                                                                               * Avoid collecting sensitive mental health data fields
+
+________________
+
+
+10. QA / Test Scenarios (contractor should include)
+                                                                                                                                                                  * Day boundary behavior across timezone + 3am reset
+
+                                                                                                                                                                  * Prompt missing state (coach hasn’t set prompt) renders safely
+
+                                                                                                                                                                  * Completion idempotency (double-tap “Done”)
+
+                                                                                                                                                                  * Inactive athlete excluded from denominator
+
+                                                                                                                                                                  * Captain message approval workflow
+
+                                                                                                                                                                  * Offline submit + later sync without duplicates
+
+                                                                                                                                                                  * Role escalation checks (athlete cannot post message if not captain)
+
+________________
+
+
+11. Deliverables for Contractor Bid
+Ask bidders to include:
+                                                                                                                                                                     1. Architecture overview + tech stack recommendation
+
+                                                                                                                                                                     2. Timeline broken into milestones (MVP + polish + launch)
+
+                                                                                                                                                                     3. Cost breakdown (frontend, backend, admin dashboard, QA)
+
+                                                                                                                                                                     4. Assumptions & out-of-scope list
+
+                                                                                                                                                                     5. Post-launch support plan (bugfix + iteration)
+
+________________
+
+
+Optional Add-On (Post-MVP)
+                                                                                                                                                                        * In-app coach messaging (1:1 chat)
+
+                                                                                                                                                                        * Advanced analytics + insights
+
+                                                                                                                                                                        * Content library (“emergency tools” hub)
+
+                                                                                                                                                                        * Multi-team support for coach accounts
+
+                                                                                                                                                                        * Payments/subscription management (Stripe / App Store IAP)

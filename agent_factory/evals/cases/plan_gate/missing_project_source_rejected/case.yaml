@@ -1,0 +1,32 @@
+# R-HAS-SOURCE — MISSING PROJECT SOURCE TAG. The real generation-drift defect: a
+# planning run admitted requirements tagged scope="team-app" with NO
+# source="prd-team-app". Both the factory-plan skill and the Praxis completeness query
+# expect source="prd-<project>". Because the gate never checked source, the bad plan
+# passed silently and the downstream completeness query (incomplete_requirements, which
+# filters source="prd-<project>") returned EMPTY -- making the build think everything was
+# done. This case reproduces it: project=team-app, requirements tagged the wrong way
+# (source: team-app, or absent). The coded gate must REJECT, naming the expected source.
+id: plan_gate_missing_project_source_rejected
+component: plan_gate
+input:
+  project: team-app
+  requirements:
+    - id: R1
+      text: "A submission is completed when the daily rep AND all three ratings are submitted."
+      acceptance: "completed=true iff rep present and effort/focus/support all non-None."
+      defines: ["daily completion"]
+      references: []
+      source: "team-app"            # scope-style tag, NOT the expected prd-team-app source
+    - id: R2
+      text: "Participation% for date D = active athletes with completed=true / active athletes * 100."
+      acceptance: "with N active and K completed, pct = round(K/N*100); N=0 -> None."
+      defines: ["participation percentage"]
+      references: ["daily completion"]
+      # source omitted entirely -- the drift that empties the completeness query
+  out_of_scope: []
+rule_ids: ["R-HAS-SOURCE"]
+deterministic_checks:
+  - name: gate_rejects
+    ref: "evals.checks:gate_rejects"
+    params:
+      reason_contains: "prd-team-app"

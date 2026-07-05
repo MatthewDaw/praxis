@@ -1,0 +1,33 @@
+# Positive control: a closed, fully-specified PRD slice is ADMITTED.
+# R1/R2/R3 of prd-team-app, each with a binary acceptance condition, and every
+# referenced concept defined by some requirement. The gate must admit this.
+id: plan_gate_well_formed_admitted
+component: plan_gate
+input:
+  project: team-app
+  requirements:
+    - id: R1
+      text: "A submission is completed when the daily rep AND all three ratings are submitted; the habit checklist does not affect completion."
+      acceptance: "completed=true iff rep present and effort/focus/support all non-None; checklist ignored."
+      defines: ["daily completion"]
+      references: []
+      source: "prd-team-app"
+    - id: R3
+      text: "Active excludes athletes the coach marked inactive; coaches are not counted; captains count as athletes."
+      acceptance: "is_active_athlete=true iff role in {athlete, captain} and not marked inactive; coaches always false."
+      defines: ["active roster"]
+      references: []
+      source: "prd-team-app"
+    - id: R2
+      text: "Participation% for date D = active athletes with completed=true / active athletes on roster * 100."
+      acceptance: "with N active and K completed, pct = round(K/N*100); N=0 -> None (no active roster), never 0."
+      defines: ["participation percentage"]
+      references: ["daily completion", "active roster"]
+      source: "prd-team-app"
+  out_of_scope: []
+# Positive control: exercises the pass-path of every rule, including R-HAS-SOURCE
+# (project=team-app, every requirement tagged source=prd-team-app -> all close cleanly).
+rule_ids: ["R-ACCEPT-BINARY", "R-NO-VAGUE", "R-NO-DANGLING", "R-HAS-SOURCE"]
+deterministic_checks:
+  - name: gate_admits
+    ref: "evals.checks:gate_admits"

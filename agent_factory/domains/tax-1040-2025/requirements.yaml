@@ -1,0 +1,78 @@
+# The requirement set. af-intake ingests each as a Praxis fact:
+#   category: requirement,  source: prd-tax-1040-2025,  scope: <scope>,
+#   meta: { requirement_id, field, verify, cover, guard, depends_on, surfaces }
+# af-fulfill drives praxis_incomplete_requirements -> 0, resolving each by `cover` order.
+#
+# cover  — ordered resolution strategy. First viable wins:
+# renders — the form line(s) this requirement grounds (D9). The deliverable (the 1040) is the single
+#          surface; af-intake binds a `renders` edge requirement -> line. `surface_coverage` then gives
+#          a bidirectional gate: every input line is grounded, every requirement renders onto the form.
+#          The live form preview fills these lines as requirements are covered (S3).
+#
+#   document:w2  cover from a fact extracted from an uploaded W-2 (document-extraction seam)
+#   user         ask the taxpayer (decrements the S1 budget)
+#   default:<k>  close with policy default <k> (records an S5 assumption; free)
+# verify — what counts as "covered" (when af-fulfill records the succeeded outcome):
+#   schema_valid    a value passing this field's fields.yaml schema is present
+#   fact_present    any value (incl. a default) is present
+#   user_confirmed  the taxpayer affirmed a read-back value
+# guard  — optional predicate; the requirement is only ASKED when it holds
+#          (it can still be defaulted). Closed predicate set: exists/eq/gt/lt/gte/lte.
+
+requirements:
+  - id: T1
+    text: "The taxpayer's filing status is recorded for the 2025 Form 1040."
+    scope: mvp
+    field: filing_status
+    cover: [user, "default:filing_status"]
+    verify: schema_valid
+    renders: [line_12_standard_deduction, line_16_tax]   # selects the std deduction + bracket schedule
+    ask_hint: "Filing status flips the standard deduction — usually the only high-impact ask."
+
+  - id: T2
+    text: "The taxpayer's W-2 Box 1 wages are recorded for the 2025 Form 1040."
+    scope: mvp
+    field: box1_wages
+    cover: ["document:w2", user]
+    verify: schema_valid
+    renders: [line_1a_wages]
+
+  - id: T3
+    text: "The taxpayer's W-2 Box 2 federal income tax withheld is recorded."
+    scope: mvp
+    field: box2_withholding
+    cover: ["document:w2", user]
+    verify: schema_valid
+    renders: [line_25a_withholding]
+
+  - id: T4
+    text: "The taxpayer confirmed the wages and withholding read back from their W-2."
+    scope: mvp
+    field: confirmed_w2
+    cover: [user]
+    verify: user_confirmed
+    depends_on: [T2, T3]        # readback only makes sense once both values exist (S6)
+    renders: [line_1a_wages, line_25a_withholding]
+
+  - id: T5
+    text: "Any non-W-2 income is recorded (or confirmed as none) for the 2025 Form 1040."
+    scope: mvp
+    field: other_income
+    cover: [user, "default:other_income"]
+    verify: fact_present
+    renders: [line_8_other_income]
+
+  # Demonstrates the Q3 guard mechanism: dependents is only ASKED when the taxpayer
+  # signals dependents; otherwise it closes by default. Not yet wired to compute.yaml
+  # (CTC is out of the current engine's scope), so it sits post-mvp.
+  - id: T6
+    text: "The number of dependents is recorded for the 2025 Form 1040."
+    scope: post-mvp
+    field: dependents
+    cover: [user, "default:dependents"]
+    verify: fact_present
+    renders: []                 # no line yet — CTC is out of compute.yaml's current scope
+    guard:
+      field: has_dependents_signal
+      op: eq
+      value: true

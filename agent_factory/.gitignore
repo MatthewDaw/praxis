@@ -1,0 +1,15 @@
+.venv/
+# Secrets / env — never commit
+.env
+.env.*
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.idea/
+runs/
+# .factory/ is ignored for genuinely-STATIC local config ONLY. There are NO build/validation/
+# review/audit status manifests here anymore — dynamic build state lives solely in Praxis.
+.factory/
+wireframe-rebuild/

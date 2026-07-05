@@ -1,0 +1,20 @@
+{
+  "name": "agent-factory-local",
+  "owner": { "name": "Matt Daw" },
+  "metadata": {
+    "description": "Local marketplace for the agent-factory plugin (Praxis-backed plan->execute->verify factory + wireframe builder).",
+    "version": "0.1.0"
+  },
+  "allowCrossMarketplaceDependenciesOn": ["compound-engineering-plugin"],
+  "plugins": [
+    {
+      "name": "agent-factory",
+      "description": "Single-agent plan->execute->verify loop with compounding memory, delivered as Claude Code skills, plus af-wireframe (one-shot PRD->complete clickable wireframe with an enforced coverage gate).",
+      "author": { "name": "Matt Daw" },
+      "source": ".",
+      "dependencies": [
+        { "name": "compound-engineering", "marketplace": "compound-engineering-plugin" }
+      ]
+    }
+  ]
+}
