@@ -419,39 +419,23 @@ export function createApiDataProvider(
       return null;
     },
 
-    async listSnapshots() {
-      const payload = await request("GET", "/snapshots");
-      return normalizeSnapshotList(payload);
+    // Snapshots are org-shared and keyed by (space, snapshot); the standalone
+    // helpers below thread the active space into the query/body per the contract,
+    // so delegate rather than re-implement it against the space-less `request()`.
+    listSnapshots() {
+      return listSnapshots(root, auth);
     },
 
-    async saveSnapshot(name: string) {
-      const payload = await request("POST", "/snapshots", { name });
-      return normalizeSnapshot(payload);
+    saveSnapshot(name: string) {
+      return saveSnapshot(root, name, auth);
     },
 
-    async loadSnapshot(name: string, mode: "add" | "replace" = "replace") {
-      const payload = await request(
-        "POST",
-        `/snapshots/${encodeURIComponent(name)}/load`,
-        { mode },
-      );
-      const row =
-        payload && typeof payload === "object"
-          ? (payload as Record<string, unknown>)
-          : {};
-      return { loaded: Number(row.loaded ?? 0) };
+    loadSnapshot(name: string, mode: "add" | "replace" = "replace") {
+      return loadSnapshot(root, name, mode, auth);
     },
 
-    async deleteSnapshot(name: string) {
-      const payload = await request(
-        "DELETE",
-        `/snapshots/${encodeURIComponent(name)}`,
-      );
-      const row =
-        payload && typeof payload === "object"
-          ? (payload as Record<string, unknown>)
-          : {};
-      return { deleted: typeof row.deleted === "string" ? row.deleted : name };
+    deleteSnapshot(name: string) {
+      return deleteSnapshot(root, name, auth);
     },
   };
 }
@@ -724,10 +708,28 @@ async function snapshotRequest(
 ): Promise<unknown> {
   const root = apiBaseUrl.replace(/\/$/, "");
   const { token, orgId, spaceId } = await resolveToken(auth);
-  const response = await fetch(`${root}${path}`, {
+  // Snapshots are org-shared and addressed by an explicit (space, snapshot) key,
+  // so every snapshot op names its space directly — on the query string for GET,
+  // in the JSON body otherwise. (The X-Praxis-Space header only scopes the
+  // caller's working memory; it does not select the org-shared snapshot folder.)
+  const space = (spaceId ?? "").trim();
+  if (!space) {
+    throw new ApiClientError(
+      "Snapshots live inside a space — select a space before saving, loading, or listing snapshots.",
+      400,
+    );
+  }
+  let url = `${root}${path}`;
+  let payload = body;
+  if (method === "GET") {
+    url += `${path.includes("?") ? "&" : "?"}space=${encodeURIComponent(space)}`;
+  } else {
+    payload = { space, ...(body ?? {}) };
+  }
+  const response = await fetch(url, {
     method,
     headers: contractHeaders(token, orgId, spaceId),
-    body: body ? JSON.stringify(body) : undefined,
+    body: payload ? JSON.stringify(payload) : undefined,
   });
   if (!response.ok) {
     const message = responseDetail(await response.text(), response.statusText);
@@ -754,7 +756,9 @@ export async function saveSnapshot(
   auth?: string | ApiDataProviderAuth,
 ): Promise<Snapshot> {
   return normalizeSnapshot(
-    await snapshotRequest(apiBaseUrl, "POST", "/snapshots", auth, { name }),
+    await snapshotRequest(apiBaseUrl, "POST", "/snapshots", auth, {
+      snapshot: name,
+    }),
   );
 }
 
@@ -767,9 +771,9 @@ export async function loadSnapshot(
   const payload = await snapshotRequest(
     apiBaseUrl,
     "POST",
-    `/snapshots/${encodeURIComponent(name)}/load`,
+    "/snapshots/load",
     auth,
-    { mode },
+    { snapshot: name, mode },
   );
   const row =
     payload && typeof payload === "object"
@@ -786,8 +790,9 @@ export async function deleteSnapshot(
   const payload = await snapshotRequest(
     apiBaseUrl,
     "DELETE",
-    `/snapshots/${encodeURIComponent(name)}`,
+    "/snapshots",
     auth,
+    { snapshot: name },
   );
   const row =
     payload && typeof payload === "object"
@@ -807,18 +812,15 @@ export async function renameSnapshot(
   newName: string,
   auth?: string | ApiDataProviderAuth,
 ): Promise<{ name: string }> {
-  const payload = await snapshotRequest(
-    apiBaseUrl,
-    "PATCH",
-    `/snapshots/${encodeURIComponent(name)}`,
-    auth,
-    { name: newName },
-  );
+  const payload = await snapshotRequest(apiBaseUrl, "PATCH", "/snapshots", auth, {
+    snapshot: name,
+    newSnapshot: newName,
+  });
   const row =
     payload && typeof payload === "object"
       ? (payload as Record<string, unknown>)
       : {};
-  return { name: typeof row.name === "string" ? row.name : newName };
+  return { name: typeof row.snapshot === "string" ? row.snapshot : newName };
 }
 
 /** A mounted snapshot: a read-only overlay added to retrieval reads. */
