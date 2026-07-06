@@ -22,7 +22,11 @@ Headers sent on every request:
     WITHOUT importing the praxis package — a raw Cognito ``InitiateAuth`` REFRESH_TOKEN_AUTH call).
     If neither an API key nor a usable Cognito mint is available, we FAIL CLOSED.
   * ``x-praxis-org``  — from ``PRAXIS_ORG`` (default ``agent-factory``).
-  * ``x-praxis-space``— from ``PRAXIS_SPACE`` only if set (absent == default graph).
+
+Tenancy model (org → space → snapshot + per-user working memory): working-memory reads/writes
+carry NO space header — they always resolve to ``(org, authenticated user)``. A snapshot-bound op
+(reading project checks, or the mutable ``prd-<project>`` tickets) emits BOTH ``x-praxis-space`` and
+``x-praxis-snapshot`` — never one without the other. There is no ``PRAXIS_SPACE`` selector anymore.
 
 The base URL is ``PRAXIS_API_BASE_URL`` (default ``http://localhost:8000``).
 The ``PRAXIS_AUTH_DISABLED=1`` dev seam is honored: when set we skip auth entirely (the server's
@@ -154,9 +158,6 @@ def _auth_headers() -> dict[str, str]:
 
     org = os.environ.get("PRAXIS_ORG", DEFAULT_ORG).strip() or DEFAULT_ORG
     headers["x-praxis-org"] = org
-    space = os.environ.get("PRAXIS_SPACE", "").strip()
-    if space:
-        headers["x-praxis-space"] = space
 
     if _auth_disabled():
         return headers
@@ -179,14 +180,26 @@ def _auth_headers() -> dict[str, str]:
 
 def _request(method: str, path: str, *, params: dict | None = None,
              body: dict | None = None, not_found_ok: bool = False,
-             space: str | None = None) -> Any:
+             space: str | None = None, snapshot: str | None = None) -> Any:
     """Issue one HTTP request and return parsed JSON, or raise PraxisUnreachable (fail-closed).
 
-    ``space`` overrides the ``x-praxis-space`` tenancy header for THIS request only (default:
-    the ``PRAXIS_SPACE`` env value). This is the checks-space seam: check RESOLUTION reads from a
-    dedicated validation space while ticket STATE stays in the default/plan space — one request's
-    override never leaks into the process-wide default.
+    ``space`` + ``snapshot`` bind THIS request to a snapshot-bound graph (project checks, or the
+    mutable ``prd-<project>`` ticket snapshot). When BOTH are given we emit ``x-praxis-space`` +
+    ``x-praxis-snapshot``; when BOTH are absent the request resolves to the authenticated user's
+    working memory (no space header).
+
+    FAIL-CLOSED: a PARTIAL reference (exactly one of ``space``/``snapshot``) is a misconfiguration
+    and RAISES rather than silently falling back to working memory. A checks read whose snapshot
+    mis-defaulted to ``None`` would otherwise hit the wrong graph, return empty, and fail a Stop
+    gate OPEN — so we refuse the request instead.
     """
+    if (space is None) != (snapshot is None):
+        raise PraxisUnreachable(
+            f"Praxis {method} {path}: partial snapshot reference "
+            f"(space={space!r}, snapshot={snapshot!r}) — both or neither required; refusing to "
+            "fall back to working memory"
+        )
+
     base = _api_base()
     url = base + path
     if params:
@@ -196,8 +209,9 @@ def _request(method: str, path: str, *, params: dict | None = None,
 
     data = json.dumps(body).encode("utf-8") if body is not None else None
     headers = _auth_headers()
-    if space:  # per-request tenancy override (checks-space seam) — beats the PRAXIS_SPACE default
+    if space is not None:  # snapshot-bound op — emit BOTH tenancy headers (partial already refused)
         headers["x-praxis-space"] = space
+        headers["x-praxis-snapshot"] = snapshot  # type: ignore[assignment]  # non-None by the guard
     if data is not None:
         headers["Content-Type"] = "application/json"
 
@@ -224,10 +238,16 @@ def _request(method: str, path: str, *, params: dict | None = None,
 
 # --------------------------------------------------------------------------- public API
 
-def incomplete_requirements(project: str, *, exclude_leased: bool = False) -> list[dict]:
+def incomplete_requirements(project: str, *, exclude_leased: bool = False,
+                            space: str | None = None, snapshot: str | None = None) -> list[dict]:
     """Active requirements in ``prd-<project>`` not yet verified-complete (never-built |
     regressed | stale). Each item carries a ``claim`` view (build_state/claim_owner/
     claim_heartbeat_at/lease_live). ``exclude_leased=True`` omits live-leased tickets.
+
+    The ``prd-<project>`` ticket graph is a MUTABLE snapshot in the project space
+    (``space=<project>``, ``snapshot=prd-<project>``); pass that ``(space, snapshot)`` reference to
+    read tickets from the snapshot-bound serve path. Absent both, the read resolves to working
+    memory (legacy default); a partial reference fails closed (see :func:`_request`).
 
     CRITICAL — pass the BARE project name. The endpoint PREPENDS ``prd-`` itself (server does
     ``source = f"prd-{project}"``). So a caller that hands us an already-prefixed ``prd-team-app``
@@ -240,66 +260,83 @@ def incomplete_requirements(project: str, *, exclude_leased: bool = False) -> li
     while bare.startswith("prd-"):  # strip EVERY leading prd- so a double-prefix can't fail open
         bare = bare[len("prd-"):]
     out = _request("GET", "/requirements/incomplete",
-                   params={"project": bare, "exclude_leased": str(exclude_leased).lower()})
+                   params={"project": bare, "exclude_leased": str(exclude_leased).lower()},
+                   space=space, snapshot=snapshot)
     return out.get("requirements") or out.get("incomplete") or out.get("items") or []
 
 
-def get_fact(cid: str) -> dict:
-    """Full fact (candidate view) including ``meta``. Raises PraxisUnreachable on any error."""
-    return _request("GET", f"/candidates/{cid}")
+def get_fact(cid: str, *, space: str | None = None, snapshot: str | None = None) -> dict:
+    """Full fact (candidate view) including ``meta``. Raises PraxisUnreachable on any error.
+    Pass the ticket ``(space, snapshot)`` to read from a snapshot-bound graph (e.g. the mutable
+    ``prd-<project>`` tickets); omit both for working memory. A partial reference fails closed."""
+    return _request("GET", f"/candidates/{cid}", space=space, snapshot=snapshot)
 
 
 def facts_by(category: str | None = None, meta: dict | None = None,
-             state: str = "active", space: str | None = None) -> list[dict]:
+             state: str = "active", space: str | None = None,
+             snapshot: str | None = None) -> list[dict]:
     """EXHAUSTIVE, server-side filtered fact enumeration (no top-k). ``meta`` is a flat object
     whose keys match by scalar equality OR array-membership. ``state`` defaults to ``active``
-    (pass ``"any"`` to span all lifecycle states). ``space`` overrides the tenancy space for this
-    read only (the checks-space seam — resolve reads validation checks from a dedicated space)."""
+    (pass ``"any"`` to span all lifecycle states). ``(space, snapshot)`` bind this read to a
+    snapshot-bound graph — the checks seam resolves validation/planning checks from the project
+    space's ``building-validation`` / ``planning-validation`` snapshot; a partial reference fails
+    closed (see :func:`_request`)."""
     params: dict[str, Any] = {"state": state}
     if category is not None:
         params["category"] = category
     if meta:
         params["meta"] = json.dumps(meta)
-    out = _request("GET", "/facts/by", params=params, space=space)
+    out = _request("GET", "/facts/by", params=params, space=space, snapshot=snapshot)
     return out.get("facts") or []
 
 
-def patch_meta(cid: str, meta_dict: dict) -> dict:
+def patch_meta(cid: str, meta_dict: dict, *, space: str | None = None,
+               snapshot: str | None = None) -> dict:
     """MERGE ``meta_dict`` into the fact's meta (top-level key merge; nested values are replaced
     wholesale). Skips re-embed (meta-only edit). This is how ticket build_state / claim /
-    pinned_checks are written. Returns the updated fact."""
-    return _request("PATCH", f"/candidates/{cid}", body={"meta": meta_dict})
+    pinned_checks are written. Pass the ticket ``(space, snapshot)`` to write into the mutable
+    ``prd-<project>`` snapshot; a partial reference fails closed. Returns the updated fact."""
+    return _request("PATCH", f"/candidates/{cid}", body={"meta": meta_dict},
+                    space=space, snapshot=snapshot)
 
 
-def record_outcome(cid: str, success: bool) -> dict:
-    """Record a verified build/check outcome on the fact (POST /facts/{cid}/outcome)."""
-    return _request("POST", f"/facts/{cid}/outcome", body={"success": bool(success)})
+def record_outcome(cid: str, success: bool, *, space: str | None = None,
+                   snapshot: str | None = None) -> dict:
+    """Record a verified build/check outcome on the fact (POST /facts/{cid}/outcome). Pass the
+    ticket ``(space, snapshot)`` to record against the mutable ``prd-<project>`` snapshot; a partial
+    reference fails closed."""
+    return _request("POST", f"/facts/{cid}/outcome", body={"success": bool(success)},
+                    space=space, snapshot=snapshot)
 
 
 def surface_checks(project: str, screen_id: str, scope: str | None = None,
-                   space: str | None = None) -> list[dict]:
+                   space: str | None = None, snapshot: str | None = None) -> list[dict]:
     """Active ``check`` facts bound (via the ``renders`` edge) to surface (project, screen_id).
-    ``space`` overrides the tenancy space for this read only (the checks-space seam), so a
-    surface-bound validation check is resolved from the same dedicated space as the tag lane."""
+    ``(space, snapshot)`` bind this read to the project space's checks snapshot (the seam), so a
+    surface-bound validation check is resolved from the same snapshot as the tag lane; a partial
+    reference fails closed."""
     # screen ids can contain a slash (e.g. "admin/s-login"); encode it so the path segment is valid,
     # and tolerate a 404 (a surface with no checks endpoint must not fail-close the whole resolution —
     # the tag-match lane in resolve_checks is the authoritative one).
     seg = urllib.parse.quote(screen_id, safe="")
     out = _request("GET", f"/surfaces/{seg}/checks",
-                   params={"project": project, "scope": scope}, not_found_ok=True, space=space)
+                   params={"project": project, "scope": scope}, not_found_ok=True,
+                   space=space, snapshot=snapshot)
     return (out or {}).get("checks") or []
 
 
 def context(query: str, *, top_k: int = 10, as_of: str | None = None,
-            space: str | None = None) -> list[dict]:
+            space: str | None = None, snapshot: str | None = None) -> list[dict]:
     """Hybrid-ranked (semantic + keyword) retrieval — the SEMANTIC lane for check discovery.
-    Returns the ``hits`` list (``{id,text,score,source,scope,category,...}``). ``space`` scopes the
-    read to a checks-space (the seam). An empty query returns no hits (never a blind full-scan)."""
+    Returns the ``hits`` list (``{id,text,score,source,scope,category,...}``). ``(space, snapshot)``
+    scope the read to the project space's checks snapshot (the seam); a partial reference fails
+    closed. An empty query returns no hits (never a blind full-scan)."""
     q = (query or "").strip()
     if not q:
         return []
     out = _request("GET", "/context",
-                   params={"query": q, "top_k": top_k, "as_of": as_of}, space=space)
+                   params={"query": q, "top_k": top_k, "as_of": as_of},
+                   space=space, snapshot=snapshot)
     return out.get("hits") or []
 
 

@@ -122,22 +122,31 @@ blocks until **every marked ticket** is `finished` (or `blocked`), and the parke
 no marker so the gate leaves them alone. Scope is therefore a hard contract, not advisory: you cannot end
 the run with a marked ticket unfinished, and you cannot accidentally over-build a parked one.
 
-## Validation source — the checks-space (default: `coding-validation`)
+## Validation source — the project space's `building-validation` snapshot
 
-Validation **checks live in a DEDICATED Praxis space**, separate from the plan graph that holds the
-tickets and their build state. af-build resolves each ticket's validation checks from the
-**`coding-validation`** space by default — the `checks_space` seam in `hooks/_ticket_state.py`
-(`resolve_validation_requirements` / `start_ticket`) points only the *check reads* (tag + surface
-lanes) at that space, while ticket state (claims, pins, passes) stays in the project/plan space,
-untouched. That space must hold the `category="check"`, `scope="validation"` rules; if it is empty a
-ticket resolves **only** its always-present acceptance-condition floor (§3) — fewer checks, never a
-crash. (Seed it from the plan or copy a snapshot into it out-of-band; af-intake amend-mode C1 is how
-new coding-validation rules get authored there.)
+Validation **checks live in a DEDICATED snapshot inside the project's own space**, separate from the
+`prd-<project>` snapshot that holds the tickets and their build state. **A project IS a space** — the
+space id is the BARE project name (`team-app`), and inside it live the `prd-<project>` snapshot
+(tickets, mutable) and the check snapshots. af-build resolves each ticket's validation checks from the
+**`building-validation`** snapshot (in space `<project>`) by default — the `checks_ref` seam in
+`hooks/_ticket_state.py` (`resolve_validation_requirements` / `start_ticket`) points only the *check
+reads* (tag + surface lanes) at `(space=<project>, snapshot=building-validation)`, while ticket state
+(claims, pins, passes) stays on the `prd-<project>` snapshot, untouched. That snapshot must hold the
+`category="check"`, `scope="validation"` rules; if it is empty a ticket resolves **only** its
+always-present acceptance-condition floor (§3) — fewer checks, never a crash. (Seed it from the plan or
+save a snapshot into it out-of-band; af-intake amend-mode C1 is how new `building-validation` rules get
+authored there.)
 
-**Override — slash argument ONLY** (no env seam): `/af-build [scope] --checks-space=<space-or-snapshot>`
-points resolution at a different validation space for this run. Thread it as `checks_space="<name>"`
-into **every** `start_ticket(...)` call — including the per-ticket worker contract (§8), so fanned-out
-workers read the same space. With no argument, the `coding-validation` default applies.
+> **Renamed from `coding-validation`.** The build-check snapshot is now `building-validation`, and it is
+> a per-project snapshot in the project space — NOT a single global `coding-validation` space. Legacy
+> global checks are not retro-fitted into per-project spaces (old data carried no reliable project
+> association); teams re-seed each project's `building-validation` snapshot via af-intake (Part C / amend).
+
+**Override — slash argument ONLY** (no env seam): `/af-build [scope] --checks-space=<space[:snapshot]>`
+points resolution at a different `(space, snapshot)` for this run. Thread it as a `checks_ref`
+`(space, snapshot)` override into **every** `start_ticket(...)` call — including the per-ticket worker
+contract (§8), so fanned-out workers read the same reference. With no argument the default applies:
+`space=<project>`, `snapshot=building-validation`.
 
 ## 0. OPEN THE RUN — stamp the whole-set marker
 
@@ -198,8 +207,9 @@ const owner = args.owner
 const FRONTIER = { type: 'object', required: ['ready', 'remaining'], additionalProperties: false,
   properties: { ready: { type: 'array', items: { type: 'string' } }, remaining: { type: 'integer' } } }
 
-// The §8 per-ticket worker contract, VERBATIM, with only PROJECT/TICKET/OWNER/CHECKS_SPACE substituted.
-const WORKER = (cid) => `<<< the full §8 block, TICKET=${cid}, PROJECT=${project}, OWNER=${owner}:${cid}, CHECKS_SPACE=coding-validation >>>`
+// The §8 per-ticket worker contract, VERBATIM, with only PROJECT/TICKET/OWNER/CHECKS_SNAPSHOT substituted.
+// Space is always the project; snapshot defaults to building-validation (or the run's --checks-space override).
+const WORKER = (cid) => `<<< the full §8 block, TICKET=${cid}, PROJECT=${project}, OWNER=${owner}:${cid}, CHECKS_SNAPSHOT=building-validation >>>`
 
 let guard = 0
 while (guard++ < 200) {                  // runaway backstop, far above any real frontier depth
@@ -242,8 +252,8 @@ depends on **no unfinished or in-progress job**. Claim that one; ignore the rest
 ## 2. CLAIM + RESOLVE REQUIREMENTS — one transaction per ticket
 
 For the next claimable ticket call `_ticket_state.start_ticket(cid, owner, project)` (BARE project name;
-pass `checks_space="<name>"` too when this run overrides the default `coding-validation` space —
-§Validation source). This does three things atomically:
+pass a `checks_ref=(space, snapshot)` too when this run overrides the default — the project space's
+`building-validation` snapshot — §Validation source). This does three things atomically:
 
 1. **Claim the lease.** `incomplete → in_progress`, stamping `meta.claim_owner`, `meta.claim_at`,
    `meta.claim_heartbeat_at`, `meta.claim_lease_ttl` (default `DEFAULT_LEASE_TTL_S = 900`) via the
@@ -272,7 +282,7 @@ pass `checks_space="<name>"` too when this run overrides the default `coding-val
 ## 3. SYNTHESIZE the validations — convert requirements into a custom covering set
 
 **First, pull the ADVISORY candidates (the semantic lane) as inspiration.** Before authoring, call
-`retrieve_advisory_checks(cid, project, scope="validation")` (same checks-space seam) — a hybrid
+`retrieve_advisory_checks(cid, project, scope="validation")` (same `(space=<project>, snapshot=building-validation)` seam) — a hybrid
 retrieval of `category="check"` facts semantically close to THIS ticket's text. They are **inspiration,
 NOT the contract**: fold the genuinely-relevant ones into the validations you author, and **ignore the
 rest** — an irrelevant retrieval is harmless precisely because it never gets pinned and never gates
@@ -525,13 +535,14 @@ fakes a pass.
 ```text
 You are an af-build per-ticket worker. Build EXACTLY ONE ticket, EVAL-FIRST (red→green). You own only
 this ticket — never look at, claim, or build another. Inputs: PROJECT=<bare name>, TICKET=<cid>,
-OWNER=<your session id>, CHECKS_SPACE=<coding-validation | the run's --checks-space override>. Run
-helpers from hooks/_ticket_state.py (contract: docs/factory-state-contract.md). af-intake is NOT in
-this path — it does not author eval requirements at build time; never wait on it.
+OWNER=<your session id>, CHECKS_SNAPSHOT=<building-validation | the run's --checks-space override
+snapshot>. Checks resolve from (space=PROJECT, snapshot=CHECKS_SNAPSHOT). Run helpers from
+hooks/_ticket_state.py (contract: docs/factory-state-contract.md). af-intake is NOT in this path — it
+does not author eval requirements at build time; never wait on it.
 
-1. CLAIM + RESOLVE + TRUNCATE  — start_ticket(TICKET, OWNER, PROJECT, checks_space=CHECKS_SPACE). This
-   atomically claims the lease, resolves the eval REQUIREMENTS (tag ∪ surface from the CHECKS_SPACE ∪ the
-   ticket's own acceptance-condition floor), TRUNCATES any prior evals, and pins the fresh requirement
+1. CLAIM + RESOLVE + TRUNCATE  — start_ticket(TICKET, OWNER, PROJECT, checks_ref=(PROJECT, CHECKS_SNAPSHOT)).
+   This atomically claims the lease, resolves the eval REQUIREMENTS (tag ∪ surface from the project space's
+   CHECKS_SNAPSHOT ∪ the ticket's own acceptance-condition floor), TRUNCATES any prior evals, and pins the fresh requirement
    contract. If it returns None → the ticket is taken/blocked,
    stop. If it returns an EMPTY list (no checks AND no acceptance condition) → block(TICKET, OWNER, reason)
    and stop; there is nothing to prove.

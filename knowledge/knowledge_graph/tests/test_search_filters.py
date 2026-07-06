@@ -29,7 +29,10 @@ pytestmark = pytest.mark.skipif(
 )
 
 USER = "u1"
-SNAP_KEY = "snapshot:s1"
+# Snapshots are now keyed (org_id, space, snapshot) with bare names (no 'snapshot:'
+# prefix) — see specs/005-praxis-tenancy-redesign/design.md §1.4.
+SPACE = "sp1"
+SNAP = "s1"
 
 
 @pytest.fixture
@@ -38,8 +41,8 @@ def unique_org(request):
 
 
 def _graph(conn, org, user):
-    conn.execute("DELETE FROM cached_fact_edges WHERE org_id = %s", (org,))
-    conn.execute("DELETE FROM cached_facts WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM snapshot_edges WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM snapshots WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM fact_edges WHERE org_id = %s AND user_id = %s", (org, user))
     conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
     return PostgresVectorGraph(
@@ -48,19 +51,20 @@ def _graph(conn, org, user):
     )
 
 
-def _seed_cached(conn, org, user, fid, text, *, category=None, meta=None):
-    """Seed one snapshot fact directly into cached_facts (with a fitted embedding).
+def _seed_cached(conn, org, fid, text, *, category=None, meta=None):
+    """Seed one snapshot fact directly into ``snapshots`` (with a fitted embedding).
 
     Mirrors how snapshots are populated (a copy/insert, NOT the write pipeline) —
-    cached_facts has no success_count column, so it can't go through _search_vec's
+    ``snapshots`` has no success_count column, so it can't go through _search_vec's
     recall. The embedding is required: overlay_search filters ``embedding IS NOT NULL``.
+    Snapshot rows carry no ``user_id`` — they are keyed by ``(space, snapshot)``.
     """
     emb = _fit(FakeEmbedder().embed([text])[0])
     conn.execute(
-        "INSERT INTO cached_facts "
-        "(id, org_id, user_id, cache_key, text, category, state, embedding, meta) "
+        "INSERT INTO snapshots "
+        "(id, org_id, space, snapshot, text, category, state, embedding, meta) "
         "VALUES (%s, %s, %s, %s, %s, %s, 'active', %s, %s)",
-        (fid, org, user, SNAP_KEY, text, category, emb, json.dumps(meta or {})),
+        (fid, org, SPACE, SNAP, text, category, emb, json.dumps(meta or {})),
     )
 
 
@@ -148,11 +152,11 @@ def test_overlay_search_filters_live_and_mounted(unique_org):
     # Live: one check + one requirement. Snapshot: one check + one note.
     live.write("live check", state="active", category="check")
     live.write("live requirement", state="active", category="requirement")
-    _seed_cached(conn, unique_org, USER, "sc1", "snapshot check", category="check")
-    _seed_cached(conn, unique_org, USER, "sn1", "snapshot note", category="note")
+    _seed_cached(conn, unique_org, "sc1", "snapshot check", category="check")
+    _seed_cached(conn, unique_org, "sn1", "snapshot note", category="note")
 
     hits = live.overlay_search(
-        "anything", [(USER, SNAP_KEY)], top_k=10, categories=["check"]
+        "anything", [(SPACE, SNAP)], top_k=10, categories=["check"]
     )
     texts = set(_texts(hits))
     assert texts == {"live check", "snapshot check"}  # both branches filtered to check

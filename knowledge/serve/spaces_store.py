@@ -1,17 +1,14 @@
-"""App-level spaces store: a login's private, named working knowledge graphs.
+"""App-level spaces store: org-shared, named project folders.
 
-A *space* lets one login own multiple ``user_id`` partitions within an org. The
-backend normally hardwires the tenant ``user_id`` to ``principal.sub`` (one live
-graph per login per org); a space adds a second axis so different agents can
-drive different live graphs concurrently. The effective tenant ``user_id`` is
-derived by the app (default space => ``principal.sub``; named space ``<sid>`` =>
-``f"{principal.sub}::space:{sid}"``) — this store only tracks which spaces a login
-has created so the request path can validate ownership.
+A *space* is an org-shared "project folder" that holds a collection of snapshots
+for one project. It is NOT partitioned by user: any member of the org can read
+every space and every snapshot in it (think of it like a folder on disk any user
+can open). The ``spaces`` table is therefore org-level, keyed
+``(org_id, space_id)`` with no owner.
 
-Spaces are PRIVATE to the creating login: every row is keyed by ``owner_sub`` and
-is never shared across logins. Backed by the ``spaces`` table (see migrations/),
-reusing a passed-in psycopg connection (the same autocommit connection the
-candidate store uses), mirroring :class:`knowledge.serve.orgs_store.OrgsStore`.
+Backed by the ``spaces`` table (see migrations/), reusing a passed-in psycopg
+connection (the same autocommit connection the candidate store uses), mirroring
+:class:`knowledge.serve.orgs_store.OrgsStore`.
 """
 
 from __future__ import annotations
@@ -20,19 +17,17 @@ import psycopg
 
 
 class SpacesStore:
-    """A login's private named spaces persisted to the ``spaces`` table."""
+    """Org-shared named spaces persisted to the ``spaces`` table."""
 
     def __init__(self, conn: psycopg.Connection) -> None:
         self._conn = conn
 
     # --- mutations ---------------------------------------------------------
-    def create_space(
-        self, org_id: str, owner_sub: str, space_id: str, name: str | None
-    ) -> None:
-        """Create space ``space_id`` owned by ``owner_sub`` within ``org_id``.
+    def create_space(self, org_id: str, space_id: str, name: str | None) -> None:
+        """Create org-shared space ``space_id`` within ``org_id``.
 
-        Raises ``ValueError`` if ``(org_id, owner_sub, space_id)`` already exists.
-        Slug validation (shape, reserved names) is the caller's responsibility.
+        Raises ``ValueError`` if ``(org_id, space_id)`` already exists. Slug
+        validation (shape, reserved names) is the caller's responsibility.
 
         The insert relies on the primary key rather than a pre-check ``SELECT`` so
         a concurrent duplicate create is a clean "already exists" (the second
@@ -40,52 +35,58 @@ class SpacesStore:
         """
         cur = self._conn.execute(
             """
-            INSERT INTO spaces (org_id, owner_sub, space_id, name)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (org_id, owner_sub, space_id) DO NOTHING
+            INSERT INTO spaces (org_id, space_id, name)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (org_id, space_id) DO NOTHING
             """,
-            (org_id, owner_sub, space_id, name),
+            (org_id, space_id, name),
         )
         if cur.rowcount == 0:
             raise ValueError(f"space {space_id!r} already exists")
 
-    def rename_space(
-        self, org_id: str, owner_sub: str, space_id: str, name: str | None
-    ) -> bool:
-        """Set the display ``name`` of ``owner_sub``'s space; True if it existed.
+    def ensure_space(self, org_id: str, space_id: str, name: str | None = None) -> None:
+        """Idempotently register ``space_id`` in ``org_id`` (no error on collision).
+
+        Used when a snapshot write implies a space that may not yet have a
+        registry row (e.g. the factory dumping into ``prd-<project>``). Unlike
+        :meth:`create_space` a pre-existing row is a no-op, never an error.
+        """
+        self._conn.execute(
+            """
+            INSERT INTO spaces (org_id, space_id, name)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (org_id, space_id) DO NOTHING
+            """,
+            (org_id, space_id, name),
+        )
+
+    def rename_space(self, org_id: str, space_id: str, name: str | None) -> bool:
+        """Set the display ``name`` of a space; True if it existed.
 
         Only the human-facing ``name`` changes — ``space_id`` is the immutable key
-        the effective tenant ``user_id`` is derived from, so it is never touched.
-        Ownership (``owner_sub``) is both the existence and authorization scope.
+        every snapshot is tenanted by, so it is never touched.
         """
         cur = self._conn.execute(
-            """
-            UPDATE spaces SET name = %s
-            WHERE org_id = %s AND owner_sub = %s AND space_id = %s
-            """,
-            (name, org_id, owner_sub, space_id),
+            "UPDATE spaces SET name = %s WHERE org_id = %s AND space_id = %s",
+            (name, org_id, space_id),
         )
         return cur.rowcount > 0
 
-    def delete_space(self, org_id: str, owner_sub: str, space_id: str) -> bool:
+    def delete_space(self, org_id: str, space_id: str) -> bool:
         """Remove the space registry row; return True if one was deleted.
 
-        Only the registry entry is touched here — the space's facts/edges/caches
-        (stored under the derived ``user_id``) are purged by the caller so a
-        re-created same-id space starts empty rather than resurrecting old data.
+        Only the registry entry is touched here — the space's snapshots (and any
+        mounts referencing them) are purged by the caller.
         """
         cur = self._conn.execute(
-            """
-            DELETE FROM spaces
-            WHERE org_id = %s AND owner_sub = %s AND space_id = %s
-            """,
-            (org_id, owner_sub, space_id),
+            "DELETE FROM spaces WHERE org_id = %s AND space_id = %s",
+            (org_id, space_id),
         )
         return cur.rowcount > 0
 
     # --- reads -------------------------------------------------------------
-    def list_spaces(self, org_id: str, owner_sub: str) -> list[dict]:
-        """Return ``owner_sub``'s spaces in ``org_id`` ordered by ``space_id``.
+    def list_spaces(self, org_id: str) -> list[dict]:
+        """Return every space in ``org_id`` ordered by ``space_id``.
 
         Each row is ``{space_id, name, created_at}``.
         """
@@ -93,22 +94,19 @@ class SpacesStore:
             """
             SELECT space_id, name, created_at
             FROM spaces
-            WHERE org_id = %s AND owner_sub = %s
+            WHERE org_id = %s
             ORDER BY space_id
             """,
-            (org_id, owner_sub),
+            (org_id,),
         ).fetchall()
         return [
             {"space_id": r[0], "name": r[1], "created_at": r[2]} for r in rows
         ]
 
-    def owns(self, org_id: str, owner_sub: str, space_id: str) -> bool:
-        """Return True if ``owner_sub`` owns space ``space_id`` in ``org_id``."""
+    def exists(self, org_id: str, space_id: str) -> bool:
+        """Return True if space ``space_id`` exists in ``org_id``."""
         row = self._conn.execute(
-            """
-            SELECT 1 FROM spaces
-            WHERE org_id = %s AND owner_sub = %s AND space_id = %s
-            """,
-            (org_id, owner_sub, space_id),
+            "SELECT 1 FROM spaces WHERE org_id = %s AND space_id = %s",
+            (org_id, space_id),
         ).fetchone()
         return row is not None

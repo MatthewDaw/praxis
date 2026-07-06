@@ -39,7 +39,7 @@ USER = "dev-user"  # the PRAXIS_AUTH_DISABLED=1 dev principal (see conftest)
 
 def _wipe(org: str) -> None:
     conn = db.connect()
-    for tbl in ("fact_edges", "facts", "cached_fact_edges", "cached_facts",
+    for tbl in ("fact_edges", "facts", "snapshot_edges", "snapshots",
                 "mounted_snapshots", "org_members", "orgs"):
         conn.execute(f"DELETE FROM {tbl} WHERE org_id = %s", (org,))
     conn.close()

@@ -47,6 +47,9 @@ class Tenant:
     email: str | None
     org_id: str
     api_base: str
+    # Purely LOCAL client-side default fed to the ``space`` param of snapshot/mount
+    # tools (via ``praxis_select_space``). Never sent as a header; never selects a
+    # working graph — working-memory ops always resolve to the authenticated ``sub``.
     space_id: str = ""
 
 
@@ -127,27 +130,25 @@ def set_org(org_id: str) -> Tenant:
 
 
 def active_space() -> str:
-    """The active space id (``X-Praxis-Space`` value); ``""`` for the default space.
+    """The client-side default ``space`` for snapshot/mount ops; ``""`` if none chosen.
 
-    A per-process ``PRAXIS_SPACE`` env override takes precedence over the cached
-    ``space_id`` when set and non-empty, so an agent can pin a space without a
-    ``select`` call (mirrors how :func:`cache_path` lets each server pin an org).
+    This is a purely LOCAL default for the ``space`` PARAMETER of the snapshot/mount
+    tools (set via ``praxis_select_space``). It is NEVER emitted as a header and NEVER
+    selects a working graph — working-memory ops always resolve to the authenticated
+    ``sub``.
 
-    Unlike :func:`active_org`, this never raises when there is no cached login:
-    the space header is optional (absent == default graph), and ``_headers`` calls
-    it unconditionally, so a missing/unreadable cache resolves to ``""``.
+    Unlike :func:`active_org`, this never raises when there is no cached login: the
+    default is optional (absent == no default), so a missing/unreadable cache resolves
+    to ``""``.
     """
-    override = os.environ.get("PRAXIS_SPACE", "").strip()
-    if override:
-        return override
     try:
         return load_identity().space_id
-    except Exception:  # noqa: BLE001 - not-logged-in / corrupt cache => default space
+    except Exception:  # noqa: BLE001 - not-logged-in / corrupt cache => no default
         return ""
 
 
 def set_space(space_id: str) -> Tenant:
-    """Set the active space on the cached identity and persist it."""
+    """Set the client-side default ``space`` on the cached identity and persist it."""
     tenant = load_identity()
     tenant.space_id = space_id
     save_identity(tenant)

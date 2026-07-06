@@ -7,7 +7,7 @@ description: >
   them (self-consistency, contradictions, dedup), then runs all planning validation — the cold-eyes
   architecture/external-service decisions, underspecification routing, cross-requirement gaps,
   coverage+depth checks, and the data-driven scope="planning" checks — convenes the ce-* plan-review
-  panel, and hands the human a clearable gate that ends in save_snapshot("prd-<project>"). AMEND MODE
+  panel, and hands the human a clearable gate that ends in save_snapshot(space="<project>", snapshot="prd-<project>"). AMEND MODE
   adds ONE check (validation or planning) to an existing plan as a Praxis fact; because checks resolve
   by query and completion is gated on them, matching tickets automatically re-enter the incomplete set.
   Use when starting (or re-baselining) a project from a brainstorm/PRD + wireframe, or to graft a new
@@ -415,13 +415,14 @@ the subject (the plan's Praxis facts, not built code). The plan-anchor `plan_sub
 
 1. **RESOLVE** — `resolve_validation_requirements(plan_subject, project, scope="planning")` returns EVERY
    active `scope="planning"` lens (global considerations; the whole plan must satisfy each — not
-   tag-bound). The lenses are read from a **DEDICATED checks-space, `planning-validation`, by default** (the
-   `checks_space` seam in `hooks/_ticket_state.py`) — separate from the `prd-<project>` plan graph this
+   tag-bound). The lenses are read from a **DEDICATED `planning-validation` snapshot inside the project's
+   own space, by default** (the `checks_ref` seam in `hooks/_ticket_state.py` resolves to
+   `(space=<project>, snapshot=planning-validation)`) — separate from the `prd-<project>` snapshot this
    intake writes; ticket/plan writes are unaffected. **Override — slash argument ONLY** (no env seam):
-   `/af-intake --checks-space=<space-or-snapshot>` reads the checklist from a different space this run
-   (pass `checks_space="<name>"` into the resolve call). The extensible lenses live ONLY in Praxis (added
-   via Amend mode, C2, which must write them INTO `planning-validation`); a lens added there is enforced on
-   the next plan with no code change.
+   `/af-intake --checks-space=<space[:snapshot]>` reads the checklist from a different `(space, snapshot)`
+   this run (pass a `checks_ref=(space, snapshot)` override into the resolve call). The extensible lenses
+   live ONLY in Praxis (added via Amend mode, C2, which must write them INTO the project space's
+   `planning-validation` snapshot); a lens added there is enforced on the next plan with no code change.
 2. **PIN the coverage contract** — `pin_requirements(plan_subject, lenses)`: every lens is now a
    requirement this plan MUST cover.
 3. **SYNTHESIZE a covering validation per lens** — for each lens, author a concrete, runnable validation
@@ -610,9 +611,13 @@ declare it yourself. The human may bless only once ALL hold, checked **live from
 and the gate is reachable, say so and STOP asking. Beware the under-specification trap: zero
 contradictions on a thin plan is not "done," it's "nothing was claimed yet."
 
-When the human clears the gate: **`save_snapshot("prd-<project>")`** (PRD-only — mounts aren't carried).
-Render the prose PRD from the facts for human review. This snapshot is the durable plan; the build loop
-consumes it later. Editing later = `load_snapshot(... replace)` → edit → re-save, or use Amend mode.
+When the human clears the gate: **`save_snapshot(space="<project>", snapshot="prd-<project>")`** (PRD-only
+— mounts aren't carried). This dumps working memory into the `prd-<project>` snapshot in the project's
+space. Render the prose PRD from the facts for human review. This snapshot is the durable plan; the build
+loop consumes it later. Editing later = `load_snapshot(space="<project>", snapshot="prd-<project>",
+mode="replace")` → edit → re-save, or use Amend mode. (The `prd-<project>` snapshot is MUTABLE — the
+build loop reads and writes ticket state on it directly; read-only applies only to mounts and load/dump
+copy semantics.)
 
 ---
 
@@ -633,13 +638,19 @@ surfaces); it **never** names specific tickets, and no ticket carries an authore
 WHICH checks apply is the fresh RESOLVE query (tag ∪ surface ∪ semantic) at the point of use. You only
 write the predicate; the build (for validation) or the audit (for planning) resolves it.
 
-**Write the check INTO the checks-space that RESOLVE reads, or it is invisible.** Because resolution
-defaults to a dedicated space per kind, an amended check only takes effect if it lands there:
-`scope="validation"` → the **`coding-validation`** space (read by af-build); `scope="planning"` → the
-**`planning-validation`** space (read by af-intake's audit). Before the `praxis_add_insight` write,
-`praxis_select_space("coding-validation" | "planning-validation")`; after, re-select your working space.
-Writing the check into the `prd-<project>` plan graph instead leaves it unresolved under the default
+**Write the check INTO the project space's check snapshot that RESOLVE reads, or it is invisible.**
+Checks are now **per-project**: resolution reads them from a dedicated snapshot inside THIS project's
+space, so an amended check only takes effect if it lands at the right `(space, snapshot)`:
+`scope="validation"` → `(space=<project>, snapshot=building-validation)` (read by af-build);
+`scope="planning"` → `(space=<project>, snapshot=planning-validation)` (read by af-intake's audit). Write
+the check into that snapshot via the snapshot-bound write path (`praxis_select_space("<project>")` sets
+the client's space default, then target the `building-validation` / `planning-validation` snapshot on the
+write). Writing the check into the `prd-<project>` snapshot instead leaves it unresolved under the check
 seam — a silent no-op. (Confirm tenancy first per `docs/af-memory-policy.md` §0.)
+
+> **Per-project, not global.** `building-validation` (renamed from the old global `coding-validation`) and
+> `planning-validation` are SNAPSHOTS in each project's own space — there is no single global checks
+> space anymore. A check authored here governs only this project; re-seed each project's check snapshots.
 
 Decide the **kind** from the request:
 
@@ -698,9 +709,11 @@ praxis_add_insight(
 )
 ```
 
-The active `scope="planning"` checks ARE the planning checklist that Part B pulls (B3). It takes effect on
-the **next plan**: the audit queries active planning checks and must close every lens whose `applies_to`
-matches.
+Keep `source="planning-checklist"` (the lens-library identity) but land the check in THIS project's
+`planning-validation` snapshot (`space=<project>`) — the checklist is no longer a single global library.
+The active `scope="planning"` checks in that snapshot ARE the planning checklist Part B pulls (B3). It
+takes effect on the **next plan** for this project: the audit queries the project's active planning checks
+and must close every lens whose `applies_to` matches.
 
 ## C3 — Re-enter the work (the "redo" that needs no redo skill)
 

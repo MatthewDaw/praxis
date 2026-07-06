@@ -85,31 +85,68 @@ _RUN_KEYS = (M_RUN_OWNER, M_RUN_AT, M_RUN_SCOPE)
 DEFAULT_LEASE_TTL_S = 900    # 15 min — per-ticket claim lease
 DEFAULT_RUN_TTL_S = 3600     # 60 min — whole-set run marker; refreshed at each ticket boundary
 
-# The checks-space seam. Check RESOLUTION reads validation rules from a DEDICATED space so they live
-# separately from the project/plan graph that holds ticket STATE (build_state, claims, pins, passes):
-#   * scope="validation" (af-build per-ticket)   -> coding-validation
-#   * scope="planning"   (af-intake whole-plan)  -> planning-validation
-# These are only DEFAULTS; the skills override per-invocation via ``checks_space=`` (their slash-command
-# argument). Ticket state is untouched by this — it keeps using the process-wide PRAXIS_SPACE/default.
-DEFAULT_VALIDATION_CHECKS_SPACE = "coding-validation"
-DEFAULT_PLANNING_CHECKS_SPACE = "planning-validation"
+# The checks seam (org -> space -> snapshot tenancy). Check RESOLUTION reads validation rules from a
+# DEDICATED SNAPSHOT inside the PROJECT space, so they live separately from the ``prd-<project>``
+# snapshot that holds ticket STATE (build_state, claims, pins, passes) even though both sit in the
+# SAME project space. Every project corresponds to exactly one space (``space == the bare project
+# name``); inside it the checks live in per-scope snapshots:
+#   * scope="validation" (af-build per-ticket)   -> snapshot "building-validation"
+#   * scope="planning"   (af-intake whole-plan)  -> snapshot "planning-validation"
+# These snapshots are only DEFAULTS; the skills override per-invocation via ``checks_ref=`` (their
+# slash-command ``--checks-space`` argument), a ``(space, snapshot)`` pair or a bare snapshot name.
+DEFAULT_VALIDATION_CHECKS_SNAPSHOT = "building-validation"
+DEFAULT_PLANNING_CHECKS_SNAPSHOT = "planning-validation"
 
-_CHECKS_SPACE_UNSET = object()  # sentinel: caller passed nothing -> use the per-scope default
+_CHECKS_SPACE_UNSET = object()  # sentinel: caller passed nothing -> use the per-scope default snapshot
 
 
-def default_checks_space(scope: Optional[str]) -> Optional[str]:
-    """The dedicated checks-space a given resolve scope reads from by DEFAULT.
+def default_checks_snapshot(scope: Optional[str]) -> Optional[str]:
+    """The dedicated checks SNAPSHOT (inside the project space) a given resolve scope reads by DEFAULT.
 
-    ``"validation"`` -> coding-validation; ``"planning"`` -> planning-validation; anything else (incl.
-    ``None``, the back-compat lane) -> ``None`` == read checks from the SAME (ticket/default) space,
-    preserving historical behavior. A caller that passes ``checks_space=`` explicitly overrides this;
-    passing ``checks_space=None`` explicitly forces the ticket/default space regardless of scope.
+    ``"validation"`` -> ``building-validation``; ``"planning"`` -> ``planning-validation``; anything
+    else (incl. ``None``, the back-compat lane) -> ``None`` == read checks from the ticket/default
+    (working-memory) graph, preserving historical behavior. A caller that passes ``checks_ref=``
+    explicitly overrides this; passing ``checks_ref=None`` explicitly forces the ticket/default
+    reference regardless of scope.
     """
     if scope == "validation":
-        return DEFAULT_VALIDATION_CHECKS_SPACE
+        return DEFAULT_VALIDATION_CHECKS_SNAPSHOT
     if scope == "planning":
-        return DEFAULT_PLANNING_CHECKS_SPACE
+        return DEFAULT_PLANNING_CHECKS_SNAPSHOT
     return None
+
+
+# Back-compat alias for any external symbol still importing the old name.
+default_checks_space = default_checks_snapshot
+
+
+def _checks_reference(checks_ref: Any, scope: Optional[str],
+                      project: str) -> tuple[Optional[str], Optional[str]]:
+    """Resolve ``checks_ref`` into the ``(space, snapshot)`` a check READ binds to.
+
+    Checks live in the PROJECT space (``space == project``) under a per-scope snapshot. ``checks_ref``
+    overrides which snapshot (and optionally space) is read:
+      * UNSET  -> ``(project, default_checks_snapshot(scope))``.
+      * a bare snapshot name (str) -> ``(project, <name>)`` (the skills' ``--checks-space`` override).
+      * a ``(space, snapshot)`` pair -> that reference (an empty space element falls back to project).
+      * explicit ``None`` -> forces the ticket/default reference (no snapshot; read working memory).
+
+    When the resolved snapshot is falsy the space is dropped too, so the read resolves to the
+    ticket/default (working-memory) graph — never a PARTIAL (space-only) reference, which ``_praxis``
+    fails closed on.
+    """
+    if checks_ref is _CHECKS_SPACE_UNSET:
+        space, snapshot = project, default_checks_snapshot(scope)
+    elif checks_ref is None:
+        space, snapshot = None, None
+    elif isinstance(checks_ref, (tuple, list)):
+        space = (checks_ref[0] if len(checks_ref) > 0 else None) or project
+        snapshot = checks_ref[1] if len(checks_ref) > 1 else None
+    else:
+        space, snapshot = project, str(checks_ref)
+    if not snapshot:
+        return None, None
+    return (space or project), snapshot
 
 
 # --------------------------------------------------------------------------- helpers
@@ -153,15 +190,17 @@ def _scope_of(check: Any) -> str:
 
 def resolve_validation_requirements(ticket: Any, project: str = "",
                                     scope: Optional[str] = None,
-                                    checks_space: Any = _CHECKS_SPACE_UNSET) -> list[dict]:
+                                    checks_ref: Any = _CHECKS_SPACE_UNSET) -> list[dict]:
     """Resolve WHICH abstract validation REQUIREMENTS apply — a fresh QUERY, never a pre-bound list.
     These are the "what must be proven" facts the worker must then COVER with synthesized validations.
 
-    ``checks_space`` selects the tenancy space the check facts are READ from (the checks-space seam),
-    independent of the ticket/default space used for state. Unset -> :func:`default_checks_space` of
-    ``scope`` (validation -> coding-validation, planning -> planning-validation, else the ticket space).
-    A string overrides it (the skills' slash-command argument); an explicit ``None`` forces the
-    ticket/default space. Only the check reads honor it — ticket reads are unaffected.
+    ``checks_ref`` selects the ``(space, snapshot)`` the check facts are READ from (the checks seam),
+    independent of the ``prd-<project>`` snapshot used for state. Unset -> the PROJECT space
+    (``space=project``) and :func:`default_checks_snapshot` of ``scope`` (validation ->
+    building-validation, planning -> planning-validation, else the ticket/default graph). A bare
+    snapshot name or a ``(space, snapshot)`` pair overrides it (the skills' slash-command argument);
+    an explicit ``None`` forces the ticket/default reference. Only the check reads honor it — ticket
+    reads are unaffected.
 
     ``scope`` is the ONE seam between the two callers — everything downstream (pin / coverage / pass)
     is identical:
@@ -183,14 +222,14 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
     the worker candidate checks as inspiration but never gates completion, so a fuzzy retrieval that is
     irrelevant is simply not authored, while a precise tag/surface/wildcard match is always covered.
     """
-    # Which tenancy space the CHECK reads target (default per scope; overridable by the skills).
-    space = default_checks_space(scope) if checks_space is _CHECKS_SPACE_UNSET else checks_space
+    # Which (space, snapshot) the CHECK reads target (default per scope; overridable by the skills).
+    space, snapshot = _checks_reference(checks_ref, scope, project)
 
     # PLANNING — the whole plan must satisfy every active planning lens (global, applies_when-bound),
     # so resolve the entire planning checklist; the per-ticket tag/surface lanes don't apply.
     if scope == "planning":
         out: dict[str, dict] = {}
-        for chk in _praxis.facts_by(category=CHECK_CATEGORY, space=space):
+        for chk in _praxis.facts_by(category=CHECK_CATEGORY, space=space, snapshot=snapshot):
             if _scope_of(chk) == "planning":
                 cid = _check_id(chk)
                 if cid:
@@ -202,7 +241,8 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
 
     tags = _as_list(meta.get("tags")) + _as_list(meta.get("applies_to"))
     for tag in {str(t) for t in tags if t}:
-        for chk in _praxis.facts_by(category=CHECK_CATEGORY, meta={"applies_to": tag}, space=space):
+        for chk in _praxis.facts_by(category=CHECK_CATEGORY, meta={"applies_to": tag},
+                                    space=space, snapshot=snapshot):
             cid = _check_id(chk)
             if cid:
                 seen.setdefault(cid, chk)
@@ -212,7 +252,8 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
     # include the literal "*" (array-membership matches the STORED value, not a wildcard). Without
     # this the baseline typecheck/build/lint/test floor authored as ``applies_to:["*"]`` silently
     # fails to resolve. This lane is MANDATORY (part of the coverage contract), like tag/surface.
-    for chk in _praxis.facts_by(category=CHECK_CATEGORY, meta={"applies_to": "*"}, space=space):
+    for chk in _praxis.facts_by(category=CHECK_CATEGORY, meta={"applies_to": "*"},
+                                space=space, snapshot=snapshot):
         cid = _check_id(chk)
         if cid:
             seen.setdefault(cid, chk)
@@ -222,7 +263,7 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
     if project:
         for screen in {str(s) for s in surfaces if s}:
             try:
-                for chk in _praxis.surface_checks(project, screen, space=space):
+                for chk in _praxis.surface_checks(project, screen, space=space, snapshot=snapshot):
                     cid = _check_id(chk)
                     if cid:
                         seen.setdefault(cid, chk)
@@ -241,17 +282,17 @@ resolve_checks = resolve_validation_requirements
 
 
 def retrieve_advisory_checks(ticket: Any, project: str = "", scope: Optional[str] = None,
-                             checks_space: Any = _CHECKS_SPACE_UNSET,
+                             checks_ref: Any = _CHECKS_SPACE_UNSET,
                              top_k: int = 10) -> list[dict]:
     """The SEMANTIC lane — ADVISORY candidate checks discovered by hybrid retrieval against the
     ticket's own text (title + acceptance). These are INSPIRATION for the worker's synthesis step,
     NOT the coverage contract: they are never pinned as ``required_validations`` and never gate
     completion. The worker folds the relevant ones into its authored validations and ignores the
     rest — so an irrelevant retrieval is harmless (the point of keeping semantics OUT of the hard
-    gate). Reads from the checks-space (same seam/default as the mandatory lanes). Returns
-    ``category="check"`` hits only, de-duplicated, filtered to ``scope`` when given.
+    gate). Reads from the checks ``(space, snapshot)`` (same seam/default as the mandatory lanes).
+    Returns ``category="check"`` hits only, de-duplicated, filtered to ``scope`` when given.
     """
-    space = default_checks_space(scope) if checks_space is _CHECKS_SPACE_UNSET else checks_space
+    space, snapshot = _checks_reference(checks_ref, scope, project)
     fact = ticket if isinstance(ticket, dict) else _praxis.get_fact(ticket)
     text = " ".join(str(x) for x in (
         (fact or {}).get("text") or (fact or {}).get("content") or "",
@@ -260,7 +301,7 @@ def retrieve_advisory_checks(ticket: Any, project: str = "", scope: Optional[str
     if not text:
         return []
     out: dict[str, dict] = {}
-    for hit in _praxis.context(text, top_k=top_k, space=space):
+    for hit in _praxis.context(text, top_k=top_k, space=space, snapshot=snapshot):
         if str(hit.get("category") or (hit.get("meta") or {}).get("category") or "") != CHECK_CATEGORY:
             continue
         if scope and _scope_of(hit) not in ("", scope):  # allow unscoped hits; drop cross-scope ones
@@ -717,12 +758,13 @@ def contract_with_floor(cid: str, acceptance_text: str, resolved: list) -> list:
 
 def start_ticket(cid: str, owner: str, project: str = "",
                  ttl: int = DEFAULT_LEASE_TTL_S,
-                 checks_space: Any = _CHECKS_SPACE_UNSET) -> Optional[list[dict]]:
+                 checks_ref: Any = _CHECKS_SPACE_UNSET) -> Optional[list[dict]]:
     """Convenience: claim, then resolve the validation REQUIREMENTS (PLUS the acceptance-condition
     floor) and pin them as this pass's coverage contract (truncating any prior synthesized validations).
 
-    ``checks_space`` (the checks-space seam) selects the space validation checks are READ from; unset
-    -> the ``scope="validation"`` default (coding-validation). Pass the skill's override through here.
+    ``checks_ref`` (the checks seam) selects the ``(space, snapshot)`` validation checks are READ
+    from; unset -> the PROJECT space + the ``scope="validation"`` default snapshot
+    (building-validation). Pass the skill's ``--checks-space`` override through here.
 
     Returns the requirement facts the worker must now COVER with synthesized validations — ALWAYS
     including the ticket's own acceptance condition as a floor (so the contract is never empty and the
@@ -735,7 +777,7 @@ def start_ticket(cid: str, owner: str, project: str = "",
     if not claim(cid, owner, ttl=ttl):
         return None
     resolved = resolve_validation_requirements(cid, project=project, scope="validation",
-                                               checks_space=checks_space)
+                                               checks_ref=checks_ref)
     requirements = contract_with_floor(cid, _meta(cid).get("acceptance"), resolved)
     pin_requirements(cid, requirements)
     return requirements

@@ -30,7 +30,7 @@ class _DBSpy:
         self._hits = hits or []
         self.context_calls = []
 
-    def facts_by(self, category=None, meta=None, state="active", space=None):
+    def facts_by(self, category=None, meta=None, state="active", space=None, snapshot=None):
         want = (meta or {}).get("applies_to")
         out = []
         for c in self._checks:
@@ -39,11 +39,12 @@ class _DBSpy:
                 out.append(c)
         return out
 
-    def surface_checks(self, project, screen_id, scope=None, space=None):
+    def surface_checks(self, project, screen_id, scope=None, space=None, snapshot=None):
         return []
 
-    def context(self, query, top_k=10, as_of=None, space=None):
-        self.context_calls.append({"query": query, "space": space, "top_k": top_k})
+    def context(self, query, top_k=10, as_of=None, space=None, snapshot=None):
+        self.context_calls.append({"query": query, "space": space, "snapshot": snapshot,
+                                   "top_k": top_k})
         return list(self._hits)
 
     def get_fact(self, cid):
@@ -102,10 +103,12 @@ def test_semantic_lane_is_advisory_not_in_mandatory(monkeypatch):
     mandatory = {c["id"] for c in ts.resolve_validation_requirements(ticket, project="p", scope="validation")}
     assert mandatory == {"floor"}
     assert "sem-suggested" not in mandatory
-    # ...but IS surfaced as an advisory candidate, read from the coding-validation checks-space.
+    # ...but IS surfaced as an advisory candidate, read from the project space's building-validation snapshot.
     advisory = {c["id"] for c in ts.retrieve_advisory_checks(ticket, project="p", scope="validation")}
     assert advisory == {"sem-suggested"}
-    assert spy.context_calls and spy.context_calls[0]["space"] == "coding-validation"
+    assert spy.context_calls
+    assert spy.context_calls[0]["space"] == "p"                  # project IS the space
+    assert spy.context_calls[0]["snapshot"] == "building-validation"
     assert "participation" in spy.context_calls[0]["query"]  # queried by the ticket's own text
 
 

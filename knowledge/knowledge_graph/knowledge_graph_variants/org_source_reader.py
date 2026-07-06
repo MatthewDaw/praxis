@@ -1,23 +1,18 @@
-"""Read-only view of another org member's facts, for skill sharing / fold-in.
+"""Read-only view of an org-shared snapshot, for browsing / fold-in.
 
-The live :class:`PostgresVectorGraph` is bound to a single ``(org_id, user_id)``
-tenant and gates every read with ``org_id = %s AND (shared OR user_id = %s)`` —
-a member can never see another member's *private* facts through it. Skill
-sharing needs exactly that: within an org (the trust boundary), any member may
-browse any other member's saved snapshot and cherry-pick facts to fold into
-their own graph.
+Snapshots are org-shared: within an org (the trust boundary) any member may
+browse any space's saved snapshot and cherry-pick facts to fold into their own
+working memory. This class is the read path for that.
 
-This class is the read path for that. It is deliberately **read-only and
-write-free**: it owns no ``write``/``add``/``delete``/cache-mutation method, so
-the predicate relaxation (``org_id = %s AND user_id = %s`` for an explicit target
-user, no ``shared`` clause) can never leak into a mutation. Authorization —
-"the caller is a member of this org" — is enforced one layer up by the route's
-``active_org`` dependency; this class only pins ``org_id`` so a reader scoped to
-org X never observes any other org's rows.
+It is deliberately **read-only and write-free**: it owns no
+``write``/``add``/``delete``/mutation method, so the snapshot predicate
+(``org_id = %s AND space = %s AND snapshot = %s``) can never leak into a mutation.
+Authorization — "the caller is a member of this org" — is enforced one layer up
+by the route's ``active_org`` dependency; this class only pins ``org_id`` so a
+reader scoped to org X never observes any other org's rows.
 
-Sources are snapshots only: ``cache_key`` is required (always a
-``"snapshot:<name>"`` key) and reads the target user's saved state in
-``cached_facts``/``cached_fact_edges``. The live graph is never browsed.
+Sources are org-shared snapshots: reads the ``(space, snapshot)`` state in
+``snapshots``/``snapshot_edges``. Working memory (``facts``) is never browsed.
 """
 
 from __future__ import annotations
@@ -32,7 +27,7 @@ from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph im
 # Same fixed-name allowlist discipline as PostgresVectorGraph: table names are
 # interpolated into SQL (psycopg can't parametrize identifiers), so they are
 # chosen here from constants and never user-controlled.
-_CACHE_FACTS, _CACHE_EDGES = "cached_facts", "cached_fact_edges"
+_SNAP_FACTS, _SNAP_EDGES = "snapshots", "snapshot_edges"
 
 _FACT_COLS = (
     "id, text, source, confidence, scope, category, observation_count, "
@@ -41,32 +36,32 @@ _FACT_COLS = (
 
 
 class OrgSourceReader:
-    """Read-only access to one org member's snapshot facts/edges."""
+    """Read-only access to one org-shared snapshot's facts/edges."""
 
     def __init__(
         self,
         conn: psycopg.Connection,
         org_id: str,
-        target_user_id: str,
         *,
-        cache_key: str,
+        space: str,
+        snapshot: str,
     ) -> None:
         self._conn = conn
         self.org_id = org_id
-        self.target_user_id = target_user_id
-        self._cache_key = cache_key
+        self.space = space
+        self.snapshot = snapshot
 
     def _where(self) -> tuple[str, list[object]]:
-        """The org+target-user+snapshot predicate."""
+        """The org+space+snapshot predicate."""
         return (
-            "org_id = %s AND user_id = %s AND cache_key = %s",
-            [self.org_id, self.target_user_id, self._cache_key],
+            "org_id = %s AND space = %s AND snapshot = %s",
+            [self.org_id, self.space, self.snapshot],
         )
 
     def all_facts(self, state: str | None = None) -> list[Fact]:
         """Every fact in the snapshot (optionally filtered by ``state``), newest first."""
         where, params = self._where()
-        sql = f"SELECT {_FACT_COLS} FROM {_CACHE_FACTS} WHERE {where}"
+        sql = f"SELECT {_FACT_COLS} FROM {_SNAP_FACTS} WHERE {where}"
         if state is not None:
             sql += " AND state = %s"
             params.append(state)
@@ -80,7 +75,7 @@ class OrgSourceReader:
         if not ids:
             return []
         where, params = self._where()
-        sql = f"SELECT {_FACT_COLS} FROM {_CACHE_FACTS} WHERE {where} AND id = ANY(%s)"
+        sql = f"SELECT {_FACT_COLS} FROM {_SNAP_FACTS} WHERE {where} AND id = ANY(%s)"
         params.append(ids)
         rows = self._conn.execute(sql, params).fetchall()
         return [PostgresVectorGraph._row_to_fact(r) for r in rows]
@@ -96,7 +91,7 @@ class OrgSourceReader:
             return []
         where, params = self._where()
         sql = (
-            f"SELECT src_id, dst_id, kind FROM {_CACHE_EDGES} "
+            f"SELECT src_id, dst_id, kind FROM {_SNAP_EDGES} "
             f"WHERE {where} AND src_id = ANY(%s) AND dst_id = ANY(%s)"
         )
         params.extend([ids, ids])

@@ -8,11 +8,14 @@ proposed/active/rejected lifecycle, ``facts.meta`` carries dashboard-only fields
 (``title``, ``auditTrail``), and the relationship links (``contradiction`` /
 ``contradicted_by`` / ``supersedes``) live in the ``fact_edges`` table.
 
-Tenancy is bound at construction (one facade per ``(org_id, user_id)``), so the
-methods here — unlike the old explicitly-tenanted stores — take no org/user
-arguments. The candidate ``id`` equals the raw fact ``id`` (no ``pipe_``/
-``cand_`` namespace), so contradiction links and lifecycle ops need no id
-translation.
+Tenancy is bound at construction: by default the facade is one user's private
+working memory (``(org_id, user_id)``); passing ``facts_table='snapshots'`` with a
+``(space, snapshot)`` pair projects it over an org-shared snapshot instead — the
+seam the factory uses to read/mutate a project snapshot's tickets by id. Either
+way the methods here — unlike the old explicitly-tenanted stores — take no
+org/user/space arguments. The candidate ``id`` equals the raw fact ``id`` (no
+``pipe_``/``cand_`` namespace), so contradiction links and lifecycle ops need no
+id translation.
 """
 
 from __future__ import annotations
@@ -127,7 +130,8 @@ def _short_title(text: str) -> str:
 
 
 class FactsCandidates:
-    """Dashboard candidate facade over a single tenant's facts graph."""
+    """Dashboard candidate facade over one user's working memory or, when bound with
+    ``facts_table='snapshots'`` + ``(space, snapshot)``, an org-shared snapshot."""
 
     def __init__(
         self,
@@ -137,16 +141,28 @@ class FactsCandidates:
         *,
         embedder: Any | None = None,
         policy: Any | None = None,
+        facts_table: str = "facts",
+        space: str | None = None,
+        snapshot: str | None = None,
     ) -> None:
         # ``embedder``/``policy`` are test seams: production uses the real
         # OpenRouter embedder + ConflictFlagger judge (default_write_policy);
         # tests inject a deterministic FakeEmbedder and a no-LLM policy.
+        # ``facts_table='snapshots'`` (with ``space``/``snapshot``) projects the
+        # candidate surface over an org-shared snapshot instead of working memory,
+        # so the factory can read/mutate a project snapshot's tickets by id.
+        snap_kwargs = (
+            {"facts_table": facts_table, "space": space, "snapshot": snapshot}
+            if facts_table != "facts"
+            else {}
+        )
         self.graph = PostgresVectorGraph(
             conn,
             org_id,
             user_id,
             embedder=embedder,
             policy=policy if policy is not None else default_write_policy(),
+            **snap_kwargs,
         )
 
     # --- internal helpers --------------------------------------------------

@@ -26,19 +26,21 @@ class _FakeLive:
     def _recent(self, limit):
         return [Fact(id="l1", text="live one")]
 
-    def recent_cache(self, *, source_user_id, cache_key, limit):
+    def recent_cache(self, *, space, snapshot, limit):
         return [Fact(id="m1", text="mounted one")]
 
 
-MOUNTS = [{"source_user_id": "u1", "snapshot_name": "snap"}]
+# Mounts are now org-shared snapshots identified by (space, snapshot) — no source
+# user, bare snapshot name (see specs/005-praxis-tenancy-redesign/design.md §3.1).
+MOUNTS = [{"space": "sp", "snapshot": "snap"}]
 
 
-def test_search_delegates_to_overlay_search_with_cache_key_pairs():
+def test_search_delegates_to_overlay_search_with_space_snapshot_pairs():
     live = _FakeLive()
     g = OverlayGraph(live, MOUNTS)
     hits = g.search("q", top_k=5)
-    # mounts normalized to (source_user_id, cache_key) with the snapshot: prefix.
-    assert live.overlay_calls == [("q", (("u1", "snapshot:snap"),), 5)]
+    # mounts normalized to (space, snapshot) tuples (bare snapshot name).
+    assert live.overlay_calls == [("q", (("sp", "snap"),), 5)]
     assert [h.fact.id for h in hits] == ["l1"]
 
 
@@ -57,7 +59,7 @@ def test_recent_union_tags_mounted_fact():
     g = OverlayGraph(_FakeLive(), MOUNTS)
     facts = g._recent_union(limit=50)
     by_id = {f.id: f for f in facts}
-    assert by_id["m1"].meta["mountedFrom"] == {"userId": "u1", "snapshot": "snap"}
+    assert by_id["m1"].meta["mountedFrom"] == {"space": "sp", "snapshot": "snap"}
     assert not by_id["l1"].meta.get("mountedFrom")  # live fact untagged
 
 

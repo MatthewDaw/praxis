@@ -1,16 +1,17 @@
 """Integration tests for cross-org sharing: copy a snapshot or a whole space
 into another org the SAME login belongs to.
 
-Two endpoints are under test:
-  * POST /snapshots/{name}/copy-to-org  — copy a saved snapshot's cache into the
-    caller's DEFAULT graph in ``targetOrg`` (ids/embeddings preserved verbatim).
-  * POST /spaces/copy-to-org            — copy the caller's active working graph
-    into a freshly created space in ``targetOrg``.
+Two endpoints are under test (re-keyed by the tenancy redesign to
+``(space, snapshot)`` — see specs/005-praxis-tenancy-redesign/design.md §4.2/§4.4):
+  * POST /snapshots/copy-to-org — copy one org-shared snapshot ``(space, snapshot)``
+    into ``(targetSpace, targetSnapshot)`` in ``targetOrg`` (ids/embeddings verbatim).
+  * POST /spaces/copy-to-org    — copy ALL snapshots of a source ``space`` into a
+    freshly created ``targetSpace`` in ``targetOrg``.
 
 The copy is pure SQL (no embedder/LLM), so unlike the fold-in tests these only
-need a Postgres DSN — facts are seeded directly. Auth is bypassed via conftest
-(PRAXIS_AUTH_DISABLED=1 -> principal sub="dev-user"); ``active_org`` still checks
-membership, so the test makes dev-user a member of BOTH orgs.
+need a Postgres DSN — snapshot rows are seeded directly. Auth is bypassed via
+conftest (PRAXIS_AUTH_DISABLED=1 -> principal sub="dev-user"); ``active_org`` still
+checks membership, so the test makes dev-user a member of BOTH orgs.
 """
 
 from __future__ import annotations
@@ -37,8 +38,8 @@ USER = "dev-user"  # the PRAXIS_AUTH_DISABLED dev principal sub
 def _wipe(conn, org):
     conn.execute("DELETE FROM fact_edges WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
-    conn.execute("DELETE FROM cached_fact_edges WHERE org_id = %s", (org,))
-    conn.execute("DELETE FROM cached_facts WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM snapshot_edges WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM snapshots WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM spaces WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM org_members WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM orgs WHERE org_id = %s", (org,))
@@ -46,7 +47,7 @@ def _wipe(conn, org):
 
 @pytest.fixture
 def ctx(unique_org):
-    """(client, conn, src_org, dst_org) with dev-user a member of both orgs.
+    """(client, conn, src_org, dst_org, third_org) with dev-user in the first two.
 
     The client carries ``X-Praxis-Org: src_org`` by default (the copy SOURCE);
     individual requests override the header where a test needs the destination.
@@ -71,196 +72,216 @@ def ctx(unique_org):
     conn.close()
 
 
-def _seed_cached(conn, org, key, fid, text, *, user=USER, scope=None, state="active"):
+def _seed_snapshot(conn, org, space, snapshot, fid, text, *, scope=None, state="active"):
     conn.execute(
-        "INSERT INTO cached_facts (id, org_id, user_id, cache_key, text, scope, state) "
+        "INSERT INTO snapshots (id, org_id, space, snapshot, text, scope, state) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-        (fid, org, user, key, text, scope, state),
+        (fid, org, space, snapshot, text, scope, state),
     )
 
 
-def _seed_cached_edge(conn, org, key, src, dst, *, user=USER, kind="related"):
+def _seed_snapshot_edge(conn, org, space, snapshot, src, dst, *, kind="related"):
     conn.execute(
-        "INSERT INTO cached_fact_edges (org_id, user_id, cache_key, src_id, dst_id, kind) "
+        "INSERT INTO snapshot_edges (org_id, space, snapshot, src_id, dst_id, kind) "
         "VALUES (%s, %s, %s, %s, %s, %s)",
-        (org, user, key, src, dst, kind),
+        (org, space, snapshot, src, dst, kind),
     )
 
 
-def _seed_live(conn, org, fid, text, *, user=USER, scope=None, state="active"):
-    conn.execute(
-        "INSERT INTO facts (id, org_id, user_id, text, scope, state) VALUES (%s,%s,%s,%s,%s,%s)",
-        (fid, org, user, text, scope, state),
-    )
-
-
-def _cached_rows(conn, org, key, *, user=USER):
+def _snapshot_rows(conn, org, space, snapshot):
     return conn.execute(
-        "SELECT id, text FROM cached_facts WHERE org_id=%s AND user_id=%s AND cache_key=%s",
-        (org, user, key),
+        "SELECT id, text FROM snapshots WHERE org_id=%s AND space=%s AND snapshot=%s",
+        (org, space, snapshot),
     ).fetchall()
 
 
-def _live_rows(conn, org, *, user):
-    return conn.execute(
-        "SELECT id, text FROM facts WHERE org_id=%s AND user_id=%s", (org, user)
-    ).fetchall()
-
-
-# --- POST /snapshots/{name}/copy-to-org ------------------------------------
+# --- POST /snapshots/copy-to-org -------------------------------------------
 def test_copy_snapshot_to_org_preserves_ids_and_facts(ctx):
     client, conn, src_org, dst_org, _third = ctx
-    _seed_cached(conn, src_org, "snapshot:snap", "f1", "always run the linter")
-    _seed_cached(conn, src_org, "snapshot:snap", "f2", "prefer composition")
-    _seed_cached_edge(conn, src_org, "snapshot:snap", "f1", "f2")
+    _seed_snapshot(conn, src_org, "sp", "snap", "f1", "always run the linter")
+    _seed_snapshot(conn, src_org, "sp", "snap", "f2", "prefer composition")
+    _seed_snapshot_edge(conn, src_org, "sp", "snap", "f1", "f2")
 
-    res = client.post("/snapshots/snap/copy-to-org", json={"targetOrg": dst_org})
+    res = client.post(
+        "/snapshots/copy-to-org",
+        json={"space": "sp", "snapshot": "snap", "targetOrg": dst_org, "targetSpace": "sp"},
+    )
     assert res.status_code == 200, res.text
-    body = res.json()
-    assert body == {"targetOrg": dst_org, "name": "snap", "count": 2}
+    assert res.json() == {
+        "targetOrg": dst_org, "space": "sp", "snapshot": "snap", "count": 2,
+    }
 
-    # Copied verbatim into dst org's default graph, same ids preserved.
-    copied = {(r[0], r[1]) for r in _cached_rows(conn, dst_org, "snapshot:snap")}
+    # Copied verbatim into dst org's (sp, snap) snapshot, same ids preserved.
+    copied = {(r[0], r[1]) for r in _snapshot_rows(conn, dst_org, "sp", "snap")}
     assert copied == {("f1", "always run the linter"), ("f2", "prefer composition")}
     edges = conn.execute(
-        "SELECT src_id, dst_id, kind FROM cached_fact_edges "
-        "WHERE org_id=%s AND user_id=%s AND cache_key=%s",
-        (dst_org, USER, "snapshot:snap"),
+        "SELECT src_id, dst_id, kind FROM snapshot_edges "
+        "WHERE org_id=%s AND space=%s AND snapshot=%s",
+        (dst_org, "sp", "snap"),
     ).fetchall()
     assert [tuple(e) for e in edges] == [("f1", "f2", "related")]
     # Source untouched.
-    assert len(_cached_rows(conn, src_org, "snapshot:snap")) == 2
+    assert len(_snapshot_rows(conn, src_org, "sp", "snap")) == 2
 
 
 def test_copy_snapshot_to_org_with_rename(ctx):
     client, conn, src_org, dst_org, _third = ctx
-    _seed_cached(conn, src_org, "snapshot:snap", "f1", "a fact")
+    _seed_snapshot(conn, src_org, "sp", "snap", "f1", "a fact")
     res = client.post(
-        "/snapshots/snap/copy-to-org",
-        json={"targetOrg": dst_org, "targetName": "renamed"},
+        "/snapshots/copy-to-org",
+        json={
+            "space": "sp", "snapshot": "snap", "targetOrg": dst_org,
+            "targetSpace": "sp", "targetSnapshot": "renamed",
+        },
     )
     assert res.status_code == 200, res.text
-    assert res.json()["name"] == "renamed"
-    assert len(_cached_rows(conn, dst_org, "snapshot:renamed")) == 1
-    assert len(_cached_rows(conn, dst_org, "snapshot:snap")) == 0
+    assert res.json()["snapshot"] == "renamed"
+    assert len(_snapshot_rows(conn, dst_org, "sp", "renamed")) == 1
+    assert len(_snapshot_rows(conn, dst_org, "sp", "snap")) == 0
 
 
 def test_copy_snapshot_unknown_source_is_404(ctx):
     client, _conn, _src, dst_org, _third = ctx
-    res = client.post("/snapshots/ghost/copy-to-org", json={"targetOrg": dst_org})
+    res = client.post(
+        "/snapshots/copy-to-org",
+        json={"space": "sp", "snapshot": "ghost", "targetOrg": dst_org, "targetSpace": "sp"},
+    )
     assert res.status_code == 404
 
 
 def test_copy_snapshot_existing_target_name_is_409(ctx):
     client, conn, src_org, dst_org, _third = ctx
-    _seed_cached(conn, src_org, "snapshot:snap", "f1", "source fact")
-    _seed_cached(conn, dst_org, "snapshot:snap", "x1", "already here")
-    res = client.post("/snapshots/snap/copy-to-org", json={"targetOrg": dst_org})
+    _seed_snapshot(conn, src_org, "sp", "snap", "f1", "source fact")
+    _seed_snapshot(conn, dst_org, "sp", "snap", "x1", "already here")
+    res = client.post(
+        "/snapshots/copy-to-org",
+        json={"space": "sp", "snapshot": "snap", "targetOrg": dst_org, "targetSpace": "sp"},
+    )
     assert res.status_code == 409
     # The pre-existing target snapshot was not overwritten.
-    assert {r[1] for r in _cached_rows(conn, dst_org, "snapshot:snap")} == {"already here"}
+    assert {r[1] for r in _snapshot_rows(conn, dst_org, "sp", "snap")} == {"already here"}
 
 
 def test_copy_snapshot_non_member_target_is_403(ctx):
     client, conn, src_org, _dst, third_org = ctx
-    _seed_cached(conn, src_org, "snapshot:snap", "f1", "source fact")
-    res = client.post("/snapshots/snap/copy-to-org", json={"targetOrg": third_org})
+    _seed_snapshot(conn, src_org, "sp", "snap", "f1", "source fact")
+    res = client.post(
+        "/snapshots/copy-to-org",
+        json={"space": "sp", "snapshot": "snap", "targetOrg": third_org, "targetSpace": "sp"},
+    )
     assert res.status_code == 403
 
 
 def test_copy_snapshot_missing_target_org_is_400(ctx):
     client, conn, src_org, _dst, _third = ctx
-    _seed_cached(conn, src_org, "snapshot:snap", "f1", "source fact")
-    assert client.post("/snapshots/snap/copy-to-org", json={}).status_code == 400
+    _seed_snapshot(conn, src_org, "sp", "snap", "f1", "source fact")
+    res = client.post("/snapshots/copy-to-org", json={"space": "sp", "snapshot": "snap"})
+    assert res.status_code == 400
 
 
 # --- POST /spaces/copy-to-org ----------------------------------------------
-def test_copy_space_to_org_creates_space_and_copies_graph(ctx):
+def test_copy_space_to_org_copies_all_snapshots(ctx):
     client, conn, src_org, dst_org, _third = ctx
-    _seed_live(conn, src_org, "f1", "space fact one")
-    _seed_live(conn, src_org, "f2", "space fact two")
-    conn.execute(
-        "INSERT INTO fact_edges (org_id, user_id, src_id, dst_id, kind) VALUES (%s,%s,%s,%s,%s)",
-        (src_org, USER, "f1", "f2", "related"),
-    )
+    # A source space must be registered (the route validates it exists) and holds
+    # a snapshot with facts + an edge.
+    assert client.post("/spaces", json={"spaceId": "proj"}).status_code == 200
+    _seed_snapshot(conn, src_org, "proj", "snap", "f1", "space fact one")
+    _seed_snapshot(conn, src_org, "proj", "snap", "f2", "space fact two")
+    _seed_snapshot_edge(conn, src_org, "proj", "snap", "f1", "f2")
 
     res = client.post(
-        "/spaces/copy-to-org", json={"targetOrg": dst_org, "targetSpace": "copied"}
+        "/spaces/copy-to-org",
+        json={"space": "proj", "targetOrg": dst_org, "targetSpace": "copied"},
     )
     assert res.status_code == 200, res.text
-    assert res.json() == {"targetOrg": dst_org, "space": "copied", "count": 2}
+    assert res.json() == {
+        "targetOrg": dst_org, "space": "copied", "snapshots": 1, "count": 2,
+    }
 
-    # The space row was created in the destination org...
-    owns = conn.execute(
-        "SELECT 1 FROM spaces WHERE org_id=%s AND owner_sub=%s AND space_id=%s",
-        (dst_org, USER, "copied"),
+    # The space row was created in the destination org (org-shared, no owner)...
+    exists = conn.execute(
+        "SELECT 1 FROM spaces WHERE org_id=%s AND space_id=%s",
+        (dst_org, "copied"),
     ).fetchone()
-    assert owns is not None
-    # ...and the graph landed under its namespaced user_id.
-    dst_uid = f"{USER}::space:copied"
-    copied = {(r[0], r[1]) for r in _live_rows(conn, dst_org, user=dst_uid)}
+    assert exists is not None
+    # ...and every snapshot's facts landed under the new space, ids preserved.
+    copied = {(r[0], r[1]) for r in _snapshot_rows(conn, dst_org, "copied", "snap")}
     assert copied == {("f1", "space fact one"), ("f2", "space fact two")}
     edges = conn.execute(
-        "SELECT src_id, dst_id, kind FROM fact_edges WHERE org_id=%s AND user_id=%s",
-        (dst_org, dst_uid),
+        "SELECT src_id, dst_id, kind FROM snapshot_edges "
+        "WHERE org_id=%s AND space=%s AND snapshot=%s",
+        (dst_org, "copied", "snap"),
     ).fetchall()
     assert [tuple(e) for e in edges] == [("f1", "f2", "related")]
-    # Source default graph untouched.
-    assert len(_live_rows(conn, src_org, user=USER)) == 2
+    # Source space untouched.
+    assert len(_snapshot_rows(conn, src_org, "proj", "snap")) == 2
+
+
+def test_copy_space_copies_multiple_snapshots(ctx):
+    # Every snapshot in the source space is copied, not just one.
+    client, conn, src_org, dst_org, _third = ctx
+    assert client.post("/spaces", json={"spaceId": "proj"}).status_code == 200
+    _seed_snapshot(conn, src_org, "proj", "a", "a1", "fact in snapshot a")
+    _seed_snapshot(conn, src_org, "proj", "b", "b1", "fact in snapshot b")
+
+    res = client.post(
+        "/spaces/copy-to-org",
+        json={"space": "proj", "targetOrg": dst_org, "targetSpace": "copied"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["snapshots"] == 2
+    assert {r[1] for r in _snapshot_rows(conn, dst_org, "copied", "a")} == {"fact in snapshot a"}
+    assert {r[1] for r in _snapshot_rows(conn, dst_org, "copied", "b")} == {"fact in snapshot b"}
+
+
+def test_copy_space_unknown_source_is_404(ctx):
+    client, _conn, _src, dst_org, _third = ctx
+    res = client.post(
+        "/spaces/copy-to-org",
+        json={"space": "ghost", "targetOrg": dst_org, "targetSpace": "copied"},
+    )
+    assert res.status_code == 404
 
 
 def test_copy_space_existing_target_is_409(ctx):
     client, conn, src_org, dst_org, _third = ctx
-    _seed_live(conn, src_org, "f1", "source fact")
+    assert client.post("/spaces", json={"spaceId": "proj"}).status_code == 200
+    _seed_snapshot(conn, src_org, "proj", "snap", "f1", "source fact")
     # dst already has a space by that id.
-    client_dst = client
     assert (
-        client_dst.post(
+        client.post(
             "/spaces", json={"spaceId": "copied"}, headers={"X-Praxis-Org": dst_org}
         ).status_code
         == 200
     )
     res = client.post(
-        "/spaces/copy-to-org", json={"targetOrg": dst_org, "targetSpace": "copied"}
+        "/spaces/copy-to-org",
+        json={"space": "proj", "targetOrg": dst_org, "targetSpace": "copied"},
     )
     assert res.status_code == 409
 
 
 def test_copy_space_invalid_slug_is_400(ctx):
     client, conn, src_org, dst_org, _third = ctx
-    _seed_live(conn, src_org, "f1", "source fact")
-    for bad in ["default", "co:lon", "UPPER", ""]:
+    assert client.post("/spaces", json={"spaceId": "proj"}).status_code == 200
+    _seed_snapshot(conn, src_org, "proj", "snap", "f1", "source fact")
+    # Only '__evals__' is reserved now (the old 'default' reservation belonged to
+    # the dropped working-graph-mangling model — design §4.6); ':' / uppercase /
+    # empty violate the lowercase-slug rule.
+    for bad in ["co:lon", "UPPER", "", "__evals__"]:
         res = client.post(
-            "/spaces/copy-to-org", json={"targetOrg": dst_org, "targetSpace": bad}
+            "/spaces/copy-to-org",
+            json={"space": "proj", "targetOrg": dst_org, "targetSpace": bad},
         )
         assert res.status_code == 400, f"{bad!r} should be rejected"
 
 
 def test_copy_space_non_member_target_is_403(ctx):
     client, conn, src_org, _dst, third_org = ctx
-    _seed_live(conn, src_org, "f1", "source fact")
-    res = client.post(
-        "/spaces/copy-to-org", json={"targetOrg": third_org, "targetSpace": "copied"}
-    )
-    assert res.status_code == 403
-
-
-def test_copy_space_from_a_named_source_space(ctx):
-    """The SOURCE can itself be a named space (selected via X-Praxis-Space)."""
-    client, conn, src_org, dst_org, _third = ctx
-    # Create + seed a named source space in the src org.
-    assert client.post("/spaces", json={"spaceId": "work"}).status_code == 200
-    src_uid = f"{USER}::space:work"
-    _seed_live(conn, src_org, "s1", "fact in the work space", user=src_uid)
-
+    assert client.post("/spaces", json={"spaceId": "proj"}).status_code == 200
+    _seed_snapshot(conn, src_org, "proj", "snap", "f1", "source fact")
     res = client.post(
         "/spaces/copy-to-org",
-        json={"targetOrg": dst_org, "targetSpace": "copied"},
-        headers={"X-Praxis-Org": src_org, "X-Praxis-Space": "work"},
+        json={"space": "proj", "targetOrg": third_org, "targetSpace": "copied"},
     )
-    assert res.status_code == 200, res.text
-    assert res.json()["count"] == 1
-    dst_uid = f"{USER}::space:copied"
-    assert {r[1] for r in _live_rows(conn, dst_org, user=dst_uid)} == {
-        "fact in the work space"
-    }
+    assert res.status_code == 403

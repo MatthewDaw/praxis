@@ -45,7 +45,7 @@ def env(unique_org, monkeypatch):
     db.bootstrap()
     conn = db.connect()
     org = unique_org
-    tables = ("fact_edges", "facts", "cached_facts", "org_members", "orgs")
+    tables = ("fact_edges", "facts", "snapshot_edges", "snapshots", "org_members", "orgs")
     for tbl in tables:
         conn.execute(f"DELETE FROM {tbl} WHERE org_id = %s", (org,))
     OrgsStore(conn).create_org(org, org, "pw", USER)

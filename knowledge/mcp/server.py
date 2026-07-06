@@ -67,21 +67,28 @@ def _dev_org() -> str:
 
 
 def _headers() -> dict[str, str]:
+    # Working memory is ALWAYS keyed by the authenticated principal (org + sub); no
+    # space header is ever sent. Snapshot / space / mount tools carry (space, snapshot)
+    # explicitly in the request body or URL, not via a header driving the live graph.
     if _auth_disabled():
         # No bearer: the auth-disabled backend ignores it and uses dev-user.
-        headers = {"X-Praxis-Org": _dev_org()}
-    else:
-        headers = {
-            "Authorization": f"Bearer {identity.token()}",
-            "X-Praxis-Org": identity.active_org(),
-        }
-    # Only send X-Praxis-Space when a named space is active; an absent/empty header
-    # means the default space (user_id = the login's sub), so the existing one-graph-
-    # per-login behaviour is unchanged for anyone who never selects a space.
-    space = identity.active_space()
-    if space:
-        headers["X-Praxis-Space"] = space
-    return headers
+        return {"X-Praxis-Org": _dev_org()}
+    return {
+        "Authorization": f"Bearer {identity.token()}",
+        "X-Praxis-Org": identity.active_org(),
+    }
+
+
+def _resolve_space(space: str | None) -> str:
+    """The explicit ``space`` arg, else the local client default (``praxis_select_space``).
+
+    ``praxis_select_space`` sets a purely client-side default that feeds the ``space``
+    parameter of the snapshot / mount / space ops — it is NOT a header and never
+    selects a working graph. An explicit ``space`` argument always wins.
+    """
+    if space and space.strip():
+        return space.strip()
+    return identity.active_space()
 
 
 def _friendly(exc: httpx.HTTPStatusError) -> str:
@@ -1010,17 +1017,24 @@ def praxis_clear_graph() -> str:
 
 
 @mcp.tool()
-def praxis_list_snapshots() -> str:
-    """List the caller's saved graph snapshots (the dashboard Snapshots panel).
+def praxis_list_snapshots(space: str | None = None) -> str:
+    """List the saved snapshots inside a space (the dashboard Snapshots panel).
 
-    Each snapshot is a saved copy of the live graph you can restore later via
-    ``praxis_load_snapshot``. Returns name, node count, and creation time.
+    A snapshot is an org-shared saved graph state stored in a ``space`` (a project
+    folder any org member can read); restore one into your working memory via
+    ``praxis_load_snapshot``. ``space`` defaults to the one selected with
+    ``praxis_select_space``. Returns each snapshot's name, node count, and creation
+    time.
     """
     if (hint := _not_ready()) is not None:
         return hint
+    space = _resolve_space(space)
+    if not space:
+        return "Pass a space (or set a default with praxis_select_space)."
     try:
         resp = httpx.get(
             f"{identity.api_base()}/snapshots",
+            params={"space": space},
             headers=_headers(),
             timeout=_READ_TIMEOUT,
         )
@@ -1029,31 +1043,36 @@ def praxis_list_snapshots() -> str:
         return _friendly(exc)
     snaps = resp.json().get("snapshots", [])
     if not snaps:
-        return "No snapshots saved."
-    lines = [f"{len(snaps)} snapshot(s):"]
+        return f"No snapshots in space {space!r}."
+    lines = [f"{len(snaps)} snapshot(s) in space {space!r}:"]
     for s in snaps:
         lines.append(
-            f"  {s.get('name')} — {s.get('count')} node(s)"
+            f"  {s.get('snapshot')} — {s.get('count')} node(s)"
             f"{f' (saved {s.get('createdAt')})' if s.get('createdAt') else ''}"
         )
     return "\n".join(lines)
 
 
 @mcp.tool()
-def praxis_save_snapshot(name: str) -> str:
-    """Save the current live graph as a snapshot (the dashboard "save snapshot").
+def praxis_save_snapshot(snapshot: str, space: str | None = None) -> str:
+    """Dump your working memory into a snapshot in a space (the "save snapshot").
 
-    Creates or overwrites the snapshot named ``name`` with the current graph
-    state, so you can restore it later with ``praxis_load_snapshot``.
+    Copies your current working memory (your private live graph) into the org-shared
+    snapshot ``snapshot`` inside ``space``, creating or overwriting it, so any org
+    member can later restore it with ``praxis_load_snapshot``. ``space`` defaults to
+    the one selected with ``praxis_select_space``.
     """
     if (hint := _not_ready()) is not None:
         return hint
-    if not name.strip():
+    space = _resolve_space(space)
+    if not space:
+        return "Pass a space (or set a default with praxis_select_space)."
+    if not snapshot.strip():
         return "Pass a non-empty snapshot name."
     try:
         resp = httpx.post(
             f"{identity.api_base()}/snapshots",
-            json={"name": name.strip()},
+            json={"space": space, "snapshot": snapshot.strip()},
             headers=_headers(),
             timeout=_WRITE_TIMEOUT,
         )
@@ -1061,86 +1080,126 @@ def praxis_save_snapshot(name: str) -> str:
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
     s = resp.json()
-    return f"Saved snapshot {s.get('name')!r} with {s.get('count', 0)} node(s)."
+    return (
+        f"Saved snapshot {s.get('snapshot')!r} in space {s.get('space', space)!r} "
+        f"with {s.get('count', 0)} node(s)."
+    )
 
 
 @mcp.tool()
-def praxis_load_snapshot(name: str, mode: str = "replace") -> str:
-    """Restore a snapshot into the live graph (the dashboard "load snapshot").
+def praxis_load_snapshot(snapshot: str, space: str | None = None, mode: str = "replace") -> str:
+    """Load a space's snapshot into your working memory (the "load snapshot").
 
-    ``mode="replace"`` (default) truncates the live graph then loads the
-    snapshot; ``mode="add"`` merges the snapshot into the current graph,
-    replacing only nodes it shares by id. Confirm with the user first —
-    ``replace`` discards the current graph (save it first if unsure).
+    Copies the org-shared snapshot ``snapshot`` from ``space`` into your private
+    working memory. ``mode="replace"`` (default) truncates your working memory then
+    loads the snapshot; ``mode="add"`` merges it in, replacing only nodes it shares
+    by id. ``space`` defaults to the one selected with ``praxis_select_space``.
+    Confirm with the user first — ``replace`` discards your current working memory
+    (save it first with ``praxis_save_snapshot`` if unsure).
     """
     if (hint := _not_ready()) is not None:
         return hint
+    space = _resolve_space(space)
+    if not space:
+        return "Pass a space (or set a default with praxis_select_space)."
+    if not snapshot.strip():
+        return "Pass a non-empty snapshot name."
     mode = mode.strip().lower()
     if mode not in ("add", "replace"):
         return "mode must be 'add' or 'replace'."
     try:
         resp = httpx.post(
-            f"{identity.api_base()}/snapshots/{name}/load",
-            json={"mode": mode},
+            f"{identity.api_base()}/snapshots/load",
+            json={"space": space, "snapshot": snapshot.strip(), "mode": mode},
             headers=_headers(),
             timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
-            return f"Unknown snapshot {name!r} — list them with praxis_list_snapshots."
+            return (
+                f"Unknown snapshot {snapshot!r} in space {space!r} — "
+                "list them with praxis_list_snapshots."
+            )
         return _friendly(exc)
-    return f"Loaded {resp.json().get('loaded', 0)} node(s) from snapshot {name!r} ({mode})."
+    return (
+        f"Loaded {resp.json().get('loaded', 0)} node(s) from snapshot "
+        f"{snapshot.strip()!r} in space {space!r} ({mode})."
+    )
 
 
 @mcp.tool()
-def praxis_delete_snapshot(name: str) -> str:
-    """Delete a saved snapshot (the dashboard "delete snapshot" action).
+def praxis_delete_snapshot(snapshot: str, space: str | None = None) -> str:
+    """Delete a snapshot from a space (the dashboard "delete snapshot" action).
 
-    Removes the snapshot named ``name``; the live graph is unaffected. Confirm
-    with the user first.
+    Removes the org-shared snapshot ``snapshot`` from ``space`` (also unmounting it
+    for any viewers who mounted it); working memory is unaffected. ``space`` defaults
+    to the one selected with ``praxis_select_space``. Confirm with the user first.
     """
     if (hint := _not_ready()) is not None:
         return hint
+    space = _resolve_space(space)
+    if not space:
+        return "Pass a space (or set a default with praxis_select_space)."
+    if not snapshot.strip():
+        return "Pass a non-empty snapshot name."
     try:
-        resp = httpx.delete(
-            f"{identity.api_base()}/snapshots/{name}",
+        resp = httpx.request(
+            "DELETE",
+            f"{identity.api_base()}/snapshots",
+            json={"space": space, "snapshot": snapshot.strip()},
             headers=_headers(),
             timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
-    return f"Deleted snapshot {resp.json().get('deleted', name)!r}."
+    return f"Deleted snapshot {resp.json().get('deleted', snapshot.strip())!r} from space {space!r}."
 
 
 @mcp.tool()
 def praxis_copy_snapshot_to_org(
-    name: str, target_org: str, target_name: str | None = None
+    snapshot: str,
+    target_org: str,
+    target_space: str,
+    space: str | None = None,
+    target_snapshot: str | None = None,
 ) -> str:
-    """Copy one of your snapshots into another org you belong to (cross-org share).
+    """Copy a snapshot into another org you belong to (cross-org share).
 
     Shares a snapshot between two orgs the SAME login is a member of: the snapshot
-    ``name`` is read from your active org/space and copied into your default graph
-    in ``target_org`` under ``target_name`` (defaults to the same name). Ids and
-    embeddings are preserved, so the copy is identical — load it there with
-    ``praxis_load_snapshot`` after ``praxis_select_org(target_org)``. The copy
-    never overwrites: it fails if ``target_org`` already has a snapshot by that
-    name (rename via ``target_name``). See ``praxis_whoami`` for your orgs. To copy
-    an entire working graph instead of a snapshot, use ``praxis_copy_space_to_org``.
+    ``snapshot`` is read from ``space`` in your active org and copied into
+    ``target_space`` in ``target_org`` under ``target_snapshot`` (defaults to the
+    same snapshot name). ``space`` defaults to the one selected with
+    ``praxis_select_space``. Ids and embeddings are preserved, so the copy is
+    identical — load it there with ``praxis_load_snapshot`` after
+    ``praxis_select_org(target_org)``. The copy never overwrites: it fails if
+    ``target_space`` in ``target_org`` already has a snapshot by that name (rename
+    via ``target_snapshot``). See ``praxis_whoami`` for your orgs. To copy every
+    snapshot of a space instead of one, use ``praxis_copy_space_to_org``.
     """
     if (hint := _not_ready()) is not None:
         return hint
-    if not name.strip():
+    space = _resolve_space(space)
+    if not space:
+        return "Pass a space (or set a default with praxis_select_space)."
+    if not snapshot.strip():
         return "Pass a non-empty snapshot name (see praxis_list_snapshots)."
     if not target_org.strip():
         return "Pass a target_org you belong to (see praxis_whoami)."
-    payload: dict[str, object] = {"targetOrg": target_org.strip()}
-    if target_name and target_name.strip():
-        payload["targetName"] = target_name.strip()
+    if not target_space.strip():
+        return "Pass a target_space (the space in target_org to copy into)."
+    payload: dict[str, object] = {
+        "space": space,
+        "snapshot": snapshot.strip(),
+        "targetOrg": target_org.strip(),
+        "targetSpace": target_space.strip(),
+    }
+    if target_snapshot and target_snapshot.strip():
+        payload["targetSnapshot"] = target_snapshot.strip()
     try:
         resp = httpx.post(
-            f"{identity.api_base()}/snapshots/{name.strip()}/copy-to-org",
+            f"{identity.api_base()}/snapshots/copy-to-org",
             json=payload,
             headers=_headers(),
             timeout=_WRITE_TIMEOUT,
@@ -1148,11 +1207,14 @@ def praxis_copy_snapshot_to_org(
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
-            return f"Unknown snapshot {name!r} — list them with praxis_list_snapshots."
+            return (
+                f"Unknown snapshot {snapshot!r} in space {space!r} — "
+                "list them with praxis_list_snapshots."
+            )
         if exc.response.status_code == 409:
             return (
-                f"A snapshot by that name already exists in {target_org!r}. "
-                "Pass a different target_name (copies never overwrite)."
+                f"A snapshot by that name already exists in space {target_space!r} of "
+                f"{target_org!r}. Pass a different target_snapshot (copies never overwrite)."
             )
         if exc.response.status_code == 403:
             return (
@@ -1162,7 +1224,8 @@ def praxis_copy_snapshot_to_org(
         return _friendly(exc)
     s = resp.json()
     return (
-        f"Copied snapshot into org {s.get('targetOrg')!r} as {s.get('name')!r} "
+        f"Copied snapshot into org {s.get('targetOrg')!r} space "
+        f"{s.get('targetSpace', target_space.strip())!r} as {s.get('snapshot')!r} "
         f"with {s.get('count', 0)} node(s). Select that org and load it with "
         "praxis_load_snapshot."
     )
@@ -1170,12 +1233,12 @@ def praxis_copy_snapshot_to_org(
 
 @mcp.tool()
 def praxis_list_org_sources() -> str:
-    """List org members and their snapshots you can fold in (the Sources panel).
+    """List the org's spaces and their snapshots you can fold in (the Sources panel).
 
-    Within the active org any member may browse and copy another member's saved
-    snapshots. Returns each member (user id, role, whether it's you) and their
-    snapshot names + node counts. Use ``praxis_browse_snapshot`` to inspect a
-    snapshot's facts, then ``praxis_fold_in`` to copy chosen facts into your graph.
+    Every space in the active org is org-shared: any member may browse and copy any
+    space's snapshots. Returns each space and its snapshot names + node counts. Use
+    ``praxis_browse_snapshot`` to inspect a snapshot's facts, then ``praxis_fold_in``
+    to copy chosen facts into your working memory.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -1191,67 +1254,79 @@ def praxis_list_org_sources() -> str:
     sources = resp.json().get("sources", [])
     if not sources:
         return "No org sources found."
-    lines = [f"{len(sources)} source(s):"]
+    lines = [f"{len(sources)} space(s):"]
     for s in sources:
-        who = s.get("username") or s.get("userId")
-        tag = " (you)" if s.get("isSelf") else ""
-        lines.append(f"\n[{s.get('userId')}] {who}{tag} — role {s.get('role')}")
+        lines.append(f"\n[{s.get('space')}]")
         snaps = s.get("snapshots") or []
         if not snaps:
             lines.append("    (no snapshots)")
         for sn in snaps:
-            lines.append(f"    {sn.get('name')} — {sn.get('count')} node(s)")
+            lines.append(f"    {sn.get('snapshot')} — {sn.get('count')} node(s)")
     return "\n".join(lines)
 
 
 @mcp.tool()
-def praxis_browse_snapshot(user_id: str, name: str) -> str:
-    """Browse a member's snapshot facts before folding them in (the browse view).
+def praxis_browse_snapshot(snapshot: str, space: str | None = None) -> str:
+    """Browse a space snapshot's facts before folding them in (the browse view).
 
-    Lists the facts in member ``user_id``'s snapshot ``name``, grouped into
-    folders by scope, with each fact's id and text. Get ``user_id``/``name``
-    from ``praxis_list_org_sources``; pass the fact ids you want to
-    ``praxis_fold_in``. Returns a structured JSON block with the grouped facts.
+    Lists the facts in ``space``'s snapshot ``snapshot``, grouped into folders by
+    scope, with each fact's id and text. Get ``space``/``snapshot`` from
+    ``praxis_list_org_sources``; pass the fact ids you want to ``praxis_fold_in``.
+    ``space`` defaults to the one selected with ``praxis_select_space``. Returns a
+    structured JSON block with the grouped facts.
     """
     if (hint := _not_ready()) is not None:
         return hint
+    space = _resolve_space(space)
+    if not space:
+        return "Pass a space (or set a default with praxis_select_space)."
+    if not snapshot.strip():
+        return "Pass a non-empty snapshot name."
+    snapshot = snapshot.strip()
     try:
         resp = httpx.get(
-            f"{identity.api_base()}/org/sources/{user_id}/snapshots/{name}/facts",
+            f"{identity.api_base()}/spaces/{space}/snapshots/{snapshot}/facts",
             headers=_headers(),
             timeout=_READ_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
-            return "Unknown member/snapshot — check praxis_list_org_sources."
+            return "Unknown space/snapshot — check praxis_list_org_sources."
         return _friendly(exc)
     payload = resp.json()
     groups = payload.get("groups", [])
     total = sum(len(g.get("facts", [])) for g in groups)
     return _structured(
-        f"{total} fact(s) in snapshot {name!r} from {user_id} across {len(groups)} folder(s).",
+        f"{total} fact(s) in snapshot {snapshot!r} from space {space!r} "
+        f"across {len(groups)} folder(s).",
         payload,
     )
 
 
 @mcp.tool()
 def praxis_fold_in(
-    source_user: str,
     snapshot: str,
     fact_ids: list[str],
+    space: str | None = None,
     mode: str = "add",
 ) -> str:
-    """Copy selected snapshot facts from a member into your graph (the "fold in").
+    """Copy selected space-snapshot facts into your working memory (the "fold in").
 
-    Folds the facts ``fact_ids`` from ``source_user``'s ``snapshot`` into your
-    live graph: they are deduped against your facts and value conflicts are
-    flagged (never silently overwritten). ``mode="add"`` (default) merges into
-    your existing graph; ``mode="replace"`` truncates your graph first. Get the
-    ids from ``praxis_browse_snapshot``. Confirm with the user first.
+    Folds the facts ``fact_ids`` from ``space``'s ``snapshot`` into your working
+    memory: they are deduped against your facts and value conflicts are flagged
+    (never silently overwritten). ``mode="add"`` (default) merges into your existing
+    working memory; ``mode="replace"`` truncates it first. ``space`` defaults to the
+    one selected with ``praxis_select_space``. Get the ids from
+    ``praxis_browse_snapshot``. Confirm with the user first.
     """
     if (hint := _not_ready()) is not None:
         return hint
+    space = _resolve_space(space)
+    if not space:
+        return "Pass a space (or set a default with praxis_select_space)."
+    if not snapshot.strip():
+        return "Pass a non-empty snapshot name."
     mode = mode.strip().lower()
     if mode not in ("add", "replace"):
         return "mode must be 'add' or 'replace'."
@@ -1261,8 +1336,8 @@ def praxis_fold_in(
         resp = httpx.post(
             f"{identity.api_base()}/fold-in",
             json={
-                "sourceUser": source_user,
-                "snapshot": snapshot,
+                "space": space,
+                "snapshot": snapshot.strip(),
                 "factIds": fact_ids,
                 "mode": mode,
             },
@@ -1272,7 +1347,7 @@ def praxis_fold_in(
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
-            return "No matching member/snapshot/facts — check praxis_browse_snapshot."
+            return "No matching space/snapshot/facts — check praxis_browse_snapshot."
         return _friendly(exc)
     payload = resp.json()
     conflicts = payload.get("conflicts", [])
@@ -1288,8 +1363,9 @@ def praxis_list_mounts() -> str:
     """List your mounted snapshots — read-only overlays added to retrieval.
 
     A mounted snapshot's facts are included when you read (``praxis_get_context``)
-    but are NOT merged into your live graph and are NOT carried over when you save
-    a snapshot. Mounts can be your own snapshots or any org member's.
+    but are NOT merged into your working memory and are NOT carried over when you
+    save a snapshot. Any org-shared snapshot (identified by its ``space``/``snapshot``)
+    can be mounted.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -1307,31 +1383,33 @@ def praxis_list_mounts() -> str:
         return "No snapshots are mounted."
     lines = [f"{len(mounts)} mounted snapshot(s):"]
     for m in mounts:
-        who = "you" if m.get("isSelf") else m.get("sourceUser")
-        lines.append(f"  {m.get('snapshot')} (from {who}) — {m.get('count')} node(s)")
+        lines.append(
+            f"  {m.get('space')}/{m.get('snapshot')} — {m.get('count')} node(s)"
+        )
     return "\n".join(lines)
 
 
 @mcp.tool()
-def praxis_mount_snapshot(snapshot: str, source_user: str | None = None) -> str:
-    """Mount a snapshot as a read-only overlay (adds it to what reads recall).
+def praxis_mount_snapshot(snapshot: str, space: str | None = None) -> str:
+    """Mount a space snapshot as a read-only overlay (adds it to what reads recall).
 
     Once mounted, ``praxis_get_context`` also recalls this snapshot's facts —
-    without merging them into your live graph and without them being carried over
-    on a save. ``source_user`` defaults to you (mount your own snapshot); pass an
-    org member's id (from ``praxis_list_org_sources``) to mount theirs. Idempotent.
+    without merging them into your working memory and without them being carried over
+    on a save. Identify the snapshot by its ``space``/``snapshot`` (from
+    ``praxis_list_org_sources`` / ``praxis_list_snapshots``); ``space`` defaults to
+    the one selected with ``praxis_select_space``. Idempotent.
     """
     if (hint := _not_ready()) is not None:
         return hint
+    space = _resolve_space(space)
+    if not space:
+        return "Pass a space (or set a default with praxis_select_space)."
     if not snapshot.strip():
         return "Pass a snapshot name."
-    body: dict[str, object] = {"snapshot": snapshot.strip()}
-    if source_user is not None:
-        body["sourceUser"] = source_user
     try:
         resp = httpx.post(
             f"{identity.api_base()}/mounts",
-            json=body,
+            json={"space": space, "snapshot": snapshot.strip()},
             headers=_headers(),
             timeout=_WRITE_TIMEOUT,
         )
@@ -1339,32 +1417,33 @@ def praxis_mount_snapshot(snapshot: str, source_user: str | None = None) -> str:
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
             return (
-                "Unknown member or snapshot — check praxis_list_org_sources / "
+                "Unknown space or snapshot — check praxis_list_org_sources / "
                 "praxis_list_snapshots."
             )
         return _friendly(exc)
     m = resp.json()
-    return f"Mounted snapshot {m.get('snapshot')!r} from {m.get('sourceUser')} for reads."
+    return f"Mounted snapshot {m.get('space', space)}/{m.get('snapshot')} for reads."
 
 
 @mcp.tool()
-def praxis_unmount_snapshot(snapshot: str, source_user: str | None = None) -> str:
+def praxis_unmount_snapshot(snapshot: str, space: str | None = None) -> str:
     """Unmount a read-only snapshot overlay (stops including it in reads).
 
-    ``source_user`` defaults to you. No-op if it was not mounted.
+    Identify the snapshot by its ``space``/``snapshot``; ``space`` defaults to the
+    one selected with ``praxis_select_space``. No-op if it was not mounted.
     """
     if (hint := _not_ready()) is not None:
         return hint
+    space = _resolve_space(space)
+    if not space:
+        return "Pass a space (or set a default with praxis_select_space)."
     if not snapshot.strip():
         return "Pass a snapshot name."
-    body: dict[str, object] = {"snapshot": snapshot.strip()}
-    if source_user is not None:
-        body["sourceUser"] = source_user
     try:
         resp = httpx.request(
             "DELETE",
             f"{identity.api_base()}/mounts",
-            json=body,
+            json={"space": space, "snapshot": snapshot.strip()},
             headers=_headers(),
             timeout=_WRITE_TIMEOUT,
         )
@@ -1372,7 +1451,7 @@ def praxis_unmount_snapshot(snapshot: str, source_user: str | None = None) -> st
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
     m = resp.json()
-    return f"Unmounted snapshot {m.get('snapshot')!r} from {m.get('sourceUser')}."
+    return f"Unmounted snapshot {m.get('space', space)}/{m.get('snapshot')}."
 
 
 @mcp.tool()
@@ -1482,16 +1561,15 @@ def praxis_delete_org(org_id: str) -> str:
 
 @mcp.tool()
 def praxis_create_space(space_id: str, name: str | None = None) -> str:
-    """Create a private working *space* in the active org and select it.
+    """Create an org-shared *space* — a project folder holding snapshots.
 
-    A space is an independent live knowledge graph owned by your login: it lets one
-    login drive MULTIPLE separate graphs in an org (e.g. different agents on different
-    tasks) instead of the single default graph. ``space_id`` is a short slug you pick
-    (lowercase letters/digits/dash/underscore; ``"default"`` and anything with ``:``
-    are reserved). Spaces are private to the creating login. On success the new space
-    becomes active locally (subsequent get_context / add_insight calls run against it,
-    via the ``X-Praxis-Space`` header). Use ``praxis_select_space`` with ``""`` to
-    return to the default space.
+    A space is a purely organizational, ORG-SHARED folder: every member of the active
+    org can read every space and its snapshots (there is no owner and no per-user
+    partitioning). It holds a collection of snapshots for one project. ``space_id`` is
+    a short slug you pick (lowercase letters/digits/dash/underscore; ``"default"``,
+    ``"__evals__"``, and anything with ``:`` are reserved). This does NOT change your
+    working memory or select anything — use ``praxis_select_space`` to set a local
+    default for the ``space`` parameter of snapshot / mount ops.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -1507,22 +1585,20 @@ def praxis_create_space(space_id: str, name: str | None = None) -> str:
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 409:
-            return f"Space {space_id!r} already exists — select it with praxis_select_space."
+            return f"Space {space_id!r} already exists — list spaces with praxis_list_space."
         if exc.response.status_code == 400:
             return f"Invalid space id {space_id!r}: {exc.response.text}"
         return _friendly(exc)
-    identity.set_space(space_id)
-    return f"Created space {space_id!r}; it is now the active space."
+    return f"Created org-shared space {space_id!r}."
 
 
 @mcp.tool()
 def praxis_list_space() -> str:
-    """List the private spaces you own in the active org (and which is active).
+    """List every org-shared space in the active org.
 
-    Each space is an independent live graph owned by your login (see
+    Every space in the org is shared and readable by all members (see
     ``praxis_create_space``). Returns each space's id, name, and creation time, and
-    notes which one is currently active — ``(default)`` when no named space is
-    selected. Switch with ``praxis_select_space``.
+    marks the one you have set as the local default via ``praxis_select_space``.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -1536,14 +1612,14 @@ def praxis_list_space() -> str:
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
     spaces = resp.json().get("spaces", [])
-    active = identity.active_space()
-    active_label = active or "(default)"
+    default = identity.active_space()
     if not spaces:
-        return f"No named spaces yet. Active space: {active_label}."
-    lines = [f"{len(spaces)} space(s) (active: {active_label}):"]
+        return "No spaces in this org yet — create one with praxis_create_space."
+    suffix = f" (default: {default!r})" if default else ""
+    lines = [f"{len(spaces)} space(s){suffix}:"]
     for s in spaces:
         sid = s.get("space_id") or s.get("spaceId")
-        marker = " *" if sid == active else ""
+        marker = " *" if sid == default else ""
         name = s.get("name")
         label = f" — {name}" if name else ""
         created = s.get("created_at") or s.get("createdAt")
@@ -1554,34 +1630,33 @@ def praxis_list_space() -> str:
 
 @mcp.tool()
 def praxis_select_space(space_id: str) -> str:
-    """Set the active space for subsequent get_context / add_insight calls.
+    """Set a local default ``space`` for snapshot / mount ops (client-side only).
 
-    Switches the live graph this login drives to the named space (see
-    ``praxis_create_space`` / ``praxis_list_space``). Pass ``""`` or ``"default"`` to
-    clear back to the default space (the login's own single graph). This is local —
-    it just changes the ``X-Praxis-Space`` header sent on later calls.
+    This does NOT touch your working memory or send any header — working-memory tools
+    always resolve to your authenticated principal. It just records a client-side
+    default that fills in the ``space`` parameter of the snapshot / mount / space
+    tools (``praxis_save_snapshot``, ``praxis_load_snapshot``, ``praxis_mount_snapshot``,
+    …) when you omit it. Pass ``""`` to clear the default (then pass ``space``
+    explicitly on those calls).
     """
     if not identity.is_logged_in():
         return "Not logged in — call `praxis_login` first."
     space = space_id.strip()
-    if space.lower() == "default":
-        space = ""
     identity.set_space(space)
     if not space:
-        return "Active space cleared back to the default space."
-    return f"Active space set to {space!r}."
+        return "Cleared the default space; pass `space` explicitly on snapshot/mount ops."
+    return f"Default space set to {space!r} for snapshot/mount ops."
 
 
 @mcp.tool()
 def praxis_delete_space(space_id: str) -> str:
-    """Permanently delete one of your private spaces and its entire working graph.
+    """Permanently delete an org-shared space and ALL of its snapshots.
 
-    This is destructive: it purges the space's live knowledge graph (every fact,
-    edge, claim, snapshot, and mount owned by that space) and removes the space
-    itself. The default graph and your other spaces are untouched. Only the space's
-    owning login can delete it. Confirm with the user before calling — there is no
-    undo (save a snapshot first if unsure). If the deleted space was the active one,
-    this falls back locally to the default space.
+    This is destructive: it removes the space and every snapshot stored in it (and
+    unmounts them for any viewers). It touches NO working memory — nobody's private
+    live graph is affected. Because spaces are org-shared, this removes the folder for
+    EVERY member of the org. Confirm with the user before calling — there is no undo.
+    If it was your local default space, the default is cleared.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -1597,33 +1672,34 @@ def praxis_delete_space(space_id: str) -> str:
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code == 404:
-            return f"Unknown space {space_id!r} — list your spaces with praxis_list_space."
+            return f"Unknown space {space_id!r} — list spaces with praxis_list_space."
         return _friendly(exc)
     if identity.active_space() == space_id:
         identity.set_space("")
-        return (
-            f"Deleted space {space_id!r} and its working graph; "
-            "active space fell back to the default space."
-        )
-    return f"Deleted space {space_id!r} and its working graph."
+        return f"Deleted space {space_id!r} and all its snapshots; cleared it as your default."
+    return f"Deleted space {space_id!r} and all its snapshots."
 
 
 @mcp.tool()
-def praxis_copy_space_to_org(target_org: str, target_space: str) -> str:
-    """Copy your whole current working graph into a NEW space in another org.
+def praxis_copy_space_to_org(
+    target_org: str, target_space: str, space: str | None = None
+) -> str:
+    """Copy ALL of a space's snapshots into a NEW space in another org.
 
-    Shares an entire graph between two orgs the SAME login belongs to: every fact,
-    edge, and claim of your ACTIVE graph (the default graph, or the space currently
-    selected via ``praxis_select_space``) is copied into a brand-new space
-    ``target_space`` in ``target_org``. ``target_space`` is a slug you pick
-    (lowercase letters/digits/dash/underscore; ``"default"`` / ``:`` reserved).
-    The copy never overwrites: it fails if that space already exists in
-    ``target_org``. After it succeeds, switch with ``praxis_select_org(target_org)``
-    then ``praxis_select_space(target_space)`` to work in the copy. To share a saved
-    snapshot instead of the live graph, use ``praxis_copy_snapshot_to_org``.
+    Shares an entire project folder between two orgs the SAME login belongs to: every
+    snapshot in ``space`` is copied into a brand-new space ``target_space`` in
+    ``target_org``. ``space`` defaults to the one selected with ``praxis_select_space``.
+    ``target_space`` is a slug you pick (lowercase letters/digits/dash/underscore;
+    ``"default"`` / ``"__evals__"`` / ``:`` reserved). The copy never overwrites: it
+    fails if that space already exists in ``target_org``. After it succeeds, switch
+    with ``praxis_select_org(target_org)`` then load its snapshots. To share a single
+    snapshot instead of the whole space, use ``praxis_copy_snapshot_to_org``.
     """
     if (hint := _not_ready()) is not None:
         return hint
+    space = _resolve_space(space)
+    if not space:
+        return "Pass a space (or set a default with praxis_select_space)."
     if not target_org.strip():
         return "Pass a target_org you belong to (see praxis_whoami)."
     if not target_space.strip():
@@ -1631,16 +1707,22 @@ def praxis_copy_space_to_org(target_org: str, target_space: str) -> str:
     try:
         resp = httpx.post(
             f"{identity.api_base()}/spaces/copy-to-org",
-            json={"targetOrg": target_org.strip(), "targetSpace": target_space.strip()},
+            json={
+                "space": space,
+                "targetOrg": target_org.strip(),
+                "targetSpace": target_space.strip(),
+            },
             headers=_headers(),
             timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return f"Unknown space {space!r} — list spaces with praxis_list_space."
         if exc.response.status_code == 409:
             return (
                 f"Space {target_space!r} already exists in {target_org!r}. "
-                "Pick a new target_space (copies never overwrite a graph)."
+                "Pick a new target_space (copies never overwrite a space)."
             )
         if exc.response.status_code == 400:
             return f"Invalid target_space {target_space!r}: {exc.response.text}"
@@ -1652,9 +1734,10 @@ def praxis_copy_space_to_org(target_org: str, target_space: str) -> str:
         return _friendly(exc)
     s = resp.json()
     return (
-        f"Copied your working graph into org {s.get('targetOrg')!r} as new space "
-        f"{s.get('space')!r} with {s.get('count', 0)} fact(s). Switch to it with "
-        "praxis_select_org then praxis_select_space."
+        f"Copied space {space!r} into org {s.get('targetOrg')!r} as new space "
+        f"{s.get('targetSpace') or s.get('space')!r} "
+        f"({s.get('snapshots', s.get('count', 0))} snapshot(s)). Switch with "
+        "praxis_select_org then load its snapshots."
     )
 
 

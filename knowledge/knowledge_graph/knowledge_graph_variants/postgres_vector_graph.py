@@ -2,10 +2,15 @@
 
 The durable sibling of :class:`~knowledge.knowledge_graph.knowledge_graph_variants.vector_graph.VectorGraph`:
 same ``KnowledgeGraph``/``SearchableGraph`` contract and the same write-policy
-pipeline (redact -> dedup -> conflict), but every fact lives in Postgres under a
-single ``(org_id, user_id)`` tenant with a pgvector embedding. Retrieval is a
-pgvector cosine search; the read predicate ``org_id = %s AND (shared OR user_id
-= %s)`` matches the rest of the multi-tenant schema (see ``migrations/``).
+pipeline (redact -> dedup -> conflict), but every fact lives in Postgres with a
+pgvector embedding. One graph is bound to exactly one partition: either a user's
+private **working memory** (table ``facts``, keyed ``(org_id, user_id)``) or one
+org-shared **snapshot** (table ``snapshots``, keyed ``(org_id, space, snapshot)``)
+when constructed with ``facts_table='snapshots'`` + ``space``/``snapshot``.
+Retrieval is a pgvector cosine search; the read predicate is exactly the graph's
+partition key — ``org_id=%s AND user_id=%s`` (working memory) or
+``org_id=%s AND space=%s AND snapshot=%s`` (snapshot) — with no ``shared``
+disjunction (org-sharing is enforced one layer up by org membership).
 
 It reuses a connection the caller already holds (the backend opens one shared
 autocommit connection per process and injects it), so this class never opens or
@@ -83,10 +88,16 @@ _RRF_KEYWORD_WEIGHT = 0.25
 _KEYWORD_MAX_DF_RATIO = 0.5
 
 # Table names are interpolated directly into SQL (psycopg can't parametrize
-# identifiers), so they must NEVER be user-controlled. Only these fixed names
-# are permitted: the live-knowledge spine and the saved-state cache.
-_ALLOWED_FACTS_TABLES = {"facts", "cached_facts"}
-_ALLOWED_EDGES_TABLES = {"fact_edges", "cached_fact_edges"}
+# identifiers), so they must NEVER be user-controlled. A graph binds to one of two
+# partition families — working memory (``facts``) or org-shared snapshots
+# (``snapshots``) — and each carries its own edge/claim satellites. The satellite
+# names are DERIVED from the facts table (never caller-controlled), so only the
+# facts table needs the allowlist guard.
+_SATELLITE_TABLES = {
+    "facts": ("fact_edges", "claims"),
+    "snapshots": ("snapshot_edges", "snapshot_claims"),
+}
+_ALLOWED_FACTS_TABLES = frozenset(_SATELLITE_TABLES)
 
 # Derivation provenance (gap H5). ``derived_from`` is written learning -> basis:
 # ``add_edge(L, F, DERIVED_FROM_EDGE)`` means "L was derived from F" (src=L, dst=F),
@@ -136,29 +147,43 @@ EPISODIC_CATEGORY = "episodic"
 _RECENCY_HALF_LIFE_DAYS = 90.0
 _LN2 = 0.6931471805599453
 
-# Columns copied verbatim between `facts` and `cached_facts` for snapshot
-# save/load (everything except the cache_key, which is stamped per copy).
+# Working-memory (`facts`) copy columns — for load (snapshot -> facts) and the
+# cross-tenant live copy. Carries `user_id` (the partition owner); NO `shared`
+# (dropped in the tenancy redesign). `space`/`snapshot` never appear on facts.
 _FACT_COPY_COLS = (
-    "id, org_id, user_id, shared, text, source, confidence, scope, category, "
+    "id, org_id, user_id, text, source, confidence, scope, category, "
     "observation_count, state, embedding, cluster_id, cluster_label, "
     "valid_at, invalid_at, meta, created_at"
 )
 
-# Columns copied verbatim between `claims` and `cached_claims` (cache_key stamped
-# per copy). Keeps extracted claims in snapshots/eval cache losslessly.
+# Snapshot (`snapshots`) copy columns — for save (facts -> snapshot) and cross-org
+# snapshot copy. NO `user_id`, NO `shared`, and (like the old cache) it OMITS the
+# outcome-trust columns. `space`/`snapshot` are stamped per copy, so they are not
+# listed here.
+_SNAPSHOT_COPY_COLS = (
+    "id, org_id, text, source, confidence, scope, category, "
+    "observation_count, state, embedding, cluster_id, cluster_label, "
+    "valid_at, invalid_at, meta, created_at"
+)
+
+# Working-memory (`claims`) copy columns. Snapshot side (`snapshot_claims`) drops
+# `user_id` and stamps `space`/`snapshot` per copy — see `_SNAPSHOT_CLAIM_COPY_COLS`.
 _CLAIM_COPY_COLS = (
     "org_id, user_id, fact_id, seq, subject, attribute, value, functional, created_at"
+)
+_SNAPSHOT_CLAIM_COPY_COLS = (
+    "org_id, fact_id, seq, subject, attribute, value, functional, created_at"
 )
 
 
 def _restamp_select(cols: str) -> str:
     """``cols`` as a SELECT list with ``org_id``/``user_id`` swapped for ``%s``.
 
-    Cross-tenant copies (sharing a snapshot or space between orgs) reuse the
-    canonical copy column lists but must re-stamp the tenant keys to the
-    destination ``(org_id, user_id)`` instead of carrying the source's. The two
-    placeholders appear in column order, so callers bind ``(dst_org, dst_user)``
-    first (followed by any trailing literals like ``cache_key``).
+    Cross-tenant / cross-partition copies reuse the canonical copy column lists but
+    re-stamp the tenant keys to the DESTINATION values instead of carrying the
+    source's. The placeholders appear in column order, so callers bind the swapped
+    keys first (followed by any trailing literals like ``space``/``snapshot``). The
+    snapshot list has no ``user_id``, so only its ``org_id`` becomes a placeholder.
     """
     return ", ".join(
         "%s" if c.strip() in ("org_id", "user_id") else c.strip()
@@ -167,9 +192,13 @@ def _restamp_select(cols: str) -> str:
 
 
 # SELECT projections for the copy column lists with the tenant keys re-stamped to
-# bound placeholders — see ``_restamp_select`` and the cross-org copy methods.
+# bound placeholders — see ``_restamp_select`` and the copy/load methods.
+#   _FACT_RESTAMP_SELECT     -> id, %s(org), %s(user), <rest>   (2 placeholders)
+#   _SNAPSHOT_RESTAMP_SELECT -> id, %s(org), <rest>             (1 placeholder)
 _FACT_RESTAMP_SELECT = _restamp_select(_FACT_COPY_COLS)
+_SNAPSHOT_RESTAMP_SELECT = _restamp_select(_SNAPSHOT_COPY_COLS)
 _CLAIM_RESTAMP_SELECT = _restamp_select(_CLAIM_COPY_COLS)
+_SNAPSHOT_CLAIM_RESTAMP_SELECT = _restamp_select(_SNAPSHOT_CLAIM_COPY_COLS)
 
 # Multi-agent build-loop ticket lease (agent factory). A requirement fact carries
 # its build lifecycle + lease entirely on ``meta`` (no new table): ``build_state``
@@ -338,13 +367,19 @@ def _meta_predicate(meta_filter: dict | None, *, col: str = "meta") -> tuple[str
 
 
 class PostgresVectorGraph(SearchableGraph):
-    """A pgvector-backed fact store for one ``(org_id, user_id)`` tenant."""
+    """A pgvector-backed fact store bound to one partition.
+
+    Working memory: ``PostgresVectorGraph(conn, org_id, user_id)`` — keyed
+    ``(org_id, user_id)``. Snapshot: ``PostgresVectorGraph(conn, org_id,
+    facts_table='snapshots', space=..., snapshot=...)`` — keyed
+    ``(org_id, space, snapshot)``, ``user_id`` unused.
+    """
 
     def __init__(
         self,
         conn: psycopg.Connection,
         org_id: str,
-        user_id: str,
+        user_id: str = "default",
         *,
         embedder: Embedder | None = None,
         policy: list[WriteStep] | None = None,
@@ -353,31 +388,29 @@ class PostgresVectorGraph(SearchableGraph):
         semantic_recall_floor: float = 0.30,
         semantic_recall_k: int = 10,
         facts_table: str = "facts",
-        edges_table: str = "fact_edges",
-        cache_key: str | None = None,
+        space: str | None = None,
+        snapshot: str | None = None,
     ) -> None:
-        # Validate table names against the allowlist before they ever reach SQL.
+        # Validate the facts table against the allowlist before it reaches SQL; the
+        # edge/claim satellites are derived from it (never caller-controlled).
         if facts_table not in _ALLOWED_FACTS_TABLES:
-            raise ValueError(f"facts_table must be one of {_ALLOWED_FACTS_TABLES}, got {facts_table!r}")
-        if edges_table not in _ALLOWED_EDGES_TABLES:
-            raise ValueError(f"edges_table must be one of {_ALLOWED_EDGES_TABLES}, got {edges_table!r}")
-        # ``cache_key`` binds this graph to one saved state in the cache tables
-        # (``cached_facts``/``cached_fact_edges``): every write/edge it makes is
-        # stamped with it, and ``wipe_cache`` clears it. It is required for the
-        # cache tables (those columns are NOT NULL) and must be None for the live
-        # ``facts``/``fact_edges`` tables (which have no cache_key column).
-        is_cache = facts_table == "cached_facts"
-        if is_cache and cache_key is None:
-            raise ValueError("cache_key is required when using the cache tables")
-        if not is_cache and cache_key is not None:
-            raise ValueError("cache_key must be None for the live facts tables")
+            raise ValueError(
+                f"facts_table must be one of {sorted(_ALLOWED_FACTS_TABLES)}, got {facts_table!r}"
+            )
+        # ``facts_table='snapshots'`` binds this graph to ONE org-shared snapshot via
+        # ``(space, snapshot)`` — every read/write is scoped to that key and
+        # ``user_id`` is unused. Both are required for the snapshots table (NOT NULL)
+        # and must be None for working memory (``facts`` has no space/snapshot cols).
+        is_snapshot = facts_table == "snapshots"
+        if is_snapshot and (space is None or snapshot is None):
+            raise ValueError("space and snapshot are required when facts_table='snapshots'")
+        if not is_snapshot and (space is not None or snapshot is not None):
+            raise ValueError("space/snapshot must be None for the live facts table")
         self._facts_table = facts_table
-        self._edges_table = edges_table
-        # The claims table tracks the facts table: live facts -> `claims`,
-        # cached facts -> `cached_claims`. Not caller-controlled, so no allowlist
-        # check is needed beyond the facts_table validation above.
-        self._claims_table = "cached_claims" if is_cache else "claims"
-        self._cache_key = cache_key
+        self._edges_table, self._claims_table = _SATELLITE_TABLES[facts_table]
+        self._is_snapshot = is_snapshot
+        self.space = space
+        self.snapshot = snapshot
         self._conn = conn
         self.org_id = org_id
         self.user_id = user_id
@@ -391,6 +424,33 @@ class PostgresVectorGraph(SearchableGraph):
         # Wider, lower-floor recall reserved for the semantic contradiction pass.
         self.semantic_recall_floor = semantic_recall_floor
         self.semantic_recall_k = semantic_recall_k
+
+    # --- partition keying (working memory vs snapshot) ---------------------
+    # One graph = one partition. These helpers emit that partition's key so every
+    # read/write predicate is exactly it — ``(org_id, user_id)`` for working memory
+    # or ``(org_id, space, snapshot)`` for a snapshot. There is NO ``shared``
+    # disjunction: org-sharing of snapshots is authorized one layer up by org
+    # membership; a snapshot graph only ever sees its own ``(space, snapshot)``.
+    def _key_cols(self) -> list[str]:
+        return ["org_id", "space", "snapshot"] if self._is_snapshot else ["org_id", "user_id"]
+
+    def _key_vals(self) -> list[object]:
+        if self._is_snapshot:
+            return [self.org_id, self.space, self.snapshot]
+        return [self.org_id, self.user_id]
+
+    def _key_pred(self, alias: str = "") -> tuple[str, list[object]]:
+        """This graph's partition predicate (no leading ``AND``) + its params.
+
+        ``alias`` qualifies the columns (e.g. ``e`` -> ``e.org_id``) for joins.
+        """
+        p = f"{alias}." if alias else ""
+        cols = " AND ".join(f"{p}{c} = %s" for c in self._key_cols())
+        return cols, list(self._key_vals())
+
+    def _join_keys(self, a: str, b: str) -> str:
+        """Equijoin fragment tying two aliases on the partition key columns."""
+        return " AND ".join(f"{a}.{c} = {b}.{c}" for c in self._key_cols())
 
     # --- KnowledgeGraph contract -------------------------------------------
     def read(
@@ -445,8 +505,8 @@ class PostgresVectorGraph(SearchableGraph):
         if the write was dropped (empty or suppressed by a policy step).
 
         ``source``/``scope``/``category``/``meta`` are carried into persistence.
-        Cache writes are stamped with this graph's bound ``cache_key``; ``meta``
-        persists into the ``meta`` jsonb column.
+        Writes are stamped with this graph's partition key (working memory or one
+        snapshot); ``meta`` persists into the ``meta`` jsonb column.
 
         ``derived_from`` records derivation provenance (gap H5): one
         ``derived_from`` edge (this fact -> each source id) so an invalidated source
@@ -589,8 +649,8 @@ class PostgresVectorGraph(SearchableGraph):
             semantic_recall_floor=self.semantic_recall_floor,
             semantic_recall_k=self.semantic_recall_k,
             facts_table=self._facts_table,
-            edges_table=self._edges_table,
-            cache_key=self._cache_key,
+            space=self.space,
+            snapshot=self.snapshot,
         )
 
     def record_episode(
@@ -661,31 +721,24 @@ class PostgresVectorGraph(SearchableGraph):
         return [f for f in self.all_facts() if f.id in ids]
 
     def _dependent_ids(self, fact_id: str, kind: str, max_depth: int) -> set[str]:
-        cache = ""
-        if self._cache_key is not None:
-            cache = " AND cache_key = %s"
         # Recursive walk up the derivation chain (dst -> src), carrying the visited
-        # path to break cycles, bounded by ``max_depth``.
-        base_params = [self.org_id, self.user_id, kind]
+        # path to break cycles, bounded by ``max_depth``. Both the anchor and the
+        # recursive step are scoped to this graph's partition key.
+        anchor_pred, anchor_params = self._key_pred()
+        recur_pred, recur_params = self._key_pred("e")
         sql = (
             "WITH RECURSIVE deps(id, depth, path) AS ("
             f"  SELECT src_id, 1, ARRAY[src_id] FROM {self._edges_table} "
-            f"   WHERE org_id=%s AND user_id=%s AND kind=%s AND dst_id=%s{cache} "
+            f"   WHERE {anchor_pred} AND kind=%s AND dst_id=%s "
             "  UNION ALL "
             "  SELECT e.src_id, d.depth+1, d.path || e.src_id "
             f"   FROM {self._edges_table} e JOIN deps d ON e.dst_id = d.id "
-            f"   WHERE e.org_id=%s AND e.user_id=%s AND e.kind=%s{cache} "
+            f"   WHERE {recur_pred} AND e.kind=%s "
             "     AND d.depth < %s AND NOT (e.src_id = ANY(d.path))"
             ") SELECT DISTINCT id FROM deps"
         )
-        anchor = [*base_params, fact_id]
-        if self._cache_key is not None:
-            anchor.append(self._cache_key)
-        recur = [*base_params]
-        if self._cache_key is not None:
-            recur.append(self._cache_key)
-        recur.append(max_depth)
-        rows = self._conn.execute(sql, [*anchor, *recur]).fetchall()
+        params = [*anchor_params, kind, fact_id, *recur_params, kind, max_depth]
+        rows = self._conn.execute(sql, params).fetchall()
         return {r[0] for r in rows}
 
     def _flag_stale_dependents(self, fact_id: str) -> None:
@@ -707,14 +760,11 @@ class PostgresVectorGraph(SearchableGraph):
         ``stale_derived`` (the review surface) and the completeness queries (a stale
         requirement is incomplete: a dependency changed, it needs rework).
         """
-        cache = ""
-        params: list[object] = [self.org_id, self.user_id, STALE_DERIVED_EDGE]
-        if self._cache_key is not None:
-            cache = " AND cache_key = %s"
-            params.append(self._cache_key)
+        key_pred, params = self._key_pred()
+        params.append(STALE_DERIVED_EDGE)
         rows = self._conn.execute(
             f"SELECT DISTINCT src_id FROM {self._edges_table} "
-            f"WHERE org_id=%s AND user_id=%s AND kind=%s{cache}",
+            f"WHERE {key_pred} AND kind=%s",
             params,
         ).fetchall()
         return {r[0] for r in rows}
@@ -762,10 +812,11 @@ class PostgresVectorGraph(SearchableGraph):
         edge winner -> loser. The row is kept for point-in-time recall.
         """
         self.invalidate(loser_id, winner_id=winner_id)
+        key_pred, key_params = self._key_pred()
         self._conn.execute(
             f"UPDATE {self._facts_table} SET state = 'rejected' "
-            "WHERE org_id = %s AND user_id = %s AND id = %s",
-            (self.org_id, self.user_id, loser_id),
+            f"WHERE {key_pred} AND id = %s",
+            (*key_params, loser_id),
         )
         self.add_edge(winner_id, loser_id, "supersedes")
         self._flag_stale_dependents(loser_id)  # H5: propagate to derived learnings
@@ -775,26 +826,20 @@ class PostgresVectorGraph(SearchableGraph):
 
         Delete-then-insert so a rewritten fact's claims stay in sync. Subject and
         attribute are stored normalized (the slot index matches on them); value is
-        raw. Cache-bound graphs stamp the bound ``cache_key``.
+        raw. Rows are stamped with this graph's partition key.
         """
-        cache_cols = ["cache_key"] if self._cache_key is not None else []
-        del_sql = (
-            f"DELETE FROM {self._claims_table} "
-            "WHERE org_id=%s AND user_id=%s AND fact_id=%s"
+        key_pred, key_params = self._key_pred()
+        self._conn.execute(
+            f"DELETE FROM {self._claims_table} WHERE {key_pred} AND fact_id=%s",
+            (*key_params, fact_id),
         )
-        del_params: list[object] = [self.org_id, self.user_id, fact_id]
-        if self._cache_key is not None:
-            del_sql += " AND cache_key=%s"
-            del_params.append(self._cache_key)
-        self._conn.execute(del_sql, del_params)
+        key_cols = self._key_cols()
         for seq, c in enumerate(claims):
-            cols = ["org_id", "user_id", *cache_cols, "fact_id", "seq",
-                    "subject", "attribute", "value", "functional"]
-            vals: list[object] = [self.org_id, self.user_id]
-            if self._cache_key is not None:
-                vals.append(self._cache_key)
-            vals += [fact_id, seq, Claim.norm(c.subject), Claim.norm(c.attribute),
-                     c.value, c.functional]
+            cols = [*key_cols, "fact_id", "seq", "subject", "attribute", "value", "functional"]
+            vals: list[object] = [
+                *self._key_vals(), fact_id, seq, Claim.norm(c.subject),
+                Claim.norm(c.attribute), c.value, c.functional,
+            ]
             placeholders = ", ".join(["%s"] * len(vals))
             self._conn.execute(
                 f"INSERT INTO {self._claims_table} ({', '.join(cols)}) "
@@ -804,16 +849,13 @@ class PostgresVectorGraph(SearchableGraph):
 
     def claims_for(self, fact_id: str) -> list[Claim]:
         """Stored claims for one fact, in seq order."""
-        sql = (
+        key_pred, params = self._key_pred()
+        params.append(fact_id)
+        rows = self._conn.execute(
             f"SELECT subject, attribute, value, functional FROM {self._claims_table} "
-            "WHERE org_id=%s AND user_id=%s AND fact_id=%s"
-        )
-        params: list[object] = [self.org_id, self.user_id, fact_id]
-        if self._cache_key is not None:
-            sql += " AND cache_key=%s"
-            params.append(self._cache_key)
-        sql += " ORDER BY seq"
-        rows = self._conn.execute(sql, params).fetchall()
+            f"WHERE {key_pred} AND fact_id=%s ORDER BY seq",
+            params,
+        ).fetchall()
         return [Claim(subject=r[0], attribute=r[1], value=r[2], functional=r[3]) for r in rows]
 
     # --- SearchableGraph contract ------------------------------------------
@@ -918,19 +960,22 @@ class PostgresVectorGraph(SearchableGraph):
         categories: list[str] | None = None,
         meta_filter: dict | None = None,
     ) -> tuple[str, list[object]]:
-        """The shared tenant/cache/state/scope/filter predicate for a search branch.
+        """The shared partition/state/scope/filter predicate for a search branch.
 
         Returns ``(sql_fragment, params)`` so the cosine and keyword branches apply
-        the exact same row gating — only their ranking expression differs.
+        the exact same row gating — only their ranking expression differs. The base
+        is this graph's partition key: ``(org_id, user_id)`` for working memory or
+        ``(org_id, space, snapshot)`` for a snapshot (which only ever sees its own
+        rows, so recall/dedup/conflict stay within it).
 
         ``categories`` (positive) keeps only rows whose ``category`` is in the list
-        (``= ANY``, served by the PR #113 ``(org_id,user_id,category)`` btree) — the
-        complement of ``exclude_categories``. ``meta_filter`` adds the same JSONB
-        scalar-OR-array predicate as ``facts_by`` (served by the ``(meta)`` GIN
-        index). Both are AND-combined with the rest; omitting them is unchanged.
+        (``= ANY``, served by the ``category`` btree) — the complement of
+        ``exclude_categories``. ``meta_filter`` adds the same JSONB scalar-OR-array
+        predicate as ``facts_by`` (served by the ``(meta)`` GIN index). Both are
+        AND-combined with the rest; omitting them is unchanged.
         """
-        sql = "WHERE org_id = %s AND (shared OR user_id = %s)"
-        params: list[object] = [self.org_id, self.user_id]
+        key_pred, params = self._key_pred()
+        sql = f"WHERE {key_pred}"
         # Bi-temporal validity (Graphiti/Zep): both the semantic and keyword
         # branches gate on the same validity window. Default returns only
         # currently-valid facts; `as_of` rewinds to point-in-time recall. A NULL
@@ -943,12 +988,6 @@ class PostgresVectorGraph(SearchableGraph):
             params.extend([as_of, as_of])
         else:
             sql += " AND (invalid_at IS NULL OR invalid_at > now())"
-        if self._cache_key is not None:
-            # A cache-bound graph only ever sees its own partition, so recall /
-            # dedup / conflict stay within the one eval case (and contradiction
-            # edges it persists always land between facts in this partition).
-            sql += " AND cache_key = %s"
-            params.append(self._cache_key)
         if state is not None:
             sql += " AND state = %s"
             params.append(state)
@@ -1001,11 +1040,17 @@ class PostgresVectorGraph(SearchableGraph):
             f"exp(- {_LN2} * EXTRACT(EPOCH FROM (now() - created_at)) "
             f"/ (86400.0 * {_RECENCY_HALF_LIFE_DAYS})) END"
         ) if apply_decay else ""
+        # Outcome/trust weighting (H1) lives only on working memory: the `snapshots`
+        # table omits the outcome-trust columns (success/failure/last_outcome), so a
+        # snapshot-bound search skips the multiplier entirely (neutral 1.0).
+        outcome_sql = (
+            "" if self._is_snapshot else
+            " * CASE WHEN success_count + failure_count = 0 THEN 1.0 "
+            "ELSE (success_count + 0.5) / (success_count + failure_count + 1.0) END"
+        )
         sql = (
             "SELECT id, text, source, confidence, scope, category, observation_count, state, "
-            "(1 - (embedding <=> %s)) * CASE WHEN success_count + failure_count = 0 THEN 1.0 "
-            "ELSE (success_count + 0.5) / (success_count + failure_count + 1.0) END"
-            f"{decay_sql} AS score "
+            f"(1 - (embedding <=> %s)){outcome_sql}{decay_sql} AS score "
             f"FROM {self._facts_table} {where} AND embedding IS NOT NULL "
             "ORDER BY score DESC LIMIT %s"
         )
@@ -1028,12 +1073,17 @@ class PostgresVectorGraph(SearchableGraph):
         derived-completeness queries (``incomplete_requirements``) read it to mark a
         succeeded-then-failed requirement as regressed.
         """
+        # Outcome-trust columns exist only on working memory; a snapshot is an
+        # immutable saved state with no such columns, so this is facts-only.
+        if self._is_snapshot:
+            raise ValueError("record_outcome is only valid on working memory (facts)")
         column = "success_count" if success else "failure_count"
         outcome = "succeeded" if success else "failed"
+        key_pred, key_params = self._key_pred()
         self._conn.execute(
             f"UPDATE {self._facts_table} SET {column} = {column} + 1, last_outcome = %s "
-            "WHERE id = %s AND org_id = %s AND user_id = %s",
-            (outcome, fact_id, self.org_id, self.user_id),
+            f"WHERE {key_pred} AND id = %s",
+            (outcome, *key_params, fact_id),
         )
 
     def _search_keyword(
@@ -1121,18 +1171,18 @@ class PostgresVectorGraph(SearchableGraph):
         """Vector-search the live graph unioned with mounted snapshots, in one query.
 
         Backs the mounted read-only overlay (see ``overlay_graph.py``). ``mounts``
-        is a list of ``(source_user_id, cache_key)`` pairs naming saved snapshots
-        to also expose. The query is embedded **once** and a single ``UNION ALL``
-        ranks the live ``facts`` branch and the ``cached_facts`` branch together —
-        no per-mount round trip, no re-embedding. Both tables have an HNSW
-        embedding index, so each branch is a sub-linear indexed search.
+        is a list of ``(space, snapshot)`` pairs naming org-shared snapshots to also
+        expose. The query is embedded **once** and a single ``UNION ALL`` ranks the
+        live ``facts`` branch and the ``snapshots`` branch together — no per-mount
+        round trip, no re-embedding. Both tables have an HNSW embedding index, so
+        each branch is a sub-linear indexed search.
 
-        The live branch keeps the normal tenant predicate
-        (``org_id AND (shared OR user_id)``); the mounted branch is org-scoped but
-        cross-user (``org_id AND (user_id, cache_key) ∈ mounts``) — the same
-        within-org trust boundary :class:`OrgSourceReader` relies on, with org
-        membership validated by the mount route. Mounted hits carry
-        ``fact.meta["mountedFrom"]`` so callers can tell them from live facts.
+        The live branch keeps the working-memory predicate (``org_id AND user_id``);
+        the mounted branch is org-scoped and keyed by snapshot
+        (``org_id AND (space, snapshot) ∈ mounts``) — the same within-org trust
+        boundary :class:`OrgSourceReader` relies on, with org membership validated by
+        the mount route. Mounted hits carry ``fact.meta["mountedFrom"]`` (a
+        ``{"space","snapshot"}`` dict) so callers can tell them from live facts.
         Results are deduped by id (a live fact wins over a same-id snapshot copy),
         ranked by score, and truncated to ``top_k``.
         """
@@ -1155,35 +1205,35 @@ class PostgresVectorGraph(SearchableGraph):
         filt = f"{excl}{cat}{scope_sql}{meta_sql}"
         filt_param: list[object] = [*excl_param, *cat_param, *scope_param, *meta_param]
         live = (
-            f"SELECT {cols}, NULL::text AS mount_user, NULL::text AS mount_key, "
+            f"SELECT {cols}, NULL::text AS mount_space, NULL::text AS mount_snapshot, "
             "1 - (embedding <=> %s) AS score FROM facts "
-            "WHERE org_id = %s AND (shared OR user_id = %s) "
+            "WHERE org_id = %s AND user_id = %s "
             f"AND state = 'active' AND embedding IS NOT NULL{filt} "
             "ORDER BY embedding <=> %s LIMIT %s"
         )
         params: list[object] = [qvec, self.org_id, self.user_id, *filt_param, qvec, top_k]
         sql = f"SELECT * FROM ({live}) AS live"
         if mounts:
-            ors = " OR ".join(["(user_id = %s AND cache_key = %s)"] * len(mounts))
+            ors = " OR ".join(["(space = %s AND snapshot = %s)"] * len(mounts))
             mounted = (
-                f"SELECT {cols}, user_id AS mount_user, cache_key AS mount_key, "
-                "1 - (embedding <=> %s) AS score FROM cached_facts "
+                f"SELECT {cols}, space AS mount_space, snapshot AS mount_snapshot, "
+                "1 - (embedding <=> %s) AS score FROM snapshots "
                 f"WHERE org_id = %s AND ({ors}) "
                 f"AND state = 'active' AND embedding IS NOT NULL{filt} "
                 "ORDER BY embedding <=> %s LIMIT %s"
             )
             sql += f" UNION ALL SELECT * FROM ({mounted}) AS mounted"
             params += [qvec, self.org_id]
-            for source_user_id, cache_key in mounts:
-                params += [source_user_id, cache_key]
+            for space, snapshot in mounts:
+                params += [space, snapshot]
             params += [*filt_param, qvec, top_k]
         rows = self._conn.execute(sql, params).fetchall()
 
         # Each branch is capped at top_k, so this is at most ~2*top_k rows. Dedupe
-        # by id preferring the live copy (mount_user IS NULL), then rank + cap.
+        # by id preferring the live copy (mount_space IS NULL), then rank + cap.
         best: dict[str, SearchHit] = {}
         for r in rows:
-            mount_user, mount_key, score = r[8], r[9], float(r[10])
+            mount_space, mount_snapshot, score = r[8], r[9], float(r[10])
             hit = SearchHit(
                 fact=Fact(
                     id=r[0], text=r[1], source=r[2],
@@ -1192,10 +1242,10 @@ class PostgresVectorGraph(SearchableGraph):
                 ),
                 score=score,
             )
-            if mount_user is not None:
+            if mount_space is not None:
                 hit.fact.meta["mountedFrom"] = {
-                    "userId": mount_user,
-                    "snapshot": mount_key.split("snapshot:", 1)[-1],
+                    "space": mount_space,
+                    "snapshot": mount_snapshot,
                 }
             existing = best.get(hit.fact.id)
             if existing is None:
@@ -1203,7 +1253,7 @@ class PostgresVectorGraph(SearchableGraph):
                 continue
             # Prefer a live hit over a same-id snapshot copy; else higher score.
             existing_mounted = bool(existing.fact.meta.get("mountedFrom"))
-            this_mounted = mount_user is not None
+            this_mounted = mount_space is not None
             if existing_mounted and not this_mounted:
                 best[hit.fact.id] = hit
             elif existing_mounted == this_mounted and hit.score > existing.score:
@@ -1211,15 +1261,13 @@ class PostgresVectorGraph(SearchableGraph):
         ranked = sorted(best.values(), key=lambda h: h.score, reverse=True)
         return ranked[:top_k]
 
-    def recent_cache(
-        self, *, source_user_id: str, cache_key: str, limit: int
-    ) -> list[Fact]:
-        """Newest active facts of a snapshot — the no-query overlay read path."""
+    def recent_cache(self, *, space: str, snapshot: str, limit: int) -> list[Fact]:
+        """Newest active facts of an org-shared snapshot — the no-query overlay read path."""
         rows = self._conn.execute(
             "SELECT id, text, source, confidence, scope, category, observation_count, state "
-            "FROM cached_facts WHERE org_id = %s AND user_id = %s AND cache_key = %s "
+            "FROM snapshots WHERE org_id = %s AND space = %s AND snapshot = %s "
             "AND state = 'active' ORDER BY created_at DESC LIMIT %s",
-            (self.org_id, source_user_id, cache_key, limit),
+            (self.org_id, space, snapshot, limit),
         ).fetchall()
         return [self._row_to_fact(r) for r in rows]
 
@@ -1231,24 +1279,25 @@ class PostgresVectorGraph(SearchableGraph):
         rows ``read``/``search`` retrieve from, so what the dashboard shows is
         exactly what MCP ``get_context`` can recall (newest-first for display).
         """
+        key_pred, key_params = self._key_pred()
         rows = self._conn.execute(
             "SELECT id, text, source, confidence, scope, category, observation_count, "
             "state, created_at, meta, cluster_id, cluster_label "
-            f"FROM {self._facts_table} WHERE org_id = %s AND (shared OR user_id = %s) "
+            f"FROM {self._facts_table} WHERE {key_pred} "
             "AND state = 'active' ORDER BY created_at DESC",
-            (self.org_id, self.user_id),
+            key_params,
         ).fetchall()
         return [self._row_to_fact(r) for r in rows]
 
     def active_edges(self) -> list[tuple[str, str, str]]:
-        """``(src, dst, kind)`` edges between this tenant's active facts."""
+        """``(src, dst, kind)`` edges between this partition's active facts."""
+        key_pred, key_params = self._key_pred("e")
         rows = self._conn.execute(
             f"SELECT e.src_id, e.dst_id, e.kind FROM {self._edges_table} e "
-            f"JOIN {self._facts_table} s ON s.org_id = e.org_id AND s.user_id = e.user_id AND s.id = e.src_id "
-            f"JOIN {self._facts_table} d ON d.org_id = e.org_id AND d.user_id = e.user_id AND d.id = e.dst_id "
-            "WHERE e.org_id = %s AND (s.shared OR s.user_id = %s) "
-            "AND s.state = 'active' AND d.state = 'active'",
-            (self.org_id, self.user_id),
+            f"JOIN {self._facts_table} s ON {self._join_keys('s', 'e')} AND s.id = e.src_id "
+            f"JOIN {self._facts_table} d ON {self._join_keys('d', 'e')} AND d.id = e.dst_id "
+            f"WHERE {key_pred} AND s.state = 'active' AND d.state = 'active'",
+            key_params,
         ).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
 
@@ -1257,8 +1306,8 @@ class PostgresVectorGraph(SearchableGraph):
         """Define-pass: (re)assign topic clusters over this graph's facts, persisted.
 
         Runs the embed -> reduce -> HDBSCAN -> label pipeline over every fact in
-        this partition (the live tenant graph, or one ``cache_key`` slice) and
-        writes the resulting ``cluster_id``/``cluster_label`` back to each row.
+        this partition (the working-memory graph, or one snapshot) and writes the
+        resulting ``cluster_id``/``cluster_label`` back to each row.
         This is the slow, write-time "define" side (used by the pipeline /
         snapshot paths), NOT a per-render call: the assignments are persisted so
         retrieval never re-clusters and the cache copy carries them verbatim.
@@ -1276,24 +1325,16 @@ class PostgresVectorGraph(SearchableGraph):
         n = assign_clusters(
             facts, min_cluster_size=min_cluster_size or MIN_CLUSTER_SIZE
         )
+        key_pred, key_vals = self._key_pred()
         sql = (
             f"UPDATE {self._facts_table} SET cluster_id = %s, cluster_label = %s "
-            "WHERE org_id = %s AND user_id = %s AND id = %s"
+            f"WHERE {key_pred} AND id = %s"
         )
-        cache_clause = ""
-        if self._cache_key is not None:
-            cache_clause = " AND cache_key = %s"
         for fact in facts:
-            params: list[object] = [
-                fact.cluster_id,
-                fact.cluster_label,
-                self.org_id,
-                self.user_id,
-                fact.id,
-            ]
-            if self._cache_key is not None:
-                params.append(self._cache_key)
-            self._conn.execute(sql + cache_clause, params)
+            self._conn.execute(
+                sql,
+                [fact.cluster_id, fact.cluster_label, *key_vals, fact.id],
+            )
         return n
 
     # --- full-lifecycle reads (candidate-facade surface) -------------------
@@ -1331,16 +1372,13 @@ class PostgresVectorGraph(SearchableGraph):
         )
 
     def all_facts(self, state: str | None = None) -> list[Fact]:
-        """Every fact for this tenant (optionally filtered by ``state``), newest first."""
+        """Every fact in this partition (optionally filtered by ``state``), newest first."""
+        key_pred, params = self._key_pred()
         sql = (
             "SELECT id, text, source, confidence, scope, category, observation_count, "
             "state, created_at, meta, cluster_id, cluster_label "
-            f"FROM {self._facts_table} WHERE org_id = %s AND (shared OR user_id = %s)"
+            f"FROM {self._facts_table} WHERE {key_pred}"
         )
-        params: list[object] = [self.org_id, self.user_id]
-        if self._cache_key is not None:
-            sql += " AND cache_key = %s"
-            params.append(self._cache_key)
         if state is not None:
             sql += " AND state = %s"
             params.append(state)
@@ -1374,18 +1412,15 @@ class PostgresVectorGraph(SearchableGraph):
         fact qualifies when ``meta.key == value`` (scalar equality) OR — when
         ``meta.key`` is a JSON array — ``value`` is a MEMBER of it. The array case lets
         a check tagged ``meta.applies_to=["s-home","*"]`` match a query for ``"s-home"``
-        or ``"*"``. All keys must match (AND). Respects the same tenancy / sharing
-        visibility and ``cache_key`` binding as the rest of the read surface.
+        or ``"*"``. All keys must match (AND). Respects the same partition key
+        (working memory or one snapshot) as the rest of the read surface.
         """
+        key_pred, params = self._key_pred()
         sql = (
             "SELECT id, text, source, confidence, scope, category, observation_count, "
             "state, created_at, meta, cluster_id, cluster_label "
-            f"FROM {self._facts_table} WHERE org_id = %s AND (shared OR user_id = %s)"
+            f"FROM {self._facts_table} WHERE {key_pred}"
         )
-        params: list[object] = [self.org_id, self.user_id]
-        if self._cache_key is not None:
-            sql += " AND cache_key = %s"
-            params.append(self._cache_key)
         if state is not None:
             sql += " AND state = %s"
             params.append(state)
@@ -1412,21 +1447,22 @@ class PostgresVectorGraph(SearchableGraph):
         return [self._row_to_fact(r) for r in rows]
 
     def get_fact(self, fact_id: str) -> Fact | None:
+        key_pred, key_params = self._key_pred()
         rows = self._conn.execute(
             "SELECT id, text, source, confidence, scope, category, observation_count, "
             "state, created_at, meta, cluster_id, cluster_label "
-            f"FROM {self._facts_table} WHERE org_id = %s AND user_id = %s AND id = %s",
-            (self.org_id, self.user_id, fact_id),
+            f"FROM {self._facts_table} WHERE {key_pred} AND id = %s",
+            (*key_params, fact_id),
         ).fetchall()
         if not rows:
             return None
         return self._row_to_fact(rows[0])
 
     def set_state(self, fact_id: str, state: str) -> None:
+        key_pred, key_params = self._key_pred()
         self._conn.execute(
-            f"UPDATE {self._facts_table} SET state = %s "
-            "WHERE org_id = %s AND user_id = %s AND id = %s",
-            (state, self.org_id, self.user_id, fact_id),
+            f"UPDATE {self._facts_table} SET state = %s WHERE {key_pred} AND id = %s",
+            (state, *key_params, fact_id),
         )
         # Derivation propagation (H5): retiring a fact flags the learnings derived
         # from it for review. This is the candidate-reject / promote-rival chokepoint.
@@ -1444,21 +1480,22 @@ class PostgresVectorGraph(SearchableGraph):
         already-invalidated row (it just re-stamps the window close).
         """
         if winner_id is not None:
+            loser_pred, loser_params = self._key_pred("loser")
             self._conn.execute(
                 f"UPDATE {self._facts_table} AS loser "
                 "SET invalid_at = COALESCE("
                 f"  (SELECT winner.valid_at FROM {self._facts_table} AS winner "
-                "    WHERE winner.org_id = loser.org_id "
-                "      AND winner.user_id = loser.user_id AND winner.id = %s), "
+                f"    WHERE {self._join_keys('winner', 'loser')} AND winner.id = %s), "
                 "  now()) "
-                "WHERE loser.org_id = %s AND loser.user_id = %s AND loser.id = %s",
-                (winner_id, self.org_id, self.user_id, fact_id),
+                f"WHERE {loser_pred} AND loser.id = %s",
+                (winner_id, *loser_params, fact_id),
             )
         else:
+            key_pred, key_params = self._key_pred()
             self._conn.execute(
                 f"UPDATE {self._facts_table} SET invalid_at = now() "
-                "WHERE org_id = %s AND user_id = %s AND id = %s",
-                (self.org_id, self.user_id, fact_id),
+                f"WHERE {key_pred} AND id = %s",
+                (*key_params, fact_id),
             )
 
     def update_fact(
@@ -1493,33 +1530,32 @@ class PostgresVectorGraph(SearchableGraph):
             params.append(category)
         if not sets:
             return
-        params.extend([self.org_id, self.user_id, fact_id])
+        key_pred, key_params = self._key_pred()
+        params.extend([*key_params, fact_id])
         self._conn.execute(
             f"UPDATE {self._facts_table} SET {', '.join(sets)} "
-            "WHERE org_id = %s AND user_id = %s AND id = %s",
+            f"WHERE {key_pred} AND id = %s",
             params,
         )
 
     def set_meta(self, fact_id: str, meta: dict) -> None:
+        key_pred, key_params = self._key_pred()
         self._conn.execute(
-            f"UPDATE {self._facts_table} SET meta = %s "
-            "WHERE org_id = %s AND user_id = %s AND id = %s",
-            (json.dumps(meta), self.org_id, self.user_id, fact_id),
+            f"UPDATE {self._facts_table} SET meta = %s WHERE {key_pred} AND id = %s",
+            (json.dumps(meta), *key_params, fact_id),
         )
 
     def delete_fact(self, fact_id: str) -> None:
+        key_pred, key_params = self._key_pred()
         self._conn.execute(
-            f"DELETE FROM {self._facts_table} WHERE org_id = %s AND user_id = %s AND id = %s",
-            (self.org_id, self.user_id, fact_id),
+            f"DELETE FROM {self._facts_table} WHERE {key_pred} AND id = %s",
+            (*key_params, fact_id),
         )
 
     # --- edges (full lifecycle, candidate-facade surface) ------------------
     def add_edge(self, src_id: str, dst_id: str, kind: str = "contradiction") -> None:
-        cols = ["org_id", "user_id", "src_id", "dst_id", "kind"]
-        vals: list[object] = [self.org_id, self.user_id, src_id, dst_id, kind]
-        if self._cache_key is not None:
-            cols.insert(2, "cache_key")
-            vals.insert(2, self._cache_key)
+        cols = [*self._key_cols(), "src_id", "dst_id", "kind"]
+        vals: list[object] = [*self._key_vals(), src_id, dst_id, kind]
         placeholders = ", ".join(["%s"] * len(vals))
         self._conn.execute(
             f"INSERT INTO {self._edges_table} ({', '.join(cols)}) "
@@ -1529,15 +1565,12 @@ class PostgresVectorGraph(SearchableGraph):
 
     def remove_edge(self, src_id: str, dst_id: str, kind: str = "contradiction") -> None:
         # Delete both directions: contradictions are conceptually undirected.
-        sql = (
-            f"DELETE FROM {self._edges_table} WHERE org_id = %s AND user_id = %s AND kind = %s "
-            "AND ((src_id = %s AND dst_id = %s) OR (src_id = %s AND dst_id = %s))"
+        key_pred, key_params = self._key_pred()
+        self._conn.execute(
+            f"DELETE FROM {self._edges_table} WHERE {key_pred} AND kind = %s "
+            "AND ((src_id = %s AND dst_id = %s) OR (src_id = %s AND dst_id = %s))",
+            [*key_params, kind, src_id, dst_id, dst_id, src_id],
         )
-        params: list[object] = [self.org_id, self.user_id, kind, src_id, dst_id, dst_id, src_id]
-        if self._cache_key is not None:
-            sql += " AND cache_key = %s"
-            params.append(self._cache_key)
-        self._conn.execute(sql, params)
 
     def flip_edge_kind(
         self,
@@ -1560,15 +1593,9 @@ class PostgresVectorGraph(SearchableGraph):
         self.add_edge(src, dst, to_kind)
 
     def all_edges(self, kind: str | None = None) -> list[tuple[str, str, str]]:
-        """All (src, dst, kind) edges for the tenant, regardless of fact state."""
-        sql = (
-            f"SELECT src_id, dst_id, kind FROM {self._edges_table} "
-            "WHERE org_id = %s AND user_id = %s"
-        )
-        params: list[object] = [self.org_id, self.user_id]
-        if self._cache_key is not None:
-            sql += " AND cache_key = %s"
-            params.append(self._cache_key)
+        """All (src, dst, kind) edges in this partition, regardless of fact state."""
+        key_pred, params = self._key_pred()
+        sql = f"SELECT src_id, dst_id, kind FROM {self._edges_table} WHERE {key_pred}"
         if kind is not None:
             sql += " AND kind = %s"
             params.append(kind)
@@ -1581,16 +1608,13 @@ class PostgresVectorGraph(SearchableGraph):
         The per-fact counterpart to :meth:`all_edges`: one indexed lookup for a
         single fact's edges instead of scanning the whole tenant. Used by the
         candidate facade's single-fact rival lookup so ``get`` (and every mutation
-        that re-reads one candidate) does not pay a full-tenant edge scan."""
-        sql = (
+        that re-reads one candidate) does not pay a full-partition edge scan."""
+        key_pred, key_params = self._key_pred()
+        rows = self._conn.execute(
             f"SELECT src_id, dst_id, kind FROM {self._edges_table} "
-            "WHERE org_id = %s AND user_id = %s AND (src_id = %s OR dst_id = %s)"
-        )
-        params: list[object] = [self.org_id, self.user_id, fact_id, fact_id]
-        if self._cache_key is not None:
-            sql += " AND cache_key = %s"
-            params.append(self._cache_key)
-        rows = self._conn.execute(sql, params).fetchall()
+            f"WHERE {key_pred} AND (src_id = %s OR dst_id = %s)",
+            [*key_params, fact_id, fact_id],
+        ).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
 
     # --- surface<->requirement bindings ------------------------------------
@@ -1604,18 +1628,16 @@ class PostgresVectorGraph(SearchableGraph):
         """The (at most one) surface fact for ``(project, screen_id)`` — any state.
 
         Idempotency key: scope=project, category="surface", meta->>'screen_id'=screen_id.
-        Honors ``cache_key`` like ``all_facts``; newest first if (defensively) more than one.
+        Scoped to this partition like ``all_facts``; newest first if (defensively) more than one.
         """
+        key_pred, params = self._key_pred()
         sql = (
             "SELECT id, text, source, confidence, scope, category, observation_count, "
             "state, created_at, meta, cluster_id, cluster_label "
-            f"FROM {self._facts_table} WHERE org_id = %s AND (shared OR user_id = %s) "
+            f"FROM {self._facts_table} WHERE {key_pred} "
             "AND category = %s AND scope = %s AND meta->>'screen_id' = %s"
         )
-        params: list[object] = [self.org_id, self.user_id, SURFACE_CATEGORY, project, screen_id]
-        if self._cache_key is not None:
-            sql += " AND cache_key = %s"
-            params.append(self._cache_key)
+        params.extend([SURFACE_CATEGORY, project, screen_id])
         sql += " ORDER BY created_at DESC LIMIT 1"
         rows = self._conn.execute(sql, params).fetchall()
         if not rows:
@@ -1629,13 +1651,14 @@ class PostgresVectorGraph(SearchableGraph):
         ``kind = RENDERS_EDGE`` filter, so a rejected requirement or surface drops
         its edge from every coverage/read result with no stale hook.
         """
+        key_pred, key_params = self._key_pred("e")
         rows = self._conn.execute(
             f"SELECT e.src_id, e.dst_id FROM {self._edges_table} e "
-            f"JOIN {self._facts_table} s ON s.org_id = e.org_id AND s.user_id = e.user_id AND s.id = e.src_id "
-            f"JOIN {self._facts_table} d ON d.org_id = e.org_id AND d.user_id = e.user_id AND d.id = e.dst_id "
-            "WHERE e.org_id = %s AND (s.shared OR s.user_id = %s) "
+            f"JOIN {self._facts_table} s ON {self._join_keys('s', 'e')} AND s.id = e.src_id "
+            f"JOIN {self._facts_table} d ON {self._join_keys('d', 'e')} AND d.id = e.dst_id "
+            f"WHERE {key_pred} "
             "AND e.kind = %s AND s.state = 'active' AND d.state = 'active'",
-            (self.org_id, self.user_id, RENDERS_EDGE),
+            (*key_params, RENDERS_EDGE),
         ).fetchall()
         return [(r[0], r[1]) for r in rows]
 
@@ -1738,24 +1761,22 @@ class PostgresVectorGraph(SearchableGraph):
         surface = self._find_surface(project, screen_id)
         if surface is None:
             return []
+        key_pred, params = self._key_pred("e")
         sql = (
             "SELECT r.id, r.text, r.source, r.confidence, r.scope, r.category, "
             "r.observation_count, r.state, r.created_at, r.meta, r.cluster_id, r.cluster_label "
             f"FROM {self._edges_table} e "
-            f"JOIN {self._facts_table} r ON r.org_id = e.org_id AND r.user_id = e.user_id AND r.id = e.src_id "
-            "WHERE e.org_id = %s AND (r.shared OR r.user_id = %s) "
+            f"JOIN {self._facts_table} r ON {self._join_keys('r', 'e')} AND r.id = e.src_id "
+            f"WHERE {key_pred} "
             "AND e.kind = %s AND e.dst_id = %s AND r.state = 'active'"
         )
-        params: list[object] = [self.org_id, self.user_id, RENDERS_EDGE, surface.id]
+        params.extend([RENDERS_EDGE, surface.id])
         if category is not None:
             sql += " AND r.category = %s"
             params.append(category)
         if meta_scope is not None:
             sql += " AND r.meta->>'scope' = %s"
             params.append(meta_scope)
-        if self._cache_key is not None:
-            sql += " AND e.cache_key = %s"
-            params.append(self._cache_key)
         sql += " ORDER BY r.created_at DESC"
         rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_fact(r) for r in rows]
@@ -1790,20 +1811,16 @@ class PostgresVectorGraph(SearchableGraph):
         The dst side of the RENDERS edges out of the requirement, restricted to
         ``active`` surface facts.
         """
+        key_pred, params = self._key_pred("e")
         sql = (
             "SELECT d.id, d.text, d.source, d.confidence, d.scope, d.category, "
             "d.observation_count, d.state, d.created_at, d.meta, d.cluster_id, d.cluster_label "
             f"FROM {self._edges_table} e "
-            f"JOIN {self._facts_table} d ON d.org_id = e.org_id AND d.user_id = e.user_id AND d.id = e.dst_id "
-            "WHERE e.org_id = %s AND (d.shared OR d.user_id = %s) "
+            f"JOIN {self._facts_table} d ON {self._join_keys('d', 'e')} AND d.id = e.dst_id "
+            f"WHERE {key_pred} "
             "AND e.kind = %s AND e.src_id = %s AND d.state = 'active' AND d.category = %s"
         )
-        params: list[object] = [
-            self.org_id, self.user_id, RENDERS_EDGE, requirement_fact_id, SURFACE_CATEGORY
-        ]
-        if self._cache_key is not None:
-            sql += " AND e.cache_key = %s"
-            params.append(self._cache_key)
+        params.extend([RENDERS_EDGE, requirement_fact_id, SURFACE_CATEGORY])
         sql += " ORDER BY d.created_at DESC"
         rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_fact(r) for r in rows]
@@ -1814,19 +1831,15 @@ class PostgresVectorGraph(SearchableGraph):
         Returns ``{"requirementId","surfaceId","screenId"}`` per edge; ``screenId``
         comes from the surface fact's ``meta->>'screen_id'``.
         """
+        key_pred, params = self._key_pred("e")
         sql = (
             "SELECT e.src_id, e.dst_id, d.meta->>'screen_id' "
             f"FROM {self._edges_table} e "
-            f"JOIN {self._facts_table} d ON d.org_id = e.org_id AND d.user_id = e.user_id AND d.id = e.dst_id "
-            "WHERE e.org_id = %s AND (d.shared OR d.user_id = %s) "
+            f"JOIN {self._facts_table} d ON {self._join_keys('d', 'e')} AND d.id = e.dst_id "
+            f"WHERE {key_pred} "
             "AND e.kind = %s AND d.category = %s AND d.scope = %s"
         )
-        params: list[object] = [
-            self.org_id, self.user_id, RENDERS_EDGE, SURFACE_CATEGORY, project
-        ]
-        if self._cache_key is not None:
-            sql += " AND e.cache_key = %s"
-            params.append(self._cache_key)
+        params.extend([RENDERS_EDGE, SURFACE_CATEGORY, project])
         rows = self._conn.execute(sql, params).fetchall()
         return [
             {"requirementId": r[0], "surfaceId": r[1], "screenId": r[2]} for r in rows
@@ -1928,20 +1941,21 @@ class PostgresVectorGraph(SearchableGraph):
         cause, or ``None`` when the requirement is complete. See ``_completeness_reasons``.
         """
         source = f"prd-{project}"
-        cache = ""
-        params: list[object] = [
-            self.org_id, self.user_id, REQUIREMENT_CATEGORY, source
-        ]
-        if self._cache_key is not None:
-            cache = " AND cache_key = %s"
-            params.append(self._cache_key)
+        key_pred, params = self._key_pred()
+        params.extend([REQUIREMENT_CATEGORY, source])
+        # Outcome-trust columns live only on working memory; a snapshot omits them,
+        # so project the neutral defaults there (never-built until loaded live).
+        outcome_cols = (
+            "0, 0, NULL::text" if self._is_snapshot
+            else "success_count, failure_count, last_outcome"
+        )
         rows = self._conn.execute(
             "SELECT id, text, source, confidence, scope, category, observation_count, "
             "state, created_at, meta, cluster_id, cluster_label, "
-            "success_count, failure_count, last_outcome "
+            f"{outcome_cols} "
             f"FROM {self._facts_table} "
-            "WHERE org_id = %s AND (shared OR user_id = %s) AND state = 'active' "
-            f"AND category = %s AND source = %s{cache} "
+            f"WHERE {key_pred} AND state = 'active' "
+            "AND category = %s AND source = %s "
             "ORDER BY created_at DESC",
             params,
         ).fetchall()
@@ -2084,14 +2098,15 @@ class PostgresVectorGraph(SearchableGraph):
         remaining lease seconds. Not part of the atomic grant — it only explains a
         grant/heartbeat that the single conditional UPDATE already declined.
         """
+        key_pred, key_params = self._key_pred()
         row = self._conn.execute(
             "SELECT meta->>'claim_owner', "
             "COALESCE((meta->>'claim_lease_ttl')::float, 0) "
             "  - (EXTRACT(EPOCH FROM now()) "
             "     - COALESCE((meta->>'claim_heartbeat_at')::float, 0)) "
             f"FROM {self._facts_table} "
-            "WHERE org_id = %s AND user_id = %s AND id = %s",
-            (self.org_id, self.user_id, fact_id),
+            f"WHERE {key_pred} AND id = %s",
+            (*key_params, fact_id),
         ).fetchone()
         if row is None:
             raise KeyError(fact_id)
@@ -2111,6 +2126,7 @@ class PostgresVectorGraph(SearchableGraph):
         row. On grant returns the claim view; on conflict raises :class:`LeaseConflict`
         (held by a live owner) and on an unknown fact ``KeyError``.
         """
+        key_pred, key_params = self._key_pred()
         row = self._conn.execute(
             f"UPDATE {self._facts_table} SET meta = meta || jsonb_build_object("
             "  'build_state', 'in_progress', "
@@ -2118,7 +2134,7 @@ class PostgresVectorGraph(SearchableGraph):
             "  'claim_at', EXTRACT(EPOCH FROM now()), "
             "  'claim_heartbeat_at', EXTRACT(EPOCH FROM now()), "
             "  'claim_lease_ttl', %s::int) "
-            "WHERE org_id = %s AND user_id = %s AND id = %s AND ("
+            f"WHERE {key_pred} AND id = %s AND ("
             "  COALESCE(meta->>'build_state', '') <> 'in_progress' "
             "  OR meta->>'claim_owner' = %s "
             "  OR EXTRACT(EPOCH FROM now()) - COALESCE((meta->>'claim_heartbeat_at')::float, 0) "
@@ -2127,8 +2143,7 @@ class PostgresVectorGraph(SearchableGraph):
             (
                 owner,
                 int(lease_ttl_seconds),
-                self.org_id,
-                self.user_id,
+                *key_params,
                 fact_id,
                 owner,
             ),
@@ -2146,16 +2161,17 @@ class PostgresVectorGraph(SearchableGraph):
         told to stop working it (:class:`LeaseConflict`); an unknown fact is
         ``KeyError``.
         """
+        key_pred, key_params = self._key_pred()
         row = self._conn.execute(
             f"UPDATE {self._facts_table} SET meta = meta || jsonb_build_object("
             "  'claim_heartbeat_at', EXTRACT(EPOCH FROM now())) "
-            "WHERE org_id = %s AND user_id = %s AND id = %s "
+            f"WHERE {key_pred} AND id = %s "
             "  AND meta->>'claim_owner' = %s "
             "  AND meta->>'build_state' = 'in_progress' "
             "  AND EXTRACT(EPOCH FROM now()) - COALESCE((meta->>'claim_heartbeat_at')::float, 0) "
             "      <= COALESCE((meta->>'claim_lease_ttl')::float, 0) "
             "RETURNING meta",
-            (self.org_id, self.user_id, fact_id, owner),
+            (*key_params, fact_id, owner),
         ).fetchone()
         if row is None:
             self._lease_conflict(fact_id)
@@ -2178,13 +2194,14 @@ class PostgresVectorGraph(SearchableGraph):
         # ``meta - 'k1' - 'k2' ...`` removes the lease keys; then merge the new
         # build_state. Both preserve every unrelated key.
         strip = " ".join(f"- '{k}'" for k in _LEASE_META_KEYS)
+        key_pred, key_params = self._key_pred()
         row = self._conn.execute(
             f"UPDATE {self._facts_table} SET meta = (meta {strip}) "
             "  || jsonb_build_object('build_state', %s::text) "
-            "WHERE org_id = %s AND user_id = %s AND id = %s "
+            f"WHERE {key_pred} AND id = %s "
             "  AND meta->>'claim_owner' = %s "
             "RETURNING meta",
-            (state, self.org_id, self.user_id, fact_id, owner),
+            (state, *key_params, fact_id, owner),
         ).fetchone()
         if row is None:
             self._lease_conflict(fact_id)
@@ -2192,266 +2209,272 @@ class PostgresVectorGraph(SearchableGraph):
         return self._claim_view(meta, self._server_epoch())
 
     def wipe_cache(self) -> int:
-        """Delete every cached fact under this graph's bound ``cache_key``.
+        """Delete every fact in this snapshot-bound graph's ``(space, snapshot)``.
 
-        Cache tables only (the graph must have been built with a ``cache_key``).
-        Edges cascade via the FK. Returns the number of facts removed.
+        Snapshot graphs only (built with ``facts_table='snapshots'``). Edges/claims
+        cascade via the FK. Returns the number of facts removed.
         """
-        if self._cache_key is None:
-            raise ValueError("wipe_cache requires a cache_key-bound graph")
+        if not self._is_snapshot:
+            raise ValueError("wipe_cache requires a snapshot-bound graph")
         cur = self._conn.execute(
-            f"DELETE FROM {self._facts_table} WHERE org_id = %s AND user_id = %s AND cache_key = %s",
-            (self.org_id, self.user_id, self._cache_key),
+            "DELETE FROM snapshots WHERE org_id = %s AND space = %s AND snapshot = %s",
+            (self.org_id, self.space, self.snapshot),
         )
         return cur.rowcount
 
-    # --- cache save/load (snapshots + eval datasets) -----------------------
+    # --- snapshot save/load (org-shared snapshots + eval datasets) ----------
     def _require_live(self, op: str) -> None:
-        if self._facts_table != "facts" or self._cache_key is not None:
-            raise ValueError(f"{op} must be called on the live (facts) graph")
+        if self._is_snapshot:
+            raise ValueError(f"{op} must be called on the live working-memory (facts) graph")
 
-    def save_cache(self, cache_key: str) -> int:
-        """Snapshot the live graph into the cache under ``cache_key`` (upsert).
+    @staticmethod
+    def _pairs_pred(pairs: list[tuple[str, str]]) -> tuple[str, list[object]]:
+        """``(space, snapshot)`` membership predicate over a snapshot table + params."""
+        ors = " OR ".join(["(space=%s AND snapshot=%s)"] * len(pairs))
+        params: list[object] = []
+        for space, snapshot in pairs:
+            params.extend([space, snapshot])
+        return f"({ors})", params
 
-        Pure SQL copy — embeddings, ids, states and meta are preserved verbatim,
-        so a later ``load_cache`` restores losslessly with no re-embedding. Any
-        existing rows under ``cache_key`` are replaced. Returns facts copied.
+    def save_cache(self, space: str, snapshot: str) -> int:
+        """Dump this user's working memory into the org-shared snapshot ``(space, snapshot)``.
+
+        Pure SQL copy — embeddings, ids, states and meta are preserved verbatim, so a
+        later ``load_cache`` restores losslessly with no re-embedding. Any existing
+        rows under ``(space, snapshot)`` are replaced. The snapshot drops ``user_id``
+        (it is org-shared, not per-user). Returns facts copied.
         """
         self._require_live("save_cache")
-        tenant = (self.org_id, self.user_id, cache_key)
-        # Replace any prior state under this key (edges first for the FK).
+        key = (self.org_id, space, snapshot)
+        src = (self.org_id, self.user_id)
+        # Replace any prior state under this key (edges/claims first for the FK).
         self._conn.execute(
-            "DELETE FROM cached_fact_edges WHERE org_id=%s AND user_id=%s AND cache_key=%s", tenant
+            "DELETE FROM snapshot_edges WHERE org_id=%s AND space=%s AND snapshot=%s", key
         )
         self._conn.execute(
-            "DELETE FROM cached_claims WHERE org_id=%s AND user_id=%s AND cache_key=%s", tenant
+            "DELETE FROM snapshot_claims WHERE org_id=%s AND space=%s AND snapshot=%s", key
         )
         self._conn.execute(
-            "DELETE FROM cached_facts WHERE org_id=%s AND user_id=%s AND cache_key=%s", tenant
+            "DELETE FROM snapshots WHERE org_id=%s AND space=%s AND snapshot=%s", key
         )
         self._conn.execute(
-            f"INSERT INTO cached_facts ({_FACT_COPY_COLS}, cache_key) "
-            f"SELECT {_FACT_COPY_COLS}, %s FROM facts WHERE org_id=%s AND user_id=%s",
-            (cache_key, self.org_id, self.user_id),
+            f"INSERT INTO snapshots ({_SNAPSHOT_COPY_COLS}, space, snapshot) "
+            f"SELECT {_SNAPSHOT_COPY_COLS}, %s, %s FROM facts WHERE org_id=%s AND user_id=%s",
+            (space, snapshot, *src),
         )
         self._conn.execute(
-            "INSERT INTO cached_fact_edges (org_id, user_id, cache_key, src_id, dst_id, kind) "
-            "SELECT org_id, user_id, %s, src_id, dst_id, kind FROM fact_edges "
+            "INSERT INTO snapshot_edges (org_id, space, snapshot, src_id, dst_id, kind) "
+            "SELECT org_id, %s, %s, src_id, dst_id, kind FROM fact_edges "
             "WHERE org_id=%s AND user_id=%s",
-            (cache_key, self.org_id, self.user_id),
+            (space, snapshot, *src),
         )
         self._conn.execute(
-            f"INSERT INTO cached_claims ({_CLAIM_COPY_COLS}, cache_key) "
-            f"SELECT {_CLAIM_COPY_COLS}, %s FROM claims WHERE org_id=%s AND user_id=%s",
-            (cache_key, self.org_id, self.user_id),
+            f"INSERT INTO snapshot_claims ({_SNAPSHOT_CLAIM_COPY_COLS}, space, snapshot) "
+            f"SELECT {_SNAPSHOT_CLAIM_COPY_COLS}, %s, %s FROM claims WHERE org_id=%s AND user_id=%s",
+            (space, snapshot, *src),
         )
         row = self._conn.execute(
-            "SELECT count(*) FROM cached_facts WHERE org_id=%s AND user_id=%s AND cache_key=%s",
-            tenant,
+            "SELECT count(*) FROM snapshots WHERE org_id=%s AND space=%s AND snapshot=%s", key
         ).fetchone()
         return int(row[0]) if row else 0
 
-    def load_cache(self, cache_key: str) -> int:
-        """Replace the live graph with one cached state (see ``load_caches``)."""
-        return self.load_caches([cache_key])
+    def load_cache(self, space: str, snapshot: str) -> int:
+        """Replace working memory with one org-shared snapshot (see ``load_caches``)."""
+        return self.load_caches([(space, snapshot)])
 
-    def load_caches(self, cache_keys: list[str]) -> int:
-        """Replace the live graph with the union of the given cached states.
+    def load_caches(self, keys: list[tuple[str, str]]) -> int:
+        """Replace this user's working memory with the union of the given snapshots.
 
-        Full truncate + insert for this tenant: the live ``facts``/``fact_edges``
-        rows are deleted and replaced by the rows of every entry in
-        ``cache_keys`` (embeddings and all). A snapshot load passes one key; an
-        eval folder load passes its cases' ``eval:<id>`` keys. Returns facts loaded.
+        Full truncate + insert for this user's ``facts``/``fact_edges``/``claims``:
+        those rows are deleted and replaced by the rows of every ``(space, snapshot)``
+        in ``keys`` (embeddings and all), stamped with the loader's ``user_id`` (the
+        snapshot carries none). A snapshot load passes one pair; an eval folder load
+        passes its cases' ``('__evals__', <case_id>)`` pairs. Returns facts loaded.
         """
         self._require_live("load_caches")
-        keys = list(cache_keys)
-        # Truncate the live tenant graph (edges first for the FK), then refill.
-        self._conn.execute(
-            "DELETE FROM fact_edges WHERE org_id=%s AND user_id=%s", (self.org_id, self.user_id)
-        )
-        self._conn.execute(
-            "DELETE FROM claims WHERE org_id=%s AND user_id=%s", (self.org_id, self.user_id)
-        )
-        self._conn.execute(
-            "DELETE FROM facts WHERE org_id=%s AND user_id=%s", (self.org_id, self.user_id)
-        )
-        if keys:
+        pairs = list(keys)
+        dst = (self.org_id, self.user_id)
+        # Truncate this user's working-memory graph (edges first for the FK), then refill.
+        self._conn.execute("DELETE FROM fact_edges WHERE org_id=%s AND user_id=%s", dst)
+        self._conn.execute("DELETE FROM claims WHERE org_id=%s AND user_id=%s", dst)
+        self._conn.execute("DELETE FROM facts WHERE org_id=%s AND user_id=%s", dst)
+        if pairs:
+            pred, pred_params = self._pairs_pred(pairs)
             self._conn.execute(
                 f"INSERT INTO facts ({_FACT_COPY_COLS}) "
-                f"SELECT {_FACT_COPY_COLS} FROM cached_facts "
-                "WHERE org_id=%s AND user_id=%s AND cache_key = ANY(%s)",
-                (self.org_id, self.user_id, keys),
+                f"SELECT {_FACT_RESTAMP_SELECT} FROM snapshots WHERE org_id=%s AND {pred}",
+                (*dst, self.org_id, *pred_params),
             )
             self._conn.execute(
                 "INSERT INTO fact_edges (org_id, user_id, src_id, dst_id, kind) "
-                "SELECT org_id, user_id, src_id, dst_id, kind FROM cached_fact_edges "
-                "WHERE org_id=%s AND user_id=%s AND cache_key = ANY(%s)",
-                (self.org_id, self.user_id, keys),
+                "SELECT %s, %s, src_id, dst_id, kind FROM snapshot_edges "
+                f"WHERE org_id=%s AND {pred}",
+                (*dst, self.org_id, *pred_params),
             )
             self._conn.execute(
                 f"INSERT INTO claims ({_CLAIM_COPY_COLS}) "
-                f"SELECT {_CLAIM_COPY_COLS} FROM cached_claims "
-                "WHERE org_id=%s AND user_id=%s AND cache_key = ANY(%s)",
-                (self.org_id, self.user_id, keys),
+                f"SELECT {_CLAIM_RESTAMP_SELECT} FROM snapshot_claims WHERE org_id=%s AND {pred}",
+                (*dst, self.org_id, *pred_params),
             )
         row = self._conn.execute(
-            "SELECT count(*) FROM facts WHERE org_id=%s AND user_id=%s", (self.org_id, self.user_id)
+            "SELECT count(*) FROM facts WHERE org_id=%s AND user_id=%s", dst
         ).fetchone()
         return int(row[0]) if row else 0
 
-    def merge_caches_into_live(self, cache_keys: list[str]) -> int:
-        """Additively upsert the given cached states into the live graph.
+    def merge_caches_into_live(self, keys: list[tuple[str, str]]) -> int:
+        """Additively upsert the given snapshots into this user's working memory.
 
-        Unlike ``load_caches`` (which truncates the whole live graph first), this
-        keeps every other live fact: for each fact in the selected cache entries
-        it deletes any live fact with the same id (so re-adding an eval replaces
-        its own nodes) and then inserts the cached rows + edges. Returns facts
-        inserted.
+        Unlike ``load_caches`` (which truncates the whole working graph first), this
+        keeps every other live fact: for each fact in the selected snapshots it deletes
+        any live fact with the same id (so re-adding an eval replaces its own nodes)
+        and then inserts the snapshot rows + edges (stamped with the loader's
+        ``user_id``). Returns facts inserted.
         """
         self._require_live("merge_caches_into_live")
-        keys = list(cache_keys)
-        if not keys:
+        pairs = list(keys)
+        if not pairs:
             return 0
-        tenant_keys = (self.org_id, self.user_id, keys)
-        # Ids about to be (re)inserted from the cache.
-        id_subq = (
-            "SELECT id FROM cached_facts "
-            "WHERE org_id=%s AND user_id=%s AND cache_key = ANY(%s)"
-        )
+        dst = (self.org_id, self.user_id)
+        pred, pred_params = self._pairs_pred(pairs)
+        # Ids about to be (re)inserted from the snapshots.
+        id_subq = f"SELECT id FROM snapshots WHERE org_id=%s AND {pred}"
+        id_params = (self.org_id, *pred_params)
         # Drop any existing live copies of those ids (edges first for the FK).
         self._conn.execute(
             "DELETE FROM fact_edges WHERE org_id=%s AND user_id=%s "
             f"AND (src_id IN ({id_subq}) OR dst_id IN ({id_subq}))",
-            (self.org_id, self.user_id, *tenant_keys, *tenant_keys),
+            (*dst, *id_params, *id_params),
         )
         self._conn.execute(
             f"DELETE FROM facts WHERE org_id=%s AND user_id=%s AND id IN ({id_subq})",
-            (self.org_id, self.user_id, *tenant_keys),
+            (*dst, *id_params),
         )
         self._conn.execute(
             f"INSERT INTO facts ({_FACT_COPY_COLS}) "
-            f"SELECT {_FACT_COPY_COLS} FROM cached_facts "
-            "WHERE org_id=%s AND user_id=%s AND cache_key = ANY(%s)",
-            tenant_keys,
+            f"SELECT {_FACT_RESTAMP_SELECT} FROM snapshots WHERE org_id=%s AND {pred}",
+            (*dst, self.org_id, *pred_params),
         )
         self._conn.execute(
             "INSERT INTO fact_edges (org_id, user_id, src_id, dst_id, kind) "
-            "SELECT org_id, user_id, src_id, dst_id, kind FROM cached_fact_edges "
-            "WHERE org_id=%s AND user_id=%s AND cache_key = ANY(%s)",
-            tenant_keys,
+            "SELECT %s, %s, src_id, dst_id, kind FROM snapshot_edges "
+            f"WHERE org_id=%s AND {pred}",
+            (*dst, self.org_id, *pred_params),
         )
         # Claims for the dropped fact ids cascaded on the facts delete above; refill
-        # them from the cache (a re-added eval replaces its own claim rows).
+        # them from the snapshot (a re-added eval replaces its own claim rows).
         self._conn.execute(
             f"INSERT INTO claims ({_CLAIM_COPY_COLS}) "
-            f"SELECT {_CLAIM_COPY_COLS} FROM cached_claims "
-            "WHERE org_id=%s AND user_id=%s AND cache_key = ANY(%s)",
-            tenant_keys,
+            f"SELECT {_CLAIM_RESTAMP_SELECT} FROM snapshot_claims WHERE org_id=%s AND {pred}",
+            (*dst, self.org_id, *pred_params),
         )
         row = self._conn.execute(
-            "SELECT count(*) FROM cached_facts WHERE org_id=%s AND user_id=%s AND cache_key = ANY(%s)",
-            tenant_keys,
+            f"SELECT count(*) FROM snapshots WHERE org_id=%s AND {pred}",
+            (self.org_id, *pred_params),
         ).fetchone()
         return int(row[0]) if row else 0
 
-    def list_caches(self, prefix: str) -> list[dict]:
-        """List saved cache entries whose key starts with ``prefix``.
+    def list_caches(self, space: str) -> list[dict]:
+        """List the snapshots saved in ``space`` (org-shared), newest-first.
 
-        Returns ``[{"key", "count", "created_at"}]`` newest-first. Use prefix
-        ``"snapshot:"`` for snapshots or ``"eval:"`` for cached eval cases.
+        Returns ``[{"snapshot", "count", "created_at"}]`` — one entry per distinct
+        snapshot name in the space.
         """
         self._require_live("list_caches")
         rows = self._conn.execute(
-            "SELECT cache_key, count(*), max(created_at) FROM cached_facts "
-            "WHERE org_id=%s AND user_id=%s AND cache_key LIKE %s "
-            "GROUP BY cache_key ORDER BY max(created_at) DESC",
-            (self.org_id, self.user_id, prefix + "%"),
+            "SELECT snapshot, count(*), max(created_at) FROM snapshots "
+            "WHERE org_id=%s AND space=%s "
+            "GROUP BY snapshot ORDER BY max(created_at) DESC",
+            (self.org_id, space),
         ).fetchall()
         return [
             {
-                "key": r[0],
+                "snapshot": r[0],
                 "count": int(r[1]),
                 "created_at": r[2].isoformat() if hasattr(r[2], "isoformat") else str(r[2]),
             }
             for r in rows
         ]
 
-    def delete_cache(self, cache_key: str) -> int:
-        """Delete a saved cache entry (edges cascade). Returns facts removed."""
+    def delete_cache(self, space: str, snapshot: str) -> int:
+        """Delete one org-shared snapshot (edges/claims cascade). Returns facts removed."""
         self._require_live("delete_cache")
         cur = self._conn.execute(
-            "DELETE FROM cached_facts WHERE org_id=%s AND user_id=%s AND cache_key=%s",
-            (self.org_id, self.user_id, cache_key),
+            "DELETE FROM snapshots WHERE org_id=%s AND space=%s AND snapshot=%s",
+            (self.org_id, space, snapshot),
         )
         return cur.rowcount
 
-    def rename_cache(self, old_key: str, new_key: str) -> int:
-        """Re-key a saved cache entry from ``old_key`` to ``new_key`` in place.
+    def rename_cache(self, space: str, old_snapshot: str, new_snapshot: str) -> int:
+        """Rename a snapshot within ``space`` from ``old_snapshot`` to ``new_snapshot``.
 
-        A snapshot's name *is* its ``cache_key``, so renaming one means rewriting
-        ``cache_key`` across its facts, edges, and claims (all three carry it).
-        Pure metadata update — embeddings/ids/states are untouched. Returns the
-        number of fact rows moved (0 == ``old_key`` had no rows). The caller is
-        responsible for the collision check (``new_key`` already in use) and for
+        Rewrites ``snapshot`` across its facts, edges, and claims (all three carry it).
+        Pure metadata update — embeddings/ids/states are untouched. Returns the number
+        of fact rows moved (0 == ``old_snapshot`` had no rows). The caller is
+        responsible for the collision check (``new_snapshot`` already in use) and for
         re-pointing any external references (e.g. ``mounted_snapshots``).
         """
         self._require_live("rename_cache")
-        for table in ("cached_fact_edges", "cached_claims", "cached_facts"):
+        for table in ("snapshot_edges", "snapshot_claims", "snapshots"):
             self._conn.execute(
-                f"UPDATE {table} SET cache_key=%s "
-                "WHERE org_id=%s AND user_id=%s AND cache_key=%s",
-                (new_key, self.org_id, self.user_id, old_key),
+                f"UPDATE {table} SET snapshot=%s "
+                "WHERE org_id=%s AND space=%s AND snapshot=%s",
+                (new_snapshot, self.org_id, space, old_snapshot),
             )
         row = self._conn.execute(
-            "SELECT count(*) FROM cached_facts WHERE org_id=%s AND user_id=%s AND cache_key=%s",
-            (self.org_id, self.user_id, new_key),
+            "SELECT count(*) FROM snapshots WHERE org_id=%s AND space=%s AND snapshot=%s",
+            (self.org_id, space, new_snapshot),
         ).fetchone()
         return int(row[0]) if row else 0
 
-    def cache_count(self, cache_key: str) -> int:
-        """How many facts are cached under ``cache_key`` (0 == not cached)."""
+    def cache_count(self, space: str, snapshot: str) -> int:
+        """How many facts are in the snapshot ``(space, snapshot)`` (0 == absent)."""
         self._require_live("cache_count")
         row = self._conn.execute(
-            "SELECT count(*) FROM cached_facts WHERE org_id=%s AND user_id=%s AND cache_key=%s",
-            (self.org_id, self.user_id, cache_key),
+            "SELECT count(*) FROM snapshots WHERE org_id=%s AND space=%s AND snapshot=%s",
+            (self.org_id, space, snapshot),
         ).fetchone()
         return int(row[0]) if row else 0
 
-    # --- cross-tenant copy (share a snapshot / space between orgs) ----------
+    # --- cross-org copy (share a snapshot between orgs) --------------------
     def copy_snapshot_from(
-        self, src_org_id: str, src_user_id: str, src_cache_key: str, dst_cache_key: str
+        self, src_org_id: str, src_space: str, src_snapshot: str
     ) -> int:
-        """Copy a saved snapshot from another tenant's cache into this one's.
+        """Copy another snapshot's rows INTO this snapshot-bound graph's ``(space, snapshot)``.
 
-        Cross-org sharing: the source rows under ``(src_org_id, src_user_id,
-        src_cache_key)`` are re-stamped with THIS graph's ``(org_id, user_id)``
-        and written under ``dst_cache_key``. Ids, embeddings, state and meta are
-        preserved verbatim (a pure SQL copy, no re-embedding), so a later
-        ``load_caches`` restores losslessly. The caller authorizes both tenants
-        and guarantees ``dst_cache_key`` is free here. Returns facts copied.
+        Cross-org sharing: the source rows under ``(src_org_id, src_space,
+        src_snapshot)`` are re-stamped with THIS graph's ``org_id`` and written under
+        THIS graph's ``(space, snapshot)``. Ids, embeddings, state and meta are
+        preserved verbatim (a pure SQL copy, no re-embedding). The caller authorizes
+        both orgs and guarantees the destination snapshot is free. Returns facts copied.
         """
-        self._require_live("copy_snapshot_from")
-        dst = (self.org_id, self.user_id)
-        src = (src_org_id, src_user_id, src_cache_key)
+        if not self._is_snapshot:
+            raise ValueError("copy_snapshot_from requires a snapshot-bound destination graph")
+        dst_org = self.org_id
+        dst = (self.space, self.snapshot)
+        src = (src_org_id, src_space, src_snapshot)
         self._conn.execute(
-            f"INSERT INTO cached_facts ({_FACT_COPY_COLS}, cache_key) "
-            f"SELECT {_FACT_RESTAMP_SELECT}, %s FROM cached_facts "
-            "WHERE org_id=%s AND user_id=%s AND cache_key=%s",
-            (*dst, dst_cache_key, *src),
+            f"INSERT INTO snapshots ({_SNAPSHOT_COPY_COLS}, space, snapshot) "
+            f"SELECT {_SNAPSHOT_RESTAMP_SELECT}, %s, %s FROM snapshots "
+            "WHERE org_id=%s AND space=%s AND snapshot=%s",
+            (dst_org, *dst, *src),
         )
         self._conn.execute(
-            "INSERT INTO cached_fact_edges (org_id, user_id, cache_key, src_id, dst_id, kind) "
-            "SELECT %s, %s, %s, src_id, dst_id, kind FROM cached_fact_edges "
-            "WHERE org_id=%s AND user_id=%s AND cache_key=%s",
-            (*dst, dst_cache_key, *src),
+            "INSERT INTO snapshot_edges (org_id, space, snapshot, src_id, dst_id, kind) "
+            "SELECT %s, %s, %s, src_id, dst_id, kind FROM snapshot_edges "
+            "WHERE org_id=%s AND space=%s AND snapshot=%s",
+            (dst_org, *dst, *src),
         )
         self._conn.execute(
-            f"INSERT INTO cached_claims ({_CLAIM_COPY_COLS}, cache_key) "
-            f"SELECT {_CLAIM_RESTAMP_SELECT}, %s FROM cached_claims "
-            "WHERE org_id=%s AND user_id=%s AND cache_key=%s",
-            (*dst, dst_cache_key, *src),
+            f"INSERT INTO snapshot_claims ({_SNAPSHOT_CLAIM_COPY_COLS}, space, snapshot) "
+            f"SELECT {_SNAPSHOT_CLAIM_RESTAMP_SELECT}, %s, %s FROM snapshot_claims "
+            "WHERE org_id=%s AND space=%s AND snapshot=%s",
+            (dst_org, *dst, *src),
         )
-        return self.cache_count(dst_cache_key)
+        row = self._conn.execute(
+            "SELECT count(*) FROM snapshots WHERE org_id=%s AND space=%s AND snapshot=%s",
+            (dst_org, *dst),
+        ).fetchone()
+        return int(row[0]) if row else 0
 
     def copy_live_from(self, src_org_id: str, src_user_id: str) -> int:
         """Copy another tenant's entire live graph into this (fresh) live graph.
@@ -2535,18 +2558,15 @@ class PostgresVectorGraph(SearchableGraph):
             return
         subjects = [s for s, _ in slots]
         attributes = [a for _, a in slots]
+        key_pred, params = self._key_pred("c")
         sql = (
             "SELECT c.subject, c.attribute, c.value, f.id, f.text, f.state "
             f"FROM {self._claims_table} c "
-            f"JOIN {self._facts_table} f ON f.org_id=c.org_id AND f.user_id=c.user_id "
-            "AND f.id=c.fact_id "
-            "WHERE c.org_id=%s AND c.user_id=%s AND c.functional "
+            f"JOIN {self._facts_table} f ON {self._join_keys('f', 'c')} AND f.id=c.fact_id "
+            f"WHERE {key_pred} AND c.functional "
             "AND (c.subject, c.attribute) IN (SELECT unnest(%s::text[]), unnest(%s::text[]))"
         )
-        params: list[object] = [self.org_id, self.user_id, subjects, attributes]
-        if self._cache_key is not None:
-            sql += " AND c.cache_key=%s AND f.cache_key=%s"
-            params.extend([self._cache_key, self._cache_key])
+        params.extend([subjects, attributes])
         rows = self._conn.execute(sql, params).fetchall()
         decision.claim_candidates = [
             ClaimHit(
@@ -2568,12 +2588,13 @@ class PostgresVectorGraph(SearchableGraph):
     def _recent(self, limit: int) -> list[Fact]:
         # Backs the no-context ``read`` path, so it surfaces only retrievable
         # ("active") facts, matching ``search``'s gating.
+        key_pred, key_params = self._key_pred()
         rows = self._conn.execute(
             "SELECT id, text, source, confidence, scope, category, observation_count, state "
-            f"FROM {self._facts_table} WHERE org_id = %s AND (shared OR user_id = %s) "
+            f"FROM {self._facts_table} WHERE {key_pred} "
             "AND state = 'active' "
             "ORDER BY created_at DESC LIMIT %s",
-            (self.org_id, self.user_id, limit),
+            (*key_params, limit),
         ).fetchall()
         return [self._row_to_fact(r) for r in rows]
 
@@ -2589,14 +2610,14 @@ class PostgresVectorGraph(SearchableGraph):
         valid_at = meta.get("valid_at")
         if valid_at is None:
             valid_at = datetime.now(timezone.utc)
-        # cache_key only exists on cached_facts; meta exists on both tables.
-        cols = ["id", "org_id", "user_id", "text", "source", "confidence",
+        # The partition key (org_id,user_id | org_id,space,snapshot) is stamped via
+        # the key columns; snapshots carry no user_id and no outcome-trust columns.
+        cols = ["id", *self._key_cols(), "text", "source", "confidence",
                 "scope", "category", "state", "embedding",
                 "valid_at", "invalid_at", "meta"]
         vals: list[object] = [
             fact_id,
-            self.org_id,
-            self.user_id,
+            *self._key_vals(),
             decision.text,
             getattr(decision, "source", None),
             1.0,
@@ -2608,9 +2629,6 @@ class PostgresVectorGraph(SearchableGraph):
             None,
             json.dumps(meta),
         ]
-        if self._cache_key is not None:
-            cols.append("cache_key")
-            vals.append(self._cache_key)
         placeholders = ", ".join(["%s"] * len(vals))
         self._conn.execute(
             f"INSERT INTO {self._facts_table} ({', '.join(cols)}) VALUES ({placeholders})",
@@ -2621,11 +2639,12 @@ class PostgresVectorGraph(SearchableGraph):
 
     def _merge(self, decision: WriteDecision) -> None:
         # Near-/exact-dup: bump the existing fact's evidence count, keep text.
+        key_pred, key_params = self._key_pred()
         self._conn.execute(
             f"UPDATE {self._facts_table} SET observation_count = observation_count + 1, "
             "confidence = LEAST(1.0, COALESCE(confidence, 1.0) + 0.05) "
-            "WHERE org_id = %s AND user_id = %s AND id = %s",
-            (self.org_id, self.user_id, decision.update_target_id),
+            f"WHERE {key_pred} AND id = %s",
+            (*key_params, decision.update_target_id),
         )
 
     def _augment(self, decision: WriteDecision) -> None:
@@ -2638,12 +2657,13 @@ class PostgresVectorGraph(SearchableGraph):
         the surviving fact (the merged text is additive, not a slot conflict).
         """
         merged = (decision.augment_text or decision.text).strip()
+        key_pred, key_params = self._key_pred()
         self._conn.execute(
             f"UPDATE {self._facts_table} SET text = %s, embedding = %s, "
             "observation_count = observation_count + 1, "
             "confidence = LEAST(1.0, COALESCE(confidence, 1.0) + 0.05) "
-            "WHERE org_id = %s AND user_id = %s AND id = %s",
-            (merged, _fit(self._embed(merged)), self.org_id, self.user_id, decision.update_target_id),
+            f"WHERE {key_pred} AND id = %s",
+            (merged, _fit(self._embed(merged)), *key_params, decision.update_target_id),
         )
 
     def _overwrite(self, decision: WriteDecision) -> str:
@@ -2668,15 +2688,15 @@ class PostgresVectorGraph(SearchableGraph):
             # so close its validity window at the winner's valid_at (falling
             # back to now()). The row and its text are kept for point-in-time
             # recall — an `as_of` before the winner still recovers the loser.
+            loser_pred, loser_params = self._key_pred("loser")
             self._conn.execute(
                 f"UPDATE {self._facts_table} AS loser SET state = 'rejected', "
                 "invalid_at = COALESCE("
                 f"  (SELECT winner.valid_at FROM {self._facts_table} AS winner "
-                "    WHERE winner.org_id = loser.org_id "
-                "      AND winner.user_id = loser.user_id AND winner.id = %s), "
+                f"    WHERE {self._join_keys('winner', 'loser')} AND winner.id = %s), "
                 "  now()) "
-                "WHERE loser.org_id = %s AND loser.user_id = %s AND loser.id = %s",
-                (fact_id, self.org_id, self.user_id, loser_id),
+                f"WHERE {loser_pred} AND loser.id = %s",
+                (fact_id, *loser_params, loser_id),
             )
             src, dst = sorted((fact_id, loser_id))
             self.add_edge(src, dst, "contradicted_by")

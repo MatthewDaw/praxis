@@ -125,7 +125,7 @@ class OrgsStore:
 
         Dropping the ``orgs`` row cascades to ``org_members`` and ``spaces`` via
         their ``ON DELETE CASCADE`` foreign keys, but the tenant graph storage
-        (``facts``/``cached_facts``/``mounted_snapshots``/``api_keys``) has no FK
+        (``facts``/``snapshots``/``mounted_snapshots``/``api_keys``) has no FK
         back to ``orgs`` and must be purged by the caller. Authorization — that
         the requester is an org *owner* — is the route's job, not this method's;
         this is the raw delete.

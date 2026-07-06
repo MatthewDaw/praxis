@@ -44,7 +44,6 @@ it — no `httpx`, `pycognito`, or `praxis` import.
 | `PRAXIS_API_BASE_URL` | Base URL. Default `http://localhost:8000`.                              |
 | `PRAXIS_API_KEY`      | Preferred auth. Sent as `x-praxis-key`.                                 |
 | `PRAXIS_ORG`          | Tenant org, sent as `x-praxis-org`. Default `agent-factory`.            |
-| `PRAXIS_SPACE`        | Optional space, sent as `x-praxis-space` only when set.                 |
 | `PRAXIS_AUTH_DISABLED`| `1` = dev seam; skip auth entirely (server has a matching seam).        |
 | `COGNITO_CLIENT_ID`   | Used to mint a bearer when no API key is set.                           |
 | `COGNITO_REGION`      | Cognito region for the mint. Default `us-east-1`.                       |
@@ -53,6 +52,11 @@ it — no `httpx`, `pycognito`, or `praxis` import.
 `x-praxis-key` · else mint a Cognito ID token from `~/.praxis/mcp.json`'s `refresh_token` via a raw
 `InitiateAuth` REFRESH_TOKEN_AUTH call (minimal replication of `knowledge/mcp/identity.py:token()`,
 without importing praxis) → `Authorization: Bearer`. If no credential is available, **fail closed.**
+
+There is **no space header for working memory.** Working-memory reads/writes resolve to `(org,
+authenticated principal)` — the client sends `x-praxis-org` and the auth credential only. `space` +
+`snapshot` are emitted (as `x-praxis-space` + `x-praxis-snapshot`) ONLY on the explicit snapshot-bound
+reads/writes below (the checks-snapshot seam and the mutable `prd-<project>` ticket ops).
 
 ## Canonical meta keys (on the requirement / ticket node)
 
@@ -143,7 +147,7 @@ arg is the ONE seam between the two callers — everything downstream (pin / cov
 - **`scope=None`** (default, back-compat) — tag union surface across all check scopes.
 
 **The semantic lane is ADVISORY, not part of the mandatory contract.** `retrieve_advisory_checks(ticket,
-project, scope, checks_space, top_k)` runs a hybrid retrieval (`/context`) of `category="check"` facts
+project, scope, checks_ref, top_k)` runs a hybrid retrieval (`/context`) of `category="check"` facts
 close to the ticket's text and returns them as **candidate inspiration** for the worker's synthesis step.
 They are NEVER pinned as `required_validations` and NEVER gate completion — the worker folds relevant ones
 into its authored validations and ignores the rest. Keeping semantics OUT of the hard gate is deliberate:
@@ -152,14 +156,17 @@ enforced. Per-ticket flow: **clear → resolve MANDATORY (precise) → retrieve 
 authors validations covering the mandatory set (+ any advisory it honors) → build → every pinned
 validation must pass (external signal) before `finished`.**
 
-**The checks-space seam.** Check *reads* target a tenancy space **separate** from the ticket/plan space,
-via a `checks_space` parameter (`resolve_validation_requirements` / `start_ticket`) that becomes a
-per-request `x-praxis-space` override on `facts_by` / `surface_checks` only — ticket state (claims,
-pins, passes) never moves off the default/`PRAXIS_SPACE` space. Default read space by scope:
-`scope="validation"` → **`coding-validation`**, `scope="planning"` → **`planning-validation`**, `scope=None`
-→ the ticket/default space. The `af-build` / `af-intake` slash argument `--checks-space=<space>` overrides
-per run (`checks_space="<space>"`); `checks_space=None` forces the ticket/default space. A check is only
-resolvable if it was authored INTO the space RESOLVE reads.
+**The checks-space seam.** Check *reads* target a snapshot **separate** from the `prd-<project>`
+ticket/plan snapshot, via a `checks_ref` parameter (`resolve_validation_requirements` /
+`start_ticket`) that becomes a per-request `x-praxis-space` + `x-praxis-snapshot` override on
+`facts_by` / `surface_checks` only — ticket state (claims, pins, passes) never moves off the
+`prd-<project>` snapshot. Both snapshots live in the SAME project space (`space=<project>`, the bare
+project name); only the snapshot differs. Default read snapshot by scope: `scope="validation"` →
+**`building-validation`** (renamed from `coding-validation`), `scope="planning"` →
+**`planning-validation`**, `scope=None` → the ticket/default reference. The `af-build` / `af-intake`
+slash argument `--checks-space=<...>` overrides per run as a `(space, snapshot)` pair
+(`checks_ref=(space, snapshot)`); `checks_ref=None` forces the ticket/default reference. A check is
+only resolvable if it was authored INTO the snapshot RESOLVE reads.
 
 ## Coverage is the contract; validations are the eval
 
@@ -182,21 +189,26 @@ no acceptance condition yields an empty contract (a planning defect) → `block(
 ```python
 class PraxisUnreachable(RuntimeError): ...   # fail-closed signal; callers BLOCK
 
-incomplete_requirements(project: str, *, exclude_leased: bool = False) -> list[dict]
+incomplete_requirements(project: str, *, exclude_leased: bool = False, space: str|None = None, snapshot: str|None = None) -> list[dict]
 # Pass the BARE project name. The endpoint prepends "prd-" itself; this fn strips a single leading
 # "prd-" so an already-prefixed "prd-team-app" can never become "prd-prd-team-app" (→ empty → a
 # gate that fails OPEN). Both "team-app" and "prd-team-app" resolve to bare "team-app".
-get_fact(cid: str) -> dict                                  # full fact incl meta
-facts_by(category: str|None = None, meta: dict|None = None, state: str = "active", space: str|None = None) -> list[dict]
-patch_meta(cid: str, meta_dict: dict) -> dict               # MERGE meta (build_state/claim/pinned_checks)
-record_outcome(cid: str, success: bool) -> dict
-surface_checks(project: str, screen_id: str, scope: str|None = None, space: str|None = None) -> list[dict]
-    # space= overrides x-praxis-space for this read only (the checks-space seam)
-context(query: str, *, top_k: int = 10, as_of=None, space: str|None = None) -> list[dict]  # hybrid retrieval (semantic lane)
-ping() -> bool                                              # smoke-test liveness
+# The prd-<project> tickets are a MUTABLE snapshot at (space=<project>, snapshot=prd-<project>);
+# thread that (space, snapshot) reference so ticket reads/writes hit the project snapshot.
+get_fact(cid: str, *, space: str|None = None, snapshot: str|None = None) -> dict   # full fact incl meta
+facts_by(category: str|None = None, meta: dict|None = None, state: str = "active", space: str|None = None, snapshot: str|None = None) -> list[dict]
+patch_meta(cid: str, meta_dict: dict, *, space: str|None = None, snapshot: str|None = None) -> dict   # MERGE meta (build_state/claim/pinned_checks)
+record_outcome(cid: str, success: bool, *, space: str|None = None, snapshot: str|None = None) -> dict
+surface_checks(project: str, screen_id: str, scope: str|None = None, space: str|None = None, snapshot: str|None = None) -> list[dict]
+    # (space, snapshot)= override x-praxis-space + x-praxis-snapshot for this read only (the checks-snapshot seam)
+context(query: str, *, top_k: int = 10, as_of=None, space: str|None = None, snapshot: str|None = None) -> list[dict]  # hybrid retrieval (semantic lane)
+ping() -> bool                                              # smoke-test liveness (no snapshot)
 ```
 
-Every method raises `PraxisUnreachable` on any connection/HTTP/auth error.
+Every method raises `PraxisUnreachable` on any connection/HTTP/auth error. A method emits
+`x-praxis-space` + `x-praxis-snapshot` ONLY when BOTH `space` and `snapshot` are given; a required
+`(space, snapshot)` reference that is missing (or defaults to empty) must RAISE — never silently fall
+back to working memory, since a mis-routed checks read returning empty would fail a Stop gate OPEN.
 
 ## Public API — `hooks/_ticket_state.py`
 
@@ -208,14 +220,19 @@ DEFAULT_LEASE_TTL_S = 900     # per-ticket claim lease
 DEFAULT_RUN_TTL_S   = 3600    # whole-set run marker (refreshed at each ticket boundary)
 
 # --- requirements (the QUERY) + the coverage contract ---
-resolve_validation_requirements(ticket, project="", scope=None, checks_space=<default>) -> list[dict]  # alias: resolve_checks
+resolve_validation_requirements(ticket, project="", scope=None, checks_ref=<default>) -> list[dict]  # alias: resolve_checks
     # scope="validation" (af-build, per-ticket tag∪surface) | "planning" (af-intake, whole checklist) | None
-    # checks_space= the seam: unset -> per-scope default (validation->coding-validation, planning->planning-validation);
-    #   a str overrides (--checks-space slash arg); None forces the ticket/default space
+    # checks_ref= the (space, snapshot) seam: unset -> space=project + per-scope default snapshot
+    #   (validation->building-validation, planning->planning-validation); a (space, snapshot) pair (or a bare
+    #   snapshot name, space defaulting to project) overrides (--checks-space slash arg);
+    #   None forces the ticket/default reference (space=project, snapshot=prd-<project>)
     # MANDATORY (precise) lanes only: tag ∪ "*" wildcard ∪ surface — the coverage contract
-retrieve_advisory_checks(ticket, project="", scope=None, checks_space=<default>, top_k=10) -> list[dict]
+retrieve_advisory_checks(ticket, project="", scope=None, checks_ref=<default>, top_k=10) -> list[dict]
     # the SEMANTIC lane — advisory candidate checks (inspiration); NEVER pinned/required, never gates
-default_checks_space(scope) -> str|None                      # the per-scope default read space
+default_checks_snapshot(scope) -> str|None                   # per-scope default read SNAPSHOT (alias: default_checks_space)
+    # validation -> "building-validation", planning -> "planning-validation", else None; the space half is project
+DEFAULT_VALIDATION_CHECKS_SNAPSHOT = "building-validation"   # was DEFAULT_VALIDATION_CHECKS_SPACE="coding-validation"
+DEFAULT_PLANNING_CHECKS_SNAPSHOT   = "planning-validation"   # was DEFAULT_PLANNING_CHECKS_SPACE
 acceptance_requirement(cid, acceptance_text) -> dict         # the <cid>::acceptance floor requirement
 contract_with_floor(cid, acceptance_text, resolved: list) -> list  # resolved checks + acceptance floor (dedup)
 pin_requirements(cid: str, requirements: list) -> dict       # truncate validations + pin coverage contract
@@ -248,7 +265,7 @@ refresh_run(cids: list[str], owner) -> int                   # bump run_at at ea
 clear_run(cids: list[str], owner) -> int                     # end the run (scoped set done / aborted)
 run_live(meta: dict, now=None) -> bool                       # non-stale run marker present?
 
-start_ticket(cid, owner, project="", ttl=900, checks_space=<default>) -> list[dict]|None  # claim + resolve (from checks_space) + pin
+start_ticket(cid, owner, project="", ttl=900, checks_ref=<default>) -> list[dict]|None  # claim + resolve (space=project, snapshot from checks_ref) + pin
 ```
 
 `ticket` arguments accept either a fact id (`str`) or an already-fetched fact (`dict`). All Praxis

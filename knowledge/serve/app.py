@@ -6,10 +6,13 @@ dashboard "candidate" read model is a projection of facts via
 :class:`knowledge.serve.facts_candidates.FactsCandidates`; the graph view, the
 MCP ``get_context`` retrieval, and the Contradictions tab all read the same rows.
 
-Saved graph states (user snapshots + cached eval cases) live in the
-``cached_facts`` table keyed by ``cache_key`` (``snapshot:<name>`` /
-``eval:<case_id>``); loading one truncates the live graph and inserts the saved
-rows, and snapshotting copies the live graph into the cache.
+Saved graph states are org-shared **snapshots** inside a **space**, held in the
+``snapshots`` table keyed ``(org_id, space, snapshot)`` (eval fixtures use the
+reserved ``__evals__`` space, one snapshot per case id). Loading a snapshot copies
+its rows into the caller's working memory; dumping copies working memory into a
+snapshot. A ``(space, snapshot)`` is addressed explicitly via the
+``X-Praxis-Space`` + ``X-Praxis-Snapshot`` headers (generic routes) or request
+body/query params (snapshot/mount routes) — never by mangling ``user_id``.
 
 Every data route hard-requires a valid Cognito JWT (the ``current_user``
 dependency) and resolves the active org from the ``X-Praxis-Org`` header; the
@@ -341,13 +344,66 @@ def create_app(conn: Any | None = None) -> FastAPI:
     # Test seam: lets reliability tests assert per-thread isolation + reopen.
     app_get_conn = resolve_conn
 
-    def candidates_for(org: str, sub: str) -> FactsCandidates:
-        """The candidate facade for one requester's tenant graph."""
-        return FactsCandidates(conn, org, sub)
+    # Reserved space id for the eval cache (org-scoped fixtures). Rejected for
+    # user-created spaces and filtered out of /spaces and /org/sources.
+    _RESERVED_EVAL_SPACE = "__evals__"
+
+    def _require_space(org: str, target: tuple[str, str]) -> tuple[str, str]:
+        """Validate a snapshot target's space exists (404 otherwise); return it.
+
+        The reserved eval space is never addressable through the generic
+        snapshot-target seam (it has no ``spaces`` registry row anyway).
+        """
+        space, snap = target
+        if space == _RESERVED_EVAL_SPACE or not spaces_store.exists(org, space):
+            raise HTTPException(status_code=404, detail=f"unknown space {space!r}")
+        return space, snap
+
+    def candidates_for(
+        org: str, sub: str, target: tuple[str, str] | None = None
+    ) -> FactsCandidates:
+        """The candidate facade for the requester's working memory, or a snapshot.
+
+        With no ``target`` this is the requester's private working-memory graph.
+        With a ``(space, snapshot)`` target it projects the candidate surface over
+        that org-shared snapshot so the factory can read/mutate a project
+        snapshot's tickets directly by id.
+        """
+        if target is None:
+            return FactsCandidates(conn, org, sub)
+        space, snap = _require_space(org, target)
+        return FactsCandidates(
+            conn, org, sub, facts_table="snapshots", space=space, snapshot=snap
+        )
 
     def live_graph(org: str, sub: str) -> PostgresVectorGraph:
-        """The live facts graph for one requester (no write policy needed for reads)."""
+        """The requester's working-memory graph (no write policy needed for reads)."""
         return PostgresVectorGraph(conn, org, sub)
+
+    def graph_for(
+        org: str,
+        sub: str,
+        target: tuple[str, str] | None,
+        *,
+        policy: list | None = None,
+    ) -> PostgresVectorGraph:
+        """Resolve the graph a generic read/write route operates on.
+
+        ``target is None`` -> the requester's working memory (keyed ``(org, sub)``).
+        A ``(space, snapshot)`` target -> the org-shared snapshot-bound graph
+        (keyed ``(org, space, snapshot)``); an unknown space is a 404. This is the
+        seam the factory uses to read/mutate a project snapshot (checks +
+        ``prd-<project>`` tickets) with an explicit header pair, no user mangling.
+        """
+        if target is None:
+            if policy is None:
+                return live_graph(org, sub)
+            return PostgresVectorGraph(conn, org, sub, policy=policy)
+        space, snap = _require_space(org, target)
+        kwargs: dict[str, Any] = {} if policy is None else {"policy": policy}
+        return PostgresVectorGraph(
+            conn, org, facts_table="snapshots", space=space, snapshot=snap, **kwargs
+        )
 
     app = FastAPI(title="Praxis Candidate API", version="1")
     # Test seam (see _ConnProxy): resolve the calling thread's live connection.
@@ -401,29 +457,34 @@ def create_app(conn: Any | None = None) -> FastAPI:
     def active_user_id(
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
-        x_praxis_space: str | None = Header(default=None),
     ) -> str:
-        """Resolve the effective tenant ``user_id`` for the requester's working graph.
+        """The working-memory tenant ``user_id``: always the authenticated principal.
 
-        A *space* (``X-Praxis-Space``) lets one login own multiple ``user_id``
-        partitions within an org, so different agents can drive different live
-        graphs concurrently. The derivation is the one key rule of the feature:
+        Working memory is a per-user private live graph keyed ``(org, sub)``. There
+        is no space-mangling: space/snapshot are explicit parameters on the
+        snapshot/mount operations only (see ``snapshot_target``), never a
+        header-driven working-graph selector. The name is kept to minimize the diff
+        across the ~45 call sites that depend on it.
+        """
+        return principal.sub
 
-        * no space selected (absent/empty header) -> ``principal.sub`` UNCHANGED,
-          so a login's existing default graph stays exactly where it was.
-        * named space ``<sid>`` -> ``f"{principal.sub}::space:{sid}"``, but only
-          after proving the caller owns that space (spaces are PRIVATE to the
-          creating login); an unknown/unowned space is a 404.
+    def snapshot_target(
+        x_praxis_space: str | None = Header(default=None),
+        x_praxis_snapshot: str | None = Header(default=None),
+    ) -> tuple[str, str] | None:
+        """Resolve an explicit ``(space, snapshot)`` target from headers, or None.
 
-        This is the tenant-graph owner — NOT the caller's identity. Identity uses
-        (membership, /me, API-key minting, mount source-user) keep ``principal.sub``.
+        When BOTH ``X-Praxis-Space`` and ``X-Praxis-Snapshot`` are present the
+        generic read/write routes operate on that org-shared snapshot; when either
+        is absent they use the requester's working memory. This is the seam that
+        lets the factory read/mutate a project snapshot (checks + ``prd-<project>``
+        tickets) without any ``{sub}::space:`` mangling.
         """
         space = (x_praxis_space or "").strip()
-        if not space:
-            return principal.sub
-        if not spaces_store.owns(org, principal.sub, space):
-            raise HTTPException(status_code=404, detail=f"unknown space {space!r}")
-        return f"{principal.sub}::space:{space}"
+        snapshot = (x_praxis_snapshot or "").strip()
+        if space and snapshot:
+            return (space, snapshot)
+        return None
 
     @app.get("/health")
     @limiter.exempt  # App Runner health check — never rate-limited.
@@ -524,8 +585,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
         Authorization is two-staged so the response never leaks org existence to a
         non-member: a non-member gets 404 (indistinguishable from "no such org"),
         a member who is not the owner gets 403. The owner's delete purges all
-        org-wide tenant storage (facts/cached/mounted/api keys across every member)
-        and then drops the ``orgs`` row, which cascades ``org_members`` + ``spaces``.
+        org-wide tenant storage (working memory + snapshots + mounts + api keys
+        across every member) and then drops the ``orgs`` row, which cascades
+        ``org_members`` + ``spaces``.
         Destructive and irreversible — this wipes the org for everyone in it.
         """
         # API-key principals are scoped to exactly one org (see ``active_org``); a
@@ -547,14 +609,23 @@ def create_app(conn: Any | None = None) -> FastAPI:
         orgs_store.delete_org(org_id)
         return {"deleted": org_id}
 
-    # --- spaces (a login's private, named working knowledge graphs) --------
+    # --- spaces (org-shared project folders holding snapshots) -------------
     import re as _re
 
     # A space_id is a user-picked slug: lowercase letters/digits/dash/underscore.
-    # The ':' separator used to build the effective user_id is therefore
-    # impossible in a slug, so "<sub>::space:<sid>" can never collide with a
-    # raw sub. ``default`` is reserved (it names the no-space graph).
     _SPACE_SLUG_RE = _re.compile(r"^[a-z0-9_-]+$")
+
+    def _validate_space_slug(space_id: str, field: str = "spaceId") -> None:
+        """Reject an empty/reserved/mis-shaped space slug (400)."""
+        if not space_id or space_id == _RESERVED_EVAL_SPACE:
+            raise HTTPException(
+                status_code=400, detail=f"{field} must be a non-reserved slug"
+            )
+        if not _SPACE_SLUG_RE.fullmatch(space_id):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{field} must be lowercase letters, digits, '-' or '_'",
+            )
 
     @app.post("/spaces")
     def create_space(
@@ -562,80 +633,67 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        """Create a private named space (a fresh working graph) in the active org.
+        """Create an org-shared space (a project folder) in the active org.
 
-        ``active_org`` proves membership; the space is owned by ``principal.sub``
-        (identity, not the tenant-graph owner) and is private to that login. The
-        ``spaceId`` is validated app-side: a non-empty slug, not the reserved
-        ``default``, and never containing ``:`` (the effective-user_id separator).
-        409 if the login already has a space by that id.
+        ``active_org`` proves membership; the space is org-shared (no owner) and
+        readable by every member. No working-graph is created and nothing is
+        activated — a space is just a folder that snapshots live in. 409 if a
+        space by that id already exists in the org.
         """
         space_id = str(body.get("spaceId") or "").strip()
         name = body.get("name")
         name = str(name) if name is not None else None
-        if not space_id or ":" in space_id or space_id == "default":
-            raise HTTPException(
-                status_code=400,
-                detail="spaceId must be a non-'default' slug without ':'",
-            )
-        if not _SPACE_SLUG_RE.fullmatch(space_id):
-            raise HTTPException(
-                status_code=400,
-                detail="spaceId must be lowercase letters, digits, '-' or '_'",
-            )
+        _validate_space_slug(space_id)
         try:
-            spaces_store.create_space(org, principal.sub, space_id, name)
+            spaces_store.create_space(org, space_id, name)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
-        return {"spaceId": space_id, "name": name, "active": True}
+        return {"spaceId": space_id, "name": name}
 
     @app.get("/spaces")
     def list_spaces(
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        """List the caller's private spaces in the active org (ordered by id)."""
-        return {"spaces": spaces_store.list_spaces(org, principal.sub)}
+        """List ALL spaces in the active org (ordered by id; eval space hidden)."""
+        return {
+            "spaces": [
+                s
+                for s in spaces_store.list_spaces(org)
+                if s["space_id"] != _RESERVED_EVAL_SPACE
+            ]
+        }
 
-    # --- tenant/org storage purges (the data side of a delete) -------------
+    # --- org storage purges (the data side of a delete) --------------------
     # These live here (not in a store) because they need the create_app-scoped
-    # ``conn`` proxy and span the whole facts spine — the same DELETEs whether a
-    # single space graph or an entire org is being torn down.
-    def _purge_tenant_graph(org_id: str, user_id: str) -> None:
-        """Hard-delete one tenant graph (``org_id``, ``user_id``): its live facts,
-        cached snapshots, and any mounted-snapshot rows it owns.
+    # ``conn`` proxy and span the whole facts spine.
+    def _purge_space_snapshots(org_id: str, space: str) -> None:
+        """Hard-delete every snapshot in ``(org_id, space)`` and mounts of them.
 
-        ``facts``/``cached_facts`` cascade their edges + claims via FK, so deleting
-        the parent fact rows removes the whole sub-graph. ``mounted_snapshots`` has
-        no such cascade and is deleted explicitly. Everything is scoped to exactly
-        this ``(org_id, user_id)`` pair, so purging a space never touches the
-        login's bare default graph (a different ``user_id``) or another member.
+        ``snapshots`` cascades its edges + claims via FK, so deleting the snapshot
+        rows removes the whole sub-graph. ``mounted_snapshots`` has no such cascade
+        and is deleted explicitly for the whole space. Working memory (``facts``) is
+        NEVER touched.
         """
         with conn.cursor() as cur:
             cur.execute(
-                "DELETE FROM facts WHERE org_id=%s AND user_id=%s", (org_id, user_id)
+                "DELETE FROM snapshots WHERE org_id=%s AND space=%s", (org_id, space)
             )
-            cur.execute(
-                "DELETE FROM cached_facts WHERE org_id=%s AND user_id=%s",
-                (org_id, user_id),
-            )
-            cur.execute(
-                "DELETE FROM mounted_snapshots WHERE org_id=%s AND user_id=%s",
-                (org_id, user_id),
-            )
+        mounted_store.unmount_space(org_id, space)
 
     def _purge_org_storage(org_id: str) -> None:
         """Hard-delete ALL of an org's tenant storage across every member, run just
         before the ``orgs`` row itself is removed.
 
-        ``facts``/``cached_facts``/``mounted_snapshots``/``api_keys`` have NO FK to
+        ``facts``/``snapshots``/``mounted_snapshots``/``api_keys`` have NO FK to
         ``orgs``, so dropping the org row would orphan them — they must be purged
-        explicitly here (org-wide, every ``user_id``). Deleting the ``orgs`` row
-        afterwards (``orgs_store.delete_org``) cascades ``org_members`` + ``spaces``.
+        explicitly here (org-wide, every user + every space). Deleting the ``orgs``
+        row afterwards (``orgs_store.delete_org``) cascades ``org_members`` +
+        ``spaces``.
         """
         with conn.cursor() as cur:
             cur.execute("DELETE FROM facts WHERE org_id=%s", (org_id,))
-            cur.execute("DELETE FROM cached_facts WHERE org_id=%s", (org_id,))
+            cur.execute("DELETE FROM snapshots WHERE org_id=%s", (org_id,))
             cur.execute("DELETE FROM mounted_snapshots WHERE org_id=%s", (org_id,))
             cur.execute("DELETE FROM api_keys WHERE org_id=%s", (org_id,))
 
@@ -645,21 +703,17 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        """Permanently delete one of the caller's private spaces and its graph.
+        """Permanently delete an org-shared space and ALL its snapshots.
 
-        Spaces are private to the creating login, so ``owns`` is both the
-        existence and the authorization check: an unknown/unowned space is a 404.
-        The space's effective tenant ``user_id`` is ``"<sub>::space:<id>"``; its
-        whole working graph (facts/edges/claims, cached snapshots, mounts) is
-        hard-purged before the ``spaces`` row is dropped. Destructive and
-        irreversible — the default (no-space) graph is a different ``user_id`` and
-        is never touched.
+        Any member of the org can delete a space (spaces are org-shared). Drops the
+        ``spaces`` row plus every snapshot in the space (cascading edges/claims) and
+        any mounts referencing those snapshots. Working memory (``facts``) is NEVER
+        touched. 404 if the space is unknown. Destructive and irreversible.
         """
-        if not spaces_store.owns(org, principal.sub, space_id):
+        if not spaces_store.exists(org, space_id):
             raise HTTPException(status_code=404, detail=f"unknown space {space_id!r}")
-        space_uid = principal.sub + "::space:" + space_id
-        _purge_tenant_graph(org, space_uid)
-        spaces_store.delete_space(org, principal.sub, space_id)
+        _purge_space_snapshots(org, space_id)
+        spaces_store.delete_space(org, space_id)
         return {"deleted": space_id}
 
     @app.post("/spaces/copy-to-org")
@@ -667,46 +721,49 @@ def create_app(conn: Any | None = None) -> FastAPI:
         body: dict[str, Any] = Body(default={}),
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
-        uid: str = Depends(active_user_id),
     ) -> dict[str, Any]:
-        """Copy the caller's current working graph into a NEW space in another org.
+        """Copy ALL snapshots of a source space into a NEW space in another org.
 
-        Cross-org sharing for a single login: the active graph ``(org, uid)`` — the
-        default graph or the currently selected space — is copied wholesale into a
-        freshly created space ``targetSpace`` in ``targetOrg`` (which the caller
-        must also belong to). The target space is created fresh: 409 if a space
-        with that id already exists there (a copy never overwrites a graph). The
-        ``targetSpace`` slug is validated like ``create_space``. The space row is
-        created first, so a copy that fails mid-flight leaves an empty space the
-        caller can delete and retry — never invisible orphan facts.
+        Cross-org sharing at the space (project) grain: every snapshot in the
+        source ``space`` is copied into a freshly created ``targetSpace`` in
+        ``targetOrg`` (which the caller must also belong to). The target space is
+        created fresh: 409 if a space with that id already exists there (a copy
+        never overwrites). 404 if the source space is unknown. Ids/embeddings are
+        preserved verbatim. The space row is created first, so a copy that fails
+        mid-flight leaves an empty space the caller can delete and retry.
         """
+        space = str(body.get("space") or "").strip()
         target_org = str(body.get("targetOrg") or "").strip()
         target_space = str(body.get("targetSpace") or "").strip()
         name = body.get("name")
         name = str(name) if name is not None else None
+        if not space or not spaces_store.exists(org, space):
+            raise HTTPException(status_code=404, detail=f"unknown space {space!r}")
         if not target_org:
             raise HTTPException(status_code=400, detail="targetOrg required")
-        if not target_space or ":" in target_space or target_space == "default":
-            raise HTTPException(
-                status_code=400,
-                detail="targetSpace must be a non-'default' slug without ':'",
-            )
-        if not _SPACE_SLUG_RE.fullmatch(target_space):
-            raise HTTPException(
-                status_code=400,
-                detail="targetSpace must be lowercase letters, digits, '-' or '_'",
-            )
+        _validate_space_slug(target_space, field="targetSpace")
         if not orgs_store.is_member(target_org, principal.sub):
             raise HTTPException(
                 status_code=403, detail=f"not a member of org {target_org!r}"
             )
         try:
-            spaces_store.create_space(target_org, principal.sub, target_space, name)
+            spaces_store.create_space(target_org, target_space, name)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
-        dst_uid = principal.sub + "::space:" + target_space
-        count = live_graph(target_org, dst_uid).copy_live_from(org, uid)
-        return {"targetOrg": target_org, "space": target_space, "count": count}
+        total = 0
+        snapshots = 0
+        for entry in live_graph(org, principal.sub).list_caches(space):
+            snap = entry["snapshot"]
+            dst = PostgresVectorGraph(
+                conn, target_org, facts_table="snapshots",
+                space=target_space, snapshot=snap,
+            )
+            total += dst.copy_snapshot_from(org, space, snap)
+            snapshots += 1
+        return {
+            "targetOrg": target_org, "space": target_space,
+            "snapshots": snapshots, "count": total,
+        }
 
     @app.patch("/spaces/{space_id}")
     def rename_space(
@@ -715,19 +772,18 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        """Rename one of the caller's private spaces (display ``name`` only).
+        """Rename an org-shared space (display ``name`` only).
 
-        Spaces are private to the creating login, so ``owns`` is both the
-        existence and the authorization check (404 on unknown/unowned). Only
-        ``name`` changes; ``space_id`` is the immutable key the tenant graph is
-        derived from, so the working graph is untouched.
+        Any member may rename a space (org-shared). Only ``name`` changes;
+        ``space_id`` is the immutable key every snapshot is tenanted by, so the
+        snapshots are untouched. 404 on unknown space.
         """
-        if not spaces_store.owns(org, principal.sub, space_id):
+        if not spaces_store.exists(org, space_id):
             raise HTTPException(status_code=404, detail=f"unknown space {space_id!r}")
         name = str(body.get("name") or "").strip()
         if not name:
             raise HTTPException(status_code=400, detail="name required")
-        spaces_store.rename_space(org, principal.sub, space_id, name)
+        spaces_store.rename_space(org, space_id, name)
         return {"spaceId": space_id, "name": name}
 
     # --- API keys (in-page key management, scoped to the active org) -------
@@ -808,8 +864,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
-        c = candidates_for(org, uid).get(cid)
+        c = candidates_for(org, uid, target).get(cid)
         if c is None:
             raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
         return c
@@ -849,6 +906,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Feed a downstream verification result back into a fact's trust.
 
@@ -862,7 +920,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=400, detail="body must include a boolean 'success'"
             )
-        live_graph(org, uid).record_outcome(fact_id, success=success)
+        graph_for(org, uid, target).record_outcome(fact_id, success=success)
         return {"id": fact_id, "success": success}
 
     @app.post("/derivations")
@@ -917,9 +975,10 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         try:
-            return candidates_for(org, uid).update(cid, body)
+            return candidates_for(org, uid, target).update(cid, body)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
         except ValueError as exc:
@@ -989,6 +1048,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """The live graph for the requester.
 
@@ -1000,7 +1060,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         - a specific state (``proposed`` / ``active`` / ``decayed``) — only facts
           in that state, with edges between them.
         """
-        g = live_graph(org, uid)
+        g = graph_for(org, uid, target)
         if state == "active":
             return {"graph": graph_adapter.graph_from_facts(g.active_facts(), g.active_edges())}
         facts = g.all_facts(None if state == "all" else state)
@@ -1014,35 +1074,46 @@ def create_app(conn: Any | None = None) -> FastAPI:
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
     ) -> dict[str, Any]:
-        """Truncate the requester's live graph only (scoped to org_id + user_id).
+        """Truncate the requester's working memory only (scoped to org_id + user_id).
 
-        Deletes every fact/edge owned by the effective tenant ``uid`` in this org
-        (the default graph or the selected space); other users' rows (including
-        their shared facts) are untouched. Implemented as a load of zero cache
-        keys, which truncates without refilling.
+        Deletes every fact/edge in the requester's private working memory
+        ``(org, uid)``; other users' working memory and all org-shared snapshots
+        are untouched. Implemented as a load of zero snapshots, which truncates
+        working memory without refilling.
         """
         g = live_graph(org, uid)
         removed = len(g.all_facts())
         g.load_caches([])
         return {"cleared": removed}
 
-    # --- snapshots (saved live-graph states in the cache) ------------------
+    # --- snapshots (org-shared saved graph states inside a space) ----------
     @app.get("/snapshots")
     def list_snapshots(
+        space: str = "",
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
-        uid: str = Depends(active_user_id),
     ) -> dict[str, Any]:
-        entries = live_graph(org, uid).list_caches("snapshot:")
+        """List the org-shared snapshots saved in ``space``.
+
+        Snapshots are org-shared, so every member sees the same list for a space.
+        404 on an unknown space. Returns ``[{snapshot, count, createdAt}]``.
+        """
+        space = str(space or "").strip()
+        if not space:
+            raise HTTPException(status_code=400, detail="query param 'space' is required")
+        if not spaces_store.exists(org, space):
+            raise HTTPException(status_code=404, detail=f"unknown space {space!r}")
+        entries = live_graph(org, principal.sub).list_caches(space)
         return {
+            "space": space,
             "snapshots": [
                 {
-                    "name": e["key"].split("snapshot:", 1)[1],
+                    "snapshot": e["snapshot"],
                     "count": e["count"],
                     "createdAt": e["created_at"],
                 }
                 for e in entries
-            ]
+            ],
         }
 
     @app.post("/snapshots")
@@ -1052,143 +1123,181 @@ def create_app(conn: Any | None = None) -> FastAPI:
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
     ) -> dict[str, Any]:
-        """Save the current live graph under ``name`` (create or overwrite)."""
-        name = str(body.get("name") or "").strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="name required")
-        count = live_graph(org, uid).save_cache(f"snapshot:{name}")
-        return {"name": name, "count": count}
+        """Dump the caller's working memory into snapshot ``(space, snapshot)``.
 
-    @app.post("/snapshots/{name}/load")
+        The space is org-shared; it is registered on first write so the space list
+        picks it up. An existing snapshot of the same ``(space, snapshot)`` is
+        overwritten. Working memory is unchanged (this is a copy, not a move).
+        """
+        space = str(body.get("space") or "").strip()
+        snapshot = str(body.get("snapshot") or "").strip()
+        _validate_space_slug(space, field="space")
+        if not snapshot:
+            raise HTTPException(status_code=400, detail="snapshot required")
+        spaces_store.ensure_space(org, space)
+        count = live_graph(org, uid).save_cache(space, snapshot)
+        return {"space": space, "snapshot": snapshot, "count": count}
+
+    @app.post("/snapshots/load")
     def load_snapshot(
-        name: str,
         body: dict[str, Any] = Body(default={}),
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
     ) -> dict[str, Any]:
-        """Put a snapshot into the live graph.
+        """Load an org-shared snapshot ``(space, snapshot)`` into working memory.
 
-        ``mode="replace"`` (default) truncates the whole live graph then inserts
-        the snapshot. ``mode="add"`` additively merges the snapshot into the
-        current graph (replacing only nodes the snapshot shares by id), keeping
-        other live facts.
+        ``mode="replace"`` (default) truncates the caller's working memory then
+        inserts the snapshot. ``mode="add"`` additively merges the snapshot into
+        working memory (replacing only nodes the snapshot shares by id), keeping
+        other working-memory facts.
         """
+        space = str(body.get("space") or "").strip()
+        snapshot = str(body.get("snapshot") or "").strip()
         mode = str(body.get("mode") or "replace").strip().lower()
+        if not space or not snapshot:
+            raise HTTPException(status_code=400, detail="space and snapshot required")
         if mode not in ("add", "replace"):
             raise HTTPException(status_code=400, detail="mode must be 'add' or 'replace'")
         g = live_graph(org, uid)
-        key = f"snapshot:{name}"
-        if g.cache_count(key) == 0:
-            raise HTTPException(status_code=404, detail=f"unknown snapshot {name!r}")
-        loaded = g.merge_caches_into_live([key]) if mode == "add" else g.load_caches([key])
+        if g.cache_count(space, snapshot) == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown snapshot {snapshot!r} in space {space!r}",
+            )
+        ref = (space, snapshot)
+        loaded = g.merge_caches_into_live([ref]) if mode == "add" else g.load_caches([ref])
         return {"loaded": loaded, "mode": mode}
 
-    @app.delete("/snapshots/{name}")
+    @app.delete("/snapshots")
     def delete_snapshot(
-        name: str,
-        principal: Principal = Depends(current_user),
-        org: str = Depends(active_org),
-        uid: str = Depends(active_user_id),
-    ) -> dict[str, Any]:
-        live_graph(org, uid).delete_cache(f"snapshot:{name}")
-        # Drop any mounts the owner had of this snapshot (it no longer exists).
-        # Mounts stay keyed on principal.sub for v1 (spaces<->mounts is out of
-        # scope): a no-op for space snapshots, which are never mountable yet.
-        mounted_store.unmount(org, principal.sub, principal.sub, name)
-        return {"deleted": name}
-
-    @app.post("/snapshots/{name}/copy-to-org")
-    def copy_snapshot_to_org(
-        name: str,
         body: dict[str, Any] = Body(default={}),
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
     ) -> dict[str, Any]:
-        """Copy one of the caller's snapshots into another org they belong to.
+        """Delete an org-shared snapshot ``(space, snapshot)`` and unmount it everywhere.
 
-        Cross-org sharing for a single login: the snapshot is read from the active
-        graph ``(org, uid)`` and copied into the caller's DEFAULT graph in
-        ``targetOrg`` under ``targetName`` (defaults to the source name). The
-        active-org dependency already proved source membership; the caller must
-        also be a member of ``targetOrg``. Ids/embeddings are preserved verbatim.
-        404 if the source snapshot is empty/unknown; 409 if ``targetOrg`` already
-        has a snapshot by that name (a copy never overwrites).
+        Drops the snapshot's facts/edges/claims (cascade) plus every viewer's mount
+        of it, so no dangling mount can reference a deleted snapshot. The space
+        registry row and all working memory are untouched.
         """
+        space = str(body.get("space") or "").strip()
+        snapshot = str(body.get("snapshot") or "").strip()
+        if not space or not snapshot:
+            raise HTTPException(status_code=400, detail="space and snapshot required")
+        live_graph(org, uid).delete_cache(space, snapshot)
+        mounted_store.unmount_all(org, space, snapshot)
+        return {"space": space, "snapshot": snapshot, "deleted": True}
+
+    @app.post("/snapshots/copy-to-org")
+    def copy_snapshot_to_org(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Copy one org-shared snapshot into a snapshot in another org.
+
+        Reads ``(space, snapshot)`` in the active org and writes it into
+        ``(targetSpace, targetSnapshot)`` in ``targetOrg`` (which the caller must
+        also belong to). ``targetSnapshot`` defaults to the source snapshot name;
+        the target space is registered on write. Ids/embeddings are preserved
+        verbatim. 404 if the source snapshot is empty/unknown; 409 if the target
+        snapshot already exists (a copy never overwrites).
+        """
+        space = str(body.get("space") or "").strip()
+        snapshot = str(body.get("snapshot") or "").strip()
         target_org = str(body.get("targetOrg") or "").strip()
-        target_name = str(body.get("targetName") or name).strip()
+        target_space = str(body.get("targetSpace") or "").strip()
+        target_snapshot = str(body.get("targetSnapshot") or snapshot).strip()
+        if not space or not snapshot:
+            raise HTTPException(status_code=400, detail="space and snapshot required")
         if not target_org:
             raise HTTPException(status_code=400, detail="targetOrg required")
-        if not target_name:
-            raise HTTPException(status_code=400, detail="targetName required")
+        _validate_space_slug(target_space, field="targetSpace")
+        if not target_snapshot:
+            raise HTTPException(status_code=400, detail="targetSnapshot required")
         if not orgs_store.is_member(target_org, principal.sub):
             raise HTTPException(
                 status_code=403, detail=f"not a member of org {target_org!r}"
             )
-        src_key = f"snapshot:{name}"
-        if live_graph(org, uid).cache_count(src_key) == 0:
-            raise HTTPException(status_code=404, detail=f"unknown snapshot {name!r}")
-        dst_key = f"snapshot:{target_name}"
-        dst = live_graph(target_org, principal.sub)
-        if dst.cache_count(dst_key) != 0:
+        if live_graph(org, principal.sub).cache_count(space, snapshot) == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown snapshot {snapshot!r} in space {space!r}",
+            )
+        # Existence check runs on a LIVE graph in the target org (cache_count reads
+        # the snapshots table for its org); a snapshot-bound graph rejects it.
+        if live_graph(target_org, principal.sub).cache_count(target_space, target_snapshot) != 0:
             raise HTTPException(
                 status_code=409,
-                detail=f"snapshot {target_name!r} already exists in org {target_org!r}",
+                detail=f"snapshot {target_snapshot!r} already exists in space "
+                f"{target_space!r} of org {target_org!r}",
             )
-        count = dst.copy_snapshot_from(org, uid, src_key, dst_key)
-        return {"targetOrg": target_org, "name": target_name, "count": count}
+        dst = PostgresVectorGraph(
+            conn, target_org, facts_table="snapshots",
+            space=target_space, snapshot=target_snapshot,
+        )
+        spaces_store.ensure_space(target_org, target_space)
+        count = dst.copy_snapshot_from(org, space, snapshot)
+        return {
+            "targetOrg": target_org,
+            "space": target_space,
+            "snapshot": target_snapshot,
+            "count": count,
+        }
 
-    @app.patch("/snapshots/{name}")
+    @app.patch("/snapshots")
     def rename_snapshot(
-        name: str,
         body: dict[str, Any] = Body(default={}),
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
     ) -> dict[str, Any]:
-        """Rename a snapshot. Unlike orgs/spaces this re-keys, not relabels.
+        """Rename a snapshot within its space (re-keys, not relabels).
 
-        A snapshot's name *is* its ``cache_key`` (``snapshot:<name>``), so the new
-        name must be free (409 on collision) and the rename rewrites the key across
-        the snapshot's facts/edges/claims. Any self-mount of the old name is moved
-        to the new one so a mounted snapshot keeps being read after the rename.
+        The snapshot ``(space, snapshot)`` is renamed to ``(space, newSnapshot)``:
+        the new name must be free (409 on collision) and the rename rewrites the key
+        across the snapshot's facts/edges/claims. Any viewer's mount of the old
+        snapshot is repointed to ``newSnapshot`` so a mounted overlay keeps reading.
         """
-        new_name = str(body.get("name") or "").strip()
-        if not new_name:
-            raise HTTPException(status_code=400, detail="name required")
+        space = str(body.get("space") or "").strip()
+        snapshot = str(body.get("snapshot") or "").strip()
+        new_snapshot = str(body.get("newSnapshot") or "").strip()
+        if not space or not snapshot:
+            raise HTTPException(status_code=400, detail="space and snapshot required")
+        if not new_snapshot:
+            raise HTTPException(status_code=400, detail="newSnapshot required")
         g = live_graph(org, uid)
-        old_key = f"snapshot:{name}"
-        new_key = f"snapshot:{new_name}"
-        if g.cache_count(old_key) == 0:
-            raise HTTPException(status_code=404, detail=f"unknown snapshot {name!r}")
-        if new_name != name and g.cache_count(new_key) > 0:
+        if g.cache_count(space, snapshot) == 0:
             raise HTTPException(
-                status_code=409, detail=f"snapshot {new_name!r} already exists"
+                status_code=404,
+                detail=f"unknown snapshot {snapshot!r} in space {space!r}",
             )
-        if new_name != name:
-            g.rename_cache(old_key, new_key)
-            # If the owner had this snapshot self-mounted, move the mount to the new
-            # name so it keeps being read (mounts key on principal.sub; space
-            # snapshots are not mountable yet, so this is a no-op for those).
-            was_mounted = any(
-                m["source_user_id"] == principal.sub and m["snapshot_name"] == name
-                for m in mounted_store.list(org, principal.sub)
+        if new_snapshot != snapshot and g.cache_count(space, new_snapshot) > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=f"snapshot {new_snapshot!r} already exists in space {space!r}",
             )
-            if was_mounted:
-                mounted_store.unmount(org, principal.sub, principal.sub, name)
-                mounted_store.mount(org, principal.sub, principal.sub, new_name)
-        return {"name": new_name}
+        if new_snapshot != snapshot:
+            g.rename_cache(space, snapshot, new_snapshot)
+            mounted_store.repoint(org, space, snapshot, new_snapshot)
+        return {"space": space, "snapshot": new_snapshot}
 
     # --- mounted snapshots (read-only overlay selection) -------------------
-    def _validate_mount_target(org: str, source_user: str, name: str) -> None:
-        """Ensure ``source_user`` is an org member and the snapshot exists."""
-        if not orgs_store.is_member(org, source_user):
+    def _snapshot_probe(org: str, space: str, snapshot: str) -> PostgresVectorGraph:
+        """A snapshot-bound graph for existence/count probes (no policy needed)."""
+        return PostgresVectorGraph(
+            conn, org, facts_table="snapshots", space=space, snapshot=snapshot
+        )
+
+    def _validate_mount_target(org: str, space: str, snapshot: str) -> None:
+        """Ensure the org-shared snapshot ``(space, snapshot)`` exists (has rows)."""
+        if _snapshot_probe(org, space, snapshot).cache_count(space, snapshot) == 0:
             raise HTTPException(
-                status_code=404, detail=f"{source_user!r} is not a member of org {org!r}"
+                status_code=404,
+                detail=f"unknown snapshot {snapshot!r} in space {space!r}",
             )
-        if live_graph(org, source_user).cache_count(f"snapshot:{name}") == 0:
-            raise HTTPException(status_code=404, detail=f"unknown snapshot {name!r}")
 
     @app.get("/mounts")
     def list_mounts(
@@ -1197,21 +1306,20 @@ def create_app(conn: Any | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         """List the caller's mounted snapshots (read-only retrieval overlays).
 
-        Each mount adds a snapshot's facts to what retrieval reads, without
-        merging them into the live graph and without being carried over on save.
+        Each mount adds an org-shared snapshot's facts to what the caller's
+        working-memory retrieval reads, without merging them into working memory and
+        without being carried over on a dump. Returns ``[{space, snapshot, count}]``.
         """
-        mounts = mounted_store.list(org, principal.sub)
         return {
             "mounts": [
                 {
-                    "sourceUser": m["source_user_id"],
-                    "snapshot": m["snapshot_name"],
-                    "isSelf": m["source_user_id"] == principal.sub,
-                    "count": live_graph(org, m["source_user_id"]).cache_count(
-                        f"snapshot:{m['snapshot_name']}"
+                    "space": m["space"],
+                    "snapshot": m["snapshot"],
+                    "count": _snapshot_probe(org, m["space"], m["snapshot"]).cache_count(
+                        m["space"], m["snapshot"]
                     ),
                 }
-                for m in mounts
+                for m in mounted_store.list(org, principal.sub)
             ]
         }
 
@@ -1221,14 +1329,14 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        """Mount a snapshot (your own or an org member's) as a read overlay."""
-        source_user = str(body.get("sourceUser") or principal.sub).strip()
-        name = str(body.get("snapshot") or "").strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="snapshot required")
-        _validate_mount_target(org, source_user, name)
-        mounted_store.mount(org, principal.sub, source_user, name)
-        return {"sourceUser": source_user, "snapshot": name, "mounted": True}
+        """Mount an org-shared snapshot ``(space, snapshot)`` as a read overlay."""
+        space = str(body.get("space") or "").strip()
+        snapshot = str(body.get("snapshot") or "").strip()
+        if not space or not snapshot:
+            raise HTTPException(status_code=400, detail="space and snapshot required")
+        _validate_mount_target(org, space, snapshot)
+        mounted_store.mount(org, principal.sub, space, snapshot)
+        return {"space": space, "snapshot": snapshot, "mounted": True}
 
     @app.delete("/mounts")
     def remove_mount(
@@ -1236,13 +1344,13 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        """Unmount a snapshot (no-op if it was not mounted)."""
-        source_user = str(body.get("sourceUser") or principal.sub).strip()
-        name = str(body.get("snapshot") or "").strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="snapshot required")
-        mounted_store.unmount(org, principal.sub, source_user, name)
-        return {"sourceUser": source_user, "snapshot": name, "mounted": False}
+        """Unmount an org-shared snapshot (no-op if it was not mounted)."""
+        space = str(body.get("space") or "").strip()
+        snapshot = str(body.get("snapshot") or "").strip()
+        if not space or not snapshot:
+            raise HTTPException(status_code=400, detail="space and snapshot required")
+        mounted_store.unmount(org, principal.sub, space, snapshot)
+        return {"space": space, "snapshot": snapshot, "mounted": False}
 
     # --- skill sharing: browse another member's facts + fold them in -------
     def _fact_brief(fact: Any) -> dict[str, Any]:
@@ -1276,62 +1384,52 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        """List browsable sources in the org: every member + their snapshots.
+        """List browsable sources in the org: every space + its snapshots.
 
-        Within an org (the trust boundary) any member may browse any other
-        member's saved snapshots. Each member's snapshots (name + node count)
-        are read from their own cache partition.
+        Spaces are org-shared, so any member may browse any space's saved
+        snapshots. Each snapshot carries its node count. The reserved eval space is
+        hidden. Returns ``[{space, name, snapshots:[{snapshot, count}]}]``.
         """
+        graph = live_graph(org, principal.sub)
         sources: list[dict[str, Any]] = []
-        for member in orgs_store.members(org):
-            uid = member["user_id"]
-            is_self = uid == principal.sub
+        for s in spaces_store.list_spaces(org):
+            space = s["space_id"]
+            if space == _RESERVED_EVAL_SPACE:
+                continue
             snapshots = [
-                {
-                    "name": e["key"].split("snapshot:", 1)[1],
-                    "count": e["count"],
-                }
-                for e in live_graph(org, uid).list_caches("snapshot:")
+                {"snapshot": e["snapshot"], "count": e["count"]}
+                for e in graph.list_caches(space)
             ]
             sources.append(
-                {
-                    "userId": uid,
-                    # Emails aren't stored app-side (org_members keys on the
-                    # Cognito sub), so we can only resolve the caller's own
-                    # username from their token; teammates fall back to the id.
-                    "username": principal.email if is_self else None,
-                    "role": member["role"],
-                    "isSelf": is_self,
-                    "snapshots": snapshots,
-                }
+                {"space": space, "name": s["name"], "snapshots": snapshots}
             )
         return {"sources": sources}
 
-    @app.get("/org/sources/{user_id}/snapshots/{name}/facts")
-    def org_source_snapshot_facts(
-        user_id: str,
-        name: str,
+    @app.get("/spaces/{space}/snapshots/{snapshot}/facts")
+    def space_snapshot_facts(
+        space: str,
+        snapshot: str,
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
     ) -> dict[str, Any]:
-        """Browse one member's snapshot facts, grouped by folder (``scope``).
+        """Browse one org-shared snapshot's facts, grouped by folder (``scope``).
 
-        ``active_org`` already proved the caller is a member of ``org``; full
-        within-org trust means any member is a valid ``user_id`` target. The
-        org-scoped reader pins ``org_id`` so no other org's rows are reachable.
-        404 if ``user_id`` is not a member or the snapshot holds no facts.
+        ``active_org`` already proved the caller is a member of ``org``; snapshots
+        are org-shared, so any ``(space, snapshot)`` in the org is a valid target.
+        The org-scoped reader pins ``org_id`` so no other org's rows are reachable.
+        404 if the snapshot holds no facts.
         """
-        if not orgs_store.is_member(org, user_id):
+        reader = OrgSourceReader(conn, org, space=space, snapshot=snapshot)
+        facts = reader.all_facts()
+        if not facts:
             raise HTTPException(
-                status_code=404, detail=f"{user_id!r} is not a member of org {org!r}"
+                status_code=404,
+                detail=f"unknown snapshot {snapshot!r} in space {space!r}",
             )
-        if live_graph(org, user_id).cache_count(f"snapshot:{name}") == 0:
-            raise HTTPException(status_code=404, detail=f"unknown snapshot {name!r}")
-        reader = OrgSourceReader(conn, org, user_id, cache_key=f"snapshot:{name}")
         return {
-            "userId": user_id,
-            "snapshot": name,
-            "groups": _group_facts(reader.all_facts()),
+            "space": space,
+            "snapshot": snapshot,
+            "groups": _group_facts(facts),
         }
 
     @app.post("/fold-in")
@@ -1343,44 +1441,39 @@ def create_app(conn: Any | None = None) -> FastAPI:
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
     ) -> dict[str, Any]:
-        """Copy selected snapshot facts from a source into the caller's live graph.
+        """Copy selected snapshot facts from a space into the caller's working memory.
 
         Each selected fact is written through a distillation-free policy
         (``Deduper`` then ``ConflictFlagger`` — no ``Redactor``, no LLM
         re-distillation): already-atomic facts are deduped against the caller's
-        graph and conflicts are flagged, never silently overwritten. Copies land
-        ``active`` (an explicit user action) and carry provenance in ``meta``.
+        working memory and conflicts are flagged, never silently overwritten. Copies
+        land ``active`` (an explicit user action) and carry provenance in ``meta``.
         Edges whose both endpoints are in the selection are carried with the
         copy, remapped to the caller's new fact ids.
 
-        ``mode="replace"`` truncates the caller's own live graph before copying
+        ``mode="replace"`` truncates the caller's own working memory before copying
         (so the caller ends up holding exactly the folded facts); ``mode="add"``
-        (default) merges the selection into the existing graph.
+        (default) merges the selection into the existing working memory.
         """
-        source_user = str(body.get("sourceUser") or "").strip()
+        space = str(body.get("space") or "").strip()
         snapshot = str(body.get("snapshot") or "").strip()
         mode = str(body.get("mode") or "add").strip().lower()
         fact_ids = body.get("factIds") or []
-        if not source_user:
-            raise HTTPException(status_code=400, detail="sourceUser required")
+        if not space:
+            raise HTTPException(status_code=400, detail="space required")
         if not snapshot:
             raise HTTPException(status_code=400, detail="snapshot required")
         if mode not in ("add", "replace"):
             raise HTTPException(status_code=400, detail="mode must be 'add' or 'replace'")
         if not isinstance(fact_ids, list) or not fact_ids:
             raise HTTPException(status_code=400, detail="factIds must be a non-empty list")
-        if not orgs_store.is_member(org, source_user):
-            raise HTTPException(
-                status_code=404, detail=f"{source_user!r} is not a member of org {org!r}"
-            )
-        cache_key = f"snapshot:{snapshot}"
-        reader = OrgSourceReader(conn, org, source_user, cache_key=cache_key)
+        reader = OrgSourceReader(conn, org, space=space, snapshot=snapshot)
         src_facts = reader.get_facts([str(i) for i in fact_ids])
         if not src_facts:
             raise HTTPException(status_code=404, detail="no matching facts in source")
 
-        # mode=replace: truncate the caller's live graph before copying (same
-        # zero-cache-load truncation as /graph/clear). Dedup/conflict are then
+        # mode=replace: truncate the caller's working memory before copying (same
+        # zero-snapshot-load truncation as /graph/clear). Dedup/conflict are then
         # moot on the now-empty graph, but the policy stays identical.
         if mode == "replace":
             live_graph(org, uid).load_caches([])
@@ -1406,7 +1499,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         deduped = 0
         for fact in src_facts:
             meta = dict(fact.meta or {})
-            meta["foldedFrom"] = {"userId": source_user, "source": cache_key}
+            meta["foldedFrom"] = {"space": space, "snapshot": snapshot}
             meta["foldedFromFactId"] = fact.id
             if fact.cluster_label:
                 meta.setdefault("sourceClusterLabel", fact.cluster_label)
@@ -1458,12 +1551,13 @@ def create_app(conn: Any | None = None) -> FastAPI:
 
         ``counts`` maps each cached case id to how many nodes its cached
         distillation holds — what the dashboard shows inside the green dot.
+
+        Eval fixtures live in ``snapshots`` under the reserved ``__evals__`` space,
+        one snapshot per case id (org-scoped, not user-partitioned).
         """
-        entries = live_graph(org, uid).list_caches("eval:")
-        ids = [e["key"].split("eval:", 1)[1] for e in entries]
-        counts = {
-            e["key"].split("eval:", 1)[1]: int(e.get("count", 0)) for e in entries
-        }
+        entries = live_graph(org, uid).list_caches(_RESERVED_EVAL_SPACE)
+        ids = [e["snapshot"] for e in entries]
+        counts = {e["snapshot"]: int(e.get("count", 0)) for e in entries}
         return {"cached": ids, "counts": counts}
 
     def _selected_case_ids(body: dict[str, Any]) -> list[str]:
@@ -1479,25 +1573,24 @@ def create_app(conn: Any | None = None) -> FastAPI:
     ) -> tuple[list[str], list[str]]:
         """Make sure each case has a cache entry; (re)generate misses (or all, if force).
 
-        Returns (regenerated_case_ids, from_cache_case_ids). Writes only the
-        cache (``cached_facts``); the live graph is untouched here.
+        Returns (regenerated_case_ids, from_cache_case_ids). Writes only the eval
+        cache (``snapshots`` under the reserved ``__evals__`` space, snapshot=case
+        id); working memory is untouched here.
         """
         live = live_graph(org, sub)
         regenerated: list[str] = []
         from_cache: list[str] = []
         for cid in case_ids:
-            key = f"eval:{cid}"
-            if not force and live.cache_count(key) > 0:
+            if not force and live.cache_count(_RESERVED_EVAL_SPACE, cid) > 0:
                 from_cache.append(cid)
                 continue
             seeds = distill_case(cid, distill=distill)
             eval_graph = PostgresVectorGraph(
                 conn,
                 org,
-                sub,
-                facts_table="cached_facts",
-                edges_table="cached_fact_edges",
-                cache_key=key,
+                facts_table="snapshots",
+                space=_RESERVED_EVAL_SPACE,
+                snapshot=cid,
                 policy=default_write_policy(),
             )
             eval_graph.wipe_cache()  # clean slate for a (re)generated case
@@ -1591,12 +1684,12 @@ def create_app(conn: Any | None = None) -> FastAPI:
         except RegenerateUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
 
-        keys = [f"eval:{cid}" for cid in case_ids]
+        refs = [(_RESERVED_EVAL_SPACE, cid) for cid in case_ids]
         live = live_graph(org, uid)
         if mode == "replace":
-            facts_in_graph = live.load_caches(keys)
+            facts_in_graph = live.load_caches(refs)
         else:
-            facts_in_graph = live.merge_caches_into_live(keys)
+            facts_in_graph = live.merge_caches_into_live(refs)
         return {
             "mode": mode,
             "regenerated": regenerated,
@@ -1627,6 +1720,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Ingest a fully-approved insight into the live ``facts`` store.
 
@@ -1662,7 +1756,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         # whole, append-only, immutable (no distill/dedup/contradiction) and out of
         # semantic recall. Routed to the store-only producer.
         if (body.get("category") or "").strip() == EPISODIC_CATEGORY:
-            return _record_episode(live_graph(org, uid), insight, body)
+            return _record_episode(graph_for(org, uid, target), insight, body)
         on_conflict = str(body.get("onConflict") or "auto_resolve").strip().lower()
         if on_conflict not in ("auto_resolve", "surface"):
             raise HTTPException(
@@ -1686,7 +1780,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         # reduces write-time safety (skips dedup + the conflict/claim policy).
         raw = body.get("raw", False) is True
         policy = [Redactor()] if raw else _insight_write_policy(on_conflict)
-        graph = PostgresVectorGraph(conn, org, uid, policy=policy)
+        graph = graph_for(org, uid, target, policy=policy)
         _, ingestor, _ = build_trio(graph=graph, llm=None)
         return _write_insight(
             graph,
@@ -1849,6 +1943,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Batch-ingest raw documents through the tenant's distillation pipeline.
 
@@ -1898,12 +1993,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         # qualifier, so different table rows are different slots and are never
         # false-flagged). The write policy must NOT also run a conflict step or it
         # would re-introduce the coarse-slot false positives.
-        graph = PostgresVectorGraph(
-            conn,
-            org,
-            uid,
-            policy=[Redactor(), Deduper()],
-        )
+        graph = graph_for(org, uid, target, policy=[Redactor(), Deduper()])
         # H5: body-level derivation provenance — each distilled fact links back to
         # these source ids via a ``derived_from`` edge.
         derived_from = body.get("derivedFrom")
@@ -2219,6 +2309,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Active ``check`` facts bound to the surface ``(project, screenId)`` (EXHAUSTIVE).
 
@@ -2229,7 +2320,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
         project = str(project or "").strip()
         if not project:
             raise HTTPException(status_code=400, detail="query param 'project' is required")
-        checks = live_graph(org, uid).checks_for_surface(project, screen_id, scope=scope)
+        checks = graph_for(org, uid, target).checks_for_surface(
+            project, screen_id, scope=scope
+        )
         return {
             "project": project,
             "screenId": screen_id,
@@ -2247,6 +2340,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """EXHAUSTIVE, server-side filtered fact enumeration (no top-k, no ranking).
 
@@ -2273,7 +2367,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
                     status_code=400, detail="meta must be a JSON object"
                 )
             meta_filter = parsed
-        facts = live_graph(org, uid).facts_by(
+        facts = graph_for(org, uid, target).facts_by(
             category=category,
             source=source,
             scope=scope,
@@ -2288,9 +2382,10 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Active surface facts governed by the requirement ``fact_id`` (which screens it renders)."""
-        surfaces = live_graph(org, uid).surfaces_for_requirement(fact_id)
+        surfaces = graph_for(org, uid, target).surfaces_for_requirement(fact_id)
         return {"factId": fact_id, "surfaces": [_derivation_view(f) for f in surfaces]}
 
     @app.get("/surfaces/bindings")
@@ -2299,12 +2394,13 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """All requirement<->surface ``renders`` bindings for ``project`` (any state)."""
         project = str(project or "").strip()
         if not project:
             raise HTTPException(status_code=400, detail="query param 'project' is required")
-        bindings = live_graph(org, uid).list_surface_bindings(project)
+        bindings = graph_for(org, uid, target).list_surface_bindings(project)
         return {"project": project, "bindings": bindings}
 
     @app.get("/surfaces/coverage")
@@ -2314,6 +2410,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Bidirectional completeness gate for ``project``.
 
@@ -2323,7 +2420,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         project = str(project or "").strip()
         if not project:
             raise HTTPException(status_code=400, detail="query param 'project' is required")
-        cov = live_graph(org, uid).surface_coverage(project, scope=scope)
+        cov = graph_for(org, uid, target).surface_coverage(project, scope=scope)
         return {
             "project": project,
             "uncoveredSurfaces": [_derivation_view(f) for f in cov["uncoveredSurfaces"]],
@@ -2339,6 +2436,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Active requirements in ``prd-<project>`` not yet verified-complete (derived
         from verification + staleness: never-built | regressed | stale).
@@ -2351,7 +2449,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         project = str(project or "").strip()
         if not project:
             raise HTTPException(status_code=400, detail="query param 'project' is required")
-        items = live_graph(org, uid).incomplete_requirements(
+        items = graph_for(org, uid, target).incomplete_requirements(
             project, exclude_leased=exclude_leased
         )
         return {
@@ -2499,12 +2597,15 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Return active-fact context relevant to ``query`` (the eval read path).
 
         If the caller has mounted snapshots (read-only overlays), retrieval unions
         the live graph with those snapshots; overlay hits are flagged ``mounted``
-        with their ``owner``/``snapshot``. Mounts never affect writes or saves.
+        with their ``space``/``snapshot``. Mounts never affect writes or saves. An
+        explicit ``(space, snapshot)`` target reads that snapshot directly and
+        never unions mounts.
 
         Episodic decision logs (``category="episodic"``) are excluded by default (H2)
         so "why we decided" notes never pollute semantic recall; pass
@@ -2557,12 +2658,17 @@ def create_app(conn: Any | None = None) -> FastAPI:
             if not isinstance(parsed, dict):
                 raise HTTPException(status_code=400, detail="meta must be a JSON object")
             meta_filter = parsed
-        live = live_graph(org, uid)
-        # Mounts stay keyed on principal.sub for v1: spaces<->mounts interaction is
-        # out of scope, so a space's live retrieval unions only with the default
-        # login's mounts (a noted limitation). The live graph itself IS the space.
-        mounts = mounted_store.list(org, principal.sub)
-        graph = OverlayGraph(live, mounts) if mounts else live
+        base = graph_for(org, uid, target)
+        # A snapshot-bound read (explicit X-Praxis-Space + X-Praxis-Snapshot) reads
+        # that snapshot directly and never unions mounts — mounts are a
+        # working-memory read overlay only. Working-memory reads union the viewer's
+        # mounted snapshots (read-only) so retrieval sees live facts plus every
+        # mounted (space, snapshot).
+        if target is None:
+            mounts = mounted_store.list(org, principal.sub)
+            graph = OverlayGraph(base, mounts) if mounts else base
+        else:
+            graph = base
         exclude = None if include_episodic else [EPISODIC_CATEGORY]
         hits = (
             graph.search(
@@ -2606,7 +2712,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
                     "scope": getattr(h.fact, "scope", None),
                     "category": getattr(h.fact, "category", None),
                     "mounted": bool((h.fact.meta or {}).get("mountedFrom")),
-                    "owner": (h.fact.meta or {}).get("mountedFrom", {}).get("userId"),
+                    "space": (h.fact.meta or {}).get("mountedFrom", {}).get("space"),
                     "snapshot": (h.fact.meta or {}).get("mountedFrom", {}).get("snapshot"),
                 }
                 for h in hits

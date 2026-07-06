@@ -86,17 +86,26 @@ reads the org from `PRAXIS_ORG`, default `agent-factory`, sent as the `x-praxis-
 > agent pins its **own** cache via `PRAXIS_MCP_CACHE` in the MCP server's `env` (so co-tenant
 > sessions can't collide); (2) re-`whoami` after every reconnect and re-select the org before writing.
 
-- **Durable knowledge = named snapshots; the live graph = scratch.** `save_snapshot` captures the
-  *whole* live graph, so durable pools are kept as named snapshots and the live graph is only the
-  current session's working set. Compose reference knowledge with read-only **`mount`** (read
-  without merging into live or its saves), never by keeping it live.
+- **Durable knowledge = org-shared snapshots; working memory = per-user scratch.** The tenancy model
+  is `org → space → snapshot` plus a private **working memory** (the live scratch graph, keyed to
+  your authenticated principal — no space, no snapshot ever appears on it). A **space** is an
+  org-shared "project folder"; a **snapshot** is a saved, org-shared named graph inside a space,
+  addressed by `(space, snapshot)` and readable by any org member. `save_snapshot(space, snapshot)`
+  captures the *whole* working graph into that snapshot; the working graph is only the current
+  session's set. Compose reference knowledge with read-only **`mount(space, snapshot)`** (overlays a
+  snapshot onto your working-memory reads without merging into it or its saves), never by keeping it
+  live.
 - **`general-pool`** — the durable cross-project conventions + learnings (incl. planning
-  conventions and the ambiguity-example library). Mounted read-only by plan and execution alike.
-- **Project pool** — each project is its own snapshot (`prd-<project>`), built during plan-hardening
-  and mounted read-only during execution.
-- Single-principal tenancy means there is **no** per-project user_id — snapshots + mounts are the
-  partition primitive. **`mount`** = read-only compose; **`load`** = merge into live (only to edit
-  a snapshot in place, then re-save).
+  conventions and the ambiguity-example library), kept as a snapshot in the shared-conventions space
+  and mounted read-only by plan and execution alike.
+- **Project space** — each project corresponds to exactly ONE **space** whose id is the BARE project
+  name (e.g. `team-app`). It holds the project's snapshots: `prd-<project>` (plan + tickets, built
+  during plan-hardening) plus the per-project check snapshots (§1). Mount `(<project>, prd-<project>)`
+  read-only during execution.
+- Projects are partitioned by **space**, not by user_id — spaces + snapshots are the org-shared
+  partition primitive; working memory is the per-user private lane. **`mount(space, snapshot)`** =
+  read-only compose; **`load(space, snapshot)`** = copy a snapshot INTO your working memory (only to
+  edit it, then `save_snapshot` back).
 
 ## 1. Dynamic build/validation state — the ticket/check model
 
@@ -164,7 +173,7 @@ de-duplicated union of three lanes:
   (`meta.surfaces` / `meta.screen_ids`); via `surface_checks` → `/surfaces/{screen}/checks`. A UI check is
   surface-bound (or UI-tagged) so it resolves ONLY onto screen-rendering tickets, never a backend ticket.
 
-**The semantic lane is ADVISORY** — `retrieve_advisory_checks(ticket, project, scope, checks_space,
+**The semantic lane is ADVISORY** — `retrieve_advisory_checks(ticket, project, scope, checks_ref,
 top_k)` runs a hybrid `/context` retrieval of `category="check"` facts near the ticket text and returns
 them as **candidate inspiration** for synthesis. They are NEVER pinned/required and NEVER gate completion:
 the worker folds in the relevant ones and ignores the rest, so an irrelevant retrieval is harmless. The
@@ -172,38 +181,41 @@ hard guarantee stays on the precise mandatory set; semantics only boosts recall.
 + read-only during builds** — a check owns its own applicability predicate and is edited only on explicit
 user request, never as a side effect of building.
 
-**The checks-space seam — checks are RESOLVED from a dedicated space.** Check resolution reads from a
-tenancy space **separate** from the project/plan graph that holds the tickets and their state, so
-validation rules live on their own. `resolve_validation_requirements(..., scope=...)` defaults the
-read space by scope: `scope="validation"` (af-build per-ticket) → **`coding-validation`**;
-`scope="planning"` (af-intake whole-plan) → **`planning-validation`**; `scope=None` (back-compat) → the
-ticket/default space. Only the *check reads* honor it (via a per-request `x-praxis-space` override in
-`facts_by` / `surface_checks`); ticket state (claims, pins, passes) is untouched. Callers override
-per-run with `checks_space="<space>"` (the `af-build` / `af-intake` slash argument, `--checks-space`);
-`checks_space=None` forces the ticket/default space. A check is only resolvable if it was written INTO
-the space RESOLVE reads — amend-mode writes must target `coding-validation` / `planning-validation`
-accordingly.
+**The checks-space seam — checks are RESOLVED from a dedicated per-project snapshot.** Check
+resolution reads from a snapshot **separate** from the `prd-<project>` graph that holds the tickets
+and their state, so validation rules live on their own. Both live in the SAME project space
+(`space=<project>`, the bare project name); only the *snapshot* differs.
+`resolve_validation_requirements(..., scope=...)` defaults the read snapshot by scope:
+`scope="validation"` (af-build per-ticket) → **`building-validation`** (renamed from
+`coding-validation`); `scope="planning"` (af-intake whole-plan) → **`planning-validation`**;
+`scope=None` (back-compat) → the ticket/default reference. Only the *check reads* honor it (via a
+per-request `x-praxis-space` + `x-praxis-snapshot` override in `facts_by` / `surface_checks`); ticket
+state (claims, pins, passes) is untouched — it stays on the `prd-<project>` snapshot. Callers override
+per-run with `checks_ref=(space, snapshot)` (the `af-build` / `af-intake` slash argument,
+`--checks-space`); `checks_ref=None` forces the ticket/default reference. A check is only resolvable
+if it was written INTO the snapshot RESOLVE reads — amend-mode writes must target
+`space=<project>, snapshot=building-validation` / `planning-validation` accordingly.
 
 ### The plugin API (the only writer of build state)
 
 `hooks/_praxis.py` (stdlib-only client; every method raises `PraxisUnreachable` on failure):
 
 ```python
-incomplete_requirements(project, *, exclude_leased=False) -> list[dict]
-get_fact(cid) -> dict
-facts_by(category=None, meta=None, state="active", space=None) -> list[dict]  # space= checks-space override
-patch_meta(cid, meta_dict) -> dict          # MERGE meta (build_state / claim / pinned_checks)
-record_outcome(cid, success) -> dict
-surface_checks(project, screen_id, scope=None, space=None) -> list[dict]      # space= checks-space override
-context(query, *, top_k=10, as_of=None, space=None) -> list[dict]             # hybrid retrieval (the semantic lane)
+incomplete_requirements(project, *, exclude_leased=False, space=None, snapshot=None) -> list[dict]  # prd-<project> tickets
+get_fact(cid, *, space=None, snapshot=None) -> dict
+facts_by(category=None, meta=None, state="active", space=None, snapshot=None) -> list[dict]  # (space,snapshot)= checks-snapshot override
+patch_meta(cid, meta_dict, *, space=None, snapshot=None) -> dict   # MERGE meta (build_state / claim / pinned_checks)
+record_outcome(cid, success, *, space=None, snapshot=None) -> dict
+surface_checks(project, screen_id, scope=None, space=None, snapshot=None) -> list[dict]  # (space,snapshot)= checks-snapshot override
+context(query, *, top_k=10, as_of=None, space=None, snapshot=None) -> list[dict]  # hybrid retrieval (the semantic lane)
 ping() -> bool
 ```
 
 `hooks/_ticket_state.py` (the lifecycle verbs; `ticket` args accept a fact id or a fetched dict):
 
 ```python
-resolve_checks(ticket, project="", scope=None, checks_space=<default>) -> list[dict]   # MANDATORY: tag ∪ "*" ∪ surface; checks_space = the seam
-retrieve_advisory_checks(ticket, project="", scope=None, checks_space=<default>, top_k=10) -> list[dict]  # ADVISORY semantic lane (inspiration; never gates)
+resolve_checks(ticket, project="", scope=None, checks_ref=<default>) -> list[dict]   # MANDATORY: tag ∪ "*" ∪ surface; checks_ref = the (space,snapshot) seam
+retrieve_advisory_checks(ticket, project="", scope=None, checks_ref=<default>, top_k=10) -> list[dict]  # ADVISORY semantic lane (inspiration; never gates)
 pin_checks(cid, checks) -> dict                                    # truncate + pin fresh contract
 record_check_pass(cid, check_id, passed, ran_at=None) -> dict      # records ON THE TICKET NODE
 all_checks_passed(ticket) -> bool                                  # ≥1 pinned AND all passed
@@ -212,7 +224,7 @@ claim(cid, owner, ttl=900) -> bool                                 # incomplete 
 heartbeat(cid, owner) -> bool                                      # bump iff still holding live lease
 release(cid, owner, state) -> bool                                 # state in {"finished","incomplete"}
 
-start_ticket(cid, owner, project="", ttl=900, checks_space=<default>) -> list[dict]|None  # claim + resolve (from checks_space) + pin
+start_ticket(cid, owner, project="", ttl=900, checks_ref=<default>) -> list[dict]|None  # claim + resolve (space=project, snapshot from checks_ref) + pin
 ```
 
 ### One completeness gate (no multi-gate machinery)
@@ -312,7 +324,8 @@ siblings (B). A is shimmed locally; B is server-side and can only be *caught*, n
 ## 5. Retrieve for grounding
 
 - Use `praxis_get_context(query, top_k)` for task grounding. Mount the relevant project
-  snapshot first so general + project facts compose in one ranked result.
+  snapshot first (`mount(<project>, prd-<project>)`) so general + project facts compose in one
+  ranked result.
 - **Cite provenance.** Every decision the agent makes should name the Praxis fact(s) that
   grounded it (the hit's `source`/`score`/`id`). Episodes are excluded by default; pass
   `include_episodic=True` to recall past decisions.

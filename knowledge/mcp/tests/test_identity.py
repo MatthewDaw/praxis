@@ -52,20 +52,22 @@ def _write_cache(path, **overrides):
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
-def test_active_space_env_overrides_cached(monkeypatch, tmp_path):
-    """PRAXIS_SPACE pins a space per-process, taking precedence over the cache."""
+def test_active_space_returns_cached_default_ignoring_env(monkeypatch, tmp_path):
+    """active_space() is a purely LOCAL default (praxis_select_space); no env pathway.
+
+    Under the tenancy redesign the ``PRAXIS_SPACE`` env → ``X-Praxis-Space`` header
+    pathway is gone (working memory always resolves to the authenticated sub). The
+    cached ``space_id`` is now just a client-side default for the ``space`` PARAM of
+    snapshot/mount ops, and the removed env override no longer influences it.
+    """
     cache = tmp_path / "mcp.json"
     _write_cache(cache, space_id="cached-space")
     monkeypatch.setenv("PRAXIS_MCP_CACHE", str(cache))
 
+    # A now-defunct PRAXIS_SPACE env var must NOT override the cached default.
     monkeypatch.setenv("PRAXIS_SPACE", "env-space")
-    assert identity.active_space() == "env-space"
-
-    # Whitespace-only override is ignored -> fall back to the cached value.
-    monkeypatch.setenv("PRAXIS_SPACE", "  ")
     assert identity.active_space() == "cached-space"
 
-    # No override at all -> cached value.
     monkeypatch.delenv("PRAXIS_SPACE", raising=False)
     assert identity.active_space() == "cached-space"
 

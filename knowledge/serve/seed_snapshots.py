@@ -1,33 +1,33 @@
-"""Seed the mock/demo fixtures into the DB as default ``snapshot:*`` caches.
+"""Seed the mock/demo fixtures into the DB as snapshots inside a demo space.
 
 The dashboard used to ship a "Mock fixtures (evals)" data source that read JSON
 fixtures generated from ``frontend/mock_data.py``. That source was removed; the
 only live data source is now Postgres. This script ports the same fixtures into
-the database as ready-to-load **snapshots** (rows in ``cached_facts`` /
-``cached_fact_edges`` keyed by ``snapshot:<name>``), so a fresh graph can be
-populated from the existing Snapshots UI ("Load" -> replace/add) instead of a
-parallel mock provider.
+the database as ready-to-load **snapshots** (rows in ``snapshots`` /
+``snapshot_edges``), so a fresh graph can be populated from the Snapshots UI
+("Load" -> replace/add) instead of a parallel mock provider.
 
-Fixtures are split by scope/theme into independently-loadable snapshots:
+Under the org -> space -> snapshot tenancy model a snapshot is an ORG-SHARED
+named graph inside a space; it carries no ``user_id`` and no ``shared`` flag.
+Fixtures are split by scope/theme into independently-loadable snapshots, all
+living in one demo ``--space`` (default ``monica``) with BARE snapshot names:
 
-    snapshot:monica-frontend   frontend/* candidates (TypeScript, React)
-    snapshot:monica-backend    backend/python candidates
-    snapshot:monica-infra      infra/ci candidates
-    snapshot:monica-nushell    nushell candidates (incl. the cand_6..cand_17 set)
-    snapshot:monica-evals      every auto-generated eval-namespace candidate
-    snapshot:monica-all        every candidate above in one snapshot (all edges)
+    space=monica snapshot=frontend   frontend/* candidates (TypeScript, React)
+    space=monica snapshot=backend    backend/python candidates
+    space=monica snapshot=infra      infra/ci candidates
+    space=monica snapshot=nushell    nushell candidates (incl. the cand_6..cand_17 set)
+    space=monica snapshot=evals      every auto-generated eval-namespace candidate
+    space=monica snapshot=all        every candidate above in one snapshot (all edges)
 
-Snapshots are tenant-scoped ``(org_id, user_id)`` just like the live graph, so
-the seed targets one tenant per run (default ``default`` / ``dev-user`` — the
-identity the API uses when ``PRAXIS_AUTH_DISABLED=1``). Point ``--org`` /
-``--user`` at a real Cognito tenant to seed it there.
+Snapshots are org-scoped, so the seed targets one org per run (default
+``default``). Point ``--org`` / ``--space`` at a real tenant/space to seed there.
 
-Idempotent: each snapshot's cache rows are deleted and rewritten on every run.
+Idempotent: each snapshot's rows are deleted and rewritten on every run.
 
 Usage::
 
     .venv/Scripts/python.exe -m knowledge.serve.seed_snapshots
-    .venv/Scripts/python.exe -m knowledge.serve.seed_snapshots --org acme --user <sub>
+    .venv/Scripts/python.exe -m knowledge.serve.seed_snapshots --org acme --space demo
     .venv/Scripts/python.exe -m knowledge.serve.seed_snapshots --no-embeddings
 """
 
@@ -52,8 +52,7 @@ _FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 # therefore must NOT be duplicated into the ``meta`` jsonb blob.
 _COLUMN_KEYS = {"id", "content", "state", "confidence", "scope", "category", "contradiction_ids"}
 
-# Snapshot name (without the ``snapshot:`` prefix) per theme; ``--prefix``
-# overrides the ``demo-`` part.
+# Bare snapshot name per theme bucket.
 _GROUP_LABELS = {
     "frontend": "frontend",
     "backend": "backend",
@@ -108,36 +107,37 @@ def _meta_of(cand: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in cand.items() if k not in _COLUMN_KEYS and k != "provenance"}
 
 
-def _delete_snapshot(conn: Any, org: str, user: str, cache_key: str) -> None:
-    """Drop a snapshot's cache rows (edges first for the FK) for re-seed."""
+def _delete_snapshot(conn: Any, org: str, space: str, snapshot: str) -> None:
+    """Drop a snapshot's rows (edges first for the FK) for re-seed."""
     conn.execute(
-        "DELETE FROM cached_fact_edges WHERE org_id=%s AND user_id=%s AND cache_key=%s",
-        (org, user, cache_key),
+        "DELETE FROM snapshot_edges WHERE org_id=%s AND space=%s AND snapshot=%s",
+        (org, space, snapshot),
     )
     conn.execute(
-        "DELETE FROM cached_facts WHERE org_id=%s AND user_id=%s AND cache_key=%s",
-        (org, user, cache_key),
+        "DELETE FROM snapshots WHERE org_id=%s AND space=%s AND snapshot=%s",
+        (org, space, snapshot),
     )
 
 
 def _insert_fact(
     conn: Any,
     org: str,
-    user: str,
-    cache_key: str,
+    space: str,
+    snapshot: str,
     cand: dict[str, Any],
     embedding: Any | None,
 ) -> None:
     conn.execute(
-        "INSERT INTO cached_facts "
-        "(id, org_id, user_id, text, source, confidence, scope, category, state, "
-        " embedding, meta, cache_key, created_at) "
+        "INSERT INTO snapshots "
+        "(id, org_id, space, snapshot, text, source, confidence, scope, category, state, "
+        " embedding, meta, created_at) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
         "        COALESCE(%s::timestamptz, now()))",
         (
             cand["id"],
             org,
-            user,
+            space,
+            snapshot,
             str(cand.get("content", "")),
             cand.get("provenance"),
             cand.get("confidence"),
@@ -146,19 +146,18 @@ def _insert_fact(
             cand.get("state", "proposed"),
             embedding,
             json.dumps(_meta_of(cand)),
-            cache_key,
             cand.get("createdAt"),
         ),
     )
 
 
 def _insert_edge(
-    conn: Any, org: str, user: str, cache_key: str, src: str, dst: str, kind: str
+    conn: Any, org: str, space: str, snapshot: str, src: str, dst: str, kind: str
 ) -> None:
     conn.execute(
-        "INSERT INTO cached_fact_edges (org_id, user_id, cache_key, src_id, dst_id, kind) "
+        "INSERT INTO snapshot_edges (org_id, space, snapshot, src_id, dst_id, kind) "
         "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-        (org, user, cache_key, src, dst, kind),
+        (org, space, snapshot, src, dst, kind),
     )
 
 
@@ -185,17 +184,16 @@ def _make_embedder(enabled: bool) -> Any | None:
 def seed(
     *,
     org: str = "default",
-    user: str = "dev-user",
-    prefix: str = "monica-",
+    space: str = "monica",
     combined: str = "all",
     embeddings: bool = True,
     dsn: str | None = None,
 ) -> dict[str, int]:
-    """Seed the per-theme + combined snapshots for one tenant.
+    """Seed the per-theme + combined snapshots into one org-shared space.
 
-    ``combined`` is the name (after ``prefix``) of an extra snapshot holding
-    every candidate and every edge in one place; pass ``""`` to skip it.
-    Returns ``{snapshot_name: count}``.
+    ``combined`` is the bare name of an extra snapshot holding every candidate
+    and every edge in one place; pass ``""`` to skip it. Returns
+    ``{snapshot_name: count}``.
     """
     candidates, edges = _load_fixtures()
     embedder = _make_embedder(embeddings)
@@ -221,39 +219,36 @@ def seed(
     conn = db.connect(dsn)
     try:
         for group, rows in sorted(groups.items()):
-            name = f"{prefix}{_GROUP_LABELS.get(group, group)}"
-            cache_key = f"snapshot:{name}"
-            _delete_snapshot(conn, org, user, cache_key)
+            name = _GROUP_LABELS.get(group, group)
+            _delete_snapshot(conn, org, space, name)
             for cand in rows:
-                _insert_fact(conn, org, user, cache_key, cand, vecs.get(str(cand["id"])))
+                _insert_fact(conn, org, space, name, cand, vecs.get(str(cand["id"])))
             counts[name] = len(rows)
-            print(f"  seeded snapshot:{name} ({len(rows)} facts)")
+            print(f"  seeded {space}/{name} ({len(rows)} facts)")
 
         dropped = 0
         for edge in edges:
             src, dst, kind = edge["src"], edge["dst"], edge.get("kind", "contradiction")
             g_src, g_dst = group_of_id.get(src), group_of_id.get(dst)
             if g_src is not None and g_src == g_dst:
-                name = f"{prefix}{_GROUP_LABELS.get(g_src, g_src)}"
-                _insert_edge(conn, org, user, f"snapshot:{name}", src, dst, kind)
+                name = _GROUP_LABELS.get(g_src, g_src)
+                _insert_edge(conn, org, space, name, src, dst, kind)
             else:
                 dropped += 1
         if dropped:
             print(f"  note: {dropped} cross-theme edge(s) kept only in the combined snapshot")
 
         if combined:
-            name = f"{prefix}{combined}"
-            cache_key = f"snapshot:{name}"
-            _delete_snapshot(conn, org, user, cache_key)
+            _delete_snapshot(conn, org, space, combined)
             for cand in candidates:
-                _insert_fact(conn, org, user, cache_key, cand, vecs.get(str(cand["id"])))
+                _insert_fact(conn, org, space, combined, cand, vecs.get(str(cand["id"])))
             for edge in edges:
                 _insert_edge(
-                    conn, org, user, cache_key,
+                    conn, org, space, combined,
                     edge["src"], edge["dst"], edge.get("kind", "contradiction"),
                 )
-            counts[name] = len(candidates)
-            print(f"  seeded snapshot:{name} ({len(candidates)} facts, all edges)")
+            counts[combined] = len(candidates)
+            print(f"  seeded {space}/{combined} ({len(candidates)} facts, all edges)")
     finally:
         conn.close()
     return counts
@@ -262,14 +257,13 @@ def seed(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--org", default="default", help="org_id to seed (default: default)")
-    parser.add_argument("--user", default="dev-user", help="user_id to seed (default: dev-user)")
     parser.add_argument(
-        "--prefix", default="monica-", help="snapshot name prefix (default: monica-)"
+        "--space", default="monica", help="org-shared space to seed into (default: monica)"
     )
     parser.add_argument(
         "--combined",
         default="all",
-        help="name (after prefix) of the combined all-in-one snapshot; '' to skip (default: all)",
+        help="bare name of the combined all-in-one snapshot; '' to skip (default: all)",
     )
     parser.add_argument(
         "--no-embeddings",
@@ -279,11 +273,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dsn", default=None, help="explicit Postgres DSN (else resolved from env)")
     args = parser.parse_args(argv)
 
-    print(f"seeding demo snapshots for tenant ({args.org!r}, {args.user!r})")
+    print(f"seeding demo snapshots into space ({args.org!r}, {args.space!r})")
     counts = seed(
         org=args.org,
-        user=args.user,
-        prefix=args.prefix,
+        space=args.space,
         combined=args.combined,
         embeddings=not args.no_embeddings,
         dsn=args.dsn,

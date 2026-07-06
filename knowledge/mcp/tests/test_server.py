@@ -647,18 +647,21 @@ def test_list_snapshots_formats_entries(monkeypatch):
     monkeypatch.setattr(
         server.httpx,
         "get",
-        lambda url, headers, timeout=None: captured.update(url=url)
-        or _Resp({"snapshots": [{"name": "wip", "count": 5, "createdAt": "2026-06-24"}]}),
+        lambda url, params, headers, timeout=None: captured.update(url=url, params=params)
+        or _Resp({"snapshots": [{"snapshot": "wip", "count": 5, "createdAt": "2026-06-24"}]}),
     )
-    out = server.praxis_list_snapshots()
+    out = server.praxis_list_snapshots(space="proj")
     assert captured["url"] == "http://api.test/snapshots"
+    assert captured["params"] == {"space": "proj"}
     assert "wip" in out and "5 node" in out
 
 
 def test_list_snapshots_empty(monkeypatch):
     _patch_identity(monkeypatch)
-    monkeypatch.setattr(server.httpx, "get", lambda url, headers, timeout=None: _Resp({"snapshots": []}))
-    assert "No snapshots" in server.praxis_list_snapshots()
+    monkeypatch.setattr(
+        server.httpx, "get", lambda url, params, headers, timeout=None: _Resp({"snapshots": []})
+    )
+    assert "No snapshots" in server.praxis_list_snapshots(space="proj")
 
 
 def test_save_snapshot_posts_name(monkeypatch):
@@ -668,17 +671,17 @@ def test_save_snapshot_posts_name(monkeypatch):
         server.httpx,
         "post",
         lambda url, json, headers, timeout=None: captured.update(url=url, json=json)
-        or _Resp({"name": "wip", "count": 5}),
+        or _Resp({"snapshot": "wip", "space": "proj", "count": 5}),
     )
-    out = server.praxis_save_snapshot("  wip  ")
+    out = server.praxis_save_snapshot("  wip  ", space="proj")
     assert captured["url"] == "http://api.test/snapshots"
-    assert captured["json"] == {"name": "wip"}  # trimmed
+    assert captured["json"] == {"space": "proj", "snapshot": "wip"}  # trimmed
     assert "wip" in out and "5 node" in out
 
 
 def test_save_snapshot_rejects_blank_name(monkeypatch):
     _patch_identity(monkeypatch)
-    out = server.praxis_save_snapshot("   ")
+    out = server.praxis_save_snapshot("   ", space="proj")
     assert "non-empty" in out
 
 
@@ -691,9 +694,9 @@ def test_load_snapshot_posts_mode(monkeypatch):
         lambda url, json, headers, timeout=None: captured.update(url=url, json=json)
         or _Resp({"loaded": 5, "mode": "add"}),
     )
-    out = server.praxis_load_snapshot("wip", mode="add")
-    assert captured["url"] == "http://api.test/snapshots/wip/load"
-    assert captured["json"] == {"mode": "add"}
+    out = server.praxis_load_snapshot("wip", space="proj", mode="add")
+    assert captured["url"] == "http://api.test/snapshots/load"
+    assert captured["json"] == {"space": "proj", "snapshot": "wip", "mode": "add"}
     assert "5 node" in out and "add" in out
 
 
@@ -705,13 +708,13 @@ def test_load_snapshot_defaults_to_replace(monkeypatch):
         "post",
         lambda url, json, headers, timeout=None: captured.update(json=json) or _Resp({"loaded": 1, "mode": "replace"}),
     )
-    server.praxis_load_snapshot("wip")
-    assert captured["json"] == {"mode": "replace"}
+    server.praxis_load_snapshot("wip", space="proj")
+    assert captured["json"] == {"space": "proj", "snapshot": "wip", "mode": "replace"}
 
 
 def test_load_snapshot_rejects_bad_mode(monkeypatch):
     _patch_identity(monkeypatch)
-    out = server.praxis_load_snapshot("wip", mode="merge")
+    out = server.praxis_load_snapshot("wip", space="proj", mode="merge")
     assert "add" in out and "replace" in out
 
 
@@ -720,20 +723,23 @@ def test_load_snapshot_unknown_is_friendly(monkeypatch):
     monkeypatch.setattr(
         server.httpx, "post", lambda url, json, headers, timeout=None: _Resp({}, status_code=404)
     )
-    out = server.praxis_load_snapshot("nope")
+    out = server.praxis_load_snapshot("nope", space="proj")
     assert "Unknown snapshot" in out
 
 
 def test_delete_snapshot_issues_delete(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
-    monkeypatch.setattr(
-        server.httpx,
-        "delete",
-        lambda url, headers, timeout=None: captured.update(url=url) or _Resp({"deleted": "wip"}),
-    )
-    out = server.praxis_delete_snapshot("wip")
-    assert captured["url"] == "http://api.test/snapshots/wip"
+
+    def fake_request(method, url, json, headers, timeout=None):
+        captured.update(method=method, url=url, json=json)
+        return _Resp({"deleted": "wip"})
+
+    monkeypatch.setattr(server.httpx, "request", fake_request)
+    out = server.praxis_delete_snapshot("wip", space="proj")
+    assert captured["method"] == "DELETE"
+    assert captured["url"] == "http://api.test/snapshots"
+    assert captured["json"] == {"space": "proj", "snapshot": "wip"}
     assert "wip" in out
 
 
@@ -746,18 +752,15 @@ def test_list_org_sources_formats(monkeypatch):
             {
                 "sources": [
                     {
-                        "userId": "u1",
-                        "username": "me@x.com",
-                        "role": "owner",
-                        "isSelf": True,
-                        "snapshots": [{"name": "wip", "count": 3}],
+                        "space": "proj",
+                        "snapshots": [{"snapshot": "wip", "count": 3}],
                     }
                 ]
             }
         ),
     )
     out = server.praxis_list_org_sources()
-    assert "u1" in out and "me@x.com" in out and "wip" in out and "(you)" in out
+    assert "proj" in out and "wip" in out
 
 
 def test_browse_snapshot_structured(monkeypatch):
@@ -769,14 +772,14 @@ def test_browse_snapshot_structured(monkeypatch):
         lambda url, headers, timeout=None: captured.update(url=url)
         or _Resp(
             {
-                "userId": "u1",
+                "space": "proj",
                 "snapshot": "wip",
                 "groups": [{"key": "backend", "label": "backend", "facts": [{"id": "f1", "text": "x"}]}],
             }
         ),
     )
-    out = server.praxis_browse_snapshot("u1", "wip")
-    assert captured["url"] == "http://api.test/org/sources/u1/snapshots/wip/facts"
+    out = server.praxis_browse_snapshot("wip", space="proj")
+    assert captured["url"] == "http://api.test/spaces/proj/snapshots/wip/facts"
     data = _extract_json(out)
     assert data["groups"][0]["facts"][0]["id"] == "f1"
 
@@ -790,10 +793,10 @@ def test_fold_in_posts_selection(monkeypatch):
         lambda url, json, headers, timeout=None: captured.update(url=url, json=json)
         or _Resp({"folded": 2, "deduped": 1, "conflicts": [], "mode": "add"}),
     )
-    out = server.praxis_fold_in("u1", "wip", ["f1", "f2"], mode="add")
+    out = server.praxis_fold_in("wip", ["f1", "f2"], space="proj", mode="add")
     assert captured["url"] == "http://api.test/fold-in"
     assert captured["json"] == {
-        "sourceUser": "u1",
+        "space": "proj",
         "snapshot": "wip",
         "factIds": ["f1", "f2"],
         "mode": "add",
@@ -804,7 +807,7 @@ def test_fold_in_posts_selection(monkeypatch):
 
 def test_fold_in_requires_fact_ids(monkeypatch):
     _patch_identity(monkeypatch)
-    out = server.praxis_fold_in("u1", "wip", [])
+    out = server.praxis_fold_in("wip", [], space="proj")
     assert "fact_ids" in out
 
 
@@ -814,11 +817,11 @@ def test_list_mounts_formats(monkeypatch):
         server.httpx,
         "get",
         lambda url, headers, timeout=None: _Resp(
-            {"mounts": [{"sourceUser": "u1", "snapshot": "wip", "isSelf": False, "count": 4}]}
+            {"mounts": [{"space": "proj", "snapshot": "wip", "count": 4}]}
         ),
     )
     out = server.praxis_list_mounts()
-    assert "wip" in out and "from u1" in out and "4 node" in out
+    assert "proj/wip" in out and "4 node" in out
 
 
 def test_list_mounts_empty(monkeypatch):
@@ -827,32 +830,35 @@ def test_list_mounts_empty(monkeypatch):
     assert "No snapshots are mounted" in server.praxis_list_mounts()
 
 
-def test_mount_snapshot_posts_self_by_default(monkeypatch):
+def test_mount_snapshot_posts_space_and_snapshot(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
     monkeypatch.setattr(
         server.httpx,
         "post",
         lambda url, json, headers, timeout=None: captured.update(url=url, json=json)
-        or _Resp({"sourceUser": "dev", "snapshot": "wip", "mounted": True}),
+        or _Resp({"space": "proj", "snapshot": "wip", "mounted": True}),
     )
-    out = server.praxis_mount_snapshot("wip")
+    out = server.praxis_mount_snapshot("wip", space="proj")
     assert captured["url"] == "http://api.test/mounts"
-    assert captured["json"] == {"snapshot": "wip"}  # no sourceUser => defaults to self
+    assert captured["json"] == {"space": "proj", "snapshot": "wip"}
     assert "Mounted" in out and "wip" in out
 
 
-def test_mount_snapshot_posts_source_user(monkeypatch):
+def test_mount_snapshot_defaults_space_from_local_default(monkeypatch):
+    # An explicit space is unnecessary once a client-side default is set with
+    # praxis_select_space; the default feeds the `space` param (no header).
     _patch_identity(monkeypatch)
+    monkeypatch.setattr(identity, "active_space", lambda: "proj")
     captured = {}
     monkeypatch.setattr(
         server.httpx,
         "post",
         lambda url, json, headers, timeout=None: captured.update(json=json)
-        or _Resp({"sourceUser": "u1", "snapshot": "wip", "mounted": True}),
+        or _Resp({"space": "proj", "snapshot": "wip", "mounted": True}),
     )
-    server.praxis_mount_snapshot("wip", source_user="u1")
-    assert captured["json"] == {"snapshot": "wip", "sourceUser": "u1"}
+    server.praxis_mount_snapshot("wip")
+    assert captured["json"] == {"space": "proj", "snapshot": "wip"}
 
 
 def test_mount_snapshot_unknown_is_friendly(monkeypatch):
@@ -860,8 +866,8 @@ def test_mount_snapshot_unknown_is_friendly(monkeypatch):
     monkeypatch.setattr(
         server.httpx, "post", lambda url, json, headers, timeout=None: _Resp({}, status_code=404)
     )
-    out = server.praxis_mount_snapshot("nope")
-    assert "Unknown member or snapshot" in out
+    out = server.praxis_mount_snapshot("nope", space="proj")
+    assert "Unknown space or snapshot" in out
 
 
 def test_unmount_snapshot_sends_delete_with_body(monkeypatch):
@@ -870,20 +876,20 @@ def test_unmount_snapshot_sends_delete_with_body(monkeypatch):
 
     def fake_request(method, url, json, headers, timeout=None):
         captured.update(method=method, url=url, json=json)
-        return _Resp({"sourceUser": "dev", "snapshot": "wip", "mounted": False})
+        return _Resp({"space": "proj", "snapshot": "wip", "mounted": False})
 
     monkeypatch.setattr(server.httpx, "request", fake_request)
-    out = server.praxis_unmount_snapshot("wip")
+    out = server.praxis_unmount_snapshot("wip", space="proj")
     assert captured["method"] == "DELETE"
     assert captured["url"] == "http://api.test/mounts"
-    assert captured["json"] == {"snapshot": "wip"}
+    assert captured["json"] == {"space": "proj", "snapshot": "wip"}
     assert "Unmounted" in out
 
 
 def test_mount_requires_name(monkeypatch):
     _patch_identity(monkeypatch)
-    assert "snapshot name" in server.praxis_mount_snapshot("  ")
-    assert "snapshot name" in server.praxis_unmount_snapshot("  ")
+    assert "snapshot name" in server.praxis_mount_snapshot("  ", space="proj")
+    assert "snapshot name" in server.praxis_unmount_snapshot("  ", space="proj")
 
 
 def test_data_tool_when_not_logged_in_guides_to_login(monkeypatch):
