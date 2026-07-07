@@ -19,6 +19,8 @@ export interface EdgeLegendEntry {
   strokeWidth: number;
   animated?: boolean;
   opacity?: number;
+  /** Swatch stroke; defaults to `var(--ink)`. Set to match the edge's canvas color. */
+  color?: string;
 }
 
 export interface FlowStep {
@@ -89,7 +91,9 @@ export const EDGE_LEGEND: EdgeLegendEntry[] = [
     label: "Depends on",
     description: "Build-order prerequisite (arrow points to the dependent)",
     strokeWidth: 1.75,
-    opacity: 0.85,
+    opacity: 0.9,
+    // Matches the accent-colored depends edge on the canvas (var(--accent)).
+    color: "var(--accent)",
   },
 ];
 

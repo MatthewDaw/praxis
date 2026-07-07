@@ -18,7 +18,7 @@ export function LegendEdgeLine({ entry }: LegendEdgeLineProps) {
         y1="6"
         x2="38"
         y2="6"
-        stroke="var(--ink)"
+        stroke={entry.color ?? "var(--ink)"}
         strokeWidth={entry.strokeWidth}
         strokeDasharray={entry.dasharray}
         strokeLinecap="round"
