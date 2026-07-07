@@ -78,7 +78,6 @@ from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm  # noqa: E40
 from knowledge.serve import batch_writer, db, graph_adapter  # noqa: E402
 from knowledge.serve.auth import Principal, make_current_user  # noqa: E402
 from knowledge.serve.facts_candidates import (  # noqa: E402
-    DeletionError,
     FactsCandidates,
     PromotionError,
 )
@@ -1002,8 +1001,6 @@ def create_app(conn: Any | None = None) -> FastAPI:
             return {"deleted": cid}
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
-        except DeletionError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
 
     # --- contradictions ----------------------------------------------------
     @app.get("/contradictions")

@@ -16,19 +16,29 @@ def graph_from_facts(
     the nodes are exactly the ``active`` facts, the edges are their persisted
     ``fact_edges``, and scope groups mirror the candidate-derived shape.
 
-    Build-order dependencies live in each fact's ``meta.depends_on`` (a list of
-    prerequisite fact ids), not in the ``fact_edges`` table, so they are
-    materialized here as directed ``depends`` edges (prerequisite -> dependent)
-    for any prerequisite that is itself a node in this graph.
+    Build-order dependencies live in each fact's ``meta.depends_on``, not in the
+    ``fact_edges`` table, so they are materialized here as directed ``depends``
+    edges (prerequisite -> dependent). An entry names its prerequisite by that
+    requirement's ``meta.requirement_id`` (e.g. ``"R8"``) — the canonical key that
+    new plans author — OR, for legacy snapshots whose requirements carry no
+    requirement_id, by the prerequisite's raw fact id. Both resolve to the same
+    node; this mirrors the build loop's ``_ticket_state._ids_of`` so the graph and
+    the build DAG agree on one resolution rule. An entry is kept only when it
+    resolves to a node in this graph.
     """
     nodes: list[dict[str, Any]] = []
     scope_members: dict[str, list[str]] = {}
     node_ids: set[str] = set()
+    # requirement_id ("R8") -> node id, the lookup that resolves meta.depends_on.
+    rid_to_id: dict[str, str] = {}
 
     for fact in facts:
         if not fact.id:
             continue
         node_ids.add(fact.id)
+        rid = fact.meta.get("requirement_id")
+        if rid:
+            rid_to_id[str(rid)] = fact.id
         node: dict[str, Any] = {
             "id": fact.id,
             "label": fact.text or fact.id,
@@ -58,16 +68,19 @@ def graph_from_facts(
         if fact.scope:
             scope_members.setdefault(fact.scope, []).append(fact.id)
 
-    # Directed prerequisite -> dependent edges derived from meta.depends_on,
-    # kept only when the prerequisite is also a node in this graph.
+    # Directed prerequisite -> dependent edges derived from meta.depends_on. Each
+    # entry is a prerequisite's requirement_id (resolved through rid_to_id) or, for
+    # legacy data with no requirement_id, its raw fact id; either way it lands on a
+    # node id. Kept only when that node is in this graph.
     depends_edges: list[tuple[str, str, str]] = []
     for fact in facts:
         if not fact.id:
             continue
         for dep in fact.meta.get("depends_on") or []:
-            dep_id = str(dep)
-            if dep_id in node_ids:
-                depends_edges.append((dep_id, fact.id, "depends"))
+            dep_str = str(dep)
+            src_id = rid_to_id.get(dep_str, dep_str)
+            if src_id in node_ids:
+                depends_edges.append((src_id, fact.id, "depends"))
 
     edge_list: list[dict[str, str]] = []
     seen_edges: set[str] = set()

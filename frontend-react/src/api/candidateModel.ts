@@ -82,8 +82,10 @@ export function nextPromotionState(
   }
 }
 
-export function canDeleteCandidate(candidate: Pick<Candidate, "state">): boolean {
-  return candidate.state === "proposed" || candidate.state === "rejected";
+export function canDeleteCandidate(_candidate: Pick<Candidate, "state">): boolean {
+  // Delete is a hard removal available from any state — no reject required first.
+  // (Kept as a predicate so call sites and future gating stay in one place.)
+  return true;
 }
 
 export function promoteUnavailableReason(candidate: Candidate): string {

@@ -215,6 +215,24 @@ _LEASE_META_KEYS = (
     "claim_lease_ttl",
 )
 
+# Live, agent-owned ``meta`` keys a build worker writes onto a requirement fact
+# AFTER a snapshot was saved: the ticket's build lifecycle, its lease, the run it
+# belongs to, and the verification contract (pinned checks / required validations /
+# block reason). A snapshot reload rebuilds the working graph from the snapshot
+# baseline, which predates these — so it must MERGE-PRESERVE them (never revert the
+# fact to the baseline), else it silently discards in-flight build state. See
+# ``_live_reload_state`` / ``_reapply_agent_meta``.
+_LIVE_AGENT_META_KEYS = (
+    "build_state",
+    *_LEASE_META_KEYS,
+    "run_owner",
+    "run_at",
+    "run_scope",
+    "required_validations",
+    "pinned_checks",
+    "block_reason",
+)
+
 
 class LeaseConflict(Exception):
     """A claim/heartbeat lost to (or was blocked by) a different live lease.
@@ -2236,6 +2254,179 @@ class PostgresVectorGraph(SearchableGraph):
             params.extend([space, snapshot])
         return f"({ors})", params
 
+    # --- reload reconciliation (id stability + live-meta durability) --------
+    @staticmethod
+    def _load_meta(raw: Any) -> dict:
+        """Coerce a ``meta`` column value (jsonb dict or json text) to a dict."""
+        if isinstance(raw, dict):
+            return raw
+        if raw:
+            try:
+                return json.loads(raw)
+            except (TypeError, ValueError):
+                return {}
+        return {}
+
+    @staticmethod
+    def _natural_key(meta: Any) -> str | None:
+        """A fact's stable cross-materialization identity, or ``None``.
+
+        A requirement carries ``meta.requirement_id`` (e.g. ``"R8"``) — the canonical
+        key dependency edges already resolve by, stable even when two independent
+        materializations of the same PRD assign different fact ids. Fall back to the
+        first ``req:<name>`` ticket tag so a fact tagged but lacking ``requirement_id``
+        still reconciles. Everything else has no natural key (reconciled by fact id
+        only), so this returns ``None`` and the reload leaves it keyed on its own id.
+        """
+        if not isinstance(meta, dict):
+            return None
+        rid = meta.get("requirement_id")
+        if rid not in (None, ""):
+            return f"requirement_id:{rid}"
+        for tag in meta.get("tags") or []:
+            if isinstance(tag, str) and tag.startswith("req:"):
+                return f"tag:{tag}"
+        return None
+
+    def _live_reload_state(self) -> tuple[dict[str, str], dict[str, dict]]:
+        """Pre-reload snapshot of this working graph, taken inside the reload txn.
+
+        Returns ``(id_by_key, agent_meta_by_id)``:
+        - ``id_by_key`` maps each live fact's natural key -> its live fact id, so the
+          reload can keep an existing requirement's id stable instead of adopting the
+          snapshot's id for the same logical requirement.
+        - ``agent_meta_by_id`` maps live fact id -> its agent-owned meta subset
+          (:data:`_LIVE_AGENT_META_KEYS`), so the reload can merge that live state
+          back OVER the snapshot baseline rather than reverting it.
+        """
+        rows = self._conn.execute(
+            "SELECT id, meta FROM facts WHERE org_id=%s AND user_id=%s",
+            (self.org_id, self.user_id),
+        ).fetchall()
+        id_by_key: dict[str, str] = {}
+        agent_meta_by_id: dict[str, dict] = {}
+        for fid, raw in rows:
+            meta = self._load_meta(raw)
+            key = self._natural_key(meta)
+            if key is not None:
+                id_by_key[key] = fid
+            kept = {k: meta[k] for k in _LIVE_AGENT_META_KEYS if k in meta}
+            if kept:
+                agent_meta_by_id[fid] = kept
+        return id_by_key, agent_meta_by_id
+
+    def _snapshot_id_remap(
+        self, pred: str, pred_params: list, id_by_key: dict[str, str]
+    ) -> dict[str, str]:
+        """Map snapshot fact id -> existing live id where they share a natural key.
+
+        So a requirement the working graph already holds under id ``L`` keeps ``L``
+        when the snapshot stores the same requirement under a different id ``S`` — the
+        logical requirement never changes id across a reload. Ids that already match,
+        or have no live counterpart, are absent (no remap needed).
+        """
+        if not id_by_key:
+            return {}
+        rows = self._conn.execute(
+            f"SELECT id, meta FROM snapshots WHERE org_id=%s AND {pred}",
+            (self.org_id, *pred_params),
+        ).fetchall()
+        remap: dict[str, str] = {}
+        for sid, raw in rows:
+            key = self._natural_key(self._load_meta(raw))
+            if key is None:
+                continue
+            live_id = id_by_key.get(key)
+            if live_id is not None and live_id != sid:
+                remap[sid] = live_id
+        return remap
+
+    @staticmethod
+    def _remap_values(remap: dict[str, str]) -> tuple[str, list]:
+        """``(VALUES (%s::text,%s::text), ...)`` fragment + params for an id remap."""
+        rows = ", ".join(["(%s::text, %s::text)"] * len(remap))
+        params: list[object] = []
+        for old, new in remap.items():
+            params.extend([old, new])
+        return f"(VALUES {rows})", params
+
+    def _insert_snapshot_rows(
+        self, pred: str, pred_params: list, remap: dict[str, str]
+    ) -> None:
+        """Copy the snapshot facts/edges/claims matching ``pred`` into working memory.
+
+        With no ``remap`` this is the original bulk restamp copy. When ``remap`` maps
+        snapshot ids -> existing live ids, the fact id, both edge endpoints, and the
+        claim ``fact_id`` are rewritten through it (``COALESCE(remap.new_id, <col>)``)
+        so a reconciled requirement lands under its live id and its edges/claims stay
+        consistent (no dangling FK).
+        """
+        dst = (self.org_id, self.user_id)
+        if not remap:
+            self._conn.execute(
+                f"INSERT INTO facts ({_FACT_COPY_COLS}) "
+                f"SELECT {_FACT_RESTAMP_SELECT} FROM snapshots WHERE org_id=%s AND {pred}",
+                (*dst, self.org_id, *pred_params),
+            )
+            self._conn.execute(
+                "INSERT INTO fact_edges (org_id, user_id, src_id, dst_id, kind) "
+                "SELECT %s, %s, src_id, dst_id, kind FROM snapshot_edges "
+                f"WHERE org_id=%s AND {pred}",
+                (*dst, self.org_id, *pred_params),
+            )
+            self._conn.execute(
+                f"INSERT INTO claims ({_CLAIM_COPY_COLS}) "
+                f"SELECT {_CLAIM_RESTAMP_SELECT} FROM snapshot_claims WHERE org_id=%s AND {pred}",
+                (*dst, self.org_id, *pred_params),
+            )
+            return
+        vals, vparams = self._remap_values(remap)
+        # facts: leading ``id`` -> COALESCE(r.new_id, id); rest of the restamp select
+        # (``, %s(org), %s(user), text, ...``) is unchanged.
+        fact_select = "COALESCE(r.new_id, id)" + _FACT_RESTAMP_SELECT[len("id"):]
+        self._conn.execute(
+            f"INSERT INTO facts ({_FACT_COPY_COLS}) "
+            f"SELECT {fact_select} FROM snapshots "
+            f"LEFT JOIN {vals} AS r(old_id, new_id) ON r.old_id = id "
+            f"WHERE org_id=%s AND {pred}",
+            (*dst, *vparams, self.org_id, *pred_params),
+        )
+        self._conn.execute(
+            "INSERT INTO fact_edges (org_id, user_id, src_id, dst_id, kind) "
+            "SELECT %s, %s, COALESCE(rs.new_id, src_id), COALESCE(rd.new_id, dst_id), kind "
+            "FROM snapshot_edges "
+            f"LEFT JOIN {vals} AS rs(old_id, new_id) ON rs.old_id = src_id "
+            f"LEFT JOIN {vals} AS rd(old_id, new_id) ON rd.old_id = dst_id "
+            f"WHERE org_id=%s AND {pred}",
+            (*dst, *vparams, *vparams, self.org_id, *pred_params),
+        )
+        claim_select = _CLAIM_RESTAMP_SELECT.replace(
+            "fact_id", "COALESCE(r.new_id, fact_id)", 1
+        )
+        self._conn.execute(
+            f"INSERT INTO claims ({_CLAIM_COPY_COLS}) "
+            f"SELECT {claim_select} FROM snapshot_claims "
+            f"LEFT JOIN {vals} AS r(old_id, new_id) ON r.old_id = fact_id "
+            f"WHERE org_id=%s AND {pred}",
+            (*dst, *vparams, self.org_id, *pred_params),
+        )
+
+    def _reapply_agent_meta(self, agent_meta_by_id: dict[str, dict]) -> None:
+        """Merge each preserved live agent-meta subset back OVER the reloaded baseline.
+
+        Right operand of ``||`` wins, so the live ``build_state``/``claim_*``/``run_*``/
+        ``pinned_checks``/``required_validations``/``block_reason`` survive the reload.
+        Keyed by the FINAL (live) fact id, so it lands on the id-reconciled row; a key
+        whose fact was not reinserted (dropped by a ``replace`` that excluded it) is a
+        harmless no-op.
+        """
+        for fid, kept in agent_meta_by_id.items():
+            self._conn.execute(
+                "UPDATE facts SET meta = COALESCE(meta, '{}'::jsonb) || %s::jsonb "
+                "WHERE org_id=%s AND user_id=%s AND id=%s",
+                (json.dumps(kept), self.org_id, self.user_id, fid),
+            )
+
     def save_cache(self, space: str, snapshot: str) -> int:
         """Dump this user's working memory into the org-shared snapshot ``(space, snapshot)``.
 
@@ -2290,32 +2481,33 @@ class PostgresVectorGraph(SearchableGraph):
         in ``keys`` (embeddings and all), stamped with the loader's ``user_id`` (the
         snapshot carries none). A snapshot load passes one pair; an eval folder load
         passes its cases' ``('__evals__', <case_id>)`` pairs. Returns facts loaded.
+
+        The whole swap runs in ONE transaction, so a concurrent reader never observes
+        the truncated-but-not-yet-refilled graph (the connection is autocommit, so
+        without this each DELETE/INSERT would commit on its own and reads landing
+        between them would see a partial — non-deterministically sized — set). The
+        reload is a MERGE-PRESERVING upsert, not a blind overwrite: a requirement the
+        working graph already holds keeps its live fact id (reconciled by natural key
+        — ``meta.requirement_id`` / ``req:`` tag) instead of adopting the snapshot's
+        id, and its live agent-owned meta (build lifecycle / lease / verification
+        contract) is merged back over the snapshot baseline.
         """
         self._require_live("load_caches")
         pairs = list(keys)
         dst = (self.org_id, self.user_id)
-        # Truncate this user's working-memory graph (edges first for the FK), then refill.
-        self._conn.execute("DELETE FROM fact_edges WHERE org_id=%s AND user_id=%s", dst)
-        self._conn.execute("DELETE FROM claims WHERE org_id=%s AND user_id=%s", dst)
-        self._conn.execute("DELETE FROM facts WHERE org_id=%s AND user_id=%s", dst)
-        if pairs:
-            pred, pred_params = self._pairs_pred(pairs)
-            self._conn.execute(
-                f"INSERT INTO facts ({_FACT_COPY_COLS}) "
-                f"SELECT {_FACT_RESTAMP_SELECT} FROM snapshots WHERE org_id=%s AND {pred}",
-                (*dst, self.org_id, *pred_params),
-            )
-            self._conn.execute(
-                "INSERT INTO fact_edges (org_id, user_id, src_id, dst_id, kind) "
-                "SELECT %s, %s, src_id, dst_id, kind FROM snapshot_edges "
-                f"WHERE org_id=%s AND {pred}",
-                (*dst, self.org_id, *pred_params),
-            )
-            self._conn.execute(
-                f"INSERT INTO claims ({_CLAIM_COPY_COLS}) "
-                f"SELECT {_CLAIM_RESTAMP_SELECT} FROM snapshot_claims WHERE org_id=%s AND {pred}",
-                (*dst, self.org_id, *pred_params),
-            )
+        with self._conn.transaction():
+            id_by_key, agent_meta_by_id = self._live_reload_state()
+            remap: dict[str, str] = {}
+            if pairs:
+                pred, pred_params = self._pairs_pred(pairs)
+                remap = self._snapshot_id_remap(pred, pred_params, id_by_key)
+            # Truncate this user's working-memory graph (edges first for the FK), then refill.
+            self._conn.execute("DELETE FROM fact_edges WHERE org_id=%s AND user_id=%s", dst)
+            self._conn.execute("DELETE FROM claims WHERE org_id=%s AND user_id=%s", dst)
+            self._conn.execute("DELETE FROM facts WHERE org_id=%s AND user_id=%s", dst)
+            if pairs:
+                self._insert_snapshot_rows(pred, pred_params, remap)
+                self._reapply_agent_meta(agent_meta_by_id)
         row = self._conn.execute(
             "SELECT count(*) FROM facts WHERE org_id=%s AND user_id=%s", dst
         ).fetchone()
@@ -2326,9 +2518,18 @@ class PostgresVectorGraph(SearchableGraph):
 
         Unlike ``load_caches`` (which truncates the whole working graph first), this
         keeps every other live fact: for each fact in the selected snapshots it deletes
-        any live fact with the same id (so re-adding an eval replaces its own nodes)
-        and then inserts the snapshot rows + edges (stamped with the loader's
-        ``user_id``). Returns facts inserted.
+        the live fact it replaces and then inserts the snapshot rows + edges (stamped
+        with the loader's ``user_id``). Returns facts inserted.
+
+        The upsert is non-destructive of live agent state and stable in id. It runs in
+        ONE transaction (the connection is autocommit, so an un-bracketed
+        delete-then-insert would let a concurrent reader see the fact momentarily gone
+        — a non-deterministic count). A requirement the working graph already holds is
+        reconciled by natural key (``meta.requirement_id`` / ``req:`` tag): it keeps
+        its LIVE fact id even when the snapshot stored the same requirement under a
+        different id (so a logical requirement never changes id across a reload), and
+        its live agent-owned meta (build lifecycle / lease / verification contract) is
+        merged back OVER the snapshot baseline rather than reverted.
         """
         self._require_live("merge_caches_into_live")
         pairs = list(keys)
@@ -2336,37 +2537,34 @@ class PostgresVectorGraph(SearchableGraph):
             return 0
         dst = (self.org_id, self.user_id)
         pred, pred_params = self._pairs_pred(pairs)
-        # Ids about to be (re)inserted from the snapshots.
-        id_subq = f"SELECT id FROM snapshots WHERE org_id=%s AND {pred}"
-        id_params = (self.org_id, *pred_params)
-        # Drop any existing live copies of those ids (edges first for the FK).
-        self._conn.execute(
-            "DELETE FROM fact_edges WHERE org_id=%s AND user_id=%s "
-            f"AND (src_id IN ({id_subq}) OR dst_id IN ({id_subq}))",
-            (*dst, *id_params, *id_params),
-        )
-        self._conn.execute(
-            f"DELETE FROM facts WHERE org_id=%s AND user_id=%s AND id IN ({id_subq})",
-            (*dst, *id_params),
-        )
-        self._conn.execute(
-            f"INSERT INTO facts ({_FACT_COPY_COLS}) "
-            f"SELECT {_FACT_RESTAMP_SELECT} FROM snapshots WHERE org_id=%s AND {pred}",
-            (*dst, self.org_id, *pred_params),
-        )
-        self._conn.execute(
-            "INSERT INTO fact_edges (org_id, user_id, src_id, dst_id, kind) "
-            "SELECT %s, %s, src_id, dst_id, kind FROM snapshot_edges "
-            f"WHERE org_id=%s AND {pred}",
-            (*dst, self.org_id, *pred_params),
-        )
-        # Claims for the dropped fact ids cascaded on the facts delete above; refill
-        # them from the snapshot (a re-added eval replaces its own claim rows).
-        self._conn.execute(
-            f"INSERT INTO claims ({_CLAIM_COPY_COLS}) "
-            f"SELECT {_CLAIM_RESTAMP_SELECT} FROM snapshot_claims WHERE org_id=%s AND {pred}",
-            (*dst, self.org_id, *pred_params),
-        )
+        with self._conn.transaction():
+            id_by_key, agent_meta_by_id = self._live_reload_state()
+            remap = self._snapshot_id_remap(pred, pred_params, id_by_key)
+            # Live ids this reload replaces: the snapshot's own ids PLUS any live id a
+            # natural-key match reconciles onto (the remap targets) — resolved to a
+            # concrete list so the fact/edge deletes drop exactly the rows we reinsert.
+            snap_ids = [
+                r[0]
+                for r in self._conn.execute(
+                    f"SELECT id FROM snapshots WHERE org_id=%s AND {pred}",
+                    (self.org_id, *pred_params),
+                ).fetchall()
+            ]
+            replace_ids = list({*snap_ids, *remap.values()})
+            if replace_ids:
+                ph = ", ".join(["%s"] * len(replace_ids))
+                # Drop existing live copies (edges first for the FK; claims cascade).
+                self._conn.execute(
+                    "DELETE FROM fact_edges WHERE org_id=%s AND user_id=%s "
+                    f"AND (src_id IN ({ph}) OR dst_id IN ({ph}))",
+                    (*dst, *replace_ids, *replace_ids),
+                )
+                self._conn.execute(
+                    f"DELETE FROM facts WHERE org_id=%s AND user_id=%s AND id IN ({ph})",
+                    (*dst, *replace_ids),
+                )
+            self._insert_snapshot_rows(pred, pred_params, remap)
+            self._reapply_agent_meta(agent_meta_by_id)
         row = self._conn.execute(
             f"SELECT count(*) FROM snapshots WHERE org_id=%s AND {pred}",
             (self.org_id, *pred_params),

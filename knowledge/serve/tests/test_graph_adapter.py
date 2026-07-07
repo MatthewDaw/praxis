@@ -38,16 +38,20 @@ def test_graph_from_facts_dedupes_undirected_edges():
 
 
 def test_graph_from_facts_derives_depends_edges_from_meta():
-    # Build-order deps live in meta.depends_on (prerequisite fact ids), not the
-    # edges table; they surface as directed prerequisite -> dependent edges.
+    # Build-order deps live in meta.depends_on as the prerequisite's stable
+    # requirement_id (NOT its fact id); they surface as directed prerequisite ->
+    # dependent edges, resolved through the requirement_id -> node index.
     facts = [
-        Fact(id="base", text="scaffold", state="active"),
-        Fact(id="models", text="models", state="active", meta={"depends_on": ["base"]}),
+        Fact(id="base", text="scaffold", state="active", category="requirement",
+             meta={"requirement_id": "R1"}),
+        Fact(id="models", text="models", state="active", category="requirement",
+             meta={"requirement_id": "R2", "depends_on": ["R1"]}),
         Fact(
             id="persist",
             text="persistence",
             state="active",
-            meta={"depends_on": ["models", "missing"]},  # 'missing' not a node
+            category="requirement",
+            meta={"requirement_id": "R3", "depends_on": ["R2", "R99"]},  # R99 not a node
         ),
     ]
 
@@ -55,9 +59,24 @@ def test_graph_from_facts_derives_depends_edges_from_meta():
 
     assert {"src": "base", "dst": "models", "kind": "depends"} in graph["edges"]
     assert {"src": "models", "dst": "persist", "kind": "depends"} in graph["edges"]
-    # A depends_on target that is not a node in this graph is skipped.
-    assert all(e["src"] != "missing" and e["dst"] != "missing" for e in graph["edges"])
+    # A depends_on requirement_id that is not a node in this graph is skipped.
     assert len(graph["edges"]) == 2
+
+
+def test_graph_from_facts_depends_on_falls_back_to_fact_id_for_legacy():
+    # Legacy snapshots (e.g. the scraper) carry no requirement_id and write the
+    # prerequisite's raw fact id in depends_on. That still resolves — the renderer
+    # shares the build loop's rule (requirement_id first, fact id fallback) so both
+    # id schemes draw edges. An entry that is neither is dropped (no phantom edge).
+    facts = [
+        Fact(id="fid-base", text="base", state="active", category="requirement"),
+        Fact(id="fid-dep", text="dep", state="active", category="requirement",
+             meta={"depends_on": ["fid-base", "nope"]}),  # fact id resolves; "nope" does not
+    ]
+
+    graph = graph_adapter.graph_from_facts(facts, [])
+
+    assert graph["edges"] == [{"src": "fid-base", "dst": "fid-dep", "kind": "depends"}]
 
 
 def test_graph_from_facts_marks_ticket_build_state():

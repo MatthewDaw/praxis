@@ -2721,6 +2721,7 @@ code,
 .scope-tree__member {
   display: block;
   width: 100%;
+  max-width: 100%;
   text-align: left;
   border: none;
   background: transparent;
@@ -2729,6 +2730,11 @@ code,
   cursor: pointer;
   font-size: 0.8rem;
   color: var(--ink);
+  /* Labels can be long ticket sentences (or fall back to a raw id) — keep them
+     on one line and ellipsize so they never overflow the sidebar. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .scope-tree__member:hover,

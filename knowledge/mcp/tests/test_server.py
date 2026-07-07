@@ -649,19 +649,6 @@ def test_delete_fact_issues_delete(monkeypatch):
     assert "f1" in out
 
 
-def test_delete_fact_conflict_reports_reason(monkeypatch):
-    _patch_identity(monkeypatch)
-
-    class _RespText(_Resp):
-        text = "fact is referenced"
-
-    monkeypatch.setattr(
-        server.httpx, "delete", lambda url, headers, timeout=None: _RespText({}, status_code=409)
-    )
-    out = server.praxis_delete_fact("f1")
-    assert "Cannot delete" in out and "referenced" in out
-
-
 def test_clear_graph_posts_and_reports_count(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}

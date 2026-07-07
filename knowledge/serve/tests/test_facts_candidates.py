@@ -13,7 +13,7 @@ from knowledge.knowledge_graph.knowledge_graph_def import Claim
 from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
 from knowledge.llm.embedder_variants.fake_embedder import FakeEmbedder
 from knowledge.serve import db
-from knowledge.serve.facts_candidates import DeletionError, FactsCandidates, PromotionError
+from knowledge.serve.facts_candidates import FactsCandidates, PromotionError
 
 pytestmark = pytest.mark.skipif(
     db.resolve_dsn() is None,
@@ -473,13 +473,12 @@ def test_resolve_loser_other_contradictions_flag(facade):
 # --- US3: delete gating -----------------------------------------------------
 
 
-def test_delete_gated_to_proposed_or_rejected(facade):
-    """FR-014: an active fact can't be deleted (reject first); proposed/rejected can."""
+def test_delete_allowed_from_any_state(facade):
+    """A fact can be hard-deleted from any state — no reject required first."""
     active = facade.create({"title": "A", "content": "Active note."})["id"]
     facade.promote(active)  # -> active
-    with pytest.raises(DeletionError):
-        facade.delete(active)
-    assert facade.get(active) is not None  # untouched
+    facade.delete(active)
+    assert facade.get(active) is None
 
     proposed = facade.create({"title": "P", "content": "Proposed note."})["id"]
     facade.delete(proposed)
@@ -497,7 +496,6 @@ def test_delete_removes_contradiction_links(facade):
     a = facade.create({"title": "A", "content": "A note."})["id"]
     b = facade.create({"title": "B", "content": "B note."})["id"]
     facade.graph.add_edge(a, b, "contradiction")
-    facade.reject(a)  # make it deletable
     facade.delete(a)
     assert facade.get(a) is None
     assert _contra_status(facade.get(b)) == {}  # b no longer linked to a

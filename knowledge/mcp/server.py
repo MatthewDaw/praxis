@@ -989,10 +989,11 @@ def praxis_reject_fact(cid: str, reason: str | None = None) -> str:
 def praxis_delete_fact(cid: str) -> str:
     """Permanently delete a fact from the graph (the dashboard "delete" action).
 
-    Unlike reject (which keeps the row in a rejected state), this removes the
-    fact entirely. Find the id via ``praxis_list_graph``. Confirm with the user
-    first — this is irreversible. Returns a 409 hint if the fact can't be
-    deleted (e.g. it is referenced elsewhere).
+    Unlike reject (which keeps the row in a rejected state and flags derived
+    dependents for review), this removes the fact entirely, in ANY state — no
+    reject required first. Its edges and claims cascade away with it. Find the id
+    via ``praxis_list_graph``. Confirm with the user first — this is irreversible;
+    prefer reject when you want the stale-dependent review propagation.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -1004,8 +1005,6 @@ def praxis_delete_fact(cid: str) -> str:
         )
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 409:
-            return f"Cannot delete fact {cid}: {exc.response.text}"
         return _friendly(exc)
     return f"Deleted fact id={cid}."
 

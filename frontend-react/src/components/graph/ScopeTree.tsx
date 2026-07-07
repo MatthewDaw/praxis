@@ -1,8 +1,10 @@
 import { useMemo, useState } from "react";
-import type { ScopeGroup } from "../../types/graph";
+import type { GraphNode, ScopeGroup } from "../../types/graph";
 
 interface ScopeTreeProps {
   scopeGroups?: ScopeGroup[];
+  /** Graph nodes, used to resolve member ids to their human-readable labels. */
+  nodes?: GraphNode[];
   selectedId: string | null;
   onSelectNode: (id: string) => void;
 }
@@ -19,6 +21,7 @@ function childrenOf(parentId: string, groups: ScopeGroup[]): ScopeGroup[] {
 interface ScopeTreeNodeProps {
   group: ScopeGroup;
   allGroups: ScopeGroup[];
+  labelById: Map<string, string>;
   selectedId: string | null;
   onSelectNode: (id: string) => void;
   depth: number;
@@ -27,11 +30,12 @@ interface ScopeTreeNodeProps {
 function ScopeTreeNode({
   group,
   allGroups,
+  labelById,
   selectedId,
   onSelectNode,
   depth,
 }: ScopeTreeNodeProps) {
-  const [open, setOpen] = useState(depth < 2);
+  const [open, setOpen] = useState(false);
   const childGroups = childrenOf(group.id, allGroups);
   const hasChildren = childGroups.length > 0 || group.memberIds.length > 0;
 
@@ -57,21 +61,25 @@ function ScopeTreeNode({
         <>
           {group.memberIds.length > 0 ? (
             <ul className="scope-tree__members">
-              {group.memberIds.map((memberId) => (
-                <li key={memberId}>
-                  <button
-                    type="button"
-                    className={
-                      selectedId === memberId
-                        ? "scope-tree__member scope-tree__member--active"
-                        : "scope-tree__member"
-                    }
-                    onClick={() => onSelectNode(memberId)}
-                  >
-                    {memberId}
-                  </button>
-                </li>
-              ))}
+              {group.memberIds.map((memberId) => {
+                const label = labelById.get(memberId) ?? memberId;
+                return (
+                  <li key={memberId}>
+                    <button
+                      type="button"
+                      className={
+                        selectedId === memberId
+                          ? "scope-tree__member scope-tree__member--active"
+                          : "scope-tree__member"
+                      }
+                      title={label}
+                      onClick={() => onSelectNode(memberId)}
+                    >
+                      {label}
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           ) : null}
           {childGroups.length > 0 ? (
@@ -81,6 +89,7 @@ function ScopeTreeNode({
                   key={child.id}
                   group={child}
                   allGroups={allGroups}
+                  labelById={labelById}
                   selectedId={selectedId}
                   onSelectNode={onSelectNode}
                   depth={depth + 1}
@@ -96,12 +105,17 @@ function ScopeTreeNode({
 
 export function ScopeTree({
   scopeGroups,
+  nodes,
   selectedId,
   onSelectNode,
 }: ScopeTreeProps) {
   const roots = useMemo(
     () => (scopeGroups ? buildTree(scopeGroups) : []),
     [scopeGroups],
+  );
+  const labelById = useMemo(
+    () => new Map((nodes ?? []).map((node) => [node.id, node.label])),
+    [nodes],
   );
 
   if (!scopeGroups || scopeGroups.length === 0) {
@@ -122,6 +136,7 @@ export function ScopeTree({
             key={group.id}
             group={group}
             allGroups={scopeGroups}
+            labelById={labelById}
             selectedId={selectedId}
             onSelectNode={onSelectNode}
             depth={0}

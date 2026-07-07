@@ -185,7 +185,7 @@ staging store as well as the source of truth. The conceptual shape:
     "surfaces": ["s-today"],          // wireframe screen ids, or ["backend-only"]
     "defines": ["completion"],
     "references": ["daily rep", "ratings", "habit checklist"],
-    "depends_on": [],                 // prerequisite requirement ids that must be FINISHED first (build-order DAG)
+    "depends_on": [],                 // prerequisite requirement_ids ("R8") — NEVER fact ids/cids — FINISHED first (build-order DAG; see Step 5)
     "scope": "mvp",                   // mvp | post-mvp — the TIER tag, not the project
     "citations": ["Brainstorm §3", "Epic D", "wireframe-player.html#s-today"],
     "tags": ["completion", "today-screen"]   // identity tags; check applicability queries these later
@@ -349,7 +349,16 @@ order or screen layout. The relations that create a genuine build-order dependen
   (B4), or a base schema a feature relies on.
 
 Set `meta.depends_on = [requirement_id, ...]` on each requirement via `praxis_edit_fact` (or at admit).
-A requirement with no prerequisite keeps `[]`. Reference requirements by their stable `requirement_id`.
+A requirement with no prerequisite keeps `[]`.
+
+**CANONICAL FORMAT — the ONE dependency key is the target's `requirement_id` (e.g. `"R8"`), NEVER its
+fact id / cid.** There is a single storage format for dependency edges; do not mix the two. Every consumer
+resolves `depends_on` by `requirement_id`: the plan gate (`R-NO-DANGLING-DEP`), the build loop
+(`next_ready_ticket`), and the dashboard graph (`graph_adapter` materializes the `depends` edges by
+mapping `requirement_id -> node`). Writing a fact id instead is a silent failure — it names no
+requirement, so the plan gate flags it dangling, the build loop never treats it as a prerequisite, and the
+graph draws **no edge** (this is exactly why a snapshot authored with cids rendered no dependency edges).
+When you have only a target's fact id in hand, look up that fact's `meta.requirement_id` and store *that*.
 
 **The DAG is VALIDATED, not just authored — it is part of the mechanical gate (B6).** Run the plan gate
 (`agent_factory.plan_gate.evaluate_plan`); its `R-NO-DANGLING-DEP` rule rejects a `depends_on` naming a

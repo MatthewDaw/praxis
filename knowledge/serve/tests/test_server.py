@@ -238,13 +238,11 @@ def test_patch_clearing_content_still_400s(client):
     assert "content" in res.json()["detail"].lower()
 
 
-def test_delete_active_is_refused_with_409(client):
+def test_delete_active_succeeds_without_reject(client):
     cid = _create(client)["id"]
     client.post(f"/candidates/{cid}/promote")  # -> active
-    res = client.delete(f"/candidates/{cid}")
-    assert res.status_code == 409
-    assert "reject" in res.json()["detail"].lower()
-    assert client.get(f"/candidates/{cid}").status_code == 200  # still there
+    assert client.delete(f"/candidates/{cid}").status_code == 200
+    assert client.get(f"/candidates/{cid}").status_code == 404  # gone
 
 
 def test_delete_proposed_and_rejected_succeed(client):

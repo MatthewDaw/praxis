@@ -321,6 +321,143 @@ def test_write_equals_decide_then_persist(unique_org):
     assert _count(conn, unique_org, "u2") == 1
 
 
+# --- snapshot reload durability (id stability + live-meta preservation) -------
+# Regression for the non-deterministic re-materialization bug: a snapshot reload
+# (POST /snapshots/load -> load_caches / merge_caches_into_live) used to rebuild the
+# working graph verbatim from the snapshot baseline, which reverted live agent-owned
+# meta (build_state/claim_*/pinned_checks/...) and, when the live graph had
+# materialized a requirement under a different id than the snapshot, re-keyed the
+# fact. The reload is now a natural-key-reconciled, meta-preserving, atomic upsert.
+
+
+def _live_graph(conn, org, user):
+    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+        PostgresVectorGraph,
+    )
+    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
+    from knowledge.llm.embedder_variants.fake_embedder import FakeEmbedder
+
+    conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
+    return PostgresVectorGraph(
+        conn, org, user, embedder=FakeEmbedder(), recall_floor=-1.0,
+        policy=[Redactor(), Deduper()],
+    )
+
+
+def _fact_by_reqid(conn, org, user, rid):
+    """(id, meta) of the sole working-memory fact carrying meta.requirement_id == rid."""
+    import json as _json
+
+    rows = conn.execute(
+        "SELECT id, meta FROM facts WHERE org_id=%s AND user_id=%s "
+        "AND meta->>'requirement_id' = %s",
+        (org, user, rid),
+    ).fetchall()
+    assert len(rows) == 1, f"expected exactly one R={rid} fact, got {len(rows)}"
+    fid, meta = rows[0]
+    return fid, (meta if isinstance(meta, dict) else _json.loads(meta))
+
+
+def test_merge_reload_preserves_live_meta_and_id(unique_org):
+    """PATCH meta.build_state on a requirement, then merge-reload its snapshot: the
+    live build state survives and the fact keeps its id (the reported repro)."""
+    conn = db.connect()
+    org, user = unique_org, "u1"
+    space, snap = "build-plan", "prd-shopping"
+    g = _live_graph(conn, org, user)
+    live_id = g.write(
+        "The scraper must respect robots.txt",
+        state="active", category="requirement", meta={"requirement_id": "R1"},
+    )
+    g.save_cache(space, snap)  # baseline: no build_state yet
+
+    # Agent claims + finishes the ticket + pins checks — all live-only meta writes.
+    fact = g.get_fact(live_id)
+    g.set_meta(live_id, {**(fact.meta or {}),
+                         "build_state": "finished",
+                         "pinned_checks": ["c1", "c2"]})
+
+    g.merge_caches_into_live([(space, snap)])  # the reload path
+
+    fid, meta = _fact_by_reqid(conn, org, user, "R1")
+    assert fid == live_id                       # id survived
+    assert meta.get("build_state") == "finished"  # live meta survived (not reverted)
+    assert meta.get("pinned_checks") == ["c1", "c2"]
+
+
+def test_load_replace_reload_preserves_live_meta_and_id(unique_org):
+    """Same durability guarantee via the replace path (load_caches)."""
+    conn = db.connect()
+    org, user = unique_org, "u1"
+    space, snap = "build-plan", "prd-shopping"
+    g = _live_graph(conn, org, user)
+    live_id = g.write(
+        "Persist scraped rows to Postgres",
+        state="active", category="requirement", meta={"requirement_id": "R2"},
+    )
+    g.save_cache(space, snap)
+    fact = g.get_fact(live_id)
+    g.set_meta(live_id, {**(fact.meta or {}), "build_state": "in_progress",
+                         "claim_owner": "agent-a"})
+
+    g.load_caches([(space, snap)])  # replace-mode reload
+
+    fid, meta = _fact_by_reqid(conn, org, user, "R2")
+    assert fid == live_id
+    assert meta.get("build_state") == "in_progress"
+    assert meta.get("claim_owner") == "agent-a"
+
+
+def test_reload_keeps_live_id_when_snapshot_reassigned_id(unique_org):
+    """The unstable-id repro: the snapshot stores the same requirement under a
+    DIFFERENT fact id than the live graph (independent materialization). The reload
+    must keep the live id (reconciled by meta.requirement_id), not adopt the
+    snapshot's — and there must be exactly one fact for the requirement."""
+    conn = db.connect()
+    org, user = unique_org, "u1"
+    space, snap = "build-plan", "prd-shopping"
+    g = _live_graph(conn, org, user)
+    live_id = g.write(
+        "Rate-limit outbound requests",
+        state="active", category="requirement", meta={"requirement_id": "R3"},
+    )
+    g.save_cache(space, snap)
+    # Simulate the snapshot's copy of R3 having a different id (as if saved from a
+    # separately-materialized graph): re-key the snapshot row.
+    other_id = "ffffffffffffffffffffffffffffffff"
+    conn.execute(
+        "UPDATE snapshots SET id=%s WHERE org_id=%s AND space=%s AND snapshot=%s AND id=%s",
+        (other_id, org, space, snap, live_id),
+    )
+    fact = g.get_fact(live_id)
+    g.set_meta(live_id, {**(fact.meta or {}), "build_state": "finished"})
+
+    g.merge_caches_into_live([(space, snap)])
+
+    fid, meta = _fact_by_reqid(conn, org, user, "R3")  # asserts exactly one
+    assert fid == live_id                # kept the live id, did NOT flip to other_id
+    assert meta.get("build_state") == "finished"
+
+
+def test_repeated_reload_is_idempotent_no_count_drift(unique_org):
+    """Repeated reloads converge: the requirement count and its fact id stay fixed
+    (guards the count-drift / duplicate-materialization regression)."""
+    conn = db.connect()
+    org, user = unique_org, "u1"
+    space, snap = "build-plan", "prd-shopping"
+    g = _live_graph(conn, org, user)
+    live_id = g.write(
+        "Emit a run summary",
+        state="active", category="requirement", meta={"requirement_id": "R4"},
+    )
+    g.save_cache(space, snap)
+
+    for _ in range(3):
+        g.merge_caches_into_live([(space, snap)])
+        fid, _ = _fact_by_reqid(conn, org, user, "R4")  # exactly one, every time
+        assert fid == live_id
+
+
 @pytest.fixture
 def unique_org(request):
     # Unique per test node so reruns and parallel tenants never collide.

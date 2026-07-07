@@ -28,6 +28,7 @@ export function GraphExplorer({
         <aside className="graph-explorer__sidebar">
           <ScopeTree
             scopeGroups={graph.scopeGroups}
+            nodes={graph.nodes}
             selectedId={selectedId}
             onSelectNode={onSelectNode}
           />
