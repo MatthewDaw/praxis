@@ -64,7 +64,6 @@ export function MountSwitcher({ apiBaseUrl, auth }: MountSwitcherProps) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Snapshot keys with an in-flight mount/unmount, so their row shows a spinner
   // and can't be double-clicked.

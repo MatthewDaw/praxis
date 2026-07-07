@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiConflictError,
   GraphIngestUnavailableError,
+  loadSnapshot,
   postInsight,
   saveSnapshot,
 } from "./api/apiClient";
@@ -232,6 +233,49 @@ export default function App() {
       return () => window.clearTimeout(timer);
     }
   }, [infoMessage]);
+
+  // Reconcile a restored "active snapshot" label with reality. The active-snapshot
+  // name is persisted in localStorage and restored on mount / space switch, but the
+  // live working-memory graph it claims to be loaded from is server-side and may be
+  // empty (a fresh session, a new browser, or a different space) — leaving the
+  // dropdown advertising "prd-team-app (205 nodes)" while the candidate list reads
+  // an empty live graph and shows "0 candidates". When a snapshot is marked active
+  // and CLEAN but the live graph came back empty, load it once so those nodes
+  // actually appear. Guards keep it safe: only into an empty graph (never clobbers
+  // live edits), never while dirty (so an intentional Truncate, which marks the
+  // graph dirty, is respected), and at most once per (org, space, snapshot).
+  const reconciledSnapshotRef = useRef<string>("");
+  useEffect(() => {
+    if (mode !== "live" || !config.apiBaseUrl) return;
+    if (!activeSnapshot || snapshotDirty || loading || error) return;
+    if (candidates.length > 0) return;
+    const key = `${orgId}:${spaceId}:${activeSnapshot}`;
+    if (reconciledSnapshotRef.current === key) return;
+    reconciledSnapshotRef.current = key;
+    const apiBaseUrl = config.apiBaseUrl;
+    void (async () => {
+      try {
+        await loadSnapshot(apiBaseUrl, activeSnapshot, "replace", auth);
+        void refresh();
+        setGraphRefreshKey((value) => value + 1);
+      } catch {
+        // Stale/missing snapshot or a transient error — leave the live graph as-is
+        // (the user can pick another snapshot). The ref guard prevents a retry loop.
+      }
+    })();
+  }, [
+    mode,
+    config.apiBaseUrl,
+    activeSnapshot,
+    snapshotDirty,
+    loading,
+    error,
+    candidates.length,
+    orgId,
+    spaceId,
+    auth,
+    refresh,
+  ]);
 
   useEffect(() => {
     setSelectedId(null);
