@@ -977,8 +977,14 @@ def create_app(conn: Any | None = None) -> FastAPI:
         uid: str = Depends(active_user_id),
         target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
+        # A plain edit is a literal write (on_conflict defaults to "none"): only the
+        # edited fact's fields change, no other fact is touched. "surface"/
+        # "auto_resolve" are the explicit opt-ins mirroring /insights.
+        on_conflict = str(body.get("onConflict") or "none").strip().lower()
         try:
-            return candidates_for(org, uid, target).update(cid, body)
+            return candidates_for(org, uid, target).update(
+                cid, body, on_conflict=on_conflict
+            )
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
         except ValueError as exc:

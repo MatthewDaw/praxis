@@ -349,8 +349,31 @@ class FactsCandidates:
         candidate["hasOtherContradictions"] = self._has_other_contradictions(cid)
         return candidate
 
-    def update(self, cid: str, body: dict[str, Any]) -> Candidate:
+    # on_conflict modes an edit may opt into (default is a literal write).
+    _EDIT_ON_CONFLICT = ("none", "surface", "auto_resolve")
+
+    def update(
+        self, cid: str, body: dict[str, Any], on_conflict: str = "none"
+    ) -> Candidate:
+        """Edit a fact in place. ``on_conflict`` (default ``"none"``) is a literal
+        write: only this fact's own fields change and no other fact is touched.
+
+        Editing a field is not an assertion of new knowledge to be reconciled, so a
+        plain edit must never mutate another fact's state (that silently rejected a
+        false-positive "loser" and hid the conflict). Contradiction detection is an
+        explicit opt-in mirroring ``add_insight``: ``"surface"`` records a *pending*
+        contradiction for each clashing fact (resolvable via ``get_contradictions``;
+        nothing is rejected — the edited fact is demoted to ``proposed`` only if it
+        would otherwise be a second active side, FR-005); ``"auto_resolve"`` supersedes
+        each clashing fact (the edit wins, the loser is rejected, the edge flipped to
+        ``contradicted_by``). Detection runs only when the content actually changes.
+        """
         body = body or {}
+        on_conflict = (on_conflict or "none").strip().lower()
+        if on_conflict not in self._EDIT_ON_CONFLICT:
+            raise ValueError(
+                "on_conflict must be 'none', 'surface', or 'auto_resolve'"
+            )
         fact = self.graph.get_fact(cid)
         if fact is None:
             raise KeyError(cid)
@@ -395,6 +418,12 @@ class FactsCandidates:
         if not str(text).strip():
             raise ValueError("title and content are required")
         meta["title"] = title
+        # Detect contradictions the new content introduces BEFORE writing it, so the
+        # edited fact's new content is not found as a duplicate of itself (which would
+        # suppress detection); the edges/resolution are applied after the write.
+        conflict_ids: list[str] = []
+        if on_conflict != "none" and content_changed:
+            conflict_ids = self._detect_edit_conflicts(cid, text, fact)
         self.graph.update_fact(
             cid,
             text=text if content_changed else None,  # None => skip the re-embed
@@ -409,9 +438,78 @@ class FactsCandidates:
         fact = self.graph.get_fact(cid)
         assert fact is not None
         self._append_audit(fact, "edited")
+        # Opt-in reconciliation: apply the contradictions detected above. Default
+        # "none" detected nothing, so a plain edit stays a literal write with no side
+        # effects on any other fact.
+        if conflict_ids:
+            self._apply_edit_conflicts(cid, conflict_ids, on_conflict)
         candidate = self.get(cid)
         assert candidate is not None
         return candidate
+
+    def _detect_edit_conflicts(self, cid: str, text: str, fact: Any) -> list[str]:
+        """Contradictions the edited content introduces, as a list of rival fact ids.
+
+        Read-only: ``graph.decide`` runs the write policy over the new content and
+        returns its contradiction flags *without* persisting a new fact (the edited
+        fact plays the role of the incoming write). Flags naming the edited fact
+        itself are dropped — recall can surface its own pre-edit claims — as are ids
+        that no longer resolve. A graph facade without the policy pipeline
+        (``decide``) yields no conflicts.
+        """
+        decide = getattr(self.graph, "decide", None)
+        if not callable(decide):
+            return []
+        decision = decide(
+            text,
+            state="active" if fact.state == "active" else "proposed",
+            source=fact.source,
+            category=getattr(fact, "category", None),
+        )
+        rivals: list[str] = []
+        for flag in getattr(decision, "flags", None) or []:
+            if not flag.startswith("contradiction:"):
+                continue
+            rid = flag.split(":", 1)[1]
+            if rid == cid or rid in rivals:
+                continue
+            if self.graph.get_fact(rid) is not None:
+                rivals.append(rid)
+        return rivals
+
+    def _apply_edit_conflicts(
+        self, cid: str, conflict_ids: list[str], on_conflict: str
+    ) -> None:
+        """Record the detected contradictions per ``on_conflict``.
+
+        - ``"surface"`` records a PENDING ``contradiction`` edge for each rival (both
+          facts kept), so the clash shows up in ``get_contradictions`` and is
+          resolvable. To uphold FR-005 (never two active contradictors) the *edited*
+          fact — never the counterpart — is demoted to ``proposed`` when it and a
+          rival would otherwise both be active.
+        - ``"auto_resolve"`` supersedes each rival through the existing resolve path:
+          the edited fact wins (active), the rival is rejected, the edge flips to
+          ``contradicted_by``.
+
+        Only the edited fact and its direct contradictors change — never an unrelated
+        fact.
+        """
+        if on_conflict == "auto_resolve":
+            for rival in conflict_ids:
+                self.graph.add_edge(cid, rival, "contradiction")
+                self.resolve(f"{cid}__{rival}", cid)
+            return
+        # surface: pending edges only, rejecting nothing.
+        demote = False
+        for rival in conflict_ids:
+            self.graph.add_edge(cid, rival, "contradiction")
+            rival_fact = self.graph.get_fact(rival)
+            if rival_fact is not None and rival_fact.state == "active":
+                demote = True
+        # FR-005: don't leave the edited fact as a second active contradictor.
+        if demote and (edited := self.graph.get_fact(cid)) is not None:
+            if edited.state == "active":
+                self.graph.set_state(cid, "proposed")
 
     def delete(self, cid: str) -> None:
         fact = self.graph.get_fact(cid)

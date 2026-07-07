@@ -529,6 +529,40 @@ def test_edit_fact_requires_a_field(monkeypatch):
     assert "Nothing to edit" in out
 
 
+def test_edit_fact_omits_on_conflict_by_default(monkeypatch):
+    # Default edit is a literal write: no onConflict in the body (backend defaults
+    # absent -> "none"), so a plain edit never triggers reconciliation.
+    _patch_identity(monkeypatch)
+    captured = {}
+
+    def fake_patch(url, json, headers, timeout=None):
+        captured["json"] = json
+        return _Resp({"id": "f1", "state": "proposed"})
+
+    monkeypatch.setattr(server.httpx, "patch", fake_patch)
+    server.praxis_edit_fact("f1", content="updated")
+    assert "onConflict" not in captured["json"]
+
+
+def test_edit_fact_plumbs_on_conflict_when_opted_in(monkeypatch):
+    _patch_identity(monkeypatch)
+    captured = {}
+
+    def fake_patch(url, json, headers, timeout=None):
+        captured["json"] = json
+        return _Resp({"id": "f1", "state": "proposed"})
+
+    monkeypatch.setattr(server.httpx, "patch", fake_patch)
+    server.praxis_edit_fact("f1", content="updated", on_conflict="surface")
+    assert captured["json"]["onConflict"] == "surface"
+
+
+def test_edit_fact_rejects_bad_on_conflict(monkeypatch):
+    _patch_identity(monkeypatch)
+    out = server.praxis_edit_fact("f1", content="updated", on_conflict="bogus")
+    assert "on_conflict must be" in out
+
+
 def test_record_derivation_posts_edge(monkeypatch):
     # Fix 3: a direct way to attach derived_from edges between existing facts.
     _patch_identity(monkeypatch)

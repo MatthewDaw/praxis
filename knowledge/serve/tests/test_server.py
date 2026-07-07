@@ -485,6 +485,79 @@ def test_insights_surface_mode_keeps_both_and_surfaces_contradiction(client):
     assert "500" in ctx["context"] and "100 requests per second" not in ctx["context"]
 
 
+def test_edit_default_is_literal_write(client):
+    """A default PATCH (no onConflict) is a literal write: editing one fact into a
+    genuine clash with another neither rejects a side nor raises a contradiction."""
+    a = _create(
+        client, title="Limit", content="The default rate limit is 100 requests per second."
+    )
+    b = _create(client, title="Draft", content="Rate limit policy is still to be decided.")
+    res = client.patch(
+        f"/candidates/{b['id']}",
+        json={"content": "The default rate limit is 500 requests per second."},
+    )
+    assert res.status_code == 200, res.text
+    assert client.get("/contradictions").json() == [], "default edit must not surface"
+    states = {c["id"]: c["state"] for c in client.get("/candidates").json()}
+    assert states[a["id"]] != "rejected"
+    assert states[b["id"]] != "rejected"
+
+
+def test_edit_surface_mode_raises_resolvable_contradiction(client):
+    """edit_fact(on_conflict='surface') keeps both facts and surfaces a resolvable
+    PENDING contradiction (opt-in reconciliation of an otherwise-literal edit)."""
+    a = _create(
+        client, title="Limit", content="The default rate limit is 100 requests per second."
+    )
+    b = _create(client, title="Draft", content="Rate limit policy is still to be decided.")
+    res = client.patch(
+        f"/candidates/{b['id']}",
+        json={
+            "content": "The default rate limit is 500 requests per second.",
+            "onConflict": "surface",
+        },
+    )
+    assert res.status_code == 200, res.text
+    clusters = client.get("/contradictions").json()
+    assert clusters, "surface edit should leave a pending contradiction to adjudicate"
+    states = {c["id"]: c["state"] for c in client.get("/candidates").json()}
+    assert states[a["id"]] != "rejected", "surface must not reject a side"
+    assert states[b["id"]] != "rejected", "surface must not reject a side"
+    # The surfaced pair is resolvable in place.
+    pair = clusters[0]["pairs"][0]
+    keep = next(s["id"] for s in (pair["a"], pair["b"]) if "500" in s["content"])
+    settled = client.post(f"/contradictions/{pair['id']}/resolve", json={"keep": [keep]})
+    assert settled.status_code == 200, settled.text
+
+
+def test_edit_auto_resolve_supersedes_clashing_fact(client):
+    """edit_fact(on_conflict='auto_resolve') supersedes the clashing fact: the edit
+    wins (active) and the loser is rejected (opt-in, preserves add_insight semantics)."""
+    a = _create(
+        client, title="Limit", content="The default rate limit is 100 requests per second."
+    )
+    b = _create(client, title="New", content="Rate limit policy is still to be decided.")
+    res = client.patch(
+        f"/candidates/{b['id']}",
+        json={
+            "content": "The default rate limit is 500 requests per second.",
+            "onConflict": "auto_resolve",
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert client.get(f"/candidates/{a['id']}").json()["state"] == "rejected"
+    assert client.get(f"/candidates/{b['id']}").json()["state"] == "active"
+
+
+def test_edit_rejects_unknown_on_conflict(client):
+    b = _create(client)
+    res = client.patch(
+        f"/candidates/{b['id']}", json={"content": "x", "onConflict": "bogus"}
+    )
+    assert res.status_code == 400
+    assert "on_conflict" in res.json()["detail"]
+
+
 def _surface_rate_limit_pair(client):
     """Seed two conflicting rate-limit facts in surface mode; return the pending pair."""
     first = client.post(

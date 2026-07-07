@@ -109,6 +109,50 @@ def test_update_changes_title_and_content(facade):
     assert facade.get(cid)["content"] == "Edited content."
 
 
+def test_edit_default_is_literal_write_no_side_effects(facade):
+    """A plain edit (on_conflict defaults to 'none') changes only the target fact's
+    fields and never rejects or re-labels a fact it is already flagged as
+    contradicting — editing a field is not an assertion of new knowledge."""
+    a = facade.create({"title": "A", "content": "Direct scraping is authorized."})["id"]
+    b = facade.create(
+        {"title": "B", "content": "Render the SERP; /search can't be fetched."}
+    )["id"]
+    # A pre-existing (false-positive) contradiction edge between the two.
+    facade.graph.add_edge(a, b, "contradiction")
+
+    facade.update(a, {"meta": {"note": "clarified"}})  # deliberate edit of A
+
+    assert facade.get(a)["state"] == "proposed"  # A unchanged
+    assert facade.get(b)["state"] == "proposed"  # B untouched by A's edit
+    assert facade.get(a)["meta"]["note"] == "clarified"
+    # The pending pair is left exactly as it was — nothing resolved, nothing rejected.
+    assert _edge_pairs(facade, "contradiction") == {frozenset((a, b))}
+    assert _edge_pairs(facade, "contradicted_by") == set()
+
+
+def test_edit_then_promote_does_not_seesaw(facade):
+    """Regression for the edit/promote see-saw: editing one fact must not reject the
+    other, and promoting one changes only that fact's state."""
+    a = facade.create({"title": "A", "content": "Direct scraping is authorized."})["id"]
+    b = facade.create({"title": "B", "content": "Render the SERP instead."})["id"]
+    facade.graph.add_edge(a, b, "contradiction")
+
+    # Edit A's content (default on_conflict='none' => no detection, no side effects).
+    facade.update(a, {"content": "Direct scraping is authorized (plain HTTP allowed)."})
+    assert facade.get(a)["state"] == "proposed"
+    assert facade.get(b)["state"] == "proposed"
+
+    facade.promote(a)  # proposed -> active
+    assert facade.get(a)["state"] == "active"
+    assert facade.get(b)["state"] == "proposed"  # counterpart NOT flipped
+
+
+def test_edit_rejects_unknown_on_conflict(facade):
+    cid = facade.create({"title": "T", "content": "Some content."})["id"]
+    with pytest.raises(ValueError):
+        facade.update(cid, {"content": "New content."}, on_conflict="bogus")
+
+
 def test_delete_then_get_and_keyerror(facade):
     cid = facade.create({"title": "T", "content": "Disposable candidate."})["id"]
     facade.delete(cid)

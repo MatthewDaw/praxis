@@ -840,6 +840,7 @@ def praxis_edit_fact(
     category: str | None = None,
     meta: dict | None = None,
     derived_from: list[str] | None = None,
+    on_conflict: str = "none",
 ) -> str:
     """Edit an existing fact in place (find its id via ``praxis_list_graph``).
 
@@ -847,9 +848,20 @@ def praxis_edit_fact(
     ``category``, ``meta`` (merged into the fact's existing meta), and/or
     ``derived_from`` (ids to attach as ``derived_from`` edges from this fact).
     Confirm edits with the user first; this mutates stored knowledge.
+
+    ``on_conflict`` defaults to ``"none"``: an edit is a **literal write** — only
+    this fact's own fields change and no other fact is touched. Editing a field is
+    not an assertion of new knowledge to reconcile, so it must never silently reject
+    a different fact. Opt in only when you want the edited content reconciled like an
+    ``add_insight``: ``"surface"`` keeps every fact and raises a *pending*
+    contradiction for each clash (review via ``praxis_get_contradictions``);
+    ``"auto_resolve"`` supersedes each clashing fact (the edit wins, the loser is
+    rejected). Reconciliation runs only when ``content`` actually changes.
     """
     if (hint := _not_ready()) is not None:
         return hint
+    if on_conflict not in ("none", "surface", "auto_resolve"):
+        return "on_conflict must be 'none', 'surface', or 'auto_resolve'."
     body: dict[str, object] = {}
     if title is not None:
         body["title"] = title
@@ -868,6 +880,10 @@ def praxis_edit_fact(
             "Nothing to edit — pass title, content, provenance, "
             "category, meta, and/or derived_from."
         )
+    # Send onConflict only when opting into reconciliation, so a plain edit stays a
+    # minimal literal-write body (the backend also defaults absent -> "none").
+    if on_conflict != "none":
+        body["onConflict"] = on_conflict
     try:
         resp = httpx.patch(
             f"{identity.api_base()}/candidates/{cid}",
