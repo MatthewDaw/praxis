@@ -31,6 +31,25 @@ describe("graphModel", () => {
     expect(snapshot.source).toBe("api");
   });
 
+  it("parses ticket build state and ignores unknown values", () => {
+    const snapshot = parseGraphPayload({
+      graph: {
+        nodes: [
+          { id: "t1", label: "done", state: "active", isTicket: true, buildState: "finished" },
+          { id: "t2", label: "bad", state: "active", isTicket: true, buildState: "nonsense" },
+          { id: "n1", label: "plain", state: "active" },
+        ],
+        edges: [],
+      },
+    });
+    const byId = Object.fromEntries(snapshot.nodes.map((n) => [n.id, n]));
+    expect(byId.t1.isTicket).toBe(true);
+    expect(byId.t1.buildState).toBe("finished");
+    expect(byId.t2.buildState).toBeUndefined();
+    expect(byId.n1.isTicket).toBeUndefined();
+    expect(byId.n1.buildState).toBeUndefined();
+  });
+
   it("derives contradiction edges from candidates without duplicates", () => {
     const candidates = [
       candidateFromMapping({

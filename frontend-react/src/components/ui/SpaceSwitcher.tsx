@@ -2,14 +2,14 @@ import { useState } from "react";
 import { useSpace } from "../../auth/SpaceGate";
 import { InlineRename } from "./InlineRename";
 
-const DEFAULT_OPTION = "";
 const NEW_OPTION = "__new__";
 
 /**
- * In-header dropdown for switching between a login's working spaces within the
- * active org. The first option is the default graph; picking "New space…" reveals
- * an inline create form. Selecting a space swaps the active `X-Praxis-Space` in
- * place — the data providers key on it, so the dashboard refetches automatically.
+ * In-header dropdown for switching between a login's spaces within the active org.
+ * A real space is always selected (there is no "default graph" — see SpaceGate);
+ * picking "New space…" reveals an inline create form. Selecting a space swaps the
+ * active `X-Praxis-Space`, which changes the snapshot folder the dashboard saves
+ * into.
  */
 export function SpaceSwitcher() {
   const {
@@ -74,7 +74,7 @@ export function SpaceSwitcher() {
     const ok = window.confirm(
       `Delete space "${label}"? This permanently removes its working knowledge ` +
         `graph (facts, snapshots, mounts). This cannot be undone. You will return ` +
-        `to the Default graph.`,
+        `to the space picker.`,
     );
     if (!ok) {
       return;
@@ -113,7 +113,6 @@ export function SpaceSwitcher() {
             value={creating ? NEW_OPTION : spaceId}
             onChange={(e) => handleSelect(e.target.value)}
           >
-            <option value={DEFAULT_OPTION}>Default graph</option>
             {spaces.map((space) => (
               <option key={space.spaceId} value={space.spaceId}>
                 {space.name && space.name !== space.spaceId

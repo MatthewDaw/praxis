@@ -3,6 +3,7 @@ import {
   Background,
   Controls,
   Handle,
+  MarkerType,
   Position,
   ReactFlow,
   useNodesInitialized,
@@ -14,18 +15,38 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { CandidateState } from "../../types/candidate";
-import type { KnowledgeGraphSnapshot } from "../../types/graph";
+import type {
+  GraphEdgeKind,
+  KnowledgeGraphSnapshot,
+  TicketBuildState,
+} from "../../types/graph";
+import { EDGE_LEGEND } from "../viz";
 import { GraphLegend } from "./GraphLegend";
-import { getTopCenterViewport, layoutGraphNodes, stateNodeColors } from "./graphLayout";
+import {
+  getTopCenterViewport,
+  layoutDagNodes,
+  layoutGraphNodes,
+  stateNodeColors,
+} from "./graphLayout";
 
 interface CandidateNodeData extends Record<string, unknown> {
   label: string;
   state: CandidateState;
   confidence: number;
+  buildState?: TicketBuildState;
 }
+
+// Ticket done-state badge copy: symbol + short label per build_state.
+const TICKET_BADGE: Record<TicketBuildState, { symbol: string; label: string }> = {
+  finished: { symbol: "✓", label: "Done" },
+  in_progress: { symbol: "⟳", label: "In progress" },
+  blocked: { symbol: "✕", label: "Blocked" },
+  incomplete: { symbol: "○", label: "To do" },
+};
 
 function CandidateGraphNode({ data, selected }: NodeProps<Node<CandidateNodeData>>) {
   const colors = stateNodeColors(data.state);
+  const badge = data.buildState ? TICKET_BADGE[data.buildState] : null;
   return (
     <div
       className="graph-node"
@@ -37,6 +58,14 @@ function CandidateGraphNode({ data, selected }: NodeProps<Node<CandidateNodeData
       }}
     >
       <Handle type="target" position={Position.Top} className="graph-node__handle" />
+      {badge ? (
+        <span
+          className={`graph-node__ticket graph-node__ticket--${data.buildState}`}
+          title={`Ticket: ${badge.label}`}
+        >
+          <span aria-hidden="true">{badge.symbol}</span> {badge.label}
+        </span>
+      ) : null}
       <p className="graph-node__title">{data.label}</p>
       <p className="graph-node__meta">
         {data.state} · {Math.round(data.confidence * 100)}%
@@ -177,6 +206,30 @@ function KnowledgeGraphViewInner({
   onSelectNode,
 }: KnowledgeGraphViewProps) {
   const [focused, setFocused] = useState<string | null>(null);
+  // Edge kinds the viewer has hidden (empty = show all). Kept as a hide-set so
+  // it needs no resync when the graph — and thus its present kinds — changes.
+  const [hiddenKinds, setHiddenKinds] = useState<Set<GraphEdgeKind>>(new Set());
+
+  // The distinct edge kinds actually present, ordered by the legend for a
+  // stable toggle row.
+  const presentKinds = useMemo(() => {
+    const present = new Set(graph.edges.map((edge) => edge.kind));
+    return EDGE_LEGEND.map((entry) => entry.kind).filter((kind) =>
+      present.has(kind),
+    );
+  }, [graph.edges]);
+
+  function toggleKind(kind: GraphEdgeKind) {
+    setHiddenKinds((prev) => {
+      const next = new Set(prev);
+      if (next.has(kind)) {
+        next.delete(kind);
+      } else {
+        next.add(kind);
+      }
+      return next;
+    });
+  }
 
   const { clusters, unclustered } = useMemo(() => groupByCluster(graph.nodes), [graph.nodes]);
 
@@ -198,9 +251,11 @@ function KnowledgeGraphViewInner({
     const out: Node<CandidateNodeData | ClusterNodeData>[] = [];
     const visible = new Set<string>();
 
-    // No cluster info at all → flat grid (legacy behavior).
+    // No cluster info at all → layered DAG when dependency edges exist, else
+    // fall back to the plain grid.
     if (!hasClusters) {
-      const positions = layoutGraphNodes(graph.nodes);
+      const positions =
+        layoutDagNodes(graph.nodes, graph.edges) ?? layoutGraphNodes(graph.nodes);
       for (const node of graph.nodes) {
         visible.add(node.id);
         out.push({
@@ -208,7 +263,12 @@ function KnowledgeGraphViewInner({
           type: "candidateNode",
           position: positions.get(node.id) ?? { x: 0, y: 0 },
           selected: node.id === selectedId,
-          data: { label: node.label, state: node.state, confidence: node.confidence },
+          data: {
+            label: node.label,
+            state: node.state,
+            confidence: node.confidence,
+            buildState: node.buildState,
+          },
         });
       }
       return { nodes: out, visibleCandidateIds: visible };
@@ -224,7 +284,12 @@ function KnowledgeGraphViewInner({
           type: "candidateNode",
           position: at(i),
           selected: node.id === selectedId,
-          data: { label: node.label, state: node.state, confidence: node.confidence },
+          data: {
+            label: node.label,
+            state: node.state,
+            confidence: node.confidence,
+            buildState: node.buildState,
+          },
         });
       });
       return { nodes: out, visibleCandidateIds: visible };
@@ -242,12 +307,17 @@ function KnowledgeGraphViewInner({
       });
     });
     return { nodes: out, visibleCandidateIds: visible };
-  }, [graph.nodes, groups, focusedGroup, hasClusters, selectedId]);
+  }, [graph.nodes, graph.edges, groups, focusedGroup, hasClusters, selectedId]);
 
   const edges: Edge[] = useMemo(
     () =>
       graph.edges
-        .filter((edge) => visibleCandidateIds.has(edge.src) && visibleCandidateIds.has(edge.dst))
+        .filter(
+          (edge) =>
+            !hiddenKinds.has(edge.kind) &&
+            visibleCandidateIds.has(edge.src) &&
+            visibleCandidateIds.has(edge.dst),
+        )
         .map((edge, index) => ({
           id: `${edge.kind}-${edge.src}-${edge.dst}-${index}`,
           source: edge.src,
@@ -259,10 +329,18 @@ function KnowledgeGraphViewInner({
                 ? "graph-edge graph-edge--support"
                 : edge.kind === "renders"
                   ? "graph-edge graph-edge--renders"
-                  : "graph-edge graph-edge--similarity",
+                  : edge.kind === "depends"
+                    ? "graph-edge graph-edge--depends"
+                    : "graph-edge graph-edge--similarity",
           animated: edge.kind === "contradiction",
+          // depends_on is directional (prerequisite -> dependent); arrow it in
+          // the accent color so it reads apart from gray similarity edges.
+          markerEnd:
+            edge.kind === "depends"
+              ? { type: MarkerType.ArrowClosed, color: "#2563eb" }
+              : undefined,
         })),
-    [graph.edges, visibleCandidateIds],
+    [graph.edges, visibleCandidateIds, hiddenKinds],
   );
 
   function handleNodeClick(id: string) {
@@ -302,7 +380,12 @@ function KnowledgeGraphViewInner({
         <Background gap={16} size={1} />
         <Controls showInteractive={false} position="top-right" />
       </ReactFlow>
-      <GraphLegend className="graph-legend--overlay" />
+      <GraphLegend
+        className="graph-legend--overlay"
+        edgeKinds={presentKinds}
+        hiddenKinds={hiddenKinds}
+        onToggleKind={toggleKind}
+      />
     </div>
   );
 }

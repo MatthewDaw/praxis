@@ -11,6 +11,7 @@ const ALL_EDGE_KINDS: GraphEdgeKind[] = [
   "support",
   "similarity",
   "renders",
+  "depends",
 ];
 
 describe("legendConfig", () => {

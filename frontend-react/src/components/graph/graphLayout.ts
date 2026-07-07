@@ -1,5 +1,5 @@
 import type { CandidateState } from "../../types/candidate";
-import type { GraphNode } from "../../types/graph";
+import type { GraphEdge, GraphEdgeKind, GraphNode } from "../../types/graph";
 
 export function stateNodeColors(state: CandidateState): {
   bg: string;
@@ -45,6 +45,107 @@ export function layoutGraphNodes(nodes: GraphNode[]): Map<string, { x: number; y
     positions.set(node.id, { x: col * xGap, y: row * yGap });
   });
 
+  return positions;
+}
+
+/**
+ * Layered (Sugiyama-style) layout keyed off directional dependency edges:
+ * an edge `src -> dst` means `dst` depends on `src`, so prerequisites sit
+ * above their dependents. Each node's row is the longest prerequisite chain
+ * ending at it (roots with no prerequisites are row 0). Nodes not touched by
+ * any dependency edge are laid out in wrapped rows below the DAG.
+ *
+ * Returns null when there are no dependency edges to layer by, so callers can
+ * fall back to the plain grid.
+ */
+export function layoutDagNodes(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+  kind: GraphEdgeKind = "depends",
+): Map<string, { x: number; y: number }> | null {
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  const deps = edges.filter(
+    (e) => e.kind === kind && nodeIds.has(e.src) && nodeIds.has(e.dst),
+  );
+  if (deps.length === 0) {
+    return null;
+  }
+
+  // dst depends on the srcs — these are its prerequisites.
+  const prereqs = new Map<string, string[]>();
+  const connected = new Set<string>();
+  for (const edge of deps) {
+    const list = prereqs.get(edge.dst);
+    if (list) {
+      list.push(edge.src);
+    } else {
+      prereqs.set(edge.dst, [edge.src]);
+    }
+    connected.add(edge.src);
+    connected.add(edge.dst);
+  }
+
+  // Longest-path depth, memoized, with a cycle guard (plans are acyclic, but
+  // never hang if a bad edge slips through).
+  const depthOf = new Map<string, number>();
+  const visiting = new Set<string>();
+  function depth(id: string): number {
+    const cached = depthOf.get(id);
+    if (cached !== undefined) {
+      return cached;
+    }
+    if (visiting.has(id)) {
+      return 0;
+    }
+    visiting.add(id);
+    let d = 0;
+    for (const prereq of prereqs.get(id) ?? []) {
+      d = Math.max(d, depth(prereq) + 1);
+    }
+    visiting.delete(id);
+    depthOf.set(id, d);
+    return d;
+  }
+
+  const byLayer = new Map<number, string[]>();
+  let maxLayer = 0;
+  for (const node of nodes) {
+    if (!connected.has(node.id)) {
+      continue;
+    }
+    const layer = depth(node.id);
+    maxLayer = Math.max(maxLayer, layer);
+    const list = byLayer.get(layer);
+    if (list) {
+      list.push(node.id);
+    } else {
+      byLayer.set(layer, [node.id]);
+    }
+  }
+
+  // Assemble rows: dependency layers top-to-bottom, then isolated nodes wrapped.
+  const rows: string[][] = [];
+  for (let layer = 0; layer <= maxLayer; layer += 1) {
+    const list = byLayer.get(layer);
+    if (list && list.length) {
+      rows.push(list);
+    }
+  }
+  const isolated = nodes.filter((n) => !connected.has(n.id)).map((n) => n.id);
+  const isolatedPerRow = 6;
+  for (let i = 0; i < isolated.length; i += isolatedPerRow) {
+    rows.push(isolated.slice(i, i + isolatedPerRow));
+  }
+
+  const xGap = 260;
+  const yGap = 170;
+  const positions = new Map<string, { x: number; y: number }>();
+  rows.forEach((row, r) => {
+    row.forEach((id, i) => {
+      // Center each row around x=0 (the viewport re-centers on fit).
+      positions.set(id, { x: (i - (row.length - 1) / 2) * xGap, y: r * yGap });
+    });
+  });
   return positions;
 }
 

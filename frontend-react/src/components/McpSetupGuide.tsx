@@ -36,7 +36,7 @@ function CommandBlock({ command, label }: { command: string; label?: string }) {
 // so it works even when pasted into a Claude session running in a *different*
 // repo — a bare `uv run python -m knowledge.mcp` resolves against the current
 // project and fails to connect from anywhere but this repo.
-const REPO_DIR = "C:/Users/mattd/Documents/gauntlet/praxis";
+const REPO_DIR = "C:/Users/mattd/Documents/official_repos/praxis";
 
 // The agent-factory plugin ships as a self-contained subdirectory of this repo
 // (imported under agent_factory/). Registering it as a *directory* marketplace

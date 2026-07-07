@@ -4,7 +4,14 @@ export type GraphEdgeKind =
   | "contradiction"
   | "support"
   | "similarity"
-  | "renders";
+  | "renders"
+  | "depends";
+
+export type TicketBuildState =
+  | "incomplete"
+  | "in_progress"
+  | "finished"
+  | "blocked";
 
 export interface GraphNode {
   id: string;
@@ -16,6 +23,10 @@ export interface GraphNode {
   provenance?: string;
   clusterId?: number | null;
   clusterLabel?: string;
+  /** True for ticket nodes (requirement facts). */
+  isTicket?: boolean;
+  /** Build-loop lifecycle state — present only on ticket nodes. */
+  buildState?: TicketBuildState;
 }
 
 export interface GraphEdge {

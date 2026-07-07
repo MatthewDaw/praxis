@@ -1,6 +1,7 @@
 import { useState } from "react";
+import type { GraphEdgeKind } from "../../types/graph";
 import {
-  EDGE_LEGEND,
+  edgeLegendByKind,
   GRAPH_INTERACTION_LEGEND,
   LIFECYCLE_LEGEND,
   LegendEdgeLine,
@@ -13,9 +14,20 @@ import {
 
 interface GraphLegendProps {
   className?: string;
+  /** Edge kinds actually present in the graph (ordered) — the only ones listed. */
+  edgeKinds: GraphEdgeKind[];
+  /** Kinds the viewer has hidden. */
+  hiddenKinds: Set<GraphEdgeKind>;
+  /** Toggle an edge kind's visibility. */
+  onToggleKind: (kind: GraphEdgeKind) => void;
 }
 
-export function GraphLegend({ className }: GraphLegendProps) {
+export function GraphLegend({
+  className,
+  edgeKinds,
+  hiddenKinds,
+  onToggleKind,
+}: GraphLegendProps) {
   // Start collapsed so the explainer doesn't cover the graph; expand on demand.
   const [collapsed, setCollapsed] = useState(true);
 
@@ -61,18 +73,43 @@ export function GraphLegend({ className }: GraphLegendProps) {
             </ul>
           </LegendSection>
 
-          <LegendSection title="Relationships">
-            <ul className="viz-legend__list">
-              {EDGE_LEGEND.map((entry) => (
-                <LegendItem
-                  key={entry.kind}
-                  marker={<LegendEdgeLine entry={entry} />}
-                  label={entry.label}
-                  description={entry.description}
-                />
-              ))}
-            </ul>
-          </LegendSection>
+          {edgeKinds.length > 0 ? (
+            <LegendSection
+              title="Relationships"
+              description="Click an edge type to show or hide it on the graph."
+            >
+              <ul className="viz-legend__list">
+                {edgeKinds.map((kind) => {
+                  const entry = edgeLegendByKind(kind);
+                  if (!entry) {
+                    return null;
+                  }
+                  const shown = !hiddenKinds.has(kind);
+                  return (
+                    <li key={kind}>
+                      <button
+                        type="button"
+                        className={`legend-edge-toggle${shown ? "" : " is-off"}`}
+                        aria-pressed={shown}
+                        onClick={() => onToggleKind(kind)}
+                      >
+                        <span className="viz-legend__marker" aria-hidden="true">
+                          <LegendEdgeLine entry={entry} />
+                        </span>
+                        <span className="viz-legend__item-text">
+                          <span className="viz-legend__item-label">{entry.label}</span>
+                          <span className="viz-legend__desc">{entry.description}</span>
+                        </span>
+                        <span className="legend-edge-toggle__state">
+                          {shown ? "shown" : "hidden"}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </LegendSection>
+          ) : null}
 
           <LegendSection title="Interaction">
             <ul className="viz-legend__list">

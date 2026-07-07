@@ -84,6 +84,13 @@ export const EDGE_LEGEND: EdgeLegendEntry[] = [
     strokeWidth: 1.75,
     opacity: 0.9,
   },
+  {
+    kind: "depends",
+    label: "Depends on",
+    description: "Build-order prerequisite (arrow points to the dependent)",
+    strokeWidth: 1.75,
+    opacity: 0.85,
+  },
 ];
 
 export const GRAPH_INTERACTION_LEGEND = {

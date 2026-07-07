@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { signOut as amplifySignOut } from "aws-amplify/auth";
+import { isLocalAuthBypassEnabled } from "./amplifyConfig";
 import { contractHeaders } from "../api/contract";
 import { resolveInitialConfig } from "../config/dataSource";
 import { useAuthToken } from "./useAuthToken";
@@ -264,6 +265,13 @@ export function OrgGate({ children }: OrgGateProps) {
 
   const handleSignOut = useCallback(async () => {
     localStorage.removeItem(ACTIVE_ORG_STORAGE_KEY);
+    // In local auth-bypass dev there is no Cognito session; calling Amplify's
+    // signOut() throws "Auth UserPool not configured". Just drop back to the
+    // picker instead of signing out of a pool that was never configured.
+    if (isLocalAuthBypassEnabled()) {
+      setActiveOrg(null);
+      return;
+    }
     await amplifySignOut();
   }, []);
 

@@ -207,7 +207,14 @@ function normalizeSnapshot(payload: unknown): Snapshot {
       ? (payload as Record<string, unknown>)
       : {};
   return {
-    name: typeof row.name === "string" ? row.name : "",
+    // The backend GET /snapshots returns the name under the key `snapshot`
+    // (see knowledge/serve/app.py list_snapshots); accept `name` as a fallback.
+    name:
+      typeof row.snapshot === "string"
+        ? row.snapshot
+        : typeof row.name === "string"
+          ? row.name
+          : "",
     count: Number(row.count ?? 0),
     createdAt:
       typeof row.createdAt === "string"

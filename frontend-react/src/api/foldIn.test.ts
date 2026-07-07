@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { foldIn, getSnapshotFacts, listOrgSources } from "./apiClient";
+import { foldIn, getSnapshotFacts, listOrgSources, listSnapshots } from "./apiClient";
 
 const AUTH = { getToken: async () => "token-123", orgId: "monica-demo" };
+const SPACE_AUTH = { ...AUTH, spaceId: "build-plan" };
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -62,6 +63,34 @@ describe("listOrgSources", () => {
 
     const sources = await listOrgSources("http://127.0.0.1:8000");
     expect(sources[0]).toMatchObject({ userId: "ada", isSelf: false });
+  });
+});
+
+describe("listSnapshots", () => {
+  it("maps the backend `snapshot` key onto each snapshot's name", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            space: "build-plan",
+            snapshots: [
+              { snapshot: "prd-build-plan", count: 44, createdAt: "2026-07-07" },
+            ],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    const snapshots = await listSnapshots("http://127.0.0.1:8000", SPACE_AUTH);
+
+    // Regression: the backend returns the name under `snapshot`, not `name`.
+    // Reading the wrong key left every snapshot nameless — it rendered as
+    // "(44 nodes)" and its empty <option value> could not be selected.
+    expect(snapshots).toEqual([
+      { name: "prd-build-plan", count: 44, createdAt: "2026-07-07" },
+    ]);
   });
 });
 

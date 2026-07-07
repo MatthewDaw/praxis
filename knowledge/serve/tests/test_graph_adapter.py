@@ -37,6 +37,51 @@ def test_graph_from_facts_dedupes_undirected_edges():
     assert len(graph["edges"]) == 1
 
 
+def test_graph_from_facts_derives_depends_edges_from_meta():
+    # Build-order deps live in meta.depends_on (prerequisite fact ids), not the
+    # edges table; they surface as directed prerequisite -> dependent edges.
+    facts = [
+        Fact(id="base", text="scaffold", state="active"),
+        Fact(id="models", text="models", state="active", meta={"depends_on": ["base"]}),
+        Fact(
+            id="persist",
+            text="persistence",
+            state="active",
+            meta={"depends_on": ["models", "missing"]},  # 'missing' not a node
+        ),
+    ]
+
+    graph = graph_adapter.graph_from_facts(facts, [])
+
+    assert {"src": "base", "dst": "models", "kind": "depends"} in graph["edges"]
+    assert {"src": "models", "dst": "persist", "kind": "depends"} in graph["edges"]
+    # A depends_on target that is not a node in this graph is skipped.
+    assert all(e["src"] != "missing" and e["dst"] != "missing" for e in graph["edges"])
+    assert len(graph["edges"]) == 2
+
+
+def test_graph_from_facts_marks_ticket_build_state():
+    # Ticket nodes (requirement facts) carry a done/not-done signal from
+    # meta.build_state; non-ticket facts carry neither isTicket nor buildState.
+    facts = [
+        Fact(id="t1", text="finished ticket", state="active", category="requirement",
+             meta={"build_state": "finished"}),
+        Fact(id="t2", text="unbuilt ticket", state="active", category="requirement"),
+        Fact(id="d1", text="a decision", state="active", category="episodic"),
+    ]
+
+    graph = graph_adapter.graph_from_facts(facts, [])
+    by_id = {n["id"]: n for n in graph["nodes"]}
+
+    assert by_id["t1"]["isTicket"] is True
+    assert by_id["t1"]["buildState"] == "finished"
+    # No build_state in meta => not-yet-built => "incomplete".
+    assert by_id["t2"]["buildState"] == "incomplete"
+    # Non-requirement facts are not tickets.
+    assert "isTicket" not in by_id["d1"]
+    assert "buildState" not in by_id["d1"]
+
+
 def test_graph_from_facts_empty_has_no_scope_groups():
     graph = graph_adapter.graph_from_facts([], [])
     assert graph == {"nodes": [], "edges": []}

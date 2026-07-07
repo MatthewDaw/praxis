@@ -6,6 +6,7 @@ import type {
   GraphSnapshotSource,
   KnowledgeGraphSnapshot,
   ScopeGroup,
+  TicketBuildState,
 } from "../types/graph";
 
 const KNOWN_EDGE_KINDS = new Set<GraphEdgeKind>([
@@ -13,6 +14,7 @@ const KNOWN_EDGE_KINDS = new Set<GraphEdgeKind>([
   "support",
   "similarity",
   "renders",
+  "depends",
 ]);
 
 function canonicalEdgeKey(src: string, dst: string, kind: GraphEdgeKind): string {
@@ -58,7 +60,26 @@ export function parseGraphNode(raw: Record<string, unknown>): GraphNode | null {
         : raw.cluster_label != null
           ? String(raw.cluster_label)
           : undefined,
+    isTicket: raw.isTicket === true || raw.is_ticket === true ? true : undefined,
+    buildState: parseBuildState(raw.buildState ?? raw.build_state),
   };
+}
+
+const BUILD_STATES: ReadonlySet<TicketBuildState> = new Set<TicketBuildState>([
+  "incomplete",
+  "in_progress",
+  "finished",
+  "blocked",
+]);
+
+function parseBuildState(raw: unknown): TicketBuildState | undefined {
+  if (raw == null) {
+    return undefined;
+  }
+  const label = String(raw);
+  return BUILD_STATES.has(label as TicketBuildState)
+    ? (label as TicketBuildState)
+    : undefined;
 }
 
 function parseNodeState(raw: unknown): GraphNode["state"] {

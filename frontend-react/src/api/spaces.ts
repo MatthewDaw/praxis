@@ -1,10 +1,11 @@
 import { contractHeaders } from "./contract";
 
 /**
- * A space is a login's private, named working knowledge graph within an org.
- * Selecting one sends `X-Praxis-Space` so reads/writes target a sibling graph
- * (the backend derives `user_id = principal.sub::space:<id>`); the default
- * space sends no header and targets the login's base graph.
+ * A space is a named container for the org-shared snapshots a login saves/loads
+ * within an org. Selecting one sends `X-Praxis-Space`, which (paired with
+ * `X-Praxis-Snapshot`) selects the snapshot folder to save into/load from. It
+ * does NOT scope working memory: the backend keys the live facts graph on
+ * `(org, sub)` alone — there is no `user_id` mangling.
  */
 export interface Space {
   spaceId: string;
