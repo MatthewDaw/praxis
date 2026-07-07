@@ -8,10 +8,13 @@ description: >
   architecture/external-service decisions, underspecification routing, cross-requirement gaps,
   coverage+depth checks, and the data-driven scope="planning" checks — convenes the ce-* plan-review
   panel, and hands the human a clearable gate that ends in save_snapshot(space="<project>", snapshot="prd-<project>"). AMEND MODE
-  adds ONE check (validation or planning) to an existing plan as a Praxis fact; because checks resolve
-  by query and completion is gated on them, matching tickets automatically re-enter the incomplete set.
-  Use when starting (or re-baselining) a project from a brainstorm/PRD + wireframe, or to graft a new
-  check onto an already-hardened plan.
+  makes ONE additive change to an existing plan as a Praxis fact — either a check (validation or
+  planning), OR a genuinely-new requirement ticket where there is nothing to edit; because checks and
+  tickets resolve by query and completion is gated on them, matching (or newly-added) tickets
+  automatically enter the incomplete set. Use when starting (or re-baselining) a project from a
+  brainstorm/PRD + wireframe, or to graft a new check or a lone missing ticket onto an already-hardened
+  plan. (Amend adds; it does NOT edit an existing requirement's content — that is a re-baseline FULL
+  INTAKE.)
 ---
 
 ## How work flows (this factory's methodology — read first)
@@ -59,10 +62,13 @@ snapshot.
 **Two entry modes:**
 - **FULL INTAKE** (default; a fresh project or re-baseline) — extract → harden → validate/audit → panel
   → human gate → `save_snapshot`. Sections "Full intake" + "Planning validation / the audit" below.
-- **AMEND MODE** (an already-hardened plan) — add ONE check (validation or planning) as a Praxis fact;
-  matching tickets re-enter the incomplete set by query. Section "Amend mode" below. This single mode
+- **AMEND MODE** (an already-hardened plan) — one additive Praxis write: a check (validation or
+  planning), OR a lone new requirement ticket where nothing existing needs editing. Matching (or
+  newly-added) tickets enter the incomplete set by query. Section "Amend mode" below. This single mode
   replaces the four former check skills (af-add-validation, af-add-planning-check,
-  af-redo-ticket-add-validation, af-redo-plan-add-check).
+  af-redo-ticket-add-validation, af-redo-plan-add-check). Amend is **additive only** — to change an
+  existing requirement's content, re-baseline via FULL INTAKE (the Step-3 `on_conflict="surface"` edit
+  path); to add work the plan simply lacks, use C0 below.
 
 All Praxis access follows **`docs/af-memory-policy.md`** (tenancy, `insight` vs `ingest`, the tabular audit, mount/save
 rules). This is a single decision-making agent that may dispatch the **read-only retrieval sub-agent**
@@ -621,14 +627,20 @@ copy semantics.)
 
 ---
 
-# PART C — AMEND MODE (add ONE check to an existing plan)
+# PART C — AMEND MODE (one additive change to an existing plan)
 
 Amend mode **replaces the four former check skills** (af-add-validation, af-add-planning-check,
-af-redo-ticket-add-validation, af-redo-plan-add-check). It adds **ONE check** — validation or planning —
-to an already-hardened plan as a Praxis fact. Because **checks resolve by query** and **completion is
-gated on them**, matching work re-enters the incomplete set automatically; there is no separate "redo"
-skill. Optionally force `build_state="incomplete"` on the matched tickets for *immediacy* (so the next
-build run picks them up at once instead of merely on their next natural RESOLVE).
+af-redo-ticket-add-validation, af-redo-plan-add-check). It makes **one additive Praxis write** to an
+already-hardened plan — a **check** (validation or planning, C1/C2), or a **new requirement ticket** the
+plan is simply missing (C0). Because **checks and tickets resolve by query** and **completion is gated on
+them**, matching work re-enters the incomplete set automatically; there is no separate "redo" skill.
+Optionally force `build_state="incomplete"` on the matched tickets for *immediacy* (so the next build run
+picks them up at once instead of merely on their next natural RESOLVE).
+
+**Amend is additive, never a content edit.** C0 adds a requirement that *did not exist*; it does not
+rewrite an existing ticket's statement/acceptance — that is a re-baseline FULL INTAKE (Step-3
+`on_conflict="surface"` edit). The `on_conflict="surface"` guard on the C0 write is exactly what catches
+"this 'new' ticket is actually an edit of an existing one" and routes you back to FULL INTAKE.
 
 Praxis is a HARD dependency: if the write cannot reach Praxis, **fail closed** (error and stop) — never
 fall back to a file. A check is **declarative and read-only during builds** — edited only on an explicit
@@ -652,7 +664,56 @@ seam — a silent no-op. (Confirm tenancy first per `docs/af-memory-policy.md` �
 > `planning-validation` are SNAPSHOTS in each project's own space — there is no single global checks
 > space anymore. A check authored here governs only this project; re-seed each project's check snapshots.
 
-Decide the **kind** from the request:
+Decide the **kind** from the request: a **new ticket** the plan lacks (C0), a **validation check**
+(C1), or a **planning check** (C2). The snapshot-targeting prose just above governs C1/C2 (checks live
+in the per-project check snapshots); C0 instead writes the requirement into the `prd-<project>` snapshot
+— see C0 for its own target.
+
+## C0 — New ticket (a genuinely-new requirement, nothing to edit)
+
+When the amendment is a **requirement the plan is simply missing** — not a rule over existing work, and
+not a rewrite of an existing ticket — admit it as a ticket the same shape Full-intake and the plan panel
+mint: **identity only** (tags, surfaces, semantics), NEVER an authored check list. This is the one Amend
+path that writes the **`prd-<project>` snapshot** (where tickets live), not a check snapshot.
+
+Do it through the load→edit→save cycle so the add runs its dedup/contradiction net against the existing
+plan (a bare snapshot-targeted write has nothing to compare against):
+
+1. `load_snapshot(space="<project>", snapshot="prd-<project>", mode="replace")` — pull the current plan
+   into working memory (confirm tenancy first per `docs/af-memory-policy.md` §0).
+2. Admit the requirement, carrying the project identity + incomplete state:
+
+```
+praxis_add_insight(
+  insight  = "<requirement — ONE semicolon-joined sentence>",
+  source   = "prd-<project>",
+  category = "requirement",
+  meta     = { "build_state": "incomplete", "tags": ["<class-tag>", ...],
+               "scope": "mvp | post-mvp", "surfaces": ["<screen-id>", ...] },
+  on_conflict = "surface",
+)
+```
+
+3. **`on_conflict="surface"` is the guard**, never `raw=True`/`auto_resolve`: if the "new" requirement
+   near-dups an existing one, it surfaces as a contradiction (`praxis_get_contradictions`) instead of
+   silently minting a twin. Settle it with `praxis_resolve_contradiction`. If it turns out to *be* an
+   existing ticket needing new wording, you are in the wrong path — that content edit belongs to FULL
+   INTAKE (Step-3), not Amend.
+4. If it renders a surface, bind it: `praxis_bind_surface(requirement_id, screen_id, ...)` (the `renders`
+   edge) so surface-bound checks resolve onto it at build.
+5. `save_snapshot(space="<project>", snapshot="prd-<project>")` — persist. A requirement left only in
+   working memory (or written into a check snapshot) is invisible to the build — the requirement analog
+   of the wrong-snapshot no-op above.
+
+**No C3 regression step.** A new ticket is born `build_state="incomplete"` with `source="prd-<project>"`,
+so it enters `incomplete_requirements` for free — there is nothing pre-existing to re-open. Confirm with
+`praxis_incomplete_requirements(<project>)` (BARE name). Never author a check list onto it — which checks
+apply is the build's fresh RESOLVE query (tag ∪ "*" ∪ surface), same as every other ticket.
+
+> **When C0 vs. re-baseline?** One or a few clearly-additive missing tickets against an otherwise-stable
+> plan → C0. A wave of changes, edits to existing requirements' content, or anything the audit/panel
+> should re-examine as a set → re-baseline FULL INTAKE. C0 does NOT re-run the audit or plan panel, so
+> reserve it for additions that don't move the plan's coverage story.
 
 ## C1 — Validation check (a build-time "must pass before done" rule)
 
@@ -716,6 +777,9 @@ takes effect on the **next plan** for this project: the audit queries the projec
 and must close every lens whose `applies_to` matches.
 
 ## C3 — Re-enter the work (the "redo" that needs no redo skill)
+
+(C0 needs none of this — a new ticket is born incomplete and already sits in `incomplete_requirements`.
+This step is for C1/C2, where the change is a check over *existing* work.)
 
 The amended check **automatically** re-enters matching work, because completion is gated on checks
 resolved by query — there is nothing to re-author. For **immediacy**, optionally force the matched work
@@ -794,8 +858,12 @@ the failure — never claim success.
 - **Never pass the prefixed project name** to the completeness/incomplete endpoints — `prd-<project>`
   becomes `prd-prd-<project>`, returns EMPTY, and fakes completeness. Pass the BARE name.
 - **In Amend mode: never touch `pinned_checks` or the claim lease, and never build, fix, or run the
-  check** — Amend only declares the rule and (optionally) regresses ticket STATE; the build owns RESOLVE,
-  CLAIM, PIN, and per-check pass records.
+  check** — Amend only declares the rule (C1/C2) or admits a new requirement ticket as identity + state
+  (C0), and (optionally) regresses ticket STATE; the build owns RESOLVE, CLAIM, PIN, and per-check pass
+  records.
+- **In Amend mode: never edit an existing requirement's content** — C0 is strictly additive (a ticket
+  that did not exist). A rewrite of an existing statement/acceptance is a re-baseline FULL INTAKE, not an
+  amend; the `on_conflict="surface"` guard on the C0 write exists to catch this and bounce it there.
 
 ## Compounding
 
