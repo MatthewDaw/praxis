@@ -71,9 +71,8 @@ praxis_add_insight(
   category = "check",
   scope    = "planning",
   meta     = { "check_id": "<stable-slug>", "applies_to": ["<tag>", ...] | ["*"], "angle": "<lens-label>" },
-  on_conflict = "surface",
   space    = "<project>",              # REQUIRED — target the org-shared snapshot,
-  snapshot = "planning-validation",    # not working memory
+  snapshot = "planning-validation",    # not working memory (on_conflict N/A for lenses)
 )
 ```
 
@@ -82,12 +81,10 @@ praxis_add_insight(
   the `(space, snapshot)` is where it lives. Omit the pair and it goes to working memory (the audit never
   reads it). VERIFY: `praxis_facts_by(category="check", scope="planning", space="<project>",
   snapshot="planning-validation")` should now list it.
-- **Idempotent on `meta.check_id`**: if one exists, `praxis_edit_fact(cid, ..., space="<project>",
-  snapshot="planning-validation")` rather than duplicating.
-- **`on_conflict="surface"`**: a near-duplicate surfaces as a pending contradiction, not a silent twin.
-  Review/settle it against the SAME snapshot:
-  `praxis_get_contradictions(space="<project>", snapshot="planning-validation")` →
-  `praxis_resolve_contradiction(pair_id, ..., space="<project>", snapshot="planning-validation")`.
+- **Identity is `meta.check_id`, NOT the prose.** The server keys lens writes on `meta.check_id` and NEVER
+  text-dedups or reconciles them: re-admitting the SAME `check_id` UPDATES that one fact in place; a
+  DIFFERENT `check_id` is ALWAYS a new distinct lens, even if the criterion reads like an existing one. Give
+  each lens a stable, DISTINCT `check_id`. `on_conflict` does not apply (no merge, no contradiction).
 
 The active `scope="planning"` checks in that snapshot ARE the planning checklist af-intake-plan's audit
 (Part B3) pulls. The lens takes effect on the **next plan** for this project: the audit queries the

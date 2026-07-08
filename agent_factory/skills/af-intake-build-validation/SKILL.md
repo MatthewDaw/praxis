@@ -86,9 +86,8 @@ praxis_add_insight(
   meta     = { "check_id": "<stable-slug>", "applies_to": ["<class-tag>", ...],
                "applies_when": "<condition | empty>", "surfaces": ["<screen-id>", ...],
                "run": "<command>" },
-  on_conflict = "surface",
   space    = "<project>",              # REQUIRED — target the org-shared snapshot,
-  snapshot = "building-validation",    # not working memory
+  snapshot = "building-validation",    # not working memory (on_conflict N/A for checks)
 )
 ```
 
@@ -96,12 +95,13 @@ praxis_add_insight(
   check lands in working memory (invisible to the build) even though the call returns success + an id.
   VERIFY it landed: `praxis_facts_by(category="check", space="<project>", snapshot="building-validation")`
   should now list it — the SAME `(space, snapshot)` af-build's RESOLVE reads.
-- **Idempotent on `meta.check_id`**: if one already exists, `praxis_edit_fact(cid, ..., space="<project>",
-  snapshot="building-validation")` rather than duplicating.
-- **`on_conflict="surface"`**, never `raw=True`/`auto_resolve`: a near-duplicate surfaces as a pending
-  contradiction rather than silently minting a twin. Review/settle it against the SAME snapshot:
-  `praxis_get_contradictions(space="<project>", snapshot="building-validation")` →
-  `praxis_resolve_contradiction(pair_id, ..., space="<project>", snapshot="building-validation")`.
+- **Identity is `meta.check_id`, NOT the prose.** The server keys check writes on `meta.check_id` and
+  NEVER text-dedups or reconciles them (a check is a declarative gate keyed on `check_id` + `run`, not a
+  knowledge assertion). Re-admitting the SAME `check_id` UPDATES that one fact in place (no duplicate, the
+  new `run` wins); a DIFFERENT `check_id` is ALWAYS a new distinct fact — even if the description reads like
+  an existing one. So give every check a stable, DISTINCT `check_id`, and never worry that a similarly-worded
+  gate will be swallowed. `on_conflict` does not apply to checks (the write never merges, overwrites, or
+  raises a contradiction); `raw`/`auto_resolve`/`surface` are all irrelevant here.
 
 The check takes effect on the **next build run** with no further action: at each ticket's RESOLVE step
 `resolve_validation_requirements` picks it up by tag/surface match, `pin_requirements` writes it into that

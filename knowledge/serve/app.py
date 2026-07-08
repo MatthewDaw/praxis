@@ -233,6 +233,70 @@ def _write_insight(
     }
 
 
+def _check_upsert(
+    graph: PostgresVectorGraph,
+    *,
+    insight: str,
+    source: str | None,
+    scope: str | None,
+    meta: dict | None,
+) -> dict[str, Any]:
+    """Identity-keyed write for a validation/planning CHECK — NEVER text-deduped or reconciled.
+
+    A check is a DECLARATIVE GATE keyed on ``meta.check_id`` + ``meta.run`` (the command whose
+    non-zero exit fails the ticket), not a knowledge assertion to reconcile against the corpus.
+    Two checks with different ``check_id``/``run`` enforce DIFFERENT tests and must stay distinct
+    facts even when their prose reads alike, so the semantic dedup + conflict/claim pipeline must
+    NOT run (that silently merged a new check into a similar one and dropped its ``run``). Identity
+    is the ``check_id``:
+
+    * same ``meta.check_id`` already in this (space, snapshot) → UPDATE that one fact in place
+      (title/content/meta/run) — never a duplicate;
+    * a new or absent-but-distinct ``check_id`` → ALWAYS a new distinct fact.
+
+    The caller passes a REDACT-ONLY ``graph`` (``policy=[Redactor()]`` — no Deduper, no
+    ConflictOverwriter/ClaimConflictDetector), so the insert path can never merge, overwrite, or
+    raise a contradiction; ``onConflict`` therefore does not apply to checks. Secrets are still
+    scrubbed by the redactor. The write-time section invariant still enforces that the fact fits
+    the destination snapshot's kind (a validation check only in ``building-validation``, etc.).
+    """
+    meta = dict(meta or {})
+    check_id = str(meta.get("check_id") or "").strip()
+    existing = None
+    if check_id:
+        for f in graph.facts_by(
+            category=CHECK_CATEGORY, state=None, meta_filter={"check_id": check_id}
+        ):
+            existing = f
+            break
+    if existing is not None:
+        graph.update_fact(
+            existing.id,
+            text=insight,
+            source=source,
+            meta={**(existing.meta or {}), **meta},
+            category=CHECK_CATEGORY,
+        )
+        return {
+            "summary": f"check {check_id!r} updated in place",
+            "action": "updated",
+            "id": existing.id,
+            "contradictionsSurfaced": 0,
+            "retrievable": True,
+        }
+    fid = graph.write(
+        insight, state="active", source=source, scope=scope,
+        category=CHECK_CATEGORY, meta=meta,
+    )
+    return {
+        "summary": "check stored",
+        "action": "added",
+        "id": fid,
+        "contradictionsSurfaced": 0,
+        "retrievable": fid is not None,
+    }
+
+
 def _batch_result_from_outcome(
     outcome: "batch_writer.BatchOutcome", on_conflict: str, index: int
 ) -> dict[str, Any]:
@@ -1814,6 +1878,19 @@ def create_app(conn: Any | None = None) -> FastAPI:
         meta = body.get("meta")
         if meta is not None and not isinstance(meta, dict):
             raise HTTPException(status_code=400, detail="meta must be an object")
+        # A validation/planning CHECK is a declarative gate keyed on meta.check_id, NOT a
+        # knowledge assertion — it must never be text-deduped or reconciled (that silently
+        # merged distinct checks and dropped their `run`). Route to the identity-keyed upsert
+        # on a REDACT-ONLY graph (no Deduper, no conflict/claim pipeline), so onConflict does
+        # not apply. The section guard above already required a (space, snapshot) target.
+        if (body.get("category") or "").strip() == CHECK_CATEGORY:
+            return _check_upsert(
+                graph_for(org, uid, target, policy=[Redactor()]),
+                insight=insight,
+                source=body.get("source"),
+                scope=body.get("scope"),
+                meta=meta,
+            )
         # raw: trusted fast lane — redact only, no Deduper / LLM conflict steps.
         # auto_resolve: ConflictOverwriter turns a confirmed contradiction into a
         # force-overwrite (loser rejected). surface: the structural+semantic detector
