@@ -45,11 +45,18 @@ const FACTORY_DIR = `${REPO_DIR}/agent_factory`;
 
 /**
  * Build the natural-language prompt a user pastes into Claude to get set up:
- * install → log in → derive THIS project's org from its repo root (creating the
- * org AND the project's default spaces if they don't exist yet, else selecting
- * them) → pin ALL project-specific config as LOCAL env overrides in
- * <project>/.claude/settings.local.json → confirm. Only the login email is
- * threaded through from the live dashboard state.
+ * install (MCP server pinned to a per-project identity cache) → log in → derive
+ * THIS project's org from its repo root (creating the org + the project space if
+ * they don't exist yet, else selecting them) → pin ALL project-specific config as
+ * LOCAL env overrides in <project>/.claude/settings.local.json → confirm. Only the
+ * login email is threaded through from the live dashboard state.
+ *
+ * Canonical layout the prompt provisions: ONE org-shared space named exactly the
+ * project, holding three snapshots — prd-<project> (plan + ticket state),
+ * building-validation (validation checks for af-build), planning-validation
+ * (planning checks for af-intake). Only the SPACE is created at setup; the /af-
+ * skills author the snapshots. (No standalone coding-validation/planning-validation
+ * spaces — that layout is retired; building-validation renames coding-validation.)
  *
  * The org is NOT hard-coded here — Claude looks at the repo root of the project it
  * is invoked in, derives the org id from that project, and creates it on first run
@@ -67,7 +74,7 @@ const FACTORY_DIR = `${REPO_DIR}/agent_factory`;
 function buildSetupPrompt(opts: { email?: string }): string {
   const email = opts.email?.trim() || "<your Praxis email>";
 
-  return `Set me up with Praxis (my local knowledge-graph MCP server) AND the agent-factory plugin (the /af- plan → intake → build → verify skills). By the end I should be logged in with THIS project's org selected (created for me if it did not exist yet) on a PER-PROJECT identity cache shared by the MCP tools and the agent-factory gate — so both resolve the same org — my project-specific config pinned as LOCAL overrides, this project's default spaces ready, and the /af-plan, /af-intake, /af-build, and /af-wireframe commands available. Follow these steps in order.
+  return `Set me up with Praxis (my local knowledge-graph MCP server) AND the agent-factory plugin (the /af- plan → intake → build → verify skills). By the end I should be logged in with THIS project's org selected (created for me if it did not exist yet) on a PER-PROJECT identity cache shared by the MCP tools and the agent-factory gate — so both resolve the same org — my project-specific config pinned as LOCAL overrides, this project's space ready, and the /af-plan, /af-intake, /af-build, and /af-wireframe commands available. Follow these steps in order.
 
 CARDINAL RULE — never configure a project by editing the praxis repo. Everything project-specific (the Praxis org, the checks-space, the API base URL, the hook interpreter, the per-agent MCP cache) is set as an ENV OVERRIDE in THIS project's own \`.claude/settings.local.json\` (which is per-project and git-ignored), NEVER by editing anything inside the praxis repo — not \`agent_factory/.env\`, not \`agent_factory/hooks/hooks.json\`, not any source file. The shared \`agent_factory/.env\` is read by every agent at once, so editing it to point at your org silently repoints every other concurrent agent too. A per-project \`settings.local.json\` override is isolated to this project and this agent. If at any point you feel you need to edit a file inside the praxis repo to make MY project work, STOP — that is a bug in these instructions; report it to me instead of doing it.
 
@@ -105,14 +112,17 @@ STEP 4 — pin THIS project's config as LOCAL env overrides, INCLUDING the proje
     }
   Why this is the correct mechanism: a real environment variable WINS over the shared \`agent_factory/.env\` default, and Claude Code applies \`settings.local.json\`'s \`env\` to BOTH this session and the Stop-hook subprocess that runs the gate — so these overrides reach the gate cleanly, per-project, with full isolation from other concurrently-running agents, and with ZERO edits inside the praxis repo. ALWAYS set PRAXIS_ORG (this project's default org from STEP 3) and PRAXIS_MCP_CACHE — together they make this repo default to its own org and make the gate share the exact identity praxis_select_org just set; PRAXIS_HOOK_PYTHON / PRAXIS_API_BASE_URL are optional (only when the defaults don't fit this machine). Again: if you are tempted to instead edit \`agent_factory/.env\` or \`hooks/hooks.json\`, that is the anti-pattern this step exists to prevent — do not.
 
-STEP 5 — make sure THIS project's default spaces exist in its org, then confirm end to end. Create each of the project's two default validation spaces; if praxis_create_space reports one already exists, that is fine — treat it as success, not an error:
-    praxis_create_space("coding-validation", "Coding validation")
-    praxis_create_space("planning-validation", "Planning validation")
-  Do NOT force-select either one — leave the default graph selected (a task selects the matching space itself: planning-validation for planning/intake, coding-validation for building/verification).
+STEP 5 — make sure THIS project's space exists, then confirm end to end. Under the agent-factory's canonical layout, EVERYTHING for a project lives in ONE org-shared space named exactly the project (the org id from STEP 3), as three SNAPSHOTS inside that space:
+    prd-<project>        — the plan + ticket state (saved by /af-intake's gate)
+    building-validation  — the validation checks /af-build reads (authored by /af-intake amend-mode)
+    planning-validation  — the planning checks /af-intake's audit reads
+  These are SNAPSHOTS in the project space — NOT separate spaces, and there is NO global "coding-validation" space (that old layout is retired; "building-validation" is the renamed build-check snapshot). So at setup you create only the project SPACE itself; the three snapshots are authored later by the /af- skills. Create the project space (idempotent — if praxis_create_space reports it already exists, that is success, not an error):
+    praxis_create_space("<the org/project id from STEP 3>", "<a readable name, e.g. the repo name>")
+  Do NOT pre-create "coding-validation" or "planning-validation" spaces — the check-resolution seam reads snapshots inside the project space and never reads those standalone spaces. Leave the default graph selected (a task selects the project space itself when it needs one of the snapshots above).
   CROSS-CLIENT ORG CHECK (do NOT skip — this is the check that catches the #1 setup bug). Confirm the MCP tools and the read/gate path resolve the SAME org for this project:
     (i)  praxis_whoami() must report THIS project's org — the one you derived in STEP 3 and pinned in STEP 4 — NOT another project's. If it shows a different org, the MCP server is still on the shared default cache: fix STEP 1a's \`claude mcp add --env PRAXIS_MCP_CACHE=<per-project path>\` (remove + re-add), make STEP 4's PRAXIS_MCP_CACHE the identical path, restart, and re-run.
     (ii) praxis_list_space() succeeds under that org, and the per-project PRAXIS_MCP_CACHE file (from STEP 1a) now records this org — proving the MCP tools, the gate, and the reads share one identity file.
-  Then confirm the rest: the /af- skills are loaded (agent-factory shows ✔ enabled in \`claude plugin list\`, and /af-plan / /af-intake / /af-build / /af-wireframe are available), and THIS project's \`.claude/settings.local.json\` holds the STEP 4 overrides — including PRAXIS_ORG and the matching PRAXIS_MCP_CACHE (and that you edited NOTHING inside the praxis repo). Then tell me, in one or two lines: the repo root you read and the org you derived from it (created or already existed), that praxis_whoami confirms the MCP tools are on THAT org (not the shared default), the per-project cache path in use, that both default spaces exist, and that the /af- commands are ready to run.`;
+  Then confirm the rest: the /af- skills are loaded (agent-factory shows ✔ enabled in \`claude plugin list\`, and /af-plan / /af-intake / /af-build / /af-wireframe are available), and THIS project's \`.claude/settings.local.json\` holds the STEP 4 overrides — including PRAXIS_ORG and the matching PRAXIS_MCP_CACHE (and that you edited NOTHING inside the praxis repo). Then tell me, in one or two lines: the repo root you read and the org you derived from it (created or already existed), that praxis_whoami confirms the MCP tools are on THAT org (not the shared default), the per-project cache path in use, that the project space exists (its check/plan snapshots come later from the /af- skills), and that the /af- commands are ready to run.`;
 }
 
 /** Prominent, one-click "paste this into Claude" setup block. */
@@ -234,12 +244,15 @@ export function McpSetupGuide({ email }: McpSetupGuideProps = {}) {
           <code>/af-plan</code>, <code>/af-intake</code>, <code>/af-build</code>, and{" "}
           <code>/af-wireframe</code> commands are ready to run. Then it logs you in,
           reads the current project&apos;s <strong>repo root</strong> to derive its org,{" "}
-          <strong>creates that org (and its default spaces) if they don&apos;t exist yet</strong>,
+          <strong>creates that org (and the project space) if they don&apos;t exist yet</strong>,
           pins it as the project&apos;s default in{" "}
-          <code>.claude/settings.local.json</code>, and provisions the two default
-          validation spaces — <strong>coding-validation</strong> and{" "}
-          <strong>planning-validation</strong>. Claude will ask for your password (it is
-          never stored).
+          <code>.claude/settings.local.json</code>, and pins the MCP server to a{" "}
+          <strong>per-project identity cache</strong> so the tools and the af-build gate
+          never drift onto different orgs. Everything for the project lives in one space
+          named after it — the <code>prd-&lt;project&gt;</code>,{" "}
+          <code>building-validation</code>, and <code>planning-validation</code> snapshots
+          are authored later by the <code>/af-</code> skills. Claude will ask for your
+          password (it is never stored).
         </p>
         <SetupPromptBlock prompt={setupPrompt} />
         <p className="muted small">
