@@ -1013,7 +1013,17 @@ def create_app(conn: Any | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=400, detail="body must include a boolean 'success'"
             )
-        graph_for(org, uid, target).record_outcome(fact_id, success=success)
+        # Honors the (space, snapshot) target like PATCH /candidates and /facts/by, so the
+        # outcome lands on the snapshot-resident ticket the project's completeness derives
+        # from. Surface any write error as a readable 500 detail rather than an empty body.
+        try:
+            graph_for(org, uid, target).record_outcome(fact_id, success=success)
+        except ValueError as exc:  # e.g. a graph that refuses the write
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 — never a bare/empty 500
+            raise HTTPException(
+                status_code=500, detail=f"record_outcome failed: {exc}"
+            ) from exc
         return {"id": fact_id, "success": success}
 
     @app.post("/derivations")

@@ -449,6 +449,29 @@ def test_snapshot_bound_outcome_drives_completeness(unique_org):
     assert g.completeness_summary("shopping")["complete"] == 1
 
 
+def test_snapshot_bound_outcome_regress_reenters_incomplete(unique_org):
+    """The regress loop af-intake-build-validation → af-build depends on: a FINISHED
+    snapshot ticket that records a FAILURE (a newly-added gate failed) re-enters the
+    incomplete set as `regressed`; a later success removes it again. This requires
+    record_outcome to work snapshot-bound (the endpoint 500'd on a stale build)."""
+    conn = db.connect()
+    org = unique_org
+    g = _snapshot_graph(conn, org, "shopping", "prd-shopping")
+    rid = g.write("Persist scraped rows", state="active", category="requirement",
+                  source="prd-shopping", meta={"requirement_id": "R1"})
+    # build it once: a success -> out of the incomplete set (finished/complete)
+    g.record_outcome(rid, success=True)
+    assert rid not in {i["fact"].id for i in g.incomplete_requirements("shopping")}
+    # a newly-added gate FAILS -> regressed -> back in the incomplete set
+    g.record_outcome(rid, success=False)
+    items = g.incomplete_requirements("shopping")
+    assert rid in {i["fact"].id for i in items}
+    assert next(i["reason"] for i in items if i["fact"].id == rid) == "regressed"
+    # re-fixed -> success -> leaves the incomplete set again
+    g.record_outcome(rid, success=True)
+    assert rid not in {i["fact"].id for i in g.incomplete_requirements("shopping")}
+
+
 # --- write-time snapshot-KIND invariant (checks may not co-mingle with a plan) ----
 # The section invariant refuses, at WRITE time, a fact that violates the KIND its
 # destination snapshot allows (kind derived from the name): a prd-* plan admits NO
