@@ -168,19 +168,32 @@ enforce the *whole* run rather than just a held claim. `refresh_run(cids, owner,
 boundary keeps the marker non-stale (it auto-expires after `DEFAULT_RUN_TTL_S` so a dead run never strands
 the set), and `clear_run(cids, owner, ref=PLAN)` at the very end (§7) ends the run.
 
-## Execution model — default to an ultracode Workflow (fan out the ready frontier)
+## Execution model — /af-build LAUNCHES the ultracode Workflow (NOT optional, NOT your discretion)
 
-After §0 stamps the run marker, decide HOW to drive the marked set. **The default is an ultracode Workflow
-that fans out the dependency-ready frontier in parallel** — one isolated worker per ready ticket — because
-the lease + the `depends_on` DAG make that safe, and it is dramatically faster than one agent grinding
-tickets serially. Do not silently fall back to sequential; fan out unless a condition below forces inline.
+**Invoking `/af-build` IS your explicit authorization AND instruction to call the `Workflow` tool.** The
+Workflow tool's "only run when the user opted into multi-agent orchestration" rule is ALREADY SATISFIED the
+moment this skill runs — *"the user invoked a skill or slash command whose instructions tell you to call
+Workflow"* is exactly one of the sanctioned opt-ins, and this is that skill. So do NOT hesitate, do NOT ask
+for permission, and do NOT quietly grind tickets one-by-one just because the user didn't type "ultracode":
+**launching the fan-out Workflow is the default, mandatory behavior of this command.** Grinding the set
+inline when the ready frontier is 2+ wide is a BUG, not a safe choice.
 
-**Trigger (compute the ready frontier first — id-only, no bodies):** query the in-scope incomplete set and
-its dependency-ready frontier (`_praxis.incomplete_requirements(project)` → filter to the marked ids →
-`_ticket_state.ready_tickets(...)`).
-- **≥2 tickets ready → LAUNCH THE WORKFLOW** (script below). This is the default.
-- **≤1 ready** (a strictly-linear DAG or a single ticket), **OR the Workflow tool is unavailable** → run the
-  **inline sequential loop** (§1→§7) yourself. A fleet buys nothing on a linear frontier.
+After §0 stamps the run marker, compute the dependency-ready frontier (id-only, no bodies):
+`_praxis.incomplete_requirements(project, space=PLAN[0], snapshot=PLAN[1])` → filter to the marked ids →
+`_ticket_state.ready_tickets(...)`. Then, unconditionally:
+- **≥2 tickets ready → LAUNCH THE WORKFLOW (the script below). ALWAYS — this is the whole point of the
+  command.** The lease + the `depends_on` DAG make parallel isolated workers safe, and it is dramatically
+  faster than serial. If you choose NOT to fan out, you MUST name which of the two narrow exceptions below
+  applies, in your reply — silence is not an option.
+- **≤1 ready** (a strictly-linear DAG, or a single remaining ticket), **OR the `Workflow` tool is genuinely
+  absent from this session's tools** → and ONLY then → run the inline per-ticket loop (§1→§7) yourself. A
+  fleet buys nothing on a one-wide frontier. These two are the ONLY sanctioned inline paths.
+
+**§1–§7 below ARE the per-ticket worker contract** — the exact loop each parallel Workflow worker runs (the
+§8 block hands it to them verbatim, one worker per ready ticket). Read them as *what the workers do*, not as
+*what you do sequentially*. You run §1–§7 inline ONLY under the narrow exception above. Either way YOU own
+the run marker and the gate: `build_completeness_gate` armed on YOUR session in §0 and BLOCKS your turn from
+ending until the whole marked set is `finished` — that is the hook that forcibly keeps the build rolling.
 
 **What the workflow does** (deterministic scheduling — each ticket still has exactly ONE decision-making
 worker; never a crew):
