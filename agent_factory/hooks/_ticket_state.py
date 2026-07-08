@@ -58,7 +58,7 @@ not a lock: a lease whose heartbeat is older than its ttl is auto-reclaimable, s
 from __future__ import annotations
 
 import time
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 import _praxis
 from _praxis import PraxisUnreachable  # re-exported so gates import one place  # noqa: F401
@@ -85,64 +85,64 @@ _RUN_KEYS = (M_RUN_OWNER, M_RUN_AT, M_RUN_SCOPE)
 DEFAULT_LEASE_TTL_S = 900    # 15 min — per-ticket claim lease
 DEFAULT_RUN_TTL_S = 3600     # 60 min — whole-set run marker; refreshed at each ticket boundary
 
-# The checks seam (org -> space -> snapshot tenancy). Check RESOLUTION reads validation rules from a
-# DEDICATED SNAPSHOT inside the PROJECT space, so they live separately from the ``prd-<project>``
-# snapshot that holds ticket STATE (build_state, claims, pins, passes) even though both sit in the
-# SAME project space. Every project corresponds to exactly one space (``space == the bare project
-# name``); inside it the checks live in per-scope snapshots:
+# The checks/state seam (org -> space -> snapshot tenancy). Every project is exactly ONE space
+# (``space == the bare project name``); inside it the plan/ticket STATE lives in the ``prd-<project>``
+# snapshot and the per-scope validation checks live in their own dedicated snapshots:
 #   * scope="validation" (af-build per-ticket)   -> snapshot "building-validation"
 #   * scope="planning"   (af-intake whole-plan)  -> snapshot "planning-validation"
-# These snapshots are only DEFAULTS; the skills override per-invocation via ``checks_ref=`` (their
-# slash-command ``--checks-space`` argument), a ``(space, snapshot)`` pair or a bare snapshot name.
+# ``project_ref`` is the SINGLE typed source of truth for these three (space, snapshot) pairs; it
+# replaces the old free-form ``checks_ref`` plumbing (a sentinel + a 4-way branch). The skills may
+# still override the checks reference per-invocation (their ``--checks-space`` argument) by passing a
+# single explicit ``(space, snapshot)`` pair as ``override=``.
 DEFAULT_VALIDATION_CHECKS_SNAPSHOT = "building-validation"
 DEFAULT_PLANNING_CHECKS_SNAPSHOT = "planning-validation"
 
-_CHECKS_SPACE_UNSET = object()  # sentinel: caller passed nothing -> use the per-scope default snapshot
 
+class ProjectRef(NamedTuple):
+    """The three ``(space, snapshot)`` pairs a project's factory lanes bind to.
 
-def default_checks_snapshot(scope: Optional[str]) -> Optional[str]:
-    """The dedicated checks SNAPSHOT (inside the project space) a given resolve scope reads by DEFAULT.
-
-    ``"validation"`` -> ``building-validation``; ``"planning"`` -> ``planning-validation``; anything
-    else (incl. ``None``, the back-compat lane) -> ``None`` == read checks from the ticket/default
-    (working-memory) graph, preserving historical behavior. A caller that passes ``checks_ref=``
-    explicitly overrides this; passing ``checks_ref=None`` explicitly forces the ticket/default
-    reference regardless of scope.
+    ``plan`` holds ticket STATE (``prd-<project>``); ``validation`` / ``planning`` hold the per-scope
+    checks. All three sit in the same project space (``space == the bare project name``).
     """
-    if scope == "validation":
-        return DEFAULT_VALIDATION_CHECKS_SNAPSHOT
-    if scope == "planning":
-        return DEFAULT_PLANNING_CHECKS_SNAPSHOT
-    return None
+
+    plan: tuple[str, str]
+    validation: tuple[str, str]
+    planning: tuple[str, str]
+
+    def for_scope(self, scope: str) -> tuple[str, str]:
+        """The checks ``(space, snapshot)`` a resolve scope reads. Scope is REQUIRED — a check read
+        must always resolve to a real snapshot, never working memory:
+        ``"validation"`` -> ``building-validation``, ``"planning"`` -> ``planning-validation``.
+        Any other value (including ``None``) is a programming error.
+        """
+        if scope == "validation":
+            return self.validation
+        if scope == "planning":
+            return self.planning
+        raise ValueError(
+            f"unsupported check scope {scope!r}; expected 'validation' or 'planning'"
+        )
 
 
-def _checks_reference(checks_ref: Any, scope: Optional[str],
-                      project: str) -> tuple[Optional[str], Optional[str]]:
-    """Resolve ``checks_ref`` into the ``(space, snapshot)`` a check READ binds to.
+def project_ref(project: str) -> ProjectRef:
+    """Build the typed ``(space, snapshot)`` references for ``project``.
 
-    Checks live in the PROJECT space (``space == project``) under a per-scope snapshot. ``checks_ref``
-    overrides which snapshot (and optionally space) is read:
-      * UNSET  -> ``(project, default_checks_snapshot(scope))``.
-      * a bare snapshot name (str) -> ``(project, <name>)`` (the skills' ``--checks-space`` override).
-      * a ``(space, snapshot)`` pair -> that reference (an empty space element falls back to project).
-      * explicit ``None`` -> forces the ticket/default reference (no snapshot; read working memory).
-
-    When the resolved snapshot is falsy the space is dropped too, so the read resolves to the
-    ticket/default (working-memory) graph — never a PARTIAL (space-only) reference, which ``_praxis``
-    fails closed on.
+    A leading ``prd-`` is stripped, so callers may pass either the bare project name or the
+    ``prd-<project>`` snapshot name and get the same references.
     """
-    if checks_ref is _CHECKS_SPACE_UNSET:
-        space, snapshot = project, default_checks_snapshot(scope)
-    elif checks_ref is None:
-        space, snapshot = None, None
-    elif isinstance(checks_ref, (tuple, list)):
-        space = (checks_ref[0] if len(checks_ref) > 0 else None) or project
-        snapshot = checks_ref[1] if len(checks_ref) > 1 else None
-    else:
-        space, snapshot = project, str(checks_ref)
-    if not snapshot:
-        return None, None
-    return (space or project), snapshot
+    bare = project[4:] if project.startswith("prd-") else project
+    return ProjectRef(
+        plan=(bare, f"prd-{bare}"),
+        validation=(bare, DEFAULT_VALIDATION_CHECKS_SNAPSHOT),
+        planning=(bare, DEFAULT_PLANNING_CHECKS_SNAPSHOT),
+    )
+
+
+def _checks_target(project: str, scope: str,
+                   override: Optional[tuple[str, str]]) -> tuple[str, str]:
+    """The ``(space, snapshot)`` a check READ binds to: the explicit ``override`` pair if given, else
+    the per-scope default from :func:`project_ref`."""
+    return override or project_ref(project).for_scope(scope)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -185,18 +185,15 @@ def _scope_of(check: Any) -> str:
 # --------------------------------------------------------------------------- requirement resolution
 
 def resolve_validation_requirements(ticket: Any, project: str = "",
-                                    scope: Optional[str] = None,
-                                    checks_ref: Any = _CHECKS_SPACE_UNSET) -> list[dict]:
+                                    scope: str = "validation",
+                                    override: Optional[tuple[str, str]] = None) -> list[dict]:
     """Resolve WHICH abstract validation REQUIREMENTS apply — a fresh QUERY, never a pre-bound list.
     These are the "what must be proven" facts the worker must then COVER with synthesized validations.
 
-    ``checks_ref`` selects the ``(space, snapshot)`` the check facts are READ from (the checks seam),
-    independent of the ``prd-<project>`` snapshot used for state. Unset -> the PROJECT space
-    (``space=project``) and :func:`default_checks_snapshot` of ``scope`` (validation ->
-    building-validation, planning -> planning-validation, else the ticket/default graph). A bare
-    snapshot name or a ``(space, snapshot)`` pair overrides it (the skills' slash-command argument);
-    an explicit ``None`` forces the ticket/default reference. Only the check reads honor it — ticket
-    reads are unaffected.
+    The check facts are READ from the ``(space, snapshot)`` given by :func:`project_ref` for ``scope``
+    (validation -> building-validation, planning -> planning-validation), independent of the
+    ``prd-<project>`` snapshot used for state. The skills' ``--checks-space`` argument overrides that
+    by passing a single explicit ``(space, snapshot)`` pair as ``override=``.
 
     ``scope`` is the ONE seam between the two callers — everything downstream (pin / coverage / pass)
     is identical:
@@ -206,7 +203,6 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
         is the plan-anchor subject the coverage contract hangs on.
       * ``scope="validation"`` (af-build PER-TICKET) — tag union surface match (below), filtered to
         validation-scope checks.
-      * ``scope=None`` (default, back-compat) — tag union surface match across all check scopes.
 
     Tag union surface (the per-ticket lanes):
       * TAG match — for each tag on the ticket (meta.tags / meta.applies_to), enumerate active
@@ -219,7 +215,7 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
     irrelevant is simply not authored, while a precise tag/surface/wildcard match is always covered.
     """
     # Which (space, snapshot) the CHECK reads target (default per scope; overridable by the skills).
-    space, snapshot = _checks_reference(checks_ref, scope, project)
+    space, snapshot = _checks_target(project, scope, override)
 
     # PLANNING — the whole plan must satisfy every active planning lens (global, applies_when-bound),
     # so resolve the entire planning checklist; the per-ticket tag/surface lanes don't apply.
@@ -273,18 +269,19 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
     return list(seen.values())
 
 
-def retrieve_advisory_checks(ticket: Any, project: str = "", scope: Optional[str] = None,
-                             checks_ref: Any = _CHECKS_SPACE_UNSET,
+def retrieve_advisory_checks(ticket: Any, project: str = "", scope: str = "validation",
+                             override: Optional[tuple[str, str]] = None,
                              top_k: int = 10) -> list[dict]:
     """The SEMANTIC lane — ADVISORY candidate checks discovered by hybrid retrieval against the
     ticket's own text (title + acceptance). These are INSPIRATION for the worker's synthesis step,
     NOT the coverage contract: they are never pinned as ``required_validations`` and never gate
     completion. The worker folds the relevant ones into its authored validations and ignores the
     rest — so an irrelevant retrieval is harmless (the point of keeping semantics OUT of the hard
-    gate). Reads from the checks ``(space, snapshot)`` (same seam/default as the mandatory lanes).
-    Returns ``category="check"`` hits only, de-duplicated, filtered to ``scope`` when given.
+    gate). Reads from the checks ``(space, snapshot)`` (same seam/default as the mandatory lanes;
+    override with an explicit ``(space, snapshot)`` pair). Returns ``category="check"`` hits only,
+    de-duplicated, filtered to ``scope``.
     """
-    space, snapshot = _checks_reference(checks_ref, scope, project)
+    space, snapshot = _checks_target(project, scope, override)
     fact = ticket if isinstance(ticket, dict) else _praxis.get_fact(ticket)
     text = " ".join(str(x) for x in (
         (fact or {}).get("text") or (fact or {}).get("content") or "",
@@ -723,13 +720,13 @@ def contract_with_floor(cid: str, acceptance_text: str, resolved: list) -> list:
 
 def start_ticket(cid: str, owner: str, project: str = "",
                  ttl: int = DEFAULT_LEASE_TTL_S,
-                 checks_ref: Any = _CHECKS_SPACE_UNSET) -> Optional[list[dict]]:
+                 override: Optional[tuple[str, str]] = None) -> Optional[list[dict]]:
     """Convenience: claim, then resolve the validation REQUIREMENTS (PLUS the acceptance-condition
     floor) and pin them as this pass's coverage contract (truncating any prior synthesized validations).
 
-    ``checks_ref`` (the checks seam) selects the ``(space, snapshot)`` validation checks are READ
-    from; unset -> the PROJECT space + the ``scope="validation"`` default snapshot
-    (building-validation). Pass the skill's ``--checks-space`` override through here.
+    Validation checks are READ from the ``scope="validation"`` default snapshot (building-validation)
+    inside the project space; pass the skill's ``--checks-space`` as an explicit ``(space, snapshot)``
+    ``override=`` to redirect the read.
 
     Returns the requirement facts the worker must now COVER with synthesized validations — ALWAYS
     including the ticket's own acceptance condition as a floor (so the contract is never empty and the
@@ -742,7 +739,7 @@ def start_ticket(cid: str, owner: str, project: str = "",
     if not claim(cid, owner, ttl=ttl):
         return None
     resolved = resolve_validation_requirements(cid, project=project, scope="validation",
-                                               checks_ref=checks_ref)
+                                               override=override)
     requirements = contract_with_floor(cid, _meta(cid).get("acceptance"), resolved)
     pin_requirements(cid, requirements)
     return requirements

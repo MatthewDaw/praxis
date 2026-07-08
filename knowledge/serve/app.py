@@ -62,6 +62,7 @@ from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph im
     EPISODIC_CATEGORY,
     LeaseConflict,
     PostgresVectorGraph,
+    SnapshotKindError,
     default_write_policy,
 )
 from knowledge.knowledge_graph.write_policy.write_step_variants import (  # noqa: E402
@@ -84,6 +85,10 @@ from knowledge.serve.facts_candidates import (  # noqa: E402
 from knowledge.serve.mounted_store import MountedStore  # noqa: E402
 from knowledge.serve.orgs_store import OrgsStore  # noqa: E402
 from knowledge.serve.spaces_store import SpacesStore  # noqa: E402
+from knowledge.serve.reserved_names import (  # noqa: E402
+    RESERVED_EVAL_SPACE,
+    is_reserved_space_id,
+)
 from knowledge.serve.rate_limit import (  # noqa: E402
     LLM_RATE_LIMIT,
     build_limiter,
@@ -343,9 +348,8 @@ def create_app(conn: Any | None = None) -> FastAPI:
     # Test seam: lets reliability tests assert per-thread isolation + reopen.
     app_get_conn = resolve_conn
 
-    # Reserved space id for the eval cache (org-scoped fixtures). Rejected for
-    # user-created spaces and filtered out of /spaces and /org/sources.
-    _RESERVED_EVAL_SPACE = "__evals__"
+    # Reserved space ids (eval cache + the retired standalone layout) live in
+    # ``reserved_names`` as the single source of truth (see ``is_reserved_space_id``).
 
     def _require_space(org: str, target: tuple[str, str]) -> tuple[str, str]:
         """Validate a snapshot target's space exists (404 otherwise); return it.
@@ -354,7 +358,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         snapshot-target seam (it has no ``spaces`` registry row anyway).
         """
         space, snap = target
-        if space == _RESERVED_EVAL_SPACE or not spaces_store.exists(org, space):
+        if space == RESERVED_EVAL_SPACE or not spaces_store.exists(org, space):
             raise HTTPException(status_code=404, detail=f"unknown space {space!r}")
         return space, snap
 
@@ -615,8 +619,14 @@ def create_app(conn: Any | None = None) -> FastAPI:
     _SPACE_SLUG_RE = _re.compile(r"^[a-z0-9_-]+$")
 
     def _validate_space_slug(space_id: str, field: str = "spaceId") -> None:
-        """Reject an empty/reserved/mis-shaped space slug (400)."""
-        if not space_id or space_id == _RESERVED_EVAL_SPACE:
+        """Reject an empty/reserved/mis-shaped space slug (400).
+
+        This single choke point guards every HTTP create path (``create_space``, the copy-to-org
+        target, and ``save_snapshot``'s space field), so reserving the retired standalone-layout ids
+        here (``building-validation`` / ``planning-validation`` / ``build-plan`` / ``<x>-plan``, plus
+        the eval space) refuses re-creating that layout everywhere at once.
+        """
+        if not space_id or is_reserved_space_id(space_id):
             raise HTTPException(
                 status_code=400, detail=f"{field} must be a non-reserved slug"
             )
@@ -659,7 +669,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
             "spaces": [
                 s
                 for s in spaces_store.list_spaces(org)
-                if s["space_id"] != _RESERVED_EVAL_SPACE
+                if s["space_id"] != RESERVED_EVAL_SPACE
             ]
         }
 
@@ -1138,7 +1148,10 @@ def create_app(conn: Any | None = None) -> FastAPI:
         if not snapshot:
             raise HTTPException(status_code=400, detail="snapshot required")
         spaces_store.ensure_space(org, space)
-        count = live_graph(org, uid).save_cache(space, snapshot)
+        try:
+            count = live_graph(org, uid).save_cache(space, snapshot)
+        except SnapshotKindError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         return {"space": space, "snapshot": snapshot, "count": count}
 
     @app.post("/snapshots/load")
@@ -1242,7 +1255,10 @@ def create_app(conn: Any | None = None) -> FastAPI:
             space=target_space, snapshot=target_snapshot,
         )
         spaces_store.ensure_space(target_org, target_space)
-        count = dst.copy_snapshot_from(org, space, snapshot)
+        try:
+            count = dst.copy_snapshot_from(org, space, snapshot)
+        except SnapshotKindError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         return {
             "targetOrg": target_org,
             "space": target_space,
@@ -1397,7 +1413,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         sources: list[dict[str, Any]] = []
         for s in spaces_store.list_spaces(org):
             space = s["space_id"]
-            if space == _RESERVED_EVAL_SPACE:
+            if space == RESERVED_EVAL_SPACE:
                 continue
             snapshots = [
                 {"snapshot": e["snapshot"], "count": e["count"]}
@@ -1558,7 +1574,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         Eval fixtures live in ``snapshots`` under the reserved ``__evals__`` space,
         one snapshot per case id (org-scoped, not user-partitioned).
         """
-        entries = live_graph(org, uid).list_caches(_RESERVED_EVAL_SPACE)
+        entries = live_graph(org, uid).list_caches(RESERVED_EVAL_SPACE)
         ids = [e["snapshot"] for e in entries]
         counts = {e["snapshot"]: int(e.get("count", 0)) for e in entries}
         return {"cached": ids, "counts": counts}
@@ -1584,7 +1600,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         regenerated: list[str] = []
         from_cache: list[str] = []
         for cid in case_ids:
-            if not force and live.cache_count(_RESERVED_EVAL_SPACE, cid) > 0:
+            if not force and live.cache_count(RESERVED_EVAL_SPACE, cid) > 0:
                 from_cache.append(cid)
                 continue
             seeds = distill_case(cid, distill=distill)
@@ -1592,7 +1608,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 conn,
                 org,
                 facts_table="snapshots",
-                space=_RESERVED_EVAL_SPACE,
+                space=RESERVED_EVAL_SPACE,
                 snapshot=cid,
                 policy=default_write_policy(),
             )
@@ -1687,7 +1703,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         except RegenerateUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc))
 
-        refs = [(_RESERVED_EVAL_SPACE, cid) for cid in case_ids]
+        refs = [(RESERVED_EVAL_SPACE, cid) for cid in case_ids]
         live = live_graph(org, uid)
         if mode == "replace":
             facts_in_graph = live.load_caches(refs)

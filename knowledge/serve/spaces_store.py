@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import psycopg
 
+from knowledge.serve.reserved_names import is_reserved_space_id
+
 
 class SpacesStore:
     """Org-shared named spaces persisted to the ``spaces`` table."""
@@ -26,13 +28,17 @@ class SpacesStore:
     def create_space(self, org_id: str, space_id: str, name: str | None) -> None:
         """Create org-shared space ``space_id`` within ``org_id``.
 
-        Raises ``ValueError`` if ``(org_id, space_id)`` already exists. Slug
-        validation (shape, reserved names) is the caller's responsibility.
+        Raises ``ValueError`` if ``(org_id, space_id)`` already exists or if
+        ``space_id`` is a reserved name (a real invariant here — the retired
+        standalone layout is unrepresentable even for direct/non-HTTP callers).
+        Slug SHAPE validation stays the caller's responsibility.
 
         The insert relies on the primary key rather than a pre-check ``SELECT`` so
         a concurrent duplicate create is a clean "already exists" (the second
         insert no-ops via ``ON CONFLICT``) instead of an uncaught ``UniqueViolation``.
         """
+        if is_reserved_space_id(space_id):
+            raise ValueError(f"space {space_id!r} is a reserved name")
         cur = self._conn.execute(
             """
             INSERT INTO spaces (org_id, space_id, name)
@@ -50,7 +56,14 @@ class SpacesStore:
         Used when a snapshot write implies a space that may not yet have a
         registry row (e.g. the factory dumping into ``prd-<project>``). Unlike
         :meth:`create_space` a pre-existing row is a no-op, never an error.
+
+        Reserved space ids are still refused: ``save_snapshot`` only ever ensures
+        the legitimate project space ``<project>`` (never a ``-validation`` /
+        ``-plan`` id), so this guard never fires on the real write path but keeps
+        the retired standalone layout unrepresentable for any caller.
         """
+        if is_reserved_space_id(space_id):
+            raise ValueError(f"space {space_id!r} is a reserved name")
         self._conn.execute(
             """
             INSERT INTO spaces (org_id, space_id, name)

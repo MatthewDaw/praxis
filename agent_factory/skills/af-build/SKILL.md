@@ -128,7 +128,7 @@ Validation **checks live in a DEDICATED snapshot inside the project's own space*
 `prd-<project>` snapshot that holds the tickets and their build state. **A project IS a space** — the
 space id is the BARE project name (`team-app`), and inside it live the `prd-<project>` snapshot
 (tickets, mutable) and the check snapshots. af-build resolves each ticket's validation checks from the
-**`building-validation`** snapshot (in space `<project>`) by default — the `checks_ref` seam in
+**`building-validation`** snapshot (in space `<project>`) by default — the typed `project_ref` seam in
 `hooks/_ticket_state.py` (`resolve_validation_requirements` / `start_ticket`) points only the *check
 reads* (tag + surface lanes) at `(space=<project>, snapshot=building-validation)`, while ticket state
 (claims, pins, passes) stays on the `prd-<project>` snapshot, untouched. That snapshot must hold the
@@ -143,8 +143,8 @@ authored there.)
 > association); teams re-seed each project's `building-validation` snapshot via af-intake (Part C / amend).
 
 **Override — slash argument ONLY** (no env seam): `/af-build [scope] --checks-space=<space[:snapshot]>`
-points resolution at a different `(space, snapshot)` for this run. Thread it as a `checks_ref`
-`(space, snapshot)` override into **every** `start_ticket(...)` call — including the per-ticket worker
+points resolution at a different `(space, snapshot)` for this run. Thread it as an `override`
+`(space, snapshot)` pair into **every** `start_ticket(...)` call — including the per-ticket worker
 contract (§8), so fanned-out workers read the same reference. With no argument the default applies:
 `space=<project>`, `snapshot=building-validation`.
 
@@ -252,7 +252,7 @@ depends on **no unfinished or in-progress job**. Claim that one; ignore the rest
 ## 2. CLAIM + RESOLVE REQUIREMENTS — one transaction per ticket
 
 For the next claimable ticket call `_ticket_state.start_ticket(cid, owner, project)` (BARE project name;
-pass a `checks_ref=(space, snapshot)` too when this run overrides the default — the project space's
+pass an `override=(space, snapshot)` pair too when this run overrides the default — the project space's
 `building-validation` snapshot — §Validation source). This does three things atomically:
 
 1. **Claim the lease.** `incomplete → in_progress`, stamping `meta.claim_owner`, `meta.claim_at`,
@@ -540,7 +540,7 @@ snapshot>. Checks resolve from (space=PROJECT, snapshot=CHECKS_SNAPSHOT). Run he
 hooks/_ticket_state.py (contract: docs/factory-state-contract.md). af-intake is NOT in this path — it
 does not author eval requirements at build time; never wait on it.
 
-1. CLAIM + RESOLVE + TRUNCATE  — start_ticket(TICKET, OWNER, PROJECT, checks_ref=(PROJECT, CHECKS_SNAPSHOT)).
+1. CLAIM + RESOLVE + TRUNCATE  — start_ticket(TICKET, OWNER, PROJECT, override=(PROJECT, CHECKS_SNAPSHOT)).
    This atomically claims the lease, resolves the eval REQUIREMENTS (tag ∪ surface from the project space's
    CHECKS_SNAPSHOT ∪ the ticket's own acceptance-condition floor), TRUNCATES any prior evals, and pins the fresh requirement
    contract. If it returns None → the ticket is taken/blocked,

@@ -1582,8 +1582,11 @@ def praxis_create_space(space_id: str, name: str | None = None) -> str:
     org can read every space and its snapshots (there is no owner and no per-user
     partitioning). It holds a collection of snapshots for one project. ``space_id`` is
     a short slug you pick (lowercase letters/digits/dash/underscore; ``"default"``,
-    ``"__evals__"``, and anything with ``:`` are reserved). This does NOT change your
-    working memory or select anything — use ``praxis_select_space`` to set a local
+    ``"__evals__"``, and anything with ``:`` are reserved). ``coding-validation``,
+    ``building-validation``, ``planning-validation``, ``build-plan`` and any ``<x>-plan``
+    slug are ALSO reserved — those are per-scope snapshot roles inside a project space, not
+    standalone spaces. This does NOT change your working memory or select anything — use
+    ``praxis_select_space`` to set a local
     default for the ``space`` parameter of snapshot / mount ops.
     """
     if (hint := _not_ready()) is not None:

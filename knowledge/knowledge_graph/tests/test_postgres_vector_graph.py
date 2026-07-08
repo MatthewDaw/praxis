@@ -458,6 +458,109 @@ def test_repeated_reload_is_idempotent_no_count_drift(unique_org):
         assert fid == live_id
 
 
+# --- write-time snapshot-KIND invariant (checks may not co-mingle with a plan) ----
+# The section invariant refuses, at WRITE time, a fact that violates the KIND its
+# destination snapshot allows (kind derived from the name): a prd-* plan admits NO
+# category="check" fact; building-/planning-validation admit ONLY matching-scope
+# checks; every other name is unconstrained. This is the fix for the "11 checks
+# embedded in a prd snapshot" failure — save_cache (whole-graph dump), the
+# snapshot-bound _add (direct write), and copy_snapshot_from all enforce it.
+
+
+def _snapshot_graph(conn, org, space, snap):
+    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+        PostgresVectorGraph,
+    )
+    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
+    from knowledge.llm.embedder_variants.fake_embedder import FakeEmbedder
+
+    conn.execute(
+        "DELETE FROM snapshots WHERE org_id=%s AND space=%s AND snapshot=%s", (org, space, snap)
+    )
+    return PostgresVectorGraph(
+        conn, org, facts_table="snapshots", space=space, snapshot=snap,
+        embedder=FakeEmbedder(), recall_floor=-1.0, policy=[Redactor(), Deduper()],
+    )
+
+
+def test_save_cache_rejects_check_into_prd_snapshot(unique_org):
+    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+        SnapshotKindError,
+    )
+
+    conn = db.connect()
+    org, user = unique_org, "u1"
+    g = _live_graph(conn, org, user)
+    g.write("A plan requirement", state="active", category="requirement",
+            meta={"requirement_id": "R1"})
+    g.write("A coverage check", state="active", category="check",
+            meta={"scope": "validation", "applies_to": ["*"]})
+    with pytest.raises(SnapshotKindError):
+        g.save_cache("myproj", "prd-myproj")
+
+
+def test_save_cache_allows_requirements_and_pinned_checks_meta_into_prd(unique_org):
+    conn = db.connect()
+    org, user = unique_org, "u1"
+    g = _live_graph(conn, org, user)
+    # A requirement ticket carrying a pinned_checks META key is NOT a category=check
+    # fact — it saves fine (pinned_checks is the load-bearing contract, untouched).
+    g.write("A plan requirement", state="active", category="requirement",
+            meta={"requirement_id": "R1", "pinned_checks": [{"validation_id": "v1"}]})
+    assert g.save_cache("myproj", "prd-myproj") == 1
+
+
+def test_snapshot_bound_add_enforces_scope_for_validation_snapshot(unique_org):
+    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+        SnapshotKindError,
+    )
+
+    conn = db.connect()
+    org = unique_org
+    g = _snapshot_graph(conn, org, "myproj", "building-validation")
+    # A validation-scope check is admitted...
+    assert g.write("check ok", state="active", category="check",
+                   meta={"scope": "validation"}) is not None
+    # ...but a planning-scope check, or a non-check, is refused.
+    with pytest.raises(SnapshotKindError):
+        g.write("wrong scope", state="active", category="check", meta={"scope": "planning"})
+    with pytest.raises(SnapshotKindError):
+        g.write("a requirement", state="active", category="requirement", meta={})
+
+
+def test_snapshot_bound_add_unconstrained_name_accepts_anything(unique_org):
+    conn = db.connect()
+    org = unique_org
+    g = _snapshot_graph(conn, org, "monica", "demo")
+    assert g.write("any check", state="active", category="check",
+                   meta={"scope": "planning"}) is not None
+
+
+def test_copy_snapshot_from_rejects_checks_into_prd_destination(unique_org):
+    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+        PostgresVectorGraph,
+        SnapshotKindError,
+    )
+    from knowledge.llm.embedder_variants.fake_embedder import FakeEmbedder
+
+    conn = db.connect()
+    org = unique_org
+    # Source: a checks-bearing snapshot (unconstrained name, so it accepts the checks).
+    src = _snapshot_graph(conn, org, "shared", "lenses")
+    src.write("a check", state="active", category="check", meta={"scope": "validation"})
+    # Destination governs the kind: copying into a prd-* plan destination is refused.
+    conn.execute(
+        "DELETE FROM snapshots WHERE org_id=%s AND space=%s AND snapshot=%s",
+        (org, "myproj", "prd-myproj"),
+    )
+    dst = PostgresVectorGraph(
+        conn, org, facts_table="snapshots", space="myproj", snapshot="prd-myproj",
+        embedder=FakeEmbedder(),
+    )
+    with pytest.raises(SnapshotKindError):
+        dst.copy_snapshot_from(org, "shared", "lenses")
+
+
 @pytest.fixture
 def unique_org(request):
     # Unique per test node so reruns and parallel tenants never collide.

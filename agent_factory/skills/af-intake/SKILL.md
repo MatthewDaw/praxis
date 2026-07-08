@@ -431,11 +431,11 @@ the subject (the plan's Praxis facts, not built code). The plan-anchor `plan_sub
 1. **RESOLVE** — `resolve_validation_requirements(plan_subject, project, scope="planning")` returns EVERY
    active `scope="planning"` lens (global considerations; the whole plan must satisfy each — not
    tag-bound). The lenses are read from a **DEDICATED `planning-validation` snapshot inside the project's
-   own space, by default** (the `checks_ref` seam in `hooks/_ticket_state.py` resolves to
+   own space, by default** (the typed `project_ref` seam in `hooks/_ticket_state.py` resolves to
    `(space=<project>, snapshot=planning-validation)`) — separate from the `prd-<project>` snapshot this
    intake writes; ticket/plan writes are unaffected. **Override — slash argument ONLY** (no env seam):
    `/af-intake --checks-space=<space[:snapshot]>` reads the checklist from a different `(space, snapshot)`
-   this run (pass a `checks_ref=(space, snapshot)` override into the resolve call). The extensible lenses
+   this run (pass an `override=(space, snapshot)` pair into the resolve call). The extensible lenses
    live ONLY in Praxis (added via Amend mode, C2, which must write them INTO the project space's
    `planning-validation` snapshot); a lens added there is enforced on the next plan with no code change.
 2. **PIN the coverage contract** — `pin_requirements(plan_subject, lenses)`: every lens is now a

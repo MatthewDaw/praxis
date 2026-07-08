@@ -3,9 +3,9 @@
 Under the org -> space -> snapshot tenancy model every project IS a space (``space == <project>``).
 Check RESOLUTION reads validation rules from a dedicated SNAPSHOT inside that project space, while
 ticket STATE lives in the project's own ``prd-<project>`` snapshot. Snapshot defaults are per-scope
-(validation -> ``building-validation``, planning -> ``planning-validation``); the skills override
-per-invocation via ``checks_ref=`` — a bare snapshot name (space stays ``<project>``) or an explicit
-``(space, snapshot)`` pair.
+(validation -> ``building-validation``, planning -> ``planning-validation``), all built by the typed
+``project_ref``; the skills override per-invocation via an explicit ``(space, snapshot)``
+``override=`` pair.
 
 These tests capture the ``(space, snapshot)`` pair handed to the check-read lanes (``facts_by`` /
 ``surface_checks``) — no network — so they assert exactly which space+snapshot each resolve reads
@@ -55,13 +55,27 @@ def _spy(monkeypatch, **kw):
     return spy
 
 
-# --------------------------------------------------------------------------- the default mapping
+# --------------------------------------------------------------------------- the typed mapping
 
-def test_default_checks_snapshot_mapping():
-    assert ts.default_checks_snapshot("validation") == "building-validation"
-    assert ts.default_checks_snapshot("planning") == "planning-validation"
-    assert ts.default_checks_snapshot(None) is None       # back-compat: no snapshot-bound reference
-    assert ts.default_checks_snapshot("other") is None
+def test_project_ref_maps_each_scope_to_its_snapshot():
+    ref = ts.project_ref("team-app")
+    assert ref.plan == ("team-app", "prd-team-app")
+    assert ref.validation == ("team-app", "building-validation")
+    assert ref.planning == ("team-app", "planning-validation")
+    assert ref.for_scope("validation") == ("team-app", "building-validation")
+    assert ref.for_scope("planning") == ("team-app", "planning-validation")
+
+
+def test_project_ref_strips_leading_prd_prefix():
+    # A caller may pass either the bare project or the prd-<project> snapshot name.
+    assert ts.project_ref("prd-team-app").plan == ("team-app", "prd-team-app")
+
+
+def test_for_scope_rejects_unsupported_scope():
+    import pytest
+    for bad in (None, "other", ""):
+        with pytest.raises(ValueError):
+            ts.project_ref("team-app").for_scope(bad)
 
 
 # --------------------------------------------------------------------------- planning lane (af-intake)
@@ -94,43 +108,14 @@ def test_validation_scope_defaults_to_building_validation_snapshot(monkeypatch):
 
 # --------------------------------------------------------------------------- explicit overrides
 
-def test_explicit_checks_ref_snapshot_overrides_default(monkeypatch):
-    spy = _spy(monkeypatch, checks=[{"id": "L1", "scope": "planning"}])
-    ts.resolve_validation_requirements({"id": "plan", "meta": {}}, project="team-app",
-                                       scope="planning", checks_ref="my-lenses")
-    # a bare snapshot override keeps space=<project>, swaps the snapshot
-    assert spy.facts_by_spaces == ["team-app"]
-    assert spy.facts_by_snapshots == ["my-lenses"]
-
-
-def test_explicit_checks_ref_pair_overrides_space_and_snapshot(monkeypatch):
+def test_explicit_override_pair_overrides_space_and_snapshot(monkeypatch):
     spy = _spy(monkeypatch, checks=[{"id": "L1", "scope": "planning"}])
     ts.resolve_validation_requirements({"id": "plan", "meta": {}}, project="team-app",
                                        scope="planning",
-                                       checks_ref=("shared-lenses", "planning-validation"))
-    # an explicit (space, snapshot) pair overrides BOTH halves
+                                       override=("shared-lenses", "planning-validation"))
+    # an explicit (space, snapshot) override pair replaces BOTH halves of the default
     assert spy.facts_by_spaces == ["shared-lenses"]
     assert spy.facts_by_snapshots == ["planning-validation"]
-
-
-def test_explicit_none_forces_default_reference(monkeypatch):
-    spy = _spy(monkeypatch, checks=[{"id": "C1", "scope": "validation",
-                                     "meta": {"applies_to": ["auth"]}}])
-    ticket = {"id": "R1", "meta": {"tags": ["auth"]}}
-    ts.resolve_validation_requirements(ticket, project="team-app", scope="validation",
-                                       checks_ref=None)
-    # None override => no snapshot-bound reference at all (neither header emitted; fail-closed safe)
-    assert spy.facts_by_spaces and all(s is None for s in spy.facts_by_spaces)
-    assert spy.facts_by_snapshots and all(s is None for s in spy.facts_by_snapshots)
-
-
-def test_scope_none_backcompat_reads_default_reference(monkeypatch):
-    spy = _spy(monkeypatch, checks=[{"id": "C1", "meta": {"applies_to": ["auth"]}}])
-    ticket = {"id": "R1", "meta": {"tags": ["auth"]}}
-    ts.resolve_validation_requirements(ticket, project="team-app")  # scope=None
-    # scope=None has no default snapshot => no snapshot-bound reference (both halves None)
-    assert spy.facts_by_spaces and all(s is None for s in spy.facts_by_spaces)
-    assert spy.facts_by_snapshots and all(s is None for s in spy.facts_by_snapshots)
 
 
 # --------------------------------------------------------------------------- transport: tenancy headers

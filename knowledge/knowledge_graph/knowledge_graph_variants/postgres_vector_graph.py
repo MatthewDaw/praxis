@@ -132,6 +132,67 @@ REQUIREMENT_CATEGORY = "requirement"
 # ``facts_by`` / ``checks_for_surface`` so a completeness gate never silently drops one.
 CHECK_CATEGORY = "check"
 
+
+class SnapshotKindError(ValueError):
+    """A fact would violate the KIND its destination snapshot allows (the kind is derived from the
+    snapshot NAME). Raised at every insert-into-``snapshots`` path so validation checks can never
+    co-mingle with a ``prd-<project>`` plan (or vice versa) — the invariant that makes the "11
+    validation checks embedded in a prd snapshot" failure impossible. Subclasses ``ValueError`` so
+    the candidate write routes (which already map ``ValueError`` -> HTTP 400) surface it unchanged.
+    """
+
+
+# A snapshot's KIND (derived from its NAME) restricts the facts it may hold. This ONE derivation +
+# spec feeds BOTH the per-row Python guard (``_add``) and the SQL violator probe (the bulk save/copy
+# paths), so there is exactly one source of truth for the rule:
+#   * ``prd-<project>`` (name starts ``prd-``) -> a PLAN: NO ``category="check"`` facts.
+#   * ``building-validation``                  -> ONLY checks with scope ``"validation"``.
+#   * ``planning-validation``                  -> ONLY checks with scope ``"planning"``.
+#   * any other name (evals, demos, ad-hoc)    -> UNCONSTRAINED (kind None).
+# A check stores its scope in ``meta.scope`` (the top-level ``scope`` column is typically NULL for
+# checks — see the CHECK_CATEGORY note above), so the invariant reads scope as
+# ``COALESCE(meta->>'scope', scope)``, mirroring ``_ticket_state._scope_of``.
+def _snapshot_kind(snapshot: str | None) -> str | None:
+    """Derive a snapshot's KIND from its NAME (None == unconstrained)."""
+    if not snapshot:
+        return None
+    if snapshot.startswith("prd-"):
+        return "plan"
+    if snapshot == "building-validation":
+        return "building-validation"
+    if snapshot == "planning-validation":
+        return "planning-validation"
+    return None
+
+
+def _row_allowed(kind: str | None, category: str | None, scope: str | None) -> bool:
+    """True iff a row with ``category``/``scope`` is allowed into a snapshot of ``kind``."""
+    if kind is None:
+        return True
+    is_check = category == CHECK_CATEGORY
+    if kind == "plan":
+        return not is_check
+    if kind == "building-validation":
+        return is_check and scope == "validation"
+    if kind == "planning-validation":
+        return is_check and scope == "planning"
+    return True
+
+
+def _snapshot_violator_sql(kind: str | None) -> str | None:
+    """A SQL boolean matching a FORBIDDEN row over the ``category``/``scope``/``meta`` columns (scope
+    resolved as ``COALESCE(meta->>'scope', scope)``). None when ``kind`` is unconstrained."""
+    if kind == "plan":
+        return "category = 'check'"
+    if kind == "building-validation":
+        return ("(category IS DISTINCT FROM 'check' "
+                "OR COALESCE(meta->>'scope', scope) IS DISTINCT FROM 'validation')")
+    if kind == "planning-validation":
+        return ("(category IS DISTINCT FROM 'check' "
+                "OR COALESCE(meta->>'scope', scope) IS DISTINCT FROM 'planning')")
+    return None
+
+
 # Episodic memory (gap H4). The reserved category that routes a write down the
 # store-only lane (whole, append-only, immutable — never distilled/deduped/
 # contradicted) and out of semantic recall (H2). Load-bearing: a non-episode write
@@ -2438,6 +2499,24 @@ class PostgresVectorGraph(SearchableGraph):
         self._require_live("save_cache")
         key = (self.org_id, space, snapshot)
         src = (self.org_id, self.user_id)
+        # WRITE-TIME SECTION INVARIANT (the primary leak site — this dumps the WHOLE working graph).
+        # A save into a kinded snapshot (prd-* plan / *-validation) must not carry a forbidden fact;
+        # probe working memory for violators FIRST and refuse the whole dump if any exist, rather than
+        # silently embedding them (the "11 checks in a prd snapshot" failure).
+        violator = _snapshot_violator_sql(_snapshot_kind(snapshot))
+        if violator is not None:
+            row = self._conn.execute(
+                f"SELECT count(*) FROM facts WHERE org_id=%s AND user_id=%s AND ({violator})",
+                src,
+            ).fetchone()
+            n = int(row[0]) if row else 0
+            if n:
+                raise SnapshotKindError(
+                    f"{n} fact(s) in working memory violate the "
+                    f"{_snapshot_kind(snapshot)!r} kind of snapshot {snapshot!r}; e.g. "
+                    f"category={CHECK_CATEGORY!r} facts cannot be saved into a prd-* plan — save "
+                    f"them to building-validation/planning-validation instead"
+                )
         # Replace any prior state under this key (edges/claims first for the FK).
         self._conn.execute(
             "DELETE FROM snapshot_edges WHERE org_id=%s AND space=%s AND snapshot=%s", key
@@ -2650,6 +2729,22 @@ class PostgresVectorGraph(SearchableGraph):
         dst_org = self.org_id
         dst = (self.space, self.snapshot)
         src = (src_org_id, src_space, src_snapshot)
+        # WRITE-TIME SECTION INVARIANT: the DESTINATION snapshot name governs the kind, so a copy of a
+        # mixed/validation source into a prd-* destination (or a plan source into a *-validation
+        # destination) is refused — the same rule as save_cache, applied to a cross-org copy.
+        violator = _snapshot_violator_sql(_snapshot_kind(self.snapshot))
+        if violator is not None:
+            row = self._conn.execute(
+                "SELECT count(*) FROM snapshots "
+                f"WHERE org_id=%s AND space=%s AND snapshot=%s AND ({violator})",
+                src,
+            ).fetchone()
+            n = int(row[0]) if row else 0
+            if n:
+                raise SnapshotKindError(
+                    f"{n} source fact(s) violate the {_snapshot_kind(self.snapshot)!r} kind of "
+                    f"destination snapshot {self.snapshot!r}"
+                )
         self._conn.execute(
             f"INSERT INTO snapshots ({_SNAPSHOT_COPY_COLS}, space, snapshot) "
             f"SELECT {_SNAPSHOT_RESTAMP_SELECT}, %s, %s FROM snapshots "
@@ -2801,6 +2896,18 @@ class PostgresVectorGraph(SearchableGraph):
         embedding = _fit(decision.embedding)  # reuse the vector from _recall
         fact_id = uuid.uuid4().hex
         meta = getattr(decision, "meta", None) or {}
+        # WRITE-TIME SECTION INVARIANT (per-row, snapshot-bound writes only — the factory's
+        # POST/PATCH into a snapshot target; MCP proxies through here too). Working-memory writes
+        # (episodic and everything else) are unconstrained. ``_overwrite`` calls ``_add`` so it is
+        # covered transitively.
+        if self._is_snapshot:
+            category = getattr(decision, "category", None)
+            scope = meta.get("scope") or getattr(decision, "scope", None)
+            if not _row_allowed(_snapshot_kind(self.snapshot), category, scope):
+                raise SnapshotKindError(
+                    f"a category={category!r} fact (scope={scope!r}) cannot be written into "
+                    f"snapshot {self.snapshot!r} (kind {_snapshot_kind(self.snapshot)!r})"
+                )
         # Bi-temporal validity: a new fact becomes valid now and stays valid
         # (invalid_at NULL) until something supersedes it. Callers may backdate
         # world-time validity by supplying meta["valid_at"] (ISO string or a
