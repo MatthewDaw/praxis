@@ -148,13 +148,25 @@ points resolution at a different `(space, snapshot)` for this run. Thread it as 
 contract (§8), so fanned-out workers read the same reference. With no argument the default applies:
 `space=<project>`, `snapshot=building-validation`.
 
+## STATE TENANCY — the whole loop operates on the plan snapshot
+
+Ticket STATE (build_state, claims, pins, run-markers, outcomes) lives on the project's
+`prd-<project>` snapshot, NOT working memory. Compute the plan ref ONCE at the top of the run:
+`PLAN = _ticket_state.project_ref(project).plan` (== `(project, "prd-<project>")`). Then:
+- pass `space=PLAN[0], snapshot=PLAN[1]` to `_praxis.incomplete_requirements(project, ...)` (FIND) and to
+  `_praxis.record_outcome(...)`;
+- pass `ref=PLAN` to every `_ticket_state` state call — `stamp_run`/`refresh_run`/`clear_run` here, and
+  `claim`/`heartbeat`/`release`/`block`/`pin_*`/`record_validation_pass` in the worker (§8).
+`start_ticket(cid, owner, project)` derives PLAN from `project` itself. Working memory is only the
+dashboard's edit buffer + personal-memory MCP surface; the factory never keeps state there.
+
 ## 0. OPEN THE RUN — stamp the whole-set marker
 
 Resolve the scope (§Scope) to its in-scope incomplete ticket ids, **list them for the human**, then
-`_ticket_state.stamp_run(cids, owner, scope_label)`. This is the single act that makes the gate enforce the
-*whole* run rather than just a held claim. `refresh_run(cids, owner)` at every ticket boundary keeps the
-marker non-stale (it auto-expires after `DEFAULT_RUN_TTL_S` so a dead run never strands the set), and
-`clear_run(cids, owner)` at the very end (§7) ends the run.
+`_ticket_state.stamp_run(cids, owner, scope_label, ref=PLAN)`. This is the single act that makes the gate
+enforce the *whole* run rather than just a held claim. `refresh_run(cids, owner, ref=PLAN)` at every ticket
+boundary keeps the marker non-stale (it auto-expires after `DEFAULT_RUN_TTL_S` so a dead run never strands
+the set), and `clear_run(cids, owner, ref=PLAN)` at the very end (§7) ends the run.
 
 ## Execution model — default to an ultracode Workflow (fan out the ready frontier)
 
@@ -233,9 +245,10 @@ return { done: true }
 to `finished` (§2→§6) before you look at, read, or claim any other. Do not survey the queue, pre-read other
 tickets' requirements, or hold a batch in mind — one ticket is the entire working set until it ships.
 
-Call `_praxis.incomplete_requirements(project)` with the **BARE** project name. The server derives this view
-from outcomes + staleness + lease state, so a validation that just regressed a ticket already shows up here
-— no local sync, no manifest. To skip tickets another live session already holds, pass `exclude_leased=True`.
+Call `_praxis.incomplete_requirements(project, space=PLAN[0], snapshot=PLAN[1])` with the **BARE** project
+name (PLAN binds it to the plan snapshot — §State tenancy). The server derives this view from outcomes +
+staleness + lease state, so a validation that just regressed a ticket already shows up here — no local sync,
+no manifest. To skip tickets another live session already holds, pass `exclude_leased=True`.
 Filter to the **marked scope** (the ids you stamped in §0), then **pop the single front** with
 `_ticket_state.next_ready_ticket(incomplete)` — the one ticket that is not finished, not blocked, and
 depends on **no unfinished or in-progress job**. Claim that one; ignore the rest.
@@ -540,32 +553,37 @@ snapshot>. Checks resolve from (space=PROJECT, snapshot=CHECKS_SNAPSHOT). Run he
 hooks/_ticket_state.py (contract: docs/factory-state-contract.md). af-intake is NOT in this path — it
 does not author eval requirements at build time; never wait on it.
 
+TICKET STATE lives ON THE PLAN SNAPSHOT, never working memory: let PLAN=(PROJECT, "prd-"+PROJECT) and
+pass ref=PLAN to EVERY _ticket_state state call below (pin/coverage/heartbeat/record/all_/release/block).
+start_ticket takes PROJECT and derives PLAN itself, so it needs no ref. Missing the ref on any one call
+splits that write into working memory and the ticket never reads back as done — always pass ref=PLAN.
+
 1. CLAIM + RESOLVE + TRUNCATE  — start_ticket(TICKET, OWNER, PROJECT, override=(PROJECT, CHECKS_SNAPSHOT)).
-   This atomically claims the lease, resolves the eval REQUIREMENTS (tag ∪ surface from the project space's
-   CHECKS_SNAPSHOT ∪ the ticket's own acceptance-condition floor), TRUNCATES any prior evals, and pins the fresh requirement
-   contract. If it returns None → the ticket is taken/blocked,
-   stop. If it returns an EMPTY list (no checks AND no acceptance condition) → block(TICKET, OWNER, reason)
+   This atomically claims the lease (on PLAN), resolves the eval REQUIREMENTS (tag ∪ surface from the project
+   space's CHECKS_SNAPSHOT ∪ the ticket's own acceptance-condition floor), TRUNCATES any prior evals, and pins
+   the fresh requirement contract. If it returns None → the ticket is taken/blocked,
+   stop. If it returns an EMPTY list (no checks AND no acceptance condition) → block(TICKET, OWNER, reason, ref=PLAN)
    and stop; there is nothing to prove.
 2. READ THE CODE  — read the ticket's acceptance condition and the specific files/surfaces it touches, so
    your evals fit THIS code case (real paths, real commands) — not generic placeholders. Do not edit yet.
 3. AUTHOR + PIN EVALS  — first pull INSPIRATION: retrieve_advisory_checks(TICKET, PROJECT, scope="validation")
    — semantically-related candidate checks; fold in the relevant ones, ignore the rest (they never gate).
    Then write CUSTOM executable validations that COVER every MANDATORY resolved requirement (each declares
-   covers:[req_id] and a `run` command whose exit code is the verdict). pin_validations(TICKET, [...]).
-   coverage_gap(TICKET) MUST be empty before you continue (coverage is enforced on the mandatory set only).
+   covers:[req_id] and a `run` command whose exit code is the verdict). pin_validations(TICKET, [...], ref=PLAN).
+   coverage_gap(TICKET, ref=PLAN) MUST be empty before you continue (coverage is enforced on the mandatory set only).
 4. CONFIRM RED  — run every pinned eval NOW, BEFORE writing any implementation. The acceptance test MUST
    FAIL (red) for the right reason. An eval that passes before you write code proves nothing — fix it until
    it genuinely fails. Do NOT write implementation in this step.
 5. BUILD  — only now make the change that satisfies the acceptance condition; nothing broader.
-   heartbeat(TICKET, OWNER) across long stretches so the lease stays live.
+   heartbeat(TICKET, OWNER, ref=PLAN) across long stretches so the lease stays live.
 6. CONFIRM GREEN + RECORD  — re-run every pinned eval and the project's real external gates (typecheck /
-   build / lint / suite). record_validation_pass(TICKET, vid, passed=(exit_code==0), ran_at=now) per eval.
+   build / lint / suite). record_validation_pass(TICKET, vid, passed=(exit_code==0), ran_at=now, ref=PLAN) per eval.
    On a failure, RE-ENTER step 5 with the captured failing signal as context — never revise from self-doubt
    alone, never weaken an eval to pass.
-7. FINISH  — when all_validations_passed(TICKET) is True: release(TICKET, OWNER, state="finished"). The
-   release is REFUSED while any eval is unrun or red — that refusal is the contract, not an error to route
-   around. To yield without finishing: release(TICKET, OWNER, state="incomplete"). Credential-only /
-   unsatisfiable: block(TICKET, OWNER, reason).
+7. FINISH  — when all_validations_passed(TICKET, ref=PLAN) is True: release(TICKET, OWNER, state="finished", ref=PLAN).
+   The release is REFUSED while any eval is unrun or red — that refusal is the contract, not an error to route
+   around. To yield without finishing: release(TICKET, OWNER, state="incomplete", ref=PLAN). Credential-only /
+   unsatisfiable: block(TICKET, OWNER, reason, ref=PLAN).
 
 NEVER build-first / test-after. NEVER fake, delete, or weaken an eval to get green. NEVER finish without
 all_validations_passed. NEVER ask af-intake to author the eval requirements.
