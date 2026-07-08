@@ -99,7 +99,9 @@ praxis_add_insight(
 - **Idempotent on `meta.check_id`**: if one already exists, `praxis_edit_fact(cid, ..., space="<project>",
   snapshot="building-validation")` rather than duplicating.
 - **`on_conflict="surface"`**, never `raw=True`/`auto_resolve`: a near-duplicate surfaces as a pending
-  contradiction rather than silently minting a twin.
+  contradiction rather than silently minting a twin. Review/settle it against the SAME snapshot:
+  `praxis_get_contradictions(space="<project>", snapshot="building-validation")` →
+  `praxis_resolve_contradiction(pair_id, ..., space="<project>", snapshot="building-validation")`.
 
 The check takes effect on the **next build run** with no further action: at each ticket's RESOLVE step
 `resolve_validation_requirements` picks it up by tag/surface match, `pin_requirements` writes it into that

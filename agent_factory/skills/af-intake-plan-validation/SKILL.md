@@ -85,6 +85,9 @@ praxis_add_insight(
 - **Idempotent on `meta.check_id`**: if one exists, `praxis_edit_fact(cid, ..., space="<project>",
   snapshot="planning-validation")` rather than duplicating.
 - **`on_conflict="surface"`**: a near-duplicate surfaces as a pending contradiction, not a silent twin.
+  Review/settle it against the SAME snapshot:
+  `praxis_get_contradictions(space="<project>", snapshot="planning-validation")` →
+  `praxis_resolve_contradiction(pair_id, ..., space="<project>", snapshot="planning-validation")`.
 
 The active `scope="planning"` checks in that snapshot ARE the planning checklist af-intake-plan's audit
 (Part B3) pulls. The lens takes effect on the **next plan** for this project: the audit queries the

@@ -1019,8 +1019,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> list[dict[str, Any]]:
-        return candidates_for(org, uid).contradictions()
+        return candidates_for(org, uid, target).contradictions()
 
     @app.post("/contradictions/{pair_id}/resolve")
     def resolve(
@@ -1029,8 +1030,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
-        facade = candidates_for(org, uid)
+        facade = candidates_for(org, uid, target)
         custom_text = body.get("customText")
         if custom_text is not None and str(custom_text).strip():
             try:

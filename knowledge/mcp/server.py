@@ -693,19 +693,24 @@ def _fmt_side(label: str, side: dict) -> str:
 
 
 @mcp.tool()
-def praxis_get_contradictions() -> str:
+def praxis_get_contradictions(space: str | None = None, snapshot: str | None = None) -> str:
     """List the flagged contradictions in the user's knowledge graph.
 
     Each entry is a pair of facts the conflict detector judged to contradict each
     other; both are kept in the graph until resolved. Use this to review what is
     flagged and why, then call ``praxis_resolve_contradiction`` to settle a pair.
+
+    Pass BOTH ``space`` and ``snapshot`` to review contradictions raised INSIDE an org-shared
+    snapshot (e.g. an ``on_conflict="surface"`` clash from authoring a check into
+    ``building-validation``); omit both for working memory. Use the same ``(space, snapshot)``
+    you wrote to — a contradiction lives in the graph the conflicting facts live in.
     """
     if (hint := _not_ready()) is not None:
         return hint
     try:
         resp = httpx.get(
             f"{identity.api_base()}/contradictions",
-            headers=_headers(),
+            headers=_headers(space, snapshot),
             timeout=_READ_TIMEOUT,
         )
         resp.raise_for_status()
@@ -739,8 +744,13 @@ def praxis_resolve_contradiction(
     pair_id: str,
     keep: str | None = None,
     custom_text: str | None = None,
+    space: str | None = None,
+    snapshot: str | None = None,
 ) -> str:
     """Resolve a flagged contradiction cluster (from ``praxis_get_contradictions``).
+
+    Pass BOTH ``space`` and ``snapshot`` (the same ones the contradiction was listed under) to
+    settle a clash raised inside an org-shared snapshot; omit both for working memory.
 
     A cluster is settled by saying which members to ``keep``:
     - ``"all"`` — every member genuinely holds (a *false positive*, e.g. the facts
@@ -776,7 +786,7 @@ def praxis_resolve_contradiction(
         resp = httpx.post(
             f"{identity.api_base()}/contradictions/{pair_id}/resolve",
             json=body,
-            headers=_headers(),
+            headers=_headers(space, snapshot),
             timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
