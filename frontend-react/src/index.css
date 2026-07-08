@@ -3469,6 +3469,23 @@ code,
   word-break: break-word;
 }
 
+.mcp-guide__subhead {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: 0.95rem;
+}
+
+/* The /af- command table is 3-column: a short command + a short "writes" target
+   flanking a wide description, so it overrides the 2-column table's 42% first col. */
+.af-cmd-table td:first-child {
+  width: 1%;
+  white-space: nowrap;
+}
+.af-cmd-table th:last-child,
+.af-cmd-table td:last-child {
+  width: 1%;
+  white-space: nowrap;
+}
+
 
 /* --- Eval runner panel ---------------------------------------------------- */
 .eval-runner {

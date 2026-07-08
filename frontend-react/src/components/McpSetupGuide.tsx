@@ -343,6 +343,116 @@ export function McpSetupGuide({ email }: McpSetupGuideProps = {}) {
           restart Claude Code after installing so the <code>/af-</code> skills appear.
           The quick-start prompt above handles this pause-and-restart automatically.
         </p>
+
+        <h4 className="mcp-guide__subhead">The <code>/af-</code> commands</h4>
+        <p className="muted small">
+          The plugin delivers the factory as a plan → intake → build → verify loop.
+          Intake is <strong>split into three section-locked commands</strong>, one per
+          canonical snapshot in the project space — each is the SOLE writer of its
+          section, which the server&apos;s write-time invariant enforces, so a check can
+          never land in the plan and vice-versa.
+        </p>
+        <table className="mcp-tools-table af-cmd-table">
+          <thead>
+            <tr>
+              <th>Command</th>
+              <th>What it does</th>
+              <th>Writes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <code>/af-plan</code>
+              </td>
+              <td>
+                Brainstorm/research a rough idea into a messy, exhaustive requirements
+                doc. Writes nothing to Praxis — it produces the doc af-intake-plan admits.
+              </td>
+              <td>
+                <em>(a doc)</em>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>/af-intake-plan</code>
+              </td>
+              <td>
+                The plan write-path: extract requirements + surface bindings from the doc
+                (+ optional wireframe), harden them, run the cold-eyes audit + plan-review
+                panel, and bless the plan at the human gate. Also amends ONE missing ticket.
+              </td>
+              <td>
+                <code>prd-&lt;project&gt;</code>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>/af-intake-build-validation</code>
+              </td>
+              <td>
+                Add ONE build-time validation check (&quot;must pass before a ticket is
+                done&quot;) — a rule with a <code>run</code> command and an applicability
+                predicate (tag / <code>*</code> / surface). af-build resolves it per ticket.
+              </td>
+              <td>
+                <code>building-validation</code>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>/af-intake-plan-validation</code>
+              </td>
+              <td>
+                Add ONE planning lens (&quot;how to plan&quot; consideration) the
+                af-intake-plan audit must close for every requirement it bears on; also
+                re-arms the audit so the plan is no longer blessable until the lens is met.
+              </td>
+              <td>
+                <code>planning-validation</code>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>/af-wireframe</code>
+              </td>
+              <td>
+                Turn a PRD into complete, clickable HTML wireframe(s) — one rendered screen
+                per Praxis surface — and self-audit coverage against the surface bindings.
+              </td>
+              <td>
+                <em>(HTML)</em>
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>/af-build</code>
+              </td>
+              <td>
+                Drive the project&apos;s incomplete tickets to done: FIND → CLAIM →
+                RESOLVE checks → BUILD → VERIFY (run every pinned check) → FINISH, looping
+                until the set is done. Reads <code>building-validation</code>; writes ticket
+                state (build_state / claims / pins / outcomes) onto the plan snapshot.
+              </td>
+              <td>
+                <code>prd-&lt;project&gt;</code> (state)
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <code>/af-fulfill</code>
+              </td>
+              <td>
+                A separate runtime (not the coding loop): drive an END USER to supply the
+                facts a structured deliverable needs, against a Praxis requirement graph,
+                until the completeness gate opens, then produce the deliverable.
+              </td>
+              <td>
+                <em>(a session space)</em>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
       <div className="mcp-guide__step">
