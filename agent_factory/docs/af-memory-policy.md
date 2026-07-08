@@ -136,13 +136,13 @@ A ticket on the requirement node moves `incomplete → in_progress → finished`
 1. **claim** — `incomplete → in_progress`, stamping `claim_owner` + `claim_at` +
    `claim_heartbeat_at` + `claim_lease_ttl`.
 2. **resolve checks** — run the applicability QUERY (below) against the *active* checks.
-3. **pin** — `pin_checks` **TRUNCATES** any prior `pinned_checks` and writes the FRESH resolved
+3. **pin** — `pin_requirements` **TRUNCATES** any prior `pinned_checks` and writes the FRESH resolved
    set as this pass's completion contract.
 
 Then **build + validate**: run each pinned check and record each pass **ON THE TICKET NODE** via
-`record_check_pass` (never on the check fact). `heartbeat` periodically to keep the lease live.
+`record_validation_pass` (never on the check fact). `heartbeat` periodically to keep the lease live.
 
-The ticket is **finished IFF** `all_checks_passed` — at least one pinned check, and every pinned
+The ticket is **finished IFF** `all_validations_passed` — at least one pinned check, and every pinned
 check passed — then `release(cid, owner, state="finished")`. Yielding cleanly without finishing →
 `release(cid, owner, state="incomplete")`.
 
@@ -160,7 +160,7 @@ heartbeat/ttl reads as not-live.
 
 ### Which checks apply = a QUERY (resolved fresh at ticket start)
 
-`resolve_checks(ticket, project)` returns the **MANDATORY (precise)** coverage contract — the
+`resolve_validation_requirements(ticket, project)` returns the **MANDATORY (precise)** coverage contract — the
 de-duplicated union of three lanes:
 
 - **tag match** — active `category="check"` facts whose `meta.applies_to` matches any of the ticket's
@@ -214,11 +214,11 @@ ping() -> bool
 `hooks/_ticket_state.py` (the lifecycle verbs; `ticket` args accept a fact id or a fetched dict):
 
 ```python
-resolve_checks(ticket, project="", scope=None, checks_ref=<default>) -> list[dict]   # MANDATORY: tag ∪ "*" ∪ surface; checks_ref = the (space,snapshot) seam
+resolve_validation_requirements(ticket, project="", scope=None, checks_ref=<default>) -> list[dict]   # MANDATORY: tag ∪ "*" ∪ surface; checks_ref = the (space,snapshot) seam
 retrieve_advisory_checks(ticket, project="", scope=None, checks_ref=<default>, top_k=10) -> list[dict]  # ADVISORY semantic lane (inspiration; never gates)
-pin_checks(cid, checks) -> dict                                    # truncate + pin fresh contract
-record_check_pass(cid, check_id, passed, ran_at=None) -> dict      # records ON THE TICKET NODE
-all_checks_passed(ticket) -> bool                                  # ≥1 pinned AND all passed
+pin_requirements(cid, requirements) -> dict                       # truncate + pin fresh contract
+record_validation_pass(cid, validation_id, passed, ran_at=None) -> dict   # records ON THE TICKET NODE
+all_validations_passed(ticket) -> bool                            # ≥1 pinned AND all passed
 
 claim(cid, owner, ttl=900) -> bool                                 # incomplete -> in_progress
 heartbeat(cid, owner) -> bool                                      # bump iff still holding live lease

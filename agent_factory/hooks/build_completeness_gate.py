@@ -140,7 +140,7 @@ def _ready_to_finish(item: dict) -> bool:
     """True iff the ticket has a pinned check contract that is fully satisfied (≥1, all passed)."""
     import _ticket_state as ts
     try:
-        return ts.all_checks_passed(item if item.get("meta") else _rid(item))
+        return ts.all_validations_passed(item if item.get("meta") else _rid(item))
     except Exception:  # noqa: BLE001 - never let an enrichment read crash the gate
         return False
 

@@ -116,10 +116,6 @@ def default_checks_snapshot(scope: Optional[str]) -> Optional[str]:
     return None
 
 
-# Back-compat alias for any external symbol still importing the old name.
-default_checks_space = default_checks_snapshot
-
-
 def _checks_reference(checks_ref: Any, scope: Optional[str],
                       project: str) -> tuple[Optional[str], Optional[str]]:
     """Resolve ``checks_ref`` into the ``(space, snapshot)`` a check READ binds to.
@@ -277,10 +273,6 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
     return list(seen.values())
 
 
-# Back-compat alias — the historical name resolved the same query.
-resolve_checks = resolve_validation_requirements
-
-
 def retrieve_advisory_checks(ticket: Any, project: str = "", scope: Optional[str] = None,
                              checks_ref: Any = _CHECKS_SPACE_UNSET,
                              top_k: int = 10) -> list[dict]:
@@ -362,25 +354,6 @@ def pin_validations(cid: str, validations: list) -> dict:
     return _praxis.patch_meta(cid, {M_PINNED_CHECKS: pinned})
 
 
-# Back-compat shim: the historical ``pin_checks(cid, checks)`` pinned each resolved check as the
-# completion contract directly (1:1, the check's own command). Preserve that behavior by recording
-# the requirement contract AND a trivial 1:1 validation per check (covers itself, runs its meta.run),
-# so any un-migrated caller still finishes. The two-tier path (pin_requirements + agent-authored
-# pin_validations) is preferred.
-def pin_checks(cid: str, checks: list) -> dict:
-    pin_requirements(cid, checks)
-    trivial = []
-    for c in checks:
-        rid = _check_id(c)
-        if not rid:
-            continue
-        run = ""
-        if isinstance(c, dict):
-            run = str((c.get("meta") or {}).get("run") or c.get("run") or "")
-        trivial.append({"validation_id": rid, "covers": [rid], "run": run})
-    return pin_validations(cid, trivial)
-
-
 def record_validation_pass(cid: str, validation_id: str, passed: bool,
                            ran_at: Optional[float] = None) -> dict:
     """Record one validation's pass/fail ON THE TICKET NODE (never on the requirement fact).
@@ -404,10 +377,6 @@ def record_validation_pass(cid: str, validation_id: str, passed: bool,
         pinned.append({"validation_id": str(validation_id), "covers": [],
                        "run": "", "passed": bool(passed), "ran_at": ran_at})
     return _praxis.patch_meta(cid, {M_PINNED_CHECKS: pinned})
-
-
-# Back-compat alias.
-record_check_pass = record_validation_pass
 
 
 def coverage_gap(ticket: Any) -> list[str]:
@@ -449,10 +418,6 @@ def all_validations_passed(ticket: Any) -> bool:
     if not required.issubset(covered):   # coverage gap — compute inline (meta already extracted)
         return False
     return all(bool(e.get("passed")) for e in pinned)
-
-
-# Back-compat alias.
-all_checks_passed = all_validations_passed
 
 
 # --------------------------------------------------------------------------- claiming / lease

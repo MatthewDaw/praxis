@@ -355,7 +355,7 @@ def surface_checks(project: str, screen_id: str, scope: str | None = None,
     reference fails closed."""
     # screen ids can contain a slash (e.g. "admin/s-login"); encode it so the path segment is valid,
     # and tolerate a 404 (a surface with no checks endpoint must not fail-close the whole resolution —
-    # the tag-match lane in resolve_checks is the authoritative one).
+    # the tag-match lane in resolve_validation_requirements is the authoritative one).
     seg = urllib.parse.quote(screen_id, safe="")
     out = _request("GET", f"/surfaces/{seg}/checks",
                    params={"project": project, "scope": scope}, not_found_ok=True,

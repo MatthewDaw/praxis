@@ -124,7 +124,7 @@ keys rather than removing them; `_lease_live` treats null heartbeat/ttl as not-l
 
 ## Requirement resolution is a query (tag union surface)
 
-`resolve_validation_requirements(ticket, project, scope=None)` (alias `resolve_checks`). The `scope`
+`resolve_validation_requirements(ticket, project, scope=None)`. The `scope`
 arg is the ONE seam between the two callers — everything downstream (pin / coverage / pass) is identical:
 
 - **`scope="validation"`** (af-build PER-TICKET; `start_ticket` passes this) — the **MANDATORY (precise)**
@@ -220,7 +220,7 @@ DEFAULT_LEASE_TTL_S = 900     # per-ticket claim lease
 DEFAULT_RUN_TTL_S   = 3600    # whole-set run marker (refreshed at each ticket boundary)
 
 # --- requirements (the QUERY) + the coverage contract ---
-resolve_validation_requirements(ticket, project="", scope=None, checks_ref=<default>) -> list[dict]  # alias: resolve_checks
+resolve_validation_requirements(ticket, project="", scope=None, checks_ref=<default>) -> list[dict]
     # scope="validation" (af-build, per-ticket tag∪surface) | "planning" (af-intake, whole checklist) | None
     # checks_ref= the (space, snapshot) seam: unset -> space=project + per-scope default snapshot
     #   (validation->building-validation, planning->planning-validation); a (space, snapshot) pair (or a bare
@@ -229,21 +229,19 @@ resolve_validation_requirements(ticket, project="", scope=None, checks_ref=<defa
     # MANDATORY (precise) lanes only: tag ∪ "*" wildcard ∪ surface — the coverage contract
 retrieve_advisory_checks(ticket, project="", scope=None, checks_ref=<default>, top_k=10) -> list[dict]
     # the SEMANTIC lane — advisory candidate checks (inspiration); NEVER pinned/required, never gates
-default_checks_snapshot(scope) -> str|None                   # per-scope default read SNAPSHOT (alias: default_checks_space)
+default_checks_snapshot(scope) -> str|None                   # per-scope default read SNAPSHOT
     # validation -> "building-validation", planning -> "planning-validation", else None; the space half is project
-DEFAULT_VALIDATION_CHECKS_SNAPSHOT = "building-validation"   # was DEFAULT_VALIDATION_CHECKS_SPACE="coding-validation"
-DEFAULT_PLANNING_CHECKS_SNAPSHOT   = "planning-validation"   # was DEFAULT_PLANNING_CHECKS_SPACE
+DEFAULT_VALIDATION_CHECKS_SNAPSHOT = "building-validation"
+DEFAULT_PLANNING_CHECKS_SNAPSHOT   = "planning-validation"
 acceptance_requirement(cid, acceptance_text) -> dict         # the <cid>::acceptance floor requirement
 contract_with_floor(cid, acceptance_text, resolved: list) -> list  # resolved checks + acceptance floor (dedup)
 pin_requirements(cid: str, requirements: list) -> dict       # truncate validations + pin coverage contract
 
 # --- worker-synthesized validations (the eval) ---
 pin_validations(cid: str, validations: list) -> dict         # entries: {validation_id, covers:[id], run}
-record_validation_pass(cid, validation_id, passed, ran_at=None) -> dict    # alias: record_check_pass
+record_validation_pass(cid, validation_id, passed, ran_at=None) -> dict
 coverage_gap(ticket) -> list[str]                            # requirement ids not yet covered ([] == ok)
 all_validations_passed(ticket) -> bool                       # coverage complete + ≥1 + all passed
-                                                             # (alias: all_checks_passed)
-# pin_checks(cid, checks) -> dict   # back-compat shim: pins requirements + trivial 1:1 validations
 
 # --- dependency readiness (the FIND queue front) ---
 deps_of(ticket) -> list[str]                                 # this ticket's depends_on prerequisite ids

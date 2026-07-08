@@ -759,7 +759,7 @@ praxis_add_insight(
 Idempotent on `meta.check_id`: if one exists, `praxis_edit_fact` it rather than duplicating. If it binds
 to surfaces, also create the `renders` edge (`praxis_bind_surface(check_id, screen_id, ...)`) so the
 surface lane of RESOLVE finds it. The check takes effect on the **next build run** with no further action:
-at each ticket's RESOLVE step `resolve_checks` picks it up by tag/surface match, `pin_checks` writes it
+at each ticket's RESOLVE step `resolve_validation_requirements` picks it up by tag/surface match, `pin_requirements` writes it
 into that ticket's `meta.pinned_checks` contract, and the ticket is FINISHED iff every pinned check passed.
 
 ## C2 — Planning check (a "how to plan" lens the audit must apply)
