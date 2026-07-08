@@ -46,8 +46,21 @@ from typing import Any
 
 DEFAULT_API_BASE = "http://localhost:8000"
 DEFAULT_ORG = "agent-factory"
-_CACHE_PATH = Path.home() / ".praxis" / "mcp.json"
+_DEFAULT_CACHE_PATH = Path.home() / ".praxis" / "mcp.json"
 _HTTP_TIMEOUT_S = 10
+
+
+def _cache_path() -> Path:
+    """The per-agent MCP identity cache — ``PRAXIS_MCP_CACHE`` if set, else ``~/.praxis/mcp.json``.
+
+    This mirrors ``knowledge/mcp/identity.py:cache_path()`` so a Stop-hook subprocess reads the SAME
+    cache the ``praxis_*`` MCP tools write. Two agents that each pin their own ``PRAXIS_MCP_CACHE``
+    (a per-project override in ``<project>/.claude/settings.local.json``) therefore mint tokens and
+    resolve the active org from their OWN identity — never clobbering each other, and never needing a
+    shared-file edit inside the praxis repo.
+    """
+    override = os.environ.get("PRAXIS_MCP_CACHE", "").strip()
+    return Path(override).expanduser() if override else _DEFAULT_CACHE_PATH
 
 
 def _load_dotenv() -> None:
@@ -98,6 +111,21 @@ def _auth_disabled() -> bool:
     return os.environ.get("PRAXIS_AUTH_DISABLED") == "1"
 
 
+def _org_from_cache() -> str:
+    """The active org id cached by ``praxis_select_org`` in this agent's MCP identity cache.
+
+    ``praxis_select_org`` (setup STEP 3) writes ``org_id`` into the cache ``_cache_path()`` points at
+    — the SAME file the MCP tools use — so reading it here makes that one selection the single source
+    of truth for BOTH the MCP tools and this hook. Returns ``""`` on any problem (no cache, not logged
+    in, unreadable/corrupt, no org selected) so the caller falls through to ``DEFAULT_ORG`` — this is a
+    best-effort resolution, never a hard failure. An explicit ``PRAXIS_ORG`` env override still wins."""
+    try:
+        data = json.loads(_cache_path().read_text(encoding="utf-8"))
+        return str(data.get("org_id") or "").strip()
+    except Exception:  # noqa: BLE001 — missing/corrupt cache -> no cached org, fall back
+        return ""
+
+
 def _mint_cognito_token() -> str:
     """Mint a fresh Cognito ID token from the cached refresh token, stdlib-only.
 
@@ -106,12 +134,13 @@ def _mint_cognito_token() -> str:
     IDP REST endpoint. Reads the refresh token from ``~/.praxis/mcp.json`` and the pool/client/
     region from ``COGNITO_*`` env. FAILS CLOSED (raises) if anything is missing or the call fails.
     """
+    cache = _cache_path()
     try:
-        data = json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+        data = json.loads(cache.read_text(encoding="utf-8"))
         refresh_token = data["refresh_token"]
     except Exception as exc:  # noqa: BLE001
         raise PraxisUnreachable(
-            f"no Praxis auth: PRAXIS_API_KEY unset and ~/.praxis/mcp.json unreadable ({exc})"
+            f"no Praxis auth: PRAXIS_API_KEY unset and {cache} unreadable ({exc})"
         ) from exc
 
     client_id = os.environ.get("COGNITO_CLIENT_ID", "")
@@ -156,7 +185,16 @@ def _auth_headers() -> dict[str, str]:
     """Build the auth + tenancy headers, failing closed if no credential is available."""
     headers: dict[str, str] = {}
 
-    org = os.environ.get("PRAXIS_ORG", DEFAULT_ORG).strip() or DEFAULT_ORG
+    # Org precedence (highest first):
+    #   1. PRAXIS_ORG env — an EXPLICIT pin. Set it as a per-project override in
+    #      <project>/.claude/settings.local.json ("env": {"PRAXIS_ORG": "<org>"}); a real env var
+    #      wins over the shared agent_factory/.env default, so a project overrides WITHOUT any edit
+    #      inside the praxis repo. (NEVER edit agent_factory/.env to point a project at its org.)
+    #   2. The org selected via praxis_select_org, read from this agent's MCP cache (_org_from_cache).
+    #      This makes setup STEP 3 the single source of truth for both the MCP tools and this hook, so
+    #      the explicit env pin in (1) is an optional belt-and-braces, not a required workaround.
+    #   3. DEFAULT_ORG — the last-resort fallback.
+    org = os.environ.get("PRAXIS_ORG", "").strip() or _org_from_cache() or DEFAULT_ORG
     headers["x-praxis-org"] = org
 
     if _auth_disabled():

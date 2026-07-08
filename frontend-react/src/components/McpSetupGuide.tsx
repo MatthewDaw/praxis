@@ -45,16 +45,28 @@ const FACTORY_DIR = `${REPO_DIR}/agent_factory`;
 
 /**
  * Build the natural-language prompt a user pastes into Claude to get set up:
- * register (if needed) → log in → select the right org → select the right space
- * → confirm. Org/space/email are threaded through from the live dashboard state
+ * install → log in → select the right org → pin ALL project-specific config as
+ * LOCAL env overrides in <project>/.claude/settings.local.json → provision the
+ * validation spaces → confirm. Org/email are threaded through from the live
+ * dashboard state.
+ *
  * The org is intentionally NOT pre-filled — Claude asks for it — so this prompt
  * stays project-agnostic and never bakes a specific org into shared config. Only
  * the login email (the user's own identity) is pre-filled when known.
+ *
+ * CARDINAL RULE the prompt enshrines: an agent working a specific project NEVER
+ * edits anything inside the praxis repo (not agent_factory/.env, not
+ * hooks/hooks.json, not any source) to configure that project. Every
+ * project-specific value (org, checks-space, API base, hook interpreter, MCP
+ * cache) is a per-project, git-ignored env override in the CONSUMING project's
+ * own .claude/settings.local.json — isolated across concurrently-running agents.
  */
 function buildSetupPrompt(opts: { email?: string }): string {
   const email = opts.email?.trim() || "<your Praxis email>";
 
-  return `Set me up with Praxis (my local knowledge-graph MCP server) AND the agent-factory plugin (the /af- plan → intake → build → verify skills). By the end I should be logged in with my org and validation spaces ready, and the /af-plan, /af-intake, /af-build, and /af-wireframe commands available. Follow these steps in order.
+  return `Set me up with Praxis (my local knowledge-graph MCP server) AND the agent-factory plugin (the /af- plan → intake → build → verify skills). By the end I should be logged in with my org selected, my project-specific config pinned as LOCAL overrides, my validation spaces ready, and the /af-plan, /af-intake, /af-build, and /af-wireframe commands available. Follow these steps in order.
+
+CARDINAL RULE — never configure a project by editing the praxis repo. Everything project-specific (the Praxis org, the checks-space, the API base URL, the hook interpreter, the per-agent MCP cache) is set as an ENV OVERRIDE in THIS project's own \`.claude/settings.local.json\` (which is per-project and git-ignored), NEVER by editing anything inside the praxis repo — not \`agent_factory/.env\`, not \`agent_factory/hooks/hooks.json\`, not any source file. The shared \`agent_factory/.env\` is read by every agent at once, so editing it to point at your org silently repoints every other concurrent agent too. A per-project \`settings.local.json\` override is isolated to this project and this agent. If at any point you feel you need to edit a file inside the praxis repo to make MY project work, STOP — that is a bug in these instructions; report it to me instead of doing it.
 
 STEP 1 — one-time install. Make sure BOTH the praxis MCP tools and the agent-factory /af- skills are available in THIS session. All commands here are plain CLI you can run directly (they are non-interactive).
 
@@ -73,14 +85,23 @@ STEP 1 — one-time install. Make sure BOTH the praxis MCP tools and the agent-f
 
 STEP 2 — log me in: call praxis_login with email "${email}" and my password. If you don't have my password, ask me for it — it is never stored.
 
-STEP 3 — ask me which org to use, then select it: praxis_select_org("<the org id I give you>"). Do NOT assume or hard-code an org — ask me for the id and wait for my answer before selecting. Confirm with praxis_whoami that the org is active.
+STEP 3 — select this project's org: ask me which org to use, then call praxis_select_org("<the org id I give you>"). Do NOT assume or hard-code an org — ask me for the id and wait for my answer before selecting. Confirm with praxis_whoami that the org is active. This writes the selected org into my per-agent MCP identity cache (the file PRAXIS_MCP_CACHE points at, default ~/.praxis/mcp.json) — the SAME cache the agent-factory Stop-hook gate reads to resolve the org, so this one selection is the single source of truth for both the MCP tools and the gate.
 
-STEP 4 — make sure my two standard validation spaces exist. Create each one; if praxis_create_space reports it already exists, that is fine — treat it as success, not an error:
+STEP 4 — pin THIS project's config as LOCAL env overrides (do NOT edit anything in the praxis repo). Write project-specific config to THIS project's own \`.claude/settings.local.json\` (create the file/dir if missing; it is per-project and git-ignored). MERGE these keys into the top-level \`env\` object — do not clobber other settings the file already has:
+    {
+      "env": {
+        "PRAXIS_MCP_CACHE": "<the ABSOLUTE path to this project's MCP cache — the SAME path you registered the praxis MCP server with, so the gate and the MCP tools share one identity/org; e.g. C:/Users/me/.praxis/<this-project>.json>",
+        "PRAXIS_ORG": "<the org from STEP 3 — an optional EXPLICIT pin; the gate already resolves the org from the cache above, so include this only if you want the org fixed regardless of the cache>",
+        "PRAXIS_HOOK_PYTHON": "<the interpreter that can run the gate hook on THIS machine — set this if a bare \`python3\` is NOT on PATH; e.g. this project's .venv python, or \`py\` on Windows, or \`uv run python\`>",
+        "PRAXIS_API_BASE_URL": "<only if this project's Praxis backend is NOT http://localhost:8000>"
+      }
+    }
+  Why this is the correct mechanism: a real environment variable WINS over the shared \`agent_factory/.env\` default, and Claude Code applies \`settings.local.json\`'s \`env\` to BOTH this session and the Stop-hook subprocess that runs the gate — so these overrides reach the gate cleanly, per-project, with full isolation from other concurrently-running agents, and with ZERO edits inside the praxis repo. Include only the keys you actually need to override (PRAXIS_MCP_CACHE is the important one — it makes the gate share the exact identity/org praxis_select_org just set; the rest are optional). Again: if you are tempted to instead edit \`agent_factory/.env\` or \`hooks/hooks.json\`, that is the anti-pattern this step exists to prevent — do not.
+
+STEP 5 — make sure my two standard validation spaces exist, then confirm end to end. Create each space; if praxis_create_space reports it already exists, that is fine — treat it as success, not an error:
     praxis_create_space("coding-validation", "Coding validation")
     praxis_create_space("planning-validation", "Planning validation")
-  Do NOT force-select either one — leave the default graph selected. When we start a task, select the matching space with praxis_select_space: planning-validation for planning/intake work, coding-validation for building/verification.
-
-STEP 5 — confirm end to end: call praxis_whoami() and praxis_list_space(), and check that the /af- skills are loaded (agent-factory shows ✔ enabled in \`claude plugin list\`, and /af-plan / /af-intake / /af-build / /af-wireframe are available). Then tell me, in one or two lines: the active org, that both validation spaces (coding-validation, planning-validation) exist, and that the /af- commands are ready to run.`;
+  Do NOT force-select either one — leave the default graph selected (a task selects the matching space itself: planning-validation for planning/intake, coding-validation for building/verification). Then confirm: call praxis_whoami() and praxis_list_space(), verify the /af- skills are loaded (agent-factory shows ✔ enabled in \`claude plugin list\`, and /af-plan / /af-intake / /af-build / /af-wireframe are available), and confirm THIS project's \`.claude/settings.local.json\` holds the STEP 4 overrides (and that you edited NOTHING inside the praxis repo). Then tell me, in one or two lines: the active org, that both validation spaces exist, that the project-local overrides are in place (and no praxis-repo file was touched), and that the /af- commands are ready to run.`;
 }
 
 /** Prominent, one-click "paste this into Claude" setup block. */
