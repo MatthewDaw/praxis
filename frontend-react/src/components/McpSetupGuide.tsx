@@ -45,14 +45,17 @@ const FACTORY_DIR = `${REPO_DIR}/agent_factory`;
 
 /**
  * Build the natural-language prompt a user pastes into Claude to get set up:
- * install → log in → select the right org → pin ALL project-specific config as
- * LOCAL env overrides in <project>/.claude/settings.local.json → provision the
- * validation spaces → confirm. Org/email are threaded through from the live
- * dashboard state.
+ * install → log in → derive THIS project's org from its repo root (creating the
+ * org AND the project's default spaces if they don't exist yet, else selecting
+ * them) → pin ALL project-specific config as LOCAL env overrides in
+ * <project>/.claude/settings.local.json → confirm. Only the login email is
+ * threaded through from the live dashboard state.
  *
- * The org is intentionally NOT pre-filled — Claude asks for it — so this prompt
- * stays project-agnostic and never bakes a specific org into shared config. Only
- * the login email (the user's own identity) is pre-filled when known.
+ * The org is NOT hard-coded here — Claude looks at the repo root of the project it
+ * is invoked in, derives the org id from that project, and creates it on first run
+ * (falling back to selecting it when it already exists) — so this prompt stays
+ * project-agnostic and never bakes a specific org into shared config. Only the
+ * login email (the user's own identity) is pre-filled when known.
  *
  * CARDINAL RULE the prompt enshrines: an agent working a specific project NEVER
  * edits anything inside the praxis repo (not agent_factory/.env, not
@@ -64,7 +67,7 @@ const FACTORY_DIR = `${REPO_DIR}/agent_factory`;
 function buildSetupPrompt(opts: { email?: string }): string {
   const email = opts.email?.trim() || "<your Praxis email>";
 
-  return `Set me up with Praxis (my local knowledge-graph MCP server) AND the agent-factory plugin (the /af- plan → intake → build → verify skills). By the end I should be logged in with my org selected, my project-specific config pinned as LOCAL overrides, my validation spaces ready, and the /af-plan, /af-intake, /af-build, and /af-wireframe commands available. Follow these steps in order.
+  return `Set me up with Praxis (my local knowledge-graph MCP server) AND the agent-factory plugin (the /af- plan → intake → build → verify skills). By the end I should be logged in with THIS project's org selected (created for me if it did not exist yet), my project-specific config pinned as LOCAL overrides, this project's default spaces ready, and the /af-plan, /af-intake, /af-build, and /af-wireframe commands available. Follow these steps in order.
 
 CARDINAL RULE — never configure a project by editing the praxis repo. Everything project-specific (the Praxis org, the checks-space, the API base URL, the hook interpreter, the per-agent MCP cache) is set as an ENV OVERRIDE in THIS project's own \`.claude/settings.local.json\` (which is per-project and git-ignored), NEVER by editing anything inside the praxis repo — not \`agent_factory/.env\`, not \`agent_factory/hooks/hooks.json\`, not any source file. The shared \`agent_factory/.env\` is read by every agent at once, so editing it to point at your org silently repoints every other concurrent agent too. A per-project \`settings.local.json\` override is isolated to this project and this agent. If at any point you feel you need to edit a file inside the praxis repo to make MY project work, STOP — that is a bug in these instructions; report it to me instead of doing it.
 
@@ -85,23 +88,26 @@ STEP 1 — one-time install. Make sure BOTH the praxis MCP tools and the agent-f
 
 STEP 2 — log me in: call praxis_login with email "${email}" and my password. If you don't have my password, ask me for it — it is never stored.
 
-STEP 3 — select this project's org: ask me which org to use, then call praxis_select_org("<the org id I give you>"). Do NOT assume or hard-code an org — ask me for the id and wait for my answer before selecting. Confirm with praxis_whoami that the org is active. This writes the selected org into my per-agent MCP identity cache (the file PRAXIS_MCP_CACHE points at, default ~/.praxis/mcp.json) — the SAME cache the agent-factory Stop-hook gate reads to resolve the org, so this one selection is the single source of truth for both the MCP tools and the gate.
+STEP 3 — determine THIS project's org from its repo root, and create the org + its default spaces if they don't exist yet. First look at the ROOT of the project you are currently working in — the git repo root (\`git rev-parse --show-toplevel\`), or the top-level project directory if it is not a git repo. Derive this project's org id from that repo root: use the repo/directory name, lowercased and slugified (letters, digits, hyphens — e.g. a project at \`.../acme-store\` → org \`acme-store\`). Tell me the org id you derived and which repo root you read it from. Then call praxis_whoami to list my memberships and decide:
+  - If that org is ALREADY one of my memberships, just select it: praxis_select_org("<derived org id>").
+  - If it does NOT exist yet / I am not a member of it, CREATE it: ask me for a join password to set on it (never guess one), then call praxis_create_org("<derived org id>", "<the password I give you>", "<a readable name, e.g. the repo name>") and select it. If praxis_create_org reports the org already exists, fall back to praxis_join_org (ask me for its password) or praxis_select_org — treat "already exists" as success, not an error.
+  Confirm with praxis_whoami that the derived org is active. This writes the selected org into my per-agent MCP identity cache (the file PRAXIS_MCP_CACHE points at, default ~/.praxis/mcp.json) — the SAME cache the agent-factory Stop-hook gate reads to resolve the org, so this one selection is the single source of truth for both the MCP tools and the gate.
 
-STEP 4 — pin THIS project's config as LOCAL env overrides (do NOT edit anything in the praxis repo). Write project-specific config to THIS project's own \`.claude/settings.local.json\` (create the file/dir if missing; it is per-project and git-ignored). MERGE these keys into the top-level \`env\` object — do not clobber other settings the file already has:
+STEP 4 — pin THIS project's config as LOCAL env overrides, INCLUDING the project's default org (do NOT edit anything in the praxis repo). Write project-specific config to THIS project's own \`.claude/settings.local.json\` (create the file/dir if missing; it is per-project and git-ignored). MERGE these keys into the top-level \`env\` object — do not clobber other settings the file already has:
     {
       "env": {
+        "PRAXIS_ORG": "<REQUIRED — the org you derived/created in STEP 3. Pin it here so it becomes THIS project's DEFAULT org for every agent and session run from this repo, independent of whatever the shared MCP cache happens to point at. This is the durable per-project default (the cache is just a runtime selection); always set it>",
         "PRAXIS_MCP_CACHE": "<the ABSOLUTE path to this project's MCP cache — the SAME path you registered the praxis MCP server with, so the gate and the MCP tools share one identity/org; e.g. C:/Users/me/.praxis/<this-project>.json>",
-        "PRAXIS_ORG": "<the org from STEP 3 — an optional EXPLICIT pin; the gate already resolves the org from the cache above, so include this only if you want the org fixed regardless of the cache>",
         "PRAXIS_HOOK_PYTHON": "<the interpreter that can run the gate hook on THIS machine — set this if a bare \`python3\` is NOT on PATH; e.g. this project's .venv python, or \`py\` on Windows, or \`uv run python\`>",
         "PRAXIS_API_BASE_URL": "<only if this project's Praxis backend is NOT http://localhost:8000>"
       }
     }
-  Why this is the correct mechanism: a real environment variable WINS over the shared \`agent_factory/.env\` default, and Claude Code applies \`settings.local.json\`'s \`env\` to BOTH this session and the Stop-hook subprocess that runs the gate — so these overrides reach the gate cleanly, per-project, with full isolation from other concurrently-running agents, and with ZERO edits inside the praxis repo. Include only the keys you actually need to override (PRAXIS_MCP_CACHE is the important one — it makes the gate share the exact identity/org praxis_select_org just set; the rest are optional). Again: if you are tempted to instead edit \`agent_factory/.env\` or \`hooks/hooks.json\`, that is the anti-pattern this step exists to prevent — do not.
+  Why this is the correct mechanism: a real environment variable WINS over the shared \`agent_factory/.env\` default, and Claude Code applies \`settings.local.json\`'s \`env\` to BOTH this session and the Stop-hook subprocess that runs the gate — so these overrides reach the gate cleanly, per-project, with full isolation from other concurrently-running agents, and with ZERO edits inside the praxis repo. ALWAYS set PRAXIS_ORG (this project's default org from STEP 3) and PRAXIS_MCP_CACHE — together they make this repo default to its own org and make the gate share the exact identity praxis_select_org just set; PRAXIS_HOOK_PYTHON / PRAXIS_API_BASE_URL are optional (only when the defaults don't fit this machine). Again: if you are tempted to instead edit \`agent_factory/.env\` or \`hooks/hooks.json\`, that is the anti-pattern this step exists to prevent — do not.
 
-STEP 5 — make sure my two standard validation spaces exist, then confirm end to end. Create each space; if praxis_create_space reports it already exists, that is fine — treat it as success, not an error:
+STEP 5 — make sure THIS project's default spaces exist in its org, then confirm end to end. Create each of the project's two default validation spaces; if praxis_create_space reports one already exists, that is fine — treat it as success, not an error:
     praxis_create_space("coding-validation", "Coding validation")
     praxis_create_space("planning-validation", "Planning validation")
-  Do NOT force-select either one — leave the default graph selected (a task selects the matching space itself: planning-validation for planning/intake, coding-validation for building/verification). Then confirm: call praxis_whoami() and praxis_list_space(), verify the /af- skills are loaded (agent-factory shows ✔ enabled in \`claude plugin list\`, and /af-plan / /af-intake / /af-build / /af-wireframe are available), and confirm THIS project's \`.claude/settings.local.json\` holds the STEP 4 overrides (and that you edited NOTHING inside the praxis repo). Then tell me, in one or two lines: the active org, that both validation spaces exist, that the project-local overrides are in place (and no praxis-repo file was touched), and that the /af- commands are ready to run.`;
+  Do NOT force-select either one — leave the default graph selected (a task selects the matching space itself: planning-validation for planning/intake, coding-validation for building/verification). Then confirm: call praxis_whoami() and praxis_list_space(), verify the /af- skills are loaded (agent-factory shows ✔ enabled in \`claude plugin list\`, and /af-plan / /af-intake / /af-build / /af-wireframe are available), and confirm THIS project's \`.claude/settings.local.json\` holds the STEP 4 overrides — including PRAXIS_ORG pinned to this project's default org (and that you edited NOTHING inside the praxis repo). Then tell me, in one or two lines: the repo root you read and the org you derived from it (and whether it was created or already existed), that this org is pinned as the project default in \`.claude/settings.local.json\`, that both default spaces exist, that the project-local overrides are in place (and no praxis-repo file was touched), and that the /af- commands are ready to run.`;
 }
 
 /** Prominent, one-click "paste this into Claude" setup block. */
@@ -222,8 +228,11 @@ export function McpSetupGuide({ email }: McpSetupGuideProps = {}) {
           <strong>agent-factory</strong> plugin, so the{" "}
           <code>/af-plan</code>, <code>/af-intake</code>, <code>/af-build</code>, and{" "}
           <code>/af-wireframe</code> commands are ready to run. Then it logs you in,
-          asks which org to use (so no specific project is baked in), and provisions
-          your two standard validation spaces — <strong>coding-validation</strong> and{" "}
+          reads the current project&apos;s <strong>repo root</strong> to derive its org,{" "}
+          <strong>creates that org (and its default spaces) if they don&apos;t exist yet</strong>,
+          pins it as the project&apos;s default in{" "}
+          <code>.claude/settings.local.json</code>, and provisions the two default
+          validation spaces — <strong>coding-validation</strong> and{" "}
           <strong>planning-validation</strong>. Claude will ask for your password (it is
           never stored).
         </p>
