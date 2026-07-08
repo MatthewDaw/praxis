@@ -147,10 +147,20 @@ def _checks_target(project: str, scope: str,
 
 # --------------------------------------------------------------------------- helpers
 
-def _meta(ticket: Any) -> dict:
+def _ref_kw(ref: Optional[tuple[str, str]]) -> dict:
+    """Unpack a ``(space, snapshot)`` plan ref into ``_praxis`` space/snapshot kwargs.
+
+    Ticket STATE lives on the ``prd-<project>`` snapshot (``ref = project_ref(project).plan``),
+    so every state read/write threads that ref. ``None`` (the default) resolves to the
+    caller's working memory — the back-compat lane for non-project callers.
+    """
+    return {"space": ref[0], "snapshot": ref[1]} if ref else {}
+
+
+def _meta(ticket: Any, ref: Optional[tuple[str, str]] = None) -> dict:
     """Extract the meta dict from a ticket id (str) or an already-fetched fact (dict)."""
     if isinstance(ticket, str):
-        ticket = _praxis.get_fact(ticket)
+        ticket = _praxis.get_fact(ticket, **_ref_kw(ref))
     return dict((ticket or {}).get("meta") or {})
 
 
@@ -228,7 +238,10 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
                     out.setdefault(cid, chk)
         return list(out.values())
 
-    meta = _meta(ticket)
+    # The TICKET (its tags/surfaces) is read from the PLAN snapshot (prd-<project>),
+    # separate from the CHECK reads above; a ticket passed as an already-fetched dict
+    # needs no fetch, a bare cid resolves against the plan ref.
+    meta = _meta(ticket, project_ref(project).plan if project else None)
     seen: dict[str, dict] = {}
 
     tags = _as_list(meta.get("tags")) + _as_list(meta.get("applies_to"))
@@ -282,7 +295,8 @@ def retrieve_advisory_checks(ticket: Any, project: str = "", scope: str = "valid
     de-duplicated, filtered to ``scope``.
     """
     space, snapshot = _checks_target(project, scope, override)
-    fact = ticket if isinstance(ticket, dict) else _praxis.get_fact(ticket)
+    plan = project_ref(project).plan if project else None
+    fact = ticket if isinstance(ticket, dict) else _praxis.get_fact(ticket, **_ref_kw(plan))
     text = " ".join(str(x) for x in (
         (fact or {}).get("text") or (fact or {}).get("content") or "",
         _meta(fact).get("acceptance") or "",
@@ -303,7 +317,8 @@ def retrieve_advisory_checks(ticket: Any, project: str = "", scope: str = "valid
 
 # --------------------------------------------------------------------------- coverage contract
 
-def pin_requirements(cid: str, requirements: list) -> dict:
+def pin_requirements(cid: str, requirements: list,
+                     ref: Optional[tuple[str, str]] = None) -> dict:
     """Pin the resolved REQUIREMENT ids as this pass's coverage contract and TRUNCATE any prior
     synthesized validations. After this, the ticket lists what must be covered (``required_validations``)
     and has an empty validation set (``pinned_checks``) the worker must now author + pin.
@@ -312,7 +327,7 @@ def pin_requirements(cid: str, requirements: list) -> dict:
     return _praxis.patch_meta(cid, {
         M_REQUIRED_VALIDATIONS: req_ids,
         M_PINNED_CHECKS: [],
-    })
+    }, **_ref_kw(ref))
 
 
 def _norm_validation(v: Any, idx: int) -> dict:
@@ -338,7 +353,8 @@ def _norm_validation(v: Any, idx: int) -> dict:
     }
 
 
-def pin_validations(cid: str, validations: list) -> dict:
+def pin_validations(cid: str, validations: list,
+                    ref: Optional[tuple[str, str]] = None) -> dict:
     """Pin the worker-SYNTHESIZED concrete validations onto the ticket (the eval).
 
     Each entry: ``{validation_id, covers:[req_id,...], run, passed=None, ran_at=None}``. Because
@@ -348,11 +364,12 @@ def pin_validations(cid: str, validations: list) -> dict:
     """
     pinned = [_norm_validation(v, i) for i, v in enumerate(validations)]
     pinned = [p for p in pinned if p["validation_id"]]
-    return _praxis.patch_meta(cid, {M_PINNED_CHECKS: pinned})
+    return _praxis.patch_meta(cid, {M_PINNED_CHECKS: pinned}, **_ref_kw(ref))
 
 
 def record_validation_pass(cid: str, validation_id: str, passed: bool,
-                           ran_at: Optional[float] = None) -> dict:
+                           ran_at: Optional[float] = None,
+                           ref: Optional[tuple[str, str]] = None) -> dict:
     """Record one validation's pass/fail ON THE TICKET NODE (never on the requirement fact).
 
     Read-modify-write of ``meta.pinned_checks``: update the matching validation's passed/ran_at. If
@@ -360,7 +377,7 @@ def record_validation_pass(cid: str, validation_id: str, passed: bool,
     """
     if ran_at is None:
         ran_at = time.time()
-    meta = _meta(cid)
+    meta = _meta(cid, ref)
     pinned = list(meta.get(M_PINNED_CHECKS) or [])
     found = False
     for entry in pinned:
@@ -373,16 +390,16 @@ def record_validation_pass(cid: str, validation_id: str, passed: bool,
     if not found:
         pinned.append({"validation_id": str(validation_id), "covers": [],
                        "run": "", "passed": bool(passed), "ran_at": ran_at})
-    return _praxis.patch_meta(cid, {M_PINNED_CHECKS: pinned})
+    return _praxis.patch_meta(cid, {M_PINNED_CHECKS: pinned}, **_ref_kw(ref))
 
 
-def coverage_gap(ticket: Any) -> list[str]:
+def coverage_gap(ticket: Any, ref: Optional[tuple[str, str]] = None) -> list[str]:
     """Requirement ids in the coverage contract NOT covered by any pinned validation.
 
     Empty list == every resolved requirement is faithfully covered. A non-empty list means the
     synthesized validations do not yet cover the contract — the ticket cannot be finished.
     """
-    meta = _meta(ticket)
+    meta = _meta(ticket, ref)
     required = {str(r) for r in (meta.get(M_REQUIRED_VALIDATIONS) or []) if r}
     if not required:
         return []
@@ -393,7 +410,7 @@ def coverage_gap(ticket: Any) -> list[str]:
     return sorted(required - covered)
 
 
-def all_validations_passed(ticket: Any) -> bool:
+def all_validations_passed(ticket: Any, ref: Optional[tuple[str, str]] = None) -> bool:
     """True IFF the ticket is genuinely done: it has a coverage contract (>=1 required requirement),
     every required requirement is covered by some pinned validation (no coverage gap), there is at
     least one pinned validation, and EVERY pinned validation passed.
@@ -403,7 +420,7 @@ def all_validations_passed(ticket: Any) -> bool:
     a silent pass. (An intentionally validation-free ticket must carry an explicit always-pass
     requirement, authored upstream.)
     """
-    meta = _meta(ticket)
+    meta = _meta(ticket, ref)
     required = {str(r) for r in (meta.get(M_REQUIRED_VALIDATIONS) or []) if r}
     pinned = list(meta.get(M_PINNED_CHECKS) or [])
     if not required or not pinned:
@@ -435,7 +452,8 @@ def _lease_live(meta: dict, now: Optional[float] = None) -> bool:
         return False
 
 
-def claim(cid: str, owner: str, ttl: int = DEFAULT_LEASE_TTL_S) -> bool:
+def claim(cid: str, owner: str, ttl: int = DEFAULT_LEASE_TTL_S,
+          ref: Optional[tuple[str, str]] = None) -> bool:
     """Claim a ticket (incomplete -> in_progress) for ``owner``, race-tolerantly.
 
     Read the live lease, then claim IFF the ticket is free to claim: not in_progress, OR ``owner``
@@ -447,7 +465,7 @@ def claim(cid: str, owner: str, ttl: int = DEFAULT_LEASE_TTL_S) -> bool:
     Race note: two agents can both read a free ticket and both write — a rare, harmless double-claim
     (see module docstring). No server CAS is assumed.
     """
-    meta = _meta(cid)
+    meta = _meta(cid, ref)
     if meta.get(M_BUILD_STATE) == "blocked":
         return False  # blocked needs owner action (af-intake amend / accept), not a build claim
     now = time.time()
@@ -462,28 +480,29 @@ def claim(cid: str, owner: str, ttl: int = DEFAULT_LEASE_TTL_S) -> bool:
         M_CLAIM_AT: held_at,
         M_CLAIM_HEARTBEAT_AT: now,
         M_CLAIM_LEASE_TTL: int(ttl),
-    })
+    }, **_ref_kw(ref))
     return True
 
 
-def heartbeat(cid: str, owner: str) -> bool:
+def heartbeat(cid: str, owner: str, ref: Optional[tuple[str, str]] = None) -> bool:
     """Bump ``claim_heartbeat_at`` IFF ``owner`` still holds a live lease. Also refreshes the
     whole-set run marker on this ticket (``run_at``) so the active run stays live. Returns success.
 
     If the lease has gone stale or been taken over, returns False without writing — the owner has
     lost the lease and should re-claim (or yield).
     """
-    meta = _meta(cid)
+    meta = _meta(cid, ref)
     if meta.get(M_CLAIM_OWNER) != owner or not _lease_live(meta):
         return False
     patch: dict[str, Any] = {M_CLAIM_HEARTBEAT_AT: time.time()}
     if meta.get(M_RUN_OWNER) == owner:
         patch[M_RUN_AT] = time.time()
-    _praxis.patch_meta(cid, patch)
+    _praxis.patch_meta(cid, patch, **_ref_kw(ref))
     return True
 
 
-def release(cid: str, owner: str, state: str) -> bool:
+def release(cid: str, owner: str, state: str,
+            ref: Optional[tuple[str, str]] = None) -> bool:
     """Release ``owner``'s lease and set a terminal build_state ("finished" or "incomplete").
 
     Drops the lease keys (so nothing dangles) and stamps build_state, MERGING so identity keys
@@ -495,7 +514,7 @@ def release(cid: str, owner: str, state: str) -> bool:
     """
     if state not in ("finished", "incomplete"):
         raise ValueError("state must be 'finished' or 'incomplete'")
-    meta = _meta(cid)
+    meta = _meta(cid, ref)
     if meta.get(M_CLAIM_OWNER) not in (owner, None):
         return False
     patch: dict[str, Any] = {M_BUILD_STATE: state}
@@ -504,11 +523,12 @@ def release(cid: str, owner: str, state: str) -> bool:
     if state == "finished":
         for k in _RUN_KEYS:
             patch[k] = None  # left the run cleanly
-    _praxis.patch_meta(cid, patch)
+    _praxis.patch_meta(cid, patch, **_ref_kw(ref))
     return True
 
 
-def block(cid: str, owner: str, reason: str) -> bool:
+def block(cid: str, owner: str, reason: str,
+          ref: Optional[tuple[str, str]] = None) -> bool:
     """Mark a ticket TERMINALLY BLOCKED — it cannot proceed autonomously (an uncoverable requirement,
     a credential/secret only the owner can supply, an unsatisfiable target). The gate surfaces blocked
     tickets prominently but EXCLUDES them from the churn set, so a blocked ticket is "a clear thing
@@ -518,7 +538,7 @@ def block(cid: str, owner: str, reason: str) -> bool:
     ticket has left the active run; clearing it must be owner action via af-intake amend / accept).
     Only the holding owner (or an unclaimed ticket) may block; mismatch returns False.
     """
-    meta = _meta(cid)
+    meta = _meta(cid, ref)
     if meta.get(M_CLAIM_OWNER) not in (owner, None):
         return False
     patch: dict[str, Any] = {M_BUILD_STATE: "blocked", M_BLOCK_REASON: str(reason)}
@@ -526,7 +546,7 @@ def block(cid: str, owner: str, reason: str) -> bool:
         patch[k] = None
     for k in _RUN_KEYS:
         patch[k] = None
-    _praxis.patch_meta(cid, patch)
+    _praxis.patch_meta(cid, patch, **_ref_kw(ref))
     return True
 
 
@@ -552,7 +572,8 @@ def run_live(meta: dict, now: Optional[float] = None) -> bool:
         return False
 
 
-def stamp_run(cids: list[str], owner: str, scope: str = "all") -> int:
+def stamp_run(cids: list[str], owner: str, scope: str = "all",
+              ref: Optional[tuple[str, str]] = None) -> int:
     """Mark each ticket id as belonging to ``owner``'s active WHOLE-SET run (run_owner/run_at/run_scope).
 
     Called at run start over the resolved in-scope incomplete ticket ids. This is the persisted,
@@ -565,12 +586,14 @@ def stamp_run(cids: list[str], owner: str, scope: str = "all") -> int:
     for cid in cids:
         if not cid:
             continue
-        _praxis.patch_meta(str(cid), {M_RUN_OWNER: owner, M_RUN_AT: now, M_RUN_SCOPE: str(scope)})
+        _praxis.patch_meta(str(cid), {M_RUN_OWNER: owner, M_RUN_AT: now, M_RUN_SCOPE: str(scope)},
+                           **_ref_kw(ref))
         n += 1
     return n
 
 
-def refresh_run(cids: list[str], owner: str) -> int:
+def refresh_run(cids: list[str], owner: str,
+                ref: Optional[tuple[str, str]] = None) -> int:
     """Bump ``run_at`` on each still-in-scope ticket this session owns the run for (heartbeat the
     whole-set marker so a long run never goes stale mid-flight). Call at each ticket boundary. Only
     refreshes tickets actually carrying THIS owner's marker. Returns the count refreshed."""
@@ -579,13 +602,14 @@ def refresh_run(cids: list[str], owner: str) -> int:
     for cid in cids:
         if not cid:
             continue
-        if _meta(cid).get(M_RUN_OWNER) == owner:
-            _praxis.patch_meta(str(cid), {M_RUN_AT: now})
+        if _meta(cid, ref).get(M_RUN_OWNER) == owner:
+            _praxis.patch_meta(str(cid), {M_RUN_AT: now}, **_ref_kw(ref))
             n += 1
     return n
 
 
-def clear_run(cids: list[str], owner: str) -> int:
+def clear_run(cids: list[str], owner: str,
+              ref: Optional[tuple[str, str]] = None) -> int:
     """Clear this session's whole-set run marker from each ticket (NULL run_owner/run_at/run_scope).
 
     Call when the run ends legitimately — the scoped set is finished (or intentionally aborted). After
@@ -595,17 +619,17 @@ def clear_run(cids: list[str], owner: str) -> int:
     for cid in cids:
         if not cid:
             continue
-        if _meta(cid).get(M_RUN_OWNER) == owner:
-            _praxis.patch_meta(str(cid), {k: None for k in _RUN_KEYS})
+        if _meta(cid, ref).get(M_RUN_OWNER) == owner:
+            _praxis.patch_meta(str(cid), {k: None for k in _RUN_KEYS}, **_ref_kw(ref))
             n += 1
     return n
 
 
 # --------------------------------------------------------------------------- dependency readiness
 
-def deps_of(ticket: Any) -> list[str]:
+def deps_of(ticket: Any, ref: Optional[tuple[str, str]] = None) -> list[str]:
     """The prerequisite ticket ids this ticket ``depends_on`` (must be FINISHED before it can run)."""
-    return [str(d) for d in _as_list(_meta(ticket).get(M_DEPENDS_ON)) if d]
+    return [str(d) for d in _as_list(_meta(ticket, ref).get(M_DEPENDS_ON)) if d]
 
 
 def _ids_of(item: dict) -> set[str]:
@@ -736,10 +760,13 @@ def start_ticket(cid: str, owner: str, project: str = "",
     every requirement. If the returned list is EMPTY (a ticket with no checks AND no acceptance
     condition — a planning defect), the worker must ``block()`` it: there is nothing to validate.
     """
-    if not claim(cid, owner, ttl=ttl):
+    # Ticket STATE lives on the plan snapshot; claim/read/pin all bind to it. Check
+    # reads use their own per-scope snapshot (resolve derives it from project + override).
+    plan = project_ref(project).plan if project else None
+    if not claim(cid, owner, ttl=ttl, ref=plan):
         return None
     resolved = resolve_validation_requirements(cid, project=project, scope="validation",
                                                override=override)
-    requirements = contract_with_floor(cid, _meta(cid).get("acceptance"), resolved)
-    pin_requirements(cid, requirements)
+    requirements = contract_with_floor(cid, _meta(cid, plan).get("acceptance"), resolved)
+    pin_requirements(cid, requirements, ref=plan)
     return requirements
