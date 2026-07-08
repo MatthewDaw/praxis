@@ -2483,6 +2483,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Atomically lease ticket ``cid`` to ``owner`` for the build loop.
 
@@ -2502,7 +2503,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 status_code=400, detail="'lease_ttl_seconds' must be an integer"
             )
         try:
-            claim = live_graph(org, uid).claim_requirement(cid, owner, ttl)
+            claim = graph_for(org, uid, target).claim_requirement(cid, owner, ttl)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown requirement {cid}")
         except LeaseConflict as exc:
@@ -2523,6 +2524,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Renew ``owner``'s live lease on ticket ``cid`` (Body: ``{"owner": str}``).
 
@@ -2533,7 +2535,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         if not owner:
             raise HTTPException(status_code=400, detail="body must include 'owner'")
         try:
-            claim = live_graph(org, uid).heartbeat_requirement(cid, owner)
+            claim = graph_for(org, uid, target).heartbeat_requirement(cid, owner)
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown requirement {cid}")
         except LeaseConflict as exc:
@@ -2554,6 +2556,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Clear ``owner``'s lease and set a terminal ``build_state``.
 
@@ -2568,7 +2571,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="body must include 'owner'")
         state = str(body.get("state") or "").strip()
         try:
-            claim = live_graph(org, uid).release_requirement(cid, owner, state)
+            claim = graph_for(org, uid, target).release_requirement(cid, owner, state)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except KeyError:
@@ -2590,12 +2593,13 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Done-of-definition counts for ``prd-<project>``'s active requirements."""
         project = str(project or "").strip()
         if not project:
             raise HTTPException(status_code=400, detail="query param 'project' is required")
-        summary = live_graph(org, uid).completeness_summary(project)
+        summary = graph_for(org, uid, target).completeness_summary(project)
         return {"project": project, **summary}
 
     @app.get("/context")

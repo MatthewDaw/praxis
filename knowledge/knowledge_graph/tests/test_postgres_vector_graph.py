@@ -321,13 +321,14 @@ def test_write_equals_decide_then_persist(unique_org):
     assert _count(conn, unique_org, "u2") == 1
 
 
-# --- snapshot reload durability (id stability + live-meta preservation) -------
-# Regression for the non-deterministic re-materialization bug: a snapshot reload
-# (POST /snapshots/load -> load_caches / merge_caches_into_live) used to rebuild the
-# working graph verbatim from the snapshot baseline, which reverted live agent-owned
-# meta (build_state/claim_*/pinned_checks/...) and, when the live graph had
-# materialized a requirement under a different id than the snapshot, re-keyed the
-# fact. The reload is now a natural-key-reconciled, meta-preserving, atomic upsert.
+# --- snapshot reload (id stability + atomicity) -------------------------------
+# A snapshot reload (POST /snapshots/load -> load_caches / merge_caches_into_live) is
+# a natural-key-reconciled, ATOMIC upsert into working memory: repeated reloads never
+# drift the count and a requirement the graph already holds keeps its live fact id
+# instead of adopting the snapshot's. The reload does NOT preserve live
+# working-memory-only meta — working memory is a UI/personal-memory buffer, not the
+# factory's state store (factory build state lives on the prd-<project> snapshot
+# itself), so a reload legitimately takes the snapshot baseline.
 
 
 def _live_graph(conn, org, user):
@@ -358,9 +359,10 @@ def _fact_by_reqid(conn, org, user, rid):
     return fid, (meta if isinstance(meta, dict) else _json.loads(meta))
 
 
-def test_merge_reload_preserves_live_meta_and_id(unique_org):
-    """PATCH meta.build_state on a requirement, then merge-reload its snapshot: the
-    live build state survives and the fact keeps its id (the reported repro)."""
+def test_reload_takes_snapshot_baseline_not_live_working_meta(unique_org):
+    """Reload takes the snapshot baseline — it does NOT preserve live working-memory-only
+    meta. (Option A: working memory is a UI/personal-memory buffer, not the factory's
+    state store, so there is no in-flight build state on it to protect.)"""
     conn = db.connect()
     org, user = unique_org, "u1"
     space, snap = "build-plan", "prd-shopping"
@@ -369,43 +371,15 @@ def test_merge_reload_preserves_live_meta_and_id(unique_org):
         "The scraper must respect robots.txt",
         state="active", category="requirement", meta={"requirement_id": "R1"},
     )
-    g.save_cache(space, snap)  # baseline: no build_state yet
-
-    # Agent claims + finishes the ticket + pins checks — all live-only meta writes.
+    g.save_cache(space, snap)  # baseline meta: requirement_id only, no build_state
     fact = g.get_fact(live_id)
-    g.set_meta(live_id, {**(fact.meta or {}),
-                         "build_state": "finished",
-                         "pinned_checks": ["c1", "c2"]})
+    g.set_meta(live_id, {**(fact.meta or {}), "build_state": "finished"})  # working-memory-only
 
     g.merge_caches_into_live([(space, snap)])  # the reload path
 
     fid, meta = _fact_by_reqid(conn, org, user, "R1")
-    assert fid == live_id                       # id survived
-    assert meta.get("build_state") == "finished"  # live meta survived (not reverted)
-    assert meta.get("pinned_checks") == ["c1", "c2"]
-
-
-def test_load_replace_reload_preserves_live_meta_and_id(unique_org):
-    """Same durability guarantee via the replace path (load_caches)."""
-    conn = db.connect()
-    org, user = unique_org, "u1"
-    space, snap = "build-plan", "prd-shopping"
-    g = _live_graph(conn, org, user)
-    live_id = g.write(
-        "Persist scraped rows to Postgres",
-        state="active", category="requirement", meta={"requirement_id": "R2"},
-    )
-    g.save_cache(space, snap)
-    fact = g.get_fact(live_id)
-    g.set_meta(live_id, {**(fact.meta or {}), "build_state": "in_progress",
-                         "claim_owner": "agent-a"})
-
-    g.load_caches([(space, snap)])  # replace-mode reload
-
-    fid, meta = _fact_by_reqid(conn, org, user, "R2")
-    assert fid == live_id
-    assert meta.get("build_state") == "in_progress"
-    assert meta.get("claim_owner") == "agent-a"
+    assert fid == live_id                 # id still stable across the reload
+    assert "build_state" not in meta      # reverted to the snapshot baseline (not preserved)
 
 
 def test_reload_keeps_live_id_when_snapshot_reassigned_id(unique_org):
@@ -429,14 +403,11 @@ def test_reload_keeps_live_id_when_snapshot_reassigned_id(unique_org):
         "UPDATE snapshots SET id=%s WHERE org_id=%s AND space=%s AND snapshot=%s AND id=%s",
         (other_id, org, space, snap, live_id),
     )
-    fact = g.get_fact(live_id)
-    g.set_meta(live_id, {**(fact.meta or {}), "build_state": "finished"})
 
     g.merge_caches_into_live([(space, snap)])
 
-    fid, meta = _fact_by_reqid(conn, org, user, "R3")  # asserts exactly one
+    fid, _meta = _fact_by_reqid(conn, org, user, "R3")  # asserts exactly one
     assert fid == live_id                # kept the live id, did NOT flip to other_id
-    assert meta.get("build_state") == "finished"
 
 
 def test_repeated_reload_is_idempotent_no_count_drift(unique_org):
@@ -456,6 +427,26 @@ def test_repeated_reload_is_idempotent_no_count_drift(unique_org):
         g.merge_caches_into_live([(space, snap)])
         fid, _ = _fact_by_reqid(conn, org, user, "R4")  # exactly one, every time
         assert fid == live_id
+
+
+def test_snapshot_bound_outcome_drives_completeness(unique_org):
+    """Option A: ticket STATE lives ON the prd-<project> snapshot. record_outcome and
+    the completeness derivation both work snapshot-bound (migration 0012 gives snapshots
+    the outcome-trust columns) — a recorded success flips a requirement from incomplete
+    (never-built) to complete, with NO working memory in the loop."""
+    conn = db.connect()
+    org = unique_org
+    g = _snapshot_graph(conn, org, "shopping", "prd-shopping")
+    rid = g.write("Scrape the catalog", state="active", category="requirement",
+                  source="prd-shopping", meta={"requirement_id": "R1"})
+    assert rid is not None
+    # never-built -> incomplete
+    assert rid in {i["fact"].id for i in g.incomplete_requirements("shopping")}
+    assert g.completeness_summary("shopping")["incomplete"] == 1
+    # record a success ON THE SNAPSHOT -> complete (no working memory touched)
+    g.record_outcome(rid, success=True)
+    assert rid not in {i["fact"].id for i in g.incomplete_requirements("shopping")}
+    assert g.completeness_summary("shopping")["complete"] == 1
 
 
 # --- write-time snapshot-KIND invariant (checks may not co-mingle with a plan) ----

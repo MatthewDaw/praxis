@@ -1252,6 +1252,12 @@ code,
   gap: var(--space-2);
 }
 
+/* The create form stacks vertically, so `.org-gate input`'s `flex: 1 1 140px`
+   basis would otherwise become the input height. Size to content instead. */
+.org-gate .space-switcher__create input {
+  flex: 0 0 auto;
+}
+
 .space-switcher__input {
   padding: 0.4rem 0.6rem;
   border: 1px solid var(--line);

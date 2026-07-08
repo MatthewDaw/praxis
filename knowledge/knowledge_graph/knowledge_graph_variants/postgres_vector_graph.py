@@ -214,17 +214,20 @@ _LN2 = 0.6931471805599453
 _FACT_COPY_COLS = (
     "id, org_id, user_id, text, source, confidence, scope, category, "
     "observation_count, state, embedding, cluster_id, cluster_label, "
-    "valid_at, invalid_at, meta, created_at"
+    "valid_at, invalid_at, meta, created_at, "
+    "success_count, failure_count, last_outcome"
 )
 
 # Snapshot (`snapshots`) copy columns — for save (facts -> snapshot) and cross-org
-# snapshot copy. NO `user_id`, NO `shared`, and (like the old cache) it OMITS the
-# outcome-trust columns. `space`/`snapshot` are stamped per copy, so they are not
-# listed here.
+# snapshot copy. NO `user_id`, NO `shared`. Since the `prd-<project>` snapshot is the
+# LIVE project graph (see migration 0012), it carries the SAME outcome-trust columns
+# as `facts`, so save/load round-trips ticket completeness losslessly. `space`/`snapshot`
+# are stamped per copy, so they are not listed here.
 _SNAPSHOT_COPY_COLS = (
     "id, org_id, text, source, confidence, scope, category, "
     "observation_count, state, embedding, cluster_id, cluster_label, "
-    "valid_at, invalid_at, meta, created_at"
+    "valid_at, invalid_at, meta, created_at, "
+    "success_count, failure_count, last_outcome"
 )
 
 # Working-memory (`claims`) copy columns. Snapshot side (`snapshot_claims`) drops
@@ -275,25 +278,6 @@ _LEASE_META_KEYS = (
     "claim_heartbeat_at",
     "claim_lease_ttl",
 )
-
-# Live, agent-owned ``meta`` keys a build worker writes onto a requirement fact
-# AFTER a snapshot was saved: the ticket's build lifecycle, its lease, the run it
-# belongs to, and the verification contract (pinned checks / required validations /
-# block reason). A snapshot reload rebuilds the working graph from the snapshot
-# baseline, which predates these — so it must MERGE-PRESERVE them (never revert the
-# fact to the baseline), else it silently discards in-flight build state. See
-# ``_live_reload_state`` / ``_reapply_agent_meta``.
-_LIVE_AGENT_META_KEYS = (
-    "build_state",
-    *_LEASE_META_KEYS,
-    "run_owner",
-    "run_at",
-    "run_scope",
-    "required_validations",
-    "pinned_checks",
-    "block_reason",
-)
-
 
 class LeaseConflict(Exception):
     """A claim/heartbeat lost to (or was blocked by) a different live lease.
@@ -1152,10 +1136,9 @@ class PostgresVectorGraph(SearchableGraph):
         derived-completeness queries (``incomplete_requirements``) read it to mark a
         succeeded-then-failed requirement as regressed.
         """
-        # Outcome-trust columns exist only on working memory; a snapshot is an
-        # immutable saved state with no such columns, so this is facts-only.
-        if self._is_snapshot:
-            raise ValueError("record_outcome is only valid on working memory (facts)")
+        # Outcome-trust columns exist on both working memory and snapshots (migration
+        # 0012), so an outcome persists whether the ticket lives in working memory or on
+        # the snapshot-bound `prd-<project>` project graph the factory now writes to.
         column = "success_count" if success else "failure_count"
         outcome = "succeeded" if success else "failed"
         key_pred, key_params = self._key_pred()
@@ -2022,16 +2005,14 @@ class PostgresVectorGraph(SearchableGraph):
         source = f"prd-{project}"
         key_pred, params = self._key_pred()
         params.extend([REQUIREMENT_CATEGORY, source])
-        # Outcome-trust columns live only on working memory; a snapshot omits them,
-        # so project the neutral defaults there (never-built until loaded live).
-        outcome_cols = (
-            "0, 0, NULL::text" if self._is_snapshot
-            else "success_count, failure_count, last_outcome"
-        )
+        # Outcome-trust columns live on BOTH working memory and snapshots (migration
+        # 0012), so completeness derives the same way whether the ticket graph is the
+        # live working memory or a snapshot-bound `prd-<project>` — the factory's
+        # canonical project graph.
         rows = self._conn.execute(
             "SELECT id, text, source, confidence, scope, category, observation_count, "
             "state, created_at, meta, cluster_id, cluster_label, "
-            f"{outcome_cols} "
+            "success_count, failure_count, last_outcome "
             f"FROM {self._facts_table} "
             f"WHERE {key_pred} AND state = 'active' "
             "AND category = %s AND source = %s "
@@ -2349,32 +2330,22 @@ class PostgresVectorGraph(SearchableGraph):
                 return f"tag:{tag}"
         return None
 
-    def _live_reload_state(self) -> tuple[dict[str, str], dict[str, dict]]:
-        """Pre-reload snapshot of this working graph, taken inside the reload txn.
-
-        Returns ``(id_by_key, agent_meta_by_id)``:
-        - ``id_by_key`` maps each live fact's natural key -> its live fact id, so the
-          reload can keep an existing requirement's id stable instead of adopting the
-          snapshot's id for the same logical requirement.
-        - ``agent_meta_by_id`` maps live fact id -> its agent-owned meta subset
-          (:data:`_LIVE_AGENT_META_KEYS`), so the reload can merge that live state
-          back OVER the snapshot baseline rather than reverting it.
+    def _live_reload_state(self) -> dict[str, str]:
+        """Natural-key -> live fact id map for this working graph, taken inside the
+        reload txn, so the reload keeps an existing requirement's id stable instead of
+        adopting the snapshot's id for the same logical requirement (a reload never
+        mints a second id for a requirement the graph already holds).
         """
         rows = self._conn.execute(
             "SELECT id, meta FROM facts WHERE org_id=%s AND user_id=%s",
             (self.org_id, self.user_id),
         ).fetchall()
         id_by_key: dict[str, str] = {}
-        agent_meta_by_id: dict[str, dict] = {}
         for fid, raw in rows:
-            meta = self._load_meta(raw)
-            key = self._natural_key(meta)
+            key = self._natural_key(self._load_meta(raw))
             if key is not None:
                 id_by_key[key] = fid
-            kept = {k: meta[k] for k in _LIVE_AGENT_META_KEYS if k in meta}
-            if kept:
-                agent_meta_by_id[fid] = kept
-        return id_by_key, agent_meta_by_id
+        return id_by_key
 
     def _snapshot_id_remap(
         self, pred: str, pred_params: list, id_by_key: dict[str, str]
@@ -2472,22 +2443,6 @@ class PostgresVectorGraph(SearchableGraph):
             (*dst, *vparams, self.org_id, *pred_params),
         )
 
-    def _reapply_agent_meta(self, agent_meta_by_id: dict[str, dict]) -> None:
-        """Merge each preserved live agent-meta subset back OVER the reloaded baseline.
-
-        Right operand of ``||`` wins, so the live ``build_state``/``claim_*``/``run_*``/
-        ``pinned_checks``/``required_validations``/``block_reason`` survive the reload.
-        Keyed by the FINAL (live) fact id, so it lands on the id-reconciled row; a key
-        whose fact was not reinserted (dropped by a ``replace`` that excluded it) is a
-        harmless no-op.
-        """
-        for fid, kept in agent_meta_by_id.items():
-            self._conn.execute(
-                "UPDATE facts SET meta = COALESCE(meta, '{}'::jsonb) || %s::jsonb "
-                "WHERE org_id=%s AND user_id=%s AND id=%s",
-                (json.dumps(kept), self.org_id, self.user_id, fid),
-            )
-
     def save_cache(self, space: str, snapshot: str) -> int:
         """Dump this user's working memory into the org-shared snapshot ``(space, snapshot)``.
 
@@ -2564,29 +2519,25 @@ class PostgresVectorGraph(SearchableGraph):
         The whole swap runs in ONE transaction, so a concurrent reader never observes
         the truncated-but-not-yet-refilled graph (the connection is autocommit, so
         without this each DELETE/INSERT would commit on its own and reads landing
-        between them would see a partial — non-deterministically sized — set). The
-        reload is a MERGE-PRESERVING upsert, not a blind overwrite: a requirement the
-        working graph already holds keeps its live fact id (reconciled by natural key
-        — ``meta.requirement_id`` / ``req:`` tag) instead of adopting the snapshot's
-        id, and its live agent-owned meta (build lifecycle / lease / verification
-        contract) is merged back over the snapshot baseline.
+        between them would see a partial — non-deterministically sized — set). A
+        requirement the working graph already holds keeps its live fact id (reconciled
+        by natural key — ``meta.requirement_id`` / ``req:`` tag) instead of adopting the
+        snapshot's id, so a logical requirement never changes id across a reload.
         """
         self._require_live("load_caches")
         pairs = list(keys)
         dst = (self.org_id, self.user_id)
         with self._conn.transaction():
-            id_by_key, agent_meta_by_id = self._live_reload_state()
             remap: dict[str, str] = {}
             if pairs:
                 pred, pred_params = self._pairs_pred(pairs)
-                remap = self._snapshot_id_remap(pred, pred_params, id_by_key)
+                remap = self._snapshot_id_remap(pred, pred_params, self._live_reload_state())
             # Truncate this user's working-memory graph (edges first for the FK), then refill.
             self._conn.execute("DELETE FROM fact_edges WHERE org_id=%s AND user_id=%s", dst)
             self._conn.execute("DELETE FROM claims WHERE org_id=%s AND user_id=%s", dst)
             self._conn.execute("DELETE FROM facts WHERE org_id=%s AND user_id=%s", dst)
             if pairs:
                 self._insert_snapshot_rows(pred, pred_params, remap)
-                self._reapply_agent_meta(agent_meta_by_id)
         row = self._conn.execute(
             "SELECT count(*) FROM facts WHERE org_id=%s AND user_id=%s", dst
         ).fetchone()
@@ -2600,15 +2551,13 @@ class PostgresVectorGraph(SearchableGraph):
         the live fact it replaces and then inserts the snapshot rows + edges (stamped
         with the loader's ``user_id``). Returns facts inserted.
 
-        The upsert is non-destructive of live agent state and stable in id. It runs in
-        ONE transaction (the connection is autocommit, so an un-bracketed
-        delete-then-insert would let a concurrent reader see the fact momentarily gone
-        — a non-deterministic count). A requirement the working graph already holds is
-        reconciled by natural key (``meta.requirement_id`` / ``req:`` tag): it keeps
-        its LIVE fact id even when the snapshot stored the same requirement under a
-        different id (so a logical requirement never changes id across a reload), and
-        its live agent-owned meta (build lifecycle / lease / verification contract) is
-        merged back OVER the snapshot baseline rather than reverted.
+        The upsert is stable in id and atomic. It runs in ONE transaction (the
+        connection is autocommit, so an un-bracketed delete-then-insert would let a
+        concurrent reader see the fact momentarily gone — a non-deterministic count). A
+        requirement the working graph already holds is reconciled by natural key
+        (``meta.requirement_id`` / ``req:`` tag): it keeps its LIVE fact id even when the
+        snapshot stored the same requirement under a different id, so a logical
+        requirement never changes id across a reload.
         """
         self._require_live("merge_caches_into_live")
         pairs = list(keys)
@@ -2617,8 +2566,7 @@ class PostgresVectorGraph(SearchableGraph):
         dst = (self.org_id, self.user_id)
         pred, pred_params = self._pairs_pred(pairs)
         with self._conn.transaction():
-            id_by_key, agent_meta_by_id = self._live_reload_state()
-            remap = self._snapshot_id_remap(pred, pred_params, id_by_key)
+            remap = self._snapshot_id_remap(pred, pred_params, self._live_reload_state())
             # Live ids this reload replaces: the snapshot's own ids PLUS any live id a
             # natural-key match reconciles onto (the remap targets) — resolved to a
             # concrete list so the fact/edge deletes drop exactly the rows we reinsert.
@@ -2643,7 +2591,6 @@ class PostgresVectorGraph(SearchableGraph):
                     (*dst, *replace_ids),
                 )
             self._insert_snapshot_rows(pred, pred_params, remap)
-            self._reapply_agent_meta(agent_meta_by_id)
         row = self._conn.execute(
             f"SELECT count(*) FROM snapshots WHERE org_id=%s AND {pred}",
             (self.org_id, *pred_params),
