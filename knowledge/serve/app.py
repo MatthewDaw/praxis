@@ -58,6 +58,7 @@ from knowledge.knowledge_graph.knowledge_graph_variants.overlay_graph import (  
 )
 from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (  # noqa: E402
     _READ_CHAR_BUDGET,
+    CHECK_CATEGORY,
     DEFAULT_LEASE_TTL_SECONDS,
     EPISODIC_CATEGORY,
     LeaseConflict,
@@ -407,6 +408,25 @@ def create_app(conn: Any | None = None) -> FastAPI:
         return PostgresVectorGraph(
             conn, org, facts_table="snapshots", space=space, snapshot=snap, **kwargs
         )
+
+    def _require_snapshot_for_check(category: Any, target: tuple[str, str] | None) -> None:
+        """A validation/planning CHECK must be authored INTO a section snapshot, never working
+        memory — which the factory never reads for checks, so a check written there is a silent
+        no-op (the class of bug where af-build can't see an authored check). This is the
+        working-memory half of the write-time section invariant: refuse a ``category="check"``
+        write that carries no ``(space, snapshot)`` target so it fails LOUDLY instead of landing
+        invisibly. Checks belong in ``building-validation``/``planning-validation`` (the snapshot's
+        own kind invariant then enforces the right scope)."""
+        if str(category or "").strip() == CHECK_CATEGORY and target is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "a category='check' fact must be authored into a section snapshot — pass "
+                    "X-Praxis-Space + X-Praxis-Snapshot targeting 'building-validation' (validation) "
+                    "or 'planning-validation' (planning). A check written to working memory is "
+                    "invisible to the factory (af-build reads checks from the snapshot)."
+                ),
+            )
 
     app = FastAPI(title="Praxis Candidate API", version="1")
     # Test seam (see _ConnProxy): resolve the calling thread's live connection.
@@ -973,6 +993,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         uid: str = Depends(active_user_id),
         target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
+        _require_snapshot_for_check(body.get("category"), target)
         try:
             return candidates_for(org, uid, target).create(body)
         except ValueError as exc:
@@ -1774,6 +1795,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         # LLM call. 128 KB matches the session-ingest ceiling.
         if len(insight.encode("utf-8")) > _MAX_BODY_BYTES:
             raise HTTPException(status_code=413, detail="insight too large")
+        _require_snapshot_for_check(body.get("category"), target)
         # Episodic (H4): a decision log entry bypasses the semantic pipeline — stored
         # whole, append-only, immutable (no distill/dedup/contradiction) and out of
         # semantic recall. Routed to the store-only producer.
@@ -1859,6 +1881,22 @@ def create_app(conn: Any | None = None) -> FastAPI:
         insights = body.get("insights")
         if not isinstance(insights, list) or not insights:
             raise HTTPException(status_code=400, detail="insights must be a non-empty list")
+        # The batch lane is the bulk personal-knowledge (working-memory) path; a CHECK must be
+        # authored into a section snapshot (see _require_snapshot_for_check), which this endpoint
+        # does not target — so refuse a batched check rather than let it land invisibly. Author
+        # checks one at a time via POST /insights with X-Praxis-Space/Snapshot.
+        if any(
+            isinstance(it, dict) and str(it.get("category") or "").strip() == CHECK_CATEGORY
+            for it in insights
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "category='check' facts cannot be batch-written to working memory — author "
+                    "each check via POST /insights targeting a 'building-validation'/'planning-"
+                    "validation' snapshot (X-Praxis-Space + X-Praxis-Snapshot)."
+                ),
+            )
         on_conflict = str(body.get("onConflict") or "auto_resolve").strip().lower()
         if on_conflict not in ("auto_resolve", "surface"):
             raise HTTPException(
