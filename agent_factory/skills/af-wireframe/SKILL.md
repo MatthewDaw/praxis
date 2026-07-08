@@ -49,9 +49,9 @@ proves coverage.
 **`af-wireframe` is a sibling output of the explore stage** — the visual counterpart to `af-plan`.
 Where `af-plan` emits a messy text exploration doc, `af-wireframe` emits clickable HTML wireframe(s);
 run it instead of, or alongside, the text doc. Either way the surfaces it produces are **handed to
-`af-intake`**, which binds surface↔requirement edges and admits the plan. This skill consumes those
+`af-intake-plan`**, which binds surface↔requirement edges and admits the plan. This skill consumes those
 bindings back once they exist (and renders against them); before they exist it raises the missing
-surfaces to `af-intake` so they get created.
+surfaces to `af-intake-plan` so they get created.
 
 Produce a **feature-complete, clickable, inert** wireframe from a PRD with a single instruction.
 Completeness is the skill's job, and it is measured against **Praxis, the single source of dynamic
@@ -62,7 +62,7 @@ bindings back live.
 
 ## State rules (non-negotiable)
 
-- **Praxis holds the surfaces, requirements, and bindings.** `af-intake` produced the
+- **Praxis holds the surfaces, requirements, and bindings.** `af-intake-plan` produced the
   surface↔requirement bindings (the `renders` edges) this skill consumes. You never invent a
   parallel manifest of "what screens exist" — you query Praxis.
 - **Praxis is a HARD dependency, fail-CLOSED.** If Praxis is unreachable/unauthenticated, STOP —
@@ -113,7 +113,7 @@ and it lives in Praxis, not in a file you author.
    must close.
 3. Cross-check the PRD docs against the bound surfaces. If a doc clearly implies a screen that has
    **no surface** in Praxis, that is a missing binding, not a private note: surface it back to the
-   human / `af-intake` so the binding gets created — the wireframe's job is to render the
+   human / `af-intake-plan` so the binding gets created — the wireframe's job is to render the
    graph's surfaces completely, not to grow a shadow inventory beside it.
 
 Always confirm the graph covers these categories (a missing surface here is the usual "you missed
@@ -205,5 +205,5 @@ optimism) decide done.
 
 When a human correction reveals a class of miss (a forgotten state, a persona split, a missing
 surface), fix it at the source: get the missing **surface/binding into Praxis** (via
-`af-intake`) so the gap is a first-class incomplete requirement next time, and record a
+`af-intake-plan`) so the gap is a first-class incomplete requirement next time, and record a
 learning via the knowledge-port policy (`docs/af-memory-policy.md`). The next wireframe starts from a stricter graph, not a stricter file.

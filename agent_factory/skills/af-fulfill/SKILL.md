@@ -11,7 +11,7 @@ description: >
   reading completeness LIVE from Praxis and failing closed. A domain is DATA (domains/<id>/*.yaml); a
   session is a per-taxpayer Praxis SPACE seeded from those files. Proving case #1 is tax-1040-2025 (a
   completed Form 1040 from a single W-2). Use to fulfill a structured deliverable for an end user —
-  NOT to build software (that is af-build) and NOT to plan/admit requirements (that is af-intake).
+  NOT to build software (that is af-build) and NOT to plan/admit requirements (that is af-intake-plan).
 ---
 
 ## The methodology — read first, this is the loop af-fulfill OWNS
@@ -133,7 +133,7 @@ and fails loud naming the offending file + key. A malformed pack never reaches a
 - **IS:** the generic, domain-agnostic runtime that drives an end user to a completed deliverable,
   wired to live Praxis session-spaces, proven on `tax-1040-2025`.
 - **IS NOT af-build:** it never touches the coding loop, the build gate, or `hooks/_ticket_state.py`.
-- **IS NOT af-intake:** it does not author or admit requirements, run planning validation, or save a
+- **IS NOT af-intake-plan:** it does not author or admit requirements, run planning validation, or save a
   `prd-<project>` snapshot. It CONSUMES the requirement files a domain ships.
 - **Owned by Praxis (Q7), not this skill:** per-session space lifecycle, TTL/cleanup, auth hardening,
   multi-tenancy. `Session.close()` is the explicit teardown hook, not an automatic cleanup policy.

@@ -164,7 +164,7 @@ both facts (incumbent `active`, newcomer `proposed`, neither rejected) and raise
 in `get_contradictions`** settled by `resolve_contradiction`.
 - *Verified live:* `retry count is 3` then `...7` with `on_conflict="surface"` → both kept (3 active,
   7 proposed), one pending pair, neither rejected; `resolve_contradiction(keep_id=7)` superseded 3.
-- *Consequence:* the earlier rejected-pile workaround is **retired**; `af-intake` and the
+- *Consequence:* the earlier rejected-pile workaround is **retired**; `af-intake-plan` and the
   knowledge-port policy (`docs/af-memory-policy.md`) now use `on_conflict="surface"` +
   `get_contradictions` as the surface.
 

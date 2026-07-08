@@ -24,7 +24,7 @@ not be subject to retrieval. They become the seed **deterministic** check kind.
 Skills keep their flow and the deterministic gates; only the **judgment checklist** lives in
 Praxis. Concretely:
 
-1. `af-intake` (the admission + planning-validation write-path) **resolves the applicable planning checklist by query** from the
+1. `af-intake-plan` (the admission + planning-validation write-path) **resolves the applicable planning checklist by query** from the
    `planning` snapshot (`meta.scope="planning"` + applicability to the project) — fresh, never a
    pre-authored list on the requirement.
 2. The skill records each applicable check **as a Praxis check/ticket** (pinned as the requirement's
@@ -34,7 +34,7 @@ Praxis. Concretely:
    check entries). There is no separate planning gate.
 
 ## Remediation (in the agent, on a hole)
-Already supported by `af-intake`: for each unmet item — research / take a default + log an
+Already supported by `af-intake-plan`: for each unmet item — research / take a default + log an
 episode / **ask the human** / defer as an owned decision / expand the plan with the missing
 requirement. The gate only blocks + reports; the skill chooses the response.
 
@@ -52,7 +52,7 @@ The eval then **proves** the checklist is complete: a checklist-driven plan that
 the golden with zero holes means the checklist has no holes.
 
 ## First cut
-De-hardcode `GAP_LENSES` → a `planning`-snapshot checklist that `af-intake` resolves by query and
+De-hardcode `GAP_LENSES` → a `planning`-snapshot checklist that `af-intake-plan` resolves by query and
 records as Praxis checks; the single `build_completeness_gate` enforces closure over them generically. Lower-risk
 than the validation side and the cleanest demonstration of the pattern.
 (The validation side is where the live bugs are — see the separate thread / `00-overview.md`.)

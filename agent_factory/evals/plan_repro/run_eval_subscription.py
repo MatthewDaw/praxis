@@ -75,7 +75,7 @@ def main() -> int:
     from evals.plan_repro.praxis_source import load_seed_checklist
 
     # The LENSES = the Praxis planning checks (round-tripped through Praxis when we plan; the
-    # version-controlled seed otherwise). They are the SINGLE source of truth shared with af-intake,
+    # version-controlled seed otherwise). They are the SINGLE source of truth shared with af-intake-plan,
     # and they GENERATE the implied set the depth question scores against.
     if out_path.is_file():
         candidate = load_candidate(str(out_path))

@@ -387,9 +387,9 @@ seams, **D** orchestration + skill.
   Praxis, single-source-of-truth). State the actor difference (end user, not coding agent), the
   interactive gate (KTD2), the seed-from-files session model (KTD5), and the data-first domain contract.
   Reference the runtime modules and the `tax-1040-2025` proving domain.
-- **Patterns to follow:** `skills/af-build/SKILL.md`, `skills/af-intake/SKILL.md`.
+- **Patterns to follow:** `skills/af-build/SKILL.md`, `skills/af-intake-plan/SKILL.md`.
 - **Test scenarios:** `Test expectation: none -- documentation/skill manifest, no behavioral code.`
-- **Verification:** the skill reads coherently against af-build/af-intake; a dry read-through drives the
+- **Verification:** the skill reads coherently against af-build/af-intake-plan; a dry read-through drives the
   U9 loop on the tax pack without inventing steps.
 
 ---

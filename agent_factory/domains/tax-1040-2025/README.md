@@ -13,8 +13,8 @@ the data-driven pack and the Python engine compute the identical return.
 
 | File | Concern | Consumed by |
 |---|---|---|
-| `manifest.yaml` | identity, project name, file wiring, the deliverable | af-intake + af-fulfill |
-| `requirements.yaml` | the requirement set: what must be gathered, cover-sources, guards | **af-intake** → Praxis facts |
+| `manifest.yaml` | identity, project name, file wiring, the deliverable | af-intake-plan + af-fulfill |
+| `requirements.yaml` | the requirement set: what must be gathered, cover-sources, guards | **af-intake-plan** → Praxis facts |
 | `fields.yaml` | field schemas + validation (the typed boundary, S6) | af-fulfill (validate inputs) |
 | `rules.yaml` | rule **tables** as data: standard deduction, marginal brackets | the evaluator |
 | `compute.yaml` | the **calculation graph**: ordered line steps over fields + tables | the evaluator |
@@ -23,7 +23,7 @@ the data-driven pack and the Python engine compute the identical return.
 
 ## How the pieces are consumed
 
-1. **Author (`af-plan` → `af-intake`).** `af-intake` ingests `requirements.yaml` into Praxis as
+1. **Author (`af-plan` → `af-intake-plan`).** `af-intake-plan` ingests `requirements.yaml` into Praxis as
    `category:"requirement"` facts with `source:"prd-tax-1040-2025"` (project = `tax-1040-2025`). The
    probe (2026-06-27) confirmed this is all that's needed — no Praxis changes.
 2. **Run (`af-fulfill`, once per taxpayer).** Create a Praxis **space** (per-user isolation, confirmed

@@ -5,7 +5,7 @@ description: >
   thin PRD) into an exhaustive, deliberately-over-generated requirements doc — scope, behaviors,
   edge states, implied features, open decisions — by driving compound-engineering's ce-brainstorm
   and ce-ideate plus adversarial research. It does NOT write Praxis, run the audit, or save a
-  snapshot: it produces the messy-but-thorough doc that af-intake then admits and hardens.
+  snapshot: it produces the messy-but-thorough doc that af-intake-plan then admits and hardens.
 ---
 
 # Factory Plan (explore / research front-end)
@@ -14,7 +14,7 @@ af-plan has ONE job: produce a **thoroughly-exhausted requirements doc** from a 
 output looks like what `ce-brainstorm` produces — a real requirements doc (scope, behavior, success
 criteria, edge states, implied features, open decisions) — only pushed harder and broader. That doc
 is the hand-off. **af-plan does NOT write to Praxis, does NOT run the audit, does NOT save a
-snapshot.** All admission, validation, and hardening live in **af-intake**.
+snapshot.** All admission, validation, and hardening live in **af-intake-plan**.
 
 State and the build loop are out of scope here. Praxis is the single source of dynamic truth; there
 are no JSON status files or locks (see `METHODOLOGY.md`, `docs/factory-state-contract.md`). The
@@ -24,7 +24,7 @@ FIND→CLAIM→RESOLVE→BUILD→VERIFY→FINISH build loop belongs to **af-buil
 *plan* can spawn hundreds of bad lines of code; a missed *requirement* can spawn thousands. The
 cheapest place to catch a missing behavior is before it exists. So af-plan's bias is **throw
 everything in** — every behavior, edge, implied feature, and open question you can surface. Filtering,
-de-duping, conflict-resolution, and the done-gate happen later in af-intake; your failure mode is
+de-duping, conflict-resolution, and the done-gate happen later in af-intake-plan; your failure mode is
 *omission*, not excess.
 
 ## Step 0 — Clarify a rough idea with compound-engineering (REQUIRED)
@@ -38,7 +38,7 @@ rather than a finished requirements doc:
   invent product shape from a one-liner. Run this FIRST when the input is vague or ambitious.
 - **`ce-ideate`** — surface the adjacent and implied features the idea never stated, and critically
   evaluate them. Admit the accepted ones into the doc as candidates. This is the generative move that
-  feeds af-intake's planning-checklist lenses (which later FORCE the implied decisions at af-intake).
+  feeds af-intake-plan's planning-checklist lenses (which later FORCE the implied decisions at af-intake-plan).
 
 Skip Step 0 only when a complete, hardened PRD already exists — and say so explicitly, never
 silently. (Even then, an `ce-ideate` pass to surface implied features is usually worth it.)
@@ -87,7 +87,7 @@ case, irreversible action. Use leading yes/no questions to corner vagueness into
 ("so you have NOT specified what happens on empty input — correct?"). Spawn an adversarial reviewer
 (`ce-adversarial-document-reviewer`) over the candidate set whose only job is to falsify and surface
 missing actors, unbounded conditions, and dangling concepts. Record every challenge in the doc as an
-open item; do not resolve it away — af-intake's audit is where challenges get forced to a decision.
+open item; do not resolve it away — af-intake-plan's audit is where challenges get forced to a decision.
 
 **c. Edge states and implied features are first-class.** For every screen/flow/entity, enumerate the
 states the idea didn't mention: loading / empty / error / partial-failure / permission-denied /
@@ -97,9 +97,9 @@ requirement *references* must be *defined* somewhere in the doc or explicitly ma
 no dangling concepts. List these even when you're unsure; over-generation is the point.
 
 **d. Capture acceptance intent, not a gate.** Where you can, sketch a binary acceptance condition
-("when X, the system does Y, observable via Z") so af-intake has something concrete to admit. Where
+("when X, the system does Y, observable via Z") so af-intake-plan has something concrete to admit. Where
 you can't yet, record it as an **open decision** with the options you see — do NOT force a fake
-condition and do NOT block. Turning these into admitted, gated facts is af-intake's job.
+condition and do NOT block. Turning these into admitted, gated facts is af-intake-plan's job.
 
 **Stop by information-gain, not exhaustion.** When the next question's expected information gain is
 low, say so and stop. But beware the inverse trap: a short, clean doc usually means *nothing was
@@ -113,14 +113,14 @@ Write the doc as plain markdown (the `ce-brainstorm` shape, pushed harder). Incl
 - **Edge states & failure classes** — the enumerated empty/error/lifecycle/loss cases from Step 2c.
 - **Implied features** — the adjacent features `ce-ideate` surfaced and the human accepted.
 - **Open decisions** — every unresolved fork and adversarial challenge, with options and what you
-  already checked ("PRD silent; no convention applies"), so af-intake/af-intake can force each.
+  already checked ("PRD silent; no convention applies"), so af-intake-plan/af-intake-plan can force each.
 - **Defaults taken** — conventions you applied, each flagged for override.
 - **Rigor mode** — which passes ran.
 
-Then hand the doc to **af-intake**. State the boundary explicitly in your closing report:
+Then hand the doc to **af-intake-plan**. State the boundary explicitly in your closing report:
 
-> **af-intake inserts this doc into Praxis and runs all planning validation** — it admits each
-> settled requirement as a `source="prd-<project>"` fact, runs the cold-eyes **af-intake**, resolves
+> **af-intake-plan inserts this doc into Praxis and runs all planning validation** — it admits each
+> settled requirement as a `source="prd-<project>"` fact, runs the cold-eyes **af-intake-plan**, resolves
 > contradictions, clears the done-gate, and calls `save_snapshot`. af-plan writes nothing to Praxis.
 
 ## Interaction rules
@@ -132,8 +132,8 @@ Then hand the doc to **af-intake**. State the boundary explicitly in your closin
 
 ## Never
 - Never write to Praxis (no `add_insight`, no `select_space`/`clear_graph`/`save_snapshot`), never
-  run the audit, never run a plan/done gate — all of that is **af-intake**.
+  run the audit, never run a plan/done gate — all of that is **af-intake-plan**.
 - Never reproduce the build loop (af-build) or build/claim/pass state.
 - Never silently skip the `ce-brainstorm`/`ce-ideate` front-end for a rough idea — say so if you do.
-- Never resolve an adversarial challenge or open fork away on your own — record it for af-intake.
+- Never resolve an adversarial challenge or open fork away on your own — record it for af-intake-plan.
 - Never under-generate: when unsure whether a behavior/edge belongs, include it and flag it.

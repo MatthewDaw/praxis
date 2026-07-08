@@ -287,7 +287,7 @@ def main() -> None:
             advice = ("build-completeness gate: scoped build set is FINISHED, but "
                       f"{len(blocked)} ticket(s) are BLOCKED and need owner action (they were NOT "
                       f"built):\n{_fmt(blocked)}\n"
-                      "Resolve each via af-intake amend (supply the missing requirement/credential) "
+                      "Resolve each via af-intake-plan amend (supply the missing requirement/credential) "
                       "or record an explicit accept; they will not auto-complete.")
         _allow(advice)
 
@@ -301,7 +301,7 @@ def main() -> None:
             f"prerequisite, so no ticket can be popped:\n{_fmt_dep(waiting)}"
             + (f"\n\nBLOCKED prerequisites ({len(blocked)}):\n{_fmt(blocked)}" if blocked else "")
             + "\n\nThis is a cycle or a chain rooted on a blocked ticket. Break it: fix/unblock the "
-            "root prerequisite (af-intake amend / accept), correct a wrong depends_on edge, or block() "
+            "root prerequisite (af-intake-plan amend / accept), correct a wrong depends_on edge, or block() "
             "the unsatisfiable dependents. The loop cannot progress until a root becomes ready."
         )
 
@@ -322,7 +322,7 @@ def main() -> None:
                      f"their prerequisites finish:\n{_fmt_dep(waiting)}")
     if blocked:
         parts.append(f"\n\nBLOCKED ({len(blocked)} ticket(s)) — excluded from churn, need owner "
-                     f"action (af-intake amend / accept), surfaced so they are never silently "
+                     f"action (af-intake-plan amend / accept), surfaced so they are never silently "
                      f"dropped:\n{_fmt(blocked)}")
 
     _block(

@@ -46,7 +46,7 @@ coverage(set, target, item_evaluator) -> per-item report -> zero-hole pass/fail
 ## Two halves
 1. **Coverage checker** *(buildable now)* — load golden + a candidate feature list → report +
    pass/fail. The fuzzy match is the pluggable judge. Can score a *recorded* candidate today.
-2. **Plan-production run** *(follow-up)* — orchestrate `af-plan` → `af-intake`
+2. **Plan-production run** *(follow-up)* — orchestrate `af-plan` → `af-intake-plan`
    (which now owns admission + planning validation) over `docs/inspiration/` to generate the
    candidate, making it end-to-end.
 

@@ -138,10 +138,10 @@ arg is the ONE seam between the two callers — everything downstream (pin / cov
   - **surface match** — checks bound (via the `renders` edge) to any surface the ticket renders; via
     `/surfaces/{screen}/checks`. A UI check is surface-bound (or UI-tagged) so it resolves ONLY onto
     screen-rendering tickets — never onto a backend-only ticket.
-- **`scope="planning"`** (af-intake WHOLE-PLAN gate, B3) — planning lenses are GLOBAL considerations
+- **`scope="planning"`** (af-intake-plan WHOLE-PLAN gate, B3) — planning lenses are GLOBAL considerations
   (`applies_when`, NOT tag/surface-bound), so this returns the ENTIRE active `scope="planning"` checklist
   regardless of the subject's tags/surfaces. `ticket` is the plan-anchor the coverage contract hangs on.
-  af-intake then runs the SAME two-tier pass (`pin_requirements` → synthesize + `pin_validations` →
+  af-intake-plan then runs the SAME two-tier pass (`pin_requirements` → synthesize + `pin_validations` →
   `coverage_gap` empty + `all_validations_passed`) over the plan's Praxis facts — making lens-coverage a
   hard gate, identical in shape to the build-side validation and to the eval's depth scorer.
 - **`scope=None`** (default, back-compat) — tag union surface across all check scopes.
@@ -163,7 +163,7 @@ ticket/plan snapshot, via a `checks_ref` parameter (`resolve_validation_requirem
 `prd-<project>` snapshot. Both snapshots live in the SAME project space (`space=<project>`, the bare
 project name); only the snapshot differs. Default read snapshot by scope: `scope="validation"` →
 **`building-validation`** (renamed from `coding-validation`), `scope="planning"` →
-**`planning-validation`**, `scope=None` → the ticket/default reference. The `af-build` / `af-intake`
+**`planning-validation`**, `scope=None` → the ticket/default reference. The `af-build` / `af-intake-plan`
 slash argument `--checks-space=<...>` overrides per run as a `(space, snapshot)` pair
 (`checks_ref=(space, snapshot)`); `checks_ref=None` forces the ticket/default reference. A check is
 only resolvable if it was authored INTO the snapshot RESOLVE reads.
@@ -221,7 +221,7 @@ DEFAULT_RUN_TTL_S   = 3600    # whole-set run marker (refreshed at each ticket b
 
 # --- requirements (the QUERY) + the coverage contract ---
 resolve_validation_requirements(ticket, project="", scope=None, checks_ref=<default>) -> list[dict]
-    # scope="validation" (af-build, per-ticket tag∪surface) | "planning" (af-intake, whole checklist) | None
+    # scope="validation" (af-build, per-ticket tag∪surface) | "planning" (af-intake-plan, whole checklist) | None
     # checks_ref= the (space, snapshot) seam: unset -> space=project + per-scope default snapshot
     #   (validation->building-validation, planning->planning-validation); a (space, snapshot) pair (or a bare
     #   snapshot name, space defaulting to project) overrides (--checks-space slash arg);

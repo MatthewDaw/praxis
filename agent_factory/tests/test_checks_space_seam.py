@@ -78,7 +78,7 @@ def test_for_scope_rejects_unsupported_scope():
             ts.project_ref("team-app").for_scope(bad)
 
 
-# --------------------------------------------------------------------------- planning lane (af-intake)
+# --------------------------------------------------------------------------- planning lane (af-intake-plan)
 
 def test_planning_scope_defaults_to_planning_validation_snapshot(monkeypatch):
     spy = _spy(monkeypatch, checks=[{"id": "L1", "scope": "planning"}])

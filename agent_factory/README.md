@@ -35,7 +35,7 @@ never proceeds on a guess.
                                │                          wireframes; a surface with no screen
                                │                          = an incomplete ticket)
                                │
-            plan + wireframe ──►  af-intake        →  admit + harden requirements in Praxis (tickets),
+            plan + wireframe ──►  af-intake-plan        →  admit + harden requirements in Praxis (tickets),
                                │                        then ALL validation in one write-path:
                                │                        cold-eyes challenge + tech/test sweep,
                                │                        planning checks, and the plan-finalization
@@ -165,32 +165,32 @@ every requirement + implied state maps to a screen.
 ### Step 2 — Plan (plan → intake = admit + all validation)
 
 This is one continuous, human-controlled phase that ends with a blessed `prd-<project>` snapshot.
-`af-plan` explores/researches into a messy plan doc; `af-intake` is the single write-path that
+`af-plan` explores/researches into a messy plan doc; `af-intake-plan` is the single write-path that
 admits the requirements **and** runs all the validation (audit, planning checks, plan-finalization
 panel) before the snapshot.
 
-> Run af-intake to turn the prose PRD in `docs/inspiration/` plus the approved wireframes
+> Run af-intake-plan to turn the prose PRD in `docs/inspiration/` plus the approved wireframes
 > (`wireframe-rebuild/wireframe-player.html`, `wireframe-rebuild/wireframe-admin.html`) into the
 > hardened `prd-<project>` requirement set in Praxis. Use **Rigorous** mode. Admit during ingestion
-> with `source="prd-<project>"`, then run af-intake's validation (the cold-eyes audit and the
+> with `source="prd-<project>"`, then run af-intake-plan's validation (the cold-eyes audit and the
 > plan-finalization panel) before `save_snapshot`.
 
 What happens, and where you're involved:
 1. **af-plan** explores and researches the PRD (behavior) + wireframe (surfaces) into a messy
    candidate inventory, reconciles duplicates, and pauses for you to review the candidates before
    admission.
-2. **af-intake** admits each requirement as a Praxis ticket (`source="prd-<project>"` = the
+2. **af-intake-plan** admits each requirement as a Praxis ticket (`source="prd-<project>"` = the
    project identity; `meta.scope` = `mvp`/`post-mvp` tier; `meta.verify` = `automated`/`manual`).
    Large plans use the **raw bulk fast-lane** (`add_insights(raw=True)`) to avoid the per-item dedup
    that times out / over-merges; small edits keep live contradiction surfacing.
-3. **af-intake validation** runs an independent **cold-eyes** pass: adversarially challenges every
+3. **af-intake-plan validation** runs an independent **cold-eyes** pass: adversarially challenges every
    requirement, routes underspecification (research / default / ask you / defer), forces a derived
    technical-architecture sweep **and a mandatory test strategy + CI**, and **reconciles** near-dup
    requirements in the graph. Anything it surfaces becomes a **ticket or a check in Praxis** — so the
    one completeness gate enforces it. (A small "panel-ran" Praxis episode records that the validation
    happened so it cannot be silently skipped — not a findings state machine.)
 4. `save_snapshot("prd-<project>")` blesses the plan.
-5. **af-intake's plan-finalization panel** runs the compound-engineering reviewers over the *whole*
+5. **af-intake-plan's plan-finalization panel** runs the compound-engineering reviewers over the *whole*
    plan (coherence / feasibility / scope / security / completeness). Each finding lands as a Praxis
    ticket/check; an open finding is just an incomplete ticket the completeness gate enforces. The
    review is skippable for small work, but **never silently** — a skip records a reason
@@ -243,8 +243,8 @@ invocable skills:
 | Skill | Role |
 |---|---|
 | **af-plan** | Explore / research the PRD into a messy candidate plan doc — surface requirements, contradictions, and open questions. |
-| **af-wireframe** | Sibling of af-plan — one-shot PRD → complete, clickable HTML wireframes, self-audited coverage; hands surfaces to af-intake. |
-| **af-intake** | The single write-path: admit + harden requirements in Praxis **and** run all validation — the cold-eyes audit (adversarial challenge, underspecification routing, technical + **test-strategy** sweep, near-dup reconciliation), the planning checks, and the plan-finalization panel. Includes an **amend mode** for adding validation/planning checks to an existing plan. |
+| **af-wireframe** | Sibling of af-plan — one-shot PRD → complete, clickable HTML wireframes, self-audited coverage; hands surfaces to af-intake-plan. |
+| **af-intake-plan** | The single write-path: admit + harden requirements in Praxis **and** run all validation — the cold-eyes audit (adversarial challenge, underspecification routing, technical + **test-strategy** sweep, near-dup reconciliation), the planning checks, and the plan-finalization panel. Includes an **amend mode** for adding validation/planning checks to an existing plan. |
 | **af-build** | The build loop — claim a ticket, resolve+pin its checks, build, verify against **external** signals only, deploy — and always run validation + the work-review panel. The "go work unfinished" entry point. |
 
 The Praxis knowledge port is now an internal reference doc, not a skill:

@@ -34,15 +34,14 @@ meta     = { check_id:   "<stable-slug>",
 `incomplete_requirements` filters `category="requirement"`, so checks never pollute it.
 
 ## How you add one (one line, no file)
-Both forms are the **add-check amend mode of `af-intake`** (the single write-path that owns
-validation):
-- **`af-intake` amend (insert only)** — inserts the check fact into Praxis, nothing else.
+Both forms are the **`af-intake-build-validation`** (the section-locked command that owns the `building-validation` snapshot; the planning sibling is `af-intake-plan-validation`) — its two forms:
+- **`af-intake-build-validation` (insert only)** — inserts the check fact into Praxis, nothing else.
   The regress happens on the next `af-build`.
-- **`af-intake` amend (insert + regress)** — inserts the check **and** regresses the
+- **`af-intake-build-validation` (insert + regress)** — inserts the check **and** regresses the
   matching tickets now (so they show incomplete immediately).
 
 Example (illustrative — added only when *you* run the amend, never by the planning side):
-> `af-intake` amend: "auth tickets need a live Playwright login test against the deployed service"
+> `af-intake-build-validation`: "auth tickets need a live Playwright login test against the deployed service"
 
 → a `check` fact (`applies_to: auth`, `run: "npx playwright test …login…"`) is written to Praxis,
 the `auth` requirements are tagged + regressed, and they re-enter the build set.
@@ -57,9 +56,9 @@ the `auth` requirements are tagged + regressed, and they re-enter the build set.
   runs each `meta.run` as a **blocking external signal**; the ticket records `"succeeded"` only when
   generic gates **and** every bound check are green.
 - **`build_completeness_gate`** (unchanged) forces the re-pick.
-- The **`af-intake` add-check amend mode** is the *write* path into Praxis.
+- The **`af-intake-build-validation`** command is the *write* path into Praxis.
 
 ## Binding by class tag (caveat)
 Binding by **requirement id** always works. Binding by **class tag** (`applies_to: auth`) only
 matches requirements that carry that tag — `resolve_bindings` reads each requirement's `meta.tags`.
-The `af-intake` insert-and-regress amend tags the matching requirements when it runs; otherwise bind by requirement id.
+`af-intake-build-validation`'s insert-and-regress tags the matching requirements when it runs; otherwise bind by requirement id.

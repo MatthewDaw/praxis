@@ -15,8 +15,8 @@ the ledger (`docs/autonomous-progress-ledger.md`), then act.
 this project (declared in `.claude-plugin/plugin.json` + `marketplace.json`'s
 `allowCrossMarketplaceDependenciesOn`), not an optional add-on. It is required across the planning
 lifecycle: the **front-end** uses `ce-brainstorm` (clarify a rough idea into a real requirements doc) and
-`ce-ideate` (surface adjacent/implied features) in `af-plan`/`af-intake`; the **back-end** uses
-the `ce-*` reviewer agents as the default cold-eyes panel in `af-intake` (plan validation) and
+`ce-ideate` (surface adjacent/implied features) in `af-plan`/`af-intake-plan`; the **back-end** uses
+the `ce-*` reviewer agents as the default cold-eyes panel in `af-intake-plan` (plan validation) and
 `af-build` (work review). Skip a compound-engineering step only when explicitly justified, never silently.
 
 **The method in one breath.** State lives in ONE place — **Praxis**. No JSON status files, no on-disk
@@ -53,8 +53,8 @@ This composes with — it does not replace — the rest of this constitution. Th
 doctrine still holds **per slice**: a workflow *orchestrates* builders and reviewers that each own
 their slice, but exactly one agent decides, edits, writes to Praxis, or commits for any given slice
 (the read-only retrieval sub-agent rule, af-build, is unchanged). The gates pair
-naturally with fan-out: the **audit** (af-intake / §4 step 8b) and the **review** gates
-(af-intake for the plan, af-build for the work; §1 item 2) are exactly where a panel of fanned-out reviewers earns its keep —
+naturally with fan-out: the **audit** (af-intake-plan / §4 step 8b) and the **review** gates
+(af-intake-plan for the plan, af-build for the work; §1 item 2) are exactly where a panel of fanned-out reviewers earns its keep —
 the gate stays human-controlled (or, unattended, defers per §3), and the workflow *informs* it.
 
 When a pass is non-trivial and you find yourself about to do it solo, stop and ask: *should this be
@@ -83,7 +83,7 @@ Keep iterating until ALL of the following hold:
    worktree-isolated slice builders via a Workflow, §0), never a serial task queue.
 2. **The plan is hardened in Praxis.** Every PRD requirement is an atomic fact in the
    `prd-team-app` snapshot, each with a binary acceptance condition and zero unresolved
-   contradictions. **Finalization is gated by `af-intake` (plan) and `af-build` (work):** the plan is not "done" until a
+   contradictions. **Finalization is gated by `af-intake-plan` (plan) and `af-build` (work):** the plan is not "done" until a
    PLAN-mode review over the finalized `prd-team-app` has **passed (no open findings) or been
    skipped-with-reason**, and the build is not "done" (per item 1) until a WORK-mode review over the
    whole diff has likewise passed or been skipped. A review/audit finding becomes a Praxis
@@ -188,7 +188,7 @@ Each pass is one slice of forward progress. Run this checklist top to bottom:
    agent that edits, writes to Praxis, or commits.
 5. **Verify.** Run `python -m pytest -q` in `team-app`. Red→green. Corrections fire only on a
    real failing signal. Only **automated** acceptance conditions can be verified tonight; any
-   condition tagged **manual** (af-intake) cannot be confirmed with no human awake — record
+   condition tagged **manual** (af-intake-plan) cannot be confirmed with no human awake — record
    it as a deferred owned decision (`record_episode`) and note it in the ledger for morning review
    rather than self-passing it.
 6. **Compound.** Write back the implementation learning to Praxis (`category="learning"`). Call
@@ -198,9 +198,9 @@ Each pass is one slice of forward progress. Run this checklist top to bottom:
 8. **Checkpoint.** Update the ledger (§7), commit the team-app slice (one focused commit),
    re-`save_snapshot("prd-team-app")` when the plan changed.
 8b. **Finalization reviews.** Finalization — not each slice — is gated by the plan panel in
-   `af-intake` and the work panel in `af-build`, whose findings land as Praxis tickets/checks the build-completeness gate
+   `af-intake-plan` and the work panel in `af-build`, whose findings land as Praxis tickets/checks the build-completeness gate
    enforces: when the **plan is finalized** (audit passed +
-   snapshot, af-intake) auto-run a **PLAN-mode** review over `prd-team-app`; when the **build
+   snapshot, af-intake-plan) auto-run a **PLAN-mode** review over `prd-team-app`; when the **build
    is finished** (the live completeness query over `prd-team-app` returns empty) auto-run a **WORK-mode**
    review over the whole diff. Neither "planning complete" nor "shipped" may end until its review has
    **passed (no open findings) or been skipped-with-reason**. Both are skippable for small work via

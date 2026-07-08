@@ -1,8 +1,8 @@
-"""End-to-end PLANNING eval — scores the REAL af-intake forcing, not a proxy planner.
+"""End-to-end PLANNING eval — scores the REAL af-intake-plan forcing, not a proxy planner.
 
 What it does (the rewrite per the "two questions, real pipeline" design):
   1. Provision an isolated Praxis space and seed the planning lenses (scope="planning" checks) into it.
-  2. Drive the REAL af-intake (headless `claude` CLI, subscription, tools enabled) in UNATTENDED mode on
+  2. Drive the REAL af-intake-plan (headless `claude` CLI, subscription, tools enabled) in UNATTENDED mode on
      the fixed PRD (docs/inspiration/): push in every explicitly-stated feature as a requirement, sweep
      every active planning check, and for every implied need / forced decision the audit raises, choose
      the low-regret DEFAULT and record it as an episode (never ask) — then leave the admitted
@@ -15,11 +15,11 @@ What it does (the rewrite per the "two questions, real pipeline" design):
   5. Tear down the space.
 
 "Working" = both ~complete: the real pipeline ingested every stated feature AND let every planning
-insight expose its implied need. A hole is a genuine af-intake defect, not a weak proxy's luck.
+insight expose its implied need. A hole is a genuine af-intake-plan defect, not a weak proxy's luck.
 
     python -m evals.plan_repro.run_eval_pipeline
 
-Heavy: this runs a full real planning session (slow, lots of subscription). Needs the af-intake skill
+Heavy: this runs a full real planning session (slow, lots of subscription). Needs the af-intake-plan skill
 loaded (plugin reloaded after the rename) and Praxis reachable.
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-EVAL_PROJECT = "team-app-eval"   # the project name af-intake plans under, inside the isolated space
+EVAL_PROJECT = "team-app-eval"   # the project name af-intake-plan plans under, inside the isolated space
 
 
 def _load_dotenv(root: Path) -> None:
@@ -44,13 +44,13 @@ def _load_dotenv(root: Path) -> None:
 
 
 def _drive_af_intake(space_id: str, prd_dir: Path, timeout: int) -> int:
-    """Run the REAL af-intake unattended into the eval space via the headless claude CLI."""
+    """Run the REAL af-intake-plan unattended into the eval space via the headless claude CLI."""
     from evals.plan_repro.claude_cli import _claude_path
     env = dict(os.environ)
     env.pop("ANTHROPIC_API_KEY", None)      # bill the subscription, not an API key
     env["PRAXIS_SPACE"] = space_id          # so the agent's Praxis writes land in the isolated space
     prompt = (
-        f"Run /agent-factory:af-intake in FULL INTAKE mode for project '{EVAL_PROJECT}', sourcing the PRD "
+        f"Run /agent-factory:af-intake-plan in FULL INTAKE mode for project '{EVAL_PROJECT}', sourcing the PRD "
         f"from {prd_dir.as_posix()} (read every doc fully). UNATTENDED MODE — the owner is asleep, NEVER "
         "ask a question: for every forced architecture/external-service decision or open fork the audit "
         "raises, choose the low-regret DEFAULT and record it as a Praxis episode, then proceed. Push in "
@@ -59,13 +59,13 @@ def _drive_af_intake(space_id: str, prd_dir: Path, timeout: int) -> int:
         "default it raises. Write requirements + episodes to the ACTIVE Praxis space only. Do NOT save a "
         "snapshot and do NOT clear the graph — just leave the admitted requirements + decision episodes."
     )
-    print(f"  driving REAL af-intake (unattended) into space '{space_id}' ...", flush=True)
+    print(f"  driving REAL af-intake-plan (unattended) into space '{space_id}' ...", flush=True)
     proc = subprocess.run(
         [_claude_path(), "-p", prompt, "--permission-mode", "bypassPermissions"],
         cwd=str(Path(__file__).resolve().parents[2]), env=env, capture_output=True, text=True,
         timeout=timeout, encoding="utf-8",
     )
-    print(f"  af-intake agent exited {proc.returncode}", flush=True)
+    print(f"  af-intake-plan agent exited {proc.returncode}", flush=True)
     if proc.returncode != 0:
         print("  (stderr tail)\n" + (proc.stderr or "")[-600:], flush=True)
     return proc.returncode
@@ -130,15 +130,15 @@ def main() -> int:
     print(f"provisioned eval space '{space_id}' + {len(lenses)} planning lens(es)", flush=True)
 
     try:
-        # 2. drive the REAL af-intake (unattended) on the PRD into the space.
+        # 2. drive the REAL af-intake-plan (unattended) on the PRD into the space.
         _drive_af_intake(space_id, DEFAULT_PRD_DIR, agent_timeout)
 
         # 3. read the produced plan back.
         candidate = _read_plan(space_id)
-        print(f"af-intake produced {len(candidate)} scorable item(s) "
+        print(f"af-intake-plan produced {len(candidate)} scorable item(s) "
               f"(requirements + decision episodes)", flush=True)
         if not candidate:
-            print("NO requirements produced — af-intake did not write to the space (check skill loaded / "
+            print("NO requirements produced — af-intake-plan did not write to the space (check skill loaded / "
                   "PRAXIS_SPACE targeting / Praxis auth). Cannot score.", flush=True)
             return 2
 
@@ -162,7 +162,7 @@ def main() -> int:
         print(depth_report.format(), flush=True)
 
         e_holes, d_holes = len(explicit_report.holes), len(depth_report.holes)
-        print(f"\n=== SIGNAL (real af-intake pipeline): {e_holes} explicit-coverage hole(s), "
+        print(f"\n=== SIGNAL (real af-intake-plan pipeline): {e_holes} explicit-coverage hole(s), "
               f"{d_holes} depth hole(s). ===", flush=True)
         print(f"PASSED: {explicit_report.passed and depth_report.passed}", flush=True)
         return 0 if (explicit_report.passed and depth_report.passed) else 1

@@ -67,9 +67,9 @@ Nothing in the spine cares about existing vs. empty code. A refactor is just a p
 1. **Planning eval** (this thread) — coverage of a plan reproduced from `docs/inspiration/` vs. the golden. See `03-eval-agent.md`. Lives in `evals/plan_repro/`.
 2. **Validation harness / checks on `../team-app`** — BUILT + wired live
    (`src/agent_factory/validation_target.py` + `af-build` wiring + the
-   `af-intake` add-check amend mode; see
+   `af-intake-build-validation` command; see
    [`06-validation-harness.md`](06-validation-harness.md)). **Checks live entirely in Praxis**
-   (`category="check"`, `scope="validation"`, `meta.applies_to`/`meta.run`); `af-intake` is the write
+   (`category="check"`, `scope="validation"`, `meta.applies_to`/`meta.run`); `af-intake-build-validation` is the write
    path. `af-build` pulls checks from Praxis + regresses bound tickets, runs each
    `meta.run` as a blocking gate at verify time, `build_completeness_gate`
    forces the re-pick. Insert a check → ticket regresses → coding agent must make it pass. No file.

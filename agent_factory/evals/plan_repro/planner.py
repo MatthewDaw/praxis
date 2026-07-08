@@ -8,7 +8,7 @@ needs a *controllable* planner so it can measure the hole rate and A/B the plann
 
 The delta in `derived`-feature holes between the two is the meta-proof that the checklist
 closes holes. This is a deliberately controllable proxy for the production gated planner
-(`af-intake`/`af-plan`), not a replacement — it isolates one variable (the checklist).
+(`af-intake-plan`/`af-plan`), not a replacement — it isolates one variable (the checklist).
 
 The checklist is NOT hard-coded here: it is loaded from the Praxis knowledge graph at
 execution time (see :mod:`evals.plan_repro.praxis_source`), so the eval relies on Praxis as the

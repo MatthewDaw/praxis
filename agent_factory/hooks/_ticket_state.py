@@ -89,7 +89,7 @@ DEFAULT_RUN_TTL_S = 3600     # 60 min — whole-set run marker; refreshed at eac
 # (``space == the bare project name``); inside it the plan/ticket STATE lives in the ``prd-<project>``
 # snapshot and the per-scope validation checks live in their own dedicated snapshots:
 #   * scope="validation" (af-build per-ticket)   -> snapshot "building-validation"
-#   * scope="planning"   (af-intake whole-plan)  -> snapshot "planning-validation"
+#   * scope="planning"   (af-intake-plan whole-plan)  -> snapshot "planning-validation"
 # ``project_ref`` is the SINGLE typed source of truth for these three (space, snapshot) pairs; it
 # replaces the old free-form ``checks_ref`` plumbing (a sentinel + a 4-way branch). The skills may
 # still override the checks reference per-invocation (their ``--checks-space`` argument) by passing a
@@ -207,7 +207,7 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
 
     ``scope`` is the ONE seam between the two callers — everything downstream (pin / coverage / pass)
     is identical:
-      * ``scope="planning"`` (af-intake WHOLE-PLAN pass) — planning lenses are GLOBAL considerations
+      * ``scope="planning"`` (af-intake-plan WHOLE-PLAN pass) — planning lenses are GLOBAL considerations
         (``applies_when``, NOT tag/surface-bound), so resolve the ENTIRE active planning checklist
         regardless of the subject's tags/surfaces: the whole plan must satisfy every lens. ``ticket``
         is the plan-anchor subject the coverage contract hangs on.
@@ -467,7 +467,7 @@ def claim(cid: str, owner: str, ttl: int = DEFAULT_LEASE_TTL_S,
     """
     meta = _meta(cid, ref)
     if meta.get(M_BUILD_STATE) == "blocked":
-        return False  # blocked needs owner action (af-intake amend / accept), not a build claim
+        return False  # blocked needs owner action (af-intake-plan amend / accept), not a build claim
     now = time.time()
     if _lease_live(meta, now) and meta.get(M_CLAIM_OWNER) != owner:
         return False  # a different owner holds a live lease
@@ -535,7 +535,7 @@ def block(cid: str, owner: str, reason: str,
     that forces a stop and cannot be progressed" — never a silent forever-deadlock.
 
     Sets build_state="blocked" + block_reason, and clears BOTH the lease and the run marker (the
-    ticket has left the active run; clearing it must be owner action via af-intake amend / accept).
+    ticket has left the active run; clearing it must be owner action via af-intake-plan amend / accept).
     Only the holding owner (or an unclaimed ticket) may block; mismatch returns False.
     """
     meta = _meta(cid, ref)

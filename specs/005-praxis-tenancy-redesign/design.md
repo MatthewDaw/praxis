@@ -540,7 +540,7 @@ factory already carries the bare project (the `prd-<project>` prefix + the
 
 Inside a project space `<project>`:
 - snapshot `prd-<project>` — plan + tickets (mutable via §4.1 snapshot-bound writes).
-- snapshot `planning-validation` — planning-scope checks (read by af-intake).
+- snapshot `planning-validation` — planning-scope checks (read by af-intake-plan).
 - snapshot `building-validation` — validation-scope checks (read by af-build). **Renamed
   from `coding-validation` everywhere.**
 
@@ -574,13 +574,13 @@ defaults space to `project`). Explicit `None` forces the ticket/default referenc
 
 ### 7.2 Slash overrides
 
-- `/af-intake --checks-space=<...>` and `/af-build --checks-space=<...>` become a
+- `/af-intake-plan --checks-space=<...>` and `/af-build --checks-space=<...>` become a
   `(space, snapshot)` override threaded as `checks_ref`. Default resolution:
   `space=<project>`, `snapshot=planning-validation` (intake) / `building-validation`
   (build).
 - af-build workflow `CHECKS_SPACE=coding-validation` constant → `CHECKS_SNAPSHOT=building-validation`
   (+ `space=<project>`); §8 per-ticket worker contract `start_ticket(checks_ref=...)`.
-- af-intake Part C writes checks INTO the project space's snapshot:
+- af-intake-plan Part C writes checks INTO the project space's snapshot:
   planning checks (`source=planning-checklist`, `scope=planning`) →
   `space=<project>, snapshot=planning-validation`; validation checks
   (`scope=validation`) → `space=<project>, snapshot=building-validation`. The old global
@@ -589,7 +589,7 @@ defaults space to `project`). Explicit `None` forces the ticket/default referenc
 
 ### 7.3 Docs + tests to update (per-project snapshot + building-validation rename)
 
-`af-intake/SKILL.md` (B3, Part C intro, C1, C2), `af-build/SKILL.md` (Validation source,
+`af-intake-plan/SKILL.md` (B3, Part C intro, C1, C2), `af-build/SKILL.md` (Validation source,
 workflow WORKER const, §8 worker contract), `agent_factory/docs/af-memory-policy.md` (§1
 seam + signatures), `agent_factory/docs/factory-state-contract.md` (seam + signatures),
 `agent_factory/docs/coverage-spine/02-planner.md` (planning-snapshot wording),

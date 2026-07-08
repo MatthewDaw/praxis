@@ -102,7 +102,7 @@ grounded each decision.
 # Factory Build — drive the (optionally scoped) build set to done
 
 The explicit entry point for *"address unfinished work."* This skill consumes a plan already hardened by
-**af-plan** (→ `prd-<project>`) and surfaces bound by **af-intake**; it does **not** plan new work or admit
+**af-plan** (→ `prd-<project>`) and surfaces bound by **af-intake-plan**; it does **not** plan new work or admit
 requirements. It runs the loop above per ticket and convenes the holistic panel at completeness.
 
 ## Scope (optional — the whole point of the argument)
@@ -134,13 +134,13 @@ reads* (tag + surface lanes) at `(space=<project>, snapshot=building-validation)
 (claims, pins, passes) stays on the `prd-<project>` snapshot, untouched. That snapshot must hold the
 `category="check"`, `scope="validation"` rules; if it is empty a ticket resolves **only** its
 always-present acceptance-condition floor (§3) — fewer checks, never a crash. (Seed it from the plan or
-save a snapshot into it out-of-band; af-intake amend-mode C1 is how new `building-validation` rules get
+save a snapshot into it out-of-band; af-intake-build-validation is how new `building-validation` rules get
 authored there.)
 
 > **Renamed from `coding-validation`.** The build-check snapshot is now `building-validation`, and it is
 > a per-project snapshot in the project space — NOT a single global `coding-validation` space. Legacy
 > global checks are not retro-fitted into per-project spaces (old data carried no reliable project
-> association); teams re-seed each project's `building-validation` snapshot via af-intake (Part C / amend).
+> association); teams re-seed each project's `building-validation` snapshot via af-intake-build-validation.
 
 **Override — slash argument ONLY** (no env seam): `/af-build [scope] --checks-space=<space[:snapshot]>`
 points resolution at a different `(space, snapshot)` for this run. Thread it as an `override`
@@ -257,7 +257,7 @@ depends on **no unfinished or in-progress job**. Claim that one; ignore the rest
   prerequisite still gates correctly. (`ready_tickets`/`pending_deps` exist for the gate's report and for
   choosing among equally-ready candidates — not for batching work.)
 - **`next_ready_ticket` returns None but work remains** → a **dependency stall** (a cycle, or a chain rooted
-  on a `blocked` ticket). Do not spin: fix/unblock the root prerequisite (af-intake amend / accept), correct
+  on a `blocked` ticket). Do not spin: fix/unblock the root prerequisite (af-intake-plan amend / accept), correct
   a wrong `depends_on` edge, or `block()` the unsatisfiable dependents. The gate detects + surfaces this too.
 - **`next_ready_ticket` returns None and nothing is waiting** (only `finished` + `blocked` remain) → the
   scoped set is done; go to the WORK-review panel (§7).
@@ -342,7 +342,7 @@ ticket-specific facts — via declared queries (scope + top_k + `as_of`). Budget
 in; warm/cold to a ceiling well below the context-rot threshold). The agent works from this sealed bundle;
 a new need is a new declared pull, logged — never unbounded mid-task querying. For a **screen-scoped
 ticket**, pull the governing behavior with `praxis_requirements_for_surface(project, screen_id)` (the
-active requirement facts bound to that wireframe screen via `renders`, per af-intake) and take the layout
+active requirement facts bound to that wireframe screen via `renders`, per af-intake-plan) and take the layout
 from the wireframe HTML in git.
 
 **Read-only retrieval sub-agent (the ONE permitted delegation).** When the bundle needs reading many files
@@ -396,12 +396,12 @@ actually observable (discover the commands; don't assume):
   first, watch it fail, then verify the change makes it pass.
 - **Nothing about *what* must be proven lives in this skill or any file** — the validation *requirements*
   are resolved by query. This skill says only *how* to synthesize covering validations, run them, and
-  record each pass. **The build NEVER waits on af-intake to author per-ticket eval requirements**, and
-  af-intake must NOT be asked to author them. The contract a ticket resolves is: its **own acceptance
+  record each pass. **The build NEVER waits on af-intake-plan to author per-ticket eval requirements**, and
+  af-intake-plan must NOT be asked to author them. The contract a ticket resolves is: its **own acceptance
   condition** (the always-present `<cid>::acceptance` floor — every ticket has one) ∪ any **STANDING
   general validation lenses** already in Praxis (wildcard `applies_to:"*"` / tag-matched conventions, e.g.
   a universal typecheck+build+lint gate). A ticket that resolves *only* the floor is **not** a defect and
-  needs **no** amend — you still author a custom eval for its acceptance condition and proceed. (af-intake
+  needs **no** amend — you still author a custom eval for its acceptance condition and proceed. (af-intake-plan
   *amend* exists to add a NEW general lens when one is discovered — a compounding improvement — never as a
   prerequisite for building an existing ticket.)
 
@@ -513,7 +513,7 @@ the subagents directly. **Dedupe** (merge multiple angles into one finding per d
 strongest severity) BEFORE emitting. **Emit each finding as an `incomplete` Praxis ticket/check** bound to
 the touched area: a defect demanding a fix → a **ticket** (the build loop re-opens via FIND and the
 completeness gate stays blocked until it is `finished`); a recurring "this must be proven" rule → a
-**check** (af-intake's amend mode, which also regresses the matching finished tickets). That is the
+**check** (af-intake-build-validation, which also regresses the matching finished tickets). That is the
 entire enforcement mechanism — no second gate, no advisory-only suggestions. **Closing a finding** = its
 ticket/check reaching `build_state="finished"`: **resolved** (built + checks pass) or **accepted** (a
 conscious owned trade-off, recorded as a Praxis episode before the ticket is released `finished` — never
@@ -550,7 +550,7 @@ You are an af-build per-ticket worker. Build EXACTLY ONE ticket, EVAL-FIRST (red
 this ticket — never look at, claim, or build another. Inputs: PROJECT=<bare name>, TICKET=<cid>,
 OWNER=<your session id>, CHECKS_SNAPSHOT=<building-validation | the run's --checks-space override
 snapshot>. Checks resolve from (space=PROJECT, snapshot=CHECKS_SNAPSHOT). Run helpers from
-hooks/_ticket_state.py (contract: docs/factory-state-contract.md). af-intake is NOT in this path — it
+hooks/_ticket_state.py (contract: docs/factory-state-contract.md). af-intake-plan is NOT in this path — it
 does not author eval requirements at build time; never wait on it.
 
 TICKET STATE lives ON THE PLAN SNAPSHOT, never working memory: let PLAN=(PROJECT, "prd-"+PROJECT) and
@@ -586,7 +586,7 @@ splits that write into working memory and the ticket never reads back as done �
    unsatisfiable: block(TICKET, OWNER, reason, ref=PLAN).
 
 NEVER build-first / test-after. NEVER fake, delete, or weaken an eval to get green. NEVER finish without
-all_validations_passed. NEVER ask af-intake to author the eval requirements.
+all_validations_passed. NEVER ask af-intake-plan to author the eval requirements.
 ```
 
 ## Long-horizon control (so the run survives length)
@@ -654,7 +654,7 @@ any other — external signal, recorded on the ticket, fail-closed.
   single ticket's build the only delegation is the disposable read-only retrieval sub-agent (it reads and
   digests, never decides/edits/writes/commits).
 - **Never** start a new plan or add requirements here — af-build only finishes existing tickets (planning
-  is af-plan; intake is af-intake).
+  is af-plan; intake is af-intake-plan).
 - **Never** build a ticket outside the requested scope; the parked non-scoped incomplete tickets MUST
   appear in the report — scoping is explicit, never a silent under-build.
 - **Never** make the WORK-review advisory-only or self-reviewed; never pass on a missing ce panel (record

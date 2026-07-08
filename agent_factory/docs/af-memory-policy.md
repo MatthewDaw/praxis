@@ -2,7 +2,7 @@
 
 This is the factory's **internal reference** for all Praxis knowledge-graph access — the single
 "knowledge port" as policy. It is **not** an invocable skill; it is the document the `af-*` skills
-(`af-plan`, `af-intake`, `af-build`, `af-wireframe`) and the plugin hooks cite whenever they read
+(`af-plan`, `af-intake-plan`, `af-build`, `af-wireframe`) and the plugin hooks cite whenever they read
 from or write to Praxis. It encodes which MCP tool to use, the tabular ingestion-integrity audit,
 tenancy via snapshots/mounts, the ticket/check state model, and the write-back rules.
 
@@ -187,11 +187,11 @@ and their state, so validation rules live on their own. Both live in the SAME pr
 (`space=<project>`, the bare project name); only the *snapshot* differs.
 `resolve_validation_requirements(..., scope=...)` defaults the read snapshot by scope:
 `scope="validation"` (af-build per-ticket) → **`building-validation`** (renamed from
-`coding-validation`); `scope="planning"` (af-intake whole-plan) → **`planning-validation`**;
+`coding-validation`); `scope="planning"` (af-intake-plan whole-plan) → **`planning-validation`**;
 `scope=None` (back-compat) → the ticket/default reference. Only the *check reads* honor it (via a
 per-request `x-praxis-space` + `x-praxis-snapshot` override in `facts_by` / `surface_checks`); ticket
 state (claims, pins, passes) is untouched — it stays on the `prd-<project>` snapshot. Callers override
-per-run with `checks_ref=(space, snapshot)` (the `af-build` / `af-intake` slash argument,
+per-run with `checks_ref=(space, snapshot)` (the `af-build` / `af-intake-plan` slash argument,
 `--checks-space`); `checks_ref=None` forces the ticket/default reference. A check is only resolvable
 if it was written INTO the snapshot RESOLVE reads — amend-mode writes must target
 `space=<project>, snapshot=building-validation` / `planning-validation` accordingly.
