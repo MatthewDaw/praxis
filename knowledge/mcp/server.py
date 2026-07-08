@@ -66,17 +66,32 @@ def _dev_org() -> str:
     return os.environ.get("PRAXIS_MCP_ORG", "default").strip() or "default"
 
 
-def _headers() -> dict[str, str]:
-    # Working memory is ALWAYS keyed by the authenticated principal (org + sub); no
-    # space header is ever sent. Snapshot / space / mount tools carry (space, snapshot)
-    # explicitly in the request body or URL, not via a header driving the live graph.
+def _headers(space: str | None = None, snapshot: str | None = None) -> dict[str, str]:
+    # Auth + org. With NO (space, snapshot) the request resolves to the authenticated
+    # principal's working memory (the default for personal-knowledge ops). Passing BOTH
+    # ``space`` and ``snapshot`` emits the ``X-Praxis-Space``/``X-Praxis-Snapshot`` headers
+    # so the op targets that ORG-SHARED snapshot graph instead — the seam the factory uses
+    # to author checks into ``building-validation``/``planning-validation`` and to read/write
+    # ``prd-<project>`` ticket state, exactly where the af hooks read. A partial reference
+    # (exactly one of space/snapshot) is a misconfiguration and RAISES (fail-closed, mirroring
+    # hooks/_praxis) rather than silently falling back to working memory.
+    if (space is None) != (snapshot is None):
+        raise ValueError(
+            f"space and snapshot must both be given or both omitted "
+            f"(space={space!r}, snapshot={snapshot!r})"
+        )
     if _auth_disabled():
         # No bearer: the auth-disabled backend ignores it and uses dev-user.
-        return {"X-Praxis-Org": _dev_org()}
-    return {
-        "Authorization": f"Bearer {identity.token()}",
-        "X-Praxis-Org": identity.active_org(),
-    }
+        headers = {"X-Praxis-Org": _dev_org()}
+    else:
+        headers = {
+            "Authorization": f"Bearer {identity.token()}",
+            "X-Praxis-Org": identity.active_org(),
+        }
+    if space is not None:
+        headers["X-Praxis-Space"] = space
+        headers["X-Praxis-Snapshot"] = snapshot  # type: ignore[assignment]
+    return headers
 
 
 def _resolve_space(space: str | None) -> str:
@@ -282,13 +297,18 @@ def praxis_dependents(fact_id: str) -> str:
 
 
 @mcp.tool()
-def praxis_get_fact(cid: str) -> str:
+def praxis_get_fact(cid: str, space: str | None = None, snapshot: str | None = None) -> str:
     """Fetch one fact's full detail, including its writer-supplied ``meta``.
 
     ``praxis_get_context`` hits carry ``source``/``scope``/``category`` but not the
     free-form ``meta`` object (kept off the lean recall path). Use this to read a
     fact's ``meta`` (e.g. ``{"requirement_id": "R4"}``) and full audit trail back.
     Find the id via ``praxis_list_graph`` / ``praxis_get_context``.
+
+    Pass BOTH ``space`` and ``snapshot`` to read a fact from an org-shared snapshot (e.g. a
+    check in ``building-validation``, a ticket in ``prd-<project>``); omit both for working
+    memory. A fact written to a snapshot is NOT in working memory, so verifying a check you
+    just authored requires the same ``(space, snapshot)`` you wrote it to.
 
     Returns a human summary plus a structured JSON block with the full candidate
     detail (``id``/``title``/``content``/``state``/``source``/``scope``/
@@ -299,7 +319,7 @@ def praxis_get_fact(cid: str) -> str:
     try:
         resp = httpx.get(
             f"{identity.api_base()}/candidates/{cid}",
-            headers=_headers(),
+            headers=_headers(space, snapshot),
             timeout=_READ_TIMEOUT,
         )
         resp.raise_for_status()
@@ -324,8 +344,18 @@ def praxis_add_insight(
     on_conflict: str = "auto_resolve",
     derived_from: list[str] | None = None,
     raw: bool = False,
+    space: str | None = None,
+    snapshot: str | None = None,
 ) -> str:
     """Store a durable insight in the user's knowledge graph.
+
+    By default the fact lands in your working memory. Pass BOTH ``space`` and ``snapshot``
+    to write it into an ORG-SHARED snapshot instead — the factory seam: author a validation
+    check into ``(space=<project>, snapshot="building-validation")``, a planning lens into
+    ``planning-validation``, or a requirement into ``prd-<project>``. That is where the
+    af-build / af-intake hooks READ, so a check written to working memory (no space/snapshot)
+    is invisible to the factory. The server refuses a fact whose category/scope does not fit
+    the destination snapshot's section (e.g. a non-check into ``building-validation``).
 
     Before calling, push the user to state a single specific, self-contained
     insight (one that stands on its own without surrounding chat context), and
@@ -375,7 +405,7 @@ def praxis_add_insight(
         resp = httpx.post(
             f"{identity.api_base()}/insights",
             json=body,
-            headers=_headers(),
+            headers=_headers(space, snapshot),
             timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
@@ -563,8 +593,14 @@ def praxis_ingest_session(narrative: str, source: str | None = None) -> str:
 
 
 @mcp.tool()
-def praxis_record_outcome(fact_id: str, outcome: str) -> str:
+def praxis_record_outcome(fact_id: str, outcome: str,
+                          space: str | None = None, snapshot: str | None = None) -> str:
     """Feed a downstream verification result back into a fact's trust (gap H1).
+
+    Pass BOTH ``space`` and ``snapshot`` to record the outcome on a fact that lives in an
+    org-shared snapshot — the factory records ticket outcomes on ``prd-<project>`` (its
+    canonical project graph), so a regress of a snapshot ticket needs that ``(space,
+    snapshot)``; omit both for a working-memory fact.
 
     Records whether acting on a fact actually worked. ``outcome`` is
     ``"succeeded"`` / ``"failed"`` (``"success"``/``"failure"``/``"true"``/
@@ -586,7 +622,7 @@ def praxis_record_outcome(fact_id: str, outcome: str) -> str:
         resp = httpx.post(
             f"{identity.api_base()}/facts/{fact_id}/outcome",
             json={"success": success},
-            headers=_headers(),
+            headers=_headers(space, snapshot),
             timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
@@ -791,8 +827,13 @@ def praxis_insert_fact(
     category: str | None = None,
     meta: dict | None = None,
     derived_from: list[str] | None = None,
+    space: str | None = None,
+    snapshot: str | None = None,
 ) -> str:
     """Insert a fact directly into the graph, bypassing the ingestion pipeline.
+
+    Pass BOTH ``space`` and ``snapshot`` to insert into an org-shared snapshot (a check into
+    ``building-validation``, a ticket into ``prd-<project>``) instead of working memory.
 
     This is a *raw* write — no redaction, dedup, or conflict handling — and the
     fact lands in the "proposed" state for review. For normal human-approved
@@ -821,7 +862,7 @@ def praxis_insert_fact(
         resp = httpx.post(
             f"{identity.api_base()}/candidates",
             json=body,
-            headers=_headers(),
+            headers=_headers(space, snapshot),
             timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
@@ -841,6 +882,8 @@ def praxis_edit_fact(
     meta: dict | None = None,
     derived_from: list[str] | None = None,
     on_conflict: str = "none",
+    space: str | None = None,
+    snapshot: str | None = None,
 ) -> str:
     """Edit an existing fact in place (find its id via ``praxis_list_graph``).
 
@@ -848,6 +891,10 @@ def praxis_edit_fact(
     ``category``, ``meta`` (merged into the fact's existing meta), and/or
     ``derived_from`` (ids to attach as ``derived_from`` edges from this fact).
     Confirm edits with the user first; this mutates stored knowledge.
+
+    Pass BOTH ``space`` and ``snapshot`` to edit a fact that lives in an org-shared snapshot
+    (e.g. an idempotent update of a check in ``building-validation``, or a ticket-state edit
+    in ``prd-<project>``); omit both for a working-memory fact.
 
     ``on_conflict`` defaults to ``"none"``: an edit is a **literal write** — only
     this fact's own fields change and no other fact is touched. Editing a field is
@@ -888,7 +935,7 @@ def praxis_edit_fact(
         resp = httpx.patch(
             f"{identity.api_base()}/candidates/{cid}",
             json=body,
-            headers=_headers(),
+            headers=_headers(space, snapshot),
             timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
@@ -1831,8 +1878,14 @@ def praxis_bind_surface(
     title: str | None = None,
     file: str | None = None,
     states: list[str] | None = None,
+    space: str | None = None,
+    snapshot: str | None = None,
 ) -> str:
     """Bind a requirement fact to a wireframe surface via a typed ``renders`` edge.
+
+    Pass BOTH ``space`` and ``snapshot`` to write the binding into an org-shared snapshot
+    (so a surface-bound check/requirement authored into a project snapshot resolves at build);
+    omit both for working memory. Use the SAME ``(space, snapshot)`` the bound fact lives in.
 
     This is the PRIMARY write of the requirement<->surface factory: it ensures the
     surface fact for ``(project, screen_id)`` exists (creating/merge-updating it from
@@ -1864,7 +1917,7 @@ def praxis_bind_surface(
         resp = httpx.post(
             f"{identity.api_base()}/surfaces/bind",
             json=body,
-            headers=_headers(),
+            headers=_headers(space, snapshot),
             timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
@@ -1996,8 +2049,15 @@ def praxis_facts_by(
     scope: str | None = None,
     state: str = "active",
     meta_filter: dict | None = None,
+    space: str | None = None,
+    snapshot: str | None = None,
 ) -> str:
     """Enumerate ALL facts matching structured filters (EXHAUSTIVE — no top-k, no ranking).
+
+    Pass BOTH ``space`` and ``snapshot`` to enumerate an org-shared snapshot instead of
+    working memory — e.g. verify a check landed with
+    ``facts_by(category="check", space=<project>, snapshot="building-validation")`` (exactly
+    where af-build's RESOLVE reads). A fact written to a snapshot is NOT in working memory.
 
     The completeness primitive for "pull everything related to one part and enforce it".
     ``praxis_get_context`` is a semantic top-k that SAMPLES (it can silently drop a
@@ -2028,7 +2088,7 @@ def praxis_facts_by(
         resp = httpx.get(
             f"{identity.api_base()}/facts/by",
             params=params,
-            headers=_headers(),
+            headers=_headers(space, snapshot),
             timeout=_READ_TIMEOUT,
         )
         resp.raise_for_status()

@@ -971,9 +971,10 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         try:
-            return candidates_for(org, uid).create(body)
+            return candidates_for(org, uid, target).create(body)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
@@ -2237,11 +2238,14 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Bind a requirement fact to a surface via a typed ``renders`` edge (PRIMARY write).
 
         Ensures the surface fact exists, then attaches ``requirement --renders--> surface``.
         Idempotent (duplicate edges are ignored). 404 if the requirement fact is unknown.
+        With a ``(space, snapshot)`` target the edge is written into that snapshot (so a
+        surface-bound check/requirement authored into a project snapshot resolves at build).
         """
         requirement_fact_id = str(body.get("requirementFactId") or "").strip()
         screen_id = str(body.get("screenId") or "").strip()
@@ -2251,7 +2255,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 status_code=400,
                 detail="body must include 'requirementFactId', 'screenId' and 'project'",
             )
-        g = live_graph(org, uid)
+        g = graph_for(org, uid, target)
         if g.get_fact(requirement_fact_id) is None:
             raise HTTPException(
                 status_code=404, detail=f"unknown fact {requirement_fact_id}"

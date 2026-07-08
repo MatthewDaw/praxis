@@ -41,11 +41,13 @@ retrieval sub-agent for bulk reading, never a crew that writes.
 
 Confirm tenancy per `docs/af-memory-policy.md` §0 (the right org, this project's per-project MCP cache).
 The check must land in the snapshot af-build RESOLVE reads, or it is a silent no-op:
-`scope="validation"` → **`(space=<project>, snapshot=building-validation)`**. Target it via the
-snapshot-bound write path (`praxis_select_space("<project>")` sets the client's space default, then the
-write targets the `building-validation` snapshot). Writing a validation check into `prd-<project>` (the
-plan) instead is refused by the section invariant; writing it into `planning-validation` makes it invisible
-to the build.
+`scope="validation"` → **`(space=<project>, snapshot="building-validation")`**. You target it by passing
+**both** `space` and `snapshot` on the write itself — `praxis_add_insight(..., space="<project>",
+snapshot="building-validation")`. (A bare `praxis_add_insight` with no `space`/`snapshot` writes your
+personal WORKING MEMORY, which af-build never reads — that is exactly the silent no-op to avoid;
+`praxis_select_space` does NOT make a write target a snapshot.) Writing a validation check into
+`prd-<project>` is refused by the server's section invariant; writing it into `planning-validation` makes
+it invisible to the build.
 
 > **Per-project, not global.** `building-validation` is a SNAPSHOT in THIS project's own space (it was
 > renamed from the retired global `coding-validation` space). A check authored here governs only this
@@ -85,15 +87,19 @@ praxis_add_insight(
                "applies_when": "<condition | empty>", "surfaces": ["<screen-id>", ...],
                "run": "<command>" },
   on_conflict = "surface",
+  space    = "<project>",              # REQUIRED — target the org-shared snapshot,
+  snapshot = "building-validation",    # not working memory
 )
 ```
 
-- **Idempotent on `meta.check_id`**: if one already exists, `praxis_edit_fact` it rather than duplicating.
-- **`on_conflict="surface"`**, never `raw=True`/`auto_resolve`: a near-duplicate surfaces as a
-  contradiction (`praxis_get_contradictions`) instead of silently minting a twin; settle it with
-  `praxis_resolve_contradiction`.
-- If it binds to surfaces, also create the `renders` edge (`praxis_bind_surface(check_id, screen_id, ...)`)
-  so the surface lane of RESOLVE finds it.
+- **The `space`/`snapshot` pair is what routes the write to the section af-build reads.** Omit it and the
+  check lands in working memory (invisible to the build) even though the call returns success + an id.
+  VERIFY it landed: `praxis_facts_by(category="check", space="<project>", snapshot="building-validation")`
+  should now list it — the SAME `(space, snapshot)` af-build's RESOLVE reads.
+- **Idempotent on `meta.check_id`**: if one already exists, `praxis_edit_fact(cid, ..., space="<project>",
+  snapshot="building-validation")` rather than duplicating.
+- **`on_conflict="surface"`**, never `raw=True`/`auto_resolve`: a near-duplicate surfaces as a pending
+  contradiction rather than silently minting a twin.
 
 The check takes effect on the **next build run** with no further action: at each ticket's RESOLVE step
 `resolve_validation_requirements` picks it up by tag/surface match, `pin_requirements` writes it into that

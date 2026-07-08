@@ -673,12 +673,9 @@ not a rewrite of an existing ticket — admit it as a ticket the same shape Full
 mint: **identity only** (tags, surfaces, semantics), NEVER an authored check list. This is the one Amend
 path that writes the **`prd-<project>` snapshot** (where tickets live), not a check snapshot.
 
-Do it through the load→edit→save cycle so the add runs its dedup/contradiction net against the existing
-plan (a bare snapshot-targeted write has nothing to compare against):
-
-1. `load_snapshot(space="<project>", snapshot="prd-<project>", mode="replace")` — pull the current plan
-   into working memory (confirm tenancy first per `docs/af-memory-policy.md` §0).
-2. Admit the requirement, carrying the project identity + incomplete state:
+Write it DIRECTLY into the `prd-<project>` snapshot by passing `space`/`snapshot` — the write's
+dedup/contradiction net runs against the plan in that snapshot, so there is no load→working-memory→save
+round-trip (confirm tenancy first per `docs/af-memory-policy.md` §0):
 
 ```
 praxis_add_insight(
@@ -688,19 +685,22 @@ praxis_add_insight(
   meta     = { "build_state": "incomplete", "tags": ["<class-tag>", ...],
                "scope": "mvp | post-mvp", "surfaces": ["<screen-id>", ...] },
   on_conflict = "surface",
+  space    = "<project>",          # REQUIRED — write into the plan snapshot itself,
+  snapshot = "prd-<project>",      # NOT working memory (invisible to the build)
 )
 ```
 
-3. **`on_conflict="surface"` is the guard**, never `raw=True`/`auto_resolve`: if the "new" requirement
-   near-dups an existing one, it surfaces as a contradiction (`praxis_get_contradictions`) instead of
-   silently minting a twin. Settle it with `praxis_resolve_contradiction`. If it turns out to *be* an
-   existing ticket needing new wording, you are in the wrong path — that content edit belongs to FULL
-   INTAKE (Step-3), not Amend.
-4. If it renders a surface, bind it: `praxis_bind_surface(requirement_id, screen_id, ...)` (the `renders`
-   edge) so surface-bound checks resolve onto it at build.
-5. `save_snapshot(space="<project>", snapshot="prd-<project>")` — persist. A requirement left only in
-   working memory (or written into a check snapshot) is invisible to the build — the requirement analog
-   of the wrong-snapshot no-op above.
+1. **`on_conflict="surface"` is the guard**, never `raw=True`/`auto_resolve`: if the "new" requirement
+   near-dups an existing one, it surfaces as a pending contradiction instead of silently minting a twin. If
+   it turns out to *be* an existing ticket needing new wording, you are in the wrong path — that content
+   edit belongs to FULL INTAKE (Step-3), not Amend.
+2. If it renders a surface, bind it against the SAME snapshot:
+   `praxis_bind_surface(requirement_id, screen_id, project, space="<project>", snapshot="prd-<project>")`
+   (the `renders` edge) so surface-bound checks resolve onto it at build.
+3. VERIFY it landed where the build reads:
+   `praxis_incomplete_requirements(<project>)` (BARE name — this endpoint reads the `prd-<project>`
+   snapshot) should now list it, or `praxis_facts_by(category="requirement", space="<project>",
+   snapshot="prd-<project>")`.
 
 **No regression step for a new ticket.** A new ticket is born `build_state="incomplete"` with `source="prd-<project>"`,
 so it enters `incomplete_requirements` for free — there is nothing pre-existing to re-open. Confirm with

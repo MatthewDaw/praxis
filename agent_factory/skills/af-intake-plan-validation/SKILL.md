@@ -38,11 +38,13 @@ stop) — never fall back to a file.
 ## Step 0 — Tenancy + target the section
 
 Confirm tenancy per `docs/af-memory-policy.md` §0. The lens must land in the snapshot the audit reads, or
-it is a silent no-op: `scope="planning"` → **`(space=<project>, snapshot=planning-validation)`**. Target
-it via the snapshot-bound write path (`praxis_select_space("<project>")` sets the client's space default,
-then the write targets the `planning-validation` snapshot). Writing a planning lens into `prd-<project>`
-(the plan) is refused by the section invariant; writing it into `building-validation` makes it invisible
-to the audit.
+it is a silent no-op: `scope="planning"` → **`(space=<project>, snapshot="planning-validation")`**. You
+target it by passing **both** `space` and `snapshot` on the write itself —
+`praxis_add_insight(..., space="<project>", snapshot="planning-validation")`. (A bare `praxis_add_insight`
+with no `space`/`snapshot` writes your personal WORKING MEMORY, which the audit never reads — the silent
+no-op to avoid; `praxis_select_space` does NOT make a write target a snapshot.) Writing a planning lens
+into `prd-<project>` is refused by the server's section invariant; writing it into `building-validation`
+makes it invisible to the audit.
 
 > **Per-project, not global.** `planning-validation` is a SNAPSHOT in THIS project's own space — the
 > planning checklist is no longer a single global library. A lens authored here governs only this
@@ -70,15 +72,19 @@ praxis_add_insight(
   scope    = "planning",
   meta     = { "check_id": "<stable-slug>", "applies_to": ["<tag>", ...] | ["*"], "angle": "<lens-label>" },
   on_conflict = "surface",
+  space    = "<project>",              # REQUIRED — target the org-shared snapshot,
+  snapshot = "planning-validation",    # not working memory
 )
 ```
 
-- Keep **`source="planning-checklist"`** (the lens-library identity) but LAND the fact in THIS project's
-  `planning-validation` snapshot (`space=<project>`) — the source string is provenance, the `(space,
-  snapshot)` is where it lives.
-- **Idempotent on `meta.check_id`**: if one exists, `praxis_edit_fact` it rather than duplicating.
-- **`on_conflict="surface"`**: a near-duplicate surfaces as a contradiction (`praxis_get_contradictions`)
-  to settle, not a silent twin.
+- Keep **`source="planning-checklist"`** (the lens-library identity) but the `space`/`snapshot` pair is
+  what LANDS the fact in THIS project's `planning-validation` snapshot — the source string is provenance,
+  the `(space, snapshot)` is where it lives. Omit the pair and it goes to working memory (the audit never
+  reads it). VERIFY: `praxis_facts_by(category="check", scope="planning", space="<project>",
+  snapshot="planning-validation")` should now list it.
+- **Idempotent on `meta.check_id`**: if one exists, `praxis_edit_fact(cid, ..., space="<project>",
+  snapshot="planning-validation")` rather than duplicating.
+- **`on_conflict="surface"`**: a near-duplicate surfaces as a pending contradiction, not a silent twin.
 
 The active `scope="planning"` checks in that snapshot ARE the planning checklist af-intake-plan's audit
 (Part B3) pulls. The lens takes effect on the **next plan** for this project: the audit queries the

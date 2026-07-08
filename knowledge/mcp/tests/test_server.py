@@ -74,6 +74,41 @@ def test_add_insight_posts_with_auth_and_returns_summary(monkeypatch):
     assert captured["headers"]["X-Praxis-Org"] == "acme"
 
 
+def test_add_insight_snapshot_target_emits_space_snapshot_headers(monkeypatch):
+    """The factory seam: add_insight(space, snapshot) must send X-Praxis-Space/Snapshot so
+    the fact lands in the ORG-SHARED snapshot af-build reads — NOT working memory."""
+    _patch_identity(monkeypatch)
+    captured = {}
+
+    def fake_post(url, json, headers, timeout=None):
+        captured["headers"] = headers
+        return _Resp({"summary": "added", "action": "add", "id": "c1"})
+
+    monkeypatch.setattr(server.httpx, "post", fake_post)
+
+    # snapshot-bound: both headers present.
+    server.praxis_add_insight(
+        "auth tickets need a live login e2e", category="check", scope="validation",
+        space="acme-store", snapshot="building-validation",
+    )
+    assert captured["headers"]["X-Praxis-Space"] == "acme-store"
+    assert captured["headers"]["X-Praxis-Snapshot"] == "building-validation"
+
+    # working memory: no space/snapshot headers.
+    server.praxis_add_insight("a personal note")
+    assert "X-Praxis-Space" not in captured["headers"]
+    assert "X-Praxis-Snapshot" not in captured["headers"]
+
+
+def test_headers_partial_snapshot_reference_raises(monkeypatch):
+    """A partial (space XOR snapshot) reference is a misconfiguration — fail closed."""
+    _patch_identity(monkeypatch)
+    with pytest.raises(ValueError):
+        server._headers(space="acme-store", snapshot=None)
+    with pytest.raises(ValueError):
+        server._headers(space=None, snapshot="building-validation")
+
+
 def test_add_insights_batch_posts_list_and_summarizes(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}
