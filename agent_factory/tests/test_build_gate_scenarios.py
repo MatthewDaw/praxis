@@ -15,6 +15,7 @@ deterministically with no network.
 
 import io
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -115,3 +116,76 @@ def test_legacy_owned_claim_arms_gate(monkeypatch):
 def test_other_sessions_run_leaves_me_inert(monkeypatch):
     # A run marker owned by a DIFFERENT session must not block this one.
     assert _run(monkeypatch, [_item("R1", **_marker("sess-B"))])["decision"] == "allow"
+
+
+# --------------------------------------------------------------------------- project resolution
+
+
+def _resolved_project(monkeypatch, cwd, session=OWNER):
+    """Drive gate.main() and capture the ``project`` string it passes to ``incomplete_requirements``.
+
+    Returns None if the gate never reached the Praxis read (e.g. it stood inert). Cleans up any
+    ``FACTORY_PROJECT`` the gate loaded into the REAL environment from a ``.env`` so tests don't leak."""
+    seen: dict[str, str] = {}
+
+    def _spy(project, **_k):
+        seen["project"] = project
+        return []  # empty incomplete set -> gate allows; we only care about the project arg
+
+    monkeypatch.setattr(_praxis, "incomplete_requirements", _spy)
+    monkeypatch.delenv("FACTORY_GATE_DISABLED", raising=False)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"session_id": session, "cwd": cwd})))
+    monkeypatch.setattr(sys, "stdout", io.StringIO())
+    try:
+        with pytest.raises(SystemExit):
+            gate.main()
+    finally:
+        # _load_dotenv writes straight into os.environ (not via monkeypatch), so drop it explicitly.
+        os.environ.pop("FACTORY_PROJECT", None)
+    return seen.get("project")
+
+
+def test_factory_project_from_dotenv_wins_over_cwd_basename(monkeypatch, tmp_path):
+    """REGRESSION: FACTORY_PROJECT set ONLY in a .env (not the real env) must be honored, and the
+    cwd basename differs. The gate must load the factory .env BEFORE resolving the project, so it
+    resolves ``prd-<FACTORY_PROJECT>`` — not ``prd-<cwd-basename>`` (the fail-open bug).
+
+    A repo checked out as ``bestie-api`` building the ``google-shopping-scraper`` Praxis project."""
+    monkeypatch.delenv("FACTORY_PROJECT", raising=False)  # absent from the REAL environment
+    (tmp_path / ".env").write_text("FACTORY_PROJECT=google-shopping-scraper\n", encoding="utf-8")
+    # _praxis._load_dotenv searches Path.cwd()/.env among its candidates — point it at our tmp .env.
+    monkeypatch.setattr(_praxis.Path, "cwd", lambda: tmp_path)
+
+    project = _resolved_project(monkeypatch, cwd="/repos/bestie-api")
+    assert project == "prd-google-shopping-scraper"  # NOT prd-bestie-api
+
+
+def test_real_env_factory_project_still_wins(monkeypatch, tmp_path):
+    """A real shell ``FACTORY_PROJECT`` env var still wins over both the .env and the cwd basename
+    (the .env load never overrides an already-set real env var)."""
+    monkeypatch.setenv("FACTORY_PROJECT", "team-app")
+    (tmp_path / ".env").write_text("FACTORY_PROJECT=other-project\n", encoding="utf-8")
+    monkeypatch.setattr(_praxis.Path, "cwd", lambda: tmp_path)
+    # _resolved_project pops FACTORY_PROJECT in teardown; restore the monkeypatched real one after.
+    project = _resolved_project(monkeypatch, cwd="/repos/bestie-api")
+    assert project == "prd-team-app"
+
+
+def test_fail_closed_when_praxis_unreachable(monkeypatch):
+    """REGRESSION guard: the early .env load must NOT turn the fail-closed path into a fail-open one.
+    When the Praxis read raises PraxisUnreachable, the gate still BLOCKS loudly."""
+    def _boom(project, **_k):
+        raise _praxis.PraxisUnreachable("connection refused")
+
+    monkeypatch.setattr(_praxis, "incomplete_requirements", _boom)
+    monkeypatch.setenv("FACTORY_PROJECT", "team-app")
+    monkeypatch.delenv("FACTORY_GATE_DISABLED", raising=False)
+    monkeypatch.setattr(sys, "stdin",
+                        io.StringIO(json.dumps({"session_id": OWNER, "cwd": "/x/bestie-api"})))
+    buf = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", buf)
+    with pytest.raises(SystemExit):
+        gate.main()
+    parsed = json.loads(buf.getvalue().strip())
+    assert parsed.get("decision") == "block"
+    assert "PRAXIS UNREACHABLE" in parsed.get("reason", "")

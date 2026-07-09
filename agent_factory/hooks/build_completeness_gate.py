@@ -78,8 +78,14 @@ def _block(reason: str) -> None:
 def _active_project(cwd: str) -> str:
     """Resolve the active ``prd-<project>`` from the environment or the cwd — NEVER a manifest file.
 
-    Order: ``FACTORY_PROJECT`` env (with or without a ``prd-`` prefix) → the basename of the cwd.
+    Order: ``FACTORY_PROJECT`` (with or without a ``prd-`` prefix) → the basename of the cwd.
     Returns the full ``prd-<name>`` form the Praxis ``/requirements/incomplete`` endpoint expects.
+
+    ``FACTORY_PROJECT`` may be set as a real shell env var OR in the factory ``<repo>/.env`` (like
+    every other factory credential) — ``main()`` loads that ``.env`` before calling this, so both
+    work. It is REQUIRED whenever the repo directory name differs from the Praxis project name (e.g.
+    a repo checked out as ``bestie-api`` building the ``google-shopping-scraper`` project); without
+    it the cwd-basename fallback resolves the WRONG ``prd-<project>`` and the gate goes inert.
     """
     raw = os.environ.get("FACTORY_PROJECT", "").strip()
     if not raw:
@@ -160,6 +166,25 @@ def main() -> None:
         _allow("build-completeness gate STOOD DOWN: FACTORY_GATE_DISABLED=1 is set. The factory is "
                "NOT verifying build state right now — incomplete tickets/checks may remain unbuilt. "
                "Unset FACTORY_GATE_DISABLED to restore enforcement.")
+
+    # Load the factory ``.env`` BEFORE resolving the project. ``_active_project`` reads
+    # ``FACTORY_PROJECT`` from ``os.environ``, but that override lives in ``<repo>/.env`` (the same
+    # place every other factory credential — PRAXIS_API_KEY / PRAXIS_ORG / PRAXIS_API_BASE_URL — is
+    # configured), and a bare Stop-hook subprocess does NOT inherit a shell-sourced ``.env``. The
+    # dotenv is loaded as a side effect of importing ``_praxis`` (its module-load ``_load_dotenv()``);
+    # doing it here, ahead of ``_active_project``, is what makes the ``FACTORY_PROJECT`` .env override
+    # actually take effect — so a repo whose dir name differs from the Praxis project name resolves
+    # the RIGHT ``prd-<project>`` instead of silently falling back to the cwd basename and going inert.
+    #
+    # Best-effort + fail-closed-preserving: if ``_praxis`` cannot even be imported here we swallow it
+    # and fall through — the real ``import _praxis`` + ``incomplete_requirements()`` below re-raises the
+    # same failure and the fail-closed block BLOCKS loudly. This early load NEVER makes the gate fail
+    # open (a wrong-project value would at worst appear in that BLOCK message, never allow a stop).
+    try:
+        import _praxis
+        _praxis._load_dotenv()
+    except Exception:  # noqa: BLE001 — a broken/absent _praxis re-raises in the fail-closed block below
+        pass
 
     project = _active_project(cwd)
     owner = _session_owner(data)

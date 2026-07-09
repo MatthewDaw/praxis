@@ -44,9 +44,17 @@ it — no `httpx`, `pycognito`, or `praxis` import.
 | `PRAXIS_API_BASE_URL` | Base URL. Default `http://localhost:8000`.                              |
 | `PRAXIS_API_KEY`      | Preferred auth. Sent as `x-praxis-key`.                                 |
 | `PRAXIS_ORG`          | Tenant org, sent as `x-praxis-org`. Default `agent-factory`.            |
+| `FACTORY_PROJECT`     | Praxis project name → `prd-<project>`. Falls back to the cwd basename. **REQUIRED when the repo dir name differs from the project name.** |
 | `PRAXIS_AUTH_DISABLED`| `1` = dev seam; skip auth entirely (server has a matching seam).        |
 | `COGNITO_CLIENT_ID`   | Used to mint a bearer when no API key is set.                           |
 | `COGNITO_REGION`      | Cognito region for the mint. Default `us-east-1`.                       |
+
+All of the above (including `FACTORY_PROJECT`) may be set as real shell env vars **or** in the factory
+`<repo>/.env` — a bare Stop-hook subprocess does not inherit a shell-sourced `.env`, so `hooks/_praxis.py`
+loads it explicitly (real env vars always win). Set `FACTORY_PROJECT` whenever the checkout directory
+name is not the Praxis project name (e.g. a repo cloned as `bestie-api` that builds the
+`google-shopping-scraper` project) — otherwise the build-completeness gate resolves the wrong
+`prd-<project>`, finds no run marker, and silently goes inert (the whole-set completeness backstop is lost).
 
 **Auth resolution order:** `PRAXIS_AUTH_DISABLED=1` → no auth header · else `PRAXIS_API_KEY` →
 `x-praxis-key` · else mint a Cognito ID token from `~/.praxis/mcp.json`'s `refresh_token` via a raw
