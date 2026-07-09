@@ -117,7 +117,18 @@ def is_logged_in() -> bool:
 
 
 def active_org() -> str:
-    """The cached active org id (``X-Praxis-Org`` value); ``""`` if none chosen."""
+    """The active org id (``X-Praxis-Org`` value); ``""`` if none chosen.
+
+    A ``PRAXIS_ORG`` env var PINS the org and WINS over the cached value. This is the
+    per-project org pin (the sibling of ``PRAXIS_MCP_CACHE``): the cached ``org_id`` in
+    ``mcp.json`` is mutable — a ``praxis_login`` / ``set_org`` from ANY server sharing the
+    cache (or an auto-select on reconnect) can silently flip it to another org. Pinning
+    ``PRAXIS_ORG`` in a project's MCP env makes that project's tenant deterministic and
+    immune to a sibling agent's org switch (the reported reconnect-flips-to-team-app bug).
+    """
+    pinned = os.environ.get("PRAXIS_ORG", "").strip()
+    if pinned:
+        return pinned
     return load_identity().org_id
 
 

@@ -1148,6 +1148,32 @@ class PostgresVectorGraph(SearchableGraph):
             (outcome, *key_params, fact_id),
         )
 
+    def regress_requirements(self, fact_ids: list[str]) -> list[str]:
+        """Bulk-regress a set of ticket facts in ONE round-trip: for every id, record a
+        failure outcome (``failure_count += 1``, ``last_outcome='failed'``) AND stamp
+        ``meta.build_state='incomplete'``, so each re-enters ``incomplete_requirements``.
+
+        This is the throughput fix for re-entering a whole plan: a per-ticket loop of
+        record_outcome + set_meta is 2·N HTTP round-trips (≈66 for a 33-ticket plan) and
+        times out; this collapses the regress to a single ``id = ANY(...)`` UPDATE. The
+        outcome bump is what drives completeness (the derivation reads ``last_outcome``);
+        the ``build_state`` stamp keeps the ticket's own state field consistent with it.
+        Returns the ids actually updated (missing ids are silently skipped). ``meta`` is a
+        jsonb column, so ``||`` merges the one key without disturbing the rest of the meta.
+        """
+        ids = [str(f).strip() for f in (fact_ids or []) if str(f).strip()]
+        if not ids:
+            return []
+        key_pred, key_params = self._key_pred()
+        rows = self._conn.execute(
+            f"UPDATE {self._facts_table} SET "
+            f"failure_count = failure_count + 1, last_outcome = 'failed', "
+            f"""meta = COALESCE(meta, '{{}}'::jsonb) || '{{"build_state": "incomplete"}}'::jsonb """
+            f"WHERE {key_pred} AND id = ANY(%s) RETURNING id",
+            (*key_params, ids),
+        ).fetchall()
+        return [r[0] for r in rows]
+
     def _search_keyword(
         self,
         query: str,

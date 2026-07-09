@@ -32,12 +32,33 @@ def test_load_identity_returns_tenant_when_present(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     monkeypatch.setenv("PRAXIS_MCP_CACHE", str(cache))
+    monkeypatch.delenv("PRAXIS_ORG", raising=False)  # no env pin -> cached org wins
 
     tenant = identity.load_identity()
     assert tenant.sub == "user-1"
     assert tenant.org_id == "acme"
     assert identity.active_org() == "acme"
     assert identity.api_base() == "http://api.test"
+
+
+def test_active_org_env_pin_overrides_cached_org(monkeypatch, tmp_path):
+    """PRAXIS_ORG PINS the active org over the mutable cached value (P7).
+
+    The cached ``org_id`` can be silently flipped by a login/set_org from any server
+    sharing ``mcp.json`` (or an auto-select on reconnect); a per-project ``PRAXIS_ORG``
+    pin makes that project's tenant deterministic and immune to the flip."""
+    cache = tmp_path / "mcp.json"
+    _write_cache(cache, org_id="team-app")  # cache says team-app...
+    monkeypatch.setenv("PRAXIS_MCP_CACHE", str(cache))
+    monkeypatch.setenv("PRAXIS_ORG", "bestie")  # ...but the env pins bestie
+    assert identity.active_org() == "bestie"
+
+    # A blank/whitespace pin is ignored -> falls back to the cached org.
+    monkeypatch.setenv("PRAXIS_ORG", "  ")
+    assert identity.active_org() == "team-app"
+
+    monkeypatch.delenv("PRAXIS_ORG", raising=False)
+    assert identity.active_org() == "team-app"
 
 
 def _write_cache(path, **overrides):

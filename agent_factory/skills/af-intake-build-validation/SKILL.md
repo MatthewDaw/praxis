@@ -120,13 +120,16 @@ query af-build's RESOLVE uses — never by writing anything onto the check or ha
 - any **explicit ids** the user named.
 
 If a target requirement lacks the class tag, add it to its `meta.tags` via `praxis_edit_fact` (ticket
-**identity**, not a check list; preserve all existing meta). Then regress each matched ticket by STATE
-only against the plan snapshot: set `meta.build_state="incomplete"` (merge; preserve everything else) AND
-`praxis_record_outcome(fact_id, success=False)` so it re-enters `incomplete_requirements`. A never-built
-ticket is already incomplete — leave it. **Do NOT touch `meta.pinned_checks`, the claim lease
-(`claim_owner`/`claim_at`/`claim_heartbeat_at`/`claim_lease_ttl`), or the check fact** — af-build's
-RESOLVE/PIN steps re-pin the fresh check set at the next ticket start. (These are STATE writes against
-`prd-<project>`; the ticket graph is snapshot-bound — pass the plan `(space=<project>, snapshot=prd-<project>)`.)
+**identity**, not a check list; preserve all existing meta). Then regress the matched set by STATE only
+with **one bulk call** — `praxis_regress_requirements(<project>, [<id>, ...])` — which records a failure
+outcome AND stamps `meta.build_state="incomplete"` on every id in a single write, so each re-enters
+`incomplete_requirements`. Use the bulk tool, NOT a per-ticket loop of `praxis_record_outcome` +
+`praxis_edit_fact`: that fired ~two calls per ticket and timed out on a real plan. A never-built ticket is
+already incomplete — you may still include it (regress is idempotent). **Do NOT touch `meta.pinned_checks`,
+the claim lease (`claim_owner`/`claim_at`/`claim_heartbeat_at`/`claim_lease_ttl`), or the check fact** —
+af-build's RESOLVE/PIN steps re-pin the fresh check set at the next ticket start. (`praxis_regress_requirements`
+targets the canonical `prd-<project>` plan snapshot automatically — the graph completeness derives from — so
+you pass only the bare project name and ids, no `(space, snapshot)`.)
 
 Confirm with `praxis_incomplete_requirements(<project>)` (BARE name).
 

@@ -427,6 +427,26 @@ def create_app(conn: Any | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"unknown space {space!r}")
         return space, snap
 
+    def _project_target(
+        org: str, uid: str, project: str, target: tuple[str, str] | None
+    ) -> tuple[str, str] | None:
+        """Resolve the graph a PROJECT-scoped read targets.
+
+        Ticket state + completeness live on the project's canonical plan snapshot
+        (``space=<project>``, ``snapshot=prd-<project>``) — Option A: the factory writes
+        build_state/claims/outcomes there, not working memory. So a BARE call (no explicit
+        ``(space, snapshot)`` header) defaults to that snapshot when it exists, making a
+        plain ``incomplete_requirements(project)`` read the SAME graph the build writes to
+        (they must never diverge). An explicit header pair always wins; a project whose
+        plan snapshot does not exist yet falls back to working memory (legacy/no-plan)."""
+        if target is not None:
+            return target
+        if project and spaces_store.exists(org, project):
+            snap = f"prd-{project}"
+            if live_graph(org, uid).cache_count(project, snap) > 0:
+                return (project, snap)
+        return None
+
     def candidates_for(
         org: str, sub: str, target: tuple[str, str] | None = None
     ) -> FactsCandidates:
@@ -1025,6 +1045,38 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 status_code=500, detail=f"record_outcome failed: {exc}"
             ) from exc
         return {"id": fact_id, "success": success}
+
+    @app.post("/requirements/regress")
+    def regress_requirements(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+        uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
+    ) -> dict[str, Any]:
+        """Re-enter a SET of tickets into ``incomplete_requirements`` in ONE call.
+
+        Body: ``{"project": str, "ids": [str, ...]}``. For every id, records a failure
+        outcome AND stamps ``meta.build_state='incomplete'`` (a single bulk UPDATE), so a
+        whole-plan regress is one round-trip instead of 2·N — the throughput fix for the
+        af-intake-build-validation "re-enter matching work NOW" step, which otherwise fired
+        ~66 sequential MCP calls and timed out. A bare call (no header pair) targets the
+        project's canonical plan snapshot, the SAME graph completeness derives from.
+        """
+        project = str(body.get("project") or "").strip()
+        ids = [str(i).strip() for i in (body.get("ids") or []) if str(i).strip()]
+        if not ids:
+            raise HTTPException(status_code=400, detail="body must include a non-empty 'ids'")
+        target = _project_target(org, uid, project, target)
+        try:
+            regressed = graph_for(org, uid, target).regress_requirements(ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 — never a bare/empty 500
+            raise HTTPException(
+                status_code=500, detail=f"regress_requirements failed: {exc}"
+            ) from exc
+        return {"project": project, "regressed": regressed, "count": len(regressed)}
 
     @app.post("/derivations")
     def record_derivation(
@@ -2599,6 +2651,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
         project = str(project or "").strip()
         if not project:
             raise HTTPException(status_code=400, detail="query param 'project' is required")
+        # A bare call defaults to the project's canonical plan snapshot (Option A: state
+        # lives there), so it reads the SAME graph the build writes — no working-memory split.
+        target = _project_target(org, uid, project, target)
         items = graph_for(org, uid, target).incomplete_requirements(
             project, exclude_leased=exclude_leased
         )
@@ -2730,6 +2785,8 @@ def create_app(conn: Any | None = None) -> FastAPI:
         project = str(project or "").strip()
         if not project:
             raise HTTPException(status_code=400, detail="query param 'project' is required")
+        # Same default as incomplete_requirements: a bare summary reads the canonical plan snapshot.
+        target = _project_target(org, uid, project, target)
         summary = graph_for(org, uid, target).completeness_summary(project)
         return {"project": project, **summary}
 

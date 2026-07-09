@@ -2265,6 +2265,43 @@ def praxis_incomplete_requirements(project: str) -> str:
 
 
 @mcp.tool()
+def praxis_regress_requirements(project: str, ids: list[str]) -> str:
+    """Re-enter a SET of tickets into ``incomplete_requirements`` in ONE call.
+
+    Records a failure outcome AND stamps ``build_state="incomplete"`` on every id in a
+    single bulk write, so re-entering a whole plan (e.g. after grafting a new build check)
+    is one round-trip instead of two-per-ticket — use this instead of looping
+    ``praxis_record_outcome`` + edit over dozens of tickets (that path times out). Targets
+    the project's canonical ``prd-<project>`` plan snapshot automatically, the SAME graph
+    completeness derives from; confirm with ``praxis_incomplete_requirements(project)``.
+
+    Regress by STATE only: never touch ``pinned_checks`` or the claim lease — af-build
+    re-pins the fresh check set at each ticket's next start. Returns the ids regressed.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    ids = [str(i).strip() for i in (ids or []) if str(i).strip()]
+    if not ids:
+        return "Pass a non-empty list of requirement fact ids to regress."
+    try:
+        resp = httpx.post(
+            f"{identity.api_base()}/requirements/regress",
+            json={"project": project, "ids": ids},
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    regressed = payload.get("regressed", [])
+    return _structured(
+        f"Regressed {len(regressed)} requirement(s) in {project} back to incomplete.",
+        payload,
+    )
+
+
+@mcp.tool()
 def praxis_completeness_summary(project: str) -> str:
     """Done-of-definition counts for a project's active requirements.
 
