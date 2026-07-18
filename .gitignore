@@ -46,3 +46,7 @@ docs/monica/videos/experiment-video-capture-*/BL_proxy/
 # SWE-rebench eval pilot grader artifacts (written to cwd on a live run)
 logs/run_evaluation/
 preds_*.json
+
+# Local backend serve logs
+backend-serve.log
+backend-serve.err.log
