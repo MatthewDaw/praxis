@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { REPO_DIR, FACTORY_DIR } from "../config/praxis";
 
 /** A copy-to-clipboard command block. */
 function CommandBlock({ command, label }: { command: string; label?: string }) {
@@ -31,17 +32,11 @@ function CommandBlock({ command, label }: { command: string; label?: string }) {
   );
 }
 
-// Absolute path to THIS Praxis repo (the one containing the `knowledge` package).
-// The setup prompt registers the MCP server with `uv run --directory <REPO_DIR>`
-// so it works even when pasted into a Claude session running in a *different*
-// repo — a bare `uv run python -m knowledge.mcp` resolves against the current
-// project and fails to connect from anywhere but this repo.
-const REPO_DIR = "C:/Users/mattd/Documents/official_repos/praxis";
-
-// The agent-factory plugin ships as a self-contained subdirectory of this repo
-// (imported under agent_factory/). Registering it as a *directory* marketplace
-// reads the live repo, so the /af- skills always reflect the working tree.
-const FACTORY_DIR = `${REPO_DIR}/agent_factory`;
+// REPO_DIR / FACTORY_DIR are imported from ../config/praxis — the single source
+// of truth for the repo path. The setup prompt registers the MCP server with
+// `uv run --directory <REPO_DIR>` so it works even when pasted into a Claude
+// session running in a *different* repo, and FACTORY_DIR points the directory
+// marketplace at the live agent_factory/ subtree so the /af- skills reflect it.
 
 /**
  * Build the natural-language prompt a user pastes into Claude to get set up:
@@ -82,7 +77,7 @@ CARDINAL RULE — never configure a project by editing the praxis repo. Everythi
 
 STEP 1 — one-time install. Make sure BOTH the praxis MCP tools and the agent-factory /af- skills are available in THIS session. All commands here are plain CLI you can run directly (they are non-interactive).
 
-  1a. Praxis MCP tools — pinned to a PER-PROJECT identity cache. FIRST derive this project's identity from its repo root, so the MCP server, the agent-factory gate, and every /af- read all resolve the SAME org: run \`git rev-parse --show-toplevel\` (or take the top-level project directory), take its basename, and lowercase+slugify it to a project slug (letters/digits/hyphens — e.g. \`.../acme-store\` → \`acme-store\`). From that build an ABSOLUTE cache path \`<your home>/.praxis/<project-slug>.json\` (e.g. C:/Users/me/.praxis/acme-store.json). Use THIS exact path both here and in STEP 4 — it is this project's dedicated Praxis identity file.
+  1a. Praxis MCP tools — pinned to a PER-PROJECT identity cache. FIRST derive this project's identity from its repo root, so the MCP server, the agent-factory gate, and every /af- read all resolve the SAME org: run \`git rev-parse --show-toplevel\` (or take the top-level project directory), take its basename, and lowercase+slugify it to a project slug (letters/digits/hyphens — e.g. \`.../acme-store\` → \`acme-store\`). From that build an ABSOLUTE cache path \`<your home>/.praxis/<project-slug>.json\` (e.g. /Users/me/.praxis/acme-store.json). Use THIS exact path both here and in STEP 4 — it is this project's dedicated Praxis identity file.
       WHY per-project (this is the #1 setup footgun): the default cache \`~/.praxis/mcp.json\` is SHARED by every Praxis MCP server on the machine. If two projects both use it, whichever ran praxis_select_org last wins, and the other project's MCP tools silently drive the WRONG org — so praxis_list_snapshots / praxis_load_snapshot and the checks reads 404 "unknown space" or come back empty even though the data is fine under the right org. A per-project cache pins this repo to its own org permanently and eliminates that class of bug.
       Now check the tools: call praxis_whoami. If it succeeds AND (after STEP 3) shows THIS project's org, the server is already loaded on the right identity — skip to 1b. Otherwise register (or re-register) the server, passing the per-project cache via --env and the absolute --directory (\`uv run\` resolves against the current repo, so --directory is required even from another project — never a bare \`uv run python -m knowledge.mcp\`):
         claude mcp add praxis --env PRAXIS_MCP_CACHE=<the absolute per-project cache path above> -- uv run --directory ${REPO_DIR} python -m knowledge.mcp
@@ -107,7 +102,7 @@ STEP 4 — pin THIS project's config as LOCAL env overrides, INCLUDING the proje
     {
       "env": {
         "PRAXIS_ORG": "<REQUIRED — the org you derived/created in STEP 3. Pin it here so it becomes THIS project's DEFAULT org for every agent and session run from this repo, independent of whatever the shared MCP cache happens to point at. This is the durable per-project default (the cache is just a runtime selection); always set it>",
-        "PRAXIS_MCP_CACHE": "<REQUIRED — the EXACT same absolute path you passed to \`claude mcp add --env PRAXIS_MCP_CACHE=...\` in STEP 1a (e.g. C:/Users/me/.praxis/<project-slug>.json). This one shared file is what keeps the MCP tools, the gate, and the /af- reads on ONE org; a mismatch here vs. STEP 1a is exactly the wrong-org bug this setup exists to prevent>",
+        "PRAXIS_MCP_CACHE": "<REQUIRED — the EXACT same absolute path you passed to \`claude mcp add --env PRAXIS_MCP_CACHE=...\` in STEP 1a (e.g. /Users/me/.praxis/<project-slug>.json). This one shared file is what keeps the MCP tools, the gate, and the /af- reads on ONE org; a mismatch here vs. STEP 1a is exactly the wrong-org bug this setup exists to prevent>",
         "PRAXIS_HOOK_PYTHON": "<the interpreter that can run the gate hook on THIS machine — set this if a bare \`python3\` is NOT on PATH; e.g. this project's .venv python, or \`py\` on Windows, or \`uv run python\`>",
         "PRAXIS_API_BASE_URL": "<only if this project's Praxis backend is NOT http://localhost:8000>"
       }
@@ -175,7 +170,7 @@ const MULTI_AGENT_CONFIG = `{
       "command": "uv",
       "args": ["run", "--directory", "${REPO_DIR}",
                "python", "-m", "knowledge.mcp"],
-      "env": { "PRAXIS_MCP_CACHE": "C:/Users/mattd/.praxis/agentA.json" }
+      "env": { "PRAXIS_MCP_CACHE": "/Users/matthewdaw/.praxis/agentA.json" }
     }
   }
 }`;
@@ -516,7 +511,7 @@ export function McpSetupGuide({ email }: McpSetupGuideProps = {}) {
         <p className="muted small">
           Set it however your client passes env to an MCP server: the <code>env</code>{" "}
           block above (Claude Desktop / <code>~/.claude.json</code>), or{" "}
-          <code>claude mcp add praxis --env PRAXIS_MCP_CACHE=C:/Users/mattd/.praxis/agentA.json -- uv run python -m knowledge.mcp</code>{" "}
+          <code>claude mcp add praxis --env PRAXIS_MCP_CACHE=/Users/matthewdaw/.praxis/agentA.json -- uv run python -m knowledge.mcp</code>{" "}
           for Claude Code. Then, in each agent: <code>praxis_login</code> →{" "}
           <code>praxis_create_org</code> / <code>praxis_select_org</code> for that
           agent&apos;s org (the same user can belong to both — isolation is by org) →{" "}

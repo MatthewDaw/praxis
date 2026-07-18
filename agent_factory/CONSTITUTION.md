@@ -143,7 +143,7 @@ Each pass is one slice of forward progress. Run this checklist top to bottom:
    (`praxis_list_mounts`; re-mount read-only if missing).
 1b. **Tooling-health gate (MANDATORY — tooling stays 100% before building).** Check whether
    praxis `HEAD` changed since the ledger's last-recorded praxis commit (`git -C
-   C:/Users/mattd/Documents/official_repos/praxis log --oneline -1`). **If it changed** (a fix or any
+   /path/to/praxis log --oneline -1`). **If it changed** (a fix or any
    commit landed): re-verify the whole captured-eval suite with the fast direct-check method
    (ledger "Verified mechanics") + the 48 write-policy unit tests (§12). Record the new praxis
    HEAD in the ledger. **Any eval that is RED — whether newly-captured or regressed by a praxis
@@ -219,8 +219,8 @@ When a Praxis or factory failure appears:
    (Praxis vs the coding factory). State it plainly in the ledger.
 3. **Reproduce deterministically.** First a hermetic probe in the scratchpad; then the real
    path using the Praxis venv + env:
-   `C:/Users/mattd/Documents/official_repos/praxis/.venv/Scripts/python.exe` with
-   `load_dotenv("C:/Users/mattd/Documents/official_repos/praxis/.env")`. Drive the REAL write policy
+   `/path/to/praxis/.venv/bin/python` with
+   `load_dotenv("/path/to/praxis/.env")`. Drive the REAL write policy
    (`default_write_policy`, `build_trio(graph, llm=None)`) in a fresh isolated tenant; clean up
    the tenant rows in a `finally`.
 4. **Capture as a RED eval** under
@@ -366,8 +366,8 @@ safe next action exists, keep going. Make your best choice, record it, and move 
 
 ## 11. Running Evals (the HOW — offline mechanics)
 
-All commands run from the Praxis repo (`C:/Users/mattd/Documents/official_repos/praxis`). Use the
-Praxis venv python (`.venv/Scripts/python.exe`) or `uv run --no-sync python`.
+All commands run from the Praxis repo (`/path/to/praxis`). Use the
+Praxis venv python (`.venv/bin/python`) or `uv run --no-sync python`.
 
 **One-time setup per machine/session:**
 1. **Postgres.** The eval cases that drive the write policy need a local Postgres+pgvector.
@@ -462,7 +462,7 @@ netstat -ano | grep ":8000.*LISTEN"          # note the PID in the last column
 # 2. stop it (PowerShell)
 powershell -NoProfile -Command "Stop-Process -Id <PID> -Force"
 # 3. relaunch in the background (loads .env itself; do NOT add --reload — unsupported here)
-cd C:/Users/mattd/Documents/official_repos/praxis && uv run --no-sync python -m knowledge.serve &
+cd /path/to/praxis && uv run --no-sync python -m knowledge.serve &
 # 4. health-check
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/health   # expect 200
 ```

@@ -73,7 +73,7 @@ Add to `claude_desktop_config.json` (set `cwd` to your repo path so `.env` loads
     "praxis": {
       "command": "uv",
       "args": ["run", "python", "-m", "knowledge.mcp"],
-      "cwd": "C:/Users/mattd/Documents/official_repos/praxis"
+      "cwd": "/path/to/praxis"
     }
   }
 }
