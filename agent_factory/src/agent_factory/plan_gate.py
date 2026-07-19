@@ -20,8 +20,9 @@ Rules enforced (each failure is a rejection reason, never a silent pass):
   slip into prd-team-app: R2 referenced it, no requirement defined it, and the
   prose gate admitted R2 anyway.
 - **No impl depends_on a decision** — a build ticket may not ``depends_on`` a
-  ticket tagged ``architecture-decision``; and an ``architecture-decision`` ticket
-  must be ``verify="manual"`` (human-accepted), not a machine-built impl end-state.
+  DECISION ticket (recognized by the ``architecture-decision`` tag OR af-intake-plan's
+  ``meta.decision`` marker); and a decision ticket must be ``verify="manual"``
+  (human-accepted), not a machine-built impl end-state.
   This rejects the D1–D5 dependency-inversion that wedged prd-sotos, where decision
   tickets sat first in build order but could only go green after the impl they gated.
 
@@ -103,6 +104,7 @@ class Requirement:
     depends_on: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)     # identity tags (checks/ decision rules key off these)
     verify: str = ""                                  # "automated" | "manual" — a decision must be manual
+    decision: str = ""                                # af-intake-plan's meta.decision marker (see DECISION_TAG)
 
 
 # The gate's decision type is the shared contract :class:`Verdict` (reasons carry a
@@ -177,10 +179,22 @@ def evaluate_plan(
     known = defined | oos
     expected_source = f"prd-{project}" if project is not None else None
 
-    # Tickets tagged as pure architecture DECISIONS. A decision is human-accepted, not machine-built,
+    # Tickets that are pure architecture DECISIONS. A decision is human-accepted, not machine-built,
     # so (a) it must be verify="manual" (R-DECISION-NOT-END-STATE), and (b) nothing may depends_on it
     # (R-NO-IMPL-DEPENDS-ON-DECISION) — see DECISION_TAG for the anti-pattern this prevents.
-    decision_ids = {r.id for r in requirements if DECISION_TAG in {_norm(t) for t in r.tags}}
+    #
+    # Recognize a decision by the neutral tag OR by af-intake-plan's ``meta.decision`` marker (values
+    # like "default-flagged" / "human-decided-..."). Tag-ONLY recognition left a hole: the ORIGINAL
+    # mistake — a decision admitted with IMPL tags (["cdk","cognito"]), verify="automated", an impl
+    # end-state acceptance, depended_on by an impl ticket — carries no "architecture-decision" tag and so
+    # slipped past both rules and ADMITted (the exact dependency-inversion they exist to reject). The
+    # marker is stamped on every decision fact regardless of its tags, so it closes that hole.
+    decision_ids = {
+        r.id
+        for r in requirements
+        if DECISION_TAG in {_norm(t) for t in r.tags}
+        or str(getattr(r, "decision", "")).strip()
+    }
 
     for r in requirements:
         if not r.acceptance.strip():
@@ -300,6 +314,10 @@ class PlanGate:
                 depends_on=r.get("depends_on", []),
                 tags=r.get("tags", []),
                 verify=r.get("verify", ""),
+                # The decision marker may ride at the top level of the case input or inside meta —
+                # accept either so neither the case author nor the live fact→Requirement mapper can
+                # drop it on the way in (dropping it would defeat the item-1 fix).
+                decision=r.get("decision") or (r.get("meta") or {}).get("decision", ""),
             )
             for r in input.get("requirements", [])
         ]

@@ -203,6 +203,18 @@ points resolution at a different `(space, snapshot)` for this run. Thread it as 
 contract (§8), so fanned-out workers read the same reference. With no argument the default applies:
 `space=<project>`, `snapshot=building-validation`.
 
+## ORG TENANCY — operate in the PROJECT-DERIVED org, never a hardcoded default
+
+Every Praxis read/write this loop makes is tenanted to an **org**, and that org is **project-derived** — the
+`PRAXIS_ORG` pin, resolved through `identity.factory_org()`, NOT a hardcoded `"agent-factory"`. A fresh run
+proceeds in the project's pinned org and **never selects `"agent-factory"`** (or any literal) just to "get
+going". **Hard rule: the af-build hook-client org (`PRAXIS_ORG`) and the MCP-tool org (`praxis_whoami` /
+`praxis_select_org`) MUST AGREE** — a fail-loud guard enforces it, so a header-truthful `whoami` that
+disagrees with the pinned client org is a STOP, not something to paper over by re-selecting an org. If they
+diverge, align them to the one true project org (fix the pin, or fix the selection) **before** claiming a
+single ticket; `praxis_select_org` itself refuses a request that fights the `PRAXIS_ORG` pin, naming both
+orgs. Never select around the mismatch.
+
 ## STATE TENANCY — the whole loop operates on the plan snapshot
 
 Ticket STATE (build_state, claims, pins, run-markers, outcomes) lives on the project's
@@ -481,6 +493,19 @@ actually observable (discover the commands; don't assume):
   *amend* exists to add a NEW general lens when one is discovered — a compounding improvement — never as a
   prerequisite for building an existing ticket.)
 
+**Whole-repo gates pin on EVERY ticket — leave the repo green with ONLY your slice.** The universal
+`applies_to:["*"]` gates (`backend-build`, `backend-vitest`, typecheck, lint, the suite) resolve onto
+**every** matching ticket through the wildcard lane, so each isolated per-ticket worker is responsible for
+leaving the **whole repo** compiling and its tests green using ONLY its own slice. Make your slice
+**self-consistent** — stub or adjust the callers your change touches so the shared build/test stays green
+even though a sibling ticket's half has not landed yet — or, if you genuinely cannot go green without a
+sibling's change, `block(cid, owner, reason)` and surface it. **NEVER weaken, skip, or scope-down a
+whole-repo gate to get your ticket green** — a red shared build is the gate doing its job, not an obstacle to
+route around. (A scope-level **integration gate** — running the whole-repo build/test ONCE at end-of-scope
+instead of on every ticket — is a possible alternative, but FLAG its tradeoff: intermediate tickets can merge
+non-green, so the repo is not guaranteed buildable between tickets. Present it as an option, never the
+default.)
+
 **Correction loop — fires ONLY on an external signal.** On a failing gate or pinned validation, re-enter BUILD
 (§4c) with the **captured failing signal** as context. Never let "the model decided to revise" be a
 transition. Four tiers with explicit trip conditions:
@@ -540,6 +565,14 @@ completeness is outcome-grounded, so the only honest finish is to actually build
 validation. Only an externally-confirmed pass is eligible to **write a learning back**: stamp `source` and
 `category="learning"`; never write speculative facts and **never block the loop on a write** — queue it and
 proceed.
+
+**Infra-dependent verification → `block`, NEVER fake.** A requirement that can only truly verify against
+**live infrastructure** — Cognito-token verification against a real pool, the e2e login, a backfill against a
+real DB, a federated relink — whose check or acceptance CANNOT honestly go green locally must be
+`block(cid, owner, reason)`, surfaced for owner action. It is **never** a stubbed, weakened, or faked-green
+validation. Blocking one infra-gated ticket never wedges the run: the single `build_completeness` gate
+**completes AROUND blocked tickets** (they are excluded from the churn set and surfaced, not counted as
+finished), so the rest of the scope finishes while the infra-gated ticket waits for the owner.
 
 ## 7. LOOP, then convene the WORK-review panel
 
@@ -723,6 +756,13 @@ any other — external signal, recorded on the ticket, fail-closed.
   validation green on an external signal, or human confirmation for non-coding); never fake a pass to escape.
 - **Never** let an uncoverable/credential-only requirement wedge the run — `block(cid, owner, reason)` it so
   it is surfaced for owner action; a blocked ticket is excluded from churn, never silently passed or dropped.
+- **Never** fake, stub, or weaken a pass to escape an **infra-dependent** requirement (Cognito against a
+  real pool, the e2e login, a real-DB backfill, a federated relink) that cannot honestly go green locally —
+  `block(cid, owner, reason)` it instead; the `build_completeness` gate completes AROUND the blocked ticket,
+  so blocking never wedges the run.
+- **Never** operate in a hardcoded `"agent-factory"` org or select around an org mismatch — run in the
+  project-derived org (`PRAXIS_ORG` / `identity.factory_org()`); the hook-client org and the MCP-tool org
+  (`whoami`/`select_org`) MUST agree, and a divergence is a fail-loud STOP to align, not to re-select past.
 - **Never** stamp/clear the run marker for a scope you were not asked to build — the marked set IS the
   enforced run; ending it early (`clear_run`) with a marked ticket unfinished is an explicit abort, reported.
 - **Never** trigger a correction from self-doubt alone — corrections require a failing signal; never use

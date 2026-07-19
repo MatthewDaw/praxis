@@ -40,6 +40,12 @@ retrieval sub-agent for bulk reading, never a crew that writes.
 ## Step 0 — Tenancy + target the section
 
 Confirm tenancy per `docs/af-memory-policy.md` §0 (the right org, this project's per-project MCP cache).
+Operate in the **PROJECT-DERIVED org** — `identity.factory_org()` (the `PRAXIS_ORG` pin, else the cached
+selection) — **not** a hardcoded `"agent-factory"`. A fresh session simply proceeds in whatever org this
+project pins; do NOT `select_org("agent-factory")`. The hard rule is **MCP-tool org == hook-client org**
+(both the project's `PRAXIS_ORG`): the write you issue here and the org af-build reads under must be the
+same, and the fail-loud `praxis_select_org` guard enforces it — a `select_org` that disagrees with a
+`PRAXIS_ORG` pin is refused by name rather than silently splitting your write into the wrong tenant.
 The check must land in the snapshot af-build RESOLVE reads, or it is a silent no-op:
 `scope="validation"` → **`(space=<project>, snapshot="building-validation")`**. You target it by passing
 **both** `space` and `snapshot` on the write itself — `praxis_add_insight(..., space="<project>",
@@ -107,6 +113,24 @@ The check takes effect on the **next build run** with no further action: at each
 `resolve_validation_requirements` picks it up by tag/surface match, `pin_requirements` writes it into that
 ticket's coverage contract, and the ticket is FINISHED iff every pinned validation covering it passed.
 
+## Step 2b — Confirm the fan-out with `--by-check`
+
+Right after authoring, make the check's reach VISIBLE instead of invisible:
+
+```
+python -m agent_factory.tools.resolve_preview <project> --by-check
+```
+
+Find the just-authored `check_id` in the output and CONFIRM it lands **ONLY on the intended concern's
+tickets**. Because `applies_to` is a predicate the build resolves fresh, an over-broad tag pins the check
+onto tickets it has no business gating — and `--by-check` is where that shows up before the build ever runs:
+- a `"secrets"`-tagged env-purge check **bleeding onto a CDK ticket**;
+- a `"migration"`-tagged schema check landing on **a runbook AND a federation ticket**.
+
+A check pinning across unrelated tickets is a **TOO-BROAD `applies_to` to tighten** (a narrower tag, or a
+surface bind instead of `["*"]`). The judgment stays with you — the tool does not decide; it just makes the
+fan-out legible so you tighten a leak deliberately rather than discover it mid-build.
+
 ## Step 3 — (optional) Re-enter matching work NOW, for immediacy
 
 The check **automatically** re-enters matching tickets — completion is gated on checks resolved by query,
@@ -135,12 +159,18 @@ Confirm with `praxis_incomplete_requirements(<project>)` (BARE name).
 
 ## Step 4 — Verify coverage (the closing gate)
 
-This is the CLOSING step of the command — do not consider the intake done until it passes. After
+This is the CLOSING step of the command, and it is an **ENFORCED GATE, not advisory**. After
 authoring the check(s), RUN:
 
 ```
 python -m agent_factory.tools.resolve_preview <project> --require-coverage
 ```
+
+**This command MUST exit ZERO before you report success. A non-zero exit BLOCKS completion** — the intake
+is NOT done, and you may not report it done. On a non-zero exit you either author the missing check(s) or
+mark the offending ticket `meta.verify="manual"`, then **re-run until it exits zero**. There is no path
+that finishes over a non-zero `--require-coverage`; treating its failure as a warning to note-and-proceed
+is exactly the unguarded-ticket state this gate exists to prevent.
 
 - If it exits **non-zero**, the plan is **NOT fully covered**: the command lists the `verify=automated`
   requirement_ids that resolve **ZERO declared checks** (only their acceptance floor). Author the missing
@@ -166,6 +196,9 @@ immediacy regression was requested. If any Praxis call failed, report the failur
   lenses. To add a requirement use af-intake-plan; a planning lens, af-intake-plan-validation.
 - **Never** author a check that names specific tickets or hand-lists checks onto a ticket — a check owns a
   predicate; WHICH tickets it governs is the build's fresh RESOLVE query.
+- **Never** leave a check whose `--by-check` fan-out pins it onto unrelated tickets (a `"secrets"` purge
+  check on a CDK ticket, a `"migration"` schema check on a runbook or federation ticket) — that is a
+  too-broad `applies_to`; tighten the tag or surface-bind it before finishing.
 - **Never** write or read a `.factory/*.json` file, and **never** proceed if Praxis is unreachable (fail
   closed).
 - **Never** edit an existing requirement's content here — that is a re-baseline via af-intake-plan.

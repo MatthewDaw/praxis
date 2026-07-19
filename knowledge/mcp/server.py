@@ -1620,10 +1620,12 @@ def praxis_select_org(org_id: str) -> str:
     pin = identity.pinned_org()
     if pin and pin != org_id.strip():
         return (
-            f"Refusing to select org '{org_id}': PRAXIS_ORG is pinned to '{pin}', which wins for "
-            f"every request (X-Praxis-Org). Selecting '{org_id}' would only change the cached value "
-            f"while writes still hit '{pin}'. Unset PRAXIS_ORG to switch orgs, or pin PRAXIS_ORG to "
-            f"'{org_id}'."
+            f"Org mismatch — refusing to select '{org_id}'. This project pins org='{pin}' via "
+            f"PRAXIS_ORG, which wins for every request (X-Praxis-Org); you asked for '{org_id}'. "
+            f"Align them: to work in '{pin}', just proceed (it is already active — do NOT select a "
+            f"different org); to switch to '{org_id}', unset PRAXIS_ORG (or repin it to '{org_id}') "
+            f"first. Selecting here without that would only change the cache while writes keep hitting "
+            f"'{pin}' — the silent wrong-org split this guard exists to prevent."
         )
     identity.set_org(org_id)
     return f"Active org set to '{org_id}'."

@@ -1,0 +1,43 @@
+# The tag-ONLY hole in decision recognition, now CLOSED. This is the ORIGINAL mistake the
+# architecture-decision guards exist to reject, but wearing IMPL tags instead of the neutral
+# "architecture-decision" tag: D1 is tagged ["cdk","cognito"] (NO architecture-decision tag),
+# verify="automated" with an impl end-state acceptance ("cdk synth emits three UserPools"), and
+# the sign-up impl ticket R1 depends_on ["D1"]. Recognized-by-tag alone, D1 would look like a
+# plain impl ticket and slip past both decision rules and ADMIT — the exact dependency-inversion
+# they exist to reject. It carries af-intake-plan's meta.decision marker ("human-decided-2026-06")
+# in the top-level "decision" key, so the marker (stamped on every decision fact regardless of its
+# tags) recognizes it as a decision and both rules fire. Everything else is well-formed (valid
+# sources, non-empty acceptances, no vague terms, no dangling refs, R1's only dep D1 exists, no
+# cycle) so ONLY the two decision rules fire: R-DECISION-NOT-END-STATE (D1 must be manual) and
+# R-NO-IMPL-DEPENDS-ON-DECISION (R1 must not depend on the decision).
+id: plan_gate_impl_tagged_decision_rejected
+component: plan_gate
+input:
+  project: sotos
+  requirements:
+    - id: D1
+      text: "Cognito is the chosen identity provider for the three user tiers."
+      acceptance: "cdk synth emits three UserPools."
+      defines: []
+      references: []
+      source: "prd-sotos"
+      depends_on: []
+      tags: ["cdk", "cognito"]
+      verify: "automated"
+      decision: "human-decided-2026-06"
+    - id: R1
+      text: "The sign-up handler creates a Cognito user in the requested tier's UserPool."
+      acceptance: "POST /signup with a valid tier creates one Cognito user and returns 201."
+      defines: []
+      references: []
+      source: "prd-sotos"
+      depends_on: ["D1"]
+      tags: ["auth"]
+      verify: "automated"
+  out_of_scope: []
+rule_ids: ["R-DECISION-NOT-END-STATE", "R-NO-IMPL-DEPENDS-ON-DECISION"]
+deterministic_checks:
+  - name: gate_rejects
+    ref: "evals.checks:gate_rejects"
+    params:
+      reason_contains: "architecture-decision ticket must be verify"

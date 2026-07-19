@@ -118,6 +118,63 @@ def _preview_ticket(ticket, bare, override):
     return _resolve_ticket(ticket, bare, override)[0]
 
 
+def _bleeds_across_concerns(landed_tagsets, applies):
+    """Heuristic flag for an over-broad ``applies_to``: a NON-wildcard check bleeds across unrelated
+    concerns when it lands on 2+ tickets that share NO identity tag in common *beyond the check's own
+    ``applies_to``*. If the intersection of those residual tagsets is empty, the check straddles
+    otherwise-unrelated tickets — the author should eyeball whether the predicate is too generic."""
+    if len(landed_tagsets) < 2:
+        return False
+    applied = set(applies)
+    residuals = [tagset - applied for tagset in landed_tagsets]
+    return not set.intersection(*residuals)
+
+
+def _by_check_view(tickets, checks_ref):
+    """INVERTED preview: for each building-validation CHECK, the set of incomplete tickets it pins
+    onto — so an over-broad ``applies_to`` that bleeds a check across unrelated concerns is visible.
+
+    Matching reuses the SAME primitives the live resolver uses (:func:`_ticket_tagset` +
+    ``ts.normalize_tag``): a check lands on a ticket iff its normalized ``meta.applies_to`` intersects
+    the ticket's normalized identity tagset, and the ``"*"`` wildcard lands on EVERY ticket. Returns
+    printable lines (read-only)."""
+    space, snapshot = checks_ref
+    checks = _praxis.facts_by(category="check", space=space, snapshot=snapshot)
+
+    # Pre-compute each incomplete ticket's printable requirement_id + normalized identity tagset once.
+    entries = []
+    for t in tickets:
+        meta = t.get("meta") or {}
+        rid = meta.get("requirement_id") or t.get("id") or t.get("factId") or "?"
+        entries.append((rid, _ticket_tagset(meta)))
+
+    lines = [f"by-check view: {len(checks)} building-validation check(s) over "
+             f"{len(entries)} incomplete ticket(s)\n"]
+    for chk in checks:
+        cid = (chk or {}).get("id") or "?"
+        applies_raw = (chk.get("meta") or {}).get("applies_to") or []
+        applies = [ts.normalize_tag(a) for a in applies_raw if a]
+        wildcard = "*" in applies
+        if wildcard:
+            landed = [(rid, tagset) for rid, tagset in entries]
+        else:
+            want = set(applies)
+            landed = [(rid, tagset) for rid, tagset in entries if want & tagset]
+        landed_ids = [rid for rid, _ in landed]
+
+        lines.append(f"  check: {cid}")
+        lines.append(f"    applies_to: {applies_raw or '(none)'}")
+        lines.append(f"    fan-out {len(landed_ids)} ticket(s): "
+                     f"{', '.join(landed_ids) or '(none)'}")
+        if wildcard:
+            lines.append("    [wildcard '*' — pins onto EVERY incomplete ticket by design]")
+        elif _bleeds_across_concerns([tagset for _, tagset in landed], applies):
+            lines.append("    ** POTENTIALLY TOO BROAD — lands on tickets across unrelated tags; "
+                         "eyeball this applies_to **")
+        lines.append("")
+    return lines
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         prog="python -m agent_factory.tools.resolve_preview",
@@ -130,6 +187,11 @@ def main(argv=None):
                    action="store_true",
                    help="exit non-zero if any incomplete automated ticket has ZERO declared checks "
                         "(only the acceptance floor). Manual tickets are exempt. Opt-in.")
+    p.add_argument("--by-check", dest="by_check", action="store_true",
+                   help="INVERT the view: for each building-validation check, list the incomplete "
+                        "tickets its applies_to lands on (plus fan-out count), so an over-broad "
+                        "applies_to that bleeds a check across unrelated concerns is visible. "
+                        "Prints the by-check view instead of the default per-ticket view.")
     args = p.parse_args(argv)
 
     try:
@@ -152,6 +214,15 @@ def main(argv=None):
     print(f"project: {bare}   plan: {plan_space}:{plan_snapshot}   "
           f"checks: {checks_ref[0]}:{checks_ref[1]}")
     print(f"incomplete tickets: {len(tickets)}\n")
+
+    if args.by_check:
+        try:
+            for line in _by_check_view(tickets, checks_ref):
+                print(line)
+        except PraxisUnreachable as e:
+            print(f"error: Praxis unreachable reading checks: {e}", file=sys.stderr)
+            return 1
+        return 0
 
     floor_only_automated: list[str] = []
     try:

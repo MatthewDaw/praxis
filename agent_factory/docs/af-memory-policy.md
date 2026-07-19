@@ -73,18 +73,28 @@ Praxis is not optional. If it is unreachable, unauthenticated, or errors, the fa
 
 ## 0. Always confirm tenancy first
 
-The factory operates **only** in the `agent-factory` org. Run `praxis_whoami` **before any
-MCP memory operation, and again after every `/mcp` reconnect or Praxis restart** — not just
-once per session. If the active org is not `agent-factory`, run
-`praxis_select_org("agent-factory")`. Never write into another org. (The plugin hook client
-reads the org from `PRAXIS_ORG`, default `agent-factory`, sent as the `x-praxis-org` header.)
+The factory operates in the org **derived from the project config** — never a hardcoded
+`agent-factory`. That org is `PRAXIS_ORG` (the per-project pin in `.claude/settings.local.json`)
+and/or the per-project MCP identity cache, resolved by `identity.factory_org()` (== `active_org()`:
+`PRAXIS_ORG` pin **>** cached selection). Run `praxis_whoami` **before any MCP memory operation,
+and again after every `/mcp` reconnect or Praxis restart** — not just once per session — to confirm
+the active org still matches the project's org. A fresh session in a project that pins its **own**
+org simply **proceeds** in that org: do **not** `praxis_select_org("agent-factory")` (that now trips
+the fail-loud org-mismatch guard and is pure friction/wrong). Never write into another org. (The
+plugin hook client reads the org from `PRAXIS_ORG` and sends it as the `x-praxis-org` header.)
+
+**The one hard rule — the two org sources must AGREE.** The MCP-tool org (what `praxis_whoami` /
+`praxis_select_org` see) and the hook-client org (`PRAXIS_ORG`, sent as `x-praxis-org`) must name the
+**same** org. If they diverge, `praxis_select_org` **fails loud naming BOTH** — align them before
+proceeding: either proceed in the pinned org, or unset / re-pin `PRAXIS_ORG` to match your intent.
 
 > **Why "after every reconnect" (learned live 2026-06-25):** a restart can silently reset the
 > active org to a default (e.g. `praxis`), and if multiple agents on the same machine **share one
 > Praxis identity cache** (`~/.praxis/mcp.json`), another agent's login will clobber *your* active
 > org mid-session — your writes then land in the wrong org. Two defenses, both required: (1) this
 > agent pins its **own** cache via `PRAXIS_MCP_CACHE` in the MCP server's `env` (so co-tenant
-> sessions can't collide); (2) re-`whoami` after every reconnect and re-select the org before writing.
+> sessions can't collide); (2) re-`whoami` after every reconnect and confirm the active org still
+matches the project's org (per the hard rule above) before writing.
 
 - **Durable knowledge = org-shared snapshots; working memory = per-user scratch.** The tenancy model
   is `org → space → snapshot` plus a private **working memory** (the live scratch graph, keyed to

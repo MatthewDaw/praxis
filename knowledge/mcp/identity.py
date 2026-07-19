@@ -152,6 +152,20 @@ def active_org() -> str:
     return resolve_org(pinned, cached)
 
 
+def factory_org() -> str:
+    """The org THIS factory session operates in — **derived from the project config, never hardcoded**.
+
+    A factory project pins its own org via ``PRAXIS_ORG`` (in ``<project>/.claude/settings.local.json``)
+    and/or its per-project MCP cache (``PRAXIS_MCP_CACHE``); the tickets/checks live in THAT org. This is
+    the single "resolve the factory org for this project" entry point the af-* skills mean by "the factory
+    org": it is exactly :func:`active_org` (``PRAXIS_ORG`` pin > cached selection), named so the memory
+    policy can say "operate in ``factory_org()``" instead of hardcoding ``agent-factory``. The Stop-hook
+    client resolves the SAME value via its stdlib mirror (``hooks/_praxis.py:_resolve_org`` in
+    ``_auth_headers``), so the MCP-tool org and the hook-client org always agree — the one hard rule.
+    """
+    return active_org()
+
+
 def set_org(org_id: str) -> Tenant:
     """Set the active org on the cached identity and persist it."""
     tenant = load_identity()

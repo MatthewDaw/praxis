@@ -79,3 +79,45 @@ def test_no_impl_depends_on_decision_fires_alone():
 
     assert not verdict.admitted
     assert verdict.rule_ids == [R_NO_IMPL_DEPENDS_ON_DECISION]
+
+
+def _impl_tagged_decision(marker: str) -> Requirement:
+    # The tag-ONLY hole: a decision wearing IMPL tags (["cdk","cognito"], NO architecture-decision
+    # tag), verify="automated" with an impl end-state acceptance, recognized as a decision ONLY by
+    # af-intake-plan's meta.decision marker carried in the top-level ``decision`` key.
+    return Requirement(
+        id="D1",
+        text="Cognito is the chosen identity provider for the three user tiers.",
+        acceptance="cdk synth emits three UserPools.",
+        source="prd-sotos",
+        depends_on=[],
+        tags=["cdk", "cognito"],
+        verify="automated",
+        decision=marker,
+    )
+
+
+def test_marker_only_decision_fires_both_rules():
+    # A decision recognized ONLY by the meta.decision marker (impl tags, no architecture-decision
+    # tag), verify=automated with an impl end-state acceptance, and an impl ticket depends_on it.
+    # The marker closes the tag-only hole, so BOTH decision rules fire.
+    verdict = evaluate_plan(
+        [_impl_tagged_decision(marker="human-decided-2026-06"), _impl(depends_on=["D1"])],
+        project="sotos",
+    )
+
+    assert not verdict.admitted
+    assert R_DECISION_NOT_END_STATE in verdict.rule_ids
+    assert R_NO_IMPL_DEPENDS_ON_DECISION in verdict.rule_ids
+
+
+def test_same_shape_without_marker_or_tag_admits():
+    # Regression guard: the SAME shape with NO marker and NO architecture-decision tag is just a
+    # plain impl ticket — NOT a decision — so neither decision rule fires and the plan admits.
+    verdict = evaluate_plan(
+        [_impl_tagged_decision(marker=""), _impl(depends_on=["D1"])],
+        project="sotos",
+    )
+
+    assert verdict.admitted
+    assert verdict.rule_ids == []

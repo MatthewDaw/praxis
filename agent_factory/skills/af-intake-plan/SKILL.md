@@ -388,6 +388,16 @@ requirement not in the plan, and `R-NO-DEP-CYCLE` rejects a cycle (A needs B nee
 would otherwise become a silent run-time **stall** when `next_ready_ticket` finds nothing claimable. A
 plan does not pass intake with a dangling or circular dependency.
 
+**Granularity — a non-independently-greenable change set is ONE ticket, never split peers.** `depends_on`
+only orders tickets that each stand alone; it does NOT license splitting a single indivisible change across
+tickets that each need a *sibling's* edit to compile or pass. The universal-ish build gates
+(`backend-build`, `backend-vitest`) pin on **EVERY** backend ticket, so each isolated worker must leave the
+**WHOLE** backend compiling and its tests green with only its own slice landed. If a set of changes is not
+independently compilable/greenable, author it as **ONE ticket** (or an explicit ordered chain) — never as
+peer tickets that each red the shared whole-repo gate until a sibling lands. Worked example: the R7
+verifier rewrite needs R8's identity change to keep the suite green — those two must be **ONE ticket or an
+ordered chain**, not two peers that each red `backend-vitest`.
+
 ---
 
 # PART B — PLANNING VALIDATION (the audit + the panel)
@@ -595,16 +605,23 @@ The mechanical half is executable, not eyeballed:
   *defined* by some admitted requirement or explicitly declared out of scope. (This is the hole that let
   an undefined "team streak" in: R2 referenced it, nothing defined it.) Tag each requirement with the
   concepts it `defines`/`references`.
-- **The plan_gate** — run **`agent_factory.plan_gate.evaluate_plan(requirements, project="<project>")`**,
-  passing the project explicitly, with each requirement carrying its `source="prd-<project>"`, and report
-  its `reasons`. The `project=` argument is mandatory: with it the gate requires every requirement's
-  `source` to equal `prd-<project>` exactly (the `R-HAS-SOURCE` rule), so a source-less or mis-scoped plan
-  is mechanically **rejected** — the drift that went uncaught when the gate ran without project+source. It
-  also checks binary-acceptance present, no-vague-term, no dangling concept reference, and the
-  **build-order DAG** (Step 5): `R-NO-DANGLING-DEP` rejects a `depends_on` naming a requirement not in the
-  plan, and `R-NO-DEP-CYCLE` rejects a dependency cycle — both would otherwise surface only as a run-time
-  stall. Covered by `evals/cases/plan_gate/` (run `pytest tests/test_eval_cases.py`); add a `case.yaml`
-  whenever a fresh gate edge case is found, so the gate's coverage compounds.
+- **The plan_gate (ENFORCED, mechanical — not prose)** — run **`python -m agent_factory.tools.plan_gate_check <project>`**.
+  It reads the **LIVE** `prd-<project>` requirement facts straight from Praxis, maps each to a Requirement
+  (threading its `tags`, `verify`, and `meta.decision` marker), and runs `evaluate_plan` over them with the
+  project pinned. **A non-zero exit is a HARD BLOCK on the bless** — the human literally cannot clear B9
+  while it exits non-zero. Surface its `reasons` **verbatim** (it prints them to stderr). Exit `0` =
+  admitted, `1` = rejected, `2` = Praxis unreachable or empty plan. Because it reads the `meta.decision`
+  marker, an **impl-tagged decision no longer slips**: a ticket carrying the decision marker is recognized
+  as a decision even when its tags are pure impl (no `architecture-decision` tag), so
+  `R-DECISION-NOT-END-STATE` and `R-NO-IMPL-DEPENDS-ON-DECISION` still bite. Pinning the project is what
+  makes the gate require every requirement's `source` to equal `prd-<project>` exactly (the `R-HAS-SOURCE`
+  rule), so a source-less or mis-scoped plan is mechanically **rejected** — the drift that went uncaught
+  when the gate ran without project+source. The same run also checks binary-acceptance present,
+  no-vague-term, no dangling concept reference, and the **build-order DAG** (Step 5): `R-NO-DANGLING-DEP`
+  rejects a `depends_on` naming a requirement not in the plan, and `R-NO-DEP-CYCLE` rejects a dependency
+  cycle — both would otherwise surface only as a run-time stall. Covered by `evals/cases/plan_gate/` (run
+  `pytest tests/test_eval_cases.py`); add a `case.yaml` whenever a fresh gate edge case is found, so the
+  gate's coverage compounds.
 
 ## B7 — The plan-review panel (holistic cold-eyes, the emergent layer)
 
@@ -679,7 +696,9 @@ Planning is **human-gated** — there is no planning Stop hook. Report status ag
 declare it yourself. The human may bless only once ALL hold, checked **live from Praxis**:
 - Every requirement maps to ≥1 binary acceptance condition (or is an explicitly-deferred owned decision).
 - Every requirement carries `source="prd-<project>"` (`R-HAS-SOURCE`).
-- `plan_gate.evaluate_plan` passes over the live requirements (B6).
+- **`python -m agent_factory.tools.plan_gate_check <project>` exits `0`** over the live requirements (B6) —
+  a non-zero exit is a **HARD BLOCK**; the gate cannot be cleared while plan_gate_check rejects, and its
+  reasons must be surfaced verbatim and cleared first.
 - Zero unresolved contradictions; no dangling concept reference (H14); bidirectional surface coverage
   clean (B6).
 - Every can't-miss failure class addressed-or-excluded with logged rationale (data loss, auth bypass,
@@ -730,9 +749,16 @@ not a rewrite of an existing ticket — admit it as a ticket the same shape Full
 mint: **identity only** (tags, surfaces, semantics), NEVER an authored check list. This is the one Amend
 path that writes the **`prd-<project>` snapshot** (where tickets live), not a check snapshot.
 
-Write it DIRECTLY into the `prd-<project>` snapshot by passing `space`/`snapshot` — the write's
+Confirm tenancy first per `docs/af-memory-policy.md` §0: the factory operates in the **project-derived
+org** — `identity.factory_org()` (the `PRAXIS_ORG` pin, else the per-project MCP-cache selection),
+**never** a hardcoded `agent-factory`. The **one hard rule**: the MCP-tool org (`praxis_whoami` /
+`praxis_select_org`) and the hook-client org (`PRAXIS_ORG`) must **AGREE** — the fail-loud
+`praxis_select_org` guard enforces it, refusing a mismatch by naming both orgs. A fresh session simply
+proceeds in the project's pinned org; it must **NOT** call `praxis_select_org("agent-factory")`.
+
+Then write it DIRECTLY into the `prd-<project>` snapshot by passing `space`/`snapshot` — the write's
 dedup/contradiction net runs against the plan in that snapshot, so there is no load→working-memory→save
-round-trip (confirm tenancy first per `docs/af-memory-policy.md` §0):
+round-trip:
 
 ```
 praxis_add_insight(
