@@ -211,17 +211,24 @@ Field rules:
 - **`meta.acceptance`** — a draft binary condition ("when X, system does Y, observable via Z"). If the
   doc gives one, use it; else leave a best-draft and flag it for the ambiguity forge (Step 2).
 - **`meta.verify`** — `"automated"` (a command the loop runs — the default) or `"manual"` (needs human
-  confirmation). Drives the phase-gate split downstream.
+  confirmation). Drives the phase-gate split downstream. A **pure architecture-decision ticket is always
+  `"manual"`** (B4's HARD RULE); the plan gate rejects an `architecture-decision` ticket left
+  `verify="automated"` (`R-DECISION-NOT-END-STATE`).
 - **`meta.surfaces`** — wireframe screen ids governed, or `["backend-only"]`. Seeds the `renders`
   bindings written in Step 4.
 - **`meta.defines` / `meta.references`** — concepts, for the H14 dangling-reference gate.
 - **`meta.depends_on`** — prerequisite requirement ids that must be `finished` before this one is
   buildable (the build-order DAG `af-build`'s `next_ready_ticket` walks). A best-draft now; the DAG is
-  mapped and validated in **Step 5**. Empty for a requirement with no prerequisites.
+  mapped and validated in **Step 5**. Empty for a requirement with no prerequisites. A prerequisite is a
+  real **build** dependency only — **NEVER a pure architecture-decision ticket** (B4's HARD RULE); the
+  plan gate rejects any edge whose target is tagged `architecture-decision` (`R-NO-IMPL-DEPENDS-ON-DECISION`).
 - **`meta.scope`** — `"mvp"` or `"post-mvp"` (the tier tag only; NOT the project identity).
 - **`meta.tags`** — identity tags (concepts / surfaces / semantics). A ticket carries identity, **NEVER
   an authored list of its checks**; *which checks apply* is a fresh query (tag ∪ surface ∪ semantic)
-  resolved at build time. Tag honestly so that query resolves correctly.
+  resolved at build time. Tag honestly so that query resolves correctly. A **pure architecture-decision
+  ticket carries the NEUTRAL tag `["architecture-decision"]` ONLY** — never an impl-domain tag (`cdk`,
+  `token-verification`, `frontend`, `database`, …), so it resolves ZERO implementation checks (B4's HARD
+  RULE).
 
 ## Step 2 — Write candidates to Praxis (the write-path)
 
@@ -357,6 +364,14 @@ order or screen layout. The relations that create a genuine build-order dependen
 
 Set `meta.depends_on = [requirement_id, ...]` on each requirement via `praxis_edit_fact` (or at admit).
 A requirement with no prerequisite keeps `[]`.
+
+**A pure architecture DECISION is NEVER a prerequisite** (B4's HARD RULE). Every relation above is a real
+*build* dependency — something that must physically exist first. An architecture decision is a **choice**,
+not a build artifact: it is baked into the IMPL ticket's own content/acceptance, not listed as its
+`depends_on`. Making a decision a prerequisite is the Auth0→Cognito wedge (B4's worked example) — the
+decision sits topologically FIRST yet can only go green LAST, so the build's ready frontier is decisions
+nothing can satisfy and the run wedges. The plan gate rejects any `depends_on` edge whose target is tagged
+`architecture-decision` (`R-NO-IMPL-DEPENDS-ON-DECISION`).
 
 **CANONICAL FORMAT — the ONE dependency key is the target's `requirement_id` (e.g. `"R8"`), NEVER its
 fact id / cid.** There is a single storage format for dependency edges; do not mix the two. Every consumer
@@ -502,6 +517,48 @@ the chosen decision **into the requirement(s) it governs** (`praxis_edit_fact`) 
 architecture requirement (`praxis_add_insight(category="requirement", ...)`), and log rationale +
 alternatives as an episode. None may be silently skipped; a default may never paper over a genuine owner
 fork.
+
+### HARD RULE — a pure architecture DECISION is modeled as a decision, NEVER as a disguised implementation ticket
+
+A pure architecture decision ("we use AWS Cognito, not Auth0"; "the transport is Postmark") is a **CHOICE**,
+not a build target. Model it **EITHER** as an owned-decision / episode fact (**PREFERRED** —
+`praxis_record_episode`, so it never enters the build set at all), **OR** — if it is admitted as a
+`category="requirement"` ticket — it **MUST** obey **ALL** of the following. This is stated once, here,
+where architecture decisions are produced; the Step-1 field rules and the Step-5 `depends_on` section
+cross-reference it.
+
+- **NEUTRAL tag ONLY** — `meta.tags = ["architecture-decision"]`, **NEVER** an impl-domain tag (`cdk`,
+  `token-verification`, `frontend`, `database`, …). The neutral tag resolves **ZERO** implementation
+  checks, so the decision ticket carries no build gate it cannot itself satisfy.
+- **`meta.verify = "manual"`** — a human **accepts or overrides** the decision at the gate (the
+  flagged-default override point of Step 0c / B9). A decision is never an automated end-state.
+- **DECISION-LEVEL acceptance** — `"<X> is the accepted design decision"`, **NEVER** an implementation
+  end-state (`"cdk synth emits three UserPools"`, `"no @auth0/auth0-react import remains"`) that
+  duplicates a downstream implementation ticket.
+- **NEVER a `depends_on` prerequisite of its own implementation ticket.** The decision is baked into the
+  **IMPL ticket's content/acceptance** instead. Impl tickets depend ONLY on real build prerequisites (data
+  producer → consumer, entity → its surfaces, shared infra → first user — Step 5), never on a decision.
+
+**The plan gate mechanically enforces this.** `agent_factory.plan_gate.evaluate_plan` **REJECTS** the
+malformed shape via **`R-DECISION-NOT-END-STATE`** (a ticket tagged `architecture-decision` must be
+`verify="manual"`, never an automated end-state) and **`R-NO-IMPL-DEPENDS-ON-DECISION`** (no ticket may
+`depends_on` an `architecture-decision` ticket). The gate enforces these properties **only on a ticket
+that IS correctly tagged `architecture-decision`** — a decision mis-tagged with impl-domain tags is not
+even seen as a decision, which is exactly the mis-modeling this rule prevents up front. Once a decision is
+tagged correctly, the rest is enforced for free; the human's only job is to **model decisions as
+decisions**.
+
+**Worked example of the anti-pattern — the Auth0→Cognito wedge (tickets D1–D5).** The Auth0→Cognito
+migration was planned as five decision tickets that EACH carried **impl-domain tags** (`cdk`,
+`token-verification`, `frontend`), had **impl end-state acceptance** (`"cdk synth emits three UserPools"`,
+`"no @auth0/auth0-react import remains"`), and were **`depends_on` prerequisites of the very impl tickets
+that would satisfy them.** So they sat topologically **FIRST** (everything depended on them) but could
+only go green **LAST** (only the downstream impl work satisfies an impl end-state). A fresh `/af-build`'s
+entire ready frontier was therefore decisions that **NOTHING could satisfy** — the run wedged immediately.
+Modeled correctly, D1–D5 collapse to a single **`verify="manual"`, `["architecture-decision"]`-tagged**
+ticket (or a recorded episode) with **decision-level acceptance and no dependents**, and the real
+UserPool/token/frontend work becomes **ordinary impl tickets** that bake the chosen design into their own
+acceptance and depend only on genuine build prerequisites.
 
 ## B5 — Test strategy is mandatory (derive the layers for THIS system)
 

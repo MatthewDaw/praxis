@@ -106,6 +106,47 @@ def _resolve_space(space: str | None) -> str:
     return identity.active_space()
 
 
+def _normalize_tag(tag: object) -> str:
+    """Canonicalize ONE applicability tag: ``strip().casefold()``, preserving the ``"*"`` wildcard.
+
+    This is the AUTHOR-TIME mirror of ``agent_factory/hooks/_ticket_state.py:normalize_tag`` — the
+    factory's check↔ticket predicate is a server-side EXACT array-membership match, so a check
+    authored ``applies_to:["Auth"]`` would silently never pin onto a ticket tagged ``["auth"]``.
+    Normalizing both sides at write time (here) AND at resolve time (the hook) removes that footgun.
+    The hook subprocess is stdlib-only and cannot import this module, so the two functions are kept
+    byte-for-byte equivalent and an agent_factory test asserts they agree — keep them in lockstep.
+    """
+    s = str(tag).strip()
+    return s if s == "*" else s.casefold()
+
+
+def _normalize_applicability(meta: dict | None) -> dict | None:
+    """Return ``meta`` with its applicability lanes (``applies_to`` on a check, ``tags`` on a ticket)
+    tag-normalized, so authored facts match the way :func:`resolve_validation_requirements` queries.
+
+    Only those two keys are touched (each may be a scalar or a list); every other meta value is passed
+    through untouched. Empty/blank tags are dropped and duplicates collapsed (order preserved). A
+    ``meta`` with neither key — the common case — is returned unchanged.
+    """
+    if not isinstance(meta, dict):
+        return meta
+    out = dict(meta)
+    for key in ("applies_to", "tags"):
+        if key not in out:
+            continue
+        raw = out[key]
+        values = list(raw) if isinstance(raw, (list, tuple)) else [raw]
+        seen: list[str] = []
+        for v in values:
+            if v is None:
+                continue
+            norm = _normalize_tag(v)
+            if norm and norm not in seen:
+                seen.append(norm)
+        out[key] = seen if isinstance(raw, (list, tuple)) else (seen[0] if seen else raw)
+    return out
+
+
 def _friendly(exc: httpx.HTTPStatusError) -> str:
     """Map auth failures to a clear hint; re-raise everything else."""
     if exc.response.status_code in (401, 403):
@@ -398,7 +439,9 @@ def praxis_add_insight(
     if source is not None:
         body["source"] = source
     if meta is not None:
-        body["meta"] = meta
+        # Tag-normalize the applicability lanes (applies_to on a check, tags on a ticket) so an
+        # authored check actually pins onto the ticket its tags name — see _normalize_applicability.
+        body["meta"] = _normalize_applicability(meta)
     if derived_from:
         body["derivedFrom"] = derived_from
     try:
@@ -472,6 +515,12 @@ def praxis_add_insights(
         return "on_conflict must be 'auto_resolve' or 'surface'."
     if not isinstance(insights, list) or not insights:
         return "insights must be a non-empty list of insight objects."
+    # Tag-normalize each item's applicability lanes (applies_to / tags), same as praxis_add_insight.
+    insights = [
+        {**it, "meta": _normalize_applicability(it["meta"])} if isinstance(it, dict) and "meta" in it
+        else it
+        for it in insights
+    ]
     body = {"insights": insights, "onConflict": on_conflict, "raw": raw}
     try:
         resp = httpx.post(
@@ -1560,9 +1609,22 @@ def praxis_login(email: str, password: str, org_id: str | None = None) -> str:
 
 @mcp.tool()
 def praxis_select_org(org_id: str) -> str:
-    """Set the active org for subsequent get_context / add_insight calls."""
+    """Set the active org for subsequent get_context / add_insight calls.
+
+    FAILS LOUD if a ``PRAXIS_ORG`` env pin contradicts the requested org: the pin wins for every
+    header (``active_org``), so silently writing a different value to the cache would make whoami and
+    the actual writes disagree — a wrong-org footgun. We refuse and name both instead.
+    """
     if not identity.is_logged_in():
         return "Not logged in — call `praxis_login` first."
+    pin = identity.pinned_org()
+    if pin and pin != org_id.strip():
+        return (
+            f"Refusing to select org '{org_id}': PRAXIS_ORG is pinned to '{pin}', which wins for "
+            f"every request (X-Praxis-Org). Selecting '{org_id}' would only change the cached value "
+            f"while writes still hit '{pin}'. Unset PRAXIS_ORG to switch orgs, or pin PRAXIS_ORG to "
+            f"'{org_id}'."
+        )
     identity.set_org(org_id)
     return f"Active org set to '{org_id}'."
 
@@ -1832,8 +1894,14 @@ def praxis_whoami() -> str:
         listing = ", ".join(o.get("orgId") or o.get("org_id") for o in orgs) or "(none)"
     except Exception:  # noqa: BLE001
         listing = "(could not fetch)"
-    org = tenant.org_id or "(none selected)"
-    return f"{tenant.email} — active org: {org}; member of: {listing}."
+    # Report the org actually sent as X-Praxis-Org (what add_insight/facts_by hit), not the raw
+    # cached org_id — a PRAXIS_ORG pin overrides the cache, and reporting the cache would lie.
+    org = identity.active_org() or "(none selected)"
+    pin = identity.pinned_org()
+    note = ""
+    if pin and pin != tenant.org_id:
+        note = f" (pinned by PRAXIS_ORG; cached selection '{tenant.org_id or '(none)'}' is overridden)"
+    return f"{tenant.email} — active org: {org}{note}; member of: {listing}."
 
 
 @mcp.tool()

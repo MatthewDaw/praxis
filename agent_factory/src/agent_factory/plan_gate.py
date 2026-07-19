@@ -19,6 +19,11 @@ Rules enforced (each failure is a rejection reason, never a silent pass):
   declared out of scope. This is the gap that let an undefined "team streak"
   slip into prd-team-app: R2 referenced it, no requirement defined it, and the
   prose gate admitted R2 anyway.
+- **No impl depends_on a decision** — a build ticket may not ``depends_on`` a
+  ticket tagged ``architecture-decision``; and an ``architecture-decision`` ticket
+  must be ``verify="manual"`` (human-accepted), not a machine-built impl end-state.
+  This rejects the D1–D5 dependency-inversion that wedged prd-sotos, where decision
+  tickets sat first in build order but could only go green after the impl they gated.
 
 Contradiction detection (zero unresolved contradictions) is delegated to Praxis
 (`praxis_get_contradictions`) and is not re-implemented here.
@@ -40,6 +45,17 @@ R_NO_DANGLING = "R-NO-DANGLING"          # every referenced concept is defined o
 R_HAS_SOURCE = "R-HAS-SOURCE"            # every requirement carries its project source tag
 R_NO_DANGLING_DEP = "R-NO-DANGLING-DEP"  # every depends_on target is a requirement in this plan
 R_NO_DEP_CYCLE = "R-NO-DEP-CYCLE"        # the depends_on graph is acyclic (build order is realizable)
+R_NO_IMPL_DEPENDS_ON_DECISION = "R-NO-IMPL-DEPENDS-ON-DECISION"  # no ticket may depends_on a decision
+R_DECISION_NOT_END_STATE = "R-DECISION-NOT-END-STATE"           # a decision is human-accepted, not built
+
+# A PURE ARCHITECTURE DECISION admitted as a requirement ticket MUST carry ONLY this neutral tag (so it
+# resolves ZERO implementation checks) and be ``verify="manual"`` (a human accepts/overrides it at the
+# gate). It must NEVER be a ``depends_on`` prerequisite of its own implementation ticket. Modeling a
+# decision as a buildable, impl-tagged, automated-end-state ticket that its impl ticket depends_on is the
+# D1–D5 anti-pattern: the decision sits topologically FIRST but can only go green LAST, so a fresh build's
+# entire ready frontier is decisions that nothing can satisfy — a hard dependency inversion that wedges
+# the run. These two rules reject that shape mechanically.
+DECISION_TAG = "architecture-decision"
 
 # A requirement's ``source`` must name the project's PRD (``prd-<project>``). When the
 # gate is told the project, the tag must equal ``prd-<project>`` exactly; otherwise it
@@ -85,6 +101,8 @@ class Requirement:
     references: list[str] = field(default_factory=list)
     source: str = ""
     depends_on: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)     # identity tags (checks/ decision rules key off these)
+    verify: str = ""                                  # "automated" | "manual" — a decision must be manual
 
 
 # The gate's decision type is the shared contract :class:`Verdict` (reasons carry a
@@ -159,10 +177,26 @@ def evaluate_plan(
     known = defined | oos
     expected_source = f"prd-{project}" if project is not None else None
 
+    # Tickets tagged as pure architecture DECISIONS. A decision is human-accepted, not machine-built,
+    # so (a) it must be verify="manual" (R-DECISION-NOT-END-STATE), and (b) nothing may depends_on it
+    # (R-NO-IMPL-DEPENDS-ON-DECISION) — see DECISION_TAG for the anti-pattern this prevents.
+    decision_ids = {r.id for r in requirements if DECISION_TAG in {_norm(t) for t in r.tags}}
+
     for r in requirements:
         if not r.acceptance.strip():
             reasons.append(
                 Reason(R_ACCEPT_BINARY, f"{r.id}: no binary acceptance condition")
+            )
+
+        if r.id in decision_ids and _norm(r.verify) != "manual":
+            reasons.append(
+                Reason(
+                    R_DECISION_NOT_END_STATE,
+                    f"{r.id}: architecture-decision ticket must be verify=\"manual\" (a human accepts "
+                    f"or overrides the design at the gate), not machine-built with an impl end-state "
+                    f"acceptance (got verify='{r.verify}'). Record the impl end-state on the "
+                    f"implementation ticket instead.",
+                )
             )
 
         src = r.source.strip()
@@ -207,6 +241,19 @@ def evaluate_plan(
     for r in requirements:
         present: list[str] = []
         for dep in r.depends_on:
+            if dep in decision_ids:
+                # A build ticket may NEVER be gated by a decision — the decision is baked into this
+                # ticket's own content/acceptance, and impl tickets depend only on real build
+                # prerequisites (producer -> consumer, entity -> its surfaces, infra -> first user).
+                reasons.append(
+                    Reason(
+                        R_NO_IMPL_DEPENDS_ON_DECISION,
+                        f"{r.id}: depends_on '{dep}' which is an architecture-decision ticket "
+                        f"(a decision must never gate a build ticket — it sits first but goes green "
+                        f"last, wedging the run). Bake the decision into this ticket's "
+                        f"content/acceptance and drop the edge.",
+                    )
+                )
             if dep not in req_ids:
                 reasons.append(
                     Reason(
@@ -251,6 +298,8 @@ class PlanGate:
                 references=r.get("references", []),
                 source=r.get("source", ""),
                 depends_on=r.get("depends_on", []),
+                tags=r.get("tags", []),
+                verify=r.get("verify", ""),
             )
             for r in input.get("requirements", [])
         ]

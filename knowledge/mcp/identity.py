@@ -116,20 +116,40 @@ def is_logged_in() -> bool:
     return cache_path().exists()
 
 
-def active_org() -> str:
-    """The active org id (``X-Praxis-Org`` value); ``""`` if none chosen.
+def pinned_org() -> str:
+    """The explicit ``PRAXIS_ORG`` env pin, stripped (``""`` if unset). The highest-precedence org."""
+    return os.environ.get("PRAXIS_ORG", "").strip()
 
-    A ``PRAXIS_ORG`` env var PINS the org and WINS over the cached value. This is the
-    per-project org pin (the sibling of ``PRAXIS_MCP_CACHE``): the cached ``org_id`` in
-    ``mcp.json`` is mutable — a ``praxis_login`` / ``set_org`` from ANY server sharing the
-    cache (or an auto-select on reconnect) can silently flip it to another org. Pinning
-    ``PRAXIS_ORG`` in a project's MCP env makes that project's tenant deterministic and
-    immune to a sibling agent's org switch (the reported reconnect-flips-to-team-app bug).
+
+def resolve_org(pinned: str, cached: str, default: str = "") -> str:
+    """THE org-precedence rule, in one place: explicit ``PRAXIS_ORG`` pin > cached selection > default.
+
+    This is the single authority both the MCP layer (:func:`active_org`) and the Stop-hook client
+    (``agent_factory/hooks/_praxis.py:_resolve_org``, a stdlib-only mirror) resolve the active org
+    with, so ``praxis_whoami`` / ``praxis_select_org`` and what ``add_insight`` / ``facts_by`` / the
+    factory hooks actually send as ``X-Praxis-Org`` can never diverge. Pure — no I/O, no env reads.
     """
-    pinned = os.environ.get("PRAXIS_ORG", "").strip()
-    if pinned:
-        return pinned
-    return load_identity().org_id
+    return (pinned or "").strip() or (cached or "").strip() or default
+
+
+def active_org() -> str:
+    """The active org id actually sent as ``X-Praxis-Org``; ``""`` if none chosen.
+
+    Resolved via :func:`resolve_org`: a ``PRAXIS_ORG`` env var PINS the org and WINS over the cached
+    value. This is the per-project org pin (the sibling of ``PRAXIS_MCP_CACHE``): the cached
+    ``org_id`` in ``mcp.json`` is mutable — a ``praxis_login`` / ``set_org`` from ANY server sharing
+    the cache (or an auto-select on reconnect) can silently flip it to another org. Pinning
+    ``PRAXIS_ORG`` in a project's MCP env makes that project's tenant deterministic and immune to a
+    sibling agent's org switch (the reported reconnect-flips-to-team-app bug).
+
+    Because THIS is what the header carries, ``praxis_whoami`` reports it (not the raw cached
+    ``org_id``) and ``praxis_select_org`` refuses a selection a live pin would contradict — so the
+    org whoami reports is always the org writes actually hit.
+    """
+    pinned = pinned_org()
+    # Only touch the cache when there is no pin, so a pinned project need not be logged in to resolve.
+    cached = "" if pinned else load_identity().org_id
+    return resolve_org(pinned, cached)
 
 
 def set_org(org_id: str) -> Tenant:

@@ -127,15 +127,70 @@ the run with a marked ticket unfinished, and you cannot accidentally over-build 
 Validation **checks live in a DEDICATED snapshot inside the project's own space**, separate from the
 `prd-<project>` snapshot that holds the tickets and their build state. **A project IS a space** — the
 space id is the BARE project name (`team-app`), and inside it live the `prd-<project>` snapshot
-(tickets, mutable) and the check snapshots. af-build resolves each ticket's validation checks from the
-**`building-validation`** snapshot (in space `<project>`) by default — the typed `project_ref` seam in
-`hooks/_ticket_state.py` (`resolve_validation_requirements` / `start_ticket`) points only the *check
-reads* (tag + surface lanes) at `(space=<project>, snapshot=building-validation)`, while ticket state
-(claims, pins, passes) stays on the `prd-<project>` snapshot, untouched. That snapshot must hold the
-`category="check"`, `scope="validation"` rules; if it is empty a ticket resolves **only** its
-always-present acceptance-condition floor (§3) — fewer checks, never a crash. (Seed it from the plan or
-save a snapshot into it out-of-band; af-intake-build-validation is how new `building-validation` rules get
-authored there.)
+(tickets, mutable) and the check snapshots.
+
+**Two snapshots, one space.** At RESOLVE time af-build reads the *checks* from
+`(space=<project>, snapshot=building-validation)`, while every bit of ticket STATE — claims, pins,
+passes, outcomes, run-markers — is read and written on the **`prd-<project>`** snapshot. The typed
+`project_ref` seam in `hooks/_ticket_state.py` (`resolve_validation_requirements` / `start_ticket`)
+points ONLY the check reads at `building-validation`; check resolution never touches the state snapshot.
+That check snapshot must hold the `category="check"`, `scope="validation"` rules; if it is empty a ticket
+resolves **only** its always-present acceptance-condition floor (below) — fewer checks, never a crash.
+(Seed it from the plan or save a snapshot into it out-of-band; af-intake-build-validation is how new
+`building-validation` rules get authored there.)
+
+### How a check pins onto a ticket — the matching model
+
+Every check **owns its own applicability**. The applicability **PREDICATE** is the check's
+`meta.applies_to` — a list of tags. The **IDENTITY** it matches against is the ticket's `meta.tags`
+(with the ticket's `meta.applies_to` as a lenient fallback for a ticket that carries no `tags`). **A
+check pins onto a ticket iff their tag sets intersect** — one shared tag is enough.
+
+Both sides are **normalized on both ends** — at author time (when the check or ticket is written) AND at
+resolve time (when af-build runs the query) — by the same rule: `strip` + `casefold`, with the literal
+`"*"` preserved verbatim. So `Auth`, `auth`, and ` auth ` are the same tag, and a check is **never
+silently dropped** over casing or stray whitespace.
+
+### The lanes that build the contract
+
+RESOLVE unions three **precise, mandatory** lanes, then prepends the floor:
+
+- **tag lane** — checks whose `meta.applies_to` intersects the ticket's (normalized) tags. This is the
+  intersection rule above.
+- **`"*"` wildcard lane — SEPARATE on purpose.** Universal gates authored with `applies_to: ["*"]`
+  (typecheck, build, lint, test) that apply to EVERY ticket. This lane is queried **separately** because
+  the per-tag lookup in the tag lane *structurally cannot* surface a `["*"]` check: a ticket's concrete
+  tags are things like `auth`, `backend` — they never include the literal `"*"`, so intersecting a
+  ticket's tags with `["*"]` is always empty. Pulling wildcards explicitly is the only way a universal
+  gate reaches every ticket.
+- **surface lane** — checks bound via the `renders` edge to a surface the ticket renders, so a
+  frontend/UI check lands ONLY on tickets that render a screen and never on a pure backend ticket.
+
+The **semantic lane is separate and advisory** — retrieved as *inspiration* during synthesis, never
+pinned, never gating completion (§3).
+
+### The acceptance floor is always prepended
+
+`contract_with_floor` ALWAYS puts the ticket's own binary acceptance condition (`<cid>::acceptance`) at
+the front of the contract, so **the contract is never empty even when zero Praxis checks match**. Every
+ticket therefore has at least one thing to prove: its own red→green acceptance test.
+
+### Two worked examples
+
+- **A check-matched ticket.** A backend ticket tagged `[backend, token-verification]` resolves a
+  `backend`-tagged typecheck (tag lane: `backend` is in both sides) and a `token-verification` login-e2e
+  check (tag lane: `token-verification` is in both) — **PLUS** the always-prepended `<cid>::acceptance`
+  floor. Contract = 3 requirements; every one must be covered and pass before FINISH.
+- **A zero-declared-check ticket.** A ticket whose tags match nothing in `building-validation` (and which
+  renders no bound surface) resolves the floor ALONE — just `<cid>::acceptance`. **This is NOT a defect
+  and needs no amend.** You still author the custom red→green eval for the acceptance condition and finish
+  normally; a floor-only contract is a complete, honest contract.
+
+### Verify coverage BEFORE a build — the dry-run inspector
+
+`python -m agent_factory.tools.resolve_preview <project>` prints, **read-only**, exactly which checks pin
+onto which tickets and by which lane, without claiming or building anything. It is the **formal way to
+verify coverage** — run it before a build whenever you want to see the resolution the loop will compute.
 
 > **Renamed from `coding-validation`.** The build-check snapshot is now `building-validation`, and it is
 > a per-project snapshot in the project space — NOT a single global `coding-validation` space. Legacy
@@ -286,15 +341,23 @@ pass an `override=(space, snapshot)` pair too when this run overrides the defaul
    race-tolerant `patch_meta` read-modify-write. Returns `None` if a live lease already holds it (or the
    ticket is `blocked`) — skip it.
 2. **Resolve the MANDATORY (precise) requirements — a fresh QUERY, never a list authored on the ticket.**
-   `resolve_validation_requirements` returns the de-duplicated union of three **precise** lanes: **tag
-   match** (active `category="check"` facts whose `meta.applies_to` contains any of the ticket's tags),
-   the **`"*"` wildcard** (universal gates — typecheck/build/lint/test — that apply to EVERY ticket,
-   pulled explicitly since a per-tag query can't match a `["*"]` check), and **surface match**
-   (requirements bound via the `renders` edge to any surface the ticket renders). These are abstract
-   *"what must be proven"* facts — declarative and read-only during a build — and they are **mandatory**:
-   the coverage contract (§3) forces every one to be covered. A frontend/UI check is surface-bound (or a
-   UI-class tag), so it lands ONLY on tickets that render a screen — it never resolves onto a backend
-   ticket. (The fuzzy **semantic** lane is separate and ADVISORY — §3.)
+   The ticket carries identity only (its tags/surfaces); the requirement set is computed live from the
+   `category="check"` facts in `(space=<project>, snapshot=building-validation)` — read there while ticket
+   state stays on `prd-<project>`. `resolve_validation_requirements` returns the de-duplicated union of
+   three **precise** lanes (the full matching model is in §Validation source):
+   - **tag match** — a check pins iff its `meta.applies_to` (the applicability PREDICATE) intersects the
+     ticket's `meta.tags` (the IDENTITY; the ticket's `meta.applies_to` is the lenient fallback). Both
+     sides are normalized `strip`+`casefold` with `"*"` preserved, on BOTH the author side and the
+     resolve side — so `Auth` vs `auth` never silently drops a check.
+   - **`"*"` wildcard** — universal gates (typecheck/build/lint/test) authored `applies_to: ["*"]`, pulled
+     as a SEPARATE lane because a per-tag query can never match a `["*"]` check: a ticket's concrete tags
+     never include the literal `"*"`.
+   - **surface match** — requirements bound via the `renders` edge to a surface the ticket renders, so a
+     frontend/UI check lands ONLY on tickets that render a screen and never on a backend ticket.
+
+   These are abstract *"what must be proven"* facts — declarative and read-only during a build — and they
+   are **mandatory**: the coverage contract (§3) forces every one to be covered. (The fuzzy **semantic**
+   lane is separate and ADVISORY — §3.)
 3. **Pin the contract = resolved checks PLUS the acceptance-condition FLOOR.** `start_ticket` calls
    `contract_with_floor` then `pin_requirements`: it always prepends the ticket's **own binary acceptance
    condition** (`<cid>::acceptance`) as a requirement, so the contract is **never empty even when zero
@@ -443,7 +506,11 @@ generator** — used only for the residue with no deterministic oracle, and only
 (form-filling, video) verifies by **human confirmation**: in an unattended run a low-confidence non-coding
 step **parks** a checkpoint for batch review; high-confidence steps proceed. For any acceptance criterion
 tagged **manual** (af-plan), in an attended run pause and hand it off for human confirmation; in an
-unattended run record it as a deferred owned decision and proceed.
+unattended run record it as a deferred owned decision and proceed. **A `verify="manual"` requirement's
+pass counts only when it carries a human signal** — record it with `record_validation_pass(cid, vid,
+passed=True, source="human", ref=PLAN)`, never the default `source="worker"`. `all_validations_passed`
+refuses a manual requirement that was only worker-self-certified, so a worker-sourced self-pass leaves the
+ticket unfinished by design until a human confirmation lands.
 
 ## 6. FINISH — doneness is THE EVAL, recorded as a hard enum (never a count)
 

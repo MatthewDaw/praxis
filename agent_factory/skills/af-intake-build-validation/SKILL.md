@@ -133,6 +133,27 @@ you pass only the bare project name and ids, no `(space, snapshot)`.)
 
 Confirm with `praxis_incomplete_requirements(<project>)` (BARE name).
 
+## Step 4 — Verify coverage (the closing gate)
+
+This is the CLOSING step of the command — do not consider the intake done until it passes. After
+authoring the check(s), RUN:
+
+```
+python -m agent_factory.tools.resolve_preview <project> --require-coverage
+```
+
+- If it exits **non-zero**, the plan is **NOT fully covered**: the command lists the `verify=automated`
+  requirement_ids that resolve **ZERO declared checks** (only their acceptance floor). Author the missing
+  building-validation check(s) for those tickets' tags (or, for a legitimately manual ticket, confirm it
+  is `meta.verify="manual"` — manual tickets are exempt because their floor is human sign-off) and re-run
+  until it exits **zero**.
+- **A floor-only AUTOMATED ticket is a COVERAGE DEFECT, not an acceptable state.** The acceptance floor is
+  a backstop, not a declared check — an automated ticket whose ONLY resolved lane is the floor has no gate
+  a build agent actually runs. This command adds ONE check at a time and nothing else guarantees every
+  ticket ends up covered, so this closing run is what makes af-build runnable with **no manual
+  post-fixes**: a clean (zero-exit) `--require-coverage` is the contract that every automated ticket has a
+  real check behind it.
+
 ## Report
 
 Report the check you wrote (id, `applies_to`, `run`, criterion, and that it landed in
@@ -148,3 +169,6 @@ immediacy regression was requested. If any Praxis call failed, report the failur
 - **Never** write or read a `.factory/*.json` file, and **never** proceed if Praxis is unreachable (fail
   closed).
 - **Never** edit an existing requirement's content here — that is a re-baseline via af-intake-plan.
+- **Never** end the command with a `verify=automated` ticket resolving only its acceptance floor — that is
+  an unguarded ticket. Author its check or mark it `meta.verify="manual"`, and re-run
+  `resolve_preview <project> --require-coverage` until it exits zero.

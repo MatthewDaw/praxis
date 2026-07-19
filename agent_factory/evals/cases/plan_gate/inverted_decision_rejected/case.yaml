@@ -1,0 +1,38 @@
+# The D1-D5 dependency-inversion anti-pattern, REJECTED. D1 is modeled as a buildable
+# architecture-decision: tagged "architecture-decision" but verify="automated" with an impl
+# end-state acceptance ("cdk synth emits three UserPools"), and the sign-up impl ticket R1
+# depends_on ["D1"]. So the decision sits topologically FIRST yet can only go green LAST (after
+# the impl it gates) — a hard inversion that wedges a fresh build. Everything else is well-formed
+# (valid sources, non-empty acceptances, no vague terms, no dangling refs, R1's only dep D1 exists,
+# no cycle) so ONLY the two decision rules fire: R-DECISION-NOT-END-STATE (D1 must be manual) and
+# R-NO-IMPL-DEPENDS-ON-DECISION (R1 must not depend on the decision).
+id: plan_gate_inverted_decision_rejected
+component: plan_gate
+input:
+  project: sotos
+  requirements:
+    - id: D1
+      text: "Cognito is the chosen identity provider for the three user tiers."
+      acceptance: "cdk synth emits three UserPools."
+      defines: []
+      references: []
+      source: "prd-sotos"
+      depends_on: []
+      tags: ["architecture-decision"]
+      verify: "automated"
+    - id: R1
+      text: "The sign-up handler creates a Cognito user in the requested tier's UserPool."
+      acceptance: "POST /signup with a valid tier creates one Cognito user and returns 201."
+      defines: []
+      references: []
+      source: "prd-sotos"
+      depends_on: ["D1"]
+      tags: ["auth"]
+      verify: "automated"
+  out_of_scope: []
+rule_ids: ["R-DECISION-NOT-END-STATE", "R-NO-IMPL-DEPENDS-ON-DECISION"]
+deterministic_checks:
+  - name: gate_rejects
+    ref: "evals.checks:gate_rejects"
+    params:
+      reason_contains: "architecture-decision ticket must be verify"

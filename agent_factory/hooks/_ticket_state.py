@@ -37,8 +37,12 @@ CANONICAL META KEYS (on the requirement/ticket node):
   claim_heartbeat_at   : float (epoch seconds, last liveness bump)
   claim_lease_ttl      : int   (seconds; lease is stale when now - heartbeat > ttl)
   required_validations : list[str]   (resolved requirement ids — THIS pass's coverage contract)
+  manual_requirements  : list[str]   (subset of required_validations whose verify=="manual"; each
+                                       needs an external/human-sourced pass — never worker-self-checked)
   pinned_checks        : list[ {validation_id, covers:[req_id,...], run, passed:bool|None,
-                                ran_at:float|None} ]   (the synthesized validations — the eval)
+                                ran_at:float|None, source:str} ]   (the synthesized validations — the
+                                eval; ``source`` names where a pass came from: the default worker-run
+                                source can never satisfy a manual requirement)
   run_owner            : str   (session id of the active WHOLE-SET build run this ticket is in)
   run_at               : float (epoch seconds, run-marker heartbeat; stale => run considered dead)
   run_scope            : str   (human label of the run's scope, for the gate's report)
@@ -57,6 +61,7 @@ not a lock: a lease whose heartbeat is older than its ttl is auto-reclaimable, s
 
 from __future__ import annotations
 
+import sys
 import time
 from typing import Any, NamedTuple, Optional
 
@@ -74,6 +79,7 @@ M_CLAIM_AT = "claim_at"
 M_CLAIM_HEARTBEAT_AT = "claim_heartbeat_at"
 M_CLAIM_LEASE_TTL = "claim_lease_ttl"
 M_REQUIRED_VALIDATIONS = "required_validations"
+M_MANUAL_REQUIREMENTS = "manual_requirements"   # subset of required ids whose verify=="manual"
 M_PINNED_CHECKS = "pinned_checks"           # entries are synthesized VALIDATIONS (see module doc)
 M_RUN_OWNER = "run_owner"
 M_RUN_AT = "run_at"
@@ -81,6 +87,13 @@ M_RUN_SCOPE = "run_scope"
 
 _LEASE_KEYS = (M_CLAIM_OWNER, M_CLAIM_AT, M_CLAIM_HEARTBEAT_AT, M_CLAIM_LEASE_TTL)
 _RUN_KEYS = (M_RUN_OWNER, M_RUN_AT, M_RUN_SCOPE)
+
+# A MANUAL requirement (``meta.verify == "manual"``) is one the executor MAY NOT self-check: its pass
+# only counts when recorded via an external/human signal, never a worker-run command. These are the
+# pass ``source`` values that count as such an external attestation; a worker-run pass defaults to
+# ``WORKER_PASS_SOURCE`` and can NEVER satisfy a manual requirement (see :func:`all_validations_passed`).
+WORKER_PASS_SOURCE = "worker"
+HUMAN_PASS_SOURCES = frozenset({"human", "manual", "external"})
 
 DEFAULT_LEASE_TTL_S = 900    # 15 min — per-ticket claim lease
 DEFAULT_RUN_TTL_S = 3600     # 60 min — whole-set run marker; refreshed at each ticket boundary
@@ -179,6 +192,32 @@ def _as_list(v: Any) -> list:
     return list(v) if isinstance(v, (list, tuple)) else [v]
 
 
+def normalize_tag(tag: Any) -> str:
+    """Canonicalize ONE applicability tag so matching is not silently case/whitespace sensitive.
+
+    The check↔ticket predicate is a server-side EXACT array-membership match: a check pins onto a
+    ticket iff some value in ``check.meta.applies_to`` equals some value in ``ticket.meta.tags`` (∪
+    ``meta.applies_to``). Exact means a ticket tag ``"Auth"`` would NOT match a check ``applies_to
+    ["auth"]`` — the check would silently drop out of the coverage contract with no error. Normalizing
+    BOTH sides (author time AND this resolve-time query) to ``strip().casefold()`` removes that
+    footgun. ``"*"`` (the universal-wildcard lane) is preserved verbatim.
+
+    This is the SINGLE canonical normalizer for the factory. Its mirror on the write path lives in
+    ``knowledge/mcp/server.py:_normalize_applicability`` (the hook subprocess is stdlib-only and cannot
+    import the MCP package, so the two are kept identical by ``test_check_resolution_lanes`` /
+    ``test_org_and_tag_normalization`` asserting they agree). Keep them in lockstep.
+    """
+    s = str(tag).strip()
+    return s if s == "*" else s.casefold()
+
+
+def _req_verify(req: Any) -> str:
+    """The ``verify`` mode ("automated" | "manual" | "") declared on a requirement fact/dict."""
+    if not isinstance(req, dict):
+        return ""
+    return str((req.get("meta") or {}).get("verify") or req.get("verify") or "").strip().casefold()
+
+
 def _check_id(check: Any) -> str:
     if isinstance(check, str):
         return check
@@ -214,9 +253,21 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
       * ``scope="validation"`` (af-build PER-TICKET) — tag union surface match (below), filtered to
         validation-scope checks.
 
+    THE MATCHING MODEL (unambiguous): the applicability PREDICATE lives on the CHECK
+    (``check.meta.applies_to``, a list); the IDENTITY it matches against lives on the TICKET
+    (``ticket.meta.tags``, with ``ticket.meta.applies_to`` as a lenient fallback). A check pins onto a
+    ticket iff ``set(normalize_tag(x) for x in check.meta.applies_to)`` intersects
+    ``set(normalize_tag(x) for x in ticket.meta.tags ∪ ticket.meta.applies_to)``, plus the separate
+    ``"*"`` and surface lanes below. Both sides are normalized (:func:`normalize_tag`, matching the
+    author-time write path) so ``"Auth"`` vs ``"auth"`` can never silently drop a check.
+
     Tag union surface (the per-ticket lanes):
-      * TAG match — for each tag on the ticket (meta.tags / meta.applies_to), enumerate active
-        ``check`` facts whose ``meta.applies_to`` contains that tag (array-membership; ``"*"`` wildcard).
+      * TAG match — for each IDENTITY tag on the ticket (meta.tags, or meta.applies_to as fallback),
+        enumerate active ``check`` facts whose PREDICATE ``meta.applies_to`` contains that tag
+        (server-side array-membership on the normalized value).
+      * ``"*"`` WILDCARD — a SEPARATE lane (below): universal checks authored ``applies_to:["*"]``
+        apply to EVERY ticket, incl. a tag-less one. It is separate because a per-tag query can never
+        surface a ``["*"]`` check — the ticket's concrete tags never include the literal ``"*"``.
       * SURFACE match — for each surface the ticket renders, enumerate checks bound via ``renders``.
 
     This function is the MANDATORY (precise) contract only: tag ∪ ``"*"`` wildcard ∪ surface. The
@@ -244,8 +295,11 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
     meta = _meta(ticket, project_ref(project).plan if project else None)
     seen: dict[str, dict] = {}
 
+    # IDENTITY lives on the TICKET (``meta.tags``, with ``meta.applies_to`` as a lenient fallback);
+    # the PREDICATE lives on the CHECK (``meta.applies_to``). Both sides are normalized
+    # (:func:`normalize_tag`, matching the write path) so ``"Auth"`` and ``"auth"`` are the same tag.
     tags = _as_list(meta.get("tags")) + _as_list(meta.get("applies_to"))
-    for tag in {str(t) for t in tags if t}:
+    for tag in {normalize_tag(t) for t in tags if t and normalize_tag(t)}:
         for chk in _praxis.facts_by(category=CHECK_CATEGORY, meta={"applies_to": tag},
                                     space=space, snapshot=snapshot):
             cid = _check_id(chk)
@@ -324,8 +378,13 @@ def pin_requirements(cid: str, requirements: list,
     and has an empty validation set (``pinned_checks``) the worker must now author + pin.
     """
     req_ids = [rid for rid in (_check_id(r) for r in requirements) if rid]
+    # A MANUAL requirement (verify=="manual") is recorded separately so completion can require an
+    # external/human-sourced pass for it — the worker may not self-certify it (see all_validations_passed).
+    manual_ids = [rid for r in requirements
+                  if (rid := _check_id(r)) and _req_verify(r) == "manual"]
     return _praxis.patch_meta(cid, {
         M_REQUIRED_VALIDATIONS: req_ids,
+        M_MANUAL_REQUIREMENTS: manual_ids,
         M_PINNED_CHECKS: [],
     }, **_ref_kw(ref))
 
@@ -369,11 +428,18 @@ def pin_validations(cid: str, validations: list,
 
 def record_validation_pass(cid: str, validation_id: str, passed: bool,
                            ran_at: Optional[float] = None,
+                           source: str = WORKER_PASS_SOURCE,
                            ref: Optional[tuple[str, str]] = None) -> dict:
     """Record one validation's pass/fail ON THE TICKET NODE (never on the requirement fact).
 
-    Read-modify-write of ``meta.pinned_checks``: update the matching validation's passed/ran_at. If
-    the validation is not already pinned (set drifted), it is appended so the result is not lost.
+    Read-modify-write of ``meta.pinned_checks``: update the matching validation's passed/ran_at/source.
+    If the validation is not already pinned (set drifted), it is appended so the result is not lost.
+
+    ``source`` names WHERE the pass came from. It defaults to ``WORKER_PASS_SOURCE`` — a command the
+    build worker ran — which is exactly the signal that can NEVER satisfy a ``verify="manual"``
+    requirement. To attest a manual requirement, record its covering validation with a human source
+    (``source="human"``, see :data:`HUMAN_PASS_SOURCES`); that external signal is the only thing
+    :func:`all_validations_passed` accepts for the manual set.
     """
     if ran_at is None:
         ran_at = time.time()
@@ -385,11 +451,12 @@ def record_validation_pass(cid: str, validation_id: str, passed: bool,
         if str(eid) == str(validation_id):
             entry["passed"] = bool(passed)
             entry["ran_at"] = ran_at
+            entry["source"] = str(source)
             found = True
             break
     if not found:
         pinned.append({"validation_id": str(validation_id), "covers": [],
-                       "run": "", "passed": bool(passed), "ran_at": ran_at})
+                       "run": "", "passed": bool(passed), "ran_at": ran_at, "source": str(source)})
     return _praxis.patch_meta(cid, {M_PINNED_CHECKS: pinned}, **_ref_kw(ref))
 
 
@@ -419,6 +486,11 @@ def all_validations_passed(ticket: Any, ref: Optional[tuple[str, str]] = None) -
     therefore done"; that is a BLOCK condition (use :func:`block`), surfaced for owner action, never
     a silent pass. (An intentionally validation-free ticket must carry an explicit always-pass
     requirement, authored upstream.)
+
+    MANUAL requirements are held to a stricter bar: a ``verify="manual"`` requirement (recorded in
+    ``meta.manual_requirements``) is satisfied ONLY when some covering validation passed with a
+    human/external ``source`` (:data:`HUMAN_PASS_SOURCES`). A worker-run pass (the default source)
+    never counts — so a manual ticket can never reach True from worker-authored validations alone.
     """
     meta = _meta(ticket, ref)
     required = {str(r) for r in (meta.get(M_REQUIRED_VALIDATIONS) or []) if r}
@@ -431,7 +503,19 @@ def all_validations_passed(ticket: Any, ref: Optional[tuple[str, str]] = None) -
             covered.add(str(c))
     if not required.issubset(covered):   # coverage gap — compute inline (meta already extracted)
         return False
-    return all(bool(e.get("passed")) for e in pinned)
+    if not all(bool(e.get("passed")) for e in pinned):
+        return False
+    # Manual requirements need an EXTERNAL/human-sourced pass — the worker may not self-certify them.
+    manual = {str(r) for r in (meta.get(M_MANUAL_REQUIREMENTS) or []) if r}
+    for req in manual:
+        if not any(
+            bool(e.get("passed"))
+            and str(e.get("source") or WORKER_PASS_SOURCE) in HUMAN_PASS_SOURCES
+            and req in {str(c) for c in (e.get("covers") or [])}
+            for e in pinned
+        ):
+            return False
+    return True
 
 
 # --------------------------------------------------------------------------- claiming / lease
@@ -708,7 +792,8 @@ def next_ready_ticket(items: list[dict]) -> Optional[dict]:
 
 # --------------------------------------------------------------------------- acceptance floor
 
-def acceptance_requirement(cid: str, acceptance_text: str) -> dict:
+def acceptance_requirement(cid: str, acceptance_text: str,
+                           verify: str = "automated") -> dict:
     """The ticket's OWN binary acceptance condition as a synthetic validation requirement.
 
     This is the coverage-contract FLOOR. Every build ticket must at minimum prove its acceptance
@@ -717,12 +802,19 @@ def acceptance_requirement(cid: str, acceptance_text: str) -> dict:
     pins zero validations, and ``all_validations_passed`` can never become True — the ticket can be
     neither finished nor (without an explicit block) escaped. The floor gives the worker a concrete,
     always-authorable target: the red→green acceptance test the skill already mandates.
+
+    ``verify`` carries the ticket's own ``meta.verify`` mode onto the floor. A ``verify="manual"``
+    ticket's acceptance is a human-confirmed condition (a UX feel, a visual), so the floor inherits
+    ``manual`` and its pass must come from an external/human signal — the executor may not
+    self-check it (see :func:`all_validations_passed`).
     """
     return {"id": f"{cid}::acceptance", "text": str(acceptance_text),
-            "meta": {"acceptance": str(acceptance_text), "synthetic": "acceptance-floor"}}
+            "meta": {"acceptance": str(acceptance_text), "synthetic": "acceptance-floor",
+                     "verify": str(verify or "automated").strip().casefold()}}
 
 
-def contract_with_floor(cid: str, acceptance_text: str, resolved: list) -> list:
+def contract_with_floor(cid: str, acceptance_text: str, resolved: list,
+                        verify: str = "automated") -> list:
     """Compose the coverage contract: the resolved Praxis requirements PLUS the acceptance floor.
 
     Prepends :func:`acceptance_requirement` (deduped) when the ticket has a non-empty acceptance
@@ -730,11 +822,14 @@ def contract_with_floor(cid: str, acceptance_text: str, resolved: list) -> list:
     its own acceptance — and can therefore be finished. A ticket with neither resolved checks NOR an
     acceptance condition returns an empty list: a genuine planning defect the build surfaces by
     ``block()``-ing the ticket (never a silent wedge), since there is nothing it could honestly prove.
+
+    ``verify`` is the ticket's own ``meta.verify`` mode, threaded onto the floor so a manual ticket's
+    acceptance floor is itself manual (worker-self-certification barred).
     """
     reqs = list(resolved)
     text = str(acceptance_text or "").strip()
     if text:
-        floor = acceptance_requirement(cid, text)
+        floor = acceptance_requirement(cid, text, verify=verify)
         if floor["id"] not in {_check_id(r) for r in reqs}:
             reqs = [floor] + reqs
     return reqs
@@ -767,6 +862,19 @@ def start_ticket(cid: str, owner: str, project: str = "",
         return None
     resolved = resolve_validation_requirements(cid, project=project, scope="validation",
                                                override=override)
-    requirements = contract_with_floor(cid, _meta(cid, plan).get("acceptance"), resolved)
+    tmeta = _meta(cid, plan)
+    verify_mode = str(tmeta.get("verify") or "automated").strip().casefold()
+    requirements = contract_with_floor(cid, tmeta.get("acceptance"), resolved, verify=verify_mode)
+    # COVERAGE-GAP WARNING (build-time visibility of the intake defect): a verify="automated" ticket
+    # that resolves ZERO declared checks is buildable via its acceptance floor, but it means NO declared
+    # gate exists for it — exactly the floor-only defect `resolve_preview --require-coverage` blocks at
+    # intake. Surface it loudly here too so the gap is visible even on a plan authored before that guard.
+    if verify_mode == "automated" and not resolved:
+        sys.stderr.write(
+            f"[af-build] WARNING: ticket {cid} is verify=automated but resolved NO declared checks — "
+            f"only its acceptance floor. It is buildable, but no declared validation gate covers it. "
+            f"Author a building-validation check for its tags (see af-intake-build-validation) or "
+            f"confirm it should be verify=manual.\n"
+        )
     pin_requirements(cid, requirements, ref=plan)
     return requirements

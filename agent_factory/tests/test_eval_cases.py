@@ -100,6 +100,25 @@ EXPECTED_VERDICTS = {
             "(no ticket in the cycle can ever be ready; break it)",
         ],
     },
+    "plan_gate_inverted_decision_rejected": {
+        "admitted": False,
+        "rule_ids": ["R-DECISION-NOT-END-STATE", "R-NO-IMPL-DEPENDS-ON-DECISION"],
+        "messages": [
+            "D1: architecture-decision ticket must be verify=\"manual\" (a human accepts "
+            "or overrides the design at the gate), not machine-built with an impl end-state "
+            "acceptance (got verify='automated'). Record the impl end-state on the "
+            "implementation ticket instead.",
+            "R1: depends_on 'D1' which is an architecture-decision ticket "
+            "(a decision must never gate a build ticket — it sits first but goes green "
+            "last, wedging the run). Bake the decision into this ticket's "
+            "content/acceptance and drop the edge.",
+        ],
+    },
+    "plan_gate_correct_decision_admitted": {
+        "admitted": True,
+        "rule_ids": [],
+        "messages": [],
+    },
 }
 
 

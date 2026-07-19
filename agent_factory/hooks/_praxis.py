@@ -111,6 +111,17 @@ def _auth_disabled() -> bool:
     return os.environ.get("PRAXIS_AUTH_DISABLED") == "1"
 
 
+def _resolve_org(pinned: str, cached: str, default: str) -> str:
+    """THE org-precedence rule: explicit ``PRAXIS_ORG`` pin > cached selection > default.
+
+    Stdlib-only MIRROR of ``knowledge/mcp/identity.py:resolve_org`` (the hook subprocess cannot import
+    the praxis package). Keeping the two byte-identical is what guarantees ``praxis_whoami`` /
+    ``praxis_select_org`` (MCP) and what the factory hooks actually send as ``X-Praxis-Org`` resolve
+    the SAME active org — never a silent wrong-org split. An agent_factory test asserts they agree.
+    """
+    return (pinned or "").strip() or (cached or "").strip() or default
+
+
 def _org_from_cache() -> str:
     """The active org id cached by ``praxis_select_org`` in this agent's MCP identity cache.
 
@@ -194,7 +205,9 @@ def _auth_headers() -> dict[str, str]:
     #      This makes setup STEP 3 the single source of truth for both the MCP tools and this hook, so
     #      the explicit env pin in (1) is an optional belt-and-braces, not a required workaround.
     #   3. DEFAULT_ORG — the last-resort fallback.
-    org = os.environ.get("PRAXIS_ORG", "").strip() or _org_from_cache() or DEFAULT_ORG
+    # Resolved through the shared precedence rule (mirror of identity.resolve_org) so this header and
+    # what praxis_whoami/select_org report can never diverge.
+    org = _resolve_org(os.environ.get("PRAXIS_ORG", ""), _org_from_cache(), DEFAULT_ORG)
     headers["x-praxis-org"] = org
 
     if _auth_disabled():

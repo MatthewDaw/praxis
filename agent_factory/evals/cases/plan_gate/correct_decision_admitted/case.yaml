@@ -1,0 +1,35 @@
+# The SAME Cognito decision modeled correctly, ADMITTED. D1 carries ONLY the neutral
+# "architecture-decision" tag, is verify="manual" (a human accepts/overrides it at the gate), and
+# records a decision-LEVEL acceptance ("Cognito is the accepted identity-provider design"), NOT an
+# impl end-state. No ticket depends_on D1 — the decision is baked into R1's own content/acceptance.
+# R1 is a normal impl ticket (verify automated, no decision prerequisite). The build-order graph is
+# realizable and every closure rule holds, so the two decision rules are satisfied (not fired) and
+# the gate admits — the positive control for inverted_decision_rejected.
+id: plan_gate_correct_decision_admitted
+component: plan_gate
+input:
+  project: sotos
+  requirements:
+    - id: D1
+      text: "Cognito is the accepted identity provider for the three user tiers."
+      acceptance: "Cognito is the accepted identity-provider design decision for the three tiers."
+      defines: []
+      references: []
+      source: "prd-sotos"
+      depends_on: []
+      tags: ["architecture-decision"]
+      verify: "manual"
+    - id: R1
+      text: "The sign-up handler creates a Cognito user in the requested tier's UserPool."
+      acceptance: "POST /signup with a valid tier creates one Cognito user and returns 201."
+      defines: []
+      references: []
+      source: "prd-sotos"
+      depends_on: []
+      tags: ["auth"]
+      verify: "automated"
+  out_of_scope: []
+rule_ids: ["R-DECISION-NOT-END-STATE", "R-NO-IMPL-DEPENDS-ON-DECISION"]
+deterministic_checks:
+  - name: gate_admits
+    ref: "evals.checks:gate_admits"
