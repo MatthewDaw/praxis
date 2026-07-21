@@ -2140,14 +2140,41 @@ class PostgresVectorGraph(SearchableGraph):
         }
 
     # --- ticket lease/claim (multi-agent build loop) -----------------------
+    # Connection-level failures that mean the PERSISTENT connection went stale (server restart,
+    # idle-socket drop) rather than a query/data error. The app's per-thread ``_ConnProxy`` already
+    # reopens a ``closed``/``broken`` connection on the NEXT access — but the FIRST statement issued
+    # after the drop still raises one of these before that reopen kicks in, which is exactly how a
+    # long-lived serve process 500'd the ``/requirements/incomplete`` path while other endpoints
+    # (which happened to open a fresh connection first) kept working. Retrying once lets the proxy
+    # hand us a fresh connection so the read self-heals instead of surfacing a 500.
+    _STALE_CONN_ERRORS = (psycopg.OperationalError, psycopg.InterfaceError)
+
+    def _execute_resilient(self, sql: str, params: object = None):
+        """Run a READ statement, transparently reconnecting ONCE if the connection went stale.
+
+        Safe only for reads / idempotent autocommit statements: on a stale-connection error the
+        statement never reached the server, so re-running it cannot double-apply. A non-connection
+        error (bad SQL, constraint, etc.) is not caught and propagates unchanged.
+        """
+        try:
+            return self._conn.execute(sql, params)
+        except self._STALE_CONN_ERRORS:
+            # The cached connection died mid-flight; psycopg marks it broken/closed, so the proxy's
+            # resolver hands us a fresh connection on this next access. Retry exactly once.
+            return self._conn.execute(sql, params)
+
     def _server_epoch(self) -> float:
         """The DB's wall clock as epoch seconds — the single trusted lease clock.
 
         Lease liveness is decided server-side (never from a client timestamp), so
         every claim/heartbeat/expiry comparison reads ``now`` from the same source
         the SQL grant conditions use (``EXTRACT(EPOCH FROM now())``).
+
+        This is the FIRST statement ``incomplete_requirements`` issues, so routing it through
+        :meth:`_execute_resilient` heals a stale persistent connection up front — the subsequent
+        classification queries on this thread then reuse the freshly-reopened connection.
         """
-        row = self._conn.execute("SELECT EXTRACT(EPOCH FROM now())").fetchone()
+        row = self._execute_resilient("SELECT EXTRACT(EPOCH FROM now())").fetchone()
         return float(row[0])
 
     @staticmethod
