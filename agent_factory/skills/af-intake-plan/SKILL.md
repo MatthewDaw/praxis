@@ -11,7 +11,10 @@ description: >
   underspecification routing, cross-requirement gaps, coverage+depth checks, and the data-driven
   scope="planning" lenses (READ from the `planning-validation` snapshot) — convenes the ce-* plan-review
   panel, and hands the human a clearable gate that ends in save_snapshot(space="<project>",
-  snapshot="prd-<project>"). AMEND (C0) adds ONE genuinely-new requirement TICKET the plan is simply
+  snapshot="prd-<project>"). As part of the audit it also DERIVES the build's known blind-spot guards —
+  the tricky edge cases and every-site refactors af-build tends to silently drop — and authors each as a
+  build-validation check by DELEGATING to af-intake-build-validation (it never writes the check section
+  itself, so the single-writer lock holds; see B5b). AMEND (C0) adds ONE genuinely-new requirement TICKET the plan is simply
   missing; because tickets resolve by query and completion is gated on them, it enters the incomplete set
   automatically. Use when starting (or re-baselining) a project from a brainstorm/PRD + wireframe, or to
   graft a lone missing ticket onto an already-hardened plan. To add a CHECK — a build gate or a planning
@@ -596,6 +599,66 @@ THIS platform?"). Write what it surfaces into Praxis, resolve those too, and **l
 nothing new** (loop-until-dry). It does not sign off while a platform-appropriate layer or the CI gate is
 missing or unenforced.
 
+## B5b — Guard the build's known blind spots (author build-validation checks via af-intake-build-validation)
+
+A hardened requirement whose acceptance *names* an edge case still does not make the build PROVE it:
+af-build self-reports "done" against the acceptance floor unless a declared **check** forces the case.
+Two failure classes survive every per-requirement audit yet are exactly what the build agent silently
+drops — this step turns each into a runnable build gate so "done" is gated on the behavior, not the
+agent's word:
+
+1. **The tricky edge case** — the empty / offline / invalid / boundary / race / idempotency / partial-
+   failure case that is easy to code past. B1's adversarial lenses SURFACE these into requirement
+   acceptance; here you promote the highest-risk ones to a **runnable check** whose `run` is a test that
+   exercises exactly that case, so a build that skips the case exits non-zero and re-opens the ticket.
+2. **The every-site change (huge refactor / cross-cutting sweep)** — a change that must land in EVERY
+   file / call-site (a provider swap, an API/method rename, a config-key migration, a banned-import
+   purge). The build agent runs the sweep and misses N of M sites; per-requirement review never sees the
+   whole set, and a half-done rename often still COMPILES GREEN (the dangerous kind). The guard is a
+   **scan/grep check that asserts ZERO stragglers remain** — `! grep -rq '<old pattern>' <scope>` (or a
+   codemod/lint rule) — so an incomplete sweep exits non-zero. This is the correct home for the
+   "no `@auth0/auth0-react` import remains" assertion that **B4's HARD RULE forbids on a decision ticket**:
+   model it here as a build-validation scan check, not as an impl end-state on the architecture decision.
+
+Neither guard is a requirement (a check is not a plan fact) and this skill **may not write the
+`building-validation` section itself** (section-lock; the server refuses a `category="check"` fact in
+`prd-<project>`). So the split of labor is: **DERIVE the guard set HERE** — the plan-side judgment of
+WHICH cases and WHICH sweeps are high-risk — then **author each guard by RUNNING af-intake-build-validation**
+(the sole writer of `building-validation`), once per guard. af-intake-plan decides; the sibling writes.
+
+**Derive the guard set — batch across the whole plan, not per-requirement (stop-sooner, same discipline
+as B1/B4):**
+- **Edge-case guards** — from B1's fired lenses, keep the cases where the miss is EXPENSIVE OR INVISIBLE
+  (silent partial failure, data loss, auth bypass, race, idempotency, money/PII) AND the case is
+  automatable. Each becomes a check whose `run` is a test hitting exactly that case. Scope it per
+  af-intake-build-validation Step 1: **surface-bind** a UI case (`meta.surfaces` + the `renders` edge, so
+  it can never resolve onto a backend-only ticket), **tag-scope** a domain case (`["auth"]`), `["*"]`
+  only for a truly universal invariant.
+- **Every-site guards** — from B4's architecture decisions and any requirement describing a rename /
+  migration / purge across the codebase, name each cross-cutting change that must be TOTAL. Each becomes
+  a completeness check — typically `! grep -rq '<old>' <scope>` (zero stragglers) or a codemod/lint gate
+  — scoped `["*"]` so it re-runs on EVERY ticket until the sweep is total (a straggler in any ticket's
+  slice re-reds the gate).
+
+Keep the set HIGH-SIGNAL: a guard for every trivial case is noise that slows every build. Guard the cases
+whose miss is costly or silent, and the sweeps whose partial application still builds green — not the
+obvious ones the acceptance floor already forces.
+
+**Author each guard through the sibling command.** For each derived guard run **`af-intake-build-validation`**
+with its criterion + `run` + `applies_to`/surface. That command owns the `building-validation` write, runs
+`resolve_preview --by-check` to confirm the guard lands ONLY on the intended tickets (tighten an over-broad
+tag before it ships), and closes on a zero-exit `resolve_preview --require-coverage`. Because the write goes
+through the sibling, the single-writer invariant on `building-validation` still holds — af-intake-plan never
+writes the check section directly.
+
+**Decision mode (Step 0c) applies to the guard set, not to whether it runs.** In **Collaborate**, confirm
+the derived guards with the human (which sweeps are truly total; which edge cases are worth a permanent
+gate) before authoring. In **Autonomous**, author the low-regret guards, record them via
+`praxis_record_episode`, and surface the list for override at B9. A guard is cheap to delete and expensive
+to omit, so bias toward authoring the every-site scan guards (near-zero false-positive) and the
+high-severity edge-case guards. Record the authored guard-check ids in the **B8 panel-ran episode** so the
+step cannot be silently skipped.
+
 ## B6 — Cross-requirement coverage + depth (the mechanical gate)
 
 The mechanical half is executable, not eyeballed:
@@ -680,7 +743,9 @@ decision and test layer written into Praxis, the plan-review panel run — recor
 praxis_record_episode(
   text = "af-intake-plan audit+panel ran for prd-<project>: challenged <N> requirements; "
          "lenses fired=[...]; near-dups reconciled=[...]; arch decisions written=[...]; "
-         "test layers=[...]; tech-decision critic loop-until-dry passes=<k>, missing=[]; "
+         "test layers=[...]; blind-spot guards authored via af-intake-build-validation="
+         "[edge-case=<check_ids>, every-site=<check_ids>] (B5b); "
+         "tech-decision critic loop-until-dry passes=<k>, missing=[]; "
          "plan panel composition=[...], findings emitted=<m>",
   outcome = "succeeded",
 )
@@ -703,6 +768,10 @@ declare it yourself. The human may bless only once ALL hold, checked **live from
   clean (B6).
 - Every can't-miss failure class addressed-or-excluded with logged rationale (data loss, auth bypass,
   irreversible action, silent partial failure).
+- **Every known every-site refactor and high-severity edge case carries a build-validation guard check**
+  (B5b) authored via af-intake-build-validation — or is explicitly recorded (episode) as not-guardable /
+  routed to a `verify="manual"` ticket. A high-risk sweep or edge case with no guard and no recorded
+  exception is an open blind spot, not a blessable plan.
 - The **panel-ran episode exists** (B8) — the audit and plan-review panel actually ran.
 
 **Stop by information-gain, not exhaustion.** When the next question's expected information gain is low
@@ -848,6 +917,11 @@ apply is the build's fresh RESOLVE query (tag ∪ "*" ∪ surface), same as ever
   challenge is unresolved, the panel-ran episode is missing, or `plan_gate` does not pass — and never with
   no automated test strategy, a platform-required test layer missing, or a CI gate lacking a binary
   condition.
+- **Never leave a known every-site refactor or high-severity edge case (B5b) without a build-validation
+  guard check** — the every-site scan (`! grep -rq '<old>' <scope>`) and the tricky-case test are exactly
+  what af-build silently drops; author each via af-intake-build-validation or record an explicit exception.
+  And **never write the `building-validation` section directly from this skill** — DERIVE the guards here,
+  DELEGATE the write to af-intake-build-validation (its sole writer), preserving the single-writer lock.
 - **Never pass on a missing ce panel** — if the compound-engineering reviewers aren't available, record NO
   panel-ran episode and surface the remediation; absence is a blocked review, never a silent skip.
 - **Never skip the audit or panel silently** — every skip records a reason as a Praxis episode; the
