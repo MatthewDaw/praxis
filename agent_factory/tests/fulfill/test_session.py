@@ -23,7 +23,7 @@ def test_seeds_six_requirements_binds_five(domain, backend):
 
 def test_both_gates_green_for_fresh_session(domain, backend):
     client = FakeFulfillPraxis(backend, space=space_id_for("bob"))
-    sess = start_session(domain, "bob", client=client)
+    start_session(domain, "bob", client=client)
     summary = client.completeness_summary(domain.project)
     assert summary["total"] == 6 and summary["complete"] == 0
     cov = client.surface_coverage(domain.project, scope="mvp")

@@ -27,7 +27,7 @@ def test_picks_box1_not_box3(domain):
 
 
 def test_missing_box2_leaves_it_unknown(domain):
-    messy = "\n".join(l for l in SAMPLE_W2.splitlines() if "Box 2 " not in l and "Box 2  " not in l)
+    messy = "\n".join(line for line in SAMPLE_W2.splitlines() if "Box 2 " not in line and "Box 2  " not in line)
     result = W2Extractor(domain).extract(messy)
     assert result.fields["box1_wages"] == 40000.0
     assert "box2_withholding" not in result.fields  # asked later, not crashed

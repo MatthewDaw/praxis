@@ -89,7 +89,8 @@ def test_parse_garbage_is_empty():
 
 
 def test_produce_candidate_with_fake_model():
-    complete = lambda prompt: '[{"id":"R1","text":"a user can sign up"}]'
+    def complete(prompt):
+        return '[{"id":"R1","text":"a user can sign up"}]'
     feats = produce_candidate(complete, "PRD")
     assert len(feats) == 1 and feats[0].text == "a user can sign up"
 

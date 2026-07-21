@@ -90,7 +90,8 @@ def main(argv: list[str] | None = None) -> int:
     add = subprocess.run(["git", "-C", repo, "worktree", "add", "--force", "--detach", wt,
                           args.start_commit], capture_output=True, text=True, encoding="utf-8")
     if add.returncode != 0:
-        print("FAILED to create worktree:\n" + add.stderr); return 2
+        print("FAILED to create worktree:\n" + add.stderr)
+        return 2
 
     try:
         # 2) RESET the ticket to pristine incomplete in Praxis (hard enum + clear lease/pins/
