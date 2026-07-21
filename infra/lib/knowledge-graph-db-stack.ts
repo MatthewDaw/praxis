@@ -59,7 +59,10 @@ export class KnowledgeGraphDbStack extends cdk.Stack {
 
     this.instance = new rds.DatabaseInstance(this, 'KgInstance', {
       engine: rds.DatabaseInstanceEngine.postgres({
-        version: rds.PostgresEngineVersion.VER_16_4,
+        // 16.4 was deprecated by RDS and is no longer offered (varies by region).
+        // Pinned via `.of()` so a version the CDK enum may not yet know about
+        // still works; bump the minor when AWS retires it again.
+        version: rds.PostgresEngineVersion.of('16.9', '16'),
       }),
       instanceType: ec2.InstanceType.of(GRAVITON, ec2.InstanceSize.MICRO),
       vpc,

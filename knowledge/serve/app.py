@@ -63,6 +63,7 @@ from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph im
     EPISODIC_CATEGORY,
     LeaseConflict,
     PostgresVectorGraph,
+    REQUIREMENT_CATEGORY,
     SnapshotKindError,
     default_write_policy,
 )
@@ -292,6 +293,86 @@ def _check_upsert(
         "summary": "check stored",
         "action": "added",
         "id": fid,
+        "contradictionsSurfaced": 0,
+        "retrievable": fid is not None,
+    }
+
+
+def _is_requirement_ticket(category: str | None, meta: dict | None) -> bool:
+    """True iff this write is a requirement TICKET — a build unit, not a knowledge assertion.
+
+    A ticket is ``category="requirement"`` carrying ``meta.build_state`` (the lifecycle key the af
+    hooks own: incomplete | in_progress | finished | blocked). That is the shape af-intake-plan's
+    AMEND (C0), the WORK-review remediation emit, and the plan panel mint — every "add a NEW ticket"
+    path. A plain requirement ASSERTION extracted during full intake carries no ``build_state`` and is
+    left on the normal reconciled path, so this guard changes only the add-a-ticket flows.
+    """
+    if str(category or "").strip() != REQUIREMENT_CATEGORY:
+        return False
+    return bool(str((meta or {}).get("build_state") or "").strip())
+
+
+def _requirement_upsert(
+    graph: PostgresVectorGraph,
+    *,
+    insight: str,
+    source: str | None,
+    scope: str | None,
+    meta: dict | None,
+) -> dict[str, Any]:
+    """Identity-keyed write for a requirement TICKET — NEVER text-deduped or reconciled.
+
+    A ticket is a distinct BUILD UNIT keyed on ``meta.requirement_id``, not a knowledge assertion to
+    reconcile against the corpus. Two tickets with different ids are different work even when their
+    prose reads alike, so the semantic dedup + conflict pipeline must NOT run — that is exactly what
+    silently MERGED a genuinely-new ticket into a topically-similar existing one, appending the new
+    text into a (sometimes already-``finished``) ticket's content and corrupting it. ``on_conflict``
+    does not apply (there is no conflict step). Identity is the ``requirement_id`` (mirrors
+    :func:`_check_upsert` on ``check_id``):
+
+    * an incoming ``requirement_id`` that ALREADY exists in this (space, snapshot) → UPDATE that one
+      fact in place (a true RESTATEMENT of the same ticket) — never a duplicate, never a cross-merge;
+    * a new / absent ``requirement_id`` → ALWAYS a fresh distinct fact. A NEW ticket can therefore
+      never mutate a DIFFERENT (or ``finished``) ticket's content.
+
+    The caller passes a REDACT-ONLY ``graph`` (``policy=[Redactor()]`` — no Deduper, no
+    ConflictOverwriter), so the insert can never merge, overwrite, or raise a contradiction; secrets
+    are still scrubbed. The write-time section invariant still enforces the fact fits its snapshot.
+    """
+    meta = dict(meta or {})
+    rid = str(meta.get("requirement_id") or "").strip()
+    existing = None
+    if rid:
+        for f in graph.facts_by(
+            category=REQUIREMENT_CATEGORY, state=None, meta_filter={"requirement_id": rid}
+        ):
+            existing = f
+            break
+    if existing is not None:
+        graph.update_fact(
+            existing.id,
+            text=insight,
+            source=source,
+            meta={**(existing.meta or {}), **meta},
+            category=REQUIREMENT_CATEGORY,
+        )
+        return {
+            "summary": f"requirement {rid!r} updated in place",
+            "action": "updated",
+            "id": existing.id,
+            "onConflict": "n/a",
+            "contradictionsSurfaced": 0,
+            "retrievable": True,
+        }
+    fid = graph.write(
+        insight, state="active", source=source, scope=scope,
+        category=REQUIREMENT_CATEGORY, meta=meta,
+    )
+    return {
+        "summary": "requirement ticket stored",
+        "action": "added",
+        "id": fid,
+        "onConflict": "n/a",
         "contradictionsSurfaced": 0,
         "retrievable": fid is not None,
     }
@@ -1947,6 +2028,21 @@ def create_app(conn: Any | None = None) -> FastAPI:
         # not apply. The section guard above already required a (space, snapshot) target.
         if (body.get("category") or "").strip() == CHECK_CATEGORY:
             return _check_upsert(
+                graph_for(org, uid, target, policy=[Redactor()]),
+                insight=insight,
+                source=body.get("source"),
+                scope=body.get("scope"),
+                meta=meta,
+            )
+        # A requirement TICKET (category="requirement" + meta.build_state) is a distinct build unit
+        # keyed on meta.requirement_id, NOT a knowledge assertion — route it to the identity-keyed
+        # upsert on a REDACT-ONLY graph. This is the fix for the AMEND (C0) footgun where the normal
+        # dedup silently MERGED a genuinely-new ticket into a topically-similar existing (even
+        # `finished`) ticket, corrupting its content. on_conflict="surface" never guarded that merge
+        # (it governs only contradictions); identity-keying does. A true restatement (same
+        # requirement_id) still updates in place; a distinct/new id is always a fresh fact.
+        if _is_requirement_ticket(body.get("category"), meta):
+            return _requirement_upsert(
                 graph_for(org, uid, target, policy=[Redactor()]),
                 insight=insight,
                 source=body.get("source"),

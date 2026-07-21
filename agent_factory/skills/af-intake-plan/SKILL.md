@@ -737,10 +737,22 @@ plan even by mistake.
 
 **Amend is additive, never a content edit.** C0 adds a requirement that *did not exist*; it does not
 rewrite an existing ticket's statement/acceptance — that is a re-baseline FULL INTAKE (Step-3
-`on_conflict="surface"` edit). The `on_conflict="surface"` guard on the C0 write is exactly what catches
-"this 'new' ticket is actually an edit of an existing one" and routes you back to FULL INTAKE. Praxis is
-a HARD dependency: if the write cannot reach Praxis, **fail closed** (error and stop) — never fall back to
-a file.
+`on_conflict="surface"` edit). Praxis is a HARD dependency: if the write cannot reach Praxis, **fail
+closed** (error and stop) — never fall back to a file.
+
+> **`on_conflict="surface"` is NOT a dedup guard for an additive ticket.** `on_conflict` governs
+> **contradictions only** — an *additive, non-contradictory* near-duplicate is invisible to it. Before
+> this was fixed, a C0 write for a genuinely-new ticket that was merely *topically similar* to an
+> existing one was silently **merged** by the ingestion dedup into the nearest fact (`action:"merged"`),
+> appending its text into that fact's `content` — even a already-`finished` ticket's — corrupting it. So
+> do NOT rely on `surface` to keep a new ticket distinct. What keeps it distinct is the **ticket-identity
+> write path**: because a C0 write is `category="requirement"` carrying `meta.build_state="incomplete"`,
+> the server routes it through an **identity-keyed upsert** (keyed on `meta.requirement_id`, redact-only,
+> NO text-dedup) — a distinct/new `requirement_id` (or none) always lands as a **fresh distinct fact**,
+> and only a write reusing an EXISTING `requirement_id` updates that one ticket in place. A new ticket can
+> therefore never mutate a different (or finished) ticket. To decide "is this actually an edit of an
+> existing ticket?", judge it yourself first (`praxis_facts_by` / `praxis_get_context` for a near-dup); if
+> it IS a restatement of existing content, that is a re-baseline (FULL INTAKE), not C0.
 
 ## C0 — New ticket (a genuinely-new requirement, nothing to edit)
 
@@ -766,17 +778,25 @@ praxis_add_insight(
   source   = "prd-<project>",
   category = "requirement",
   meta     = { "build_state": "incomplete", "tags": ["<class-tag>", ...],
-               "scope": "mvp | post-mvp", "surfaces": ["<screen-id>", ...] },
-  on_conflict = "surface",
+               "scope": "mvp | post-mvp", "surfaces": ["<screen-id>", ...],
+               "requirement_id": "<R-id, OPTIONAL>" },  # include to make a re-file update-in-place
   space    = "<project>",          # REQUIRED — write into the plan snapshot itself,
   snapshot = "prd-<project>",      # NOT working memory (invisible to the build)
 )
 ```
 
-1. **`on_conflict="surface"` is the guard**, never `raw=True`/`auto_resolve`: if the "new" requirement
-   near-dups an existing one, it surfaces as a pending contradiction instead of silently minting a twin. If
-   it turns out to *be* an existing ticket needing new wording, you are in the wrong path — that content
-   edit belongs to FULL INTAKE (Step-3), not Amend.
+1. **The `build_state="incomplete"` on this write is what makes it a TICKET**, and the server routes a
+   requirement ticket through the identity-keyed path — so it lands as a **distinct new fact**
+   (`action:"added"`) and is NEVER text-merged into a similar existing ticket. `on_conflict` is
+   irrelevant here (it only ever gated contradictions, never additive near-dup merges), so do not pass it
+   expecting it to guard the dup. **Optionally set `meta.requirement_id`:** with it, re-filing the *same*
+   ticket updates that one fact in place (a true restatement) instead of minting a twin; without it, every
+   write is a fresh fact. If the "new" requirement is really an EDIT of an existing ticket's content, you
+   are in the wrong path — that content edit belongs to FULL INTAKE (Step-3), not Amend.
+   **Recovery (a pre-fix corrupted ticket):** if an older plan has a ticket whose `content` was appended
+   into by a silent merge, restore it with `praxis_edit_fact(<id>, content="<original>", on_conflict="none")`
+   (a literal in-place rewrite, no reconcile), then re-file the intended new ticket — which now lands
+   distinct.
 2. If it renders a surface, bind it against the SAME snapshot:
    `praxis_bind_surface(requirement_id, screen_id, project, space="<project>", snapshot="prd-<project>")`
    (the `renders` edge) so surface-bound checks resolve onto it at build.

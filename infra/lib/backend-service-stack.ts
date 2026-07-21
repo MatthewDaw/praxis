@@ -69,9 +69,13 @@ export class BackendServiceStack extends cdk.Stack {
       process.env.OPENROUTER_API_KEY;
 
     // Build the backend image from the repo-root Dockerfile and publish it to
-    // the CDK assets ECR repo.
+    // the CDK assets ECR repo. Pinned to linux/amd64: App Runner runs x86_64, so
+    // an arm64 image built on an Apple-Silicon machine crashes at startup with
+    // "exec format error". This forces a cross-build (via Docker buildx/QEMU)
+    // regardless of the host architecture.
     const asset = new ecrAssets.DockerImageAsset(this, 'BackendImage', {
       directory: path.join(__dirname, '../..'),
+      platform: ecrAssets.Platform.LINUX_AMD64,
     });
 
     // App Runner pulls the image from ECR using this access role.

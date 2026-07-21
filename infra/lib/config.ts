@@ -40,7 +40,7 @@ export const DB_NAME = 'praxis_kg';
 export const GRAVITON = ec2.InstanceClass.BURSTABLE4_GRAVITON;
 
 /** Deployed Cognito identity the backend validates JWTs against.
- *  The pool AuthUserPoolStack creates in the deploy account
+ *  This is the pool AuthUserPoolStack creates in the deploy account
  *  (sotos / 528782700781, us-east-1). */
 export const COGNITO = {
   userPoolId: 'us-east-1_dqDCickOP',
