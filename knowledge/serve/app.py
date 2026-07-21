@@ -2635,6 +2635,8 @@ def create_app(conn: Any | None = None) -> FastAPI:
     def incomplete_requirements(
         project: str = "",
         exclude_leased: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
@@ -2647,19 +2649,33 @@ def create_app(conn: Any | None = None) -> FastAPI:
         ``claim_heartbeat_at``, ``lease_live``) for the multi-agent build loop. With
         ``exclude_leased=true`` tickets under a LIVE lease are omitted so a worker
         only sees claimable ones (stale-leased and unclaimed remain). Default false
-        keeps the prior behavior/response for back-compat."""
+        keeps the prior behavior/response for back-compat.
+
+        OPT-IN PAGINATION: this response can grow to 100k+ chars on a large plan.
+        ``limit``/``offset`` page the (dependency/recency-ordered) set so a client that
+        wants a bounded payload can ask for one; ``total`` always reports the full count.
+        BOTH DEFAULT TO OFF (``limit=None`` => every item) so the gate's completeness read
+        — which MUST see the whole set or it could believe a build is done when it isn't —
+        is unchanged. A caller that paginates opts into tracking ``total`` itself."""
         project = str(project or "").strip()
         if not project:
             raise HTTPException(status_code=400, detail="query param 'project' is required")
+        if offset < 0 or (limit is not None and limit < 0):
+            raise HTTPException(status_code=400, detail="limit/offset must be non-negative")
         # A bare call defaults to the project's canonical plan snapshot (Option A: state
         # lives there), so it reads the SAME graph the build writes — no working-memory split.
         target = _project_target(org, uid, project, target)
         items = graph_for(org, uid, target).incomplete_requirements(
             project, exclude_leased=exclude_leased
         )
+        total = len(items)
+        # Slice BEFORE rendering the (non-trivial) completeness view so a paged call also does less
+        # work, not just returns less. limit=None keeps the full, back-compatible response.
+        page = items[offset:] if limit is None else items[offset:offset + limit]
         return {
             "project": project,
-            "incomplete": [_requirement_completeness_view(i) for i in items],
+            "total": total,
+            "incomplete": [_requirement_completeness_view(i) for i in page],
         }
 
     @app.post("/requirements/{cid}/claim")
