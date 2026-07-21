@@ -39,10 +39,12 @@ export const DB_NAME = 'praxis_kg';
 /** Burstable Graviton class shared by the EC2 (Phoenix) and RDS (KG) instances. */
 export const GRAVITON = ec2.InstanceClass.BURSTABLE4_GRAVITON;
 
-/** Deployed Cognito identity the backend validates JWTs against. */
+/** Deployed Cognito identity the backend validates JWTs against.
+ *  The pool AuthUserPoolStack creates in the deploy account
+ *  (sotos / 528782700781, us-east-1). */
 export const COGNITO = {
-  userPoolId: 'us-east-1_4nAMe6bPK',
-  clientId: '3ij653bq912pi4f17l5hn9iqqn',
+  userPoolId: 'us-east-1_dqDCickOP',
+  clientId: '3v12800pitg5l6tm4er2qati8g',
   region: REGION,
   userPoolName: 'praxis-users',
 };

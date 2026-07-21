@@ -47,6 +47,7 @@ jobs:
               - 'uv.lock'
               - 'knowledge/**'
               - 'infra/lib/backend-service-stack.ts'
+              - 'infra/lib/config.ts'
               - 'infra/bin/app.ts'
               - 'infra/cdk.json'
               - 'infra/package.json'
@@ -98,9 +99,10 @@ jobs:
         && (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped') }}
     runs-on: ubuntu-latest
     env:
-      # Known/deployed Cognito values baked into the frontend bundle.
-      VITE_COGNITO_USER_POOL_ID: us-east-1_4nAMe6bPK
-      VITE_COGNITO_CLIENT_ID: 3ij653bq912pi4f17l5hn9iqqn
+      # Known/deployed Cognito values baked into the frontend bundle
+      # (AuthUserPoolStack pool in the sotos / 528782700781 account).
+      VITE_COGNITO_USER_POOL_ID: us-east-1_dqDCickOP
+      VITE_COGNITO_CLIENT_ID: 3v12800pitg5l6tm4er2qati8g
       VITE_COGNITO_REGION: us-east-1
     steps:
       - uses: actions/checkout@v4
