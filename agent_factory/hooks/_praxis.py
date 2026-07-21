@@ -35,6 +35,7 @@ matching seam accepts unauthenticated requests).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -42,7 +43,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 DEFAULT_API_BASE = "http://localhost:8000"
 DEFAULT_ORG = "agent-factory"
@@ -395,3 +396,199 @@ def ping() -> bool:
     """Best-effort liveness check used by smoke tests. Raises PraxisUnreachable if unreachable."""
     _request("GET", "/facts/by", params={"state": "active", "category": "__ping__"})
     return True
+
+
+# --------------------------------------------------------------------------- preflight
+
+# The ONE reason a factory Stop hook is hard to stand up: two things must be right at once —
+# the API must be reachable AND the hook's OWN auth (Cognito refresh token + client id, or an
+# API key) must be configured — and when either is missing the gate used to fail closed with a
+# GENERIC "check PRAXIS_* / auth" message, then (in headless `claude -p`) loop on the block
+# forever. Preflight replaces that with a PRECISE, actionable verdict: it names EXACTLY which of
+# PRAXIS_API_BASE_URL / the identity cache / COGNITO_CLIENT_ID / PRAXIS_ORG is missing or failing,
+# and classifies the failure as a MISCONFIG (operator error, never self-heals) vs a transient
+# UNREACHABLE (server down) so the caller can be loud instead of silently retrying.
+#
+# It "runs once and caches": the result is memoized to a small file next to the identity cache for
+# a few seconds, so a Stop hook firing repeatedly probes Cognito/the API at most once per TTL.
+
+_PREFLIGHT_TTL_S = 30
+_MISCONFIG = "misconfig"
+_UNREACHABLE = "unreachable"
+
+
+class PreflightResult(NamedTuple):
+    """Structured readiness verdict for the hook's Praxis auth path (see :func:`preflight`)."""
+
+    ok: bool
+    kind: str                    # "ok" | "misconfig" | "unreachable"
+    org: str
+    org_source: str              # "PRAXIS_ORG" | "cache" | "default"
+    api_base: str
+    failures: tuple[str, ...]    # precise, actionable problems (empty iff ok)
+    warnings: tuple[str, ...]    # non-fatal advisories (e.g. falling back to the default org)
+
+    def message(self) -> str:
+        """A single human-readable, actionable diagnostic block."""
+        where = f"org={self.org} (via {self.org_source}), api={self.api_base}"
+        if self.ok:
+            head = f"Praxis hook preflight OK — {where}."
+            if self.warnings:
+                head += "\n" + "\n".join(f"    note: {w}" for w in self.warnings)
+            return head
+        head = ("Praxis hook is MISCONFIGURED — its auth is not set up, so it can never verify build "
+                "state (this will NOT self-heal by retrying)"
+                if self.kind == _MISCONFIG else
+                "Praxis is UNREACHABLE right now (auth material looks present)")
+        lines = "\n".join(f"    - {f}" for f in self.failures)
+        note = ("\n" + "\n".join(f"    note: {w}" for w in self.warnings)) if self.warnings else ""
+        return f"{head}, {where}:\n{lines}{note}"
+
+
+def _preflight_cache_file() -> Path:
+    return _cache_path().parent / ".hook_preflight.json"
+
+
+def _preflight_key() -> str:
+    """Hash of the config inputs a preflight depends on — a change busts the cache immediately."""
+    parts = [
+        _api_base(),
+        os.environ.get("PRAXIS_ORG", ""),
+        str(_cache_path()),
+        "key" if os.environ.get("PRAXIS_API_KEY", "").strip() else "",
+        os.environ.get("COGNITO_CLIENT_ID", ""),
+        os.environ.get("COGNITO_REGION", ""),
+        "disabled" if _auth_disabled() else "",
+    ]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _read_preflight_cache() -> PreflightResult | None:
+    try:
+        data = json.loads(_preflight_cache_file().read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — no/broken cache is just a miss
+        return None
+    if data.get("key") != _preflight_key():
+        return None
+    if (time.time() - float(data.get("ts") or 0)) > _PREFLIGHT_TTL_S:
+        return None
+    try:
+        return PreflightResult(
+            ok=bool(data["ok"]), kind=str(data["kind"]), org=str(data["org"]),
+            org_source=str(data["org_source"]), api_base=str(data["api_base"]),
+            failures=tuple(data.get("failures") or ()), warnings=tuple(data.get("warnings") or ()),
+        )
+    except Exception:  # noqa: BLE001 — malformed cache row is a miss
+        return None
+
+
+def _write_preflight_cache(result: PreflightResult) -> None:
+    try:
+        path = _preflight_cache_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "key": _preflight_key(), "ts": time.time(), "ok": result.ok, "kind": result.kind,
+            "org": result.org, "org_source": result.org_source, "api_base": result.api_base,
+            "failures": list(result.failures), "warnings": list(result.warnings),
+        }), encoding="utf-8")
+    except Exception:  # noqa: BLE001 — caching is best-effort; never let it crash a gate
+        pass
+
+
+def _run_preflight(*, live: bool) -> PreflightResult:
+    api_base = _api_base()
+    pinned = os.environ.get("PRAXIS_ORG", "").strip()
+    cached_org = _org_from_cache()
+    org = _resolve_org(pinned, cached_org, DEFAULT_ORG)
+    org_source = "PRAXIS_ORG" if pinned else ("cache" if cached_org else "default")
+
+    failures: list[str] = []
+    warnings: list[str] = []
+    config_bad = False  # any MISSING-material failure => misconfig (vs a transient live failure)
+
+    if org_source == "default":
+        warnings.append(
+            f"PRAXIS_ORG is unset and no org is selected in {_cache_path()} — falling back to the "
+            f"default org '{DEFAULT_ORG}'. If this project builds under a different org, pin "
+            f"PRAXIS_ORG (e.g. in <project>/.claude/settings.local.json) or run praxis_select_org; a "
+            f"wrong org resolves an empty ticket set."
+        )
+
+    api_key = os.environ.get("PRAXIS_API_KEY", "").strip()
+    client_id = os.environ.get("COGNITO_CLIENT_ID", "").strip()
+    cache = _cache_path()
+    refresh_ok = False
+
+    if _auth_disabled():
+        warnings.append("PRAXIS_AUTH_DISABLED=1 — auth is bypassed (dev seam).")
+    elif api_key:
+        pass  # simplest, complete credential
+    else:
+        # Cognito refresh-token path: name each missing piece precisely.
+        if not cache.exists():
+            config_bad = True
+            failures.append(
+                f"identity cache {cache} is MISSING — the hook mints its Cognito token from the "
+                f"refresh token cached there. Create it by logging in via the praxis_login MCP tool, "
+                f"OR set PRAXIS_API_KEY, OR point PRAXIS_MCP_CACHE at an existing cache file."
+            )
+        else:
+            try:
+                data = json.loads(cache.read_text(encoding="utf-8"))
+                if str(data.get("refresh_token") or "").strip():
+                    refresh_ok = True
+                else:
+                    config_bad = True
+                    failures.append(f"identity cache {cache} has no refresh_token — re-run praxis_login.")
+            except Exception as exc:  # noqa: BLE001
+                config_bad = True
+                failures.append(f"identity cache {cache} is unreadable ({exc}) — re-run praxis_login.")
+        if not client_id:
+            config_bad = True
+            failures.append(
+                "COGNITO_CLIENT_ID is unset — the hook cannot mint a Cognito token without it. Set "
+                "COGNITO_CLIENT_ID (and COGNITO_REGION, default us-east-1) in agent_factory/.env."
+            )
+        if live and refresh_ok and client_id:
+            try:
+                _mint_cognito_token()
+            except PraxisUnreachable as exc:
+                failures.append(
+                    f"Cognito token mint FAILED: {exc} — check COGNITO_CLIENT_ID / COGNITO_REGION "
+                    f"and network access to cognito-idp."
+                )
+
+    # End-to-end reachability: an authenticated probe against the API, only when auth material is
+    # sane (a config failure already tells the operator what to fix — no point probing).
+    if live and not failures:
+        try:
+            _request("GET", "/facts/by", params={"state": "active", "category": "__preflight__"})
+        except PraxisUnreachable as exc:
+            failures.append(
+                f"the Praxis API at {api_base} did not answer an authenticated probe: {exc} — is the "
+                f"server up? Check PRAXIS_API_BASE_URL (default {DEFAULT_API_BASE})."
+            )
+
+    ok = not failures
+    kind = "ok" if ok else (_MISCONFIG if config_bad else _UNREACHABLE)
+    return PreflightResult(ok=ok, kind=kind, org=org, org_source=org_source, api_base=api_base,
+                           failures=tuple(failures), warnings=tuple(warnings))
+
+
+def preflight(*, live: bool = True, use_cache: bool = True) -> PreflightResult:
+    """Fast, PRECISE readiness verdict for the hook's Praxis auth path — the antidote to the silent
+    hang. Names exactly which of PRAXIS_API_BASE_URL / the identity cache / COGNITO_CLIENT_ID /
+    PRAXIS_ORG is missing or failing, classifies MISCONFIG vs UNREACHABLE, and (by default) memoizes
+    the result to disk for ``_PREFLIGHT_TTL_S`` so a looping Stop hook probes at most once per TTL.
+
+    ``live=False`` checks only local config (no Cognito mint, no API call) — cheap and offline.
+    ``use_cache=False`` forces a fresh probe (the ``doctor`` command and tests use this).
+    """
+    if use_cache:
+        cached = _read_preflight_cache()
+        if cached is not None:
+            return cached
+    result = _run_preflight(live=live)
+    if use_cache:
+        _write_preflight_cache(result)
+    return result

@@ -101,6 +101,62 @@ def _session_owner(data: dict) -> str:
     return str(data.get("session_id") or data.get("sessionId") or "").strip()
 
 
+# --------------------------------------------------------------------------- no-op scope fast-path
+
+# Substrings that mean THIS session engaged the factory in some way. The set is deliberately BROAD:
+# a false positive only costs a fall-through to the normal (fail-closed) Praxis read — never a
+# fail-OPEN — while a miss must never let an active build stand down, so we err toward "looks like
+# factory work". A real builder session is saturated with these (it calls the praxis_* MCP tools and
+# stamps run markers); an ordinary coding/chat session in a repo that merely HAS a plan contains none.
+_FACTORY_SIGNALS = (
+    "af-build", "af-fulfill", "af-intake", "factory_project", "factory_gate",
+    "prd-", "praxis_", "mcp__praxis", "incomplete_requirements",
+    "build_state", "claim_owner", "run_owner", "stamp_run", "building-validation",
+)
+_MAX_TRANSCRIPT_SCAN_BYTES = 8 * 1024 * 1024  # above this, don't fast-path (fall through, stay safe)
+
+
+def _session_touched_factory(transcript_path: str) -> bool | None:
+    """Did THIS session engage the factory at all? ``False`` == cleanly read the transcript and found
+    ZERO factory signal (a provably no-op session); ``True`` == signals present; ``None`` == unknown
+    (missing / unreadable / oversized transcript). Only a confident ``False`` lets the gate stand down
+    WITHOUT consulting Praxis — ``True``/``None`` fall through to the hard, fail-closed read, so this
+    can relieve a no-op session of the Praxis dependency but can never fail a real build open.
+    """
+    if not transcript_path:
+        return None
+    try:
+        p = os.path.expanduser(str(transcript_path))
+        if not os.path.isfile(p) or os.path.getsize(p) > _MAX_TRANSCRIPT_SCAN_BYTES:
+            return None
+        with open(p, "r", encoding="utf-8", errors="ignore") as fh:
+            text = fh.read().lower()
+    except Exception:  # noqa: BLE001 — any read problem => unknown, fall through to the safe path
+        return None
+    return any(sig in text for sig in _FACTORY_SIGNALS)
+
+
+def _emit_preflight_once(diagnostic: str) -> None:
+    """Print a Praxis-auth diagnostic to STDERR the FIRST time a given failure is seen, then stay
+    quiet for it. The Stop block reason (stdout JSON) is consumed by the headless `claude -p` retry
+    loop and never surfaces to a human, so without this a misconfigured hook is invisible; a one-shot
+    stderr line (deduped by a marker file so a tight loop doesn't spam) is what makes it diagnosable.
+    """
+    if not diagnostic:
+        return
+    try:
+        import _praxis
+        marker = _praxis._cache_path().parent / ".hook_preflight_emitted"
+        digest = __import__("hashlib").sha256(diagnostic.encode("utf-8")).hexdigest()[:16]
+        if marker.exists() and marker.read_text(encoding="utf-8").strip() == digest:
+            return  # already shouted about this exact failure
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(digest, encoding="utf-8")
+    except Exception:  # noqa: BLE001 — dedup is best-effort; still emit if the marker fails
+        pass
+    print(f"[build-completeness gate] {diagnostic}", file=sys.stderr, flush=True)
+
+
 # --------------------------------------------------------------------------- ticket views
 
 def _rid(item: dict) -> str:
@@ -189,6 +245,17 @@ def main() -> None:
     project = _active_project(cwd)
     owner = _session_owner(data)
 
+    # --- NO-OP FAST-PATH: a session that never touched the factory has nothing to verify. -----
+    # The gate is loaded on EVERY session (any repo with the plugin), including ones doing zero
+    # factory work. Such a session owns no claim and carries no run marker, so the arming rule below
+    # would ALLOW it anyway — but only AFTER a hard Praxis read that fails CLOSED when Praxis is down,
+    # needlessly blocking an unrelated session. If the transcript proves this session never engaged
+    # the factory (zero signals), stand down here WITHOUT the Praxis dependency. This is safe: a real
+    # build's transcript is saturated with factory signals, and any uncertainty (unreadable/oversized
+    # transcript) returns None and falls through to the fail-closed read — it can never fail open.
+    if _session_touched_factory(data.get("transcript_path")) is False:
+        _allow()
+
     # --- Read the single source of dynamic truth (fail-closed). -------------------------------
     # NOTE on fan-out: a supervisor that delegated building to sub-agents owns NO live claim of its
     # own (the builders claim tickets under their own session ids), so the arming rule below leaves
@@ -206,14 +273,28 @@ def main() -> None:
         except Exception:  # noqa: BLE001
             is_unreachable = True
         detail = str(exc) if is_unreachable else f"{type(exc).__name__}: {exc}"
+
+        # PINPOINT the cause instead of a generic "check PRAXIS_* / auth". Preflight names EXACTLY
+        # which of PRAXIS_API_BASE_URL / the identity cache / COGNITO_CLIENT_ID / PRAXIS_ORG is
+        # missing or failing, and whether this is a MISCONFIG (never self-heals — the exact thing
+        # that turned into a silent headless loop) or a transient outage. Emit it to stderr ONCE so
+        # it surfaces even in `claude -p`, where the block reason itself is swallowed by the retry.
+        diag = ""
+        try:
+            diag = _praxis.preflight(live=True).message()
+        except Exception:  # noqa: BLE001 — a preflight crash must not replace the block with nothing
+            diag = ""
+        _emit_preflight_once(diag)
         _block(
             "build-completeness gate: PRAXIS UNREACHABLE — the factory cannot verify build state, so "
             "this gate is failing CLOSED and BLOCKING. Praxis is the single source of dynamic truth; "
             "without it there is no way to know whether tickets/checks are still incomplete.\n"
             f"  reason: {detail}\n"
-            "Bring Praxis up (default http://localhost:8000; check PRAXIS_API_BASE_URL / "
-            "PRAXIS_API_KEY / PRAXIS_ORG / auth) and try again. For a real emergency ONLY, set "
-            "FACTORY_GATE_DISABLED=1 to stand the gate down (loud, never silent)."
+            + (f"\nPREFLIGHT:\n{diag}\n" if diag else "")
+            + "\nBring Praxis up (default http://localhost:8000) and/or fix the item(s) above, then "
+            "try again. If this is a MISCONFIG it will NOT resolve by retrying — fix the named piece. "
+            "For a real emergency ONLY, set FACTORY_GATE_DISABLED=1 to stand the gate down (loud, "
+            "never silent)."
         )
 
     if not isinstance(incomplete, list):
