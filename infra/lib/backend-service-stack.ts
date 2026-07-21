@@ -17,9 +17,9 @@ import { COGNITO, DB_SECRET_NAME } from './config';
 const WAF_IP_RATE_LIMIT_PER_5MIN = 3000;
 
 export interface BackendServiceStackProps extends cdk.StackProps {
-  /** Cognito user pool id. Defaults to the deployed pool `us-east-1_4nAMe6bPK`. */
+  /** Cognito user pool id. Defaults to `COGNITO.userPoolId` (currently the live pool `us-east-1_dqDCickOP` / praxis-users). */
   readonly cognitoUserPoolId?: string;
-  /** Cognito app client id. Defaults to the deployed client `3ij653bq912pi4f17l5hn9iqqn`. */
+  /** Cognito app client id. Defaults to `COGNITO.clientId` (currently `3v12800pitg5l6tm4er2qati8g`). */
   readonly cognitoClientId?: string;
   /** Cognito region. Defaults to `us-east-1`. */
   readonly cognitoRegion?: string;
