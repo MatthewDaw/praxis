@@ -96,11 +96,7 @@ export function buildResolveBody(
   resolution: string,
   keepId: string,
 ): { resolution: string; keepId: string } {
-  const mapped = RESOLUTION_TO_API[resolution];
-  if (!mapped) {
-    throw new Error(`Unsupported resolution ${resolution}`);
-  }
-  return { resolution: mapped, keepId };
+  return { resolution: normalizeResolution(resolution), keepId };
 }
 
 export function buildCustomResolveBody(customText: string): { customText: string } {

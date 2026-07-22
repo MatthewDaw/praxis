@@ -21,6 +21,44 @@ interface ScopePickerProps {
   cached?: Map<string, number>;
 }
 
+/**
+ * Cache indicator for a leaf case: a plain red dot when uncached, or a green
+ * badge with the cached node count when cached. The cache is keyed by the bare
+ * case id (`eval:<case_id>`); the folder name need not match that id (e.g.
+ * volta_video → matt_volta_video_mock), so prefer the backend-supplied caseId,
+ * falling back to the path leaf for older payloads.
+ */
+function CacheDot({
+  caseId,
+  pathLeaf,
+  cached,
+}: {
+  caseId?: string;
+  pathLeaf: string;
+  cached?: Map<string, number>;
+}) {
+  const cacheKey = caseId ?? pathLeaf;
+  if (!(cached?.has(cacheKey) ?? false)) {
+    return (
+      <span
+        className="eval-runner__cache-dot"
+        title="not cached"
+        aria-label="not cached"
+      />
+    );
+  }
+  const nodes = cached?.get(cacheKey) ?? 0;
+  return (
+    <span
+      className="eval-runner__node-badge is-cached"
+      title={`${nodes} node${nodes === 1 ? "" : "s"} · cached`}
+      aria-label={`${nodes} node${nodes === 1 ? "" : "s"}, cached`}
+    >
+      {nodes}
+    </span>
+  );
+}
+
 /** A file-tree style folder browser with multi-select (folders and/or cases). */
 export function ScopePicker({ scopes, selected, onChange, cached }: ScopePickerProps) {
   const [scope, setScope] = useState("."); // navigation cursor (current folder)
@@ -122,35 +160,11 @@ export function ScopePicker({ scopes, selected, onChange, cached }: ScopePickerP
                     </span>
                     <span className="eval-runner__entry-name">{leafName(c.scope)}</span>
                     {!isDir ? (
-                      // The cache is keyed by the bare case id (eval:<case_id>).
-                      // The folder name need not match that id (e.g. volta_video →
-                      // matt_volta_video_mock), so prefer the backend-supplied
-                      // caseId, falling back to the path leaf for older payloads.
-                      (() => {
-                        const cacheKey = c.caseId ?? leafName(c.scope);
-                        const isCached = cached?.has(cacheKey) ?? false;
-                        // Not cached → keep the plain red dot (no count). Cached →
-                        // a green circle showing the cached node count.
-                        if (!isCached) {
-                          return (
-                            <span
-                              className="eval-runner__cache-dot"
-                              title="not cached"
-                              aria-label="not cached"
-                            />
-                          );
-                        }
-                        const nodes = cached?.get(cacheKey) ?? 0;
-                        return (
-                          <span
-                            className="eval-runner__node-badge is-cached"
-                            title={`${nodes} node${nodes === 1 ? "" : "s"} · cached`}
-                            aria-label={`${nodes} node${nodes === 1 ? "" : "s"}, cached`}
-                          >
-                            {nodes}
-                          </span>
-                        );
-                      })()
+                      <CacheDot
+                        caseId={c.caseId}
+                        pathLeaf={leafName(c.scope)}
+                        cached={cached}
+                      />
                     ) : null}
                     {isDir ? <span className="eval-runner__entry-count">{c.caseCount}</span> : null}
                     {isDir ? <span className="eval-runner__entry-caret">›</span> : null}

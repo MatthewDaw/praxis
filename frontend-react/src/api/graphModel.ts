@@ -197,6 +197,40 @@ export function dedupeEdges(edges: GraphEdge[]): GraphEdge[] {
   return out;
 }
 
+type CandidateNodeFields = Pick<
+  GraphNode,
+  "scope" | "category" | "clusterId" | "clusterLabel"
+>;
+
+/**
+ * Project a candidate's `extra.*` fields onto graph-node shape, coercing types.
+ * `fallback` supplies each field when the candidate leaves it unset (used by the
+ * merge path to keep the existing node's value; undefined for the derive path).
+ */
+function candidateNodeFields(
+  candidate: Candidate,
+  fallback?: CandidateNodeFields,
+): CandidateNodeFields {
+  return {
+    scope:
+      candidate.extra.scope != null
+        ? String(candidate.extra.scope)
+        : fallback?.scope,
+    category:
+      candidate.extra.category != null
+        ? String(candidate.extra.category)
+        : fallback?.category,
+    clusterId:
+      candidate.extra.cluster_id != null
+        ? Number(candidate.extra.cluster_id)
+        : fallback?.clusterId,
+    clusterLabel:
+      candidate.extra.cluster_label != null
+        ? String(candidate.extra.cluster_label)
+        : fallback?.clusterLabel,
+  };
+}
+
 export function deriveGraphFromCandidates(
   candidates: Candidate[],
 ): KnowledgeGraphSnapshot {
@@ -205,13 +239,8 @@ export function deriveGraphFromCandidates(
     label: c.title,
     state: c.state,
     confidence: c.confidence,
-    scope:
-      c.extra.scope != null ? String(c.extra.scope) : undefined,
-    category:
-      c.extra.category != null ? String(c.extra.category) : undefined,
     provenance: c.provenance,
-    clusterId: c.extra.cluster_id != null ? Number(c.extra.cluster_id) : undefined,
-    clusterLabel: c.extra.cluster_label != null ? String(c.extra.cluster_label) : undefined,
+    ...candidateNodeFields(c),
   }));
 
   const edges: GraphEdge[] = [];
@@ -255,22 +284,7 @@ export function mergeGraphWithCandidates(
       state: candidate.state,
       confidence: candidate.confidence,
       provenance: candidate.provenance,
-      scope:
-        candidate.extra.scope != null
-          ? String(candidate.extra.scope)
-          : node.scope,
-      category:
-        candidate.extra.category != null
-          ? String(candidate.extra.category)
-          : node.category,
-      clusterId:
-        candidate.extra.cluster_id != null
-          ? Number(candidate.extra.cluster_id)
-          : node.clusterId,
-      clusterLabel:
-        candidate.extra.cluster_label != null
-          ? String(candidate.extra.cluster_label)
-          : node.clusterLabel,
+      ...candidateNodeFields(candidate, node),
     };
   });
   const nodeIds = new Set(nodes.map((node) => node.id));
