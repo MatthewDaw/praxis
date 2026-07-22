@@ -32,8 +32,9 @@ export function contractHeaders(
   if (orgId) {
     headers[ORG_HEADER] = orgId;
   }
-  // The default space sends no header (the backend reads principal.sub); a named
-  // space selects a sibling working graph within the same org.
+  // X-Praxis-Space only scopes snapshot/mount ops (and only when paired with
+  // X-Praxis-Snapshot); working memory always keys on principal.sub, so a lone
+  // space header never selects a working graph — the backend drops it.
   if (spaceId) {
     headers[SPACE_HEADER] = spaceId;
   }

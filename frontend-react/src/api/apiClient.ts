@@ -240,8 +240,9 @@ export interface ApiDataProviderAuth {
   /** Active org id sent as X-Praxis-Org for server-side tenancy. */
   orgId?: string;
   /**
-   * Active space id sent as X-Praxis-Space. Selects a sibling working graph
-   * within the org; empty/undefined targets the login's default graph.
+   * Active space id sent as X-Praxis-Space. Scopes snapshot/mount ops only (and
+   * only alongside X-Praxis-Snapshot); working memory always keys on the login's
+   * sub, so a lone space header is ignored by the backend.
    */
   spaceId?: string;
 }

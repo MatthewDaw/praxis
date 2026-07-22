@@ -26,8 +26,8 @@ services:
         value: "3.12"
       # Cognito (PraxisAuthUserPoolStack outputs) — used to verify JWTs.
       - key: COGNITO_USER_POOL_ID
-        value: us-east-1_4nAMe6bPK
+        value: us-east-1_dqDCickOP
       - key: COGNITO_CLIENT_ID
-        value: 3ij653bq912pi4f17l5hn9iqqn
+        value: 3v12800pitg5l6tm4er2qati8g
       - key: COGNITO_REGION
         value: us-east-1

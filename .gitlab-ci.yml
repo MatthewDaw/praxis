@@ -33,8 +33,8 @@ workflow:
 
 # Known/deployed Cognito values baked into the frontend bundle (see infra/README.md).
 .cognito: &cognito
-  VITE_COGNITO_USER_POOL_ID: us-east-1_4nAMe6bPK
-  VITE_COGNITO_CLIENT_ID: 3ij653bq912pi4f17l5hn9iqqn
+  VITE_COGNITO_USER_POOL_ID: us-east-1_dqDCickOP
+  VITE_COGNITO_CLIENT_ID: 3v12800pitg5l6tm4er2qati8g
   VITE_COGNITO_REGION: us-east-1
 
 # ---- Lint / static checks ----------------------------------------------------
