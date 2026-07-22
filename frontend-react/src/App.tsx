@@ -321,13 +321,13 @@ export default function App() {
     }
   }
 
-  function handleDataSourceLoad(presetId: string, customApiBaseUrl?: string) {
+  function handleDataSourceLoad(presetId: string) {
     setActionError(null);
     if (presetId !== PRESET_IDS.localLogs) {
       setLocalSession(null);
       setLocalRawFiles([]);
     }
-    const next = applyConfig(presetId, customApiBaseUrl);
+    const next = applyConfig(presetId);
     // Switching to a different live server changes which backend owns auth and
     // org membership. OrgGate validates membership against the base URL it
     // resolved at mount, so a runtime swap would leave a stale org context

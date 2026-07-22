@@ -18,8 +18,8 @@ export function useDataSource(
 ) {
   const [config, setConfig] = useState<DataSourceConfig>(() => resolveInitialConfig());
 
-  const applyConfig = useCallback((presetId: string, customApiBaseUrl?: string) => {
-    const next = buildConfigFromPreset(presetId, customApiBaseUrl);
+  const applyConfig = useCallback((presetId: string) => {
+    const next = buildConfigFromPreset(presetId);
     persistConfig(next);
     setConfig(next);
     return next;

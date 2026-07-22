@@ -13,22 +13,7 @@
  */
 import { contractHeaders } from "./contract";
 import type { ApiDataProviderAuth } from "./apiClient";
-import { ApiClientError } from "./apiClient";
-
-async function resolveToken(
-  auth?: string | ApiDataProviderAuth,
-): Promise<{ token?: string; orgId?: string }> {
-  const resolved: ApiDataProviderAuth =
-    typeof auth === "string" ? { getToken: async () => auth } : auth ?? {};
-  const token = resolved.getToken ? await resolved.getToken() : undefined;
-  return { token, orgId: resolved.orgId };
-}
-
-async function parseJson(response: Response): Promise<unknown> {
-  const raw = await response.text();
-  if (!raw.trim()) return {};
-  return JSON.parse(raw) as unknown;
-}
+import { ApiClientError, parseJsonResponse, resolveToken } from "./apiClient";
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -157,7 +142,7 @@ async function getJson(
       response.status,
     );
   }
-  return parseJson(response);
+  return parseJsonResponse(response);
 }
 
 function hitList(payload: unknown): unknown[] {
@@ -203,7 +188,7 @@ export async function recordFactOutcome(
       response.status,
     );
   }
-  return parseFactTrust(await parseJson(response)) ?? { successCount: 0, failureCount: 0, utility: 1.0 };
+  return parseFactTrust(await parseJsonResponse(response)) ?? { successCount: 0, failureCount: 0, utility: 1.0 };
 }
 
 /** A downstream learning derived (kind="derived_from") from a fact. */

@@ -74,11 +74,7 @@ export function getPresetById(presetId: string): DataSourcePreset | undefined {
   return DATA_SOURCE_PRESETS.find((p) => p.id === presetId);
 }
 
-export function buildConfigFromPreset(
-  presetId: string,
-  customApiBaseUrl?: string,
-): DataSourceConfig {
-  void customApiBaseUrl;
+export function buildConfigFromPreset(presetId: string): DataSourceConfig {
   const preset = getPresetById(presetId);
   if (!preset) {
     return buildConfigFromPreset(PRESET_IDS.local);
