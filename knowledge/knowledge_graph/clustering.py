@@ -98,17 +98,23 @@ def _reduce(vecs: np.ndarray) -> np.ndarray:
         return PCA(n_components=min(15, n - 1, vecs.shape[1])).fit_transform(vecs)
 
 
+def _group_by_cluster(texts: list[str], labels: np.ndarray) -> dict[int, list[str]]:
+    """Bucket texts by cluster id (noise ``-1`` dropped), keys sorted ascending."""
+    members: dict[int, list[str]] = {}
+    for cid in sorted({int(c) for c in labels if c != -1}):
+        members[cid] = [t for t, c in zip(texts, labels) if int(c) == cid]
+    return members
+
+
 def _llm_labels(texts: list[str], labels: np.ndarray, sample: int = 8) -> dict[int, str]:
     """Name each cluster with a short LLM-generated topic label (parallel calls)."""
     from knowledge.llm.llm_def import ChatMessage
     from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
 
-    cluster_ids = sorted({int(c) for c in labels if c != -1})
-    if not cluster_ids:
+    members = {cid: ms[:sample] for cid, ms in _group_by_cluster(texts, labels).items()}
+    if not members:
         return {}
-    members = {
-        cid: [t for t, c in zip(texts, labels) if int(c) == cid][:sample] for cid in cluster_ids
-    }
+    cluster_ids = list(members)
     llm = OpenRouterLlm(model="openai/gpt-4o-mini")
 
     def _label_one(cid: int) -> tuple[int, str | None]:
@@ -134,10 +140,11 @@ def _ctfidf_labels(texts: list[str], labels: np.ndarray, top_n: int = 3) -> dict
     """c-TF-IDF: treat each cluster as one document; its top terms become the label."""
     from sklearn.feature_extraction.text import TfidfVectorizer
 
-    cluster_ids = sorted({int(c) for c in labels if c != -1})
-    if not cluster_ids:
+    members = _group_by_cluster(texts, labels)
+    if not members:
         return {}
-    docs = [" ".join(t for t, c in zip(texts, labels) if int(c) == cid) for cid in cluster_ids]
+    cluster_ids = list(members)
+    docs = [" ".join(members[cid]) for cid in cluster_ids]
     vec = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), min_df=1, max_features=4000)
     matrix = vec.fit_transform(docs)
     terms = np.array(vec.get_feature_names_out())

@@ -164,6 +164,14 @@ def _eval_embedder(case: EvalCase):
     return CachedEmbedder(live, cache, model_id=model, allow_compute=has_key)
 
 
+def _has_cassette(cache_dir: Path) -> bool:
+    """True when verdicts for ``cache_dir`` can be produced: a live key can
+    compute them, or a committed cassette replays them offline."""
+    return bool(os.getenv("OPENROUTER_API_KEY")) or (
+        cache_dir.exists() and any(cache_dir.glob("*.json"))
+    )
+
+
 def harness_capabilities() -> set[str]:
     """Embedding capabilities the harness can satisfy, independent of the runner.
 
@@ -176,43 +184,25 @@ def harness_capabilities() -> set[str]:
         caps.add("real_embeddings")
     if os.getenv("OPENROUTER_API_KEY"):
         caps |= {"real_embeddings", "live_embeddings"}
-    # Merge-judge verdicts: a committed merge cassette replays offline; a live key
-    # can compute them. Either way the dedup cases can run faithfully.
-    merge_dir = VERDICT_CACHE_DIR / "merge"
-    if os.getenv("OPENROUTER_API_KEY") or (merge_dir.exists() and any(merge_dir.glob("*.json"))):
-        caps.add("merge_verdicts")
-    # Conflict-judge verdicts: same shape as merge — a committed conflict cassette
-    # replays offline; a live key can compute them.
-    conflict_dir = VERDICT_CACHE_DIR / "conflict"
-    if os.getenv("OPENROUTER_API_KEY") or (conflict_dir.exists() and any(conflict_dir.glob("*.json"))):
-        caps.add("conflict_verdicts")
-    # Augment (Mem0 UPDATE/merge) verdicts: same shape as merge — a committed
-    # augment cassette replays offline; a live key can compute them.
-    augment_dir = VERDICT_CACHE_DIR / "augment"
-    if os.getenv("OPENROUTER_API_KEY") or (augment_dir.exists() and any(augment_dir.glob("*.json"))):
-        caps.add("augment_verdicts")
-    # Claim-extraction replay for the structural contradiction path: a committed
-    # claim cassette replays offline; a live key can record it.
-    claim_dir = VERDICT_CACHE_DIR / "claim_extract"
-    if os.getenv("OPENROUTER_API_KEY") or (claim_dir.exists() and any(claim_dir.glob("*.json"))):
-        caps.add("claim_verdicts")
-    # Tier-B aspect-tag verdicts: same shape — committed aspect cassette replays
-    # offline; a live key can compute them.
-    aspect_dir = VERDICT_CACHE_DIR / "aspect"
-    if os.getenv("OPENROUTER_API_KEY") or (aspect_dir.exists() and any(aspect_dir.glob("*.json"))):
-        caps.add("tag_verdicts")
+    # Judge verdicts: each is a committed cassette that replays offline, or a live
+    # key can compute them. Either way the corresponding cases run faithfully.
+    for subdir, capability in (
+        ("merge", "merge_verdicts"),
+        ("conflict", "conflict_verdicts"),
+        ("augment", "augment_verdicts"),
+        ("claim_extract", "claim_verdicts"),
+        ("aspect", "tag_verdicts"),
+    ):
+        if _has_cassette(VERDICT_CACHE_DIR / subdir):
+            caps.add(capability)
     # Ingestion replay: a committed ingestion cassette replays the distilled text
     # offline; a live key can record it. Either way an ingest_model case can run
     # faithfully (rather than mis-running on the passthrough line-split).
-    if os.getenv("OPENROUTER_API_KEY") or (
-        INGEST_CACHE_DIR.exists() and any(INGEST_CACHE_DIR.glob("*.json"))
-    ):
+    if _has_cassette(INGEST_CACHE_DIR):
         caps.add("ingest_replay")
     # Image captions: a committed caption cassette replays offline; a live key can
     # compute them. Either way image-asset cases can run faithfully.
-    if os.getenv("OPENROUTER_API_KEY") or (
-        CAPTION_CACHE_DIR.exists() and any(CAPTION_CACHE_DIR.glob("*.json"))
-    ):
+    if _has_cassette(CAPTION_CACHE_DIR):
         caps.add("real_captions")
     return caps
 
@@ -657,7 +647,6 @@ def clear_seed_cache() -> None:
 
 def _seed_signature(case: EvalCase) -> str:
     import hashlib
-    import json
 
     payload = {
         "substrate": case.substrate,

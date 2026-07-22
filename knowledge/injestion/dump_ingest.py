@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
 from knowledge.injestion.injestor_variants.prompt_injestor import SPLIT_PROMPT
 from knowledge.llm.llm_def import ChatMessage
@@ -216,41 +216,55 @@ _FACT_SCHEMA = {
 }
 
 
+def _batched_index_judge(
+    llm: Llm,
+    pairs: list,
+    *,
+    prompt: str,
+    schema: dict,
+    key: str,
+    format_line: Callable[[int, Any, Any], str],
+) -> list[int]:
+    """One batched judge call over numbered pairs; return the valid selected indices.
+
+    Formats each pair with ``format_line``, sends ``prompt`` + the numbered lines,
+    reads ``key`` from the JSON reply, and keeps only in-range integer indices.
+    """
+    if not pairs:
+        return []
+    lines = [format_line(i, a, b) for i, (a, b) in enumerate(pairs)]
+    raw = llm.complete(
+        [ChatMessage(role="user", content=prompt + "\n\n" + "\n".join(lines))],
+        response_format=schema,
+    )
+    try:
+        idxs = json.loads(raw).get(key, [])
+    except (TypeError, ValueError):
+        return []
+    return [i for i in idxs if isinstance(i, int) and 0 <= i < len(pairs)]
+
+
 def _same_fact(llm: Llm, pairs: list[tuple[str, str]]) -> list[int]:
     """One batched call: which (new_text, existing_text) pairs are the same fact.
 
     Permissive about phrasing (different subject/attribute wording is fine) but
     strict on value — so it dedups restatements without merging genuine conflicts.
     """
-    if not pairs:
-        return []
-    lines = [f"{i}. NEW: {a}\n   EXISTING: {b}" for i, (a, b) in enumerate(pairs)]
-    raw = llm.complete(
-        [ChatMessage(role="user", content=_FACT_PROMPT + "\n\n" + "\n".join(lines))],
-        response_format=_FACT_SCHEMA,
+    return _batched_index_judge(
+        llm, pairs, prompt=_FACT_PROMPT, schema=_FACT_SCHEMA, key="same",
+        format_line=lambda i, a, b: f"{i}. NEW: {a}\n   EXISTING: {b}",
     )
-    try:
-        idxs = json.loads(raw).get("same", [])
-    except (TypeError, ValueError):
-        return []
-    return [i for i in idxs if isinstance(i, int) and 0 <= i < len(pairs)]
 
 
 def _same_slot(llm: Llm, pairs: list[tuple[dict, dict]]) -> list[int]:
     """One batched call: which (A_new, B_existing) claim pairs share a slot."""
-    if not pairs:
-        return []
-    lines = [
-        f"{i}. A: {a['subject']} | {a['attribute']}\n   B: {b['subject']} | {b['attribute']}"
-        for i, (a, b) in enumerate(pairs)
-    ]
-    content = _SLOT_PROMPT + "\n\n" + "\n".join(lines)
-    raw = llm.complete([ChatMessage(role="user", content=content)], response_format=_SLOT_SCHEMA)
-    try:
-        idxs = json.loads(raw).get("same_slot", [])
-    except (TypeError, ValueError):
-        return []
-    return [i for i in idxs if isinstance(i, int) and 0 <= i < len(pairs)]
+    return _batched_index_judge(
+        llm, pairs, prompt=_SLOT_PROMPT, schema=_SLOT_SCHEMA, key="same_slot",
+        format_line=lambda i, a, b: (
+            f"{i}. A: {a['subject']} | {a['attribute']}\n"
+            f"   B: {b['subject']} | {b['attribute']}"
+        ),
+    )
 
 
 def ingest_dump(

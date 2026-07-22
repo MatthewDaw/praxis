@@ -34,6 +34,17 @@ def _active_blocks(ctx: EvalContext) -> list[str]:
     return [b.strip() for b in raw.split("\n\n") if b.strip()]
 
 
+def _fact_blocks(output: str) -> tuple[list[str], list[str]]:
+    """Split ``ctx.output`` into (all blocks, non-``CONTRADICTION:`` fact blocks).
+
+    The knowledge_graph component joins every stored fact text with blank lines
+    (plus any ``CONTRADICTION:`` summary lines); split on that and drop empties.
+    """
+    blocks = [b.strip() for b in output.split("\n\n") if b.strip()]
+    fact_blocks = [b for b in blocks if not b.startswith("CONTRADICTION:")]
+    return blocks, fact_blocks
+
+
 def min_active_asset_cards(ctx: EvalContext, *, minimum: int = 1) -> CheckResult:
     """Pass iff at least ``minimum`` active image/asset cards were seeded.
 
@@ -109,8 +120,7 @@ def single_merged_fact(
     fact blocks exist, no ``CONTRADICTION:`` line is present, and exactly one block
     mentions all the required terms.
     """
-    blocks = [b.strip() for b in ctx.output.split("\n\n") if b.strip()]
-    fact_blocks = [b for b in blocks if not b.startswith("CONTRADICTION:")]
+    blocks, fact_blocks = _fact_blocks(ctx.output)
     has_contradiction = any("CONTRADICTION:" in b for b in blocks)
     merged = [b for b in fact_blocks if all(m.lower() in b.lower() for m in mentions)]
     ok = (
@@ -145,8 +155,7 @@ def distinct_fact_blocks(
     still appear in the merged text). Passes iff at least ``min_blocks`` non-
     contradiction fact blocks remain.
     """
-    blocks = [b.strip() for b in ctx.output.split("\n\n") if b.strip()]
-    fact_blocks = [b for b in blocks if not b.startswith("CONTRADICTION:")]
+    _, fact_blocks = _fact_blocks(ctx.output)
     ok = len(fact_blocks) >= min_blocks
     return CheckResult(
         name="distinct_fact_blocks",

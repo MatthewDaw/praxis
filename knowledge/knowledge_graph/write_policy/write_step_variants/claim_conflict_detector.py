@@ -56,10 +56,6 @@ _SCHEMA = {
 _NUM = re.compile(r"-?\d+(?:\.\d+)?")
 
 
-def _norm(v: str) -> str:
-    return " ".join(v.lower().split())
-
-
 def _numeric_tokens(v: str) -> list[str]:
     return _NUM.findall(v)
 
@@ -135,7 +131,7 @@ class ClaimConflictDetector(WriteStep):
                 flagged.add(fact_id)
 
     def _incompatible(self, slot: tuple[str, str], a: str, b: str) -> bool:
-        if _norm(a) == _norm(b):
+        if Claim.norm(a) == Claim.norm(b):
             return False  # same value -> agreement
         if slot[1] == "stance":
             # A stance value is constrained to one of the axis's two named poles, so
@@ -145,8 +141,8 @@ class ClaimConflictDetector(WriteStep):
         an, bn = _numeric_tokens(a), _numeric_tokens(b)
         if an and bn:
             # Both carry numbers: a clear, deterministic clash (e.g. 1799 vs 1800)
-            # needs no LLM. Equal number sets already returned above via _norm only
-            # when whole strings matched, so compare the numeric tokens directly.
+            # needs no LLM. Equal number sets already returned above via Claim.norm
+            # only when whole strings matched, so compare the numeric tokens directly.
             return an != bn
         # Fuzzy (free-text) values: the narrow gray-zone judge decides. Precision
         # -first — no judge or uncertain -> suppress (treat as not incompatible).

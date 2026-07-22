@@ -130,6 +130,15 @@ class ClaimHit:
     value: str  # the existing fact's raw value on this slot
 
 
+def contradiction_ids(flags: list[str]) -> set[str]:
+    """Decode ``contradiction:<id>`` flags into the set of contradicted fact ids.
+
+    Single owner for the ``contradiction:`` flag encoding, matched by the append
+    sites (``decision.flags.append(f"contradiction:{id}")``).
+    """
+    return {f.split(":", 1)[1] for f in flags if f.startswith("contradiction:")}
+
+
 def demote_active_contradiction(decision: WriteDecision) -> None:
     """Enforce FR-005 in place: a forced-``active`` write that the policy flagged
     as contradicting an already-``active`` fact is dropped to ``proposed``.
@@ -142,9 +151,7 @@ def demote_active_contradiction(decision: WriteDecision) -> None:
     """
     if decision.state != "active":
         return
-    contradicted = {
-        f.split(":", 1)[1] for f in decision.flags if f.startswith("contradiction:")
-    }
+    contradicted = contradiction_ids(decision.flags)
     if not contradicted:
         return
     by_id = {

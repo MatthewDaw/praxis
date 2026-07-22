@@ -28,7 +28,10 @@ import re
 
 from knowledge.knowledge_graph.knowledge_graph_def import Claim
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
-from knowledge.knowledge_graph.write_policy.write_policy_def import WriteDecision
+from knowledge.knowledge_graph.write_policy.write_policy_def import (
+    WriteDecision,
+    contradiction_ids,
+)
 
 _YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
 _TEMPORAL_ATTRS = ("year", "date", "time", "as of", "as-of", "since", "effective")
@@ -60,10 +63,8 @@ class TemporalSupersessionDetector(WriteStep):
     def apply(self, decision: WriteDecision) -> None:
         if decision.dropped or decision.action == "update":
             return
-        contradiction_ids = {
-            f.split(":", 1)[1] for f in decision.flags if f.startswith("contradiction:")
-        }
-        if not contradiction_ids:
+        flagged_ids = contradiction_ids(decision.flags)
+        if not flagged_ids:
             return
         incoming = {c.slot: c.value for c in decision.claims if c.functional}
         if not incoming:
@@ -73,7 +74,7 @@ class TemporalSupersessionDetector(WriteStep):
         clashes: dict[str, list[tuple[str, str, str]]] = {}
         for ch in decision.claim_candidates:
             cid = ch.fact.fact.id
-            if cid not in contradiction_ids:
+            if cid not in flagged_ids:
                 continue
             slot = (Claim.norm(ch.subject), Claim.norm(ch.attribute))
             new_val = incoming.get(slot)

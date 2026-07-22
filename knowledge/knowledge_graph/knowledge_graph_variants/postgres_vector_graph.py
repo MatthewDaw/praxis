@@ -154,16 +154,20 @@ class SnapshotKindError(ValueError):
 # A check stores its scope in ``meta.scope`` (the top-level ``scope`` column is typically NULL for
 # checks — see the CHECK_CATEGORY note above), so the invariant reads scope as
 # ``COALESCE(meta->>'scope', scope)``, mirroring ``_ticket_state._scope_of``.
+# A validation snapshot kind ties a snapshot name to the ``meta.scope`` its checks
+# must carry — the single source of truth both the row filter and the violator SQL
+# read, so a new kinded snapshot is one entry rather than four edits.
+_VALIDATION_SCOPE = {"building-validation": "validation", "planning-validation": "planning"}
+
+
 def _snapshot_kind(snapshot: str | None) -> str | None:
     """Derive a snapshot's KIND from its NAME (None == unconstrained)."""
     if not snapshot:
         return None
     if snapshot.startswith("prd-"):
         return "plan"
-    if snapshot == "building-validation":
-        return "building-validation"
-    if snapshot == "planning-validation":
-        return "planning-validation"
+    if snapshot in _VALIDATION_SCOPE:
+        return snapshot
     return None
 
 
@@ -174,10 +178,8 @@ def _row_allowed(kind: str | None, category: str | None, scope: str | None) -> b
     is_check = category == CHECK_CATEGORY
     if kind == "plan":
         return not is_check
-    if kind == "building-validation":
-        return is_check and scope == "validation"
-    if kind == "planning-validation":
-        return is_check and scope == "planning"
+    if kind in _VALIDATION_SCOPE:
+        return is_check and scope == _VALIDATION_SCOPE[kind]
     return True
 
 
@@ -186,12 +188,9 @@ def _snapshot_violator_sql(kind: str | None) -> str | None:
     resolved as ``COALESCE(meta->>'scope', scope)``). None when ``kind`` is unconstrained."""
     if kind == "plan":
         return "category = 'check'"
-    if kind == "building-validation":
+    if kind in _VALIDATION_SCOPE:
         return ("(category IS DISTINCT FROM 'check' "
-                "OR COALESCE(meta->>'scope', scope) IS DISTINCT FROM 'validation')")
-    if kind == "planning-validation":
-        return ("(category IS DISTINCT FROM 'check' "
-                "OR COALESCE(meta->>'scope', scope) IS DISTINCT FROM 'planning')")
+                f"OR COALESCE(meta->>'scope', scope) IS DISTINCT FROM '{_VALIDATION_SCOPE[kind]}')")
     return None
 
 
@@ -1558,15 +1557,9 @@ class PostgresVectorGraph(SearchableGraph):
         if scope is not None:
             sql += " AND scope = %s"
             params.append(scope)
-        for key, value in (meta_filter or {}).items():
-            # Scalar equality OR array-membership, in one indexed JSONB predicate:
-            #   meta->>key = value                      (scalar: "planning")
-            #   jsonb_typeof(meta->key)='array' AND meta->key @> [value]  (list: applies_to)
-            sql += (
-                " AND (meta->>%s = %s OR (jsonb_typeof(meta->%s) = 'array' "
-                "AND meta->%s @> %s::jsonb))"
-            )
-            params.extend([key, value, key, key, json.dumps([value])])
+        meta_sql, meta_params = _meta_predicate(meta_filter)
+        sql += meta_sql
+        params.extend(meta_params)
         sql += " ORDER BY created_at DESC"
         rows = self._conn.execute(sql, params).fetchall()
         return [self._row_to_fact(r) for r in rows]

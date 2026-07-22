@@ -596,10 +596,17 @@ class FactsCandidates:
         """
         facts = self.graph.all_facts()  # newest-first
         order = {f.id: i for i, f in enumerate(facts)}  # lower index == newer
-        slot_info = self._slot_info_multi(list(order))
         candidates = self.list()
+        # Only facts appearing in a pending contradiction pair can be resolved, so
+        # load claims for just those (not every tenant fact) — the loop never reads
+        # slot_info for any other id.
+        pending_pairs = serialize_pairs(candidates, status_filter="pending")
+        member_ids = sorted(
+            {side["id"] for p in pending_pairs for side in (p["a"], p["b"])}
+        )
+        slot_info = self._slot_info_multi(member_ids)
         resolved: list[str] = []
-        for pair in serialize_pairs(candidates, status_filter="pending"):
+        for pair in pending_pairs:
             a, b = pair["a"]["id"], pair["b"]["id"]
             # Forced/raw facts are permanently exempt from the pipeline: never let the
             # auto-resolver reject one. A pair touching a forced fact stays as-is (it
