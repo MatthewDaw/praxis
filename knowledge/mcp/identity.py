@@ -200,9 +200,35 @@ def set_space(space_id: str) -> Tenant:
     return tenant
 
 
+def org_id_of(org: dict) -> str:
+    """The org id from a ``/me`` org record, tolerating camelCase or snake_case."""
+    return str(org.get("orgId") or org.get("org_id") or "")
+
+
 def list_my_orgs() -> list[dict]:
     """The orgs the logged-in user belongs to (backend ``GET /me``)."""
     return _list_orgs(api_base(), token())
+
+
+def _authenticate_and_cache(
+    email: str, password: str, choose_org
+) -> tuple[Tenant, list[dict]]:
+    """Cognito auth + verify + list-orgs + build/save Tenant; ``choose_org`` picks the org."""
+    cog = _cognito(username=email)
+    cog.authenticate(password=password)
+    claims = verify_token(cog.id_token)
+
+    api = _api_base()
+    orgs = _list_orgs(api, cog.id_token)
+    tenant = Tenant(
+        refresh_token=cog.refresh_token,
+        sub=claims["sub"],
+        email=claims.get("email", email),
+        org_id=choose_org(orgs),
+        api_base=api,
+    )
+    save_identity(tenant)
+    return tenant, orgs
 
 
 def authenticate(email: str, password: str) -> tuple[Tenant, list[dict]]:
@@ -212,25 +238,9 @@ def authenticate(email: str, password: str) -> tuple[Tenant, list[dict]]:
     selects the org when the user has exactly one; otherwise leaves ``org_id``
     empty for the caller to set via :func:`set_org`.
     """
-    cog = _cognito(username=email)
-    cog.authenticate(password=password)
-    claims = verify_token(cog.id_token)
-
-    api = _api_base()
-    orgs = _list_orgs(api, cog.id_token)
-    org_id = ""
-    if len(orgs) == 1:
-        org_id = str(orgs[0].get("orgId") or orgs[0].get("org_id") or "")
-
-    tenant = Tenant(
-        refresh_token=cog.refresh_token,
-        sub=claims["sub"],
-        email=claims.get("email", email),
-        org_id=org_id,
-        api_base=api,
+    return _authenticate_and_cache(
+        email, password, lambda orgs: org_id_of(orgs[0]) if len(orgs) == 1 else ""
     )
-    save_identity(tenant)
-    return tenant, orgs
 
 
 def api_base() -> str:
@@ -278,32 +288,14 @@ def _pick_org(orgs: list[dict]) -> str:
     if not orgs:
         return input("No orgs found — enter an org id to use: ").strip()
     if len(orgs) == 1:
-        return str(orgs[0].get("orgId") or orgs[0].get("org_id"))
+        return org_id_of(orgs[0])
     print("Your orgs:")
     for i, org in enumerate(orgs):
-        oid = org.get("orgId") or org.get("org_id")
-        print(f"  [{i}] {oid} ({org.get('role', 'member')})")
+        print(f"  [{i}] {org_id_of(org)} ({org.get('role', 'member')})")
     choice = int(input("Pick an org by number: ").strip())
-    org = orgs[choice]
-    return str(org.get("orgId") or org.get("org_id"))
+    return org_id_of(orgs[choice])
 
 
 def login(email: str, password: str) -> Tenant:
     """Authenticate with Cognito, pick an org, and cache the identity."""
-    cog = _cognito(username=email)
-    cog.authenticate(password=password)
-    claims = verify_token(cog.id_token)
-
-    api = _api_base()
-    orgs = _list_orgs(api, cog.id_token)
-    org_id = _pick_org(orgs)
-
-    tenant = Tenant(
-        refresh_token=cog.refresh_token,
-        sub=claims["sub"],
-        email=claims.get("email", email),
-        org_id=org_id,
-        api_base=api,
-    )
-    save_identity(tenant)
-    return tenant
+    return _authenticate_and_cache(email, password, _pick_org)[0]
