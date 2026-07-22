@@ -1,7 +1,7 @@
 ---
 title: "feat: Graded rubric checks for the agent factory verification loop"
 type: feat
-status: active
+status: completed
 created: 2026-07-21
 depth: deep
 area: agent_factory

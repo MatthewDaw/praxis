@@ -421,6 +421,9 @@ def _norm_validation(v: Any, idx: int) -> dict:
         entry["kind"] = "graded"
         if isinstance(v.get("rubric"), dict):
             entry["rubric"] = v["rubric"]  # frozen at pin time; VERIFY reads this copy
+        src = str(v.get("source_check_id") or "").strip()
+        if src:  # links back to the seeded library check, for the U7 auto-adjust in-flight guard
+            entry["source_check_id"] = src
     return entry
 
 
