@@ -37,6 +37,20 @@ class Axis:
 
 
 @dataclass(frozen=True)
+class Anchors:
+    """Literal, copy-pasted code exemplars that pin the judge's taste for a subjective check.
+
+    ``good`` demonstrates the standard met; ``slop`` demonstrates it violated. These are verbatim
+    text injected into the judge prompt (see :func:`graded_verdict.build_judge_prompt`) — NO scoring,
+    NO versioning, no infrastructure. Their whole job is reproducibility: the same snippets always
+    frame the same judgment.
+    """
+
+    good: tuple[str, ...] = ()
+    slop: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Rubric:
     """A graded check's rubric: the axes to score, the confidence floor, and judge guidance."""
 
@@ -44,6 +58,7 @@ class Rubric:
     confidence_floor: int = 5  # defects with confidence < floor are dropped
     criterion: str = ""
     judge_prompt: str = ""
+    anchors: Anchors | None = None  # optional calibration exemplars; absent -> None (byte-compatible)
 
     def axis_names(self) -> tuple[str, ...]:
         return tuple(a.name for a in self.axes)
@@ -102,7 +117,43 @@ def rubric_from_dict(data: dict) -> Rubric:
         confidence_floor=floor,
         criterion=str(data.get("criterion") or ""),
         judge_prompt=str(data.get("judge_prompt") or ""),
+        anchors=_anchors_from_dict(data.get("anchors")),
     )
+
+
+def _anchors_from_dict(raw: object) -> Anchors | None:
+    """Parse the optional ``anchors`` block. Absent -> None (byte-compatible with pre-anchor
+    rubrics); a malformed block raises ``ValueError`` so a bad definition fails loudly at load."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("rubric anchors must be a mapping of {good:[...], slop:[...]}")
+    sides: dict[str, tuple[str, ...]] = {}
+    for side in ("good", "slop"):
+        vals = raw.get(side, [])
+        if not isinstance(vals, (list, tuple)):
+            raise ValueError(f"rubric anchors {side!r} must be a list of strings")
+        sides[side] = tuple(str(v) for v in vals)
+    return Anchors(good=sides["good"], slop=sides["slop"])
+
+
+def rubric_to_dict(rubric: Rubric) -> dict:
+    """Serialize a :class:`Rubric` back to the plain-dict shape :func:`rubric_from_dict` accepts.
+
+    The inverse of :func:`rubric_from_dict` — used to FREEZE a seeded rubric onto a pinned validation
+    (``_ticket_state``) so VERIFY reads back an identical target. Omits ``anchors`` entirely when
+    absent, so a no-anchor rubric round-trips byte-for-byte.
+    """
+    data: dict = {
+        "axes": [{"name": a.name, "threshold": a.threshold, "guidance": a.guidance}
+                 for a in rubric.axes],
+        "confidence_floor": rubric.confidence_floor,
+        "criterion": rubric.criterion,
+        "judge_prompt": rubric.judge_prompt,
+    }
+    if rubric.anchors is not None:
+        data["anchors"] = {"good": list(rubric.anchors.good), "slop": list(rubric.anchors.slop)}
+    return data
 
 
 def evaluate(rubric: Rubric, axis_scores: dict[str, float], defects: list[Defect]) -> Verdict:
