@@ -29,7 +29,10 @@ from __future__ import annotations
 import json
 
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
-from knowledge.knowledge_graph.write_policy.write_policy_def import WriteDecision
+from knowledge.knowledge_graph.write_policy.write_policy_def import (
+    WriteDecision,
+    contradiction_ids,
+)
 from knowledge.knowledge_graph.write_policy.write_step_variants.filing_status import (
     distinct_tax_facts,
 )
@@ -129,9 +132,7 @@ class SemanticConflictDetector(WriteStep):
         if self.judge is None or not decision.semantic_candidates:
             return
         # Already-settled pairs: anything the structural detector flagged this write.
-        flagged: set[str] = {
-            f.split(":", 1)[1] for f in decision.flags if f.startswith("contradiction:")
-        }
+        flagged: set[str] = contradiction_ids(decision.flags)
         # Functional slots the incoming write occupies — a candidate sharing one of
         # these is the STRUCTURAL detector's domain, so we never second-guess it here
         # (it ruled the values compatible, or already flagged them).

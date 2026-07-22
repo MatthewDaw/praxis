@@ -124,6 +124,24 @@ def _now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _parse_meta_filter(meta: str | None) -> dict | None:
+    """Parse the ``meta`` query param as a JSON object filter (None when blank).
+
+    Raises ``HTTPException(400)`` on invalid JSON or a non-object payload.
+    """
+    if meta is None or not meta.strip():
+        return None
+    try:
+        parsed = json.loads(meta)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"meta must be valid JSON: {exc}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400, detail="meta must be a JSON object")
+    return parsed
+
+
 # --- shared insight-write helpers (single + batch paths, gap H8) -------------
 # The single POST /insights and the bulk POST /insights/batch run the exact same
 # per-insight write, so the logic lives here once and both endpoints call it. The
@@ -2663,19 +2681,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         state_filter: str | None = state
         if state in ("", "any", "all"):
             state_filter = None
-        meta_filter: dict | None = None
-        if meta is not None and meta.strip():
-            try:
-                parsed = json.loads(meta)
-            except json.JSONDecodeError as exc:
-                raise HTTPException(
-                    status_code=400, detail=f"meta must be valid JSON: {exc}"
-                ) from exc
-            if not isinstance(parsed, dict):
-                raise HTTPException(
-                    status_code=400, detail="meta must be a JSON object"
-                )
-            meta_filter = parsed
+        meta_filter = _parse_meta_filter(meta)
         facts = graph_for(org, uid, target).facts_by(
             category=category,
             source=source,
@@ -2981,17 +2987,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
             cats.extend(c.strip() for c in categories.split(",") if c.strip())
         cats_filter = list(dict.fromkeys(cats)) or None
         scope_filter = scope.strip() if scope and scope.strip() else None
-        meta_filter: dict | None = None
-        if meta is not None and meta.strip():
-            try:
-                parsed = json.loads(meta)
-            except json.JSONDecodeError as exc:
-                raise HTTPException(
-                    status_code=400, detail=f"meta must be valid JSON: {exc}"
-                ) from exc
-            if not isinstance(parsed, dict):
-                raise HTTPException(status_code=400, detail="meta must be a JSON object")
-            meta_filter = parsed
+        meta_filter = _parse_meta_filter(meta)
         base = graph_for(org, uid, target)
         # A snapshot-bound read (explicit X-Praxis-Space + X-Praxis-Snapshot) reads
         # that snapshot directly and never unions mounts — mounts are a

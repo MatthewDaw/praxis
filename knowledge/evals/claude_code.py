@@ -25,7 +25,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 from knowledge.evals.eval_def import (
     Artifact,
@@ -122,6 +122,16 @@ def _extract_json(text: str) -> dict:
         raise
 
 
+def _box_files(workdir: Path) -> Iterator[Path]:
+    """Yield every box file (sorted) skipping dotfile paths (``.git`` etc.)."""
+    for path in sorted(workdir.rglob("*")):
+        if not path.is_file():
+            continue
+        if any(seg.startswith(".") for seg in path.relative_to(workdir).parts):
+            continue
+        yield path
+
+
 def _hash_tree(workdir: Path) -> dict[str, str]:
     """Map every non-dotfile in the box to a hash of its bytes (box-relative posix).
 
@@ -129,12 +139,8 @@ def _hash_tree(workdir: Path) -> dict[str, str]:
     correctly. Dotfile paths (``.git`` etc.) are skipped, matching the sweep.
     """
     tree: dict[str, str] = {}
-    for path in sorted(workdir.rglob("*")):
-        if not path.is_file():
-            continue
+    for path in _box_files(workdir):
         rel = path.relative_to(workdir)
-        if any(seg.startswith(".") for seg in rel.parts):
-            continue
         try:
             tree[rel.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
         except OSError:
@@ -284,11 +290,7 @@ class ClaudeCodeRunner:
             return preferred.read_text(encoding="utf-8"), "named_file"
 
         parts: list[str] = []
-        for path in sorted(workdir.rglob("*")):
-            if not path.is_file():
-                continue
-            if any(seg.startswith(".") for seg in path.relative_to(workdir).parts):
-                continue  # skip dotfiles / .git
+        for path in _box_files(workdir):
             try:
                 text = path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):

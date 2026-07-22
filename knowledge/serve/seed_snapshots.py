@@ -52,15 +52,9 @@ _FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 # therefore must NOT be duplicated into the ``meta`` jsonb blob.
 _COLUMN_KEYS = {"id", "content", "state", "confidence", "scope", "category", "contradiction_ids"}
 
-# Bare snapshot name per theme bucket.
-_GROUP_LABELS = {
-    "frontend": "frontend",
-    "backend": "backend",
-    "infra": "infra",
-    "nushell": "nushell",
-    "evals": "evals",
-    "misc": "misc",
-}
+# Known theme buckets; a candidate's scope top-segment is kept as its own snapshot
+# name when it names one of these (otherwise it falls into ``misc``).
+_GROUP_NAMES = frozenset({"frontend", "backend", "infra", "nushell", "evals", "misc"})
 
 
 def _load_fixtures() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -86,7 +80,7 @@ def _group_of(cand: dict[str, Any]) -> str:
         top = str(scope).split("/", 1)[0]
         if top == "eval":
             return "evals"
-        if top in _GROUP_LABELS:
+        if top in _GROUP_NAMES:
             return top
         return "misc"
     cid = str(cand.get("id", ""))
@@ -219,7 +213,7 @@ def seed(
     conn = db.connect(dsn)
     try:
         for group, rows in sorted(groups.items()):
-            name = _GROUP_LABELS.get(group, group)
+            name = group
             _delete_snapshot(conn, org, space, name)
             for cand in rows:
                 _insert_fact(conn, org, space, name, cand, vecs.get(str(cand["id"])))
@@ -231,8 +225,7 @@ def seed(
             src, dst, kind = edge["src"], edge["dst"], edge.get("kind", "contradiction")
             g_src, g_dst = group_of_id.get(src), group_of_id.get(dst)
             if g_src is not None and g_src == g_dst:
-                name = _GROUP_LABELS.get(g_src, g_src)
-                _insert_edge(conn, org, space, name, src, dst, kind)
+                _insert_edge(conn, org, space, g_src, src, dst, kind)
             else:
                 dropped += 1
         if dropped:

@@ -37,17 +37,7 @@ class SpacesStore:
         a concurrent duplicate create is a clean "already exists" (the second
         insert no-ops via ``ON CONFLICT``) instead of an uncaught ``UniqueViolation``.
         """
-        if is_reserved_space_id(space_id):
-            raise ValueError(f"space {space_id!r} is a reserved name")
-        cur = self._conn.execute(
-            """
-            INSERT INTO spaces (org_id, space_id, name)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (org_id, space_id) DO NOTHING
-            """,
-            (org_id, space_id, name),
-        )
-        if cur.rowcount == 0:
+        if self._insert_space(org_id, space_id, name) == 0:
             raise ValueError(f"space {space_id!r} already exists")
 
     def ensure_space(self, org_id: str, space_id: str, name: str | None = None) -> None:
@@ -62,9 +52,17 @@ class SpacesStore:
         ``-plan`` id), so this guard never fires on the real write path but keeps
         the retired standalone layout unrepresentable for any caller.
         """
+        self._insert_space(org_id, space_id, name)
+
+    def _insert_space(self, org_id: str, space_id: str, name: str | None) -> int:
+        """Guard the reserved-id invariant and insert the space row (idempotent).
+
+        Returns the affected row count: 0 when the space already existed (the
+        ``ON CONFLICT`` no-op), 1 when a new row was created.
+        """
         if is_reserved_space_id(space_id):
             raise ValueError(f"space {space_id!r} is a reserved name")
-        self._conn.execute(
+        cur = self._conn.execute(
             """
             INSERT INTO spaces (org_id, space_id, name)
             VALUES (%s, %s, %s)
@@ -72,6 +70,7 @@ class SpacesStore:
             """,
             (org_id, space_id, name),
         )
+        return cur.rowcount
 
     def rename_space(self, org_id: str, space_id: str, name: str | None) -> bool:
         """Set the display ``name`` of a space; True if it existed.

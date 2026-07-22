@@ -37,6 +37,12 @@ from knowledge.observability import tracing
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-4o-mini"
 
+
+def _serves_openrouter_model(model: str) -> bool:
+    """OpenRouter ids are provider-prefixed (e.g. ``openai/gpt-4o-mini``); a bare
+    alias like ``sonnet`` belongs to another backend."""
+    return "/" in model
+
 # A POST seam: (url, payload, headers, timeout) -> raw response body (str).
 Poster = Callable[[str, dict, dict, int], str]
 
@@ -166,9 +172,7 @@ class OpenRouterRunner:
 
     @staticmethod
     def serves_model(model: str) -> bool:
-        """OpenRouter ids are provider-prefixed (e.g. ``openai/gpt-4o-mini``); a
-        bare alias like ``sonnet`` belongs to another backend."""
-        return "/" in model
+        return _serves_openrouter_model(model)
 
     def __init__(
         self,
@@ -285,9 +289,7 @@ class StructuredOpenRouterRunner:
 
     @staticmethod
     def serves_model(model: str) -> bool:
-        # OpenRouter ids are provider-prefixed (e.g. openai/gpt-4o-mini); a bare
-        # alias belongs to another backend. (Same rule as OpenRouterRunner.)
-        return "/" in model
+        return _serves_openrouter_model(model)
 
     def __init__(self, client: OpenRouterClient | None = None, max_tokens: int = 2048) -> None:
         self.client = client or OpenRouterClient()

@@ -80,15 +80,14 @@ class Ingestor(ABC):
             # is the persistent store's fact provenance; ``tabular`` flags a
             # table-derived write so the deduper's slot-guard engages downstream.
             kwargs: dict = {"state": state}
-            eff_source = source if source is not None else insight.source
-            if eff_source is not None:
-                kwargs["source"] = eff_source
-            eff_scope = scope if scope is not None else insight.scope
-            if eff_scope is not None:
-                kwargs["scope"] = eff_scope
-            eff_category = category if category is not None else insight.category
-            if eff_category is not None:
-                kwargs["category"] = eff_category
+            for key, wval, ival in (
+                ("source", source, insight.source),
+                ("scope", scope, insight.scope),
+                ("category", category, insight.category),
+            ):
+                eff = wval if wval is not None else ival
+                if eff is not None:
+                    kwargs[key] = eff
             if meta:
                 kwargs["meta"] = meta
             if insight.tabular:

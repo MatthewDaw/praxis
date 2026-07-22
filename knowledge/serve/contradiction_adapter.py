@@ -26,11 +26,6 @@ def _cid(c: Candidate) -> str:
     return str(c.get("id", ""))
 
 
-def contradiction_ids(c: Candidate) -> list[str]:
-    raw = c.get("contradiction_ids") or c.get("contradictions") or []
-    return [str(x.get("id") if isinstance(x, dict) else x) for x in raw]
-
-
 def contradiction_links(c: Candidate) -> list[tuple[str, str]]:
     """``[(rival_id, status)]`` for a candidate, from the rich ``contradictions``
     field (``{id, status}``) or, failing that, the flat ``contradiction_ids``
