@@ -16,6 +16,16 @@ from knowledge.knowledge_graph.knowledge_graph_def import Claim, SearchHit
 
 Action = Literal["add", "noop", "update", "overwrite", "augment"]
 
+# The persisted marker (in ``Fact.meta``) that stamps a fact as a force/raw insert.
+# A forced fact honors the documented ``raw=True`` contract: it is redacted and
+# embedded but PERMANENTLY EXEMPT from the dedup/contradiction/merge pipeline — it
+# lands ``active`` and is never auto-merged or auto-rejected, on its own write or on
+# any later re-distill. The flag lives in ``meta`` so the exemption round-trips a
+# save/reload: a re-submitted forced fact re-bypasses the pipeline, later writes
+# never treat it as a merge/conflict target, and the auto-resolver refuses to reject
+# it.
+FORCED_META_KEY = "forced"
+
 # The state a freshly-written fact is persisted with. Set by the caller of
 # ``write`` (not by a policy step): "active" when the user directly approved the
 # insertion, "proposed" when the system added it passively. ("rejected" is a
@@ -40,6 +50,14 @@ class WriteDecision:
     text: str
     state: SeedState = "proposed"
     action: Action = "add"
+    # A force/raw insert (``praxis_add_insight(raw=True)`` or ``write(forced=True)``).
+    # A forced write honors the documented raw contract literally: it is redacted and
+    # embedded but PERMANENTLY EXEMPT from the dedup/contradiction/merge pipeline — it
+    # lands ``active`` and is never auto-merged or auto-rejected, on its own write or on
+    # any later re-distill. The store persists ``meta["forced"]=True`` so the exemption
+    # round-trips a save/reload cycle (recall excludes forced facts as merge/conflict
+    # targets; the auto-resolver refuses to reject them).
+    forced: bool = False
     # Fact to act on for action == "update" (bump), "overwrite" (replace in place),
     # or "augment" (rewrite the target's text with a Mem0-style merged survivor).
     update_target_id: str | None = None

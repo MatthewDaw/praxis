@@ -2058,6 +2058,13 @@ def create_app(conn: Any | None = None) -> FastAPI:
         # the string "false") falls back to the SAFER reconciled write, since raw
         # reduces write-time safety (skips dedup + the conflict/claim policy).
         raw = body.get("raw", False) is True
+        # A raw/force insert is PERMANENTLY exempt from the pipeline, not just at write
+        # time: stamp ``meta['forced']`` so the fact round-trips as forced. Later writes
+        # never treat it as a dedup/conflict target and the auto-resolver refuses to
+        # reject it, so a topically-similar force insert cannot be silently merged or
+        # rejected by the async distillation pass. Redact-only policy keeps it cheap.
+        if raw:
+            meta = {**(meta or {}), "forced": True}
         policy = [Redactor()] if raw else _insight_write_policy(on_conflict)
         graph = graph_for(org, uid, target, policy=policy)
         _, ingestor, _ = build_trio(graph=graph, llm=None)
@@ -2180,6 +2187,11 @@ def create_app(conn: Any | None = None) -> FastAPI:
             if item_meta is not None and not isinstance(item_meta, dict):
                 results[i] = {"ok": False, "error": "meta must be an object", "index": i}
                 continue
+            # raw batch: stamp meta['forced'] so each item is a permanently-exempt force
+            # insert — the write path bypasses the pipeline for it, it round-trips as
+            # forced, and the async distillation pass can never merge/reject it.
+            if raw:
+                item_meta = {**(item_meta or {}), "forced": True}
             if (item.get("category") or "").strip() == EPISODIC_CATEGORY:
                 try:
                     res = _record_episode(graph, text, item)

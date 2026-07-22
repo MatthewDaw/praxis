@@ -32,6 +32,7 @@ from knowledge.knowledge_graph.knowledge_graph_def import Claim, Fact, SearchHit
 from knowledge.knowledge_graph.parent_searchable_graph import SearchableGraph
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
 from knowledge.knowledge_graph.write_policy.write_policy_def import (
+    FORCED_META_KEY,
     ClaimHit,
     WriteDecision,
     demote_active_contradiction,
@@ -629,7 +630,15 @@ class PostgresVectorGraph(SearchableGraph):
             raise ValueError(
                 f"category {EPISODIC_CATEGORY!r} is reserved for episodes; use record_episode()"
             )
-        decision = WriteDecision(text=content, state="active" if state == "active" else "proposed")
+        # A force/raw insert is marked either by an explicit persisted ``meta['forced']``
+        # (the working-memory raw lane stamps it; a re-distill re-submits it) — bypass the
+        # whole pipeline for it below so it is never auto-merged/auto-rejected.
+        forced = bool((meta or {}).get(FORCED_META_KEY))
+        decision = WriteDecision(
+            text=content,
+            state="active" if (state == "active" or forced) else "proposed",
+            forced=forced,
+        )
         if tabular:
             decision.flags.append(TABULAR_FLAG)
         # A write carrying derived_from declares a NEW fact built on a source; flag it so
@@ -641,7 +650,9 @@ class PostgresVectorGraph(SearchableGraph):
         decision.source = source
         decision.scope = scope
         decision.category = category
-        decision.meta = meta or {}
+        decision.meta = dict(meta or {})
+        if forced:
+            return self._decide_forced(decision)
         # A declared derivation is a new fact built on its sources, never a duplicate;
         # carry it onto the decision so the Augmenter exempts it from the merge (H5).
         decision.derived_from = list(derived_from or [])
@@ -666,6 +677,23 @@ class PostgresVectorGraph(SearchableGraph):
         # flagged against an already-active fact lands "proposed" (a pending
         # contradiction); the contradiction edge is still persisted below.
         demote_active_contradiction(decision)
+        return decision
+
+    def _decide_forced(self, decision: WriteDecision) -> WriteDecision:
+        """Force/raw fast lane: redact + embed only — no dedup/conflict/merge pipeline.
+
+        Honors the ``raw=True`` contract literally so a forced fact is never
+        auto-merged or auto-rejected: run only the cheap regex ``Redactor`` (secrets
+        stay scrubbed), embed once (the fact stays retrievable), stamp ``meta['forced']``
+        so the exemption round-trips a save/reload, and land ``active`` as a plain add.
+        ``meta`` is preserved verbatim (no distillation reshaping/stripping).
+        """
+        decision.meta[FORCED_META_KEY] = True
+        for step in self.policy:
+            if isinstance(step, Redactor):
+                step.apply(decision)
+        if decision.embedding is None:
+            decision.embedding = self._embed(decision.text)
         return decision
 
     def persist(self, decision: WriteDecision) -> str | None:
@@ -1023,6 +1051,7 @@ class PostgresVectorGraph(SearchableGraph):
         exclude_categories: list[str] | None = None,
         categories: list[str] | None = None,
         meta_filter: dict | None = None,
+        exclude_forced: bool = False,
     ) -> tuple[str, list[object]]:
         """The shared partition/state/scope/filter predicate for a search branch.
 
@@ -1069,6 +1098,12 @@ class PostgresVectorGraph(SearchableGraph):
         if exclude_categories:
             sql += " AND (category IS NULL OR category <> ALL(%s))"
             params.append(list(exclude_categories))
+        # Forced/raw facts are permanently exempt from the write pipeline: the recall
+        # passes set this so a later write never sees a forced fact as a dedup/conflict/
+        # supersession candidate (and thus can never merge into or reject it). Only the
+        # write-time recall opts in; public retrieval (search) still returns forced facts.
+        if exclude_forced:
+            sql += " AND (meta->>'forced') IS DISTINCT FROM 'true'"
         meta_sql, meta_params = _meta_predicate(meta_filter)
         sql += meta_sql
         params.extend(meta_params)
@@ -1087,11 +1122,12 @@ class PostgresVectorGraph(SearchableGraph):
         categories: list[str] | None = None,
         meta_filter: dict | None = None,
         apply_decay: bool = False,
+        exclude_forced: bool = False,
     ) -> list[SearchHit]:
         where, where_params = self._where(
             filters=filters, scope=scope, state=state, as_of=as_of,
             exclude_categories=exclude_categories, categories=categories,
-            meta_filter=meta_filter,
+            meta_filter=meta_filter, exclude_forced=exclude_forced,
         )
         # Outcome/trust weighting (H1): cosine similarity scaled by a per-fact utility
         # multiplier from recorded outcomes — neutral 1.0 until outcomes exist.
@@ -2817,7 +2853,7 @@ class PostgresVectorGraph(SearchableGraph):
         # decision log). Episodes run no recall of their own (store-only lane).
         hits = self._search_vec(
             _fit(decision.embedding), top_k=self.recall_k, state=None,
-            exclude_categories=[EPISODIC_CATEGORY],
+            exclude_categories=[EPISODIC_CATEGORY], exclude_forced=True,
         )
         decision.candidates = [h for h in hits if h.score >= self.recall_floor]
 
@@ -2835,6 +2871,7 @@ class PostgresVectorGraph(SearchableGraph):
         hits = self._search_vec(
             _fit(decision.embedding), top_k=self.semantic_recall_k, state=None,
             exclude_categories=[EPISODIC_CATEGORY],  # never recall an episode (see _recall)
+            exclude_forced=True,  # forced facts stay exempt (see _recall)
         )
         decision.semantic_candidates = [
             h for h in hits if h.score >= self.semantic_recall_floor
@@ -2858,6 +2895,8 @@ class PostgresVectorGraph(SearchableGraph):
             f"FROM {self._claims_table} c "
             f"JOIN {self._facts_table} f ON {self._join_keys('f', 'c')} AND f.id=c.fact_id "
             f"WHERE {key_pred} AND c.functional "
+            # Forced/raw facts are exempt: never a structural-conflict target (see _recall).
+            "AND (f.meta->>'forced') IS DISTINCT FROM 'true' "
             "AND (c.subject, c.attribute) IN (SELECT unnest(%s::text[]), unnest(%s::text[]))"
         )
         params.extend([subjects, attributes])

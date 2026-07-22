@@ -569,6 +569,16 @@ class FactsCandidates:
         slot_info = self._slot_info_multi(member_ids)
         return serialize_clusters(candidates, slot_info, status_filter="pending")
 
+    def _is_forced(self, fact_id: str) -> bool:
+        """True iff the fact was force/raw-inserted (``meta['forced']`` truthy).
+
+        Force-inserted facts honor the documented ``raw=True`` contract: permanently
+        exempt from the dedup/contradiction/merge pipeline, so the auto-resolver must
+        never reject one.
+        """
+        fact = self.graph.get_fact(fact_id)
+        return bool(fact is not None and (fact.meta or {}).get("forced"))
+
     def auto_resolve_high_confidence(self, *, prefer_id: str | None = None) -> list[str]:
         """Auto-resolve pending contradictions that are high-confidence clashes.
 
@@ -591,6 +601,12 @@ class FactsCandidates:
         resolved: list[str] = []
         for pair in serialize_pairs(candidates, status_filter="pending"):
             a, b = pair["a"]["id"], pair["b"]["id"]
+            # Forced/raw facts are permanently exempt from the pipeline: never let the
+            # auto-resolver reject one. A pair touching a forced fact stays as-is (it
+            # would not normally form, since forced facts are excluded from write-time
+            # recall — this is the belt-and-suspenders guard for a pre-existing edge).
+            if self._is_forced(a) or self._is_forced(b):
+                continue
             shared = {s for s, _ in slot_info.get(a, [])} & {
                 s for s, _ in slot_info.get(b, [])
             }

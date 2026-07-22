@@ -21,6 +21,7 @@ from knowledge.knowledge_graph.knowledge_graph_def import Contradiction, Fact, S
 from knowledge.knowledge_graph.parent_searchable_graph import SearchableGraph
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
 from knowledge.knowledge_graph.write_policy.write_policy_def import (
+    FORCED_META_KEY,
     ClaimHit,
     WriteDecision,
     demote_active_contradiction,
@@ -48,6 +49,11 @@ def _cosine(a: list[float], b: list[float]) -> float:
     na = math.sqrt(sum(x * x for x in a)) or 1.0
     nb = math.sqrt(sum(y * y for y in b)) or 1.0
     return dot / (na * nb)
+
+
+def is_forced(fact: Fact) -> bool:
+    """True iff ``fact`` was force/raw-inserted (``meta['forced']`` is truthy)."""
+    return bool((fact.meta or {}).get(FORCED_META_KEY))
 
 
 def default_write_policy(llm: Llm | None = None) -> list[WriteStep]:
@@ -126,6 +132,7 @@ class VectorGraph(SearchableGraph):
         category: str | None = None,
         meta: dict | None = None,
         derived_from: list[str] | None = None,
+        forced: bool = False,
     ) -> WriteDecision | None:
         """Run the write-policy pipeline over ``content``, then persist.
 
@@ -145,6 +152,12 @@ class VectorGraph(SearchableGraph):
         steps keep it as its own distinct node rather than folding it back into the
         source. Keyed on derived_from presence, not category.
 
+        ``forced`` (or a persisted ``meta['forced']``) is the force/raw insert: it
+        skips the entire dedup/conflict/merge/supersession pipeline (redact + embed
+        only), lands ``active``, stamps ``meta['forced']`` so the exemption survives a
+        save/reload, and preserves ``meta`` verbatim. A forced fact is never
+        auto-merged or auto-rejected — on its own write or on any later re-distill.
+
         Returns the enacted ``WriteDecision`` so callers can observe the per-write
         outcome (``action`` add/update/overwrite, ``dropped``, ``update_target_id``)
         without diffing ``facts`` before/after — an additive change; existing
@@ -155,7 +168,15 @@ class VectorGraph(SearchableGraph):
         content = content.strip()
         if not content:
             return None
-        decision = WriteDecision(text=content, state="active" if state == "active" else "proposed")
+        # A forced/raw insert is marked either by the ``forced`` arg OR by a persisted
+        # ``meta['forced']`` — so the exemption round-trips: a re-distill/save-reload
+        # that re-submits a forced fact's text + meta auto-bypasses the pipeline again
+        # without the caller having to re-pass the flag.
+        forced = forced or bool((meta or {}).get(FORCED_META_KEY))
+        # A forced/raw insert lands active (direct-approval semantics) regardless of
+        # the passed state — the whole point is a trusted force insert.
+        seed_state = "active" if (state == "active" or forced) else "proposed"
+        decision = WriteDecision(text=content, state=seed_state, forced=forced)
         if tabular:
             decision.flags.append(TABULAR_FLAG)
         decision.derived = bool(derived_from)
@@ -164,7 +185,9 @@ class VectorGraph(SearchableGraph):
         decision.source = source
         decision.scope = scope
         decision.category = category
-        decision.meta = meta or {}
+        decision.meta = dict(meta or {})
+        if forced:
+            return self._write_forced(decision)
         claim_recalled = False
         semantic_recalled = False
         for step in self.policy:
@@ -197,6 +220,27 @@ class VectorGraph(SearchableGraph):
             return decision
         self._add(decision)
         self._apply_supersessions(decision)
+        return decision
+
+    def _write_forced(self, decision: WriteDecision) -> WriteDecision:
+        """Force/raw fast lane: redact + embed, then persist ``active`` — no pipeline.
+
+        Honors the documented ``raw=True`` contract literally: the write skips the
+        Deduper and the whole conflict/claim/supersession pipeline, so a forced fact
+        can never be auto-merged or auto-rejected on its own write. We still run the
+        cheap regex ``Redactor`` (secrets are scrubbed) and embed once (the fact stays
+        retrievable). ``meta['forced']`` is stamped so the exemption round-trips a
+        save/reload and later writes never treat this fact as a merge/conflict target
+        (see the ``is_forced`` filter in the recall passes). ``meta`` — including
+        arrays like ``defines`` — is persisted verbatim (no distillation reshaping).
+        """
+        decision.meta[FORCED_META_KEY] = True
+        for step in self.policy:
+            if isinstance(step, Redactor):
+                step.apply(decision)
+        if decision.embedding is None:
+            decision.embedding = self.embedder.embed_one(decision.text)
+        self._add(decision)
         return decision
 
     def _apply_supersessions(self, decision: WriteDecision) -> None:
@@ -302,10 +346,13 @@ class VectorGraph(SearchableGraph):
         decision.embedding = self.embedder.embed_one(decision.text)
         if not self._facts:
             return
+        # Forced/raw facts are permanently exempt from the pipeline: never offer one
+        # to a later write as a dedup/conflict candidate, so nothing can merge into or
+        # reject it (mirrored in the semantic and claim recall passes below).
         hits = [
             SearchHit(fact=f, score=_cosine(decision.embedding, f.embedding))
             for f in self._facts
-            if f.embedding is not None
+            if f.embedding is not None and not is_forced(f)
         ]
         hits.sort(key=lambda h: h.score, reverse=True)
         decision.candidates = [h for h in hits if h.score >= self.recall_floor][: self.recall_k]
@@ -337,7 +384,7 @@ class VectorGraph(SearchableGraph):
         hits = [
             SearchHit(fact=f, score=_cosine(decision.embedding, f.embedding))
             for f in self._facts
-            if f.embedding is not None
+            if f.embedding is not None and not is_forced(f)  # forced facts stay exempt
         ]
         hits.sort(key=lambda h: h.score, reverse=True)
         decision.semantic_candidates = [
@@ -357,6 +404,8 @@ class VectorGraph(SearchableGraph):
         wanted = {c.slot for c in incoming}
         hits: list[ClaimHit] = []
         for f in self._facts:
+            if is_forced(f):  # forced facts are never a structural-conflict target
+                continue
             for c in f.claims:
                 if c.functional and c.slot in wanted:
                     hits.append(
