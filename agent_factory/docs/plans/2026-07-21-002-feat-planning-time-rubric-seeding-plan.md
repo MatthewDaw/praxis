@@ -22,9 +22,9 @@ extension of the completed companion plan, not a parallel system.
   `building-validation` snapshot: `af-intake-plan` (whole-plan B1 findings) and `af-build`'s
   ticket-start search (ticket-local + rules search). A check carries a **`meta.candidate`
   flag**: `candidate:true` = a non-gating suggestion in the pool; `candidate:false`/absent =
-  a hard gate exactly as today. Planning authors its high-severity **cross-ticket** concerns
-  as `candidate:false` (they gate directly, set where the whole-plan context lives); every
-  other idea is a `candidate:true` pool entry.
+  a hard gate exactly as today (the existing binary floor gates and any check a human authors
+  directly). **Both writers contribute `candidate:true` entries with a `severity` hint; neither
+  decides gating.**
 - **Assemble (at the build-time synthesis seam).** When the worker synthesizes validations
   for a ticket (the companion's existing fold step, which calls `pin_validations`), a rubric
   **assembly** function reads the ticket's resolved `candidate:true` set and tiers it:
@@ -125,12 +125,15 @@ give the build-time synthesis step an assembly function that composes each ticke
    disclaimed under R4. The deterministic query (not the semantic `retrieve_advisory_checks`,
    which is embedding top-k) is what lets the assembler enumerate *all* of a ticket's candidates.
 
-2. **Must-gate cross-ticket concerns are authored gating at intake, bypassing the pool.** The
-   whole-plan context is the only place that knows a concern is cross-ticket-critical, so
-   `af-intake-plan` authors those as `candidate:false` graded checks — they gate directly via
-   the existing lane and the per-ticket assembler can never demote them. Everything else (both
-   sources) is `candidate:true`. This removes the "ticket-local budget silently un-gates a
-   whole-plan concern" failure by construction.
+2. **A separate assembler function decides gating at build time — neither writer does.** The
+   sequence is: `af-intake-plan` writes candidates to the pool → `af-build` ADDS its ticket-local
+   discoveries to the SAME pool → THEN, per ticket at build time, the rubric assembler determines
+   what must be gated. Both writers only contribute `candidate:true` entries + a `severity` hint;
+   neither authors a `candidate:false` graded gate or makes a mandatory-vs-advisory call. The
+   assembler promotes high-severity candidates (severity + budget) to individual gating validations
+   and folds the rest into one min-of-candidates advisory aggregate; the aggregate's soft-floor is
+   the backstop so an egregious folded concern still surfaces as a gate rather than being silently
+   demoted. This keeps the gating decision in the ticket-local context that runs the build, by design.
 
 3. **Assembly runs at the build-time synthesis seam, not `start_ticket`.** The worker already
    folds candidates into synthesized validations and calls `pin_validations` at build time
@@ -164,16 +167,17 @@ give the build-time synthesis step an assembly function that composes each ticke
 *Directional guidance for review, not implementation specification.*
 
 ```
-GATHER — two writers, one pool (building-validation)
-  af-intake-plan  B1 whole-plan findings
-        ├─ must-gate cross-ticket ─► candidate:false  (gates directly — Decision 2)
-        └─ everything else ────────► candidate:true    (pool entry)
-  af-build  ticket-start search  ──► candidate:true    (pool entry; via sibling — U4)
+GATHER — two writers, one pool (building-validation); NEITHER decides gating
+  1. af-intake-plan  B1 whole-plan findings ─► candidate:true (+severity hint)
+  2. af-build ticket-start search ──────────► candidate:true (+severity hint; via sibling — U4)
   (all authored THROUGH af-intake-build-validation → single-writer lock holds)
+  (candidate:false stays for the existing binary floor gates / human-authored gates only)
 
 RESOLVE (U1 discriminator)
-  candidate:false → required_validations (GATES, as today)
+  candidate:false → required_validations (GATES, as today — floor/manual gates)
   candidate:true  → deterministic candidate query (NON-gating), input to assembly
+
+THEN — a separate function determines what gates (per ticket, build time)
 
 ASSEMBLE — at build-time worker synthesis (U5; extends companion fold step)
   read ticket's candidate:true set
@@ -234,26 +238,26 @@ ASSEMBLE — at build-time worker synthesis (U5; extends companion fold step)
   - A graded check with a missing/malformed rubric is rejected at author time.
   - `resolve_preview --by-check` shows the check's `kind` and candidate/gating status.
 
-### U3. af-intake-plan B5b contributes candidates + must-gate checks
+### U3. af-intake-plan B5b contributes candidates (first pool writer, no gating decision)
 
-- **Goal:** From B1's whole-plan findings, author high-severity cross-ticket concerns as
-  `candidate:false` graded checks (gate directly) and all other ideas as `candidate:true` pool
-  entries — via the sibling, single-writer lock preserved.
+- **Goal:** From B1's whole-plan findings, author every quality finding as a `candidate:true` pool
+  entry with a `severity` hint — via the sibling, single-writer lock preserved. af-intake-plan makes
+  **no** gating decision (no `candidate:false` graded gate); the build-time assembler decides gating.
 - **Requirements:** R1, R4.
 - **Dependencies:** U2.
-- **Files:** `agent_factory/skills/af-intake-plan/SKILL.md` (§B5b — two-mode derivation +
+- **Files:** `agent_factory/skills/af-intake-plan/SKILL.md` (§B5b-graded — candidate derivation +
   delegation; §B8 records authored ids).
-- **Approach:** Extend B5b's derive-then-delegate. A finding whose miss is expensive/invisible
-  AND cross-ticket → `candidate:false` (must-gate, Decision 2). Every other quality finding →
-  `candidate:true` candidate with severity + axis + default threshold (from the seeded-library
-  value for that axis; do NOT invent aggressive thresholds) + tag/surface scope. Author all
-  through `af-intake-build-validation`.
+- **Approach:** Extend B5b's derive-then-delegate. Each B1 quality finding → a `candidate:true`
+  candidate with a `severity` hint (higher for expensive/invisible cross-ticket misses), the axis(es)
+  from the firing lens, a default threshold (from the seeded-library value for that axis; do NOT
+  invent aggressive thresholds), and a TIGHT tag/surface scope. Author all through
+  `af-intake-build-validation`. The mandatory-vs-advisory call is the assembler's (U5), at build time.
 - **Patterns to follow:** existing B5b binary-guard derivation + delegation; axis vocabulary in
   `src/agent_factory/seeded_checks.py`.
 - **Test scenarios:**
-  - Integration: a high-severity cross-ticket B1 finding produces a `candidate:false` graded
-    check that `resolve_preview --by-check` shows gating its ticket.
-  - A non-cross-ticket quality finding produces a `candidate:true` pool entry (non-gating).
+  - Integration: a high-severity B1 finding produces a `candidate:true` pool entry (non-gating) with
+    its `severity` hint, visible in `resolve_preview --by-check` as a candidate.
+  - af-intake-plan authors no `candidate:false` graded gate from B1 findings.
   - af-intake-plan never writes `building-validation` directly (delegates to the sibling).
 
 ### U4. af-build ticket-start search persists candidates to the pool (via sibling)
