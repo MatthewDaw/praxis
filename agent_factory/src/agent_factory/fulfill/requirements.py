@@ -85,6 +85,7 @@ def requirement_from_fact(fact: dict) -> FulfillRequirement:
         return fact.get(key, default)
 
     req_id = meta.get("requirement_id") or fact.get("id") or ""
+    guard = pick("guard")
     return FulfillRequirement(
         id=str(req_id),
         field=str(pick("field", "") or ""),
@@ -92,7 +93,7 @@ def requirement_from_fact(fact: dict) -> FulfillRequirement:
         cover=_as_list(pick("cover")),
         renders=_as_list(pick("renders")),
         depends_on=_as_list(pick("depends_on")),
-        guard=pick("guard") if isinstance(pick("guard"), dict) else None,
+        guard=guard if isinstance(guard, dict) else None,
         scope=str(pick("scope", "") or ""),
         text=str(pick("text", "") or ""),
         fact_id=str(fact.get("id") or req_id),

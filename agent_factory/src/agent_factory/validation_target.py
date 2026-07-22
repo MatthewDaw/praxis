@@ -76,6 +76,11 @@ class ValidationState:
         return [c for c in self.checks if c.last_result != PASSED]
 
 
+def _binds(check: ValidationCheck, req: ReqRef) -> bool:
+    """A check applies to a requirement when its ``applies_to`` matches the id OR a class tag."""
+    return check.applies_to == req.id or check.applies_to in req.tags
+
+
 def resolve_bindings(
     checks: list[ValidationCheck], requirements: list[ReqRef]
 ) -> dict[str, ValidationState]:
@@ -87,7 +92,7 @@ def resolve_bindings(
     """
     states: dict[str, ValidationState] = {}
     for req in requirements:
-        bound = [c for c in checks if c.applies_to == req.id or c.applies_to in req.tags]
+        bound = [c for c in checks if _binds(c, req)]
         if bound:
             states[req.id] = ValidationState(requirement_id=req.id, checks=bound)
     return states
@@ -107,10 +112,7 @@ def unbound_checks(
 ) -> list[ValidationCheck]:
     """Checks whose ``applies_to`` matched no requirement (a binding/typo bug to surface)."""
     bound_ids = {
-        c.id
-        for req in requirements
-        for c in checks
-        if c.applies_to == req.id or c.applies_to in req.tags
+        c.id for req in requirements for c in checks if _binds(c, req)
     }
     return [c for c in checks if c.id not in bound_ids]
 

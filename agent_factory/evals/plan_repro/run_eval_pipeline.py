@@ -29,18 +29,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from evals.plan_repro._util import force_utf8_streams, load_repo_dotenv, retrying
+
 EVAL_PROJECT = "team-app-eval"   # the project name af-intake-plan plans under, inside the isolated space
-
-
-def _load_dotenv(root: Path) -> None:
-    env = root / ".env"
-    if not env.is_file():
-        return
-    for line in env.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, _, v = line.partition("=")
-            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
 def _drive_af_intake(space_id: str, prd_dir: Path, timeout: int) -> int:
@@ -99,14 +90,10 @@ def _read_plan(space_id: str):
 
 
 def main() -> int:
-    for s in (sys.stdout, sys.stderr):
-        try:
-            s.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-        except Exception:
-            pass
+    force_utf8_streams()
 
     root = Path(__file__).resolve().parents[2]   # agent_factory/
-    _load_dotenv(root)
+    load_repo_dotenv(root)
     praxis_repo = root.parent / "praxis"
     if praxis_repo.is_dir():
         sys.path.insert(0, str(praxis_repo))
@@ -142,7 +129,7 @@ def main() -> int:
                   "PRAXIS_SPACE targeting / Praxis auth). Cannot score.", flush=True)
             return 2
 
-        complete = _retrying(make_claude_cli_complete(timeout=150))
+        complete = retrying(make_claude_cli_complete(timeout=150))
 
         # 4a. Q1 — explicit coverage vs the EXPLICIT golden (raw-PRD features, derived==False).
         golden = load_golden(str(DEFAULT_GOLDEN))
@@ -169,19 +156,6 @@ def main() -> int:
     finally:
         ps.teardown_eval_space(space_id=space_id)
         print("torn down eval space", flush=True)
-
-
-def _retrying(base):
-    def complete(prompt: str) -> str:
-        last = None
-        for attempt in range(3):
-            try:
-                return base(prompt)
-            except Exception as exc:  # noqa: BLE001
-                last = exc
-                print(f"  [judge retry {attempt + 1}/3 after {type(exc).__name__}]", flush=True)
-        raise last  # type: ignore[misc]
-    return complete
 
 
 if __name__ == "__main__":

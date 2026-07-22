@@ -120,17 +120,23 @@ class Domain:
     def line_map(self) -> dict[str, str]:
         return self.template.get("line_map") or {}
 
-    def step(self, step_id: str) -> ComputeStep | None:
+    def __post_init__(self) -> None:
+        # id->node lookups built once so step()/requirement() are O(1) inside per-line / per-dep
+        # loops (formfill.build_line_items, requirements.deps_met) instead of O(n) linear scans.
+        step_index: dict[str, ComputeStep] = {}
         for s in self.compute_steps:
-            if s.id == step_id:
-                return s
-        return None
+            step_index.setdefault(s.id, s)  # first-match wins, matching the old linear scan
+        req_index: dict[str, dict[str, Any]] = {}
+        for r in self.requirements:
+            req_index.setdefault(str(r.get("id")), r)
+        object.__setattr__(self, "_step_index", step_index)
+        object.__setattr__(self, "_req_index", req_index)
+
+    def step(self, step_id: str) -> ComputeStep | None:
+        return self._step_index.get(step_id)
 
     def requirement(self, req_id: str) -> dict[str, Any] | None:
-        for r in self.requirements:
-            if str(r.get("id")) == req_id:
-                return r
-        return None
+        return self._req_index.get(req_id)
 
 
 def _read_yaml(path: Path, label: str) -> Any:

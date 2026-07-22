@@ -74,8 +74,6 @@ def _facts_from_table(header: list[str], rows: list[list[str]]) -> list[str]:
 def _try_markdown_table(lines: list[str], i: int) -> tuple[int, list[str]]:
     """If a markdown table starts at ``lines[i]``, return (lines_consumed, facts)."""
     n = len(lines)
-    if i + 2 >= n + 0:  # need at least header + separator + one row
-        pass
     if not _is_pipe_row(lines[i]):
         return 0, []
     if i + 1 >= n or not _SEP_RE.match(lines[i + 1]):

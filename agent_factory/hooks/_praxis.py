@@ -435,11 +435,7 @@ def get_episodes(*, meta: dict | None = None, space: str | None = None,
     gate can find the signed-contract episode and validate it. ``meta`` is a flat top-level meta
     filter (scalar-equality OR array-membership). ``(space, snapshot)`` bind the read to a
     snapshot-bound graph; a partial reference fails closed (see :func:`_request`). Empty -> ``[]``."""
-    params: dict[str, Any] = {"state": "active", "category": "episodic"}
-    if meta:
-        params["meta"] = json.dumps(meta)
-    out = _request("GET", "/facts/by", params=params, space=space, snapshot=snapshot)
-    return out.get("facts") or []
+    return facts_by(category="episodic", meta=meta, space=space, snapshot=snapshot)
 
 
 def get_contradictions(*, space: str | None = None, snapshot: str | None = None) -> list[dict]:
