@@ -6,7 +6,7 @@ import textwrap
 
 import pytest
 
-from agent_factory.seeded_checks import GRADED, load_seeded_checks
+from agent_factory.seeded_checks import GRADED, load_seeded_checks, universal_seeded_checks
 
 
 def _write(tmp_path, body: str):
@@ -103,6 +103,30 @@ def test_axis_threshold_out_of_range_rejected(tmp_path):
     """)
     with pytest.raises(ValueError, match="threshold must be in"):
         load_seeded_checks(p)
+
+
+def test_ships_minimalism_dry_universal():
+    """U5: the always-on ``minimalism-dry`` graded check ships report-only, in the universal lane,
+    with strict axes and literal good/slop anchors demonstrating strict minimization."""
+    checks = {c.check_id: c for c in load_seeded_checks()}
+    m = checks["minimalism-dry"]
+    assert m.kind == GRADED and m.applies_to == ("*",)
+    assert m.promote_universal is True and m.report_only is True  # ships report-only (calibration)
+    assert {a.name for a in m.rubric.axes} == {"minimalism", "deduplication", "dry"}
+    assert m.rubric.anchors is not None
+    # >=3 anchors demonstrating strict minimization (dead-code/speculative vs minimal; copy-paste vs DRY).
+    assert len(m.rubric.anchors.good) >= 3 and len(m.rubric.anchors.slop) >= 3
+    # It is the (only) member of the universal lane the library ships today.
+    assert "minimalism-dry" in {c.check_id for c in universal_seeded_checks(list(checks.values()))}
+
+
+def test_minimalism_dry_prompt_embeds_anchors_verbatim():
+    from agent_factory.graded_verdict import build_judge_prompt
+    m = {c.check_id: c for c in load_seeded_checks()}["minimalism-dry"]
+    prompt = build_judge_prompt(m.rubric, "DIFF")
+    assert "CALIBRATION" in prompt
+    for snippet in (*m.rubric.anchors.good, *m.rubric.anchors.slop):
+        assert snippet in prompt  # verbatim — the reproducibility claim
 
 
 def test_adding_one_entry_is_the_only_edit(tmp_path):
