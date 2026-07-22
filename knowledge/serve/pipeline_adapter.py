@@ -236,7 +236,10 @@ def ingest_insights(graph: VectorGraph, insights: list[Insight]) -> IngestReport
 def _fact_by_id(graph: VectorGraph, fact_id: str | None) -> Fact | None:
     if fact_id is None:
         return None
-    for fact in graph.facts:
+    # Scan newest-first: callers look up the fact the immediately-preceding write
+    # just appended, so it is at the tail — O(1) in the common case, same result
+    # (ids are unique) as a forward scan.
+    for fact in reversed(graph.facts):
         if fact.id == fact_id:
             return fact
     return None
