@@ -10,11 +10,11 @@ testable offline and runs on the subscription with no API key.
 """
 from __future__ import annotations
 
-import json
-import re
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
+
+from evals._json import extract_json_object
 
 Complete = Callable[[str], str]
 
@@ -76,18 +76,6 @@ def build_judge_prompt(golden_diff: str, agent_diff: str) -> str:
     )
 
 
-def _loads(text: str):
-    s = (text or "").strip()
-    if s.startswith("```"):
-        s = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", s)
-        s = re.sub(r"\n?```$", "", s).strip()
-    try:
-        return json.loads(s)
-    except Exception:
-        m = re.search(r"\{.*\}", s, re.S)
-        return json.loads(m.group(0)) if m else {}
-
-
 @dataclass
 class BuildScore:
     aspects: dict = field(default_factory=dict)     # key -> {covered, confidence, evidence}
@@ -120,7 +108,7 @@ class BuildScore:
 def score_build(complete: Complete, golden_diff: str, agent_diff: str,
                 agent_files: set[str], golden_files: set[str], praxis_state: dict,
                 *, threshold: float = 0.8) -> BuildScore:
-    verdict = _loads(complete(build_judge_prompt(golden_diff, agent_diff)))
+    verdict = extract_json_object(complete(build_judge_prompt(golden_diff, agent_diff)))
     aspects = {a.get("key"): a for a in (verdict.get("aspects") or []) if a.get("key")}
     covered = sum(1 for k, _ in ASPECTS if aspects.get(k, {}).get("covered"))
     aspect_score = round(covered / len(ASPECTS), 3)

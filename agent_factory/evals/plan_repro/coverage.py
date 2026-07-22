@@ -217,6 +217,12 @@ def _overlap(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a)
 
 
+def _best_lexical(part: Feature, related: list[Feature]) -> tuple[float, Feature]:
+    """Best token-overlap match ``(score, candidate)`` among ``related`` (must be non-empty)."""
+    pt = _tokens(part.text)
+    return max(((_overlap(pt, _tokens(c.text)), c) for c in related), key=lambda sc: sc[0])
+
+
 def all_related_query(part: Feature, candidates: list[Feature]) -> list[Feature]:
     """Return every candidate — fine when the candidate set is small (the eval's ~78)."""
     return list(candidates)
@@ -267,9 +273,7 @@ def lexical_evaluator(
     if not related:
         return PartResult(part_id=part.id, status=MISSING, confidence=0.9,
                           notes="no related candidate")
-    pt = _tokens(part.text)
-    best_score, best = max(((_overlap(pt, _tokens(c.text)), c) for c in related),
-                           key=lambda sc: sc[0])
+    best_score, best = _best_lexical(part, related)
     if best_score >= cover_threshold:
         return PartResult(part_id=part.id, status=COVERED, evidence=best.text,
                           matched_ids=[best.id], confidence=min(1.0, best_score))

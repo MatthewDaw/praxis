@@ -23,13 +23,12 @@ The golden is the answer key (for scoring only); the checklist must never be the
 
 from __future__ import annotations
 
-import json
-import re
 from collections.abc import Callable
 from pathlib import Path
 
 import yaml
 
+from evals._json import extract_json
 from evals.plan_repro.coverage import Feature
 
 #: Same contract as the evaluator's backend.
@@ -115,41 +114,9 @@ def build_planner_prompt(prd_text: str, *, checklist: list[str] | None = None) -
 # --- parsing -------------------------------------------------------------------
 
 
-def _loads_lenient(text: str):
-    """Parse the first top-level JSON value (array or object) out of model text."""
-    if not text:
-        return None
-    s = text.strip()
-    if s.startswith("```"):
-        s = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", s)
-        s = re.sub(r"\n?```$", "", s).strip()
-    try:
-        return json.loads(s)
-    except Exception:
-        pass
-    starts = [p for p in (s.find("["), s.find("{")) if p != -1]
-    if not starts:
-        return None
-    start = min(starts)
-    open_ch = s[start]
-    close_ch = "]" if open_ch == "[" else "}"
-    depth = 0
-    for i in range(start, len(s)):
-        if s[i] == open_ch:
-            depth += 1
-        elif s[i] == close_ch:
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(s[start : i + 1])
-                except Exception:
-                    return None
-    return None
-
-
 def parse_candidate(raw: str | list | dict) -> list[Feature]:
     """Parse a planner response into candidate :class:`Feature` items (tolerant)."""
-    obj = raw if isinstance(raw, (list, dict)) else _loads_lenient(raw)
+    obj = raw if isinstance(raw, (list, dict)) else extract_json(raw, allow_array=True)
     if isinstance(obj, dict):
         items = obj.get("features") or obj.get("requirements") or []
     elif isinstance(obj, list):
