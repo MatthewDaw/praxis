@@ -12,8 +12,6 @@ Starting from empty drops orphaned keys left by edited/removed assets.
 from __future__ import annotations
 
 import argparse
-import os
-import sys
 
 from knowledge.evals.run import (
     CAPTION_CACHE_DIR,
@@ -22,12 +20,12 @@ from knowledge.evals.run import (
     _slug,
     load_cases,
     load_env,
+    missing_openrouter_key,
 )
 
 
 def refresh(cases=None) -> int:
-    if not os.getenv("OPENROUTER_API_KEY"):
-        print("set OPENROUTER_API_KEY to refresh the caption cassette", file=sys.stderr)
+    if missing_openrouter_key("set OPENROUTER_API_KEY to refresh the caption cassette"):
         return 1
 
     cases = load_cases() if cases is None else cases

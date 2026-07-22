@@ -34,7 +34,9 @@ from knowledge.evals.eval_def import (
     Rubric,
     align_per_item,
     build_judge_prompt,
+    format_box_file,
     rubric_score_schema,
+    strip_code_fences,
     weighted_overall,
 )
 from knowledge.observability import tracing
@@ -110,9 +112,7 @@ def _claude_usage(stdout: str) -> dict:
 
 def _extract_json(text: str) -> dict:
     """Best-effort parse of a JSON object out of model text (tolerates fences)."""
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```[a-zA-Z]*\n?|\n?```$", "", text).strip()
+    text = strip_code_fences(text)
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -295,7 +295,7 @@ class ClaudeCodeRunner:
                 text = path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
-            parts.append(f"# {path.relative_to(workdir).as_posix()}\n{text}")
+            parts.append(format_box_file(path.relative_to(workdir).as_posix(), text))
 
         if parts:
             return "\n\n".join(parts), "box_sweep"

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 
-from knowledge.evals.eval_def import CheckResult, EvalContext
+from knowledge.evals.eval_def import CheckResult, EvalContext, strip_code_fences
 
 
 def forbids_substring(
@@ -170,17 +170,10 @@ def regex_absent(ctx: EvalContext, *, pattern: str) -> CheckResult:
     )
 
 
-def _strip_fences(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```[a-zA-Z]*\n?|\n?```$", "", text).strip()
-    return text
-
-
 def json_valid(ctx: EvalContext) -> CheckResult:
     """Pass iff the output parses as JSON (tolerant of whitespace / code fences)."""
     try:
-        json.loads(_strip_fences(ctx.output))
+        json.loads(strip_code_fences(ctx.output))
         ok, evidence = True, "output is valid JSON"
     except (json.JSONDecodeError, ValueError) as e:
         ok, evidence = False, f"not valid JSON: {e}"

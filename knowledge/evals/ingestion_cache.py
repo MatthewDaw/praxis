@@ -16,7 +16,6 @@ caches vectors for soon-to-be-stale text).
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 
 from knowledge.evals.run import (
@@ -25,12 +24,12 @@ from knowledge.evals.run import (
     _slug,
     load_cases,
     load_env,
+    missing_openrouter_key,
 )
 
 
 def refresh() -> int:
-    if not os.getenv("OPENROUTER_API_KEY"):
-        print("set OPENROUTER_API_KEY to refresh the ingestion cassette", file=sys.stderr)
+    if missing_openrouter_key("set OPENROUTER_API_KEY to refresh the ingestion cassette"):
         return 1
 
     cases = [c for c in load_cases() if c.ingest_model]

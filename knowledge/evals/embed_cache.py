@@ -22,7 +22,6 @@ captions that won't match at replay time and seeding is a loud miss.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 
 from knowledge.evals.run import (
@@ -33,17 +32,14 @@ from knowledge.evals.run import (
     _slug,
     load_cases,
     load_env,
+    missing_openrouter_key,
 )
 
 
 def _no_key() -> bool:
-    if not os.getenv("OPENROUTER_API_KEY"):
-        print(
-            "set OPENROUTER_API_KEY (+ OPENROUTER_EMBED_MODEL) to record the cache",
-            file=sys.stderr,
-        )
-        return True
-    return False
+    return missing_openrouter_key(
+        "set OPENROUTER_API_KEY (+ OPENROUTER_EMBED_MODEL) to record the cache"
+    )
 
 
 def _record_case(case) -> None:

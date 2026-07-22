@@ -18,6 +18,7 @@ import argparse
 import importlib
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
@@ -347,65 +348,56 @@ def _ingest_llm_for(case: EvalCase, llm):
     return IngestionCassette(cache, model_id=case.ingest_model, inner=inner, allow_compute=has_key)
 
 
-def _merge_judge_for(case: EvalCase):
-    """Build the dedup ``MergeJudge`` for a case's ``merge_model`` axis (None => none).
+def _llm_and_cassette(model: str, subdir: str):
+    """Resolve the ``(llm, cassette)`` pair for a verdict axis (either may be None).
 
-    Mirrors the embedder wiring: a live OpenRouter judge when a key is set, plus a
-    committed verdict cassette for offline replay. With neither, returns None so the
-    ``Deduper`` falls back to exact-dedup only (the case SKIPs via ``merge_verdicts``).
+    A live OpenRouter judge when ``OPENROUTER_API_KEY`` is set, plus a committed
+    verdict cassette (``VERDICT_CACHE_DIR/<subdir>/<model>.json``) for offline
+    replay. No key -> no llm; no cassette file and no key -> no cassette.
     """
-    if not case.merge_model:
-        return None
-    from knowledge.knowledge_graph.write_policy.write_step_variants import MergeJudge
     from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
     from knowledge.llm.verdict_cassette import VerdictCassette
 
     has_key = bool(os.getenv("OPENROUTER_API_KEY"))
-    llm = OpenRouterLlm(model=case.merge_model) if has_key else None
-    cache = VERDICT_CACHE_DIR / "merge" / f"{_slug(case.merge_model)}.json"
+    llm = OpenRouterLlm(model=model) if has_key else None
+    cache = VERDICT_CACHE_DIR / subdir / f"{_slug(model)}.json"
     cassette = (
-        VerdictCassette(cache, model_id=case.merge_model, allow_compute=has_key)
+        VerdictCassette(cache, model_id=model, allow_compute=has_key)
         if (cache.exists() or has_key)
         else None
     )
+    return llm, cassette
+
+
+def _merge_judge_for(case: EvalCase):
+    """Dedup ``MergeJudge`` for ``merge_model`` (None => Deduper does exact-dedup only)."""
+    if not case.merge_model:
+        return None
+    from knowledge.knowledge_graph.write_policy.write_step_variants import MergeJudge
+
+    llm, cassette = _llm_and_cassette(case.merge_model, "merge")
     if llm is None and cassette is None:
         return None
     return MergeJudge(llm=llm, cassette=cassette)
 
 
 def _augment_judge_for(case: EvalCase):
-    """Build the Mem0-style ``AugmentJudge`` for a case's ``augment_model`` axis (None => none).
-
-    Mirrors ``_merge_judge_for``: a live OpenRouter judge when a key is set, plus a
-    committed augment verdict cassette for offline replay. With neither, returns None
-    so the ``Augmenter`` is a no-op (the case SKIPs via ``augment_verdicts``).
-    """
+    """Mem0-style ``AugmentJudge`` for ``augment_model`` (None => Augmenter is a no-op)."""
     if not case.augment_model:
         return None
     from knowledge.knowledge_graph.write_policy.write_step_variants import AugmentJudge
-    from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
-    from knowledge.llm.verdict_cassette import VerdictCassette
 
-    has_key = bool(os.getenv("OPENROUTER_API_KEY"))
-    llm = OpenRouterLlm(model=case.augment_model) if has_key else None
-    cache = VERDICT_CACHE_DIR / "augment" / f"{_slug(case.augment_model)}.json"
-    cassette = (
-        VerdictCassette(cache, model_id=case.augment_model, allow_compute=has_key)
-        if (cache.exists() or has_key)
-        else None
-    )
+    llm, cassette = _llm_and_cassette(case.augment_model, "augment")
     if llm is None and cassette is None:
         return None
     return AugmentJudge(llm=llm, cassette=cassette)
 
 
 def _claim_extractor_for(case: EvalCase):
-    """Build the ``ClaimExtractor`` for a case's ``conflict_model`` axis (None => none).
+    """Structural-contradiction ``ClaimExtractor`` for ``conflict_model`` (None => inert).
 
-    The structural contradiction path's front: extracts (subject, attribute, value)
-    claims, replayed offline from a committed claim cassette. With neither cassette
-    nor key, returns None so the extractor is inert (the case SKIPs via
-    ``conflict_verdicts``).
+    Extracts (subject, attribute, value) claims, replayed offline from the
+    ``claim_extract`` cassette.
     """
     if not case.conflict_model:
         return None
@@ -413,72 +405,40 @@ def _claim_extractor_for(case: EvalCase):
         ClaimExtractionJudge,
         ClaimExtractor,
     )
-    from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
-    from knowledge.llm.verdict_cassette import VerdictCassette
 
-    has_key = bool(os.getenv("OPENROUTER_API_KEY"))
-    llm = OpenRouterLlm(model=case.conflict_model) if has_key else None
-    cache = VERDICT_CACHE_DIR / "claim_extract" / f"{_slug(case.conflict_model)}.json"
-    cassette = (
-        VerdictCassette(cache, model_id=case.conflict_model, allow_compute=has_key)
-        if (cache.exists() or has_key)
-        else None
-    )
+    llm, cassette = _llm_and_cassette(case.conflict_model, "claim_extract")
     if llm is None and cassette is None:
         return None
     return ClaimExtractor(judge=ClaimExtractionJudge(llm=llm, cassette=cassette))
 
 
 def _claim_value_judge_for(case: EvalCase):
-    """Build the ``ClaimValueJudge`` for the gray-zone value check (None => none).
+    """``ClaimValueJudge`` for the gray-zone same-slot value check (``conflict`` dir).
 
-    Mirrors ``_claim_extractor_for`` but for the narrow same-slot value-incompatibility
-    decision, with its own committed verdict cassette (the ``conflict`` dir).
+    May legitimately be absent (numeric clashes need no LLM); precision-first
+    suppression handles a missing judge, so this stays wired even when both are None.
     """
     if not case.conflict_model:
         return None
     from knowledge.knowledge_graph.write_policy.write_step_variants import ClaimValueJudge
-    from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
-    from knowledge.llm.verdict_cassette import VerdictCassette
 
-    has_key = bool(os.getenv("OPENROUTER_API_KEY"))
-    llm = OpenRouterLlm(model=case.conflict_model) if has_key else None
-    cache = VERDICT_CACHE_DIR / "conflict" / f"{_slug(case.conflict_model)}.json"
-    cassette = (
-        VerdictCassette(cache, model_id=case.conflict_model, allow_compute=has_key)
-        if (cache.exists() or has_key)
-        else None
-    )
-    # The value judge may legitimately be absent (numeric clashes need no LLM);
-    # precision-first suppression handles a missing judge.
+    llm, cassette = _llm_and_cassette(case.conflict_model, "conflict")
     return ClaimValueJudge(llm=llm, cassette=cassette)
 
 
 def _semantic_conflict_judge_for(case: EvalCase):
-    """Build the ``SemanticConflictJudge`` for the paraphrase fallback (None => none).
+    """``SemanticConflictJudge`` for the paraphrase fallback (``semantic`` dir; None => inert).
 
-    Mirrors ``_claim_value_judge_for`` but for the second-pass, free-text "does A
-    contradict B?" decision, with its own committed verdict cassette (the
-    ``semantic`` dir). Gated by the same ``conflict_model`` axis as the structural
-    path. Returns None when neither a cassette nor a live key is available, so the
-    detector stays inert (precision-first suppression).
+    Second-pass, free-text "does A contradict B?" over cosine-recalled neighbours
+    with no shared slot. Gated by the same ``conflict_model`` axis.
     """
     if not case.conflict_model:
         return None
     from knowledge.knowledge_graph.write_policy.write_step_variants import (
         SemanticConflictJudge,
     )
-    from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
-    from knowledge.llm.verdict_cassette import VerdictCassette
 
-    has_key = bool(os.getenv("OPENROUTER_API_KEY"))
-    llm = OpenRouterLlm(model=case.conflict_model) if has_key else None
-    cache = VERDICT_CACHE_DIR / "semantic" / f"{_slug(case.conflict_model)}.json"
-    cassette = (
-        VerdictCassette(cache, model_id=case.conflict_model, allow_compute=has_key)
-        if (cache.exists() or has_key)
-        else None
-    )
+    llm, cassette = _llm_and_cassette(case.conflict_model, "semantic")
     if llm is None and cassette is None:
         return None
     return SemanticConflictJudge(llm=llm, cassette=cassette)
@@ -534,29 +494,15 @@ def _seed_image_assets(case: EvalCase, graph) -> None:
 
 
 def _aspect_tagger_for(case: EvalCase):
-    """Build the Tier-B ``AspectTagger`` for a case's ``tag_model`` axis (None => none).
-
-    Mirrors ``_conflict_judge_for``: a live OpenRouter judge when a key is set, plus
-    a committed aspect verdict cassette for offline replay. With neither, returns
-    None so no tagger is wired (the case SKIPs via ``tag_verdicts``).
-    """
+    """Tier-B ``AspectTagger`` for ``tag_model`` (``aspect`` dir; None => no tagger wired)."""
     if not case.tag_model:
         return None
     from knowledge.knowledge_graph.write_policy.write_step_variants import (
         AspectJudge,
         AspectTagger,
     )
-    from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm
-    from knowledge.llm.verdict_cassette import VerdictCassette
 
-    has_key = bool(os.getenv("OPENROUTER_API_KEY"))
-    llm = OpenRouterLlm(model=case.tag_model) if has_key else None
-    cache = VERDICT_CACHE_DIR / "aspect" / f"{_slug(case.tag_model)}.json"
-    cassette = (
-        VerdictCassette(cache, model_id=case.tag_model, allow_compute=has_key)
-        if (cache.exists() or has_key)
-        else None
-    )
+    llm, cassette = _llm_and_cassette(case.tag_model, "aspect")
     if llm is None and cassette is None:
         return None
     return AspectTagger(judge=AspectJudge(llm=llm, cassette=cassette))
@@ -952,6 +898,17 @@ def load_env() -> None:
     except ImportError:
         return
     load_dotenv()
+
+
+def missing_openrouter_key(message: str) -> bool:
+    """Print ``message`` to stderr and return True when ``OPENROUTER_API_KEY`` is unset.
+
+    Shared guard for the cache-refresh CLIs, which each need a live key to record.
+    """
+    if os.getenv("OPENROUTER_API_KEY"):
+        return False
+    print(message, file=sys.stderr)
+    return True
 
 
 # Human-readable label per backend, for run banners.
