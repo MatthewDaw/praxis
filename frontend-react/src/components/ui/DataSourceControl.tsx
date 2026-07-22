@@ -2,15 +2,11 @@ import { useEffect, useState } from "react";
 import { DATA_SOURCE_PRESETS, PRESET_IDS } from "../../config/dataSource";
 import type { DataSourceConfig } from "../../config/dataSource";
 import type { ApiStoreType } from "../../hooks/useApiHealth";
-import type { LocalLogFileInput } from "../../types/transcript";
 
 interface DataSourceControlProps {
   config: DataSourceConfig;
   storeType?: ApiStoreType;
-  localSession?: { files: { name: string; lineCount: number }[] } | null;
   onLoad: (presetId: string, customApiBaseUrl?: string) => void;
-  onLoadLocalLogs?: (files: LocalLogFileInput[]) => void;
-  onClearLocalLogs?: () => void;
 }
 
 export function DataSourceControl({

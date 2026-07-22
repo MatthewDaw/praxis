@@ -13,8 +13,6 @@ interface ContradictionPanelProps {
     keepId: string,
     rivalTitle: string,
   ) => Promise<void>;
-  onPromote: (id: string) => Promise<void>;
-  onReject: (id: string, reason?: string) => Promise<void>;
   onDelete: (id: string) => Promise<void> | void;
 }
 

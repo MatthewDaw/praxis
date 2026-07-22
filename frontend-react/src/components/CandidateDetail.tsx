@@ -7,7 +7,8 @@ import { MetadataGrid } from "./MetadataGrid";
 import { PhoenixTraces } from "./PhoenixTraces";
 import { StateBadge } from "./StateBadge";
 import { formatCandidateDate } from "../api/candidateModel";
-import { formatUtility, parseFactTrust, utilityTone } from "../api/contextClient";
+import { parseFactTrust } from "../api/contextClient";
+import { UtilityBadge } from "./ContextExplorer";
 
 interface CandidateDetailProps {
   candidates: Candidate[];
@@ -39,8 +40,6 @@ export function CandidateDetail({
   candidates,
   selectedId,
   onSelect,
-  onPromote,
-  onReject,
   onRefreshCandidate,
   refreshingId,
   onResolve,
@@ -131,27 +130,7 @@ export function CandidateDetail({
             value: <span className="mono">{candidate.confidence.toFixed(2)}</span>,
           },
           ...(trust
-            ? [
-                {
-                  label: "Utility",
-                  value: (
-                    <span
-                      className={`utility-badge utility-badge--${utilityTone(
-                        trust.utility,
-                        trust.successCount,
-                        trust.failureCount,
-                      )}`}
-                      title="Laplace-smoothed H1 utility"
-                    >
-                      {formatUtility(trust.utility)}
-                      <span className="utility-badge__counts">
-                        {" "}
-                        ({trust.successCount}✓ / {trust.failureCount}✗)
-                      </span>
-                    </span>
-                  ),
-                },
-              ]
+            ? [{ label: "Utility", value: <UtilityBadge trust={trust} /> }]
             : []),
         ]}
       />
@@ -215,8 +194,6 @@ export function CandidateDetail({
         <ContradictionPanel
           candidate={candidate}
           peersById={idToCandidate}
-          onPromote={onPromote}
-          onReject={onReject}
           onResolve={onResolve}
           onDelete={onDelete}
         />

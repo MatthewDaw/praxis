@@ -25,7 +25,7 @@ function localToIso(value: string): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
-function UtilityBadge({ trust }: { trust: FactTrust }) {
+export function UtilityBadge({ trust }: { trust: FactTrust }) {
   const tone = utilityTone(trust.utility, trust.successCount, trust.failureCount);
   return (
     <span className={`utility-badge utility-badge--${tone}`} title="Laplace-smoothed H1 utility">
