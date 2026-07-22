@@ -2453,14 +2453,26 @@ class PostgresVectorGraph(SearchableGraph):
             f"SELECT id, meta FROM snapshots WHERE org_id=%s AND {pred}",
             (self.org_id, *pred_params),
         ).fetchall()
+        # A live id can natural-key-match MORE THAN ONE snapshot row (a snapshot that
+        # stored the same requirement_id several times). Only ONE row may adopt that
+        # live id, or the restamped INSERT collides on facts_pkey (org_id, user_id, id).
+        # A row already sitting on the live id claims it implicitly; among the rest that
+        # target it, the first wins and the others keep their own snapshot ids.
+        claimed: set[str] = {
+            sid
+            for sid, raw in rows
+            if id_by_key.get(self._natural_key(self._load_meta(raw))) == sid
+        }
         remap: dict[str, str] = {}
         for sid, raw in rows:
             key = self._natural_key(self._load_meta(raw))
             if key is None:
                 continue
             live_id = id_by_key.get(key)
-            if live_id is not None and live_id != sid:
-                remap[sid] = live_id
+            if live_id is None or live_id == sid or live_id in claimed:
+                continue
+            remap[sid] = live_id
+            claimed.add(live_id)
         return remap
 
     @staticmethod

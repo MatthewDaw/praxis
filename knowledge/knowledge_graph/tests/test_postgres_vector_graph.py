@@ -429,6 +429,49 @@ def test_repeated_reload_is_idempotent_no_count_drift(unique_org):
         assert fid == live_id
 
 
+def test_reload_survives_duplicate_requirement_id_in_snapshot(unique_org):
+    """Regression: a snapshot can carry the SAME meta.requirement_id on more than one
+    fact (e.g. a re-materialized PRD). When the live graph also holds that requirement,
+    the natural-key remap must not collapse every dup onto the one live id — that used
+    to raise ``UniqueViolation: facts_pkey`` and 500 POST /snapshots/load. Exactly one
+    row adopts the live id; the rest keep their own snapshot ids and all load."""
+    conn = db.connect()
+    org, user = unique_org, "u1"
+    space, snap = "build-plan", "prd-shopping"
+    g = _live_graph(conn, org, user)
+    live_id = g.write(
+        "Persist the run ledger",
+        state="active", category="requirement", meta={"requirement_id": "R9"},
+    )
+    g.save_cache(space, snap)  # snapshot now holds one R9 row (id == live_id)
+    # Give the snapshot a SECOND R9 row under a different id (duplicate natural key).
+    dup_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    conn.execute(
+        "INSERT INTO snapshots (id, org_id, text, source, confidence, scope, category, "
+        "observation_count, state, embedding, cluster_id, cluster_label, valid_at, "
+        "invalid_at, meta, snapshot, created_at, space, success_count, failure_count, "
+        "last_outcome) "
+        "SELECT %s, org_id, text || ' (dup)', source, confidence, scope, category, "
+        "observation_count, state, embedding, cluster_id, cluster_label, valid_at, "
+        "invalid_at, meta, snapshot, created_at, space, success_count, failure_count, "
+        "last_outcome FROM snapshots WHERE org_id=%s AND space=%s AND snapshot=%s AND id=%s",
+        (dup_id, org, space, snap, live_id),
+    )
+
+    loaded = g.load_caches([(space, snap)])  # the failing path — must not raise
+
+    assert loaded == 2
+    ids = {
+        r[0]
+        for r in conn.execute(
+            "SELECT id FROM facts WHERE org_id=%s AND user_id=%s "
+            "AND meta->>'requirement_id' = %s",
+            (org, user, "R9"),
+        ).fetchall()
+    }
+    assert ids == {live_id, dup_id}  # live id kept its row; the dup kept its own id
+
+
 def test_snapshot_bound_outcome_drives_completeness(unique_org):
     """Option A: ticket STATE lives ON the prd-<project> snapshot. record_outcome and
     the completeness derivation both work snapshot-bound (migration 0012 gives snapshots
