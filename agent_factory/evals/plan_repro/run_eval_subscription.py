@@ -11,36 +11,17 @@ directly (no re-provision / no re-plan). Delete that file to force a fresh plan.
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
-
-def _load_dotenv(root: Path) -> None:
-    env = root / ".env"
-    if not env.is_file():
-        return
-    for line in env.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, _, v = line.partition("=")
-        k, v = k.strip(), v.strip().strip('"').strip("'")
-        if k and k not in os.environ:
-            os.environ[k] = v
+from evals.plan_repro._util import force_utf8_streams, load_repo_dotenv, retrying
 
 
 def main() -> int:
-    # Force UTF-8 stdout/stderr so feature text with chars like U+2265 ('≥') never crashes a
-    # Windows cp1252 console.
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-        except Exception:
-            pass
+    force_utf8_streams()
 
     root = Path(__file__).resolve().parents[2]  # agent_factory/
-    _load_dotenv(root)
+    load_repo_dotenv(root)
     praxis_repo = root.parent / "praxis"
     if praxis_repo.is_dir():
         sys.path.insert(0, str(praxis_repo))
@@ -57,17 +38,7 @@ def main() -> int:
 
     # Resilient subscription backend: a hung `claude -p` call must not kill the whole scoring pass
     # (round 3 died on a single 600s hang). Use a shorter per-call timeout and retry a few times.
-    _base = make_claude_cli_complete(timeout=150)
-
-    def complete(prompt: str) -> str:
-        last = None
-        for attempt in range(3):
-            try:
-                return _base(prompt)
-            except Exception as exc:  # TimeoutExpired or transient CLI error
-                last = exc
-                print(f"  [judge retry {attempt + 1}/3 after {type(exc).__name__}]", flush=True)
-        raise last  # type: ignore[misc]
+    complete = retrying(make_claude_cli_complete(timeout=150))
 
     print("backend: claude CLI (subscription, timeout=150 x3 retry)", flush=True)
 
