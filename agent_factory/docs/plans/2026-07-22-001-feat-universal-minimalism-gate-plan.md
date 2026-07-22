@@ -1,7 +1,7 @@
 ---
 title: "feat: Universal always-enforced minimalism/dedup/DRY gate (report-only → gating)"
 type: feat
-status: active
+status: completed
 created: 2026-07-22
 depth: standard
 area: agent_factory

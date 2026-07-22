@@ -1,7 +1,7 @@
 ---
 title: "feat: Falsifiable fresh-worker resumability probe"
 type: feat
-status: active
+status: completed
 created: 2026-07-22
 depth: standard
 area: agent_factory

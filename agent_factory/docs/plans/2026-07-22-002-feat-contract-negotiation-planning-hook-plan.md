@@ -1,7 +1,7 @@
 ---
 title: "feat: Adversarial contract negotiation + planning Stop-hook"
 type: feat
-status: active
+status: completed
 created: 2026-07-22
 depth: deep
 area: agent_factory
