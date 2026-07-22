@@ -346,7 +346,20 @@ depends on **no unfinished or in-progress job**. Claim that one; ignore the rest
 
 For the next claimable ticket call `_ticket_state.start_ticket(cid, owner, project)` (BARE project name;
 pass an `override=(space, snapshot)` pair too when this run overrides the default — the project space's
-`building-validation` snapshot — §Validation source). This does three things atomically:
+`building-validation` snapshot — §Validation source).
+
+**Pre-claim resumability guard (falsifiable "Praxis = sole state").** BEFORE it leases, `start_ticket`
+resolves the requirement set and runs the pure structural resumability probe
+(`agent_factory.resumability.resumability_report`) over the ticket's meta: is a cold worker able to
+reconstruct what "done" means from Praxis state ALONE? A ticket is resumable iff it is
+**coverable-from-state** (`non-empty acceptance` **OR** `non-empty resolved required_validations` — the
+same rule `contract_with_floor` uses, so a check-covered but acceptance-less backend/terminal ticket is
+NOT starved) **AND** carries a `verify` mode. If the probe FAILS, `start_ticket` does **not** claim: it
+stamps `meta.under_specified = [missing fields]` (a planning defect surfaced to intake, never a silent
+skip) and returns `None`. Fix the gap at intake (add an acceptance condition OR a declared check); the
+next `start_ticket` then clears the marker and claims. A resumable ticket claims and proceeds unchanged.
+
+On a resumable ticket, `start_ticket` does three things atomically:
 
 1. **Claim the lease.** `incomplete → in_progress`, stamping `meta.claim_owner`, `meta.claim_at`,
    `meta.claim_heartbeat_at`, `meta.claim_lease_ttl` (default `DEFAULT_LEASE_TTL_S = 900`) via the
@@ -376,9 +389,11 @@ pass an `override=(space, snapshot)` pair too when this run overrides the defaul
    Praxis checks match**. This is what makes "the validation agent generated no evals" impossible to wedge
    on: there is always at least one thing to validate — the red→green acceptance test. It **TRUNCATES** any
    prior validations and writes `meta.required_validations` with an empty `meta.pinned_checks`; synthesis
-   (§3) fills that in. **If `start_ticket` returns an EMPTY list** (a ticket with no checks AND no
-   acceptance condition — a planning defect), there is nothing to honestly prove: `block(cid, owner,
-   reason)` it (surfaced for owner action), never leave it spinning.
+   (§3) fills that in. A ticket with no checks AND no acceptance condition is an empty contract — but the
+   pre-claim resumability guard (above) now catches that case FIRST, routing it to `under_specified`
+   (returns `None`, never claimed) instead of letting it reach an empty pin. So `start_ticket` returns
+   `None` for two reasons — a live lease already holds the ticket, **or** it was routed under-specified
+   (check `meta.under_specified`); neither is a claim, so skip it and (for the latter) surface it to intake.
 
 ## 3. SYNTHESIZE the validations — convert requirements into a custom covering set
 

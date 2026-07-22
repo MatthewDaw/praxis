@@ -68,6 +68,18 @@ from typing import Any, NamedTuple, Optional
 import _praxis
 from _praxis import PraxisUnreachable  # re-exported so gates import one place  # noqa: F401
 
+# The pure structural resumability probe (plan 003) lives in the src package. A bare hook subprocess
+# only has ``hooks/`` on its path, so add the sibling ``src/`` before importing. The module is pure
+# stdlib, so this pulls in no heavy dependency.
+try:  # pragma: no cover - import plumbing
+    from agent_factory.resumability import resumability_report
+except ImportError:  # pragma: no cover - import plumbing
+    import os as _os
+    _SRC = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "src")
+    if _SRC not in sys.path:
+        sys.path.insert(0, _SRC)
+    from agent_factory.resumability import resumability_report
+
 CHECK_CATEGORY = "check"
 
 # Canonical meta keys.
@@ -85,6 +97,7 @@ M_PINNED_CHECKS = "pinned_checks"           # entries are synthesized VALIDATION
 M_RUN_OWNER = "run_owner"
 M_RUN_AT = "run_at"
 M_RUN_SCOPE = "run_scope"
+M_UNDER_SPECIFIED = "under_specified"   # [missing structural fields] — routed to intake, never claimed
 
 _LEASE_KEYS = (M_CLAIM_OWNER, M_CLAIM_AT, M_CLAIM_HEARTBEAT_AT, M_CLAIM_LEASE_TTL)
 _RUN_KEYS = (M_RUN_OWNER, M_RUN_AT, M_RUN_SCOPE)
@@ -1009,12 +1022,34 @@ def start_ticket(cid: str, owner: str, project: str = "",
     # Ticket STATE lives on the plan snapshot; claim/read/pin all bind to it. Check
     # reads use their own per-scope snapshot (resolve derives it from project + override).
     plan = project_ref(project).plan if project else None
-    if not claim(cid, owner, ttl=ttl, ref=plan):
-        return None
+    tmeta = _meta(cid, plan)
     resolved = resolve_validation_requirements(cid, project=project, scope="validation",
                                                override=override)
-    tmeta = _meta(cid, plan)
     verify_mode = str(tmeta.get("verify") or "automated").strip().casefold()
+
+    # --- RESUMABILITY GUARD (plan 003) -------------------------------------------------------------
+    # BEFORE leasing, probe whether a cold worker could reconstruct "done" from state alone. We feed
+    # the probe the factory's own verify DEFAULT (absent == "automated", as below) and no id universe,
+    # so it routes PRECISELY on the coverability contract — the same empty-contract case
+    # contract_with_floor would otherwise force the worker to block() on. A non-resumable ticket is
+    # NOT claimed: mark it under_specified (surfaced to intake) and return None. Keep this block
+    # localized/additive — it is shared with plan 001's claim path.
+    probe = resumability_report({**tmeta, "verify": verify_mode}, resolved)
+    if not probe["resumable"]:
+        _praxis.patch_meta(cid, {M_UNDER_SPECIFIED: probe["missing"]}, **_ref_kw(plan))
+        return None
+    # --- END RESUMABILITY GUARD --------------------------------------------------------------------
+
+    if not claim(cid, owner, ttl=ttl, ref=plan):
+        return None
+    # The probe passed — if a prior pass had routed this ticket under_specified, that gap is now
+    # resolved, so clear the marker (patch_meta can't delete keys; NULL it). Only written when set,
+    # so a ticket that was never routed claims byte-identically to before.
+    if tmeta.get(M_UNDER_SPECIFIED):
+        _praxis.patch_meta(cid, {M_UNDER_SPECIFIED: None}, **_ref_kw(plan))
+    # UNION of plan 003 (resumability guard, above) + plan 001 (universal lane): the contract is
+    # composed AFTER the claim, threading ``ticket_meta=tmeta`` so plan 001's report-only universal
+    # minimalism check is injected onto every non-exempt ticket.
     requirements = contract_with_floor(cid, tmeta.get("acceptance"), resolved,
                                        verify=verify_mode, ticket_meta=tmeta)
     # COVERAGE-GAP WARNING (build-time visibility of the intake defect): a verify="automated" ticket
