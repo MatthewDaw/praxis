@@ -1,0 +1,85 @@
+# Seeded generic verification checks — the single source of truth for reusable checks the
+# factory offers the check-authoring agent as OPT-IN candidates during RESOLVE (see U1/U3 of
+# docs/plans/2026-07-21-001-feat-graded-rubric-checks-plan.md).
+#
+# TO ADD A CHECK: append one [[check]] block below. That is the ONLY edit needed — no code
+# change. `check_id` must be unique. Keep it appendable and diff-friendly.
+#
+# Fields:
+#   check_id            required, unique slug
+#   kind                "binary" (exit-code) or "graded" (min-of-axes rubric); default "binary"
+#   applies_to          candidate-offer tags; ["*"] = offered to every ticket (still opt-in)
+#   promote_universal   optional bool; if true a project auto-pins it via the wildcard lane
+#   criterion           human description of what "done" means
+#   run                 (binary only) command whose non-zero exit is failure
+#   confidence_floor    (graded only) 1..10; defects below this are dropped, default 5
+#   judge_prompt        (graded only) extra guidance handed to the fresh-context judge
+#   [[check.axes]]      (graded only) one per scored dimension: name, threshold (0..1), guidance
+
+[[check]]
+check_id = "correctness-review"
+kind = "graded"
+applies_to = ["*"]
+criterion = "The change does what the ticket asks and holds up on its boundaries."
+confidence_floor = 6
+judge_prompt = "Judge only the diff's own logic; do not re-run tests (those are separate binary checks). Cite a file:line for any defect."
+[[check.axes]]
+name = "logic_correct"
+threshold = 0.75
+guidance = "The core behavior matches the ticket's stated intent with no logic errors."
+[[check.axes]]
+name = "edge_cases"
+threshold = 0.6
+guidance = "Boundary values, empty/nil inputs, and obvious concurrent access are handled, not just the happy path."
+
+[[check]]
+check_id = "security-review"
+kind = "graded"
+applies_to = ["*"]
+criterion = "The change introduces no exploitable input-handling, authz, or secret-exposure defect."
+confidence_floor = 6
+judge_prompt = "Approve only with positive evidence of safety (e.g. inputs are validated HERE), never mere absence of a finding. Cite file:line for any defect."
+[[check.axes]]
+name = "input_validation"
+threshold = 0.75
+guidance = "Untrusted input is validated/escaped before use in queries, paths, or commands."
+[[check.axes]]
+name = "authz"
+threshold = 0.8
+guidance = "Permission checks guard the new surface; no privilege escalation or missing gate."
+[[check.axes]]
+name = "secret_handling"
+threshold = 0.85
+guidance = "No hardcoded secrets; credentials are read from the keychain/env, never logged."
+
+[[check]]
+check_id = "error-paths-covered"
+kind = "graded"
+applies_to = ["*"]
+criterion = "Failure modes are handled and cleaned up, not just the happy path."
+confidence_floor = 5
+judge_prompt = "Trace the failure path with the diff in hand. Cite file:line for any unhandled failure or orphaned state."
+[[check.axes]]
+name = "failure_handling"
+threshold = 0.7
+guidance = "Invalid input, downstream failures, and timeouts are handled explicitly rather than swallowed."
+[[check.axes]]
+name = "cleanup_on_failure"
+threshold = 0.65
+guidance = "State persisted before a risky call is cleaned up on failure, or retry is idempotent."
+
+[[check]]
+check_id = "maintainability-review"
+kind = "graded"
+applies_to = ["*"]
+criterion = "The change is clear and carries no dead weight."
+confidence_floor = 7
+judge_prompt = "Be conservative — style nitpicks are not defects. Fail only on genuine clarity or dead-code problems, with a file:line."
+[[check.axes]]
+name = "clarity"
+threshold = 0.6
+guidance = "Names and structure make intent obvious; no needless indirection or premature abstraction."
+[[check.axes]]
+name = "no_dead_code"
+threshold = 0.7
+guidance = "No unreachable code, unused symbols, or commented-out blocks left behind."
