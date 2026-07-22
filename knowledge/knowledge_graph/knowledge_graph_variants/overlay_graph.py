@@ -22,6 +22,7 @@ from typing import Any
 from knowledge.knowledge_graph.knowledge_graph_def import Fact, SearchHit
 from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
     _READ_CHAR_BUDGET,
+    _join_within_budget,
     PostgresVectorGraph,
 )
 from knowledge.knowledge_graph.parent_searchable_graph import SearchableGraph
@@ -83,14 +84,7 @@ class OverlayGraph(SearchableGraph):
             ]
         else:
             facts = [f for f in self._recent_union(limit=50) if f.category not in excluded]
-        parts: list[str] = []
-        used = 0
-        for fact in facts:
-            if used + len(fact.text) > budget and parts:
-                break
-            parts.append(fact.text)
-            used += len(fact.text)
-        return "\n\n".join(parts)
+        return _join_within_budget(facts, budget)
 
     def _recent_union(self, limit: int) -> list[Fact]:
         """Recent active facts from working memory plus every mounted snapshot."""

@@ -66,6 +66,20 @@ _EMBED_DIM = 1536
 # stays bounded. ~4 chars/token, so this is a few thousand tokens.
 _READ_CHAR_BUDGET = 8000
 
+
+def _join_within_budget(facts: list[Fact], budget: int) -> str:
+    """Concatenate ``fact.text`` (score/recency order preserved) until the running
+    length would exceed ``budget``, then join with blank lines. The first fact always
+    lands so a single over-budget fact is never dropped. Shared by every ``read``."""
+    parts: list[str] = []
+    used = 0
+    for fact in facts:
+        if used + len(fact.text) > budget and parts:
+            break
+        parts.append(fact.text)
+        used += len(fact.text)
+    return "\n\n".join(parts)
+
 # Reciprocal Rank Fusion constant (Graphiti/Zep use ~60). Larger k flattens the
 # weight of top ranks, blending the two branches more gently; 60 is the standard.
 _RRF_K = 60
@@ -539,14 +553,7 @@ class PostgresVectorGraph(SearchableGraph):
             facts = [h.fact for h in hits]
         else:
             facts = [f for f in self._recent(limit=50) if f.category not in excluded]
-        parts: list[str] = []
-        used = 0
-        for fact in facts:
-            if used + len(fact.text) > budget and parts:
-                break
-            parts.append(fact.text)
-            used += len(fact.text)
-        return "\n\n".join(parts)
+        return _join_within_budget(facts, budget)
 
     def write(
         self,
