@@ -289,9 +289,26 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
                     out.setdefault(cid, chk)
         return list(out.values())
 
-    # The TICKET (its tags/surfaces) is read from the PLAN snapshot (prd-<project>),
-    # separate from the CHECK reads above; a ticket passed as an already-fetched dict
-    # needs no fetch, a bare cid resolves against the plan ref.
+    # Per-ticket resolution (tag ∪ "*" ∪ surface, scope-filtered), then split by the CANDIDATE flag
+    # (U1): GATING checks (candidate:false / absent) form the coverage contract; candidate:true
+    # entries are the NON-GATING shared pool, returned separately by :func:`pool_candidates`.
+    seen = _matching_checks(ticket, project, scope, space, snapshot)
+    return [v for v in seen.values() if not _is_candidate(v)]
+
+
+def _is_candidate(chk: Any) -> bool:
+    """True iff the check is a non-gating pool entry (``meta.candidate`` truthy)."""
+    if not isinstance(chk, dict):
+        return False
+    return bool((chk.get("meta") or {}).get("candidate"))
+
+
+def _matching_checks(ticket: Any, project: str, scope: str,
+                     space: Optional[str], snapshot: Optional[str]) -> dict[str, dict]:
+    """The tag ∪ ``"*"`` ∪ surface resolution, scope-filtered — the shared body behind both the
+    gating resolve and the candidate pool. Returns ``{check_id: check}`` BEFORE the candidate split,
+    so callers can partition it however they need. No candidate/gating decision is made here.
+    """
     meta = _meta(ticket, project_ref(project).plan if project else None)
     seen: dict[str, dict] = {}
 
@@ -333,7 +350,21 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
 
     if scope:  # e.g. scope="validation" — restrict the per-ticket match to that check scope
         seen = {k: v for k, v in seen.items() if _scope_of(v) == scope}
-    return list(seen.values())
+    return seen
+
+
+def pool_candidates(ticket: Any, project: str = "", scope: str = "validation",
+                    override: Optional[tuple[str, str]] = None) -> list[dict]:
+    """The DETERMINISTIC candidate lane (U1): every ``candidate:true`` check in ``building-validation``
+    that resolves onto this ticket (tag ∪ ``"*"`` ∪ surface), returned in full — NOT a top-k sample
+    like :func:`retrieve_advisory_checks`. These are non-gating; they are the input the build-time
+    rubric assembler (U5) tiers into promoted gating validations + one advisory aggregate. The gating
+    resolve (:func:`resolve_validation_requirements`) excludes exactly this set, so a check is either
+    a gate or a candidate, never both.
+    """
+    space, snapshot = _checks_target(project, scope, override)
+    seen = _matching_checks(ticket, project, scope, space, snapshot)
+    return [v for v in seen.values() if _is_candidate(v)]
 
 
 def retrieve_advisory_checks(ticket: Any, project: str = "", scope: str = "validation",
