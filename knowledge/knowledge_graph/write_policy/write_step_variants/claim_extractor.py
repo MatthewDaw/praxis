@@ -17,14 +17,10 @@ so the detector simply has nothing to flag (a missed conflict beats a false one)
 
 from __future__ import annotations
 
-import json
-
 from knowledge.knowledge_graph.knowledge_graph_def import Claim
+from knowledge.knowledge_graph.write_policy.cassette_judge import CassetteJudge
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
 from knowledge.knowledge_graph.write_policy.write_policy_def import WriteDecision
-from knowledge.llm.llm_def import ChatMessage
-from knowledge.llm.parent_llm import Llm
-from knowledge.llm.verdict_cassette import VerdictCassette
 
 _PROMPT = (
     "Decompose the NOTE into atomic factual claims as (subject, attribute, value, "
@@ -157,14 +153,8 @@ _STANCE_SCHEMA = {
 }
 
 
-class ClaimExtractionJudge:
+class ClaimExtractionJudge(CassetteJudge):
     """Extracts atomic (subject, attribute, value) claims from a note (or None to skip)."""
-
-    def __init__(
-        self, llm: Llm | None = None, cassette: VerdictCassette | None = None
-    ) -> None:
-        self.llm = llm
-        self.cassette = cassette
 
     def extract(self, note: str) -> list[Claim] | None:
         """Claims for ``note`` if a source is available; None to skip (no cassette, no llm)."""
@@ -174,26 +164,15 @@ class ClaimExtractionJudge:
         # clean miss, not a stale replay.
         claim_prompt = _PROMPT.format(note=note)
         stance_prompt = _STANCE_PROMPT.format(axes=_AXES_BLOCK, note=note)
-        if self.cassette is not None:
-            payload = f"{claim_prompt}\n||\n{stance_prompt}"
-            raw = self.cassette.verdict(
-                payload, lambda: self._compute(claim_prompt, stance_prompt)
-            )
-            return self._to_claims(raw)
-        if self.llm is not None:
-            return self._to_claims(self._compute(claim_prompt, stance_prompt))
-        return None  # no source -> skip
+        payload = f"{claim_prompt}\n||\n{stance_prompt}"
+        raw = self._verdict(payload, lambda: self._compute(claim_prompt, stance_prompt))
+        return self._to_claims(raw) if raw is not None else None
 
     def _compute(self, claim_prompt: str, stance_prompt: str) -> dict:
-        claims_raw = self.llm.complete(
-            [ChatMessage(role="user", content=claim_prompt)],
-            response_format=_SCHEMA,
-        )
-        stance_raw = self.llm.complete(
-            [ChatMessage(role="user", content=stance_prompt)],
-            response_format=_STANCE_SCHEMA,
-        )
-        return {"claims": json.loads(claims_raw)["claims"], "stance": json.loads(stance_raw)}
+        return {
+            "claims": self._complete_json(claim_prompt, _SCHEMA)["claims"],
+            "stance": self._complete_json(stance_prompt, _STANCE_SCHEMA),
+        }
 
     @staticmethod
     def _to_claims(raw: dict) -> list[Claim]:

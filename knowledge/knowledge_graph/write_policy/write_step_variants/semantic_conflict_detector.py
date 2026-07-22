@@ -26,8 +26,7 @@ pair the structural path already settled.
 
 from __future__ import annotations
 
-import json
-
+from knowledge.knowledge_graph.write_policy.cassette_judge import CassetteJudge
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
 from knowledge.knowledge_graph.write_policy.write_policy_def import (
     WriteDecision,
@@ -36,9 +35,6 @@ from knowledge.knowledge_graph.write_policy.write_policy_def import (
 from knowledge.knowledge_graph.write_policy.write_step_variants.filing_status import (
     distinct_tax_facts,
 )
-from knowledge.llm.llm_def import ChatMessage
-from knowledge.llm.parent_llm import Llm
-from knowledge.llm.verdict_cassette import VerdictCassette
 
 _PROMPT = (
     "Two statements were recorded about the same person/topic.\n"
@@ -78,36 +74,25 @@ _SCHEMA = {
 }
 
 
-class SemanticConflictJudge:
+class SemanticConflictJudge(CassetteJudge):
     """Decides whether two free-text statements logically contradict.
 
     Mirrors ``ClaimValueJudge``: structured ``{contradicts}`` over the LLM seam,
     cassette-replayed offline, ``None`` when there is no source (caller suppresses).
     """
 
-    def __init__(
-        self, llm: Llm | None = None, cassette: VerdictCassette | None = None
-    ) -> None:
-        self.llm = llm
-        self.cassette = cassette
-
     def contradicts(self, a: str, b: str) -> bool | None:
-        """True/False if a verdict is available; None to skip (no cassette, no llm)."""
-        # Key the cassette on the exact rendered prompt, so editing the prompt (or the
-        # inputs) is a clean miss, not a stale replay.
+        """True/False if a verdict is available; None to skip (no cassette, no llm).
+
+        Keyed on the exact rendered prompt, so editing the prompt (or the inputs) is a
+        clean miss, not a stale replay.
+        """
         prompt = _PROMPT.format(a=a, b=b)
-        if self.cassette is not None:
-            return self.cassette.verdict(prompt, lambda: self._compute(prompt))["contradicts"]
-        if self.llm is not None:
-            return self._compute(prompt)["contradicts"]
-        return None
+        verdict = self._verdict(prompt, lambda: self._compute(prompt))
+        return verdict["contradicts"] if verdict is not None else None
 
     def _compute(self, prompt: str) -> dict:
-        raw = self.llm.complete(
-            [ChatMessage(role="user", content=prompt)],
-            response_format=_SCHEMA,
-        )
-        return {"contradicts": bool(json.loads(raw)["contradicts"])}
+        return {"contradicts": bool(self._complete_json(prompt, _SCHEMA)["contradicts"])}
 
 
 class SemanticConflictDetector(WriteStep):
