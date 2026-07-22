@@ -86,7 +86,19 @@ reads/writes below (the checks-snapshot seam and the mutable `prd-<project>` tic
 `pinned_checks` entry: `{ "validation_id": str, "covers": list[str], "run": str,
 "passed": bool｜null, "ran_at": float｜null }` (null = not yet run). The key name is retained for
 back-compat with the Praxis server's `claim` view and the eval harness, but entries now describe
-synthesized VALIDATIONS, not raw checks. `build_state`/`claim_owner`/`claim_heartbeat_at`/`lease_live`
+synthesized VALIDATIONS, not raw checks.
+
+A **GRADED** validation (a min-of-axes rubric check, see
+`docs/plans/2026-07-21-001-feat-graded-rubric-checks-plan.md`) carries two extra keys and is
+otherwise identical: `"kind": "graded"` and `"rubric": {axes, confidence_floor, criterion,
+judge_prompt}` (the rubric FROZEN at synthesis time — VERIFY reads this copy, never the live
+seeded library). After it runs it also stashes `"verdict": {code_hash, passed, min_axis, reason,
+axis_scores, defects}` — the content-hash cache so identical code is never re-graded. **The gate
+(`all_validations_passed`) reads only `passed`**, so every graded extra is inert to it: a graded
+check's subjective verdict reduces to the same boolean a binary check produces. Binary validations
+omit `kind`/`rubric`/`verdict` and stay byte-compatible with the shape above. Per-ticket graded
+loop state lives in `graded_loop: {validation_id: {iters, last_defects, last_hash}}` (iteration cap
++ defect-count monotonicity guards; cap → `block()`). `build_state`/`claim_owner`/`claim_heartbeat_at`/`lease_live`
 align with the server's `claim` view, so `/requirements/incomplete` and these client writes agree.
 
 ## Per-ticket lifecycle

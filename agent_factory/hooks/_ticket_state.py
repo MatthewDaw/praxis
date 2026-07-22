@@ -394,6 +394,12 @@ def _norm_validation(v: Any, idx: int) -> dict:
 
     Accepts a dict with ``covers`` (req id or list), ``run`` (command), and optional ``validation_id``.
     A missing id is synthesized stably from its covered requirements + index so passes can be recorded.
+
+    A GRADED validation (``kind="graded"``) additionally carries its FROZEN ``rubric`` dict — pinned
+    here at synthesis time and read back verbatim at VERIFY (U6 frozen-rubric guard), so a later edit
+    to the seeded library can never move the target under an in-progress ticket. Binary validations
+    omit ``kind``/``rubric`` and stay byte-compatible with the pre-graded entry shape; the gate
+    (:func:`all_validations_passed`) only ever reads ``passed``, so graded extras are inert to it.
     """
     if not isinstance(v, dict):
         v = {"run": str(v)}
@@ -403,13 +409,19 @@ def _norm_validation(v: Any, idx: int) -> dict:
     if not vid:
         base = "+".join(covers) if covers else "validation"
         vid = f"{base}#{idx}"
-    return {
+    entry = {
         "validation_id": vid,
         "covers": covers,
         "run": str(v.get("run") or v.get("command") or ""),
         "passed": None,
         "ran_at": None,
     }
+    kind = str(v.get("kind") or "").strip().casefold()
+    if kind == "graded":
+        entry["kind"] = "graded"
+        if isinstance(v.get("rubric"), dict):
+            entry["rubric"] = v["rubric"]  # frozen at pin time; VERIFY reads this copy
+    return entry
 
 
 def pin_validations(cid: str, validations: list,
@@ -429,6 +441,7 @@ def pin_validations(cid: str, validations: list,
 def record_validation_pass(cid: str, validation_id: str, passed: bool,
                            ran_at: Optional[float] = None,
                            source: str = WORKER_PASS_SOURCE,
+                           verdict: Optional[dict] = None,
                            ref: Optional[tuple[str, str]] = None) -> dict:
     """Record one validation's pass/fail ON THE TICKET NODE (never on the requirement fact).
 
@@ -452,11 +465,16 @@ def record_validation_pass(cid: str, validation_id: str, passed: bool,
             entry["passed"] = bool(passed)
             entry["ran_at"] = ran_at
             entry["source"] = str(source)
+            if verdict is not None:  # graded checks stash the cached verdict (incl. code_hash)
+                entry["verdict"] = verdict
             found = True
             break
     if not found:
-        pinned.append({"validation_id": str(validation_id), "covers": [],
-                       "run": "", "passed": bool(passed), "ran_at": ran_at, "source": str(source)})
+        appended = {"validation_id": str(validation_id), "covers": [],
+                    "run": "", "passed": bool(passed), "ran_at": ran_at, "source": str(source)}
+        if verdict is not None:
+            appended["verdict"] = verdict
+        pinned.append(appended)
     return _praxis.patch_meta(cid, {M_PINNED_CHECKS: pinned}, **_ref_kw(ref))
 
 

@@ -30,6 +30,8 @@ import _praxis  # noqa: E402
 import _ticket_state as ts  # noqa: E402
 from _praxis import PraxisUnreachable  # noqa: E402
 
+from agent_factory.seeded_checks import seeded_candidates  # noqa: E402
+
 _FLOOR_SUFFIX = "::acceptance"
 
 
@@ -110,6 +112,15 @@ def _resolve_ticket(ticket, bare, override):
             lines.append(f"    [{lane}] {', '.join(lanes[lane])}")
     if not contract:
         lines.append("    (empty contract — no checks AND no acceptance; a planning defect)")
+    # OPT-IN seeded candidates (U3): the deterministic generic-check library offered to this ticket.
+    # NON-gating — shown so the reader sees what the authoring agent may fold in, distinct from the
+    # gating lanes above. A missing/malformed library must never break the read-only preview.
+    try:
+        offered = seeded_candidates(tags)
+        if offered:
+            lines.append(f"    [seeded-candidate] {', '.join(c.check_id for c in offered)}  (opt-in)")
+    except Exception:  # noqa: BLE001 - preview must not fail on a library problem
+        pass
     return lines, info
 
 

@@ -390,6 +390,14 @@ rest** — an irrelevant retrieval is harmless precisely because it never gets p
 completion. This is the "search the DB for candidate checks, then let the LLM curate" step; the hard
 guarantee stays on the mandatory precise set (§2.2), the recall boost comes from here.
 
+**Then consider the SEEDED generic candidates (the deterministic lane).** `agent_factory/seeded_checks.toml`
+is a hand-curated library of generic reusable checks (correctness, security, error-paths, maintainability —
+each a binary command or a graded rubric) offered to EVERY ticket via `seeded_candidates(ticket_tags)`. Unlike
+the semantic lane these are surfaced deterministically (not embedding-dependent), but they are equally
+**opt-in and non-gating**: fold in the ones genuinely relevant to this ticket as authored validations, ignore
+the rest. A graded seeded candidate becomes a `kind:"graded"` validation carrying its rubric (see §5 VERIFY).
+`python -m agent_factory.tools.resolve_preview <project>` lists the seeded candidates offered per ticket.
+
 This is the heart of the two-tier model. The retrieved requirements say *what* must be proven; **you author
 the concrete validations that prove it for THIS ticket**, faithfully covering every **mandatory**
 requirement (advisory candidates you chose to honor become validations too, but coverage is only enforced
@@ -470,6 +478,28 @@ record_validation_pass(cid, validation_id, passed=(exit_code == 0), ran_at=now)
 ```
 
 This MERGES into the ticket's `pinned_checks` entry via `patch_meta` — **never onto the requirement fact**.
+
+**GRADED validations (`kind:"graded"`) — subjective judgment, still one boolean.** A validation the worker
+synthesized from a seeded rubric candidate (see §3 / `agent_factory/seeded_checks.toml`) has no exit-code
+command; its verdict is a min-of-axes rubric judgment. Run it through the graded harness instead of a shell
+command:
+
+```
+from _graded_verify import verify_graded_check   # hooks/
+r = verify_graded_check(cid, validation_id, code_diff, complete, ref=PLAN)  # complete = fresh-context judge
+if r.should_block:
+    block(cid, owner, r.block_reason, ref=PLAN)   # cap / non-convergence → HITL, never incomplete-forever
+```
+
+It grades the ticket's diff with a **fresh-context judge** (never the builder's context), records the same
+`passed` boolean the gate reads, and **caches the verdict by code-state hash** so identical code is never
+re-graded (this is what stops a nondeterministic judge from thrashing the forcibly-continue loop). A graded
+check only *fails* on a below-threshold axis or a located, above-confidence-floor defect — vague
+dissatisfaction with no located defect passes. The rubric is the copy **frozen** onto the pinned validation
+at synthesis time, so editing the seeded library never moves the target mid-ticket. `verify_graded_check`
+returns `should_block=True` once the graded iteration cap is hit or the defect set stops shrinking; route
+that to `block()` (the existing HITL escalation tier), never an endless retry.
+
 Alongside the pinned validations, run the project's real external gates so the acceptance condition is
 actually observable (discover the commands; don't assume):
 

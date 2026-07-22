@@ -71,6 +71,30 @@ def _parse_check(raw: dict) -> SeededCheck:
     )
 
 
+def _norm_tag(tag: object) -> str:
+    """Match the author/resolve normalization in _ticket_state.normalize_tag (strip+casefold,
+    ``"*"`` preserved) so candidate offering agrees with the gating lanes."""
+    return str(tag).strip().casefold()
+
+
+def seeded_candidates(ticket_tags, checks: list[SeededCheck] | None = None) -> list[SeededCheck]:
+    """The DETERMINISTIC candidate lane (U3): the seeded checks offered to a ticket, independent of
+    embedding similarity. A check is offered iff its ``applies_to`` contains ``"*"`` (offered to every
+    ticket) or intersects the ticket's tags. These are OPT-IN — never auto-pinned, never gating; the
+    authoring agent folds the relevant ones into its synthesized validations. (Promotion to a hard
+    gate is out-of-band: author the check into Praxis with ``applies_to:["*"]`` so it flows the
+    existing wildcard lane — no gating code here.)
+    """
+    checks = checks if checks is not None else load_seeded_checks()
+    tags = {_norm_tag(t) for t in (ticket_tags or []) if _norm_tag(t)}
+    out: list[SeededCheck] = []
+    for c in checks:
+        offer = {_norm_tag(t) for t in c.applies_to}
+        if "*" in offer or (offer & tags):
+            out.append(c)
+    return out
+
+
 def load_seeded_checks(path: str | Path | None = None) -> list[SeededCheck]:
     """Parse and validate the seeded-check library. Raises ``ValueError`` on any malformed entry
     or duplicate ``check_id``; raises ``FileNotFoundError`` if the file is missing.
