@@ -85,7 +85,7 @@ Expected secret shape (RDS-generated):
   "username": "praxis",
   "password": "...",
   "engine": "postgres",
-  "host": "praxiskginstance....rds.amazonaws.com",
+  "host": "your-kg-instance....rds.amazonaws.com",
   "port": 5432,
   "dbname": "praxis_kg"
 }

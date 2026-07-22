@@ -9,7 +9,7 @@ Run locally::
     uvicorn frontend.phoenix_proxy.app:app --host 0.0.0.0 --port 8800
 
 Environment:
-    PHOENIX_BASE_URL   Phoenix origin (default ``https://phoenix.praxiskg.com``).
+    PHOENIX_BASE_URL   Phoenix origin (default ``http://localhost:6006``).
     PHOENIX_API_KEY    Bearer token for Phoenix (read-only key preferred).
     PHOENIX_PROJECT    Default project identifier (name or id) to query.
     PHOENIX_PROJECT_UI_ID  Phoenix UI project node id (e.g. UHJvamVjdDoz).
@@ -29,7 +29,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-DEFAULT_PHOENIX_BASE_URL = "https://phoenix.praxiskg.com"
+DEFAULT_PHOENIX_BASE_URL = "http://localhost:6006"
 # Mirrors knowledge/serve CORS: localhost (any port) + Render/CloudFront/App Runner.
 _DEFAULT_CORS_REGEX = (
     r"(http://(localhost|127\.0\.0\.1):\d+|https://[\w-]+\.onrender\.com"

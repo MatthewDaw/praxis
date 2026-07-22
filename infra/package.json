@@ -9,7 +9,6 @@
     "build": "tsc",
     "synth": "cdk synth",
     "deploy": "cdk deploy --require-approval never",
-    "domain:backend": "node scripts/associate-backend-domain.mjs",
     "destroy": "cdk destroy",
     "cdk": "cdk"
   },

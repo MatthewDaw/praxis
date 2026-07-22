@@ -1,6 +1,6 @@
 {
   "project": "praxis-eval",
-  "phoenixBaseUrl": "https://phoenix.praxiskg.com",
+  "phoenixBaseUrl": "https://phoenix.example.com",
   "traces": [
     {
       "traceId": "phx-trace-exhaustive-switch",
@@ -17,7 +17,7 @@
         { "name": "llm.exhaustive_switch", "kind": "LLM", "latencyMs": 3990.2, "statusCode": "OK" },
         { "name": "tool.edit_file", "kind": "TOOL", "latencyMs": 410.1, "statusCode": "OK" }
       ],
-      "phoenixUrl": "https://phoenix.praxiskg.com/projects/UHJvamVjdDoz/spans/8ad15c43d3c4ace7669116f0d3d47156?timeRangeKey=7d&selectedSpanNodeId=U3Bhbjo4MDgw"
+      "phoenixUrl": "https://phoenix.example.com/projects/UHJvamVjdDoz/spans/8ad15c43d3c4ace7669116f0d3d47156?timeRangeKey=7d&selectedSpanNodeId=U3Bhbjo4MDgw"
     },
     {
       "traceId": "phx-trace-useeffect-cleanup",

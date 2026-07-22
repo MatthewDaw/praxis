@@ -139,26 +139,3 @@ jobs:
           name: cdk-outputs-frontend
           path: infra/cdk-web-out.json
           if-no-files-found: ignore
-
-  # App Runner custom domains aren't CDK-managed, so attach mcp.praxiskg.com here.
-  # Runs in parallel with deploy-frontend once the backend is up. The script
-  # self-checks and no-ops when the domain is already ACTIVE.
-  domain-backend:
-    needs: [changes, deploy-backend]
-    if: ${{ needs.deploy-backend.result == 'success' }}
-    runs-on: ubuntu-latest
-    continue-on-error: true   # best-effort; never fails the overall run
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ vars.AWS_DEFAULT_REGION }}
-      - run: aws sts get-caller-identity
-      - name: Ensure mcp.praxiskg.com custom domain
-        working-directory: infra
-        run: npm run domain:backend

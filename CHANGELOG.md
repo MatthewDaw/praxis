@@ -16,7 +16,7 @@ and versioning aligns with [pyproject.toml](pyproject.toml) (`0.1.0`).
 - **Phoenix observability** — optional OpenTelemetry/Phoenix tracing for LLM, embedding, eval runner, and judge surfaces; React dashboard support for Phoenix trace context; `PHOENIX_*` configuration documented in README and `.env.example`.
 - **Eval harness improvements** — backend capability gating, per-case model pins via `CLAUDE_CODE_MODEL`, structured OpenRouter grading, per-artifact `output_file` / `writes_file` / `modifies_file` checks, grouped Phoenix spans, expected-fail red specs, negative controls, and retrieval-focused before/after cases.
 - **Retrieval and embedding cache path** — added `RetrievingReader`, `CachedEmbedder`, embedder-axis gating, committed embedding fixtures, and a retrieval proposal marked implemented.
-- **Cloud deployment surface** — AWS CDK stacks now cover shared networking, RDS/pgvector, Cognito, App Runner backend, CloudFront frontend, Phoenix, Route 53 DNS, and `app.praxiskg.com` / `mcp.praxiskg.com` domain association helpers.
+- **Cloud deployment surface** — AWS CDK stacks now cover shared networking, RDS/pgvector, Cognito, App Runner backend, CloudFront frontend, and Phoenix, served on AWS-generated URLs (no custom domains).
 - **CI/deploy automation** — added GitHub Actions deploy workflow plus GitLab per-stack deploy jobs with change detection and AWS website deploy support.
 - **Project provenance and licensing** — added MIT license and README note preserving the original GitLab project history for attribution.
 
@@ -37,7 +37,7 @@ and versioning aligns with [pyproject.toml](pyproject.toml) (`0.1.0`).
 
 ### Fixed
 
-- **Candidate API** — aligned CRUD handlers with per-call multi-tenant store APIs and allowed `praxiskg.com` origins in CORS preflight.
+- **Candidate API** — aligned CRUD handlers with per-call multi-tenant store APIs and allowed the AWS-generated frontend origins (`*.cloudfront.net`) in CORS preflight.
 - **Auth** — allowed clock-skew leeway in Cognito JWT verification.
 - **Docker/App Runner** — run the virtualenv Python directly so App Runner health checks pass, and exclude `infra/` from the Docker build context.
 - **Infrastructure deploys** — corrected App Runner DNS target lookup, made domain association wait for `ACTIVE`, and made ACTIVE checks case-insensitive/idempotent.

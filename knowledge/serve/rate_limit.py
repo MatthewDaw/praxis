@@ -1,6 +1,6 @@
 """App-layer rate limiting for the public FastAPI backend (``knowledge.serve``).
 
-The backend is the real public MCP surface (App Runner, ``mcp.praxiskg.com``); the
+The backend is the real public MCP surface (App Runner); the
 stdio MCP server is a single-user local client and needs no limiting. Limits are
 keyed on the authenticated *principal*, not the client IP:
 

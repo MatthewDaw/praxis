@@ -19,12 +19,12 @@ export interface FrontendSiteStackProps extends cdk.StackProps {
    */
   readonly distPath?: string;
   /**
-   * Route 53 hosted zone for the PRAXIS domain (see DnsStack). Only needed when
-   * `domainName` is set to serve the site on a custom domain.
+   * Route 53 hosted zone you control. Only needed when `domainName` is set to
+   * serve the site on a custom domain.
    */
   readonly hostedZone?: route53.IHostedZone;
   /**
-   * Custom hostname for the dashboard (e.g. `app.praxiskg.com`). When set
+   * Custom hostname for the dashboard (e.g. `app.example.com`). When set
    * (together with `hostedZone`), CloudFront is fronted by an ACM cert plus a
    * Route 53 alias record — but the cert must live in us-east-1 (a hard
    * CloudFront constraint), so that path requires a us-east-1 deploy. When

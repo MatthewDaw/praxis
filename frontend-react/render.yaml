@@ -61,7 +61,7 @@ services:
       # Phoenix REST API connection (read-only). Set as secrets in the Render
       # dashboard — Dominic provides the project identifier and read-only key.
       - key: PHOENIX_BASE_URL
-        value: https://phoenix.praxiskg.com
+        value: http://localhost:6006
       - key: PHOENIX_PROJECT
         sync: false
       # Phoenix UI project node id, e.g. UHJvamVjdDoz for /projects/{id}/spans links.

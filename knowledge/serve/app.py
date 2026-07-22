@@ -105,8 +105,7 @@ from knowledge.wiring import build_trio  # noqa: E402
 
 _DEFAULT_CORS_REGEX = (
     r"(http://(localhost|127\.0\.0\.1):\d+|https://[\w-]+\.onrender\.com"
-    r"|https://[\w-]+\.cloudfront\.net|https://[\w-]+\.awsapprunner\.com"
-    r"|https://[\w-]+\.praxiskg\.com)"
+    r"|https://[\w-]+\.cloudfront\.net|https://[\w-]+\.awsapprunner\.com)"
 )
 
 
