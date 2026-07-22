@@ -102,10 +102,10 @@ def _resolve_ticket(ticket, bare, override):
     for chk in contract:
         lanes[_lane_of(chk, tagset)].append((chk or {}).get("id") or "?")
 
-    non_floor = [c for c in contract if _lane_of(c, tagset) != "floor"]
+    has_non_floor = any(lanes[lane] for lane in ("wildcard", "tag", "surface"))
     lines = [f"  requirement_id: {req_id}   (fact {cid})",
              f"  tags: {tags or '(none)'}"]
-    if not non_floor and lanes["floor"]:
+    if not has_non_floor and lanes["floor"]:
         lines.append("  ** ONLY acceptance-floor (no declared check) **")
     for lane in ("floor", "wildcard", "tag", "surface"):
         if lanes[lane]:
