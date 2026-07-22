@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import type { KnowledgeGraphSnapshot } from "../../types/graph";
 
 interface GraphSummaryProps {
@@ -5,14 +6,22 @@ interface GraphSummaryProps {
 }
 
 export function GraphSummary({ graph }: GraphSummaryProps) {
-  const contradictionCount = graph.edges.filter((e) => e.kind === "contradiction").length;
-  const supportCount = graph.edges.filter((e) => e.kind === "support").length;
-  const rendersCount = graph.edges.filter((e) => e.kind === "renders").length;
-  const surfaceCount = graph.nodes.filter((n) => n.category === "surface").length;
-  const edgeBreakdown = `${contradictionCount} contradictions, ${supportCount} support, ${rendersCount} renders`;
-  const summary =
-    `${graph.nodes.length} nodes, ${graph.edges.length} edges (${edgeBreakdown})` +
-    (surfaceCount > 0 ? `; ${surfaceCount} surfaces` : "");
+  const summary = useMemo(() => {
+    let contradictionCount = 0;
+    let supportCount = 0;
+    let rendersCount = 0;
+    for (const edge of graph.edges) {
+      if (edge.kind === "contradiction") contradictionCount += 1;
+      else if (edge.kind === "support") supportCount += 1;
+      else if (edge.kind === "renders") rendersCount += 1;
+    }
+    const surfaceCount = graph.nodes.filter((n) => n.category === "surface").length;
+    const edgeBreakdown = `${contradictionCount} contradictions, ${supportCount} support, ${rendersCount} renders`;
+    return (
+      `${graph.nodes.length} nodes, ${graph.edges.length} edges (${edgeBreakdown})` +
+      (surfaceCount > 0 ? `; ${surfaceCount} surfaces` : "")
+    );
+  }, [graph]);
 
   return (
     <div className="graph-summary" role="img" aria-label={summary}>

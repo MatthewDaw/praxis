@@ -135,6 +135,12 @@ function responseDetail(detail: string, fallback: string): string {
   return detail;
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
 function normalizeGraphIngestResult(payload: unknown): GraphIngestResult {
   if (!payload || typeof payload !== "object") {
     return { summary: "ingested insight", action: "added", id: null };
@@ -159,10 +165,7 @@ function toStringArray(value: unknown): string[] {
 }
 
 function normalizeEvalCacheResult(payload: unknown): EvalCacheResult {
-  const row =
-    payload && typeof payload === "object"
-      ? (payload as Record<string, unknown>)
-      : {};
+  const row = asRecord(payload);
   return {
     casesCached: Number(row.cases_cached ?? row.casesCached ?? 0),
     regenerated: toStringArray(row.regenerated),
@@ -172,10 +175,7 @@ function normalizeEvalCacheResult(payload: unknown): EvalCacheResult {
 }
 
 function normalizeEvalLoadResult(payload: unknown): EvalLoadResult {
-  const row =
-    payload && typeof payload === "object"
-      ? (payload as Record<string, unknown>)
-      : {};
+  const row = asRecord(payload);
   const mode = row.mode === "replace" ? "replace" : "add";
   return {
     mode,
@@ -187,10 +187,7 @@ function normalizeEvalLoadResult(payload: unknown): EvalLoadResult {
 }
 
 function normalizeEvalRegenerateResult(payload: unknown): EvalRegenerateResult {
-  const row =
-    payload && typeof payload === "object"
-      ? (payload as Record<string, unknown>)
-      : {};
+  const row = asRecord(payload);
   return {
     preset: typeof row.preset === "string" ? row.preset : "offline-fake",
     casesRun: Number(row.cases_run ?? row.casesRun ?? 0),
@@ -202,10 +199,7 @@ function normalizeEvalRegenerateResult(payload: unknown): EvalRegenerateResult {
 }
 
 function normalizeSnapshot(payload: unknown): Snapshot {
-  const row =
-    payload && typeof payload === "object"
-      ? (payload as Record<string, unknown>)
-      : {};
+  const row = asRecord(payload);
   return {
     // The backend GET /snapshots returns the name under the key `snapshot`
     // (see knowledge/serve/app.py list_snapshots); accept `name` as a fallback.
@@ -226,10 +220,7 @@ function normalizeSnapshot(payload: unknown): Snapshot {
 }
 
 function normalizeSnapshotList(payload: unknown): Snapshot[] {
-  const row =
-    payload && typeof payload === "object"
-      ? (payload as Record<string, unknown>)
-      : {};
+  const row = asRecord(payload);
   const list = Array.isArray(row.snapshots) ? row.snapshots : [];
   return list.map(normalizeSnapshot);
 }
@@ -401,13 +392,6 @@ export function createApiDataProvider(
         const payload = await request("GET", path);
         return parseGraphPayload(payload, "api");
       } catch (error) {
-        if (
-          error instanceof ApiClientError &&
-          (error.statusCode === 404 || error.statusCode === 405)
-        ) {
-          const rows = await this.listCandidates();
-          return deriveGraphFromCandidates(rows);
-        }
         if (error instanceof ApiClientError) {
           const rows = await this.listCandidates();
           return deriveGraphFromCandidates(rows);
@@ -419,7 +403,7 @@ export function createApiDataProvider(
     async clearGraph() {
       const payload = await request("POST", "/graph/clear");
       const row =
-        payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+        asRecord(payload);
       return { cleared: Number(row.cleared ?? 0) };
     },
 
@@ -454,12 +438,10 @@ export async function postIngestJsonl(
   auth?: string | ApiDataProviderAuth,
 ): Promise<void> {
   const root = apiBaseUrl.replace(/\/$/, "");
-  const resolved: ApiDataProviderAuth =
-    typeof auth === "string" ? { getToken: async () => auth } : auth ?? {};
-  const token = resolved.getToken ? await resolved.getToken() : undefined;
+  const { token, orgId, spaceId } = await resolveToken(auth);
   const response = await fetch(`${root}/ingest/jsonl`, {
     method: "POST",
-    headers: contractHeaders(token, resolved.orgId, resolved.spaceId),
+    headers: contractHeaders(token, orgId, spaceId),
     body: JSON.stringify({ files }),
   });
 
@@ -486,12 +468,10 @@ export async function postInsight(
   }
 
   const root = apiBaseUrl.replace(/\/$/, "");
-  const resolved: ApiDataProviderAuth =
-    typeof auth === "string" ? { getToken: async () => auth } : auth ?? {};
-  const token = resolved.getToken ? await resolved.getToken() : undefined;
+  const { token, orgId, spaceId } = await resolveToken(auth);
   const response = await fetch(`${root}/insights`, {
     method: "POST",
-    headers: contractHeaders(token, resolved.orgId, resolved.spaceId),
+    headers: contractHeaders(token, orgId, spaceId),
     body: JSON.stringify({ insight: text }),
   });
 
@@ -522,12 +502,10 @@ export async function postRegenerateEvals(
   auth?: string | ApiDataProviderAuth,
 ): Promise<EvalRegenerateResult> {
   const root = apiBaseUrl.replace(/\/$/, "");
-  const resolved: ApiDataProviderAuth =
-    typeof auth === "string" ? { getToken: async () => auth } : auth ?? {};
-  const token = resolved.getToken ? await resolved.getToken() : undefined;
+  const { token, orgId, spaceId } = await resolveToken(auth);
   const response = await fetch(`${root}/evals/regenerate`, {
     method: "POST",
-    headers: contractHeaders(token, resolved.orgId, resolved.spaceId),
+    headers: contractHeaders(token, orgId, spaceId),
     body: JSON.stringify({ preset }),
   });
 
@@ -613,12 +591,12 @@ export async function listCachedEvalCases(
     );
   }
   const payload = await parseJsonResponse(response);
-  const obj = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  const obj = asRecord(payload);
   const cached = Array.isArray(obj.cached)
     ? obj.cached.filter((c): c is string => typeof c === "string")
     : [];
   const counts =
-    obj.counts && typeof obj.counts === "object" ? (obj.counts as Record<string, unknown>) : {};
+    asRecord(obj.counts);
   const out = new Map<string, number>();
   for (const id of cached) {
     const n = counts[id];
@@ -783,10 +761,7 @@ export async function loadSnapshot(
     auth,
     { snapshot: name, mode },
   );
-  const row =
-    payload && typeof payload === "object"
-      ? (payload as Record<string, unknown>)
-      : {};
+  const row = asRecord(payload);
   return { loaded: Number(row.loaded ?? 0) };
 }
 
@@ -802,10 +777,7 @@ export async function deleteSnapshot(
     auth,
     { snapshot: name },
   );
-  const row =
-    payload && typeof payload === "object"
-      ? (payload as Record<string, unknown>)
-      : {};
+  const row = asRecord(payload);
   return { deleted: typeof row.deleted === "string" ? row.deleted : name };
 }
 
@@ -824,10 +796,7 @@ export async function renameSnapshot(
     snapshot: name,
     newSnapshot: newName,
   });
-  const row =
-    payload && typeof payload === "object"
-      ? (payload as Record<string, unknown>)
-      : {};
+  const row = asRecord(payload);
   return { name: typeof row.snapshot === "string" ? row.snapshot : newName };
 }
 
@@ -841,7 +810,7 @@ export interface Mount {
 
 function normalizeMount(payload: unknown): Mount {
   const row =
-    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    asRecord(payload);
   return {
     sourceUser:
       typeof row.sourceUser === "string" ? row.sourceUser : String(row.source_user ?? ""),
@@ -858,7 +827,7 @@ export async function listMounts(
 ): Promise<Mount[]> {
   const payload = await snapshotRequest(apiBaseUrl, "GET", "/mounts", auth);
   const row =
-    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    asRecord(payload);
   const list = Array.isArray(row.mounts) ? row.mounts : [];
   return list.map(normalizeMount);
 }
@@ -946,7 +915,7 @@ function normalizeSourceSnapshot(payload: unknown): SourceSnapshot {
   // Tolerate both the object shape ({name, count}) and a bare name string.
   if (typeof payload === "string") return { name: payload, count: 0 };
   const row =
-    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    asRecord(payload);
   return {
     name: typeof row.name === "string" ? row.name : String(row.name ?? ""),
     count: typeof row.count === "number" ? row.count : Number(row.count ?? 0),
@@ -955,7 +924,7 @@ function normalizeSourceSnapshot(payload: unknown): SourceSnapshot {
 
 function normalizeOrgSource(payload: unknown): OrgSource {
   const row =
-    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    asRecord(payload);
   const snapshots = Array.isArray(row.snapshots) ? row.snapshots : [];
   return {
     userId: typeof row.userId === "string" ? row.userId : String(row.user_id ?? ""),
@@ -968,14 +937,14 @@ function normalizeOrgSource(payload: unknown): OrgSource {
 
 function normalizeOrgSourceList(payload: unknown): OrgSource[] {
   const row =
-    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    asRecord(payload);
   const list = Array.isArray(row.sources) ? row.sources : [];
   return list.map(normalizeOrgSource);
 }
 
 function normalizeSourceFact(payload: unknown): SourceFact {
   const row =
-    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    asRecord(payload);
   return {
     id: typeof row.id === "string" ? row.id : String(row.id ?? ""),
     text: typeof row.text === "string" ? row.text : "",
@@ -990,7 +959,7 @@ function normalizeSourceFact(payload: unknown): SourceFact {
 
 function normalizeSourceFactGroup(payload: unknown): SourceFactGroup {
   const row =
-    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    asRecord(payload);
   const facts = Array.isArray(row.facts) ? row.facts.map(normalizeSourceFact) : [];
   return {
     key: typeof row.key === "string" ? row.key : String(row.key ?? ""),
@@ -1001,7 +970,7 @@ function normalizeSourceFactGroup(payload: unknown): SourceFactGroup {
 
 function normalizeSourceFacts(payload: unknown): SourceFacts {
   const row =
-    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    asRecord(payload);
   const groups = Array.isArray(row.groups)
     ? row.groups.map(normalizeSourceFactGroup)
     : [];
@@ -1014,11 +983,10 @@ function normalizeSourceFacts(payload: unknown): SourceFacts {
 
 function normalizeFoldInResult(payload: unknown): FoldInResult {
   const row =
-    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    asRecord(payload);
   const rawConflicts = Array.isArray(row.conflicts) ? row.conflicts : [];
   const conflicts: FoldInConflict[] = rawConflicts.map((c) => {
-    const cr =
-      c && typeof c === "object" ? (c as Record<string, unknown>) : {};
+    const cr = asRecord(c);
     return {
       newId: typeof cr.newId === "string" ? cr.newId : String(cr.new_id ?? ""),
       rivalId: typeof cr.rivalId === "string" ? cr.rivalId : String(cr.rival_id ?? ""),
@@ -1095,7 +1063,7 @@ export interface CreatedApiKey {
 
 function normalizeApiKey(payload: unknown): ApiKey {
   const row =
-    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    asRecord(payload);
   return {
     id: typeof row.id === "string" ? row.id : String(row.id ?? ""),
     label: typeof row.label === "string" ? row.label : null,
@@ -1127,7 +1095,7 @@ function normalizeApiKeyList(payload: unknown): ApiKey[] {
 
 function normalizeCreatedApiKey(payload: unknown): CreatedApiKey {
   const row =
-    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    asRecord(payload);
   return {
     id: typeof row.id === "string" ? row.id : String(row.id ?? ""),
     key: typeof row.key === "string" ? row.key : String(row.key ?? ""),
@@ -1175,7 +1143,7 @@ export async function revokeApiKey(
     auth,
   );
   const row =
-    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    asRecord(payload);
   return {
     id: typeof row.id === "string" ? row.id : id,
     revoked: Boolean(row.revoked),

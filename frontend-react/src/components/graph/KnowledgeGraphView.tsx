@@ -36,6 +36,16 @@ interface CandidateNodeData extends Record<string, unknown> {
   buildState?: TicketBuildState;
 }
 
+// Edge CSS class per edge kind (unknown/similarity fall back to the default).
+const EDGE_CLASS_DEFAULT = "graph-edge graph-edge--similarity";
+const EDGE_CLASS: Record<GraphEdgeKind, string> = {
+  contradiction: "graph-edge graph-edge--contradiction",
+  support: "graph-edge graph-edge--support",
+  renders: "graph-edge graph-edge--renders",
+  depends: "graph-edge graph-edge--depends",
+  similarity: EDGE_CLASS_DEFAULT,
+};
+
 // Ticket done-state badge copy: symbol + short label per build_state.
 const TICKET_BADGE: Record<TicketBuildState, { symbol: string; label: string }> = {
   finished: { symbol: "✓", label: "Done" },
@@ -322,16 +332,7 @@ function KnowledgeGraphViewInner({
           id: `${edge.kind}-${edge.src}-${edge.dst}-${index}`,
           source: edge.src,
           target: edge.dst,
-          className:
-            edge.kind === "contradiction"
-              ? "graph-edge graph-edge--contradiction"
-              : edge.kind === "support"
-                ? "graph-edge graph-edge--support"
-                : edge.kind === "renders"
-                  ? "graph-edge graph-edge--renders"
-                  : edge.kind === "depends"
-                    ? "graph-edge graph-edge--depends"
-                    : "graph-edge graph-edge--similarity",
+          className: EDGE_CLASS[edge.kind] ?? EDGE_CLASS_DEFAULT,
           animated: edge.kind === "contradiction",
           // depends_on is directional (prerequisite -> dependent); arrow it in
           // the accent color so it reads apart from gray similarity edges.

@@ -2,6 +2,7 @@ import { stateNodeColors } from "../graph/graphLayout";
 import { FLOW_REJECTED_STEP, FLOW_STRIP_STEPS } from "./legendConfig";
 
 export function LegendFlowStrip() {
+  const rejected = stateNodeColors(FLOW_REJECTED_STEP.state);
   return (
     <div className="legend-flow-strip" aria-hidden="true">
       <div className="legend-flow-strip__main">
@@ -29,9 +30,9 @@ export function LegendFlowStrip() {
         <span
           className="legend-flow-strip__node legend-flow-strip__node--rejected"
           style={{
-            background: stateNodeColors(FLOW_REJECTED_STEP.state).bg,
-            borderColor: stateNodeColors(FLOW_REJECTED_STEP.state).border,
-            color: stateNodeColors(FLOW_REJECTED_STEP.state).text,
+            background: rejected.bg,
+            borderColor: rejected.border,
+            color: rejected.text,
           }}
         >
           {FLOW_REJECTED_STEP.label}

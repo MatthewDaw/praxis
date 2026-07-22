@@ -97,14 +97,16 @@ export default function App() {
   // save" light; it is session-only (a reload conservatively resets to clean).
   const snapshotStorageKey = `praxis-active-snapshot:${orgId}:${spaceId}`;
   const [activeSnapshot, setActiveSnapshot] = useState<string>(
-    () => localStorage.getItem(`praxis-active-snapshot:${orgId}:${spaceId}`) ?? "",
+    () => localStorage.getItem(snapshotStorageKey) ?? "",
   );
   const [snapshotDirty, setSnapshotDirty] = useState(false);
 
   useEffect(() => {
-    setActiveSnapshot(localStorage.getItem(`praxis-active-snapshot:${orgId}:${spaceId}`) ?? "");
+    setActiveSnapshot(localStorage.getItem(snapshotStorageKey) ?? "");
     setSnapshotDirty(false);
-  }, [orgId, spaceId]);
+    // snapshotStorageKey is derived from orgId+spaceId, so it is the effect's
+    // real dependency.
+  }, [snapshotStorageKey]);
 
   const markGraphDirty = useCallback(() => setSnapshotDirty(true), []);
 

@@ -253,10 +253,7 @@ export async function readFilesAsLogInputs(
   fileList: FileList | File[],
 ): Promise<Array<{ name: string; content: string }>> {
   const files = Array.from(fileList);
-  const out: Array<{ name: string; content: string }> = [];
-  for (const file of files) {
-    const content = await file.text();
-    out.push({ name: file.name, content });
-  }
-  return out;
+  return Promise.all(
+    files.map(async (file) => ({ name: file.name, content: await file.text() })),
+  );
 }

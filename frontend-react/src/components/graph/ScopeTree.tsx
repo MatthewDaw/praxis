@@ -9,34 +9,41 @@ interface ScopeTreeProps {
   onSelectNode: (id: string) => void;
 }
 
-function buildTree(groups: ScopeGroup[]): ScopeGroup[] {
-  const roots = groups.filter((g) => g.parentId == null);
-  return roots;
-}
-
-function childrenOf(parentId: string, groups: ScopeGroup[]): ScopeGroup[] {
-  return groups.filter((g) => g.parentId === parentId);
+// Group children by parent id once so each node is an O(1) map lookup rather
+// than an O(groups) rescan on every render. Roots are keyed under null.
+function buildChildrenByParent(
+  groups: ScopeGroup[],
+): Map<string | null, ScopeGroup[]> {
+  const byParent = new Map<string | null, ScopeGroup[]>();
+  for (const group of groups) {
+    const key = group.parentId ?? null;
+    const siblings = byParent.get(key);
+    if (siblings) {
+      siblings.push(group);
+    } else {
+      byParent.set(key, [group]);
+    }
+  }
+  return byParent;
 }
 
 interface ScopeTreeNodeProps {
   group: ScopeGroup;
-  allGroups: ScopeGroup[];
+  childrenByParent: Map<string | null, ScopeGroup[]>;
   labelById: Map<string, string>;
   selectedId: string | null;
   onSelectNode: (id: string) => void;
-  depth: number;
 }
 
 function ScopeTreeNode({
   group,
-  allGroups,
+  childrenByParent,
   labelById,
   selectedId,
   onSelectNode,
-  depth,
 }: ScopeTreeNodeProps) {
   const [open, setOpen] = useState(false);
-  const childGroups = childrenOf(group.id, allGroups);
+  const childGroups = childrenByParent.get(group.id) ?? [];
   const hasChildren = childGroups.length > 0 || group.memberIds.length > 0;
 
   return (
@@ -88,11 +95,10 @@ function ScopeTreeNode({
                 <ScopeTreeNode
                   key={child.id}
                   group={child}
-                  allGroups={allGroups}
+                  childrenByParent={childrenByParent}
                   labelById={labelById}
                   selectedId={selectedId}
                   onSelectNode={onSelectNode}
-                  depth={depth + 1}
                 />
               ))}
             </ul>
@@ -109,10 +115,11 @@ export function ScopeTree({
   selectedId,
   onSelectNode,
 }: ScopeTreeProps) {
-  const roots = useMemo(
-    () => (scopeGroups ? buildTree(scopeGroups) : []),
+  const childrenByParent = useMemo(
+    () => buildChildrenByParent(scopeGroups ?? []),
     [scopeGroups],
   );
+  const roots = childrenByParent.get(null) ?? [];
   const labelById = useMemo(
     () => new Map((nodes ?? []).map((node) => [node.id, node.label])),
     [nodes],
@@ -135,11 +142,10 @@ export function ScopeTree({
           <ScopeTreeNode
             key={group.id}
             group={group}
-            allGroups={scopeGroups}
+            childrenByParent={childrenByParent}
             labelById={labelById}
             selectedId={selectedId}
             onSelectNode={onSelectNode}
-            depth={0}
           />
         ))}
       </ul>

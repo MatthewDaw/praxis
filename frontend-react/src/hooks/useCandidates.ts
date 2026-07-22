@@ -102,6 +102,16 @@ export function useCandidates(options: UseCandidatesOptions) {
     [provider, refreshCandidateFromProvider],
   );
 
+  // A contradiction id encodes both sides as `primaryId__rivalId`; refresh each
+  // so the UI drops the rejected side(s) from the active queue.
+  const refreshContradictionSides = useCallback(
+    async (contradictionId: string) => {
+      const ids = Array.from(new Set(contradictionId.split("__")));
+      await Promise.all(ids.map(refreshCandidateFromProvider));
+    },
+    [refreshCandidateFromProvider],
+  );
+
   const resolveContradiction = useCallback(
     async (
       contradictionId: string,
@@ -115,12 +125,11 @@ export function useCandidates(options: UseCandidatesOptions) {
         keepId,
       );
       applyCandidate(updated);
-      const affectedIds = Array.from(new Set(contradictionId.split("__")));
-      await Promise.all(affectedIds.map((id) => refreshCandidateFromProvider(id)));
+      await refreshContradictionSides(contradictionId);
       setLastAction(`Resolved contradiction — kept ${keepId} over ${rivalTitle}.`);
       return updated;
     },
-    [provider, applyCandidate, refreshCandidateFromProvider],
+    [provider, applyCandidate, refreshContradictionSides],
   );
 
   const resolveContradictionCustom = useCallback(
@@ -130,14 +139,11 @@ export function useCandidates(options: UseCandidatesOptions) {
       }
       const created = await provider.resolveContradictionCustom(contradictionId, customText);
       applyCandidate(created);
-      // Both original sides are rejected server-side — refresh them so the UI drops
-      // them from the active queue.
-      const affectedIds = Array.from(new Set(contradictionId.split("__")));
-      await Promise.all(affectedIds.map((id) => refreshCandidateFromProvider(id)));
+      await refreshContradictionSides(contradictionId);
       setLastAction(`Resolved contradiction with a custom answer: "${created.title}".`);
       return created;
     },
-    [provider, applyCandidate, refreshCandidateFromProvider],
+    [provider, applyCandidate, refreshContradictionSides],
   );
 
   const createCandidate = useCallback(
