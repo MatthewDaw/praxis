@@ -1,16 +1,21 @@
 import { useState } from "react";
 import { REPO_DIR, FACTORY_DIR } from "../config/praxis";
 
-/** A copy-to-clipboard command block. */
-function CommandBlock({ command, label }: { command: string; label?: string }) {
+/** Copy `text` to the clipboard and flash a "Copied" flag for 1.5s. */
+function useCopyToClipboard(text: string) {
   const [copied, setCopied] = useState(false);
-
-  function handleCopy() {
-    void navigator.clipboard?.writeText(command).then(() => {
+  function copy() {
+    void navigator.clipboard?.writeText(text).then(() => {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     });
   }
+  return { copied, copy };
+}
+
+/** A copy-to-clipboard command block. */
+function CommandBlock({ command, label }: { command: string; label?: string }) {
+  const { copied, copy } = useCopyToClipboard(command);
 
   return (
     <div className="mcp-command">
@@ -22,7 +27,7 @@ function CommandBlock({ command, label }: { command: string; label?: string }) {
         <button
           type="button"
           className="btn secondary mcp-command__copy"
-          onClick={handleCopy}
+          onClick={copy}
           aria-label={`Copy command: ${command}`}
         >
           {copied ? "Copied" : "Copy"}
@@ -124,14 +129,7 @@ STEP 5 — make sure THIS project's space exists, then confirm end to end. Under
 
 /** Prominent, one-click "paste this into Claude" setup block. */
 function SetupPromptBlock({ prompt }: { prompt: string }) {
-  const [copied, setCopied] = useState(false);
-
-  function handleCopy() {
-    void navigator.clipboard?.writeText(prompt).then(() => {
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    });
-  }
+  const { copied, copy } = useCopyToClipboard(prompt);
 
   return (
     <div className="mcp-setup-prompt">
@@ -142,7 +140,7 @@ function SetupPromptBlock({ prompt }: { prompt: string }) {
         <button
           type="button"
           className="btn primary mcp-setup-prompt__copy"
-          onClick={handleCopy}
+          onClick={copy}
           aria-label="Copy Praxis setup prompt for Claude"
         >
           {copied ? "Copied" : "Copy prompt"}

@@ -26,10 +26,7 @@ interface DashboardHeaderProps {
 export function DashboardHeader({
   storeType,
   config,
-  localSession,
   onDataSourceLoad,
-  onLoadLocalLogs,
-  onClearLocalLogs,
   tools,
   tabs,
   snapshot,
@@ -48,10 +45,7 @@ export function DashboardHeader({
           <DataSourceControl
             config={config}
             storeType={storeType}
-            localSession={localSession}
             onLoad={onDataSourceLoad}
-            onLoadLocalLogs={onLoadLocalLogs}
-            onClearLocalLogs={onClearLocalLogs}
           />
           <OrgSwitcher />
           <SpaceSwitcher />
