@@ -152,10 +152,11 @@ class Conversation:
     def _advance(self, events: list[Event], emit) -> TurnResult:
         self._settle_and_default(emit)
 
-        if not self._incomplete_mvp():
+        remaining = self._incomplete_mvp()
+        if not remaining:
             return self._gated_produce(events, emit)
 
-        ranked = rank_open(self._incomplete_mvp(), self.domain, self.facts)
+        ranked = rank_open(remaining, self.domain, self.facts)
         asks = [r for r in ranked if r.disposition == ASK]
         if asks:
             req = asks[0].req
@@ -167,9 +168,10 @@ class Conversation:
             # budget exhausted: refuse the question, fall back to defaulting what we can (S1).
             emit("budget_exhausted", max=self.budget.max)
             self._default_remaining(emit)
-            if not self._incomplete_mvp():
+            remaining = self._incomplete_mvp()
+            if not remaining:
                 return self._gated_produce(events, emit)
-            blocked = [r.req.id for r in rank_open(self._incomplete_mvp(), self.domain, self.facts)]
+            blocked = [r.req.id for r in rank_open(remaining, self.domain, self.facts)]
             return TurnResult(events=events, blocked=blocked)
 
         # nothing askable this turn (WAIT/TRIAGE only) — surface but do not spin.
