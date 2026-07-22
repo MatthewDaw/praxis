@@ -48,7 +48,7 @@ def client(unique_org):
     # Start clean so create + membership + facts begin fresh and reruns isolate.
     conn.execute("DELETE FROM fact_edges WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
-    conn.execute("DELETE FROM cached_facts WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM snapshots WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM org_members WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM orgs WHERE org_id = %s", (org,))
     OrgsStore(conn).create_org(org, org, "pw", USER)
@@ -56,7 +56,7 @@ def client(unique_org):
     yield TestClient(app, headers={"X-Praxis-Org": org})
     conn.execute("DELETE FROM fact_edges WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
-    conn.execute("DELETE FROM cached_facts WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM snapshots WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM org_members WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM orgs WHERE org_id = %s", (org,))
     conn.close()
@@ -275,65 +275,92 @@ def test_graph_reflects_active_facts(client):
     assert "edges" in after
 
 
+# Snapshots are keyed by (space, snapshot); the space must be a valid, non-reserved
+# slug. These round-trips file the caller's working memory under this scratch space.
+SNAP_SPACE = "srv-snap"
+
+
 def test_snapshots_save_list_load_delete_round_trip(client):
     cid = _create(client, content="A fact worth snapshotting in the graph.")["id"]
     client.post(f"/candidates/{cid}/promote", json={})
 
-    saved = client.post("/snapshots", json={"name": "snap1"})
-    assert saved.status_code == 200
+    saved = client.post("/snapshots", json={"space": SNAP_SPACE, "snapshot": "snap1"})
+    assert saved.status_code == 200, saved.text
     assert saved.json()["count"] >= 1
 
-    listed = client.get("/snapshots").json()["snapshots"]
-    assert any(s["name"] == "snap1" for s in listed)
+    listed = client.get("/snapshots", params={"space": SNAP_SPACE}).json()["snapshots"]
+    assert any(s["snapshot"] == "snap1" for s in listed)
 
-    loaded = client.post("/snapshots/snap1/load")
+    loaded = client.post("/snapshots/load", json={"space": SNAP_SPACE, "snapshot": "snap1"})
     assert loaded.status_code == 200
     assert loaded.json()["loaded"] >= 1
 
-    deleted = client.delete("/snapshots/snap1")
+    deleted = client.request(
+        "DELETE", "/snapshots", json={"space": SNAP_SPACE, "snapshot": "snap1"}
+    )
     assert deleted.status_code == 200
-    assert not any(s["name"] == "snap1" for s in client.get("/snapshots").json()["snapshots"])
+    remaining = client.get("/snapshots", params={"space": SNAP_SPACE}).json()["snapshots"]
+    assert not any(s["snapshot"] == "snap1" for s in remaining)
 
 
 def test_load_unknown_snapshot_is_404(client):
-    assert client.post("/snapshots/nope/load").status_code == 404
+    res = client.post("/snapshots/load", json={"space": SNAP_SPACE, "snapshot": "nope"})
+    assert res.status_code == 404
 
 
 def test_rename_snapshot_rekeys_and_preserves_count(client):
-    """PATCH /snapshots/{name} re-keys the snapshot: the old name stops listing,
+    """PATCH /snapshots re-keys the snapshot: the old name stops listing,
     the new name lists with the same node count, and it still loads."""
     cid = _create(client, content="A fact worth renaming a snapshot over.")["id"]
     client.post(f"/candidates/{cid}/promote", json={})
-    count = client.post("/snapshots", json={"name": "snap1"}).json()["count"]
+    count = client.post(
+        "/snapshots", json={"space": SNAP_SPACE, "snapshot": "snap1"}
+    ).json()["count"]
     assert count >= 1
 
-    res = client.patch("/snapshots/snap1", json={"name": "snap2"})
+    res = client.patch(
+        "/snapshots",
+        json={"space": SNAP_SPACE, "snapshot": "snap1", "newSnapshot": "snap2"},
+    )
     assert res.status_code == 200, res.text
-    assert res.json() == {"name": "snap2"}
+    assert res.json() == {"space": SNAP_SPACE, "snapshot": "snap2"}
 
-    listed = {s["name"]: s["count"] for s in client.get("/snapshots").json()["snapshots"]}
+    listed = {
+        s["snapshot"]: s["count"]
+        for s in client.get("/snapshots", params={"space": SNAP_SPACE}).json()["snapshots"]
+    }
     assert "snap1" not in listed
     assert listed.get("snap2") == count
     # The re-keyed snapshot still loads under its new name.
-    assert client.post("/snapshots/snap2/load").json()["loaded"] == count
+    loaded = client.post("/snapshots/load", json={"space": SNAP_SPACE, "snapshot": "snap2"})
+    assert loaded.json()["loaded"] == count
 
 
 def test_rename_snapshot_onto_existing_name_is_409(client):
     """Renaming onto a name already in use is a clean 409, not a silent merge."""
     cid = _create(client, content="A fact for the snapshot collision test.")["id"]
     client.post(f"/candidates/{cid}/promote", json={})
-    client.post("/snapshots", json={"name": "snapA"})
-    client.post("/snapshots", json={"name": "snapB"})
+    client.post("/snapshots", json={"space": SNAP_SPACE, "snapshot": "snapA"})
+    client.post("/snapshots", json={"space": SNAP_SPACE, "snapshot": "snapB"})
 
-    res = client.patch("/snapshots/snapA", json={"name": "snapB"})
+    res = client.patch(
+        "/snapshots",
+        json={"space": SNAP_SPACE, "snapshot": "snapA", "newSnapshot": "snapB"},
+    )
     assert res.status_code == 409, res.text
     # Both originals survive the rejected rename.
-    names = {s["name"] for s in client.get("/snapshots").json()["snapshots"]}
+    names = {
+        s["snapshot"]
+        for s in client.get("/snapshots", params={"space": SNAP_SPACE}).json()["snapshots"]
+    }
     assert {"snapA", "snapB"} <= names
 
 
 def test_rename_unknown_snapshot_is_404(client):
-    assert client.patch("/snapshots/nope", json={"name": "x"}).status_code == 404
+    res = client.patch(
+        "/snapshots", json={"space": SNAP_SPACE, "snapshot": "nope", "newSnapshot": "x"}
+    )
+    assert res.status_code == 404
 
 
 def _graph_for(client):
