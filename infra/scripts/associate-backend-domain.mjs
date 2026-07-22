@@ -16,8 +16,9 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
 const DOMAIN = process.env.MCP_DOMAIN ?? 'mcp.praxiskg.com';
-const ZONE_ID = process.env.HOSTED_ZONE_ID ?? 'Z068874626AUKGUC8FK65';
 const STACK = 'PraxisBackendServiceStack';
+// ZONE_ID is resolved dynamically below (after aws() is defined) so a zone
+// recreated with a new id never breaks this script; see resolveZoneId().
 // After writing the records, wait for App Runner to validate the cert and flip the
 // domain to ACTIVE, so a green run means "mcp is actually serving". Set
 // WAIT_FOR_ACTIVE=0 to skip (e.g. a quick local run); tune the cap with WAIT_TIMEOUT_SEC.
@@ -38,6 +39,25 @@ function aws(args) {
 function sleep(seconds) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, seconds * 1000);
 }
+
+// Resolve the Route 53 hosted zone that owns DOMAIN. An explicit HOSTED_ZONE_ID
+// wins; otherwise pick the public zone whose name is the longest suffix of DOMAIN
+// (mcp.praxiskg.com -> praxiskg.com), so a zone recreated with a new id self-heals
+// instead of erroring with NoSuchHostedZone. The literal is only a last-known
+// fallback for when the lookup returns nothing.
+function resolveZoneId() {
+  if (process.env.HOSTED_ZONE_ID) return process.env.HOSTED_ZONE_ID;
+  const r = aws(['route53', 'list-hosted-zones', '--output', 'json']);
+  if (r.ok) {
+    const fqdn = `${DOMAIN}.`;
+    const match = JSON.parse(r.out).HostedZones
+      .filter((z) => !z.Config?.PrivateZone && fqdn.endsWith(z.Name))
+      .sort((a, b) => b.Name.length - a.Name.length)[0];
+    if (match) return match.Id.replace('/hostedzone/', '');
+  }
+  return 'Z05005163AR5WTJFHKYZC'; // last-known praxiskg.com public zone
+}
+const ZONE_ID = resolveZoneId();
 
 // 1. Resolve the App Runner service ARN from the deployed stack.
 const res = aws(['cloudformation', 'describe-stack-resources', '--stack-name', STACK, '--output', 'json']);

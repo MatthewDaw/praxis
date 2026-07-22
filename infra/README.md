@@ -60,7 +60,7 @@ frontend deploy must first rebuild `dist/` with the `VITE_*` vars above, or the 
 
 The domain **`praxiskg.com`** is registered at **Cloudflare**. Cloudflare Registrar won't let the apex
 nameservers move to Route 53, so the apex stays on Cloudflare DNS and individual **subdomains are delegated**
-to a Route 53 public hosted zone (`PraxisDnsStack`, zone id `Z068874626AUKGUC8FK65`). Route 53 is then
+to a Route 53 public hosted zone (`PraxisDnsStack`, zone id `Z05005163AR5WTJFHKYZC`). Route 53 is then
 authoritative for everything under a delegated subdomain, so CDK/ACM can manage records + cert validation there.
 
 ### One-time Cloudflare delegation
@@ -69,13 +69,13 @@ For each subdomain, add **four `NS` records** in the Cloudflare DNS panel (recor
 e.g. `app`), all pointing at the zone's nameservers:
 
 ```
-ns-1871.awsdns-41.co.uk
-ns-546.awsdns-04.net
-ns-1450.awsdns-53.org
-ns-428.awsdns-53.com
+ns-665.awsdns-19.net
+ns-1601.awsdns-08.co.uk
+ns-1305.awsdns-35.org
+ns-186.awsdns-23.com
 ```
 
-(Re-fetch anytime: `aws route53 get-hosted-zone --id Z068874626AUKGUC8FK65 --query DelegationSet.NameServers`.)
+(Re-fetch anytime: `aws route53 get-hosted-zone --id Z05005163AR5WTJFHKYZC --query DelegationSet.NameServers`.)
 
 | Subdomain | Points at | Managed by |
 |-----------|-----------|------------|
