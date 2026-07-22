@@ -133,6 +133,11 @@ EXPECTED_VERDICTS = {
         "rule_ids": [],
         "messages": [],
     },
+    "plan_gate_contract_signed_admitted": {
+        "admitted": True,
+        "rule_ids": [],
+        "messages": [],
+    },
 }
 
 

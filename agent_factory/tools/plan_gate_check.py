@@ -50,6 +50,7 @@ def _load(modname: str, path: Path):
 # gate.py is pure stdlib; register it as agent_factory.gate first so plan_gate's import resolves.
 _load("agent_factory.gate", _SRC_AF / "gate.py")
 _pg = _load("agent_factory.plan_gate", _SRC_AF / "plan_gate.py")
+_cs = _load("agent_factory.contract_signature", _SRC_AF / "contract_signature.py")
 evaluate_plan = _pg.evaluate_plan
 Requirement = _pg.Requirement
 
@@ -85,8 +86,31 @@ def requirement_from_fact(fact: dict) -> Requirement:
     )
 
 
+def read_contract(project: str) -> dict:
+    """Read the signed-contract evidence for ``project`` and reduce it to the ``{signed,
+    actions_recorded}`` field ``evaluate_plan`` gates on (``R-CONTRACT-SIGNED``).
+
+    The ``contract-signed`` episode is recorded by intake's evaluator (via the ``praxis_record_episode``
+    MCP tool → the store-only episodic lane), so we read the episodic decision log via the U1
+    ``get_episodes`` wrapper and evaluate it with the PURE ``contract_signature`` helpers — keeping
+    ``evaluate_plan`` free of any Praxis read. A plan is "signed with actions" iff SOME signed episode
+    also records real evaluator actions (anti-Goodhart). No signed episode -> ``signed=False`` (reject).
+
+    Raises :class:`PraxisUnreachable` (fail-closed) if the episodes can't be read.
+    """
+    episodes = _praxis.get_episodes()
+    signed = [e for e in episodes if _cs.is_signed(e)]
+    if not signed:
+        return {"signed": False, "actions_recorded": False}
+    return {"signed": True, "actions_recorded": any(_cs.actions_recorded(e) for e in signed)}
+
+
 def check_plan(project: str, out_of_scope: list[str] | None = None):
     """Read the live plan and run the gate. Returns ``(verdict, requirements)``.
+
+    Also reads the signed-contract episode (:func:`read_contract`) and THREADS the ``contract`` field
+    into the pure ``evaluate_plan`` so ``R-CONTRACT-SIGNED`` fires on the live plan — the read happens
+    here (this tool has ``_praxis``), never inside the pure gate.
 
     Raises :class:`PraxisUnreachable` (fail-closed) if the facts can't be read, and ``ValueError`` if
     the project has NO requirement facts (a wrong project/org or empty plan must not silently "pass").
@@ -99,7 +123,9 @@ def check_plan(project: str, out_of_scope: list[str] | None = None):
             f"unblessed plan, or an empty snapshot — refusing to report a vacuous PASS."
         )
     requirements = [requirement_from_fact(f) for f in facts]
-    verdict = evaluate_plan(requirements, out_of_scope=out_of_scope or [], project=bare)
+    contract = read_contract(bare)
+    verdict = evaluate_plan(requirements, out_of_scope=out_of_scope or [], project=bare,
+                            contract=contract)
     return verdict, requirements
 
 
