@@ -117,7 +117,27 @@ Write the doc as plain markdown (the `ce-brainstorm` shape, pushed harder). Incl
 - **Defaults taken** — conventions you applied, each flagged for override.
 - **Rigor mode** — which passes ran.
 
-Then hand the doc to **af-intake-plan**. State the boundary explicitly in your closing report:
+### Step 3.5 — Cold-eyes multi-persona document review (REQUIRED, every run)
+
+Before hand-off, run **`ce-doc-review`** on the requirements doc you just wrote. This is a multi-persona
+cold-eyes pass (coherence, feasibility, scope-guardian, adversarial, and product/design/security lenses
+when the doc's content activates them) that catches **feasibility errors, contradictions, scope creep, and
+premise gaps at the DOCUMENT stage — before any Praxis extraction cost**. It is mandatory on every af-plan
+run, not optional: a single review pass here routinely catches "the code can't support this" and
+"these two behaviors contradict" defects that are far cheaper to fix in the doc than after extraction.
+
+- Invoke `ce-doc-review` (the compound-engineering skill — a HARD factory dependency, same as ce-brainstorm)
+  with the requirements doc path. It classifies the doc as `requirements` and dispatches the panel.
+- **Integrate the findings before hand-off:** apply the clear fixes into the doc, and record the genuine
+  forks/decisions the reviewers surfaced under **Open decisions** so af-intake-plan forces them. Do NOT
+  silently drop a finding — every one is either fixed in the doc or recorded as an open decision.
+- This is **distinct from and complementary to** af-intake-plan's B7 panel: B7 reviews the hardened Praxis
+  *fact-set* after extraction; this reviews the *narrative document* before extraction, on the language the
+  extraction will lose fidelity on. Both run; they catch different classes of defect.
+- Record in the doc's **Rigor mode** section that the ce-doc-review pass ran (so a skipped review is visible,
+  never a silent omission).
+
+Only after the review findings are integrated, hand the doc to **af-intake-plan**. State the boundary explicitly in your closing report:
 
 > **af-intake-plan inserts this doc into Praxis and runs all planning validation** — it admits each
 > settled requirement as a `source="prd-<project>"` fact, runs the cold-eyes **af-intake-plan**, resolves

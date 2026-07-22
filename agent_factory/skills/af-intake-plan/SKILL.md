@@ -699,6 +699,30 @@ to omit, so bias toward authoring the every-site scan guards (near-zero false-po
 high-severity edge-case guards. Record the authored guard-check ids in the **B8 panel-ran episode** so the
 step cannot be silently skipped.
 
+### B5b-graded — seed the shared graded-check pool from the whole-plan audit
+
+The B1 lens findings (`failure-modes` / `security` / `data-lifecycle` / `rollback` / `who-pays`) are
+whole-plan **quality axes** — exactly what a graded rubric check encodes, and a view the ticket-local
+build agent cannot reconstruct. Author every quality finding as a **`candidate:true` pool entry** (via
+`af-intake-build-validation`, single-writer lock holds) — nothing dropped. Each carries:
+
+- a **`severity`** hint (higher for the expensive/invisible cross-ticket misses — data-loss, auth
+  bypass, silent partial failure, PII, security), which the gating function later weighs;
+- the **axis(es)** from the firing lens with a default **`threshold`** (the seeded-library value for
+  that axis — do NOT invent aggressive thresholds);
+- a **TIGHT** tag/surface scope (never `["*"]`).
+
+**af-intake-plan does NOT decide gating.** It is the FIRST writer to the shared pool. `af-build` later
+ADDS its own ticket-local search discoveries to the SAME pool; only THEN does a separate function — the
+rubric assembler (`agent_factory/src/agent_factory/rubric_assembly.py`), run per ticket at build time —
+determine what must be gated (promote high-severity candidates to individual gating validations, fold
+the rest into one min-of-candidates advisory aggregate). af-intake-plan authors **no `candidate:false`
+graded gate** and makes no mandatory-vs-advisory call; it only contributes candidates + severity hints.
+
+Record the authored candidate ids in the **B8 panel-ran episode** alongside the binary guards. See the
+pool + assembly model in
+`agent_factory/docs/plans/2026-07-21-002-feat-planning-time-rubric-seeding-plan.md`.
+
 ## B6 — Cross-requirement coverage + depth (the mechanical gate)
 
 The mechanical half is executable, not eyeballed:

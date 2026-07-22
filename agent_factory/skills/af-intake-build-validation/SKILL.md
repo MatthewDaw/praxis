@@ -131,6 +131,43 @@ A check pinning across unrelated tickets is a **TOO-BROAD `applies_to` to tighte
 surface bind instead of `["*"]`). The judgment stays with you — the tool does not decide; it just makes the
 fan-out legible so you tighten a leak deliberately rather than discover it mid-build.
 
+## Step 2c — GRADED checks and CANDIDATE-pool entries
+
+A check need not be a binary `run` command. Two additional shapes flow the same section-locked write:
+
+**Graded rubric check.** Instead of a `run`, author `meta.kind="graded"` + `meta.rubric` — a
+subjective, LLM-judged, min-of-axes rubric whose verdict still reduces to one `passed` boolean
+(see `agent_factory/src/agent_factory/rubric.py`). The rubric shape:
+
+```
+meta = { "check_id": "<slug>", "kind": "graded", "applies_to": ["<tag>", ...],
+         "rubric": { "axes": [ {"name": "error-paths", "threshold": 0.9, "guidance": "..."}, ... ],
+                     "confidence_floor": 5, "criterion": "<what good looks like>",
+                     "judge_prompt": "<how to score>" },
+         "candidate": <bool>, "severity": "<P0|P1|P2|P3 | number>" }
+```
+
+A graded check carries **no `run`**. A missing/malformed `rubric` is rejected at author time
+(`rubric_from_dict` raises) — never written as a silent floor-only check. Do NOT re-grade anything
+already exit-codeable (typecheck/build/lint/test) — the rubric is for the residue exit codes can't judge.
+
+**`meta.candidate` — gating vs pool.** This is the discriminator RESOLVE reads (U1):
+- **`candidate:false` / absent → a HARD GATE.** Resolves into `required_validations` exactly as a
+  binary check does; completion is gated on it. Author your must-hold concerns here.
+- **`candidate:true` → a NON-GATING POOL ENTRY.** Excluded from `required_validations`; returned only
+  by the deterministic `pool_candidates(ticket)` query, which the build-time **rubric assembler**
+  (`agent_factory/src/agent_factory/rubric_assembly.py`) tiers into promoted gating validations + one
+  advisory aggregate. Use candidate entries for "ideas worth checking" that should not each be a
+  standalone permanent gate.
+
+**Scoping a candidate (pool hygiene — U6).** A pool candidate resolves by the SAME tag/`*`/surface
+lanes as a gate, so scope it **tightly** to the concern it came from — a specific tag or a surface
+bind, **never `["*"]`** for a build-discovered candidate. A candidate whose `applies_to` matches no
+live ticket is an **orphan** (`agent_factory/src/agent_factory/pool_lifecycle.orphaned_candidate_ids`)
+and should be `reject`ed so the pool tracks the live plan rather than accumulating forever. Confirm a
+candidate's fan-out with `resolve_preview --by-check` (it prints each check's `kind` + gating/candidate
+status and flags a too-broad predicate) before finishing.
+
 ## Step 3 — (optional) Re-enter matching work NOW, for immediacy
 
 The check **automatically** re-enters matching tickets — completion is gated on checks resolved by query,

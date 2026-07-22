@@ -413,6 +413,31 @@ the semantic lane these are surfaced deterministically (not embedding-dependent)
 the rest. A graded seeded candidate becomes a `kind:"graded"` validation carrying its rubric (see §5 VERIFY).
 `python -m agent_factory.tools.resolve_preview <project>` lists the seeded candidates offered per ticket.
 
+**Then GATHER + ASSEMBLE the graded candidate pool (the shared pool; the gating function).** Beyond the
+semantic lane above, the `building-validation` pool holds `candidate:true` graded checks contributed by
+BOTH `af-intake-plan` (whole-plan B1 findings) and your own ticket-local search — two writers, one pool.
+The mandatory-vs-advisory decision is made HERE, by a function, not by either writer:
+
+1. **ADD your discoveries to the pool (U4).** If your rules/memory search surfaces a ticket-specific
+   quality concern worth grading, PERSIST it as a `candidate:true` graded check via
+   **`af-intake-build-validation`** (never a direct write — preserves the single-writer lock), scoped
+   TIGHTLY to this ticket's tags/surface (never `["*"]`), `authored_by:"build"`, with a `severity` hint.
+   Idempotent on `check_id`, so re-discovery updates in place.
+2. **READ the pool for this ticket.** `pool_candidates(cid, project, scope="validation")` (hooks/) — the
+   DETERMINISTIC set of every `candidate:true` check resolving onto this ticket (NON-gating; the full
+   set, unlike the semantic `retrieve_advisory_checks` sample).
+3. **ASSEMBLE the per-ticket rubric — the function that determines what gates (U5).**
+   `from rubric_assembly import assemble` (src/), then
+   `graded = assemble(pool_candidates(...), budget=<N>, covers=[<this ticket's requirement_id>])`. It
+   promotes the highest-`severity` candidates (up to `budget`) to individual GATING graded validations
+   and folds the rest into ONE min-of-candidates advisory aggregate. Deterministic — the gating set is
+   stable across passes on the same pool (no thrash). Include `graded` in the list you `pin_validations`.
+
+The promoted graded validations gate via `all_validations_passed` like any pinned validation; the
+aggregate is soft-floored (advisory unless a folded concern is egregious). Neither `af-intake-plan` nor
+you chose which candidates gate — `assemble` did, at build time, from the pooled severity hints. All
+graded validations are judged in **§5 VERIFY** (`verify_graded_check`, fresh-context judge), never run.
+
 This is the heart of the two-tier model. The retrieved requirements say *what* must be proven; **you author
 the concrete validations that prove it for THIS ticket**, faithfully covering every **mandatory**
 requirement (advisory candidates you chose to honor become validations too, but coverage is only enforced
