@@ -45,8 +45,7 @@ def linearize_table(text: str) -> list[str]:
 
     Returns one self-contained fact per row, with the row/column identity folded
     into the sentence. Returns an empty list when ``text`` is not recognized as
-    tabular — callers use that as the "fall through to prose handling" signal
-    (see :func:`is_tabular`).
+    tabular — callers use that as the "fall through to prose handling" signal.
     """
     facts = _linearize_markdown(text)
     if facts:
@@ -55,16 +54,6 @@ def linearize_table(text: str) -> list[str]:
     if facts:
         return facts
     return _linearize_key_value(text)
-
-
-def is_tabular(text: str) -> bool:
-    """True when ``text`` is structured enough to linearize deterministically.
-
-    A thin convenience wrapper over :func:`linearize_table` so call sites can
-    branch without parsing twice in spirit; kept cheap by short-circuiting on
-    the first non-empty linearization.
-    """
-    return bool(linearize_table(text))
 
 
 def _split_row(line: str) -> list[str]:

@@ -14,7 +14,7 @@ from knowledge.injestion.injestor_variants.prompt_injestor import (
     PromptIngestor,
     segment_passthrough,
 )
-from knowledge.injestion.table_linearizer import is_tabular, linearize_table
+from knowledge.injestion.table_linearizer import linearize_table
 
 # ---------------------------------------------------------------------------
 # Real PRD fixtures (Roles & Permissions, agent_factory first PRD).
@@ -153,7 +153,6 @@ def test_prose_is_not_tabular():
         "Alessandro Volta was an Italian physicist. He invented the electric "
         "battery in 1800. His work was foundational to electrochemistry."
     )
-    assert not is_tabular(prose)
     assert linearize_table(prose) == []
 
 

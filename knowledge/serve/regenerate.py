@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +19,7 @@ from knowledge.knowledge_graph.knowledge_graph_variants.vector_graph import Vect
 from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
 from knowledge.serve.pipeline_adapter import (
     IngestReport,
+    _now,
     candidates_from_graph,
     ingest_insights,
 )
@@ -460,7 +460,3 @@ def _insights_from_cases(cases) -> list[Insight]:
                     )
                 )
     return insights
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

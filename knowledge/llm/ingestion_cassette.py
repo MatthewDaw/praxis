@@ -1,43 +1,23 @@
 """Replay the ingestion splitter's distilled text from a committed cassette.
 
-The ingestion LLM's ``raw input -> distilled text`` step is keyed exactly like
-embeddings and judge verdicts, so we reuse the :class:`CachedEmbedder` pattern one
-layer up: record the real distilled output once (locally, with a key) and replay it
-everywhere else — letting CI exercise real distillation offline and
-deterministically. The cache key includes the ingest model id, so swapping the model
-is a clean miss, never silent staleness.
-
-A miss with recording disabled is a **loud error**, not a silent fallback: it means a
-seeded input or the ingest model changed without a refresh, which must fail rather
-than pass on a stale fixture. (Graceful "no cassette and no key" degradation is the
-caller's job — see ``knowledge.evals.run``: a case requiring cassetted ingestion
-SKIPs when neither a committed cassette nor a key is available.)
-
-On-disk format: JSON mapping ``key -> distilled_text``, sorted keys for stable diffs.
+A :class:`KeyedCassette` for the ingestion LLM's ``raw input -> distilled text`` step,
+exposed as the ``str -> str`` callable ``PromptIngestor`` expects. See
+``verdict_cassette`` for the shared record/replay/loud-miss contract; graceful "no
+cassette and no key" degradation is the caller's job (see ``knowledge.evals.run``,
+which SKIPs a cassetted-ingestion case when neither a committed cassette nor a key is
+available).
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
-import threading
 from pathlib import Path
 from typing import Callable
 
-from knowledge.llm.atomic_write import atomic_write_text
-
-# Guards the read-modify-write in ``save`` so parallel cases (the runner's
-# ``--workers``) recording to the same cassette can't clobber each other's keys.
-_FILE_LOCK = threading.Lock()
+from knowledge.llm.verdict_cassette import KeyedCassette
 
 
-class IngestionCassette:
-    """Serves distilled ingestion text from a committed cassette, recording when allowed.
-
-    A ``str -> str`` callable (the shape ``PromptIngestor``'s LLM expects): given the
-    raw ingestion input, return the recorded distilled text, or — only with a key and
-    a live ``inner`` — compute, record, and persist it.
-    """
+class IngestionCassette(KeyedCassette):
+    """Serves distilled ingestion text from a committed cassette, recording when allowed."""
 
     def __init__(
         self,
@@ -47,47 +27,22 @@ class IngestionCassette:
         inner: Callable[[str], str] | None,
         allow_compute: bool,
     ) -> None:
-        self.path = Path(path)
-        self.model_id = model_id
+        super().__init__(path, model_id=model_id, allow_compute=allow_compute)
         self.inner = inner
-        self.allow_compute = allow_compute
-        self._cache: dict[str, str] = self._load()
-        self._dirty = False
 
     def __call__(self, raw_input: str) -> str:
         """Return the distilled text for ``raw_input``, replaying or recording as allowed."""
-        key = self._key(raw_input)
-        if key in self._cache:
-            return self._cache[key]
-        if not (self.allow_compute and self.inner is not None):
-            raise RuntimeError(
-                f"ingestion cassette miss under model {self.model_id!r} "
-                f"(input e.g. {raw_input[:60]!r}). A seeded input or the ingest model "
-                "changed — refresh the cassette locally with OPENROUTER_API_KEY set "
-                "(`uv run python -m knowledge.evals.ingestion_cache --refresh`) and commit "
-                f"{self.path.name}."
-            )
-        value = self.inner(raw_input)
-        self._cache[key] = value
-        self._dirty = True
-        self.save()
-        return value
+        return self._record(
+            raw_input,
+            lambda: self.inner(raw_input),
+            can_compute=self.allow_compute and self.inner is not None,
+        )
 
-    def save(self) -> None:
-        """Write the cassette back (sorted), merging on-disk state under a lock."""
-        if not self._dirty:
-            return
-        with _FILE_LOCK:
-            merged = self._load()  # re-read: may include a peer's concurrent writes
-            merged.update(self._cache)
-            atomic_write_text(self.path, json.dumps(merged, indent=0, sort_keys=True) + "\n")
-            self._cache = merged
-            self._dirty = False
-
-    def _load(self) -> dict[str, str]:
-        if not self.path.exists():
-            return {}
-        return json.loads(self.path.read_text(encoding="utf-8"))
-
-    def _key(self, raw_input: str) -> str:
-        return hashlib.sha256(f"{self.model_id}\n{raw_input}".encode("utf-8")).hexdigest()
+    def _miss_error(self, payload: str) -> str:
+        return (
+            f"ingestion cassette miss under model {self.model_id!r} "
+            f"(input e.g. {payload[:60]!r}). A seeded input or the ingest model "
+            "changed — refresh the cassette locally with OPENROUTER_API_KEY set "
+            "(`uv run python -m knowledge.evals.ingestion_cache --refresh`) and commit "
+            f"{self.path.name}."
+        )

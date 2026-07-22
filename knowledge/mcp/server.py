@@ -181,7 +181,7 @@ def _not_ready() -> str | None:
             orgs = identity.list_my_orgs()
         except Exception:  # noqa: BLE001 - token/network issue surfaces as login hint
             return "Not logged in to Praxis — call `praxis_login` again."
-        listing = ", ".join(o.get("orgId") or o.get("org_id") for o in orgs) or "(none)"
+        listing = ", ".join(identity.org_id_of(o) for o in orgs) or "(none)"
         return (
             "Logged in, but no active org is selected. Your orgs: "
             f"{listing}. Call `praxis_select_org` (or `praxis_create_org` / "
@@ -1596,7 +1596,7 @@ def praxis_login(email: str, password: str, org_id: str | None = None) -> str:
     if tenant.org_id:
         return f"Logged in as {tenant.email}; active org '{tenant.org_id}'."
     if orgs:
-        listing = ", ".join(o.get("orgId") or o.get("org_id") for o in orgs)
+        listing = ", ".join(identity.org_id_of(o) for o in orgs)
         return (
             f"Logged in as {tenant.email}. You belong to: {listing}. "
             "Call `praxis_select_org` with the one to use."
@@ -1893,7 +1893,7 @@ def praxis_whoami() -> str:
     tenant = identity.load_identity()
     try:
         orgs = identity.list_my_orgs()
-        listing = ", ".join(o.get("orgId") or o.get("org_id") for o in orgs) or "(none)"
+        listing = ", ".join(identity.org_id_of(o) for o in orgs) or "(none)"
     except Exception:  # noqa: BLE001
         listing = "(could not fetch)"
     # Report the org actually sent as X-Praxis-Org (what add_insight/facts_by hit), not the raw

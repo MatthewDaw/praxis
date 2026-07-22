@@ -1,19 +1,18 @@
-"""Replay LLM judge verdicts from a committed cassette; record misses when allowed.
+"""Committed record-once / replay-many cassettes for nondeterministic LLM output.
 
-The write-policy judges (merge / conflict) are nondeterministic and keyed exactly
-like embeddings, so we reuse the :class:`CachedEmbedder` pattern one layer up: record
-a real verdict once (locally, with a key) and replay it everywhere else — letting CI
-exercise real merge/conflict decisions offline and deterministically. The cache key
-includes the judge model id, so swapping the model is a clean miss, never silent
-staleness.
+:class:`KeyedCassette` is the shared skeleton: record a real value once (locally, with
+a key) and replay it everywhere else, so CI exercises the real merge/conflict/caption/
+distill/embedding steps offline and deterministically. The key includes the model id,
+so swapping models is a clean miss, never silent staleness. A miss with recording
+disabled is a **loud error**, not a silent fallback: a changed seeded input or model
+must fail rather than pass on a stale fixture. (Graceful "no judge/caption/cassette at
+all" degradation is each caller's job — see ``MergeJudge``, ``image.captioner``,
+``knowledge.evals.run``.)
 
-A miss with recording disabled is a **loud error**, not a silent fallback: it means a
-seeded text or the judge model changed without a refresh, which must fail rather than
-pass on a stale fixture. (Graceful "no judge at all" degradation is the caller's job —
-see ``MergeJudge``: with neither a cassette verdict nor a live LLM it skips.)
+Subclasses set the miss-error text and may add a value codec (embeddings) or extra key
+material (the caption prompt); the sha256 key and the concurrent-merge save live here.
 
-On-disk format: JSON mapping ``key -> verdict`` (a small JSON object), sorted keys for
-stable diffs.
+On-disk format: JSON mapping ``key -> encoded value``, sorted keys for stable diffs.
 """
 
 from __future__ import annotations
@@ -31,29 +30,35 @@ from knowledge.llm.atomic_write import atomic_write_text
 _FILE_LOCK = threading.Lock()
 
 
-class VerdictCassette:
-    """Serves judge verdicts from a committed cassette, recording misses when allowed."""
+class KeyedCassette:
+    """Serves keyed values from a committed JSON cassette, recording misses when allowed."""
+
+    _key_prefix = ""  # extra key material after the model id (e.g. the caption prompt)
 
     def __init__(self, path: Path | str, *, model_id: str, allow_compute: bool) -> None:
         self.path = Path(path)
         self.model_id = model_id
         self.allow_compute = allow_compute
-        self._cache: dict[str, dict] = self._load()
+        self._cache: dict = self._load()
         self._dirty = False
 
-    def verdict(self, payload: str, compute: Callable[[], dict]) -> dict:
-        """Return the verdict for ``payload``, replaying or recording as allowed."""
+    # Value codec: identity by default; overridden where the on-disk form differs.
+    def _encode(self, value):
+        return value
+
+    def _decode(self, stored):
+        return stored
+
+    def _miss_error(self, payload: str) -> str:
+        raise NotImplementedError
+
+    def _record(self, payload: str, compute: Callable[[], object], *, can_compute: bool):
+        """Replay ``payload`` from cache, or record ``compute()`` when ``can_compute``."""
         key = self._key(payload)
         if key in self._cache:
             return self._cache[key]
-        if not self.allow_compute:
-            raise RuntimeError(
-                f"verdict cassette miss under model {self.model_id!r} "
-                f"(payload e.g. {payload[:60]!r}). A seeded text or the judge model "
-                "changed — refresh the cassette locally with OPENROUTER_API_KEY set "
-                "(`uv run python -m knowledge.evals.verdict_cache --refresh`) and commit "
-                f"{self.path.name}."
-            )
+        if not can_compute:
+            raise RuntimeError(self._miss_error(payload))
         value = compute()
         self._cache[key] = value
         self._dirty = True
@@ -67,14 +72,34 @@ class VerdictCassette:
         with _FILE_LOCK:
             merged = self._load()  # re-read: may include a peer's concurrent writes
             merged.update(self._cache)
-            atomic_write_text(self.path, json.dumps(merged, indent=0, sort_keys=True) + "\n")
+            packed = {k: self._encode(v) for k, v in merged.items()}
+            atomic_write_text(self.path, json.dumps(packed, indent=0, sort_keys=True) + "\n")
             self._cache = merged
             self._dirty = False
 
-    def _load(self) -> dict[str, dict]:
+    def _load(self) -> dict:
         if not self.path.exists():
             return {}
-        return json.loads(self.path.read_text(encoding="utf-8"))
+        raw = json.loads(self.path.read_text(encoding="utf-8"))
+        return {k: self._decode(v) for k, v in raw.items()}
 
     def _key(self, payload: str) -> str:
-        return hashlib.sha256(f"{self.model_id}\n{payload}".encode("utf-8")).hexdigest()
+        material = f"{self.model_id}\n{self._key_prefix}{payload}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+class VerdictCassette(KeyedCassette):
+    """Serves judge verdicts from a committed cassette, recording misses when allowed."""
+
+    def verdict(self, payload: str, compute: Callable[[], dict]) -> dict:
+        """Return the verdict for ``payload``, replaying or recording as allowed."""
+        return self._record(payload, compute, can_compute=self.allow_compute)
+
+    def _miss_error(self, payload: str) -> str:
+        return (
+            f"verdict cassette miss under model {self.model_id!r} "
+            f"(payload e.g. {payload[:60]!r}). A seeded text or the judge model "
+            "changed — refresh the cassette locally with OPENROUTER_API_KEY set "
+            "(`uv run python -m knowledge.evals.verdict_cache --refresh`) and commit "
+            f"{self.path.name}."
+        )
