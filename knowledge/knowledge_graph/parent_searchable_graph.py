@@ -11,13 +11,39 @@ this interface, not on a concrete store.
 from __future__ import annotations
 
 from abc import abstractmethod
+from typing import TYPE_CHECKING
 
 from knowledge.knowledge_graph.knowledge_graph_def import SearchHit
 from knowledge.knowledge_graph.parent_knowledge_graph import KnowledgeGraph
 
+if TYPE_CHECKING:
+    from knowledge.knowledge_graph.write_policy.write_policy_def import WriteDecision
+
 
 class SearchableGraph(KnowledgeGraph):
     """A knowledge graph that supports similarity/keyword retrieval."""
+
+    def _run_policy(self, decision: "WriteDecision") -> None:
+        """Run the ordered write-policy steps over ``decision`` in place.
+
+        Each recall set is filled lazily the first time a step that consumes it runs:
+        the shared candidate pass (embeds the incoming text once), the wider semantic
+        pass, and the claim-slot pass (after ClaimExtractor). A pass runs at most once.
+        Shared by every store's write/decide entry point; the subclasses supply the
+        ``policy`` and the ``_recall*`` hooks.
+        """
+        claim_recalled = False
+        semantic_recalled = False
+        for step in self.policy:
+            if step.consumes_candidates and decision.embedding is None:
+                self._recall(decision)  # embed once + one shared candidate pass
+            if step.consumes_semantic_candidates and not semantic_recalled:
+                self._recall_semantic(decision)  # wider recall for the semantic pass
+                semantic_recalled = True
+            if step.consumes_claim_candidates and not claim_recalled:
+                self._recall_claims(decision)  # slot recall, after ClaimExtractor ran
+                claim_recalled = True
+            step.apply(decision)
 
     @abstractmethod
     def search(

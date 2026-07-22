@@ -676,18 +676,7 @@ class PostgresVectorGraph(SearchableGraph):
         # A declared derivation is a new fact built on its sources, never a duplicate;
         # carry it onto the decision so the Augmenter exempts it from the merge (H5).
         decision.derived_from = list(derived_from or [])
-        claim_recalled = False
-        semantic_recalled = False
-        for step in self.policy:
-            if step.consumes_candidates and decision.embedding is None:
-                self._recall(decision)  # embed once + one shared candidate pass
-            if step.consumes_semantic_candidates and not semantic_recalled:
-                self._recall_semantic(decision)  # wider recall for the semantic pass
-                semantic_recalled = True
-            if step.consumes_claim_candidates and not claim_recalled:
-                self._recall_claims(decision)  # slot recall, after ClaimExtractor ran
-                claim_recalled = True
-            step.apply(decision)
+        self._run_policy(decision)
         if decision.dropped:
             return None
         if decision.embedding is None:
