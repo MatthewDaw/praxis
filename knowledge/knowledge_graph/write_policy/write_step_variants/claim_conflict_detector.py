@@ -18,18 +18,15 @@ pair is **suppressed**, not flagged — a missed conflict beats a false one.
 
 from __future__ import annotations
 
-import json
 import re
 
 from knowledge.knowledge_graph.knowledge_graph_def import Claim
+from knowledge.knowledge_graph.write_policy.cassette_judge import CassetteJudge
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
 from knowledge.knowledge_graph.write_policy.write_policy_def import WriteDecision
 from knowledge.knowledge_graph.write_policy.write_step_variants.filing_status import (
     distinct_tax_facts,
 )
-from knowledge.llm.llm_def import ChatMessage
-from knowledge.llm.parent_llm import Llm
-from knowledge.llm.verdict_cassette import VerdictCassette
 
 _PROMPT = (
     "Two facts assert a value for the same property ({subject} -> {attribute}). "
@@ -60,36 +57,25 @@ def _numeric_tokens(v: str) -> list[str]:
     return _NUM.findall(v)
 
 
-class ClaimValueJudge:
+class ClaimValueJudge(CassetteJudge):
     """Decides whether two values for the same functional slot are incompatible.
 
     Mirrors ``ConflictJudge``: structured ``{incompatible}`` over the LLM seam,
     cassette-replayed offline, ``None`` when no source (caller suppresses).
     """
 
-    def __init__(
-        self, llm: Llm | None = None, cassette: VerdictCassette | None = None
-    ) -> None:
-        self.llm = llm
-        self.cassette = cassette
-
     def incompatible(self, subject: str, attribute: str, a: str, b: str) -> bool | None:
-        """True/False if a verdict is available; None to skip (no cassette, no llm)."""
-        # Key the cassette on the exact rendered prompt, so editing the prompt (or the
-        # inputs) is a clean miss, not a stale replay.
+        """True/False if a verdict is available; None to skip (no cassette, no llm).
+
+        Keyed on the exact rendered prompt, so editing the prompt (or the inputs) is a
+        clean miss, not a stale replay.
+        """
         prompt = _PROMPT.format(subject=subject, attribute=attribute, a=a, b=b)
-        if self.cassette is not None:
-            return self.cassette.verdict(prompt, lambda: self._compute(prompt))["incompatible"]
-        if self.llm is not None:
-            return self._compute(prompt)["incompatible"]
-        return None
+        verdict = self._verdict(prompt, lambda: self._compute(prompt))
+        return verdict["incompatible"] if verdict is not None else None
 
     def _compute(self, prompt: str) -> dict:
-        raw = self.llm.complete(
-            [ChatMessage(role="user", content=prompt)],
-            response_format=_SCHEMA,
-        )
-        return {"incompatible": bool(json.loads(raw)["incompatible"])}
+        return {"incompatible": bool(self._complete_json(prompt, _SCHEMA)["incompatible"])}
 
 
 class ClaimConflictDetector(WriteStep):

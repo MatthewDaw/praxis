@@ -20,13 +20,9 @@ gate cleared.
 
 from __future__ import annotations
 
-import json
-
+from knowledge.knowledge_graph.write_policy.cassette_judge import CassetteJudge
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
 from knowledge.knowledge_graph.write_policy.write_policy_def import WriteDecision
-from knowledge.llm.llm_def import ChatMessage
-from knowledge.llm.parent_llm import Llm
-from knowledge.llm.verdict_cassette import VerdictCassette
 
 # Controlled vocabulary of *tradeoff axes*: both sides of a preference
 # contradiction map to the same label even with disjoint surface vocabulary, so a
@@ -71,32 +67,21 @@ _SCHEMA = {
 }
 
 
-class AspectJudge:
+class AspectJudge(CassetteJudge):
     """Assigns controlled-vocabulary aspect tags to a note (or None to skip)."""
 
-    def __init__(
-        self, llm: Llm | None = None, cassette: VerdictCassette | None = None
-    ) -> None:
-        self.llm = llm
-        self.cassette = cassette
-
     def tags(self, note: str) -> list[str] | None:
-        """Tags for ``note`` if a source is available; None to skip (no cassette, no llm)."""
+        """Tags for ``note`` if a source is available; None to skip (no cassette, no llm).
+
+        Keyed on the rendered prompt so the vocabulary (carried in the prompt) is part
+        of the key, not just the note -- a vocab edit is a clean miss.
+        """
         prompt = _PROMPT.format(vocab=", ".join(ASPECT_VOCAB), note=note)
-        if self.cassette is not None:
-            # Key on the rendered prompt so the vocabulary (carried in the prompt) is
-            # part of the key, not just the note -- a vocab edit is a clean miss.
-            return self.cassette.verdict(prompt, lambda: self._compute(prompt))["tags"]
-        if self.llm is not None:
-            return self._compute(prompt)["tags"]
-        return None  # no source -> skip
+        verdict = self._verdict(prompt, lambda: self._compute(prompt))
+        return verdict["tags"] if verdict is not None else None
 
     def _compute(self, prompt: str) -> dict:
-        raw = self.llm.complete(
-            [ChatMessage(role="user", content=prompt)],
-            response_format=_SCHEMA,
-        )
-        tags = json.loads(raw)["tags"]
+        tags = self._complete_json(prompt, _SCHEMA)["tags"]
         # Defensive: keep only in-vocabulary tags (the schema already constrains a
         # compliant model; a cassette-recorded value is trusted as-is).
         return {"tags": [t for t in tags if t in ASPECT_VOCAB]}

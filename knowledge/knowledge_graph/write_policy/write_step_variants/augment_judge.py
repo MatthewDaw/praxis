@@ -17,11 +17,7 @@ Determinism + graceful degradation, mirroring ``MergeJudge``:
 
 from __future__ import annotations
 
-import json
-
-from knowledge.llm.llm_def import ChatMessage
-from knowledge.llm.parent_llm import Llm
-from knowledge.llm.verdict_cassette import VerdictCassette
+from knowledge.knowledge_graph.write_policy.cassette_judge import CassetteJudge
 
 _PROMPT = (
     "You maintain a memory store. Decide whether the NEW note should be MERGED INTO "
@@ -70,14 +66,8 @@ _SCHEMA = {
 }
 
 
-class AugmentJudge:
+class AugmentJudge(CassetteJudge):
     """Decides whether an incoming note should be folded into an existing one."""
-
-    def __init__(
-        self, llm: Llm | None = None, cassette: VerdictCassette | None = None
-    ) -> None:
-        self.llm = llm
-        self.cassette = cassette
 
     def merged_text(self, incoming: str, existing: str) -> str | None:
         """The synthesized merged sentence if the note is additive; None to skip.
@@ -87,23 +77,13 @@ class AugmentJudge:
         way the caller leaves the write as a plain add.
         """
         prompt = _PROMPT.format(existing=existing, new=incoming)
-        if self.cassette is not None:
-            verdict = self.cassette.verdict(prompt, lambda: self._compute(prompt))
-        elif self.llm is not None:
-            verdict = self._compute(prompt)
-        else:
+        verdict = self._verdict(prompt, lambda: self._compute(prompt))
+        if verdict is None or not verdict.get("merge"):
             return None
-        if not verdict.get("merge"):
-            return None
-        text = (verdict.get("merged_text") or "").strip()
-        return text or None
+        return (verdict.get("merged_text") or "").strip() or None
 
     def _compute(self, prompt: str) -> dict:
-        raw = self.llm.complete(
-            [ChatMessage(role="user", content=prompt)],
-            response_format=_SCHEMA,
-        )
-        parsed = json.loads(raw)
+        parsed = self._complete_json(prompt, _SCHEMA)
         return {
             "merge": bool(parsed["merge"]),
             "merged_text": str(parsed.get("merged_text") or ""),

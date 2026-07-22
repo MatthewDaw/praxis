@@ -15,11 +15,7 @@ Determinism + graceful degradation, mirroring ``ConflictFlagger``:
 
 from __future__ import annotations
 
-import json
-
-from knowledge.llm.llm_def import ChatMessage
-from knowledge.llm.parent_llm import Llm
-from knowledge.llm.verdict_cassette import VerdictCassette
+from knowledge.knowledge_graph.write_policy.cassette_judge import CassetteJudge
 
 _PROMPT = (
     "Do these two notes record the SAME lesson or rule, just phrased differently? "
@@ -42,29 +38,14 @@ _SCHEMA = {
 }
 
 
-class MergeJudge:
+class MergeJudge(CassetteJudge):
     """Decides whether an incoming note duplicates an existing one (same lesson)."""
-
-    def __init__(
-        self, llm: Llm | None = None, cassette: VerdictCassette | None = None
-    ) -> None:
-        self.llm = llm
-        self.cassette = cassette
 
     def same_lesson(self, incoming: str, existing: str) -> bool | None:
         """True/False if a verdict is available; None to skip (no cassette, no llm)."""
         prompt = _PROMPT.format(existing=existing, new=incoming)
-        if self.cassette is not None:
-            # Key on the exact rendered prompt: a prompt edit or different texts is a
-            # clean miss, never a stale replay.
-            return self.cassette.verdict(prompt, lambda: self._compute(prompt))["same_lesson"]
-        if self.llm is not None:
-            return self._compute(prompt)["same_lesson"]
-        return None  # no verdict source -> skip
+        verdict = self._verdict(prompt, lambda: self._compute(prompt))
+        return verdict["same_lesson"] if verdict is not None else None
 
     def _compute(self, prompt: str) -> dict:
-        raw = self.llm.complete(
-            [ChatMessage(role="user", content=prompt)],
-            response_format=_SCHEMA,
-        )
-        return {"same_lesson": bool(json.loads(raw)["same_lesson"])}
+        return {"same_lesson": bool(self._complete_json(prompt, _SCHEMA)["same_lesson"])}

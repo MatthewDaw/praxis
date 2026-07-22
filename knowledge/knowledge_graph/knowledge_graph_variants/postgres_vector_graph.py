@@ -66,6 +66,20 @@ _EMBED_DIM = 1536
 # stays bounded. ~4 chars/token, so this is a few thousand tokens.
 _READ_CHAR_BUDGET = 8000
 
+
+def _join_within_budget(facts: list[Fact], budget: int) -> str:
+    """Concatenate ``fact.text`` (score/recency order preserved) until the running
+    length would exceed ``budget``, then join with blank lines. The first fact always
+    lands so a single over-budget fact is never dropped. Shared by every ``read``."""
+    parts: list[str] = []
+    used = 0
+    for fact in facts:
+        if used + len(fact.text) > budget and parts:
+            break
+        parts.append(fact.text)
+        used += len(fact.text)
+    return "\n\n".join(parts)
+
 # Reciprocal Rank Fusion constant (Graphiti/Zep use ~60). Larger k flattens the
 # weight of top ranks, blending the two branches more gently; 60 is the standard.
 _RRF_K = 60
@@ -239,6 +253,20 @@ _CLAIM_COPY_COLS = (
 _SNAPSHOT_CLAIM_COPY_COLS = (
     "org_id, fact_id, seq, subject, attribute, value, functional, created_at"
 )
+
+# Full read projection consumed POSITIONALLY by ``_row_to_fact`` (id..cluster_label).
+# Referenced by every full-fact read query here and by ``org_source_reader`` so a
+# column add/reorder is one edit, not ~9 in lockstep. Alias-qualify via ``_aliased``
+# for JOIN queries (``r.``/``d.``).
+_FACT_READ_COLS = (
+    "id, text, source, confidence, scope, category, observation_count, "
+    "state, created_at, meta, cluster_id, cluster_label"
+)
+
+
+def _aliased(cols: str, alias: str) -> str:
+    """``cols`` with each bare column prefixed ``alias.`` (JOIN disambiguation)."""
+    return ", ".join(f"{alias}.{c.strip()}" for c in cols.split(","))
 
 
 def _restamp_select(cols: str) -> str:
@@ -539,14 +567,7 @@ class PostgresVectorGraph(SearchableGraph):
             facts = [h.fact for h in hits]
         else:
             facts = [f for f in self._recent(limit=50) if f.category not in excluded]
-        parts: list[str] = []
-        used = 0
-        for fact in facts:
-            if used + len(fact.text) > budget and parts:
-                break
-            parts.append(fact.text)
-            used += len(fact.text)
-        return "\n\n".join(parts)
+        return _join_within_budget(facts, budget)
 
     def write(
         self,
@@ -655,18 +676,7 @@ class PostgresVectorGraph(SearchableGraph):
         # A declared derivation is a new fact built on its sources, never a duplicate;
         # carry it onto the decision so the Augmenter exempts it from the merge (H5).
         decision.derived_from = list(derived_from or [])
-        claim_recalled = False
-        semantic_recalled = False
-        for step in self.policy:
-            if step.consumes_candidates and decision.embedding is None:
-                self._recall(decision)  # embed once + one shared candidate pass
-            if step.consumes_semantic_candidates and not semantic_recalled:
-                self._recall_semantic(decision)  # wider recall for the semantic pass
-                semantic_recalled = True
-            if step.consumes_claim_candidates and not claim_recalled:
-                self._recall_claims(decision)  # slot recall, after ClaimExtractor ran
-                claim_recalled = True
-            step.apply(decision)
+        self._run_policy(decision)
         if decision.dropped:
             return None
         if decision.embedding is None:
@@ -1405,8 +1415,7 @@ class PostgresVectorGraph(SearchableGraph):
         """
         key_pred, key_params = self._key_pred()
         rows = self._conn.execute(
-            "SELECT id, text, source, confidence, scope, category, observation_count, "
-            "state, created_at, meta, cluster_id, cluster_label "
+            f"SELECT {_FACT_READ_COLS} "
             f"FROM {self._facts_table} WHERE {key_pred} "
             "AND state = 'active' ORDER BY created_at DESC",
             key_params,
@@ -1499,8 +1508,7 @@ class PostgresVectorGraph(SearchableGraph):
         """Every fact in this partition (optionally filtered by ``state``), newest first."""
         key_pred, params = self._key_pred()
         sql = (
-            "SELECT id, text, source, confidence, scope, category, observation_count, "
-            "state, created_at, meta, cluster_id, cluster_label "
+            f"SELECT {_FACT_READ_COLS} "
             f"FROM {self._facts_table} WHERE {key_pred}"
         )
         if state is not None:
@@ -1541,8 +1549,7 @@ class PostgresVectorGraph(SearchableGraph):
         """
         key_pred, params = self._key_pred()
         sql = (
-            "SELECT id, text, source, confidence, scope, category, observation_count, "
-            "state, created_at, meta, cluster_id, cluster_label "
+            f"SELECT {_FACT_READ_COLS} "
             f"FROM {self._facts_table} WHERE {key_pred}"
         )
         if state is not None:
@@ -1567,8 +1574,7 @@ class PostgresVectorGraph(SearchableGraph):
     def get_fact(self, fact_id: str) -> Fact | None:
         key_pred, key_params = self._key_pred()
         rows = self._conn.execute(
-            "SELECT id, text, source, confidence, scope, category, observation_count, "
-            "state, created_at, meta, cluster_id, cluster_label "
+            f"SELECT {_FACT_READ_COLS} "
             f"FROM {self._facts_table} WHERE {key_pred} AND id = %s",
             (*key_params, fact_id),
         ).fetchall()
@@ -1750,8 +1756,7 @@ class PostgresVectorGraph(SearchableGraph):
         """
         key_pred, params = self._key_pred()
         sql = (
-            "SELECT id, text, source, confidence, scope, category, observation_count, "
-            "state, created_at, meta, cluster_id, cluster_label "
+            f"SELECT {_FACT_READ_COLS} "
             f"FROM {self._facts_table} WHERE {key_pred} "
             "AND category = %s AND scope = %s AND meta->>'screen_id' = %s"
         )
@@ -1881,8 +1886,7 @@ class PostgresVectorGraph(SearchableGraph):
             return []
         key_pred, params = self._key_pred("e")
         sql = (
-            "SELECT r.id, r.text, r.source, r.confidence, r.scope, r.category, "
-            "r.observation_count, r.state, r.created_at, r.meta, r.cluster_id, r.cluster_label "
+            f"SELECT {_aliased(_FACT_READ_COLS, 'r')} "
             f"FROM {self._edges_table} e "
             f"JOIN {self._facts_table} r ON {self._join_keys('r', 'e')} AND r.id = e.src_id "
             f"WHERE {key_pred} "
@@ -1931,8 +1935,7 @@ class PostgresVectorGraph(SearchableGraph):
         """
         key_pred, params = self._key_pred("e")
         sql = (
-            "SELECT d.id, d.text, d.source, d.confidence, d.scope, d.category, "
-            "d.observation_count, d.state, d.created_at, d.meta, d.cluster_id, d.cluster_label "
+            f"SELECT {_aliased(_FACT_READ_COLS, 'd')} "
             f"FROM {self._edges_table} e "
             f"JOIN {self._facts_table} d ON {self._join_keys('d', 'e')} AND d.id = e.dst_id "
             f"WHERE {key_pred} "
@@ -2066,8 +2069,7 @@ class PostgresVectorGraph(SearchableGraph):
         # live working memory or a snapshot-bound `prd-<project>` — the factory's
         # canonical project graph.
         rows = self._conn.execute(
-            "SELECT id, text, source, confidence, scope, category, observation_count, "
-            "state, created_at, meta, cluster_id, cluster_label, "
+            f"SELECT {_FACT_READ_COLS}, "
             "success_count, failure_count, last_outcome "
             f"FROM {self._facts_table} "
             f"WHERE {key_pred} AND state = 'active' "

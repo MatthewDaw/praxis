@@ -21,6 +21,7 @@ import psycopg
 
 from knowledge.knowledge_graph.knowledge_graph_def import Fact
 from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+    _FACT_READ_COLS as _FACT_COLS,
     PostgresVectorGraph,
 )
 
@@ -29,10 +30,8 @@ from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph im
 # chosen here from constants and never user-controlled.
 _SNAP_FACTS, _SNAP_EDGES = "snapshots", "snapshot_edges"
 
-_FACT_COLS = (
-    "id, text, source, confidence, scope, category, observation_count, "
-    "state, created_at, meta, cluster_id, cluster_label"
-)
+# Same positional projection ``_row_to_fact`` consumes — reused from the store so
+# the two never drift.
 
 
 class OrgSourceReader:
