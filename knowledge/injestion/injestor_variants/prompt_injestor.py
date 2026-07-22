@@ -111,7 +111,12 @@ def segment_passthrough(raw_input: str) -> list[str]:
     table_facts = linearize_table(raw_input)
     if table_facts:
         return table_facts
+    return _segment_prose(raw_input)
 
+
+def _segment_prose(raw_input: str) -> list[str]:
+    """Segment non-tabular prose into atomic, noise-free sentences (the table check
+    is the caller's — this is the prose-only tail of :func:`segment_passthrough`)."""
     facts: list[str] = []
     skipping = False  # inside a trailing noise section
     for raw_line in raw_input.splitlines():
@@ -172,7 +177,9 @@ class PromptIngestor(Ingestor):
         if self.llm is None:
             # No model to distill with: clean obvious document noise and segment
             # into atomic sentences so we don't dump raw chunks into the graph.
-            return [Insight(raw_text=fact) for fact in segment_passthrough(raw_input)]
+            # The table branch above already ruled out tabular input, so segment
+            # the prose directly (skips a redundant second linearize_table pass).
+            return [Insight(raw_text=fact) for fact in _segment_prose(raw_input)]
         # The SOURCE line gives the model document context so it can resolve
         # in-document references (e.g. a bare "line 12") into self-contained facts.
         context = f"SOURCE: {source}\n\n" if source else ""
