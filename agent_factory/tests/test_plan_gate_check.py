@@ -21,13 +21,25 @@ if _TOOLS not in sys.path:
 import plan_gate_check as pgc  # noqa: E402
 
 
-class FakePraxis:
-    """Fake exposing the ONE method the tool calls. ``facts_by`` asserts the exact live-plan query
-    (category/space/snapshot) then returns canned facts — or raises, to model Praxis being down."""
+# A signed contract episode (evaluator recorded real cut/merge/add actions). Threaded by default so
+# these tests exercise the OTHER (decision/source/dep) rules — R-CONTRACT-SIGNED is locked separately
+# in test_plan_gate_contract.py. ``episodes=None`` here means "the default signed contract".
+_SIGNED_EPISODE = {
+    "id": "ep-1",
+    "meta": {"episode": {"kind": "contract-signed", "n_assertions": 14,
+                         "actions": {"cut": 3, "merged": 1, "added": 2}, "signer": "evaluator"}},
+}
 
-    def __init__(self, facts=None, raise_exc=None):
+
+class FakePraxis:
+    """Fake exposing the methods the tool calls. ``facts_by`` asserts the exact live-plan query
+    (category/space/snapshot) then returns canned facts — or raises, to model Praxis being down.
+    ``get_episodes`` returns the signed-contract episode (default) so the contract rule passes."""
+
+    def __init__(self, facts=None, raise_exc=None, episodes=None):
         self._facts = [] if facts is None else list(facts)
         self._raise = raise_exc
+        self._episodes = [_SIGNED_EPISODE] if episodes is None else list(episodes)
         self.calls = []
 
     def facts_by(self, category=None, space=None, snapshot=None, **k):
@@ -39,6 +51,11 @@ class FakePraxis:
         if self._raise is not None:
             raise self._raise
         return list(self._facts)
+
+    def get_episodes(self, *, meta=None, space=None, snapshot=None):
+        if self._raise is not None:
+            raise self._raise
+        return list(self._episodes)
 
 
 def _fact(rid, *, acceptance, tags, verify, decision="", depends_on=None, source="prd-sotos"):

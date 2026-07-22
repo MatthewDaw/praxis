@@ -161,6 +161,15 @@ defaults there instead of one at a time. **Anti-masking guard:** a forced defaul
 genuine high-regret/irreversible fork (auth model, data-loss semantics, money, PII exposure) — those
 surface to the human even in Autonomous mode.
 
+## Step 0d — Arm the planning marker (so the plan Stop hook enforces this session)
+
+Before extracting, **stamp the planning marker**: `_ticket_state.stamp_planning(project, owner)`. This
+writes a session-owned, heartbeated marker on the `prd-<project>` snapshot that ARMS the
+`plan_completeness` Stop hook — from here until bless the hook blocks the planning turn from ending until
+the plan mechanically blesses (B9). Re-stamp periodically to heartbeat it (the marker goes stale after
+`DEFAULT_PLANNING_TTL_S`). It is CLEARED at bless (B9). A build session stamps a *run* marker, not this
+one, so the two Stop hooks never cross-fire.
+
 ## Step 1 — Extract candidates (two passes, then reconcile)
 
 **Pass A — behavioral, from the doc.** Atomize the rules into binary conditions. A good brainstorm doc
@@ -323,6 +332,14 @@ positive where both genuinely hold, or `custom_text` to reconcile). You never se
 requirement that conflicts with a mounted `constitution` invariant surfaces as the same kind of pending
 pair. (For the raw-bulk path, the contradiction net is the audit — see the caveat in Step 2.)
 
+**Stamp the `contradictions_checked` marker (positive evidence detection RAN, KTD4).** An empty
+`praxis_get_contradictions` queue is NOT evidence of consistency — the raw-bulk path skips detection, so
+"empty" can mean "never ran". The `plan_completeness` hook therefore requires a `contradictions_checked`
+marker on the planning marker fact IN ADDITION to an empty queue. Once you have actually RUN detection
+over the snapshot (the surface-mode conflict pass, or the audit's contradiction net for a raw-admitted
+set), set `contradictions_checked=true` on the planning marker; a raw-bulk write that has not yet run the
+net must leave it **`false`** honestly. The gate blocks until it is `true` AND the queue is empty.
+
 **d. A human correction is a fact, not an override.** When the human corrects a *factual* claim, admit it
 the same way (`add_insight(..., on_conflict="surface")`) so a correction that is itself wrong, or clashes
 with something settled, *surfaces* and is reconciled rather than silently absorbed. When a correction
@@ -440,6 +457,29 @@ A challenge isn't done until **closed by a Praxis write**:
 - **dismissed** — doesn't hold: record *why* with a non-empty reason as `praxis_record_episode`.
 - **deferred** — a genuine owned-decision: record it as a deferred owned-decision episode (explicit, not
   silent); if it still blocks the build, leave the affected requirement **incomplete** in Praxis.
+
+## B1c — Sign the contract (a SEPARATE evaluator, adversarial, then signs)
+
+The planner **never grades its own contract.** After extraction + the B1 challenge, dispatch a
+**separate, read-only evaluator sub-agent** (the read-only retrieval sub-agent contract) whose only job
+is to **falsify / cut / merge / tighten** the candidate testable assertions — then **sign** the result.
+The evaluator records ONE `contract-signed` episode carrying the assertion COUNT and its ACTIONS:
+
+```
+praxis_record_episode(
+  text = "contract-signed for prd-<project>: evaluator adversarially reviewed and signed the "
+         "testable-assertion contract",
+  # meta.episode payload mirrors contract_signature.build_signed_payload(n, actions, signer):
+  #   kind="contract-signed", n_assertions=<N>, actions={cut,merged,added}, signer="evaluator"
+  outcome = "signed",
+)
+```
+
+**Gate on ACTIONS, not a padded count (anti-Goodhart, KTD3).** The HARD bless predicate (`R-CONTRACT-SIGNED`,
+enforced by `plan_gate_check` at B6/B9) is "**signed AND ≥1 real evaluator action recorded**" — a
+signature over an unchanged draft (all-zero actions) does NOT pass. The count is recorded for visibility
+only; a requirement below ~10 concrete assertions is **FLAGGED for the evaluator** (`below_floor`), never
+hard-rejected.
 
 ## B2 — Near-duplicate / overlap challenges WRITE BACK to the graph
 
@@ -755,17 +795,27 @@ This is the **only** thing the validation leaves behind besides the graph edits.
 assertion-of-record so the act of auditing **cannot be silently skipped** — NOT a findings state machine,
 NOT a status manifest.
 
-## B9 — The human clears the gate, then bless
+## B9 — The gate blesses (auto when the predicate holds; human only on a failing predicate)
 
-Planning is **human-gated** — there is no planning Stop hook. Report status against each condition; never
-declare it yourself. The human may bless only once ALL hold, checked **live from Praxis**:
+Planning is guarded by the **`plan_completeness` Stop hook** (`hooks/plan_completeness_gate.py`, the
+second `Stop` entry): while the planning marker is armed (Step 0d) it BLOCKS the planning turn until the
+plan mechanically blesses, then **auto-blesses (ALLOWS) with no human**. The human is summoned **only on a
+failing predicate** — auto-bless raises *structural* rigor (it adds the signed-contract + contradictions-
+checked predicates); it does not replace the qualitative human review, which becomes **sampled on a
+failing predicate**. A bounded terminal escalation (`FACTORY_PLAN_GATE_MAX_ATTEMPTS`, default 3) means an
+unresolvable predicate on an unchanged snapshot escalates to a human instead of re-blocking forever.
+
+Report status against each condition; never declare it yourself. The plan blesses only once ALL hold,
+checked **live from Praxis**:
 - Every requirement maps to ≥1 binary acceptance condition (or is an explicitly-deferred owned decision).
 - Every requirement carries `source="prd-<project>"` (`R-HAS-SOURCE`).
 - **`python -m agent_factory.tools.plan_gate_check <project>` exits `0`** over the live requirements (B6) —
   a non-zero exit is a **HARD BLOCK**; the gate cannot be cleared while plan_gate_check rejects, and its
-  reasons must be surfaced verbatim and cleared first.
-- Zero unresolved contradictions; no dangling concept reference (H14); bidirectional surface coverage
-  clean (B6).
+  reasons must be surfaced verbatim and cleared first. This now INCLUDES `R-CONTRACT-SIGNED`: a
+  **signed contract** (B1c) with recorded evaluator actions must exist, or the gate blocks.
+- The **`contradictions_checked` marker is set** for the snapshot AND zero unresolved contradictions (an
+  empty queue with no marker is NOT evidence of consistency — the raw-bulk path skips detection, KTD4);
+  no dangling concept reference (H14); bidirectional surface coverage clean (B6).
 - Every can't-miss failure class addressed-or-excluded with logged rationale (data loss, auth bypass,
   irreversible action, silent partial failure).
 - **Every known every-site refactor and high-severity edge case carries a build-validation guard check**
@@ -778,9 +828,10 @@ declare it yourself. The human may bless only once ALL hold, checked **live from
 and the gate is reachable, say so and STOP asking. Beware the under-specification trap: zero
 contradictions on a thin plan is not "done," it's "nothing was claimed yet."
 
-When the human clears the gate: **`save_snapshot(space="<project>", snapshot="prd-<project>")`** (PRD-only
-— mounts aren't carried). This dumps working memory into the `prd-<project>` snapshot in the project's
-space. Render the prose PRD from the facts for human review. This snapshot is the durable plan; the build
+When the gate blesses: **`save_snapshot(space="<project>", snapshot="prd-<project>")`** (PRD-only
+— mounts aren't carried), then **CLEAR the planning marker** (`_ticket_state.clear_planning(project,
+owner)`) so the `plan_completeness` hook goes inert for this session. This dumps working memory into the
+`prd-<project>` snapshot in the project's space. Render the prose PRD from the facts for human review. This snapshot is the durable plan; the build
 loop consumes it later. Editing later = `load_snapshot(space="<project>", snapshot="prd-<project>",
 mode="replace")` → edit → re-save, or use Amend mode. (The `prd-<project>` snapshot is MUTABLE — the
 build loop reads and writes ticket state on it directly; read-only applies only to mounts and load/dump

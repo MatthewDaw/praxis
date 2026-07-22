@@ -317,11 +317,17 @@ def incomplete_requirements(project: str, *, exclude_leased: bool = False,
     return out.get("requirements") or out.get("incomplete") or out.get("items") or []
 
 
-def get_fact(cid: str, *, space: str | None = None, snapshot: str | None = None) -> dict:
+def get_fact(cid: str, *, space: str | None = None, snapshot: str | None = None,
+             not_found_ok: bool = False) -> dict:
     """Full fact (candidate view) including ``meta``. Raises PraxisUnreachable on any error.
     Pass the ticket ``(space, snapshot)`` to read from a snapshot-bound graph (e.g. the mutable
-    ``prd-<project>`` tickets); omit both for working memory. A partial reference fails closed."""
-    return _request("GET", f"/candidates/{cid}", space=space, snapshot=snapshot)
+    ``prd-<project>`` tickets); omit both for working memory. A partial reference fails closed.
+
+    ``not_found_ok`` returns ``{}`` on a benign 404 (the fact simply does not exist) instead of
+    fail-closing — the read a planning-marker probe wants, where "no marker fact" means "no planning
+    session", NOT "Praxis is down". Every other failure still raises."""
+    return _request("GET", f"/candidates/{cid}", space=space, snapshot=snapshot,
+                    not_found_ok=not_found_ok)
 
 
 def facts_by(category: str | None = None, meta: dict | None = None,
@@ -390,6 +396,61 @@ def context(query: str, *, top_k: int = 10, as_of: str | None = None,
                    params={"query": q, "top_k": top_k, "as_of": as_of},
                    space=space, snapshot=snapshot)
     return out.get("hits") or []
+
+
+# --------------------------------------------------------------------------- episodes / contradictions
+
+# The decision-log + contradiction lanes the MCP tools (``praxis_record_episode`` /
+# ``praxis_get_contradictions``, ``knowledge/mcp/server.py:684,745``) call, exposed here so a
+# Stop-hook subprocess and ``tools/plan_gate_check.py`` can read/write them WITHOUT importing the
+# praxis package. Episodes are store-only decision journals (``category="episodic"``, out of semantic
+# recall); the signed-contract episode rides here as a ``meta.episode`` payload (see
+# ``src/agent_factory/contract_signature.py`` for the pure payload/validation helpers).
+
+def record_episode(text: str, *, episode: dict | None = None,
+                   alternatives: list[str] | None = None, outcome: str = "pending",
+                   derived_from: list[str] | None = None, decided_at: str | None = None,
+                   space: str | None = None, snapshot: str | None = None) -> dict:
+    """Record a decision-log episode (POST /insights, ``category="episodic"``) — mirror of the
+    ``praxis_record_episode`` MCP tool's request body. ``episode`` is the full ``meta.episode``
+    payload (e.g. the signed-contract payload from ``contract_signature.build_signed_payload``);
+    ``outcome``/``alternatives``/``decided_at`` fill in the store-only fields the tool also sets.
+    Raises PraxisUnreachable on any error (fail-closed, like the rest of the client)."""
+    payload = dict(episode or {})
+    payload.setdefault("outcome", outcome)
+    if alternatives:
+        payload["alternatives"] = list(alternatives)
+    if decided_at is not None:
+        payload["decided_at"] = decided_at
+    body: dict[str, Any] = {"insight": text, "category": "episodic",
+                            "meta": {"episode": payload}}
+    if derived_from:
+        body["derivedFrom"] = list(derived_from)
+    return _request("POST", "/insights", body=body, space=space, snapshot=snapshot)
+
+
+def get_episodes(*, meta: dict | None = None, space: str | None = None,
+                 snapshot: str | None = None) -> list[dict]:
+    """EXHAUSTIVE enumeration of the ``category="episodic"`` decision-log facts (GET /facts/by), so a
+    gate can find the signed-contract episode and validate it. ``meta`` is a flat top-level meta
+    filter (scalar-equality OR array-membership). ``(space, snapshot)`` bind the read to a
+    snapshot-bound graph; a partial reference fails closed (see :func:`_request`). Empty -> ``[]``."""
+    params: dict[str, Any] = {"state": "active", "category": "episodic"}
+    if meta:
+        params["meta"] = json.dumps(meta)
+    out = _request("GET", "/facts/by", params=params, space=space, snapshot=snapshot)
+    return out.get("facts") or []
+
+
+def get_contradictions(*, space: str | None = None, snapshot: str | None = None) -> list[dict]:
+    """The flagged contradiction clusters (GET /contradictions) — mirror of ``praxis_get_contradictions``.
+    Pass BOTH ``space`` and ``snapshot`` to review contradictions raised INSIDE an org-shared snapshot
+    (e.g. an ``on_conflict="surface"`` clash while authoring the plan); omit both for working memory.
+    Returns the cluster list (``[]`` when none flagged). Raises PraxisUnreachable on any error."""
+    out = _request("GET", "/contradictions", space=space, snapshot=snapshot)
+    if isinstance(out, list):
+        return out
+    return out.get("contradictions") or out.get("clusters") or []
 
 
 def ping() -> bool:

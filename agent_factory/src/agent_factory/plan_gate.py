@@ -48,6 +48,7 @@ R_NO_DANGLING_DEP = "R-NO-DANGLING-DEP"  # every depends_on target is a requirem
 R_NO_DEP_CYCLE = "R-NO-DEP-CYCLE"        # the depends_on graph is acyclic (build order is realizable)
 R_NO_IMPL_DEPENDS_ON_DECISION = "R-NO-IMPL-DEPENDS-ON-DECISION"  # no ticket may depends_on a decision
 R_DECISION_NOT_END_STATE = "R-DECISION-NOT-END-STATE"           # a decision is human-accepted, not built
+R_CONTRACT_SIGNED = "R-CONTRACT-SIGNED"  # a blessed plan carries a signed contract w/ evaluator actions
 
 # A PURE ARCHITECTURE DECISION admitted as a requirement ticket MUST carry ONLY this neutral tag (so it
 # resolves ZERO implementation checks) and be ``verify="manual"`` (a human accepts/overrides it at the
@@ -157,6 +158,7 @@ def evaluate_plan(
     requirements: list[Requirement],
     out_of_scope: list[str] | None = None,
     project: str | None = None,
+    contract: dict | None = None,
 ) -> Verdict:
     """Run the done-gate over a PRD's requirements; return admit/reject + reasons.
 
@@ -172,6 +174,15 @@ def evaluate_plan(
     requirement that lacks its project source tag is REJECTED, so generation drift cannot
     slip a source-less plan past the gate and make the downstream completeness query
     (which filters ``source="prd-<project>"``) silently return empty.
+
+    ``contract`` is the signed-contract evidence THREADED IN by the caller — this function
+    stays PURE and never reads Praxis (feasibility finding: ``src/agent_factory`` has no
+    client). ``tools/plan_gate_check.py`` reads the ``contract-signed`` episode via
+    ``hooks/_praxis`` and passes ``{"signed": bool, "actions_recorded": bool}`` here. This is
+    the ``R-CONTRACT-SIGNED`` rule: a blessed plan requires a signed contract whose evaluator
+    ACTIONS were recorded (anti-Goodhart — the count is informational, not the gate). ``None``
+    means the evidence was not supplied (the pure-eval / back-compat lane) and the rule stands
+    down; an explicit dict gates on ``signed`` + ``actions_recorded``.
     """
     reasons: list[Reason] = []
     defined = {_norm(c) for r in requirements for c in r.defines}
@@ -290,6 +301,33 @@ def evaluate_plan(
             )
         )
 
+    # --- R-CONTRACT-SIGNED (plan-level). A blessed plan must carry a signed contract whose evaluator
+    # ACTIONS (cuts/merges/additions) were recorded — the anti-Goodhart bless predicate (KTD3). The
+    # evidence is threaded IN by the caller (plan_gate_check reads the contract-signed episode); this
+    # pure function never reads Praxis. ``contract=None`` = evidence not supplied (pure-eval lane) ->
+    # rule stands down. An explicit dict gates: unsigned rejects; signed-but-no-actions (a padded count)
+    # rejects; the raw n_assertions count is informational only, never the gate.
+    if contract is not None:
+        if not bool(contract.get("signed")):
+            reasons.append(
+                Reason(
+                    R_CONTRACT_SIGNED,
+                    "plan has no signed contract — an evaluator (separate from the planner) must "
+                    "adversarially cut/merge/tighten the testable assertions and SIGN the result "
+                    "(a contract-signed episode). Run the intake negotiation + signing step.",
+                )
+            )
+        elif not bool(contract.get("actions_recorded")):
+            reasons.append(
+                Reason(
+                    R_CONTRACT_SIGNED,
+                    "contract is signed but records NO evaluator actions (cuts/merges/additions) — a "
+                    "signature over an unchanged draft is a padded-count Goodhart target, not real "
+                    "adversarial review. The evaluator must actually falsify/cut/merge/tighten "
+                    "assertions before signing.",
+                )
+            )
+
     return Verdict(admitted=not reasons, reasons=reasons)
 
 
@@ -325,6 +363,9 @@ class PlanGate:
             requirements,
             out_of_scope=input.get("out_of_scope", []),
             project=input.get("project"),
+            # The signed-contract evidence, when a case supplies it. Absent -> None -> the
+            # R-CONTRACT-SIGNED rule stands down (existing cases are unaffected).
+            contract=input.get("contract"),
         )
 
 

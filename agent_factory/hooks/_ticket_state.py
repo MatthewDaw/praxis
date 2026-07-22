@@ -97,10 +97,13 @@ M_PINNED_CHECKS = "pinned_checks"           # entries are synthesized VALIDATION
 M_RUN_OWNER = "run_owner"
 M_RUN_AT = "run_at"
 M_RUN_SCOPE = "run_scope"
-M_UNDER_SPECIFIED = "under_specified"   # [missing structural fields] — routed to intake, never claimed
+M_UNDER_SPECIFIED = "under_specified"   # [missing structural fields] — routed to intake, never claimed (plan 003)
+M_PLANNING_OWNER = "planning_owner"         # session id of the active planning (intake) session (plan 002)
+M_PLANNING_AT = "planning_at"               # epoch seconds, planning-marker heartbeat; stale => dead (plan 002)
 
 _LEASE_KEYS = (M_CLAIM_OWNER, M_CLAIM_AT, M_CLAIM_HEARTBEAT_AT, M_CLAIM_LEASE_TTL)
 _RUN_KEYS = (M_RUN_OWNER, M_RUN_AT, M_RUN_SCOPE)
+_PLANNING_KEYS = (M_PLANNING_OWNER, M_PLANNING_AT)
 
 # A MANUAL requirement (``meta.verify == "manual"``) is one the executor MAY NOT self-check: its pass
 # only counts when recorded via an external/human signal, never a worker-run command. These are the
@@ -111,6 +114,7 @@ HUMAN_PASS_SOURCES = frozenset({"human", "manual", "external"})
 
 DEFAULT_LEASE_TTL_S = 900    # 15 min — per-ticket claim lease
 DEFAULT_RUN_TTL_S = 3600     # 60 min — whole-set run marker; refreshed at each ticket boundary
+DEFAULT_PLANNING_TTL_S = 3600  # 60 min — planning-session marker; refreshed by intake heartbeat
 
 # The checks/state seam (org -> space -> snapshot tenancy). Every project is exactly ONE space
 # (``space == the bare project name``); inside it the plan/ticket STATE lives in the ``prd-<project>``
@@ -801,6 +805,72 @@ def clear_run(cids: list[str], owner: str,
             _praxis.patch_meta(str(cid), {k: None for k in _RUN_KEYS}, **_ref_kw(ref))
             n += 1
     return n
+
+
+# --------------------------------------------------------------------------- planning-session marker
+
+# The planning ARMING signal (the sibling of the whole-set run marker, for the ``plan_completeness``
+# Stop hook). af-intake-plan stamps it at intake START and clears it at BLESS; while a non-stale
+# marker is present the plan hook is ARMED and blocks a planning session's Stop until the plan
+# mechanically blesses. It lives on a single, deterministic marker fact in the plan snapshot
+# (``prd-<project>``) — so, like ``run_owner``/``run_at``, it is a session-owned, heartbeated meta.
+
+def planning_marker_id(project: str) -> str:
+    """The deterministic id of the planning marker fact in ``prd-<project>`` (a leading ``prd-`` is
+    stripped, so a bare project or the snapshot name both resolve to the same marker)."""
+    bare = project[len("prd-"):] if project.startswith("prd-") else project
+    return f"prd-{bare}::planning"
+
+
+def planning_live(meta: dict, now: Optional[float] = None) -> bool:
+    """True iff ``meta`` carries a NON-STALE planning marker (now - planning_at <=
+    DEFAULT_PLANNING_TTL_S). A stale marker (a dead/abandoned intake) is ignored so a crashed
+    planning session never arms the hook forever. Mirror of :func:`run_live`."""
+    if now is None:
+        now = time.time()
+    if not meta.get(M_PLANNING_OWNER):
+        return False
+    at = meta.get(M_PLANNING_AT)
+    if at is None:
+        return False
+    try:
+        return (now - float(at)) <= float(DEFAULT_PLANNING_TTL_S)
+    except (TypeError, ValueError):
+        return False
+
+
+def stamp_planning(project: str, owner: str) -> str:
+    """Mark ``project``'s planning session ACTIVE for ``owner`` (planning_owner/planning_at) on the
+    plan snapshot's marker fact. Called at intake start; re-stamping heartbeats the marker (refreshes
+    planning_at). Returns the marker fact id. Mirror of :func:`stamp_run`."""
+    mid = planning_marker_id(project)
+    ref = project_ref(project).plan
+    _praxis.patch_meta(mid, {M_PLANNING_OWNER: owner, M_PLANNING_AT: time.time()}, **_ref_kw(ref))
+    return mid
+
+
+def clear_planning(project: str, owner: str) -> bool:
+    """Clear ``owner``'s planning marker (NULL planning_owner/planning_at) — called at BLESS, when the
+    plan is done and the hook should go inert. Only clears a marker THIS owner holds (an unowned
+    marker is also clearable); an owner mismatch returns False. Mirror of :func:`clear_run`."""
+    mid = planning_marker_id(project)
+    ref = project_ref(project).plan
+    if _meta(mid, ref).get(M_PLANNING_OWNER) not in (owner, None):
+        return False
+    _praxis.patch_meta(mid, {k: None for k in _PLANNING_KEYS}, **_ref_kw(ref))
+    return True
+
+
+def planning_active(project: str, now: Optional[float] = None) -> bool:
+    """True iff a NON-STALE planning marker is present for ``project`` — the signal the
+    ``plan_completeness`` hook arms on. Reads the marker fact NOT-FOUND-TOLERANTLY: a missing marker
+    fact means "no planning session" (inactive), NOT "Praxis down" — a genuine PraxisUnreachable still
+    propagates so the hook fails closed."""
+    mid = planning_marker_id(project)
+    ref = project_ref(project).plan
+    fact = _praxis.get_fact(mid, not_found_ok=True, **_ref_kw(ref))
+    meta = dict((fact or {}).get("meta") or {})
+    return planning_live(meta, now)
 
 
 # --------------------------------------------------------------------------- dependency readiness
