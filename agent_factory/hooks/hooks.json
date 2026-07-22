@@ -8,6 +8,14 @@
             "command": "${PRAXIS_HOOK_PYTHON:-python3} \"${CLAUDE_PLUGIN_ROOT}/hooks/build_completeness_gate.py\""
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PRAXIS_HOOK_PYTHON:-python3} \"${CLAUDE_PLUGIN_ROOT}/hooks/plan_completeness_gate.py\""
+          }
+        ]
       }
     ]
   }
