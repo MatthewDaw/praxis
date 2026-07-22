@@ -223,11 +223,92 @@ export function McpSetupGuide({ email }: McpSetupGuideProps = {}) {
           <code>include_episodic</code> on <code>praxis_get_context</code>), and read a
           fact&apos;s full <code>meta</code> (<code>praxis_get_fact</code>). This is full
           parity with the dashboard&apos;s graph, Snapshots, and Context actions. Your tenant{" "}
-          <code>(org_id, user_id)</code> is resolved
-          from a cached Cognito login, so the local process never holds database
-          credentials.
+          <code>(org_id, user_id)</code> is resolved from your credential — a cached
+          Cognito login <em>or</em> a durable org-scoped API key (see below) — so the
+          local process never holds database credentials.
         </p>
       </header>
+
+      <div className="mcp-guide__step mcp-guide__step--highlight">
+        <h3>Connect &amp; authenticate to a specific org</h3>
+        <p>
+          Every request carries <strong>one credential</strong> plus an{" "}
+          <code>X-Praxis-Org</code> header. There are two correct ways to connect —
+          pick by <strong>who is running</strong>:
+        </p>
+        <table className="mcp-tools-table">
+          <thead>
+            <tr>
+              <th>You are…</th>
+              <th>Connect with</th>
+              <th>How the org is chosen</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <strong>A human</strong> (interactive session)
+              </td>
+              <td>
+                <strong>Cognito login.</strong> Ask Claude to log you in
+                (<code>praxis_login</code>), then <code>praxis_select_org</code>. A
+                refresh token + selected org are cached to your per-project identity
+                file (<code>PRAXIS_MCP_CACHE</code>, default{" "}
+                <code>~/.praxis/mcp.json</code>).
+              </td>
+              <td>
+                The org you <code>praxis_select_org</code> — or the{" "}
+                <code>PRAXIS_ORG</code> pin, which always wins.
+              </td>
+            </tr>
+            <tr>
+              <td>
+                <strong>An agent</strong> / automation / CI (the af-build gate)
+              </td>
+              <td>
+                <strong>A durable, org-scoped API key.</strong> Set{" "}
+                <code>PRAXIS_API_KEY</code> to a <code>pxk_…</code> key (no login, no
+                refresh token, survives restarts). Mint one below.
+              </td>
+              <td>
+                The key <em>is</em> the org — pin <code>PRAXIS_ORG</code> to the key&apos;s
+                org. Using the key for any other org is rejected with{" "}
+                <strong>403</strong>.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p className="muted small">
+          <strong>Precedence, highest first:</strong> the{" "}
+          <code>PRAXIS_MCP_AUTH_DISABLED</code> dev seam →{" "}
+          <code>PRAXIS_API_KEY</code> (if set, it wins over any login) → the Cognito
+          bearer minted from your cached login. So an agent that sets{" "}
+          <code>PRAXIS_API_KEY</code> is authenticated by that key even if a login is
+          also cached. Confirm which mode + org is live any time with{" "}
+          <code>praxis_whoami</code>.
+        </p>
+        <p className="muted small">
+          <strong>Two orgs at once (e.g. <code>bestie</code> + <code>sotos</code>):</strong>{" "}
+          give each project its own <code>.claude/settings.local.json</code> with its own{" "}
+          <code>PRAXIS_ORG</code> + <code>PRAXIS_API_KEY</code> (+{" "}
+          <code>PRAXIS_MCP_CACHE</code>). A real env var wins over the shared{" "}
+          <code>agent_factory/.env</code>, so each project connects to its own org with
+          its own durable key — concurrently, neither disturbing the other. <strong>Never
+          edit <code>agent_factory/.env</code></strong> to repoint an org; that is the
+          shared default and moves every project at once.
+        </p>
+        <h4 className="mcp-guide__subhead">Mint a durable org-scoped key (agents)</h4>
+        <p className="muted small">
+          From the dashboard <strong>API Keys</strong> panel (scoped to the active org),
+          or the CLI. The raw <code>pxk_…</code> key is shown <strong>once</strong> — copy it
+          into <code>PRAXIS_API_KEY</code>. It is non-expiring (lives until revoked) and
+          survives service restarts.
+        </p>
+        <CommandBlock
+          command="uv run python -m knowledge.serve.apikeys mint --org bestie --label agent"
+          label="Mint a bestie-scoped key (prints the raw key once)"
+        />
+      </div>
 
       <div className="mcp-guide__step mcp-guide__step--highlight">
         <h3>Quick start — hand this prompt to Claude</h3>

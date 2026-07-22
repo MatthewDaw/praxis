@@ -70,6 +70,16 @@ def cognito_config() -> CognitoConfig:
     return CognitoConfig(user_pool_id=user_pool_id, region=region, client_id=client_id)
 
 
+def _cognito_configured() -> bool:
+    """True iff this backend has a Cognito pool + client wired (can verify bearers).
+
+    A backend with these unset is API-key-only: a bearer can never validate here,
+    so we say so by name instead of returning a generic 401 (see :func:`_bearer_error`).
+    """
+    cfg = cognito_config()
+    return bool(cfg.user_pool_id and cfg.client_id)
+
+
 @lru_cache(maxsize=1)
 def _jwks_client() -> jwt.PyJWKClient:
     """Module-level cached JWKS client (handles key fetch/rotation/caching)."""
@@ -110,6 +120,28 @@ def verify_token(token: str) -> dict:
     return claims
 
 
+def _bearer_error(token: str, exc: Exception) -> str:
+    """A precise 401 detail for a bearer that failed verification.
+
+    Names the specific failure mode instead of a bare "invalid token": a token
+    from a DIFFERENT Cognito pool (the classic "right key, wrong backend" case)
+    is called out as a pool mismatch, so the caller learns to point at the
+    backend that actually hosts their org rather than guessing.
+    """
+    cfg = cognito_config()
+    try:
+        iss = jwt.decode(token, options={"verify_signature": False}).get("iss")
+    except Exception:  # noqa: BLE001 — undecodable token: fall through to the generic reason
+        iss = None
+    if iss and iss != cfg.issuer:
+        return (
+            f"bearer pool mismatch: token was issued by {iss!r} but this backend only trusts "
+            f"{cfg.issuer!r} (pool {cfg.user_pool_id!r}). Use a token minted against this pool, or "
+            f"authenticate with an X-Praxis-Key for the org this backend hosts."
+        )
+    return f"invalid token: {exc}"
+
+
 def _principal_from_jwt(authorization: str | None) -> Principal:
     """Resolve a Principal from a Cognito Bearer JWT (or the dev seam)."""
     if os.environ.get("PRAXIS_AUTH_DISABLED") == "1":
@@ -118,11 +150,24 @@ def _principal_from_jwt(authorization: str | None) -> Principal:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="missing bearer token")
 
+    # A backend with no Cognito pool wired can NEVER validate a bearer. Say so by
+    # name (the expected auth mode) rather than letting the mint below fail with a
+    # generic 401 that reads as "your token is bad" when it's really "wrong door".
+    if not _cognito_configured():
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "this backend is API-key-only: Cognito bearer auth is not configured here "
+                "(COGNITO_USER_POOL_ID / COGNITO_CLIENT_ID are unset). Send an "
+                "'X-Praxis-Key: pxk_...' header instead."
+            ),
+        )
+
     token = authorization.split(" ", 1)[1].strip()
     try:
         claims = verify_token(token)
     except Exception as exc:  # noqa: BLE001 - any decode/JWKS failure is a 401
-        raise HTTPException(status_code=401, detail="invalid token") from exc
+        raise HTTPException(status_code=401, detail=_bearer_error(token, exc)) from exc
 
     return Principal(sub=claims["sub"], email=claims.get("email"))
 

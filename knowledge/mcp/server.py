@@ -1,10 +1,13 @@
 """The ``praxis-knowledge`` MCP server: thin tools over the backend's HTTP API.
 
-Each tool is a thin authenticated client — it mints a fresh Cognito ID token
-from the cached login (:mod:`knowledge.mcp.identity`) and calls the backend with
-``Authorization: Bearer <token>`` + ``X-Praxis-Org: <org>``. Tenancy and the
-ingestion/retrieval pipeline live entirely on the backend; nothing here touches
-the database.
+Each tool is a thin authenticated client that calls the backend with
+``X-Praxis-Org: <org>`` plus ONE credential, resolved by this precedence (see
+:func:`_headers`): the ``PRAXIS_MCP_AUTH_DISABLED`` dev seam, else a durable
+org-scoped ``pxk_`` key from ``PRAXIS_API_KEY`` (``X-Praxis-Key`` — no login
+needed, survives restarts; parity with the af-build hook), else a fresh Cognito
+ID token minted from the cached login (:mod:`knowledge.mcp.identity`,
+``Authorization: Bearer <token>``). Tenancy and the ingestion/retrieval pipeline
+live entirely on the backend; nothing here touches the database.
 
 Login happens through the MCP tools themselves (``praxis_login`` / org tools), so
 the only setup is registering the server — no separate CLI step:
@@ -66,6 +69,41 @@ def _dev_org() -> str:
     return os.environ.get("PRAXIS_MCP_ORG", "default").strip() or "default"
 
 
+def _api_key() -> str:
+    """A durable, org-scoped ``pxk_`` key from ``PRAXIS_API_KEY`` (``""`` if unset).
+
+    When set, the MCP tools authenticate to a specific org with this ONE key —
+    the same durable credential the af-build Stop-hook uses (``hooks/_praxis``),
+    and the simplest way to pin the MCP tools to an org WITHOUT a Cognito login (no
+    refresh-token cache, survives restarts). It takes precedence over the bearer
+    mint, mirroring the hook's precedence exactly. The key IS org-scoped, so the
+    org sent alongside it must be the key's org (see :func:`_key_org`).
+    """
+    return os.environ.get("PRAXIS_API_KEY", "").strip()
+
+
+def _key_org() -> str:
+    """The org to send with an API key: the ``PRAXIS_ORG`` pin, else the cached selection.
+
+    A key is org-scoped and the backend 403s a mismatch, so this MUST resolve — a
+    key with no org is a misconfiguration, not a default. Does not require a login
+    (the whole point of key auth), but honors a cached ``praxis_select_org`` if one
+    happens to exist. Raises a precise hint when neither is set.
+    """
+    org = identity.pinned_org()
+    if not org:
+        try:
+            org = identity.load_identity().org_id
+        except Exception:  # noqa: BLE001 — no/unreadable cache is fine; the pin is the real source
+            org = ""
+    if not org:
+        raise RuntimeError(
+            "PRAXIS_API_KEY is set but no org is selected — pin PRAXIS_ORG (the key's org) in this "
+            "project's .claude/settings.local.json, or log in and run praxis_select_org."
+        )
+    return org
+
+
 def _headers(space: str | None = None, snapshot: str | None = None) -> dict[str, str]:
     # Auth + org. With NO (space, snapshot) the request resolves to the authenticated
     # principal's working memory (the default for personal-knowledge ops). Passing BOTH
@@ -83,6 +121,9 @@ def _headers(space: str | None = None, snapshot: str | None = None) -> dict[str,
     if _auth_disabled():
         # No bearer: the auth-disabled backend ignores it and uses dev-user.
         headers = {"X-Praxis-Org": _dev_org()}
+    elif _api_key():
+        # Durable, org-scoped key — the preferred credential (parity with the hook).
+        headers = {"X-Praxis-Key": _api_key(), "X-Praxis-Org": _key_org()}
     else:
         headers = {
             "Authorization": f"Bearer {identity.token()}",
@@ -1577,12 +1618,22 @@ def praxis_unmount_snapshot(snapshot: str, space: str | None = None) -> str:
 
 @mcp.tool()
 def praxis_login(email: str, password: str, org_id: str | None = None) -> str:
-    """Log in to Praxis with the user's email + password (and optional org).
+    """Log in to Praxis with the user's email + password (the HUMAN connect path).
 
-    Call this when the user asks to log in / connect / sign in to Praxis, or when
-    another tool reports "not logged in". Ask the user for their credentials in
-    chat first. (Their password is sent to this local tool to authenticate with
-    Cognito; it is not stored in plaintext — only a refresh token is cached.)
+    TWO WAYS TO CONNECT — pick by who is running:
+      • HUMAN (interactive): THIS tool. Call it when the user asks to log in /
+        connect / sign in, or when another tool reports "not logged in". Ask the
+        user for their credentials in chat first (their password authenticates with
+        Cognito and is never stored — only a refresh token is cached). Then select
+        the org with ``praxis_select_org``.
+      • AGENT / automation (durable, no login): do NOT call this. Set the env var
+        ``PRAXIS_API_KEY`` to a long-lived, org-scoped ``pxk_`` key and pin
+        ``PRAXIS_ORG`` to that key's org (both in ``<project>/.claude/settings.local.json``).
+        The MCP tools then send that key on every request — it takes precedence
+        over any login, survives restarts, and needs no refresh token. Mint one from
+        the dashboard (API Keys) or ``POST /apikeys`` / ``python -m knowledge.serve.apikeys mint``.
+        A key only works for ITS org (wrong org → 403). Confirm either mode with ``praxis_whoami``.
+
     Pass ``org_id`` if the user names a specific org; otherwise a single org is
     auto-selected and multiple orgs are listed for the user to choose.
     """
@@ -1887,6 +1938,16 @@ def praxis_whoami() -> str:
         return (
             f"auth-disabled dev mode: principal 'dev-user', org {_dev_org()!r} "
             "(no login required)."
+        )
+    if _api_key():
+        # Durable org-scoped key auth (no Cognito login needed) — report the key's org.
+        try:
+            org = _key_org()
+        except RuntimeError as exc:
+            return f"API-key auth (PRAXIS_API_KEY) but {exc}"
+        return (
+            f"API-key auth (PRAXIS_API_KEY) — org: {org!r}. This durable pxk_ key is scoped to that "
+            "one org; it takes precedence over any Cognito login."
         )
     if not identity.is_logged_in():
         return "Not logged in — call `praxis_login`."
