@@ -85,7 +85,8 @@ def test_aggregate_is_min_of_candidates_not_average():
     names = rub.axis_names()
     good = {n: 0.9 for n in names}
     assert evaluate(rub, good, []).passed is True             # both clear the soft floor
-    bad = dict(good); bad[[n for n in names if n.startswith("c2")][0]] = 0.05
+    bad = dict(good)
+    bad[[n for n in names if n.startswith("c2")][0]] = 0.05
     assert evaluate(rub, bad, []).passed is False             # one egregious axis fails the whole
 
 

@@ -10,8 +10,6 @@ import ast
 import sys
 from pathlib import Path
 
-import pytest
-
 _TOOLS = str(Path(__file__).resolve().parent.parent / "tools")
 if _TOOLS not in sys.path:
     sys.path.insert(0, _TOOLS)
