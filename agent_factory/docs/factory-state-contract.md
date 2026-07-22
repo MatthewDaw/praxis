@@ -176,6 +176,21 @@ enforced. Per-ticket flow: **clear → resolve MANDATORY (precise) → retrieve 
 authors validations covering the mandatory set (+ any advisory it honors) → build → every pinned
 validation must pass (external signal) before `finished`.**
 
+**The shared graded-check candidate pool + per-ticket assembly (`meta.candidate`).** A
+`category="check"` fact in `building-validation` carries a `meta.candidate` flag that splits the lane
+(`resolve_validation_requirements`, see `docs/plans/2026-07-21-002-...-plan.md`):
+- **`candidate:false` / absent → a GATE.** Resolves into `required_validations` exactly as today (the
+  binary floor gates, human-authored gates).
+- **`candidate:true` → a NON-GATING POOL entry.** Excluded from `required_validations`; returned only by
+  the deterministic `pool_candidates(ticket, project, scope)` query. Two writers feed this pool, each via
+  `af-intake-build-validation` (single-writer lock): `af-intake-plan` (whole-plan B1 findings) and
+  `af-build`'s ticket-local search — both author `candidate:true` + a `severity` hint and make NO gating
+  decision. At build-time synthesis a separate function, `rubric_assembly.assemble(pool_candidates(...),
+  budget, covers)`, DETERMINES what gates: it promotes the highest-severity candidates (up to `budget`)
+  to individual gating graded validations and folds the rest into ONE min-of-candidates advisory
+  aggregate (soft-floored). Its output pins through the normal `pin_validations` path as `kind="graded"`
+  validations. The promoted set is a pure function of the pool, so gating is deterministic across passes.
+
 **The checks-space seam.** Check *reads* target a snapshot **separate** from the `prd-<project>`
 ticket/plan snapshot, via a `checks_ref` parameter (`resolve_validation_requirements` /
 `start_ticket`) that becomes a per-request `x-praxis-space` + `x-praxis-snapshot` override on

@@ -10,6 +10,17 @@ companion_plan: agent_factory/docs/plans/2026-07-21-001-feat-graded-rubric-check
 
 # Planning-time rubric-check seeding in af-intake-plan
 
+> **Update (2026-07-22) — scope evolved during planning.** This brainstorm scoped only the
+> planning-time writer and framed the two sources as "not merged." Planning
+> (`docs/plans/2026-07-21-002-...-plan.md`) evolved the design into a **shared candidate pool with a
+> per-ticket assembler**, which supersedes the "no merge" boundary below: both `af-intake-plan` and
+> `af-build`'s search write `candidate:true` entries (+ a `severity` hint) into ONE
+> `building-validation` pool via `af-intake-build-validation`, and a separate function
+> (`rubric_assembly.assemble`) determines gating **at af-build run time** — neither writer decides
+> mandatory-vs-advisory. Read the plan for the authoritative model; the requirements below capture the
+> original intent and remain valid except where they imply planning authors gates or the sources stay
+> physically separate.
+
 ## Summary
 
 Give the agent factory **two complementary sources** of graded rubric checks, each

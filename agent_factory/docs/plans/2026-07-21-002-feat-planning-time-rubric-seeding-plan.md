@@ -1,7 +1,7 @@
 ---
 title: "feat: Shared graded-check candidate pool + per-ticket rubric assembly"
 type: feat
-status: active
+status: completed
 created: 2026-07-21
 deepened: 2026-07-22
 depth: deep
