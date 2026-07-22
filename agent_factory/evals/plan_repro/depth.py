@@ -14,10 +14,10 @@ offline-testable and runs on the subscription with no API key.
 """
 from __future__ import annotations
 
-import json
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
+
+from evals._json import extract_json_object
 
 Complete = Callable[[str], str]
 
@@ -44,21 +44,6 @@ def build_depth_prompt(lens: str, candidate) -> str:
         '"implied_need":"<what the lens requires for it>","status":"surfaced|flagged|missing",'
         '"evidence":"<short quote or reason>"}]}'
     )
-
-
-def _loads(text: str) -> dict:
-    s = (text or "").strip()
-    if s.startswith("```"):
-        s = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", s)
-        s = re.sub(r"\n?```$", "", s).strip()
-    try:
-        return json.loads(s)
-    except Exception:
-        m = re.search(r"\{.*\}", s, re.S)
-        try:
-            return json.loads(m.group(0)) if m else {"applies": []}
-        except Exception:
-            return {"applies": []}
 
 
 def _short(lens: str, n: int = 46) -> str:
@@ -110,7 +95,7 @@ def run_depth(complete: Complete, lenses: list[str], candidate) -> DepthReport:
     """One judge call per lens over the whole plan (cheap: O(lenses), not O(features×lenses))."""
     items: list[DepthItem] = []
     for lens in lenses:
-        data = _loads(complete(build_depth_prompt(lens, candidate)))
+        data = extract_json_object(complete(build_depth_prompt(lens, candidate)))
         for a in (data.get("applies") or []):
             st = str(a.get("status", MISSING)).lower()
             if st not in _STATUSES:

@@ -57,44 +57,13 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-
-# --------------------------------------------------------------------------- hook I/O
-
-def _allow(advice: str = "") -> None:
-    if advice:
-        print(json.dumps({
-            "hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": advice}
-        }))
-    sys.exit(0)
-
-
-def _block(reason: str) -> None:
-    print(json.dumps({"decision": "block", "reason": reason}))
-    sys.exit(0)
+from _gate_common import active_project as _active_project  # noqa: E402
+from _gate_common import allow as _allow  # noqa: E402
+from _gate_common import block as _block  # noqa: E402
+from _gate_common import classify_unreachable, session_touched  # noqa: E402
 
 
 # --------------------------------------------------------------------------- project / identity
-
-def _active_project(cwd: str) -> str:
-    """Resolve the active ``prd-<project>`` from the environment or the cwd — NEVER a manifest file.
-
-    Order: ``FACTORY_PROJECT`` (with or without a ``prd-`` prefix) → the basename of the cwd.
-    Returns the full ``prd-<name>`` form the Praxis ``/requirements/incomplete`` endpoint expects.
-
-    ``FACTORY_PROJECT`` may be set as a real shell env var OR in the factory ``<repo>/.env`` (like
-    every other factory credential) — ``main()`` loads that ``.env`` before calling this, so both
-    work. It is REQUIRED whenever the repo directory name differs from the Praxis project name (e.g.
-    a repo checked out as ``bestie-api`` building the ``google-shopping-scraper`` project); without
-    it the cwd-basename fallback resolves the WRONG ``prd-<project>`` and the gate goes inert.
-    """
-    raw = os.environ.get("FACTORY_PROJECT", "").strip()
-    if not raw:
-        raw = os.path.basename(os.path.normpath(cwd or os.getcwd()))
-    raw = raw.strip()
-    if not raw:
-        return ""
-    return raw if raw.startswith("prd-") else f"prd-{raw}"
-
 
 def _session_owner(data: dict) -> str:
     """This session's claim-owner identity (matches the owner the build loop claims tickets with)."""
@@ -113,27 +82,6 @@ _FACTORY_SIGNALS = (
     "prd-", "praxis_", "mcp__praxis", "incomplete_requirements",
     "build_state", "claim_owner", "run_owner", "stamp_run", "building-validation",
 )
-_MAX_TRANSCRIPT_SCAN_BYTES = 8 * 1024 * 1024  # above this, don't fast-path (fall through, stay safe)
-
-
-def _session_touched_factory(transcript_path: str) -> bool | None:
-    """Did THIS session engage the factory at all? ``False`` == cleanly read the transcript and found
-    ZERO factory signal (a provably no-op session); ``True`` == signals present; ``None`` == unknown
-    (missing / unreadable / oversized transcript). Only a confident ``False`` lets the gate stand down
-    WITHOUT consulting Praxis — ``True``/``None`` fall through to the hard, fail-closed read, so this
-    can relieve a no-op session of the Praxis dependency but can never fail a real build open.
-    """
-    if not transcript_path:
-        return None
-    try:
-        p = os.path.expanduser(str(transcript_path))
-        if not os.path.isfile(p) or os.path.getsize(p) > _MAX_TRANSCRIPT_SCAN_BYTES:
-            return None
-        with open(p, "r", encoding="utf-8", errors="ignore") as fh:
-            text = fh.read().lower()
-    except Exception:  # noqa: BLE001 — any read problem => unknown, fall through to the safe path
-        return None
-    return any(sig in text for sig in _FACTORY_SIGNALS)
 
 
 def _emit_preflight_once(diagnostic: str) -> None:
@@ -253,7 +201,7 @@ def main() -> None:
     # the factory (zero signals), stand down here WITHOUT the Praxis dependency. This is safe: a real
     # build's transcript is saturated with factory signals, and any uncertainty (unreadable/oversized
     # transcript) returns None and falls through to the fail-closed read — it can never fail open.
-    if _session_touched_factory(data.get("transcript_path")) is False:
+    if session_touched(data.get("transcript_path"), _FACTORY_SIGNALS) is False:
         _allow()
 
     # --- Read the single source of dynamic truth (fail-closed). -------------------------------
@@ -267,12 +215,7 @@ def main() -> None:
         # FAIL-CLOSED: a gate that cannot reach Praxis can prove nothing, so it BLOCKS. It NEVER
         # fails open. (PraxisUnreachable is the contract signal; any import/transport failure is
         # treated identically — the truth is unavailable.)
-        try:
-            from _praxis import PraxisUnreachable  # noqa: F811
-            is_unreachable = isinstance(exc, PraxisUnreachable)
-        except Exception:  # noqa: BLE001
-            is_unreachable = True
-        detail = str(exc) if is_unreachable else f"{type(exc).__name__}: {exc}"
+        _, detail = classify_unreachable(exc)
 
         # PINPOINT the cause instead of a generic "check PRAXIS_* / auth". Preflight names EXACTLY
         # which of PRAXIS_API_BASE_URL / the identity cache / COGNITO_CLIENT_ID / PRAXIS_ORG is

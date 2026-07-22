@@ -26,10 +26,9 @@ Typical wiring::
 
 from __future__ import annotations
 
-import json
-import re
 from collections.abc import Callable
 
+from evals._json import extract_json_object as _extract_json
 from evals.plan_repro.coverage import (
     COVERED,
     MISSING,
@@ -37,8 +36,7 @@ from evals.plan_repro.coverage import (
     ItemEvaluator,
     PartResult,
     Refuter,
-    _overlap,
-    _tokens,
+    _best_lexical,
     build_judge_prompt,
     build_refuter_prompt,
     judge_result_from_response,
@@ -52,47 +50,9 @@ Complete = Callable[[str], str]
 #: stronger model than the first-pass judge.
 DEFAULT_JUDGE_MODEL = "claude-sonnet-4-6"
 
-
-# --- tolerant JSON extraction --------------------------------------------------
-
-
-def _extract_json(text: str) -> dict:
-    """Pull the first JSON object out of model text — tolerant of ```fences and prose.
-
-    Returns ``{}`` on any failure; the downstream parsers
-    (:func:`~evals.plan_repro.coverage.judge_result_from_response` /
-    :func:`~evals.plan_repro.coverage.refuted_from_response`) treat an empty/!valid payload
-    safely (MISSING / refuted=True), so a malformed judge response never silently passes.
-    """
-    if not text:
-        return {}
-    s = text.strip()
-    if s.startswith("```"):
-        s = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", s)
-        s = re.sub(r"\n?```$", "", s).strip()
-    try:
-        obj = json.loads(s)
-        return obj if isinstance(obj, dict) else {}
-    except Exception:
-        pass
-    # Scan for the first balanced {...} object embedded in prose.
-    start = s.find("{")
-    if start == -1:
-        return {}
-    depth = 0
-    for i in range(start, len(s)):
-        ch = s[i]
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    obj = json.loads(s[start : i + 1])
-                    return obj if isinstance(obj, dict) else {}
-                except Exception:
-                    return {}
-    return {}
+# ``_extract_json`` is the shared tolerant object extractor (see :mod:`evals._json`).
+# Downstream parsers treat an empty ``{}`` payload safely (MISSING / refuted=True), so a
+# malformed judge response never silently passes.
 
 
 # --- evaluator / refuter factories ---------------------------------------------
@@ -138,10 +98,7 @@ def make_tiered_evaluator(
 
     def evaluator(part: Feature, related: list[Feature]) -> PartResult:
         if related:
-            pt = _tokens(part.text)
-            score, best = max(
-                ((_overlap(pt, _tokens(c.text)), c) for c in related), key=lambda sc: sc[0]
-            )
+            score, best = _best_lexical(part, related)
             if score >= lexical_cover_threshold:
                 return PartResult(
                     part_id=part.id, status=COVERED, derived=part.derived,
