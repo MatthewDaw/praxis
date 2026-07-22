@@ -27,7 +27,12 @@ class GradeError(RuntimeError):
 
 
 def build_judge_prompt(rubric: Rubric, code_diff: str) -> str:
-    """Construct the fresh-context judge prompt. Everything is inline — the judge needs no tools."""
+    """Construct the fresh-context judge prompt. Everything is inline — the judge needs no tools.
+
+    When the rubric carries :class:`agent_factory.rubric.Anchors`, a ``CALIBRATION`` block with the
+    good-then-slop exemplars is injected VERBATIM to pin the judge's taste. A rubric without anchors
+    produces the exact pre-anchor prompt (no block) — byte-compatible with every existing rubric.
+    """
     axes_spec = "\n".join(
         f"  - {a.name} (pass threshold {a.threshold}): {a.guidance}" for a in rubric.axes
     )
@@ -45,6 +50,7 @@ def build_judge_prompt(rubric: Rubric, code_diff: str) -> str:
         f"{rubric.confidence_floor} only when you are genuinely unsure.\n"
         "- To score an axis high you must have POSITIVE evidence of safety/correctness, not "
         "merely the absence of a problem.\n\n"
+        f"{_calibration_block(rubric)}"
         "Respond with ONLY a JSON object:\n"
         '{"axis_scores": {"<axis>": <0..1>, ...}, '
         '"defects": [{"file": "...", "line": <int|null>, "problem": "...", '
@@ -52,6 +58,20 @@ def build_judge_prompt(rubric: Rubric, code_diff: str) -> str:
         "DIFF:\n"
         f"{code_diff}\n"
     )
+
+
+def _calibration_block(rubric: Rubric) -> str:
+    """The verbatim good/slop anchor block, or ``""`` when the rubric carries no anchors (so the
+    prompt stays byte-identical to the pre-anchor form)."""
+    anchors = rubric.anchors
+    if anchors is None or not (anchors.good or anchors.slop):
+        return ""
+    lines = ["CALIBRATION — grade to these worked examples, not an external opinion of taste:"]
+    for snippet in anchors.good:
+        lines.append(f"[GOOD — meets the standard]\n{snippet}")
+    for snippet in anchors.slop:
+        lines.append(f"[SLOP — violates the standard]\n{snippet}")
+    return "\n\n".join(lines) + "\n\n"
 
 
 def _loads(text: str) -> dict:
