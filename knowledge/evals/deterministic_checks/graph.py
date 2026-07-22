@@ -169,6 +169,59 @@ def distinct_fact_blocks(
     )
 
 
+class _CachedAxis:
+    """Minimal case stand-in selecting the harness's committed-vector cached embedder."""
+
+    embedder = "cached"
+
+
+def _tenant_graph(
+    prefix: str,
+    *,
+    policy: str = "dedup",
+    embedder: str = "cached",
+    recall_floor: float | None = None,
+):
+    """A fresh, isolated ``(org, user='u1')`` PostgresVectorGraph for a DSN-backed check.
+
+    Mints a unique throwaway org (``prefix`` + random hex), bootstraps the schema, and
+    wires the graph the way every DSN check does. ``policy``: ``"dedup"`` ->
+    ``[Redactor(), Deduper()]`` (distinct seeds coexist, no merge collapse), ``"default"``
+    -> the real ``default_write_policy()``. ``embedder``: ``"cached"`` (committed real
+    vectors, deterministic offline) or ``"fake"`` (FakeEmbedder). Returns
+    ``(graph, conn, org, user)``; pair with :func:`_cleanup` in a ``finally``.
+    """
+    from knowledge.evals.run import _eval_embedder
+    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
+        PostgresVectorGraph,
+        default_write_policy,
+    )
+    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
+    from knowledge.serve import db
+
+    if embedder == "fake":
+        from knowledge.llm.embedder_variants.fake_embedder import FakeEmbedder
+
+        emb = FakeEmbedder()
+    else:
+        emb = _eval_embedder(_CachedAxis())
+    policy_steps = default_write_policy() if policy == "default" else [Redactor(), Deduper()]
+
+    conn = db.connect()
+    db.bootstrap()
+    org = prefix + uuid.uuid4().hex[:12]
+    user = "u1"
+    kwargs = {} if recall_floor is None else {"recall_floor": recall_floor}
+    graph = PostgresVectorGraph(conn, org, user, embedder=emb, policy=policy_steps, **kwargs)
+    return graph, conn, org, user
+
+
+def _cleanup(conn, org: str) -> None:
+    """Drop a throwaway tenant's rows (edges + facts) so the live store isn't polluted."""
+    conn.execute("DELETE FROM fact_edges WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
+
+
 def retrieves_fact_for_query(
     ctx: EvalContext,
     *,
@@ -194,33 +247,7 @@ def retrieves_fact_for_query(
     Requires a reachable Postgres DSN (the case declares ``embedder: cached`` /
     ``substrate: vector``); without one the harness SKIPs the case before it runs.
     """
-    from knowledge.evals.run import _eval_embedder
-    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
-        PostgresVectorGraph,
-    )
-    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
-    from knowledge.serve import db
-
-    # Resolve the same cached embedder the harness wires for an ``embedder: cached``
-    # case (committed real vectors, deterministic offline).
-    class _CachedAxis:
-        embedder = "cached"
-
-    embedder = _eval_embedder(_CachedAxis())
-
-    conn = db.connect()
-    db.bootstrap()  # ensure the tsvector column / GIN index exist on this DB
-    org = "eval_hybrid_" + uuid.uuid4().hex[:12]
-    user = "u1"
-    graph = PostgresVectorGraph(
-        conn,
-        org,
-        user,
-        embedder=embedder,
-        # Distinct seed texts must coexist (no overwrite/merge collapse): a plain
-        # redact + exact-dedup policy keeps each fact as its own active row.
-        policy=[Redactor(), Deduper()],
-    )
+    graph, conn, org, _ = _tenant_graph("eval_hybrid_")
     try:
         for text in seed_facts:
             graph.write(text, state="active")
@@ -239,8 +266,7 @@ def retrieves_fact_for_query(
             ),
         )
     finally:
-        # Drop the throwaway tenant so the live store isn't polluted across runs.
-        conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
+        _cleanup(conn, org)
 
 
 def retrieval_prefers_proven_over_failed(
@@ -277,25 +303,7 @@ def retrieval_prefers_proven_over_failed(
     Requires a reachable Postgres DSN (``embedder: cached`` / ``substrate: vector``);
     without one the harness SKIPs the case.
     """
-    from knowledge.evals.run import _eval_embedder
-    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
-        PostgresVectorGraph,
-    )
-    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
-    from knowledge.serve import db
-
-    class _CachedAxis:
-        embedder = "cached"
-
-    embedder = _eval_embedder(_CachedAxis())
-
-    conn = db.connect()
-    db.bootstrap()
-    org = "eval_outcome_" + uuid.uuid4().hex[:12]
-    user = "u1"
-    graph = PostgresVectorGraph(
-        conn, org, user, embedder=embedder, policy=[Redactor(), Deduper()]
-    )
+    graph, conn, org, _ = _tenant_graph("eval_outcome_")
     try:
         proven_id = graph.write(proven_text, state="active")
         failed_id = graph.write(failed_text, state="active")
@@ -324,7 +332,7 @@ def retrieval_prefers_proven_over_failed(
             ),
         )
     finally:
-        conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
+        _cleanup(conn, org)
 
 
 def derivation_surfaces_stale_when_source_invalidated(
@@ -351,24 +359,7 @@ def derivation_surfaces_stale_when_source_invalidated(
     Requires a Postgres DSN (``embedder: cached`` / ``substrate: vector``); the
     harness SKIPs the case without one.
     """
-    from knowledge.evals.run import _eval_embedder
-    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
-        PostgresVectorGraph,
-    )
-    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
-    from knowledge.serve import db
-
-    class _CachedAxis:
-        embedder = "cached"
-
-    embedder = _eval_embedder(_CachedAxis())
-    conn = db.connect()
-    db.bootstrap()
-    org = "eval_deriv_" + uuid.uuid4().hex[:12]
-    user = "u1"
-    graph = PostgresVectorGraph(
-        conn, org, user, embedder=embedder, policy=[Redactor(), Deduper()]
-    )
+    graph, conn, org, _ = _tenant_graph("eval_deriv_")
     try:
         source_id = graph.write(source_text, state="active")
         derived_id = graph.write(derived_text, state="active")
@@ -394,8 +385,7 @@ def derivation_surfaces_stale_when_source_invalidated(
             ),
         )
     finally:
-        conn.execute("DELETE FROM fact_edges WHERE org_id = %s AND user_id = %s", (org, user))
-        conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
+        _cleanup(conn, org)
 
 
 def min_non_seed_facts(
@@ -436,22 +426,7 @@ def min_non_seed_facts(
 
 def _episodic_graph():
     """A throwaway-tenant PostgresVectorGraph wired like the other DSN-backed checks."""
-    from knowledge.evals.run import _eval_embedder
-    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
-        PostgresVectorGraph,
-    )
-    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
-    from knowledge.serve import db
-
-    class _CachedAxis:
-        embedder = "cached"
-
-    conn = db.connect()
-    db.bootstrap()
-    org = "eval_episodic_" + uuid.uuid4().hex[:12]
-    graph = PostgresVectorGraph(
-        conn, org, "u1", embedder=_eval_embedder(_CachedAxis()), policy=[Redactor(), Deduper()]
-    )
+    graph, conn, org, _ = _tenant_graph("eval_episodic_")
     return graph, conn, org
 
 
@@ -503,8 +478,7 @@ def episode_stored_whole_and_immutable(
             ),
         )
     finally:
-        conn.execute("DELETE FROM fact_edges WHERE org_id = %s", (org,))
-        conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
+        _cleanup(conn, org)
 
 
 def episodic_reserved_tag_integrity(
@@ -545,7 +519,7 @@ def episodic_reserved_tag_integrity(
             ),
         )
     finally:
-        conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
+        _cleanup(conn, org)
 
 
 def context_excludes_episodic(
@@ -591,7 +565,7 @@ def context_excludes_episodic(
             ),
         )
     finally:
-        conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
+        _cleanup(conn, org)
 
 
 def stale_episode_findable_not_in_context(
@@ -637,8 +611,7 @@ def stale_episode_findable_not_in_context(
             ),
         )
     finally:
-        conn.execute("DELETE FROM fact_edges WHERE org_id = %s", (org,))
-        conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
+        _cleanup(conn, org)
 
 
 def retrieval_prefers_recent_over_stale(
@@ -662,22 +635,7 @@ def retrieval_prefers_recent_over_stale(
 
     Requires a Postgres DSN (``embedder: cached`` / ``substrate: vector``).
     """
-    from knowledge.evals.run import _eval_embedder
-    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
-        PostgresVectorGraph,
-    )
-    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
-    from knowledge.serve import db
-
-    class _CachedAxis:
-        embedder = "cached"
-
-    conn = db.connect()
-    db.bootstrap()
-    org = "eval_decay_" + uuid.uuid4().hex[:12]
-    graph = PostgresVectorGraph(
-        conn, org, "u1", embedder=_eval_embedder(_CachedAxis()), policy=[Redactor(), Deduper()]
-    )
+    graph, conn, org, _ = _tenant_graph("eval_decay_")
     try:
         stale_id = graph.write(stale_text, state="active")
         graph.write(recent_text, state="active")
@@ -702,7 +660,7 @@ def retrieval_prefers_recent_over_stale(
             ),
         )
     finally:
-        conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
+        _cleanup(conn, org)
 
 
 def derived_learning_not_merged_into_source(
@@ -728,23 +686,7 @@ def derived_learning_not_merged_into_source(
     the harness SKIPs without them. GREEN: a derived_from-carrying write is now exempt from
     the merge (see WriteDecision.derived, threaded in PostgresVectorGraph.write).
     """
-    from knowledge.evals.run import _eval_embedder
-    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
-        PostgresVectorGraph,
-        default_write_policy,
-    )
-    from knowledge.serve import db
-
-    class _CachedAxis:
-        embedder = "cached"
-
-    conn = db.connect()
-    db.bootstrap()
-    org = "eval_derivmerge_" + uuid.uuid4().hex[:12]
-    user = "u1"
-    graph = PostgresVectorGraph(
-        conn, org, user, embedder=_eval_embedder(_CachedAxis()), policy=default_write_policy()
-    )
+    graph, conn, org, _ = _tenant_graph("eval_derivmerge_", policy="default")
     try:
         req_id = graph.write(requirement_text, state="active", category="requirement")
         learn_id = graph.write(
@@ -765,8 +707,7 @@ def derived_learning_not_merged_into_source(
             ),
         )
     finally:
-        conn.execute("DELETE FROM fact_edges WHERE org_id = %s AND user_id = %s", (org, user))
-        conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
+        _cleanup(conn, org)
 
 
 def surface_binding_governs_screen(
@@ -801,24 +742,7 @@ def surface_binding_governs_screen(
     Requires a Postgres DSN (``embedder: cached`` / ``substrate: vector``); the harness SKIPs
     the case without one.
     """
-    from knowledge.evals.run import _eval_embedder
-    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
-        PostgresVectorGraph,
-    )
-    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
-    from knowledge.serve import db
-
-    class _CachedAxis:
-        embedder = "cached"
-
-    embedder = _eval_embedder(_CachedAxis())
-    conn = db.connect()
-    db.bootstrap()
-    org = "eval_surface_" + uuid.uuid4().hex[:12]
-    user = "u1"
-    graph = PostgresVectorGraph(
-        conn, org, user, embedder=embedder, policy=[Redactor(), Deduper()]
-    )
+    graph, conn, org, _ = _tenant_graph("eval_surface_")
     try:
         req_id = graph.write(requirement_text, state="active", category="requirement")
         other_id = graph.write(
@@ -871,8 +795,7 @@ def surface_binding_governs_screen(
             ),
         )
     finally:
-        conn.execute("DELETE FROM fact_edges WHERE org_id = %s AND user_id = %s", (org, user))
-        conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
+        _cleanup(conn, org)
 
 
 def requirement_incomplete_when_unbuilt_or_regressed(
@@ -908,25 +831,7 @@ def requirement_incomplete_when_unbuilt_or_regressed(
     each seed coexists as its own active row. Requires a Postgres DSN (``substrate:
     vector``); the harness SKIPs the case without one.
     """
-    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
-        PostgresVectorGraph,
-    )
-    from knowledge.knowledge_graph.write_policy.write_step_variants import Deduper, Redactor
-    from knowledge.llm.embedder_variants.fake_embedder import FakeEmbedder
-    from knowledge.serve import db
-
-    conn = db.connect()
-    db.bootstrap()
-    org = "eval_complete_" + uuid.uuid4().hex[:12]
-    user = "u1"
-    graph = PostgresVectorGraph(
-        conn,
-        org,
-        user,
-        embedder=FakeEmbedder(),
-        policy=[Redactor(), Deduper()],
-        recall_floor=-1.0,
-    )
+    graph, conn, org, _ = _tenant_graph("eval_complete_", embedder="fake", recall_floor=-1.0)
     source = f"prd-{project}"
     try:
         regressed_id = graph.write(
@@ -972,8 +877,7 @@ def requirement_incomplete_when_unbuilt_or_regressed(
             ),
         )
     finally:
-        conn.execute("DELETE FROM fact_edges WHERE org_id = %s AND user_id = %s", (org, user))
-        conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
+        _cleanup(conn, org)
 
 
 def requirement_not_fragmented_by_distillation(
@@ -1020,9 +924,6 @@ def requirement_not_fragmented_by_distillation(
     )
     from knowledge.wiring import build_trio
     from knowledge.serve import db
-
-    class _CachedAxis:
-        embedder = "cached"
 
     conn = db.connect()
     db.bootstrap()
@@ -1100,8 +1001,7 @@ def requirement_not_fragmented_by_distillation(
         )
     finally:
         for o in (org, ctrl_org):
-            conn.execute("DELETE FROM fact_edges WHERE org_id = %s AND user_id = %s", (o, user))
-            conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (o, user))
+            _cleanup(conn, o)
 
 
 def contradicting_requirement_not_merged(
@@ -1146,23 +1046,7 @@ def contradicting_requirement_not_merged(
     NOT assert an active-fact count -- only that the contradiction was kept as its own fact and
     the incumbent stayed clean.
     """
-    from knowledge.evals.run import _eval_embedder
-    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
-        PostgresVectorGraph,
-        default_write_policy,
-    )
-    from knowledge.serve import db
-
-    class _CachedAxis:
-        embedder = "cached"
-
-    conn = db.connect()
-    db.bootstrap()
-    org = "eval_contradmerge_" + uuid.uuid4().hex[:12]
-    user = "u1"
-    graph = PostgresVectorGraph(
-        conn, org, user, embedder=_eval_embedder(_CachedAxis()), policy=default_write_policy()
-    )
+    graph, conn, org, _ = _tenant_graph("eval_contradmerge_", policy="default")
     try:
         req_id = graph.write(incumbent_text, state="active", category="requirement")
         chal_id = graph.write(contradicting_text, state="active", category="requirement")
@@ -1192,8 +1076,7 @@ def contradicting_requirement_not_merged(
             evidence=evidence,
         )
     finally:
-        conn.execute("DELETE FROM fact_edges WHERE org_id = %s AND user_id = %s", (org, user))
-        conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
+        _cleanup(conn, org)
 
 
 def tabular_field_not_merged_into_incumbent(
@@ -1236,24 +1119,9 @@ def tabular_field_not_merged_into_incumbent(
     RED today (FP1 fails: incumbent absorbs the row; FP2 fails: no standalone row fact). GREEN
     once the Augmenter stops folding a distinct tabular fact into an overlapping incumbent.
     """
-    from knowledge.evals.run import _eval_embedder
-    from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
-        PostgresVectorGraph,
-        default_write_policy,
-    )
     from knowledge.wiring import build_trio
-    from knowledge.serve import db
 
-    class _CachedAxis:
-        embedder = "cached"
-
-    conn = db.connect()
-    db.bootstrap()
-    org = "eval_tabmerge_" + uuid.uuid4().hex[:12]
-    user = "u1"
-    graph = PostgresVectorGraph(
-        conn, org, user, embedder=_eval_embedder(_CachedAxis()), policy=default_write_policy()
-    )
+    graph, conn, org, _ = _tenant_graph("eval_tabmerge_", policy="default")
     _, ingestor, _ = build_trio(graph=graph, llm=None)
     marker = overlap_marker.lower()
     try:
@@ -1287,5 +1155,4 @@ def tabular_field_not_merged_into_incumbent(
             evidence=evidence,
         )
     finally:
-        conn.execute("DELETE FROM fact_edges WHERE org_id = %s AND user_id = %s", (org, user))
-        conn.execute("DELETE FROM facts WHERE org_id = %s AND user_id = %s", (org, user))
+        _cleanup(conn, org)

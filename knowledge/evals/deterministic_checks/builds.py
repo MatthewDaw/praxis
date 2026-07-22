@@ -9,9 +9,8 @@ the case declared and returns a :class:`CheckResult`.
 from __future__ import annotations
 
 import ast
-import re
 
-from knowledge.evals.eval_def import CheckResult, EvalContext
+from knowledge.evals.eval_def import CheckResult, EvalContext, parse_box_files
 
 
 def contains_text(ctx: EvalContext, *, text: str) -> CheckResult:
@@ -57,14 +56,13 @@ def _call_name(func: ast.expr) -> str | None:
 def _py_sources(output: str) -> list[str]:
     """Python source chunks to analyze.
 
-    The runner concatenates box files as ``# <path>\n<code>`` blocks, so split
-    those out and keep the ``.py`` ones. With no such headers (e.g. a single
-    raw file), treat the whole output as one source.
+    The runner concatenates box files as ``# <path>\n<code>`` blocks (see
+    :func:`parse_box_files`); split those out and keep the ``.py`` ones. With no
+    such headers (e.g. a single raw file), treat the whole output as one source.
     """
-    parts = re.split(r"(?m)^# (\S+)$\n", output)
-    if len(parts) == 1:
+    pairs = parse_box_files(output)
+    if not pairs:
         return [output]
-    pairs = zip(parts[1::2], parts[2::2])  # (path, body), (path, body), ...
     return [body for path, body in pairs if path.endswith(".py")]
 
 

@@ -8,11 +8,40 @@ what a graded run produces and what gets written to the baseline.
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 from knowledge.evals.repo.repo_task_def import RepoTask
+
+
+def strip_code_fences(text: str) -> str:
+    """Strip a leading/trailing Markdown code fence (```lang ... ```), if present."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?|\n?```$", "", text).strip()
+    return text
+
+
+# Box-sweep output format: when the runner can't name a single answer file it
+# concatenates every box file as ``# <path>\n<code>`` blocks (blank-line joined).
+# The producer (ClaudeCodeRunner._collect_output) and every consumer (builds._py_sources)
+# share these two helpers so the header format lives in exactly one place.
+_BOX_FILE_HEADER = re.compile(r"(?m)^# (\S+)$\n")
+
+
+def format_box_file(path: str, text: str) -> str:
+    """Render one box file as a ``# <path>\\n<code>`` block for the box sweep."""
+    return f"# {path}\n{text}"
+
+
+def parse_box_files(output: str) -> list[tuple[str, str]]:
+    """Split a box-sweep blob back into ``(path, body)`` pairs (empty if unheadered)."""
+    parts = _BOX_FILE_HEADER.split(output)
+    if len(parts) == 1:
+        return []
+    return list(zip(parts[1::2], parts[2::2]))
 
 
 class DeterministicCheckRef(BaseModel):

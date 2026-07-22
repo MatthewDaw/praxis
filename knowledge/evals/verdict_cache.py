@@ -13,18 +13,14 @@ the embedding fixture.
 from __future__ import annotations
 
 import argparse
-import os
-import sys
 
-from knowledge.evals.run import _build_trio_for, load_cases, load_env
+from knowledge.evals.run import _build_trio_for, load_cases, load_env, missing_openrouter_key
 
 
 def refresh() -> int:
-    if not os.getenv("OPENROUTER_API_KEY"):
-        print(
-            "set OPENROUTER_API_KEY (+ OPENROUTER_EMBED_MODEL) to refresh the cassette",
-            file=sys.stderr,
-        )
+    if missing_openrouter_key(
+        "set OPENROUTER_API_KEY (+ OPENROUTER_EMBED_MODEL) to refresh the cassette"
+    ):
         return 1
 
     cases = [c for c in load_cases() if c.merge_model or c.conflict_model or c.tag_model]
