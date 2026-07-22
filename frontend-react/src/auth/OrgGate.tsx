@@ -97,17 +97,31 @@ function normalizeMemberships(payload: unknown): OrgMembership[] {
   return result;
 }
 
+async function orgRequest(
+  baseUrl: string,
+  getToken: () => Promise<string | undefined>,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<Response> {
+  const token = await getToken();
+  const response = await fetch(`${baseUrl.replace(/\/$/, "")}${path}`, {
+    method,
+    headers: contractHeaders(token),
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `${method} ${path} failed (${response.status})`);
+  }
+  return response;
+}
+
 export async function fetchMe(
   baseUrl: string,
   getToken: () => Promise<string | undefined>,
 ): Promise<MeResponse> {
-  const token = await getToken();
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/me`, {
-    headers: contractHeaders(token),
-  });
-  if (!response.ok) {
-    throw new Error(`GET /me failed (${response.status})`);
-  }
+  const response = await orgRequest(baseUrl, getToken, "GET", "/me");
   const payload = (await response.json()) as Record<string, unknown>;
   return {
     sub: (payload.sub as string) ?? "",
@@ -121,16 +135,7 @@ export async function createOrg(
   getToken: () => Promise<string | undefined>,
   body: { orgId: string; name: string; password: string },
 ): Promise<void> {
-  const token = await getToken();
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/orgs`, {
-    method: "POST",
-    headers: contractHeaders(token),
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `POST /orgs failed (${response.status})`);
-  }
+  await orgRequest(baseUrl, getToken, "POST", "/orgs", body);
 }
 
 export async function joinOrg(
@@ -138,16 +143,7 @@ export async function joinOrg(
   getToken: () => Promise<string | undefined>,
   body: { orgId: string; password: string },
 ): Promise<void> {
-  const token = await getToken();
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/orgs/join`, {
-    method: "POST",
-    headers: contractHeaders(token),
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `POST /orgs/join failed (${response.status})`);
-  }
+  await orgRequest(baseUrl, getToken, "POST", "/orgs/join", body);
 }
 
 /**
@@ -161,18 +157,12 @@ export async function deleteOrg(
   getToken: () => Promise<string | undefined>,
   orgId: string,
 ): Promise<void> {
-  const token = await getToken();
-  const response = await fetch(
-    `${baseUrl.replace(/\/$/, "")}/orgs/${encodeURIComponent(orgId)}`,
-    {
-      method: "DELETE",
-      headers: contractHeaders(token),
-    },
+  await orgRequest(
+    baseUrl,
+    getToken,
+    "DELETE",
+    `/orgs/${encodeURIComponent(orgId)}`,
   );
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `DELETE /orgs/${orgId} failed (${response.status})`);
-  }
 }
 
 /**
@@ -185,19 +175,13 @@ export async function renameOrg(
   orgId: string,
   name: string,
 ): Promise<void> {
-  const token = await getToken();
-  const response = await fetch(
-    `${baseUrl.replace(/\/$/, "")}/orgs/${encodeURIComponent(orgId)}`,
-    {
-      method: "PATCH",
-      headers: contractHeaders(token),
-      body: JSON.stringify({ name }),
-    },
+  await orgRequest(
+    baseUrl,
+    getToken,
+    "PATCH",
+    `/orgs/${encodeURIComponent(orgId)}`,
+    { name },
   );
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `PATCH /orgs/${orgId} failed (${response.status})`);
-  }
 }
 
 export async function changeOrgPassword(
@@ -205,16 +189,7 @@ export async function changeOrgPassword(
   getToken: () => Promise<string | undefined>,
   body: { orgId: string; currentPassword: string; newPassword: string },
 ): Promise<void> {
-  const token = await getToken();
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/orgs/password`, {
-    method: "POST",
-    headers: contractHeaders(token),
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `POST /orgs/password failed (${response.status})`);
-  }
+  await orgRequest(baseUrl, getToken, "POST", "/orgs/password", body);
 }
 
 interface OrgGateProps {
@@ -343,12 +318,7 @@ export function OrgGate({ children }: OrgGateProps) {
     setError(null);
     setNotice(null);
     try {
-      await deleteOrg(baseUrl, getToken, org.orgId);
-      await loadMe();
-      // If we just deleted the org we were working in, drop back to the picker.
-      if (activeOrg === org.orgId) {
-        switchOrg();
-      }
+      await deleteAndSwitchOrg(org.orgId);
       setNotice(`Deleted ${label}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

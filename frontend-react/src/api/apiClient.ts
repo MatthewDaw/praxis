@@ -112,7 +112,7 @@ function toPromoteConflict(error: ApiClientError, candidateId: string): ApiConfl
   return new ApiConflictError(error.message, candidateId);
 }
 
-async function parseJsonResponse(response: Response): Promise<unknown> {
+export async function parseJsonResponse(response: Response): Promise<unknown> {
   const raw = await response.text();
   if (!raw.trim()) {
     return {};
@@ -537,7 +537,7 @@ export interface EvalScopesResponse {
   overrideFields: Record<string, string[] | null>;
 }
 
-async function resolveToken(
+export async function resolveToken(
   auth?: string | ApiDataProviderAuth,
 ): Promise<{ token?: string; orgId?: string; spaceId?: string }> {
   const resolved: ApiDataProviderAuth =

@@ -30,19 +30,34 @@ function normalizeSpace(payload: unknown): Space | null {
   };
 }
 
+async function spaceRequest(
+  baseUrl: string,
+  getToken: () => Promise<string | undefined>,
+  orgId: string,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<Response> {
+  const token = await getToken();
+  const response = await fetch(`${baseUrl.replace(/\/$/, "")}${path}`, {
+    method,
+    headers: contractHeaders(token, orgId),
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || `${method} ${path} failed (${response.status})`);
+  }
+  return response;
+}
+
 /** `GET /spaces` — the named spaces the caller owns in the active org. */
 export async function listSpaces(
   baseUrl: string,
   getToken: () => Promise<string | undefined>,
   orgId: string,
 ): Promise<Space[]> {
-  const token = await getToken();
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/spaces`, {
-    headers: contractHeaders(token, orgId),
-  });
-  if (!response.ok) {
-    throw new Error(`GET /spaces failed (${response.status})`);
-  }
+  const response = await spaceRequest(baseUrl, getToken, orgId, "GET", "/spaces");
   const payload = (await response.json()) as Record<string, unknown>;
   const list = Array.isArray(payload.spaces) ? payload.spaces : [];
   return list
@@ -61,18 +76,13 @@ export async function deleteSpace(
   orgId: string,
   spaceId: string,
 ): Promise<void> {
-  const token = await getToken();
-  const response = await fetch(
-    `${baseUrl.replace(/\/$/, "")}/spaces/${encodeURIComponent(spaceId)}`,
-    {
-      method: "DELETE",
-      headers: contractHeaders(token, orgId),
-    },
+  await spaceRequest(
+    baseUrl,
+    getToken,
+    orgId,
+    "DELETE",
+    `/spaces/${encodeURIComponent(spaceId)}`,
   );
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `DELETE /spaces/${spaceId} failed (${response.status})`);
-  }
 }
 
 /**
@@ -86,19 +96,14 @@ export async function renameSpace(
   spaceId: string,
   name: string,
 ): Promise<void> {
-  const token = await getToken();
-  const response = await fetch(
-    `${baseUrl.replace(/\/$/, "")}/spaces/${encodeURIComponent(spaceId)}`,
-    {
-      method: "PATCH",
-      headers: contractHeaders(token, orgId),
-      body: JSON.stringify({ name }),
-    },
+  await spaceRequest(
+    baseUrl,
+    getToken,
+    orgId,
+    "PATCH",
+    `/spaces/${encodeURIComponent(spaceId)}`,
+    { name },
   );
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `PATCH /spaces/${spaceId} failed (${response.status})`);
-  }
 }
 
 /** `POST /spaces` — create a named space owned by the caller in the active org. */
@@ -108,14 +113,5 @@ export async function createSpace(
   orgId: string,
   body: { spaceId: string; name?: string },
 ): Promise<void> {
-  const token = await getToken();
-  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/spaces`, {
-    method: "POST",
-    headers: contractHeaders(token, orgId),
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `POST /spaces failed (${response.status})`);
-  }
+  await spaceRequest(baseUrl, getToken, orgId, "POST", "/spaces", body);
 }
