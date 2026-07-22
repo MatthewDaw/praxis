@@ -9,25 +9,15 @@ the headless `claude` CLI on the subscription (no API key) for BOTH the build ag
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import sys
 from pathlib import Path
 
+from evals.plan_repro._util import force_utf8_streams, load_repo_dotenv
+
 R73 = "e9db7e1dada846ce843474b7785df515"
 _REPO_ROOT = Path(__file__).resolve().parents[2]            # agent_factory/
 _DEFAULT_TEAM_APP = _REPO_ROOT.parent / "team-app"
-
-
-def _load_dotenv(root: Path) -> None:
-    env = root / ".env"
-    if not env.is_file():
-        return
-    for line in env.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, _, v = line.partition("=")
-            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
 def _git(repo: str, *args: str) -> str:
@@ -37,9 +27,8 @@ def _git(repo: str, *args: str) -> str:
 
 def _run_build_agent(worktree: str, ticket_cid: str, timeout: int) -> None:
     """Drive the real factory loop headlessly in the worktree (tools enabled, subscription billing)."""
-    from evals.plan_repro.claude_cli import _claude_path  # reuse the binary resolver
-    env = dict(os.environ)
-    env.pop("ANTHROPIC_API_KEY", None)                      # bill the subscription, not an API key
+    from evals.plan_repro.claude_cli import _claude_path, _subscription_env
+    env = _subscription_env()                               # bill the subscription, not an API key
     prompt = f"/agent-factory:af-build please implement R73 {ticket_cid}"
     print(f"  driving build agent in {worktree} ...", flush=True)
     proc = subprocess.run(
@@ -52,12 +41,8 @@ def _run_build_agent(worktree: str, ticket_cid: str, timeout: int) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    for s in (sys.stdout, sys.stderr):
-        try:
-            s.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-        except Exception:
-            pass
-    _load_dotenv(_REPO_ROOT)
+    force_utf8_streams()
+    load_repo_dotenv(_REPO_ROOT)
     praxis_repo = _REPO_ROOT.parent / "praxis"
     if praxis_repo.is_dir():
         sys.path.insert(0, str(praxis_repo))

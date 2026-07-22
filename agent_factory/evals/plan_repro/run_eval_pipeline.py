@@ -36,9 +36,8 @@ EVAL_PROJECT = "team-app-eval"   # the project name af-intake-plan plans under, 
 
 def _drive_af_intake(space_id: str, prd_dir: Path, timeout: int) -> int:
     """Run the REAL af-intake-plan unattended into the eval space via the headless claude CLI."""
-    from evals.plan_repro.claude_cli import _claude_path
-    env = dict(os.environ)
-    env.pop("ANTHROPIC_API_KEY", None)      # bill the subscription, not an API key
+    from evals.plan_repro.claude_cli import _claude_path, _subscription_env
+    env = _subscription_env()               # bill the subscription, not an API key
     env["PRAXIS_SPACE"] = space_id          # so the agent's Praxis writes land in the isolated space
     prompt = (
         f"Run /agent-factory:af-intake-plan in FULL INTAKE mode for project '{EVAL_PROJECT}', sourcing the PRD "
