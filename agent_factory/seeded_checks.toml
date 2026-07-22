@@ -9,12 +9,16 @@
 #   check_id            required, unique slug
 #   kind                "binary" (exit-code) or "graded" (min-of-axes rubric); default "binary"
 #   applies_to          candidate-offer tags; ["*"] = offered to every ticket (still opt-in)
-#   promote_universal   optional bool; if true a project auto-pins it via the wildcard lane
+#   promote_universal   optional bool; if true it is injected into the MANDATORY lane of every
+#                       non-exempt ticket (tag-independent) by _ticket_state.contract_with_floor
+#   report_only         optional bool (promote_universal only); graded + recorded but NON-gating —
+#                       the calibration-rollout knob. Flip to false (one edit) to make it GATE.
 #   criterion           human description of what "done" means
 #   run                 (binary only) command whose non-zero exit is failure
 #   confidence_floor    (graded only) 1..10; defects below this are dropped, default 5
 #   judge_prompt        (graded only) extra guidance handed to the fresh-context judge
 #   [[check.axes]]      (graded only) one per scored dimension: name, threshold (0..1), guidance
+#   [check.anchors]     (graded only) literal good/slop code exemplars injected VERBATIM to pin taste
 
 [[check]]
 check_id = "correctness-review"
@@ -83,3 +87,50 @@ guidance = "Names and structure make intent obvious; no needless indirection or 
 name = "no_dead_code"
 threshold = 0.7
 guidance = "No unreachable code, unused symbols, or commented-out blocks left behind."
+
+# ---------------------------------------------------------------------------------------------------
+# UNIVERSAL, always-enforced minimalism/dedup/DRY gate. promote_universal => injected into the
+# mandatory lane of every non-exempt ticket (a vendored/generated/config ticket, or one carrying
+# meta.universal_exempt, is omitted — it has nothing to minimize). Ships report_only = true: it GRADES
+# and RECORDS a verdict on every ticket (the calibration data) but does NOT block. Flip report_only to
+# false — a ONE-LINE edit — to make it gate, once the anchors below prove calibrated (owner watches the
+# blocked-ticket rate on the recorded verdicts). Anchors are literal, copy-pasted exemplars from the
+# repo's clean-code conventions (see the `clean-code` / `simplify` skills), injected verbatim.
+[[check]]
+check_id = "minimalism-dry"
+kind = "graded"
+applies_to = ["*"]
+promote_universal = true
+report_only = true
+criterion = "The change is the minimum code that does the job — no dead or speculative code, no duplication, and shared logic factored once (DRY)."
+confidence_floor = 8
+judge_prompt = "Grade strictly to the CALIBRATION anchors, not an external opinion of taste. Fail only on a LOCATED (file:line) instance of dead/speculative code, copy-pasted logic, or a needless abstraction — never on vague dissatisfaction. Do not re-run tests."
+[[check.axes]]
+name = "minimalism"
+threshold = 0.8
+guidance = "Every line earns its place: no dead code, unused symbols, speculative abstraction, or premature generality. The simplest thing that works."
+[[check.axes]]
+name = "deduplication"
+threshold = 0.8
+guidance = "No copy-pasted blocks: near-identical logic appearing 2+ times is consolidated, not duplicated."
+[[check.axes]]
+name = "dry"
+threshold = 0.75
+guidance = "A single source of truth for each piece of logic/knowledge; shared behavior lives in one named helper, not re-implemented per caller."
+[check.anchors]
+good = [
+  # Minimal — the simplest thing that works, no speculative abstraction:
+  "def total(items):\n    return sum(i.price for i in items)",
+  # DRY — the shared transform is factored into one named helper:
+  "def _slug(s):\n    return s.strip().lower().replace(' ', '-')\n\ntitle_slug = _slug(title)\ntag_slug = _slug(tag)\ncategory_slug = _slug(category)",
+  # No dead code — only the values that are actually returned are computed:
+  "def parse(line):\n    key, value = line.split('=', 1)\n    return key.strip(), value.strip()",
+]
+slop = [
+  # Speculative abstraction — a strategy hierarchy with exactly one implementation, never overridden:
+  "class AbstractTotalStrategy:\n    def compute(self, items): ...\n\nclass DefaultTotalStrategy(AbstractTotalStrategy):\n    def compute(self, items):\n        return sum(i.price for i in items)",
+  # Copy-paste — the same transform re-implemented at every call site instead of a shared helper:
+  "title_slug = title.strip().lower().replace(' ', '-')\ntag_slug = tag.strip().lower().replace(' ', '-')\ncategory_slug = category.strip().lower().replace(' ', '-')",
+  # Dead code — locals and a flag that are computed but never used:
+  "def parse(line):\n    parts = line.split('=', 1)\n    key = parts[0]\n    value = parts[1]\n    joined = '\\n'.join(parts)  # computed, never used\n    debug = False              # speculative flag, always False\n    return key.strip(), value.strip()",
+]

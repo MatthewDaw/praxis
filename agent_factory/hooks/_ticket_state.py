@@ -80,6 +80,7 @@ M_CLAIM_HEARTBEAT_AT = "claim_heartbeat_at"
 M_CLAIM_LEASE_TTL = "claim_lease_ttl"
 M_REQUIRED_VALIDATIONS = "required_validations"
 M_MANUAL_REQUIREMENTS = "manual_requirements"   # subset of required ids whose verify=="manual"
+M_REPORT_ONLY_REQUIREMENTS = "report_only_requirements"  # subset graded + recorded but NOT gating
 M_PINNED_CHECKS = "pinned_checks"           # entries are synthesized VALIDATIONS (see module doc)
 M_RUN_OWNER = "run_owner"
 M_RUN_AT = "run_at"
@@ -216,6 +217,13 @@ def _req_verify(req: Any) -> str:
     if not isinstance(req, dict):
         return ""
     return str((req.get("meta") or {}).get("verify") or req.get("verify") or "").strip().casefold()
+
+
+def _req_report_only(req: Any) -> bool:
+    """True iff the requirement is a REPORT-ONLY universal — graded + recorded, but non-gating."""
+    if not isinstance(req, dict):
+        return False
+    return bool((req.get("meta") or {}).get("report_only") or req.get("report_only"))
 
 
 def _check_id(check: Any) -> str:
@@ -413,9 +421,14 @@ def pin_requirements(cid: str, requirements: list,
     # external/human-sourced pass for it — the worker may not self-certify it (see all_validations_passed).
     manual_ids = [rid for r in requirements
                   if (rid := _check_id(r)) and _req_verify(r) == "manual"]
+    # A REPORT-ONLY requirement (a report-only universal, meta.report_only) is graded + recorded but
+    # excluded from the completion gate — recorded separately so all_validations_passed can skip it.
+    report_only_ids = [rid for r in requirements
+                       if (rid := _check_id(r)) and _req_report_only(r)]
     return _praxis.patch_meta(cid, {
         M_REQUIRED_VALIDATIONS: req_ids,
         M_MANUAL_REQUIREMENTS: manual_ids,
+        M_REPORT_ONLY_REQUIREMENTS: report_only_ids,
         M_PINNED_CHECKS: [],
     }, **_ref_kw(ref))
 
@@ -529,6 +542,13 @@ def coverage_gap(ticket: Any, ref: Optional[tuple[str, str]] = None) -> list[str
     return sorted(required - covered)
 
 
+def _covers_only(entry: dict, ids: set[str]) -> bool:
+    """True iff the pinned validation covers at least one requirement and EVERY one it covers is in
+    ``ids`` (used to spot a validation that exists solely to record a report-only verdict)."""
+    covered = {str(c) for c in (entry.get("covers") or [])}
+    return bool(covered) and covered <= ids
+
+
 def all_validations_passed(ticket: Any, ref: Optional[tuple[str, str]] = None) -> bool:
     """True IFF the ticket is genuinely done: it has a coverage contract (>=1 required requirement),
     every required requirement is covered by some pinned validation (no coverage gap), there is at
@@ -543,9 +563,15 @@ def all_validations_passed(ticket: Any, ref: Optional[tuple[str, str]] = None) -
     ``meta.manual_requirements``) is satisfied ONLY when some covering validation passed with a
     human/external ``source`` (:data:`HUMAN_PASS_SOURCES`). A worker-run pass (the default source)
     never counts — so a manual ticket can never reach True from worker-authored validations alone.
+
+    REPORT-ONLY requirements (``meta.report_only_requirements`` — the report-only universal lane) are
+    EXCLUDED from the gate: they need no coverage and no passing validation, and a validation that
+    exists solely to record one is ignored (a failing report-only verdict never blocks). This is the
+    calibration rollout knob — flip a universal's ``report_only`` off (drop it from this set) to gate.
     """
     meta = _meta(ticket, ref)
-    required = {str(r) for r in (meta.get(M_REQUIRED_VALIDATIONS) or []) if r}
+    report_only = {str(r) for r in (meta.get(M_REPORT_ONLY_REQUIREMENTS) or []) if r}
+    required = {str(r) for r in (meta.get(M_REQUIRED_VALIDATIONS) or []) if r} - report_only
     pinned = list(meta.get(M_PINNED_CHECKS) or [])
     if not required or not pinned:
         return False
@@ -555,7 +581,10 @@ def all_validations_passed(ticket: Any, ref: Optional[tuple[str, str]] = None) -
             covered.add(str(c))
     if not required.issubset(covered):   # coverage gap — compute inline (meta already extracted)
         return False
-    if not all(bool(e.get("passed")) for e in pinned):
+    # A pinned validation that covers ONLY report-only requirements is not gating — its pass/fail is
+    # recorded (calibration) but never blocks completion.
+    gating_pinned = [e for e in pinned if not _covers_only(e, report_only)]
+    if not all(bool(e.get("passed")) for e in gating_pinned):
         return False
     # Manual requirements need an EXTERNAL/human-sourced pass — the worker may not self-certify them.
     manual = {str(r) for r in (meta.get(M_MANUAL_REQUIREMENTS) or []) if r}
@@ -865,9 +894,67 @@ def acceptance_requirement(cid: str, acceptance_text: str,
                      "verify": str(verify or "automated").strip().casefold()}}
 
 
+# --------------------------------------------------------------------------- universal lane
+
+# Tickets tagged with one of these (or carrying ``meta.universal_exempt``) have nothing to minimize —
+# a one-line config change, vendored, or generated code. A subjective universal gate on such a ticket
+# would be unsatisfiable and, because a subjective fail is content-hash-cached with no iteration
+# consumed, would deadlock the session. So they are OMITTED from the universal lane entirely.
+_UNIVERSAL_EXEMPT_TAGS = frozenset({"vendored", "generated", "config"})
+
+
+def _universal_checks() -> list:
+    """The ``promote_universal`` seeded checks. Lazily imports the (src-layout) package so importing
+    this stdlib-only hook never hard-depends on it; returns ``[]`` if it is unavailable."""
+    try:
+        from agent_factory.seeded_checks import universal_seeded_checks
+        return universal_seeded_checks()
+    except Exception:  # noqa: BLE001 - the universal lane is best-effort; never break ticket start
+        return []
+
+
+def _universal_exempt(ticket_meta: Optional[dict]) -> bool:
+    """True iff the ticket opts out of the universal lane (exempt tag or ``meta.universal_exempt``)."""
+    meta = ticket_meta or {}
+    if meta.get("universal_exempt"):
+        return True
+    tags = _as_list(meta.get("tags")) + _as_list(meta.get("applies_to"))
+    return any(normalize_tag(t) in _UNIVERSAL_EXEMPT_TAGS for t in tags if t)
+
+
+def universal_requirements(cid: str, ticket_meta: Optional[dict]) -> list[dict]:
+    """The universal graded requirements to inject onto ``cid`` — one per ``promote_universal`` seeded
+    check, unless the ticket is exempt. Each carries ``kind="graded"`` + its serialized rubric + a
+    stable id (the seeded ``check_id``) + a ``report_only`` flag, so a worker-synthesized validation
+    covers it and ``verify_graded_check`` grades it exactly like a pool graded check.
+    """
+    if _universal_exempt(ticket_meta):
+        return []
+    out: list[dict] = []
+    for chk in _universal_checks():
+        if getattr(chk, "rubric", None) is None:  # only graded universal checks are injectable
+            continue
+        from agent_factory.rubric import rubric_to_dict
+        out.append({
+            "id": chk.check_id,
+            "text": chk.criterion,
+            "meta": {
+                "check_id": chk.check_id,
+                "kind": "graded",
+                "rubric": rubric_to_dict(chk.rubric),
+                "report_only": bool(chk.report_only),
+                "universal": True,
+                "source_check_id": chk.check_id,
+            },
+        })
+    return out
+
+
 def contract_with_floor(cid: str, acceptance_text: str, resolved: list,
-                        verify: str = "automated") -> list:
-    """Compose the coverage contract: the resolved Praxis requirements PLUS the acceptance floor.
+                        verify: str = "automated",
+                        ticket_meta: Optional[dict] = None) -> list:
+    """Compose the coverage contract: the resolved Praxis requirements PLUS the acceptance floor
+    PLUS (when ``ticket_meta`` is given and the ticket is not exempt) the always-on universal lane.
 
     Prepends :func:`acceptance_requirement` (deduped) when the ticket has a non-empty acceptance
     condition, so a ticket with NO matching Praxis checks still has exactly one thing to validate —
@@ -877,6 +964,12 @@ def contract_with_floor(cid: str, acceptance_text: str, resolved: list,
 
     ``verify`` is the ticket's own ``meta.verify`` mode, threaded onto the floor so a manual ticket's
     acceptance floor is itself manual (worker-self-certification barred).
+
+    ``ticket_meta`` (the ticket's own meta, passed by :func:`start_ticket`) drives the UNIVERSAL lane:
+    the ``promote_universal`` seeded checks are appended (deduped by id) on every NON-exempt ticket,
+    tag-independent. It is a no-op when ``ticket_meta`` is None (the pure callers — preview/tests keep
+    their exact contract) or the contract is otherwise empty (the block path must survive, never be
+    masked into buildable by a report-only universal).
     """
     reqs = list(resolved)
     text = str(acceptance_text or "").strip()
@@ -884,6 +977,12 @@ def contract_with_floor(cid: str, acceptance_text: str, resolved: list,
         floor = acceptance_requirement(cid, text, verify=verify)
         if floor["id"] not in {_check_id(r) for r in reqs}:
             reqs = [floor] + reqs
+    if ticket_meta is not None and reqs:
+        existing = {_check_id(r) for r in reqs}
+        for u in universal_requirements(cid, ticket_meta):
+            if u["id"] not in existing:
+                reqs.append(u)
+                existing.add(u["id"])
     return reqs
 
 
@@ -916,7 +1015,8 @@ def start_ticket(cid: str, owner: str, project: str = "",
                                                override=override)
     tmeta = _meta(cid, plan)
     verify_mode = str(tmeta.get("verify") or "automated").strip().casefold()
-    requirements = contract_with_floor(cid, tmeta.get("acceptance"), resolved, verify=verify_mode)
+    requirements = contract_with_floor(cid, tmeta.get("acceptance"), resolved,
+                                       verify=verify_mode, ticket_meta=tmeta)
     # COVERAGE-GAP WARNING (build-time visibility of the intake defect): a verify="automated" ticket
     # that resolves ZERO declared checks is buildable via its acceptance floor, but it means NO declared
     # gate exists for it — exactly the floor-only defect `resolve_preview --require-coverage` blocks at

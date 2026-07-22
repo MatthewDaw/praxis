@@ -37,6 +37,7 @@ class SeededCheck:
     run: str = ""
     promote_universal: bool = False
     rubric: Rubric | None = None
+    report_only: bool = False  # a promoted universal that GRADES + RECORDS but does not gate (yet)
 
 
 def _parse_check(raw: dict) -> SeededCheck:
@@ -68,6 +69,7 @@ def _parse_check(raw: dict) -> SeededCheck:
         run=run,
         promote_universal=bool(raw.get("promote_universal", False)),
         rubric=rubric,
+        report_only=bool(raw.get("report_only", False)),
     )
 
 
@@ -93,6 +95,18 @@ def seeded_candidates(ticket_tags, checks: list[SeededCheck] | None = None) -> l
         if "*" in offer or (offer & tags):
             out.append(c)
     return out
+
+
+def universal_seeded_checks(checks: list[SeededCheck] | None = None) -> list[SeededCheck]:
+    """The ``promote_universal`` seeded checks — the always-enforced UNIVERSAL lane.
+
+    Unlike :func:`seeded_candidates` (opt-in, tag-scoped inspiration), these are injected into the
+    MANDATORY coverage contract of every non-exempt ticket by ``_ticket_state.contract_with_floor``,
+    tag-independent. Order-preserving and deterministic. A universal check ships ``report_only=true``
+    first (grades + records, does not gate); flipping that one flag makes it gate.
+    """
+    checks = checks if checks is not None else load_seeded_checks()
+    return [c for c in checks if c.promote_universal]
 
 
 def load_seeded_checks(path: str | Path | None = None) -> list[SeededCheck]:
