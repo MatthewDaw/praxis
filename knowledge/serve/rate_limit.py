@@ -34,8 +34,11 @@ from starlette.requests import Request
 # limits exist mainly to stop runaway loops, not to ration normal iteration.
 LLM_RATE_LIMIT = "30/minute"
 
-# Looser global default for every other (cheap) route.
-GLOBAL_RATE_LIMIT = "180/minute"
+# Looser global default for every other (cheap) route. Raised well above the old
+# 180/min: autonomous af-build and the resolve_preview coverage tool resolve checks
+# per-ticket across a large plan and legitimately exceed 180 cheap GETs/minute --
+# the limit is only meant to stop runaway loops, not ration normal iteration.
+GLOBAL_RATE_LIMIT = "5000/minute"
 
 
 def principal_key(request: Request) -> str:
