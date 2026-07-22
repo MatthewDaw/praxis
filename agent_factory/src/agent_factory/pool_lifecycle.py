@@ -49,7 +49,7 @@ def orphaned_candidate_ids(candidates: Sequence[Any],
         applies = _applies(c)
         if "*" in applies:
             continue  # wildcard always resolves — never an orphan
-        if any(applies & tagset for tagset in live) and applies:
+        if applies and any(applies & tagset for tagset in live):
             continue  # resolves onto at least one live ticket
         cid = _cid(c)
         if cid:
