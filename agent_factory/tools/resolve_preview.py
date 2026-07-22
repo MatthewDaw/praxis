@@ -121,6 +121,16 @@ def _resolve_ticket(ticket, bare, override):
             lines.append(f"    [seeded-candidate] {', '.join(c.check_id for c in offered)}  (opt-in)")
     except Exception:  # noqa: BLE001 - preview must not fail on a library problem
         pass
+    # Project-authored POOL candidates (candidate:true building-validation checks) — non-gating; the
+    # input the build-time rubric assembler (U5) tiers. Distinct from the gating lanes and the seeded
+    # library. A malformed/unreachable pool must never break the read-only preview.
+    try:
+        pool = ts.pool_candidates(ticket, project=bare, scope="validation", override=override)
+        if pool:
+            lines.append(f"    [pool-candidate] "
+                         f"{', '.join((c or {}).get('id') or '?' for c in pool)}  (non-gating)")
+    except Exception:  # noqa: BLE001 - preview must not fail on a pool read problem
+        pass
     return lines, info
 
 
@@ -173,7 +183,11 @@ def _by_check_view(tickets, checks_ref):
             landed = [(rid, tagset) for rid, tagset in entries if want & tagset]
         landed_ids = [rid for rid, _ in landed]
 
+        chk_meta = chk.get("meta") or {}
+        kind = str(chk_meta.get("kind") or "binary")
+        status = "candidate (non-gating pool)" if chk_meta.get("candidate") else "gating"
         lines.append(f"  check: {cid}")
+        lines.append(f"    kind: {kind}  |  {status}")
         lines.append(f"    applies_to: {applies_raw or '(none)'}")
         lines.append(f"    fan-out {len(landed_ids)} ticket(s): "
                      f"{', '.join(landed_ids) or '(none)'}")

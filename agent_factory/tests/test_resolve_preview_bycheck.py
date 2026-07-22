@@ -111,6 +111,22 @@ def test_broad_check_is_flagged_too_broad(monkeypatch, capsys):
     assert "TOO BROAD" not in _block_for(out, "auth-e2e")
 
 
+def test_by_check_shows_kind_and_candidate_status(monkeypatch, capsys):
+    # A graded, candidate:true pool entry and a binary gate must be distinguishable at a glance.
+    graded_pool = {"id": "quality-rubric",
+                   "meta": {"applies_to": ["auth"], "kind": "graded", "candidate": True}}
+    binary_gate = {"id": "auth-e2e", "meta": {"applies_to": ["auth"]}}  # kind absent -> binary, gating
+    _install(monkeypatch, [_T_AUTH], [graded_pool, binary_gate])
+    rp.main(["proj", "--by-check"])
+    out = capsys.readouterr().out
+    pool_block = _block_for(out, "quality-rubric")
+    assert "kind: graded" in pool_block
+    assert "candidate (non-gating pool)" in pool_block
+    gate_block = _block_for(out, "auth-e2e")
+    assert "kind: binary" in gate_block
+    assert "gating" in gate_block
+
+
 def test_default_view_is_unchanged_without_flag(monkeypatch, capsys):
     # No --by-check: the by-check header must NOT appear; the per-ticket path runs instead.
     def fake_resolve(ticket, project="", scope="validation", override=None):
