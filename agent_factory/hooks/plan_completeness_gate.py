@@ -54,43 +54,16 @@ for _p in (_HERE, _TOOLS):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from _gate_common import active_project as _active_project  # noqa: E402
+from _gate_common import allow as _allow  # noqa: E402
+from _gate_common import block as _block  # noqa: E402
+from _gate_common import classify_unreachable, session_touched  # noqa: E402
+
 # The marker meta key (on the planning marker fact) that records contradiction detection RAN for the
 # snapshot — positive evidence, honestly stamped false by the raw-bulk path (KTD4 / Assumptions).
 M_CONTRADICTIONS_CHECKED = "contradictions_checked"
 
 _DEFAULT_MAX_ATTEMPTS = 3
-
-
-# --------------------------------------------------------------------------- hook I/O
-
-def _allow(advice: str = "") -> None:
-    if advice:
-        print(json.dumps({
-            "hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": advice}
-        }))
-    sys.exit(0)
-
-
-def _block(reason: str) -> None:
-    print(json.dumps({"decision": "block", "reason": reason}))
-    sys.exit(0)
-
-
-# --------------------------------------------------------------------------- project / identity
-
-def _active_project(cwd: str) -> str:
-    """Resolve the active ``prd-<project>`` from ``FACTORY_PROJECT`` (with or without a ``prd-``
-    prefix) else the cwd basename — NEVER a manifest file. Mirrors the build gate."""
-    raw = os.environ.get("FACTORY_PROJECT", "").strip()
-    if not raw:
-        raw = os.path.basename(os.path.normpath(cwd or os.getcwd()))
-    raw = raw.strip()
-    if not raw:
-        return ""
-    return raw if raw.startswith("prd-") else f"prd-{raw}"
-
-
-# --------------------------------------------------------------------------- no-op fast-path
 
 # Substrings that mean THIS session engaged PLANNING. Broad on purpose: a false positive only costs a
 # fall-through to the fail-closed Praxis read (never a fail-OPEN), while a miss must never let an armed
@@ -99,24 +72,6 @@ _PLANNING_SIGNALS = (
     "af-intake", "plan_completeness", "planning_active", "stamp_planning", "planning-validation",
     "contract-signed", "plan_gate", "prd-", "praxis_", "mcp__praxis",
 )
-_MAX_TRANSCRIPT_SCAN_BYTES = 8 * 1024 * 1024
-
-
-def _session_touched_planning(transcript_path: str) -> bool | None:
-    """``False`` == cleanly read the transcript and found ZERO planning signal (a provable no-op);
-    ``True`` == signals present; ``None`` == unknown (missing/unreadable/oversized). Only a confident
-    ``False`` lets the gate stand down WITHOUT a Praxis read."""
-    if not transcript_path:
-        return None
-    try:
-        p = os.path.expanduser(str(transcript_path))
-        if not os.path.isfile(p) or os.path.getsize(p) > _MAX_TRANSCRIPT_SCAN_BYTES:
-            return None
-        with open(p, "r", encoding="utf-8", errors="ignore") as fh:
-            text = fh.read().lower()
-    except Exception:  # noqa: BLE001 — any read problem => unknown, fall through to the safe path
-        return None
-    return any(sig in text for sig in _PLANNING_SIGNALS)
 
 
 # --------------------------------------------------------------------------- attempt tracking (KTD5)
@@ -272,7 +227,7 @@ def main() -> None:
     project = _active_project(cwd)
 
     # --- NO-OP FAST-PATH: a session that never touched planning has nothing to bless. -------------
-    if _session_touched_planning(data.get("transcript_path")) is False:
+    if session_touched(data.get("transcript_path"), _PLANNING_SIGNALS) is False:
         _allow()
 
     # --- ARM + ENFORCE (fail-closed). All Praxis reads live under one guard so PraxisUnreachable ---
@@ -291,12 +246,7 @@ def main() -> None:
                 reason = why
                 break
     except Exception as exc:  # noqa: BLE001
-        try:
-            from _praxis import PraxisUnreachable  # noqa: F811
-            is_unreachable = isinstance(exc, PraxisUnreachable)
-        except Exception:  # noqa: BLE001
-            is_unreachable = True
-        detail = str(exc) if is_unreachable else f"{type(exc).__name__}: {exc}"
+        _, detail = classify_unreachable(exc)
         diag = ""
         try:
             import _praxis
