@@ -1,11 +1,14 @@
 """Scoped API keys: mint / hash / verify / revoke + a thin CLI.
 
-An API key is a long-lived, org-scoped service token for automated agents that
+An API key is a long-lived (non-expiring — there is no expiry column; a key lives
+until explicitly revoked), org-scoped service token for automated agents that
 can't run the Cognito SRP + per-request token mint. The raw key has the form
 ``pxk_<random>`` and is shown exactly once at mint time; the database stores only
-its sha256 hex (:data:`api_keys.key_hash`). Resolving a key yields the owning
-org (and optional user) so the auth dependency can build a Principal and enforce
-that the request's ``X-Praxis-Org`` equals the key's org.
+its hash (:data:`api_keys.key_hash`) — HMAC-SHA256 under the durable, env-provided
+``PRAXIS_API_KEY_SECRET`` pepper, or plain sha256 when that secret is unset (see
+:func:`hash_key`). Resolving a key yields the owning org (and optional user) so
+the auth dependency can build a Principal and enforce that the request's
+``X-Praxis-Org`` equals the key's org.
 
 CLI (uses the same ``knowledge.serve.db.connect()`` as the server)::
 
@@ -17,6 +20,8 @@ CLI (uses the same ``knowledge.serve.db.connect()`` as the server)::
 from __future__ import annotations
 
 import hashlib
+import hmac
+import os
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -24,10 +29,54 @@ from typing import Any
 
 KEY_PREFIX = "pxk_"
 
+# The stable, env-provided secret that peppers the API-key hash. The server NEVER
+# generates this — a boot-generated secret would re-hash every incoming key to a
+# value no longer in the DB, silently invalidating every previously minted key on
+# the next restart (the exact durability bug this guards). Set it once, from a
+# durable source (env / secrets manager), and a key minted yesterday still
+# authenticates after N restarts. Unset => legacy plain sha256 (see hash_key).
+_SECRET_ENV = "PRAXIS_API_KEY_SECRET"
+
+
+def _pepper() -> str:
+    """The API-key hashing secret from ``PRAXIS_API_KEY_SECRET`` (``""`` if unset).
+
+    Read fresh each call (never cached, never generated) so the only thing that
+    pins hash stability across restarts is the stable env value.
+    """
+    return os.environ.get(_SECRET_ENV, "").strip()
+
+
+def _legacy_hash(raw_key: str) -> str:
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+
+def _peppered_hash(raw_key: str, secret: str) -> str:
+    return hmac.new(secret.encode("utf-8"), raw_key.encode("utf-8"), hashlib.sha256).hexdigest()
+
 
 def hash_key(raw_key: str) -> str:
-    """Return the sha256 hex of a raw API key (what we persist + look up by)."""
-    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    """Return the hash we persist + look up by (what a fresh mint stores).
+
+    With ``PRAXIS_API_KEY_SECRET`` set this is HMAC-SHA256(secret, raw_key); unset
+    it is the legacy sha256(raw_key). Both depend only on durable inputs, so the
+    hash is identical after any number of restarts as long as the secret is stable.
+    """
+    secret = _pepper()
+    return _peppered_hash(raw_key, secret) if secret else _legacy_hash(raw_key)
+
+
+def _candidate_hashes(raw_key: str) -> list[str]:
+    """Hashes to try when resolving ``raw_key``, most-current first.
+
+    When a pepper is configured we also try the legacy unpeppered sha256 so keys
+    minted *before* the pepper existed keep resolving — a seamless one-way
+    migration (they re-hash peppered only on the next mint, never on read).
+    """
+    secret = _pepper()
+    if not secret:
+        return [_legacy_hash(raw_key)]
+    return [_peppered_hash(raw_key, secret), _legacy_hash(raw_key)]
 
 
 def generate_key() -> str:
@@ -76,11 +125,15 @@ def resolve_key(conn: Any, raw_key: str) -> ApiKeyRecord | None:
     """
     if not raw_key or not raw_key.startswith(KEY_PREFIX):
         return None
-    row = conn.execute(
-        "SELECT id, org_id, user_id FROM api_keys "
-        "WHERE key_hash = %s AND NOT revoked",
-        (hash_key(raw_key),),
-    ).fetchone()
+    row = None
+    for candidate in _candidate_hashes(raw_key):
+        row = conn.execute(
+            "SELECT id, org_id, user_id FROM api_keys "
+            "WHERE key_hash = %s AND NOT revoked",
+            (candidate,),
+        ).fetchone()
+        if row is not None:
+            break
     if row is None:
         return None
     conn.execute(

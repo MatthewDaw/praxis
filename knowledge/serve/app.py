@@ -704,6 +704,45 @@ def create_app(conn: Any | None = None) -> FastAPI:
             "orgs": orgs_store.list_orgs(principal.sub),
         }
 
+    @app.get("/whoami")
+    def whoami(
+        principal: Principal = Depends(current_user),
+        x_praxis_org: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """One-shot auth/tenancy self-check for preflight/`af whoami`.
+
+        Deliberately depends on ``current_user`` but NOT ``active_org``: a key↔org
+        mismatch is REPORTED (``orgMatch=false`` + ``detail``) instead of raising
+        403, so the caller can print a crisp one-line diagnosis (e.g. "key scoped
+        to org 'sotos' but PRAXIS_ORG='bestie'") rather than a bare error.
+        """
+        requested = x_praxis_org or "default"
+        if os.environ.get("PRAXIS_AUTH_DISABLED") == "1":
+            auth_mode, key_org = "dev", None
+        elif principal.api_key_org is not None:
+            auth_mode, key_org = "key", principal.api_key_org
+        else:
+            auth_mode, key_org = "bearer", None
+
+        if auth_mode == "key":
+            org_match = requested == key_org
+            detail = "" if org_match else (
+                f"key scoped to org {key_org!r} but request targets org {requested!r}"
+            )
+        else:
+            org_match = orgs_store.is_member(requested, principal.sub)
+            detail = "" if org_match else (
+                f"{auth_mode} principal {principal.sub!r} is not a member of org {requested!r}"
+            )
+        return {
+            "sub": principal.sub,
+            "authMode": auth_mode,
+            "keyOrg": key_org,
+            "requestedOrg": requested,
+            "orgMatch": org_match,
+            "detail": detail,
+        }
+
     # --- orgs --------------------------------------------------------------
     @app.post("/orgs")
     def create_org(

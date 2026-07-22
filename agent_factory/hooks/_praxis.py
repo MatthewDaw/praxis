@@ -38,6 +38,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -64,15 +65,24 @@ def _cache_path() -> Path:
     return Path(override).expanduser() if override else _DEFAULT_CACHE_PATH
 
 
-def _load_dotenv() -> None:
-    """Load repo-root ``.env`` into ``os.environ`` (without overriding already-set vars).
+# The single .env this loader actually read (or None). Exposed so the loader is not SILENT about
+# WHICH file — and therefore which backend — won: the whole class of "I edited agent_factory/.env but
+# a stale plugin-cache COPY at a different inode is what the hook loaded" bug. See _log_env_resolution.
+LOADED_ENV_PATH: Path | None = None
+
+
+def _load_dotenv() -> Path | None:
+    """Load the first existing ``.env`` into ``os.environ`` (without overriding already-set vars).
 
     A Stop-hook runs as a bare subprocess that does NOT inherit a shell-sourced ``.env``, so the
     factory's Praxis credentials (``PRAXIS_API_KEY``/``PRAXIS_ORG``/...) live in ``<repo>/.env`` and
     must be loaded explicitly. Stdlib-only, tolerant ``KEY=VALUE`` parsing (skips blanks/comments,
-    strips optional surrounding quotes). Real environment values WIN over the file, so an operator
-    can always override. Searched newest-wins: repo root (``hooks/..``), cwd, the hooks dir itself.
+    strips optional surrounding quotes). Real environment values WIN over the file, so a per-project
+    ``settings.local.json`` env override always beats the shared file. Searched in order: repo root
+    (``hooks/..``), cwd, the hooks dir itself; the FIRST one found is authoritative and its path is
+    recorded in :data:`LOADED_ENV_PATH`. Returns that path (or ``None`` if no file was found).
     """
+    global LOADED_ENV_PATH
     candidates = [
         Path(__file__).resolve().parent.parent / ".env",  # <repo>/.env (hooks/ is at repo root)
         Path.cwd() / ".env",
@@ -91,11 +101,28 @@ def _load_dotenv() -> None:
                 val = val.strip().strip('"').strip("'")
                 if key and key not in os.environ:  # never override a real env var
                     os.environ[key] = val
+            LOADED_ENV_PATH = env_path.resolve()
+            return LOADED_ENV_PATH
         except Exception:  # noqa: BLE001 — a malformed .env must not crash the gate
             continue
+    return None
+
+
+def _log_env_resolution() -> None:
+    """Emit ONE stderr line naming the .env + backend this hook resolved (never silent).
+
+    Suppressed only when ``PRAXIS_HOOK_QUIET=1`` (tests / noise-sensitive runs). This is the
+    diagnostic that turns "a copy silently decided which backend was queried" into a visible fact.
+    """
+    if os.environ.get("PRAXIS_HOOK_QUIET") == "1":
+        return
+    where = str(LOADED_ENV_PATH) if LOADED_ENV_PATH else "<none: relying on real env vars>"
+    backend = os.environ.get("PRAXIS_API_BASE_URL", DEFAULT_API_BASE).rstrip("/")
+    print(f"[praxis-hook] env={where} backend={backend}", file=sys.stderr)
 
 
 _load_dotenv()
+_log_env_resolution()
 
 
 class PraxisUnreachable(RuntimeError):
@@ -649,3 +676,62 @@ def preflight(*, live: bool = True, use_cache: bool = True) -> PreflightResult:
     if use_cache:
         _write_preflight_cache(result)
     return result
+
+
+# --------------------------------------------------------------------------- whoami
+
+class WhoAmI(NamedTuple):
+    """The resolved identity for THIS invocation — the crisp one-line answer to
+    "who am I, against which backend, in which org?" (see :func:`whoami`)."""
+
+    backend: str
+    org: str
+    org_source: str          # "PRAXIS_ORG" | "cache" | "default"
+    principal: str           # server-reported sub (or "?" if unreachable)
+    auth_mode: str           # "key" | "bearer" | "dev" | "?"
+    key_org: str | None      # the org a key is scoped to (None for bearer/dev)
+    ok: bool
+    detail: str              # crisp mismatch/error when not ok (else "")
+
+    def line(self) -> str:
+        """The single diagnostic line: identity + a MISMATCH clause when broken."""
+        base = (
+            f"backend={self.backend} resolved_org={self.org} (via {self.org_source}) "
+            f"principal={self.principal} auth_mode={self.auth_mode}"
+        )
+        if self.key_org is not None:
+            base += f" key_org={self.key_org}"
+        return base if self.ok else f"{base}  MISMATCH: {self.detail}"
+
+
+def whoami() -> WhoAmI:
+    """Resolve and return THIS invocation's identity by asking the server ``GET /whoami``.
+
+    Sends the exact auth + ``x-praxis-org`` headers a real hook request sends (so it reports the
+    truth the gates see), then compares the key's org against the resolved org to surface the
+    canonical multi-tenancy footgun as one line: "key scoped to org 'sotos' but PRAXIS_ORG='bestie'".
+    """
+    backend = _api_base()
+    pinned = os.environ.get("PRAXIS_ORG", "").strip()
+    cached = _org_from_cache()
+    org = _resolve_org(pinned, cached, DEFAULT_ORG)
+    org_source = "PRAXIS_ORG" if pinned else ("cache" if cached else "default")
+
+    try:
+        data = _request("GET", "/whoami")
+    except PraxisUnreachable as exc:
+        return WhoAmI(backend, org, org_source, "?", "?", None, False,
+                      f"cannot reach {backend}/whoami: {exc}")
+
+    principal = str(data.get("sub") or "?")
+    auth_mode = str(data.get("authMode") or "?")
+    key_org = data.get("keyOrg")
+    ok = bool(data.get("orgMatch", True))
+    detail = ""
+    if not ok:
+        if auth_mode == "key":
+            src = f"PRAXIS_ORG={org!r}" if org_source == "PRAXIS_ORG" else f"resolved org {org!r}"
+            detail = f"key scoped to org {key_org!r} but {src} (via {org_source})"
+        else:
+            detail = str(data.get("detail") or f"{auth_mode} principal not a member of org {org!r}")
+    return WhoAmI(backend, org, org_source, principal, auth_mode, key_org, ok, detail)
