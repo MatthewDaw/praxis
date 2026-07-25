@@ -98,6 +98,7 @@ M_PINNED_CHECKS = "pinned_checks"           # entries are synthesized VALIDATION
 M_RUN_OWNER = "run_owner"
 M_RUN_AT = "run_at"
 M_RUN_SCOPE = "run_scope"
+M_FINISHED_AT = "finished_at"                # epoch seconds, stamped by release(state="finished") only
 M_UNDER_SPECIFIED = "under_specified"   # [missing structural fields] — routed to intake, never claimed (plan 003)
 M_PLANNING_OWNER = "planning_owner"         # session id of the active planning (intake) session (plan 002)
 M_PLANNING_AT = "planning_at"               # epoch seconds, planning-marker heartbeat; stale => dead (plan 002)
@@ -764,6 +765,7 @@ def release(cid: str, owner: str, state: str,
     if state == "finished":
         for k in _RUN_KEYS:
             patch[k] = None  # left the run cleanly
+        patch[M_FINISHED_AT] = time.time()
     _praxis.patch_meta(cid, patch, **_ref_kw(ref))
     return True
 

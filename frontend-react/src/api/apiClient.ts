@@ -7,6 +7,9 @@ import {
   buildResolveBody,
   buildUpdateBody,
   contractHeaders,
+  parseProductivityResponse,
+  type ProductivityRange,
+  type ProductivityResponse,
 } from "./contract";
 import {
   candidateFromMapping,
@@ -1148,6 +1151,34 @@ export async function revokeApiKey(
     id: typeof row.id === "string" ? row.id : id,
     revoked: Boolean(row.revoked),
   };
+}
+
+/**
+ * `GET /productivity` — the four bucketed S1-S4 series for the dashboard's Productivity
+ * panel (R3), owner-gated on the backend. Goes through {@link contractHeaders} like every
+ * other apiClient helper (Cognito bearer + org + space) rather than a bare `fetch` call, so
+ * the panel never has to hand-roll auth headers or response parsing.
+ */
+export async function getProductivity(
+  apiBaseUrl: string,
+  range: ProductivityRange,
+  auth?: string | ApiDataProviderAuth,
+): Promise<ProductivityResponse> {
+  const root = apiBaseUrl.replace(/\/$/, "");
+  const { token, orgId, spaceId } = await resolveToken(auth);
+  const response = await fetch(`${root}/productivity?range=${encodeURIComponent(range)}`, {
+    method: "GET",
+    headers: contractHeaders(token, orgId, spaceId),
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    const message = responseDetail(detail, response.statusText);
+    throw new ApiClientError(
+      `API GET /productivity failed (${response.status}): ${message}`,
+      response.status,
+    );
+  }
+  return parseProductivityResponse(await parseJsonResponse(response));
 }
 
 export {
