@@ -128,6 +128,17 @@ export class BackendServiceStack extends cdk.Stack {
     // (see R1) — the token itself never becomes a runtimeEnvironmentVariables entry.
     githubTokenSecret.grantRead(instanceRole);
 
+    // GitHub PAT (R1): CDK owns creation of this secret (a generated placeholder
+    // value at first deploy; ops overwrites it with the real token out-of-band).
+    // The instance role gets read access; the token is fetched at runtime by
+    // knowledge/serve/github_token.py and is NEVER a plaintext
+    // runtimeEnvironmentVariables entry below.
+    const githubTokenSecret = new secretsmanager.Secret(this, 'GithubTokenSecret', {
+      secretName: GITHUB_TOKEN_SECRET_NAME,
+      description: 'GitHub personal access token used by the productivity backend (R1).',
+    });
+    githubTokenSecret.grantRead(instanceRole);
+
     this.service = new apprunner.CfnService(this, 'Service', {
       sourceConfiguration: {
         autoDeploymentsEnabled: false,
