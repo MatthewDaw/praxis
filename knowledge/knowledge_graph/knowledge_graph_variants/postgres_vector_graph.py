@@ -2333,16 +2333,32 @@ class PostgresVectorGraph(SearchableGraph):
         preserved. Only the holding owner may release; a mismatch is
         :class:`LeaseConflict` and an unknown fact ``KeyError``. ``finished`` clears
         the lease only — completeness stays derived from outcomes elsewhere.
+
+        ``finished`` also stamps ``meta.finished_at`` with the DB's wall clock as a
+        fixed-format, zero-padded UTC ISO-8601 string (e.g.
+        ``"2026-07-25T03:50:06.740712+00:00"`` — the exact shape migration 0013's
+        ``snapshots_finished_at_idx`` indexes for range queries). ``incomplete``
+        never sets it, so a ticket that yields without finishing carries none.
         """
         if state not in ("finished", "incomplete"):
             raise ValueError("state must be 'finished' or 'incomplete'")
         # ``meta - 'k1' - 'k2' ...`` removes the lease keys; then merge the new
-        # build_state. Both preserve every unrelated key.
+        # build_state (+ finished_at, for ``finished`` only). Both preserve every
+        # unrelated key.
         strip = " ".join(f"- '{k}'" for k in _LEASE_META_KEYS)
         key_pred, key_params = self._key_pred()
+        if state == "finished":
+            set_expr = (
+                "jsonb_build_object("
+                "  'build_state', %s::text, "
+                "  'finished_at', to_char(now() AT TIME ZONE 'utc', "
+                "                         'YYYY-MM-DD\"T\"HH24:MI:SS.US') || '+00:00')"
+            )
+        else:
+            set_expr = "jsonb_build_object('build_state', %s::text)"
         row = self._conn.execute(
             f"UPDATE {self._facts_table} SET meta = (meta {strip}) "
-            "  || jsonb_build_object('build_state', %s::text) "
+            f"  || {set_expr} "
             f"WHERE {key_pred} AND id = %s "
             "  AND meta->>'claim_owner' = %s "
             "RETURNING meta",
