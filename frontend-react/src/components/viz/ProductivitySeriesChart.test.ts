@@ -80,3 +80,67 @@ describe("ProductivitySeriesChart", () => {
     expect(spread).toBeGreaterThan(10);
   });
 });
+
+// R27 acceptance: "given a 12-month range whose start precedes the instrumentation
+// date, the S4 line is greyed before that date and carries a ticket-history-starts
+// annotation" — a weekly-bucketed 12-month series whose window starts well before
+// the instrumentation date, with several buckets on each side of the boundary (a
+// single-point segment renders no path at all, so this must exercise a real curve).
+const TWELVE_MONTH_BUCKETS = [
+  "2025-08-01T00:00:00+00:00",
+  "2025-11-01T00:00:00+00:00",
+  "2026-07-01T00:00:00+00:00", // < instrumentation date: no real S4 data yet
+  "2026-07-29T00:00:00+00:00", // >= instrumentation date: real recorded completions
+  "2026-08-05T00:00:00+00:00",
+];
+function bucketedPoints(values: number[]) {
+  return TWELVE_MONTH_BUCKETS.map((bucketStart, i) => ({ bucketStart, value: values[i] }));
+}
+const TWELVE_MONTH_SERIES: ProductivitySeries = {
+  linesAdded: bucketedPoints([500, 700, 750, 800, 820]),
+  linesDeleted: bucketedPoints([100, 150, 180, 200, 210]),
+  netLines: bucketedPoints([400, 550, 570, 600, 610]),
+  ticketsCompleted: bucketedPoints([0, 0, 0, 2, 3]),
+};
+const INSTRUMENTATION_DATE = "2026-07-25T07:17:15+00:00";
+
+describe("ProductivitySeriesChart — S4 instrumentation-date greying (R27)", () => {
+  it("greys S4 before the instrumentation date and shows a ticket-history-starts annotation when the range starts before it", () => {
+    const markup = renderToStaticMarkup(
+      createElement(ProductivitySeriesChart, {
+        series: TWELVE_MONTH_SERIES,
+        instrumentationDate: INSTRUMENTATION_DATE,
+      }),
+    );
+
+    expect(markup).toContain('data-testid="s4-instrumentation-annotation"');
+    expect(markup).toContain("Ticket history starts 2026-07-25");
+
+    // The pre-instrumentation S4 segment is drawn in the grey/dashed style, the
+    // post-instrumentation segment in the normal green style — two distinct S4
+    // lines, not one.
+    expect(markup).toContain("#9ca3af");
+    expect(markup).toContain("#16a34a");
+  });
+
+  it("does not grey or annotate S4 when the whole window is after the instrumentation date", () => {
+    const markup = renderToStaticMarkup(
+      createElement(ProductivitySeriesChart, {
+        series: TWELVE_MONTH_SERIES,
+        instrumentationDate: "2025-01-01T00:00:00+00:00",
+      }),
+    );
+
+    expect(markup).not.toContain('data-testid="s4-instrumentation-annotation"');
+    expect(markup).not.toContain("#9ca3af");
+  });
+
+  it("does not grey or annotate S4 when no instrumentation date is known", () => {
+    const markup = renderToStaticMarkup(
+      createElement(ProductivitySeriesChart, { series: TWELVE_MONTH_SERIES }),
+    );
+
+    expect(markup).not.toContain('data-testid="s4-instrumentation-annotation"');
+    expect(markup).not.toContain("#9ca3af");
+  });
+});

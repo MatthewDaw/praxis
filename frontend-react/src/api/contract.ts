@@ -139,6 +139,11 @@ export interface ProductivityResponse {
   range: string;
   truncated: boolean;
   series: ProductivitySeries;
+  /** The earliest `finished_at` ever recorded org-wide (S4's instrumentation
+   * start date, R27/D27) — `null` when no ticket has ever finished. A range
+   * whose start precedes this date means S4 has no real data before it: the
+   * chart must grey that span and annotate it, never plot a truthful zero. */
+  s4InstrumentationDate: string | null;
 }
 
 function toSeriesPoints(raw: unknown): ProductivitySeriesPoint[] {
@@ -169,5 +174,7 @@ export function parseProductivityResponse(payload: unknown): ProductivityRespons
       netLines: toSeriesPoints(series.s3_net_lines),
       ticketsCompleted: toSeriesPoints(series.s4_tickets_completed),
     },
+    s4InstrumentationDate:
+      typeof root.s4_instrumentation_date === "string" ? root.s4_instrumentation_date : null,
   };
 }

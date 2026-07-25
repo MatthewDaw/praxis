@@ -30,7 +30,7 @@ from typing import Any
 from knowledge.serve import github_audit, github_commits, github_token, productivity_cache
 from knowledge.serve.auth import Principal
 from knowledge.serve.productivity_attribution import bucketed_owner_totals, net_lines
-from knowledge.serve.productivity_series import s4_series
+from knowledge.serve.productivity_series import s4_instrumentation_date, s4_series
 
 # The one range values the route accepts (R8: each range selects the bucket_unit and bucket
 # count below — see bucket_plan).
@@ -166,6 +166,7 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
     s1, s2 = totals["s1"], totals["s2"]
     s3 = net_lines(s1, s2)
     s4 = s4_series(conn, org_id, bucket_starts, bucket_seconds)
+    instrumentation_date = s4_instrumentation_date(conn, org_id)
 
     github_audit.record_productivity_request(
         duration_ms=(time.perf_counter() - started_at) * 1000,
@@ -178,6 +179,7 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
         "range": range_,
         "bucket_unit": bucket_unit,
         "truncated": bool(activity.get("truncated")),
+        "s4_instrumentation_date": instrumentation_date,
         "series": {
             "s1_lines_added": _series_points(bucket_starts, s1),
             "s2_lines_deleted": _series_points(bucket_starts, s2),

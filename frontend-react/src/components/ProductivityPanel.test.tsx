@@ -86,6 +86,42 @@ describe("ProductivityPanel", () => {
     });
   });
 
+  it("greys S4 and shows the ticket-history-starts annotation when the response carries an instrumentation date preceding the window (R27)", async () => {
+    const body = JSON.stringify({
+      range: "12months",
+      truncated: false,
+      s4_instrumentation_date: "2026-07-25T07:17:15+00:00",
+      series: {
+        s1_lines_added: [
+          { bucket_start: "2025-08-01T00:00:00+00:00", value: 500 },
+          { bucket_start: "2026-07-01T00:00:00+00:00", value: 800 },
+        ],
+        s2_lines_deleted: [
+          { bucket_start: "2025-08-01T00:00:00+00:00", value: 100 },
+          { bucket_start: "2026-07-01T00:00:00+00:00", value: 200 },
+        ],
+        s3_net_lines: [
+          { bucket_start: "2025-08-01T00:00:00+00:00", value: 400 },
+          { bucket_start: "2026-07-01T00:00:00+00:00", value: 600 },
+        ],
+        s4_tickets_completed: [
+          { bucket_start: "2025-08-01T00:00:00+00:00", value: 0 },
+          { bucket_start: "2026-07-01T00:00:00+00:00", value: 3 },
+        ],
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 200 })));
+
+    render(<ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("s4-instrumentation-annotation")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("s4-instrumentation-annotation")).toHaveTextContent(
+      "Ticket history starts 2026-07-25",
+    );
+  });
+
   it("shows an error state when the fetch fails", async () => {
     vi.stubGlobal(
       "fetch",

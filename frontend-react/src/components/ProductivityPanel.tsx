@@ -21,6 +21,7 @@ const DEFAULT_RANGE = "4weeks" as const;
  */
 export function ProductivityPanel({ apiBaseUrl, auth }: ProductivityPanelProps) {
   const [series, setSeries] = useState<ProductivitySeries | null>(null);
+  const [instrumentationDate, setInstrumentationDate] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -36,6 +37,7 @@ export function ProductivityPanel({ apiBaseUrl, auth }: ProductivityPanelProps) 
       .then((response) => {
         if (active) {
           setSeries(response.series);
+          setInstrumentationDate(response.s4InstrumentationDate);
           setLoading(false);
         }
       })
@@ -61,7 +63,7 @@ export function ProductivityPanel({ apiBaseUrl, auth }: ProductivityPanelProps) 
           Couldn't load productivity data: {error}
         </p>
       ) : series ? (
-        <ProductivitySeriesChart series={series} />
+        <ProductivitySeriesChart series={series} instrumentationDate={instrumentationDate} />
       ) : (
         <p className="muted" data-testid="productivity-empty">
           Productivity reporting is coming soon.

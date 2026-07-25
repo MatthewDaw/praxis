@@ -65,3 +65,25 @@ def s4_series(
     return bucket_counts(
         fetch_ticket_finished_ats(conn, org_id), bucket_starts, bucket_seconds
     )
+
+
+def instrumentation_date(finished_ats: list[str | None]) -> str | None:
+    """The earliest ``finished_at`` in ``finished_ats``, or ``None`` if none exist.
+
+    This IS the S4 instrumentation start date (D1/D27): finish-timestamp stamping
+    only began recording once the first ticket ever transitioned to ``finished``,
+    so the earliest recorded value is exactly the point before which "no data" and
+    "zero tickets finished" are indistinguishable — the boundary a chart must grey
+    and annotate ("ticket history starts <date>") rather than render as a truthful
+    zero.
+    """
+    values = [raw for raw in finished_ats if raw]
+    if not values:
+        return None
+    return min(values)
+
+
+def s4_instrumentation_date(conn: psycopg.Connection, org_id: str) -> str | None:
+    """The org's S4 instrumentation-start date: the earliest ``finished_at`` ever
+    recorded across every space in ``org_id`` (see :func:`instrumentation_date`)."""
+    return instrumentation_date(fetch_ticket_finished_ats(conn, org_id))

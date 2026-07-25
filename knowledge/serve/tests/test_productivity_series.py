@@ -11,7 +11,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from knowledge.serve import db
-from knowledge.serve.productivity_series import bucket_counts, s4_series
+from knowledge.serve.productivity_series import (
+    bucket_counts,
+    instrumentation_date,
+    s4_instrumentation_date,
+    s4_series,
+)
 
 pytestmark_db = pytest.mark.skipif(
     db.resolve_dsn() is None,
@@ -53,6 +58,29 @@ def test_timestamps_sort_into_distinct_buckets():
     assert bucket_counts(finished_ats, [day0, day1], 86400) == [1, 2]
 
 
+# --- R27: S4 instrumentation-start date (the earliest finished_at ever) --
+
+
+def test_instrumentation_date_is_the_earliest_finished_at():
+    assert instrumentation_date(
+        [
+            "2026-07-25T09:00:00+00:00",
+            "2026-07-25T07:17:15+00:00",
+            "2026-07-25T10:30:00+00:00",
+        ]
+    ) == "2026-07-25T07:17:15+00:00"
+
+
+def test_instrumentation_date_skips_missing_values():
+    assert instrumentation_date([None, "", "2026-07-25T07:17:15+00:00"]) == (
+        "2026-07-25T07:17:15+00:00"
+    )
+
+
+def test_instrumentation_date_is_none_when_nothing_ever_finished():
+    assert instrumentation_date([None, "", None]) is None
+
+
 # --- DB-backed: aggregation spans every space in the org ------------------
 
 
@@ -88,6 +116,58 @@ def test_s4_series_aggregates_across_every_space_in_org(unique_org):
         result = s4_series(conn, org, [day], 86400)
 
         assert result == [3]
+    finally:
+        conn.execute("DELETE FROM snapshots WHERE org_id = %s", (org,))
+        conn.close()
+
+
+@pytestmark_db
+def test_s4_instrumentation_date_is_the_earliest_finish_across_the_org(unique_org):
+    db.bootstrap()
+    conn = db.connect()
+    org = unique_org
+    day = datetime(2026, 7, 20, tzinfo=timezone.utc)
+    try:
+        conn.execute("DELETE FROM snapshots WHERE org_id = %s", (org,))
+        rows = [
+            ("t-1", org, "ticket one", "space-a", "prd-space-a", "active",
+             "requirement", f'{{"finished_at": "{(day + timedelta(hours=3)).isoformat()}"}}'),
+            # the earliest finish, in a DIFFERENT space -- must still win.
+            ("t-2", org, "ticket two", "space-b", "prd-space-b", "active",
+             "requirement", f'{{"finished_at": "{(day + timedelta(hours=1)).isoformat()}"}}'),
+            ("t-3", org, "ticket three", "space-a", "prd-space-a", "active",
+             "requirement", "{}"),
+        ]
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO snapshots "
+                "(id, org_id, text, space, snapshot, state, category, meta) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+                rows,
+            )
+
+        result = s4_instrumentation_date(conn, org)
+
+        assert result == (day + timedelta(hours=1)).isoformat()
+    finally:
+        conn.execute("DELETE FROM snapshots WHERE org_id = %s", (org,))
+        conn.close()
+
+
+@pytestmark_db
+def test_s4_instrumentation_date_is_none_when_no_ticket_ever_finished(unique_org):
+    db.bootstrap()
+    conn = db.connect()
+    org = unique_org
+    try:
+        conn.execute("DELETE FROM snapshots WHERE org_id = %s", (org,))
+        conn.execute(
+            "INSERT INTO snapshots (id, org_id, text, space, snapshot, state, category, meta) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)",
+            ("t-1", org, "ticket one", "space-a", "prd-space-a", "active", "requirement", "{}"),
+        )
+
+        assert s4_instrumentation_date(conn, org) is None
     finally:
         conn.execute("DELETE FROM snapshots WHERE org_id = %s", (org,))
         conn.close()

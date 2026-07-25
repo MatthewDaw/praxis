@@ -1,6 +1,7 @@
 {
   "range": "week",
   "truncated": false,
+  "s4_instrumentation_date": "2026-07-25T07:17:15+00:00",
   "series": {
     "s1_lines_added": [{ "bucket_start": "2026-07-18T00:00:00+00:00", "value": 120 }],
     "s2_lines_deleted": [{ "bucket_start": "2026-07-18T00:00:00+00:00", "value": 40 }],
