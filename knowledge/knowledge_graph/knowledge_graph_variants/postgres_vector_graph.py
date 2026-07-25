@@ -762,6 +762,7 @@ class PostgresVectorGraph(SearchableGraph):
         outcome: str = "pending",
         derived_from: list[str] | None = None,
         decided_at: str | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> str | None:
         """Append an episode (a decision + its rationale) — store-only (gap H4).
 
@@ -772,6 +773,16 @@ class PostgresVectorGraph(SearchableGraph):
         directly via ``_add`` — bypassing the policy entirely — tagged
         ``category="episodic"`` with a ``meta.episode`` block, plus ``derived_from``
         edges (H5) to the facts the decision was based on.
+
+        ``extra`` carries CALLER-DEFINED keys through into the ``meta.episode`` block
+        verbatim. Without it this method whitelisted only the three canonical fields
+        below and silently DROPPED everything else, which broke every typed episode
+        payload built on top of episodes — notably the agent-factory's signed-contract
+        payload (``contract_signature.build_signed_payload``: ``kind`` /
+        ``n_assertions`` / ``actions`` / ``signer``), whose loss made the
+        ``R-CONTRACT-SIGNED`` plan-gate rule unsatisfiable through the normal write
+        path while the write still reported success. The canonical fields always WIN
+        over ``extra`` so a caller can never spoof ``outcome``/``decided_at``.
 
         Empty text is a no-op (returns ``None``). Returns the new fact id.
         """
@@ -784,6 +795,8 @@ class PostgresVectorGraph(SearchableGraph):
         decision.category = EPISODIC_CATEGORY
         decision.meta = {
             "episode": {
+                **{k: v for k, v in (extra or {}).items()
+                   if k not in ("decided_at", "alternatives", "outcome")},
                 "decided_at": decided_at or datetime.now(timezone.utc).isoformat(),
                 "alternatives": list(alternatives or []),
                 "outcome": outcome,

@@ -169,12 +169,20 @@ def _record_episode(graph: PostgresVectorGraph, insight: str, body: dict[str, An
     written fact is fetchable immediately, since writes commit on autocommit.
     """
     ep = (body.get("meta") or {}).get("episode") or {}
+    # Pass the caller's OTHER episode keys through instead of dropping them. This used to
+    # destructure only the three canonical fields, so a typed payload layered on top of an
+    # episode lost its own keys with no error and a `retrievable: true` response — which is
+    # how the agent-factory's signed-contract payload (kind/n_assertions/actions/signer)
+    # vanished and made the R-CONTRACT-SIGNED plan-gate rule unsatisfiable.
+    extra = {k: v for k, v in ep.items()
+             if k not in ("alternatives", "outcome", "decided_at")}
     fid = graph.record_episode(
         insight,
         alternatives=ep.get("alternatives"),
         outcome=ep.get("outcome", "pending"),
         decided_at=ep.get("decided_at"),
         derived_from=body.get("derivedFrom"),
+        extra=extra or None,
     )
     return {
         "summary": "recorded episode",
