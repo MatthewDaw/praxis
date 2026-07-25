@@ -139,6 +139,7 @@ export interface ProductivityResponse {
   range: string;
   truncated: boolean;
   series: ProductivitySeries;
+  computedAt: string;
 }
 
 function toSeriesPoints(raw: unknown): ProductivitySeriesPoint[] {
@@ -169,5 +170,15 @@ export function parseProductivityResponse(payload: unknown): ProductivityRespons
       netLines: toSeriesPoints(series.s3_net_lines),
       ticketsCompleted: toSeriesPoints(series.s4_tickets_completed),
     },
+    computedAt: typeof root.computed_at === "string" ? root.computed_at : "",
   };
+}
+
+// Ranges of four weeks or less always force-fetch on Refresh; the 12-month and
+// all-time ranges reuse the long-TTL cache unless the explicit force affordance
+// is used (the ticket's stated force-fetch rule).
+const SHORT_TTL_RANGES: readonly ProductivityRange[] = ["day", "week", "4weeks"];
+
+export function isShortTtlRange(range: ProductivityRange): boolean {
+  return (SHORT_TTL_RANGES as readonly string[]).includes(range);
 }

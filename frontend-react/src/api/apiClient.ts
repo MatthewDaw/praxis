@@ -1189,10 +1189,12 @@ export async function getProductivity(
   apiBaseUrl: string,
   range: ProductivityRange,
   auth?: string | ApiDataProviderAuth,
+  force?: boolean,
 ): Promise<ProductivityResponse> {
   const root = apiBaseUrl.replace(/\/$/, "");
   const { token, orgId, spaceId } = await resolveToken(auth);
-  const response = await fetch(`${root}/productivity?range=${encodeURIComponent(range)}`, {
+  const query = `range=${encodeURIComponent(range)}${force ? "&force=true" : ""}`;
+  const response = await fetch(`${root}/productivity?${query}`, {
     method: "GET",
     headers: contractHeaders(token, orgId, spaceId),
   });
