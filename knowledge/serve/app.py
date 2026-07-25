@@ -2971,8 +2971,15 @@ def create_app(conn: Any | None = None) -> FastAPI:
         The owner-allowlist check runs BEFORE any GitHub call: a non-owner principal
         (including one authenticated by an org API key) gets a bare 403 and never a
         git-derived number, whether or not the caller can also reach GitHub.
+
+        The kill switch (R39) is checked FIRST, ahead of the owner gate and the range
+        validation, for every authenticated caller: when set, the route degrades to a
+        disabled status instead of an error and never reaches GitHub, so a leaked or
+        revoked token can be contained immediately with no redeploy.
         """
         del uid  # dependency enforces org membership; the series aren't per-user.
+        if productivity_route.kill_switch_enabled():
+            return {"status": "disabled"}
         if not productivity_route.is_owner(principal):
             raise HTTPException(status_code=403, detail="not the productivity token owner")
         if range not in productivity_route.ALLOWED_RANGES:
