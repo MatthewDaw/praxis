@@ -88,7 +88,9 @@ jobs:
           npm ci
           npm run lint
 
-  # Frontend (React/Vite): the repo's `test` script is `vitest run`.
+  # Frontend (React/Vite): the repo's `test` script is `vitest run`. Gated only on the
+  # frontend changes filter so it always runs on a frontend-only PR (never AND-ed with
+  # another stack's filter or restricted to push-only, which would skip it there).
   frontend-test:
     needs: changes
     if: ${{ needs.changes.outputs.frontend == 'true' }}
@@ -103,7 +105,7 @@ jobs:
       - working-directory: frontend-react
         run: |
           npm ci
-          npm run test
+          npm test
 
   # Infra (AWS CDK, TypeScript): `tsc` via the `build` script is the type-check gate.
   infra-typecheck:
