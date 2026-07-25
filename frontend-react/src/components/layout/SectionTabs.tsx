@@ -4,12 +4,15 @@ interface SectionTabsProps {
   viewTab: ViewTab;
   contradictionCount: number;
   onViewTabChange: (tab: ViewTab) => void;
+  /** True when the backend productivity kill switch (R39) is set -- hides the tab. */
+  productivityDisabled?: boolean;
 }
 
 export function SectionTabs({
   viewTab,
   contradictionCount,
   onViewTabChange,
+  productivityDisabled = false,
 }: SectionTabsProps) {
   const isKnowledgeView =
     viewTab === "table" || viewTab === "cards" || viewTab === "graph";
@@ -50,17 +53,19 @@ export function SectionTabs({
       >
         Context
       </button>
-      <button
-        type="button"
-        role="tab"
-        className={
-          viewTab === "productivity" ? "view-toggle__tab active" : "view-toggle__tab"
-        }
-        aria-selected={viewTab === "productivity"}
-        onClick={() => onViewTabChange("productivity")}
-      >
-        Productivity
-      </button>
+      {productivityDisabled ? null : (
+        <button
+          type="button"
+          role="tab"
+          className={
+            viewTab === "productivity" ? "view-toggle__tab active" : "view-toggle__tab"
+          }
+          aria-selected={viewTab === "productivity"}
+          onClick={() => onViewTabChange("productivity")}
+        >
+          Productivity
+        </button>
+      )}
       <button
         type="button"
         role="tab"

@@ -7,6 +7,7 @@ import {
   saveSnapshot,
 } from "./api/apiClient";
 import { recordFactOutcome } from "./api/contextClient";
+import { isProductivityDisabled } from "./api/productivityClient";
 import { canDeleteCandidate } from "./api/candidateModel";
 import { buildLocalLogSession } from "./api/localLogsProvider";
 import { CandidateCards } from "./components/CandidateCards";
@@ -213,6 +214,34 @@ export default function App() {
     [wireClusters, candidates],
   );
   const contradictionCount = contradictionClusterList.length;
+
+  // Kill-switch signal (R39): hides the Productivity tab without a redeploy when
+  // the backend reports the feature disabled. Defaults to enabled (not hidden) so
+  // a still-loading or mock/local session never flashes the tab away; only a live
+  // `{"status": "disabled"}` body flips it.
+  const [productivityDisabled, setProductivityDisabled] = useState(false);
+  useEffect(() => {
+    if (mode !== "live" || !config.apiBaseUrl) {
+      setProductivityDisabled(false);
+      return;
+    }
+    let active = true;
+    isProductivityDisabled(config.apiBaseUrl, auth).then((disabled) => {
+      if (active) setProductivityDisabled(disabled);
+    });
+    return () => {
+      active = false;
+    };
+  }, [mode, config.apiBaseUrl, auth]);
+
+  // If the tab was already open when the kill switch flips on mid-session, fall
+  // back off the now-hidden Productivity view rather than stranding the user on
+  // a tab whose button no longer exists.
+  useEffect(() => {
+    if (productivityDisabled && viewTab === "productivity") {
+      setViewTab("table");
+    }
+  }, [productivityDisabled, viewTab]);
 
   useEffect(() => {
     if (filtered.length === 0) {
@@ -651,6 +680,7 @@ export default function App() {
             viewTab={viewTab}
             contradictionCount={contradictionCount}
             onViewTabChange={setViewTab}
+            productivityDisabled={productivityDisabled}
           />
         }
       />

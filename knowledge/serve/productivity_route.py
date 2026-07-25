@@ -48,6 +48,19 @@ DEFAULT_OWNER_LOGIN = "mattdaw7"
 DEFAULT_OWNER_EMAIL = "mattdaw7@gmail.com"
 
 
+def kill_switch_enabled() -> bool:
+    """True iff the productivity feature is administratively disabled (R39).
+
+    Read fresh on every call (no caching) so flipping ``PRODUCTIVITY_KILL_SWITCH``
+    takes effect on the very next request, no redeploy required: the route degrades
+    to a disabled status before the owner gate and before any GitHub call, so a
+    leaked or revoked token is contained immediately regardless of who is asking.
+    """
+    return os.environ.get("PRODUCTIVITY_KILL_SWITCH", "").strip().lower() in {
+        "1", "true", "yes",
+    }
+
+
 def owner_login() -> str:
     """The GitHub login whose commits count toward S1/S2 (see ``productivity_attribution``)."""
     return os.environ.get("PRODUCTIVITY_OWNER_LOGIN", "").strip() or DEFAULT_OWNER_LOGIN
