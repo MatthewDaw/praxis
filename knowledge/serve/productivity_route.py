@@ -32,9 +32,8 @@ from knowledge.serve.auth import Principal
 from knowledge.serve.productivity_attribution import bucketed_owner_totals
 from knowledge.serve.productivity_series import s4_series
 
-# The one range values the route accepts. R8 (bucket-unit selection/aggregation) is a
-# separate, not-yet-built ticket; the bucket widths chosen here are a reasonable
-# equal-width placeholder pending that ticket, not a claim of calendar-exact buckets.
+# The one range values the route accepts (R8: each range selects the bucket_unit and bucket
+# count below — see bucket_plan).
 DAY = "day"
 WEEK = "week"
 FOUR_WEEKS = "4weeks"
@@ -44,6 +43,7 @@ ALLOWED_RANGES = {DAY, WEEK, FOUR_WEEKS, TWELVE_MONTHS, ALLTIME}
 
 _HOUR = 3600.0
 _DAY = 86400.0
+_WEEK = 7 * _DAY
 
 DEFAULT_OWNER_LOGIN = "mattdaw7"
 DEFAULT_OWNER_EMAIL = "mattdaw7@gmail.com"
@@ -98,31 +98,38 @@ def is_owner(principal: Principal) -> bool:
     return email in {e.lower() for e in owner_emails()}
 
 
-def bucket_plan(range_: str, now: datetime) -> tuple[list[datetime], float, date, date]:
-    """Return ``(bucket_starts, bucket_seconds, window_start, window_end)`` for ``range_``.
+def bucket_plan(range_: str, now: datetime) -> tuple[list[datetime], float, date, date, str]:
+    """Return ``(bucket_starts, bucket_seconds, window_start, window_end, bucket_unit)`` for
+    ``range_`` (R8).
 
-    Buckets are contiguous, equal-width, half-open windows ending at ``now`` (the most
-    recent bucket is the one ``now`` currently falls in). ``window_start``/``window_end``
-    are the calendar-date bounds the GitHub commit-activity fetch spans.
+    Each range selects the bucket width so every selectable range yields enough points to
+    draw a line: hourly for ``day``, daily for ``week``/``4weeks``, weekly for ``12months``,
+    monthly for ``alltime``. ``bucket_unit`` names that width (``"hour"``/``"day"``/``"week"``/
+    ``"month"``) so the response can disclose it and the client can label the axis in matching
+    units. Buckets are contiguous, equal-width, half-open windows ending at ``now`` (the most
+    recent bucket is the one ``now`` currently falls in); each bucket SUMS the values of the
+    periods it contains (never averages) — a property of how callers accumulate into these
+    windows, not of the plan itself. ``window_start``/``window_end`` are the calendar-date
+    bounds the GitHub commit-activity fetch spans.
     """
     if range_ not in ALLOWED_RANGES:
         raise ValueError(f"unknown range {range_!r}")
 
     if range_ == DAY:
-        count, seconds = 24, _HOUR
+        count, seconds, unit = 24, _HOUR, "hour"
     elif range_ == WEEK:
-        count, seconds = 7, _DAY
+        count, seconds, unit = 7, _DAY, "day"
     elif range_ == FOUR_WEEKS:
-        count, seconds = 28, _DAY
+        count, seconds, unit = 28, _DAY, "day"
     elif range_ == TWELVE_MONTHS:
-        count, seconds = 12, 30 * _DAY
+        count, seconds, unit = 52, _WEEK, "week"
     else:  # ALLTIME
-        count, seconds = 5, 365 * _DAY  # floored at the same 5yr lookback as R9.
+        count, seconds, unit = 60, 30 * _DAY, "month"  # 5yr lookback (same floor as R9).
 
     span = timedelta(seconds=seconds * count)
     first_start = now - span
     bucket_starts = [first_start + timedelta(seconds=seconds * i) for i in range(count)]
-    return bucket_starts, seconds, first_start.date(), now.date()
+    return bucket_starts, seconds, first_start.date(), now.date(), unit
 
 
 def _series_points(bucket_starts: list[datetime], values: list[int]) -> list[dict[str, Any]]:
@@ -141,7 +148,7 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
     """
     started_at = time.perf_counter()
     now = now or datetime.now(timezone.utc)
-    bucket_starts, bucket_seconds, window_start, window_end = bucket_plan(range_, now)
+    bucket_starts, bucket_seconds, window_start, window_end, bucket_unit = bucket_plan(range_, now)
 
     token = github_token.resolve_github_token()
     activity = github_commits.fetch_commit_activity(
@@ -171,6 +178,7 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
 
     return {
         "range": range_,
+        "bucket_unit": bucket_unit,
         "truncated": bool(activity.get("truncated")),
         "series": {
             "s1_lines_added": _series_points(bucket_starts, s1),
