@@ -168,6 +168,9 @@ export interface ProductivityResponse {
   rateLimited: boolean;
   reposDiscovered: number;
   spacesCount: number;
+  /** Server-reported bucket granularity for the requested range (R8/R16), e.g.
+   * "hourly"/"daily"/"weekly"/"monthly" — drives the chart's x-axis relabeling. */
+  bucketUnit: string;
   series: ProductivitySeries;
   /** The earliest `finished_at` ever recorded org-wide (S4's instrumentation
    * start date, R27/D27) — `null` when no ticket has ever finished. A range
@@ -232,6 +235,7 @@ export function parseProductivityResponse(payload: unknown): ProductivityRespons
     rateLimited: Boolean(root.rate_limited ?? root.rateLimited),
     reposDiscovered: Number(root.repos_discovered ?? 0),
     spacesCount: Number(root.spaces_count ?? 0),
+    bucketUnit: typeof root.bucket_unit === "string" ? root.bucket_unit : "",
     series: {
       linesAdded: toSeriesPoints(series.s1_lines_added),
       linesDeleted: toSeriesPoints(series.s2_lines_deleted),

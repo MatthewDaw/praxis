@@ -24,6 +24,15 @@ export interface ProductivityPanelProps {
 
 const DEFAULT_RANGE: ProductivityRange = "4weeks";
 
+/** Human-facing labels for the range dropdown, in display order (R16). */
+const RANGE_LABELS: Record<ProductivityRange, string> = {
+  day: "Day",
+  week: "Week",
+  "4weeks": "Last 4 weeks",
+  "12months": "Last 12 months",
+  alltime: "All time",
+};
+
 // A click within this window of the last accepted Refresh click is ignored
 // (leading-edge debounce): ten clicks inside one second collapse to a single
 // outbound request.
@@ -107,6 +116,7 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
   const [reposDiscovered, setReposDiscovered] = useState<number | null>(null);
   const [spacesCount, setSpacesCount] = useState<number | null>(null);
   const [seriesErrors, setSeriesErrors] = useState<ProductivitySeriesErrors>({});
+  const [bucketUnit, setBucketUnit] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const lastRefreshAtRef = useRef(-Infinity);
@@ -138,6 +148,7 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
             setReposDiscovered(response.reposDiscovered);
             setSpacesCount(response.spacesCount);
             setSeriesErrors(response.errors);
+            setBucketUnit(response.bucketUnit);
             setLoading(false);
           }
         })
@@ -165,6 +176,7 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
     fetchSeries(range, isShortTtlRange(range) || forceAffordance);
   };
 
+
   // A user with zero discovered GitHub repositories and zero Praxis spaces has
   // connected nothing yet -- their series are all genuinely empty, which would
   // otherwise render as a flat zero line indistinguishable from "connected but
@@ -189,7 +201,7 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
             >
               {PRODUCTIVITY_RANGES.map((r) => (
                 <option key={r} value={r}>
-                  {r}
+                  {RANGE_LABELS[r]}
                 </option>
               ))}
             </select>
@@ -245,6 +257,7 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
             instrumentationDate={instrumentationDate}
             disclosures={disclosures}
             errors={seriesErrors}
+            bucketUnit={bucketUnit}
           />
           {isAllZero(series) ? (
             <p className="muted" data-testid="productivity-no-activity">
