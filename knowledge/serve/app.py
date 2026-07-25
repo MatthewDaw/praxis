@@ -86,6 +86,7 @@ from knowledge.serve.facts_candidates import (  # noqa: E402
 )
 from knowledge.serve.mounted_store import MountedStore  # noqa: E402
 from knowledge.serve.orgs_store import OrgsStore  # noqa: E402
+from knowledge.serve.productivity import productivity_status  # noqa: E402
 from knowledge.serve.spaces_store import SpacesStore  # noqa: E402
 from knowledge.serve.reserved_names import (  # noqa: E402
     RESERVED_EVAL_SPACE,
@@ -750,6 +751,18 @@ def create_app(conn: Any | None = None) -> FastAPI:
             "orgMatch": org_match,
             "detail": detail,
         }
+
+    @app.get("/productivity")
+    def productivity(
+        principal: Principal = Depends(current_user),
+    ) -> dict[str, Any]:
+        """Kill-switch-gated productivity status (see ``productivity.py``).
+
+        Checked FIRST, before anything that would call out to GitHub: when
+        ``PRODUCTIVITY_KILL_SWITCH`` is set this returns ``{"status":
+        "disabled"}`` immediately and issues no outbound GitHub call.
+        """
+        return productivity_status()
 
     # --- orgs --------------------------------------------------------------
     @app.post("/orgs")

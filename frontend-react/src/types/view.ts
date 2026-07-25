@@ -4,4 +4,5 @@ export type ViewTab =
   | "contradictions"
   | "graph"
   | "context"
-  | "setup";
+  | "setup"
+  | "productivity";

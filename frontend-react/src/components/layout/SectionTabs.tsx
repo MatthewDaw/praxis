@@ -4,12 +4,20 @@ interface SectionTabsProps {
   viewTab: ViewTab;
   contradictionCount: number;
   onViewTabChange: (tab: ViewTab) => void;
+  /**
+   * Server-side kill switch (`GET /productivity`, `{status}`). `false` while
+   * unknown (still loading) or explicitly disabled — the tab stays hidden
+   * either way so a leaked/revoked GitHub token can be contained without a
+   * redeploy and the dashboard never flashes a tab that will 404/disable.
+   */
+  productivityEnabled: boolean;
 }
 
 export function SectionTabs({
   viewTab,
   contradictionCount,
   onViewTabChange,
+  productivityEnabled,
 }: SectionTabsProps) {
   const isKnowledgeView =
     viewTab === "table" || viewTab === "cards" || viewTab === "graph";
@@ -59,6 +67,19 @@ export function SectionTabs({
       >
         MCP Setup
       </button>
+      {productivityEnabled ? (
+        <button
+          type="button"
+          role="tab"
+          className={
+            viewTab === "productivity" ? "view-toggle__tab active" : "view-toggle__tab"
+          }
+          aria-selected={viewTab === "productivity"}
+          onClick={() => onViewTabChange("productivity")}
+        >
+          Productivity
+        </button>
+      ) : null}
     </div>
   );
 }

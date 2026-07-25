@@ -496,6 +496,32 @@ export async function postInsight(
   return normalizeGraphIngestResult(await parseJsonResponse(response));
 }
 
+/**
+ * `GET /productivity` — the kill-switch-gated productivity status. Reads only
+ * `{status}`; never issues any further request (in particular, never calls
+ * GitHub) when the server reports `"disabled"`.
+ */
+export async function getProductivityStatus(
+  apiBaseUrl: string,
+  auth?: string | ApiDataProviderAuth,
+): Promise<"enabled" | "disabled"> {
+  const root = apiBaseUrl.replace(/\/$/, "");
+  const { token, orgId, spaceId } = await resolveToken(auth);
+  const response = await fetch(`${root}/productivity`, {
+    method: "GET",
+    headers: contractHeaders(token, orgId, spaceId),
+  });
+  if (!response.ok) {
+    const message = responseDetail(await response.text(), response.statusText);
+    throw new ApiClientError(
+      `API GET /productivity failed (${response.status}): ${message}`,
+      response.status,
+    );
+  }
+  const body = asRecord(await parseJsonResponse(response));
+  return body.status === "enabled" ? "enabled" : "disabled";
+}
+
 export async function postRegenerateEvals(
   apiBaseUrl: string,
   preset = "offline-fake",

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiConflictError,
   GraphIngestUnavailableError,
+  getProductivityStatus,
   loadSnapshot,
   postInsight,
   saveSnapshot,
@@ -160,6 +161,33 @@ export default function App() {
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [viewTab, setViewTab] = useState<ViewTab>("table");
+  // Server-side kill switch: hidden by default (fail closed) until
+  // `GET /productivity` confirms `{status: "enabled"}`. If disabled, or the
+  // fetch itself fails, the tab simply stays hidden — no GitHub call is ever
+  // attempted from a live/enabled check.
+  const [productivityEnabled, setProductivityEnabled] = useState(false);
+
+  useEffect(() => {
+    if (mode !== "live" || !config.apiBaseUrl) {
+      setProductivityEnabled(false);
+      return;
+    }
+    let cancelled = false;
+    getProductivityStatus(config.apiBaseUrl, auth)
+      .then((status) => {
+        if (!cancelled) {
+          setProductivityEnabled(status === "enabled");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setProductivityEnabled(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, config.apiBaseUrl, auth]);
   const [activePanel, setActivePanel] = useState<null | "apikeys">(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [reviewNotice, setReviewNotice] = useState<string | null>(null);
@@ -649,6 +677,7 @@ export default function App() {
             viewTab={viewTab}
             contradictionCount={contradictionCount}
             onViewTabChange={setViewTab}
+            productivityEnabled={productivityEnabled}
           />
         }
       />
@@ -702,7 +731,10 @@ export default function App() {
         />
       ) : null}
 
-      {viewTab !== "setup" && viewTab !== "contradictions" && viewTab !== "context" ? (
+      {viewTab !== "setup" &&
+      viewTab !== "contradictions" &&
+      viewTab !== "context" &&
+      viewTab !== "productivity" ? (
         <FilterBar
           searchQuery={searchQuery}
           stateFilter={stateFilter}
@@ -721,6 +753,10 @@ export default function App() {
 
       {viewTab === "setup" ? (
         <McpSetupGuide email={email} />
+      ) : viewTab === "productivity" ? (
+        // The tab is only reachable when productivityEnabled is true (kill
+        // switch off); the metrics/chart themselves are a separate ticket.
+        <p className="muted">Productivity metrics are enabled.</p>
       ) : viewTab === "context" ? (
         mode === "live" && config.apiBaseUrl ? (
           <ContextExplorer apiBaseUrl={config.apiBaseUrl} auth={auth} />
