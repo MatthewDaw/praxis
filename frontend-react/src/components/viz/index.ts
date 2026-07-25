@@ -1,4 +1,7 @@
 export { VizLegend } from "./VizLegend";
+export { DualAxisChart } from "./DualAxisChart";
+export type { DualAxisChartProps, DualAxisPoint } from "./DualAxisChart";
+export { ProductivityChartPreview } from "./ProductivityChartPreview";
 export { LegendSection } from "./LegendSection";
 export { LegendItem } from "./LegendItem";
 export { LegendSwatch } from "./LegendSwatch";
