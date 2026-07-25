@@ -11,6 +11,7 @@ import {
   buildResolveBody,
   contradictionPairId,
   normalizeResolution,
+  parseProductivityResponse,
 } from "./contract";
 
 const REPO_ROOT = join(
@@ -98,6 +99,19 @@ describe("contract v1 fixtures", () => {
     expect(payload.files.length).toBeGreaterThanOrEqual(1);
     expect(payload.files[0].name).toBeTruthy();
     expect(typeof payload.files[0].content).toBe("string");
+  });
+
+  it("parses productivity-response.json into the typed contract shape", () => {
+    const payload = loadFixture("productivity-response.json");
+    const parsed = parseProductivityResponse(payload);
+    expect(parsed.range).toBe("week");
+    expect(parsed.truncated).toBe(false);
+    expect(parsed.series.linesAdded).toEqual([
+      { bucketStart: "2026-07-18T00:00:00+00:00", value: 120 },
+    ]);
+    expect(parsed.series.linesDeleted[0].value).toBe(40);
+    expect(parsed.series.netLines[0].value).toBe(80);
+    expect(parsed.series.ticketsCompleted[0].value).toBe(3);
   });
 
   it("validates ingest-jsonl-response.json shape", () => {
