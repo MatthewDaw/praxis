@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -39,22 +40,16 @@ def _synth_template() -> dict:
     proc = subprocess.run(
         ["npx", "cdk", "synth", "PraxisBackendServiceStack", "--json"],
         cwd=INFRA_DIR,
-        env={"GITHUB_TOKEN": FAKE_TOKEN, **_inherited_env()},
+        env={"GITHUB_TOKEN": FAKE_TOKEN, **dict(os.environ)},
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=600,
     )
     if proc.returncode != 0:
         sys.stderr.write(proc.stdout)
         sys.stderr.write(proc.stderr)
         raise SystemExit(f"cdk synth failed with exit code {proc.returncode}")
     return json.loads(proc.stdout)
-
-
-def _inherited_env() -> dict:
-    import os
-
-    return dict(os.environ)
 
 
 def _check_secret_resource(resources: dict) -> str:
@@ -94,7 +89,6 @@ def _check_grant_read(resources: dict, secret_logical_id: str) -> None:
 
 
 def _check_no_env_leak(resources: dict) -> None:
-    template_str = json.dumps(resources)
     for logical_id, res in resources.items():
         if res.get("Type") != "AWS::AppRunner::Service":
             continue
@@ -115,6 +109,7 @@ def _check_no_env_leak(resources: dict) -> None:
     # Belt-and-suspenders: the fake token must appear ONLY inside the secret
     # resource's own SecretString property (where Secrets Manager is supposed
     # to hold it), never anywhere else in the synthesized template.
+    template_str = json.dumps(resources)
     occurrences = template_str.count(FAKE_TOKEN)
     secret_occurrences = sum(
         json.dumps(res.get("Properties", {})).count(FAKE_TOKEN)
