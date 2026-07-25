@@ -89,6 +89,8 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
   const [stale, setStale] = useState(false);
   const [rateLimited, setRateLimited] = useState(false);
   const [keyStatus, setKeyStatus] = useState<ProductivityKeyStatus | null>(null);
+  const [reposDiscovered, setReposDiscovered] = useState<number | null>(null);
+  const [spacesCount, setSpacesCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const lastRefreshAtRef = useRef(-Infinity);
@@ -117,6 +119,8 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
             setComputedAt(response.computedAt || null);
             setStale(Boolean(response.stale));
             setRateLimited(Boolean(response.rateLimited));
+            setReposDiscovered(response.reposDiscovered);
+            setSpacesCount(response.spacesCount);
             setLoading(false);
           }
         })
@@ -143,6 +147,12 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
     lastRefreshAtRef.current = now;
     fetchSeries(range, isShortTtlRange(range) || forceAffordance);
   };
+
+  // A user with zero discovered GitHub repositories and zero Praxis spaces has
+  // connected nothing yet -- their series are all genuinely empty, which would
+  // otherwise render as a flat zero line indistinguishable from "connected but
+  // did no work" (R20). Show a dedicated first-run message instead of the chart.
+  const isFirstRun = reposDiscovered === 0 && spacesCount === 0;
 
   return (
     <section className="productivity-panel" aria-label="Productivity">
@@ -190,6 +200,11 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
       ) : error ? (
         <p className="productivity-panel__error" data-testid="productivity-error">
           Couldn't load productivity data: {error}
+        </p>
+      ) : isFirstRun ? (
+        <p className="muted" data-testid="productivity-first-run">
+          Nothing connected yet — link a GitHub repository and a Praxis space to see
+          productivity data here.
         </p>
       ) : series ? (
         <>

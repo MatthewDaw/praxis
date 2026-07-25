@@ -161,6 +161,8 @@ export interface ProductivityResponse {
   /** True when the fetch failure behind a `stale` response was specifically a
    * GitHub rate limit (vs. a timeout/upstream error). */
   rateLimited: boolean;
+  reposDiscovered: number;
+  spacesCount: number;
   series: ProductivitySeries;
   /** The earliest `finished_at` ever recorded org-wide (S4's instrumentation
    * start date, R27/D27) — `null` when no ticket has ever finished. A range
@@ -206,6 +208,8 @@ export function parseProductivityResponse(payload: unknown): ProductivityRespons
     computedAt,
     stale: Boolean(root.stale),
     rateLimited: Boolean(root.rate_limited ?? root.rateLimited),
+    reposDiscovered: Number(root.repos_discovered ?? 0),
+    spacesCount: Number(root.spaces_count ?? 0),
     series: {
       linesAdded: toSeriesPoints(series.s1_lines_added),
       linesDeleted: toSeriesPoints(series.s2_lines_deleted),
