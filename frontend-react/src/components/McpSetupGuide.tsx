@@ -1,5 +1,13 @@
 import { useState } from "react";
-import { REPO_DIR, FACTORY_DIR } from "../config/praxis";
+import {
+  REPO_DIR,
+  FACTORY_DIR,
+  PRAXIS_API_BASE_URL,
+  PRAXIS_FRONTEND_URL,
+  COGNITO_USER_POOL_ID,
+  COGNITO_CLIENT_ID,
+  COGNITO_REGION,
+} from "../config/praxis";
 
 /** Copy `text` to the clipboard and flash a "Copied" flag for 1.5s. */
 function useCopyToClipboard(text: string) {
@@ -76,7 +84,13 @@ function CommandBlock({ command, label }: { command: string; label?: string }) {
 function buildSetupPrompt(opts: { email?: string }): string {
   const email = opts.email?.trim() || "<your Praxis email>";
 
-  return `Set me up with Praxis (my local knowledge-graph MCP server) AND the agent-factory plugin (the /af- plan → intake → build → verify skills). By the end I should be logged in with THIS project's org selected (created for me if it did not exist yet) on a PER-PROJECT identity cache shared by the MCP tools and the agent-factory gate — so both resolve the same org — my project-specific config pinned as LOCAL overrides, this project's space ready, and the /af-plan, /af-intake-plan, /af-intake-build-validation, /af-intake-plan-validation, /af-build, and /af-wireframe commands available. Follow these steps in order.
+  return `Set me up with Praxis (my knowledge-graph MCP server — a local client that talks to the REMOTE deployed Praxis backend, so there is NO local backend to boot) AND the agent-factory plugin (the /af- plan → intake → build → verify skills). By the end I should be logged in with THIS project's org selected (created for me if it did not exist yet) on a PER-PROJECT identity cache shared by the MCP tools and the agent-factory gate — so both resolve the same org — my project-specific config pinned as LOCAL overrides, this project's space ready, ALWAYS talking to the REMOTE deployed Praxis backend (never a local service I have to run), and the /af-plan, /af-intake-plan, /af-intake-build-validation, /af-intake-plan-validation, /af-build, and /af-wireframe commands available. Follow these steps in order.
+
+REMOTE ENDPOINTS (baked in — always connect to these; do NOT run a local backend):
+  - Backend API — this is PRAXIS_API_BASE_URL, the URL the MCP tools/gate call over HTTP: ${PRAXIS_API_BASE_URL}
+    Verify it is the API and not the SPA: \`curl ${PRAXIS_API_BASE_URL}/health\` must return JSON like {"status":"ok","store":"postgres"} (NOT an <!doctype html> page). This is the AWS App Runner service URL; if the backend is ever redeployed to a new service the host changes — re-check with \`aws apprunner list-services\`.
+  - Frontend (humans only — open in a browser): ${PRAXIS_FRONTEND_URL}. This CloudFront URL serves ONLY the static React SPA; it is NOT the API base — hitting /spaces or /health there returns HTML, so NEVER put it in PRAXIS_API_BASE_URL.
+  - Cognito (praxis_login auth — the remote pool; these are public client identifiers, not secrets): COGNITO_USER_POOL_ID=${COGNITO_USER_POOL_ID}, COGNITO_CLIENT_ID=${COGNITO_CLIENT_ID}, COGNITO_REGION=${COGNITO_REGION}.
 
 CARDINAL RULE — never configure a project by editing the praxis repo. Everything project-specific (the Praxis org, the checks-space, the API base URL, the hook interpreter, the per-agent MCP cache) is set as an ENV OVERRIDE in THIS project's own \`.claude/settings.local.json\` (which is per-project and git-ignored), NEVER by editing anything inside the praxis repo — not \`agent_factory/.env\`, not \`agent_factory/hooks/hooks.json\`, not any source file. The shared \`agent_factory/.env\` is read by every agent at once, so editing it to point at your org silently repoints every other concurrent agent too. A per-project \`settings.local.json\` override is isolated to this project and this agent. If at any point you feel you need to edit a file inside the praxis repo to make MY project work, STOP — that is a bug in these instructions; report it to me instead of doing it.
 
@@ -84,9 +98,15 @@ STEP 1 — one-time install. Make sure BOTH the praxis MCP tools and the agent-f
 
   1a. Praxis MCP tools — pinned to a PER-PROJECT identity cache. FIRST derive this project's identity from its repo root, so the MCP server, the agent-factory gate, and every /af- read all resolve the SAME org: run \`git rev-parse --show-toplevel\` (or take the top-level project directory), take its basename, and lowercase+slugify it to a project slug (letters/digits/hyphens — e.g. \`.../acme-store\` → \`acme-store\`). From that build an ABSOLUTE cache path \`<your home>/.praxis/<project-slug>.json\` (e.g. /Users/me/.praxis/acme-store.json). Use THIS exact path both here and in STEP 4 — it is this project's dedicated Praxis identity file.
       WHY per-project (this is the #1 setup footgun): the default cache \`~/.praxis/mcp.json\` is SHARED by every Praxis MCP server on the machine. If two projects both use it, whichever ran praxis_select_org last wins, and the other project's MCP tools silently drive the WRONG org — so praxis_list_snapshots / praxis_load_snapshot and the checks reads 404 "unknown space" or come back empty even though the data is fine under the right org. A per-project cache pins this repo to its own org permanently and eliminates that class of bug.
-      Now check the tools: call praxis_whoami. If it succeeds AND (after STEP 3) shows THIS project's org, the server is already loaded on the right identity — skip to 1b. Otherwise register (or re-register) the server, passing the per-project cache via --env and the absolute --directory (\`uv run\` resolves against the current repo, so --directory is required even from another project — never a bare \`uv run python -m knowledge.mcp\`):
-        claude mcp add praxis --env PRAXIS_MCP_CACHE=<the absolute per-project cache path above> -- uv run --directory ${REPO_DIR} python -m knowledge.mcp
-      If praxis was already registered on the shared default cache, remove it first (\`claude mcp remove praxis\`) then run the line above so it picks up the per-project cache. Verify with \`claude mcp list\` — praxis must show ✓ Connected. ✗ Failed to connect means the --directory path is wrong (it must contain the \`knowledge/\` package) or deps aren't installed (\`uv sync\` in ${REPO_DIR}) — fix that and re-run, do not continue.
+      Now check the tools: call praxis_whoami. If it succeeds AND (after STEP 3) shows THIS project's org on the REMOTE backend, the server is already loaded on the right identity — skip to 1b. Otherwise register (or re-register) the server. The MCP subprocess reads PRAXIS_API_BASE_URL and the COGNITO_* vars from its OWN environment, and settings.local.json's env does NOT reach it — so the remote backend URL and Cognito pool MUST be passed here as --env flags (this is what makes the tools talk to remote instead of localhost, and what lets praxis_login authenticate). Pass the per-project cache too, and the absolute --directory (\`uv run\` resolves against the current repo, so --directory is required even from another project — never a bare \`uv run python -m knowledge.mcp\`):
+        claude mcp add praxis \\
+          --env PRAXIS_MCP_CACHE=<the absolute per-project cache path above> \\
+          --env PRAXIS_API_BASE_URL=${PRAXIS_API_BASE_URL} \\
+          --env COGNITO_USER_POOL_ID=${COGNITO_USER_POOL_ID} \\
+          --env COGNITO_CLIENT_ID=${COGNITO_CLIENT_ID} \\
+          --env COGNITO_REGION=${COGNITO_REGION} \\
+          -- uv run --directory ${REPO_DIR} python -m knowledge.mcp
+      If praxis was already registered (on the shared default cache, or a local backend URL), remove it first (\`claude mcp remove praxis\`) then run the block above so it picks up the per-project cache AND the remote backend. Verify with \`claude mcp list\` — praxis must show ✓ Connected. ✗ Failed to connect means the --directory path is wrong (it must contain the \`knowledge/\` package) or deps aren't installed (\`uv sync\` in ${REPO_DIR}) — fix that and re-run, do not continue.
 
   1b. agent-factory /af- skills. Run \`claude plugin list\`. If it shows \`agent-factory@agent-factory-local\` as ✔ enabled, skip to 1c. Otherwise install the plugin — it ships as a self-contained subdirectory of the Praxis repo (agent_factory/):
         claude plugin marketplace add EveryInc/compound-engineering-plugin
@@ -108,11 +128,14 @@ STEP 4 — pin THIS project's config as LOCAL env overrides, INCLUDING the proje
       "env": {
         "PRAXIS_ORG": "<REQUIRED — the org you derived/created in STEP 3. Pin it here so it becomes THIS project's DEFAULT org for every agent and session run from this repo, independent of whatever the shared MCP cache happens to point at. This is the durable per-project default (the cache is just a runtime selection); always set it>",
         "PRAXIS_MCP_CACHE": "<REQUIRED — the EXACT same absolute path you passed to \`claude mcp add --env PRAXIS_MCP_CACHE=...\` in STEP 1a (e.g. /Users/me/.praxis/<project-slug>.json). This one shared file is what keeps the MCP tools, the gate, and the /af- reads on ONE org; a mismatch here vs. STEP 1a is exactly the wrong-org bug this setup exists to prevent>",
-        "PRAXIS_HOOK_PYTHON": "<the interpreter that can run the gate hook on THIS machine — set this if a bare \`python3\` is NOT on PATH; e.g. this project's .venv python, or \`py\` on Windows, or \`uv run python\`>",
-        "PRAXIS_API_BASE_URL": "<only if this project's Praxis backend is NOT http://localhost:8000>"
+        "PRAXIS_API_BASE_URL": "${PRAXIS_API_BASE_URL}  <REQUIRED — the REMOTE deployed backend, so the session/gate/af- reads hit remote too, never localhost>",
+        "COGNITO_USER_POOL_ID": "${COGNITO_USER_POOL_ID}",
+        "COGNITO_CLIENT_ID": "${COGNITO_CLIENT_ID}",
+        "COGNITO_REGION": "${COGNITO_REGION}",
+        "PRAXIS_HOOK_PYTHON": "<the interpreter that can run the gate hook on THIS machine — set this if a bare \`python3\` is NOT on PATH; e.g. this project's .venv python, or \`py\` on Windows, or \`uv run python\`>"
       }
     }
-  Why this is the correct mechanism: a real environment variable WINS over the shared \`agent_factory/.env\` default, and Claude Code applies \`settings.local.json\`'s \`env\` to BOTH this session and the Stop-hook subprocess that runs the gate — so these overrides reach the gate cleanly, per-project, with full isolation from other concurrently-running agents, and with ZERO edits inside the praxis repo. ALWAYS set PRAXIS_ORG (this project's default org from STEP 3) and PRAXIS_MCP_CACHE — together they make this repo default to its own org and make the gate share the exact identity praxis_select_org just set; PRAXIS_HOOK_PYTHON / PRAXIS_API_BASE_URL are optional (only when the defaults don't fit this machine). Again: if you are tempted to instead edit \`agent_factory/.env\` or \`hooks/hooks.json\`, that is the anti-pattern this step exists to prevent — do not.
+  Why this is the correct mechanism: a real environment variable WINS over the shared \`agent_factory/.env\` default, and Claude Code applies \`settings.local.json\`'s \`env\` to BOTH this session and the Stop-hook subprocess that runs the gate — so these overrides reach the gate cleanly, per-project, with full isolation from other concurrently-running agents, and with ZERO edits inside the praxis repo. ALWAYS set PRAXIS_ORG (this project's default org from STEP 3), PRAXIS_MCP_CACHE, and PRAXIS_API_BASE_URL (the remote deployed backend, plus the COGNITO_* pool) — together they make this repo default to its own org, keep the session/gate/af- reads on the REMOTE backend, and make the gate share the exact identity praxis_select_org just set; PRAXIS_HOOK_PYTHON is optional (only when a bare \`python3\` is not on PATH). Again: if you are tempted to instead edit \`agent_factory/.env\` or \`hooks/hooks.json\`, that is the anti-pattern this step exists to prevent — do not.
 
 STEP 5 — make sure THIS project's space exists, then confirm end to end. Under the agent-factory's canonical layout, EVERYTHING for a project lives in ONE org-shared space named exactly the project (the org id from STEP 3), as three SNAPSHOTS inside that space:
     prd-<project>        — the plan + ticket state (written by /af-intake-plan)
@@ -154,7 +177,13 @@ const DESKTOP_CONFIG = `{
   "mcpServers": {
     "praxis": {
       "command": "uv",
-      "args": ["run", "--directory", "${REPO_DIR}", "python", "-m", "knowledge.mcp"]
+      "args": ["run", "--directory", "${REPO_DIR}", "python", "-m", "knowledge.mcp"],
+      "env": {
+        "PRAXIS_API_BASE_URL": "${PRAXIS_API_BASE_URL}",
+        "COGNITO_USER_POOL_ID": "${COGNITO_USER_POOL_ID}",
+        "COGNITO_CLIENT_ID": "${COGNITO_CLIENT_ID}",
+        "COGNITO_REGION": "${COGNITO_REGION}"
+      }
     }
   }
 }`;
@@ -168,7 +197,13 @@ const MULTI_AGENT_CONFIG = `{
       "command": "uv",
       "args": ["run", "--directory", "${REPO_DIR}",
                "python", "-m", "knowledge.mcp"],
-      "env": { "PRAXIS_MCP_CACHE": "/Users/matthewdaw/.praxis/agentA.json" }
+      "env": {
+        "PRAXIS_MCP_CACHE": "/Users/matthewdaw/.praxis/agentA.json",
+        "PRAXIS_API_BASE_URL": "${PRAXIS_API_BASE_URL}",
+        "COGNITO_USER_POOL_ID": "${COGNITO_USER_POOL_ID}",
+        "COGNITO_CLIENT_ID": "${COGNITO_CLIENT_ID}",
+        "COGNITO_REGION": "${COGNITO_REGION}"
+      }
     }
   }
 }`;
@@ -364,12 +399,12 @@ export function McpSetupGuide({ email }: McpSetupGuideProps = {}) {
             <code>GET /health</code> showing <code>"store":"postgres"</code>.
           </li>
           <li>
-            <code>PRAXIS_API_BASE_URL</code> — the backend the tools call. Use{" "}
-            <code>http://localhost:8000</code> for local dev (run the backend with{" "}
-            <code>uv run python -m knowledge.serve</code>), or the deployed App Runner
-            URL <em>once it has the <code>/insights</code> + <code>/context</code>{" "}
-            endpoints deployed</em>. Tenant is derived from your login, <em>not</em> this
-            var.
+            <code>PRAXIS_API_BASE_URL</code> — the backend the tools call.{" "}
+            <strong>Default is the remote deployed backend</strong>{" "}
+            (<code>{PRAXIS_API_BASE_URL}</code>), so you do not run a local backend at
+            all. Only override to <code>http://localhost:8000</code> if you are
+            deliberately doing local backend dev (<code>uv run python -m knowledge.serve</code>).
+            Tenant is derived from your login, <em>not</em> this var.
           </li>
         </ul>
         <CommandBlock command="uv sync" label="Install dependencies (repo root)" />
@@ -385,7 +420,7 @@ export function McpSetupGuide({ email }: McpSetupGuideProps = {}) {
           setup step — login happens through the MCP tools, so there is no separate CLI
           login command.
         </p>
-        <CommandBlock command={`claude mcp add praxis -- uv run --directory ${REPO_DIR} python -m knowledge.mcp`} />
+        <CommandBlock command={`claude mcp add praxis --env PRAXIS_API_BASE_URL=${PRAXIS_API_BASE_URL} --env COGNITO_USER_POOL_ID=${COGNITO_USER_POOL_ID} --env COGNITO_CLIENT_ID=${COGNITO_CLIENT_ID} --env COGNITO_REGION=${COGNITO_REGION} -- uv run --directory ${REPO_DIR} python -m knowledge.mcp`} />
         <CommandBlock command="claude mcp list" label="Verify it registered" />
       </div>
 
