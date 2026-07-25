@@ -274,6 +274,30 @@ worker; never a crew):
    `blocked` ticket) — break it exactly as §1 says (unblock the root, fix a bad `depends_on`, or `block()`
    the unsatisfiable dependents). Do not spin.
 
+**Worktree isolation is DISK-EXPENSIVE — share the dependency cache and guard the disk.** Each worktree is a
+full checkout, and a worker that bootstraps its own environment (`pip install`, `npm install`) materializes a
+FULL dependency tree per worktree. That multiplies: a real run put 29 worktrees on one box, each installing a
+~5GB CUDA torch build that a CPU host never needed, and filled a 98GB volume to 100%. A full disk does not
+fail loudly — it corrupts writes mid-build and strands the run. Three rules, in order of leverage:
+
+- **Point every package manager at ONE shared cache, outside the worktrees**, and prefer the tools that
+  materialize from that cache by HARDLINK rather than by copy — `uv` for Python and `pnpm` for Node. With
+  hardlinks, the Nth environment costs ~0 additional bytes; with `pip`/`npm` it costs a full copy every time.
+  Export these into the workers' environment (a stable path on the same filesystem as the worktrees, or the
+  hardlinks silently degrade to copies):
+
+  ```bash
+  export UV_CACHE_DIR=/workspace/.uv-cache        # uv: hardlinks into each venv
+  export PIP_CACHE_DIR=/workspace/.pip-cache      # pip fallback: saves re-download, NOT disk
+  export npm_config_cache=/workspace/.npm-cache
+  ```
+
+- **Preflight the disk before every fan-out round, and STOP — do not degrade — when it is low.** Free space
+  is a precondition for a correct build, so treat it like Praxis being unreachable: fail closed.
+- **Reap each worktree once its ticket is integrated.** Worktrees are per-ticket scratch space, not run
+  artifacts; the 29 that stranded the run outlived their agents by hours. Only their BRANCHES need to
+  survive integration (`git worktree remove --force <path>` keeps the branch).
+
 **You own the run marker and the gate.** You stamped it in §0, so `build_completeness_gate` arms on YOUR
 session and blocks your turn from ending until the whole marked set is `finished` — even though the workers
 build. **Await the workflow** (`run_in_background:false`); its completion is the whole job. `refresh_run`
@@ -303,8 +327,24 @@ const FRONTIER = { type: 'object', required: ['ready', 'remaining'], additionalP
 // Space is always the project; snapshot defaults to building-validation (or the run's --checks-space override).
 const WORKER = (cid) => `<<< the full §8 block, TICKET=${cid}, PROJECT=${project}, OWNER=${owner}:${cid}, CHECKS_SNAPSHOT=building-validation >>>`
 
+const DISK = { type: 'object', required: ['freeGb'], additionalProperties: false,
+  properties: { freeGb: { type: 'number' } } }
+const MIN_FREE_GB = 15   // a fan-out round of worktrees + their dep trees must fit, with headroom
+
 let guard = 0
 while (guard++ < 200) {                  // runaway backstop, far above any real frontier depth
+  // DISK PREFLIGHT — worktree isolation is disk-expensive and a full volume corrupts builds
+  // silently rather than failing. Fail CLOSED, exactly like an unreachable Praxis.
+  const d = await agent(
+    `Read-only. Report free space on the filesystem holding the repo: run \`df -BG --output=avail .\` ` +
+    `(or \`df -g .\` on macOS) and return {freeGb:<integer gigabytes available>}.`,
+    { phase: 'Build', label: 'disk-preflight', schema: DISK, effort: 'low' })
+  if (d && d.freeGb < MIN_FREE_GB) {
+    log(`STOPPING: only ${d.freeGb}GB free (<${MIN_FREE_GB}GB). Worktrees + per-worktree dependency ` +
+        `trees will exhaust the disk and corrupt the run. Reclaim space, then resume.`)
+    return { done: false, stalled: 'disk', freeGb: d.freeGb }
+  }
+
   const f = await agent(
     `Read-only — issue NO claims/edits/writes. For PROJECT="${project}" (BARE), scope="${scope}": run ` +
     `_praxis.incomplete_requirements(project), filter to the scope's marked ids, then ` +
@@ -318,6 +358,10 @@ while (guard++ < 200) {                  // runaway backstop, far above any real
 }
 return { done: true }
 ```
+
+> **Reap the round's worktrees before looping.** After integrating a round, remove its worktrees
+> (`git worktree remove --force <path>`, which KEEPS the branch) and `git worktree prune`. Left alone they
+> accumulate across every round — one run stranded 29 of them, each holding a full dependency tree.
 
 ## 1. FIND — pop the ONE next dependency-ready ticket
 
