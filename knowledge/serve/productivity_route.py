@@ -191,6 +191,7 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
 
 def get_series_cached(
     conn: Any, org_id: str, user_key: str, range_: str, *, now: datetime | None = None,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Serve ``/productivity`` from the short/long-TTL cache when possible (R4).
 
@@ -202,6 +203,11 @@ def get_series_cached(
     Either path logs one observability record (R40): the miss path logs from
     inside :func:`build_series`, the hit path logs here (zero GitHub points spent).
 
+    ``force=True`` (the Refresh control's explicit-force affordance, R33) skips
+    the cache READ entirely and always recomputes -- but still WRITES the fresh
+    result back into the cache for that range's TTL band, so the next
+    non-forced request still benefits from it.
+
     Concurrent misses for the SAME cache key are coalesced (single-flight): only
     the first caller to acquire this key's lock computes and calls GitHub; every
     other simultaneous caller blocks on the same lock and, once it clears, finds
@@ -210,7 +216,7 @@ def get_series_cached(
     """
     now = now or datetime.now(timezone.utc)
     ts = now.timestamp()
-    cached = productivity_cache.get(org_id, user_key, range_, now=ts)
+    cached = None if force else productivity_cache.get(org_id, user_key, range_, now=ts)
     if cached is not None:
         github_audit.record_productivity_request(
             duration_ms=0.0,
@@ -223,8 +229,9 @@ def get_series_cached(
     lock = productivity_cache.lock_for(org_id, user_key, range_)
     with lock:
         # Re-check: another thread may have populated the cache while we were
-        # waiting for the lock -- that thread's payload wins, we never recompute.
-        cached = productivity_cache.get(org_id, user_key, range_, now=ts)
+        # waiting for the lock -- that thread's payload wins, we never recompute
+        # (unless the caller explicitly forced a fresh fetch).
+        cached = None if force else productivity_cache.get(org_id, user_key, range_, now=ts)
         if cached is not None:
             github_audit.record_productivity_request(
                 duration_ms=0.0,

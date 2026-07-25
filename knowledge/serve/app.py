@@ -3006,6 +3006,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
     @app.get("/productivity")
     def productivity(
         range: str = "week",
+        force: bool = False,
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
@@ -3020,6 +3021,11 @@ def create_app(conn: Any | None = None) -> FastAPI:
         validation, for every authenticated caller: when set, the route degrades to a
         disabled status instead of an error and never reaches GitHub, so a leaked or
         revoked token can be contained immediately with no redeploy.
+
+        ``force=true`` (the Refresh control's explicit-force affordance, R33) bypasses
+        the cache READ for this one request; the per-principal global rate limit
+        (``knowledge.serve.rate_limit``) still applies, so a client cannot bypass both
+        the cache and the server-side request budget at once.
         """
         if productivity_route.kill_switch_enabled():
             return {"status": "disabled"}
@@ -3030,7 +3036,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 status_code=400,
                 detail=f"unknown range {range!r}; expected one of {sorted(productivity_route.ALLOWED_RANGES)}",
             )
-        return productivity_route.get_series_cached(conn, org, uid, range)
+        return productivity_route.get_series_cached(conn, org, uid, range, force=force)
 
     @app.get("/productivity/buckets")
     def productivity_buckets(

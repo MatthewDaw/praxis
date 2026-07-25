@@ -144,6 +144,7 @@ export interface ProductivityResponse {
    * whose start precedes this date means S4 has no real data before it: the
    * chart must grey that span and annotate it, never plot a truthful zero. */
   s4InstrumentationDate: string | null;
+  computedAt: string;
 }
 
 function toSeriesPoints(raw: unknown): ProductivitySeriesPoint[] {
@@ -176,5 +177,15 @@ export function parseProductivityResponse(payload: unknown): ProductivityRespons
     },
     s4InstrumentationDate:
       typeof root.s4_instrumentation_date === "string" ? root.s4_instrumentation_date : null,
+    computedAt: typeof root.computed_at === "string" ? root.computed_at : "",
   };
+}
+
+// Ranges of four weeks or less always force-fetch on Refresh; the 12-month and
+// all-time ranges reuse the long-TTL cache unless the explicit force affordance
+// is used (the ticket's stated force-fetch rule).
+const SHORT_TTL_RANGES: readonly ProductivityRange[] = ["day", "week", "4weeks"];
+
+export function isShortTtlRange(range: ProductivityRange): boolean {
+  return (SHORT_TTL_RANGES as readonly string[]).includes(range);
 }

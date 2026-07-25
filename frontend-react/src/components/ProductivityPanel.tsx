@@ -1,6 +1,11 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getProductivity, type ApiDataProviderAuth } from "../api/apiClient";
-import type { ProductivitySeries } from "../api/contract";
+import {
+  PRODUCTIVITY_RANGES,
+  isShortTtlRange,
+  type ProductivityRange,
+  type ProductivitySeries,
+} from "../api/contract";
 import {
   DEFAULT_STATIC_CAVEATS,
   ProductivitySeriesChart,
@@ -10,61 +15,128 @@ import {
 export interface ProductivityPanelProps {
   apiBaseUrl?: string;
   auth?: string | ApiDataProviderAuth;
+  /** Initial selected range (default `"4weeks"`); the panel's range picker changes it from there. */
+  initialRange?: ProductivityRange;
 }
 
-const DEFAULT_RANGE = "4weeks" as const;
+const DEFAULT_RANGE: ProductivityRange = "4weeks";
+
+// A click within this window of the last accepted Refresh click is ignored
+// (leading-edge debounce): ten clicks inside one second collapse to a single
+// outbound request.
+const REFRESH_DEBOUNCE_MS = 1000;
 
 /**
- * The Productivity tab (R15): fetches the owner-gated `GET /productivity`
+ * The Productivity tab (R15/R33): fetches the owner-gated `GET /productivity`
  * series and renders them as a multi-series dual-axis chart — the
  * lines-of-code series S1-S3 on the left axis, the ticket-count series S4 on
  * its own right axis, so single-digit ticket counts stay legible beside
  * line counts that commonly run in the thousands. Reporting is filter-free
  * by design — the fixed time-bucket boundaries never depend on the
  * candidate search/state filters, so this renders standalone (no FilterBar).
+ *
+ * A Refresh control lets the caller re-pull without waiting out the TTL: it
+ * force-fetches for ranges of four weeks or less (short-TTL, cheap to
+ * re-derive) and otherwise reuses the long-TTL cache for 12-month/all-time
+ * ranges unless the explicit "Force refresh" affordance is checked. Refresh
+ * is debounced on the client (leading-edge, `REFRESH_DEBOUNCE_MS`) so a burst
+ * of clicks issues exactly one outbound request, and a last-updated label
+ * always reflects the served response's `computed_at`.
  */
-export function ProductivityPanel({ apiBaseUrl, auth }: ProductivityPanelProps) {
+export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: ProductivityPanelProps) {
+  const [range, setRange] = useState<ProductivityRange>(initialRange ?? DEFAULT_RANGE);
+  const [forceAffordance, setForceAffordance] = useState(false);
   const [series, setSeries] = useState<ProductivitySeries | null>(null);
   const [instrumentationDate, setInstrumentationDate] = useState<string | null>(null);
   const [disclosures, setDisclosures] = useState<ProductivityDisclosures | undefined>(undefined);
+  const [computedAt, setComputedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const lastRefreshAtRef = useRef(-Infinity);
 
-  useEffect(() => {
-    if (!apiBaseUrl) {
-      setLoading(false);
+  const fetchSeries = useCallback(
+    (fetchRange: ProductivityRange, force: boolean) => {
+      if (!apiBaseUrl) {
+        setLoading(false);
+        return;
+      }
+      let active = true;
+      setLoading(true);
+      setError(null);
+      getProductivity(apiBaseUrl, fetchRange, auth, force)
+        .then((response) => {
+          if (active) {
+            setSeries(response.series);
+            setInstrumentationDate(response.s4InstrumentationDate);
+            setDisclosures({
+              staticCaveats: DEFAULT_STATIC_CAVEATS,
+              perLoadConditions: response.truncated
+                ? ["Rate-limited or large window — showing a truncated result for this load."]
+                : [],
+            });
+            setComputedAt(response.computedAt || null);
+            setLoading(false);
+          }
+        })
+        .catch((err: unknown) => {
+          if (active) {
+            setError(err instanceof Error ? err.message : "Failed to load productivity data");
+            setLoading(false);
+          }
+        });
+      return () => {
+        active = false;
+      };
+    },
+    [apiBaseUrl, auth],
+  );
+
+  useEffect(() => fetchSeries(range, false), [range, fetchSeries]);
+
+  const handleRefresh = () => {
+    const now = Date.now();
+    if (now - lastRefreshAtRef.current < REFRESH_DEBOUNCE_MS) {
       return;
     }
-    let active = true;
-    setLoading(true);
-    setError(null);
-    getProductivity(apiBaseUrl, DEFAULT_RANGE, auth)
-      .then((response) => {
-        if (active) {
-          setSeries(response.series);
-          setInstrumentationDate(response.s4InstrumentationDate);
-          setDisclosures({
-            staticCaveats: DEFAULT_STATIC_CAVEATS,
-            perLoadConditions: response.truncated
-              ? ["Rate-limited or large window — showing a truncated result for this load."]
-              : [],
-          });
-          setLoading(false);
-        }
-      })
-      .catch((err: unknown) => {
-        if (active) {
-          setError(err instanceof Error ? err.message : "Failed to load productivity data");
-          setLoading(false);
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [apiBaseUrl, auth]);
+    lastRefreshAtRef.current = now;
+    fetchSeries(range, isShortTtlRange(range) || forceAffordance);
+  };
 
   return (
     <section className="productivity-panel" aria-label="Productivity">
+      <div className="productivity-panel__controls">
+        <label>
+          Range{" "}
+          <select
+            data-testid="productivity-range"
+            value={range}
+            onChange={(event) => setRange(event.target.value as ProductivityRange)}
+          >
+            {PRODUCTIVITY_RANGES.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </label>
+        {!isShortTtlRange(range) ? (
+          <label>
+            <input
+              type="checkbox"
+              data-testid="productivity-force-affordance"
+              checked={forceAffordance}
+              onChange={(event) => setForceAffordance(event.target.checked)}
+            />{" "}
+            Force refresh
+          </label>
+        ) : null}
+        <button type="button" data-testid="productivity-refresh" onClick={handleRefresh}>
+          Refresh
+        </button>
+        <span className="productivity-panel__last-updated" data-testid="productivity-last-updated">
+          {computedAt ? `Last updated: ${computedAt}` : null}
+        </span>
+      </div>
       {loading ? (
         <p className="muted" data-testid="productivity-loading">
           Loading productivity data…
