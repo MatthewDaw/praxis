@@ -479,7 +479,10 @@ praxis_record_episode(
 enforced by `plan_gate_check` at B6/B9) is "**signed AND ≥1 real evaluator action recorded**" — a
 signature over an unchanged draft (all-zero actions) does NOT pass. The count is recorded for visibility
 only; a requirement below ~10 concrete assertions is **FLAGGED for the evaluator** (`below_floor`), never
-hard-rejected.
+hard-rejected. The predicate **fails CLOSED**: **no contract at all** (nothing threaded into the gate, an
+empty payload, or a payload whose `kind` is not `contract-signed`) also REJECTS, with its own reason text
+so you can tell "never negotiated" apart from "signed lazily". A plan that never had a contract signed is
+the *more* dangerous state, so it can never be the admit path.
 
 ## B2 — Near-duplicate / overlap challenges WRITE BACK to the graph
 

@@ -3,6 +3,12 @@
 id: plan_gate_missing_acceptance_rejected
 component: plan_gate
 input:
+  # A valid signed contract (evaluator actions recorded) so the plan-level R-CONTRACT-SIGNED rule
+  # closes cleanly and this case keeps isolating the rule(s) it is about. Absent evidence now REJECTS
+  # (the rule fails closed), so every case that expects to reach the other rules must supply it.
+  contract:
+    signed: true
+    actions_recorded: true
   requirements:
     - id: R5
       text: "Coaches can see a team dashboard."

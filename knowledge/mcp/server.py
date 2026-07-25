@@ -522,6 +522,8 @@ def praxis_add_insights(
     insights: list[dict],
     on_conflict: str = "auto_resolve",
     raw: bool = False,
+    space: str | None = None,
+    snapshot: str | None = None,
 ) -> str:
     """Store many already-distilled insights in ONE call (bulk sibling of praxis_add_insight).
 
@@ -530,6 +532,14 @@ def praxis_add_insights(
     ``praxis_add_insight`` repeatedly — it's one round-trip and the backend writes
     them serially, which is both faster and gentler on the write path than firing
     many concurrent single-insight calls.
+
+    By default the whole batch lands in your working memory. Pass BOTH ``space`` and
+    ``snapshot`` to write it into an ORG-SHARED snapshot instead — the same factory seam
+    as ``praxis_add_insight`` (e.g. a whole plan into ``(space=<project>,
+    snapshot="prd-<project>")``, which is where the af-build / af-intake hooks READ).
+    Passing exactly one of the pair is a misconfiguration and raises. Checks
+    (``category="check"``) are the one exception: they are identity-keyed and must be
+    authored one at a time via ``praxis_add_insight``, so the backend rejects a batched check.
 
     ``insights`` is a list of objects, each shaped like a ``praxis_add_insight``
     call: ``{"insight": str, "scope"?: str, "category"?: str, "source"?: str,

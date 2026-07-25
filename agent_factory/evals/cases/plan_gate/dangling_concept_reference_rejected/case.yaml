@@ -8,6 +8,12 @@
 id: plan_gate_dangling_concept_reference_rejected
 component: plan_gate
 input:
+  # A valid signed contract (evaluator actions recorded) so the plan-level R-CONTRACT-SIGNED rule
+  # closes cleanly and this case keeps isolating the rule(s) it is about. Absent evidence now REJECTS
+  # (the rule fails closed), so every case that expects to reach the other rules must supply it.
+  contract:
+    signed: true
+    actions_recorded: true
   requirements:
     - id: R2
       text: "Participation% for date D = active athletes completed / active athletes * 100. An N=0 day neither advances nor breaks the team streak."

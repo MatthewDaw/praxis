@@ -2150,6 +2150,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Bulk-write many fully-approved insights in one synchronous round-trip (H8).
 
@@ -2183,14 +2184,23 @@ def create_app(conn: Any | None = None) -> FastAPI:
         conflict checks lands quickly. ``onConflict`` is ignored when ``raw`` is set.
         The embedding prefetch below still runs, so the write stays cheap on the
         embedder too.
+
+        ``X-Praxis-Space`` + ``X-Praxis-Snapshot`` are honored exactly as on
+        ``POST /insights`` (see ``snapshot_target``/``graph_for``): with both
+        headers the whole batch is written to that org-shared snapshot; with
+        neither (or only one) it goes to the requester's working memory. Getting
+        this wrong is silent — every item still reports ``ok``/``added`` — so the
+        target must be threaded into the graph the batch writer commits on, and
+        into the worker clones it derives from it (``sibling`` carries
+        ``facts_table``/``space``/``snapshot`` across).
         """
         insights = body.get("insights")
         if not isinstance(insights, list) or not insights:
             raise HTTPException(status_code=400, detail="insights must be a non-empty list")
-        # The batch lane is the bulk personal-knowledge (working-memory) path; a CHECK must be
-        # authored into a section snapshot (see _require_snapshot_for_check), which this endpoint
-        # does not target — so refuse a batched check rather than let it land invisibly. Author
-        # checks one at a time via POST /insights with X-Praxis-Space/Snapshot.
+        # A CHECK is identity-keyed on meta.check_id and must go through the redact-only
+        # _check_upsert (see POST /insights) — the batch lane runs the dedup/conflict write
+        # path instead, which silently MERGES distinct checks and drops their `run`. Refuse a
+        # batched check outright (this holds whether or not the request targets a snapshot).
         if any(
             isinstance(it, dict) and str(it.get("category") or "").strip() == CHECK_CATEGORY
             for it in insights
@@ -2198,9 +2208,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "category='check' facts cannot be batch-written to working memory — author "
-                    "each check via POST /insights targeting a 'building-validation'/'planning-"
-                    "validation' snapshot (X-Praxis-Space + X-Praxis-Snapshot)."
+                    "category='check' facts cannot be batch-written — author each check via "
+                    "POST /insights targeting a 'building-validation'/'planning-validation' "
+                    "snapshot (X-Praxis-Space + X-Praxis-Snapshot)."
                 ),
             )
         on_conflict = str(body.get("onConflict") or "auto_resolve").strip().lower()
@@ -2218,7 +2228,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         # reduces write-time safety (skips dedup + the conflict/claim policy).
         raw = body.get("raw", False) is True
         policy = [Redactor()] if raw else _insight_write_policy(on_conflict)
-        graph = PostgresVectorGraph(conn, org, uid, policy=policy)
+        graph = graph_for(org, uid, target, policy=policy)
         # Memoize + pre-embed every item's text in ONE batch call up front so the
         # parallel decides (and any re-decide) resolve embeddings from the memo
         # instead of paying N round-trips. The memo is lock-guarded so the workers

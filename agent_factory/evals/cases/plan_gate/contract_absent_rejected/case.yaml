@@ -1,0 +1,23 @@
+# R-CONTRACT-SIGNED FAILS CLOSED. An otherwise-perfect plan slice with NO contract evidence at all
+# (the ``contract`` field absent -> evaluate_plan receives None) must be REJECTED. This was the
+# fail-OPEN bug: a plan that never had a contract negotiated is MORE dangerous than one signed lazily,
+# yet it used to be admitted with zero reasons, so af-intake-plan's B9 "hard predicate" was clearable
+# by simply never signing anything.
+id: plan_gate_contract_absent_rejected
+component: plan_gate
+input:
+  project: team-app
+  requirements:
+    - id: R1
+      text: "A submission is completed when the daily rep AND all three ratings are submitted."
+      acceptance: "completed=true iff rep present and effort/focus/support all non-None."
+      defines: ["daily completion"]
+      references: []
+      source: "prd-team-app"
+  out_of_scope: []
+rule_ids: ["R-CONTRACT-SIGNED"]
+deterministic_checks:
+  - name: gate_rejects
+    ref: "evals.checks:gate_rejects"
+    params:
+      reason_contains: "NO contract evidence at all"
