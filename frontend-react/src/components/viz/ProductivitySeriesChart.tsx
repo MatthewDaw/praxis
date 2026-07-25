@@ -54,6 +54,13 @@ function mergeSeries(series: ProductivitySeries): ChartRow[] {
  * OWN independent RIGHT y-axis. S1-S3 commonly run in the thousands while
  * S4 is a single-digit count per bucket — sharing one scale would flatten
  * S4 onto the x-axis, so it is never plotted against the left axis's domain.
+ *
+ * Scope honesty (R25): S1-S3 are the owner's GitHub commit activity; S4 is
+ * the org-wide Praxis ticket-completion count. These are two distinct,
+ * unmapped sets of projects — a GitHub repo is never joined to a Praxis
+ * project — so every axis title and legend entry names its own scope
+ * ("GitHub" / "Praxis") explicitly, and nothing here labels the combined
+ * view as one project's productivity.
  */
 export function ProductivitySeriesChart({
   series,
@@ -67,13 +74,13 @@ export function ProductivitySeriesChart({
       <XAxis dataKey="label" />
       <YAxis
         yAxisId="left"
-        label={{ value: "Lines of code", angle: -90, position: "insideLeft" }}
+        label={{ value: "Lines of code (GitHub commits)", angle: -90, position: "insideLeft" }}
       />
       <YAxis
         yAxisId="right"
         orientation="right"
         allowDecimals={false}
-        label={{ value: "Tickets completed", angle: 90, position: "insideRight" }}
+        label={{ value: "Tickets completed (Praxis)", angle: 90, position: "insideRight" }}
       />
       <Tooltip />
       <Legend />

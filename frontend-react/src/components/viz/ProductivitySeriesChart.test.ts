@@ -79,4 +79,23 @@ describe("ProductivitySeriesChart", () => {
     const spread = Math.max(...s4Ys) - Math.min(...s4Ys);
     expect(spread).toBeGreaterThan(10);
   });
+
+  it("labels the two data scopes distinctly (GitHub commit activity vs Praxis ticket activity) and never asserts they describe one project's productivity (R25)", () => {
+    const markup = renderToStaticMarkup(
+      createElement(ProductivitySeriesChart, { series: SKEWED_SERIES }),
+    );
+
+    // The left (lines-of-code, S1-S3) axis/legend must name its scope as GitHub
+    // commit activity, and the right (S4) axis/legend must name its scope as
+    // Praxis ticket activity — distinctly, not just "Lines of code" / "Tickets
+    // completed" with no source attribution.
+    expect(markup).toMatch(/GitHub/i);
+    expect(markup).toMatch(/Praxis/i);
+
+    // No label may assert the combined view describes a single project's
+    // productivity — the two series are drawn from different, unmapped sets
+    // (the owner's GitHub repos vs. the org-wide Praxis ticket graph).
+    expect(markup).not.toMatch(/single project's? productivity/i);
+    expect(markup).not.toMatch(/same (set of )?projects?/i);
+  });
 });
