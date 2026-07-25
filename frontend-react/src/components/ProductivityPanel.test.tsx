@@ -6,6 +6,34 @@ import { ProductivityPanel } from "./ProductivityPanel";
 
 const AUTH = { getToken: async () => "token-123", orgId: "org-1", spaceId: "space-1" };
 
+// Every S1-S4 point is zero — the "no activity in this period" acceptance
+// scenario: the chart must still render (a zero line), plus a no-activity
+// caption, and must NOT be routed through the error-styling path.
+function allZeroResponseBody() {
+  return JSON.stringify({
+    range: "4weeks",
+    truncated: false,
+    series: {
+      s1_lines_added: [
+        { bucket_start: "2026-07-01", value: 0 },
+        { bucket_start: "2026-07-08", value: 0 },
+      ],
+      s2_lines_deleted: [
+        { bucket_start: "2026-07-01", value: 0 },
+        { bucket_start: "2026-07-08", value: 0 },
+      ],
+      s3_net_lines: [
+        { bucket_start: "2026-07-01", value: 0 },
+        { bucket_start: "2026-07-08", value: 0 },
+      ],
+      s4_tickets_completed: [
+        { bucket_start: "2026-07-01", value: 0 },
+        { bucket_start: "2026-07-08", value: 0 },
+      ],
+    },
+  });
+}
+
 // S1 (lines added) in the thousands, S4 (tickets completed) under five —
 // the acceptance scenario the panel's chart must handle without flattening
 // S4 onto the x-axis.
@@ -172,6 +200,33 @@ describe("ProductivityPanel", () => {
     expect(
       container.querySelector(".productivity-panel")?.querySelector("svg.recharts-surface"),
     ).not.toBeNull();
+  });
+
+  it("renders a zero line plus the no-activity caption, with no error styling, when every series is all zero", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(allZeroResponseBody(), { status: 200 })),
+    );
+
+    const { container } = render(
+      <ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />,
+    );
+
+    // The chart itself still renders (a flat zero line), not swapped out for a blank state.
+    await waitFor(() => {
+      expect(container.querySelector("svg.recharts-surface")).not.toBeNull();
+    });
+    const zeroLineGroups = container.querySelectorAll(".recharts-line");
+    expect(zeroLineGroups.length).toBe(4);
+
+    // Plus the no-activity caption (scoped to this render's own container — RTL
+    // does not auto-unmount between tests in this file, so a global `screen`
+    // query could otherwise match a stale element left by an earlier test).
+    expect(container.querySelector('[data-testid="productivity-no-activity"]')).not.toBeNull();
+
+    // Never the error path/styling.
+    expect(container.querySelector('[data-testid="productivity-error"]')).toBeNull();
+    expect(container.querySelector(".productivity-panel__error")).toBeNull();
   });
 
   it("labels the marker Rate-limited when the stale response was caused by a rate limit", async () => {

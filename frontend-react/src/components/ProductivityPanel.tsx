@@ -63,6 +63,19 @@ const KEY_STATUS_TEST_IDS: Record<ProductivityKeyStatus, string> = {
   insufficient_scope: "productivity-key-status-insufficient-scope",
 };
 
+/** True iff every point across every S1-S4 series is exactly zero — a "no activity in this
+ * period" response, distinct from a fetch error. The chart still renders (a flat zero line);
+ * this only gates the extra caption, never the error styling path. */
+function isAllZero(series: ProductivitySeries): boolean {
+  const allPoints = [
+    ...series.linesAdded,
+    ...series.linesDeleted,
+    ...series.netLines,
+    ...series.ticketsCompleted,
+  ];
+  return allPoints.every((point) => point.value === 0);
+}
+
 /**
  * The Productivity tab (R15/R33): fetches the owner-gated `GET /productivity`
  * series and renders them as a multi-series dual-axis chart — the
@@ -225,6 +238,11 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
             disclosures={disclosures}
             errors={seriesErrors}
           />
+          {isAllZero(series) ? (
+            <p className="muted" data-testid="productivity-no-activity">
+              No activity in this period.
+            </p>
+          ) : null}
         </>
       ) : (
         <p className="muted" data-testid="productivity-empty">
