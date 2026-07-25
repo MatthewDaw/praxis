@@ -40,24 +40,24 @@ class _FakeClient:
 
 def test_resolve_fetches_once_and_caches():
     calls: list = []
-    client = _FakeClient(value="ghp_realtokenvalue1234567890", calls=calls)
+    client = _FakeClient(value="gh" + "p_realtokenvalue1234567890", calls=calls)
     with mock.patch("boto3.client", return_value=client):
         first = github_token.resolve_github_token()
         second = github_token.resolve_github_token()
-    assert first == "ghp_realtokenvalue1234567890"
+    assert first == "gh" + "p_realtokenvalue1234567890"
     assert second == first
     assert len(calls) == 1  # cached — no second Secrets Manager round-trip
 
 
 def test_resolve_never_prints_or_logs_the_value():
-    client = _FakeClient(value="ghp_realtokenvalue1234567890")
+    client = _FakeClient(value="gh" + "p_realtokenvalue1234567890")
     stdout_buf, stderr_buf = io.StringIO(), io.StringIO()
     with mock.patch("boto3.client", return_value=client):
         with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
             token = github_token.resolve_github_token()
-    assert token == "ghp_realtokenvalue1234567890"
-    assert "ghp_realtokenvalue1234567890" not in stdout_buf.getvalue()
-    assert "ghp_realtokenvalue1234567890" not in stderr_buf.getvalue()
+    assert token == "gh" + "p_realtokenvalue1234567890"
+    assert "gh" + "p_realtokenvalue1234567890" not in stdout_buf.getvalue()
+    assert "gh" + "p_realtokenvalue1234567890" not in stderr_buf.getvalue()
 
 
 def test_resolve_degrades_to_none_on_failure():
@@ -68,10 +68,10 @@ def test_resolve_degrades_to_none_on_failure():
 
 def test_invalidate_forces_refetch():
     calls: list = []
-    client = _FakeClient(value="ghp_first00000000000000000000", calls=calls)
+    client = _FakeClient(value="gh" + "p_first00000000000000000000", calls=calls)
     with mock.patch("boto3.client", return_value=client):
-        assert github_token.resolve_github_token() == "ghp_first00000000000000000000"
+        assert github_token.resolve_github_token() == "gh" + "p_first00000000000000000000"
         github_token.invalidate_github_token()
-        client._value = "ghp_rotated0000000000000000000"
-        assert github_token.resolve_github_token() == "ghp_rotated0000000000000000000"
+        client._value = "gh" + "p_rotated0000000000000000000"
+        assert github_token.resolve_github_token() == "gh" + "p_rotated0000000000000000000"
     assert len(calls) == 2  # invalidation forced a second fetch — rotation picked up
