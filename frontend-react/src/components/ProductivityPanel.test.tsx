@@ -1,0 +1,101 @@
+// @vitest-environment jsdom
+import "@testing-library/jest-dom/vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ProductivityPanel } from "./ProductivityPanel";
+
+const AUTH = { getToken: async () => "token-123", orgId: "org-1", spaceId: "space-1" };
+
+// S1 (lines added) in the thousands, S4 (tickets completed) under five —
+// the acceptance scenario the panel's chart must handle without flattening
+// S4 onto the x-axis.
+function skewedResponseBody() {
+  return JSON.stringify({
+    range: "4weeks",
+    truncated: false,
+    series: {
+      s1_lines_added: [
+        { bucket_start: "2026-07-01", value: 1200 },
+        { bucket_start: "2026-07-08", value: 3400 },
+      ],
+      s2_lines_deleted: [
+        { bucket_start: "2026-07-01", value: 300 },
+        { bucket_start: "2026-07-08", value: 900 },
+      ],
+      s3_net_lines: [
+        { bucket_start: "2026-07-01", value: 900 },
+        { bucket_start: "2026-07-08", value: 2500 },
+      ],
+      s4_tickets_completed: [
+        { bucket_start: "2026-07-01", value: 1 },
+        { bucket_start: "2026-07-08", value: 4 },
+      ],
+    },
+  });
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("ProductivityPanel", () => {
+  it("fetches /productivity and renders a multi-series dual-axis chart with S1-S3 on the left axis and S4 on the right", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(skewedResponseBody(), { status: 200 })),
+    );
+
+    const { container } = render(
+      <ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("svg.recharts-surface")).not.toBeNull();
+    });
+
+    const yAxisGroups = container.querySelectorAll(".recharts-yAxis");
+    expect(yAxisGroups.length).toBe(2);
+    const lineGroups = container.querySelectorAll(".recharts-line");
+    expect(lineGroups.length).toBe(4);
+  });
+
+  it("shows a loading state before the fetch resolves and no chart yet", async () => {
+    let resolveFetch: (value: Response) => void = () => {};
+    const fetchMock = vi.fn().mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(
+      <ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />,
+    );
+
+    expect(screen.getByTestId("productivity-loading")).toBeInTheDocument();
+    expect(container.querySelector("svg.recharts-surface")).toBeNull();
+
+    // Wait until the panel's effect has actually invoked `fetch` (it does so only
+    // after an async `resolveToken` tick) before resolving it, or this resolves a
+    // stale pre-call promise and the real fetch call hangs forever.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    resolveFetch(new Response(skewedResponseBody(), { status: 200 }));
+    await waitFor(() => {
+      expect(container.querySelector("svg.recharts-surface")).not.toBeNull();
+    });
+  });
+
+  it("shows an error state when the fetch fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("forbidden", { status: 403 })),
+    );
+
+    render(<ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("productivity-error")).toBeInTheDocument();
+    });
+  });
+});

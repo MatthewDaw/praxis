@@ -7,6 +7,7 @@ import {
   saveSnapshot,
 } from "./api/apiClient";
 import { recordFactOutcome } from "./api/contextClient";
+import { isProductivityDisabled } from "./api/productivityClient";
 import { canDeleteCandidate } from "./api/candidateModel";
 import { buildLocalLogSession } from "./api/localLogsProvider";
 import { CandidateCards } from "./components/CandidateCards";
@@ -22,7 +23,9 @@ import {
 } from "./components/ContradictionsReview";
 import type { ContradictionClusterWire } from "./api/dataProvider";
 import { GraphExplorer } from "./components/graph/GraphExplorer";
+import { ProductivityChartPreview } from "./components/viz";
 import { McpSetupGuide } from "./components/McpSetupGuide";
+import { ProductivityPanel } from "./components/ProductivityPanel";
 import { AppShell } from "./components/layout/AppShell";
 import { ContentSplit } from "./components/layout/ContentSplit";
 import { DashboardHeader } from "./components/layout/DashboardHeader";
@@ -211,6 +214,34 @@ export default function App() {
     [wireClusters, candidates],
   );
   const contradictionCount = contradictionClusterList.length;
+
+  // Kill-switch signal (R39): hides the Productivity tab without a redeploy when
+  // the backend reports the feature disabled. Defaults to enabled (not hidden) so
+  // a still-loading or mock/local session never flashes the tab away; only a live
+  // `{"status": "disabled"}` body flips it.
+  const [productivityDisabled, setProductivityDisabled] = useState(false);
+  useEffect(() => {
+    if (mode !== "live" || !config.apiBaseUrl) {
+      setProductivityDisabled(false);
+      return;
+    }
+    let active = true;
+    isProductivityDisabled(config.apiBaseUrl, auth).then((disabled) => {
+      if (active) setProductivityDisabled(disabled);
+    });
+    return () => {
+      active = false;
+    };
+  }, [mode, config.apiBaseUrl, auth]);
+
+  // If the tab was already open when the kill switch flips on mid-session, fall
+  // back off the now-hidden Productivity view rather than stranding the user on
+  // a tab whose button no longer exists.
+  useEffect(() => {
+    if (productivityDisabled && viewTab === "productivity") {
+      setViewTab("table");
+    }
+  }, [productivityDisabled, viewTab]);
 
   useEffect(() => {
     if (filtered.length === 0) {
@@ -649,6 +680,7 @@ export default function App() {
             viewTab={viewTab}
             contradictionCount={contradictionCount}
             onViewTabChange={setViewTab}
+            productivityDisabled={productivityDisabled}
           />
         }
       />
@@ -702,7 +734,10 @@ export default function App() {
         />
       ) : null}
 
-      {viewTab !== "setup" && viewTab !== "contradictions" && viewTab !== "context" ? (
+      {viewTab !== "setup" &&
+      viewTab !== "contradictions" &&
+      viewTab !== "context" &&
+      viewTab !== "productivity" ? (
         <FilterBar
           searchQuery={searchQuery}
           stateFilter={stateFilter}
@@ -721,16 +756,24 @@ export default function App() {
 
       {viewTab === "setup" ? (
         <McpSetupGuide email={email} />
+      ) : viewTab === "productivity" ? (
+        <ProductivityPanel
+          apiBaseUrl={mode === "live" ? config.apiBaseUrl : undefined}
+          auth={auth}
+        />
       ) : viewTab === "context" ? (
-        mode === "live" && config.apiBaseUrl ? (
-          <ContextExplorer apiBaseUrl={config.apiBaseUrl} auth={auth} />
-        ) : (
-          <p className="muted">
-            Context recall reads the live knowledge graph — switch the data source to a
-            live API to query <code>/context</code>, record outcomes, and trace
-            derivations.
-          </p>
-        )
+        <>
+          {mode === "live" && config.apiBaseUrl ? (
+            <ContextExplorer apiBaseUrl={config.apiBaseUrl} auth={auth} />
+          ) : (
+            <p className="muted">
+              Context recall reads the live knowledge graph — switch the data source to a
+              live API to query <code>/context</code>, record outcomes, and trace
+              derivations.
+            </p>
+          )}
+          <ProductivityChartPreview />
+        </>
       ) : graphViewLoading ? (
         <LoadingSkeleton />
       ) : viewTab === "contradictions" ? (

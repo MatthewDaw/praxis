@@ -110,3 +110,64 @@ export function buildCustomResolveBody(customText: string): { customText: string
 export function contradictionPairId(primaryId: string, rivalId: string): string {
   return `${primaryId}__${rivalId}`;
 }
+
+// --- GET /productivity (R3) request/response contract ---
+
+export const PRODUCTIVITY_RANGES = [
+  "day",
+  "week",
+  "4weeks",
+  "12months",
+  "alltime",
+] as const;
+
+export type ProductivityRange = (typeof PRODUCTIVITY_RANGES)[number];
+
+export interface ProductivitySeriesPoint {
+  bucketStart: string;
+  value: number;
+}
+
+export interface ProductivitySeries {
+  linesAdded: ProductivitySeriesPoint[];
+  linesDeleted: ProductivitySeriesPoint[];
+  netLines: ProductivitySeriesPoint[];
+  ticketsCompleted: ProductivitySeriesPoint[];
+}
+
+export interface ProductivityResponse {
+  range: string;
+  truncated: boolean;
+  series: ProductivitySeries;
+}
+
+function toSeriesPoints(raw: unknown): ProductivitySeriesPoint[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((point) => {
+    const row = (point ?? {}) as Record<string, unknown>;
+    const bucketStart =
+      typeof row.bucket_start === "string"
+        ? row.bucket_start
+        : typeof row.bucketStart === "string"
+          ? row.bucketStart
+          : "";
+    const value = typeof row.value === "number" ? row.value : Number(row.value ?? 0);
+    return { bucketStart, value };
+  });
+}
+
+/** Parse a `GET /productivity` response body into the typed contract shape (R3/R33). */
+export function parseProductivityResponse(payload: unknown): ProductivityResponse {
+  const root = (payload ?? {}) as Record<string, unknown>;
+  const series = (root.series ?? {}) as Record<string, unknown>;
+  return {
+    range: typeof root.range === "string" ? root.range : "",
+    truncated: Boolean(root.truncated),
+    series: {
+      linesAdded: toSeriesPoints(series.s1_lines_added),
+      linesDeleted: toSeriesPoints(series.s2_lines_deleted),
+      netLines: toSeriesPoints(series.s3_net_lines),
+      ticketsCompleted: toSeriesPoints(series.s4_tickets_completed),
+    },
+  };
+}
