@@ -33,6 +33,14 @@ export const DEFAULT_ALLOWED_CIDR = '0.0.0.0/0';
 /** Secrets Manager name holding the RDS master credentials. */
 export const DB_SECRET_NAME = 'praxis/knowledge-graph/db';
 
+/**
+ * Secrets Manager name holding the GitHub personal access token (R1). The
+ * secret resource itself (`AWS::SecretsManager::Secret`) is created fresh
+ * in `backend-service-stack.ts`; this constant is only the shared name so the
+ * runtime and the stack agree on it without duplicating the literal.
+ */
+export const GITHUB_TOKEN_SECRET_NAME = 'praxis/github/token';
+
 /** Postgres database name created on the KG instance. */
 export const DB_NAME = 'praxis_kg';
 

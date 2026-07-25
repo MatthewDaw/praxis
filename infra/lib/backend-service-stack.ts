@@ -6,7 +6,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import { Construct } from 'constructs';
-import { COGNITO, DB_SECRET_NAME } from './config';
+import { COGNITO, DB_SECRET_NAME, GITHUB_TOKEN_SECRET_NAME } from './config';
 
 /**
  * Edge-layer flood ceiling: max requests per source IP over WAF's fixed 5-minute
@@ -25,6 +25,15 @@ export interface BackendServiceStackProps extends cdk.StackProps {
   readonly cognitoRegion?: string;
   /** OpenRouter API key. Defaults to the `OPENROUTER_API_KEY` env var / `openrouterApiKey` context. */
   readonly openrouterApiKey?: string;
+  /**
+   * GitHub personal access token, seeded into the new Secrets Manager secret at
+   * deploy time. Defaults to the `GITHUB_TOKEN` env var / `githubToken` context.
+   * Never becomes a runtime environment variable — only the *secret's name* is
+   * (see `GITHUB_TOKEN_SECRET_NAME` on the running task), so the App Runner
+   * instance role reads the value from Secrets Manager at request time instead
+   * of it sitting in plaintext service configuration.
+   */
+  readonly githubToken?: string;
 }
 
 /**
@@ -68,6 +77,28 @@ export class BackendServiceStack extends cdk.Stack {
       this.node.tryGetContext('openrouterApiKey') ??
       process.env.OPENROUTER_API_KEY;
 
+    // GitHub PAT for the (forthcoming) productivity backend. Seeded once at
+    // deploy time from the `GITHUB_TOKEN` env var (fed by a GitHub secret in the
+    // deploy workflow, mirroring OPENROUTER_API_KEY above) — but unlike that key,
+    // this one is a NEW Secrets Manager secret, not a runtimeEnvironmentVariables
+    // entry: App Runner logs and describes its own env vars in plaintext, so a
+    // token living there would leak into deploy tooling and console views. The
+    // running task instead reads it from Secrets Manager at request time via its
+    // instanceRole grant. When no token is supplied (e.g. a local `cdk synth`
+    // with nothing configured), CDK generates a placeholder value so synth never
+    // fails; an operator rotates in the real token via the AWS console/CLI post-deploy.
+    const githubToken =
+      props.githubToken ??
+      this.node.tryGetContext('githubToken') ??
+      process.env.GITHUB_TOKEN;
+    const githubTokenSecret = new secretsmanager.Secret(this, 'GithubTokenSecret', {
+      secretName: GITHUB_TOKEN_SECRET_NAME,
+      description: 'GitHub personal access token for the productivity backend (R1).',
+      ...(githubToken
+        ? { secretStringValue: cdk.SecretValue.unsafePlainText(githubToken) }
+        : { generateSecretString: {} }),
+    });
+
     // Build the backend image from the repo-root Dockerfile and publish it to
     // the CDK assets ECR repo. Pinned to linux/amd64: App Runner runs x86_64, so
     // an arm64 image built on an Apple-Silicon machine crashes at startup with
@@ -93,6 +124,9 @@ export class BackendServiceStack extends cdk.Stack {
       'DbSecret',
       DB_SECRET_NAME,
     ).grantRead(instanceRole);
+    // Grants Secrets Manager `GetSecretValue`/`DescribeSecret` on this ARN only
+    // (see R1) — the token itself never becomes a runtimeEnvironmentVariables entry.
+    githubTokenSecret.grantRead(instanceRole);
 
     this.service = new apprunner.CfnService(this, 'Service', {
       sourceConfiguration: {
