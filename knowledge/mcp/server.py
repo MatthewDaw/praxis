@@ -1760,6 +1760,16 @@ def praxis_create_space(space_id: str, name: str | None = None) -> str:
     standalone spaces. This does NOT change your working memory or select anything — use
     ``praxis_select_space`` to set a local
     default for the ``space`` parameter of snapshot / mount ops.
+
+    AGENT-FACTORY PROJECTS — do NOT slugify the name. For a space that the ``/af-`` skills
+    will use, ``space_id`` MUST EQUAL the factory's bare PROJECT name character for character:
+    the repo directory basename VERBATIM (underscores and case preserved), or ``FACTORY_PROJECT``
+    when it is pinned. ``_ticket_state.project_ref`` resolves every plan/check read to
+    ``space == the bare project name``, so a hyphen-slugified space (``acme-store`` for a repo at
+    ``.../acme_store``) is a SILENT failure: the space exists, but no gate ever reads it and the
+    first ``/af-intake-plan`` dies with ``unknown space 'acme_store'``. The Praxis ORG id is
+    separately slugified to hyphens — org and space names legitimately differ; do not reuse one
+    for the other.
     """
     if (hint := _not_ready()) is not None:
         return hint

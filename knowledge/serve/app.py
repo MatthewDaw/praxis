@@ -2552,6 +2552,31 @@ def create_app(conn: Any | None = None) -> FastAPI:
         deps = live_graph(org, uid).dependents(fact_id)
         return {"factId": fact_id, "dependents": [_derivation_view(f) for f in deps]}
 
+    # --- planning-session marker (factory plan_completeness gate) -----------
+    @app.post("/planning-marker")
+    def ensure_planning_marker(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+        uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
+    ) -> dict[str, Any]:
+        """Idempotently ensure ``project``'s planning-marker fact exists; return its id.
+
+        The marker is the arming signal for the factory's ``plan_completeness`` Stop hook and the
+        anchor its planning coverage contract pins onto. Nothing else creates it, so a greenfield
+        project had no way to stamp one — this is that bootstrap. Find-or-create is done inside the
+        graph (keyed ``scope=project, category="planning-marker"``) so concurrent intakes cannot
+        mint two markers. Pass the ``(space, snapshot)`` header pair to place it in the project's
+        ``prd-<project>`` snapshot, where the hook reads it.
+        """
+        project = str(body.get("project") or "").strip()
+        if not project:
+            raise HTTPException(status_code=400, detail="body must include 'project'")
+        g = graph_for(org, uid, target)
+        marker_id = g.ensure_planning_marker(project)
+        return {"id": marker_id, "project": project}
+
     # --- requirement RENDERS surface (factory completeness gate) ------------
     @app.post("/surfaces")
     def ensure_surface(

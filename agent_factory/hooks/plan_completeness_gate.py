@@ -163,9 +163,10 @@ def _contradictions_clean(project: str) -> tuple[bool, str]:
     import _ticket_state as ts
 
     space, snap = ts.project_ref(project).plan
-    marker = _praxis.get_fact(ts.planning_marker_id(project), not_found_ok=True,
-                              space=space, snapshot=snap)
-    if not bool((marker.get("meta") or {}).get(M_CONTRADICTIONS_CHECKED)):
+    mid = ts.planning_marker_id(project)
+    marker = _praxis.get_fact(mid, not_found_ok=True,
+                              space=space, snapshot=snap) if mid else None
+    if not bool(((marker or {}).get("meta") or {}).get(M_CONTRADICTIONS_CHECKED)):
         return False, (
             "contradiction detection has NOT run for this snapshot — an empty queue is not evidence "
             "of consistency (the raw-bulk path skips detection). Run detection so the "
@@ -184,7 +185,8 @@ def _lens_coverage_complete(project: str) -> tuple[bool, str]:
     import _ticket_state as ts
 
     lenses = ts.resolve_validation_requirements(
-        {"id": ts.planning_marker_id(project), "meta": {}}, project=project, scope="planning")
+        {"id": ts.planning_marker_id(project) or f"prd-{ts.planning_project(project)}::planning",
+         "meta": {}}, project=project, scope="planning")
     gaps = []
     for lens in (lenses or []):
         meta = lens.get("meta") or {}

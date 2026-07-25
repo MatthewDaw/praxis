@@ -815,11 +815,34 @@ def clear_run(cids: list[str], owner: str,
 # mechanically blesses. It lives on a single, deterministic marker fact in the plan snapshot
 # (``prd-<project>``) — so, like ``run_owner``/``run_at``, it is a session-owned, heartbeated meta.
 
-def planning_marker_id(project: str) -> str:
-    """The deterministic id of the planning marker fact in ``prd-<project>`` (a leading ``prd-`` is
-    stripped, so a bare project or the snapshot name both resolve to the same marker)."""
-    bare = project[len("prd-"):] if project.startswith("prd-") else project
-    return f"prd-{bare}::planning"
+# The category the marker fact carries (mirrors SURFACE_CATEGORY server-side).
+PLANNING_MARKER_CATEGORY = "planning-marker"
+
+
+def planning_project(project: str) -> str:
+    """The BARE project name (a leading ``prd-`` is stripped, so a bare project or the snapshot name
+    both resolve to the same marker)."""
+    return project[len("prd-"):] if project.startswith("prd-") else project
+
+
+def planning_marker_id(project: str, *, create: bool = False) -> str:
+    """The id of ``project``'s planning marker fact in ``prd-<project>``, or ``""`` if none exists.
+
+    The marker's id is SERVER-GENERATED (like a surface), not a computed address — the id is
+    resolved by the idempotency key ``(scope=project, category="planning-marker")``. With
+    ``create=True`` the marker is materialized if absent (the bootstrap a greenfield project needs);
+    with the default ``create=False`` this is a pure read that returns ``""`` when no planning
+    session has ever been stamped, so the Stop hook can treat absence as "inactive".
+    """
+    bare = planning_project(project)
+    ref = project_ref(project).plan
+    if create:
+        return _praxis.ensure_planning_marker(bare, **_ref_kw(ref))
+    for fact in (_praxis.facts_by(category=PLANNING_MARKER_CATEGORY, **_ref_kw(ref)) or []):
+        meta = dict(fact.get("meta") or {})
+        if (fact.get("scope") or meta.get("project")) == bare:
+            return str(fact.get("id") or "")
+    return ""
 
 
 def planning_live(meta: dict, now: Optional[float] = None) -> bool:
@@ -843,7 +866,7 @@ def stamp_planning(project: str, owner: str) -> str:
     """Mark ``project``'s planning session ACTIVE for ``owner`` (planning_owner/planning_at) on the
     plan snapshot's marker fact. Called at intake start; re-stamping heartbeats the marker (refreshes
     planning_at). Returns the marker fact id. Mirror of :func:`stamp_run`."""
-    mid = planning_marker_id(project)
+    mid = planning_marker_id(project, create=True)
     ref = project_ref(project).plan
     _praxis.patch_meta(mid, {M_PLANNING_OWNER: owner, M_PLANNING_AT: time.time()}, **_ref_kw(ref))
     return mid
@@ -854,6 +877,8 @@ def clear_planning(project: str, owner: str) -> bool:
     plan is done and the hook should go inert. Only clears a marker THIS owner holds (an unowned
     marker is also clearable); an owner mismatch returns False. Mirror of :func:`clear_run`."""
     mid = planning_marker_id(project)
+    if not mid:
+        return True  # never stamped => nothing to clear; the hook is already inert
     ref = project_ref(project).plan
     if _meta(mid, ref).get(M_PLANNING_OWNER) not in (owner, None):
         return False
@@ -867,6 +892,8 @@ def planning_active(project: str, now: Optional[float] = None) -> bool:
     fact means "no planning session" (inactive), NOT "Praxis down" — a genuine PraxisUnreachable still
     propagates so the hook fails closed."""
     mid = planning_marker_id(project)
+    if not mid:
+        return False  # no marker fact => no planning session (NOT "Praxis down")
     ref = project_ref(project).plan
     fact = _praxis.get_fact(mid, not_found_ok=True, **_ref_kw(ref))
     meta = dict((fact or {}).get("meta") or {})
