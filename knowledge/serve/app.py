@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable
 
 from dotenv import load_dotenv
@@ -79,6 +79,7 @@ from knowledge.knowledge_graph.write_policy.write_step_variants import (  # noqa
 from knowledge.llm.embedder_variants.memoizing_embedder import MemoizingEmbedder  # noqa: E402
 from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm  # noqa: E402
 from knowledge.serve import batch_writer, db, graph_adapter  # noqa: E402
+from knowledge.serve import productivity_route  # noqa: E402
 from knowledge.serve.auth import Principal, make_current_user  # noqa: E402
 from knowledge.serve.facts_candidates import (  # noqa: E402
     FactsCandidates,
@@ -86,6 +87,7 @@ from knowledge.serve.facts_candidates import (  # noqa: E402
 )
 from knowledge.serve.mounted_store import MountedStore  # noqa: E402
 from knowledge.serve.orgs_store import OrgsStore  # noqa: E402
+from knowledge.serve.productivity_buckets import daily_buckets  # noqa: E402
 from knowledge.serve.spaces_store import SpacesStore  # noqa: E402
 from knowledge.serve.reserved_names import (  # noqa: E402
     RESERVED_EVAL_SPACE,
@@ -3000,6 +3002,59 @@ def create_app(conn: Any | None = None) -> FastAPI:
         target = _project_target(org, uid, project, target)
         summary = graph_for(org, uid, target).completeness_summary(project)
         return {"project": project, **summary}
+
+    @app.get("/productivity")
+    def productivity(
+        range: str = "week",
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+        uid: str = Depends(active_user_id),
+    ) -> dict[str, Any]:
+        """The four bucketed productivity series (R3), token-owner gated.
+
+        The owner-allowlist check runs BEFORE any GitHub call: a non-owner principal
+        (including one authenticated by an org API key) gets a bare 403 and never a
+        git-derived number, whether or not the caller can also reach GitHub.
+
+        The kill switch (R39) is checked FIRST, ahead of the owner gate and the range
+        validation, for every authenticated caller: when set, the route degrades to a
+        disabled status instead of an error and never reaches GitHub, so a leaked or
+        revoked token can be contained immediately with no redeploy.
+        """
+        if productivity_route.kill_switch_enabled():
+            return {"status": "disabled"}
+        if not productivity_route.is_owner(principal):
+            raise HTTPException(status_code=403, detail="not the productivity token owner")
+        if range not in productivity_route.ALLOWED_RANGES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown range {range!r}; expected one of {sorted(productivity_route.ALLOWED_RANGES)}",
+            )
+        return productivity_route.get_series_cached(conn, org, uid, range)
+
+    @app.get("/productivity/buckets")
+    def productivity_buckets(
+        start: str,
+        end: str,
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Day-bucket boundaries for the Productivity page's series, fixed to
+        ``America/Denver`` (D9, hardened): the zone is never client-configurable, so this
+        route deliberately declares no timezone/offset query parameter — an unrecognized one
+        in the request is silently ignored by FastAPI's routing, never read or honored (the
+        ``no-client-supplied-timezone`` build gate enforces the absence of such a parameter
+        across this whole app). ``start``/``end`` are ISO calendar dates (``YYYY-MM-DD``).
+        """
+        try:
+            start_date = date.fromisoformat(start)
+            end_date = date.fromisoformat(end)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"invalid date: {exc}") from exc
+        try:
+            return daily_buckets(start_date, end_date)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/context")
     @limiter.limit(LLM_RATE_LIMIT)

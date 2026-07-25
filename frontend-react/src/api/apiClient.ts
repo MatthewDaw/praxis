@@ -7,6 +7,9 @@ import {
   buildResolveBody,
   buildUpdateBody,
   contractHeaders,
+  parseProductivityResponse,
+  type ProductivityRange,
+  type ProductivityResponse,
 } from "./contract";
 import {
   candidateFromMapping,
@@ -494,6 +497,32 @@ export async function postInsight(
   }
 
   return normalizeGraphIngestResult(await parseJsonResponse(response));
+}
+
+/**
+ * `GET /productivity` — the kill-switch-gated productivity status. Reads only
+ * `{status}`; never issues any further request (in particular, never calls
+ * GitHub) when the server reports `"disabled"`.
+ */
+export async function getProductivityStatus(
+  apiBaseUrl: string,
+  auth?: string | ApiDataProviderAuth,
+): Promise<"enabled" | "disabled"> {
+  const root = apiBaseUrl.replace(/\/$/, "");
+  const { token, orgId, spaceId } = await resolveToken(auth);
+  const response = await fetch(`${root}/productivity`, {
+    method: "GET",
+    headers: contractHeaders(token, orgId, spaceId),
+  });
+  if (!response.ok) {
+    const message = responseDetail(await response.text(), response.statusText);
+    throw new ApiClientError(
+      `API GET /productivity failed (${response.status}): ${message}`,
+      response.status,
+    );
+  }
+  const body = asRecord(await parseJsonResponse(response));
+  return body.status === "enabled" ? "enabled" : "disabled";
 }
 
 export async function postRegenerateEvals(
@@ -1148,6 +1177,34 @@ export async function revokeApiKey(
     id: typeof row.id === "string" ? row.id : id,
     revoked: Boolean(row.revoked),
   };
+}
+
+/**
+ * `GET /productivity` — the four bucketed S1-S4 series for the dashboard's Productivity
+ * panel (R3), owner-gated on the backend. Goes through {@link contractHeaders} like every
+ * other apiClient helper (Cognito bearer + org + space) rather than a bare `fetch` call, so
+ * the panel never has to hand-roll auth headers or response parsing.
+ */
+export async function getProductivity(
+  apiBaseUrl: string,
+  range: ProductivityRange,
+  auth?: string | ApiDataProviderAuth,
+): Promise<ProductivityResponse> {
+  const root = apiBaseUrl.replace(/\/$/, "");
+  const { token, orgId, spaceId } = await resolveToken(auth);
+  const response = await fetch(`${root}/productivity?range=${encodeURIComponent(range)}`, {
+    method: "GET",
+    headers: contractHeaders(token, orgId, spaceId),
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    const message = responseDetail(detail, response.statusText);
+    throw new ApiClientError(
+      `API GET /productivity failed (${response.status}): ${message}`,
+      response.status,
+    );
+  }
+  return parseProductivityResponse(await parseJsonResponse(response));
 }
 
 export {
