@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProductivityPanel } from "./ProductivityPanel";
 
@@ -36,6 +36,7 @@ function skewedResponseBody() {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  cleanup();
 });
 
 describe("ProductivityPanel", () => {
@@ -97,5 +98,69 @@ describe("ProductivityPanel", () => {
     await waitFor(() => {
       expect(screen.getByTestId("productivity-error")).toBeInTheDocument();
     });
+  });
+
+  // R22 acceptance: given a response carrying a stale flag and a computed_at, the
+  // panel displays the computed_at age and a stale marker adjacent to the chart.
+  it("renders the computed_at age and a stale marker adjacent to the chart when the response is stale", async () => {
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const body = JSON.stringify({
+      ...JSON.parse(skewedResponseBody()),
+      stale: true,
+      computed_at: fiveMinutesAgo,
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 200 })));
+
+    const { container } = render(
+      <ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("svg.recharts-surface")).not.toBeNull();
+    });
+
+    const marker = screen.getByTestId("productivity-stale-marker");
+    expect(marker).toBeInTheDocument();
+    expect(marker.textContent).toContain("Stale");
+    expect(screen.getByTestId("productivity-computed-age").textContent).toBe("5m old");
+    // Adjacent to the chart: the marker and the chart share the same panel section.
+    expect(container.querySelector(".productivity-panel")?.contains(marker)).toBe(true);
+    expect(
+      container.querySelector(".productivity-panel")?.querySelector("svg.recharts-surface"),
+    ).not.toBeNull();
+  });
+
+  it("labels the marker Rate-limited when the stale response was caused by a rate limit", async () => {
+    const body = JSON.stringify({
+      ...JSON.parse(skewedResponseBody()),
+      stale: true,
+      rate_limited: true,
+      computed_at: new Date(Date.now() - 30 * 1000).toISOString(),
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 200 })));
+
+    render(<ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("productivity-stale-marker").textContent).toContain(
+        "Rate-limited",
+      );
+    });
+  });
+
+  it("renders no stale marker for a fresh (non-stale) response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(skewedResponseBody(), { status: 200 })),
+    );
+
+    const { container } = render(
+      <ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("svg.recharts-surface")).not.toBeNull();
+    });
+    expect(screen.queryByTestId("productivity-stale-marker")).toBeNull();
   });
 });
