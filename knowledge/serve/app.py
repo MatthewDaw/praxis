@@ -3021,7 +3021,6 @@ def create_app(conn: Any | None = None) -> FastAPI:
         disabled status instead of an error and never reaches GitHub, so a leaked or
         revoked token can be contained immediately with no redeploy.
         """
-        del uid  # dependency enforces org membership; the series aren't per-user.
         if productivity_route.kill_switch_enabled():
             return {"status": "disabled"}
         if not productivity_route.is_owner(principal):
@@ -3031,7 +3030,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 status_code=400,
                 detail=f"unknown range {range!r}; expected one of {sorted(productivity_route.ALLOWED_RANGES)}",
             )
-        return productivity_route.build_series(conn, org, range)
+        return productivity_route.get_series_cached(conn, org, uid, range)
 
     @app.get("/productivity/buckets")
     def productivity_buckets(

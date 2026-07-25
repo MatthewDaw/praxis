@@ -27,7 +27,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from knowledge.serve import github_audit, github_commits, github_token
+from knowledge.serve import github_audit, github_commits, github_token, productivity_cache
 from knowledge.serve.auth import Principal
 from knowledge.serve.productivity_attribution import bucketed_owner_totals
 from knowledge.serve.productivity_series import s4_series
@@ -170,8 +170,6 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
     github_audit.record_productivity_request(
         duration_ms=(time.perf_counter() - started_at) * 1000,
         points_spent=int(activity.get("points_spent") or 0),
-        # No response cache exists yet (R4, not yet built): every request is
-        # genuinely a miss until that ticket lands and threads a real value here.
         cache_hit=False,
         truncated=bool(activity.get("truncated")),
     )
@@ -187,3 +185,33 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
             "s4_tickets_completed": _series_points(bucket_starts, s4),
         },
     }
+
+
+def get_series_cached(
+    conn: Any, org_id: str, user_key: str, range_: str, *, now: datetime | None = None,
+) -> dict[str, Any]:
+    """Serve ``/productivity`` from the short/long-TTL cache when possible (R4).
+
+    Cached on ``(org_id, user_key, range_)`` — the caller's org/identity and the
+    requested window, never a client-supplied timezone (see module docstring). A
+    hit returns the EXACT prior payload — same ``computed_at`` — and never calls
+    GitHub or Praxis again; a miss calls :func:`build_series`, stamps
+    ``computed_at`` onto the result, and caches it for that range's TTL band (D7).
+    Either path logs one observability record (R40): the miss path logs from
+    inside :func:`build_series`, the hit path logs here (zero GitHub points spent).
+    """
+    now = now or datetime.now(timezone.utc)
+    cached = productivity_cache.get(org_id, user_key, range_, now=now.timestamp())
+    if cached is not None:
+        github_audit.record_productivity_request(
+            duration_ms=0.0,
+            points_spent=0,
+            cache_hit=True,
+            truncated=bool(cached.get("truncated")),
+        )
+        return cached
+
+    result = build_series(conn, org_id, range_, now=now)
+    result["computed_at"] = now.isoformat()
+    productivity_cache.put(org_id, user_key, range_, result, now=now.timestamp())
+    return result
