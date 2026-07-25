@@ -113,3 +113,14 @@ def bucketed_owner_totals(
                     break
 
     return {"s1": s1, "s2": s2}
+
+
+def net_lines(additions: list[int], deletions: list[int]) -> list[int]:
+    """S3: the per-bucket net line count, additions minus deletions at MATCHING bucket index.
+
+    Computed per bucket (never as a single whole-window difference) so a bucket where
+    deletions outweigh additions surfaces as a negative net right where it happened — e.g.
+    a heavy-refactor day inside an otherwise net-positive week stays visible on the chart
+    instead of being smoothed away by the surrounding buckets.
+    """
+    return [a - d for a, d in zip(additions, deletions)]
