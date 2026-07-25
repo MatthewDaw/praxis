@@ -6,6 +6,7 @@ import {
   type ProductivityKeyStatus,
   type ProductivityRange,
   type ProductivitySeries,
+  type ProductivitySeriesErrors,
 } from "../api/contract";
 import {
   DEFAULT_STATIC_CAVEATS,
@@ -91,6 +92,7 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
   const [keyStatus, setKeyStatus] = useState<ProductivityKeyStatus | null>(null);
   const [reposDiscovered, setReposDiscovered] = useState<number | null>(null);
   const [spacesCount, setSpacesCount] = useState<number | null>(null);
+  const [seriesErrors, setSeriesErrors] = useState<ProductivitySeriesErrors>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const lastRefreshAtRef = useRef(-Infinity);
@@ -121,6 +123,7 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
             setRateLimited(Boolean(response.rateLimited));
             setReposDiscovered(response.reposDiscovered);
             setSpacesCount(response.spacesCount);
+            setSeriesErrors(response.errors);
             setLoading(false);
           }
         })
@@ -220,6 +223,7 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
             series={series}
             instrumentationDate={instrumentationDate}
             disclosures={disclosures}
+            errors={seriesErrors}
           />
         </>
       ) : (

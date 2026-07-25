@@ -149,6 +149,11 @@ const PRODUCTIVITY_KEY_STATUSES: ReadonlySet<string> = new Set([
   "insufficient_scope",
 ]);
 
+/** Per-series failure for a productivity response's independently-failing data sources
+ * (the git series S1-S3 vs. the ticket series S4): keyed by the same camelCase key as
+ * `ProductivitySeries`, present only for a series that errored. */
+export type ProductivitySeriesErrors = Partial<Record<keyof ProductivitySeries, string>>;
+
 export interface ProductivityResponse {
   range: string;
   truncated: boolean;
@@ -171,6 +176,7 @@ export interface ProductivityResponse {
   s4InstrumentationDate: string | null;
   /** Set only when the backend's GitHub token is missing/expired/insufficient-scope (R21). */
   keyStatus?: ProductivityKeyStatus;
+  errors: ProductivitySeriesErrors;
 }
 
 function toSeriesPoints(raw: unknown): ProductivitySeriesPoint[] {
@@ -188,6 +194,15 @@ function toSeriesPoints(raw: unknown): ProductivitySeriesPoint[] {
   });
 }
 
+// Maps each raw backend series key to its camelCase contract key, reused for both the
+// series values themselves and their per-series `errors` (same key set, same shape).
+const SERIES_KEY_BY_RAW: Record<string, keyof ProductivitySeries> = {
+  s1_lines_added: "linesAdded",
+  s2_lines_deleted: "linesDeleted",
+  s3_net_lines: "netLines",
+  s4_tickets_completed: "ticketsCompleted",
+};
+
 /** Parse a `GET /productivity` response body into the typed contract shape (R3/R33/R21). */
 export function parseProductivityResponse(payload: unknown): ProductivityResponse {
   const root = (payload ?? {}) as Record<string, unknown>;
@@ -202,6 +217,13 @@ export function parseProductivityResponse(payload: unknown): ProductivityRespons
     typeof root.key_status === "string" && PRODUCTIVITY_KEY_STATUSES.has(root.key_status)
       ? (root.key_status as ProductivityKeyStatus)
       : undefined;
+  const rawErrors = (root.errors ?? {}) as Record<string, unknown>;
+  const errors: ProductivitySeriesErrors = {};
+  for (const [rawKey, key] of Object.entries(SERIES_KEY_BY_RAW)) {
+    const entry = rawErrors[rawKey] as Record<string, unknown> | undefined;
+    const reason = entry && typeof entry.reason === "string" ? entry.reason : undefined;
+    if (reason) errors[key] = reason;
+  }
   return {
     range: typeof root.range === "string" ? root.range : "",
     truncated: Boolean(root.truncated),
@@ -219,6 +241,7 @@ export function parseProductivityResponse(payload: unknown): ProductivityRespons
     s4InstrumentationDate:
       typeof root.s4_instrumentation_date === "string" ? root.s4_instrumentation_date : null,
     ...(keyStatus ? { keyStatus } : {}),
+    errors,
   };
 }
 

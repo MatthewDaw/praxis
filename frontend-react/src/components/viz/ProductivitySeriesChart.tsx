@@ -8,8 +8,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { Payload } from "recharts/types/component/DefaultLegendContent";
-import type { ProductivitySeries } from "../../api/contract";
+import type { Props as LegendContentProps } from "recharts/types/component/DefaultLegendContent";
+import type { ProductivitySeries, ProductivitySeriesErrors } from "../../api/contract";
 
 /**
  * The disclosure content around the chart (D31/R24): static, load-independent
@@ -47,6 +47,10 @@ export interface ProductivitySeriesChartProps {
    * "ticket history starts <date>" annotation — so missing pre-instrumentation
    * history reads as not-yet-recorded, never as zero tickets completed. */
   instrumentationDate?: string | null;
+  /** Per-series failure reasons (e.g. the ticket series S4 errored while the git series
+   * S1-S3 succeeded) — the affected legend entry gets an error badge instead of the line
+   * silently reading as a flat, indistinguishable zero. */
+  errors?: ProductivitySeriesErrors;
   width?: number;
   height?: number;
   disclosures?: ProductivityDisclosures;
@@ -129,6 +133,7 @@ function mergeSeries(series: ProductivitySeries): ChartRow[] {
 export function ProductivitySeriesChart({
   series,
   instrumentationDate,
+  errors,
   width = 640,
   height = 320,
   disclosures = EMPTY_DISCLOSURES,
@@ -145,23 +150,38 @@ export function ProductivitySeriesChart({
   // Custom legend content so the S4 (tickets-completed) entry can carry its
   // ticket-history-start caption inline, right beside that one legend label —
   // the caption qualifies only S4, so it never lives in the shared footnote
-  // strip where it would read as applying to every series.
-  const renderLegend = (props: { payload?: Array<Payload> }) => (
+  // strip where it would read as applying to every series. Any entry whose
+  // series independently failed (R-partial-failure) also gets an error badge
+  // carrying the failure reason, instead of silently reading as a flat zero.
+  const renderLegend = ({ payload }: LegendContentProps) => (
     <ul className="productivity-chart__legend">
-      {(props.payload ?? []).map((entry) => (
-        <li key={String(entry.value)} style={{ color: entry.color }}>
-          {entry.value}
-          {String(entry.value).includes("S4") && ticketHistoryStart ? (
-            <span
-              className="productivity-chart__s4-caption"
-              data-testid="productivity-s4-caption"
-            >
-              {" "}
-              (ticket history since {ticketHistoryStart})
-            </span>
-          ) : null}
-        </li>
-      ))}
+      {(payload ?? []).map((entry) => {
+        const dataKey = entry.dataKey as keyof ProductivitySeries | undefined;
+        const reason = dataKey ? errors?.[dataKey] : undefined;
+        return (
+          <li key={String(entry.value)} style={{ color: entry.color }}>
+            {entry.value}
+            {String(entry.value).includes("S4") && ticketHistoryStart ? (
+              <span
+                className="productivity-chart__s4-caption"
+                data-testid="productivity-s4-caption"
+              >
+                {" "}
+                (ticket history since {ticketHistoryStart})
+              </span>
+            ) : null}
+            {reason && (
+              <span
+                className="productivity-legend__error-badge"
+                data-testid={`productivity-legend-error-${dataKey}`}
+                title={reason}
+              >
+                {" "}⚠ error
+              </span>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 

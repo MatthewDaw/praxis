@@ -168,6 +168,12 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
     in ``org_id``. Zero/zero is the first-run signal the client uses to show a
     dedicated "nothing connected yet" state instead of a flat zero-valued chart that
     would otherwise look indistinguishable from "connected but did no work".
+
+    The two data sources fail independently: if the ticket series (S4, Praxis-derived)
+    raises, S1-S3 (the git series, already fetched above) still render normally and the
+    response instead carries ``errors.s4_tickets_completed.reason`` naming the failure -- a
+    failed series must never be silently reported as a confirmed flat zero (indistinguishable
+    from genuine zero activity).
     """
     started_at = time.perf_counter()
     now = now or datetime.now(timezone.utc)
@@ -198,7 +204,12 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
     )
     s1, s2 = totals["s1"], totals["s2"]
     s3 = net_lines(s1, s2)
-    s4 = s4_series(conn, org_id, bucket_starts, bucket_seconds)
+    errors: dict[str, dict[str, str]] = {}
+    try:
+        s4 = s4_series(conn, org_id, bucket_starts, bucket_seconds)
+    except Exception as exc:  # noqa: BLE001 - the ticket series must never take down S1-S3
+        s4 = []
+        errors["s4_tickets_completed"] = {"reason": str(exc)}
     instrumentation_date = s4_instrumentation_date(conn, org_id)
 
     github_audit.record_productivity_request(
@@ -208,7 +219,7 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
         truncated=bool(activity.get("truncated")),
     )
 
-    return {
+    result: dict[str, Any] = {
         "range": range_,
         "bucket_unit": bucket_unit,
         "truncated": bool(activity.get("truncated")),
@@ -222,6 +233,9 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
             "s4_tickets_completed": _series_points(bucket_starts, s4),
         },
     }
+    if errors:
+        result["errors"] = errors
+    return result
 
 
 def get_series_cached(

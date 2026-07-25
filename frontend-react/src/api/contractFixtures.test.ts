@@ -114,6 +114,26 @@ describe("contract v1 fixtures", () => {
     expect(parsed.series.ticketsCompleted[0].value).toBe(3);
   });
 
+  it("parses a partial-failure productivity response's per-series errors", () => {
+    const parsed = parseProductivityResponse({
+      range: "week",
+      truncated: false,
+      series: {
+        s1_lines_added: [{ bucket_start: "2026-07-18T00:00:00+00:00", value: 120 }],
+        s2_lines_deleted: [{ bucket_start: "2026-07-18T00:00:00+00:00", value: 40 }],
+        s3_net_lines: [{ bucket_start: "2026-07-18T00:00:00+00:00", value: 80 }],
+        s4_tickets_completed: [],
+      },
+      errors: {
+        s4_tickets_completed: { reason: "boom: ticket store unavailable" },
+      },
+    });
+    expect(parsed.series.linesAdded[0].value).toBe(120);
+    expect(parsed.series.ticketsCompleted).toEqual([]);
+    expect(parsed.errors.ticketsCompleted).toBe("boom: ticket store unavailable");
+    expect(parsed.errors.linesAdded).toBeUndefined();
+  });
+
   it("validates ingest-jsonl-response.json shape", () => {
     const payload = loadFixture("ingest-jsonl-response.json") as {
       candidatesCreated: number;
