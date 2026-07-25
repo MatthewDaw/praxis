@@ -22,7 +22,9 @@ import {
 } from "./components/ContradictionsReview";
 import type { ContradictionClusterWire } from "./api/dataProvider";
 import { GraphExplorer } from "./components/graph/GraphExplorer";
+import { ProductivityChartPreview } from "./components/viz";
 import { McpSetupGuide } from "./components/McpSetupGuide";
+import { ProductivityPanel } from "./components/ProductivityPanel";
 import { AppShell } from "./components/layout/AppShell";
 import { ContentSplit } from "./components/layout/ContentSplit";
 import { DashboardHeader } from "./components/layout/DashboardHeader";
@@ -702,7 +704,10 @@ export default function App() {
         />
       ) : null}
 
-      {viewTab !== "setup" && viewTab !== "contradictions" && viewTab !== "context" ? (
+      {viewTab !== "setup" &&
+      viewTab !== "contradictions" &&
+      viewTab !== "context" &&
+      viewTab !== "productivity" ? (
         <FilterBar
           searchQuery={searchQuery}
           stateFilter={stateFilter}
@@ -721,16 +726,21 @@ export default function App() {
 
       {viewTab === "setup" ? (
         <McpSetupGuide email={email} />
+      ) : viewTab === "productivity" ? (
+        <ProductivityPanel />
       ) : viewTab === "context" ? (
-        mode === "live" && config.apiBaseUrl ? (
-          <ContextExplorer apiBaseUrl={config.apiBaseUrl} auth={auth} />
-        ) : (
-          <p className="muted">
-            Context recall reads the live knowledge graph — switch the data source to a
-            live API to query <code>/context</code>, record outcomes, and trace
-            derivations.
-          </p>
-        )
+        <>
+          {mode === "live" && config.apiBaseUrl ? (
+            <ContextExplorer apiBaseUrl={config.apiBaseUrl} auth={auth} />
+          ) : (
+            <p className="muted">
+              Context recall reads the live knowledge graph — switch the data source to a
+              live API to query <code>/context</code>, record outcomes, and trace
+              derivations.
+            </p>
+          )}
+          <ProductivityChartPreview />
+        </>
       ) : graphViewLoading ? (
         <LoadingSkeleton />
       ) : viewTab === "contradictions" ? (
