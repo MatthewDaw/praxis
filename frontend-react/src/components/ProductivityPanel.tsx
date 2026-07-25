@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import { getProductivity, type ApiDataProviderAuth } from "../api/apiClient";
 import type { ProductivitySeries } from "../api/contract";
-import { ProductivitySeriesChart } from "./viz/ProductivitySeriesChart";
+import {
+  DEFAULT_STATIC_CAVEATS,
+  ProductivitySeriesChart,
+  type ProductivityDisclosures,
+} from "./viz/ProductivitySeriesChart";
 
 export interface ProductivityPanelProps {
   apiBaseUrl?: string;
@@ -22,6 +26,7 @@ const DEFAULT_RANGE = "4weeks" as const;
 export function ProductivityPanel({ apiBaseUrl, auth }: ProductivityPanelProps) {
   const [series, setSeries] = useState<ProductivitySeries | null>(null);
   const [instrumentationDate, setInstrumentationDate] = useState<string | null>(null);
+  const [disclosures, setDisclosures] = useState<ProductivityDisclosures | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -38,6 +43,12 @@ export function ProductivityPanel({ apiBaseUrl, auth }: ProductivityPanelProps) 
         if (active) {
           setSeries(response.series);
           setInstrumentationDate(response.s4InstrumentationDate);
+          setDisclosures({
+            staticCaveats: DEFAULT_STATIC_CAVEATS,
+            perLoadConditions: response.truncated
+              ? ["Rate-limited or large window — showing a truncated result for this load."]
+              : [],
+          });
           setLoading(false);
         }
       })
@@ -63,7 +74,11 @@ export function ProductivityPanel({ apiBaseUrl, auth }: ProductivityPanelProps) 
           Couldn't load productivity data: {error}
         </p>
       ) : series ? (
-        <ProductivitySeriesChart series={series} instrumentationDate={instrumentationDate} />
+        <ProductivitySeriesChart
+          series={series}
+          instrumentationDate={instrumentationDate}
+          disclosures={disclosures}
+        />
       ) : (
         <p className="muted" data-testid="productivity-empty">
           Productivity reporting is coming soon.
