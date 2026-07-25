@@ -34,9 +34,10 @@ export const DEFAULT_ALLOWED_CIDR = '0.0.0.0/0';
 export const DB_SECRET_NAME = 'praxis/knowledge-graph/db';
 
 /**
- * Secrets Manager name holding the GitHub personal access token used by the
- * (forthcoming) productivity backend. The secret resource itself is created
- * in `backend-service-stack.ts`; this constant is only the shared name so the
+ * Secrets Manager name holding the GitHub personal access token (R1) used by
+ * the productivity backend. The secret resource itself
+ * (`AWS::SecretsManager::Secret`) is created fresh in
+ * `backend-service-stack.ts`; this constant is only the shared name so the
  * runtime and the stack agree on it without duplicating the literal.
  */
 export const GITHUB_TOKEN_SECRET_NAME = 'praxis/github/token';

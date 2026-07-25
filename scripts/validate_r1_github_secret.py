@@ -15,7 +15,9 @@ Proves, against a REAL `cdk synth` of the backend stack (fed a fake token via
 and, against the runtime resolver module:
 
   4. resolving the token never prints/logs the value (stdout+stderr captured
-     around the call must not contain it).
+     around the call must not contain it). (This overlaps with, but does not
+     replace, the dedicated coverage in
+     ``knowledge/serve/tests/test_github_token.py``.)
 
 Exit 0 == every assertion holds. Any failure prints which one and exits 1.
 """
@@ -32,8 +34,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INFRA_DIR = REPO_ROOT / "infra"
+sys.path.insert(0, str(REPO_ROOT))
+from knowledge.serve.github_token import DEFAULT_SECRET_NAME as SECRET_NAME  # noqa: E402
+
 FAKE_TOKEN = "ghp_faketokenFAKE1234567890abcdEVAL"
-SECRET_NAME = "praxis/github/token"
 
 
 def _synth_template() -> dict:
@@ -124,7 +128,6 @@ def _check_no_env_leak(resources: dict) -> None:
 
 
 def _check_resolver_never_logs() -> None:
-    sys.path.insert(0, str(REPO_ROOT))
     import importlib
 
     github_token = importlib.import_module("knowledge.serve.github_token")
