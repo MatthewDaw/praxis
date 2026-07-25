@@ -22,6 +22,7 @@ import {
 } from "./components/ContradictionsReview";
 import type { ContradictionClusterWire } from "./api/dataProvider";
 import { GraphExplorer } from "./components/graph/GraphExplorer";
+import { ProductivityChartPreview } from "./components/viz";
 import { McpSetupGuide } from "./components/McpSetupGuide";
 import { AppShell } from "./components/layout/AppShell";
 import { ContentSplit } from "./components/layout/ContentSplit";
@@ -722,15 +723,18 @@ export default function App() {
       {viewTab === "setup" ? (
         <McpSetupGuide email={email} />
       ) : viewTab === "context" ? (
-        mode === "live" && config.apiBaseUrl ? (
-          <ContextExplorer apiBaseUrl={config.apiBaseUrl} auth={auth} />
-        ) : (
-          <p className="muted">
-            Context recall reads the live knowledge graph — switch the data source to a
-            live API to query <code>/context</code>, record outcomes, and trace
-            derivations.
-          </p>
-        )
+        <>
+          {mode === "live" && config.apiBaseUrl ? (
+            <ContextExplorer apiBaseUrl={config.apiBaseUrl} auth={auth} />
+          ) : (
+            <p className="muted">
+              Context recall reads the live knowledge graph — switch the data source to a
+              live API to query <code>/context</code>, record outcomes, and trace
+              derivations.
+            </p>
+          )}
+          <ProductivityChartPreview />
+        </>
       ) : graphViewLoading ? (
         <LoadingSkeleton />
       ) : viewTab === "contradictions" ? (
