@@ -23,6 +23,7 @@ import {
 import type { ContradictionClusterWire } from "./api/dataProvider";
 import { GraphExplorer } from "./components/graph/GraphExplorer";
 import { McpSetupGuide } from "./components/McpSetupGuide";
+import { ProductivityPanel } from "./components/ProductivityPanel";
 import { AppShell } from "./components/layout/AppShell";
 import { ContentSplit } from "./components/layout/ContentSplit";
 import { DashboardHeader } from "./components/layout/DashboardHeader";
@@ -702,7 +703,10 @@ export default function App() {
         />
       ) : null}
 
-      {viewTab !== "setup" && viewTab !== "contradictions" && viewTab !== "context" ? (
+      {viewTab !== "setup" &&
+      viewTab !== "contradictions" &&
+      viewTab !== "context" &&
+      viewTab !== "productivity" ? (
         <FilterBar
           searchQuery={searchQuery}
           stateFilter={stateFilter}
@@ -721,6 +725,8 @@ export default function App() {
 
       {viewTab === "setup" ? (
         <McpSetupGuide email={email} />
+      ) : viewTab === "productivity" ? (
+        <ProductivityPanel />
       ) : viewTab === "context" ? (
         mode === "live" && config.apiBaseUrl ? (
           <ContextExplorer apiBaseUrl={config.apiBaseUrl} auth={auth} />
