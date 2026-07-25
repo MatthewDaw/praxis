@@ -757,7 +757,10 @@ export default function App() {
       {viewTab === "setup" ? (
         <McpSetupGuide email={email} />
       ) : viewTab === "productivity" ? (
-        <ProductivityPanel />
+        <ProductivityPanel
+          apiBaseUrl={mode === "live" ? config.apiBaseUrl : undefined}
+          auth={auth}
+        />
       ) : viewTab === "context" ? (
         <>
           {mode === "live" && config.apiBaseUrl ? (
