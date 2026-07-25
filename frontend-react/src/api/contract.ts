@@ -138,6 +138,8 @@ export interface ProductivitySeries {
 export interface ProductivityResponse {
   range: string;
   truncated: boolean;
+  reposDiscovered: number;
+  spacesCount: number;
   series: ProductivitySeries;
 }
 
@@ -163,6 +165,8 @@ export function parseProductivityResponse(payload: unknown): ProductivityRespons
   return {
     range: typeof root.range === "string" ? root.range : "",
     truncated: Boolean(root.truncated),
+    reposDiscovered: Number(root.repos_discovered ?? 0),
+    spacesCount: Number(root.spaces_count ?? 0),
     series: {
       linesAdded: toSeriesPoints(series.s1_lines_added),
       linesDeleted: toSeriesPoints(series.s2_lines_deleted),

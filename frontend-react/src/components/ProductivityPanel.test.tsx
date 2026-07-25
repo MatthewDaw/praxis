@@ -13,6 +13,8 @@ function skewedResponseBody() {
   return JSON.stringify({
     range: "4weeks",
     truncated: false,
+    repos_discovered: 1,
+    spaces_count: 1,
     series: {
       s1_lines_added: [
         { bucket_start: "2026-07-01", value: 1200 },
@@ -97,5 +99,65 @@ describe("ProductivityPanel", () => {
     await waitFor(() => {
       expect(screen.getByTestId("productivity-error")).toBeInTheDocument();
     });
+  });
+
+  it("shows a first-run message and no chart when zero repos and zero spaces are reported", async () => {
+    const firstRunBody = JSON.stringify({
+      range: "4weeks",
+      truncated: false,
+      repos_discovered: 0,
+      spaces_count: 0,
+      series: {
+        s1_lines_added: [{ bucket_start: "2026-07-01", value: 0 }],
+        s2_lines_deleted: [{ bucket_start: "2026-07-01", value: 0 }],
+        s3_net_lines: [{ bucket_start: "2026-07-01", value: 0 }],
+        s4_tickets_completed: [{ bucket_start: "2026-07-01", value: 0 }],
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(firstRunBody, { status: 200 })),
+    );
+
+    const { container } = render(
+      <ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="productivity-first-run"]')).not.toBeNull();
+    });
+    expect(container.querySelector("svg.recharts-surface")).toBeNull();
+  });
+
+  it("renders the chart (not the first-run message) when repos or spaces are non-zero", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            range: "4weeks",
+            truncated: false,
+            repos_discovered: 1,
+            spaces_count: 0,
+            series: {
+              s1_lines_added: [{ bucket_start: "2026-07-01", value: 0 }],
+              s2_lines_deleted: [{ bucket_start: "2026-07-01", value: 0 }],
+              s3_net_lines: [{ bucket_start: "2026-07-01", value: 0 }],
+              s4_tickets_completed: [{ bucket_start: "2026-07-01", value: 0 }],
+            },
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    const { container } = render(
+      <ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector("svg.recharts-surface")).not.toBeNull();
+    });
+    expect(container.querySelector('[data-testid="productivity-first-run"]')).toBeNull();
   });
 });

@@ -31,6 +31,7 @@ from knowledge.serve import github_audit, github_commits, github_token, producti
 from knowledge.serve.auth import Principal
 from knowledge.serve.productivity_attribution import bucketed_owner_totals, net_lines
 from knowledge.serve.productivity_series import s4_series
+from knowledge.serve.spaces_store import SpacesStore
 
 # The one range values the route accepts (R8: each range selects the bucket_unit and bucket
 # count below — see bucket_plan).
@@ -145,6 +146,12 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
     Fetches the owner's GitHub commit activity for the resolved window (S1 additions, S2
     deletions, S3 their difference) and the org-wide finished-ticket counts (S4, R7),
     bucketed identically so every series lines up on the same ``bucket_start`` axis.
+
+    Also reports ``repos_discovered``/``spaces_count`` (R20): the count of GitHub
+    repositories the commit-activity discovery found and the count of Praxis spaces
+    in ``org_id``. Zero/zero is the first-run signal the client uses to show a
+    dedicated "nothing connected yet" state instead of a flat zero-valued chart that
+    would otherwise look indistinguishable from "connected but did no work".
     """
     started_at = time.perf_counter()
     now = now or datetime.now(timezone.utc)
@@ -178,6 +185,8 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
         "range": range_,
         "bucket_unit": bucket_unit,
         "truncated": bool(activity.get("truncated")),
+        "repos_discovered": len(activity.get("repositories") or {}),
+        "spaces_count": len(SpacesStore(conn).list_spaces(org_id)),
         "series": {
             "s1_lines_added": _series_points(bucket_starts, s1),
             "s2_lines_deleted": _series_points(bucket_starts, s2),
