@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from dotenv import load_dotenv
@@ -172,6 +173,46 @@ def test_release_finished_clears_lease_and_preserves_other_meta(env):
     assert meta["tags"] == ["auth"]            # untouched
     assert "claim_owner" not in meta           # lease keys dropped
     assert "claim_lease_ttl" not in meta
+
+
+def test_release_finished_stamps_finished_at(env):
+    """``release(..., state="finished")`` stamps ``meta.finished_at`` within ~1s of
+    the call, as a fixed-format zero-padded UTC ISO-8601 string (the shape indexed
+    by migration 0013's ``snapshots_finished_at_idx``)."""
+    client, graph, _ = env
+    rid = _req(graph)
+    client.post(f"/requirements/{rid}/claim", json={"owner": "agent-a"})
+
+    before = datetime.now(timezone.utc)
+    res = client.post(
+        f"/requirements/{rid}/release", json={"owner": "agent-a", "state": "finished"}
+    )
+    after = datetime.now(timezone.utc)
+    assert res.status_code == 200, res.text
+
+    meta = graph.get_fact(rid).meta
+    assert meta["build_state"] == "finished"
+    finished_at = meta.get("finished_at")
+    assert finished_at, "finished ticket must carry meta.finished_at"
+    stamped = datetime.fromisoformat(finished_at)
+    assert before - timedelta(seconds=1) <= stamped <= after + timedelta(seconds=1)
+
+
+def test_release_incomplete_carries_no_finished_at(env):
+    """A ticket that yields ``incomplete`` (never finished) must carry NO
+    ``finished_at`` — the field only ever appears on a genuinely finished ticket."""
+    client, graph, _ = env
+    rid = _req(graph)
+    client.post(f"/requirements/{rid}/claim", json={"owner": "agent-a"})
+
+    res = client.post(
+        f"/requirements/{rid}/release", json={"owner": "agent-a", "state": "incomplete"}
+    )
+    assert res.status_code == 200, res.text
+
+    meta = graph.get_fact(rid).meta
+    assert meta["build_state"] == "incomplete"
+    assert "finished_at" not in meta
 
 
 def test_release_rejects_bad_state_and_non_owner(env):
