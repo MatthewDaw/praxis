@@ -62,6 +62,7 @@ not a lock: a lease whose heartbeat is older than its ttl is auto-reclaimable, s
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import time
 from typing import Any, NamedTuple, Optional
@@ -716,6 +717,23 @@ def heartbeat(cid: str, owner: str, ref: Optional[tuple[str, str]] = None) -> bo
     return True
 
 
+def uncommitted_changes(cwd: Optional[str] = None) -> str:
+    """Return the porcelain status of the git worktree at ``cwd`` — ``""`` when clean.
+
+    POSITIVE EVIDENCE ONLY: anything that means "cannot tell" (git missing, not a repo, command
+    error/timeout) returns ``""`` (treated as clean), because a worker legitimately running outside a
+    git worktree must still be able to finish. We only ever block on a definite dirty answer.
+    """
+    try:
+        p = subprocess.run(["git", "status", "--porcelain"], cwd=cwd or os.getcwd(),
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if p.returncode != 0:  # not a repo, or git unhappy — cannot tell, so do not block
+        return ""
+    return (p.stdout or "").strip()
+
+
 def release(cid: str, owner: str, state: str,
             ref: Optional[tuple[str, str]] = None) -> bool:
     """Release ``owner``'s lease and set a terminal build_state ("finished" or "incomplete").
@@ -741,6 +759,19 @@ def release(cid: str, owner: str, state: str,
     """
     if state not in ("finished", "incomplete"):
         raise ValueError("state must be 'finished' or 'incomplete'")
+    if state == "finished" and os.environ.get("AF_ALLOW_DIRTY_FINISH") != "1":
+        dirty = uncommitted_changes()
+        if dirty:
+            rid = _meta(cid, ref).get("requirement_id") or cid
+            sys.stderr.write(
+                f"[af-build] REFUSING to finish {rid}: the worktree has uncommitted changes. A worker "
+                f"builds in an ISOLATED worktree and the orchestrator integrates by MERGING its branch, "
+                f"so uncommitted work is invisible to that merge — it is either lost or swept into an "
+                f"unreviewed WIP commit that never passed this ticket's evals. Commit on your own branch "
+                f"first (SKILL §8 step 7), then release. Set AF_ALLOW_DIRTY_FINISH=1 only when you have a "
+                f"deliberate reason to finish dirty.\n--- git status --porcelain ---\n{dirty}\n"
+            )
+            return False
     meta = _meta(cid, ref)
     held_by = meta.get(M_CLAIM_OWNER)
     if held_by not in (owner, None):

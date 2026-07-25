@@ -50,3 +50,16 @@ def pass_judge():
 def fail_judge():
     """The offline fail judge as a ``Complete`` callable."""
     return stub_fail_judge
+
+
+@pytest.fixture(autouse=True)
+def _allow_dirty_finish(monkeypatch):
+    """Neutralize ``release``'s clean-worktree guard for the unit suite.
+
+    A real per-ticket worker finishes inside its OWN git worktree, so ``release(state="finished")``
+    refuses while that tree is dirty (uncommitted work is invisible to the orchestrator's merge).
+    Unit tests are not worktrees — they run from whatever checkout pytest was invoked in, which is
+    routinely dirty during development — so without this every ticket-to-finished test would flip
+    red on an unrelated edit. Tests that assert the guard itself delete this var explicitly.
+    """
+    monkeypatch.setenv("AF_ALLOW_DIRTY_FINISH", "1")

@@ -308,6 +308,17 @@ returns, **integrate the finished tickets' worktrees onto the run's working tree
 rare conflict when two same-round tickets touched one file — dependency-independent is not file-disjoint),
 then run the **WORK-review panel (§7)** over the integrated diff and `clear_run`.
 
+> **A finished ticket MUST arrive as commits on its own branch — never as a dirty worktree.** §8 step 7
+> makes the worker commit before it releases, so integration is a pure `git merge`. If you nevertheless find
+> a *finished* ticket whose worktree is dirty or whose branch holds no new commit, that is a **contract
+> violation, not a packaging chore**: its work never passed the evals it claims to have passed, because the
+> evals ran against a tree the worker then failed to preserve. **Fail closed** — `record_outcome(...,
+> success=False)` / `release(TICKET, OWNER, state="incomplete", ref=PLAN)` to regress that ticket so it is
+> rebuilt properly, and say so in the run report. **NEVER sweep stray worktree changes into a catch-all
+> `wip:`/`salvage` commit on the run branch.** Such a commit launders unverified edits — possibly from a
+> worker that died mid-BUILD, between CONFIRM RED and CONFIRM GREEN — into the branch under cover of a green
+> run, which is exactly the silent-partial-failure class the gates exist to prevent.
+
 **Canonical build-churn workflow — author it inline (substitute PROJECT / SCOPE / OWNER):**
 
 ```javascript
@@ -807,13 +818,23 @@ splits that write into working memory and the ticket never reads back as done �
    build / lint / suite). record_validation_pass(TICKET, vid, passed=(exit_code==0), ran_at=now, ref=PLAN) per eval.
    On a failure, RE-ENTER step 5 with the captured failing signal as context — never revise from self-doubt
    alone, never weaken an eval to pass.
-7. FINISH  — when all_validations_passed(TICKET, ref=PLAN) is True: release(TICKET, OWNER, state="finished", ref=PLAN).
+7. COMMIT  — BEFORE releasing, commit your work on YOUR OWN worktree branch: `git add -A` then
+   `git commit -m "<type>(<scope>): <what the ticket delivered> (<TICKET requirement_id>)"`. Then assert the
+   tree is CLEAN — `git status --porcelain` must print NOTHING. You build in an ISOLATED worktree, and the
+   orchestrator integrates finished tickets by MERGING your branch: work you leave uncommitted is invisible to
+   that merge, so an uncommitted "finished" ticket either loses its work or gets swept into an unreviewed WIP
+   commit that never passed your evals. If you have nothing to commit because the ticket needed no code change,
+   say so explicitly in your final report — do not leave an ambiguous dirty tree.
+8. FINISH  — when all_validations_passed(TICKET, ref=PLAN) is True AND step 7 left the tree clean:
+   release(TICKET, OWNER, state="finished", ref=PLAN).
    The release is REFUSED while any eval is unrun or red — that refusal is the contract, not an error to route
-   around. To yield without finishing: release(TICKET, OWNER, state="incomplete", ref=PLAN). Credential-only /
+   around. NEVER release "finished" with uncommitted changes in your worktree: finished MUST imply committed.
+   To yield without finishing: release(TICKET, OWNER, state="incomplete", ref=PLAN). Credential-only /
    unsatisfiable: block(TICKET, OWNER, reason, ref=PLAN).
 
 NEVER build-first / test-after. NEVER fake, delete, or weaken an eval to get green. NEVER finish without
-all_validations_passed. NEVER ask af-intake-plan to author the eval requirements.
+all_validations_passed. NEVER release "finished" leaving uncommitted changes. NEVER ask af-intake-plan to
+author the eval requirements.
 ```
 
 ## Long-horizon control (so the run survives length)
