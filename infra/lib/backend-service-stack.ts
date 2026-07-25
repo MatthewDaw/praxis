@@ -6,7 +6,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import { Construct } from 'constructs';
-import { COGNITO, DB_SECRET_NAME } from './config';
+import { COGNITO, DB_SECRET_NAME, GITHUB_TOKEN_SECRET_NAME } from './config';
 
 /**
  * Edge-layer flood ceiling: max requests per source IP over WAF's fixed 5-minute
@@ -93,6 +93,17 @@ export class BackendServiceStack extends cdk.Stack {
       'DbSecret',
       DB_SECRET_NAME,
     ).grantRead(instanceRole);
+
+    // GitHub PAT (R1): CDK owns creation of this secret (a generated placeholder
+    // value at first deploy; ops overwrites it with the real token out-of-band).
+    // The instance role gets read access; the token is fetched at runtime by
+    // knowledge/serve/github_token.py and is NEVER a plaintext
+    // runtimeEnvironmentVariables entry below.
+    const githubTokenSecret = new secretsmanager.Secret(this, 'GithubTokenSecret', {
+      secretName: GITHUB_TOKEN_SECRET_NAME,
+      description: 'GitHub personal access token used by the productivity backend (R1).',
+    });
+    githubTokenSecret.grantRead(instanceRole);
 
     this.service = new apprunner.CfnService(this, 'Service', {
       sourceConfiguration: {

@@ -33,6 +33,12 @@ export const DEFAULT_ALLOWED_CIDR = '0.0.0.0/0';
 /** Secrets Manager name holding the RDS master credentials. */
 export const DB_SECRET_NAME = 'praxis/knowledge-graph/db';
 
+/** Secrets Manager name holding the GitHub personal access token (R1). CDK
+ *  creates this secret with a generated placeholder value; ops populates the
+ *  real PAT out-of-band and the backend fetches it at runtime (never a
+ *  plaintext env var — see BackendServiceStack). */
+export const GITHUB_TOKEN_SECRET_NAME = 'praxis/github/token';
+
 /** Postgres database name created on the KG instance. */
 export const DB_NAME = 'praxis_kg';
 
