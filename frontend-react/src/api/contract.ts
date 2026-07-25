@@ -135,10 +135,26 @@ export interface ProductivitySeries {
   ticketsCompleted: ProductivitySeriesPoint[];
 }
 
+/**
+ * The three ways the backend's GitHub token can fail the panel (R21): absent
+ * entirely, rejected outright by GitHub (invalid/revoked/expired), or valid but
+ * missing the permission (`Contents: Read`) the query needs. When present on a
+ * `GET /productivity` response, `series` carries no data for that request.
+ */
+export type ProductivityKeyStatus = "missing" | "expired" | "insufficient_scope";
+
+const PRODUCTIVITY_KEY_STATUSES: ReadonlySet<string> = new Set([
+  "missing",
+  "expired",
+  "insufficient_scope",
+]);
+
 export interface ProductivityResponse {
   range: string;
   truncated: boolean;
   series: ProductivitySeries;
+  /** Set only when the backend's GitHub token is missing/expired/insufficient-scope (R21). */
+  keyStatus?: ProductivityKeyStatus;
 }
 
 function toSeriesPoints(raw: unknown): ProductivitySeriesPoint[] {
@@ -156,10 +172,14 @@ function toSeriesPoints(raw: unknown): ProductivitySeriesPoint[] {
   });
 }
 
-/** Parse a `GET /productivity` response body into the typed contract shape (R3/R33). */
+/** Parse a `GET /productivity` response body into the typed contract shape (R3/R33/R21). */
 export function parseProductivityResponse(payload: unknown): ProductivityResponse {
   const root = (payload ?? {}) as Record<string, unknown>;
   const series = (root.series ?? {}) as Record<string, unknown>;
+  const keyStatus =
+    typeof root.key_status === "string" && PRODUCTIVITY_KEY_STATUSES.has(root.key_status)
+      ? (root.key_status as ProductivityKeyStatus)
+      : undefined;
   return {
     range: typeof root.range === "string" ? root.range : "",
     truncated: Boolean(root.truncated),
@@ -169,5 +189,6 @@ export function parseProductivityResponse(payload: unknown): ProductivityRespons
       netLines: toSeriesPoints(series.s3_net_lines),
       ticketsCompleted: toSeriesPoints(series.s4_tickets_completed),
     },
+    ...(keyStatus ? { keyStatus } : {}),
   };
 }

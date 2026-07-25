@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProductivityPanel } from "./ProductivityPanel";
 
@@ -35,6 +35,12 @@ function skewedResponseBody() {
 }
 
 afterEach(() => {
+  // This file's vitest config runs with no global `afterEach`, so
+  // `@testing-library/react`'s auto-cleanup never registers itself -- without an
+  // explicit `cleanup()` here, a previous test's rendered DOM (e.g. its own
+  // `data-testid="productivity-error"`) would still be present when the next
+  // test queries the document, producing false "found stale element" failures.
+  cleanup();
   vi.unstubAllGlobals();
 });
 
@@ -96,6 +102,64 @@ describe("ProductivityPanel", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("productivity-error")).toBeInTheDocument();
+    });
+  });
+
+  // R21 acceptance: given the backend reports a key status of missing, expired or
+  // insufficient_scope, the panel renders the matching operator message and never a
+  // raw 401/403 or a user-facing "connect your GitHub" prompt.
+  describe("GitHub key status (R21)", () => {
+    const cases: Array<{
+      keyStatus: "missing" | "expired" | "insufficient_scope";
+      testId: string;
+      expectedSnippet: string;
+    }> = [
+      { keyStatus: "missing", testId: "productivity-key-status-missing", expectedSnippet: "not configured" },
+      { keyStatus: "expired", testId: "productivity-key-status-expired", expectedSnippet: "rejected" },
+      {
+        keyStatus: "insufficient_scope",
+        testId: "productivity-key-status-insufficient-scope",
+        expectedSnippet: "Contents: Read",
+      },
+    ];
+
+    // Every distinct message text seen across cases, asserted unique at the end -- a
+    // single shared `it.each` run rather than a second full render loop.
+    const seenMessages = new Set<string>();
+
+    it.each(cases)(
+      "renders the $keyStatus operator message and no connect button, never the chart",
+      async ({ keyStatus, testId, expectedSnippet }) => {
+        vi.stubGlobal(
+          "fetch",
+          vi.fn().mockResolvedValue(
+            new Response(JSON.stringify({ key_status: keyStatus }), { status: 200 }),
+          ),
+        );
+
+        const { container, getByTestId, queryByTestId } = render(
+          <ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />,
+        );
+
+        await waitFor(() => {
+          expect(getByTestId(testId)).toBeInTheDocument();
+        });
+        const messageText = getByTestId(testId).textContent ?? "";
+        expect(messageText).toContain(expectedSnippet);
+        seenMessages.add(messageText);
+
+        // Never a raw 401/403 string surfaced as the (unrelated) error state...
+        expect(queryByTestId("productivity-error")).not.toBeInTheDocument();
+        // ...never the chart...
+        expect(container.querySelector("svg.recharts-surface")).toBeNull();
+        // ...and never a connect-your-GitHub button/link.
+        expect(container.querySelector("button, a[role='button']")).toBeNull();
+        expect(container.textContent).not.toMatch(/connect.*github/i);
+      },
+    );
+
+    it("renders a distinct message per key status (never a generic one)", () => {
+      expect(seenMessages.size).toBe(cases.length);
     });
   });
 });
