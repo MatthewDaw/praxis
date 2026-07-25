@@ -29,7 +29,7 @@ from typing import Any
 
 from knowledge.serve import github_audit, github_commits, github_token, productivity_cache
 from knowledge.serve.auth import Principal
-from knowledge.serve.productivity_attribution import bucketed_owner_totals
+from knowledge.serve.productivity_attribution import bucketed_owner_totals, net_lines
 from knowledge.serve.productivity_series import s4_series
 
 # The one range values the route accepts (R8: each range selects the bucket_unit and bucket
@@ -164,7 +164,7 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
         owner_emails=owner_emails(),
     )
     s1, s2 = totals["s1"], totals["s2"]
-    s3 = [a - d for a, d in zip(s1, s2)]
+    s3 = net_lines(s1, s2)
     s4 = s4_series(conn, org_id, bucket_starts, bucket_seconds)
 
     github_audit.record_productivity_request(
