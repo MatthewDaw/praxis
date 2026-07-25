@@ -11,11 +11,16 @@ tunable via env var.
 Storage is a single in-process dict — the same single-App-Runner-instance
 assumption ``rate_limit.py`` already documents for this deployment; if the
 service ever scales horizontally this would need a shared backend (e.g. Redis).
+
+Also holds the per-cache-key lock registry that ``productivity_route`` uses to
+coalesce concurrent misses into a single upstream GitHub fan-out (single-flight):
+see :func:`lock_for`.
 """
 
 from __future__ import annotations
 
 import os
+import threading
 import time
 from typing import Any
 
@@ -26,6 +31,26 @@ _DEFAULT_SHORT_TTL_SECONDS = 90.0
 _DEFAULT_LONG_TTL_SECONDS = 20 * 60.0
 
 _store: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
+
+_locks_guard = threading.Lock()
+_key_locks: dict[tuple[str, str, str], threading.Lock] = {}
+
+
+def lock_for(org_id: str, user_key: str, range_: str) -> threading.Lock:
+    """The single-flight lock for this cache key, created lazily and reused.
+
+    Two concurrent misses for the SAME ``(org_id, user_key, range_)`` must never
+    both reach GitHub; concurrent misses for DIFFERENT keys must never block each
+    other. A tiny meta-lock guards the registry dict itself (the window between
+    "not present" and "insert" is the only race, and it's O(1) work).
+    """
+    key = (org_id, user_key, range_)
+    with _locks_guard:
+        lock = _key_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _key_locks[key] = lock
+        return lock
 
 
 def ttl_seconds(range_: str) -> float:
@@ -63,5 +88,7 @@ def put(
 
 
 def clear() -> None:
-    """Test seam: drop every cached entry (module-global state persists across tests)."""
+    """Test seam: drop every cached entry and lock (module-global state persists across tests)."""
     _store.clear()
+    with _locks_guard:
+        _key_locks.clear()

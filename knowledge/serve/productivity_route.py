@@ -199,9 +199,16 @@ def get_series_cached(
     ``computed_at`` onto the result, and caches it for that range's TTL band (D7).
     Either path logs one observability record (R40): the miss path logs from
     inside :func:`build_series`, the hit path logs here (zero GitHub points spent).
+
+    Concurrent misses for the SAME cache key are coalesced (single-flight): only
+    the first caller to acquire this key's lock computes and calls GitHub; every
+    other simultaneous caller blocks on the same lock and, once it clears, finds
+    the winner's payload already cached and returns THAT exact object — same
+    ``computed_at`` — instead of racing its own redundant GitHub fan-out.
     """
     now = now or datetime.now(timezone.utc)
-    cached = productivity_cache.get(org_id, user_key, range_, now=now.timestamp())
+    ts = now.timestamp()
+    cached = productivity_cache.get(org_id, user_key, range_, now=ts)
     if cached is not None:
         github_audit.record_productivity_request(
             duration_ms=0.0,
@@ -211,7 +218,21 @@ def get_series_cached(
         )
         return cached
 
-    result = build_series(conn, org_id, range_, now=now)
-    result["computed_at"] = now.isoformat()
-    productivity_cache.put(org_id, user_key, range_, result, now=now.timestamp())
-    return result
+    lock = productivity_cache.lock_for(org_id, user_key, range_)
+    with lock:
+        # Re-check: another thread may have populated the cache while we were
+        # waiting for the lock -- that thread's payload wins, we never recompute.
+        cached = productivity_cache.get(org_id, user_key, range_, now=ts)
+        if cached is not None:
+            github_audit.record_productivity_request(
+                duration_ms=0.0,
+                points_spent=0,
+                cache_hit=True,
+                truncated=bool(cached.get("truncated")),
+            )
+            return cached
+
+        result = build_series(conn, org_id, range_, now=now)
+        result["computed_at"] = now.isoformat()
+        productivity_cache.put(org_id, user_key, range_, result, now=ts)
+        return result
