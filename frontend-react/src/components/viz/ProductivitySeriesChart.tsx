@@ -13,6 +13,21 @@ export interface ProductivitySeriesChartProps {
   series: ProductivitySeries;
   width?: number;
   height?: number;
+  /** The server-chosen bucket width ("hour"/"day"/"week"/"month", R8) — labels the x-axis
+   * so switching the range dropdown visibly relabels the chart to match its new buckets. */
+  bucketUnit?: string;
+}
+
+const BUCKET_AXIS_LABELS: Record<string, string> = {
+  hour: "Hourly buckets",
+  day: "Daily buckets",
+  week: "Weekly buckets",
+  month: "Monthly buckets",
+};
+
+function bucketAxisLabel(bucketUnit?: string): string {
+  if (!bucketUnit) return "";
+  return BUCKET_AXIS_LABELS[bucketUnit] ?? `${bucketUnit} buckets`;
 }
 
 interface ChartRow {
@@ -59,12 +74,17 @@ export function ProductivitySeriesChart({
   series,
   width = 640,
   height = 320,
+  bucketUnit,
 }: ProductivitySeriesChartProps) {
   const data = mergeSeries(series);
+  const axisLabel = bucketAxisLabel(bucketUnit);
   return (
     <ComposedChart width={width} height={height} data={data}>
       <CartesianGrid strokeDasharray="3 3" />
-      <XAxis dataKey="label" />
+      <XAxis
+        dataKey="label"
+        label={axisLabel ? { value: axisLabel, position: "insideBottom", offset: -5 } : undefined}
+      />
       <YAxis
         yAxisId="left"
         label={{ value: "Lines of code", angle: -90, position: "insideLeft" }}
