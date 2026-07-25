@@ -577,7 +577,7 @@ def praxis_add_insights(
         resp = httpx.post(
             f"{identity.api_base()}/insights/batch",
             json=body,
-            headers=_headers(),
+            headers=_headers(space, snapshot),
             timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
