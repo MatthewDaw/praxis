@@ -26,6 +26,22 @@ const DEFAULT_RANGE: ProductivityRange = "4weeks";
 // outbound request.
 const REFRESH_DEBOUNCE_MS = 1000;
 
+/** Human-readable age of `computedAt` relative to `now` (R22), e.g. "5m old". Empty
+ * string for a missing/unparseable timestamp -- callers should skip rendering. */
+export function formatComputedAge(computedAt: string | null, now: number = Date.now()): string {
+  if (!computedAt) return "";
+  const computedMs = Date.parse(computedAt);
+  if (Number.isNaN(computedMs)) return "";
+  const seconds = Math.max(0, Math.round((now - computedMs) / 1000));
+  if (seconds < 60) return `${seconds}s old`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m old`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h old`;
+  const days = Math.round(hours / 24);
+  return `${days}d old`;
+}
+
 /**
  * The Productivity tab (R15/R33): fetches the owner-gated `GET /productivity`
  * series and renders them as a multi-series dual-axis chart — the
@@ -50,6 +66,8 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
   const [instrumentationDate, setInstrumentationDate] = useState<string | null>(null);
   const [disclosures, setDisclosures] = useState<ProductivityDisclosures | undefined>(undefined);
   const [computedAt, setComputedAt] = useState<string | null>(null);
+  const [stale, setStale] = useState(false);
+  const [rateLimited, setRateLimited] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const lastRefreshAtRef = useRef(-Infinity);
@@ -75,6 +93,8 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
                 : [],
             });
             setComputedAt(response.computedAt || null);
+            setStale(Boolean(response.stale));
+            setRateLimited(Boolean(response.rateLimited));
             setLoading(false);
           }
         })
@@ -146,11 +166,21 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
           Couldn't load productivity data: {error}
         </p>
       ) : series ? (
-        <ProductivitySeriesChart
-          series={series}
-          instrumentationDate={instrumentationDate}
-          disclosures={disclosures}
-        />
+        <>
+          {stale ? (
+            <p className="productivity-panel__stale-notice" data-testid="productivity-stale-marker">
+              <span className="stale-badge">{rateLimited ? "Rate-limited" : "Stale"}</span>{" "}
+              <span data-testid="productivity-computed-age">
+                {formatComputedAge(computedAt)}
+              </span>
+            </p>
+          ) : null}
+          <ProductivitySeriesChart
+            series={series}
+            instrumentationDate={instrumentationDate}
+            disclosures={disclosures}
+          />
+        </>
       ) : (
         <p className="muted" data-testid="productivity-empty">
           Productivity reporting is coming soon.

@@ -138,13 +138,21 @@ export interface ProductivitySeries {
 export interface ProductivityResponse {
   range: string;
   truncated: boolean;
+  /** ISO timestamp the series was computed at (set on both a fresh compute and a
+   * served-stale fallback, where it is the ORIGINAL compute time, not now). */
+  computedAt: string | null;
+  /** True when this response is a cached fallback served after a live GitHub fetch
+   * failed or was rate-limited (R22), rather than the just-computed series. */
+  stale: boolean;
+  /** True when the fetch failure behind a `stale` response was specifically a
+   * GitHub rate limit (vs. a timeout/upstream error). */
+  rateLimited: boolean;
   series: ProductivitySeries;
   /** The earliest `finished_at` ever recorded org-wide (S4's instrumentation
    * start date, R27/D27) — `null` when no ticket has ever finished. A range
    * whose start precedes this date means S4 has no real data before it: the
    * chart must grey that span and annotate it, never plot a truthful zero. */
   s4InstrumentationDate: string | null;
-  computedAt: string;
 }
 
 function toSeriesPoints(raw: unknown): ProductivitySeriesPoint[] {
@@ -166,9 +174,18 @@ function toSeriesPoints(raw: unknown): ProductivitySeriesPoint[] {
 export function parseProductivityResponse(payload: unknown): ProductivityResponse {
   const root = (payload ?? {}) as Record<string, unknown>;
   const series = (root.series ?? {}) as Record<string, unknown>;
+  const computedAt =
+    typeof root.computed_at === "string"
+      ? root.computed_at
+      : typeof root.computedAt === "string"
+        ? root.computedAt
+        : null;
   return {
     range: typeof root.range === "string" ? root.range : "",
     truncated: Boolean(root.truncated),
+    computedAt,
+    stale: Boolean(root.stale),
+    rateLimited: Boolean(root.rate_limited ?? root.rateLimited),
     series: {
       linesAdded: toSeriesPoints(series.s1_lines_added),
       linesDeleted: toSeriesPoints(series.s2_lines_deleted),
@@ -177,7 +194,6 @@ export function parseProductivityResponse(payload: unknown): ProductivityRespons
     },
     s4InstrumentationDate:
       typeof root.s4_instrumentation_date === "string" ? root.s4_instrumentation_date : null,
-    computedAt: typeof root.computed_at === "string" ? root.computed_at : "",
   };
 }
 

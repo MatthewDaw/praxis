@@ -213,6 +213,15 @@ def get_series_cached(
     other simultaneous caller blocks on the same lock and, once it clears, finds
     the winner's payload already cached and returns THAT exact object — same
     ``computed_at`` — instead of racing its own redundant GitHub fan-out.
+
+    STALE FALLBACK (R22): when the live compute comes back truncated with a
+    reason (a GitHub timeout, upstream error, or rate limit that survived R37's
+    retries), and a previously-computed payload exists for this key (regardless
+    of its TTL — see :func:`productivity_cache.get_stale`), that cached payload is
+    served instead, marked ``stale: True`` (and ``rate_limited: True`` iff the
+    failure was specifically a rate limit) with its ORIGINAL ``computed_at``
+    intact — never presented as freshly computed. Only when there is no prior
+    payload to fall back on is the truncated fresh result returned as-is.
     """
     now = now or datetime.now(timezone.utc)
     ts = now.timestamp()
@@ -242,6 +251,18 @@ def get_series_cached(
             return cached
 
         result = build_series(conn, org_id, range_, now=now)
+        if result.get("reason") is not None:
+            stale = productivity_cache.get_stale(org_id, user_key, range_)
+            if stale is not None:
+                stale_response = dict(stale)
+                stale_response["stale"] = True
+                stale_response["rate_limited"] = (
+                    result.get("reason") == github_commits.TruncationReason.RATE_LIMITED
+                )
+                return stale_response
+
         result["computed_at"] = now.isoformat()
+        result.setdefault("stale", False)
+        result.setdefault("rate_limited", False)
         productivity_cache.put(org_id, user_key, range_, result, now=ts)
         return result
