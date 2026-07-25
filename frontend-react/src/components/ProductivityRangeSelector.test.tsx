@@ -10,6 +10,8 @@ function responseBody(range: string, bucketUnit: string) {
   return JSON.stringify({
     range,
     truncated: false,
+    repos_discovered: 1,
+    spaces_count: 1,
     bucket_unit: bucketUnit,
     series: {
       s1_lines_added: [{ bucket_start: "2026-07-01", value: 100 }],
@@ -39,7 +41,7 @@ describe("ProductivityPanel range dropdown (R16)", () => {
 
     // Fresh page: the dropdown defaults to "Last 4 weeks" and the initial
     // fetch requests range=4weeks.
-    const select = (await screen.findByTestId("productivity-range-select")) as HTMLSelectElement;
+    const select = (await screen.findByTestId("productivity-range")) as HTMLSelectElement;
     expect(select.value).toBe("4weeks");
     expect(screen.getByText("Last 4 weeks")).toBeInTheDocument();
     await waitFor(() => {
