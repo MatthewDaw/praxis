@@ -79,4 +79,27 @@ describe("ProductivitySeriesChart", () => {
     const spread = Math.max(...s4Ys) - Math.min(...s4Ys);
     expect(spread).toBeGreaterThan(10);
   });
+
+  it("renders S1-S3 normally and marks the S4 legend entry with an error badge carrying its reason when the ticket series errored", () => {
+    const markup = renderToStaticMarkup(
+      createElement(ProductivitySeriesChart, {
+        series: {
+          ...SKEWED_SERIES,
+          ticketsCompleted: [],
+        },
+        errors: { ticketsCompleted: "boom: ticket store unavailable" },
+      }),
+    );
+
+    // S1-S3 still render as three normal lines (unaffected by the S4 failure).
+    const lineGroups = markup.match(/class="recharts-layer recharts-line"/g) ?? [];
+    expect(lineGroups.length).toBe(4);
+
+    // The S4 legend entry carries an error badge naming the reason; S1-S3 do not.
+    expect(markup).toContain('data-testid="productivity-legend-error-ticketsCompleted"');
+    expect(markup).toContain("boom: ticket store unavailable");
+    expect(markup).not.toContain('data-testid="productivity-legend-error-linesAdded"');
+    expect(markup).not.toContain('data-testid="productivity-legend-error-linesDeleted"');
+    expect(markup).not.toContain('data-testid="productivity-legend-error-netLines"');
+  });
 });

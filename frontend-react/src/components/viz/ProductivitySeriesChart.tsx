@@ -7,12 +7,47 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import type { ProductivitySeries } from "../../api/contract";
+import type { Props as LegendContentProps } from "recharts/types/component/DefaultLegendContent";
+import type { ProductivitySeries, ProductivitySeriesErrors } from "../../api/contract";
 
 export interface ProductivitySeriesChartProps {
   series: ProductivitySeries;
+  /** Per-series failure reasons (e.g. the ticket series S4 errored while the git series
+   * S1-S3 succeeded) — the affected legend entry gets an error badge instead of the line
+   * silently reading as a flat, indistinguishable zero. */
+  errors?: ProductivitySeriesErrors;
   width?: number;
   height?: number;
+}
+
+/** Custom legend content: same name/swatch recharts renders by default, plus an error badge
+ * (carrying the failure reason as its title) on any entry whose series errored. */
+function renderLegend(errors: ProductivitySeriesErrors | undefined) {
+  return ({ payload }: LegendContentProps) => (
+    <ul className="productivity-legend" style={{ padding: 0, margin: 0, textAlign: "center" }}>
+      {(payload ?? []).map((entry) => {
+        const dataKey = entry.dataKey as keyof ProductivitySeries | undefined;
+        const reason = dataKey ? errors?.[dataKey] : undefined;
+        return (
+          <li
+            key={entry.value}
+            style={{ display: "inline-block", marginRight: 10, color: entry.color }}
+          >
+            {entry.value}
+            {reason && (
+              <span
+                className="productivity-legend__error-badge"
+                data-testid={`productivity-legend-error-${dataKey}`}
+                title={reason}
+              >
+                {" "}⚠ error
+              </span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 interface ChartRow {
@@ -57,6 +92,7 @@ function mergeSeries(series: ProductivitySeries): ChartRow[] {
  */
 export function ProductivitySeriesChart({
   series,
+  errors,
   width = 640,
   height = 320,
 }: ProductivitySeriesChartProps) {
@@ -76,7 +112,7 @@ export function ProductivitySeriesChart({
         label={{ value: "Tickets completed", angle: 90, position: "insideRight" }}
       />
       <Tooltip />
-      <Legend />
+      <Legend content={renderLegend(errors)} />
       <Line
         yAxisId="left"
         type="monotone"

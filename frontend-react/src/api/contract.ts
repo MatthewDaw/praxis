@@ -135,10 +135,16 @@ export interface ProductivitySeries {
   ticketsCompleted: ProductivitySeriesPoint[];
 }
 
+/** Per-series failure for a productivity response's independently-failing data sources
+ * (the git series S1-S3 vs. the ticket series S4): keyed by the same camelCase key as
+ * `ProductivitySeries`, present only for a series that errored. */
+export type ProductivitySeriesErrors = Partial<Record<keyof ProductivitySeries, string>>;
+
 export interface ProductivityResponse {
   range: string;
   truncated: boolean;
   series: ProductivitySeries;
+  errors: ProductivitySeriesErrors;
 }
 
 function toSeriesPoints(raw: unknown): ProductivitySeriesPoint[] {
@@ -156,10 +162,26 @@ function toSeriesPoints(raw: unknown): ProductivitySeriesPoint[] {
   });
 }
 
+// Maps each raw backend series key to its camelCase contract key, reused for both the
+// series values themselves and their per-series `errors` (same key set, same shape).
+const SERIES_KEY_BY_RAW: Record<string, keyof ProductivitySeries> = {
+  s1_lines_added: "linesAdded",
+  s2_lines_deleted: "linesDeleted",
+  s3_net_lines: "netLines",
+  s4_tickets_completed: "ticketsCompleted",
+};
+
 /** Parse a `GET /productivity` response body into the typed contract shape (R3/R33). */
 export function parseProductivityResponse(payload: unknown): ProductivityResponse {
   const root = (payload ?? {}) as Record<string, unknown>;
   const series = (root.series ?? {}) as Record<string, unknown>;
+  const rawErrors = (root.errors ?? {}) as Record<string, unknown>;
+  const errors: ProductivitySeriesErrors = {};
+  for (const [rawKey, key] of Object.entries(SERIES_KEY_BY_RAW)) {
+    const entry = rawErrors[rawKey] as Record<string, unknown> | undefined;
+    const reason = entry && typeof entry.reason === "string" ? entry.reason : undefined;
+    if (reason) errors[key] = reason;
+  }
   return {
     range: typeof root.range === "string" ? root.range : "",
     truncated: Boolean(root.truncated),
@@ -169,5 +191,6 @@ export function parseProductivityResponse(payload: unknown): ProductivityRespons
       netLines: toSeriesPoints(series.s3_net_lines),
       ticketsCompleted: toSeriesPoints(series.s4_tickets_completed),
     },
+    errors,
   };
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getProductivity, type ApiDataProviderAuth } from "../api/apiClient";
-import type { ProductivitySeries } from "../api/contract";
+import type { ProductivitySeries, ProductivitySeriesErrors } from "../api/contract";
 import { ProductivitySeriesChart } from "./viz/ProductivitySeriesChart";
 
 export interface ProductivityPanelProps {
@@ -21,6 +21,7 @@ const DEFAULT_RANGE = "4weeks" as const;
  */
 export function ProductivityPanel({ apiBaseUrl, auth }: ProductivityPanelProps) {
   const [series, setSeries] = useState<ProductivitySeries | null>(null);
+  const [seriesErrors, setSeriesErrors] = useState<ProductivitySeriesErrors>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -36,6 +37,7 @@ export function ProductivityPanel({ apiBaseUrl, auth }: ProductivityPanelProps) 
       .then((response) => {
         if (active) {
           setSeries(response.series);
+          setSeriesErrors(response.errors);
           setLoading(false);
         }
       })
@@ -61,7 +63,7 @@ export function ProductivityPanel({ apiBaseUrl, auth }: ProductivityPanelProps) 
           Couldn't load productivity data: {error}
         </p>
       ) : series ? (
-        <ProductivitySeriesChart series={series} />
+        <ProductivitySeriesChart series={series} errors={seriesErrors} />
       ) : (
         <p className="muted" data-testid="productivity-empty">
           Productivity reporting is coming soon.

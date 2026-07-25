@@ -136,6 +136,38 @@ def test_owner_authenticated_request_returns_four_series(ctx, monkeypatch):
     assert sum(p["value"] for p in series["s3_net_lines"]) == 8
 
 
+def test_partial_failure_ticket_series_errors_git_series_still_renders(ctx, monkeypatch):
+    """Ticket: when the ticket series (S4, Praxis-derived) errors and the git series
+    (S1-S3, GitHub-derived) succeeds, S1-S3 must still render normally and the
+    response must carry a per-series error for S4 naming the reason -- a failed
+    series must never be indistinguishable from a genuine flat-zero line."""
+    monkeypatch.setenv("PRAXIS_DEV_USER_EMAIL", OWNER_EMAIL)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("boom: ticket store unavailable")
+
+    monkeypatch.setattr(productivity_route, "s4_series", _boom)
+    client, org = ctx["client"], ctx["org"]
+    res = client.get("/productivity", params={"range": "week"}, headers={"X-Praxis-Org": org})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    series = body["series"]
+
+    # S1-S3 (the git series) render normally, unaffected by the ticket-series failure.
+    assert len(series["s1_lines_added"]) == 7
+    assert sum(p["value"] for p in series["s1_lines_added"]) == 12
+    assert sum(p["value"] for p in series["s2_lines_deleted"]) == 4
+    assert sum(p["value"] for p in series["s3_net_lines"]) == 8
+
+    # S4 (the ticket series) is empty rather than a confirmed zero, and the
+    # response names the failure reason for that series specifically.
+    assert series["s4_tickets_completed"] == []
+    assert "errors" in body
+    assert "s4_tickets_completed" in body["errors"]
+    reason = body["errors"]["s4_tickets_completed"]["reason"]
+    assert isinstance(reason, str) and reason
+
+
 def test_invalid_range_is_400(ctx, monkeypatch):
     monkeypatch.setenv("PRAXIS_DEV_USER_EMAIL", OWNER_EMAIL)
     client, org = ctx["client"], ctx["org"]
