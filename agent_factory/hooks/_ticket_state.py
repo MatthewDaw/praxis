@@ -61,6 +61,7 @@ not a lock: a lease whose heartbeat is older than its ttl is auto-reclaimable, s
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from typing import Any, NamedTuple, Optional
@@ -112,7 +113,30 @@ _PLANNING_KEYS = (M_PLANNING_OWNER, M_PLANNING_AT)
 WORKER_PASS_SOURCE = "worker"
 HUMAN_PASS_SOURCES = frozenset({"human", "manual", "external"})
 
-DEFAULT_LEASE_TTL_S = 900    # 15 min — per-ticket claim lease
+def _ttl_env(name: str, default: int) -> int:
+    """Read a TTL override from the environment, falling back to ``default``.
+
+    Lease windows are workload-dependent: a plan whose tickets are long-form decision records needs a
+    far wider window than one of small code edits. Without an override the only way to widen a lease
+    is to edit this file, which is exactly the "edit the factory to make one project work" trap.
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return default
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        sys.stderr.write(f"[af] WARNING: {name}={raw!r} is not an integer — using default {default}s\n")
+        return default
+    if val <= 0:
+        sys.stderr.write(f"[af] WARNING: {name}={val} must be positive — using default {default}s\n")
+        return default
+    return val
+
+
+# 15 min — per-ticket claim lease. Override with AF_LEASE_TTL_S for plans whose tickets legitimately
+# run longer than the default window (see :func:`release` on what a lease takeover costs).
+DEFAULT_LEASE_TTL_S = _ttl_env("AF_LEASE_TTL_S", 900)
 DEFAULT_RUN_TTL_S = 3600     # 60 min — whole-set run marker; refreshed at each ticket boundary
 DEFAULT_PLANNING_TTL_S = 3600  # 60 min — planning-session marker; refreshed by intake heartbeat
 
@@ -517,6 +541,12 @@ def record_validation_pass(cid: str, validation_id: str, passed: bool,
     requirement. To attest a manual requirement, record its covering validation with a human source
     (``source="human"``, see :data:`HUMAN_PASS_SOURCES`); that external signal is the only thing
     :func:`all_validations_passed` accepts for the manual set.
+
+    IMPLICIT HEARTBEAT. Recording a validation result IS proof of liveness, so this bumps
+    ``claim_heartbeat_at`` in the same write whenever the ticket holds a live claim. :func:`heartbeat`
+    exists but relies on the build agent remembering to call it on a timer, which it does not reliably
+    do — leaving long tickets to expire their own lease mid-work and be handed out twice. Piggybacking
+    on a write the worker already makes costs no extra round-trip and cannot be forgotten.
     """
     if ran_at is None:
         ran_at = time.time()
@@ -539,7 +569,10 @@ def record_validation_pass(cid: str, validation_id: str, passed: bool,
         if verdict is not None:
             appended["verdict"] = verdict
         pinned.append(appended)
-    return _praxis.patch_meta(cid, {M_PINNED_CHECKS: pinned}, **_ref_kw(ref))
+    patch: dict[str, Any] = {M_PINNED_CHECKS: pinned}
+    if meta.get(M_CLAIM_OWNER) and meta.get(M_BUILD_STATE) == "in_progress":
+        patch[M_CLAIM_HEARTBEAT_AT] = time.time()  # implicit heartbeat — see docstring
+    return _praxis.patch_meta(cid, patch, **_ref_kw(ref))
 
 
 def coverage_gap(ticket: Any, ref: Optional[tuple[str, str]] = None) -> list[str]:
@@ -691,14 +724,40 @@ def release(cid: str, owner: str, state: str,
     (tags/surfaces/required_validations/pinned_checks) survive. On ``finished`` the run marker is
     also cleared (the ticket has left the active run). On ``incomplete`` the run marker is KEPT so
     the whole-set gate keeps the ticket in scope and forces it to be re-done (a clean yield does not
-    end the run). Only the holding owner may release; a mismatch returns False without writing.
-    ``patch_meta`` cannot delete keys, so cleared keys are NULLED out.
+    end the run). ``patch_meta`` cannot delete keys, so cleared keys are NULLED out.
+
+    LEASE TAKEOVER — the two states are deliberately NOT symmetric on an owner mismatch:
+
+    - ``finished`` is HONORED even when the lease was taken over, and warns loudly. Completion is a
+      fact about the world — the work is built and its checks passed — not a fact about who holds a
+      lease. The old behavior (refuse, return False, write nothing) meant a worker whose lease expired
+      mid-ticket had its FINISHED work silently discarded: the ticket stayed incomplete, was handed to
+      another agent, was rebuilt, and that agent's finish raced the same way. That is an unbounded
+      rebuild loop which burns a run's whole budget while converging on nothing, and it is invisible
+      because nothing is ever recorded. Honoring the completion terminates the loop; a later duplicate
+      finish from the new owner is idempotent.
+    - ``incomplete`` still REFUSES on mismatch (returns False, warns). A yield is a claim about the
+      CURRENT attempt, so a stale owner must never regress a ticket another agent is actively building.
     """
     if state not in ("finished", "incomplete"):
         raise ValueError("state must be 'finished' or 'incomplete'")
     meta = _meta(cid, ref)
-    if meta.get(M_CLAIM_OWNER) not in (owner, None):
-        return False
+    held_by = meta.get(M_CLAIM_OWNER)
+    if held_by not in (owner, None):
+        rid = meta.get("requirement_id") or cid
+        if state != "finished":
+            sys.stderr.write(
+                f"[af-build] LEASE LOST: {rid} yielded incomplete by {owner!r} but the lease is held "
+                f"by {held_by!r} — refusing to regress a ticket another agent is building. This "
+                f"attempt's work is dropped; the holder's attempt continues.\n"
+            )
+            return False
+        sys.stderr.write(
+            f"[af-build] LEASE TAKEOVER: {rid} finished by {owner!r} but the lease is now held by "
+            f"{held_by!r} — HONORING the completion (the work is built and its checks passed). The "
+            f"lease expired while this ticket was still being worked, so it was handed out twice. "
+            f"Widen AF_LEASE_TTL_S if this recurs.\n"
+        )
     patch: dict[str, Any] = {M_BUILD_STATE: state}
     for k in _LEASE_KEYS:
         patch[k] = None  # MERGE can't remove keys; null them so _lease_live reads not-live
