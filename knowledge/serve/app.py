@@ -79,6 +79,7 @@ from knowledge.knowledge_graph.write_policy.write_step_variants import (  # noqa
 from knowledge.llm.embedder_variants.memoizing_embedder import MemoizingEmbedder  # noqa: E402
 from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm  # noqa: E402
 from knowledge.serve import batch_writer, db, graph_adapter  # noqa: E402
+from knowledge.serve import productivity_route  # noqa: E402
 from knowledge.serve.auth import Principal, make_current_user  # noqa: E402
 from knowledge.serve.facts_candidates import (  # noqa: E402
     FactsCandidates,
@@ -2957,6 +2958,29 @@ def create_app(conn: Any | None = None) -> FastAPI:
         target = _project_target(org, uid, project, target)
         summary = graph_for(org, uid, target).completeness_summary(project)
         return {"project": project, **summary}
+
+    @app.get("/productivity")
+    def productivity(
+        range: str = "week",
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+        uid: str = Depends(active_user_id),
+    ) -> dict[str, Any]:
+        """The four bucketed productivity series (R3), token-owner gated.
+
+        The owner-allowlist check runs BEFORE any GitHub call: a non-owner principal
+        (including one authenticated by an org API key) gets a bare 403 and never a
+        git-derived number, whether or not the caller can also reach GitHub.
+        """
+        del uid  # dependency enforces org membership; the series aren't per-user.
+        if not productivity_route.is_owner(principal):
+            raise HTTPException(status_code=403, detail="not the productivity token owner")
+        if range not in productivity_route.ALLOWED_RANGES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown range {range!r}; expected one of {sorted(productivity_route.ALLOWED_RANGES)}",
+            )
+        return productivity_route.build_series(conn, org, range)
 
     @app.get("/context")
     @limiter.limit(LLM_RATE_LIMIT)
