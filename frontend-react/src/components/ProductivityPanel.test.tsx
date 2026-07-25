@@ -86,6 +86,38 @@ describe("ProductivityPanel", () => {
     });
   });
 
+  it("shows a skeleton chart (no series path) while in flight, and removes it once data resolves", async () => {
+    let resolveFetch: (value: Response) => void = () => {};
+    const fetchMock = vi.fn().mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(
+      <ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />,
+    );
+
+    // In flight: a skeleton element is present and there is no chart series
+    // path yet (no empty axes, no flash-of-zero chart).
+    expect(screen.getByTestId("productivity-skeleton")).toBeInTheDocument();
+    expect(container.querySelector(".recharts-line-curve")).toBeNull();
+    expect(container.querySelector("svg.recharts-surface")).toBeNull();
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    resolveFetch(new Response(skewedResponseBody(), { status: 200 }));
+
+    // Resolved: the skeleton is gone and the real chart (with series paths)
+    // has taken its place.
+    await waitFor(() => {
+      expect(container.querySelector("svg.recharts-surface")).not.toBeNull();
+    });
+    expect(screen.queryByTestId("productivity-skeleton")).not.toBeInTheDocument();
+    expect(container.querySelector(".recharts-line-curve")).not.toBeNull();
+  });
+
   it("shows an error state when the fetch fails", async () => {
     vi.stubGlobal(
       "fetch",

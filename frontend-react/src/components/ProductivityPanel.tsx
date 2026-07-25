@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getProductivity, type ApiDataProviderAuth } from "../api/apiClient";
 import type { ProductivitySeries } from "../api/contract";
+import { ProductivityChartSkeleton } from "./viz/ProductivityChartSkeleton";
 import { ProductivitySeriesChart } from "./viz/ProductivitySeriesChart";
 
 export interface ProductivityPanelProps {
@@ -53,9 +54,9 @@ export function ProductivityPanel({ apiBaseUrl, auth }: ProductivityPanelProps) 
   return (
     <section className="productivity-panel" aria-label="Productivity">
       {loading ? (
-        <p className="muted" data-testid="productivity-loading">
-          Loading productivity data…
-        </p>
+        <div data-testid="productivity-loading">
+          <ProductivityChartSkeleton />
+        </div>
       ) : error ? (
         <p className="productivity-panel__error" data-testid="productivity-error">
           Couldn't load productivity data: {error}
