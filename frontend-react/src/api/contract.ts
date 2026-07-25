@@ -135,6 +135,20 @@ export interface ProductivitySeries {
   ticketsCompleted: ProductivitySeriesPoint[];
 }
 
+/**
+ * The three ways the backend's GitHub token can fail the panel (R21): absent
+ * entirely, rejected outright by GitHub (invalid/revoked/expired), or valid but
+ * missing the permission (`Contents: Read`) the query needs. When present on a
+ * `GET /productivity` response, `series` carries no data for that request.
+ */
+export type ProductivityKeyStatus = "missing" | "expired" | "insufficient_scope";
+
+const PRODUCTIVITY_KEY_STATUSES: ReadonlySet<string> = new Set([
+  "missing",
+  "expired",
+  "insufficient_scope",
+]);
+
 export interface ProductivityResponse {
   range: string;
   truncated: boolean;
@@ -153,6 +167,8 @@ export interface ProductivityResponse {
    * whose start precedes this date means S4 has no real data before it: the
    * chart must grey that span and annotate it, never plot a truthful zero. */
   s4InstrumentationDate: string | null;
+  /** Set only when the backend's GitHub token is missing/expired/insufficient-scope (R21). */
+  keyStatus?: ProductivityKeyStatus;
 }
 
 function toSeriesPoints(raw: unknown): ProductivitySeriesPoint[] {
@@ -170,7 +186,7 @@ function toSeriesPoints(raw: unknown): ProductivitySeriesPoint[] {
   });
 }
 
-/** Parse a `GET /productivity` response body into the typed contract shape (R3/R33). */
+/** Parse a `GET /productivity` response body into the typed contract shape (R3/R33/R21). */
 export function parseProductivityResponse(payload: unknown): ProductivityResponse {
   const root = (payload ?? {}) as Record<string, unknown>;
   const series = (root.series ?? {}) as Record<string, unknown>;
@@ -180,6 +196,10 @@ export function parseProductivityResponse(payload: unknown): ProductivityRespons
       : typeof root.computedAt === "string"
         ? root.computedAt
         : null;
+  const keyStatus =
+    typeof root.key_status === "string" && PRODUCTIVITY_KEY_STATUSES.has(root.key_status)
+      ? (root.key_status as ProductivityKeyStatus)
+      : undefined;
   return {
     range: typeof root.range === "string" ? root.range : "",
     truncated: Boolean(root.truncated),
@@ -194,6 +214,7 @@ export function parseProductivityResponse(payload: unknown): ProductivityRespons
     },
     s4InstrumentationDate:
       typeof root.s4_instrumentation_date === "string" ? root.s4_instrumentation_date : null,
+    ...(keyStatus ? { keyStatus } : {}),
   };
 }
 

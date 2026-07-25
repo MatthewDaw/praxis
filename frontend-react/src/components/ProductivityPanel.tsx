@@ -3,6 +3,7 @@ import { getProductivity, type ApiDataProviderAuth } from "../api/apiClient";
 import {
   PRODUCTIVITY_RANGES,
   isShortTtlRange,
+  type ProductivityKeyStatus,
   type ProductivityRange,
   type ProductivitySeries,
 } from "../api/contract";
@@ -42,6 +43,25 @@ export function formatComputedAge(computedAt: string | null, now: number = Date.
   return `${days}d old`;
 }
 
+// Operator-facing copy for each GitHub-key failure the backend can report (R21). Each
+// names the specific condition (never a raw 401) and never invites the caller to
+// "connect GitHub" -- the token is a backend secret, not something an end user holds
+// or can supply, so no such prompt is ever rendered for any of these three states.
+const KEY_STATUS_MESSAGES: Record<ProductivityKeyStatus, string> = {
+  missing:
+    "GitHub token not configured on the backend. Ask an operator to add it (see docs/solutions/conventions/github-token-storage.md).",
+  expired:
+    "GitHub token was rejected (expired or revoked). Ask an operator to rotate it (see docs/solutions/conventions/github-token-storage.md).",
+  insufficient_scope:
+    "GitHub token is missing the required Contents: Read permission. Ask an operator to reissue it with that scope.",
+};
+
+const KEY_STATUS_TEST_IDS: Record<ProductivityKeyStatus, string> = {
+  missing: "productivity-key-status-missing",
+  expired: "productivity-key-status-expired",
+  insufficient_scope: "productivity-key-status-insufficient-scope",
+};
+
 /**
  * The Productivity tab (R15/R33): fetches the owner-gated `GET /productivity`
  * series and renders them as a multi-series dual-axis chart — the
@@ -68,6 +88,7 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
   const [computedAt, setComputedAt] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
   const [rateLimited, setRateLimited] = useState(false);
+  const [keyStatus, setKeyStatus] = useState<ProductivityKeyStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const lastRefreshAtRef = useRef(-Infinity);
@@ -84,7 +105,8 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
       getProductivity(apiBaseUrl, fetchRange, auth, force)
         .then((response) => {
           if (active) {
-            setSeries(response.series);
+            setKeyStatus(response.keyStatus ?? null);
+            setSeries(response.keyStatus ? null : response.series);
             setInstrumentationDate(response.s4InstrumentationDate);
             setDisclosures({
               staticCaveats: DEFAULT_STATIC_CAVEATS,
@@ -160,6 +182,10 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
       {loading ? (
         <p className="muted" data-testid="productivity-loading">
           Loading productivity data…
+        </p>
+      ) : keyStatus ? (
+        <p className="productivity-panel__key-status" data-testid={KEY_STATUS_TEST_IDS[keyStatus]}>
+          {KEY_STATUS_MESSAGES[keyStatus]}
         </p>
       ) : error ? (
         <p className="productivity-panel__error" data-testid="productivity-error">

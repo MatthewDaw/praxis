@@ -17,6 +17,11 @@ GitHub timeout, upstream 5xx, secondary rate limit (honoring ``Retry-After``), o
 GraphQL ``errors`` payload never gets silently reported as zero activity for the affected window —
 :func:`fetch_commit_activity` instead returns ``truncated=True`` with a :class:`TruncationReason`
 constant naming the cause, keeping whatever partial data was already fetched.
+
+A rejection of the TOKEN ITSELF (GitHub 401/403) is a different kind of failure and is never
+retried or folded into ``truncated``: it raises :class:`GitHubAuthExpired` or
+:class:`GitHubInsufficientScope` immediately, for the caller (the productivity route, R21) to
+turn into an operator-facing key status instead of a raw HTTP error.
 """
 
 from __future__ import annotations
@@ -75,6 +80,27 @@ class GitHubRateLimited(GitHubTransportError):
     def __init__(self, retry_after: float) -> None:
         super().__init__(f"GitHub secondary rate limit, retry after {retry_after}s")
         self.retry_after = retry_after
+
+
+class GitHubAuthError(Exception):
+    """The token itself was rejected by GitHub — never retried (see subclasses).
+
+    Deliberately NOT a :class:`GitHubTransportError`: retrying a bad token can't
+    succeed, and folding it into ``TruncationReason`` would make a dead key
+    indistinguishable from a transient network/rate-limit blip the caller can
+    recover from just by trying again. The productivity route (R21) catches
+    these directly to report an operator-facing key status instead.
+    """
+
+
+class GitHubAuthExpired(GitHubAuthError):
+    """GitHub returned 401 — the token is absent, invalid, or revoked/expired."""
+
+
+class GitHubInsufficientScope(GitHubAuthError):
+    """GitHub returned 403 (not a secondary rate limit, which carries ``Retry-After``
+    and is handled by :class:`GitHubRateLimited`) — the token is valid but lacks the
+    permission the query needs (e.g. missing ``Contents: Read``)."""
 
 
 _REASON_FOR_ERROR: dict[type[GitHubTransportError], str] = {
@@ -215,8 +241,12 @@ def _default_transport(
     except httpx.TimeoutException as exc:
         raise GitHubTimeout(str(exc)) from exc
 
+    if resp.status_code == 401:
+        raise GitHubAuthExpired(f"GitHub rejected the token: {resp.status_code}")
     if resp.status_code in (403, 429) and "retry-after" in resp.headers:
         raise GitHubRateLimited(retry_after=float(resp.headers["retry-after"]))
+    if resp.status_code == 403:
+        raise GitHubInsufficientScope(f"GitHub token lacks required scope: {resp.status_code}")
     if 500 <= resp.status_code < 600:
         raise GitHubUpstreamError(resp.status_code)
     resp.raise_for_status()

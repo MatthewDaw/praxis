@@ -48,6 +48,15 @@ _WEEK = 7 * _DAY
 DEFAULT_OWNER_LOGIN = "mattdaw7"
 DEFAULT_OWNER_EMAIL = "mattdaw7@gmail.com"
 
+# The three GitHub-token key statuses the panel must distinguish (R21): no token
+# configured at all, a token GitHub outright rejects (401 -- invalid/revoked/expired),
+# and a token GitHub recognizes but that lacks the permission the query needs (403,
+# e.g. missing Contents: Read). Each is reported as ``{"key_status": ...}`` instead of
+# raising -- the route must never surface a raw 401/403 to the caller.
+KEY_STATUS_MISSING = "missing"
+KEY_STATUS_EXPIRED = "expired"
+KEY_STATUS_INSUFFICIENT_SCOPE = "insufficient_scope"
+
 
 def kill_switch_enabled() -> bool:
     """True iff the productivity feature is administratively disabled (R39).
@@ -145,15 +154,32 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
     Fetches the owner's GitHub commit activity for the resolved window (S1 additions, S2
     deletions, S3 their difference) and the org-wide finished-ticket counts (S4, R7),
     bucketed identically so every series lines up on the same ``bucket_start`` axis.
+
+    When the backend's GitHub token is missing, expired/revoked, or lacks the required
+    scope (R21), no series are computed and no raw 401/403 ever escapes: the result is
+    instead ``{"key_status": KEY_STATUS_MISSING | KEY_STATUS_EXPIRED |
+    KEY_STATUS_INSUFFICIENT_SCOPE}``, naming exactly which of the three applies. An
+    expired token also invalidates the in-process token cache so the very next call
+    re-fetches (picking up a rotated secret with no redeploy, per ``github_token``).
     """
     started_at = time.perf_counter()
     now = now or datetime.now(timezone.utc)
     bucket_starts, bucket_seconds, window_start, window_end, bucket_unit = bucket_plan(range_, now)
 
     token = github_token.resolve_github_token()
-    activity = github_commits.fetch_commit_activity(
-        owner_login(), window_start, window_end, token=token
-    )
+    if token is None:
+        return {"key_status": KEY_STATUS_MISSING}
+
+    try:
+        activity = github_commits.fetch_commit_activity(
+            owner_login(), window_start, window_end, token=token
+        )
+    except github_commits.GitHubAuthExpired:
+        github_token.invalidate_github_token()
+        return {"key_status": KEY_STATUS_EXPIRED}
+    except github_commits.GitHubInsufficientScope:
+        return {"key_status": KEY_STATUS_INSUFFICIENT_SCOPE}
+
     github_audit.record_github_use("/productivity", len(activity.get("repositories") or {}))
 
     totals = bucketed_owner_totals(
@@ -208,6 +234,10 @@ def get_series_cached(
     result back into the cache for that range's TTL band, so the next
     non-forced request still benefits from it.
 
+    A ``key_status`` result (R21 -- the token is missing/expired/insufficient-scope)
+    is NEVER cached: an operator fixing the token must see it take effect on the very
+    next request, not wait out a TTL band that was sized for real series data.
+
     Concurrent misses for the SAME cache key are coalesced (single-flight): only
     the first caller to acquire this key's lock computes and calls GitHub; every
     other simultaneous caller blocks on the same lock and, once it clears, finds
@@ -251,6 +281,8 @@ def get_series_cached(
             return cached
 
         result = build_series(conn, org_id, range_, now=now)
+        if result.get("key_status"):
+            return result
         if result.get("reason") is not None:
             stale = productivity_cache.get_stale(org_id, user_key, range_)
             if stale is not None:
