@@ -23,6 +23,7 @@ turn "the caller" into an unbounded cache-key dimension — see the
 from __future__ import annotations
 
 import os
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -125,6 +126,7 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
     deletions, S3 their difference) and the org-wide finished-ticket counts (S4, R7),
     bucketed identically so every series lines up on the same ``bucket_start`` axis.
     """
+    started_at = time.perf_counter()
     now = now or datetime.now(timezone.utc)
     bucket_starts, bucket_seconds, window_start, window_end = bucket_plan(range_, now)
 
@@ -144,6 +146,15 @@ def build_series(conn: Any, org_id: str, range_: str, *, now: datetime | None = 
     s1, s2 = totals["s1"], totals["s2"]
     s3 = [a - d for a, d in zip(s1, s2)]
     s4 = s4_series(conn, org_id, bucket_starts, bucket_seconds)
+
+    github_audit.record_productivity_request(
+        duration_ms=(time.perf_counter() - started_at) * 1000,
+        points_spent=int(activity.get("points_spent") or 0),
+        # No response cache exists yet (R4, not yet built): every request is
+        # genuinely a miss until that ticket lands and threads a real value here.
+        cache_hit=False,
+        truncated=bool(activity.get("truncated")),
+    )
 
     return {
         "range": range_,

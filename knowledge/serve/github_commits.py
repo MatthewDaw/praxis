@@ -92,6 +92,7 @@ query($login: String!, $from: DateTime!, $to: DateTime!) {
       }
     }
   }
+  rateLimit { cost }
 }
 """
 
@@ -113,8 +114,18 @@ query($owner: String!, $name: String!, $since: GitTimestamp!, $until: GitTimesta
       }
     }
   }
+  rateLimit { cost }
 }
 """
+
+
+def _points_cost(data: Optional[dict[str, Any]]) -> int:
+    """The GraphQL ``rateLimit.cost`` (points spent) a response reports, or 0.
+
+    Every discovery/history query above requests ``rateLimit { cost }`` alongside its real
+    payload; a response predating that field (or a test fixture that omits it) simply spends 0.
+    """
+    return int(((data or {}).get("data") or {}).get("rateLimit", {}).get("cost") or 0)
 
 
 def year_chunks(start: date, end: date) -> list[tuple[date, date]]:
@@ -258,8 +269,8 @@ def _discover_active_repos(
     base_delay: float,
     max_delay: float,
     sleep: Sleep,
-) -> tuple[list[str], Optional[str]]:
-    """Issue one discovery query per year-chunk; return (active repos, truncation reason).
+) -> tuple[list[str], Optional[str], int]:
+    """Issue one discovery query per year-chunk; return (active repos, truncation reason, points spent).
 
     Active repos are deduped in first-seen order. A chunk whose call ultimately fails (retries
     exhausted) contributes no repos and sets the returned reason — that chunk's activity is
@@ -268,6 +279,7 @@ def _discover_active_repos(
     """
     seen: dict[str, None] = {}
     reason: Optional[str] = None
+    points = 0
     for since, until in chunks:
         variables = {"login": login, "from": _iso(since), "to": _iso(until)}
         data, call_reason = _call_with_retry(
@@ -278,6 +290,7 @@ def _discover_active_repos(
             reason = reason or call_reason
             continue
         assert data is not None
+        points += _points_cost(data)
         if data.get("errors") and data.get("data") is not None:
             reason = reason or TruncationReason.PARTIAL_ERRORS
         contributions = (
@@ -288,7 +301,7 @@ def _discover_active_repos(
             name = (entry.get("repository") or {}).get("nameWithOwner")
             if name and name not in seen:
                 seen[name] = None
-    return list(seen.keys()), reason
+    return list(seen.keys()), reason, points
 
 
 def _fetch_repo_commits(
@@ -302,8 +315,8 @@ def _fetch_repo_commits(
     base_delay: float,
     max_delay: float,
     sleep: Sleep,
-) -> tuple[Optional[list[dict[str, Any]]], Optional[str]]:
-    """Issue one history query for ``repo``; return (commit nodes or None, truncation reason).
+) -> tuple[Optional[list[dict[str, Any]]], Optional[str], int]:
+    """Issue one history query for ``repo``; return (commit nodes or None, truncation reason, points spent).
 
     ``None`` (not ``[]``) signals the repo's activity is UNKNOWN because the call ultimately
     failed — the caller must omit the repo rather than report it as a confirmed zero.
@@ -315,8 +328,9 @@ def _fetch_repo_commits(
         max_retries=max_retries, base_delay=base_delay, max_delay=max_delay, sleep=sleep,
     )
     if reason is not None:
-        return None, reason
+        return None, reason, 0
     assert data is not None
+    points = _points_cost(data)
     if data.get("errors") and data.get("data") is not None:
         reason = TruncationReason.PARTIAL_ERRORS
     repo_data = (data.get("data") or {}).get("repository") or {}
@@ -331,7 +345,7 @@ def _fetch_repo_commits(
         }
         for node in nodes
     ]
-    return commits, reason
+    return commits, reason, points
 
 
 def fetch_commit_activity(
@@ -352,13 +366,15 @@ def fetch_commit_activity(
     repositories ``login`` committed to), then exactly one history query per repository found
     active in any chunk (to pull its commits for the full window).
 
-    Returns ``{"repositories": {...}, "truncated": bool, "reason": str|None}``:
+    Returns ``{"repositories": {...}, "truncated": bool, "reason": str|None, "points_spent": int}``:
     ``repositories`` is keyed by ``"owner/name"`` -> a list of commit dicts (``additions``,
     ``deletions``, ``committedDate``, ``author_login``). ``truncated``/``reason`` surface a
     GitHub timeout, upstream 5xx, secondary rate limit, or partial GraphQL ``errors`` payload
     (see :class:`TruncationReason`) that survived ``max_retries`` retries with exponential
     backoff — the affected repo/window is OMITTED from ``repositories`` rather than reported as a
     confirmed zero, and any repo/window that succeeded is still included with real data.
+    ``points_spent`` is the summed GraphQL ``rateLimit.cost`` every issued query reported (0 for a
+    response that predates that field), for the productivity route's observability log (R40).
 
     ``token`` authenticates the outbound GraphQL request (the caller resolves/rotates it; this
     module never caches or logs it). ``transport`` is injectable (query, variables, token) ->
@@ -371,17 +387,25 @@ def fetch_commit_activity(
     retry_kwargs = dict(max_retries=max_retries, base_delay=base_delay, max_delay=max_delay, sleep=sleep)
 
     chunks = year_chunks(start, end)
-    active_repos, reason = _discover_active_repos(login, chunks, xport, token, **retry_kwargs)
+    active_repos, reason, points = _discover_active_repos(login, chunks, xport, token, **retry_kwargs)
 
     repositories: dict[str, list[dict[str, Any]]] = {}
     for repo in active_repos:
-        commits, repo_reason = _fetch_repo_commits(repo, start, end, xport, token, **retry_kwargs)
+        commits, repo_reason, repo_points = _fetch_repo_commits(
+            repo, start, end, xport, token, **retry_kwargs
+        )
+        points += repo_points
         if repo_reason is not None:
             reason = reason or repo_reason
         if commits is not None:
             repositories[repo] = commits
 
-    return {"repositories": repositories, "truncated": reason is not None, "reason": reason}
+    return {
+        "repositories": repositories,
+        "truncated": reason is not None,
+        "reason": reason,
+        "points_spent": points,
+    }
 
 
 def fetch_commit_activity_alltime(
@@ -415,11 +439,13 @@ def fetch_commit_activity_alltime(
     retry_kwargs = dict(max_retries=max_retries, base_delay=base_delay, max_delay=max_delay, sleep=sleep)
     effective_start = resolve_alltime_start(account_created_at, now, max_lookback_years)
     chunks = alltime_chunks(effective_start, now)
-    active_repos, _reason = _discover_active_repos(login, chunks, xport, token, **retry_kwargs)
+    active_repos, _reason, _points = _discover_active_repos(login, chunks, xport, token, **retry_kwargs)
 
     commits: dict[str, list[dict[str, Any]]] = {}
     for repo in active_repos:
-        repo_commits, _repo_reason = _fetch_repo_commits(repo, effective_start, now, xport, token, **retry_kwargs)
+        repo_commits, _repo_reason, _repo_points = _fetch_repo_commits(
+            repo, effective_start, now, xport, token, **retry_kwargs
+        )
         if repo_commits is not None:
             commits[repo] = repo_commits
     return effective_start, commits

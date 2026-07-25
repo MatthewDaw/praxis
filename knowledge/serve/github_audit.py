@@ -49,3 +49,30 @@ def record_github_use(endpoint: str, repository_count: int) -> dict[str, Any]:
     }
     logger.info(json.dumps(entry))
     return entry
+
+
+metrics_logger = logging.getLogger("productivity.metrics")
+
+
+def record_productivity_request(
+    *, duration_ms: float, points_spent: int, cache_hit: bool, truncated: bool
+) -> dict[str, Any]:
+    """Log one ``/productivity`` request's observability signals (R40).
+
+    Emits exactly ``{"timestamp", "endpoint", "duration_ms", "points_spent",
+    "cache_hit", "truncated"}`` as a single JSON line on the
+    ``productivity.metrics`` logger, so a silent degradation into cached or
+    truncated data is detectable without reading the UI. Every field is a
+    number/bool the caller computed itself — never the token value, and
+    never a caller-supplied string that could carry one.
+    """
+    entry: dict[str, Any] = {
+        "timestamp": time.time(),
+        "endpoint": "/productivity",
+        "duration_ms": round(float(duration_ms), 3),
+        "points_spent": int(points_spent),
+        "cache_hit": bool(cache_hit),
+        "truncated": bool(truncated),
+    }
+    metrics_logger.info(json.dumps(entry))
+    return entry
