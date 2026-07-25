@@ -119,13 +119,18 @@ def test_fetch_commit_activity_issues_one_discovery_query_per_year_chunk_and_one
         "acme/three",
     }
 
-    # The client returns per-repo commit nodes, each carrying the four required fields.
-    assert set(result.keys()) == {"acme/one", "acme/two", "acme/three"}
-    assert result["acme/two"] == [
+    # The client returns per-repo commit nodes, each carrying the four required fields, plus a
+    # truncated/reason envelope (see test_github_reliability.py) — untouched (False/None) here since
+    # every call succeeded.
+    repositories = result["repositories"]
+    assert result["truncated"] is False
+    assert result["reason"] is None
+    assert set(repositories.keys()) == {"acme/one", "acme/two", "acme/three"}
+    assert repositories["acme/two"] == [
         {"additions": 5, "deletions": 1, "committedDate": "2023-08-01T00:00:00Z", "author_login": "mattdaw7"},
         {"additions": 3, "deletions": 0, "committedDate": "2024-02-01T00:00:00Z", "author_login": "mattdaw7"},
     ]
-    for commits in result.values():
+    for commits in repositories.values():
         for node in commits:
             assert {"additions", "deletions", "committedDate", "author_login"} <= set(node)
 
@@ -141,4 +146,6 @@ def test_fetch_commit_activity_no_active_repos_issues_no_history_queries():
 
     assert len(transport.discovery_calls) == 1
     assert len(transport.history_calls) == 0
-    assert result == {}
+    assert result["repositories"] == {}
+    assert result["truncated"] is False
+    assert result["reason"] is None
