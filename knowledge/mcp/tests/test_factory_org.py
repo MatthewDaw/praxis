@@ -15,6 +15,7 @@ cached / global default ("agent-factory").
 
 import json
 import sys
+from pathlib import Path
 
 from knowledge.mcp import identity, server
 
@@ -81,9 +82,7 @@ def test_stop_hook_client_resolves_same_factory_org(monkeypatch, tmp_path):
     MCP-tool org and hook-client org AGREE."""
     _pin_project(monkeypatch, tmp_path)
 
-    sys.path.insert(
-        0, "/Users/matthewdaw/Documents/official_repos/praxis/agent_factory/hooks"
-    )
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "agent_factory" / "hooks"))
     import os
 
     import _praxis  # stdlib-only Stop-hook mirror
