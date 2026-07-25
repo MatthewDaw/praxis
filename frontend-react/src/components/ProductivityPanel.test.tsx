@@ -8,11 +8,15 @@ const AUTH = { getToken: async () => "token-123", orgId: "org-1", spaceId: "spac
 
 // Every S1-S4 point is zero — the "no activity in this period" acceptance
 // scenario: the chart must still render (a zero line), plus a no-activity
-// caption, and must NOT be routed through the error-styling path.
+// caption, and must NOT be routed through the error-styling path. Distinct
+// from the R20 first-run scenario (zero repos/spaces): this response has a
+// real connected repo and space, they just did no work this window.
 function allZeroResponseBody() {
   return JSON.stringify({
     range: "4weeks",
     truncated: false,
+    repos_discovered: 1,
+    spaces_count: 1,
     series: {
       s1_lines_added: [
         { bucket_start: "2026-07-01", value: 0 },
@@ -127,6 +131,8 @@ describe("ProductivityPanel", () => {
     const body = JSON.stringify({
       range: "12months",
       truncated: false,
+      repos_discovered: 1,
+      spaces_count: 1,
       s4_instrumentation_date: "2026-07-25T07:17:15+00:00",
       series: {
         s1_lines_added: [
@@ -157,6 +163,38 @@ describe("ProductivityPanel", () => {
     expect(screen.getByTestId("s4-instrumentation-annotation")).toHaveTextContent(
       "Ticket history starts 2026-07-25",
     );
+  });
+
+  it("shows a skeleton chart (no series path) while in flight, and removes it once data resolves", async () => {
+    let resolveFetch: (value: Response) => void = () => {};
+    const fetchMock = vi.fn().mockImplementation(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = render(
+      <ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />,
+    );
+
+    // In flight: a skeleton element is present and there is no chart series
+    // path yet (no empty axes, no flash-of-zero chart).
+    expect(screen.getByTestId("productivity-skeleton")).toBeInTheDocument();
+    expect(container.querySelector(".recharts-line-curve")).toBeNull();
+    expect(container.querySelector("svg.recharts-surface")).toBeNull();
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    resolveFetch(new Response(skewedResponseBody(), { status: 200 }));
+
+    // Resolved: the skeleton is gone and the real chart (with series paths)
+    // has taken its place.
+    await waitFor(() => {
+      expect(container.querySelector("svg.recharts-surface")).not.toBeNull();
+    });
+    expect(screen.queryByTestId("productivity-skeleton")).not.toBeInTheDocument();
+    expect(container.querySelector(".recharts-line-curve")).not.toBeNull();
   });
 
   it("shows an error state when the fetch fails", async () => {

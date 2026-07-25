@@ -8,6 +8,7 @@ import {
   type ProductivitySeries,
   type ProductivitySeriesErrors,
 } from "../api/contract";
+import { ProductivityChartSkeleton } from "./viz/ProductivityChartSkeleton";
 import {
   DEFAULT_STATIC_CAVEATS,
   ProductivitySeriesChart,
@@ -172,43 +173,50 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
 
   return (
     <section className="productivity-panel" aria-label="Productivity">
-      <div className="productivity-panel__controls">
-        <label>
-          Range{" "}
-          <select
-            data-testid="productivity-range"
-            value={range}
-            onChange={(event) => setRange(event.target.value as ProductivityRange)}
-          >
-            {PRODUCTIVITY_RANGES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-        </label>
-        {!isShortTtlRange(range) ? (
+      {/* The controls bar (range picker, refresh, force-affordance) only makes sense once the
+          panel actually has -- or could have -- a chart to control. A blocking GitHub key status
+          (missing/expired/insufficient_scope) means there is no data and nothing to refresh or
+          re-range, so no button/control renders at all (R21) rather than a dead Refresh button
+          beside an operator message. */}
+      {!loading && !keyStatus ? (
+        <div className="productivity-panel__controls">
           <label>
-            <input
-              type="checkbox"
-              data-testid="productivity-force-affordance"
-              checked={forceAffordance}
-              onChange={(event) => setForceAffordance(event.target.checked)}
-            />{" "}
-            Force refresh
+            Range{" "}
+            <select
+              data-testid="productivity-range"
+              value={range}
+              onChange={(event) => setRange(event.target.value as ProductivityRange)}
+            >
+              {PRODUCTIVITY_RANGES.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
           </label>
-        ) : null}
-        <button type="button" data-testid="productivity-refresh" onClick={handleRefresh}>
-          Refresh
-        </button>
-        <span className="productivity-panel__last-updated" data-testid="productivity-last-updated">
-          {computedAt ? `Last updated: ${computedAt}` : null}
-        </span>
-      </div>
+          {!isShortTtlRange(range) ? (
+            <label>
+              <input
+                type="checkbox"
+                data-testid="productivity-force-affordance"
+                checked={forceAffordance}
+                onChange={(event) => setForceAffordance(event.target.checked)}
+              />{" "}
+              Force refresh
+            </label>
+          ) : null}
+          <button type="button" data-testid="productivity-refresh" onClick={handleRefresh}>
+            Refresh
+          </button>
+          <span className="productivity-panel__last-updated" data-testid="productivity-last-updated">
+            {computedAt ? `Last updated: ${computedAt}` : null}
+          </span>
+        </div>
+      ) : null}
       {loading ? (
-        <p className="muted" data-testid="productivity-loading">
-          Loading productivity data…
-        </p>
+        <div data-testid="productivity-loading">
+          <ProductivityChartSkeleton />
+        </div>
       ) : keyStatus ? (
         <p className="productivity-panel__key-status" data-testid={KEY_STATUS_TEST_IDS[keyStatus]}>
           {KEY_STATUS_MESSAGES[keyStatus]}
