@@ -53,11 +53,64 @@ def test_signed_but_no_actions_padded_count_rejects():
     assert any("no evaluator actions" in r.message.lower() for r in v.reasons)
 
 
-def test_contract_none_stands_down_backcompat():
-    # The pure-eval / back-compat lane: no contract supplied -> the rule does not fire.
+def test_contract_none_fails_closed():
+    # THE FIX: absent evidence is a REJECTION, not a stand-down. The rule used to fire only when a
+    # contract WAS supplied, so a plan that never had one negotiated at all — the more dangerous
+    # state — was admitted with zero reasons and af-intake-plan's B9 hard gate was trivially clearable.
     v = evaluate_plan(_reqs(), project="sotos", contract=None)
-    assert R_CONTRACT_SIGNED not in v.rule_ids
+    assert v.admitted is False
+    assert R_CONTRACT_SIGNED in v.rule_ids
+    assert any("NO contract evidence at all" in r.message for r in v.reasons)
+
+
+def test_empty_contract_fails_closed_as_absent():
+    # `{}` carries no evidence either: same "no contract at all" message, not "unsigned".
+    v = evaluate_plan(_reqs(), project="sotos", contract={})
+    assert v.admitted is False
+    assert any("NO contract evidence at all" in r.message for r in v.reasons)
+
+
+def test_absent_message_distinguishes_from_signed_but_lazy():
+    # The operator must be able to tell WHICH state the plan is in from the reason alone.
+    absent = evaluate_plan(_reqs(), project="sotos", contract=None).reasons[0].message
+    lazy = evaluate_plan(
+        _reqs(), project="sotos", contract={"signed": True, "actions_recorded": False}
+    ).reasons[0].message
+    assert absent != lazy
+    assert "NO contract evidence at all" in absent
+    assert "no evaluator actions" in lazy.lower()
+
+
+# --------------------------------------------------- raw build_signed_payload shape is understood
+
+def _raw(*, kind="contract-signed", actions):
+    # The shape contract_signature.build_signed_payload emits (and the shape a caller holding the
+    # episode payload threads straight through), as opposed to read_contract's reduced form.
+    return {"kind": kind, "n_assertions": 75, "actions": actions, "signer": "evaluator"}
+
+
+def test_raw_payload_with_real_actions_admits():
+    v = evaluate_plan(_reqs(), project="sotos", contract=_raw(actions={"cut": 4, "added": 1}))
     assert v.admitted is True
+    assert R_CONTRACT_SIGNED not in v.rule_ids
+
+
+def test_raw_payload_wrong_kind_rejects_as_unsigned():
+    # A mislabelled payload is not a signed contract, however many actions it claims.
+    v = evaluate_plan(_reqs(), project="sotos",
+                      contract=_raw(kind="plan-reviewed", actions={"cut": 4}))
+    assert v.admitted is False
+    assert R_CONTRACT_SIGNED in v.rule_ids
+    assert any("no signed contract" in r.message for r in v.reasons)
+
+
+def test_raw_payload_all_zero_actions_still_rejects():
+    # Anti-Goodhart preserved on the raw shape: a fat n_assertions count with zero real actions
+    # is a signature over an unchanged draft.
+    v = evaluate_plan(_reqs(), project="sotos",
+                      contract=_raw(actions={"cut": 0, "merged": 0, "added": 0}))
+    assert v.admitted is False
+    assert any("no evaluator actions" in r.message.lower() for r in v.reasons)
 
 
 # --------------------------------------------------------------------------- evaluate_plan is PURE
@@ -109,6 +162,8 @@ def test_check_plan_rejects_when_no_signed_episode(monkeypatch):
     verdict, _ = pgc.check_plan("sotos")
     assert verdict.admitted is False
     assert R_CONTRACT_SIGNED in verdict.rule_ids
+    # The live "never negotiated" state gets the ABSENT reason, not "unsigned or malformed".
+    assert any("NO contract evidence at all" in r.message for r in verdict.reasons)
 
 
 def test_check_plan_rejects_when_signed_but_no_actions(monkeypatch):
@@ -123,4 +178,5 @@ def test_read_contract_reduces_episodes(monkeypatch):
     monkeypatch.setattr(pgc, "_praxis", _FakePraxis([_signed_episode(actions={"added": 2})]))
     assert pgc.read_contract("sotos") == {"signed": True, "actions_recorded": True}
     monkeypatch.setattr(pgc, "_praxis", _FakePraxis([]))
-    assert pgc.read_contract("sotos") == {"signed": False, "actions_recorded": False}
+    # No signed episode -> EMPTY evidence, which evaluate_plan treats as "no contract at all".
+    assert pgc.read_contract("sotos") == {}

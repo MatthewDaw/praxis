@@ -47,10 +47,11 @@ def _load(modname: str, path: Path):
     return module
 
 
-# gate.py is pure stdlib; register it as agent_factory.gate first so plan_gate's import resolves.
+# gate.py and contract_signature.py are pure stdlib; register them under their canonical names
+# FIRST so plan_gate's ``from agent_factory.{gate,contract_signature} import ...`` both resolve.
 _load("agent_factory.gate", _SRC_AF / "gate.py")
-_pg = _load("agent_factory.plan_gate", _SRC_AF / "plan_gate.py")
 _cs = _load("agent_factory.contract_signature", _SRC_AF / "contract_signature.py")
+_pg = _load("agent_factory.plan_gate", _SRC_AF / "plan_gate.py")
 evaluate_plan = _pg.evaluate_plan
 Requirement = _pg.Requirement
 
@@ -98,10 +99,28 @@ def read_contract(project: str) -> dict:
 
     Raises :class:`PraxisUnreachable` (fail-closed) if the episodes can't be read.
     """
-    episodes = _praxis.get_episodes()
+    # Look in the PLAN SNAPSHOT first, then working memory. Reading only working memory (the
+    # prior behavior) made the signature session-local: intake records it in working memory and
+    # `save_snapshot` copies it into `prd-<project>`, so a LATER session — or any other agent —
+    # re-ran the gate against an empty working memory and saw an unsigned plan even though the
+    # blessed snapshot carried the signature. The snapshot is the durable plan, so it is
+    # authoritative; working memory is the in-flight fallback for the intake session itself.
+    # (space, snapshot) derived inline rather than via _ticket_state.project_ref, to keep this
+    # tool's imports to the stdlib-plus-_praxis set it already declares.
+    bare = project[4:] if project.startswith("prd-") else project
+    episodes: list = []
+    try:
+        episodes += _praxis.get_episodes(space=bare, snapshot=f"prd-{bare}")
+    except PraxisUnreachable:  # a missing/unreadable snapshot is not a signature failure
+        pass
+    episodes += _praxis.get_episodes()
     signed = [e for e in episodes if _cs.is_signed(e)]
     if not signed:
-        return {"signed": False, "actions_recorded": False}
+        # NO signed contract episode exists — return the EMPTY dict (not {"signed": False, ...}) so
+        # evaluate_plan reports its "no contract evidence at all" reason rather than "unsigned or
+        # malformed". Both reject; the distinction tells the operator whether the negotiation never
+        # happened or produced something unusable.
+        return {}
     return {"signed": True, "actions_recorded": any(_cs.actions_recorded(e) for e in signed)}
 
 

@@ -93,7 +93,10 @@ def test_full_chain_source_scope_drift():
     #     binary acceptance, no vague terms, and no dangling references, so the gate's
     #     OTHER rules stay silent. Pre-guardrail, the ONLY thing wrong is the missing
     #     source — which those rules don't inspect — so the plan would have been ADMITTED.
-    verdict = evaluate_plan([req], project=PROJECT)
+    # Signed contract supplied: R-CONTRACT-SIGNED is plan-level and fails closed on absent
+    # evidence, so it would otherwise mask the "only the source is wrong" isolation below.
+    verdict = evaluate_plan([req], project=PROJECT,
+                            contract={"signed": True, "actions_recorded": True})
     fired = set(verdict.rule_ids)
     assert R_ACCEPT_BINARY not in fired, "acceptance is valid; this rule must not fire"
     assert R_NO_VAGUE not in fired, "no vague terms; this rule must not fire"

@@ -126,3 +126,64 @@ def test_context_excludes_episodic_from_mounted_overlay(client):
     client.post("/mounts", json={"owner": USER, "snapshot": "snap-ep"})
     ctx = client.get("/context", params={"query": _QUERY}).json()
     assert _EPISODE["insight"] not in (ctx.get("context") or "")
+
+
+def test_episode_preserves_caller_defined_meta_keys(client):
+    """A typed payload layered on top of an episode must survive the write.
+
+    Regression: ``_record_episode`` destructured only alternatives/outcome/decided_at and
+    ``graph.record_episode`` rebuilt ``meta.episode`` from just those, so ANY other key the
+    caller sent was dropped — silently, with a 200 and ``retrievable: true``. That is how the
+    agent-factory's signed-contract payload (kind/n_assertions/actions/signer, built by
+    ``contract_signature.build_signed_payload``) vanished, which made the plan gate's
+    ``R-CONTRACT-SIGNED`` rule unsatisfiable through the documented write path.
+    """
+    signed = {
+        "kind": "contract-signed",
+        "n_assertions": 37,
+        "actions": {"cut": 0, "merged": 1, "added": 0},
+        "signer": "evaluator",
+    }
+    res = client.post("/insights", json={
+        "insight": "contract-signed: the evaluator reviewed and signed the assertion contract.",
+        "category": "episodic",
+        "meta": {"episode": {**signed, "outcome": "signed"}},
+    })
+    assert res.status_code == 200, res.text
+
+    facts = client.get("/facts/by", params={"category": "episodic", "state": "any"}).json()
+    ep = next(
+        (f.get("meta") or {}).get("episode") or {}
+        for f in facts["facts"]
+        if ((f.get("meta") or {}).get("episode") or {}).get("kind") == "contract-signed"
+    )
+    # The caller's own keys round-trip verbatim...
+    assert ep["signer"] == "evaluator"
+    assert ep["n_assertions"] == 37
+    assert ep["actions"] == {"cut": 0, "merged": 1, "added": 0}
+    # ...alongside the canonical store-only fields the server still owns.
+    assert ep["outcome"] == "signed"
+    assert ep["decided_at"]
+
+
+def test_episode_canonical_fields_win_over_caller_keys(client):
+    """``extra`` must never let a caller spoof the server-owned canonical fields."""
+    res = client.post("/insights", json={
+        "insight": "Episode whose payload tries to override the canonical outcome.",
+        "category": "episodic",
+        "meta": {"episode": {"kind": "probe", "outcome": "succeeded",
+                             "alternatives": ["a"], "decided_at": "2020-01-01T00:00:00Z"}},
+    })
+    assert res.status_code == 200, res.text
+    facts = client.get("/facts/by", params={"category": "episodic", "state": "any"}).json()
+    ep = next(
+        (f.get("meta") or {}).get("episode") or {}
+        for f in facts["facts"]
+        if ((f.get("meta") or {}).get("episode") or {}).get("kind") == "probe"
+    )
+    # The caller's values for the canonical trio are honored through the NAMED params, not
+    # smuggled in via extra — so they land exactly once, with no duplicate/conflicting copy.
+    assert ep["outcome"] == "succeeded"
+    assert ep["alternatives"] == ["a"]
+    assert ep["decided_at"] == "2020-01-01T00:00:00Z"
+    assert ep["kind"] == "probe"

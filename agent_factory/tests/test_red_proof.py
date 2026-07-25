@@ -26,6 +26,10 @@ def _dangling_reject_case(case_id: str, red_proof: dict | None) -> EvalCase:
         id=case_id,
         component="plan_gate",
         input={
+            # A valid signed contract so plan-level R-CONTRACT-SIGNED (which fails CLOSED on absent
+            # evidence) closes cleanly and R-NO-DANGLING stays the ONLY firing rule — otherwise
+            # disabling R-NO-DANGLING would not flip the verdict and the red_proof would read BOGUS.
+            "contract": {"signed": True, "actions_recorded": True},
             "requirements": [
                 {
                     "id": "R1",

@@ -35,6 +35,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from agent_factory.contract_signature import actions_recorded, is_signed
 from agent_factory.gate import Reason, Verdict, register
 
 # Stable rule-IDs (KTD5). Each emitted reason carries the constant for the rule that
@@ -154,6 +155,28 @@ def _find_dep_cycle(graph: dict[str, list[str]]) -> list[str] | None:
     return None
 
 
+def _contract_evidence(contract: object) -> tuple[bool, bool] | None:
+    """Normalize threaded contract evidence to ``(signed, actions_recorded)``, or ``None`` when NO
+    usable contract evidence was supplied (absent / empty / not a dict).
+
+    Two shapes are accepted, so a caller can hand over whichever it has:
+
+    - the REDUCED form ``{"signed": bool, "actions_recorded": bool}`` that
+      ``tools/plan_gate_check.read_contract`` produces from the episode log; and
+    - a RAW ``contract_signature.build_signed_payload`` dict (or a read-back fact wrapping one in
+      ``meta.episode``), validated by the pure ``is_signed`` / ``actions_recorded`` helpers — so a
+      payload whose ``kind`` is not ``contract-signed`` reads as UNSIGNED rather than as valid.
+
+    ``None`` (the absent verdict) is what makes the rule fail CLOSED: the caller supplied nothing to
+    check, which is a rejection, not a stand-down.
+    """
+    if not isinstance(contract, dict) or not contract:
+        return None
+    if "signed" in contract or "actions_recorded" in contract:
+        return bool(contract.get("signed")), bool(contract.get("actions_recorded"))
+    return is_signed(contract), actions_recorded(contract)
+
+
 def evaluate_plan(
     requirements: list[Requirement],
     out_of_scope: list[str] | None = None,
@@ -178,11 +201,19 @@ def evaluate_plan(
     ``contract`` is the signed-contract evidence THREADED IN by the caller — this function
     stays PURE and never reads Praxis (feasibility finding: ``src/agent_factory`` has no
     client). ``tools/plan_gate_check.py`` reads the ``contract-signed`` episode via
-    ``hooks/_praxis`` and passes ``{"signed": bool, "actions_recorded": bool}`` here. This is
-    the ``R-CONTRACT-SIGNED`` rule: a blessed plan requires a signed contract whose evaluator
-    ACTIONS were recorded (anti-Goodhart — the count is informational, not the gate). ``None``
-    means the evidence was not supplied (the pure-eval / back-compat lane) and the rule stands
-    down; an explicit dict gates on ``signed`` + ``actions_recorded``.
+    ``hooks/_praxis`` and passes ``{"signed": bool, "actions_recorded": bool}`` here; a raw
+    ``build_signed_payload`` dict (``kind``/``n_assertions``/``actions``/``signer``) is also
+    accepted. This is the ``R-CONTRACT-SIGNED`` rule: a blessed plan requires a signed contract
+    whose evaluator ACTIONS were recorded (anti-Goodhart — the count is informational, never the
+    gate).
+
+    The rule FAILS CLOSED on missing evidence: ``contract=None``, ``{}``, a non-dict, or a
+    payload whose ``kind`` is not ``contract-signed`` all REJECT with ``R-CONTRACT-SIGNED``.
+    A plan that never had a contract negotiated at all is strictly MORE dangerous than one
+    signed lazily, so "no evidence supplied" can never be an admit path for a HARD bless
+    predicate (af-intake-plan's B9 must be unclearable while the gate rejects). The absent
+    case carries its own message so the operator can tell "no contract at all" apart from
+    "signed with no evaluator actions".
     """
     reasons: list[Reason] = []
     defined = {_norm(c) for r in requirements for c in r.defines}
@@ -304,20 +335,34 @@ def evaluate_plan(
     # --- R-CONTRACT-SIGNED (plan-level). A blessed plan must carry a signed contract whose evaluator
     # ACTIONS (cuts/merges/additions) were recorded — the anti-Goodhart bless predicate (KTD3). The
     # evidence is threaded IN by the caller (plan_gate_check reads the contract-signed episode); this
-    # pure function never reads Praxis. ``contract=None`` = evidence not supplied (pure-eval lane) ->
-    # rule stands down. An explicit dict gates: unsigned rejects; signed-but-no-actions (a padded count)
-    # rejects; the raw n_assertions count is informational only, never the gate.
-    if contract is not None:
-        if not bool(contract.get("signed")):
+    # pure function never reads Praxis. The rule FAILS CLOSED: absent/empty/wrong-kind evidence rejects
+    # (its own message), unsigned rejects, signed-but-no-actions (a padded count) rejects; the raw
+    # n_assertions count is informational only, never the gate.
+    evidence = _contract_evidence(contract)
+    if evidence is None:
+        reasons.append(
+            Reason(
+                R_CONTRACT_SIGNED,
+                "plan carries NO contract evidence at all — no contract-signed episode was supplied "
+                "to the gate, so the adversarial evaluator step never ran. This is a HARD bless "
+                "predicate and fails CLOSED: an un-negotiated plan is more dangerous than a lazily "
+                "signed one. Run the intake negotiation + signing step, then re-run the gate.",
+            )
+        )
+    else:
+        signed, acted = evidence
+        if not signed:
             reasons.append(
                 Reason(
                     R_CONTRACT_SIGNED,
-                    "plan has no signed contract — an evaluator (separate from the planner) must "
-                    "adversarially cut/merge/tighten the testable assertions and SIGN the result "
-                    "(a contract-signed episode). Run the intake negotiation + signing step.",
+                    "plan has no signed contract — the supplied evidence is unsigned or malformed "
+                    "(not a well-formed contract-signed payload with a signer). An evaluator "
+                    "(separate from the planner) must adversarially cut/merge/tighten the testable "
+                    "assertions and SIGN the result (a contract-signed episode). Run the intake "
+                    "negotiation + signing step.",
                 )
             )
-        elif not bool(contract.get("actions_recorded")):
+        elif not acted:
             reasons.append(
                 Reason(
                     R_CONTRACT_SIGNED,
@@ -364,7 +409,8 @@ class PlanGate:
             out_of_scope=input.get("out_of_scope", []),
             project=input.get("project"),
             # The signed-contract evidence, when a case supplies it. Absent -> None -> the
-            # R-CONTRACT-SIGNED rule stands down (existing cases are unaffected).
+            # R-CONTRACT-SIGNED rule REJECTS (it fails closed), so a case that means to exercise
+            # another rule's pass-path must supply a valid contract explicitly.
             contract=input.get("contract"),
         )
 

@@ -44,6 +44,13 @@ def test_cases_were_discovered():
 # Pinned admit/reject decision, fired rule-IDs, and reason message text for each
 # existing case. Captured from the pre-refactor string-reason gate so the refactor
 # (structured reasons via the registry) is provably non-breaking.
+_ABSENT_CONTRACT_MSG = (
+    "plan carries NO contract evidence at all — no contract-signed episode was supplied "
+    "to the gate, so the adversarial evaluator step never ran. This is a HARD bless "
+    "predicate and fails CLOSED: an un-negotiated plan is more dangerous than a lazily "
+    "signed one. Run the intake negotiation + signing step, then re-run the gate."
+)
+
 EXPECTED_VERDICTS = {
     "plan_gate_well_formed_admitted": {
         "admitted": True,
@@ -134,6 +141,45 @@ EXPECTED_VERDICTS = {
         "messages": [],
     },
     "plan_gate_contract_signed_admitted": {
+        "admitted": True,
+        "rule_ids": [],
+        "messages": [],
+    },
+    # R-CONTRACT-SIGNED fails CLOSED. Absent / empty evidence is NOT a stand-down: it rejects with
+    # its own "no contract at all" message, distinct from the signed-but-lazy message below, so the
+    # operator can tell which state the plan is in.
+    "plan_gate_contract_absent_rejected": {
+        "admitted": False,
+        "rule_ids": ["R-CONTRACT-SIGNED"],
+        "messages": [_ABSENT_CONTRACT_MSG],
+    },
+    "plan_gate_contract_empty_rejected": {
+        "admitted": False,
+        "rule_ids": ["R-CONTRACT-SIGNED"],
+        "messages": [_ABSENT_CONTRACT_MSG],
+    },
+    "plan_gate_contract_wrong_kind_rejected": {
+        "admitted": False,
+        "rule_ids": ["R-CONTRACT-SIGNED"],
+        "messages": [
+            "plan has no signed contract — the supplied evidence is unsigned or malformed "
+            "(not a well-formed contract-signed payload with a signer). An evaluator "
+            "(separate from the planner) must adversarially cut/merge/tighten the testable "
+            "assertions and SIGN the result (a contract-signed episode). Run the intake "
+            "negotiation + signing step.",
+        ],
+    },
+    "plan_gate_contract_zero_actions_rejected": {
+        "admitted": False,
+        "rule_ids": ["R-CONTRACT-SIGNED"],
+        "messages": [
+            "contract is signed but records NO evaluator actions (cuts/merges/additions) — a "
+            "signature over an unchanged draft is a padded-count Goodhart target, not real "
+            "adversarial review. The evaluator must actually falsify/cut/merge/tighten "
+            "assertions before signing.",
+        ],
+    },
+    "plan_gate_contract_raw_payload_admitted": {
         "admitted": True,
         "rule_ids": [],
         "messages": [],

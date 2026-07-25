@@ -137,6 +137,12 @@ _MAX_DERIVATION_DEPTH = 25
 # learning, it simply stops being rendered when its requirement or itself is rejected.
 RENDERS_EDGE = "renders"            # src=requirement fact, dst=surface fact
 SURFACE_CATEGORY = "surface"
+
+# The planning-session marker (the arming signal for the ``plan_completeness`` Stop hook, and the
+# plan-anchor the planning coverage contract pins onto). Exactly ONE per project, materialized
+# idempotently by ``ensure_planning_marker`` — the same find-or-create shape as ``ensure_surface``,
+# so the id stays server-generated and two concurrent intakes can never mint two markers.
+PLANNING_MARKER_CATEGORY = "planning-marker"
 REQUIREMENT_CATEGORY = "requirement"
 
 # Coverage "check" facts (agent-factory coverage spine). A free-form category like
@@ -762,6 +768,7 @@ class PostgresVectorGraph(SearchableGraph):
         outcome: str = "pending",
         derived_from: list[str] | None = None,
         decided_at: str | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> str | None:
         """Append an episode (a decision + its rationale) — store-only (gap H4).
 
@@ -772,6 +779,16 @@ class PostgresVectorGraph(SearchableGraph):
         directly via ``_add`` — bypassing the policy entirely — tagged
         ``category="episodic"`` with a ``meta.episode`` block, plus ``derived_from``
         edges (H5) to the facts the decision was based on.
+
+        ``extra`` carries CALLER-DEFINED keys through into the ``meta.episode`` block
+        verbatim. Without it this method whitelisted only the three canonical fields
+        below and silently DROPPED everything else, which broke every typed episode
+        payload built on top of episodes — notably the agent-factory's signed-contract
+        payload (``contract_signature.build_signed_payload``: ``kind`` /
+        ``n_assertions`` / ``actions`` / ``signer``), whose loss made the
+        ``R-CONTRACT-SIGNED`` plan-gate rule unsatisfiable through the normal write
+        path while the write still reported success. The canonical fields always WIN
+        over ``extra`` so a caller can never spoof ``outcome``/``decided_at``.
 
         Empty text is a no-op (returns ``None``). Returns the new fact id.
         """
@@ -784,6 +801,8 @@ class PostgresVectorGraph(SearchableGraph):
         decision.category = EPISODIC_CATEGORY
         decision.meta = {
             "episode": {
+                **{k: v for k, v in (extra or {}).items()
+                   if k not in ("decided_at", "alternatives", "outcome")},
                 "decided_at": decided_at or datetime.now(timezone.utc).isoformat(),
                 "alternatives": list(alternatives or []),
                 "outcome": outcome,
@@ -1748,6 +1767,50 @@ class PostgresVectorGraph(SearchableGraph):
     # edge add, an unbinding an edge remove, and every read is active-only (mirrors
     # ``active_edges``) so a rejected endpoint silently drops from coverage with no
     # stale hook. Surfaces are idempotent on (project, screen_id).
+    def find_planning_marker(self, project: str) -> Fact | None:
+        """The (at most one) planning-marker fact for ``project`` — any state, or None.
+
+        Idempotency key: scope=project, category="planning-marker". Read-only: a missing marker
+        means "no planning session has ever been stamped here", NOT an error — the Stop hook reads
+        it on every turn and must treat absence as "inactive".
+        """
+        key_pred, params = self._key_pred()
+        sql = (
+            f"SELECT {_FACT_READ_COLS} "
+            f"FROM {self._facts_table} WHERE {key_pred} "
+            "AND category = %s AND scope = %s"
+        )
+        params.extend([PLANNING_MARKER_CATEGORY, project])
+        sql += " ORDER BY created_at DESC LIMIT 1"
+        rows = self._conn.execute(sql, params).fetchall()
+        if not rows:
+            return None
+        return self._row_to_fact(rows[0])
+
+    def ensure_planning_marker(self, project: str) -> str:
+        """Idempotently materialize ``project``'s planning-marker fact and return its id.
+
+        Mirrors :meth:`ensure_surface`: find-or-create keyed on ``(scope=project,
+        category="planning-marker")`` with a server-generated id, so the marker the
+        ``plan_completeness`` hook arms on can be BOOTSTRAPPED on a greenfield project (nothing
+        else ever creates it) without inventing a caller-supplied id scheme. At most ONE marker per
+        project — doing the find-or-create here rather than in the hook closes the TOCTOU window
+        where two concurrent intakes would each create one and leave the plan-anchor ambiguous.
+
+        The session meta (``planning_owner``/``planning_at``) is written separately by the hook's
+        ``stamp_planning`` via ``set_meta``; this only guarantees the fact exists.
+        """
+        existing = self.find_planning_marker(project)
+        if existing is not None:
+            return existing.id
+        decision = WriteDecision(text=f"planning marker for {project}", state="active")
+        decision.source = None
+        decision.scope = project
+        decision.category = PLANNING_MARKER_CATEGORY
+        decision.meta = {"project": project}
+        decision.embedding = self._embed(f"planning marker for {project}")
+        return self._add(decision)  # store-only: a marker is not a semantic learning
+
     def _find_surface(self, project: str, screen_id: str) -> Fact | None:
         """The (at most one) surface fact for ``(project, screen_id)`` — any state.
 

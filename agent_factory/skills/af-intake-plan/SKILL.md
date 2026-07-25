@@ -247,14 +247,54 @@ Field rules:
 Extraction is the **highest-leverage error point** — a bad requirement spawns thousands of bad lines.
 Review leverage is inverse to distance-from-execution, so scrutiny concentrates here, at the plan.
 
-**Admit the whole batch via the raw fast-lane.** A fresh intake is a *bulk* admission:
-`praxis_add_insights(insights=[...], raw=True)` in ONE round-trip. `raw=True` still embeds each fact
-(retrievable) and still redacts secrets, but **skips Praxis dedup AND the per-item LLM conflict check** —
-which is what avoids the timeout the normal path hits on large batches (e.g. 71 items) and the dedup that
+### THE DEFAULT WRITE PATH IS DIRECT-TO-SNAPSHOT (never working memory)
+
+**Write every candidate STRAIGHT INTO `(space=<project>, snapshot="prd-<project>")`** by passing BOTH
+`space` and `snapshot` on the write. Working memory is **not** a staging area for a plan:
+
+```
+praxis_add_insight(
+  insight  = "<requirement — ONE semicolon-joined sentence>",
+  category = "requirement",
+  source   = "prd-<project>",
+  meta     = { "requirement_id": "R1", "build_state": "incomplete", "acceptance": "...", ... },
+  space    = "<project>",          # REQUIRED
+  snapshot = "prd-<project>",      # REQUIRED
+  raw      = True,                 # skip dedup + the per-item LLM conflict check
+)
+```
+
+**Why this is the default, and why the old working-memory flow is a footgun.** Working memory is a
+single shared graph per principal — it accumulates every prior project's facts (a real session found
+**208 unrelated facts** left over from two earlier intakes). The old flow ended in
+`save_snapshot(space, snapshot)`, which **OVERWRITES the destination snapshot with the whole of working
+memory**. That has two failure modes, both silent:
+- **Leak** — every unrelated working-memory fact is dumped into `prd-<project>`. They carry no
+  `source="prd-<project>"`, so `plan_gate_check` rejects on `R-HAS-SOURCE`… *if* you are lucky enough
+  for it to be caught there.
+- **CLOBBER (worse)** — if the plan was already authored into the snapshot, `save_snapshot` **replaces
+  it with working memory and destroys the plan**, along with the planning marker fact living on it.
+
+Direct-to-snapshot has neither failure mode: the facts are already where the build reads, nothing is
+staged, and no overwrite is ever needed.
+
+**`build_state="incomplete"` on the write is what makes it a TICKET**, and the server routes a
+requirement ticket through an **identity-keyed upsert** (keyed on `meta.requirement_id`, redact-only, NO
+text-dedup) — so each write lands as a distinct fact (`action:"added"`) and can never be text-merged
+into a similar existing ticket. Setting `meta.requirement_id` makes a re-file update that one ticket in
+place, which is what makes the whole extraction **idempotent and resumable**. Every record MUST carry
+`source="prd-<project>"`; check each result's `ok`/`id`/`action`.
+
+`raw=True` still embeds each fact (retrievable) and still redacts secrets, but **skips Praxis dedup AND
+the per-item LLM conflict check** — avoiding the timeout the normal path hits at scale and the dedup that
 wrongly collapses near-duplicate requirements. **You own clean, non-conflicting data on this path** —
-which is why it is only safe HERE: Step-1 Reconcile already deduped, and the **audit's cold-eyes conflict
-pass (Part B) is the contradiction net.** Every record MUST carry `source="prd-<project>"`; each result
-returns `ok`/`id`/`action`/`retrievable` — a bad item errors without aborting the rest, so check them.
+safe only because Step-1 Reconcile already deduped and the **audit's cold-eyes conflict pass (Part B) is
+the contradiction net.**
+
+> **Bulk caveat.** `praxis_add_insights` (the bulk sibling) currently exposes **no `space`/`snapshot`
+> parameter**, so it can only write to working memory and MUST NOT be used to admit a plan. Until it
+> accepts them, admit with per-item `praxis_add_insight(..., space=, snapshot=, raw=True)` calls —
+> issue them in parallel batches to keep the round-trips cheap.
 
 > **Raw-bulk caveat for contradictions.** Because `raw=True` runs NO conflict detection,
 > `praxis_get_contradictions` is empty *by construction* — that emptiness is NOT evidence of consistency.
@@ -479,7 +519,10 @@ praxis_record_episode(
 enforced by `plan_gate_check` at B6/B9) is "**signed AND ≥1 real evaluator action recorded**" — a
 signature over an unchanged draft (all-zero actions) does NOT pass. The count is recorded for visibility
 only; a requirement below ~10 concrete assertions is **FLAGGED for the evaluator** (`below_floor`), never
-hard-rejected.
+hard-rejected. The predicate **fails CLOSED**: **no contract at all** (nothing threaded into the gate, an
+empty payload, or a payload whose `kind` is not `contract-signed`) also REJECTS, with its own reason text
+so you can tell "never negotiated" apart from "signed lazily". A plan that never had a contract signed is
+the *more* dangerous state, so it can never be the admit path.
 
 ## B2 — Near-duplicate / overlap challenges WRITE BACK to the graph
 
@@ -852,14 +895,35 @@ checked **live from Praxis**:
 and the gate is reachable, say so and STOP asking. Beware the under-specification trap: zero
 contradictions on a thin plan is not "done," it's "nothing was claimed yet."
 
-When the gate blesses: **`save_snapshot(space="<project>", snapshot="prd-<project>")`** (PRD-only
-— mounts aren't carried), then **CLEAR the planning marker** (`_ticket_state.clear_planning(project,
-owner)`) so the `plan_completeness` hook goes inert for this session. This dumps working memory into the
-`prd-<project>` snapshot in the project's space. Render the prose PRD from the facts for human review. This snapshot is the durable plan; the build
-loop consumes it later. Editing later = `load_snapshot(space="<project>", snapshot="prd-<project>",
-mode="replace")` → edit → re-save, or use Amend mode. (The `prd-<project>` snapshot is MUTABLE — the
-build loop reads and writes ticket state on it directly; read-only applies only to mounts and load/dump
-copy semantics.)
+### Blessing a plan that already lives in the snapshot (the DEFAULT)
+
+Because Step 2 writes candidates **directly into `prd-<project>`**, the plan is *already* durable when
+the gate clears. There is nothing to dump, so **blessing is a VERIFY-then-RELEASE, not a save**:
+
+1. **VERIFY the plan is where the build reads** — `praxis_facts_by(category="requirement",
+   space="<project>", snapshot="prd-<project>")` returns the expected count, and
+   `praxis_incomplete_requirements("<project>")` (**BARE** name) lists the tickets. That readback IS the
+   durability proof.
+2. **DO NOT CALL `save_snapshot`.** On this path it is not a no-op — it **OVERWRITES `prd-<project>`
+   with working memory**, destroying the plan you just authored and the planning marker fact on it.
+   Calling it here is a data-loss bug, not a belt-and-braces step.
+3. **CLEAR the planning marker** — `_ticket_state.clear_planning(project, owner)` — so the
+   `plan_completeness` hook goes inert for this session.
+4. **Render the prose PRD** from the facts for human review.
+
+> **Legacy path (only if the plan was authored in working memory).** If — and only if — this intake
+> staged candidates in working memory, bless with `save_snapshot(space="<project>",
+> snapshot="prd-<project>")` (PRD-only; mounts aren't carried) BEFORE clearing the marker, and first
+> confirm working memory contains **nothing but** this plan's facts (`praxis_list_graph`) — otherwise
+> the save leaks every unrelated fact into the plan. Prefer converting to the direct-to-snapshot path
+> instead of auditing working memory.
+
+The `prd-<project>` snapshot is the durable plan; the build loop consumes it later. **Editing later is
+an in-place write to the snapshot** — `praxis_add_insight`/`praxis_edit_fact` with `space`/`snapshot`
+set, or Amend mode (Part C). Do NOT round-trip through
+`load_snapshot(mode="replace")` → edit → `save_snapshot` unless you intend to replace the entire
+snapshot from working memory. (The `prd-<project>` snapshot is MUTABLE — the build loop reads and writes
+ticket state on it directly; read-only applies only to mounts and load/dump copy semantics.)
 
 ---
 
@@ -981,6 +1045,12 @@ apply is the build's fresh RESOLVE query (tag ∪ "*" ∪ surface), same as ever
   the contradiction net).
 - **Never treat a write timeout as a failure** — the write usually landed; **read back** (`list_graph` /
   `get_context`) before retrying, or you'll create duplicates.
+- **Never admit a plan through working memory** — write candidates DIRECTLY into
+  `(space=<project>, snapshot="prd-<project>")` by passing both `space` and `snapshot` (Step 2). Working
+  memory is a shared, dirty graph; staging a plan there risks leaking unrelated facts into the plan.
+- **Never call `save_snapshot` on a plan that was authored directly into the snapshot** — it OVERWRITES
+  the snapshot with working memory, destroying the plan and the planning marker on it. On the default
+  path, bless is a readback (`facts_by` / `incomplete_requirements`) + `clear_planning`, never a save.
 - **Never `clear_graph` without a confirmed save-before-clear snapshot**, and never let mounted reference
   knowledge leak into the `prd-<project>` snapshot.
 - **Never let the agent that drafted a requirement be its only skeptic** — the audit and the plan panel

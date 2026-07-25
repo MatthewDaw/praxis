@@ -151,6 +151,37 @@ def test_add_insights_batch_posts_list_and_summarizes(monkeypatch):
     assert captured["headers"]["X-Praxis-Org"] == "acme"
 
 
+def test_add_insights_batch_snapshot_target_emits_space_snapshot_headers(monkeypatch):
+    """Bulk parity with add_insight: a batch aimed at an ORG-SHARED snapshot must actually
+    SEND X-Praxis-Space/Snapshot. Without them the backend silently writes working memory
+    and still reports every item as added, so a whole plan admitted via the raw fast-lane
+    (af-intake-plan Step 2) vanishes from prd-<project>."""
+    _patch_identity(monkeypatch)
+    captured = {}
+
+    def fake_post(url, json, headers, timeout=None):
+        captured["headers"] = headers
+        return _Resp({"count": 1, "results": [{"ok": True, "id": "f1", "action": "added"}]})
+
+    monkeypatch.setattr(server.httpx, "post", fake_post)
+
+    server.praxis_add_insights(
+        [{"insight": "R1: the home screen lists today's tasks", "source": "prd-acme"}],
+        raw=True, space="acme", snapshot="prd-acme",
+    )
+    assert captured["headers"]["X-Praxis-Space"] == "acme"
+    assert captured["headers"]["X-Praxis-Snapshot"] == "prd-acme"
+
+    # No target -> working memory, no target headers.
+    server.praxis_add_insights([{"insight": "a personal note"}])
+    assert "X-Praxis-Space" not in captured["headers"]
+    assert "X-Praxis-Snapshot" not in captured["headers"]
+
+    # A partial reference fails closed rather than silently writing working memory.
+    with pytest.raises(ValueError):
+        server.praxis_add_insights([{"insight": "x"}], space="acme")
+
+
 def test_add_insights_batch_rejects_empty_list(monkeypatch):
     _patch_identity(monkeypatch)
     monkeypatch.setattr(

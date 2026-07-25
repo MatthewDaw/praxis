@@ -20,6 +20,11 @@ from agent_factory.plan_gate import (
 )
 
 
+# A valid signed contract. R-CONTRACT-SIGNED is plan-level and now FAILS CLOSED on absent evidence,
+# so every case here supplies it to keep the decision rules the only ones under test.
+_SIGNED = {"signed": True, "actions_recorded": True}
+
+
 def _decision(verify: str, depends_on=None) -> Requirement:
     return Requirement(
         id="D1",
@@ -49,7 +54,8 @@ def test_malformed_decision_fires_both_rules():
     # AND an impl ticket depends_on it — the full anti-pattern. Both decision rules must fire.
     decision = _decision(verify="automated", depends_on=[])
     decision.acceptance = "cdk synth emits three UserPools."
-    verdict = evaluate_plan([decision, _impl(depends_on=["D1"])], project="sotos")
+    verdict = evaluate_plan([decision, _impl(depends_on=["D1"])], project="sotos",
+                            contract=_SIGNED)
 
     assert not verdict.admitted
     assert R_DECISION_NOT_END_STATE in verdict.rule_ids
@@ -58,7 +64,8 @@ def test_malformed_decision_fires_both_rules():
 
 def test_correctly_modeled_decision_is_admitted():
     # verify=manual, decision-level acceptance, and NO ticket depends_on the decision.
-    verdict = evaluate_plan([_decision(verify="manual"), _impl(depends_on=[])], project="sotos")
+    verdict = evaluate_plan([_decision(verify="manual"), _impl(depends_on=[])], project="sotos",
+                            contract=_SIGNED)
 
     assert verdict.admitted
     assert verdict.rule_ids == []
@@ -66,7 +73,8 @@ def test_correctly_modeled_decision_is_admitted():
 
 def test_decision_not_end_state_fires_alone():
     # verify=automated decision but NOTHING depends_on it: isolates R-DECISION-NOT-END-STATE.
-    verdict = evaluate_plan([_decision(verify="automated"), _impl(depends_on=[])], project="sotos")
+    verdict = evaluate_plan([_decision(verify="automated"), _impl(depends_on=[])], project="sotos",
+                            contract=_SIGNED)
 
     assert not verdict.admitted
     assert verdict.rule_ids == [R_DECISION_NOT_END_STATE]
@@ -75,7 +83,8 @@ def test_decision_not_end_state_fires_alone():
 def test_no_impl_depends_on_decision_fires_alone():
     # Decision is otherwise well-formed (verify=manual) but an impl ticket depends_on it:
     # isolates R-NO-IMPL-DEPENDS-ON-DECISION.
-    verdict = evaluate_plan([_decision(verify="manual"), _impl(depends_on=["D1"])], project="sotos")
+    verdict = evaluate_plan([_decision(verify="manual"), _impl(depends_on=["D1"])], project="sotos",
+                            contract=_SIGNED)
 
     assert not verdict.admitted
     assert verdict.rule_ids == [R_NO_IMPL_DEPENDS_ON_DECISION]
@@ -104,6 +113,7 @@ def test_marker_only_decision_fires_both_rules():
     verdict = evaluate_plan(
         [_impl_tagged_decision(marker="human-decided-2026-06"), _impl(depends_on=["D1"])],
         project="sotos",
+        contract=_SIGNED,
     )
 
     assert not verdict.admitted
@@ -117,6 +127,7 @@ def test_same_shape_without_marker_or_tag_admits():
     verdict = evaluate_plan(
         [_impl_tagged_decision(marker=""), _impl(depends_on=["D1"])],
         project="sotos",
+        contract=_SIGNED,
     )
 
     assert verdict.admitted

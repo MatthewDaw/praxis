@@ -170,12 +170,20 @@ def _record_episode(graph: PostgresVectorGraph, insight: str, body: dict[str, An
     written fact is fetchable immediately, since writes commit on autocommit.
     """
     ep = (body.get("meta") or {}).get("episode") or {}
+    # Pass the caller's OTHER episode keys through instead of dropping them. This used to
+    # destructure only the three canonical fields, so a typed payload layered on top of an
+    # episode lost its own keys with no error and a `retrievable: true` response — which is
+    # how the agent-factory's signed-contract payload (kind/n_assertions/actions/signer)
+    # vanished and made the R-CONTRACT-SIGNED plan-gate rule unsatisfiable.
+    extra = {k: v for k, v in ep.items()
+             if k not in ("alternatives", "outcome", "decided_at")}
     fid = graph.record_episode(
         insight,
         alternatives=ep.get("alternatives"),
         outcome=ep.get("outcome", "pending"),
         decided_at=ep.get("decided_at"),
         derived_from=body.get("derivedFrom"),
+        extra=extra or None,
     )
     return {
         "summary": "recorded episode",
@@ -2143,6 +2151,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Bulk-write many fully-approved insights in one synchronous round-trip (H8).
 
@@ -2176,14 +2185,23 @@ def create_app(conn: Any | None = None) -> FastAPI:
         conflict checks lands quickly. ``onConflict`` is ignored when ``raw`` is set.
         The embedding prefetch below still runs, so the write stays cheap on the
         embedder too.
+
+        ``X-Praxis-Space`` + ``X-Praxis-Snapshot`` are honored exactly as on
+        ``POST /insights`` (see ``snapshot_target``/``graph_for``): with both
+        headers the whole batch is written to that org-shared snapshot; with
+        neither (or only one) it goes to the requester's working memory. Getting
+        this wrong is silent — every item still reports ``ok``/``added`` — so the
+        target must be threaded into the graph the batch writer commits on, and
+        into the worker clones it derives from it (``sibling`` carries
+        ``facts_table``/``space``/``snapshot`` across).
         """
         insights = body.get("insights")
         if not isinstance(insights, list) or not insights:
             raise HTTPException(status_code=400, detail="insights must be a non-empty list")
-        # The batch lane is the bulk personal-knowledge (working-memory) path; a CHECK must be
-        # authored into a section snapshot (see _require_snapshot_for_check), which this endpoint
-        # does not target — so refuse a batched check rather than let it land invisibly. Author
-        # checks one at a time via POST /insights with X-Praxis-Space/Snapshot.
+        # A CHECK is identity-keyed on meta.check_id and must go through the redact-only
+        # _check_upsert (see POST /insights) — the batch lane runs the dedup/conflict write
+        # path instead, which silently MERGES distinct checks and drops their `run`. Refuse a
+        # batched check outright (this holds whether or not the request targets a snapshot).
         if any(
             isinstance(it, dict) and str(it.get("category") or "").strip() == CHECK_CATEGORY
             for it in insights
@@ -2191,9 +2209,9 @@ def create_app(conn: Any | None = None) -> FastAPI:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "category='check' facts cannot be batch-written to working memory — author "
-                    "each check via POST /insights targeting a 'building-validation'/'planning-"
-                    "validation' snapshot (X-Praxis-Space + X-Praxis-Snapshot)."
+                    "category='check' facts cannot be batch-written — author each check via "
+                    "POST /insights targeting a 'building-validation'/'planning-validation' "
+                    "snapshot (X-Praxis-Space + X-Praxis-Snapshot)."
                 ),
             )
         on_conflict = str(body.get("onConflict") or "auto_resolve").strip().lower()
@@ -2211,7 +2229,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         # reduces write-time safety (skips dedup + the conflict/claim policy).
         raw = body.get("raw", False) is True
         policy = [Redactor()] if raw else _insight_write_policy(on_conflict)
-        graph = PostgresVectorGraph(conn, org, uid, policy=policy)
+        graph = graph_for(org, uid, target, policy=policy)
         # Memoize + pre-embed every item's text in ONE batch call up front so the
         # parallel decides (and any re-decide) resolve embeddings from the memo
         # instead of paying N round-trips. The memo is lock-guarded so the workers
@@ -2544,6 +2562,31 @@ def create_app(conn: Any | None = None) -> FastAPI:
         """
         deps = live_graph(org, uid).dependents(fact_id)
         return {"factId": fact_id, "dependents": [_derivation_view(f) for f in deps]}
+
+    # --- planning-session marker (factory plan_completeness gate) -----------
+    @app.post("/planning-marker")
+    def ensure_planning_marker(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+        uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
+    ) -> dict[str, Any]:
+        """Idempotently ensure ``project``'s planning-marker fact exists; return its id.
+
+        The marker is the arming signal for the factory's ``plan_completeness`` Stop hook and the
+        anchor its planning coverage contract pins onto. Nothing else creates it, so a greenfield
+        project had no way to stamp one — this is that bootstrap. Find-or-create is done inside the
+        graph (keyed ``scope=project, category="planning-marker"``) so concurrent intakes cannot
+        mint two markers. Pass the ``(space, snapshot)`` header pair to place it in the project's
+        ``prd-<project>`` snapshot, where the hook reads it.
+        """
+        project = str(body.get("project") or "").strip()
+        if not project:
+            raise HTTPException(status_code=400, detail="body must include 'project'")
+        g = graph_for(org, uid, target)
+        marker_id = g.ensure_planning_marker(project)
+        return {"id": marker_id, "project": project}
 
     # --- requirement RENDERS surface (factory completeness gate) ------------
     @app.post("/surfaces")

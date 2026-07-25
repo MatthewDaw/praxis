@@ -522,6 +522,8 @@ def praxis_add_insights(
     insights: list[dict],
     on_conflict: str = "auto_resolve",
     raw: bool = False,
+    space: str | None = None,
+    snapshot: str | None = None,
 ) -> str:
     """Store many already-distilled insights in ONE call (bulk sibling of praxis_add_insight).
 
@@ -530,6 +532,14 @@ def praxis_add_insights(
     ``praxis_add_insight`` repeatedly — it's one round-trip and the backend writes
     them serially, which is both faster and gentler on the write path than firing
     many concurrent single-insight calls.
+
+    By default the whole batch lands in your working memory. Pass BOTH ``space`` and
+    ``snapshot`` to write it into an ORG-SHARED snapshot instead — the same factory seam
+    as ``praxis_add_insight`` (e.g. a whole plan into ``(space=<project>,
+    snapshot="prd-<project>")``, which is where the af-build / af-intake hooks READ).
+    Passing exactly one of the pair is a misconfiguration and raises. Checks
+    (``category="check"``) are the one exception: they are identity-keyed and must be
+    authored one at a time via ``praxis_add_insight``, so the backend rejects a batched check.
 
     ``insights`` is a list of objects, each shaped like a ``praxis_add_insight``
     call: ``{"insight": str, "scope"?: str, "category"?: str, "source"?: str,
@@ -567,7 +577,7 @@ def praxis_add_insights(
         resp = httpx.post(
             f"{identity.api_base()}/insights/batch",
             json=body,
-            headers=_headers(),
+            headers=_headers(space, snapshot),
             timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
@@ -1760,6 +1770,16 @@ def praxis_create_space(space_id: str, name: str | None = None) -> str:
     standalone spaces. This does NOT change your working memory or select anything — use
     ``praxis_select_space`` to set a local
     default for the ``space`` parameter of snapshot / mount ops.
+
+    AGENT-FACTORY PROJECTS — do NOT slugify the name. For a space that the ``/af-`` skills
+    will use, ``space_id`` MUST EQUAL the factory's bare PROJECT name character for character:
+    the repo directory basename VERBATIM (underscores and case preserved), or ``FACTORY_PROJECT``
+    when it is pinned. ``_ticket_state.project_ref`` resolves every plan/check read to
+    ``space == the bare project name``, so a hyphen-slugified space (``acme-store`` for a repo at
+    ``.../acme_store``) is a SILENT failure: the space exists, but no gate ever reads it and the
+    first ``/af-intake-plan`` dies with ``unknown space 'acme_store'``. The Praxis ORG id is
+    separately slugified to hyphens — org and space names legitimately differ; do not reuse one
+    for the other.
     """
     if (hint := _not_ready()) is not None:
         return hint
