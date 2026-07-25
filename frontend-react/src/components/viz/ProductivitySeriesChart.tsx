@@ -26,12 +26,14 @@ export interface ProductivityDisclosures {
   ticketHistoryStart?: string;
 }
 
-/** Caveats inherent to how S1-S3 are computed (D5) and how buckets are windowed —
+/** Caveats inherent to how S1-S3 are computed (D5/D26/R26) and how buckets are windowed —
  * true of every load, so these belong in the always-visible footnote strip rather
  * than behind the per-load "ⓘ" affordance. */
 export const DEFAULT_STATIC_CAVEATS: string[] = [
   "Lines added/deleted count the default branch only — forks and other branches are excluded.",
   "Bucket boundaries are fixed to America/Denver and never vary by viewer.",
+  "Squash-merged commits are attributed to the merging author, not the writing author.",
+  "Private repositories owned by other individuals are excluded.",
 ];
 
 const EMPTY_DISCLOSURES: ProductivityDisclosures = {

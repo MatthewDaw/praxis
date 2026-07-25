@@ -73,6 +73,23 @@ describe("ProductivitySeriesChart disclosures (R24)", () => {
     expect(strip).not.toHaveTextContent("2026-06-01");
   });
 
+  it("states the default-branch-only, fork-exclusion, squash-attribution and other-owner-exclusion caveats (R26)", () => {
+    render(
+      <ProductivitySeriesChart
+        series={SERIES}
+        disclosures={{ staticCaveats: DEFAULT_STATIC_CAVEATS, perLoadConditions: [] }}
+      />,
+    );
+
+    const strip = screen.getByTestId("productivity-footnote-strip");
+    expect(strip).toHaveTextContent(/default[- ]branch/i);
+    expect(strip).toHaveTextContent(/fork/i);
+    expect(strip).toHaveTextContent(/squash/i);
+    expect(strip).toHaveTextContent(/merging author/i);
+    expect(strip).toHaveTextContent(/private repositories/i);
+    expect(strip).toHaveTextContent(/other individuals|owned by other/i);
+  });
+
   it("never drops a disclosure: no condition, caveat, or the start date, is entirely absent from the DOM", async () => {
     render(<ProductivitySeriesChart series={SERIES} disclosures={FULL_DISCLOSURES} />);
 
