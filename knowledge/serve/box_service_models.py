@@ -39,7 +39,14 @@ OPEN_JOB_STATES = frozenset(
 @dataclass
 class Job:
     """A box-service job row (R1, R31). ``session_id`` and ``run_owner`` are
-    ``None`` until the job has been launched at least once."""
+    ``None`` until the job has been launched at least once.
+
+    ``run_owner`` doubles as the claim lease's holder id (R2); ``claim_heartbeat_at``
+    and ``claim_lease_ttl`` are the heartbeat and expiry that, together with the
+    holder id, make the job claim one of the system's lease types (R63) — set
+    together by :meth:`box_service_queue.JobQueue.claim`/``heartbeat`` and cleared
+    on release, never assigned individually.
+    """
 
     id: str
     project: str
@@ -51,6 +58,8 @@ class Job:
     max_attempts: int = 3
     resumable: bool = False
     failure_reason: str | None = None
+    claim_heartbeat_at: float | None = None
+    claim_lease_ttl: float | None = None
 
     def is_open(self) -> bool:
         return self.state in OPEN_JOB_STATES
