@@ -61,3 +61,24 @@ exclusion for a different tracked pre-existing bug. Remove entries here once eac
 is actually fixed by whichever ticket owns that surface; do not leave this permanently. This
 ticket's own new tests (`knowledge/serve/tests/test_job_resume.py`) and touched files
 (`knowledge/serve/box_service_resume.py`) carry none of this drift.
+
+## Environment-dependent additions (R57, verified 2026-07-26)
+
+The following also fail on this box, independent of any remote-jobs/box-service change (confirmed
+by stashing `job_authz.py` and re-running each alone): every one raises
+`urllib.error.HTTPError: HTTP Error 402: Payment Required` from an external embedding-provider call
+made during ingest/resolve. This is a sandbox credential/billing limit, not a code regression —
+`job_authz.py` (the file R57 touches) has no import path anywhere near ingest or embeddings.
+
+- `test_server.py::test_ingest_derived_from_creates_edge`
+- `test_server.py::test_insights_surface_mode_keeps_both_and_surfaces_contradiction`
+- `test_server.py::test_edit_surface_mode_raises_resolvable_contradiction`
+- `test_server.py::test_edit_auto_resolve_supersedes_clashing_fact`
+- `test_server.py::test_resolve_keep_all_keeps_both_active_and_clears_pending`
+- `test_server.py::test_resolve_keep_none_rejects_all_and_clears_pending`
+- `test_server.py::test_resolve_keep_subset_of_three`
+- `test_server.py::test_resolve_rejects_bad_keep_id`
+- `test_server.py::test_batch_ingest_happy_path`
+- `test_server.py::test_batch_ingest_persists_writer_metadata`
+
+Remove this section once the embedding-provider credential/billing issue is resolved on the box.
