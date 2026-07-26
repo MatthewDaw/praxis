@@ -11,6 +11,7 @@ import {
   buildResolveBody,
   contradictionPairId,
   normalizeResolution,
+  parseProductivityResponse,
 } from "./contract";
 
 const REPO_ROOT = join(
@@ -98,6 +99,39 @@ describe("contract v1 fixtures", () => {
     expect(payload.files.length).toBeGreaterThanOrEqual(1);
     expect(payload.files[0].name).toBeTruthy();
     expect(typeof payload.files[0].content).toBe("string");
+  });
+
+  it("parses productivity-response.json into the typed contract shape", () => {
+    const payload = loadFixture("productivity-response.json");
+    const parsed = parseProductivityResponse(payload);
+    expect(parsed.range).toBe("week");
+    expect(parsed.truncated).toBe(false);
+    expect(parsed.series.linesAdded).toEqual([
+      { bucketStart: "2026-07-18T00:00:00+00:00", value: 120 },
+    ]);
+    expect(parsed.series.linesDeleted[0].value).toBe(40);
+    expect(parsed.series.netLines[0].value).toBe(80);
+    expect(parsed.series.ticketsCompleted[0].value).toBe(3);
+  });
+
+  it("parses a partial-failure productivity response's per-series errors", () => {
+    const parsed = parseProductivityResponse({
+      range: "week",
+      truncated: false,
+      series: {
+        s1_lines_added: [{ bucket_start: "2026-07-18T00:00:00+00:00", value: 120 }],
+        s2_lines_deleted: [{ bucket_start: "2026-07-18T00:00:00+00:00", value: 40 }],
+        s3_net_lines: [{ bucket_start: "2026-07-18T00:00:00+00:00", value: 80 }],
+        s4_tickets_completed: [],
+      },
+      errors: {
+        s4_tickets_completed: { reason: "boom: ticket store unavailable" },
+      },
+    });
+    expect(parsed.series.linesAdded[0].value).toBe(120);
+    expect(parsed.series.ticketsCompleted).toEqual([]);
+    expect(parsed.errors.ticketsCompleted).toBe("boom: ticket store unavailable");
+    expect(parsed.errors.linesAdded).toBeUndefined();
   });
 
   it("validates ingest-jsonl-response.json shape", () => {

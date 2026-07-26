@@ -110,3 +110,150 @@ export function buildCustomResolveBody(customText: string): { customText: string
 export function contradictionPairId(primaryId: string, rivalId: string): string {
   return `${primaryId}__${rivalId}`;
 }
+
+// --- GET /productivity (R3) request/response contract ---
+
+export const PRODUCTIVITY_RANGES = [
+  "day",
+  "week",
+  "4weeks",
+  "12months",
+  "alltime",
+] as const;
+
+export type ProductivityRange = (typeof PRODUCTIVITY_RANGES)[number];
+
+export interface ProductivitySeriesPoint {
+  bucketStart: string;
+  value: number;
+}
+
+export interface ProductivitySeries {
+  linesAdded: ProductivitySeriesPoint[];
+  linesDeleted: ProductivitySeriesPoint[];
+  netLines: ProductivitySeriesPoint[];
+  ticketsCompleted: ProductivitySeriesPoint[];
+}
+
+/**
+ * The three ways the backend's GitHub token can fail the panel (R21): absent
+ * entirely, rejected outright by GitHub (invalid/revoked/expired), or valid but
+ * missing the permission (`Contents: Read`) the query needs. When present on a
+ * `GET /productivity` response, `series` carries no data for that request.
+ */
+export type ProductivityKeyStatus = "missing" | "expired" | "insufficient_scope";
+
+const PRODUCTIVITY_KEY_STATUSES: ReadonlySet<string> = new Set([
+  "missing",
+  "expired",
+  "insufficient_scope",
+]);
+
+/** Per-series failure for a productivity response's independently-failing data sources
+ * (the git series S1-S3 vs. the ticket series S4): keyed by the same camelCase key as
+ * `ProductivitySeries`, present only for a series that errored. */
+export type ProductivitySeriesErrors = Partial<Record<keyof ProductivitySeries, string>>;
+
+export interface ProductivityResponse {
+  range: string;
+  truncated: boolean;
+  /** ISO timestamp the series was computed at (set on both a fresh compute and a
+   * served-stale fallback, where it is the ORIGINAL compute time, not now). */
+  computedAt: string | null;
+  /** True when this response is a cached fallback served after a live GitHub fetch
+   * failed or was rate-limited (R22), rather than the just-computed series. */
+  stale: boolean;
+  /** True when the fetch failure behind a `stale` response was specifically a
+   * GitHub rate limit (vs. a timeout/upstream error). */
+  rateLimited: boolean;
+  reposDiscovered: number;
+  spacesCount: number;
+  /** Server-reported bucket granularity for the requested range (R8/R16), e.g.
+   * "hourly"/"daily"/"weekly"/"monthly" — drives the chart's x-axis relabeling. */
+  bucketUnit: string;
+  series: ProductivitySeries;
+  /** The earliest `finished_at` ever recorded org-wide (S4's instrumentation
+   * start date, R27/D27) — `null` when no ticket has ever finished. A range
+   * whose start precedes this date means S4 has no real data before it: the
+   * chart must grey that span and annotate it, never plot a truthful zero. */
+  s4InstrumentationDate: string | null;
+  /** Set only when the backend's GitHub token is missing/expired/insufficient-scope (R21). */
+  keyStatus?: ProductivityKeyStatus;
+  errors: ProductivitySeriesErrors;
+}
+
+function toSeriesPoints(raw: unknown): ProductivitySeriesPoint[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((point) => {
+    const row = (point ?? {}) as Record<string, unknown>;
+    const bucketStart =
+      typeof row.bucket_start === "string"
+        ? row.bucket_start
+        : typeof row.bucketStart === "string"
+          ? row.bucketStart
+          : "";
+    const value = typeof row.value === "number" ? row.value : Number(row.value ?? 0);
+    return { bucketStart, value };
+  });
+}
+
+// Maps each raw backend series key to its camelCase contract key, reused for both the
+// series values themselves and their per-series `errors` (same key set, same shape).
+const SERIES_KEY_BY_RAW: Record<string, keyof ProductivitySeries> = {
+  s1_lines_added: "linesAdded",
+  s2_lines_deleted: "linesDeleted",
+  s3_net_lines: "netLines",
+  s4_tickets_completed: "ticketsCompleted",
+};
+
+/** Parse a `GET /productivity` response body into the typed contract shape (R3/R33/R21). */
+export function parseProductivityResponse(payload: unknown): ProductivityResponse {
+  const root = (payload ?? {}) as Record<string, unknown>;
+  const series = (root.series ?? {}) as Record<string, unknown>;
+  const computedAt =
+    typeof root.computed_at === "string"
+      ? root.computed_at
+      : typeof root.computedAt === "string"
+        ? root.computedAt
+        : null;
+  const keyStatus =
+    typeof root.key_status === "string" && PRODUCTIVITY_KEY_STATUSES.has(root.key_status)
+      ? (root.key_status as ProductivityKeyStatus)
+      : undefined;
+  const rawErrors = (root.errors ?? {}) as Record<string, unknown>;
+  const errors: ProductivitySeriesErrors = {};
+  for (const [rawKey, key] of Object.entries(SERIES_KEY_BY_RAW)) {
+    const entry = rawErrors[rawKey] as Record<string, unknown> | undefined;
+    const reason = entry && typeof entry.reason === "string" ? entry.reason : undefined;
+    if (reason) errors[key] = reason;
+  }
+  return {
+    range: typeof root.range === "string" ? root.range : "",
+    truncated: Boolean(root.truncated),
+    computedAt,
+    stale: Boolean(root.stale),
+    rateLimited: Boolean(root.rate_limited ?? root.rateLimited),
+    reposDiscovered: Number(root.repos_discovered ?? 0),
+    spacesCount: Number(root.spaces_count ?? 0),
+    bucketUnit: typeof root.bucket_unit === "string" ? root.bucket_unit : "",
+    series: {
+      linesAdded: toSeriesPoints(series.s1_lines_added),
+      linesDeleted: toSeriesPoints(series.s2_lines_deleted),
+      netLines: toSeriesPoints(series.s3_net_lines),
+      ticketsCompleted: toSeriesPoints(series.s4_tickets_completed),
+    },
+    s4InstrumentationDate:
+      typeof root.s4_instrumentation_date === "string" ? root.s4_instrumentation_date : null,
+    ...(keyStatus ? { keyStatus } : {}),
+    errors,
+  };
+}
+
+// Ranges of four weeks or less always force-fetch on Refresh; the 12-month and
+// all-time ranges reuse the long-TTL cache unless the explicit force affordance
+// is used (the ticket's stated force-fetch rule).
+const SHORT_TTL_RANGES: readonly ProductivityRange[] = ["day", "week", "4weeks"];
+
+export function isShortTtlRange(range: ProductivityRange): boolean {
+  return (SHORT_TTL_RANGES as readonly string[]).includes(range);
+}

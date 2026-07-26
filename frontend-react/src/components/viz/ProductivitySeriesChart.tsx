@@ -1,0 +1,334 @@
+import { useState } from "react";
+import {
+  CartesianGrid,
+  ComposedChart,
+  Legend,
+  Line,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import type { Props as LegendContentProps } from "recharts/types/component/DefaultLegendContent";
+import type { ProductivitySeries, ProductivitySeriesErrors } from "../../api/contract";
+
+/**
+ * The disclosure content around the chart (D31/R24): static, load-independent
+ * caveats always shown in a persistent footnote strip beneath the chart;
+ * per-load conditions (rate-limited, N commits unattributed, showing only the
+ * first N points, stale/cached-age) that vary response-to-response and sit
+ * behind an "ⓘ" affordance instead of permanently occupying the plot area;
+ * and the S4 (tickets-completed) series' ticket-history start date, captioned
+ * inline beside its own legend entry since it qualifies only that one series.
+ */
+export interface ProductivityDisclosures {
+  staticCaveats: string[];
+  perLoadConditions: string[];
+  ticketHistoryStart?: string;
+}
+
+/** Caveats inherent to how S1-S3 are computed (D5/D26/R26) and how buckets are windowed —
+ * true of every load, so these belong in the always-visible footnote strip rather
+ * than behind the per-load "ⓘ" affordance. */
+export const DEFAULT_STATIC_CAVEATS: string[] = [
+  "Lines added/deleted count the default branch only — forks and other branches are excluded.",
+  "Bucket boundaries are fixed to America/Denver and never vary by viewer.",
+  "Squash-merged commits are attributed to the merging author, not the writing author.",
+  "Private repositories owned by other individuals are excluded.",
+];
+
+const EMPTY_DISCLOSURES: ProductivityDisclosures = {
+  staticCaveats: DEFAULT_STATIC_CAVEATS,
+  perLoadConditions: [],
+};
+
+export interface ProductivitySeriesChartProps {
+  series: ProductivitySeries;
+  /** S4's instrumentation-start date (R27/D27), `null`/absent when unknown. When
+   * the earliest plotted bucket falls before this date, S4 is split into a greyed
+   * pre-instrumentation segment and a normal post-instrumentation segment, with a
+   * "ticket history starts <date>" annotation — so missing pre-instrumentation
+   * history reads as not-yet-recorded, never as zero tickets completed. */
+  instrumentationDate?: string | null;
+  /** Per-series failure reasons (e.g. the ticket series S4 errored while the git series
+   * S1-S3 succeeded) — the affected legend entry gets an error badge instead of the line
+   * silently reading as a flat, indistinguishable zero. */
+  errors?: ProductivitySeriesErrors;
+  width?: number;
+  height?: number;
+  disclosures?: ProductivityDisclosures;
+  /** The server-chosen bucket width ("hour"/"day"/"week"/"month", R8) — labels the x-axis
+   * so switching the range dropdown visibly relabels the chart to match its new buckets. */
+  bucketUnit?: string;
+}
+
+const BUCKET_AXIS_LABELS: Record<string, string> = {
+  hour: "Hourly buckets",
+  day: "Daily buckets",
+  week: "Weekly buckets",
+  month: "Monthly buckets",
+};
+
+function bucketAxisLabel(bucketUnit?: string): string {
+  if (!bucketUnit) return "";
+  return BUCKET_AXIS_LABELS[bucketUnit] ?? `${bucketUnit} buckets`;
+}
+
+interface ChartRow {
+  label: string;
+  linesAdded?: number;
+  linesDeleted?: number;
+  netLines?: number;
+  ticketsCompleted?: number;
+  ticketsCompletedBefore?: number;
+  ticketsCompletedAfter?: number;
+}
+
+const GREY_STROKE = "#9ca3af";
+const TICKETS_STROKE = "#16a34a";
+
+function formatInstrumentationDate(iso: string): string {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return iso;
+  return parsed.toISOString().slice(0, 10);
+}
+
+/** Split each row's `ticketsCompleted` into a greyed pre-instrumentation value
+ * and a normal post-instrumentation value, compared lexicographically against
+ * `instrumentationDate` (both are fixed-format UTC ISO-8601 strings, which sort
+ * identically to chronological order — same property migration 0013 relies on). */
+function splitByInstrumentationDate(rows: ChartRow[], instrumentationDate: string): ChartRow[] {
+  return rows.map((row) => {
+    if (row.ticketsCompleted === undefined) return row;
+    const isBefore = row.label < instrumentationDate;
+    return {
+      ...row,
+      ticketsCompletedBefore: isBefore ? row.ticketsCompleted : undefined,
+      ticketsCompletedAfter: isBefore ? undefined : row.ticketsCompleted,
+    };
+  });
+}
+
+const LEFT_AXIS_KEYS = ["linesAdded", "linesDeleted", "netLines"] as const;
+
+/** Merge the four independently-bucketed S1-S4 series into one row-per-bucket
+ * table, keyed by `bucketStart`, so recharts can plot all four lines against
+ * a shared x-axis. */
+function mergeSeries(series: ProductivitySeries): ChartRow[] {
+  const byBucket = new Map<string, ChartRow>();
+  const assign = (
+    points: ProductivitySeries["linesAdded"],
+    key: keyof Omit<ChartRow, "label">,
+  ) => {
+    for (const point of points) {
+      const row = byBucket.get(point.bucketStart) ?? { label: point.bucketStart };
+      row[key] = point.value;
+      byBucket.set(point.bucketStart, row);
+    }
+  };
+  assign(series.linesAdded, "linesAdded");
+  assign(series.linesDeleted, "linesDeleted");
+  assign(series.netLines, "netLines");
+  assign(series.ticketsCompleted, "ticketsCompleted");
+  return Array.from(byBucket.values()).sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/**
+ * The Productivity panel's chart (R15): the lines-of-code series S1
+ * (lines added), S2 (lines deleted) and S3 (net lines) share the LEFT
+ * y-axis, while the ticket-count series S4 (tickets completed) gets its
+ * OWN independent RIGHT y-axis. S1-S3 commonly run in the thousands while
+ * S4 is a single-digit count per bucket — sharing one scale would flatten
+ * S4 onto the x-axis, so it is never plotted against the left axis's domain.
+ *
+ * Scope honesty (R25): S1-S3 are the owner's GitHub commit activity; S4 is
+ * the org-wide Praxis ticket-completion count. These are two distinct,
+ * unmapped sets of projects — a GitHub repo is never joined to a Praxis
+ * project — so every axis title and legend entry names its own scope
+ * ("GitHub" / "Praxis") explicitly, and nothing here labels the combined
+ * view as one project's productivity.
+ */
+export function ProductivitySeriesChart({
+  series,
+  instrumentationDate,
+  errors,
+  width = 640,
+  height = 320,
+  disclosures = EMPTY_DISCLOSURES,
+  bucketUnit,
+}: ProductivitySeriesChartProps) {
+  const merged = mergeSeries(series);
+  const preInstrumentationWindow =
+    !!instrumentationDate && merged.length > 0 && merged[0].label < instrumentationDate;
+  const data = preInstrumentationWindow
+    ? splitByInstrumentationDate(merged, instrumentationDate)
+    : merged;
+  const axisLabel = bucketAxisLabel(bucketUnit);
+  const { staticCaveats, perLoadConditions, ticketHistoryStart } = disclosures;
+  const [conditionsOpen, setConditionsOpen] = useState(false);
+
+  // Custom legend content so the S4 (tickets-completed) entry can carry its
+  // ticket-history-start caption inline, right beside that one legend label —
+  // the caption qualifies only S4, so it never lives in the shared footnote
+  // strip where it would read as applying to every series. Any entry whose
+  // series independently failed (R-partial-failure) also gets an error badge
+  // carrying the failure reason, instead of silently reading as a flat zero.
+  const renderLegend = ({ payload }: LegendContentProps) => (
+    <ul className="productivity-chart__legend">
+      {(payload ?? []).map((entry) => {
+        const dataKey = entry.dataKey as keyof ProductivitySeries | undefined;
+        const reason = dataKey ? errors?.[dataKey] : undefined;
+        return (
+          <li key={String(entry.value)} style={{ color: entry.color }}>
+            {entry.value}
+            {String(entry.value).includes("S4") && ticketHistoryStart ? (
+              <span
+                className="productivity-chart__s4-caption"
+                data-testid="productivity-s4-caption"
+              >
+                {" "}
+                (ticket history since {ticketHistoryStart})
+              </span>
+            ) : null}
+            {reason && (
+              <span
+                className="productivity-legend__error-badge"
+                data-testid={`productivity-legend-error-${dataKey}`}
+                title={reason}
+              >
+                {" "}⚠ error
+              </span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+
+  return (
+    <div className="productivity-chart">
+      {preInstrumentationWindow && instrumentationDate && (
+        <p
+          className="productivity-series-chart__annotation"
+          data-testid="s4-instrumentation-annotation"
+        >
+          Ticket history starts {formatInstrumentationDate(instrumentationDate)}
+        </p>
+      )}
+      <ComposedChart width={width} height={height} data={data}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis
+          dataKey="label"
+          label={axisLabel ? { value: axisLabel, position: "insideBottom", offset: -5 } : undefined}
+        />
+        <YAxis
+          yAxisId="left"
+          label={{ value: "Lines of code (GitHub commits)", angle: -90, position: "insideLeft" }}
+        />
+        <YAxis
+          yAxisId="right"
+          orientation="right"
+          allowDecimals={false}
+          label={{ value: "Tickets completed (Praxis)", angle: 90, position: "insideRight" }}
+        />
+        <Tooltip />
+        <Legend content={renderLegend} />
+        <Line
+          yAxisId="left"
+          type="monotone"
+          dataKey={LEFT_AXIS_KEYS[0]}
+          name="Lines added (S1)"
+          stroke="#4f46e5"
+          dot={false}
+        />
+        <Line
+          yAxisId="left"
+          type="monotone"
+          dataKey={LEFT_AXIS_KEYS[1]}
+          name="Lines deleted (S2)"
+          stroke="#dc2626"
+          dot={false}
+        />
+        <Line
+          yAxisId="left"
+          type="monotone"
+          dataKey={LEFT_AXIS_KEYS[2]}
+          name="Net lines (S3)"
+          stroke="#0891b2"
+          dot={false}
+        />
+        {preInstrumentationWindow
+          ? [
+              <Line
+                key="ticketsCompletedBefore"
+                yAxisId="right"
+                type="monotone"
+                dataKey="ticketsCompletedBefore"
+                name="Tickets completed (S4, pre-instrumentation)"
+                stroke={GREY_STROKE}
+                strokeDasharray="4 4"
+                dot={false}
+                connectNulls={false}
+              />,
+              <Line
+                key="ticketsCompletedAfter"
+                yAxisId="right"
+                type="monotone"
+                dataKey="ticketsCompletedAfter"
+                name="Tickets completed (S4)"
+                stroke={TICKETS_STROKE}
+                dot={false}
+                connectNulls={false}
+              />,
+            ]
+          : (
+            <Line
+              yAxisId="right"
+              type="monotone"
+              dataKey="ticketsCompleted"
+              name="Tickets completed (S4)"
+              stroke={TICKETS_STROKE}
+              dot={false}
+            />
+          )}
+      </ComposedChart>
+
+      {perLoadConditions.length > 0 ? (
+        <div className="productivity-chart__conditions">
+          <button
+            type="button"
+            className="productivity-chart__info-affordance"
+            aria-expanded={conditionsOpen}
+            aria-label="Conditions affecting this load"
+            data-testid="productivity-info-affordance"
+            onClick={() => setConditionsOpen((open) => !open)}
+          >
+            ⓘ
+          </button>
+          {conditionsOpen ? (
+            <ul
+              className="productivity-chart__conditions-list"
+              data-testid="productivity-conditions-list"
+            >
+              {perLoadConditions.map((condition) => (
+                <li key={condition}>{condition}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+
+      {staticCaveats.length > 0 ? (
+        <footer
+          className="productivity-chart__footnotes"
+          data-testid="productivity-footnote-strip"
+        >
+          <ul>
+            {staticCaveats.map((caveat) => (
+              <li key={caveat}>{caveat}</li>
+            ))}
+          </ul>
+        </footer>
+      ) : null}
+    </div>
+  );
+}
