@@ -1,26 +1,37 @@
-"""Dispatch payload construction (R6): the self-contained payload the box
-service needs to queue and execute a job.
+"""Dispatch (R5, R6, R53): queuing a remote build job is a SEPARATE action from
+building it, and carries a self-contained payload.
 
-The payload carries project slug, snapshot, origin URL, build-base commit
-SHA, intended PR base, and Praxis org identity (see
-``docs/brainstorms/2026-07-24-af-build-remote-jobs-requirements.md``). Every
-field is either supplied directly by the dispatching caller (the MCP tool,
-which resolves ``org`` server-side from the authenticated principal — never
-from an untrusted client-supplied value) or derived from git itself
-(``build_base_sha``, via ``git rev-parse HEAD``). **No file inside the target
-repo is ever opened** — there is no factory-config lookup to source any
-field from, so a repo with no such file dispatches identically to one with
-any config an operator might have added by hand.
+``hooks/build_completeness_gate.py`` arms — and blocks the session's turn — only when
+the session holds a live owned ticket claim or a non-stale whole-set run marker (see
+``_ticket_state.claim`` / ``_ticket_state.stamp_run``). Those are what a BUILD does. A
+dispatching session that also claimed a ticket or stamped a run marker would therefore
+block its own turn against the gate it just armed, up to the configured block cap
+(citations: requirements R5; ``hooks/build_completeness_gate.py:301``).
 
-Every git call routes through an injectable ``runner`` — same call signature
-as ``subprocess.run`` — mirroring ``session_launcher.SessionLauncher`` and
-``box_service_clone.RepoCloneManager``'s seam, so this is assertable without
-a live git remote.
+``dispatch_job`` is deliberately the ENTIRE dispatch action: it records the job as
+queued and returns. It does not — and structurally cannot, since it never imports
+``_ticket_state`` — claim a ticket or stamp a run marker.
+
+The payload (R6) carries project slug, snapshot, origin URL, build-base commit SHA,
+intended PR base, and Praxis org identity (see
+``docs/brainstorms/2026-07-24-af-build-remote-jobs-requirements.md``). Every field is
+either supplied directly by the dispatching caller (the MCP tool, which resolves
+``org`` server-side from the authenticated principal — never from an untrusted
+client-supplied value, R53) or derived from git itself (``build_base_sha``, via
+``git rev-parse HEAD``). **No file inside the target repo is ever opened** — there is
+no factory-config lookup to source any field from, so a repo with no such file
+dispatches identically to one with any config an operator might have added by hand.
+
+Every git call routes through an injectable ``runner`` — same call signature as
+``subprocess.run`` — mirroring ``session_launcher.SessionLauncher`` and
+``box_service_clone.RepoCloneManager``'s seam, so this is assertable without a live
+git remote.
 """
 
 from __future__ import annotations
 
 import subprocess
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -133,3 +144,26 @@ def build_dispatch_payload(
         pr_base=pr_base,
         org=org,
     )
+
+
+@dataclass
+class DispatchedJob:
+    """A queued remote build job, as handed back to the dispatching session."""
+
+    id: str
+    project: str
+    snapshot: str
+    state: str = "queued"
+
+
+def dispatch_job(project: str, snapshot: str) -> DispatchedJob:
+    """Queue a remote build job for ``(project, snapshot)`` and return it.
+
+    This is the whole of dispatch: create a queued job record and return it to the
+    caller. It never claims a ticket and never stamps a whole-set run marker (R5) — the
+    dispatching session's completeness gate must stay inert after this call, so its turn
+    can end without the gate blocking.
+    """
+    if not project or not snapshot:
+        raise ValueError("dispatch_job requires a non-empty project and snapshot")
+    return DispatchedJob(id=str(uuid.uuid4()), project=project, snapshot=snapshot)
