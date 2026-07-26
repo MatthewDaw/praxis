@@ -28,8 +28,9 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from knowledge.serve.box_service_delivery import DeliveryAction, reconcile_delivery
 from knowledge.serve.box_service_failures import FailureClass, record_failure
-from knowledge.serve.box_service_models import Job
+from knowledge.serve.box_service_models import DeliveryStage, Job
 from knowledge.serve.box_service_push_guard import PushRequest, evaluate_push
 
 #: Same shape as ``subprocess.run`` — the seam a fake runner replaces in tests.
@@ -37,6 +38,10 @@ Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 Clock = Callable[[], float]
 #: A pull-request-creation seam: given the target and the merged sha, returns the created PR's URL.
 PrCreator = Callable[["IntegrationTarget", str], str]
+#: An existing-pull-request-lookup seam (R62): given the target, returns the URL of an already-open
+#: pull request for ``target.integration_ref``, or ``None`` if there is none — the re-detection
+#: replay uses instead of trusting a durable stage blindly.
+ExistingPrLookup = Callable[["IntegrationTarget"], "str | None"]
 
 #: Default staleness window for the per-repo integration lock, mirroring the shape (not the value)
 #: of every other lease in the system (holder id, heartbeat, expiry).
@@ -67,6 +72,13 @@ class MergeConflictError(IntegrationError):
 class PublishRefusedError(IntegrationError):
     """The push guard refused the outbound ref update — wrong target repo, ref outside the
     reserved integration namespace, a force update, or an already-existing remote ref."""
+
+
+class UnreconcilableDeliveryStageError(IntegrationError):
+    """R62: on replay, the job's durable delivery stage does not reconcile with the re-detected
+    remote state (e.g. it claims the pull request is being opened but the published branch is
+    missing). Never guessed or retried blind — the job branch is left completely untouched and the
+    job is recorded ``needs-attention`` (``FailureClass.DELIVERY_STAGE_UNRECONCILABLE``)."""
 
 
 @dataclass(frozen=True)
@@ -276,9 +288,98 @@ def run_integration_sequence(
         if not decision.allowed:
             raise PublishRefusedError(f"publish refused: {decision.reason}")
 
+        if job is not None:
+            job.delivery_stage = DeliveryStage.PUBLISHING
         run_git(runner, cwd, "push", "origin", f"HEAD:{target.integration_ref}")
+
+        if job is not None:
+            job.delivery_stage = DeliveryStage.OPENING_PR
         pr_url = pr_creator(target, merged_sha)
 
+        if job is not None:
+            job.delivery_stage = DeliveryStage.DELIVERED
+        return IntegrationResult(merged_sha=merged_sha, pushed_ref=target.integration_ref, pr_url=pr_url)
+    finally:
+        lock.release(repo_key, holder_id)
+
+
+def replay_integration_sequence(
+    target: IntegrationTarget,
+    *,
+    holder_id: str,
+    lock: RepoIntegrationLock,
+    job: Job,
+    runner: Runner = subprocess.run,
+    pr_creator: PrCreator = default_pr_creator,
+    existing_pr_lookup: ExistingPrLookup,
+    force_publish: bool = False,
+    remote_ref_exists: bool = False,
+) -> IntegrationResult:
+    """Replay ``target``'s integration sequence after a crash (R62), using ``job.delivery_stage``
+    — recorded BEFORE each irreversible step by :func:`run_integration_sequence` — to decide what
+    is safe to do next, RE-DETECTING the real remote state (``remote_ref_exists``,
+    ``existing_pr_lookup``) rather than trusting the recorded stage blindly.
+
+    Given a crash between the push and the pull-request creation (stage ``PUBLISHING`` with the
+    remote ref already published, or stage ``OPENING_PR``), replay opens exactly one pull request
+    for the already-existing branch — it never pushes again, and it reuses an already-open pull
+    request instead of opening a second one. Given nothing published yet (stage ``NOT_STARTED``,
+    or ``PUBLISHING`` with no remote ref found), replay safely runs the ordinary full sequence.
+
+    Given a recorded stage that does not reconcile with the re-detected remote state, replay raises
+    :class:`UnreconcilableDeliveryStageError`, records ``FailureClass.DELIVERY_STAGE_UNRECONCILABLE``
+    on ``job`` (needs-attention), and touches no git state at all — the job branch is left exactly
+    as it was, never retried blind.
+    """
+    decision = reconcile_delivery(
+        job.delivery_stage,
+        remote_ref_exists=remote_ref_exists,
+        existing_pr_url=existing_pr_lookup(target),
+    )
+
+    if decision.action is DeliveryAction.NEEDS_ATTENTION:
+        record_failure(job, FailureClass.DELIVERY_STAGE_UNRECONCILABLE)
+        raise UnreconcilableDeliveryStageError(
+            decision.reason or "delivery stage does not reconcile with the remote state"
+        )
+
+    if decision.action in (DeliveryAction.REUSE_EXISTING_PR, DeliveryAction.ALREADY_DELIVERED):
+        assert decision.pr_url is not None
+        job.delivery_stage = DeliveryStage.DELIVERED
+        return IntegrationResult(
+            merged_sha="", pushed_ref=target.integration_ref, pr_url=decision.pr_url
+        )
+
+    if decision.action is DeliveryAction.RUN_FULL_SEQUENCE:
+        job.delivery_stage = DeliveryStage.NOT_STARTED
+        return run_integration_sequence(
+            target,
+            holder_id=holder_id,
+            lock=lock,
+            runner=runner,
+            pr_creator=pr_creator,
+            force_publish=force_publish,
+            remote_ref_exists=False,
+            job=job,
+        )
+
+    # DeliveryAction.SKIP_PUSH_OPEN_PR: the branch is already published (from a previous attempt,
+    # run entirely from the main worktree per R33) — never push again, go straight to opening
+    # exactly one pull request.
+    assert decision.action is DeliveryAction.SKIP_PUSH_OPEN_PR
+    repo_key = target.main_worktree_path
+    if not lock.acquire(repo_key, holder_id):
+        raise IntegrationLockedError(
+            f"integration for {repo_key!r} is already in flight under a different holder"
+        )
+    try:
+        cwd = target.main_worktree_path
+        merged_sha = run_git(runner, cwd, "rev-parse", "HEAD").strip()
+
+        job.delivery_stage = DeliveryStage.OPENING_PR
+        pr_url = pr_creator(target, merged_sha)
+
+        job.delivery_stage = DeliveryStage.DELIVERED
         return IntegrationResult(merged_sha=merged_sha, pushed_ref=target.integration_ref, pr_url=pr_url)
     finally:
         lock.release(repo_key, holder_id)

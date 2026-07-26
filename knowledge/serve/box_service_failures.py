@@ -38,6 +38,12 @@ class FailureClass(str, Enum):
     #: worktree is preserved for a human rather than silently reset away, so
     #: this is needs-attention, not failed.
     MAIN_WORKTREE_DIRTY = "main_worktree_dirty"
+    #: R62: on replay after a crash, the job's durable delivery stage does not
+    #: reconcile with the re-detected remote state (e.g. the stage claims the
+    #: branch was published but it is missing). Never guessed or retried
+    #: blind — the branch is preserved for a human, so this is
+    #: needs-attention, not failed.
+    DELIVERY_STAGE_UNRECONCILABLE = "delivery_stage_unreconcilable"
 
 
 #: The terminal JobState each failure class transitions a job to.
@@ -47,6 +53,7 @@ TERMINAL_STATE_FOR_CLASS: dict[FailureClass, JobState] = {
     FailureClass.MERGE_CONFLICT: JobState.NEEDS_ATTENTION,
     FailureClass.CAPABILITY_PROBE_FAILED: JobState.FAILED,
     FailureClass.MAIN_WORKTREE_DIRTY: JobState.NEEDS_ATTENTION,
+    FailureClass.DELIVERY_STAGE_UNRECONCILABLE: JobState.NEEDS_ATTENTION,
 }
 
 

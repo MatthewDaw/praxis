@@ -15,6 +15,28 @@ from dataclasses import dataclass
 from enum import Enum
 
 
+class DeliveryStage(str, Enum):
+    """The durable per-job delivery stage (R62), recorded on the job row BEFORE each irreversible
+    integration step begins — never after — so a crash mid-step still leaves a durable record of
+    what was ABOUT to happen. Replay (``box_service_delivery.reconcile_delivery``) never trusts
+    this value blindly: it RE-DETECTS the real remote state (does the branch exist? is a pull
+    request already open?) and only uses the stage to narrow which re-detection is relevant.
+
+    - ``NOT_STARTED``: neither the remote-ref publish nor the pull-request creation has been
+      attempted yet.
+    - ``PUBLISHING``: the remote-ref push is the next (or just-attempted) irreversible step; the
+      pull request has not been attempted.
+    - ``OPENING_PR``: the push is confirmed complete and pull-request creation is the next (or
+      just-attempted) irreversible step.
+    - ``DELIVERED``: the pull request is confirmed open; nothing irreversible remains.
+    """
+
+    NOT_STARTED = "not_started"
+    PUBLISHING = "publishing"
+    OPENING_PR = "opening_pr"
+    DELIVERED = "delivered"
+
+
 class JobState(str, Enum):
     """A job's lifecycle state (R1). ``NEEDS_ATTENTION`` is the terminal state
     for a failure class that preserves work for a human rather than one that
@@ -114,6 +136,7 @@ class Job:
     claim_heartbeat_at: float | None = None
     claim_lease_ttl: float | None = None
     queued_at: float | None = None
+    delivery_stage: DeliveryStage = DeliveryStage.NOT_STARTED
 
     def is_open(self) -> bool:
         return self.state in OPEN_JOB_STATES
