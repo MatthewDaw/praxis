@@ -67,6 +67,7 @@ def make_target(**overrides) -> GroupIntegrationTarget:
         main_worktree_path="/repos/widgets/main",
         origin_repo="git@github.com:acme/widgets.git",
         member_branches=["job/job-1", "job/job-2", "job/job-3"],
+        member_job_ids=["job-1", "job-2", "job-3"],
         pr_base="main",
         integration_ref="refs/heads/integrate/group-1",
     )

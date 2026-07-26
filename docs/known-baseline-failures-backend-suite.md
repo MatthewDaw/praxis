@@ -54,6 +54,22 @@ tests earlier in the run) but passes every time run alone or with a fresh DB. It
 here (it is not deterministically broken), just noted as a known source of full-suite flakiness
 pre-dating this ticket.
 
+Additionally, as of the R74 ticket (026ae9c5abe5429ea98d14fc23a95dc2), ten more `test_server.py`
+tests fail deterministically, alone or in the full suite, with `urllib.error.HTTPError: HTTP Error
+402: Payment Required` from an outbound call the test setup makes — a billing/quota outage on an
+external dependency, confirmed identical with the ticket's own diff fully stashed:
+
+- `test_server.py::test_ingest_derived_from_creates_edge`
+- `test_server.py::test_insights_surface_mode_keeps_both_and_surfaces_contradiction`
+- `test_server.py::test_edit_surface_mode_raises_resolvable_contradiction`
+- `test_server.py::test_edit_auto_resolve_supersedes_clashing_fact`
+- `test_server.py::test_resolve_keep_all_keeps_both_active_and_clears_pending`
+- `test_server.py::test_resolve_keep_none_rejects_all_and_clears_pending`
+- `test_server.py::test_resolve_keep_subset_of_three`
+- `test_server.py::test_resolve_rejects_bad_keep_id`
+- `test_server.py::test_batch_ingest_happy_path`
+- `test_server.py::test_batch_ingest_persists_writer_metadata`
+
 This list is excluded (`--deselect`) from this ticket's own backend-suite validation run so the
 ticket is graded on whether **it** regressed the suite, not on unrelated pre-existing breakage —
 mirroring `agent-factory-suite`'s own documented `-k "not test_factory_project_from_dotenv..."`
