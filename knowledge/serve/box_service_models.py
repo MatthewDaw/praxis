@@ -35,6 +35,30 @@ OPEN_JOB_STATES = frozenset(
     {JobState.QUEUED, JobState.CLAIMED, JobState.RUNNING, JobState.AWAITING_HUMAN}
 )
 
+#: The at-rest states (R1). Every one of these carries a machine-readable
+#: reason (``Job.failure_reason``) distinct from the state value itself —
+#: including ``COMPLETED``, so a completed job's "why" is recorded the same
+#: way a failed one's is.
+TERMINAL_JOB_STATES = frozenset(
+    {JobState.COMPLETED, JobState.FAILED, JobState.NEEDS_ATTENTION}
+)
+
+
+def mark_terminal(job: "Job", state: JobState, reason: str, *, clear_worktree: bool = False) -> "Job":
+    """Transition ``job`` to a terminal ``state`` with a ``reason`` kept in a
+    field distinct from the state itself (R1). ``clear_worktree`` defaults to
+    False so a needs-attention job's worktree/branch artifacts are retained
+    for a human (R34); a caller that has safely torn down the worktree after
+    a clean completed/failed merge may pass ``clear_worktree=True``.
+    """
+    if state not in TERMINAL_JOB_STATES:
+        raise ValueError(f"{state.value!r} is not a terminal JobState")
+    job.state = state
+    job.failure_reason = reason
+    if clear_worktree:
+        job.worktree_path = None
+    return job
+
 
 @dataclass
 class Job:
@@ -51,6 +75,7 @@ class Job:
     max_attempts: int = 3
     resumable: bool = False
     failure_reason: str | None = None
+    worktree_path: str | None = None
 
     def is_open(self) -> bool:
         return self.state in OPEN_JOB_STATES
