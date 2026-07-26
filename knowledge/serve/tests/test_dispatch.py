@@ -34,6 +34,7 @@ from knowledge.serve.dispatch import (
     DispatchError,
     DispatchPayload,
     build_dispatch_payload,
+    check_clean_working_tree,
     dispatch_job,
     resolve_build_base_sha,
     resolve_dispatch_org,
@@ -215,6 +216,83 @@ class TestResolveDispatchOrg:
             resolve_dispatch_org({"org": "acme-org"}, credential_org="")
         with pytest.raises(DispatchError):
             resolve_dispatch_org({}, credential_org="")
+
+
+class TestDirtyWorkingTreeGuard:
+    """Acceptance test for ticket a13b7a9deca24a11948a508d3b84e6d3 (R9):
+
+    given uncommitted changes in the working tree or index, dispatch exits non-zero
+    and lists the uncommitted paths; given a clean tree, dispatch proceeds.
+    """
+
+    def test_clean_tree_does_not_raise(self, tmp_path):
+        repo = make_bare_repo(tmp_path)
+        check_clean_working_tree(str(repo))  # must not raise
+
+    def test_dirty_working_tree_is_refused_and_names_the_path(self, tmp_path):
+        repo = make_bare_repo(tmp_path)
+        (repo / "README.md").write_text("changed\n")  # unstaged modification
+
+        with pytest.raises(DispatchError) as exc_info:
+            check_clean_working_tree(str(repo))
+
+        assert "README.md" in str(exc_info.value)
+
+    def test_dirty_index_is_refused_and_names_the_path(self, tmp_path):
+        repo = make_bare_repo(tmp_path)
+        (repo / "untracked.txt").write_text("new\n")
+        subprocess.run(["git", "add", "untracked.txt"], cwd=repo, check=True)  # staged, uncommitted
+
+        with pytest.raises(DispatchError) as exc_info:
+            check_clean_working_tree(str(repo))
+
+        assert "untracked.txt" in str(exc_info.value)
+
+    def test_untracked_file_is_refused_and_named(self, tmp_path):
+        repo = make_bare_repo(tmp_path)
+        (repo / "scratch.txt").write_text("stray\n")  # untracked, never added
+
+        with pytest.raises(DispatchError) as exc_info:
+            check_clean_working_tree(str(repo))
+
+        assert "scratch.txt" in str(exc_info.value)
+
+    def test_git_status_failure_raises_dispatch_error(self):
+        def failing_runner(args, **kwargs):
+            return subprocess.CompletedProcess(args, 128, stdout="", stderr="not a git repository")
+
+        with pytest.raises(DispatchError):
+            check_clean_working_tree("/not/a/repo", runner=failing_runner)
+
+    def test_dirty_working_tree_fails_the_whole_dispatch_payload_build(self, tmp_path):
+        repo = make_bare_repo(tmp_path)
+        (repo / "README.md").write_text("changed\n")
+
+        with pytest.raises(DispatchError) as exc_info:
+            build_dispatch_payload(
+                project="p",
+                snapshot="prd-p",
+                origin_url="git@github.com:acme/widgets.git",
+                repo_root=str(repo),
+                pr_base="main",
+                org="acme-org",
+            )
+
+        assert "README.md" in str(exc_info.value)
+
+    def test_clean_tree_dispatch_proceeds(self, tmp_path):
+        repo = make_bare_repo(tmp_path)
+
+        payload = build_dispatch_payload(
+            project="p",
+            snapshot="prd-p",
+            origin_url="git@github.com:acme/widgets.git",
+            repo_root=str(repo),
+            pr_base="main",
+            org="acme-org",
+        )
+
+        assert isinstance(payload, DispatchPayload)
 
 
 def test_dispatch_returns_a_queued_job():

@@ -1,5 +1,9 @@
-"""Dispatch (R5, R6, R53): queuing a remote build job is a SEPARATE action from
+"""Dispatch (R5, R6, R9, R53): queuing a remote build job is a SEPARATE action from
 building it, and carries a self-contained payload.
+
+R9: dispatch fails loud when the working tree or index is dirty, naming every
+uncommitted path (see ``check_clean_working_tree``), so the operator never receives a
+PR built without changes they could see on screen when they dispatched.
 
 ``hooks/build_completeness_gate.py`` arms — and blocks the session's turn — only when
 the session holds a live owned ticket claim or a non-stale whole-set run marker (see
@@ -82,6 +86,31 @@ def resolve_build_base_sha(repo_root: str, *, runner: Runner = subprocess.run) -
     return sha
 
 
+def check_clean_working_tree(repo_root: str, *, runner: Runner = subprocess.run) -> None:
+    """Refuse a dirty working tree or index (R9): dispatch fails loud, naming every
+    uncommitted path, so the operator never receives a PR built without changes that
+    were on screen at dispatch time. A clean tree raises nothing.
+
+    ``git status --porcelain`` reports staged, unstaged, and untracked paths alike —
+    all three count as "uncommitted" here, since none of them are what the recorded
+    ``build_base_sha`` (HEAD) will actually build.
+    """
+    proc = runner(
+        ["git", "status", "--porcelain"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise DispatchError(f"failed to check working tree status: {proc.stderr.strip()}")
+    dirty_paths = [line[3:].strip() for line in proc.stdout.splitlines() if line.strip()]
+    if dirty_paths:
+        raise DispatchError(
+            "dispatch refused: uncommitted changes present: " + ", ".join(dirty_paths)
+        )
+
+
 def resolve_dispatch_org(payload: dict, *, credential_org: str) -> str:
     """Derive the org identity for a dispatch server-side from the authenticated
     caller credential (R53), never from the untrusted client-supplied payload.
@@ -134,6 +163,7 @@ def build_dispatch_payload(
         if not value:
             raise DispatchError(f"dispatch payload missing required field: {name}")
 
+    check_clean_working_tree(repo_root, runner=runner)
     build_base_sha = resolve_build_base_sha(repo_root, runner=runner)
 
     return DispatchPayload(
