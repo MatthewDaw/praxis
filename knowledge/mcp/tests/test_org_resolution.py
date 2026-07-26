@@ -10,8 +10,11 @@ These tests pin the cache at a tmp file and stub any would-be network call.
 
 import json
 import sys
+from pathlib import Path
 
 from knowledge.mcp import identity, server
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _write_cache(path, **overrides):
@@ -104,9 +107,7 @@ def test_select_org_sets_when_no_pin(monkeypatch, tmp_path):
 # ---------------------------------------------------- 4. HOOK MIRROR AGREES
 
 def test_hook_resolver_mirrors_identity_resolve_org():
-    sys.path.insert(
-        0, "/Users/matthewdaw/Documents/official_repos/praxis/agent_factory/hooks"
-    )
+    sys.path.insert(0, str(_REPO_ROOT / "agent_factory" / "hooks"))
     import _praxis  # stdlib-only Stop-hook mirror
 
     triples = [
