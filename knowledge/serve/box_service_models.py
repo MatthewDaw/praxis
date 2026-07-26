@@ -37,9 +37,28 @@ OPEN_JOB_STATES = frozenset(
 
 
 @dataclass
+class Lease:
+    """A holder id + heartbeat + expiry (R2/R63): every lease in the system —
+    the job-claim lease, the job-control lease resume takes, and the host
+    advisory lock — carries this shape, so a dead holder never permanently
+    strands the resource it held (the caller checks ``is_live`` against a
+    fresh ``now`` before ever treating a stale lease as still enforced)."""
+
+    holder_id: str
+    heartbeat_at: float
+    expires_at: float
+
+    def is_live(self, now: float) -> bool:
+        return now < self.expires_at
+
+
+@dataclass
 class Job:
     """A box-service job row (R1, R31). ``session_id`` and ``run_owner`` are
-    ``None`` until the job has been launched at least once."""
+    ``None`` until the job has been launched at least once. ``org`` scopes
+    the row for cross-org read/write authorization (R-ticket a75ca6a9);
+    ``claim_lease`` is who currently owns terminal-write/mailbox/resume
+    authority over the job."""
 
     id: str
     project: str
@@ -51,6 +70,8 @@ class Job:
     max_attempts: int = 3
     resumable: bool = False
     failure_reason: str | None = None
+    org: str = "default"
+    claim_lease: Lease | None = None
 
     def is_open(self) -> bool:
         return self.state in OPEN_JOB_STATES
