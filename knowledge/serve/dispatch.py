@@ -71,6 +71,29 @@ def resolve_build_base_sha(repo_root: str, *, runner: Runner = subprocess.run) -
     return sha
 
 
+def resolve_dispatch_org(payload: dict, *, credential_org: str) -> str:
+    """Derive the org identity for a dispatch server-side from the authenticated
+    caller credential (R53), never from the untrusted client-supplied payload.
+
+    ``credential_org`` is the org resolved from the authenticated principal — the
+    only trustworthy source. ``payload`` is the raw, untrusted caller-supplied
+    dispatch request: if it carries an ``org`` field that disagrees with
+    ``credential_org``, the dispatch is rejected outright (a self-asserted org is
+    an authorization claim, not data, and is never silently overridden or
+    honored); if ``org`` is absent (or falsy), dispatch proceeds using the
+    credential-derived org.
+    """
+    if not credential_org:
+        raise DispatchError("resolve_dispatch_org requires a non-empty credential_org")
+    payload_org = payload.get("org")
+    if payload_org and payload_org != credential_org:
+        raise DispatchError(
+            f"dispatch payload org {payload_org!r} does not match authenticated "
+            f"credential org {credential_org!r}; dispatch refused"
+        )
+    return credential_org
+
+
 def build_dispatch_payload(
     *,
     project: str,

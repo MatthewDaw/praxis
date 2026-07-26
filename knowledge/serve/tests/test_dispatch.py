@@ -18,6 +18,7 @@ from knowledge.serve.dispatch import (
     DispatchPayload,
     build_dispatch_payload,
     resolve_build_base_sha,
+    resolve_dispatch_org,
 )
 
 
@@ -146,3 +147,32 @@ def test_org_is_never_sourced_from_an_alternate_payload_field(tmp_path):
     sig = inspect.signature(build_dispatch_payload)
     org_like = [p for p in sig.parameters if "org" in p]
     assert org_like == ["org"]
+
+
+class TestResolveDispatchOrg:
+    """Acceptance test for ticket 31537bea12124dfdb27cb99e7e1f5c2d (R53):
+
+    given a dispatch payload whose org field differs from the authenticated
+    credential's org, the dispatch is rejected rather than honoring the
+    payload value; given no org field at all, dispatch still succeeds using
+    the credential-derived org.
+    """
+
+    def test_payload_org_matching_credential_org_is_honored(self):
+        assert resolve_dispatch_org({"org": "acme-org"}, credential_org="acme-org") == "acme-org"
+
+    def test_payload_org_mismatching_credential_org_is_rejected(self):
+        with pytest.raises(DispatchError):
+            resolve_dispatch_org({"org": "attacker-org"}, credential_org="acme-org")
+
+    def test_missing_payload_org_falls_back_to_credential_org(self):
+        assert resolve_dispatch_org({}, credential_org="acme-org") == "acme-org"
+
+    def test_payload_org_key_present_but_falsy_falls_back_to_credential_org(self):
+        assert resolve_dispatch_org({"org": ""}, credential_org="acme-org") == "acme-org"
+
+    def test_empty_credential_org_is_refused_regardless_of_payload(self):
+        with pytest.raises(DispatchError):
+            resolve_dispatch_org({"org": "acme-org"}, credential_org="")
+        with pytest.raises(DispatchError):
+            resolve_dispatch_org({}, credential_org="")
