@@ -39,7 +39,10 @@ OPEN_JOB_STATES = frozenset(
 @dataclass
 class Job:
     """A box-service job row (R1, R31). ``session_id`` and ``run_owner`` are
-    ``None`` until the job has been launched at least once."""
+    ``None`` until the job has been launched at least once. ``group_id`` is
+    ``None`` for a solo job; when set, it is explicit group membership (R50)
+    that ``box_service_groups`` uses to find a job's batch and decide when
+    the batch's barrier opens (R48)."""
 
     id: str
     project: str
@@ -51,6 +54,7 @@ class Job:
     max_attempts: int = 3
     resumable: bool = False
     failure_reason: str | None = None
+    group_id: str | None = None
 
     def is_open(self) -> bool:
         return self.state in OPEN_JOB_STATES
