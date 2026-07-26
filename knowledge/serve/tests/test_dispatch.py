@@ -16,6 +16,7 @@ import pytest
 from knowledge.serve.dispatch import (
     DispatchError,
     DispatchPayload,
+    OriginNotAllowedError,
     build_dispatch_payload,
     resolve_build_base_sha,
 )
@@ -51,6 +52,7 @@ def test_dispatch_payload_carries_every_field_with_no_config_file_present(tmp_pa
         repo_root=str(repo),
         pr_base="main",
         org="acme-org",
+        allowed_origins=["git@github.com:acme/widgets.git"],
     )
 
     assert isinstance(payload, DispatchPayload)
@@ -87,6 +89,7 @@ def test_dispatch_never_opens_a_file_inside_the_target_repo(tmp_path, monkeypatc
         repo_root=repo_str,
         pr_base="main",
         org="acme-org",
+        allowed_origins=["git@github.com:acme/widgets.git"],
     )
 
     assert payload.build_base_sha
@@ -106,6 +109,7 @@ def test_build_base_sha_matches_git_rev_parse_head(tmp_path):
         repo_root=str(repo),
         pr_base="main",
         org="acme-org",
+        allowed_origins=["git@github.com:acme/widgets.git"],
     )
 
     assert payload.build_base_sha == expected
@@ -121,11 +125,78 @@ def test_missing_required_field_raises_dispatch_error(tmp_path, missing_field):
         repo_root=str(repo),
         pr_base="main",
         org="acme-org",
+        allowed_origins=["git@github.com:acme/widgets.git"],
     )
     kwargs[missing_field] = ""
 
     with pytest.raises(DispatchError):
         build_dispatch_payload(**kwargs)
+
+
+def test_origin_allowlist_acceptance(tmp_path):
+    """Acceptance test for ticket R8 (912ffcda29974f96b231abff71b4552c):
+
+    given a dispatch whose origin URL is absent from the allowlist, dispatch
+    is refused with the origin named; given an allowlisted origin, dispatch
+    succeeds.
+    """
+    repo = make_bare_repo(tmp_path)
+    allowed_origins = ["git@github.com:acme/widgets.git"]
+
+    # Absent from the allowlist -> refused, naming the origin.
+    with pytest.raises(OriginNotAllowedError, match=r"git@github\.com:acme/rogue\.git"):
+        build_dispatch_payload(
+            project="p",
+            snapshot="prd-p",
+            origin_url="git@github.com:acme/rogue.git",
+            repo_root=str(repo),
+            pr_base="main",
+            org="acme-org",
+            allowed_origins=allowed_origins,
+        )
+
+    # Allowlisted origin -> dispatch succeeds.
+    payload = build_dispatch_payload(
+        project="p",
+        snapshot="prd-p",
+        origin_url="git@github.com:acme/widgets.git",
+        repo_root=str(repo),
+        pr_base="main",
+        org="acme-org",
+        allowed_origins=allowed_origins,
+    )
+    assert payload.origin_url == "git@github.com:acme/widgets.git"
+
+
+def test_origin_not_in_allowlist_raises_before_touching_git(tmp_path):
+    """The allowlist check must refuse an unregistered origin without needing a
+    valid repo at all (fail fast, before resolving the build-base SHA)."""
+    with pytest.raises(OriginNotAllowedError):
+        build_dispatch_payload(
+            project="p",
+            snapshot="prd-p",
+            origin_url="git@github.com:not-registered/evil.git",
+            repo_root="/does/not/exist",
+            pr_base="main",
+            org="acme-org",
+            allowed_origins=["git@github.com:acme/widgets.git"],
+        )
+
+
+def test_empty_allowlist_refuses_every_origin(tmp_path):
+    """A pre-registered allowlist that is empty (nothing registered yet) refuses
+    every origin — fail-closed, never fail-open."""
+    repo = make_bare_repo(tmp_path)
+    with pytest.raises(OriginNotAllowedError):
+        build_dispatch_payload(
+            project="p",
+            snapshot="prd-p",
+            origin_url="git@github.com:acme/widgets.git",
+            repo_root=str(repo),
+            pr_base="main",
+            org="acme-org",
+            allowed_origins=[],
+        )
 
 
 def test_resolve_build_base_sha_raises_on_git_failure():
