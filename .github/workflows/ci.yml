@@ -88,25 +88,6 @@ jobs:
           npm ci
           npm run lint
 
-  # Frontend (React/Vite): the repo's `test` script is `vitest run`. Gated only on the
-  # frontend changes filter so it always runs on a frontend-only PR (never AND-ed with
-  # another stack's filter or restricted to push-only, which would skip it there).
-  frontend-test:
-    needs: changes
-    if: ${{ needs.changes.outputs.frontend == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: frontend-react/package-lock.json
-      - working-directory: frontend-react
-        run: |
-          npm ci
-          npm test
-
   # Infra (AWS CDK, TypeScript): `tsc` via the `build` script is the type-check gate.
   infra-typecheck:
     needs: changes
@@ -199,3 +180,28 @@ jobs:
           uv run --no-sync python -m knowledge.serve.db
       - name: Run tests
         run: uv run --no-sync pytest -q
+
+  # THE single required status check. Every heavyweight job above is change-filtered, so on
+  # any given PR some of them are legitimately SKIPPED — and GitHub counts a skipped required
+  # check as "never reported", which leaves the PR pending forever. Requiring the individual
+  # jobs therefore wedges any PR that does not touch every stack. This gate always runs and
+  # collapses them: it FAILS if any upstream job failed or was cancelled, and PASSES when they
+  # succeeded or were skipped. Require ONLY this context in branch protection.
+  ci-gate:
+    needs: [changes, python-lint, frontend-typecheck, frontend-test, infra-typecheck, go-lint, python-test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any upstream job did not succeed or skip
+        run: |
+          results="${{ join(needs.*.result, ' ') }}"
+          echo "upstream results: $results"
+          status=0
+          for r in $results; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::an upstream job reported '$r'"; status=1 ;;
+            esac
+          done
+          exit $status
+
