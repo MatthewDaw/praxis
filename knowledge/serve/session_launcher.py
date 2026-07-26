@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from knowledge.serve.box_service_models import SessionInfo
@@ -35,12 +35,29 @@ class SessionLauncher:
         self._runner = runner
         self._cli = cli
 
-    def launch(self, *, cwd: str, command: str, name: str | None = None) -> str:
-        """Start a ``claude --bg`` session and return its session id."""
+    def launch(
+        self,
+        *,
+        cwd: str,
+        command: str,
+        name: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> str:
+        """Start a ``claude --bg`` session and return its session id.
+
+        ``env``, when given, is the EXACT process environment the session runs under
+        (never merged with the caller's own) — see ``build_session_env`` (R37) for the
+        allowlist-scrubbed, distinct-``HOME`` environment a build session gets. Omitting
+        it preserves the previous behaviour of inheriting the launching process's
+        environment untouched.
+        """
         args = [self._cli, "--bg", command]
         if name is not None:
             args += ["--name", name]
-        proc = self._runner(args, cwd=cwd, capture_output=True, text=True, check=False)
+        kwargs: dict[str, Any] = {"cwd": cwd, "capture_output": True, "text": True, "check": False}
+        if env is not None:
+            kwargs["env"] = dict(env)
+        proc = self._runner(args, **kwargs)
         if proc.returncode != 0:
             raise SessionLauncherError(f"launch failed: {proc.stderr.strip()}")
         session_id = proc.stdout.strip()
