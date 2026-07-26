@@ -42,7 +42,7 @@ Signals observed independently of the build session's cooperation:
 These are the only signals restart reconciliation
 (`knowledge/serve/box_service_reconcile.py`), failure classification
 (`knowledge/serve/box_service_failures.py`), job authorization
-(`knowledge/serve/box_service_authz.py`), and group-integration decisions
+(`knowledge/serve/job_authz.py`), and group-integration decisions
 (`knowledge/serve/box_service_groups.py`) key their terminal/control decisions
 on. A job's terminal state (a state outside `OPEN_JOB_STATES`, see
 `knowledge/serve/box_service_models.py::Job.is_open`) and any restart-

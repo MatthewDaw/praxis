@@ -1,80 +1,124 @@
-"""Acceptance test for the job authorization matrix
-(c8b6b949911142fab8c8b2dd626e5d64::acceptance):
+"""Authorization matrix for job lifecycle operations (R52).
 
-given a caller that is not the leaseholding box-service principal attempting
-to set a job terminal, the write is refused; given a non-owning principal
-attempting a mailbox write or resume, it is refused; given a cross-org read
-of a job row, it is refused.
+Every job transition, claim, mailbox write, resume trigger, and read of job
+data requires an authenticated principal of a named class: the dispatching
+principal may create a job only; only the leaseholding box-service principal
+may set claimed, running, or a terminal state; only the operator principal
+owning the job may post a mailbox message or trigger resume. All job rows
+are org-scoped and any cross-org read or write is refused.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from knowledge.serve.box_service_authz import (
-    JobAuthorizationError,
-    authorize_mailbox_write,
-    authorize_read,
-    authorize_resume,
-    authorize_set_terminal,
+from knowledge.serve.job_authz import (
+    AuthorizationError,
+    JobAction,
+    JobPrincipal,
+    JobRef,
+    PrincipalKind,
+    authorize,
 )
-from knowledge.serve.box_service_models import Job, JobState, Lease
+
+ORG = "org-a"
+OTHER_ORG = "org-b"
+
+JOB = JobRef(
+    id="job-1",
+    org_id=ORG,
+    owner_id="operator-1",
+    lease_holder_id="box-1",
+)
+
+DISPATCHER = JobPrincipal(kind=PrincipalKind.DISPATCHER, id="dispatcher-1", org_id=ORG)
+LEASEHOLDER = JobPrincipal(kind=PrincipalKind.BOX_SERVICE, id="box-1", org_id=ORG)
+OTHER_BOX = JobPrincipal(kind=PrincipalKind.BOX_SERVICE, id="box-2", org_id=ORG)
+OWNER = JobPrincipal(kind=PrincipalKind.OPERATOR, id="operator-1", org_id=ORG)
+OTHER_OPERATOR = JobPrincipal(kind=PrincipalKind.OPERATOR, id="operator-2", org_id=ORG)
 
 
-def make_job(**overrides) -> Job:
-    defaults = dict(
-        id="job-1",
-        project="af-build-remote-jobs",
-        snapshot="prd-af-build-remote-jobs",
-        state=JobState.RUNNING,
-        org="org-a",
-        claim_lease=Lease(holder_id="box-service-a", heartbeat_at=0.0, expires_at=1e12),
-    )
-    defaults.update(overrides)
-    return Job(**defaults)
+# --- create: dispatching principal only -------------------------------------------------
+
+def test_dispatcher_may_create():
+    authorize(JobAction.CREATE, DISPATCHER, JOB)  # does not raise
 
 
-def test_leaseholder_may_set_job_terminal():
-    job = make_job()
-    authorize_set_terminal(job, "box-service-a")  # does not raise
+@pytest.mark.parametrize("principal", [LEASEHOLDER, OWNER])
+def test_non_dispatcher_may_not_create(principal):
+    with pytest.raises(AuthorizationError):
+        authorize(JobAction.CREATE, principal, JOB)
 
 
-def test_non_leaseholder_is_refused_setting_job_terminal():
-    job = make_job()
-    with pytest.raises(JobAuthorizationError):
-        authorize_set_terminal(job, "box-service-b")
+# --- claimed / running / terminal: leaseholding box-service principal only --------------
+
+@pytest.mark.parametrize(
+    "action", [JobAction.SET_CLAIMED, JobAction.SET_RUNNING, JobAction.SET_TERMINAL]
+)
+def test_leaseholder_may_transition_state(action):
+    authorize(action, LEASEHOLDER, JOB)  # does not raise
 
 
-def test_job_with_no_lease_refuses_every_terminal_write():
-    job = make_job(claim_lease=None)
-    with pytest.raises(JobAuthorizationError):
-        authorize_set_terminal(job, "anyone")
+@pytest.mark.parametrize(
+    "action", [JobAction.SET_CLAIMED, JobAction.SET_RUNNING, JobAction.SET_TERMINAL]
+)
+@pytest.mark.parametrize("principal", [OTHER_BOX, DISPATCHER, OWNER])
+def test_non_leaseholder_state_transition_refused(action, principal):
+    with pytest.raises(AuthorizationError):
+        authorize(action, principal, JOB)
 
 
-def test_owning_principal_may_write_mailbox_and_resume():
-    job = make_job()
-    authorize_mailbox_write(job, "box-service-a")  # does not raise
-    authorize_resume(job, "box-service-a")  # does not raise
+def test_set_terminal_by_non_leaseholder_box_service_is_refused():
+    """A caller that is a box-service principal but does not hold this job's
+    lease may not set a terminal state (the acceptance floor's headline case)."""
+    with pytest.raises(AuthorizationError):
+        authorize(JobAction.SET_TERMINAL, OTHER_BOX, JOB)
 
 
-def test_non_owning_principal_is_refused_mailbox_write():
-    job = make_job()
-    with pytest.raises(JobAuthorizationError):
-        authorize_mailbox_write(job, "box-service-b")
+# --- mailbox write / resume: owning operator principal only -----------------------------
+
+@pytest.mark.parametrize("action", [JobAction.MAILBOX_WRITE, JobAction.RESUME])
+def test_owner_may_mailbox_write_and_resume(action):
+    authorize(action, OWNER, JOB)  # does not raise
 
 
-def test_non_owning_principal_is_refused_resume():
-    job = make_job()
-    with pytest.raises(JobAuthorizationError):
-        authorize_resume(job, "box-service-b")
+@pytest.mark.parametrize("action", [JobAction.MAILBOX_WRITE, JobAction.RESUME])
+@pytest.mark.parametrize("principal", [OTHER_OPERATOR, DISPATCHER, LEASEHOLDER])
+def test_non_owner_mailbox_write_and_resume_refused(action, principal):
+    with pytest.raises(AuthorizationError):
+        authorize(action, principal, JOB)
 
 
-def test_same_org_read_is_allowed():
-    job = make_job(org="org-a")
-    authorize_read(job, "org-a")  # does not raise
+# --- read: any in-org principal ----------------------------------------------------------
+
+@pytest.mark.parametrize("principal", [DISPATCHER, LEASEHOLDER, OWNER, OTHER_BOX, OTHER_OPERATOR])
+def test_any_in_org_principal_may_read(principal):
+    authorize(JobAction.READ, principal, JOB)  # does not raise
 
 
-def test_cross_org_read_is_refused():
-    job = make_job(org="org-a")
-    with pytest.raises(JobAuthorizationError):
-        authorize_read(job, "org-b")
+# --- org scoping: refused for every action, regardless of principal class ---------------
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        JobAction.CREATE,
+        JobAction.SET_CLAIMED,
+        JobAction.SET_RUNNING,
+        JobAction.SET_TERMINAL,
+        JobAction.MAILBOX_WRITE,
+        JobAction.RESUME,
+        JobAction.READ,
+    ],
+)
+def test_cross_org_is_always_refused(action):
+    cross_org_principal = JobPrincipal(kind=PrincipalKind.OPERATOR, id="operator-1", org_id=OTHER_ORG)
+    with pytest.raises(AuthorizationError):
+        authorize(action, cross_org_principal, JOB)
+
+
+def test_cross_org_read_is_refused_even_for_a_principal_with_matching_ids():
+    """Same principal id/kind as the job's owner, but a different org — the
+    cross-org guard must win even when every other field matches."""
+    lookalike = JobPrincipal(kind=PrincipalKind.OPERATOR, id="operator-1", org_id=OTHER_ORG)
+    with pytest.raises(AuthorizationError):
+        authorize(JobAction.READ, lookalike, JOB)
