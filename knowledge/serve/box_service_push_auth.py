@@ -17,6 +17,15 @@ A job worktree cannot reach a network remote under its own power. Concretely:
   — never written to a persisted credential helper, so the secret never lands in on-disk git
   config.
 
+The account-wide PAT backing that main-worktree push is FETCHED PER INTEGRATION
+(``github_token.fetch_github_token_uncached``), never cached for the process's lifetime the way
+the productivity route's reads are — a token revoked or rotated mid-run (the 90-day operator
+calendar obligation documented in ``docs/solutions/conventions/github-token-storage.md``) must
+surface at the very NEXT integration, not only once the whole box-service process restarts. When
+the remote rejects that credential, the push raises :class:`PushCredentialRejectedError` — a
+distinct, credential-naming reason, never an opaque git failure — and (when a ``job`` is given)
+records ``FailureClass.PUSH_CREDENTIAL_REJECTED`` as needs-attention.
+
 Every git call routes through an injectable ``runner`` (the seam already used by
 ``box_service_clone`` and ``box_service_job_worktree``), so this is unit-testable against real
 throwaway repos with no live network remote or credential store.
@@ -24,22 +33,54 @@ throwaway repos with no live network remote or credential store.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Callable
 from urllib.parse import urlsplit, urlunsplit
 
 from knowledge.serve.box_service_clone import RepoClone
+from knowledge.serve.box_service_failures import FailureClass, record_failure
 from knowledge.serve.box_service_job_worktree import JobWorktree
-from knowledge.serve.github_token import resolve_github_token
+from knowledge.serve.box_service_models import Job
+from knowledge.serve.github_token import DEFAULT_SECRET_NAME, fetch_github_token_uncached
 
 #: Same shape as ``subprocess.run`` — the seam a fake runner replaces in tests.
 Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 TokenResolver = Callable[[], "str | None"]
 
+#: Substrings of a failed push's stderr that name an authentication/authorization rejection
+#: (a bad, revoked, or rotated-out-from-under-it credential) rather than an unrelated git
+#: failure (e.g. a non-fast-forward, a network timeout) — case-insensitive.
+_AUTH_FAILURE_MARKERS = (
+    "authentication failed",
+    "invalid username or token",
+    "could not read username",
+    "could not read password",
+    "bad credentials",
+    "support for password authentication was removed",
+    "403",
+)
+
+
+def _looks_like_authentication_failure(stderr: str) -> bool:
+    lowered = stderr.lower()
+    return any(marker in lowered for marker in _AUTH_FAILURE_MARKERS)
+
+
+def _push_credential_secret_name() -> str:
+    return os.environ.get("GITHUB_TOKEN_SECRET_NAME", DEFAULT_SECRET_NAME)
+
 
 class PushAuthError(RuntimeError):
     """Raised when a required git-config call or push fails. Never silently swallowed (R17:
     refuse rather than degrade)."""
+
+
+class PushCredentialRejectedError(PushAuthError):
+    """The account-wide GitHub PAT was rejected by the remote pushing from the main worktree —
+    revoked or rotated mid-run — distinct from a token that never resolved at all
+    (:class:`PushAuthError` alone) or an unrelated git failure, so the operator sees exactly
+    which credential needs rotating/replacing rather than an opaque push error."""
 
 
 def _run(runner: Runner, cwd: str, *args: str) -> str:
@@ -121,23 +162,52 @@ def push_main_worktree(
     repo_clone: RepoClone,
     ref: str,
     *,
-    token_resolver: TokenResolver = resolve_github_token,
+    token_resolver: TokenResolver = fetch_github_token_uncached,
     runner: Runner = subprocess.run,
+    job: "Job | None" = None,
 ) -> None:
     """Push ``ref`` from the repo's main worktree to its real ``origin_url`` — the box service's
     own push, distinct from a job worktree's — authenticated with a token resolved fresh from
     ``github_token`` and embedded directly in the push URL for this one call only.
 
+    ``token_resolver`` defaults to :func:`github_token.fetch_github_token_uncached`, which hits
+    Secrets Manager on EVERY call rather than reusing a process-lifetime cache: the account-wide
+    PAT is rotated on a 90-day operator calendar obligation (or revoked early on suspected
+    exposure), and a rotated/revoked value must be picked up at the very next integration, not
+    only after a redeploy.
+
     Raises :class:`PushAuthError` if no token resolves (the push is refused, never attempted
-    unauthenticated) or if the push itself fails.
+    unauthenticated), or :class:`PushCredentialRejectedError` — a distinct, credential-naming
+    subclass — if the remote rejects the resolved token (revoked or rotated mid-run) rather than
+    an opaque generic push failure. Either way, when ``job`` is given, the rejection is also
+    recorded as ``FailureClass.PUSH_CREDENTIAL_REJECTED`` (needs-attention, naming the secret).
     """
+    secret_name = _push_credential_secret_name()
     token = token_resolver()
     if not token:
-        raise PushAuthError("no GitHub token resolved — main worktree push refused")
+        if job is not None:
+            record_failure(
+                job, FailureClass.PUSH_CREDENTIAL_REJECTED,
+                detail=f"no GitHub token resolved from secret {secret_name!r}",
+            )
+        raise PushAuthError(
+            f"no GitHub token resolved from secret {secret_name!r} — main worktree push refused"
+        )
     push_url = authenticated_push_url(repo_clone.origin_url, token)
     proc = runner(
         ["git", "push", push_url, ref],
         cwd=repo_clone.main_worktree_path, capture_output=True, text=True, check=False,
     )
     if proc.returncode != 0:
-        raise PushAuthError(f"main worktree push of {ref!r} failed: {proc.stderr.strip()}")
+        stderr = proc.stderr.strip()
+        if _looks_like_authentication_failure(stderr):
+            if job is not None:
+                record_failure(
+                    job, FailureClass.PUSH_CREDENTIAL_REJECTED,
+                    detail=f"GitHub PAT from secret {secret_name!r} rejected by remote",
+                )
+            raise PushCredentialRejectedError(
+                f"GitHub PAT from secret {secret_name!r} was rejected pushing {ref!r} "
+                f"(revoked or rotated?): {stderr}"
+            )
+        raise PushAuthError(f"main worktree push of {ref!r} failed: {stderr}")

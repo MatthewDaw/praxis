@@ -38,6 +38,11 @@ class FailureClass(str, Enum):
     #: worktree is preserved for a human rather than silently reset away, so
     #: this is needs-attention, not failed.
     MAIN_WORKTREE_DIRTY = "main_worktree_dirty"
+    #: The account-wide push credential (the GitHub PAT, R36/R37/R38) was rejected by the
+    #: remote at integration time — revoked or rotated mid-run, distinct from an unrelated git
+    #: push failure. Nothing about the job's work is at fault, so it is preserved for a human to
+    #: rotate/replace the credential and retry, rather than failed outright.
+    PUSH_CREDENTIAL_REJECTED = "push_credential_rejected"
 
 
 #: The terminal JobState each failure class transitions a job to.
@@ -47,17 +52,25 @@ TERMINAL_STATE_FOR_CLASS: dict[FailureClass, JobState] = {
     FailureClass.MERGE_CONFLICT: JobState.NEEDS_ATTENTION,
     FailureClass.CAPABILITY_PROBE_FAILED: JobState.FAILED,
     FailureClass.MAIN_WORKTREE_DIRTY: JobState.NEEDS_ATTENTION,
+    FailureClass.PUSH_CREDENTIAL_REJECTED: JobState.NEEDS_ATTENTION,
 }
 
 
-def record_failure(job: Job, failure_class: FailureClass) -> Job:
+def record_failure(job: Job, failure_class: FailureClass, *, detail: str | None = None) -> Job:
     """Transition ``job`` to its failure class's terminal state, in place.
 
     Increments ``attempt_count`` and sets ``resumable`` to whether the job is
     still under its attempt bound — the attempt bound is what stops automatic
     re-queueing, not a special-cased state.
+
+    ``detail`` appends free text naming the specifics (e.g. which credential secret was
+    rejected) onto the failure class's fixed reason, so an opaque enum value alone never has to
+    stand in for "which credential" an operator needs to act on. Omitting it keeps
+    ``job.failure_reason`` byte-identical to ``failure_class.value``, unchanged from before this
+    parameter existed.
     """
     job.attempt_count += 1
-    mark_terminal(job, TERMINAL_STATE_FOR_CLASS[failure_class], failure_class.value)
+    reason = failure_class.value if not detail else f"{failure_class.value}: {detail}"
+    mark_terminal(job, TERMINAL_STATE_FOR_CLASS[failure_class], reason)
     job.resumable = job.attempt_count < job.max_attempts
     return job

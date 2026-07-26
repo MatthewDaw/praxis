@@ -39,15 +39,19 @@ def test_launch_returns_session_id_and_never_shells_out_for_real():
     session_id = launcher.launch(cwd="/repo/worktree", command="/af-build", name="job-1")
 
     assert session_id == "sess-123"
-    assert runner.calls == [
-        {
-            "args": ["claude", "--bg", "/af-build", "--name", "job-1"],
-            "cwd": "/repo/worktree",
-            "capture_output": True,
-            "text": True,
-            "check": False,
-        }
-    ]
+    assert len(runner.calls) == 1
+    call = dict(runner.calls[0])
+    env = call.pop("env")
+    assert call == {
+        "args": ["claude", "--bg", "/af-build", "--name", "job-1"],
+        "cwd": "/repo/worktree",
+        "capture_output": True,
+        "text": True,
+        "check": False,
+    }
+    # An explicit, credential-sanitized env is passed (never the box service's own inherited by
+    # omission) — see test_credential_isolation.py for the full credential-shape assertion.
+    assert isinstance(env, dict)
 
 
 def test_launch_raises_on_nonzero_exit():
