@@ -147,11 +147,47 @@ class RepoIntegrationLock:
         return entry.holder_id
 
 
-def _run_git(runner: Runner, cwd: str, *args: str) -> str:
+def run_git(runner: Runner, cwd: str, *args: str) -> str:
+    """Run one git command against ``cwd``, raising :class:`IntegrationError` on a non-zero
+    exit. Public (not module-private) because ``box_service_group_integrate`` reuses it for the
+    group sequence's own git calls, rather than re-implementing this same wrap-and-raise shape."""
     proc = runner(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise IntegrationError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
     return proc.stdout
+
+
+def reset_main_worktree_to_pr_base(
+    runner: Runner, cwd: str, pr_base: str, *, job: Job | None = None
+) -> None:
+    """The shared R33 preflight: refuse (:class:`MainWorktreeDirtyError`) a main worktree that is
+    dirty or holds a commit not yet reflected upstream at ``pr_base``, recording
+    ``FailureClass.MAIN_WORKTREE_DIRTY`` on ``job`` when given; otherwise fetch the PR base and
+    hard-reset ``cwd`` to it. Shared by :func:`run_integration_sequence` (single job) and
+    ``box_service_group_integrate.run_group_integration_sequence`` (group), since both start every
+    integration sequence from the identical resolved-PR-base state.
+    """
+    status = run_git(runner, cwd, "status", "--porcelain")
+    if status.strip():
+        if job is not None:
+            record_failure(job, FailureClass.MAIN_WORKTREE_DIRTY)
+        raise MainWorktreeDirtyError(
+            f"main worktree {cwd!r} has uncommitted changes, refusing to reset"
+        )
+
+    tracking_ref = f"refs/remotes/origin/{pr_base}"
+    run_git(runner, cwd, "fetch", "origin", f"+{pr_base}:{tracking_ref}")
+
+    unpushed = run_git(runner, cwd, "log", f"{tracking_ref}..HEAD", "--oneline")
+    if unpushed.strip():
+        if job is not None:
+            record_failure(job, FailureClass.MAIN_WORKTREE_DIRTY)
+        raise MainWorktreeDirtyError(
+            f"main worktree {cwd!r} holds a commit not yet reflected at origin/{pr_base}, "
+            "refusing to reset"
+        )
+
+    run_git(runner, cwd, "reset", "--hard", tracking_ref)
 
 
 def default_pr_creator(target: IntegrationTarget, merged_sha: str) -> str:
@@ -212,27 +248,7 @@ def run_integration_sequence(
     try:
         cwd = target.main_worktree_path
 
-        status = _run_git(runner, cwd, "status", "--porcelain")
-        if status.strip():
-            if job is not None:
-                record_failure(job, FailureClass.MAIN_WORKTREE_DIRTY)
-            raise MainWorktreeDirtyError(
-                f"main worktree {cwd!r} has uncommitted changes, refusing to reset"
-            )
-
-        tracking_ref = f"refs/remotes/origin/{target.pr_base}"
-        _run_git(runner, cwd, "fetch", "origin", f"+{target.pr_base}:{tracking_ref}")
-
-        unpushed = _run_git(runner, cwd, "log", f"{tracking_ref}..HEAD", "--oneline")
-        if unpushed.strip():
-            if job is not None:
-                record_failure(job, FailureClass.MAIN_WORKTREE_DIRTY)
-            raise MainWorktreeDirtyError(
-                f"main worktree {cwd!r} holds a commit not yet reflected at origin/{target.pr_base}, "
-                "refusing to reset"
-            )
-
-        _run_git(runner, cwd, "reset", "--hard", tracking_ref)
+        reset_main_worktree_to_pr_base(runner, cwd, target.pr_base, job=job)
 
         merge_proc = runner(
             ["git", "merge", "--no-ff", target.job_branch],
@@ -246,7 +262,7 @@ def run_integration_sequence(
                 f"merge of {target.job_branch!r} into {cwd!r} conflicted, job branch preserved"
             )
 
-        merged_sha = _run_git(runner, cwd, "rev-parse", "HEAD").strip()
+        merged_sha = run_git(runner, cwd, "rev-parse", "HEAD").strip()
 
         decision = evaluate_push(
             PushRequest(
@@ -260,7 +276,7 @@ def run_integration_sequence(
         if not decision.allowed:
             raise PublishRefusedError(f"publish refused: {decision.reason}")
 
-        _run_git(runner, cwd, "push", "origin", f"HEAD:{target.integration_ref}")
+        run_git(runner, cwd, "push", "origin", f"HEAD:{target.integration_ref}")
         pr_url = pr_creator(target, merged_sha)
 
         return IntegrationResult(merged_sha=merged_sha, pushed_ref=target.integration_ref, pr_url=pr_url)
