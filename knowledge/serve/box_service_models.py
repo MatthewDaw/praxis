@@ -35,6 +35,30 @@ OPEN_JOB_STATES = frozenset(
     {JobState.QUEUED, JobState.CLAIMED, JobState.RUNNING, JobState.AWAITING_HUMAN}
 )
 
+#: The at-rest states (R1). Every one of these carries a machine-readable
+#: reason (``Job.failure_reason``) distinct from the state value itself —
+#: including ``COMPLETED``, so a completed job's "why" is recorded the same
+#: way a failed one's is.
+TERMINAL_JOB_STATES = frozenset(
+    {JobState.COMPLETED, JobState.FAILED, JobState.NEEDS_ATTENTION}
+)
+
+
+def mark_terminal(job: "Job", state: JobState, reason: str, *, clear_worktree: bool = False) -> "Job":
+    """Transition ``job`` to a terminal ``state`` with a ``reason`` kept in a
+    field distinct from the state itself (R1). ``clear_worktree`` defaults to
+    False so a needs-attention job's worktree/branch artifacts are retained
+    for a human (R34); a caller that has safely torn down the worktree after
+    a clean completed/failed merge may pass ``clear_worktree=True``.
+    """
+    if state not in TERMINAL_JOB_STATES:
+        raise ValueError(f"{state.value!r} is not a terminal JobState")
+    job.state = state
+    job.failure_reason = reason
+    if clear_worktree:
+        job.worktree_path = None
+    return job
+
 
 @dataclass
 class Lease:
@@ -60,7 +84,18 @@ class Job:
     that ``box_service_groups`` uses to find a job's batch and decide when
     the batch's barrier opens (R48). ``org`` scopes the row for cross-org
     read/write authorization (R-ticket a75ca6a9); ``claim_lease`` is who
-    currently owns terminal-write/mailbox/resume authority over the job."""
+    currently owns terminal-write/mailbox/resume authority over the job.
+
+    ``run_owner`` doubles as the claim lease's holder id (R2); ``claim_heartbeat_at``
+    and ``claim_lease_ttl`` are the heartbeat and expiry that, together with the
+    holder id, make the job claim one of the system's lease types (R63) — set
+    together by :meth:`box_service_queue.JobQueue.claim`/``heartbeat`` and cleared
+    on release, never assigned individually.
+
+    ``queued_at`` is stamped once, at creation, and never touched again — it is
+    the fixed reference point ``box_service_observability.find_stuck_jobs`` (R3)
+    measures a still-``queued`` job's age against.
+    """
 
     id: str
     project: str
@@ -75,6 +110,10 @@ class Job:
     group_id: str | None = None
     org: str = "default"
     claim_lease: Lease | None = None
+    worktree_path: str | None = None
+    claim_heartbeat_at: float | None = None
+    claim_lease_ttl: float | None = None
+    queued_at: float | None = None
 
     def is_open(self) -> bool:
         return self.state in OPEN_JOB_STATES

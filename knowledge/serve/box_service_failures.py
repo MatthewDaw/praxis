@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from knowledge.serve.box_service_models import Job, JobState
+from knowledge.serve.box_service_models import Job, JobState, mark_terminal
 
 
 class FailureClass(str, Enum):
@@ -58,7 +58,6 @@ def record_failure(job: Job, failure_class: FailureClass) -> Job:
     re-queueing, not a special-cased state.
     """
     job.attempt_count += 1
-    job.state = TERMINAL_STATE_FOR_CLASS[failure_class]
-    job.failure_reason = failure_class.value
+    mark_terminal(job, TERMINAL_STATE_FOR_CLASS[failure_class], failure_class.value)
     job.resumable = job.attempt_count < job.max_attempts
     return job

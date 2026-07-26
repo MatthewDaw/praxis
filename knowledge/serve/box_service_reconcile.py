@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 
-from knowledge.serve.box_service_models import Job, JobState, SessionInfo
+from knowledge.serve.box_service_models import Job, JobState, SessionInfo, mark_terminal
 
 
 class ReconcileAction(str, Enum):
@@ -90,9 +90,8 @@ def apply_reconciliation(
         elif decision.action is ReconcileAction.MARK_FAILED_RESUMABLE:
             job = decision.job
             assert job is not None
-            job.state = JobState.FAILED
+            mark_terminal(job, JobState.FAILED, SESSION_MISSING_AT_RESTART)
             job.resumable = True
-            job.failure_reason = SESSION_MISSING_AT_RESTART
             reconciled.append(job)
         elif decision.action is ReconcileAction.REAP:
             session = decision.session
