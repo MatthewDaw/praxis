@@ -33,6 +33,11 @@ class FailureClass(str, Enum):
     #: R17: a startup capability probe failed, so the box service refuses to
     #: run this job rather than degrade silently.
     CAPABILITY_PROBE_FAILED = "capability_probe_failed"
+    #: R33: the main worktree is dirty or holds a commit not yet published to
+    #: the PR base at integration time. The work already sitting in the main
+    #: worktree is preserved for a human rather than silently reset away, so
+    #: this is needs-attention, not failed.
+    MAIN_WORKTREE_DIRTY = "main_worktree_dirty"
 
 
 #: The terminal JobState each failure class transitions a job to.
@@ -41,6 +46,7 @@ TERMINAL_STATE_FOR_CLASS: dict[FailureClass, JobState] = {
     FailureClass.SESSION_CRASHED: JobState.FAILED,
     FailureClass.MERGE_CONFLICT: JobState.NEEDS_ATTENTION,
     FailureClass.CAPABILITY_PROBE_FAILED: JobState.FAILED,
+    FailureClass.MAIN_WORKTREE_DIRTY: JobState.NEEDS_ATTENTION,
 }
 
 
