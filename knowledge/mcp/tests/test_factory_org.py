@@ -19,6 +19,8 @@ from pathlib import Path
 
 from knowledge.mcp import identity, server
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
 
 def _write_cache(path, **overrides):
     data = {
@@ -82,7 +84,7 @@ def test_stop_hook_client_resolves_same_factory_org(monkeypatch, tmp_path):
     MCP-tool org and hook-client org AGREE."""
     _pin_project(monkeypatch, tmp_path)
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "agent_factory" / "hooks"))
+    sys.path.insert(0, str(_REPO_ROOT / "agent_factory" / "hooks"))
     import os
 
     import _praxis  # stdlib-only Stop-hook mirror
