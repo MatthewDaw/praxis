@@ -38,8 +38,14 @@ class LeaseConflict(RuntimeError):
         super().__init__(f"job held by {owner!r} for {remaining:.1f}s more")
 
 
-def _lease_live(job: Job, now: float) -> bool:
-    """True iff ``job`` is claimed/running under a non-stale heartbeat."""
+def lease_is_live(job: Job, now: float) -> bool:
+    """True iff ``job`` is claimed/running under a non-stale heartbeat.
+
+    Public (not module-private) so other read-side consumers — e.g.
+    ``box_service_observability.find_stuck_jobs`` (R3) — share this single
+    definition of "stale" rather than re-deriving it from the three lease
+    fields themselves.
+    """
     if job.run_owner is None or job.claim_heartbeat_at is None or job.claim_lease_ttl is None:
         return False
     if job.state not in (JobState.CLAIMED, JobState.RUNNING):
@@ -94,7 +100,7 @@ class JobQueue:
             if job is None:
                 raise KeyError(job_id)
             now = self._clock()
-            live = _lease_live(job, now)
+            live = lease_is_live(job, now)
             if live and job.run_owner != owner:
                 remaining = job.claim_lease_ttl - (now - job.claim_heartbeat_at)  # type: ignore[operator]
                 raise LeaseConflict(owner=job.run_owner, remaining=remaining)
@@ -116,7 +122,7 @@ class JobQueue:
             if job is None:
                 raise KeyError(job_id)
             now = self._clock()
-            if job.run_owner != owner or not _lease_live(job, now):
+            if job.run_owner != owner or not lease_is_live(job, now):
                 raise LeaseConflict(owner=job.run_owner, remaining=0.0)
             job.claim_heartbeat_at = now
             return job

@@ -70,6 +70,10 @@ class Job:
     holder id, make the job claim one of the system's lease types (R63) — set
     together by :meth:`box_service_queue.JobQueue.claim`/``heartbeat`` and cleared
     on release, never assigned individually.
+
+    ``queued_at`` is stamped once, at creation, and never touched again — it is
+    the fixed reference point ``box_service_observability.find_stuck_jobs`` (R3)
+    measures a still-``queued`` job's age against.
     """
 
     id: str
@@ -85,6 +89,7 @@ class Job:
     worktree_path: str | None = None
     claim_heartbeat_at: float | None = None
     claim_lease_ttl: float | None = None
+    queued_at: float | None = None
 
     def is_open(self) -> bool:
         return self.state in OPEN_JOB_STATES

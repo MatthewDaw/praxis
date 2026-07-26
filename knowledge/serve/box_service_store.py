@@ -10,20 +10,36 @@ from ... without a new job being created").
 
 from __future__ import annotations
 
+import time
 import uuid
+from collections.abc import Callable
 
 from knowledge.serve.box_service_models import Job, JobState
 
 
 class JobStore:
-    """A keyed-by-id collection of job rows."""
+    """A keyed-by-id collection of job rows.
 
-    def __init__(self) -> None:
+    ``clock`` is injectable so ``queued_at`` (R3) can be asserted
+    deterministically in tests without sleeping past a real threshold.
+    """
+
+    def __init__(self, clock: Callable[[], float] = time.time) -> None:
+        self._clock = clock
         self._jobs: dict[str, Job] = {}
 
     def create(self, *, project: str, snapshot: str) -> Job:
-        """Create and store a new job, queued, with a fresh stable id."""
-        job = Job(id=str(uuid.uuid4()), project=project, snapshot=snapshot, state=JobState.QUEUED)
+        """Create and store a new job, queued, with a fresh stable id. Stamps
+        ``queued_at`` (R3) once at creation, the fixed reference point a still-
+        queued job's age is later measured against.
+        """
+        job = Job(
+            id=str(uuid.uuid4()),
+            project=project,
+            snapshot=snapshot,
+            state=JobState.QUEUED,
+            queued_at=self._clock(),
+        )
         self._jobs[job.id] = job
         return job
 
