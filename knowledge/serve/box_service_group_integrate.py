@@ -43,10 +43,16 @@ from knowledge.serve.box_service_push_guard import PushRequest, evaluate_push
 class GroupIntegrationTarget:
     """Everything one GROUP integration sequence needs. ``member_branches`` is the DISPATCH-ORDER
     list of branch names to fold in — the same order ``box_service_groups.members_of_group``
-    returns (and the caller's original dispatch order); this module never re-sorts it."""
+    returns (and the caller's original dispatch order); this module never re-sorts it.
+
+    ``allowlisted_origin`` mirrors ``box_service_integrate.IntegrationTarget`` (R36): a field
+    independent of ``origin_repo`` so a real divergence between the resolved push target and the
+    group's registered origin is refused rather than compared against itself.
+    """
 
     main_worktree_path: str
     origin_repo: str
+    allowlisted_origin: str
     member_branches: list[str]
     pr_base: str
     integration_ref: str
@@ -135,7 +141,7 @@ def run_group_integration_sequence(
                 force=force_publish,
                 remote_ref_exists=remote_ref_exists,
             ),
-            allowlisted_origin=target.origin_repo,
+            allowlisted_origin=target.allowlisted_origin,
         )
         if not decision.allowed:
             raise PublishRefusedError(f"publish refused: {decision.reason}")

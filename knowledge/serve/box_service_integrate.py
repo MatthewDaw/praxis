@@ -72,10 +72,19 @@ class PublishRefusedError(IntegrationError):
 @dataclass(frozen=True)
 class IntegrationTarget:
     """Everything one integration sequence needs, resolved ahead of time so this module owns no
-    lookup of its own — just the main worktree it must run in (never a job worktree)."""
+    lookup of its own — just the main worktree it must run in (never a job worktree).
+
+    ``origin_repo`` and ``allowlisted_origin`` are deliberately SEPARATE fields (R36): the former is
+    whatever repo this sequence is actually about to push to, the latter is the job's own
+    independently-registered origin. A caller that resolves ``origin_repo`` from anywhere other
+    than the job's trusted record (a bug, a stale cache, a misrouted job) is refused by
+    ``evaluate_push`` rather than silently passing a same-field-compared-to-itself check that could
+    never catch a real divergence.
+    """
 
     main_worktree_path: str
     origin_repo: str
+    allowlisted_origin: str
     job_branch: str
     pr_base: str
     integration_ref: str
@@ -271,7 +280,7 @@ def run_integration_sequence(
                 force=force_publish,
                 remote_ref_exists=remote_ref_exists,
             ),
-            allowlisted_origin=target.origin_repo,
+            allowlisted_origin=target.allowlisted_origin,
         )
         if not decision.allowed:
             raise PublishRefusedError(f"publish refused: {decision.reason}")
