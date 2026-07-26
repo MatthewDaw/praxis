@@ -38,6 +38,7 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "memory_audit",  # a rejected-pile / integrity check
         "gate_result",   # a verification gate outcome
         "outcome",       # final success/failure of a task or run
+        "blocked_on_question",  # R23: harness-fired, in-domain "blocked on a question" signal
         "note",
     }
 )
