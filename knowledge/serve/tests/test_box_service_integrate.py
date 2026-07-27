@@ -65,6 +65,7 @@ def make_target(**overrides) -> IntegrationTarget:
     defaults = dict(
         main_worktree_path="/repos/widgets/main",
         origin_repo="git@github.com:acme/widgets.git",
+        allowlisted_origin="git@github.com:acme/widgets.git",
         job_branch="job/job-1",
         pr_base="main",
         integration_ref="refs/heads/integrate/job-1",
