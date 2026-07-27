@@ -95,6 +95,12 @@ class Job:
     ``queued_at`` is stamped once, at creation, and never touched again — it is
     the fixed reference point ``box_service_observability.find_stuck_jobs`` (R3)
     measures a still-``queued`` job's age against.
+
+    ``tail_ref`` is an opaque key into the object store
+    ``box_service_activity_tail.ActivityTailStore`` holds the job's bounded
+    rolling activity tail under (R25) — the job row carries only this
+    reference, never the tail content itself, so no tail content is ever
+    stored as a Praxis fact.
     """
 
     id: str
@@ -114,6 +120,7 @@ class Job:
     claim_heartbeat_at: float | None = None
     claim_lease_ttl: float | None = None
     queued_at: float | None = None
+    tail_ref: str | None = None
 
     def is_open(self) -> bool:
         return self.state in OPEN_JOB_STATES
