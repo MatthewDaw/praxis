@@ -30,7 +30,7 @@ class ScriptedRunner:
     def __call__(self, args, cwd, capture_output=True, text=True, check=False):
         self.calls.append((tuple(args), cwd))
         sub = args[1] if len(args) > 1 else None
-        if sub in ("status", "fetch", "log", "reset", "commit", "push"):
+        if sub in ("status", "fetch", "log", "reset", "commit", "push", "config"):
             return Proc()
         if sub == "merge" and "--squash" in args:
             return Proc()
@@ -43,6 +43,7 @@ def make_target(**overrides) -> GroupIntegrationTarget:
     defaults = dict(
         main_worktree_path="/repos/widgets/main",
         origin_repo="git@github.com:acme/widgets.git",
+        allowlisted_origin="git@github.com:acme/widgets.git",
         member_branches=["job/job-1", "job/job-2", "job/job-3"],
         member_job_ids=["job-1", "job-2", "job-3"],
         pr_base="main",

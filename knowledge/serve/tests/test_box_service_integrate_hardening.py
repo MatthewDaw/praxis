@@ -95,6 +95,7 @@ def test_conflicting_merge_driver_never_executes(repo: Path) -> None:
     target = IntegrationTarget(
         main_worktree_path=str(repo),
         origin_repo=str(repo.parent / "origin.git"),
+        allowlisted_origin=str(repo.parent / "origin.git"),
         job_branch="job/1",
         pr_base="main",
         integration_ref="refs/heads/integrate/job-1",
@@ -127,6 +128,7 @@ def test_hook_and_smudge_filter_never_execute_on_a_clean_merge(repo: Path) -> No
     target = IntegrationTarget(
         main_worktree_path=str(repo),
         origin_repo=str(repo.parent / "origin.git"),
+        allowlisted_origin=str(repo.parent / "origin.git"),
         job_branch="job/2",
         pr_base="main",
         integration_ref="refs/heads/integrate/job-2",

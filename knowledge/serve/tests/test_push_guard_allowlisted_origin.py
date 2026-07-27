@@ -55,7 +55,7 @@ class ScriptedRunner:
     def __call__(self, args, cwd, capture_output=True, text=True, check=False):
         self.calls.append((tuple(args), cwd))
         sub = args[1] if len(args) > 1 else None
-        if sub in ("status", "fetch", "log", "reset"):
+        if sub in ("status", "fetch", "log", "reset", "config"):
             return Proc()
         if sub == "merge" and "--abort" not in args and "--squash" not in args:
             return Proc(returncode=0 if self.merge_ok else 1)
@@ -89,6 +89,7 @@ def make_group_target(**overrides) -> GroupIntegrationTarget:
         origin_repo=ALLOWED_ORIGIN,
         allowlisted_origin=ALLOWED_ORIGIN,
         member_branches=["job/job-1", "job/job-2"],
+        member_job_ids=["job-1", "job-2"],
         pr_base="main",
         integration_ref="refs/heads/integrate/group-1",
     )

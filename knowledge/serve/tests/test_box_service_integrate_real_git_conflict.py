@@ -73,6 +73,7 @@ def make_target(main_worktree: str, origin: str) -> IntegrationTarget:
     return IntegrationTarget(
         main_worktree_path=main_worktree,
         origin_repo=origin,
+        allowlisted_origin=origin,
         job_branch="job/conflict",
         pr_base="main",
         integration_ref="refs/heads/integrate/job-conflict",

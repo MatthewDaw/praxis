@@ -103,6 +103,8 @@ class ScriptedRunner:
     def __call__(self, args, cwd, capture_output=True, text=True, check=False):
         self.calls.append((tuple(args), cwd))
         sub = args[1] if len(args) > 1 else None
+        if sub == "config":
+            return Proc()
         if sub == "status":
             return Proc(stdout="")
         if sub == "fetch":
@@ -126,6 +128,7 @@ def make_target(**overrides) -> IntegrationTarget:
     defaults = dict(
         main_worktree_path="/repos/widgets/main",
         origin_repo="git@github.com:acme/widgets.git",
+        allowlisted_origin="git@github.com:acme/widgets.git",
         job_branch="job/job-1",
         pr_base="main",
         integration_ref="refs/heads/integrate/job-1",
