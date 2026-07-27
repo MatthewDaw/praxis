@@ -47,6 +47,10 @@ class JobStore:
         """Query a job row by id, or ``None`` if no such job exists."""
         return self._jobs.get(job_id)
 
+    def all(self) -> list[Job]:
+        """Every stored job row (R26's ``GET /jobs`` listing reads this)."""
+        return list(self._jobs.values())
+
     def resume_from_awaiting_human(self, job_id: str) -> Job:
         """Transition the job back to ``running`` in place. Raises if the job
         is not currently ``awaiting-human`` — resuming is a transition on an
