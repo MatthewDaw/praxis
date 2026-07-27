@@ -331,3 +331,32 @@ def test_edit_allowed_on_non_prd_snapshot(seeded):
     assert resp.status_code == 200, (
         f"edit on non-prd snapshot should not be guarded, "
         f"got {resp.status_code}: {resp.text}")
+
+
+def test_planning_marker_itself_is_exempt_from_the_bless_guard():
+    """The re-arm path must not be blocked by the guard it re-arms.
+
+    REGRESSION: `_check_bless_guard` applied to every fact in a `prd-*` snapshot, including
+    the planning marker. `stamp_planning` re-arms a blessed plan by PATCHing that marker, so
+    a blessed plan could never be re-armed: the refusal said "re-arm the planning marker
+    (stamp_planning)" and stamp_planning was refused by the same check. A blessed plan was
+    permanently immutable, with no documented escape.
+    """
+    from knowledge.serve.facts_candidates import FactsCandidates
+
+    class _G:
+        def find_planning_marker(self, project):
+            return None  # blessed / unarmed: any guarded fact must raise here
+
+    store = object.__new__(FactsCandidates)
+    store._facts_table = "snapshots"
+    store._snapshot = "prd-proj"
+    store._space = "proj"
+    store.graph = _G()
+
+    # The marker itself is exempt -> allowed even with no armed marker.
+    assert store._check_bless_guard("prd-proj::planning", "edit") == (False, "")
+
+    # Ordinary plan facts are still guarded.
+    with pytest.raises(ValueError, match="planning marker"):
+        store._check_bless_guard("some-ordinary-fact-id", "edit")
