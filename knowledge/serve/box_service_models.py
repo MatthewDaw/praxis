@@ -95,6 +95,11 @@ class Job:
     ``queued_at`` is stamped once, at creation, and never touched again — it is
     the fixed reference point ``box_service_observability.find_stuck_jobs`` (R3)
     measures a still-``queued`` job's age against.
+
+    ``terminal_at`` is stamped only by :func:`mark_terminal`'s callers (R24) —
+    from a discrete terminal event's own timestamp, never a wall-clock read
+    taken when that event happens to be processed — so the recorded terminal
+    moment is never inferred from a poll interval.
     """
 
     id: str
@@ -114,6 +119,7 @@ class Job:
     claim_heartbeat_at: float | None = None
     claim_lease_ttl: float | None = None
     queued_at: float | None = None
+    terminal_at: float | None = None
 
     def is_open(self) -> bool:
         return self.state in OPEN_JOB_STATES
