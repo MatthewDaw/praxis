@@ -122,3 +122,25 @@ def test_cross_org_read_is_refused_even_for_a_principal_with_matching_ids():
     lookalike = JobPrincipal(kind=PrincipalKind.OPERATOR, id="operator-1", org_id=OTHER_ORG)
     with pytest.raises(AuthorizationError):
         authorize(JobAction.READ, lookalike, JOB)
+
+
+# --- unauthenticated: no principal at all, refused (not crashed) -----------------------
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        JobAction.CREATE,
+        JobAction.SET_CLAIMED,
+        JobAction.SET_RUNNING,
+        JobAction.SET_TERMINAL,
+        JobAction.MAILBOX_WRITE,
+        JobAction.RESUME,
+        JobAction.READ,
+    ],
+)
+def test_unauthenticated_caller_is_refused_not_crashed(action):
+    """An absent principal (no credential at all) is refused through the same
+    ``AuthorizationError`` path as a cross-org caller — it must never surface
+    as an unhandled ``AttributeError`` from touching ``principal.org_id``."""
+    with pytest.raises(AuthorizationError):
+        authorize(action, None, JOB)

@@ -72,14 +72,18 @@ class AuthorizationError(PermissionError):
     """Raised when a principal is refused an action on a job."""
 
 
-def authorize(action: JobAction, principal: JobPrincipal, job: JobRef) -> None:
+def authorize(action: JobAction, principal: JobPrincipal | None, job: JobRef) -> None:
     """Raise :class:`AuthorizationError` unless ``principal`` may perform
     ``action`` on ``job``.
 
-    Enforcement order: the org-scope guard runs first and wins over every
-    other rule — a cross-org caller is refused regardless of principal class,
-    identity match, or requested action — then the action's own gate.
+    Enforcement order: an absent principal (no credential at all) is refused
+    first, then the org-scope guard, which wins over every other rule — a
+    cross-org caller is refused regardless of principal class, identity
+    match, or requested action — then the action's own gate.
     """
+    if principal is None:
+        raise AuthorizationError("unauthenticated caller: no principal supplied")
+
     if principal.org_id != job.org_id:
         raise AuthorizationError(
             f"principal org {principal.org_id!r} does not match job org {job.org_id!r}"
