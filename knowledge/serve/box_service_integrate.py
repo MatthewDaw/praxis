@@ -23,10 +23,12 @@ tests.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from knowledge.serve.box_service_delivery import DeliveryAction, reconcile_delivery
 from knowledge.serve.box_service_failures import FailureClass, record_failure
@@ -178,6 +180,43 @@ def run_git(runner: Runner, cwd: str, *args: str) -> str:
     return proc.stdout
 
 
+#: The single line written into the main worktree's (untracked) ``.git/info/attributes``, which
+#: gitattributes(5) gives HIGHER precedence than any tracked ``.gitattributes`` for the same path:
+#: unsetting ``merge`` and ``filter`` for every path means a job branch's own ``.gitattributes``
+#: can name a custom merge driver or clean/smudge filter all it wants — git falls back to a plain
+#: content merge and leaves working-tree content unfiltered regardless, so neither ever runs.
+_NEUTRALIZE_ATTRIBUTES_LINE = "* -merge -filter"
+
+
+def _harden_main_worktree(runner: Runner, cwd: str) -> None:
+    """Disable every session-authored code path a job branch's content could trigger during
+    integration (R58): pin ``core.hooksPath`` to a location with no hooks (``os.devnull`` is never
+    a directory a hook script can live under, so any hook — including one a job branch supplies
+    under an existing tracked hooks directory — is silently skipped), and neutralize any custom
+    merge driver / clean-smudge filter the branch's ``.gitattributes`` might name via the
+    higher-precedence ``.git/info/attributes`` override below.
+
+    Idempotent and cheap, so it runs at the top of every integration sequence (via
+    :func:`reset_main_worktree_to_pr_base`) before anything is fetched, reset, or merged. Only
+    touches the real filesystem when ``cwd`` is an actual directory — a scripted/fake runner used
+    by other tests may pass a synthetic path that never exists on disk, and there is nothing to
+    harden there.
+    """
+    run_git(runner, cwd, "config", "core.hooksPath", os.devnull)
+
+    if not os.path.isdir(cwd):
+        return
+    info_dir = Path(cwd) / ".git" / "info"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    attrs_path = info_dir / "attributes"
+    existing = attrs_path.read_text() if attrs_path.exists() else ""
+    if _NEUTRALIZE_ATTRIBUTES_LINE not in existing.splitlines():
+        with attrs_path.open("a") as fh:
+            if existing and not existing.endswith("\n"):
+                fh.write("\n")
+            fh.write(_NEUTRALIZE_ATTRIBUTES_LINE + "\n")
+
+
 def reset_main_worktree_to_pr_base(
     runner: Runner, cwd: str, pr_base: str, *, job: Job | None = None
 ) -> None:
@@ -187,7 +226,13 @@ def reset_main_worktree_to_pr_base(
     hard-reset ``cwd`` to it. Shared by :func:`run_integration_sequence` (single job) and
     ``box_service_group_integrate.run_group_integration_sequence`` (group), since both start every
     integration sequence from the identical resolved-PR-base state.
+
+    Also the single shared point (R58) where every job-branch-influenceable code path — repo hooks,
+    ``.gitattributes`` merge drivers, clean/smudge filters — is disabled for the whole sequence
+    before any fetch, reset, or merge runs; see :func:`_harden_main_worktree`.
     """
+    _harden_main_worktree(runner, cwd)
+
     status = run_git(runner, cwd, "status", "--porcelain")
     if status.strip():
         if job is not None:

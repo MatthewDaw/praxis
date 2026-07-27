@@ -40,6 +40,8 @@ class ScriptedRunner:
     def __call__(self, args, cwd, capture_output=True, text=True, check=False):
         self.calls.append((tuple(args), cwd))
         sub = args[1] if len(args) > 1 else None
+        if sub == "config":
+            return Proc()
         if sub == "status":
             return Proc(stdout="")
         if sub == "fetch":
