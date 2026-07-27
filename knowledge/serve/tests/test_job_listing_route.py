@@ -18,7 +18,7 @@ load_dotenv()
 
 from knowledge.serve import db  # noqa: E402
 from knowledge.serve.app import create_app  # noqa: E402
-from knowledge.serve.box_service_models import Job, JobState  # noqa: E402
+from knowledge.serve.box_service_models import JobState  # noqa: E402
 from knowledge.serve.orgs_store import OrgsStore  # noqa: E402
 
 pytestmark = pytest.mark.skipif(

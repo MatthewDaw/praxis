@@ -92,6 +92,10 @@ def test_job_worktree_push_lands_only_in_the_local_mirror_never_the_network_orig
     # A real push from the job worktree (git's default remote+branch resolution) lands in the
     # local mirror only — the network origin never sees it.
     _git("checkout", "-b", "jobs/job-1", cwd=job.path)
+    # A worktree carries no committer identity of its own, and CI has no global git config —
+    # without this the commit below exits 128 on a fresh machine while passing on a developer box.
+    _git("config", "user.email", "box@example.com", cwd=job.path)
+    _git("config", "user.name", "Box Service", cwd=job.path)
     Path(job.path, "job.txt").write_text("job work\n")
     _git("add", "job.txt", cwd=job.path)
     _git("commit", "-m", "job work", cwd=job.path)

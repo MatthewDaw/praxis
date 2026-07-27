@@ -42,8 +42,8 @@ if _HOOKS not in sys.path:
 import _ticket_state as ts  # noqa: E402
 import build_completeness_gate as gate  # noqa: E402
 
-from knowledge.serve.box_service_models import Job, JobState
-from knowledge.serve.box_service_resume import (
+from knowledge.serve.box_service_models import Job, JobState  # noqa: E402
+from knowledge.serve.box_service_resume import (  # noqa: E402
     FACTORY_TICKET_OWNER_ENV,
     ResumeError,
     can_resume,
