@@ -35,12 +35,31 @@ class SessionLauncher:
         self._runner = runner
         self._cli = cli
 
-    def launch(self, *, cwd: str, command: str, name: str | None = None) -> str:
-        """Start a ``claude --bg`` session and return its session id."""
+    def launch(
+        self,
+        *,
+        cwd: str,
+        command: str,
+        name: str | None = None,
+        extra_args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+    ) -> str:
+        """Start a ``claude --bg`` session and return its session id.
+
+        ``extra_args``/``env`` default to ``None`` so the existing no-config call shape is
+        byte-identical to before (``test_launch_returns_session_id_and_never_shells_out_for_real``
+        asserts the exact runner-call kwargs) — a caller that needs to inject a per-dispatch hook
+        (R28's mailbox relay) or an env var (R29's resumed-owner identity) passes them explicitly.
+        """
         args = [self._cli, "--bg", command]
         if name is not None:
             args += ["--name", name]
-        proc = self._runner(args, cwd=cwd, capture_output=True, text=True, check=False)
+        if extra_args:
+            args += extra_args
+        kwargs: dict = dict(cwd=cwd, capture_output=True, text=True, check=False)
+        if env is not None:
+            kwargs["env"] = env
+        proc = self._runner(args, **kwargs)
         if proc.returncode != 0:
             raise SessionLauncherError(f"launch failed: {proc.stderr.strip()}")
         session_id = proc.stdout.strip()

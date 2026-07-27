@@ -26,6 +26,8 @@ def launch_job_session(
     launcher: SessionLauncher,
     *,
     command: str = DEFAULT_JOB_COMMAND,
+    extra_args: list[str] | None = None,
+    env: dict[str, str] | None = None,
 ) -> Job:
     """Launch ``job``'s background session at its own worktree path, in place.
 
@@ -33,10 +35,17 @@ def launch_job_session(
     launched). Records the returned session id on the job and moves it to
     ``RUNNING``. Raises :class:`~knowledge.serve.session_launcher.SessionLauncherError`
     (never silently swallowed) if the launcher itself fails.
+
+    ``extra_args``/``env`` default to ``None`` (byte-identical to the pre-R28 call), so passing
+    ``knowledge.serve.box_service_mailbox.dispatch_wiring(job)`` here is what makes THIS launch —
+    and only a real job launch, never a local ``claude`` invocation — carry the per-dispatch
+    mailbox-relay Stop hook (R28).
     """
     if not job.worktree_path:
         raise ValueError(f"job {job.id!r} has no worktree_path — cannot launch a session")
-    job.session_id = launcher.launch(cwd=job.worktree_path, command=command, name=job.id)
+    job.session_id = launcher.launch(
+        cwd=job.worktree_path, command=command, name=job.id, extra_args=extra_args, env=env
+    )
     job.state = JobState.RUNNING
     return job
 
