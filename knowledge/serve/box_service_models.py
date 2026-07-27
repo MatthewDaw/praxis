@@ -107,6 +107,7 @@ class Job:
     max_attempts: int = 3
     resumable: bool = False
     failure_reason: str | None = None
+    error_text: str | None = None
     group_id: str | None = None
     org: str = "default"
     claim_lease: Lease | None = None

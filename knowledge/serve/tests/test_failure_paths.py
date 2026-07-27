@@ -79,3 +79,65 @@ def test_needs_attention_failure_also_respects_attempt_bound():
 
     assert job.state == JobState.NEEDS_ATTENTION
     assert job.resumable is False
+
+
+# --- R67: the six named operational failures requeue with error text, then
+# needs-attention once the attempt bound is reached. ---
+
+RETRYABLE_FAILURE_CLASSES = [
+    FailureClass.CLONE_FETCH_FAILED,
+    FailureClass.SESSION_LAUNCH_FAILED,
+    FailureClass.NOTIFICATION_SEND_FAILED,
+    FailureClass.PULL_REQUEST_OPEN_FAILED,
+    FailureClass.CREDENTIAL_FAILED,
+    FailureClass.WORKTREE_DELETION_FAILED,
+]
+
+
+@pytest.mark.parametrize("failure_class", RETRYABLE_FAILURE_CLASSES)
+def test_named_failure_returns_to_queued_under_attempt_bound(failure_class):
+    job = make_job(max_attempts=3, attempt_count=0)
+
+    record_failure(job, failure_class, error_text="boom: connection reset")
+
+    assert job.attempt_count == 1
+    assert job.state == JobState.QUEUED
+    assert job.resumable is True
+    assert job.error_text == "boom: connection reset"
+    # Even while requeued, the reason for the most recent attempt is recorded.
+    assert job.failure_reason == failure_class.value
+
+
+@pytest.mark.parametrize("failure_class", RETRYABLE_FAILURE_CLASSES)
+def test_named_failure_reaches_needs_attention_after_three_requeues(failure_class):
+    job = make_job(max_attempts=3, attempt_count=0)
+
+    record_failure(job, failure_class, error_text="err-1")
+    assert job.state == JobState.QUEUED
+    record_failure(job, failure_class, error_text="err-2")
+    assert job.state == JobState.QUEUED
+    record_failure(job, failure_class, error_text="err-3")
+
+    assert job.attempt_count == 3
+    assert job.state == JobState.NEEDS_ATTENTION
+    assert job.resumable is False
+    assert job.failure_reason == failure_class.value
+    assert job.error_text == "err-3"
+
+
+def test_named_failure_never_auto_requeued_a_fourth_time():
+    job = make_job(max_attempts=3, attempt_count=3, state=JobState.NEEDS_ATTENTION)
+
+    record_failure(job, FailureClass.CLONE_FETCH_FAILED, error_text="still broken")
+
+    assert job.attempt_count == 4
+    assert job.state == JobState.NEEDS_ATTENTION
+    assert job.resumable is False
+
+
+def test_named_failure_classes_are_distinct_machine_readable_reasons():
+    values = {fc.value for fc in RETRYABLE_FAILURE_CLASSES}
+    assert len(values) == len(RETRYABLE_FAILURE_CLASSES)
+    # And distinct from every pre-existing class.
+    all_values = {fc.value for fc in FailureClass}
+    assert len(all_values) == len(FailureClass)
