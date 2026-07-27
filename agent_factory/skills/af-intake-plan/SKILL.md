@@ -291,10 +291,26 @@ wrongly collapses near-duplicate requirements. **You own clean, non-conflicting 
 safe only because Step-1 Reconcile already deduped and the **audit's cold-eyes conflict pass (Part B) is
 the contradiction net.**
 
-> **Bulk caveat.** `praxis_add_insights` (the bulk sibling) currently exposes **no `space`/`snapshot`
-> parameter**, so it can only write to working memory and MUST NOT be used to admit a plan. Until it
-> accepts them, admit with per-item `praxis_add_insight(..., space=, snapshot=, raw=True)` calls —
-> issue them in parallel batches to keep the round-trips cheap.
+> **Bulk write.** `praxis_add_insights` (the bulk sibling) accepts the same `space`/`snapshot` pair as
+> `praxis_add_insight`, so a fresh full intake admits its whole batch in **one round-trip** instead of
+> many per-item calls:
+>
+> ```
+> praxis_add_insights(
+>   insights = [ { "insight": "<requirement — ONE semicolon-joined sentence>",
+>                  "category": "requirement", "source": "prd-<project>",
+>                  "meta": { "requirement_id": "R1", "build_state": "incomplete",
+>                            "acceptance": "...", ... } },
+>                ... one object per candidate ... ],
+>   space    = "<project>",          # REQUIRED
+>   snapshot = "prd-<project>",      # REQUIRED
+>   raw      = True,                 # skip dedup + the per-item LLM conflict check
+> )
+> ```
+>
+> The whole batch lands directly in `prd-<project>`; working memory's fact count never moves. Fall back
+> to per-item `praxis_add_insight(..., space=, snapshot=, raw=True)` calls only for a stray one-off
+> addition outside a fresh bulk intake, or if a batch item needs its own distinct `on_conflict`.
 
 > **Raw-bulk caveat for contradictions.** Because `raw=True` runs NO conflict detection,
 > `praxis_get_contradictions` is empty *by construction* — that emptiness is NOT evidence of consistency.
