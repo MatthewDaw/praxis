@@ -23,11 +23,20 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from knowledge.serve.box_service_models import Job
+from knowledge.serve.box_service_models import Job, JobState
 
 #: The single named box-service configuration value every silence-based
 #: conclusion about a job's last-activity consults (R22/R26/R27).
 SILENCE_THRESHOLD_S = 1800.0
+
+#: R78: a job stays merely "silent" (R26/R27) until it is silent past this
+#: many multiples of SILENCE_THRESHOLD_S, at which point it READS as
+#: needs-attention with reason "silent" and becomes eligible for the backstop
+#: reaper (D2's grace window). 2x SILENCE_THRESHOLD_S equals
+#: ``local_derived_job.DEFAULT_RUN_TTL_S`` (3600s), so a remote job and a
+#: derived local job share one elapsed-silence window.
+NEEDS_ATTENTION_SILENCE_MULTIPLE = 2
+NEEDS_ATTENTION_SILENCE_THRESHOLD_S = SILENCE_THRESHOLD_S * NEEDS_ATTENTION_SILENCE_MULTIPLE
 
 
 class HookEvent(str, Enum):
@@ -76,4 +85,28 @@ def job_view(job: Job, *, now: float) -> dict[str, Any]:
         "last_activity_at": job.last_activity_at,
         "silence_threshold_s": SILENCE_THRESHOLD_S,
         "silent": is_silent(job, now=now, silence_threshold_s=SILENCE_THRESHOLD_S),
+    }
+
+
+def is_reaper_eligible_for_silence(job: Job, *, now: float) -> bool:
+    """True iff ``job`` has been silent past
+    ``NEEDS_ATTENTION_SILENCE_THRESHOLD_S`` (R78) — the read-time signal that
+    makes a stalled job eligible for the backstop reaper. Pure query: never
+    mutates ``job`` (D1 — stuck is reported as an observation, not a
+    verdict)."""
+    return is_silent(job, now=now, silence_threshold_s=NEEDS_ATTENTION_SILENCE_THRESHOLD_S)
+
+
+def silence_needs_attention_view(job: Job, *, now: float) -> dict[str, Any]:
+    """The needs-attention/silent projection for a remote job (R78): once
+    :func:`is_reaper_eligible_for_silence` is true, the job READS as
+    ``needs-attention`` with reason ``"silent"`` regardless of its persisted
+    ``state`` — the actual state mutation happens only when the backstop
+    reaper acts on it."""
+    eligible = is_reaper_eligible_for_silence(job, now=now)
+    return {
+        "id": job.id,
+        "state": JobState.NEEDS_ATTENTION.value if eligible else job.state.value,
+        "reason": "silent" if eligible else job.failure_reason,
+        "reaper_eligible": eligible,
     }

@@ -1,4 +1,4 @@
-"""Local-venue derived jobs (R45, absorbing R46/R47/R69).
+"""Local-venue derived jobs (R45, absorbing R46/R47/R69/R78).
 
 af-build's *local* runs are never persisted as a box-service job row (R44 --
 af-build keeps working locally, venue is a projection property, not a
@@ -16,8 +16,13 @@ so the projection is unit-testable without a live backend.
   no job row is ever written for venue=local.
 - **R46** -- once the run marker passes its recency window (TTL), the job
   stops reporting ``running`` and instead reports a **terminal** state
-  (``completed``/``failed``) reconciled against the remaining in-scope
-  tickets' ``build_state`` -- never "running forever".
+  (``completed``/``needs-attention``) reconciled against the remaining
+  in-scope tickets' ``build_state`` -- never "running forever".
+- **R78** -- stale markers with unfinished tickets read ``needs-attention``
+  with reason ``"silent"`` (the local venue's equivalent of a remote job
+  whose last activity has gone silent past
+  ``box_service_activity.NEEDS_ATTENTION_SILENCE_THRESHOLD_S``, which equals
+  this module's ``DEFAULT_RUN_TTL_S``), rather than a bare ``failed``.
 - **R47/R69** -- the projection is *bounded* to the recency window: only a
   fresh (``running``) local job appears in the live job list; a run whose
   marker has aged out is absent from that list (pruned), even though
@@ -44,6 +49,7 @@ class LocalJobState(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    NEEDS_ATTENTION = "needs-attention"
 
 
 class CapabilityStatus(str, Enum):
@@ -68,12 +74,16 @@ LOCAL_UNAVAILABLE_CAPABILITIES = (
 @dataclass(frozen=True)
 class LocalJobView:
     """The read-time projection for a local run. Never persisted -- there
-    is no job row for venue=local (R45)."""
+    is no job row for venue=local (R45). ``reason`` mirrors
+    ``box_service_models.Job.failure_reason`` -- a machine-readable "why"
+    distinct from ``state`` itself, set to ``"silent"`` when ``state`` is
+    ``NEEDS_ATTENTION`` (R78) and ``None`` otherwise."""
 
     id: str
     venue: str
     state: LocalJobState
     run_owner: str
+    reason: str | None = None
     capabilities: dict[str, CapabilityStatus] = field(
         default_factory=lambda: dict.fromkeys(
             LOCAL_UNAVAILABLE_CAPABILITIES, CapabilityStatus.UNAVAILABLE_BY_DESIGN
@@ -108,8 +118,12 @@ def derive_local_job(
     When the freshest marker is within ``ttl_s`` the job is ``RUNNING``.
     Once it ages past the window the job reports a **terminal** state
     reconciled against the remaining in-scope tickets (R46): ``COMPLETED``
-    if every member ticket finished, ``FAILED`` otherwise -- so a killed
-    local run is never reported as running forever.
+    if every member ticket finished, otherwise ``NEEDS_ATTENTION`` with
+    reason ``"silent"`` (R78) -- run markers this stale with unfinished
+    tickets is exactly the local venue's version of a job gone silent past
+    the needs-attention threshold, so it READS the same state and reason a
+    stalled remote job does -- so a killed local run is never reported as
+    running forever.
     """
     if now is None:
         now = time.time()
@@ -126,13 +140,20 @@ def derive_local_job(
     run_owner = max(owners, key=lambda o: _latest_run_at(owners[o]))
     members = owners[run_owner]
 
+    reason: str | None = None
     if (now - _latest_run_at(members)) <= ttl_s:
         state = LocalJobState.RUNNING
     else:
         all_finished = all((t.get("meta") or {}).get("build_state") == "finished" for t in members)
-        state = LocalJobState.COMPLETED if all_finished else LocalJobState.FAILED
+        if all_finished:
+            state = LocalJobState.COMPLETED
+        else:
+            state = LocalJobState.NEEDS_ATTENTION
+            reason = "silent"
 
-    return LocalJobView(id=derive_local_job_id(run_owner), venue="local", state=state, run_owner=run_owner)
+    return LocalJobView(
+        id=derive_local_job_id(run_owner), venue="local", state=state, run_owner=run_owner, reason=reason
+    )
 
 
 def list_live_local_jobs(

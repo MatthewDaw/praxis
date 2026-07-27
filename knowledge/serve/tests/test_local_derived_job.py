@@ -69,7 +69,10 @@ def test_killed_run_stops_showing_running_once_ttl_passes_and_reports_terminal()
     assert job.state is not LocalJobState.RUNNING
 
 
-def test_killed_run_with_incomplete_tickets_reports_failed_not_running_forever():
+def test_killed_run_with_incomplete_tickets_reports_needs_attention_not_running_forever():
+    # R78: stale markers with unfinished tickets read needs-attention/silent
+    # -- the local venue's version of a remote job gone silent -- rather
+    # than a bare "failed", and never "running forever".
     stale_at = NOW - DEFAULT_RUN_TTL_S - 1
     tickets = [
         make_ticket(run_owner=RUN_OWNER, run_at=stale_at, build_state="finished"),
@@ -78,7 +81,8 @@ def test_killed_run_with_incomplete_tickets_reports_failed_not_running_forever()
 
     job = derive_local_job(tickets, now=NOW)
 
-    assert job.state is LocalJobState.FAILED
+    assert job.state is LocalJobState.NEEDS_ATTENTION
+    assert job.reason == "silent"
 
 
 def test_markers_older_than_window_are_absent_from_the_job_list():
