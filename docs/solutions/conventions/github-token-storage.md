@@ -2,25 +2,44 @@
 title: GitHub token storage — rotation cadence, owner and revocation runbook
 date: 2026-07-25
 category: conventions
-module: knowledge/serve (github_audit), infra/lib/backend-service-stack.ts
+module: knowledge/serve (github_audit, github_token, box_service_push_auth), infra/lib/backend-service-stack.ts
 problem_type: convention
 component: secrets_management
 severity: high
-related_components: [productivity_feature, secrets_manager, audit_logging]
+related_components: [productivity_feature, box_service, secrets_manager, audit_logging]
 applies_when:
   - Rotating, revoking or auditing the backend's GitHub personal access token
-  - Adding a new caller of the GitHub token (e.g. the productivity route's GraphQL client, R2/R3)
+  - Adding a new caller of the GitHub token (e.g. the productivity route's GraphQL client, R2/R3;
+    or the box service's main-worktree push, R36-R38)
   - Investigating a suspected token leak
 tags: [security, secrets, github, operations, audit-log, token-rotation]
 ---
 
 # GitHub token storage
 
-The productivity feature (R1–R11) reads repository activity via a single
-backend-held GitHub personal access token (PAT), stored in AWS Secrets Manager
-per `infra/lib/backend-service-stack.ts` (R1). This doc is the operational
+The SAME account-wide GitHub personal access token (PAT), stored in AWS
+Secrets Manager per `infra/lib/backend-service-stack.ts` (R1), backs TWO
+consumers: the productivity feature (R1–R11), which reads repository
+activity, and the box service (R36-R38), which uses it to push a finished
+job's integration branch from the repo's main worktree
+(`box_service_push_auth.push_main_worktree`). This doc is the operational
 half: who owns the token, how often it rotates, how to revoke it, and how its
 use is audited.
+
+## Two different freshness contracts over the one secret
+
+- **Productivity route** (`github_token.resolve_github_token`) caches the
+  value for the process's lifetime and only re-fetches after an upstream 401
+  invalidates the cache (R1/R21) — acceptable because a stale read there just
+  means one more request degrades before the next call re-fetches.
+- **Box service push** (`github_token.fetch_github_token_uncached`) fetches
+  fresh from Secrets Manager on EVERY integration, never caching — a push is
+  a one-shot, consequential action (a merge landing on the real remote), so a
+  token revoked or rotated mid-run must surface at the very next integration
+  as a named `FailureClass.PUSH_CREDENTIAL_REJECTED` needs-attention job
+  (`box_service_push_auth.PushCredentialRejectedError`), not silently succeed
+  against a still-cached value or fail with an opaque git error one process
+  restart later.
 
 ## Rotation cadence and owner
 
@@ -48,10 +67,12 @@ If the token is suspected leaked or is being rotated on schedule:
    above.
 4. **Update the secret** in AWS Secrets Manager (the secret `grantRead` onto
    the App Runner instance role, per R1) — no code change or redeploy needed.
-5. **Confirm pickup** — the backend's in-process token cache refreshes on an
-   authentication failure, so the first request after the update re-fetches
-   the new value; confirm via the audit log (below) that subsequent entries
-   keep flowing with no error spike.
+5. **Confirm pickup** — the productivity route's in-process token cache
+   refreshes on an authentication failure, so the first request after the
+   update re-fetches the new value; confirm via the audit log (below) that
+   subsequent entries keep flowing with no error spike. The box service needs
+   no such confirmation step — it never caches, so its very next integration
+   already uses the new value.
 6. **Re-enable the feature** once the new token is confirmed working.
 
 ## Audit log

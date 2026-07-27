@@ -2,23 +2,33 @@
 inside a job worktree, a push to any ref fails to authenticate because no credential helper
 resolves for the network URL, and the configured push URL for the job namespace points at the
 box's local mirror; the box service itself still pushes successfully from the main worktree.
+
+Also covers ticket abcc9694 (R37/R38): the account-wide PAT is fetched per integration rather
+than cached for the process's lifetime, so a token revoked or rotated mid-run surfaces at the
+next integration as a distinct ``PushCredentialRejectedError``/``FailureClass.PUSH_CREDENTIAL_
+REJECTED`` naming the credential, rather than an opaque push error.
 """
 
 from __future__ import annotations
 
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from knowledge.serve.box_service_clone import RepoClone
+from knowledge.serve.box_service_failures import FailureClass
 from knowledge.serve.box_service_job_worktree import JobWorktreeManager
+from knowledge.serve.box_service_models import Job, JobState
 from knowledge.serve.box_service_push_auth import (
     PushAuthError,
+    PushCredentialRejectedError,
     authenticated_push_url,
     job_worktree_credential_helper,
     job_worktree_pushurl,
     lock_job_worktree_to_local_mirror,
     push_main_worktree,
 )
+from knowledge.serve.github_token import fetch_github_token_uncached
 
 
 def _git(*args: str, cwd: str) -> str:
@@ -131,3 +141,80 @@ def test_main_worktree_push_refuses_rather_than_push_unauthenticated_when_no_tok
         raise AssertionError("expected PushAuthError")
     except PushAuthError as exc:
         assert "no GitHub token" in str(exc)
+
+
+def test_push_main_worktree_defaults_to_the_uncached_per_integration_token_fetch():
+    """The default resolver is NOT the process-lifetime-cached ``resolve_github_token`` — it is
+    ``fetch_github_token_uncached``, which hits Secrets Manager fresh on every call, so a token
+    rotated or revoked mid-run is picked up at the very next integration."""
+    default_resolver = push_main_worktree.__kwdefaults__["token_resolver"]
+    assert default_resolver is fetch_github_token_uncached
+
+
+@dataclass
+class _ScriptedRunner:
+    """Returns a scripted result for the push call; records what it was invoked with."""
+
+    returncode: int
+    stderr: str = ""
+    calls: list = field(default_factory=list)
+
+    def __call__(self, args, **kwargs):
+        self.calls.append({"args": args, **kwargs})
+        return subprocess.CompletedProcess(args=args, returncode=self.returncode, stdout="", stderr=self.stderr)
+
+
+def _make_repo_clone() -> RepoClone:
+    return RepoClone(
+        origin_url="https://github.com/acme/widgets.git",
+        clone_path="/box/repo.git",
+        main_worktree_path="/box/repo/main",
+    )
+
+
+def test_push_main_worktree_raises_distinct_error_and_records_needs_attention_when_remote_rejects_the_credential():
+    runner = _ScriptedRunner(
+        returncode=1,
+        stderr="remote: Invalid username or token.\nfatal: Authentication failed for 'https://github.com/acme/widgets.git/'",
+    )
+    job = Job(id="job-1", project="p", snapshot="prd-p", state=JobState.RUNNING)
+
+    try:
+        push_main_worktree(
+            _make_repo_clone(), "main",
+            token_resolver=lambda: "revoked-token-value",
+            runner=runner,
+            job=job,
+        )
+        raise AssertionError("expected PushCredentialRejectedError")
+    except PushCredentialRejectedError as exc:
+        assert isinstance(exc, PushAuthError)  # still catchable as the base push-auth error
+        assert "praxis/github/token" in str(exc)  # names the credential, not an opaque error
+
+    assert job.state == JobState.NEEDS_ATTENTION
+    assert job.failure_reason is not None
+    assert job.failure_reason.startswith(FailureClass.PUSH_CREDENTIAL_REJECTED.value)
+    assert "praxis/github/token" in job.failure_reason
+
+
+def test_push_main_worktree_an_unrelated_push_failure_stays_a_plain_push_auth_error():
+    """A non-authentication push failure (e.g. a rejected non-fast-forward) must NOT be
+    misreported as a credential rejection."""
+    runner = _ScriptedRunner(returncode=1, stderr="! [rejected] main -> main (non-fast-forward)")
+    job = Job(id="job-2", project="p", snapshot="prd-p", state=JobState.RUNNING)
+
+    try:
+        push_main_worktree(
+            _make_repo_clone(), "main",
+            token_resolver=lambda: "a-valid-token",
+            runner=runner,
+            job=job,
+        )
+        raise AssertionError("expected PushAuthError")
+    except PushCredentialRejectedError:
+        raise AssertionError("a non-fast-forward rejection must not be reported as a credential rejection")
+    except PushAuthError:
+        pass
+
+    # An unrelated push failure never touches the job's failure state.
+    assert job.state == JobState.RUNNING

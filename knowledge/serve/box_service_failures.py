@@ -72,6 +72,11 @@ class FailureClass(str, Enum):
     #: Deleting a job worktree after integration failed (R40) — retry before
     #: leaving the orphaned tree for a human to clear.
     WORKTREE_DELETION_FAILED = "worktree_deletion_failed"
+    #: The account-wide push credential (the GitHub PAT, R36/R37/R38) was rejected by the
+    #: remote at integration time — revoked or rotated mid-run, distinct from an unrelated git
+    #: push failure. Nothing about the job's work is at fault, so it is preserved for a human to
+    #: rotate/replace the credential and retry, rather than failed outright.
+    PUSH_CREDENTIAL_REJECTED = "push_credential_rejected"
 
 
 #: The terminal JobState each failure class transitions a job to once it is
@@ -90,6 +95,7 @@ TERMINAL_STATE_FOR_CLASS: dict[FailureClass, JobState] = {
     FailureClass.PULL_REQUEST_OPEN_FAILED: JobState.NEEDS_ATTENTION,
     FailureClass.CREDENTIAL_FAILED: JobState.NEEDS_ATTENTION,
     FailureClass.WORKTREE_DELETION_FAILED: JobState.NEEDS_ATTENTION,
+    FailureClass.PUSH_CREDENTIAL_REJECTED: JobState.NEEDS_ATTENTION,
 }
 
 #: Failure classes that get automatic retries (a return to ``queued``) rather
@@ -113,11 +119,18 @@ def record_failure(
     error_text: str | None = None,
     *,
     command_output: str | None = None,
+    detail: str | None = None,
 ) -> Job:
     """Record ``failure_class`` against ``job``, in place, with the
     underlying ``error_text`` (if any) and ``command_output`` (R80) — the
     output of the command that produced this failure, carried on the job
     distinct from its machine-readable reason.
+
+    ``detail`` appends free text naming the specifics (e.g. which credential secret was
+    rejected) onto the failure class's fixed reason, so an opaque enum value alone never has to
+    stand in for "which credential" an operator needs to act on. Omitting it keeps
+    ``job.failure_reason`` byte-identical to ``failure_class.value``, unchanged from before this
+    parameter existed.
 
     Always increments ``attempt_count`` and stamps ``failure_reason`` /
     ``error_text``. For a class in ``RETRYABLE_FAILURE_CLASSES`` still under
@@ -131,13 +144,14 @@ def record_failure(
     """
     job.attempt_count += 1
     job.error_text = error_text
+    reason = failure_class.value if not detail else f"{failure_class.value}: {detail}"
     if failure_class in RETRYABLE_FAILURE_CLASSES and job.attempt_count < job.max_attempts:
         job.state = JobState.QUEUED
-        job.failure_reason = failure_class.value
+        job.failure_reason = reason
         job.resumable = True
         return job
     mark_terminal(
-        job, TERMINAL_STATE_FOR_CLASS[failure_class], failure_class.value, command_output=command_output
+        job, TERMINAL_STATE_FOR_CLASS[failure_class], reason, command_output=command_output
     )
     job.resumable = job.attempt_count < job.max_attempts
     return job

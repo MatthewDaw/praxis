@@ -82,3 +82,39 @@ def test_invalidate_forces_refetch():
         client._value = _fake_token("rotated0000000000000000000")
         assert github_token.resolve_github_token() == _fake_token("rotated0000000000000000000")
     assert len(calls) == 2  # invalidation forced a second fetch — rotation picked up
+
+
+def test_fetch_uncached_hits_secrets_manager_on_every_call_never_caching():
+    """The box service's push path (``box_service_push_auth.push_main_worktree``) uses this
+    resolver instead of the cached one, precisely so a token revoked or rotated mid-run (the
+    90-day rotation cadence) surfaces at the very next integration rather than only after a
+    process restart."""
+    calls: list = []
+    client = _FakeClient(value=_fake_token("firstintegration000000000"), calls=calls)
+    with mock.patch("boto3.client", return_value=client):
+        first = github_token.fetch_github_token_uncached()
+        # No call to `resolve_github_token`/`invalidate_github_token` in between — a rotated
+        # secret must still be picked up on the very next call, unlike the cached resolver.
+        client._value = _fake_token("rotatedmidrun00000000000")
+        second = github_token.fetch_github_token_uncached()
+    assert first == _fake_token("firstintegration000000000")
+    assert second == _fake_token("rotatedmidrun00000000000")
+    assert len(calls) == 2  # every call is a fresh Secrets Manager round-trip, never cached
+
+
+def test_fetch_uncached_is_independent_of_the_cached_resolver_state():
+    """Warming (or leaving cold) the process-lifetime cache used by ``resolve_github_token`` must
+    not affect what the uncached box-service resolver returns."""
+    cached_client = _FakeClient(value=_fake_token("cachedvalue000000000000000"))
+    with mock.patch("boto3.client", return_value=cached_client):
+        assert github_token.resolve_github_token() == _fake_token("cachedvalue000000000000000")
+
+    fresh_client = _FakeClient(value=_fake_token("freshvalue0000000000000000"))
+    with mock.patch("boto3.client", return_value=fresh_client):
+        assert github_token.fetch_github_token_uncached() == _fake_token("freshvalue0000000000000000")
+
+
+def test_fetch_uncached_degrades_to_none_on_failure():
+    client = _FakeClient(value=None)
+    with mock.patch("boto3.client", return_value=client):
+        assert github_token.fetch_github_token_uncached() is None
