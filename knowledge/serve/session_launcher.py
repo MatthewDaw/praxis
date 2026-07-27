@@ -35,12 +35,32 @@ class SessionLauncher:
         self._runner = runner
         self._cli = cli
 
-    def launch(self, *, cwd: str, command: str, name: str | None = None) -> str:
-        """Start a ``claude --bg`` session and return its session id."""
+    def launch(
+        self,
+        *,
+        cwd: str,
+        command: str,
+        name: str | None = None,
+        extra_args: list[str] | None = None,
+        env: dict[str, str] | None = None,
+    ) -> str:
+        """Start a ``claude --bg`` session and return its session id.
+
+        ``extra_args`` (e.g. the R14 per-dispatch plugin/mcp-config/settings flags
+        from ``dispatch_launch``) are appended after ``--name``; ``env`` is passed
+        straight to the runner. Both default to ``None`` so a plain call's args/kwargs
+        are byte-identical to before this seam existed (asserted by
+        ``test_session_launcher_seam.py``).
+        """
         args = [self._cli, "--bg", command]
         if name is not None:
             args += ["--name", name]
-        proc = self._runner(args, cwd=cwd, capture_output=True, text=True, check=False)
+        if extra_args:
+            args += extra_args
+        kwargs = dict(cwd=cwd, capture_output=True, text=True, check=False)
+        if env is not None:
+            kwargs["env"] = env
+        proc = self._runner(args, **kwargs)
         if proc.returncode != 0:
             raise SessionLauncherError(f"launch failed: {proc.stderr.strip()}")
         session_id = proc.stdout.strip()
