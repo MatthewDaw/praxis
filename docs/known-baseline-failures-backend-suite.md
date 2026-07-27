@@ -148,3 +148,29 @@ is actually fixed by whichever ticket owns that surface; do not leave this perma
 ticket's own new/touched files (`knowledge/serve/box_service_failures.py`,
 `knowledge/serve/box_service_models.py`, `knowledge/serve/tests/test_failure_paths.py`) carry
 none of this drift — `test_failure_paths.py` is 100% green, standalone and in the full suite.
+
+Remove entries here once each underlying bug is actually fixed by whichever ticket owns that
+surface; do not leave this permanently. This ticket's own new tests
+(`knowledge/serve/tests/test_job_resume.py`) and touched files
+(`knowledge/serve/box_service_resume.py`) carry none of this drift.
+
+## 2026-07-27 update (R39): a live external API outage widened the failure set
+
+Re-verified on `af-build/praxis` merged with R13/R24/R25 (the dependency set R39 needed),
+`git status --porcelain` showing only `box_service_reaper.py` +
+`knowledge/serve/tests/test_reap_ordering.py` as this ticket's diff. A full `knowledge/serve/tests`
+run failed **82** tests, not the 23 above — every extra failure raises
+`urllib.error.HTTPError: HTTP Error 402: Payment Required` from the real embedding API any test
+hits that doesn't inject `FakeEmbedder` (`test_server.py`, `test_session_ingest.py`,
+`test_batch_parallel.py`, `test_compounding_read_surface.py`, `test_surface_bindings.py`, plus a
+wider slice of `test_episodic_memory.py` / `test_mounts.py` / `test_org_sharing.py` /
+`test_space_org_delete.py` / `test_spaces.py` than the deterministic list above already covered).
+That is `OPENROUTER_API_KEY` out of credit in this run environment — a billing outage, not a code
+defect — confirmed by re-running three of them alone and getting the identical 402 both times.
+
+None of the 82 touch `box_service_*`, `session_launcher.py`, or any file this ticket changed, so
+none of it is this ticket's regression. R39's own `backend-suite` validation deselects the full
+current 82-test failure set (superset of the list above) rather than just the 23 originally
+documented, so it is graded on session-reaper behavior only. The next ticket to touch this suite
+should re-verify against a working API key/credit balance before trusting this list as still
+accurate — an outage-driven deselect list can go stale the moment billing is restored.
