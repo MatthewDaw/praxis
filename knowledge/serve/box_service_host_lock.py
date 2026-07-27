@@ -15,6 +15,11 @@ carries -- job claim, job-control, and this lock alike), stamped into the
 lock file. The OS-level ``flock`` itself is what makes a dead holder's
 lease reclaimable: the kernel releases it the instant the holding process
 exits, so no separate reap step is needed.
+
+``run_locked`` is also the seam ``box_service_deploy_guard.guard_command``
+runs in front of: a deploy-class command is refused outright before this
+module ever classifies it, so the lock's scope stays limited to the
+fixture/fixed-host-port class ``is_contending_command`` recognizes.
 """
 
 from __future__ import annotations
@@ -28,6 +33,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, TypeVar
+
+from knowledge.serve.box_service_deploy_guard import guard_command
 
 DEFAULT_LOCK_DIR = "/tmp/box-service-host-locks"
 DEFAULT_LEASE_TTL_S = 900
@@ -112,7 +119,11 @@ def run_locked(
     """Run ``command`` via ``runner`` (a zero-arg callable), taking the
     per-repo host advisory lock only if ``command`` is a contending command.
     Non-contending commands run unlocked so concurrent non-contending jobs
-    never wait on each other."""
+    never wait on each other.
+
+    A deploy-class command is refused (``DeployCommandRefused``) before this
+    function ever classifies or runs it -- see ``box_service_deploy_guard``."""
+    guard_command(command)
     if is_contending_command(command):
         lock = lock or HostAdvisoryLock()
         with lock.acquire(repo_key):
