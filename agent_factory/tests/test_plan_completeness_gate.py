@@ -123,6 +123,54 @@ def test_lens_gap_blocks(monkeypatch, tmp_path):
     assert "lens coverage is INCOMPLETE" in r["reason"]
 
 
+# --------------------------------------------------------------------------- _lens_coverage_complete (S6)
+#
+# S6: resolving planning-validation lenses against an EMPTY snapshot must return an explicit
+# zero-resolved signal that the gate treats as INCOMPLETE coverage (BLOCK), never as trivially
+# complete. A non-empty snapshot must still be evaluated normally (gap-by-gap).
+
+def test_lens_coverage_zero_resolved_blocks_not_trivially_complete(monkeypatch):
+    """Empty planning-validation snapshot -> resolve returns [] -> predicate must BLOCK naming
+    the zero-resolved case, not auto-pass as 'trivially complete'."""
+    monkeypatch.setattr(ts, "resolve_validation_requirements", lambda *a, **k: [])
+    monkeypatch.setattr(ts, "planning_marker_id", lambda project: "marker-1")
+    monkeypatch.setattr(ts, "planning_project", lambda project: project)
+
+    ok, reason = gate._lens_coverage_complete("team-app")
+
+    assert ok is False
+    assert "zero" in reason.lower()
+    assert "resolved" in reason.lower()
+
+
+def test_lens_coverage_nonempty_fully_covered_passes(monkeypatch):
+    """A non-empty snapshot where every lens is covered still evaluates normally -> complete."""
+    monkeypatch.setattr(ts, "resolve_validation_requirements",
+                        lambda *a, **k: [{"id": "lens-1", "meta": {"covered": True}}])
+    monkeypatch.setattr(ts, "planning_marker_id", lambda project: "marker-1")
+    monkeypatch.setattr(ts, "planning_project", lambda project: project)
+
+    ok, reason = gate._lens_coverage_complete("team-app")
+
+    assert ok is True
+    assert reason == ""
+
+
+def test_lens_coverage_nonempty_with_gap_blocks_normally(monkeypatch):
+    """A non-empty snapshot with an uncovered lens still names that lens (unchanged behavior)."""
+    monkeypatch.setattr(ts, "resolve_validation_requirements",
+                        lambda *a, **k: [{"id": "lens-1", "meta": {"covered": True}},
+                                          {"id": "lens-2", "meta": {}}])
+    monkeypatch.setattr(ts, "planning_marker_id", lambda project: "marker-1")
+    monkeypatch.setattr(ts, "planning_project", lambda project: project)
+
+    ok, reason = gate._lens_coverage_complete("team-app")
+
+    assert ok is False
+    assert "lens-2" in reason
+    assert "lens-1" not in reason
+
+
 # --------------------------------------------------------------------------- bounded escalation (KTD5)
 
 def test_k_failures_on_unchanged_snapshot_terminates(monkeypatch, tmp_path):
