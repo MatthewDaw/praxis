@@ -35,7 +35,7 @@ from knowledge.serve.box_service_integrate import (
     reset_main_worktree_to_pr_base,
     run_git,
 )
-from knowledge.serve.box_service_models import Job
+from knowledge.serve.box_service_models import Job, mark_completed
 from knowledge.serve.box_service_push_guard import PushRequest, evaluate_push
 
 
@@ -97,7 +97,8 @@ def run_group_integration_sequence(
     ``target.member_branches`` (one job per branch) so a conflicting member's branch can be
     resolved back to its own ``Job`` and recorded as ``FailureClass.MERGE_CONFLICT`` — leaving
     every other member (including ones already folded in earlier in the loop) untouched, since
-    nothing is committed until every member has merged cleanly.
+    nothing is committed until every member has merged cleanly. On success every member job is
+    marked ``COMPLETED`` carrying its own branch and the ONE opened pull request's URL (R80).
     """
     repo_key = target.main_worktree_path
     if not lock.acquire(repo_key, holder_id):
@@ -120,7 +121,8 @@ def run_group_integration_sequence(
                 # preserved untouched.
                 run_git(runner, cwd, "reset", "--hard", f"refs/remotes/origin/{target.pr_base}")
                 if jobs is not None and index < len(jobs):
-                    record_failure(jobs[index], FailureClass.MERGE_CONFLICT)
+                    output = (merge_proc.stderr or merge_proc.stdout or "").strip()
+                    record_failure(jobs[index], FailureClass.MERGE_CONFLICT, command_output=output)
                 raise MergeConflictError(
                     f"merge of {branch!r} into {cwd!r} conflicted, every member branch preserved"
                 )
@@ -142,6 +144,10 @@ def run_group_integration_sequence(
 
         run_git(runner, cwd, "push", "origin", f"HEAD:{target.integration_ref}")
         pr_url = pr_creator(target, merged_sha)
+
+        if jobs is not None:
+            for member_job, branch in zip(jobs, target.member_branches):
+                mark_completed(member_job, branch=branch, pr_url=pr_url)
 
         return IntegrationResult(merged_sha=merged_sha, pushed_ref=target.integration_ref, pr_url=pr_url)
     finally:

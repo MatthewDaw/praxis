@@ -50,14 +50,20 @@ TERMINAL_STATE_FOR_CLASS: dict[FailureClass, JobState] = {
 }
 
 
-def record_failure(job: Job, failure_class: FailureClass) -> Job:
+def record_failure(
+    job: Job, failure_class: FailureClass, *, command_output: str | None = None
+) -> Job:
     """Transition ``job`` to its failure class's terminal state, in place.
 
     Increments ``attempt_count`` and sets ``resumable`` to whether the job is
     still under its attempt bound — the attempt bound is what stops automatic
-    re-queueing, not a special-cased state.
+    re-queueing, not a special-cased state. ``command_output`` (R80) is the
+    output of the command that produced this failure, carried on the job
+    distinct from its machine-readable reason.
     """
     job.attempt_count += 1
-    mark_terminal(job, TERMINAL_STATE_FOR_CLASS[failure_class], failure_class.value)
+    mark_terminal(
+        job, TERMINAL_STATE_FOR_CLASS[failure_class], failure_class.value, command_output=command_output
+    )
     job.resumable = job.attempt_count < job.max_attempts
     return job

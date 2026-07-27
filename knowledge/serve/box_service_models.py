@@ -44,20 +44,58 @@ TERMINAL_JOB_STATES = frozenset(
 )
 
 
-def mark_terminal(job: "Job", state: JobState, reason: str, *, clear_worktree: bool = False) -> "Job":
+def mark_terminal(
+    job: "Job",
+    state: JobState,
+    reason: str,
+    *,
+    clear_worktree: bool = False,
+    command_output: str | None = None,
+) -> "Job":
     """Transition ``job`` to a terminal ``state`` with a ``reason`` kept in a
     field distinct from the state itself (R1). ``clear_worktree`` defaults to
     False so a needs-attention job's worktree/branch artifacts are retained
     for a human (R34); a caller that has safely torn down the worktree after
     a clean completed/failed merge may pass ``clear_worktree=True``.
+
+    ``command_output`` (R80) is the output of the command that produced this
+    terminal transition — e.g. a failed merge's stderr — kept in a field
+    distinct from ``reason`` (the machine-readable classification) the same
+    way ``reason`` is kept distinct from ``state``.
     """
     if state not in TERMINAL_JOB_STATES:
         raise ValueError(f"{state.value!r} is not a terminal JobState")
     job.state = state
     job.failure_reason = reason
+    job.command_output = command_output
     if clear_worktree:
         job.worktree_path = None
     return job
+
+
+def mark_completed(job: "Job", *, branch: str, pr_url: str, clear_worktree: bool = True) -> "Job":
+    """Transition ``job`` to ``COMPLETED``, recording the branch and pull-request URL the job view
+    exposes for a completed job (R80) — the success-path counterpart to :func:`record_failure`.
+    """
+    job.branch = branch
+    job.pr_url = pr_url
+    return mark_terminal(job, JobState.COMPLETED, reason="merged", clear_worktree=clear_worktree)
+
+
+def job_view(job: "Job") -> dict[str, object]:
+    """Project the fields the job view exposes for ``job`` (R80, surface ``s-jobs``): a completed
+    job's branch and pull-request URL, or a failed/needs-attention job's machine-readable failure
+    reason together with the output of the command that produced it. State-specific fields are
+    omitted (never fabricated) for a job that hasn't reached that state.
+    """
+    view: dict[str, object] = {"id": job.id, "state": job.state.value}
+    if job.state is JobState.COMPLETED:
+        view["branch"] = job.branch
+        view["pr_url"] = job.pr_url
+    elif job.state in (JobState.FAILED, JobState.NEEDS_ATTENTION):
+        view["failure_reason"] = job.failure_reason
+        view["command_output"] = job.command_output
+    return view
 
 
 @dataclass
@@ -107,6 +145,14 @@ class Job:
     max_attempts: int = 3
     resumable: bool = False
     failure_reason: str | None = None
+    #: The output of the command that produced the current terminal state (R80) — kept distinct
+    #: from ``failure_reason`` (the machine-readable classification) the same way that reason is
+    #: kept distinct from ``state``.
+    command_output: str | None = None
+    #: The job branch and, once opened, the pull-request URL (R80) — set together by
+    #: :func:`mark_completed` when integration succeeds.
+    branch: str | None = None
+    pr_url: str | None = None
     group_id: str | None = None
     org: str = "default"
     claim_lease: Lease | None = None
