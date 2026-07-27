@@ -255,15 +255,18 @@ class FactsCandidates:
             return False, ""
 
         # The planning marker is the guard's own CONTROL SURFACE, not guarded content.
-        # `stamp_planning` re-arms a blessed plan by PATCHing this very fact, so guarding it
+        # `stamp_planning` re-arms a blessed plan by mutating this very fact, so guarding it
         # deadlocks the only documented recovery path: the refusal tells the caller to run
-        # stamp_planning, and stamp_planning is then refused by the same check. Exempt it.
-        # The id is deterministic ("prd-<project>::planning", see _ticket_state.planning_marker_id),
-        # so this holds even when the marker does not exist yet and is being created.
-        if str(fact_id).endswith("::planning"):
+        # stamp_planning, and stamp_planning is then refused by the same check.
+        # Match BOTH spellings — the deterministic id ("prd-<project>::planning", which is what
+        # a not-yet-created marker is addressed by) and the resolved storage id of an existing
+        # marker, since the marker is looked up and patched by its real fact id.
+        marker = self.graph.find_planning_marker(project)
+        if str(fact_id).endswith("::planning") or (
+            marker is not None and str(fact_id) == str(getattr(marker, "id", ""))
+        ):
             return False, ""
 
-        marker = self.graph.find_planning_marker(project)
         if marker is None:
             raise ValueError(
                 f"plan '{snapshot}' has no planning marker — re-arm the planning "

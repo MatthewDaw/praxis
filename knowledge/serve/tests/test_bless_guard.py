@@ -344,9 +344,13 @@ def test_planning_marker_itself_is_exempt_from_the_bless_guard():
     """
     from knowledge.serve.facts_candidates import FactsCandidates
 
+    class _Marker:
+        id = "eab208fcec4d4182b67214796b244a89"   # markers are stored under a real fact id
+        meta = {}                                  # unarmed: no planning_owner
+
     class _G:
         def find_planning_marker(self, project):
-            return None  # blessed / unarmed: any guarded fact must raise here
+            return _Marker()
 
     store = object.__new__(FactsCandidates)
     store._facts_table = "snapshots"
@@ -354,8 +358,11 @@ def test_planning_marker_itself_is_exempt_from_the_bless_guard():
     store._space = "proj"
     store.graph = _G()
 
-    # The marker itself is exempt -> allowed even with no armed marker.
+    # The marker is exempt under BOTH spellings, even though it is unarmed:
+    #   - the deterministic id (a marker that does not exist yet)
+    #   - its resolved storage id (what stamp_planning actually patches)
     assert store._check_bless_guard("prd-proj::planning", "edit") == (False, "")
+    assert store._check_bless_guard(_Marker.id, "edit") == (False, "")
 
     # Ordinary plan facts are still guarded.
     with pytest.raises(ValueError, match="planning marker"):
