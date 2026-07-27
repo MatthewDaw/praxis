@@ -128,6 +128,11 @@ class Job:
     as its own queryable field distinct from ``failure_reason`` — the job view
     reads it to render the question next to the reply control, while the
     notification payload (R27) deliberately never includes it.
+
+    ``terminal_at`` is stamped only by :func:`mark_terminal`'s callers (R24) —
+    from a discrete terminal event's own timestamp, never a wall-clock read
+    taken when that event happens to be processed — so the recorded terminal
+    moment is never inferred from a poll interval.
     """
 
     id: str
@@ -155,6 +160,7 @@ class Job:
     activity time. ``None`` until the first hook event fires."""
     tail_ref: str | None = None
     question: str | None = None
+    terminal_at: float | None = None
 
     def is_open(self) -> bool:
         return self.state in OPEN_JOB_STATES
