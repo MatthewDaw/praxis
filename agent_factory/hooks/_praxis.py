@@ -402,16 +402,23 @@ def record_outcome(cid: str, success: bool, *, space: str | None = None,
                     space=space, snapshot=snapshot)
 
 
-def ensure_planning_marker(project: str, *, space: str | None = None,
+def ensure_planning_marker(project: str, *, category: str | None = None,
+                           space: str | None = None,
                            snapshot: str | None = None) -> str:
-    """Idempotently ensure ``project``'s planning-marker fact exists; return its id.
+    """Idempotently ensure ``project``'s marker fact exists; return its id.
 
     The BOOTSTRAP for the ``plan_completeness`` arming signal: nothing else creates the marker, so
     on a greenfield project ``stamp_planning`` has no fact to write session meta onto. Find-or-create
     happens server-side (see ``ensure_planning_marker`` in the graph), which also makes it race-free
     across concurrent intakes. Pass the plan ``(space, snapshot)`` so the marker lands in
-    ``prd-<project>`` where the hook reads it."""
-    out = _request("POST", "/planning-marker", body={"project": project},
+    ``prd-<project>`` where the hook reads it.
+
+    The optional ``category`` parameter (defaults to ``"planning-marker"`` on the server) allows
+    markers of different kinds to coexist per project without overwriting one another."""
+    body = {"project": project}
+    if category is not None:
+        body["category"] = category
+    out = _request("POST", "/planning-marker", body=body,
                    space=space, snapshot=snapshot)
     return str((out or {}).get("id") or "")
 
