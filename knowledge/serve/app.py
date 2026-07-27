@@ -1321,12 +1321,15 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         try:
-            candidates_for(org, uid).delete(cid)
+            candidates_for(org, uid, target).delete(cid)
             return {"deleted": cid}
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     # --- contradictions ----------------------------------------------------
     @app.get("/contradictions")
@@ -2594,20 +2597,51 @@ def create_app(conn: Any | None = None) -> FastAPI:
         uid: str = Depends(active_user_id),
         target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
-        """Idempotently ensure ``project``'s planning-marker fact exists; return its id.
+        """Idempotently ensure ``project``'s marker fact exists; return its id.
 
         The marker is the arming signal for the factory's ``plan_completeness`` Stop hook and the
         anchor its planning coverage contract pins onto. Nothing else creates it, so a greenfield
         project had no way to stamp one — this is that bootstrap. Find-or-create is done inside the
-        graph (keyed ``scope=project, category="planning-marker"``) so concurrent intakes cannot
-        mint two markers. Pass the ``(space, snapshot)`` header pair to place it in the project's
+        graph (keyed ``scope=project, category``) so concurrent intakes cannot mint two markers.
+        Pass the ``(space, snapshot)`` header pair to place it in the project's
         ``prd-<project>`` snapshot, where the hook reads it.
+
+        The optional ``category`` body parameter (defaults to ``"planning-marker"``) allows markers
+        of different kinds to coexist per project — they use distinct identity keys so a planning
+        marker and a marker of a new category do not overwrite one another.
+        """
+        project = str(body.get("project") or "").strip()
+        category = str(body.get("category") or "").strip() or None
+        if not project:
+            raise HTTPException(status_code=400, detail="body must include 'project'")
+        g = graph_for(org, uid, target)
+        marker_id = g.ensure_planning_marker(project, category=category)
+        return {"id": marker_id, "project": project, "category": category or "planning-marker"}
+
+    # --- build-run marker (factory build_completeness gate) -----------------
+    @app.post("/build-marker")
+    def ensure_build_marker(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+        uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
+    ) -> dict[str, Any]:
+        """Idempotently ensure ``project``'s build-marker fact exists; return its id.
+
+        The marker holds gate-disable state for the factory's ``build_completeness`` and
+        ``plan_completeness`` Stop hooks — when a gate stands down because a disable variable is
+        set, the variable name and observed value are recorded here so a run that executed with a
+        disabled gate cannot be presented as fully gated. Bootstrap on a greenfield project.
+        Find-or-create is done inside the graph (keyed ``scope=project, category="build-marker"``).
+        Pass the ``(space, snapshot)`` header pair to place it in the project's ``prd-<project>``
+        snapshot, where the hooks write/read it.
         """
         project = str(body.get("project") or "").strip()
         if not project:
             raise HTTPException(status_code=400, detail="body must include 'project'")
         g = graph_for(org, uid, target)
-        marker_id = g.ensure_planning_marker(project)
+        marker_id = g.ensure_build_marker(project)
         return {"id": marker_id, "project": project}
 
     # --- requirement RENDERS surface (factory completeness gate) ------------

@@ -74,45 +74,52 @@ _PLANNING_SIGNALS = (
 )
 
 
-# --------------------------------------------------------------------------- attempt tracking (KTD5)
-
-def _attempts_file():
-    import _praxis
-    return _praxis._cache_path().parent / ".plan_gate_attempts.json"
-
+# --------------------------------------------------------------------------- attempt tracking (KTD5 / S8)
 
 def _read_attempts(snapshot_hash: str) -> int:
     """The number of consecutive failed bless attempts recorded for THIS snapshot hash (0 if the
-    stored hash differs — a changed plan resets the counter)."""
+    stored hash differs — a changed plan resets the counter). Reads the DURABLE Praxis-stored
+    escalation state (S8) instead of the old gate-local file, so a separate process sees the
+    same counter."""
+    import _ticket_state as ts
     try:
-        data = json.loads(_attempts_file().read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 — no/broken file => zero attempts
+        attempts, stored_hash, _ = ts.read_escalation_state(project=_active_project(os.getcwd()))
+    except ts.PlanEscalationError:
+        # A corrupt counter is NOT silently zero — it surfaces via the named error so the gate
+        # can fail LOUD. Return a value that will force escalation (treat as max+1).
+        import sys as _sys
+        _sys.stderr.write(
+            "[plan-completeness gate] WARNING: escalation counter is corrupt — treating as "
+            "terminal to force a human review. Clear via clear_plan_blocked().\n"
+        )
+        return _max_attempts()  # force terminal escalation on corrupt state
+    except Exception:
+        # PraxisUnreachable or any other problem — return 0 (not a hard failure here; the
+        # caller's fail-closed guard handles the PraxisUnreachable separately).
         return 0
-    if str(data.get("hash")) != snapshot_hash:
+    if stored_hash != snapshot_hash:
         return 0
-    try:
-        return int(data.get("attempts") or 0)
-    except (TypeError, ValueError):
-        return 0
+    return attempts
 
 
 def _bump_attempts(snapshot_hash: str) -> int:
-    """Record one more failed attempt for this snapshot hash and return the new count."""
-    n = _read_attempts(snapshot_hash) + 1
+    """Record one more failed attempt for this snapshot hash (durable, Praxis-stored — S8).
+    Returns the new count, or 0 if Praxis is unreachable (best-effort; the fail-closed guard
+    in main() handles unreachability separately)."""
+    import _ticket_state as ts
     try:
-        path = _attempts_file()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"hash": snapshot_hash, "attempts": n}), encoding="utf-8")
-    except Exception:  # noqa: BLE001 — tracking is best-effort; never crash the gate
-        pass
-    return n
+        return ts.bump_escalation_attempts(project=_active_project(os.getcwd()),
+                                           snapshot_hash=snapshot_hash)
+    except Exception:
+        return 0
 
 
 def _reset_attempts() -> None:
-    try:
-        _attempts_file().unlink()
-    except Exception:  # noqa: BLE001
-        pass
+    """Clear the failed-attempt counter AND the terminal escalation block from Praxis (S8).
+    Best-effort: a missing/unreachable Praxis is a no-op here. The gate's fail-closed guard
+    handles unreachability before this is ever called."""
+    import _ticket_state as ts
+    ts.reset_escalation_attempts(project=_active_project(os.getcwd()))
 
 
 def _max_attempts() -> int:
@@ -124,22 +131,60 @@ def _max_attempts() -> int:
 
 # --------------------------------------------------------------------------- predicates
 
+# The plan-content fields that constitute the identity of a requirement for the purpose of
+# snapshot-fingerprint comparison. These are the fields af-intake-plan authors; lifecycle
+# meta keys (build_state, pinned_checks, claimed_by, etc.) added during the build process
+# are EXCLUDED so a claim / heartbeat / release cycle does not change the fingerprint and
+# re-trigger the reset defect.
+_PLAN_CONTENT_ALLOWLIST = (
+    "acceptance",
+    "defines",
+    "depends_on",
+    "references",
+    "tags",
+    "verify",
+    # requirement_id is included for stable ordering; it is also plan content (authored by intake).
+    "requirement_id",
+)
+
+
 def _snapshot_hash(project: str) -> str:
-    """A stable fingerprint of the plan snapshot (its requirement facts). Two attempts on the SAME
-    plan share a hash; any edit to a requirement changes it, resetting the escalation counter."""
+    """A stable fingerprint of the plan snapshot (its requirement facts).
+
+    Hashes ONLY the plan-content fields (the explicit allow-list) — not the full meta blob — so
+    lifecycle meta keys added during the build (build_state, pinned_checks, claimed_by,
+    heartbeat_at, validation_results, etc.) cannot silently re-enter the fingerprint and re-open
+    the reset defect. Two attempts on the SAME plan share a hash; an edit to a requirement's
+    text or acceptance changes it; adding a lifecycle key does not.
+    """
     import _praxis
     import _ticket_state as ts
 
     space, snap = ts.project_ref(project).plan
     facts = _praxis.facts_by(category="requirement", space=space, snapshot=snap)
     rows = sorted(
-        (str(f.get("id") or f.get("factId") or ""),
-         str((f.get("meta") or {}).get("requirement_id") or ""),
-         str(f.get("text") or f.get("content") or ""),
-         json.dumps(f.get("meta") or {}, sort_keys=True, default=str))
-        for f in (facts or [])
+        _fingerprint_row(f) for f in (facts or [])
     )
     return hashlib.sha256(json.dumps(rows, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _fingerprint_row(fact: dict) -> tuple:
+    """Reduce a single requirement fact to its plan-content fingerprint tuple.
+
+    Only the allow-listed plan-content fields contribute — lifecycle meta keys are stripped so
+    they cannot re-enter the fingerprint. The field set matches what ``plan_gate_check.py``'s
+    ``requirement_from_fact`` threads into the pure gate (Requirement: id, text, acceptance,
+    defines, references, depends_on, tags, verify).
+    """
+    meta = fact.get("meta") or {}
+    return (
+        str(fact.get("id") or fact.get("factId") or ""),
+        str(meta.get("requirement_id") or ""),
+        str(fact.get("text") or fact.get("content") or ""),
+        *(str(meta.get(k) or "") if not isinstance(meta.get(k), (list, dict))
+          else json.dumps(meta.get(k) or ([], {}), sort_keys=True, default=str)
+          for k in _PLAN_CONTENT_ALLOWLIST),
+    )
 
 
 def _plan_blesses(project: str) -> tuple[bool, str]:
@@ -202,6 +247,21 @@ def _lens_coverage_complete(project: str) -> tuple[bool, str]:
 _PREDICATES = (_plan_blesses, _contradictions_clean, _lens_coverage_complete)
 
 
+# --------------------------------------------------------------------------- session identity
+
+def _session_owner(data: dict) -> str:
+    """This session's owner identity (matches the session id that stamped the planning marker).
+
+    ``FACTORY_TICKET_OWNER``, when set, OVERRIDES the CLI-assigned ``session_id`` (mirrors the
+    ``FACTORY_PROJECT`` override pattern in ``_gate_common.active_project``, and the build gate's
+    own ``_session_owner``). Unset, falls back to the session id from the Stop-hook data.
+    """
+    override = str(os.environ.get("FACTORY_TICKET_OWNER") or "").strip()
+    if override:
+        return override
+    return str(data.get("session_id") or data.get("sessionId") or "").strip()
+
+
 # --------------------------------------------------------------------------- main
 
 def main() -> None:
@@ -213,10 +273,33 @@ def main() -> None:
     cwd = data.get("cwd") or os.getcwd()
 
     # --- Scoped escape hatch (documented + LOUD; distinct from the build gate's). ----------------
-    if os.environ.get("FACTORY_PLAN_GATE_DISABLED") == "1":
-        _allow("plan-completeness gate STOOD DOWN: FACTORY_PLAN_GATE_DISABLED=1 is set. The planning "
-               "gate is NOT verifying the plan right now (build enforcement is UNAFFECTED — that is a "
-               "separate gate/escape). Unset FACTORY_PLAN_GATE_DISABLED to restore enforcement.")
+    auth_disabled = os.environ.get("PRAXIS_AUTH_DISABLED") == "1"
+    plan_gate_disabled = os.environ.get("FACTORY_PLAN_GATE_DISABLED") == "1"
+
+    if plan_gate_disabled or auth_disabled:
+        # Record the disable variable on the project's build marker so a run that executed with
+        # a disabled gate cannot be presented as fully gated. Best-effort: still stand down if
+        # stamping fails.
+        try:
+            import _ticket_state as ts
+            _proj = _active_project(cwd)
+            if _proj:
+                if plan_gate_disabled:
+                    ts.stamp_gate_disable(_proj, "FACTORY_PLAN_GATE_DISABLED", "1")
+                if auth_disabled:
+                    ts.stamp_gate_disable(_proj, "PRAXIS_AUTH_DISABLED", "1")
+        except Exception:  # noqa: BLE001 - marker write is best-effort; never block the stand-down
+            pass
+
+        parts: list[str] = []
+        if plan_gate_disabled:
+            parts.append("FACTORY_PLAN_GATE_DISABLED=1: planning gate is NOT verifying the plan "
+                         "(build enforcement is UNAFFECTED — that is a separate gate/escape)")
+        if auth_disabled:
+            parts.append("PRAXIS_AUTH_DISABLED=1: Praxis auth is bypassed — gate enforcement cannot "
+                         "verify identity")
+        _allow("plan-completeness gate STOOD DOWN: " + " | ".join(parts)
+               + ". Unset the named variable(s) to restore enforcement.")
 
     # Load the factory .env before resolving the project (a bare Stop-hook subprocess does not inherit
     # a shell-sourced .env). Best-effort + fail-closed-preserving, exactly like the build gate.
@@ -227,6 +310,7 @@ def main() -> None:
         pass
 
     project = _active_project(cwd)
+    owner = _session_owner(data)
 
     # --- NO-OP FAST-PATH: a session that never touched planning has nothing to bless. -------------
     if session_touched(data.get("transcript_path"), _PLANNING_SIGNALS) is False:
@@ -237,8 +321,8 @@ def main() -> None:
     try:
         import _ticket_state as ts
 
-        if not ts.planning_active(project):
-            _allow()  # inert — no planning session is armed for this project
+        if not ts.planning_active(project, owner=owner):
+            _allow()  # inert — no planning session is armed for this project (or this session)
 
         snapshot_hash = _snapshot_hash(project)
         reason = ""
@@ -274,18 +358,28 @@ def main() -> None:
                "complete). Auto-blessed with no human required. Clear the planning marker "
                "(clear_planning) as intake finishes.")
 
-    # --- A predicate failed. Bounded terminal escalation (KTD5): after K unchanged-snapshot -------
-    # failures, ALLOW with a terminal plan_blocked so an unresolvable predicate never loops forever.
+    # --- A predicate failed. Bounded terminal escalation (KTD5 / S8): after K unchanged-snapshot ---
+    # failures, stamp a DUrable terminal escalation record in Praxis (S8) and ALLOW so an
+    # unresolvable predicate never loops forever. The downstream build gate reads this record and
+    # refuses the build phase while it exists. An operator can clear it via clear_plan_blocked().
     attempts = _bump_attempts(snapshot_hash)
     limit = _max_attempts()
     if attempts >= limit:
+        try:
+            import _ticket_state as ts  # noqa: F811
+            ts.stamp_plan_blocked(project)
+        except Exception:  # noqa: BLE001 — a Praxis failure during stamp is best-effort; still allow
+            pass
         _allow(
             f"plan-completeness gate: TERMINAL plan_blocked — the plan failed to bless {attempts} "
-            f"time(s) on an UNCHANGED snapshot (cap {limit}). Standing down to avoid an infinite "
-            "re-block; a HUMAN is required to resolve the outstanding predicate:\n"
+            f"time(s) on an UNCHANGED snapshot (cap {limit}). A durable escalation record has been "
+            "written to Praxis (S8); the downstream build gate will refuse the build phase while it "
+            "exists. Standing down to avoid an infinite re-block; a HUMAN is required to resolve the "
+            "outstanding predicate:\n"
             f"{reason}\n"
             "Edit the plan (which resets this counter) or accept/override the outstanding item, then "
-            "re-run intake.")
+            "re-run intake. If the plan will never bless, clear the escalation explicitly with "
+            "clear_plan_blocked().")
 
     _block(
         f"plan-completeness gate: the plan does NOT bless yet (attempt {attempts}/{limit} on this "

@@ -143,6 +143,10 @@ SURFACE_CATEGORY = "surface"
 # idempotently by ``ensure_planning_marker`` — the same find-or-create shape as ``ensure_surface``,
 # so the id stays server-generated and two concurrent intakes can never mint two markers.
 PLANNING_MARKER_CATEGORY = "planning-marker"
+# The build-run marker (the record for build-run gate-disable state, and the report anchor).
+# Exactly ONE per project, materialized idempotently by ``ensure_build_marker`` — the same
+# find-or-create shape as ``ensure_planning_marker``.
+BUILD_MARKER_CATEGORY = "build-marker"
 REQUIREMENT_CATEGORY = "requirement"
 
 # Coverage "check" facts (agent-factory coverage spine). A free-form category like
@@ -1767,12 +1771,61 @@ class PostgresVectorGraph(SearchableGraph):
     # edge add, an unbinding an edge remove, and every read is active-only (mirrors
     # ``active_edges``) so a rejected endpoint silently drops from coverage with no
     # stale hook. Surfaces are idempotent on (project, screen_id).
-    def find_planning_marker(self, project: str) -> Fact | None:
+    def find_planning_marker(self, project: str, category: str | None = None) -> Fact | None:
         """The (at most one) planning-marker fact for ``project`` — any state, or None.
 
-        Idempotency key: scope=project, category="planning-marker". Read-only: a missing marker
-        means "no planning session has ever been stamped here", NOT an error — the Stop hook reads
-        it on every turn and must treat absence as "inactive".
+        Idempotency key: scope=project, category (defaults to ``"planning-marker"`` for backward
+        compatibility). Read-only: a missing marker means "no session has ever been stamped here",
+        NOT an error — the Stop hook reads it on every turn and must treat absence as "inactive".
+        """
+        _cat = category or PLANNING_MARKER_CATEGORY
+        key_pred, params = self._key_pred()
+        sql = (
+            f"SELECT {_FACT_READ_COLS} "
+            f"FROM {self._facts_table} WHERE {key_pred} "
+            "AND category = %s AND scope = %s"
+        )
+        params.extend([_cat, project])
+        sql += " ORDER BY created_at DESC LIMIT 1"
+        rows = self._conn.execute(sql, params).fetchall()
+        if not rows:
+            return None
+        return self._row_to_fact(rows[0])
+
+    def ensure_planning_marker(self, project: str, category: str | None = None) -> str:
+        """Idempotently materialize ``project``'s marker fact and return its id.
+
+        Mirrors :meth:`ensure_surface`: find-or-create keyed on ``(scope=project,
+        category)`` with a server-generated id, so the marker the ``plan_completeness`` hook arms on
+        can be BOOTSTRAPPED on a greenfield project (nothing else ever creates it) without inventing
+        a caller-supplied id scheme. At most ONE marker per ``(project, category)`` — doing the
+        find-or-create here rather than in the hook closes the TOCTOU window where two concurrent
+        intakes would each create one and leave the plan-anchor ambiguous.
+
+        ``category`` defaults to ``"planning-marker"`` for backward compatibility — callers that
+        pass a different category get a marker of that kind, coexisting with the planning marker
+        for the same project without overwriting it.
+
+        The session meta (``planning_owner``/``planning_at``) is written separately by the hook's
+        ``stamp_planning`` via ``set_meta``; this only guarantees the fact exists.
+        """
+        _cat = category or PLANNING_MARKER_CATEGORY
+        existing = self.find_planning_marker(project, _cat)
+        if existing is not None:
+            return existing.id
+        decision = WriteDecision(text=f"{_cat} for {project}", state="active")
+        decision.source = None
+        decision.scope = project
+        decision.category = _cat
+        decision.meta = {"project": project}
+        decision.embedding = self._embed(f"{_cat} for {project}")
+        return self._add(decision)  # store-only: a marker is not a semantic learning
+
+    def find_build_marker(self, project: str) -> Fact | None:
+        """The (at most one) build-marker fact for ``project`` — any state, or None.
+
+        Idempotency key: scope=project, category="build-marker". Read-only: a missing marker
+        means "no build run has been tracked here", NOT an error.
         """
         key_pred, params = self._key_pred()
         sql = (
@@ -1780,35 +1833,30 @@ class PostgresVectorGraph(SearchableGraph):
             f"FROM {self._facts_table} WHERE {key_pred} "
             "AND category = %s AND scope = %s"
         )
-        params.extend([PLANNING_MARKER_CATEGORY, project])
+        params.extend([BUILD_MARKER_CATEGORY, project])
         sql += " ORDER BY created_at DESC LIMIT 1"
         rows = self._conn.execute(sql, params).fetchall()
         if not rows:
             return None
         return self._row_to_fact(rows[0])
 
-    def ensure_planning_marker(self, project: str) -> str:
-        """Idempotently materialize ``project``'s planning-marker fact and return its id.
+    def ensure_build_marker(self, project: str) -> str:
+        """Idempotently materialize ``project``'s build-marker fact and return its id.
 
-        Mirrors :meth:`ensure_surface`: find-or-create keyed on ``(scope=project,
-        category="planning-marker")`` with a server-generated id, so the marker the
-        ``plan_completeness`` hook arms on can be BOOTSTRAPPED on a greenfield project (nothing
-        else ever creates it) without inventing a caller-supplied id scheme. At most ONE marker per
-        project — doing the find-or-create here rather than in the hook closes the TOCTOU window
-        where two concurrent intakes would each create one and leave the plan-anchor ambiguous.
-
-        The session meta (``planning_owner``/``planning_at``) is written separately by the hook's
-        ``stamp_planning`` via ``set_meta``; this only guarantees the fact exists.
+        Mirrors :meth:`ensure_planning_marker`: find-or-create keyed on ``(scope=project,
+        category="build-marker")`` with a server-generated id, so the marker the build gate
+        records disable state onto can be BOOTSTRAPPED on a greenfield project. At most ONE
+        marker per project.
         """
-        existing = self.find_planning_marker(project)
+        existing = self.find_build_marker(project)
         if existing is not None:
             return existing.id
-        decision = WriteDecision(text=f"planning marker for {project}", state="active")
+        decision = WriteDecision(text=f"build marker for {project}", state="active")
         decision.source = None
         decision.scope = project
-        decision.category = PLANNING_MARKER_CATEGORY
+        decision.category = BUILD_MARKER_CATEGORY
         decision.meta = {"project": project}
-        decision.embedding = self._embed(f"planning marker for {project}")
+        decision.embedding = self._embed(f"build marker for {project}")
         return self._add(decision)  # store-only: a marker is not a semantic learning
 
     def _find_surface(self, project: str, screen_id: str) -> Fact | None:

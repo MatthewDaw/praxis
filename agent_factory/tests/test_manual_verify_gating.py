@@ -61,7 +61,8 @@ def test_manual_ticket_not_passed_by_worker_self_cert(monkeypatch):
     # The manual requirement was self-certified by the worker — that does NOT count.
     assert ts.all_validations_passed("R1", ref=PLAN) is False
 
-    # 3) Re-record the SAME validation with a human source — now it counts.
+    # 3) Re-record with a human source AND the attestation credential — now it counts.
+    monkeypatch.setenv("PRAXIS_ATTESTED_CALLER", "true")
     ts.record_validation_pass("R1", "v1", True, source="human", ref=PLAN)
     assert ts.all_validations_passed("R1", ref=PLAN) is True
 

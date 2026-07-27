@@ -103,6 +103,10 @@ M_FINISHED_AT = "finished_at"                # epoch seconds, stamped by release
 M_UNDER_SPECIFIED = "under_specified"   # [missing structural fields] — routed to intake, never claimed (plan 003)
 M_PLANNING_OWNER = "planning_owner"         # session id of the active planning (intake) session (plan 002)
 M_PLANNING_AT = "planning_at"               # epoch seconds, planning-marker heartbeat; stale => dead (plan 002)
+M_BLESSED_AT = "blessed_at"                 # epoch seconds, stamped at bless; signals post-bless guard (S12)
+M_PLAN_ATTEMPTS = "plan_attempts"           # int, failed bless attempts on current plan hash (S8 escalation)
+M_PLAN_HASH = "plan_hash"                   # str, snapshot hash last attempt was recorded against (S8)
+M_PLAN_BLOCKED_AT = "plan_blocked_at"       # float, epoch seconds; non-None means plan is terminally escalated (S8)
 
 _LEASE_KEYS = (M_CLAIM_OWNER, M_CLAIM_AT, M_CLAIM_HEARTBEAT_AT, M_CLAIM_LEASE_TTL)
 _RUN_KEYS = (M_RUN_OWNER, M_RUN_AT, M_RUN_SCOPE)
@@ -114,6 +118,35 @@ _PLANNING_KEYS = (M_PLANNING_OWNER, M_PLANNING_AT)
 # ``WORKER_PASS_SOURCE`` and can NEVER satisfy a manual requirement (see :func:`all_validations_passed`).
 WORKER_PASS_SOURCE = "worker"
 HUMAN_PASS_SOURCES = frozenset({"human", "manual", "external"})
+
+# The credential a caller must present in its execution environment to record an attested
+# (human-class) pass. Without it, any source value in HUMAN_PASS_SOURCES is silently forced
+# to WORKER_PASS_SOURCE — a build worker cannot obtain the attested path by naming it.
+_ATTESTED_CALLER_ENV = "PRAXIS_ATTESTED_CALLER"
+
+
+def _derive_effective_source(source: Optional[str]) -> str:
+    """Derive the effective pass source from execution context, not a self-declared parameter.
+
+    A build worker may NOT self-declare an attested/human source: without the
+    ``PRAXIS_ATTESTED_CALLER`` credential, any human-class source is silently forced to
+    ``WORKER_PASS_SOURCE``. Only a caller presenting the distinct credential (set by the
+    execution environment, not by the worker itself) can record an attested pass.
+
+    Non-human sources (e.g. ``"graded-judge"``) pass through unchanged — they never satisfy
+    the manual gate in :func:`all_validations_passed`, so self-declaring one is harmless.
+    """
+    if source is None:
+        return WORKER_PASS_SOURCE
+    # The attestation credential must be present in the execution environment.
+    if os.environ.get(_ATTESTED_CALLER_ENV):
+        return str(source)
+    # Without the credential, human-source values are refused — the worker cannot self-attest.
+    if str(source) in HUMAN_PASS_SOURCES:
+        return WORKER_PASS_SOURCE
+    # Non-human sources pass through.
+    return str(source)
+
 
 def _ttl_env(name: str, default: int) -> int:
     """Read a TTL override from the environment, falling back to ``default``.
@@ -530,7 +563,7 @@ def pin_validations(cid: str, validations: list,
 
 def record_validation_pass(cid: str, validation_id: str, passed: bool,
                            ran_at: Optional[float] = None,
-                           source: str = WORKER_PASS_SOURCE,
+                           source: Optional[str] = None,
                            verdict: Optional[dict] = None,
                            ref: Optional[tuple[str, str]] = None) -> dict:
     """Record one validation's pass/fail ON THE TICKET NODE (never on the requirement fact).
@@ -538,11 +571,13 @@ def record_validation_pass(cid: str, validation_id: str, passed: bool,
     Read-modify-write of ``meta.pinned_checks``: update the matching validation's passed/ran_at/source.
     If the validation is not already pinned (set drifted), it is appended so the result is not lost.
 
-    ``source`` names WHERE the pass came from. It defaults to ``WORKER_PASS_SOURCE`` — a command the
-    build worker ran — which is exactly the signal that can NEVER satisfy a ``verify="manual"``
-    requirement. To attest a manual requirement, record its covering validation with a human source
-    (``source="human"``, see :data:`HUMAN_PASS_SOURCES`); that external signal is the only thing
-    :func:`all_validations_passed` accepts for the manual set.
+    The effective ``source`` is DERIVED from the execution context via
+    :func:`_derive_effective_source`, NOT from a self-declared parameter. A build worker passing
+    ``source="human"`` without the ``PRAXIS_ATTESTED_CALLER`` credential is silently forced to
+    ``WORKER_PASS_SOURCE`` — the worker cannot obtain the attested path by naming it. Only a caller
+    presenting the distinct credential records an attested pass.
+
+    When ``source`` is ``None``, the effective source defaults to ``WORKER_PASS_SOURCE``.
 
     IMPLICIT HEARTBEAT. Recording a validation result IS proof of liveness, so this bumps
     ``claim_heartbeat_at`` in the same write whenever the ticket holds a live claim. :func:`heartbeat`
@@ -550,6 +585,7 @@ def record_validation_pass(cid: str, validation_id: str, passed: bool,
     do — leaving long tickets to expire their own lease mid-work and be handed out twice. Piggybacking
     on a write the worker already makes costs no extra round-trip and cannot be forgotten.
     """
+    effective_source = _derive_effective_source(source)
     if ran_at is None:
         ran_at = time.time()
     meta = _meta(cid, ref)
@@ -560,14 +596,15 @@ def record_validation_pass(cid: str, validation_id: str, passed: bool,
         if str(eid) == str(validation_id):
             entry["passed"] = bool(passed)
             entry["ran_at"] = ran_at
-            entry["source"] = str(source)
+            entry["source"] = effective_source
             if verdict is not None:  # graded checks stash the cached verdict (incl. code_hash)
                 entry["verdict"] = verdict
             found = True
             break
     if not found:
         appended = {"validation_id": str(validation_id), "covers": [],
-                    "run": "", "passed": bool(passed), "ran_at": ran_at, "source": str(source)}
+                    "run": "", "passed": bool(passed), "ran_at": ran_at,
+                    "source": effective_source}
         if verdict is not None:
             appended["verdict"] = verdict
         pinned.append(appended)
@@ -910,6 +947,14 @@ def clear_run(cids: list[str], owner: str,
 # The category the marker fact carries (mirrors SURFACE_CATEGORY server-side).
 PLANNING_MARKER_CATEGORY = "planning-marker"
 
+# The build-run marker (holds gate-disable state for the Stop hooks — a separate
+# category so a build run's disable records never collide with a planning session's marker).
+BUILD_MARKER_CATEGORY = "build-marker"
+
+# Meta keys for gate-disable records (on the build marker fact).
+M_GATE_DISABLE_VARS = "gate_disable_vars"    # dict[str,str]: {var_name: observed_value}
+M_GATE_DISABLED_AT = "gate_disabled_at"       # float: epoch seconds when first disable was stamped
+
 
 def planning_project(project: str) -> str:
     """The BARE project name (a leading ``prd-`` is stripped, so a bare project or the snapshot name
@@ -967,21 +1012,34 @@ def stamp_planning(project: str, owner: str) -> str:
 def clear_planning(project: str, owner: str) -> bool:
     """Clear ``owner``'s planning marker (NULL planning_owner/planning_at) — called at BLESS, when the
     plan is done and the hook should go inert. Only clears a marker THIS owner holds (an unowned
-    marker is also clearable); an owner mismatch returns False. Mirror of :func:`clear_run`."""
+    marker is also clearable); an owner mismatch returns False UNLESS the original owner is no longer
+    live (stale marker) — then the marker is reclaimable by any owner rather than stranding the
+    project. Mirror of :func:`clear_run`."""
     mid = planning_marker_id(project)
     if not mid:
         return True  # never stamped => nothing to clear; the hook is already inert
     ref = project_ref(project).plan
-    if _meta(mid, ref).get(M_PLANNING_OWNER) not in (owner, None):
-        return False
-    _praxis.patch_meta(mid, {k: None for k in _PLANNING_KEYS}, **_ref_kw(ref))
+    marker_owner = _meta(mid, ref).get(M_PLANNING_OWNER)
+    if marker_owner not in (owner, None):
+        # Owner mismatch — but if the original owner is no longer live (stale), allow reclaim.
+        if planning_live(_meta(mid, ref)):
+            return False  # original owner is still live -> can't take over
+        # Marker is stale — original owner is dead, reclaim it.
+    _praxis.patch_meta(
+        mid,
+        {**{k: None for k in _PLANNING_KEYS}, M_BLESSED_AT: time.time()},
+        **_ref_kw(ref),
+    )
     return True
 
 
-def planning_active(project: str, now: Optional[float] = None) -> bool:
+def planning_active(project: str, owner: Optional[str] = None,
+                    now: Optional[float] = None) -> bool:
     """True iff a NON-STALE planning marker is present for ``project`` — the signal the
-    ``plan_completeness`` hook arms on. Reads the marker fact NOT-FOUND-TOLERANTLY: a missing marker
-    fact means "no planning session" (inactive), NOT "Praxis down" — a genuine PraxisUnreachable still
+    ``plan_completeness`` hook arms on. When ``owner`` is given, the marker is ONLY armed for the
+    session that stamped it (``planning_owner`` MUST match); a live marker owned by a different
+    session does NOT arm. Reads the marker fact NOT-FOUND-TOLERANTLY: a missing marker fact means
+    "no planning session" (inactive), NOT "Praxis down" — a genuine PraxisUnreachable still
     propagates so the hook fails closed."""
     mid = planning_marker_id(project)
     if not mid:
@@ -989,7 +1047,238 @@ def planning_active(project: str, now: Optional[float] = None) -> bool:
     ref = project_ref(project).plan
     fact = _praxis.get_fact(mid, not_found_ok=True, **_ref_kw(ref))
     meta = dict((fact or {}).get("meta") or {})
+    if owner is not None and meta.get(M_PLANNING_OWNER) != owner:
+        return False  # a different owner holds the marker — not armed for this caller
     return planning_live(meta, now)
+
+
+# --------------------------------------------------------------------------- plan-gate escalation (S8)
+
+class PlanEscalationError(RuntimeError):
+    """A durable escalation counter could not be read or is corrupt — the caller must fail LOUD,
+    never silently return zero. Raised when the planning marker's meta is present but the attempts
+    field is unreadable (wrong type) or the plan_hash is missing while attempts > 0."""
+
+
+def _escalation_meta(project: str) -> dict:
+    """Read the planning marker's meta for ``project``. Returns ``{}`` when no marker exists
+    (a greenfield project with no intake session), raises :class:`PraxisUnreachable` on transport
+    failure, and raises :class:`PlanEscalationError` when the marker is readable but its escalation
+    fields are corrupt — a named error, not a silent zero."""
+    mid = planning_marker_id(project)
+    if not mid:
+        return {}
+    ref = project_ref(project).plan
+    try:
+        fact = _praxis.get_fact(mid, not_found_ok=True, **_ref_kw(ref))
+    except _praxis.PraxisUnreachable:
+        raise
+    except Exception as exc:
+        raise PlanEscalationError(
+            f"unable to read planning marker for {project}: {exc}"
+        ) from exc
+    return dict((fact or {}).get("meta") or {})
+
+
+def read_escalation_state(project: str) -> tuple[int, str, Optional[float]]:
+    """Return ``(attempts, plan_hash, blocked_at)`` from the planning marker's meta.
+
+    Returns ``(0, "", None)`` when the marker has never recorded an attempt (the cold-start state).
+    Raises :class:`PlanEscalationError` when the marker IS present but its escalation fields are
+    corrupt — the "named error" the acceptance condition requires, so a downstream gate that sees
+    a corrupt counter fails LOUD instead of silently treating it as zero and admitting a plan that
+    should be blocked.
+    """
+    meta = _escalation_meta(project)
+    attempts_raw = meta.get(M_PLAN_ATTEMPTS)
+    plan_hash = str(meta.get(M_PLAN_HASH) or "")
+    blocked_raw = meta.get(M_PLAN_BLOCKED_AT)
+
+    if attempts_raw is None:
+        return 0, "", None
+
+    # A non-None attempts value that is NOT an int/float is a corrupt counter — surface the named error.
+    try:
+        attempts = int(attempts_raw)
+    except (TypeError, ValueError) as exc:
+        raise PlanEscalationError(
+            f"planning marker for {project} has a corrupt {M_PLAN_ATTEMPTS} field: "
+            f"{attempts_raw!r} is not an integer — cannot determine the escalation state. "
+            f"Clear it via clear_plan_blocked() or reset the marker."
+        ) from exc
+
+    blocked_at: Optional[float] = None
+    if blocked_raw is not None:
+        try:
+            blocked_at = float(blocked_raw)
+        except (TypeError, ValueError):
+            pass  # a non-numeric blocked_at is treated as None (not a hard error)
+
+    return attempts, plan_hash, blocked_at
+
+
+def is_plan_blocked(project: str) -> bool:
+    """True iff the plan is terminally escalated (``plan_blocked_at`` is set on the planning marker).
+    The downstream build gate calls this to refuse the build phase while the escalation exists."""
+    try:
+        _, _, blocked_at = read_escalation_state(project)
+    except PlanEscalationError:
+        # A corrupt counter means we cannot determine whether the plan is blocked — fail LOUD
+        # by treating it as blocked (the gate should refuse), NOT pass silently.
+        return True
+    return blocked_at is not None
+
+
+def bump_escalation_attempts(project: str, snapshot_hash: str) -> int:
+    """Increment the failed bless attempt counter for ``snapshot_hash`` and return the new count.
+    If the stored hash differs from ``snapshot_hash`` the counter resets to 1 (a changed plan is
+    not penalized). Raises :class:`PlanEscalationError` on a corrupt counter."""
+    attempts, stored_hash, _ = read_escalation_state(project)
+    if stored_hash != snapshot_hash:
+        attempts = 0  # changed plan resets the counter
+    attempts += 1
+    mid = planning_marker_id(project, create=True)
+    ref = project_ref(project).plan
+    _praxis.patch_meta(mid, {
+        M_PLAN_ATTEMPTS: attempts,
+        M_PLAN_HASH: snapshot_hash,
+    }, **_ref_kw(ref))
+    return attempts
+
+
+def stamp_plan_blocked(project: str) -> None:
+    """Record the terminal escalation timestamp on the planning marker — the durable signal the
+    downstream gate reads to refuse the build phase. Idempotent: a subsequent call overwrites
+    the timestamp (re-blocking after an operator clear)."""
+    mid = planning_marker_id(project, create=True)
+    ref = project_ref(project).plan
+    _praxis.patch_meta(mid, {M_PLAN_BLOCKED_AT: time.time()}, **_ref_kw(ref))
+
+
+def reset_escalation_attempts(project: str) -> None:
+    """Clear the failed-attempt counter and hash — called when the plan blesses, so a subsequent
+    intake session starts fresh. Also clears the terminal block (escalation is resolved by the
+    plan finally blessing, or by an operator clearing it).
+
+    Best-effort: a missing space (e.g. in a test environment without Praxis) is a no-op, not a
+    crash. The record lives in the plan snapshot; if that snapshot is unreachable, clearing it is
+    moot anyway — the downstream gate will also be unreachable and will fail closed on its own."""
+    mid = None
+    try:
+        mid = planning_marker_id(project)
+    except _praxis.PraxisUnreachable:
+        return  # no Praxis available => nothing to clear; the gate has bigger problems
+    if not mid:
+        return
+    ref = project_ref(project).plan
+    try:
+        _praxis.patch_meta(mid, {
+            M_PLAN_ATTEMPTS: None,
+            M_PLAN_HASH: None,
+            M_PLAN_BLOCKED_AT: None,
+        }, **_ref_kw(ref))
+    except _praxis.PraxisUnreachable:
+        return  # unreachable => best-effort, not a crash
+    except Exception:
+        pass  # best-effort clear; a missing/corrupt marker is a no-op
+
+
+def clear_plan_blocked(project: str) -> bool:
+    """Operator action: clear the terminal escalation on a plan that never blesses.
+    Returns True on success, False if the marker does not exist (nothing to clear).
+    This is the explicit operator recovery path — separate from ``reset_escalation_attempts``
+    which fires automatically at bless."""
+    mid = planning_marker_id(project)
+    if not mid:
+        return False
+    ref = project_ref(project).plan
+    try:
+        _praxis.patch_meta(mid, {M_PLAN_BLOCKED_AT: None}, **_ref_kw(ref))
+    except _praxis.PraxisUnreachable:
+        raise
+    except Exception:
+        return False
+    return True
+
+
+# --------------------------------------------------------------------------- build-run marker
+
+# The build-run marker holds gate-disable STATE for the Stop hooks — when a gate stands down because
+# a disable variable is set, the variable name and observed value are recorded here as durable state
+# on the project's Praxis marker. After the run terminates, clear_gate_disable removes it so a review
+# can tell whether the run was fully gated.
+
+
+def build_marker_project(project: str) -> str:
+    """The BARE project name (a leading ``prd-`` is stripped, so a bare project or the snapshot name
+    both resolve to the same marker)."""
+    return project[len("prd-"):] if project.startswith("prd-") else project
+
+
+def build_marker_id(project: str, *, create: bool = False) -> str:
+    """The id of ``project``'s build marker fact in ``prd-<project>``, or ``""`` if none exists.
+
+    The marker's id is SERVER-GENERATED (like a surface), resolved by the idempotency key
+    ``(scope=project, category="build-marker")``. With ``create=True`` the marker is materialized
+    if absent (the bootstrap a greenfield project needs); with the default ``create=False`` this is
+    a pure read that returns ``""`` when no build run has ever been tracked.
+    """
+    bare = build_marker_project(project)
+    ref = project_ref(project).plan
+    if create:
+        return _praxis.ensure_build_marker(bare, **_ref_kw(ref))
+    for fact in (_praxis.facts_by(category=BUILD_MARKER_CATEGORY, **_ref_kw(ref)) or []):
+        meta = dict(fact.get("meta") or {})
+        if (fact.get("scope") or meta.get("project")) == bare:
+            return str(fact.get("id") or "")
+    return ""
+
+
+def stamp_gate_disable(project: str, var_name: str, value: str) -> dict:
+    """Record that ``var_name`` (e.g. ``"FACTORY_GATE_DISABLED"``) was observed as ``value`` when
+    a Stop gate stood down. ACCUMULATES: calling with a different variable adds to the existing set
+    rather than replacing it. Returns the patched fact.
+
+    The variable name and value are written onto the project's build marker fact (in the plan
+    snapshot), so a report can read which disable variables were in effect during the run.
+    """
+    mid = build_marker_id(project, create=True)
+    ref = project_ref(project).plan
+    meta = _meta(mid, ref)
+    prev_vars: dict[str, str] = dict(meta.get(M_GATE_DISABLE_VARS) or {})
+    prev_vars[str(var_name)] = str(value)
+    return _praxis.patch_meta(mid, {
+        M_GATE_DISABLE_VARS: prev_vars,
+        M_GATE_DISABLED_AT: meta.get(M_GATE_DISABLED_AT) or time.time(),
+    }, **_ref_kw(ref))
+
+
+def clear_gate_disable(project: str) -> bool:
+    """Clear the gate-disable record (remove disable variable names/values). Call when the run
+    terminates so a post-run report can tell whether the run was fully gated.
+
+    No fact yet stamped => already clear => True. Returns False only on an owner mismatch (never
+    relevant for the build marker since it has no ownership check)."""
+    mid = build_marker_id(project)
+    if not mid:
+        return True  # never stamped => nothing to clear
+    ref = project_ref(project).plan
+    _praxis.patch_meta(mid, {
+        M_GATE_DISABLE_VARS: None,
+        M_GATE_DISABLED_AT: None,
+    }, **_ref_kw(ref))
+    return True
+
+
+def gate_disable_vars(project: str) -> dict[str, str]:
+    """The disable variables recorded during this project's run (empty dict if none were set)."""
+    mid = build_marker_id(project)
+    if not mid:
+        return {}
+    ref = project_ref(project).plan
+    fact = _praxis.get_fact(mid, not_found_ok=True, **_ref_kw(ref))
+    meta = dict((fact or {}).get("meta") or {})
+    return dict(meta.get(M_GATE_DISABLE_VARS) or {})
 
 
 # --------------------------------------------------------------------------- dependency readiness

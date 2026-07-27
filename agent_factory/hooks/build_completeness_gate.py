@@ -85,6 +85,49 @@ def _session_owner(data: dict) -> str:
     return str(data.get("session_id") or data.get("sessionId") or "").strip()
 
 
+# --------------------------------------------------------------------------- plan escalation guard (S8)
+
+# TERMINAL PLAN ESCALATION (S8): the plan-completeness gate writes a durable escalation record to
+# Praxis when its bounded-attempt cap is reached. THIS gate (build-completeness) must read that record
+# and refuse the build phase while it exists — the downstream enforcement leg of the two-gate contract.
+# This check runs BEFORE any ticket enumeration, so it blocks the build phase regardless of which
+# session escalated or whether this session owns any tickets.
+
+def _plan_escalation_check(project: str) -> str:
+    """Check for a terminal plan escalation. Returns "" (empty) if the plan is clear, or a block
+    reason string if the build phase must be refused. Raises PlanEscalationError on a corrupt counter
+    so the caller can fail LOUD."""
+    import _ticket_state as ts
+    if not project:
+        return ""
+    try:
+        if ts.is_plan_blocked(project):
+            return (
+                f"build-completeness gate: PLAN BLOCKED for {project} — the plan terminally "
+                "escalated (plan_blocked). The plan-completeness gate wrote a durable escalation "
+                "record to Praxis; this gate now refuses the build phase while it exists. No ticket "
+                "can be built until the plan's outstanding predicate is resolved and the escalation "
+                "is cleared.\n\n"
+                "Recovery paths:\n"
+                "  1. Fix the failing plan predicate and re-run intake until the plan blesses — "
+                "the bless auto-clears the escalation.\n"
+                "  2. If the plan will never bless (unresolvable contradiction, out-of-scope term), "
+                f"an operator may clear the escalation explicitly via clear_plan_blocked('{project}').\n"
+                "  3. For emergency-only stand-down of THIS gate: FACTORY_GATE_DISABLED=1."
+            )
+    except ts.PlanEscalationError as exc:
+        return (
+            f"build-completeness gate: CORRUPT ESCALATION STATE for {project} — the plan escalation "
+            f"counter cannot be read (PlanEscalationError). This is the 'named error' guard: a "
+            f"corrupt or unreadable counter refuses the build phase rather than silently returning "
+            f"zero and admitting a plan that should be blocked. Clear or repair the escalation state "
+            f"on the planning marker before building. Detail: {exc}"
+        )
+    except Exception:
+        return ""
+    return ""
+
+
 # --------------------------------------------------------------------------- no-op scope fast-path
 
 # Substrings that mean THIS session engaged the factory in some way. The set is deliberately BROAD:
@@ -180,11 +223,36 @@ def main() -> None:
         data = {}
     cwd = data.get("cwd") or os.getcwd()
 
-    # --- Emergency escape hatch (documented + LOUD, never silent). ----------------------------
-    if os.environ.get("FACTORY_GATE_DISABLED") == "1":
-        _allow("build-completeness gate STOOD DOWN: FACTORY_GATE_DISABLED=1 is set. The factory is "
-               "NOT verifying build state right now — incomplete tickets/checks may remain unbuilt. "
-               "Unset FACTORY_GATE_DISABLED to restore enforcement.")
+    # --- Emergency escape hatches (documented + LOUD, never silent). -----------------------
+    # When a disable variable causes a stand-down, RECORD the variable name and observed value
+    # as durable state on the project's Praxis build marker so a run that executed with a
+    # disabled gate cannot be presented as a fully gated run.
+    auth_disabled = os.environ.get("PRAXIS_AUTH_DISABLED") == "1"
+    gate_disabled = os.environ.get("FACTORY_GATE_DISABLED") == "1"
+
+    if gate_disabled or auth_disabled:
+        # Resolve the project so we can stamp the marker. Best-effort: if stamping fails,
+        # still stand down (the disable var is the authority, not the marker write).
+        try:
+            import _ticket_state as ts
+            _proj = _active_project(cwd)
+            if _proj:
+                if gate_disabled:
+                    ts.stamp_gate_disable(_proj, "FACTORY_GATE_DISABLED", "1")
+                if auth_disabled:
+                    ts.stamp_gate_disable(_proj, "PRAXIS_AUTH_DISABLED", "1")
+        except Exception:  # noqa: BLE001 - marker write is best-effort; never block the stand-down
+            pass
+
+        parts: list[str] = []
+        if gate_disabled:
+            parts.append("FACTORY_GATE_DISABLED=1: the factory is NOT verifying build state — "
+                         "incomplete tickets/checks may remain unbuilt")
+        if auth_disabled:
+            parts.append("PRAXIS_AUTH_DISABLED=1: Praxis auth is bypassed — gate enforcement cannot "
+                         "verify identity")
+        _allow("build-completeness gate STOOD DOWN: " + " | ".join(parts)
+               + ". Unset the named variable(s) to restore enforcement.")
 
     # Load the factory ``.env`` BEFORE resolving the project. ``_active_project`` reads
     # ``FACTORY_PROJECT`` from ``os.environ``, but that override lives in ``<repo>/.env`` (the same
@@ -207,6 +275,14 @@ def main() -> None:
 
     project = _active_project(cwd)
     owner = _session_owner(data)
+
+    # --- S8 plan-escalation guard: if the plan is terminally escalated, refuse the build phase ---
+    # BEFORE any ticket enumeration. This is the downstream enforcement leg — the plan-completeness
+    # gate writes the escalation record; this gate reads it and blocks. The check is fail-closed:
+    # a corrupt counter (PlanEscalationError) also refuses.
+    escalation_block = _plan_escalation_check(project)
+    if escalation_block:
+        _block(escalation_block)
 
     # --- NO-OP FAST-PATH: a session that never touched the factory has nothing to verify. -----
     # The gate is loaded on EVERY session (any repo with the plugin), including ones doing zero
