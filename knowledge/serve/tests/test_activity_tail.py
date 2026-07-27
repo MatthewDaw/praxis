@@ -76,3 +76,17 @@ def test_read_is_org_scope_authorized():
 
     with pytest.raises(AuthorizationError):
         store.read(job, _principal(org="org-b"), session_alive=False)
+
+
+def test_unauthenticated_read_is_refused_through_the_same_authorization_path():
+    """R85: a tail read with no principal at all (no credential) is refused
+    via the same ``job_authz.authorize`` path that guards job rows — not an
+    unhandled crash from touching a ``None`` principal's ``org_id``."""
+    store = ActivityTailStore()
+    job = _job()
+    store.append(job, "secret activity")
+
+    with pytest.raises(AuthorizationError):
+        store.read(job, None, session_alive=False)
+    with pytest.raises(AuthorizationError):
+        store.read_stored(job, None)

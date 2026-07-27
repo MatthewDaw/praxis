@@ -70,12 +70,13 @@ class ActivityTailStore:
         )
         return ref
 
-    def read_stored(self, job: Job, principal: JobPrincipal) -> str:
+    def read_stored(self, job: Job, principal: JobPrincipal | None) -> str:
         """Return the stored bounded tail for ``job``, org-scope authorized
         (R52's ``job_authz``) — the path a reaped session's history, an
         unreachable box, or a dead process's last activity is read through.
-        Raises :class:`job_authz.AuthorizationError` for a cross-org caller,
-        regardless of whether the tail has been purged/never written.
+        Raises :class:`job_authz.AuthorizationError` for a cross-org or
+        unauthenticated (``principal=None``) caller, regardless of whether
+        the tail has been purged/never written.
         """
         job_ref = JobRef(
             id=job.id,
@@ -92,7 +93,7 @@ class ActivityTailStore:
     def read(
         self,
         job: Job,
-        principal: JobPrincipal,
+        principal: JobPrincipal | None,
         *,
         session_alive: bool,
         live_fetch: Callable[[], str] | None = None,
