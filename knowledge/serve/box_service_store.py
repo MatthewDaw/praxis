@@ -14,7 +14,7 @@ import time
 import uuid
 from collections.abc import Callable
 
-from knowledge.serve.box_service_models import Job, JobState
+from knowledge.serve.box_service_models import Job, JobState, TERMINAL_JOB_STATES
 
 
 class JobStore:
@@ -54,7 +54,9 @@ class JobStore:
     def resume_from_awaiting_human(self, job_id: str) -> Job:
         """Transition the job back to ``running`` in place. Raises if the job
         is not currently ``awaiting-human`` — resuming is a transition on an
-        existing row, never a way to create one.
+        existing row, never a way to create one. Clears ``question`` (R79):
+        the pause it named is now resolved, so a later awaiting-human pause
+        on the same job never reads a stale prior question.
         """
         job = self._jobs[job_id]
         if job.state is not JobState.AWAITING_HUMAN:
@@ -62,4 +64,27 @@ class JobStore:
                 f"job {job_id!r} is {job.state.value!r}, not awaiting-human; cannot resume"
             )
         job.state = JobState.RUNNING
+        job.question = None
+        return job
+
+    def enter_awaiting_human(self, job_id: str, question: str) -> Job:
+        """Transition a mid-run job into ``awaiting-human`` on a blocked-on-
+        question event (R23/R79), mutating the SAME row in place so
+        :meth:`resume_from_awaiting_human` later returns it under the
+        identical job id. ``question`` is persisted as its own queryable
+        field (R79) distinct from ``failure_reason`` -- the job view reads
+        it directly, and it is never folded into the terminal-failure
+        vocabulary. Raises if the job is already terminal, or if
+        ``question`` is empty (an awaiting-human pause must say what
+        question it is waiting on).
+        """
+        job = self._jobs[job_id]
+        if job.state in TERMINAL_JOB_STATES:
+            raise ValueError(
+                f"job {job_id!r} is terminal ({job.state.value!r}); cannot enter awaiting-human"
+            )
+        if not question:
+            raise ValueError("awaiting-human requires a non-empty question")
+        job.state = JobState.AWAITING_HUMAN
+        job.question = question
         return job

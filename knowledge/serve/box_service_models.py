@@ -123,6 +123,11 @@ class Job:
     rolling activity tail under (R25) — the job row carries only this
     reference, never the tail content itself, so no tail content is ever
     stored as a Praxis fact.
+
+    ``question`` (R79) is the blocked-on-question event's question text, kept
+    as its own queryable field distinct from ``failure_reason`` — the job view
+    reads it to render the question next to the reply control, while the
+    notification payload (R27) deliberately never includes it.
     """
 
     id: str
@@ -149,6 +154,7 @@ class Job:
     external session poll (:class:`SessionInfo`) carries a start time but no
     activity time. ``None`` until the first hook event fires."""
     tail_ref: str | None = None
+    question: str | None = None
 
     def is_open(self) -> bool:
         return self.state in OPEN_JOB_STATES
