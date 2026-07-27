@@ -213,10 +213,33 @@ def main() -> None:
     cwd = data.get("cwd") or os.getcwd()
 
     # --- Scoped escape hatch (documented + LOUD; distinct from the build gate's). ----------------
-    if os.environ.get("FACTORY_PLAN_GATE_DISABLED") == "1":
-        _allow("plan-completeness gate STOOD DOWN: FACTORY_PLAN_GATE_DISABLED=1 is set. The planning "
-               "gate is NOT verifying the plan right now (build enforcement is UNAFFECTED — that is a "
-               "separate gate/escape). Unset FACTORY_PLAN_GATE_DISABLED to restore enforcement.")
+    auth_disabled = os.environ.get("PRAXIS_AUTH_DISABLED") == "1"
+    plan_gate_disabled = os.environ.get("FACTORY_PLAN_GATE_DISABLED") == "1"
+
+    if plan_gate_disabled or auth_disabled:
+        # Record the disable variable on the project's build marker so a run that executed with
+        # a disabled gate cannot be presented as fully gated. Best-effort: still stand down if
+        # stamping fails.
+        try:
+            import _ticket_state as ts
+            _proj = _active_project(cwd)
+            if _proj:
+                if plan_gate_disabled:
+                    ts.stamp_gate_disable(_proj, "FACTORY_PLAN_GATE_DISABLED", "1")
+                if auth_disabled:
+                    ts.stamp_gate_disable(_proj, "PRAXIS_AUTH_DISABLED", "1")
+        except Exception:  # noqa: BLE001 - marker write is best-effort; never block the stand-down
+            pass
+
+        parts: list[str] = []
+        if plan_gate_disabled:
+            parts.append("FACTORY_PLAN_GATE_DISABLED=1: planning gate is NOT verifying the plan "
+                         "(build enforcement is UNAFFECTED — that is a separate gate/escape)")
+        if auth_disabled:
+            parts.append("PRAXIS_AUTH_DISABLED=1: Praxis auth is bypassed — gate enforcement cannot "
+                         "verify identity")
+        _allow("plan-completeness gate STOOD DOWN: " + " | ".join(parts)
+               + ". Unset the named variable(s) to restore enforcement.")
 
     # Load the factory .env before resolving the project (a bare Stop-hook subprocess does not inherit
     # a shell-sourced .env). Best-effort + fail-closed-preserving, exactly like the build gate.

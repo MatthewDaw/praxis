@@ -910,6 +910,14 @@ def clear_run(cids: list[str], owner: str,
 # The category the marker fact carries (mirrors SURFACE_CATEGORY server-side).
 PLANNING_MARKER_CATEGORY = "planning-marker"
 
+# The build-run marker (holds gate-disable state for the Stop hooks — a separate
+# category so a build run's disable records never collide with a planning session's marker).
+BUILD_MARKER_CATEGORY = "build-marker"
+
+# Meta keys for gate-disable records (on the build marker fact).
+M_GATE_DISABLE_VARS = "gate_disable_vars"    # dict[str,str]: {var_name: observed_value}
+M_GATE_DISABLED_AT = "gate_disabled_at"       # float: epoch seconds when first disable was stamped
+
 
 def planning_project(project: str) -> str:
     """The BARE project name (a leading ``prd-`` is stripped, so a bare project or the snapshot name
@@ -990,6 +998,86 @@ def planning_active(project: str, now: Optional[float] = None) -> bool:
     fact = _praxis.get_fact(mid, not_found_ok=True, **_ref_kw(ref))
     meta = dict((fact or {}).get("meta") or {})
     return planning_live(meta, now)
+
+
+# --------------------------------------------------------------------------- build-run marker
+
+# The build-run marker holds gate-disable STATE for the Stop hooks — when a gate stands down because
+# a disable variable is set, the variable name and observed value are recorded here as durable state
+# on the project's Praxis marker. After the run terminates, clear_gate_disable removes it so a review
+# can tell whether the run was fully gated.
+
+
+def build_marker_project(project: str) -> str:
+    """The BARE project name (a leading ``prd-`` is stripped, so a bare project or the snapshot name
+    both resolve to the same marker)."""
+    return project[len("prd-"):] if project.startswith("prd-") else project
+
+
+def build_marker_id(project: str, *, create: bool = False) -> str:
+    """The id of ``project``'s build marker fact in ``prd-<project>``, or ``""`` if none exists.
+
+    The marker's id is SERVER-GENERATED (like a surface), resolved by the idempotency key
+    ``(scope=project, category="build-marker")``. With ``create=True`` the marker is materialized
+    if absent (the bootstrap a greenfield project needs); with the default ``create=False`` this is
+    a pure read that returns ``""`` when no build run has ever been tracked.
+    """
+    bare = build_marker_project(project)
+    ref = project_ref(project).plan
+    if create:
+        return _praxis.ensure_build_marker(bare, **_ref_kw(ref))
+    for fact in (_praxis.facts_by(category=BUILD_MARKER_CATEGORY, **_ref_kw(ref)) or []):
+        meta = dict(fact.get("meta") or {})
+        if (fact.get("scope") or meta.get("project")) == bare:
+            return str(fact.get("id") or "")
+    return ""
+
+
+def stamp_gate_disable(project: str, var_name: str, value: str) -> dict:
+    """Record that ``var_name`` (e.g. ``"FACTORY_GATE_DISABLED"``) was observed as ``value`` when
+    a Stop gate stood down. ACCUMULATES: calling with a different variable adds to the existing set
+    rather than replacing it. Returns the patched fact.
+
+    The variable name and value are written onto the project's build marker fact (in the plan
+    snapshot), so a report can read which disable variables were in effect during the run.
+    """
+    mid = build_marker_id(project, create=True)
+    ref = project_ref(project).plan
+    meta = _meta(mid, ref)
+    prev_vars: dict[str, str] = dict(meta.get(M_GATE_DISABLE_VARS) or {})
+    prev_vars[str(var_name)] = str(value)
+    return _praxis.patch_meta(mid, {
+        M_GATE_DISABLE_VARS: prev_vars,
+        M_GATE_DISABLED_AT: meta.get(M_GATE_DISABLED_AT) or time.time(),
+    }, **_ref_kw(ref))
+
+
+def clear_gate_disable(project: str) -> bool:
+    """Clear the gate-disable record (remove disable variable names/values). Call when the run
+    terminates so a post-run report can tell whether the run was fully gated.
+
+    No fact yet stamped => already clear => True. Returns False only on an owner mismatch (never
+    relevant for the build marker since it has no ownership check)."""
+    mid = build_marker_id(project)
+    if not mid:
+        return True  # never stamped => nothing to clear
+    ref = project_ref(project).plan
+    _praxis.patch_meta(mid, {
+        M_GATE_DISABLE_VARS: None,
+        M_GATE_DISABLED_AT: None,
+    }, **_ref_kw(ref))
+    return True
+
+
+def gate_disable_vars(project: str) -> dict[str, str]:
+    """The disable variables recorded during this project's run (empty dict if none were set)."""
+    mid = build_marker_id(project)
+    if not mid:
+        return {}
+    ref = project_ref(project).plan
+    fact = _praxis.get_fact(mid, not_found_ok=True, **_ref_kw(ref))
+    meta = dict((fact or {}).get("meta") or {})
+    return dict(meta.get(M_GATE_DISABLE_VARS) or {})
 
 
 # --------------------------------------------------------------------------- dependency readiness
