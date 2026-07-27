@@ -54,6 +54,34 @@ class SessionLauncherError(RuntimeError):
     payload. Never silently swallowed (R17: refuse rather than degrade)."""
 
 
+#: Permission mode a box-launched build session runs under (R19). The session is
+#: unattended — there is no TTY to answer an interactive permission prompt — so it must
+#: never fall back to one. ``--disallowedTools`` (below) is enforced ahead of the
+#: permission-mode check, so pairing it with the most permissive non-interactive mode
+#: still leaves every denylisted tool call hard-refused rather than silently allowed
+#: (mirrors ``agent_factory/evals/plan_repro/claude_cli.py``'s own
+#: ``--permission-mode bypassPermissions`` + ``--disallowedTools`` pairing).
+PERMISSION_MODE = "bypassPermissions"
+
+#: Bash patterns capable of reaching a cloud instance's own credential endpoints
+#: (R19, R37): AWS/GCP/Azure/OCI all expose their instance-metadata service at this
+#: same link-local address, and each provider's CLI also exposes a direct
+#: credential/token read. Denied outright — regardless of ``PERMISSION_MODE`` — so a
+#: launched build session can never read the box host's own administrative cloud
+#: credentials.
+DENIED_CREDENTIAL_TOOLS: tuple[str, ...] = (
+    "Bash(*169.254.169.254*)",
+    "Bash(*metadata.google.internal*)",
+    "Bash(aws sts get-caller-identity*)",
+    "Bash(aws configure get*)",
+    "Bash(cat*.aws/credentials*)",
+    "Bash(gcloud auth print-access-token*)",
+    "Bash(gcloud auth print-identity-token*)",
+    "Bash(az account get-access-token*)",
+    "Bash(az login*)",
+)
+
+
 class SessionLauncher:
     """Thin wrapper over the ``claude`` CLI's background-session surface."""
 
@@ -72,6 +100,11 @@ class SessionLauncher:
     ) -> str:
         """Start a ``claude --bg`` session and return its session id.
 
+        Every launch carries R19's permission mode and credential denylist — there is
+        no parameter to omit them, since an unattended box-launched session must never
+        be able to fall back to an interactive prompt or reach a cloud credential
+        endpoint.
+
         ``extra_args`` (e.g. the R14 per-dispatch plugin/mcp-config/settings flags
         from ``dispatch_launch``, or R28's mailbox-relay Stop hook) are appended after
         ``--name``. ``env`` defaults to an explicit, credential-sanitized copy of the box
@@ -79,7 +112,11 @@ class SessionLauncher:
         inheriting it wholesale (R37); pass an explicit ``env`` (e.g. R29's resumed-owner
         identity) to override.
         """
-        args = [self._cli, "--bg", command]
+        args = [
+            self._cli, "--bg", command,
+            "--permission-mode", PERMISSION_MODE,
+            "--disallowedTools", *DENIED_CREDENTIAL_TOOLS,
+        ]
         if name is not None:
             args += ["--name", name]
         if extra_args:

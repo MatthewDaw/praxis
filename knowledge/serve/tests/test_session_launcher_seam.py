@@ -13,7 +13,12 @@ from dataclasses import dataclass, field
 import pytest
 
 from knowledge.serve.box_service_models import SessionInfo
-from knowledge.serve.session_launcher import SessionLauncher, SessionLauncherError
+from knowledge.serve.session_launcher import (
+    DENIED_CREDENTIAL_TOOLS,
+    PERMISSION_MODE,
+    SessionLauncher,
+    SessionLauncherError,
+)
 
 
 @dataclass
@@ -43,7 +48,12 @@ def test_launch_returns_session_id_and_never_shells_out_for_real():
     call = dict(runner.calls[0])
     env = call.pop("env")
     assert call == {
-        "args": ["claude", "--bg", "/af-build", "--name", "job-1"],
+        "args": [
+            "claude", "--bg", "/af-build",
+            "--permission-mode", PERMISSION_MODE,
+            "--disallowedTools", *DENIED_CREDENTIAL_TOOLS,
+            "--name", "job-1",
+        ],
         "cwd": "/repo/worktree",
         "capture_output": True,
         "text": True,

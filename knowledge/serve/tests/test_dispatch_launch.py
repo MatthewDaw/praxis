@@ -43,7 +43,11 @@ from knowledge.serve.dispatch_launch import (
     build_praxis_mcp_config,
     fire_observation_activity,
 )
-from knowledge.serve.session_launcher import SessionLauncher
+from knowledge.serve.session_launcher import (
+    DENIED_CREDENTIAL_TOOLS,
+    PERMISSION_MODE,
+    SessionLauncher,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -168,15 +172,24 @@ def test_launch_job_session_with_no_dispatch_config_is_unchanged():
 
     launch_job_session(job, launcher)
 
-    assert runner.calls == [
-        {
-            "args": ["claude", "--bg", "/af-build", "--name", "job-1"],
-            "cwd": "/repo/jobs/job-1",
-            "capture_output": True,
-            "text": True,
-            "check": False,
-        }
-    ]
+    assert len(runner.calls) == 1
+    call = dict(runner.calls[0])
+    env = call.pop("env")
+    assert call == {
+        "args": [
+            "claude", "--bg", "/af-build",
+            "--permission-mode", PERMISSION_MODE,
+            "--disallowedTools", *DENIED_CREDENTIAL_TOOLS,
+            "--name", "job-1",
+        ],
+        "cwd": "/repo/jobs/job-1",
+        "capture_output": True,
+        "text": True,
+        "check": False,
+    }
+    # An explicit, credential-sanitized env is passed (never the box service's own inherited by
+    # omission, R37) — see test_credential_isolation.py for the full credential-shape assertion.
+    assert isinstance(env, dict)
 
 
 def test_launch_job_session_threads_extra_args_and_env_when_given():
