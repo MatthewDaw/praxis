@@ -137,6 +137,11 @@ class Job:
     claim_lease_ttl: float | None = None
     queued_at: float | None = None
     delivery_stage: DeliveryStage = DeliveryStage.NOT_STARTED
+    last_activity_at: float | None = None
+    """Last-activity timestamp maintained from harness-fired hook events
+    alone (R22, see ``knowledge/serve/box_service_activity.py``) -- the
+    external session poll (:class:`SessionInfo`) carries a start time but no
+    activity time. ``None`` until the first hook event fires."""
 
     def is_open(self) -> bool:
         return self.state in OPEN_JOB_STATES
