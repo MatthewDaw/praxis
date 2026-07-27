@@ -6,7 +6,6 @@ passing ``source="human"`` without the credential is still refused; only a calle
 the distinct credential records an attested pass.
 """
 
-import os
 import sys
 from pathlib import Path
 

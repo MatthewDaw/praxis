@@ -10,7 +10,6 @@ import io
 import json
 import os
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -346,7 +345,7 @@ def test_plan_gate_stands_down_and_records_auth_disable(monkeypatch):
 
 def test_gate_disable_vars_readable_for_report(monkeypatch):
     """gate_disable_vars returns a dict readable by a report."""
-    fake = _install(monkeypatch)
+    _install(monkeypatch)
     ts.build_marker_id("team-app", create=True)
     ts.stamp_gate_disable("team-app", "FACTORY_GATE_DISABLED", "1")
     ts.stamp_gate_disable("team-app", "PRAXIS_AUTH_DISABLED", "1")
