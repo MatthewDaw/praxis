@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from knowledge.serve.box_service_models import SessionInfo
@@ -96,7 +96,7 @@ class SessionLauncher:
         command: str,
         name: str | None = None,
         extra_args: list[str] | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str] | None = None,
     ) -> str:
         """Start a ``claude --bg`` session and return its session id.
 
@@ -107,10 +107,13 @@ class SessionLauncher:
 
         ``extra_args`` (e.g. the R14 per-dispatch plugin/mcp-config/settings flags
         from ``dispatch_launch``, or R28's mailbox-relay Stop hook) are appended after
-        ``--name``. ``env`` defaults to an explicit, credential-sanitized copy of the box
+        ``--name``. ``env``, when given, is the EXACT process environment the session
+        runs under (never merged with the caller's own) — see ``build_session_env``
+        (R37) for the allowlist-scrubbed, distinct-``HOME`` environment a build session
+        gets. Omitting it falls back to an explicit, credential-sanitized copy of the box
         service's own environment (:func:`_sanitized_session_env`) rather than the child
         inheriting it wholesale (R37); pass an explicit ``env`` (e.g. R29's resumed-owner
-        identity) to override.
+        identity, or R37's allowlist-scrubbed session env) to override.
         """
         args = [
             self._cli, "--bg", command,
@@ -123,7 +126,7 @@ class SessionLauncher:
             args += extra_args
         proc = self._runner(
             args, cwd=cwd, capture_output=True, text=True, check=False,
-            env=env if env is not None else _sanitized_session_env(),
+            env=dict(env) if env is not None else _sanitized_session_env(),
         )
         if proc.returncode != 0:
             raise SessionLauncherError(f"launch failed: {proc.stderr.strip()}")

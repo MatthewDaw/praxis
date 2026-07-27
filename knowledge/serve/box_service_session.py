@@ -13,7 +13,10 @@ path can ever issue is the ``claude`` CLI call ``SessionLauncher`` makes.
 
 from __future__ import annotations
 
+import os
+
 from knowledge.serve.box_service_models import Job, JobState, SessionInfo
+from knowledge.serve.build_session_env import build_session_environment, default_job_home
 from knowledge.serve.session_launcher import SessionLauncher
 
 #: Default command a launched job session runs (the box service's per-job
@@ -40,15 +43,24 @@ def launch_job_session(
     flags and Praxis/``FACTORY_PROJECT`` env from
     ``knowledge.serve.dispatch_launch``) are threaded straight through to
     :meth:`SessionLauncher.launch`; both default to ``None`` so a caller that
-    passes neither launches identically to before this parameter existed. Passing
+    passes neither still gets the allowlist-scrubbed R37 default below. Passing
     ``knowledge.serve.box_service_mailbox.dispatch_wiring(job)`` here is what makes THIS launch —
     and only a real job launch, never a local ``claude`` invocation — carry the per-dispatch
     mailbox-relay Stop hook (R28).
+
+    When ``env`` is not given, the session is launched under an allowlist-scrubbed
+    environment with its own ``HOME``, distinct from the box service's (R37) — see
+    ``build_session_env`` — so no push credential, service token, or cloud-credential
+    variable the box service's own process carries reaches the launched session. Pass an
+    explicit ``env`` (e.g. R29's resumed-owner identity) to override this default.
     """
     if not job.worktree_path:
         raise ValueError(f"job {job.id!r} has no worktree_path — cannot launch a session")
+    session_env = env if env is not None else build_session_environment(
+        os.environ, home_dir=default_job_home(job.worktree_path)
+    )
     job.session_id = launcher.launch(
-        cwd=job.worktree_path, command=command, name=job.id, extra_args=extra_args, env=env
+        cwd=job.worktree_path, command=command, name=job.id, extra_args=extra_args, env=session_env
     )
     job.state = JobState.RUNNING
     return job
