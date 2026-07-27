@@ -103,6 +103,7 @@ M_FINISHED_AT = "finished_at"                # epoch seconds, stamped by release
 M_UNDER_SPECIFIED = "under_specified"   # [missing structural fields] — routed to intake, never claimed (plan 003)
 M_PLANNING_OWNER = "planning_owner"         # session id of the active planning (intake) session (plan 002)
 M_PLANNING_AT = "planning_at"               # epoch seconds, planning-marker heartbeat; stale => dead (plan 002)
+M_BLESSED_AT = "blessed_at"                 # epoch seconds, stamped at bless; signals post-bless guard (S12)
 
 _LEASE_KEYS = (M_CLAIM_OWNER, M_CLAIM_AT, M_CLAIM_HEARTBEAT_AT, M_CLAIM_LEASE_TTL)
 _RUN_KEYS = (M_RUN_OWNER, M_RUN_AT, M_RUN_SCOPE)
@@ -1007,7 +1008,11 @@ def clear_planning(project: str, owner: str) -> bool:
     ref = project_ref(project).plan
     if _meta(mid, ref).get(M_PLANNING_OWNER) not in (owner, None):
         return False
-    _praxis.patch_meta(mid, {k: None for k in _PLANNING_KEYS}, **_ref_kw(ref))
+    _praxis.patch_meta(
+        mid,
+        {**{k: None for k in _PLANNING_KEYS}, M_BLESSED_AT: time.time()},
+        **_ref_kw(ref),
+    )
     return True
 
 
