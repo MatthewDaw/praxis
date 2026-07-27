@@ -115,6 +115,35 @@ _PLANNING_KEYS = (M_PLANNING_OWNER, M_PLANNING_AT)
 WORKER_PASS_SOURCE = "worker"
 HUMAN_PASS_SOURCES = frozenset({"human", "manual", "external"})
 
+# The credential a caller must present in its execution environment to record an attested
+# (human-class) pass. Without it, any source value in HUMAN_PASS_SOURCES is silently forced
+# to WORKER_PASS_SOURCE — a build worker cannot obtain the attested path by naming it.
+_ATTESTED_CALLER_ENV = "PRAXIS_ATTESTED_CALLER"
+
+
+def _derive_effective_source(source: Optional[str]) -> str:
+    """Derive the effective pass source from execution context, not a self-declared parameter.
+
+    A build worker may NOT self-declare an attested/human source: without the
+    ``PRAXIS_ATTESTED_CALLER`` credential, any human-class source is silently forced to
+    ``WORKER_PASS_SOURCE``. Only a caller presenting the distinct credential (set by the
+    execution environment, not by the worker itself) can record an attested pass.
+
+    Non-human sources (e.g. ``"graded-judge"``) pass through unchanged — they never satisfy
+    the manual gate in :func:`all_validations_passed`, so self-declaring one is harmless.
+    """
+    if source is None:
+        return WORKER_PASS_SOURCE
+    # The attestation credential must be present in the execution environment.
+    if os.environ.get(_ATTESTED_CALLER_ENV):
+        return str(source)
+    # Without the credential, human-source values are refused — the worker cannot self-attest.
+    if str(source) in HUMAN_PASS_SOURCES:
+        return WORKER_PASS_SOURCE
+    # Non-human sources pass through.
+    return str(source)
+
+
 def _ttl_env(name: str, default: int) -> int:
     """Read a TTL override from the environment, falling back to ``default``.
 
@@ -530,7 +559,7 @@ def pin_validations(cid: str, validations: list,
 
 def record_validation_pass(cid: str, validation_id: str, passed: bool,
                            ran_at: Optional[float] = None,
-                           source: str = WORKER_PASS_SOURCE,
+                           source: Optional[str] = None,
                            verdict: Optional[dict] = None,
                            ref: Optional[tuple[str, str]] = None) -> dict:
     """Record one validation's pass/fail ON THE TICKET NODE (never on the requirement fact).
@@ -538,11 +567,13 @@ def record_validation_pass(cid: str, validation_id: str, passed: bool,
     Read-modify-write of ``meta.pinned_checks``: update the matching validation's passed/ran_at/source.
     If the validation is not already pinned (set drifted), it is appended so the result is not lost.
 
-    ``source`` names WHERE the pass came from. It defaults to ``WORKER_PASS_SOURCE`` — a command the
-    build worker ran — which is exactly the signal that can NEVER satisfy a ``verify="manual"``
-    requirement. To attest a manual requirement, record its covering validation with a human source
-    (``source="human"``, see :data:`HUMAN_PASS_SOURCES`); that external signal is the only thing
-    :func:`all_validations_passed` accepts for the manual set.
+    The effective ``source`` is DERIVED from the execution context via
+    :func:`_derive_effective_source`, NOT from a self-declared parameter. A build worker passing
+    ``source="human"`` without the ``PRAXIS_ATTESTED_CALLER`` credential is silently forced to
+    ``WORKER_PASS_SOURCE`` — the worker cannot obtain the attested path by naming it. Only a caller
+    presenting the distinct credential records an attested pass.
+
+    When ``source`` is ``None``, the effective source defaults to ``WORKER_PASS_SOURCE``.
 
     IMPLICIT HEARTBEAT. Recording a validation result IS proof of liveness, so this bumps
     ``claim_heartbeat_at`` in the same write whenever the ticket holds a live claim. :func:`heartbeat`
@@ -550,6 +581,7 @@ def record_validation_pass(cid: str, validation_id: str, passed: bool,
     do — leaving long tickets to expire their own lease mid-work and be handed out twice. Piggybacking
     on a write the worker already makes costs no extra round-trip and cannot be forgotten.
     """
+    effective_source = _derive_effective_source(source)
     if ran_at is None:
         ran_at = time.time()
     meta = _meta(cid, ref)
@@ -560,14 +592,15 @@ def record_validation_pass(cid: str, validation_id: str, passed: bool,
         if str(eid) == str(validation_id):
             entry["passed"] = bool(passed)
             entry["ran_at"] = ran_at
-            entry["source"] = str(source)
+            entry["source"] = effective_source
             if verdict is not None:  # graded checks stash the cached verdict (incl. code_hash)
                 entry["verdict"] = verdict
             found = True
             break
     if not found:
         appended = {"validation_id": str(validation_id), "covers": [],
-                    "run": "", "passed": bool(passed), "ran_at": ran_at, "source": str(source)}
+                    "run": "", "passed": bool(passed), "ran_at": ran_at,
+                    "source": effective_source}
         if verdict is not None:
             appended["verdict"] = verdict
         pinned.append(appended)
