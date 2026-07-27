@@ -70,6 +70,13 @@ class ActivityTailStore:
         )
         return ref
 
+    def has_entry(self, ref: str | None) -> bool:
+        """Whether ``ref`` currently has a persisted tail entry. The query
+        surface ``box_service_worktree_cleanup`` reads to confirm a job's
+        tail has actually persisted (R40), rather than reaching into this
+        store's private state."""
+        return ref is not None and ref in self._entries
+
     def read_stored(self, job: Job, principal: JobPrincipal | None) -> str:
         """Return the stored bounded tail for ``job``, org-scope authorized
         (R52's ``job_authz``) — the path a reaped session's history, an
