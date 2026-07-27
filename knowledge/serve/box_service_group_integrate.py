@@ -48,12 +48,19 @@ class GroupIntegrationTarget:
     ``allowlisted_origin`` mirrors ``box_service_integrate.IntegrationTarget`` (R36): a field
     independent of ``origin_repo`` so a real divergence between the resolved push target and the
     group's registered origin is refused rather than compared against itself.
+
+    ``member_job_ids`` is the PARALLEL, same-order list of each member's job id (R74): the squash
+    merge only ever sees the branch, so pairing each branch back to the job id that produced it is
+    otherwise lost the moment every member folds into one commit. Naming both in the commit message
+    and pull-request body (below) keeps that per-member attribution recoverable by a reviewer even
+    though the merge itself erases it.
     """
 
     main_worktree_path: str
     origin_repo: str
     allowlisted_origin: str
     member_branches: list[str]
+    member_job_ids: list[str]
     pr_base: str
     integration_ref: str
 
@@ -63,16 +70,26 @@ class GroupIntegrationTarget:
 GroupPrCreator = Callable[[GroupIntegrationTarget, str], str]
 
 
+def _member_summary(target: GroupIntegrationTarget) -> str:
+    """``"job-1 (job/job-1), job-2 (job/job-2), ..."`` — every member job id paired with its
+    branch, in dispatch order (R74's "name all three job ids and branches")."""
+    return ", ".join(
+        f"{job_id} ({branch})"
+        for job_id, branch in zip(target.member_job_ids, target.member_branches)
+    )
+
+
 def default_group_pr_creator(target: GroupIntegrationTarget, merged_sha: str) -> str:
-    """The default pull-request-creation seam for a group: ONE PR naming every merged member
-    branch, invoked as separate argv elements (never a single shell string) from the main worktree
-    only — mirrors ``box_service_integrate.default_pr_creator``."""
+    """The default pull-request-creation seam for a group: ONE PR naming every merged member's job
+    id and branch (R74), invoked as separate argv elements (never a single shell string) from the
+    main worktree only — mirrors ``box_service_integrate.default_pr_creator``."""
+    summary = _member_summary(target)
     args = [
         "gh", "pr", "create",
         "--base", target.pr_base,
         "--head", target.integration_ref,
-        "--title", f"Integrate group ({len(target.member_branches)} members)",
-        "--body", "Merged: " + ", ".join(target.member_branches) + f"\n\nMerged {merged_sha}",
+        "--title", f"Integrate group ({len(target.member_branches)} members): {summary}",
+        "--body", "Merged: " + summary + f"\n\nMerged {merged_sha}",
     ]
     proc = subprocess.run(args, cwd=target.main_worktree_path, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
@@ -133,7 +150,10 @@ def run_group_integration_sequence(
                     f"merge of {branch!r} into {cwd!r} conflicted, every member branch preserved"
                 )
 
-        run_git(runner, cwd, "commit", "-m", f"Integrate group ({len(target.member_branches)} members)")
+        run_git(
+            runner, cwd, "commit", "-m",
+            f"Integrate group ({len(target.member_branches)} members): {_member_summary(target)}",
+        )
         merged_sha = run_git(runner, cwd, "rev-parse", "HEAD").strip()
 
         decision = evaluate_push(
