@@ -133,6 +133,10 @@ class Job:
     from a discrete terminal event's own timestamp, never a wall-clock read
     taken when that event happens to be processed — so the recorded terminal
     moment is never inferred from a poll interval.
+
+    ``error_text`` carries the underlying error message a failure class's
+    machine-readable ``failure_reason`` doesn't (``box_service_failures``):
+    the class is what a caller branches on, the text is what a human reads.
     """
 
     id: str
@@ -145,6 +149,7 @@ class Job:
     max_attempts: int = 3
     resumable: bool = False
     failure_reason: str | None = None
+    error_text: str | None = None
     group_id: str | None = None
     org: str = "default"
     claim_lease: Lease | None = None
