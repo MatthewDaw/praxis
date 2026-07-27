@@ -214,6 +214,76 @@ def test_get_context_gets_with_auth_and_returns_context(monkeypatch):
     assert captured["headers"]["X-Praxis-Org"] == "acme"
 
 
+def test_list_jobs_gets_with_auth_and_returns_ordered_jobs(monkeypatch):
+    _patch_identity(monkeypatch)
+    captured = {}
+
+    def fake_get(url, headers, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        return _Resp(
+            {
+                "jobs": [
+                    {"id": "attention-1", "state": "failed", "needsAttention": True},
+                    {"id": "progressing-1", "state": "running", "needsAttention": False},
+                ]
+            }
+        )
+
+    monkeypatch.setattr(server.httpx, "get", fake_get)
+
+    out = server.praxis_list_jobs()
+
+    data = _extract_json(out)
+    assert [j["id"] for j in data["jobs"]] == ["attention-1", "progressing-1"]
+    assert "2 job(s), 1 needing attention." in out
+    assert captured["url"] == "http://api.test/jobs"
+    assert captured["headers"]["Authorization"] == "Bearer id-tok"
+    assert captured["headers"]["X-Praxis-Org"] == "acme"
+
+
+def test_list_jobs_reports_none_live_when_empty(monkeypatch):
+    _patch_identity(monkeypatch)
+    monkeypatch.setattr(server.httpx, "get", lambda url, headers, timeout=None: _Resp({"jobs": []}))
+
+    out = server.praxis_list_jobs()
+
+    assert "No live jobs." in out
+
+
+def test_job_activity_gets_the_per_job_endpoint_with_auth(monkeypatch):
+    _patch_identity(monkeypatch)
+    captured = {}
+
+    def fake_get(url, headers, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        return _Resp({"jobId": "job-42", "activity": "hello from the job"})
+
+    monkeypatch.setattr(server.httpx, "get", fake_get)
+
+    out = server.praxis_job_activity("job-42")
+
+    data = _extract_json(out)
+    assert data["jobId"] == "job-42"
+    assert data["activity"] == "hello from the job"
+    assert captured["url"] == "http://api.test/jobs/job-42/activity"
+    assert captured["headers"]["Authorization"] == "Bearer id-tok"
+
+
+def test_job_activity_unknown_job_returns_friendly_404(monkeypatch):
+    _patch_identity(monkeypatch)
+    monkeypatch.setattr(
+        server.httpx,
+        "get",
+        lambda url, headers, timeout=None: _Resp({"detail": "unknown job job-99"}, status_code=404),
+    )
+
+    out = server.praxis_job_activity("job-99")
+
+    assert "Unknown job job-99" in out
+
+
 def test_ingest_posts_documents_with_auth(monkeypatch):
     _patch_identity(monkeypatch)
     captured = {}

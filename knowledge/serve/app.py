@@ -81,13 +81,21 @@ from knowledge.llm.embedder_variants.memoizing_embedder import MemoizingEmbedder
 from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm  # noqa: E402
 from knowledge.serve import batch_writer, db, graph_adapter  # noqa: E402
 from knowledge.serve import productivity_route  # noqa: E402
+from knowledge.serve.box_service_activity_tail import ActivityTailStore  # noqa: E402
+from knowledge.serve.box_service_jobs_view import order_jobs_for_view  # noqa: E402
+from knowledge.serve.box_service_store import JobStore  # noqa: E402
+from knowledge.serve.job_authz import (  # noqa: E402
+    AuthorizationError,
+    JobPrincipal,
+    PrincipalKind,
+)
 from knowledge.serve.auth import Principal, make_current_user  # noqa: E402
 from knowledge.serve.box_service_store import JobStore  # noqa: E402
 from knowledge.serve.facts_candidates import (  # noqa: E402
     FactsCandidates,
     PromotionError,
 )
-from knowledge.serve.job_listing import list_jobs_for_operator  # noqa: E402
+
 from knowledge.serve.mounted_store import MountedStore  # noqa: E402
 from knowledge.serve.orgs_store import OrgsStore  # noqa: E402
 from knowledge.serve.productivity_buckets import daily_buckets  # noqa: E402
@@ -656,6 +664,13 @@ def create_app(conn: Any | None = None) -> FastAPI:
     # instance today, but would need a shared backend (Redis) if it scales out.
     limiter = build_limiter()
     app.state.limiter = limiter
+    # In-memory box-service job stores (R26). Real Postgres-backed persistence is
+    # later infrastructure work — see box_service_store.JobStore's own docstring
+    # ("in-memory now, real backing later"), the same split every box_service_*
+    # module already takes; nothing yet populates these (dispatch is not wired to
+    # a store), so /jobs honestly reports empty until a later ticket wires it.
+    app.state.job_store = JobStore()
+    app.state.activity_tail_store = ActivityTailStore()
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.add_middleware(SlowAPIMiddleware)
 
@@ -1127,18 +1142,6 @@ def create_app(conn: Any | None = None) -> FastAPI:
     ) -> list[dict[str, Any]]:
         return candidates_for(org, uid).list(state)
 
-    # --- jobs (R26: attention-first listing, mirrored by praxis_list_jobs) --
-    @app.get("/jobs")
-    def list_jobs(
-        principal: Principal = Depends(current_user),
-        org: str = Depends(active_org),
-    ) -> dict[str, Any]:
-        """Live jobs for the caller's org, ordered so attention-needing jobs
-        (awaiting-human, failed, needs-attention, or a claimed/running job
-        past the silence threshold) sort above jobs progressing normally."""
-        org_jobs = [j for j in job_store.all() if j.org == org]
-        return {"jobs": list_jobs_for_operator(org_jobs, now=time.time())}
-
     @app.get("/candidates/{cid}")
     def get_candidate(
         cid: str,
@@ -1419,6 +1422,53 @@ def create_app(conn: Any | None = None) -> FastAPI:
         removed = len(g.all_facts())
         g.load_caches([])
         return {"cleared": removed}
+
+    # --- jobs (box-service jobs view, R26) ----------------------------------
+    def _job_view(job, needs_attention: bool) -> dict[str, Any]:
+        return {
+            "id": job.id,
+            "project": job.project,
+            "state": job.state.value,
+            "needsAttention": needs_attention,
+            "failureReason": job.failure_reason,
+            "groupId": job.group_id,
+        }
+
+    @app.get("/jobs")
+    def list_jobs(
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Live jobs and their states (R26), ordered so every job needing
+        attention (``awaiting-human``, ``failed``, or silently past the silence
+        threshold) sorts above every job progressing normally. Scoped to the
+        requester's active org — a job belonging to a different org is never
+        listed, mirroring every other org-scoped read.
+        """
+        jobs = [j for j in app.state.job_store.all() if j.org == org]
+        rows = order_jobs_for_view(jobs, now=time.time())
+        return {"jobs": [_job_view(r.job, r.needs_attention) for r in rows]}
+
+    @app.get("/jobs/{job_id}/activity")
+    def job_activity(
+        job_id: str,
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """One job's recent activity (R26) — the per-job view a mix of
+        progressing and attention-needing jobs each expose. Reads the bounded
+        rolling tail (R25); org-scope authorization is enforced by
+        ``job_authz`` on every read.
+        """
+        job = app.state.job_store.get(job_id)
+        if job is None or job.org != org:
+            raise HTTPException(status_code=404, detail=f"unknown job {job_id}")
+        job_principal = JobPrincipal(kind=PrincipalKind.OPERATOR, id=principal.sub, org_id=org)
+        try:
+            activity = app.state.activity_tail_store.read_stored(job, job_principal)
+        except AuthorizationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        return {"jobId": job_id, "activity": activity}
 
     # --- snapshots (org-shared saved graph states inside a space) ----------
     @app.get("/snapshots")

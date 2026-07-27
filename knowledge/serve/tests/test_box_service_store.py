@@ -42,6 +42,19 @@ def test_querying_an_unknown_id_returns_no_row():
     assert store.get("does-not-exist") is None
 
 
+def test_all_returns_every_created_job():
+    # The list-all query R26's jobs view reads.
+    store = JobStore()
+    a = store.create(project="p", snapshot="s")
+    b = store.create(project="p", snapshot="s")
+
+    assert {j.id for j in store.all()} == {a.id, b.id}
+
+
+def test_all_is_empty_for_a_fresh_store():
+    assert JobStore().all() == []
+
+
 def test_awaiting_human_transitions_back_to_running_without_a_new_job():
     store = JobStore()
     job = store.create(project="p", snapshot="s")

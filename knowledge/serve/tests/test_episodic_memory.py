@@ -122,8 +122,8 @@ def test_context_excludes_episodic_from_mounted_overlay(client):
     """A mounted snapshot's episodes must also be excluded from /context (the exclude
     predicate must apply to the live+mounted UNION, not just the live branch)."""
     client.post("/insights", json=_EPISODE)
-    assert client.post("/snapshots", json={"name": "snap-ep"}).status_code == 200
-    client.post("/mounts", json={"owner": USER, "snapshot": "snap-ep"})
+    assert client.post("/snapshots", json={"space": "default", "snapshot": "snap-ep"}).status_code == 200
+    client.post("/mounts", json={"space": "default", "snapshot": "snap-ep"})
     ctx = client.get("/context", params={"query": _QUERY}).json()
     assert _EPISODE["insight"] not in (ctx.get("context") or "")
 

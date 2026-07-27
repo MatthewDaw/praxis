@@ -379,6 +379,72 @@ def praxis_dependents(fact_id: str) -> str:
 
 
 @mcp.tool()
+def praxis_list_jobs() -> str:
+    """List live box-service jobs and their states (R26), ordered so every job needing
+    attention — ``awaiting-human``, ``failed``, or silently past the silence threshold —
+    sorts above every job progressing normally. The website's top-level jobs list reads
+    the identical ordering from the same backend endpoint
+    (``knowledge/serve/box_service_jobs_view.order_jobs_for_view``), so an operator gets
+    the same answer from either surface.
+
+    Returns a human summary plus a structured JSON block with ``jobs`` — one entry per
+    job (``id``/``state``/``needsAttention``/...), already in display order.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/jobs",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    jobs = payload.get("jobs", [])
+    attention = sum(1 for j in jobs if j.get("needsAttention"))
+    return _structured(
+        f"{len(jobs)} job(s), {attention} needing attention."
+        if jobs
+        else "No live jobs.",
+        {"jobs": jobs},
+    )
+
+
+@mcp.tool()
+def praxis_job_activity(job_id: str) -> str:
+    """Fetch one job's recent activity (R26) — the per-job view of what it has been
+    doing, e.g. for a mix of progressing and attention-needing jobs surfaced by
+    ``praxis_list_jobs``. Backed by the bounded rolling activity tail (R25), so recent
+    messages remain readable even after the job's session is gone.
+
+    Returns a human summary plus a structured JSON block with ``jobId``/``activity``.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/jobs/{job_id}/activity",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return f"Unknown job {job_id} — list ids with praxis_list_jobs."
+        return _friendly(exc)
+    payload = resp.json()
+    activity = payload.get("activity", "")
+    return _structured(
+        f"activity for job {job_id} ({len(activity)} chars)."
+        if activity
+        else f"No recorded activity for job {job_id}.",
+        {"jobId": job_id, "activity": activity},
+    )
+
+
+@mcp.tool()
 def praxis_get_fact(cid: str, space: str | None = None, snapshot: str | None = None) -> str:
     """Fetch one fact's full detail, including its writer-supplied ``meta``.
 

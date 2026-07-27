@@ -74,11 +74,11 @@ def test_attention_needing_jobs_sort_above_progressing(env):
     assert len(jobs) == 5
 
     by_id = {j["id"]: j for j in jobs}
-    assert by_id[attention_awaiting.id]["attentionNeeded"] is True
-    assert by_id[attention_failed.id]["attentionNeeded"] is True
-    assert by_id[attention_stale.id]["attentionNeeded"] is True
-    assert by_id[progressing_running.id]["attentionNeeded"] is False
-    assert by_id[progressing_queued.id]["attentionNeeded"] is False
+    assert by_id[attention_awaiting.id]["needsAttention"] is True
+    assert by_id[attention_failed.id]["needsAttention"] is True
+    assert by_id[attention_stale.id]["needsAttention"] is True
+    assert by_id[progressing_running.id]["needsAttention"] is False
+    assert by_id[progressing_queued.id]["needsAttention"] is False
 
     order = [j["id"] for j in jobs]
     attention_ids = {attention_awaiting.id, attention_failed.id, attention_stale.id}

@@ -48,8 +48,28 @@ class JobStore:
         return self._jobs.get(job_id)
 
     def all(self) -> list[Job]:
-        """Every stored job row (R26's ``GET /jobs`` listing reads this)."""
+        """Every stored job row (R26: the "which jobs are live" listing query),
+        in creation order."""
         return list(self._jobs.values())
+
+    def enter_awaiting_human(self, job_id: str, question: str) -> Job:
+        """Transition a running job into ``awaiting-human`` with a question.
+
+        The question is persisted as its own field on the job (distinct from
+        ``failure_reason``) so the jobs view can render it next to the reply
+        control (R79). Raises ``ValueError`` if the question is empty or the
+        job is already in a terminal state.
+        """
+        if not question or not question.strip():
+            raise ValueError("question must not be empty")
+        job = self._jobs[job_id]
+        if job.state in TERMINAL_JOB_STATES:
+            raise ValueError(
+                f"job {job_id!r} is {job.state.value!r} (terminal); cannot enter awaiting-human"
+            )
+        job.state = JobState.AWAITING_HUMAN
+        job.question = question.strip()
+        return job
 
     def resume_from_awaiting_human(self, job_id: str) -> Job:
         """Transition the job back to ``running`` in place. Raises if the job
@@ -65,26 +85,4 @@ class JobStore:
             )
         job.state = JobState.RUNNING
         job.question = None
-        return job
-
-    def enter_awaiting_human(self, job_id: str, question: str) -> Job:
-        """Transition a mid-run job into ``awaiting-human`` on a blocked-on-
-        question event (R23/R79), mutating the SAME row in place so
-        :meth:`resume_from_awaiting_human` later returns it under the
-        identical job id. ``question`` is persisted as its own queryable
-        field (R79) distinct from ``failure_reason`` -- the job view reads
-        it directly, and it is never folded into the terminal-failure
-        vocabulary. Raises if the job is already terminal, or if
-        ``question`` is empty (an awaiting-human pause must say what
-        question it is waiting on).
-        """
-        job = self._jobs[job_id]
-        if job.state in TERMINAL_JOB_STATES:
-            raise ValueError(
-                f"job {job_id!r} is terminal ({job.state.value!r}); cannot enter awaiting-human"
-            )
-        if not question:
-            raise ValueError("awaiting-human requires a non-empty question")
-        job.state = JobState.AWAITING_HUMAN
-        job.question = question
         return job

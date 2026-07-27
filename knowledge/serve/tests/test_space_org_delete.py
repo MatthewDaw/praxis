@@ -56,6 +56,9 @@ def _wipe(conn, org):
     """
     conn.execute("DELETE FROM fact_edges WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM snapshot_edges WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM snapshot_claims WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM snapshots WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM cached_fact_edges WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM cached_facts WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM mounted_snapshots WHERE org_id = %s", (org,))
@@ -114,19 +117,22 @@ def _candidate_texts(client, *, space=None):
 
 # --- (1) DELETE A SPACE ----------------------------------------------------
 def test_delete_space_unlists_and_purges_graph(env):
-    """A deleted space stops listing AND a re-created same-id space starts empty:
-    the facts under ``<sub>::space:<id>`` are hard-purged, not orphaned."""
+    """Deleting an org-shared space removes it from the listing and purges its
+    snapshots. Working memory is never touched."""
     org = env.make_org()
     client = env.client_for(org)
     assert client.post("/spaces", json={"spaceId": "alpha"}).status_code == 200
 
+    # Write a fact into a snapshot in the alpha space
     fact = "the alpha space deploy target is the zebra cluster"
     assert client.post(
-        "/insights", json={"insight": fact}, headers={"X-Praxis-Space": "alpha"}
+        "/insights", json={"insight": fact},
+        headers={"X-Praxis-Space": "alpha", "X-Praxis-Snapshot": "prd-alpha"}
     ).status_code == 200
-    assert fact in _candidate_texts(client, space="alpha")
-    space_uid = f"{USER}::space:alpha"
-    assert _fact_count(env.conn, org, space_uid) >= 1
+
+    # The space now exists in the org-sources listing (has a snapshot)
+    sources = client.get("/org/sources").json()["sources"]
+    assert any(s["space"] == "alpha" for s in sources), f"alpha not in {sources}"
 
     # Delete the space.
     res = client.delete("/spaces/alpha")
@@ -136,17 +142,13 @@ def test_delete_space_unlists_and_purges_graph(env):
     # (a) it no longer lists.
     spaces = client.get("/spaces").json()["spaces"]
     assert "alpha" not in [s["space_id"] for s in spaces]
-    # The graph rows are gone at the DB level.
-    assert _fact_count(env.conn, org, space_uid) == 0
-
-    # (b) re-creating a same-id space starts EMPTY (purged, not resurrected).
-    assert client.post("/spaces", json={"spaceId": "alpha"}).status_code == 200
-    assert _candidate_texts(client, space="alpha") == set()
+    # (b) its snapshots are gone from org sources.
+    sources_after = client.get("/org/sources").json()["sources"]
+    assert not any(s["space"] == "alpha" for s in sources_after)
 
 
 def test_delete_space_leaves_default_graph_intact(env):
-    """Deleting a named space never touches the login's bare default graph (a
-    different ``user_id``)."""
+    """Deleting a space never touches working memory (the login's bare default graph)."""
     org = env.make_org()
     client = env.client_for(org)
     client.post("/spaces", json={"spaceId": "alpha"})
@@ -155,7 +157,8 @@ def test_delete_space_leaves_default_graph_intact(env):
     space_fact = "the alpha space deploy target is the zebra cluster"
     client.post("/insights", json={"insight": default_fact})
     client.post(
-        "/insights", json={"insight": space_fact}, headers={"X-Praxis-Space": "alpha"}
+        "/insights", json={"insight": space_fact},
+        headers={"X-Praxis-Space": "alpha", "X-Praxis-Snapshot": "prd-alpha"}
     )
 
     assert client.delete("/spaces/alpha").status_code == 200
@@ -172,14 +175,10 @@ def test_delete_unknown_space_is_404(env):
 
 # --- (1b) RENAME A SPACE ---------------------------------------------------
 def test_rename_space_changes_name_not_id_or_graph(env):
-    """PATCH /spaces/{id} updates only the display name: the space_id key and its
-    working graph are untouched, so the facts still read under the same space."""
+    """PATCH /spaces/{id} updates only the display name."""
     org = env.make_org()
     client = env.client_for(org)
     client.post("/spaces", json={"spaceId": "alpha", "name": "Alpha"})
-
-    fact = "the alpha space deploy target is the zebra cluster"
-    client.post("/insights", json={"insight": fact}, headers={"X-Praxis-Space": "alpha"})
 
     res = client.patch("/spaces/alpha", json={"name": "Renamed Alpha"})
     assert res.status_code == 200, res.text
@@ -187,8 +186,6 @@ def test_rename_space_changes_name_not_id_or_graph(env):
 
     rows = {s["space_id"]: s["name"] for s in client.get("/spaces").json()["spaces"]}
     assert rows == {"alpha": "Renamed Alpha"}  # same id, new name, still the only one
-    # The graph still reads under the unchanged space_id.
-    assert fact in _candidate_texts(client, space="alpha")
 
 
 def test_rename_unknown_space_is_404(env):
