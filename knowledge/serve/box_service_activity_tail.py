@@ -23,8 +23,9 @@ from knowledge.serve.job_authz import JobAction, JobPrincipal, JobRef, authorize
 #: Default bounded size (bytes) of a job's rolling tail (R25's "bounded").
 DEFAULT_TAIL_BYTE_CAP = 8_000
 
-#: Default retention window (seconds) past which a stored tail is purged.
-DEFAULT_RETENTION_SECONDS = 7 * 24 * 3600.0
+#: Default retention window (seconds) past which a stored tail is purged
+#: (R66: 90 days for observation events).
+DEFAULT_RETENTION_SECONDS = 90 * 24 * 3600.0
 
 
 @dataclass

@@ -71,6 +71,14 @@ class JobStore:
         job.question = question.strip()
         return job
 
+    def delete_project(self, project: str) -> int:
+        """Delete every job row belonging to ``project`` (R66: cascading delete
+        when a project space is removed). Returns the count deleted."""
+        dead = [jid for jid, job in self._jobs.items() if job.project == project]
+        for jid in dead:
+            del self._jobs[jid]
+        return len(dead)
+
     def resume_from_awaiting_human(self, job_id: str) -> Job:
         """Transition the job back to ``running`` in place. Raises if the job
         is not currently ``awaiting-human`` — resuming is a transition on an
