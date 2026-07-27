@@ -31,6 +31,7 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "task_start",
         "task_end",
         "decision",
+        "blocked_on_question",  # R23/R79: harness-fired, carries the question text
         "tool_call",
         "tool_result",
         "memory_read",   # a Praxis retrieval

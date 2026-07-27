@@ -95,6 +95,11 @@ class Job:
     ``queued_at`` is stamped once, at creation, and never touched again — it is
     the fixed reference point ``box_service_observability.find_stuck_jobs`` (R3)
     measures a still-``queued`` job's age against.
+
+    ``question`` (R79) is the blocked-on-question event's question text, kept
+    as its own queryable field distinct from ``failure_reason`` — the job view
+    reads it to render the question next to the reply control, while the
+    notification payload (R27) deliberately never includes it.
     """
 
     id: str
@@ -114,6 +119,7 @@ class Job:
     claim_heartbeat_at: float | None = None
     claim_lease_ttl: float | None = None
     queued_at: float | None = None
+    question: str | None = None
 
     def is_open(self) -> bool:
         return self.state in OPEN_JOB_STATES
