@@ -79,3 +79,53 @@ def test_needs_attention_failure_also_respects_attempt_bound():
 
     assert job.state == JobState.NEEDS_ATTENTION
     assert job.resumable is False
+
+
+# The six named failures (clone/fetch, session launch, notification send,
+# pull-request open, credential, worktree deletion) injected in turn: each
+# carries a distinct machine-readable reason plus the underlying error text,
+# and a job returns to queued at most 3 times before it is needs-attention
+# and is never re-queued automatically again (the acceptance floor).
+NAMED_RETRY_FAILURE_CLASSES = [
+    FailureClass.CLONE_FETCH_FAILED,
+    FailureClass.SESSION_LAUNCH_FAILED,
+    FailureClass.NOTIFICATION_SEND_FAILED,
+    FailureClass.PULL_REQUEST_OPEN_FAILED,
+    FailureClass.CREDENTIAL_FAILED,
+    FailureClass.WORKTREE_DELETION_FAILED,
+]
+
+
+def test_six_named_failure_classes_are_covered():
+    assert len(NAMED_RETRY_FAILURE_CLASSES) == 6
+
+
+@pytest.mark.parametrize("failure_class", NAMED_RETRY_FAILURE_CLASSES)
+def test_named_failure_requeues_under_the_attempt_bound_with_error_text(failure_class):
+    job = make_job(max_attempts=3)
+
+    record_failure(job, failure_class, error_text="boom 1")
+    assert job.state == JobState.QUEUED
+    assert job.attempt_count == 1
+    assert job.failure_reason == failure_class.value
+    assert job.error_text == "boom 1"
+    assert job.resumable is True
+
+    record_failure(job, failure_class, error_text="boom 2")
+    assert job.state == JobState.QUEUED
+    assert job.attempt_count == 2
+    assert job.error_text == "boom 2"
+    assert job.resumable is True
+
+
+@pytest.mark.parametrize("failure_class", NAMED_RETRY_FAILURE_CLASSES)
+def test_named_failure_reaches_needs_attention_and_stops_requeue_at_the_bound(failure_class):
+    job = make_job(max_attempts=3, attempt_count=2)
+
+    record_failure(job, failure_class, error_text="still failing")
+
+    assert job.state == JobState.NEEDS_ATTENTION
+    assert job.attempt_count == 3
+    assert job.failure_reason == failure_class.value
+    assert job.error_text == "still failing"
+    assert job.resumable is False
