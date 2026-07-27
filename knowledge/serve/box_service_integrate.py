@@ -32,7 +32,7 @@ from pathlib import Path
 
 from knowledge.serve.box_service_delivery import DeliveryAction, reconcile_delivery
 from knowledge.serve.box_service_failures import FailureClass, record_failure
-from knowledge.serve.box_service_models import DeliveryStage, Job
+from knowledge.serve.box_service_models import DeliveryStage, Job, mark_completed
 from knowledge.serve.box_service_push_guard import PushRequest, evaluate_push
 
 #: Same shape as ``subprocess.run`` — the seam a fake runner replaces in tests.
@@ -236,7 +236,7 @@ def reset_main_worktree_to_pr_base(
     status = run_git(runner, cwd, "status", "--porcelain")
     if status.strip():
         if job is not None:
-            record_failure(job, FailureClass.MAIN_WORKTREE_DIRTY)
+            record_failure(job, FailureClass.MAIN_WORKTREE_DIRTY, command_output=status.strip())
         raise MainWorktreeDirtyError(
             f"main worktree {cwd!r} has uncommitted changes, refusing to reset"
         )
@@ -247,7 +247,7 @@ def reset_main_worktree_to_pr_base(
     unpushed = run_git(runner, cwd, "log", f"{tracking_ref}..HEAD", "--oneline")
     if unpushed.strip():
         if job is not None:
-            record_failure(job, FailureClass.MAIN_WORKTREE_DIRTY)
+            record_failure(job, FailureClass.MAIN_WORKTREE_DIRTY, command_output=unpushed.strip())
         raise MainWorktreeDirtyError(
             f"main worktree {cwd!r} holds a commit not yet reflected at origin/{pr_base}, "
             "refusing to reset"
@@ -305,6 +305,10 @@ def run_integration_sequence(
     The remote-ref update and pull-request creation are each checked against
     ``box_service_push_guard.evaluate_push`` first; a refusal raises
     :class:`PublishRefusedError` and neither the remote ref nor a pull request is touched.
+
+    On success, when ``job`` is given, it is marked ``COMPLETED`` carrying ``target.job_branch``
+    and the opened pull request's URL (R80) — the job view's success-path counterpart to the
+    failure recordings above.
     """
     repo_key = target.main_worktree_path
     if not lock.acquire(repo_key, holder_id):
@@ -323,7 +327,8 @@ def run_integration_sequence(
         if merge_proc.returncode != 0:
             runner(["git", "merge", "--abort"], cwd=cwd, capture_output=True, text=True, check=False)
             if job is not None:
-                record_failure(job, FailureClass.MERGE_CONFLICT)
+                output = (merge_proc.stderr or merge_proc.stdout or "").strip()
+                record_failure(job, FailureClass.MERGE_CONFLICT, command_output=output)
             raise MergeConflictError(
                 f"merge of {target.job_branch!r} into {cwd!r} conflicted, job branch preserved"
             )
@@ -352,6 +357,7 @@ def run_integration_sequence(
 
         if job is not None:
             job.delivery_stage = DeliveryStage.DELIVERED
+            mark_completed(job, branch=target.job_branch, pr_url=pr_url)
         return IntegrationResult(merged_sha=merged_sha, pushed_ref=target.integration_ref, pr_url=pr_url)
     finally:
         lock.release(repo_key, holder_id)
@@ -434,6 +440,7 @@ def replay_integration_sequence(
         pr_url = pr_creator(target, merged_sha)
 
         job.delivery_stage = DeliveryStage.DELIVERED
+        mark_completed(job, branch=target.job_branch, pr_url=pr_url)
         return IntegrationResult(merged_sha=merged_sha, pushed_ref=target.integration_ref, pr_url=pr_url)
     finally:
         lock.release(repo_key, holder_id)

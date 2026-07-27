@@ -107,9 +107,17 @@ RETRYABLE_FAILURE_CLASSES: frozenset[FailureClass] = frozenset(
 )
 
 
-def record_failure(job: Job, failure_class: FailureClass, error_text: str | None = None) -> Job:
+def record_failure(
+    job: Job,
+    failure_class: FailureClass,
+    error_text: str | None = None,
+    *,
+    command_output: str | None = None,
+) -> Job:
     """Record ``failure_class`` against ``job``, in place, with the
-    underlying ``error_text`` (if any).
+    underlying ``error_text`` (if any) and ``command_output`` (R80) — the
+    output of the command that produced this failure, carried on the job
+    distinct from its machine-readable reason.
 
     Always increments ``attempt_count`` and stamps ``failure_reason`` /
     ``error_text``. For a class in ``RETRYABLE_FAILURE_CLASSES`` still under
@@ -117,8 +125,9 @@ def record_failure(job: Job, failure_class: FailureClass, error_text: str | None
     automatic attempt (``resumable=True``) instead of a terminal state.
     Otherwise — the original non-retryable classes, or a retryable one whose
     attempt bound is now reached — transitions to the class's terminal state
-    and sets ``resumable`` to whether the job is still under its attempt
-    bound, which is what stops automatic re-queueing for good.
+    (via :func:`mark_terminal`, carrying ``command_output``) and sets
+    ``resumable`` to whether the job is still under its attempt bound, which
+    is what stops automatic re-queueing for good.
     """
     job.attempt_count += 1
     job.error_text = error_text
@@ -127,6 +136,8 @@ def record_failure(job: Job, failure_class: FailureClass, error_text: str | None
         job.failure_reason = failure_class.value
         job.resumable = True
         return job
-    mark_terminal(job, TERMINAL_STATE_FOR_CLASS[failure_class], failure_class.value)
+    mark_terminal(
+        job, TERMINAL_STATE_FOR_CLASS[failure_class], failure_class.value, command_output=command_output
+    )
     job.resumable = job.attempt_count < job.max_attempts
     return job
