@@ -30,11 +30,11 @@ def _run(monkeypatch, tmp_path, *, active=True, predicates=None, transcript_path
     monkeypatch.setenv("PRAXIS_MCP_CACHE", str(tmp_path / "mcp.json"))  # isolate the attempts file
 
     if planning_active_exc is not None:
-        def _raise(project, now=None):
+        def _raise(project, owner=None, now=None):
             raise planning_active_exc
         monkeypatch.setattr(ts, "planning_active", _raise)
     else:
-        monkeypatch.setattr(ts, "planning_active", lambda project, now=None: active)
+        monkeypatch.setattr(ts, "planning_active", lambda project, owner=None, now=None: active)
 
     monkeypatch.setattr(gate, "_snapshot_hash", lambda project: "HASH1")
     if predicates is not None:
@@ -172,7 +172,7 @@ def test_noop_transcript_allows_without_praxis(monkeypatch, tmp_path):
     t = tmp_path / "transcript.jsonl"
     t.write_text("just some ordinary chat about the weather\n", encoding="utf-8")
 
-    def _boom(project, now=None):
+    def _boom(project, owner=None, now=None):
         raise AssertionError("planning_active must not be consulted for a no-op session")
     monkeypatch.setattr(ts, "planning_active", _boom)
     monkeypatch.setenv("PRAXIS_MCP_CACHE", str(tmp_path / "mcp.json"))

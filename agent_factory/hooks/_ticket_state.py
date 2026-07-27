@@ -1001,13 +1001,19 @@ def stamp_planning(project: str, owner: str) -> str:
 def clear_planning(project: str, owner: str) -> bool:
     """Clear ``owner``'s planning marker (NULL planning_owner/planning_at) — called at BLESS, when the
     plan is done and the hook should go inert. Only clears a marker THIS owner holds (an unowned
-    marker is also clearable); an owner mismatch returns False. Mirror of :func:`clear_run`."""
+    marker is also clearable); an owner mismatch returns False UNLESS the original owner is no longer
+    live (stale marker) — then the marker is reclaimable by any owner rather than stranding the
+    project. Mirror of :func:`clear_run`."""
     mid = planning_marker_id(project)
     if not mid:
         return True  # never stamped => nothing to clear; the hook is already inert
     ref = project_ref(project).plan
-    if _meta(mid, ref).get(M_PLANNING_OWNER) not in (owner, None):
-        return False
+    marker_owner = _meta(mid, ref).get(M_PLANNING_OWNER)
+    if marker_owner not in (owner, None):
+        # Owner mismatch — but if the original owner is no longer live (stale), allow reclaim.
+        if planning_live(_meta(mid, ref)):
+            return False  # original owner is still live -> can't take over
+        # Marker is stale — original owner is dead, reclaim it.
     _praxis.patch_meta(
         mid,
         {**{k: None for k in _PLANNING_KEYS}, M_BLESSED_AT: time.time()},
@@ -1016,10 +1022,13 @@ def clear_planning(project: str, owner: str) -> bool:
     return True
 
 
-def planning_active(project: str, now: Optional[float] = None) -> bool:
+def planning_active(project: str, owner: Optional[str] = None,
+                    now: Optional[float] = None) -> bool:
     """True iff a NON-STALE planning marker is present for ``project`` — the signal the
-    ``plan_completeness`` hook arms on. Reads the marker fact NOT-FOUND-TOLERANTLY: a missing marker
-    fact means "no planning session" (inactive), NOT "Praxis down" — a genuine PraxisUnreachable still
+    ``plan_completeness`` hook arms on. When ``owner`` is given, the marker is ONLY armed for the
+    session that stamped it (``planning_owner`` MUST match); a live marker owned by a different
+    session does NOT arm. Reads the marker fact NOT-FOUND-TOLERANTLY: a missing marker fact means
+    "no planning session" (inactive), NOT "Praxis down" — a genuine PraxisUnreachable still
     propagates so the hook fails closed."""
     mid = planning_marker_id(project)
     if not mid:
@@ -1027,6 +1036,8 @@ def planning_active(project: str, now: Optional[float] = None) -> bool:
     ref = project_ref(project).plan
     fact = _praxis.get_fact(mid, not_found_ok=True, **_ref_kw(ref))
     meta = dict((fact or {}).get("meta") or {})
+    if owner is not None and meta.get(M_PLANNING_OWNER) != owner:
+        return False  # a different owner holds the marker — not armed for this caller
     return planning_live(meta, now)
 
 

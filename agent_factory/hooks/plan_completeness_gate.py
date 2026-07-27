@@ -202,6 +202,21 @@ def _lens_coverage_complete(project: str) -> tuple[bool, str]:
 _PREDICATES = (_plan_blesses, _contradictions_clean, _lens_coverage_complete)
 
 
+# --------------------------------------------------------------------------- session identity
+
+def _session_owner(data: dict) -> str:
+    """This session's owner identity (matches the session id that stamped the planning marker).
+
+    ``FACTORY_TICKET_OWNER``, when set, OVERRIDES the CLI-assigned ``session_id`` (mirrors the
+    ``FACTORY_PROJECT`` override pattern in ``_gate_common.active_project``, and the build gate's
+    own ``_session_owner``). Unset, falls back to the session id from the Stop-hook data.
+    """
+    override = str(os.environ.get("FACTORY_TICKET_OWNER") or "").strip()
+    if override:
+        return override
+    return str(data.get("session_id") or data.get("sessionId") or "").strip()
+
+
 # --------------------------------------------------------------------------- main
 
 def main() -> None:
@@ -227,6 +242,7 @@ def main() -> None:
         pass
 
     project = _active_project(cwd)
+    owner = _session_owner(data)
 
     # --- NO-OP FAST-PATH: a session that never touched planning has nothing to bless. -------------
     if session_touched(data.get("transcript_path"), _PLANNING_SIGNALS) is False:
@@ -237,8 +253,8 @@ def main() -> None:
     try:
         import _ticket_state as ts
 
-        if not ts.planning_active(project):
-            _allow()  # inert — no planning session is armed for this project
+        if not ts.planning_active(project, owner=owner):
+            _allow()  # inert — no planning session is armed for this project (or this session)
 
         snapshot_hash = _snapshot_hash(project)
         reason = ""

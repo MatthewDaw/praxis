@@ -50,3 +50,4 @@ preds_*.json
 # Local backend serve logs
 backend-serve.log
 backend-serve.err.log
+.venv/
