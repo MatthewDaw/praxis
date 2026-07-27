@@ -103,6 +103,9 @@ M_FINISHED_AT = "finished_at"                # epoch seconds, stamped by release
 M_UNDER_SPECIFIED = "under_specified"   # [missing structural fields] — routed to intake, never claimed (plan 003)
 M_PLANNING_OWNER = "planning_owner"         # session id of the active planning (intake) session (plan 002)
 M_PLANNING_AT = "planning_at"               # epoch seconds, planning-marker heartbeat; stale => dead (plan 002)
+M_PLAN_ATTEMPTS = "plan_attempts"           # int, failed bless attempts on current plan hash (S8 escalation)
+M_PLAN_HASH = "plan_hash"                   # str, snapshot hash last attempt was recorded against (S8)
+M_PLAN_BLOCKED_AT = "plan_blocked_at"       # float, epoch seconds; non-None means plan is terminally escalated (S8)
 
 _LEASE_KEYS = (M_CLAIM_OWNER, M_CLAIM_AT, M_CLAIM_HEARTBEAT_AT, M_CLAIM_LEASE_TTL)
 _RUN_KEYS = (M_RUN_OWNER, M_RUN_AT, M_RUN_SCOPE)
@@ -990,6 +993,155 @@ def planning_active(project: str, now: Optional[float] = None) -> bool:
     fact = _praxis.get_fact(mid, not_found_ok=True, **_ref_kw(ref))
     meta = dict((fact or {}).get("meta") or {})
     return planning_live(meta, now)
+
+
+# --------------------------------------------------------------------------- plan-gate escalation (S8)
+
+class PlanEscalationError(RuntimeError):
+    """A durable escalation counter could not be read or is corrupt — the caller must fail LOUD,
+    never silently return zero. Raised when the planning marker's meta is present but the attempts
+    field is unreadable (wrong type) or the plan_hash is missing while attempts > 0."""
+
+
+def _escalation_meta(project: str) -> dict:
+    """Read the planning marker's meta for ``project``. Returns ``{}`` when no marker exists
+    (a greenfield project with no intake session), raises :class:`PraxisUnreachable` on transport
+    failure, and raises :class:`PlanEscalationError` when the marker is readable but its escalation
+    fields are corrupt — a named error, not a silent zero."""
+    mid = planning_marker_id(project)
+    if not mid:
+        return {}
+    ref = project_ref(project).plan
+    try:
+        fact = _praxis.get_fact(mid, not_found_ok=True, **_ref_kw(ref))
+    except _praxis.PraxisUnreachable:
+        raise
+    except Exception as exc:
+        raise PlanEscalationError(
+            f"unable to read planning marker for {project}: {exc}"
+        ) from exc
+    return dict((fact or {}).get("meta") or {})
+
+
+def read_escalation_state(project: str) -> tuple[int, str, Optional[float]]:
+    """Return ``(attempts, plan_hash, blocked_at)`` from the planning marker's meta.
+
+    Returns ``(0, "", None)`` when the marker has never recorded an attempt (the cold-start state).
+    Raises :class:`PlanEscalationError` when the marker IS present but its escalation fields are
+    corrupt — the "named error" the acceptance condition requires, so a downstream gate that sees
+    a corrupt counter fails LOUD instead of silently treating it as zero and admitting a plan that
+    should be blocked.
+    """
+    meta = _escalation_meta(project)
+    attempts_raw = meta.get(M_PLAN_ATTEMPTS)
+    plan_hash = str(meta.get(M_PLAN_HASH) or "")
+    blocked_raw = meta.get(M_PLAN_BLOCKED_AT)
+
+    if attempts_raw is None:
+        return 0, "", None
+
+    # A non-None attempts value that is NOT an int/float is a corrupt counter — surface the named error.
+    try:
+        attempts = int(attempts_raw)
+    except (TypeError, ValueError) as exc:
+        raise PlanEscalationError(
+            f"planning marker for {project} has a corrupt {M_PLAN_ATTEMPTS} field: "
+            f"{attempts_raw!r} is not an integer — cannot determine the escalation state. "
+            f"Clear it via clear_plan_blocked() or reset the marker."
+        ) from exc
+
+    blocked_at: Optional[float] = None
+    if blocked_raw is not None:
+        try:
+            blocked_at = float(blocked_raw)
+        except (TypeError, ValueError):
+            pass  # a non-numeric blocked_at is treated as None (not a hard error)
+
+    return attempts, plan_hash, blocked_at
+
+
+def is_plan_blocked(project: str) -> bool:
+    """True iff the plan is terminally escalated (``plan_blocked_at`` is set on the planning marker).
+    The downstream build gate calls this to refuse the build phase while the escalation exists."""
+    try:
+        _, _, blocked_at = read_escalation_state(project)
+    except PlanEscalationError:
+        # A corrupt counter means we cannot determine whether the plan is blocked — fail LOUD
+        # by treating it as blocked (the gate should refuse), NOT pass silently.
+        return True
+    return blocked_at is not None
+
+
+def bump_escalation_attempts(project: str, snapshot_hash: str) -> int:
+    """Increment the failed bless attempt counter for ``snapshot_hash`` and return the new count.
+    If the stored hash differs from ``snapshot_hash`` the counter resets to 1 (a changed plan is
+    not penalized). Raises :class:`PlanEscalationError` on a corrupt counter."""
+    attempts, stored_hash, _ = read_escalation_state(project)
+    if stored_hash != snapshot_hash:
+        attempts = 0  # changed plan resets the counter
+    attempts += 1
+    mid = planning_marker_id(project, create=True)
+    ref = project_ref(project).plan
+    _praxis.patch_meta(mid, {
+        M_PLAN_ATTEMPTS: attempts,
+        M_PLAN_HASH: snapshot_hash,
+    }, **_ref_kw(ref))
+    return attempts
+
+
+def stamp_plan_blocked(project: str) -> None:
+    """Record the terminal escalation timestamp on the planning marker — the durable signal the
+    downstream gate reads to refuse the build phase. Idempotent: a subsequent call overwrites
+    the timestamp (re-blocking after an operator clear)."""
+    mid = planning_marker_id(project, create=True)
+    ref = project_ref(project).plan
+    _praxis.patch_meta(mid, {M_PLAN_BLOCKED_AT: time.time()}, **_ref_kw(ref))
+
+
+def reset_escalation_attempts(project: str) -> None:
+    """Clear the failed-attempt counter and hash — called when the plan blesses, so a subsequent
+    intake session starts fresh. Also clears the terminal block (escalation is resolved by the
+    plan finally blessing, or by an operator clearing it).
+
+    Best-effort: a missing space (e.g. in a test environment without Praxis) is a no-op, not a
+    crash. The record lives in the plan snapshot; if that snapshot is unreachable, clearing it is
+    moot anyway — the downstream gate will also be unreachable and will fail closed on its own."""
+    mid = None
+    try:
+        mid = planning_marker_id(project)
+    except _praxis.PraxisUnreachable:
+        return  # no Praxis available => nothing to clear; the gate has bigger problems
+    if not mid:
+        return
+    ref = project_ref(project).plan
+    try:
+        _praxis.patch_meta(mid, {
+            M_PLAN_ATTEMPTS: None,
+            M_PLAN_HASH: None,
+            M_PLAN_BLOCKED_AT: None,
+        }, **_ref_kw(ref))
+    except _praxis.PraxisUnreachable:
+        return  # unreachable => best-effort, not a crash
+    except Exception:
+        pass  # best-effort clear; a missing/corrupt marker is a no-op
+
+
+def clear_plan_blocked(project: str) -> bool:
+    """Operator action: clear the terminal escalation on a plan that never blesses.
+    Returns True on success, False if the marker does not exist (nothing to clear).
+    This is the explicit operator recovery path — separate from ``reset_escalation_attempts``
+    which fires automatically at bless."""
+    mid = planning_marker_id(project)
+    if not mid:
+        return False
+    ref = project_ref(project).plan
+    try:
+        _praxis.patch_meta(mid, {M_PLAN_BLOCKED_AT: None}, **_ref_kw(ref))
+    except _praxis.PraxisUnreachable:
+        raise
+    except Exception:
+        return False
+    return True
 
 
 # --------------------------------------------------------------------------- dependency readiness

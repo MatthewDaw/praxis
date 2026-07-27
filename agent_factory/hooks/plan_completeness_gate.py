@@ -74,45 +74,52 @@ _PLANNING_SIGNALS = (
 )
 
 
-# --------------------------------------------------------------------------- attempt tracking (KTD5)
-
-def _attempts_file():
-    import _praxis
-    return _praxis._cache_path().parent / ".plan_gate_attempts.json"
-
+# --------------------------------------------------------------------------- attempt tracking (KTD5 / S8)
 
 def _read_attempts(snapshot_hash: str) -> int:
     """The number of consecutive failed bless attempts recorded for THIS snapshot hash (0 if the
-    stored hash differs — a changed plan resets the counter)."""
+    stored hash differs — a changed plan resets the counter). Reads the DURABLE Praxis-stored
+    escalation state (S8) instead of the old gate-local file, so a separate process sees the
+    same counter."""
+    import _ticket_state as ts
     try:
-        data = json.loads(_attempts_file().read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 — no/broken file => zero attempts
+        attempts, stored_hash, _ = ts.read_escalation_state(project=_active_project(os.getcwd()))
+    except ts.PlanEscalationError:
+        # A corrupt counter is NOT silently zero — it surfaces via the named error so the gate
+        # can fail LOUD. Return a value that will force escalation (treat as max+1).
+        import sys as _sys
+        _sys.stderr.write(
+            "[plan-completeness gate] WARNING: escalation counter is corrupt — treating as "
+            "terminal to force a human review. Clear via clear_plan_blocked().\n"
+        )
+        return _max_attempts()  # force terminal escalation on corrupt state
+    except Exception:
+        # PraxisUnreachable or any other problem — return 0 (not a hard failure here; the
+        # caller's fail-closed guard handles the PraxisUnreachable separately).
         return 0
-    if str(data.get("hash")) != snapshot_hash:
+    if stored_hash != snapshot_hash:
         return 0
-    try:
-        return int(data.get("attempts") or 0)
-    except (TypeError, ValueError):
-        return 0
+    return attempts
 
 
 def _bump_attempts(snapshot_hash: str) -> int:
-    """Record one more failed attempt for this snapshot hash and return the new count."""
-    n = _read_attempts(snapshot_hash) + 1
+    """Record one more failed attempt for this snapshot hash (durable, Praxis-stored — S8).
+    Returns the new count, or 0 if Praxis is unreachable (best-effort; the fail-closed guard
+    in main() handles unreachability separately)."""
+    import _ticket_state as ts
     try:
-        path = _attempts_file()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"hash": snapshot_hash, "attempts": n}), encoding="utf-8")
-    except Exception:  # noqa: BLE001 — tracking is best-effort; never crash the gate
-        pass
-    return n
+        return ts.bump_escalation_attempts(project=_active_project(os.getcwd()),
+                                           snapshot_hash=snapshot_hash)
+    except Exception:
+        return 0
 
 
 def _reset_attempts() -> None:
-    try:
-        _attempts_file().unlink()
-    except Exception:  # noqa: BLE001
-        pass
+    """Clear the failed-attempt counter AND the terminal escalation block from Praxis (S8).
+    Best-effort: a missing/unreachable Praxis is a no-op here. The gate's fail-closed guard
+    handles unreachability before this is ever called."""
+    import _ticket_state as ts
+    ts.reset_escalation_attempts(project=_active_project(os.getcwd()))
 
 
 def _max_attempts() -> int:
@@ -274,18 +281,28 @@ def main() -> None:
                "complete). Auto-blessed with no human required. Clear the planning marker "
                "(clear_planning) as intake finishes.")
 
-    # --- A predicate failed. Bounded terminal escalation (KTD5): after K unchanged-snapshot -------
-    # failures, ALLOW with a terminal plan_blocked so an unresolvable predicate never loops forever.
+    # --- A predicate failed. Bounded terminal escalation (KTD5 / S8): after K unchanged-snapshot ---
+    # failures, stamp a DUrable terminal escalation record in Praxis (S8) and ALLOW so an
+    # unresolvable predicate never loops forever. The downstream build gate reads this record and
+    # refuses the build phase while it exists. An operator can clear it via clear_plan_blocked().
     attempts = _bump_attempts(snapshot_hash)
     limit = _max_attempts()
     if attempts >= limit:
+        try:
+            import _ticket_state as ts  # noqa: F811
+            ts.stamp_plan_blocked(project)
+        except Exception:  # noqa: BLE001 — a Praxis failure during stamp is best-effort; still allow
+            pass
         _allow(
             f"plan-completeness gate: TERMINAL plan_blocked — the plan failed to bless {attempts} "
-            f"time(s) on an UNCHANGED snapshot (cap {limit}). Standing down to avoid an infinite "
-            "re-block; a HUMAN is required to resolve the outstanding predicate:\n"
+            f"time(s) on an UNCHANGED snapshot (cap {limit}). A durable escalation record has been "
+            "written to Praxis (S8); the downstream build gate will refuse the build phase while it "
+            "exists. Standing down to avoid an infinite re-block; a HUMAN is required to resolve the "
+            "outstanding predicate:\n"
             f"{reason}\n"
             "Edit the plan (which resets this counter) or accept/override the outstanding item, then "
-            "re-run intake.")
+            "re-run intake. If the plan will never bless, clear the escalation explicitly with "
+            "clear_plan_blocked().")
 
     _block(
         f"plan-completeness gate: the plan does NOT bless yet (attempt {attempts}/{limit} on this "

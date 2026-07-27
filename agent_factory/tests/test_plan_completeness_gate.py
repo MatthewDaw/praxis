@@ -22,6 +22,17 @@ import plan_completeness_gate as gate  # noqa: E402
 
 OWNER = "sess-A"
 
+# S8: per-_run() mutable state for the in-memory attempt-counter mock (replaces the old local file
+# the production gate no longer uses). Cleared between test functions via the autouse fixture below.
+_MOCK_ATTEMPTS: dict[str, int] = {}  # snapshot_hash -> attempts
+
+
+@pytest.fixture(autouse=True)
+def _clear_mock_attempts():
+    """S8: reset the in-memory attempt counter before each test function."""
+    _MOCK_ATTEMPTS.clear()
+    yield
+
 
 def _run(monkeypatch, tmp_path, *, active=True, predicates=None, transcript_path=None,
          planning_active_exc=None):
@@ -39,6 +50,21 @@ def _run(monkeypatch, tmp_path, *, active=True, predicates=None, transcript_path
     monkeypatch.setattr(gate, "_snapshot_hash", lambda project: "HASH1")
     if predicates is not None:
         monkeypatch.setattr(gate, "_PREDICATES", tuple(predicates))
+    # S8: the gate's attempt-tracking now stores escalation state durably in Praxis. The tests
+    # run against an ephemeral project with no Praxis space, so monkeypatch them back to a
+    # simple in-memory counter (byte-behavior of the old local-file approach) — the production
+    # gate's Praxis-stored path is tested by the ticket's own eval validations.
+    def _mock_read(snapshot_hash):
+        return _MOCK_ATTEMPTS.get(snapshot_hash, 0)
+    def _mock_bump(snapshot_hash):
+        n = _MOCK_ATTEMPTS.get(snapshot_hash, 0) + 1
+        _MOCK_ATTEMPTS[snapshot_hash] = n
+        return n
+    def _mock_reset():
+        _MOCK_ATTEMPTS.clear()
+    monkeypatch.setattr(gate, "_read_attempts", _mock_read)
+    monkeypatch.setattr(gate, "_bump_attempts", _mock_bump)
+    monkeypatch.setattr(gate, "_reset_attempts", _mock_reset)
     # keep preflight offline for the fail-closed diagnostic
     monkeypatch.setattr(_praxis, "preflight", lambda **k: _praxis.PreflightResult(
         ok=False, kind="unreachable", org="o", org_source="default", api_base="x",
