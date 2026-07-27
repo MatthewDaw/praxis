@@ -16,6 +16,7 @@ surface (PATCH/DELETE); never the semantic pipeline.
 
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -217,6 +218,11 @@ def test_delete_succeeds_after_rearm(seeded):
     assert data.get("deleted") == seeded["fact_id"]
 
 
+@pytest.mark.skipif(
+    not os.getenv("OPENROUTER_API_KEY"),
+    reason="the DELETE path runs through create_app()'s own graph, which uses the real "
+           "embedder (the fixture's FakeEmbedder only covers direct-graph writes)",
+)
 def test_delete_post_bless_leaves_audit_on_marker(seeded):
     """Post-bless delete records an audit entry on the planning marker."""
 
