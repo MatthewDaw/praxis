@@ -124,22 +124,60 @@ def _max_attempts() -> int:
 
 # --------------------------------------------------------------------------- predicates
 
+# The plan-content fields that constitute the identity of a requirement for the purpose of
+# snapshot-fingerprint comparison. These are the fields af-intake-plan authors; lifecycle
+# meta keys (build_state, pinned_checks, claimed_by, etc.) added during the build process
+# are EXCLUDED so a claim / heartbeat / release cycle does not change the fingerprint and
+# re-trigger the reset defect.
+_PLAN_CONTENT_ALLOWLIST = (
+    "acceptance",
+    "defines",
+    "depends_on",
+    "references",
+    "tags",
+    "verify",
+    # requirement_id is included for stable ordering; it is also plan content (authored by intake).
+    "requirement_id",
+)
+
+
 def _snapshot_hash(project: str) -> str:
-    """A stable fingerprint of the plan snapshot (its requirement facts). Two attempts on the SAME
-    plan share a hash; any edit to a requirement changes it, resetting the escalation counter."""
+    """A stable fingerprint of the plan snapshot (its requirement facts).
+
+    Hashes ONLY the plan-content fields (the explicit allow-list) — not the full meta blob — so
+    lifecycle meta keys added during the build (build_state, pinned_checks, claimed_by,
+    heartbeat_at, validation_results, etc.) cannot silently re-enter the fingerprint and re-open
+    the reset defect. Two attempts on the SAME plan share a hash; an edit to a requirement's
+    text or acceptance changes it; adding a lifecycle key does not.
+    """
     import _praxis
     import _ticket_state as ts
 
     space, snap = ts.project_ref(project).plan
     facts = _praxis.facts_by(category="requirement", space=space, snapshot=snap)
     rows = sorted(
-        (str(f.get("id") or f.get("factId") or ""),
-         str((f.get("meta") or {}).get("requirement_id") or ""),
-         str(f.get("text") or f.get("content") or ""),
-         json.dumps(f.get("meta") or {}, sort_keys=True, default=str))
-        for f in (facts or [])
+        _fingerprint_row(f) for f in (facts or [])
     )
     return hashlib.sha256(json.dumps(rows, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+def _fingerprint_row(fact: dict) -> tuple:
+    """Reduce a single requirement fact to its plan-content fingerprint tuple.
+
+    Only the allow-listed plan-content fields contribute — lifecycle meta keys are stripped so
+    they cannot re-enter the fingerprint. The field set matches what ``plan_gate_check.py``'s
+    ``requirement_from_fact`` threads into the pure gate (Requirement: id, text, acceptance,
+    defines, references, depends_on, tags, verify).
+    """
+    meta = fact.get("meta") or {}
+    return (
+        str(fact.get("id") or fact.get("factId") or ""),
+        str(meta.get("requirement_id") or ""),
+        str(fact.get("text") or fact.get("content") or ""),
+        *(str(meta.get(k) or "") if not isinstance(meta.get(k), (list, dict))
+          else json.dumps(meta.get(k) or ([], {}), sort_keys=True, default=str)
+          for k in _PLAN_CONTENT_ALLOWLIST),
+    )
 
 
 def _plan_blesses(project: str) -> tuple[bool, str]:
