@@ -175,6 +175,12 @@ class Job:
     ``error_text`` carries the underlying error message a failure class's
     machine-readable ``failure_reason`` doesn't (``box_service_failures``):
     the class is what a caller branches on, the text is what a human reads.
+
+    ``control_lease`` (R30) is the job-control lease resume takes before it launches a relaunched
+    session, so the backstop reaper (``box_service_reaper.reap_terminal_session``) can refuse to act
+    on a job it is held for — see ``box_service_job_control``. Distinct from ``claim_lease``: that
+    one is terminal-write/mailbox/resume AUTHORIZATION (who may act on the job at all); this one
+    serializes resume against reap SPECIFICALLY, for the instant a relaunch is in flight.
     """
 
     id: str
@@ -212,6 +218,7 @@ class Job:
     tail_ref: str | None = None
     question: str | None = None
     terminal_at: float | None = None
+    control_lease: Lease | None = None
 
     def is_open(self) -> bool:
         return self.state in OPEN_JOB_STATES
