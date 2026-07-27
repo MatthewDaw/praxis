@@ -385,6 +385,14 @@ def patch_meta(cid: str, meta_dict: dict, *, space: str | None = None,
                     space=space, snapshot=snapshot)
 
 
+def delete_fact(cid: str, *, space: str | None = None,
+                snapshot: str | None = None) -> dict:
+    """Hard-delete a fact (DELETE /candidates/{cid}). Pass the ticket ``(space, snapshot)`` to
+    target the mutable ``prd-<project>`` snapshot; a partial reference fails closed. Returns
+    ``{"deleted": cid}`` on success."""
+    return _request("DELETE", f"/candidates/{cid}", space=space, snapshot=snapshot)
+
+
 def record_outcome(cid: str, success: bool, *, space: str | None = None,
                    snapshot: str | None = None) -> dict:
     """Record a verified build/check outcome on the fact (POST /facts/{cid}/outcome). Pass the

@@ -1321,12 +1321,15 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         try:
-            candidates_for(org, uid).delete(cid)
+            candidates_for(org, uid, target).delete(cid)
             return {"deleted": cid}
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     # --- contradictions ----------------------------------------------------
     @app.get("/contradictions")

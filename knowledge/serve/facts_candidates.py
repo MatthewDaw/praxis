@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import time as _time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -121,6 +122,14 @@ def _short_title(text: str) -> str:
     return text if len(text) <= 60 else f"{text[:57].rstrip()}…"
 
 
+# Bless-state guard constants (S12 — mirrors the planning-marker system in
+# _ticket_state.py and postgres_vector_graph.py).
+_S12_PLANNING_OWNER = "planning_owner"
+_S12_PLANNING_AT = "planning_at"
+_S12_BLESSED_AT = "blessed_at"
+_S12_DEFAULT_PLANNING_TTL_S = 3600
+
+
 class FactsCandidates:
     """Dashboard candidate facade over one user's working memory or, when bound with
     ``facts_table='snapshots'`` + ``(space, snapshot)``, an org-shared snapshot."""
@@ -156,6 +165,9 @@ class FactsCandidates:
             policy=policy if policy is not None else default_write_policy(),
             **snap_kwargs,
         )
+        self._facts_table = facts_table
+        self._space = space
+        self._snapshot = snapshot
 
     # --- internal helpers --------------------------------------------------
     # Edge kinds that make two facts rivals, and the status each implies.
@@ -221,6 +233,76 @@ class FactsCandidates:
         trail.append(_audit_entry(provenance, action, actor=actor, note=note))
         meta["auditTrail"] = trail
         self.graph.set_meta(fact.id, meta)
+
+    def _check_bless_guard(self, fact_id: str, action: str) -> tuple[bool, str]:
+        """Enforce the bless-state boundary (S12): an edit/delete against a prd-<project>
+        plan snapshot is refused while no planning marker is armed, and succeeds once one is.
+
+        Returns ``(post_bless: bool, owner: str)`` when the guard allows the
+        mutation — ``post_bless`` is True when a prior bless was recorded (so audit
+        episodes must name the caller), and ``owner`` is the planning-marker owner.
+        Raises ``ValueError`` when the guard blocks.
+        """
+        if self._facts_table != "snapshots":
+            return False, ""
+
+        snapshot = self._snapshot or ""
+        if not snapshot.startswith("prd-"):
+            return False, ""
+
+        project = self._space or ""
+        if not project:
+            return False, ""
+
+        marker = self.graph.find_planning_marker(project)
+        if marker is None:
+            raise ValueError(
+                f"plan '{snapshot}' has no planning marker — re-arm the planning "
+                f"marker (stamp_planning) to mutate this snapshot"
+            )
+
+        meta = dict(marker.meta or {})
+        owner = str(meta.get(_S12_PLANNING_OWNER) or "")
+
+        if not owner:
+            raise ValueError(
+                f"plan '{snapshot}' is blessed — re-arm the planning marker "
+                f"(stamp_planning) to mutate this snapshot"
+            )
+
+        at = meta.get(_S12_PLANNING_AT)
+        now = _time.time()
+        try:
+            if at is None or (now - float(at)) > _S12_DEFAULT_PLANNING_TTL_S:
+                raise ValueError(
+                    f"planning marker for '{snapshot}' is stale — re-arm the "
+                    f"planning marker (stamp_planning) to mutate this snapshot"
+                )
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"planning marker for '{snapshot}' has an invalid timestamp — "
+                f"re-arm the planning marker (stamp_planning) to mutate this snapshot"
+            )
+
+        # Post-bless: marker carries a blessed_at from a prior clear_planning.
+        blessed_at = meta.get(_S12_BLESSED_AT)
+        post_bless = bool(blessed_at)
+
+        if post_bless and action == "delete":
+            # Record an audit entry on the planning marker — the deleted fact
+            # will be gone, so there is nowhere else to record the episode.
+            marker_meta = dict(marker.meta or {})
+            trail = list(marker_meta.get("auditTrail", []))
+            trail.append(_audit_entry(
+                snapshot,
+                f"post-bless-delete:{fact_id}",
+                actor=owner,
+                note=f"post-bless delete of {fact_id}",
+            ))
+            marker_meta["auditTrail"] = trail
+            self.graph.set_meta(marker.id, marker_meta)
+
+        return post_bless, owner
 
     # --- reads -------------------------------------------------------------
     def list(self, state: str | None = None) -> list[Candidate]:
@@ -366,6 +448,11 @@ class FactsCandidates:
             raise ValueError(
                 "on_conflict must be 'none', 'surface', or 'auto_resolve'"
             )
+
+        # S12 bless-state guard: refuse edits against a blessed plan snapshot
+        # unless the planning marker is armed.
+        post_bless, planning_owner = self._check_bless_guard(cid, "edit")
+
         fact = self.graph.get_fact(cid)
         if fact is None:
             raise KeyError(cid)
@@ -429,7 +516,8 @@ class FactsCandidates:
         # Re-read so the audit entry sees the updated source/meta.
         fact = self.graph.get_fact(cid)
         assert fact is not None
-        self._append_audit(fact, "edited")
+        actor = planning_owner if post_bless else "human-gate"
+        self._append_audit(fact, "edited", actor=actor)
         # Opt-in reconciliation: apply the contradictions detected above. Default
         # "none" detected nothing, so a plain edit stays a literal write with no side
         # effects on any other fact.
@@ -513,6 +601,11 @@ class FactsCandidates:
         anchors on the deleted fact and would cascade away with it — so choose ``reject``
         when that propagation matters and ``delete`` for a clean removal.
         """
+        # S12 bless-state guard: refuse deletes against a blessed plan snapshot
+        # unless the planning marker is armed. Post-bless audit is recorded on the
+        # marker inside _check_bless_guard (before the fact is gone).
+        self._check_bless_guard(cid, "delete")
+
         fact = self.graph.get_fact(cid)
         if fact is None:
             raise KeyError(cid)
