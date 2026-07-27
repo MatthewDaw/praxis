@@ -73,10 +73,11 @@ class SessionLauncher:
         """Start a ``claude --bg`` session and return its session id.
 
         ``extra_args`` (e.g. the R14 per-dispatch plugin/mcp-config/settings flags
-        from ``dispatch_launch``) are appended after ``--name``. ``env`` defaults to an
-        explicit, credential-sanitized copy of the box service's own environment
-        (:func:`_sanitized_session_env`) rather than the child inheriting it wholesale (R37);
-        pass an explicit ``env`` to override.
+        from ``dispatch_launch``, or R28's mailbox-relay Stop hook) are appended after
+        ``--name``. ``env`` defaults to an explicit, credential-sanitized copy of the box
+        service's own environment (:func:`_sanitized_session_env`) rather than the child
+        inheriting it wholesale (R37); pass an explicit ``env`` (e.g. R29's resumed-owner
+        identity) to override.
         """
         args = [self._cli, "--bg", command]
         if name is not None:

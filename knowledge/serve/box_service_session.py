@@ -40,7 +40,10 @@ def launch_job_session(
     flags and Praxis/``FACTORY_PROJECT`` env from
     ``knowledge.serve.dispatch_launch``) are threaded straight through to
     :meth:`SessionLauncher.launch`; both default to ``None`` so a caller that
-    passes neither launches identically to before this parameter existed.
+    passes neither launches identically to before this parameter existed. Passing
+    ``knowledge.serve.box_service_mailbox.dispatch_wiring(job)`` here is what makes THIS launch —
+    and only a real job launch, never a local ``claude`` invocation — carry the per-dispatch
+    mailbox-relay Stop hook (R28).
     """
     if not job.worktree_path:
         raise ValueError(f"job {job.id!r} has no worktree_path — cannot launch a session")
