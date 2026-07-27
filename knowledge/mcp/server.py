@@ -1226,6 +1226,37 @@ def praxis_list_snapshots(space: str | None = None) -> str:
 
 
 @mcp.tool()
+def praxis_list_jobs() -> str:
+    """List live af-build remote jobs for your org (R26 — the same data the
+    website's top level shows).
+
+    Ordered so jobs needing attention — ``awaiting-human``, ``failed``,
+    ``needs-attention``, or a running/claimed job whose external heartbeat has
+    gone silent past the configured threshold — sort above jobs progressing
+    normally, so the attention-needing ones are always first.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/jobs",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    jobs = resp.json().get("jobs", [])
+    if not jobs:
+        return "No live jobs."
+    lines = [f"{len(jobs)} job(s), attention-needing first:"]
+    for j in jobs:
+        flag = "⚠ " if j.get("attentionNeeded") else "  "
+        lines.append(f"{flag}{j.get('id')} — {j.get('state')} ({j.get('project')})")
+    return _structured("\n".join(lines), {"jobs": jobs})
+
+
+@mcp.tool()
 def praxis_save_snapshot(snapshot: str, space: str | None = None) -> str:
     """Dump your working memory into a snapshot in a space (the "save snapshot").
 

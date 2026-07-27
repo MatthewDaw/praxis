@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from datetime import date, datetime, timezone
 from typing import Any, Callable
 
@@ -81,10 +82,12 @@ from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm  # noqa: E40
 from knowledge.serve import batch_writer, db, graph_adapter  # noqa: E402
 from knowledge.serve import productivity_route  # noqa: E402
 from knowledge.serve.auth import Principal, make_current_user  # noqa: E402
+from knowledge.serve.box_service_store import JobStore  # noqa: E402
 from knowledge.serve.facts_candidates import (  # noqa: E402
     FactsCandidates,
     PromotionError,
 )
+from knowledge.serve.job_listing import list_jobs_for_operator  # noqa: E402
 from knowledge.serve.mounted_store import MountedStore  # noqa: E402
 from knowledge.serve.orgs_store import OrgsStore  # noqa: E402
 from knowledge.serve.productivity_buckets import daily_buckets  # noqa: E402
@@ -515,6 +518,10 @@ def create_app(conn: Any | None = None) -> FastAPI:
     orgs_store = OrgsStore(conn)
     mounted_store = MountedStore(conn)
     spaces_store = SpacesStore(conn)
+    # In-memory for now (R1's box_service_store.JobStore docstring: real
+    # persistence is separate later work) — one store per app instance, kept
+    # on app.state so tests can seed rows directly ahead of GET /jobs (R26).
+    job_store = JobStore()
     # Bind the auth dependency to this connection so it can also resolve API keys
     # (X-Praxis-Key) in addition to the Cognito Bearer JWT / dev seam.
     current_user = make_current_user(conn)
@@ -623,6 +630,8 @@ def create_app(conn: Any | None = None) -> FastAPI:
     app = FastAPI(title="Praxis Candidate API", version="1")
     # Test seam (see _ConnProxy): resolve the calling thread's live connection.
     app.state.get_conn = app_get_conn
+    # Test seam: lets tests seed job rows directly before GET /jobs (R26).
+    app.state.job_store = job_store
 
     explicit_origins = [
         origin.strip()
@@ -1117,6 +1126,18 @@ def create_app(conn: Any | None = None) -> FastAPI:
         uid: str = Depends(active_user_id),
     ) -> list[dict[str, Any]]:
         return candidates_for(org, uid).list(state)
+
+    # --- jobs (R26: attention-first listing, mirrored by praxis_list_jobs) --
+    @app.get("/jobs")
+    def list_jobs(
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Live jobs for the caller's org, ordered so attention-needing jobs
+        (awaiting-human, failed, needs-attention, or a claimed/running job
+        past the silence threshold) sort above jobs progressing normally."""
+        org_jobs = [j for j in job_store.all() if j.org == org]
+        return {"jobs": list_jobs_for_operator(org_jobs, now=time.time())}
 
     @app.get("/candidates/{cid}")
     def get_candidate(

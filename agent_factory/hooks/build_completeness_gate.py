@@ -66,7 +66,22 @@ from _gate_common import classify_unreachable, session_touched  # noqa: E402
 # --------------------------------------------------------------------------- project / identity
 
 def _session_owner(data: dict) -> str:
-    """This session's claim-owner identity (matches the owner the build loop claims tickets with)."""
+    """This session's claim-owner identity (matches the owner the build loop claims tickets with).
+
+    ``FACTORY_TICKET_OWNER``, when set, OVERRIDES the CLI-assigned ``session_id`` (mirrors the
+    ``FACTORY_PROJECT`` override pattern in ``_gate_common.active_project``). This is the seam a
+    remote-job RESUME relies on (R29): the box service's background-session launcher stamps the
+    relaunched ``claude --bg`` process with the JOB-SCOPED owner id recorded on the job row (R31),
+    not a freshly-minted per-session id — every ``claude --bg`` invocation gets its own new
+    ``session_id`` from the CLI, so a resume that let the gate fall through to the raw session_id
+    would own neither the prior run's ticket claims nor its run marker, and the completeness gate
+    would see no live claim and no matching run marker and go INERT (session ends immediately,
+    having built nothing, while recording itself failed) — the exact silent failure this ticket
+    closes. Unset (the default, every non-remote session), behavior is byte-identical to before.
+    """
+    override = str(os.environ.get("FACTORY_TICKET_OWNER") or "").strip()
+    if override:
+        return override
     return str(data.get("session_id") or data.get("sessionId") or "").strip()
 
 
