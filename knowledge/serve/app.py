@@ -2618,6 +2618,32 @@ def create_app(conn: Any | None = None) -> FastAPI:
         marker_id = g.ensure_planning_marker(project, category=category)
         return {"id": marker_id, "project": project, "category": category or "planning-marker"}
 
+    # --- build-run marker (factory build_completeness gate) -----------------
+    @app.post("/build-marker")
+    def ensure_build_marker(
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+        uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
+    ) -> dict[str, Any]:
+        """Idempotently ensure ``project``'s build-marker fact exists; return its id.
+
+        The marker holds gate-disable state for the factory's ``build_completeness`` and
+        ``plan_completeness`` Stop hooks — when a gate stands down because a disable variable is
+        set, the variable name and observed value are recorded here so a run that executed with a
+        disabled gate cannot be presented as fully gated. Bootstrap on a greenfield project.
+        Find-or-create is done inside the graph (keyed ``scope=project, category="build-marker"``).
+        Pass the ``(space, snapshot)`` header pair to place it in the project's ``prd-<project>``
+        snapshot, where the hooks write/read it.
+        """
+        project = str(body.get("project") or "").strip()
+        if not project:
+            raise HTTPException(status_code=400, detail="body must include 'project'")
+        g = graph_for(org, uid, target)
+        marker_id = g.ensure_build_marker(project)
+        return {"id": marker_id, "project": project}
+
     # --- requirement RENDERS surface (factory completeness gate) ------------
     @app.post("/surfaces")
     def ensure_surface(

@@ -423,6 +423,19 @@ def ensure_planning_marker(project: str, *, category: str | None = None,
     return str((out or {}).get("id") or "")
 
 
+def ensure_build_marker(project: str, *, space: str | None = None,
+                        snapshot: str | None = None) -> str:
+    """Idempotently ensure ``project``'s build-marker fact exists; return its id.
+
+    The marker holds gate-disable state for the factory's Stop hooks — when a gate stands
+    down because a disable variable is set, the variable name and observed value are
+    recorded here. Bootstrap on a greenfield project. Pass the plan ``(space, snapshot)``
+    so the marker lands in ``prd-<project>`` where the hooks write/read it."""
+    out = _request("POST", "/build-marker", body={"project": project},
+                   space=space, snapshot=snapshot)
+    return str((out or {}).get("id") or "")
+
+
 def surface_checks(project: str, screen_id: str, scope: str | None = None,
                    space: str | None = None, snapshot: str | None = None) -> list[dict]:
     """Active ``check`` facts bound (via the ``renders`` edge) to surface (project, screen_id).

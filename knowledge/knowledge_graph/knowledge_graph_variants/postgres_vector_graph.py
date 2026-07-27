@@ -143,6 +143,10 @@ SURFACE_CATEGORY = "surface"
 # idempotently by ``ensure_planning_marker`` — the same find-or-create shape as ``ensure_surface``,
 # so the id stays server-generated and two concurrent intakes can never mint two markers.
 PLANNING_MARKER_CATEGORY = "planning-marker"
+# The build-run marker (the record for build-run gate-disable state, and the report anchor).
+# Exactly ONE per project, materialized idempotently by ``ensure_build_marker`` — the same
+# find-or-create shape as ``ensure_planning_marker``.
+BUILD_MARKER_CATEGORY = "build-marker"
 REQUIREMENT_CATEGORY = "requirement"
 
 # Coverage "check" facts (agent-factory coverage spine). A free-form category like
@@ -1815,6 +1819,44 @@ class PostgresVectorGraph(SearchableGraph):
         decision.category = _cat
         decision.meta = {"project": project}
         decision.embedding = self._embed(f"{_cat} for {project}")
+        return self._add(decision)  # store-only: a marker is not a semantic learning
+
+    def find_build_marker(self, project: str) -> Fact | None:
+        """The (at most one) build-marker fact for ``project`` — any state, or None.
+
+        Idempotency key: scope=project, category="build-marker". Read-only: a missing marker
+        means "no build run has been tracked here", NOT an error.
+        """
+        key_pred, params = self._key_pred()
+        sql = (
+            f"SELECT {_FACT_READ_COLS} "
+            f"FROM {self._facts_table} WHERE {key_pred} "
+            "AND category = %s AND scope = %s"
+        )
+        params.extend([BUILD_MARKER_CATEGORY, project])
+        sql += " ORDER BY created_at DESC LIMIT 1"
+        rows = self._conn.execute(sql, params).fetchall()
+        if not rows:
+            return None
+        return self._row_to_fact(rows[0])
+
+    def ensure_build_marker(self, project: str) -> str:
+        """Idempotently materialize ``project``'s build-marker fact and return its id.
+
+        Mirrors :meth:`ensure_planning_marker`: find-or-create keyed on ``(scope=project,
+        category="build-marker")`` with a server-generated id, so the marker the build gate
+        records disable state onto can be BOOTSTRAPPED on a greenfield project. At most ONE
+        marker per project.
+        """
+        existing = self.find_build_marker(project)
+        if existing is not None:
+            return existing.id
+        decision = WriteDecision(text=f"build marker for {project}", state="active")
+        decision.source = None
+        decision.scope = project
+        decision.category = BUILD_MARKER_CATEGORY
+        decision.meta = {"project": project}
+        decision.embedding = self._embed(f"build marker for {project}")
         return self._add(decision)  # store-only: a marker is not a semantic learning
 
     def _find_surface(self, project: str, screen_id: str) -> Fact | None:
