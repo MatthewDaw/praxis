@@ -19,7 +19,6 @@ from knowledge.serve.box_service_backends import (
     DEFAULT_BACKEND_FILE,
     VALID_BACKENDS,
     BACKEND_CREDENTIAL_VAR,
-    _backend_file,
     backend_session_credential,
     read_active_backend,
     write_active_backend,

@@ -15,11 +15,11 @@ import type { Job } from "./jobGroups";
 afterEach(cleanup);
 
 const JOBS: Job[] = [
-  { id: "job-a", title: "repo-a: sync deps", state: "running", groupId: "batch-1" },
-  { id: "job-x", title: "repo-x: unrelated fix", state: "running", groupId: null },
-  { id: "job-b", title: "repo-a: run migration", state: "queued", groupId: "batch-1" },
-  { id: "job-y", title: "repo-y: unrelated cleanup", state: "completed" },
-  { id: "job-c", title: "repo-a: deploy", state: "queued", groupId: "batch-1" },
+  { id: "job-a", title: "repo-a: sync deps", state: "running", groupId: "batch-1", modelBackend: "unknown" },
+  { id: "job-x", title: "repo-x: unrelated fix", state: "running", groupId: null, modelBackend: "unknown" },
+  { id: "job-b", title: "repo-a: run migration", state: "queued", groupId: "batch-1", modelBackend: "unknown" },
+  { id: "job-y", title: "repo-y: unrelated cleanup", state: "completed", modelBackend: "unknown" },
+  { id: "job-c", title: "repo-a: deploy", state: "queued", groupId: "batch-1", modelBackend: "unknown" },
 ];
 
 describe("JobList grouping (R51 acceptance)", () => {

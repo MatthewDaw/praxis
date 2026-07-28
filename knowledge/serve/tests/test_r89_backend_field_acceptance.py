@@ -16,7 +16,6 @@ import json
 from pathlib import Path
 from unittest import mock
 
-import pytest
 
 from knowledge.serve.box_service_backends import (
     VALID_BACKENDS,
