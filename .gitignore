@@ -22,6 +22,7 @@ __pycache__/
 frontend-react/.env.local
 
 # CDK build artifacts
+node_modules/
 infra/node_modules/
 infra/cdk.out/
 infra/cdk.context.json
