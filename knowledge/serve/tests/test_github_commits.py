@@ -1,29 +1,17 @@
 """Unit tests for the GitHub GraphQL commit-activity client (R2/R3).
 
-Covers the ticket's acceptance condition: given a date window, the client returns per-repo
-commit nodes each carrying ``additions``, ``deletions``, ``committedDate`` and ``author_login``,
-issuing exactly one discovery query per year-chunk plus one history query per active repository.
+Covers the ticket's acceptance condition: given a date window and an explicit list of
+``"owner/name"`` repos, the client returns per-repo commit nodes each carrying ``additions``,
+``deletions``, ``committedDate`` and ``author_login``, issuing exactly one history query per
+repo in that list -- there is no discovery step (see ``github_commits`` module docstring for
+why GraphQL-based discovery was replaced with a static, caller-supplied repo list).
 """
 
 from __future__ import annotations
 
 from datetime import date
 
-from knowledge.serve.github_commits import fetch_commit_activity, year_chunks
-
-
-def _discovery_response(repo_names: list[str]) -> dict:
-    return {
-        "data": {
-            "user": {
-                "contributionsCollection": {
-                    "commitContributionsByRepository": [
-                        {"repository": {"nameWithOwner": name}} for name in repo_names
-                    ]
-                }
-            }
-        }
-    }
+from knowledge.serve.github_commits import fetch_commit_activity
 
 
 def _history_response(commits: list[dict]) -> dict:
@@ -51,48 +39,24 @@ def _history_response(commits: list[dict]) -> dict:
 
 
 class _FakeTransport:
-    """Records every call and dispatches a canned response by query shape."""
+    """Records every history call and dispatches a canned response per repo."""
 
-    def __init__(self, discovery_by_window: dict[tuple[str, str], list[str]], history_by_repo: dict[str, list[dict]]):
-        self.discovery_by_window = discovery_by_window
+    def __init__(self, history_by_repo: dict[str, list[dict]]):
         self.history_by_repo = history_by_repo
-        self.discovery_calls: list[dict] = []
         self.history_calls: list[dict] = []
 
     def __call__(self, query: str, variables: dict, token) -> dict:
-        if "contributionsCollection" in query:
-            self.discovery_calls.append(variables)
-            key = (variables["from"], variables["to"])
-            return _discovery_response(self.discovery_by_window[key])
         assert "history(" in query
         self.history_calls.append(variables)
         repo = f"{variables['owner']}/{variables['name']}"
         return _history_response(self.history_by_repo[repo])
 
 
-def test_year_chunks_splits_multi_year_window_at_calendar_boundaries():
-    chunks = year_chunks(date(2023, 6, 1), date(2024, 3, 1))
-    assert chunks == [
-        (date(2023, 6, 1), date(2023, 12, 31)),
-        (date(2024, 1, 1), date(2024, 3, 1)),
-    ]
-
-
-def test_year_chunks_single_calendar_year_is_one_chunk():
-    assert year_chunks(date(2024, 1, 1), date(2024, 6, 30)) == [(date(2024, 1, 1), date(2024, 6, 30))]
-
-
-def test_fetch_commit_activity_issues_one_discovery_query_per_year_chunk_and_one_history_query_per_active_repo():
+def test_fetch_commit_activity_issues_exactly_one_history_query_per_configured_repo():
     start, end = date(2023, 6, 1), date(2024, 3, 1)
-    chunks = year_chunks(start, end)
-    win1 = (chunks[0][0].isoformat() + "T00:00:00Z", chunks[0][1].isoformat() + "T00:00:00Z")
-    win2 = (chunks[1][0].isoformat() + "T00:00:00Z", chunks[1][1].isoformat() + "T00:00:00Z")
+    repos = ["acme/one", "acme/two", "acme/three"]
 
     transport = _FakeTransport(
-        discovery_by_window={
-            win1: ["acme/one", "acme/two"],
-            win2: ["acme/two", "acme/three"],
-        },
         history_by_repo={
             "acme/one": [
                 {"additions": 10, "deletions": 2, "committedDate": "2023-07-01T00:00:00Z", "author_login": "mattdaw7"}
@@ -107,11 +71,9 @@ def test_fetch_commit_activity_issues_one_discovery_query_per_year_chunk_and_one
         },
     )
 
-    result = fetch_commit_activity("mattdaw7", start, end, transport=transport)
+    result = fetch_commit_activity(repos, start, end, transport=transport)
 
-    # One discovery query per year-chunk (2 chunks in this window) — not per repo, not per day.
-    assert len(transport.discovery_calls) == len(chunks) == 2
-    # One history query per repo discovered active in ANY chunk (union, deduped): one, two, three.
+    # One history query per configured repo -- no discovery query at all.
     assert len(transport.history_calls) == 3
     assert {c["owner"] + "/" + c["name"] for c in transport.history_calls} == {
         "acme/one",
@@ -135,17 +97,29 @@ def test_fetch_commit_activity_issues_one_discovery_query_per_year_chunk_and_one
             assert {"additions", "deletions", "committedDate", "author_login"} <= set(node)
 
 
-def test_fetch_commit_activity_no_active_repos_issues_no_history_queries():
+def test_fetch_commit_activity_empty_repo_list_issues_no_history_queries():
     start, end = date(2024, 1, 1), date(2024, 6, 30)
-    transport = _FakeTransport(
-        discovery_by_window={(start.isoformat() + "T00:00:00Z", end.isoformat() + "T00:00:00Z"): []},
-        history_by_repo={},
-    )
+    transport = _FakeTransport(history_by_repo={})
 
-    result = fetch_commit_activity("mattdaw7", start, end, transport=transport)
+    result = fetch_commit_activity([], start, end, transport=transport)
 
-    assert len(transport.discovery_calls) == 1
     assert len(transport.history_calls) == 0
     assert result["repositories"] == {}
     assert result["truncated"] is False
     assert result["reason"] is None
+
+
+def test_fetch_commit_activity_dedupes_repeated_repo_entries():
+    start, end = date(2024, 1, 1), date(2024, 6, 30)
+    transport = _FakeTransport(
+        history_by_repo={
+            "acme/one": [
+                {"additions": 1, "deletions": 0, "committedDate": "2024-02-01T00:00:00Z", "author_login": "x"}
+            ],
+        },
+    )
+
+    result = fetch_commit_activity(["acme/one", "acme/one"], start, end, transport=transport)
+
+    assert len(transport.history_calls) == 1
+    assert set(result["repositories"].keys()) == {"acme/one"}

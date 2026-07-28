@@ -1,17 +1,24 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { getProductivity, type ApiDataProviderAuth } from "../api/apiClient";
 import {
+  PRODUCTIVITY_BUCKET_UNITS,
   PRODUCTIVITY_RANGES,
   isShortTtlRange,
+  type ProductivityBucketUnit,
   type ProductivityKeyStatus,
+  type ProductivityOrgSeries,
   type ProductivityRange,
+  type ProductivityRepoSeries,
   type ProductivitySeries,
   type ProductivitySeriesErrors,
+  type ProductivitySeriesPoint,
 } from "../api/contract";
 import { ProductivityChartSkeleton } from "./viz/ProductivityChartSkeleton";
 import {
   DEFAULT_STATIC_CAVEATS,
+  formatFullTimestamp,
   ProductivitySeriesChart,
+  TicketsCompletedChart,
   type ProductivityDisclosures,
 } from "./viz/ProductivitySeriesChart";
 
@@ -24,6 +31,10 @@ export interface ProductivityPanelProps {
 
 const DEFAULT_RANGE: ProductivityRange = "4weeks";
 
+/** Default "bin by" bucket width -- day, per the feature ask ("Default is day"). Independent
+ * of `range`, which only picks the window span. */
+const DEFAULT_BUCKET_UNIT: ProductivityBucketUnit = "day";
+
 /** Human-facing labels for the range dropdown, in display order (R16). */
 const RANGE_LABELS: Record<ProductivityRange, string> = {
   day: "Day",
@@ -31,6 +42,13 @@ const RANGE_LABELS: Record<ProductivityRange, string> = {
   "4weeks": "Last 4 weeks",
   "12months": "Last 12 months",
   alltime: "All time",
+};
+
+/** Human-facing labels for the "Bin by" dropdown, in display order. */
+const BUCKET_UNIT_LABELS: Record<ProductivityBucketUnit, string> = {
+  day: "Day",
+  week: "Week",
+  month: "Month",
 };
 
 // A click within this window of the last accepted Refresh click is ignored
@@ -73,17 +91,65 @@ const KEY_STATUS_TEST_IDS: Record<ProductivityKeyStatus, string> = {
   insufficient_scope: "productivity-key-status-insufficient-scope",
 };
 
-/** True iff every point across every S1-S4 series is exactly zero — a "no activity in this
- * period" response, distinct from a fetch error. The chart still renders (a flat zero line);
- * this only gates the extra caption, never the error styling path. */
-function isAllZero(series: ProductivitySeries): boolean {
-  const allPoints = [
-    ...series.linesAdded,
-    ...series.linesDeleted,
-    ...series.netLines,
-    ...series.ticketsCompleted,
-  ];
-  return allPoints.every((point) => point.value === 0);
+/** True iff every point across `lists` is exactly zero (an empty list counts as zero) — the
+ * "no activity in this window" test. A chart whose own series are all zero conveys nothing
+ * but a flat floor, so the panel drops it entirely rather than rendering an empty plot. */
+function isAllZero(...lists: ProductivitySeriesPoint[][]): boolean {
+  return lists.every((points) => points.every((point) => point.value === 0));
+}
+
+/** True iff a repo's (or the aggregate's) S1-S3 lines-of-code series carry any activity. */
+function hasLinesActivity(series: Omit<ProductivitySeries, "ticketsCompleted">): boolean {
+  return !isAllZero(series.linesAdded, series.linesDeleted, series.netLines);
+}
+
+/** Keys of `entries` whose series carry activity this window, sorted for a stable order. */
+function activeKeys<T>(entries: Record<string, T>, hasActivity: (value: T) => boolean): string[] {
+  return Object.keys(entries)
+    .filter((key) => hasActivity(entries[key]))
+    .sort();
+}
+
+interface BreakdownSectionProps {
+  /** Collapsed-section label, e.g. "Lines Of Code by repo". */
+  label: string;
+  count: number;
+  testId: string;
+  children: ReactNode;
+}
+
+/**
+ * One collapsible per-repo/per-org breakdown block. Collapsed by default so the panel
+ * opens on its two aggregate charts rather than a wall of mini charts, and built on the
+ * same disclosure idiom as the "Reading from extra snapshots" mount switcher: a full-width
+ * `<button>` bar carrying `aria-expanded` and a ▸/▾ chevron, with the body simply not
+ * rendered while collapsed.
+ */
+function BreakdownSection({ label, count, testId, children }: BreakdownSectionProps) {
+  const [collapsed, setCollapsed] = useState(true);
+  return (
+    <div className="productivity-panel__breakdown" data-testid={testId}>
+      <button
+        type="button"
+        className="productivity-panel__breakdown-bar"
+        onClick={() => setCollapsed((value) => !value)}
+        aria-expanded={!collapsed}
+        data-testid={`${testId}-toggle`}
+        title={collapsed ? "Expand" : "Collapse"}
+      >
+        <span className="productivity-panel__breakdown-chevron" aria-hidden="true">
+          {collapsed ? "▸" : "▾"}
+        </span>
+        <span className="productivity-panel__breakdown-label">{label}</span>
+        <span className="productivity-panel__breakdown-count">{count}</span>
+      </button>
+      {collapsed ? null : (
+        <div className="productivity-panel__breakdown-body" data-testid={`${testId}-body`}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -105,8 +171,15 @@ function isAllZero(series: ProductivitySeries): boolean {
  */
 export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: ProductivityPanelProps) {
   const [range, setRange] = useState<ProductivityRange>(initialRange ?? DEFAULT_RANGE);
+  const [bucketUnit, setBucketUnit] = useState<ProductivityBucketUnit>(DEFAULT_BUCKET_UNIT);
   const [forceAffordance, setForceAffordance] = useState(false);
   const [series, setSeries] = useState<ProductivitySeries | null>(null);
+  const [seriesByRepo, setSeriesByRepo] = useState<Record<string, ProductivityRepoSeries>>({});
+  const [seriesByOrg, setSeriesByOrg] = useState<Record<string, ProductivityOrgSeries>>({});
+  // Which lines-of-code series are toggled off in the legend. Owned here, in the common
+  // parent, and handed to every lines-of-code chart -- aggregate and per-repo alike -- so
+  // one legend click hides that series across all of them instead of desyncing per chart.
+  const [hiddenSeries, setHiddenSeries] = useState<string[]>([]);
   const [instrumentationDate, setInstrumentationDate] = useState<string | null>(null);
   const [disclosures, setDisclosures] = useState<ProductivityDisclosures | undefined>(undefined);
   const [computedAt, setComputedAt] = useState<string | null>(null);
@@ -116,13 +189,13 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
   const [reposDiscovered, setReposDiscovered] = useState<number | null>(null);
   const [spacesCount, setSpacesCount] = useState<number | null>(null);
   const [seriesErrors, setSeriesErrors] = useState<ProductivitySeriesErrors>({});
-  const [bucketUnit, setBucketUnit] = useState<string>("");
+  const [resolvedBucketUnit, setResolvedBucketUnit] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const lastRefreshAtRef = useRef(-Infinity);
 
   const fetchSeries = useCallback(
-    (fetchRange: ProductivityRange, force: boolean) => {
+    (fetchRange: ProductivityRange, force: boolean, fetchBucketUnit: ProductivityBucketUnit) => {
       if (!apiBaseUrl) {
         setLoading(false);
         return;
@@ -130,11 +203,13 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
       let active = true;
       setLoading(true);
       setError(null);
-      getProductivity(apiBaseUrl, fetchRange, auth, force)
+      getProductivity(apiBaseUrl, fetchRange, auth, force, fetchBucketUnit)
         .then((response) => {
           if (active) {
             setKeyStatus(response.keyStatus ?? null);
             setSeries(response.keyStatus ? null : response.series);
+            setSeriesByRepo(response.keyStatus ? {} : response.seriesByRepo);
+            setSeriesByOrg(response.keyStatus ? {} : response.seriesByOrg);
             setInstrumentationDate(response.s4InstrumentationDate);
             setDisclosures({
               staticCaveats: DEFAULT_STATIC_CAVEATS,
@@ -148,7 +223,7 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
             setReposDiscovered(response.reposDiscovered);
             setSpacesCount(response.spacesCount);
             setSeriesErrors(response.errors);
-            setBucketUnit(response.bucketUnit);
+            setResolvedBucketUnit(response.bucketUnit);
             setLoading(false);
           }
         })
@@ -165,7 +240,10 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
     [apiBaseUrl, auth],
   );
 
-  useEffect(() => fetchSeries(range, false), [range, fetchSeries]);
+  useEffect(
+    () => fetchSeries(range, false, bucketUnit),
+    [range, bucketUnit, fetchSeries],
+  );
 
   const handleRefresh = () => {
     const now = Date.now();
@@ -173,8 +251,14 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
       return;
     }
     lastRefreshAtRef.current = now;
-    fetchSeries(range, isShortTtlRange(range) || forceAffordance);
+    fetchSeries(range, isShortTtlRange(range) || forceAffordance, bucketUnit);
   };
+
+  const toggleSeries = useCallback((key: string) => {
+    setHiddenSeries((hidden) =>
+      hidden.includes(key) ? hidden.filter((k) => k !== key) : [...hidden, key],
+    );
+  }, []);
 
 
   // A user with zero discovered GitHub repositories and zero Praxis spaces has
@@ -182,6 +266,16 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
   // otherwise render as a flat zero line indistinguishable from "connected but
   // did no work" (R20). Show a dedicated first-run message instead of the chart.
   const isFirstRun = reposDiscovered === 0 && spacesCount === 0;
+
+  // A chart whose every bucket is zero says nothing the no-activity caption doesn't say
+  // better, so it isn't rendered at all -- aggregate or mini, lines or tickets. A
+  // breakdown section with no surviving child chart drops its header along with it.
+  const showLines = series !== null && hasLinesActivity(series);
+  const showTickets = series !== null && !isAllZero(series.ticketsCompleted);
+  const activeRepos = activeKeys(seriesByRepo, hasLinesActivity);
+  const activeOrgs = activeKeys(seriesByOrg, (org) => !isAllZero(org.ticketsCompleted));
+  const nothingToShow =
+    !showLines && !showTickets && activeRepos.length === 0 && activeOrgs.length === 0;
 
   return (
     <section className="productivity-panel" aria-label="Productivity">
@@ -206,6 +300,20 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
               ))}
             </select>
           </label>
+          <label>
+            Bin by{" "}
+            <select
+              data-testid="productivity-bucket-unit"
+              value={bucketUnit}
+              onChange={(event) => setBucketUnit(event.target.value as ProductivityBucketUnit)}
+            >
+              {PRODUCTIVITY_BUCKET_UNITS.map((u) => (
+                <option key={u} value={u}>
+                  {BUCKET_UNIT_LABELS[u]}
+                </option>
+              ))}
+            </select>
+          </label>
           {!isShortTtlRange(range) ? (
             <label>
               <input
@@ -221,7 +329,7 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
             Refresh
           </button>
           <span className="productivity-panel__last-updated" data-testid="productivity-last-updated">
-            {computedAt ? `Last updated: ${computedAt}` : null}
+            {computedAt ? `Last updated: ${formatFullTimestamp(computedAt)}` : null}
           </span>
         </div>
       ) : null}
@@ -252,14 +360,77 @@ export function ProductivityPanel({ apiBaseUrl, auth, initialRange }: Productivi
               </span>
             </p>
           ) : null}
-          <ProductivitySeriesChart
-            series={series}
-            instrumentationDate={instrumentationDate}
-            disclosures={disclosures}
-            errors={seriesErrors}
-            bucketUnit={bucketUnit}
-          />
-          {isAllZero(series) ? (
+          {showLines ? (
+            <ProductivitySeriesChart
+              series={series}
+              disclosures={disclosures}
+              errors={seriesErrors}
+              bucketUnit={resolvedBucketUnit}
+              hiddenSeries={hiddenSeries}
+              onToggleSeries={toggleSeries}
+            />
+          ) : null}
+          {showTickets ? (
+            <TicketsCompletedChart
+              series={series}
+              instrumentationDate={instrumentationDate}
+              errors={seriesErrors}
+              bucketUnit={resolvedBucketUnit}
+            />
+          ) : null}
+          {activeRepos.length > 0 ? (
+            <BreakdownSection
+              label="Lines Of Code by repo"
+              count={activeRepos.length}
+              testId="productivity-by-repo"
+            >
+              {activeRepos.map((repo) => (
+                <div
+                  key={repo}
+                  className="productivity-panel__repo-chart"
+                  data-testid={`productivity-repo-chart-${repo}`}
+                >
+                  <ProductivitySeriesChart
+                    series={{ ...seriesByRepo[repo], ticketsCompleted: [] }}
+                    bucketUnit={resolvedBucketUnit}
+                    height={200}
+                    title={repo}
+                    hiddenSeries={hiddenSeries}
+                    onToggleSeries={toggleSeries}
+                  />
+                </div>
+              ))}
+            </BreakdownSection>
+          ) : null}
+          {activeOrgs.length > 0 ? (
+            <BreakdownSection
+              label="Tickets completed by org"
+              count={activeOrgs.length}
+              testId="productivity-by-org"
+            >
+              {activeOrgs.map((orgId) => (
+                <div
+                  key={orgId}
+                  className="productivity-panel__repo-chart"
+                  data-testid={`productivity-org-chart-${orgId}`}
+                >
+                  <TicketsCompletedChart
+                    series={{
+                      linesAdded: [],
+                      linesDeleted: [],
+                      netLines: [],
+                      ticketsCompleted: seriesByOrg[orgId].ticketsCompleted,
+                    }}
+                    instrumentationDate={instrumentationDate}
+                    bucketUnit={resolvedBucketUnit}
+                    height={180}
+                    title={seriesByOrg[orgId].name}
+                  />
+                </div>
+              ))}
+            </BreakdownSection>
+          ) : null}
+          {nothingToShow ? (
             <p className="muted" data-testid="productivity-no-activity">
               No activity in this period.
             </p>

@@ -26,20 +26,7 @@ from knowledge.serve.github_commits import (
 )
 
 START, END = date(2024, 1, 1), date(2024, 6, 30)
-
-
-def _discovery_ok(repo_names: list[str]) -> dict:
-    return {
-        "data": {
-            "user": {
-                "contributionsCollection": {
-                    "commitContributionsByRepository": [
-                        {"repository": {"nameWithOwner": name}} for name in repo_names
-                    ]
-                }
-            }
-        }
-    }
+REPOS = ["acme/one"]
 
 
 def _history_ok(commits: list[dict]) -> dict:
@@ -74,14 +61,13 @@ class _RecordingSleep:
         self.calls.append(seconds)
 
 
-def test_genuine_no_active_repos_is_not_truncated():
-    """The pre-existing "no activity" case stays truncated=False (a real, confident zero)."""
+def test_empty_repo_list_is_not_truncated():
+    """No configured repos -> no calls at all, a real, confident zero."""
 
     def transport(query, variables, token):
-        assert "contributionsCollection" in query
-        return _discovery_ok([])
+        raise AssertionError("no repos configured -- transport must never be called")
 
-    result = fetch_commit_activity("mattdaw7", START, END, transport=transport, sleep=lambda s: None)
+    result = fetch_commit_activity([], START, END, transport=transport, sleep=lambda s: None)
 
     assert result["repositories"] == {}
     assert result["truncated"] is False
@@ -97,7 +83,7 @@ def test_timeout_exhausting_retries_is_truncated_with_timeout_reason():
 
     sleep = _RecordingSleep()
     result = fetch_commit_activity(
-        "mattdaw7", START, END, transport=transport, sleep=sleep, max_retries=2
+        REPOS, START, END, transport=transport, sleep=sleep, max_retries=2
     )
 
     # Retried (not just one shot) before giving up.
@@ -114,7 +100,7 @@ def test_upstream_502_is_truncated_with_upstream_reason():
         raise GitHubUpstreamError(502)
 
     result = fetch_commit_activity(
-        "mattdaw7", START, END, transport=transport, sleep=lambda s: None, max_retries=1
+        REPOS, START, END, transport=transport, sleep=lambda s: None, max_retries=1
     )
 
     assert result["truncated"] is True
@@ -127,7 +113,7 @@ def test_secondary_rate_limit_honors_retry_after_then_truncates_if_still_limited
 
     sleep = _RecordingSleep()
     result = fetch_commit_activity(
-        "mattdaw7", START, END, transport=transport, sleep=sleep, max_retries=2
+        REPOS, START, END, transport=transport, sleep=sleep, max_retries=2
     )
 
     # Backoff honors the Retry-After value it was told (never sleeps for less than it).
@@ -143,10 +129,10 @@ def test_rate_limit_recovers_after_retry_is_not_truncated():
         calls["n"] += 1
         if calls["n"] == 1:
             raise GitHubRateLimited(retry_after=1.0)
-        return _discovery_ok([])
+        return _history_ok([])
 
     sleep = _RecordingSleep()
-    result = fetch_commit_activity("mattdaw7", START, END, transport=transport, sleep=sleep)
+    result = fetch_commit_activity(REPOS, START, END, transport=transport, sleep=sleep)
 
     assert calls["n"] == 2
     assert sleep.calls == [1.0]
@@ -156,15 +142,13 @@ def test_rate_limit_recovers_after_retry_is_not_truncated():
 
 def test_partial_graphql_errors_payload_is_truncated_but_keeps_partial_data():
     def transport(query, variables, token):
-        if "contributionsCollection" in query:
-            body = _discovery_ok(["acme/one"])
-            body["errors"] = [{"message": "something partially failed"}]
-            return body
-        return _history_ok(
+        body = _history_ok(
             [{"additions": 1, "deletions": 0, "committedDate": "2024-02-01T00:00:00Z", "author_login": "x"}]
         )
+        body["errors"] = [{"message": "something partially failed"}]
+        return body
 
-    result = fetch_commit_activity("mattdaw7", START, END, transport=transport, sleep=lambda s: None)
+    result = fetch_commit_activity(REPOS, START, END, transport=transport, sleep=lambda s: None)
 
     assert result["truncated"] is True
     assert result["reason"] == TruncationReason.PARTIAL_ERRORS
@@ -178,8 +162,6 @@ def test_partial_graphql_errors_payload_is_truncated_but_keeps_partial_data():
 
 def test_history_failure_for_one_repo_does_not_zero_the_whole_result():
     def transport(query, variables, token):
-        if "contributionsCollection" in query:
-            return _discovery_ok(["acme/one", "acme/two"])
         if variables["name"] == "one":
             raise GitHubUpstreamError(502)
         return _history_ok(
@@ -187,7 +169,7 @@ def test_history_failure_for_one_repo_does_not_zero_the_whole_result():
         )
 
     result = fetch_commit_activity(
-        "mattdaw7", START, END, transport=transport, sleep=lambda s: None, max_retries=1
+        ["acme/one", "acme/two"], START, END, transport=transport, sleep=lambda s: None, max_retries=1
     )
 
     assert result["truncated"] is True
@@ -204,5 +186,5 @@ def test_history_failure_for_one_repo_does_not_zero_the_whole_result():
 def test_max_retries_is_bounded_non_negative(bad_max_retries):
     with pytest.raises(ValueError):
         fetch_commit_activity(
-            "mattdaw7", START, END, transport=lambda *a: {}, max_retries=bad_max_retries
+            REPOS, START, END, transport=lambda *a: {}, max_retries=bad_max_retries
         )

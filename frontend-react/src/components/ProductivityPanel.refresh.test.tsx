@@ -3,6 +3,7 @@ import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProductivityPanel } from "./ProductivityPanel";
+import { formatFullTimestamp } from "./viz/ProductivitySeriesChart";
 
 const AUTH = { getToken: async () => "token-123", orgId: "org-1", spaceId: "space-1" };
 
@@ -47,7 +48,7 @@ describe("ProductivityPanel Refresh control (acceptance)", () => {
       // reflect the first response's computed_at.
       await waitFor(() => {
         expect(screen.getByTestId("productivity-last-updated")).toHaveTextContent(
-          "2026-07-25T00:00:00+00:00",
+          formatFullTimestamp("2026-07-25T00:00:00+00:00"),
         );
       });
       const callsBeforeRefresh = fetchMock.mock.calls.length;
@@ -59,7 +60,7 @@ describe("ProductivityPanel Refresh control (acceptance)", () => {
 
       await waitFor(() => {
         expect(screen.getByTestId("productivity-last-updated")).toHaveTextContent(
-          "2026-07-25T00:05:00+00:00",
+          formatFullTimestamp("2026-07-25T00:05:00+00:00"),
         );
       });
 

@@ -1,16 +1,19 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProductivityPanel } from "./ProductivityPanel";
+import { formatShortDate } from "./viz/ProductivitySeriesChart";
 
 const AUTH = { getToken: async () => "token-123", orgId: "org-1", spaceId: "space-1" };
 
 // Every S1-S4 point is zero — the "no activity in this period" acceptance
-// scenario: the chart must still render (a zero line), plus a no-activity
-// caption, and must NOT be routed through the error-styling path. Distinct
-// from the R20 first-run scenario (zero repos/spaces): this response has a
-// real connected repo and space, they just did no work this window.
+// scenario: an all-zero chart conveys nothing but a flat floor, so no chart is
+// drawn at all; the panel shows the no-activity caption instead, and must NOT be
+// routed through the error-styling path. Distinct from the R20 first-run scenario
+// (zero repos/spaces): this response has a real connected repo and space, they
+// just did no work this window.
 function allZeroResponseBody() {
   return JSON.stringify({
     range: "4weeks",
@@ -96,8 +99,191 @@ describe("ProductivityPanel", () => {
 
     const yAxisGroups = container.querySelectorAll(".recharts-yAxis");
     expect(yAxisGroups.length).toBe(2);
-    const lineGroups = container.querySelectorAll(".recharts-line");
-    expect(lineGroups.length).toBe(4);
+    const barGroups = container.querySelectorAll(".recharts-bar");
+    expect(barGroups.length).toBe(4);
+  });
+
+  it("renders one aggregate chart plus one small chart per repo in series_by_repo, behind a collapsed-by-default section", async () => {
+    const body = JSON.stringify({
+      range: "4weeks",
+      truncated: false,
+      repos_discovered: 2,
+      spaces_count: 1,
+      series: {
+        s1_lines_added: [{ bucket_start: "2026-07-01", value: 30 }],
+        s2_lines_deleted: [{ bucket_start: "2026-07-01", value: 10 }],
+        s3_net_lines: [{ bucket_start: "2026-07-01", value: 20 }],
+        s4_tickets_completed: [{ bucket_start: "2026-07-01", value: 1 }],
+      },
+      series_by_repo: {
+        "acme/one": {
+          s1_lines_added: [{ bucket_start: "2026-07-01", value: 10 }],
+          s2_lines_deleted: [{ bucket_start: "2026-07-01", value: 4 }],
+          s3_net_lines: [{ bucket_start: "2026-07-01", value: 6 }],
+        },
+        "acme/two": {
+          s1_lines_added: [{ bucket_start: "2026-07-01", value: 20 }],
+          s2_lines_deleted: [{ bucket_start: "2026-07-01", value: 6 }],
+          s3_net_lines: [{ bucket_start: "2026-07-01", value: 14 }],
+        },
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 200 })));
+
+    render(<ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("productivity-by-repo")).toBeInTheDocument();
+    });
+
+    // Collapsed on load: the header is there, the mini charts are not.
+    const toggle = screen.getByTestId("productivity-by-repo-toggle");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("productivity-repo-chart-acme/one")).not.toBeInTheDocument();
+
+    await userEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("productivity-repo-chart-acme/one")).toBeInTheDocument();
+    expect(screen.getByTestId("productivity-repo-chart-acme/two")).toBeInTheDocument();
+    expect(screen.getByText("acme/one")).toBeInTheDocument();
+    expect(screen.getByText("acme/two")).toBeInTheDocument();
+
+    // ...and collapses again on a second click.
+    await userEvent.click(toggle);
+    expect(screen.queryByTestId("productivity-repo-chart-acme/one")).not.toBeInTheDocument();
+  });
+
+  it("renders one collapsible small chart per org in series_by_org, titled by org name", async () => {
+    const body = JSON.stringify({
+      range: "4weeks",
+      truncated: false,
+      repos_discovered: 1,
+      spaces_count: 2,
+      series: {
+        s1_lines_added: [{ bucket_start: "2026-07-01", value: 30 }],
+        s2_lines_deleted: [{ bucket_start: "2026-07-01", value: 10 }],
+        s3_net_lines: [{ bucket_start: "2026-07-01", value: 20 }],
+        s4_tickets_completed: [{ bucket_start: "2026-07-01", value: 5 }],
+      },
+      series_by_org: {
+        "org-1": {
+          name: "Acme Inc",
+          s4_tickets_completed: [{ bucket_start: "2026-07-01", value: 3 }],
+        },
+        "org-2": {
+          name: "Side Project",
+          s4_tickets_completed: [{ bucket_start: "2026-07-01", value: 2 }],
+        },
+        // Every bucket zero: this org contributes no chart at all.
+        "org-3": {
+          name: "Dormant Org",
+          s4_tickets_completed: [{ bucket_start: "2026-07-01", value: 0 }],
+        },
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 200 })));
+
+    render(<ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("productivity-by-org")).toBeInTheDocument();
+    });
+
+    const toggle = screen.getByTestId("productivity-by-org-toggle");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("productivity-org-chart-org-1")).not.toBeInTheDocument();
+
+    await userEvent.click(toggle);
+
+    const body_ = screen.getByTestId("productivity-by-org-body");
+    expect(within(body_).getByText("Acme Inc")).toBeInTheDocument();
+    expect(within(body_).getByText("Side Project")).toBeInTheDocument();
+    expect(screen.queryByTestId("productivity-org-chart-org-3")).not.toBeInTheDocument();
+  });
+
+  it("renders no by-org section when series_by_org is absent from the response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(skewedResponseBody(), { status: 200 })),
+    );
+
+    render(<ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("productivity-loading")).not.toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("productivity-by-org")).not.toBeInTheDocument();
+  });
+
+  it("keeps a legend toggle in sync across the aggregate and every per-repo lines-of-code chart", async () => {
+    const body = JSON.stringify({
+      range: "4weeks",
+      truncated: false,
+      repos_discovered: 1,
+      spaces_count: 1,
+      series: {
+        s1_lines_added: [{ bucket_start: "2026-07-01", value: 30 }],
+        s2_lines_deleted: [{ bucket_start: "2026-07-01", value: 10 }],
+        s3_net_lines: [{ bucket_start: "2026-07-01", value: 20 }],
+        s4_tickets_completed: [{ bucket_start: "2026-07-01", value: 1 }],
+      },
+      series_by_repo: {
+        "acme/one": {
+          s1_lines_added: [{ bucket_start: "2026-07-01", value: 30 }],
+          s2_lines_deleted: [{ bucket_start: "2026-07-01", value: 10 }],
+          s3_net_lines: [{ bucket_start: "2026-07-01", value: 20 }],
+        },
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 200 })));
+
+    const { container } = render(
+      <ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("productivity-by-repo-toggle")).toBeInTheDocument();
+    });
+    await userEvent.click(screen.getByTestId("productivity-by-repo-toggle"));
+
+    // Two lines-of-code charts on screen (aggregate + one repo), three S1-S3 bars each.
+    const linesAddedToggles = screen.getAllByTestId("productivity-legend-toggle-linesAdded");
+    expect(linesAddedToggles.length).toBe(2);
+    for (const toggle of linesAddedToggles) {
+      expect(toggle).toHaveAttribute("aria-pressed", "true");
+    }
+    const barsBefore = container.querySelectorAll(".recharts-bar").length;
+
+    // One click on the aggregate chart's legend...
+    await userEvent.click(linesAddedToggles[0]);
+
+    // ...flips BOTH charts' legend entries and drops one bar series from each.
+    for (const toggle of screen.getAllByTestId("productivity-legend-toggle-linesAdded")) {
+      expect(toggle).toHaveAttribute("aria-pressed", "false");
+    }
+    expect(container.querySelectorAll(".recharts-bar").length).toBe(barsBefore - 2);
+
+    // Clicking a per-repo legend entry toggles it back on everywhere too.
+    await userEvent.click(screen.getAllByTestId("productivity-legend-toggle-linesAdded")[1]);
+    for (const toggle of screen.getAllByTestId("productivity-legend-toggle-linesAdded")) {
+      expect(toggle).toHaveAttribute("aria-pressed", "true");
+    }
+    expect(container.querySelectorAll(".recharts-bar").length).toBe(barsBefore);
+  });
+
+  it("renders no by-repo section when series_by_repo is empty", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(skewedResponseBody(), { status: 200 })),
+    );
+
+    render(<ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("productivity-loading")).not.toBeInTheDocument();
+    });
+    expect(screen.queryByTestId("productivity-by-repo")).not.toBeInTheDocument();
   });
 
   it("shows a loading state before the fetch resolves and no chart yet", async () => {
@@ -161,7 +347,7 @@ describe("ProductivityPanel", () => {
       expect(screen.getByTestId("s4-instrumentation-annotation")).toBeInTheDocument();
     });
     expect(screen.getByTestId("s4-instrumentation-annotation")).toHaveTextContent(
-      "Ticket history starts 2026-07-25",
+      `Ticket history starts ${formatShortDate("2026-07-25T07:17:15+00:00")}`,
     );
   });
 
@@ -182,7 +368,7 @@ describe("ProductivityPanel", () => {
     // In flight: a skeleton element is present and there is no chart series
     // path yet (no empty axes, no flash-of-zero chart).
     expect(screen.getByTestId("productivity-skeleton")).toBeInTheDocument();
-    expect(container.querySelector(".recharts-line-curve")).toBeNull();
+    expect(container.querySelector(".recharts-rectangle")).toBeNull();
     expect(container.querySelector("svg.recharts-surface")).toBeNull();
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
@@ -194,7 +380,7 @@ describe("ProductivityPanel", () => {
       expect(container.querySelector("svg.recharts-surface")).not.toBeNull();
     });
     expect(screen.queryByTestId("productivity-skeleton")).not.toBeInTheDocument();
-    expect(container.querySelector(".recharts-line-curve")).not.toBeNull();
+    expect(container.querySelector(".recharts-rectangle")).not.toBeNull();
   });
 
   it("shows an error state when the fetch fails", async () => {
@@ -240,7 +426,7 @@ describe("ProductivityPanel", () => {
     ).not.toBeNull();
   });
 
-  it("renders a zero line plus the no-activity caption, with no error styling, when every series is all zero", async () => {
+  it("drops every chart and shows just the no-activity caption, with no error styling, when every series is all zero", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(new Response(allZeroResponseBody(), { status: 200 })),
@@ -250,17 +436,16 @@ describe("ProductivityPanel", () => {
       <ProductivityPanel apiBaseUrl="http://127.0.0.1:8000" auth={AUTH} />,
     );
 
-    // The chart itself still renders (a flat zero line), not swapped out for a blank state.
+    // The no-activity caption stands in for both charts (scoped to this render's own
+    // container — RTL does not auto-unmount between tests in this file, so a global
+    // `screen` query could otherwise match a stale element left by an earlier test).
     await waitFor(() => {
-      expect(container.querySelector("svg.recharts-surface")).not.toBeNull();
+      expect(container.querySelector('[data-testid="productivity-no-activity"]')).not.toBeNull();
     });
-    const zeroLineGroups = container.querySelectorAll(".recharts-line");
-    expect(zeroLineGroups.length).toBe(4);
 
-    // Plus the no-activity caption (scoped to this render's own container — RTL
-    // does not auto-unmount between tests in this file, so a global `screen`
-    // query could otherwise match a stale element left by an earlier test).
-    expect(container.querySelector('[data-testid="productivity-no-activity"]')).not.toBeNull();
+    // No empty plot area survives: a chart with nothing but zeros isn't drawn.
+    expect(container.querySelector("svg.recharts-surface")).toBeNull();
+    expect(container.querySelectorAll(".recharts-bar").length).toBe(0);
 
     // Never the error path/styling.
     expect(container.querySelector('[data-testid="productivity-error"]')).toBeNull();
@@ -340,10 +525,10 @@ describe("ProductivityPanel", () => {
             repos_discovered: 1,
             spaces_count: 0,
             series: {
-              s1_lines_added: [{ bucket_start: "2026-07-01", value: 0 }],
-              s2_lines_deleted: [{ bucket_start: "2026-07-01", value: 0 }],
-              s3_net_lines: [{ bucket_start: "2026-07-01", value: 0 }],
-              s4_tickets_completed: [{ bucket_start: "2026-07-01", value: 0 }],
+              s1_lines_added: [{ bucket_start: "2026-07-01", value: 40 }],
+              s2_lines_deleted: [{ bucket_start: "2026-07-01", value: 15 }],
+              s3_net_lines: [{ bucket_start: "2026-07-01", value: 25 }],
+              s4_tickets_completed: [{ bucket_start: "2026-07-01", value: 2 }],
             },
           }),
           { status: 200 },

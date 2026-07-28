@@ -34,7 +34,7 @@ def test_401_raises_auth_expired_immediately_never_retried():
 
     with pytest.raises(GitHubAuthExpired):
         fetch_commit_activity(
-            "mattdaw7", START, END, transport=transport, sleep=lambda s: None, max_retries=3
+            ["acme/one"], START, END, transport=transport, sleep=lambda s: None, max_retries=3
         )
 
     assert calls["n"] == 1  # never retried -- a dead token can't be fixed by trying again
@@ -49,7 +49,7 @@ def test_plain_403_raises_insufficient_scope_immediately_never_retried():
 
     with pytest.raises(GitHubInsufficientScope):
         fetch_commit_activity(
-            "mattdaw7", START, END, transport=transport, sleep=lambda s: None, max_retries=3
+            ["acme/one"], START, END, transport=transport, sleep=lambda s: None, max_retries=3
         )
 
     assert calls["n"] == 1

@@ -6,7 +6,12 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as wafv2 from 'aws-cdk-lib/aws-wafv2';
 import { Construct } from 'constructs';
-import { COGNITO, DB_SECRET_NAME, GITHUB_TOKEN_SECRET_NAME } from './config';
+import {
+  COGNITO,
+  DB_SECRET_NAME,
+  GITHUB_TOKEN_SECRET_NAME,
+  OPENROUTER_API_KEY_SECRET_NAME,
+} from './config';
 
 /**
  * Edge-layer flood ceiling: max requests per source IP over WAF's fixed 5-minute
@@ -68,14 +73,32 @@ export class BackendServiceStack extends cdk.Stack {
       this.node.tryGetContext('cognitoRegion') ??
       COGNITO.region;
 
-    // OpenRouter key for the runtime embed/judge/distillation paths. Injected at
+    // OpenRouter key for the runtime embed/judge/distillation paths. Seeded at
     // deploy time from the `OPENROUTER_API_KEY` env var (fed by a GitHub secret in
-    // the deploy workflow); omitted from the service when unset so a local `cdk
-    // deploy` without it doesn't push an empty value.
+    // the deploy workflow) into its OWN Secrets Manager secret, then referenced by
+    // ARN through `runtimeEnvironmentSecrets` below.
+    //
+    // It used to be a plain `runtimeEnvironmentVariables` entry, which meant
+    // `aws apprunner describe-service` and the App Runner console echoed the live
+    // key in full to any caller holding `apprunner:DescribeService` — the very leak
+    // the GitHub-token comment below warns about, in the same env-var list. Fixed
+    // 2026-07-28; the key was rotated as part of that change, since the previous
+    // value must be considered exposed.
+    //
+    // App Runner resolves the ARN at launch and injects the value into the
+    // container's environment under the same `OPENROUTER_API_KEY` name, so no
+    // application code changes: `describe-service` now shows only the ARN.
     const openrouterApiKey =
       props.openrouterApiKey ??
       this.node.tryGetContext('openrouterApiKey') ??
       process.env.OPENROUTER_API_KEY;
+    const openrouterApiKeySecret = new secretsmanager.Secret(this, 'OpenrouterApiKeySecret', {
+      secretName: OPENROUTER_API_KEY_SECRET_NAME,
+      description: 'OpenRouter API key for the backend embed/judge/distillation paths.',
+      ...(openrouterApiKey
+        ? { secretStringValue: cdk.SecretValue.unsafePlainText(openrouterApiKey) }
+        : { generateSecretString: {} }),
+    });
 
     // GitHub PAT for the (forthcoming) productivity backend. Seeded once at
     // deploy time from the `GITHUB_TOKEN` env var (fed by a GitHub secret in the
@@ -127,6 +150,10 @@ export class BackendServiceStack extends cdk.Stack {
     // Grants Secrets Manager `GetSecretValue`/`DescribeSecret` on this ARN only
     // (see R1) — the token itself never becomes a runtimeEnvironmentVariables entry.
     githubTokenSecret.grantRead(instanceRole);
+    // App Runner resolves `runtimeEnvironmentSecrets` using the INSTANCE role, so this
+    // grant is what lets the platform inject the key at launch (the app itself never
+    // calls Secrets Manager for this one — it just reads the injected env var).
+    openrouterApiKeySecret.grantRead(instanceRole);
 
     // GitHub PAT (R1): CDK owns creation of this secret (a generated placeholder
     // value at first deploy; ops overwrites it with the real token out-of-band).
@@ -158,9 +185,15 @@ export class BackendServiceStack extends cdk.Stack {
               // Only the secret's NAME, so the backend knows which Secrets
               // Manager entry to fetch at request time — never the token value.
               { name: 'GITHUB_TOKEN_SECRET_NAME', value: GITHUB_TOKEN_SECRET_NAME },
-              ...(openrouterApiKey
-                ? [{ name: 'OPENROUTER_API_KEY', value: openrouterApiKey }]
-                : []),
+            ],
+            // Secret VALUES belong here, never in runtimeEnvironmentVariables above:
+            // App Runner stores these as ARN references and resolves them privately at
+            // launch, so `describe-service` and the console expose only the ARN.
+            runtimeEnvironmentSecrets: [
+              {
+                name: 'OPENROUTER_API_KEY',
+                value: openrouterApiKeySecret.secretArn,
+              },
             ],
           },
         },

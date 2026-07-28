@@ -3,10 +3,10 @@
 Exercises the real route through the FULL stack down to a MOCKED GitHub GraphQL
 *transport* (the ``(query, variables, token) -> response`` seam in
 ``github_commits.py`` — not a stand-in for ``fetch_commit_activity`` itself, so the
-real discovery/history query construction, response parsing and retry/truncation
-logic all genuinely run) and a Praxis ``snapshots`` table SEEDED with a real
-finished ticket, so the S4 series is exercised against real seeded data rather
-than an empty table.
+real history query construction, response parsing and retry/truncation logic all
+genuinely run) and a Praxis ``snapshots`` table SEEDED with a real finished
+ticket, so the S4 series is exercised against real seeded data rather than an
+empty table.
 
 Acceptance condition (R30): the integration test asserts all four series values,
 a truncated case and a non-owner 403 case, and fails if any of those assertions
@@ -37,21 +37,6 @@ pytestmark = pytest.mark.skipif(
 OWNER_EMAIL = productivity_route.DEFAULT_OWNER_EMAIL
 OWNER_LOGIN = productivity_route.DEFAULT_OWNER_LOGIN
 REPO = "acme/repo"
-
-
-def _discovery_response() -> dict:
-    return {
-        "data": {
-            "user": {
-                "contributionsCollection": {
-                    "commitContributionsByRepository": [
-                        {"repository": {"nameWithOwner": REPO}}
-                    ]
-                }
-            },
-            "rateLimit": {"cost": 1},
-        }
-    }
 
 
 def _history_response(commits: list[dict]) -> dict:
@@ -127,6 +112,7 @@ def test_owner_request_returns_four_series_from_the_real_graphql_parse_path_and_
     path (only the transport is faked) and the S4 series reflects a REAL seeded
     Praxis ticket, not an empty table."""
     monkeypatch.setenv("PRAXIS_DEV_USER_EMAIL", OWNER_EMAIL)
+    monkeypatch.setenv("PRODUCTIVITY_TRACKED_REPOS", REPO)
     client, org, conn = ctx["client"], ctx["org"], ctx["conn"]
 
     now = datetime.now(timezone.utc)
@@ -141,9 +127,6 @@ def test_owner_request_returns_four_series_from_the_real_graphql_parse_path_and_
 
     def fake_transport(query, variables, token):
         assert token == "fake-token"
-        if "contributionsCollection" in query:
-            calls.append("discovery")
-            return _discovery_response()
         calls.append("history")
         assert variables["owner"] == "acme" and variables["name"] == "repo"
         return _history_response(commits)
@@ -159,7 +142,7 @@ def test_owner_request_returns_four_series_from_the_real_graphql_parse_path_and_
     assert res.status_code == 200, res.text
     body = res.json()
 
-    assert calls == ["discovery", "history"]
+    assert calls == ["history"]
     assert body["truncated"] is False
 
     series = body["series"]
@@ -183,6 +166,9 @@ def test_github_failure_surfaces_as_truncated_true_never_a_confident_zero(ctx, m
     surfaced as ``truncated: true`` rather than a silent, confident zero-activity
     response (R37's acceptance condition, exercised end to end through the route)."""
     monkeypatch.setenv("PRAXIS_DEV_USER_EMAIL", OWNER_EMAIL)
+    # Pin to a single repo (rather than the 5-repo default) so this test's exhausted-retries
+    # backoff sleeps only once per-repo's worth of real time, not once per default repo.
+    monkeypatch.setenv("PRODUCTIVITY_TRACKED_REPOS", REPO)
     client, org = ctx["client"], ctx["org"]
 
     def always_times_out(query, variables, token):

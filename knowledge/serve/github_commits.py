@@ -1,11 +1,17 @@
 """GitHub GraphQL client for the productivity feature's commit-activity fetch (R2/R3/R37).
 
-Given a date window, returns per-repository commit activity — each commit node carrying
-``additions``, ``deletions``, ``committedDate`` and the author's ``login`` — by issuing exactly
-one *discovery* GraphQL query per calendar-year chunk of the window (GitHub's
-``contributionsCollection`` rejects a ``from``/``to`` span over one year, so discovery must be
-chunked) to find which repositories the account was active in, then exactly one *history* GraphQL
-query per repository discovered active in ANY chunk to pull its commits for the whole window.
+Given a date window and an EXPLICIT, caller-supplied list of repositories (``"owner/name"``
+pairs — see ``productivity_route.tracked_repos()``), returns per-repository commit activity —
+each commit node carrying ``additions``, ``deletions``, ``committedDate`` and the author's
+``login`` — by issuing exactly one *history* GraphQL query per repository in that list to pull
+its commits for the whole window.
+
+Repository discovery previously ran via a GraphQL ``contributionsCollection`` query against the
+account, but that field silently omits PRIVATE repositories owned by a GitHub ORGANIZATION the
+account is merely a member of (confirmed against the live API — this is not the "hide private
+contributions" profile-privacy setting, which is a separate, correctly-zero field). Per-repo
+history fetching (the ``HISTORY_QUERY`` below) has no such gap, so discovery was replaced with a
+static, explicitly configured repo list instead.
 
 The caller supplies the GitHub token (this module never resolves or caches one itself, and never
 logs it, writes it to the graph, or puts it in a return value) and the date window as plain
@@ -28,7 +34,7 @@ from __future__ import annotations
 
 import calendar
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional
 
 GITHUB_GRAPHQL_URL = "https://api.github.com/graphql"
@@ -109,19 +115,6 @@ _REASON_FOR_ERROR: dict[type[GitHubTransportError], str] = {
     GitHubRateLimited: TruncationReason.RATE_LIMITED,
 }
 
-DISCOVERY_QUERY = """
-query($login: String!, $from: DateTime!, $to: DateTime!) {
-  user(login: $login) {
-    contributionsCollection(from: $from, to: $to) {
-      commitContributionsByRepository(maxRepositories: 100) {
-        repository { nameWithOwner }
-      }
-    }
-  }
-  rateLimit { cost }
-}
-"""
-
 HISTORY_QUERY = """
 query($owner: String!, $name: String!, $since: GitTimestamp!, $until: GitTimestamp!) {
   repository(owner: $owner, name: $name) {
@@ -154,23 +147,6 @@ def _points_cost(data: Optional[dict[str, Any]]) -> int:
     return int(((data or {}).get("data") or {}).get("rateLimit", {}).get("cost") or 0)
 
 
-def year_chunks(start: date, end: date) -> list[tuple[date, date]]:
-    """Split ``[start, end]`` into contiguous per-calendar-year ``(start, end)`` pairs.
-
-    GitHub's ``contributionsCollection`` rejects a ``from``/``to`` span over one year, so the
-    discovery query must be issued once per calendar year the window touches.
-    """
-    if start > end:
-        raise ValueError("start must not be after end")
-    chunks: list[tuple[date, date]] = []
-    cur = start
-    while cur <= end:
-        chunk_end = min(date(cur.year, 12, 31), end)
-        chunks.append((cur, chunk_end))
-        cur = date(cur.year + 1, 1, 1)
-    return chunks
-
-
 def _add_months(d: date, months: int) -> date:
     """Return ``d`` shifted forward by ``months`` calendar months, clamping the day-of-month."""
     total = d.month - 1 + months
@@ -198,25 +174,6 @@ def months_span(start: date, end: date) -> int:
     if end.day >= start.day:
         span += 1
     return span
-
-
-def alltime_chunks(start: date, end: date) -> list[tuple[date, date]]:
-    """Split ``[start, end]`` into rolling 12-month chunks starting at ``start``.
-
-    Unlike ``year_chunks`` (calendar-year aligned), these chunks start at ``start`` itself so the
-    chunk count is always exactly ``ceil(months_span(start, end) / 12)`` regardless of where in the
-    year the all-time window begins.
-    """
-    if start > end:
-        raise ValueError("start must not be after end")
-    chunks: list[tuple[date, date]] = []
-    cur = start
-    while cur <= end:
-        nxt = _add_months(cur, 12)
-        chunk_end = min(nxt - timedelta(days=1), end)
-        chunks.append((cur, chunk_end))
-        cur = nxt
-    return chunks
 
 
 def _iso(d: date) -> str:
@@ -289,49 +246,13 @@ def _call_with_retry(
             attempt += 1
 
 
-def _discover_active_repos(
-    login: str,
-    chunks: list[tuple[date, date]],
-    transport: Transport,
-    token: Optional[str],
-    *,
-    max_retries: int,
-    base_delay: float,
-    max_delay: float,
-    sleep: Sleep,
-) -> tuple[list[str], Optional[str], int]:
-    """Issue one discovery query per year-chunk; return (active repos, truncation reason, points spent).
-
-    Active repos are deduped in first-seen order. A chunk whose call ultimately fails (retries
-    exhausted) contributes no repos and sets the returned reason — that chunk's activity is
-    UNKNOWN, never folded in as a confirmed zero. A response carrying both ``data`` and ``errors``
-    (partial GraphQL failure) still contributes whatever repos it found, and also sets the reason.
-    """
+def _dedupe(repos: list[str]) -> list[str]:
+    """``repos`` deduped in first-seen order (a caller-supplied list may repeat an entry)."""
     seen: dict[str, None] = {}
-    reason: Optional[str] = None
-    points = 0
-    for since, until in chunks:
-        variables = {"login": login, "from": _iso(since), "to": _iso(until)}
-        data, call_reason = _call_with_retry(
-            transport, DISCOVERY_QUERY, variables, token,
-            max_retries=max_retries, base_delay=base_delay, max_delay=max_delay, sleep=sleep,
-        )
-        if call_reason is not None:
-            reason = reason or call_reason
-            continue
-        assert data is not None
-        points += _points_cost(data)
-        if data.get("errors") and data.get("data") is not None:
-            reason = reason or TruncationReason.PARTIAL_ERRORS
-        contributions = (
-            (data.get("data") or {}).get("user") or {}
-        ).get("contributionsCollection") or {}
-        entries = contributions.get("commitContributionsByRepository") or []
-        for entry in entries:
-            name = (entry.get("repository") or {}).get("nameWithOwner")
-            if name and name not in seen:
-                seen[name] = None
-    return list(seen.keys()), reason, points
+    for repo in repos:
+        if repo not in seen:
+            seen[repo] = None
+    return list(seen.keys())
 
 
 def _fetch_repo_commits(
@@ -379,7 +300,7 @@ def _fetch_repo_commits(
 
 
 def fetch_commit_activity(
-    login: str,
+    repos: list[str],
     start: date,
     end: date,
     *,
@@ -390,19 +311,20 @@ def fetch_commit_activity(
     max_delay: float = DEFAULT_MAX_DELAY_S,
     sleep: Sleep = time.sleep,
 ) -> dict[str, Any]:
-    """Fetch per-repository commit activity for ``login`` over the calendar-date window ``[start, end]``.
+    """Fetch per-repository commit activity for ``repos`` over the calendar-date window ``[start, end]``.
 
-    Issues exactly one discovery query per calendar-year chunk of the window (to find which
-    repositories ``login`` committed to), then exactly one history query per repository found
-    active in any chunk (to pull its commits for the full window).
+    Issues exactly one history query per repository in ``repos`` (an explicit, caller-supplied
+    list of ``"owner/name"`` pairs — see ``productivity_route.tracked_repos()`` — deduped in
+    first-seen order) to pull its commits for the full window. There is no discovery step: which
+    repos to query is config, not something inferred per request.
 
     Returns ``{"repositories": {...}, "truncated": bool, "reason": str|None, "points_spent": int}``:
     ``repositories`` is keyed by ``"owner/name"`` -> a list of commit dicts (``additions``,
     ``deletions``, ``committedDate``, ``author_login``). ``truncated``/``reason`` surface a
     GitHub timeout, upstream 5xx, secondary rate limit, or partial GraphQL ``errors`` payload
     (see :class:`TruncationReason`) that survived ``max_retries`` retries with exponential
-    backoff — the affected repo/window is OMITTED from ``repositories`` rather than reported as a
-    confirmed zero, and any repo/window that succeeded is still included with real data.
+    backoff — the affected repo is OMITTED from ``repositories`` rather than reported as a
+    confirmed zero, and any repo that succeeded is still included with real data.
     ``points_spent`` is the summed GraphQL ``rateLimit.cost`` every issued query reported (0 for a
     response that predates that field), for the productivity route's observability log (R40).
 
@@ -416,11 +338,10 @@ def fetch_commit_activity(
     xport: Transport = transport or _default_transport
     retry_kwargs = dict(max_retries=max_retries, base_delay=base_delay, max_delay=max_delay, sleep=sleep)
 
-    chunks = year_chunks(start, end)
-    active_repos, reason, points = _discover_active_repos(login, chunks, xport, token, **retry_kwargs)
-
+    reason: Optional[str] = None
+    points = 0
     repositories: dict[str, list[dict[str, Any]]] = {}
-    for repo in active_repos:
+    for repo in _dedupe(repos):
         commits, repo_reason, repo_points = _fetch_repo_commits(
             repo, start, end, xport, token, **retry_kwargs
         )
@@ -439,7 +360,7 @@ def fetch_commit_activity(
 
 
 def fetch_commit_activity_alltime(
-    login: str,
+    repos: list[str],
     account_created_at: date,
     now: date,
     *,
@@ -455,24 +376,21 @@ def fetch_commit_activity_alltime(
 
     The scan never goes back further than ``max_lookback_years`` before ``now`` even when the
     account is older than that: ``effective_start`` is the later of ``account_created_at`` and
-    ``now`` minus ``max_lookback_years``. Discovery is chunked in rolling 12-month windows from
-    ``effective_start`` (not calendar-year aligned), so exactly ``ceil(months_span(effective_start,
-    now) / 12)`` discovery queries are issued, plus at most one history query per repository
-    discovered active in any chunk.
+    ``now`` minus ``max_lookback_years``. Issues exactly one history query per repository in
+    ``repos`` (the same explicit, caller-supplied list :func:`fetch_commit_activity` takes) for
+    the ``[effective_start, now]`` window.
 
-    Like :func:`fetch_commit_activity`, every call is bounded/retried (R37) and a repo/chunk whose
-    call ultimately fails is simply omitted rather than reported as a confirmed zero.
+    Like :func:`fetch_commit_activity`, every call is bounded/retried (R37) and a repo whose call
+    ultimately fails is simply omitted rather than reported as a confirmed zero.
 
     Returns ``(effective_start, commit_activity)`` so the caller/UI can label the floored window.
     """
     xport: Transport = transport or _default_transport
     retry_kwargs = dict(max_retries=max_retries, base_delay=base_delay, max_delay=max_delay, sleep=sleep)
     effective_start = resolve_alltime_start(account_created_at, now, max_lookback_years)
-    chunks = alltime_chunks(effective_start, now)
-    active_repos, _reason, _points = _discover_active_repos(login, chunks, xport, token, **retry_kwargs)
 
     commits: dict[str, list[dict[str, Any]]] = {}
-    for repo in active_repos:
+    for repo in _dedupe(repos):
         repo_commits, _repo_reason, _repo_points = _fetch_repo_commits(
             repo, effective_start, now, xport, token, **retry_kwargs
         )

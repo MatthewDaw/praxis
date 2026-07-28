@@ -19,7 +19,18 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INFRA_DIR = REPO_ROOT / "infra"
 STACK_NAME = "PraxisBackendServiceStack"
-TOKEN_PATTERN = re.compile(r"(github_pat_|ghp_)[A-Za-z0-9_]{10,}")
+TOKEN_PATTERN = re.compile(r"(github_pat_|ghp_|gho_)[A-Za-z0-9_]{10,}")
+
+# Env-var names that imply the VALUE is a credential rather than a pointer/identifier.
+# Deliberately excludes Cognito pool/client ids, which are public identifiers, not secrets.
+_SECRET_NAME_PATTERN = re.compile(r"(TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY|CREDENTIAL)")
+
+
+def _is_cfn_reference(value: object) -> bool:
+    """True when ``value`` is a CloudFormation intrinsic (``Ref``/``Fn::*``) rather than a
+    literal string. A reference resolves to an ARN or an identifier CloudFormation supplies
+    at deploy time, so it never embeds a credential in the template or the service config."""
+    return isinstance(value, dict)
 
 
 def _fail(msg: str) -> None:
@@ -90,12 +101,32 @@ def main() -> None:
             if TOKEN_PATTERN.search(value):
                 _fail(f"runtimeEnvironmentVariables entry {name!r} looks like a raw GitHub token")
 
+            # Generalized guard (2026-07-28): `OPENROUTER_API_KEY` sat here as a plaintext
+            # literal for months, echoed in full by `apprunner describe-service` and the
+            # console to anyone holding `apprunner:DescribeService` -- the exact leak the
+            # GitHub-token rule above prevents, in the same list, just under a name the
+            # GitHub-specific check never looked at. Secret-NAMED entries are only allowed
+            # when they carry a CloudFormation reference (an ARN/Ref that App Runner
+            # resolves privately) rather than a literal value; a real secret value belongs
+            # in `RuntimeEnvironmentSecrets`, never here.
+            if _SECRET_NAME_PATTERN.search(name) and not _is_cfn_reference(entry.get("Value")):
+                if not name.upper().endswith(("_SECRET_NAME", "_SECRET_ARN")):
+                    _fail(
+                        f"runtimeEnvironmentVariables entry {name!r} has a secret-suggesting "
+                        "name with a literal value -- App Runner echoes these in plaintext via "
+                        "describe-service/console. Move it to runtimeEnvironmentSecrets (an ARN "
+                        "reference), or, if it is genuinely only a secret's NAME, suffix it "
+                        "_SECRET_NAME."
+                    )
+
     # 4) Defense-in-depth: no literal GitHub token ever landed in the synthesized
     #    template text itself.
     if TOKEN_PATTERN.search(template_path.read_text()):
         _fail("a GitHub token-shaped literal appears in the synthesized template")
 
-    print("OK: GitHub token secret + instance-role grantRead + no plaintext env var")
+    print(
+        "OK: GitHub token secret + instance-role grantRead + no plaintext secret env vars"
+    )
 
 
 if __name__ == "__main__":
