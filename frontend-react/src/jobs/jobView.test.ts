@@ -51,4 +51,21 @@ describe("jobView", () => {
     expect(view.failureReason).toBeUndefined();
     expect(view.commandOutput).toBeUndefined();
   });
+
+  it("surfaces modelBackend, defaulting to unknown for absent/missing values (R89)", () => {
+    // Known backend surfaced as-is
+    const deepseek = jobView({ id: "j1", state: "running", modelBackend: "deepseek" });
+    expect(deepseek.modelBackend).toBe("deepseek");
+
+    const sonnet = jobView({ id: "j2", state: "completed", modelBackend: "sonnet" });
+    expect(sonnet.modelBackend).toBe("sonnet");
+
+    // Absent → "unknown" (never a false default)
+    const missing = jobView({ id: "j3", state: "running" });
+    expect(missing.modelBackend).toBe("unknown");
+
+    // Empty string → "unknown"
+    const empty = jobView({ id: "j4", state: "failed", modelBackend: "" });
+    expect(empty.modelBackend).toBe("unknown");
+  });
 });

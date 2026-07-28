@@ -154,6 +154,7 @@ def test_a_successful_integration_sequence_marks_the_job_completed_with_branch_a
     assert job_view(job) == {
         "id": "job-1",
         "state": "completed",
+        "modelBackend": "unknown",
         "branch": "job/job-1",
         "pr_url": "https://github.com/acme/widgets/pull/9",
     }

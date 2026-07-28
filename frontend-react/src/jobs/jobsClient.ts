@@ -25,6 +25,8 @@ interface JobsResponse {
     id: string;
     state: JobSummary["state"];
     lastActivityAtMs?: number;
+    /** R89: the model backend active when this job was launched. */
+    modelBackend?: string;
   }>;
 }
 

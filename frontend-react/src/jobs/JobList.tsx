@@ -17,6 +17,9 @@ function JobRow({ job, grouped }: { job: Job; grouped: boolean }) {
     >
       <span className="job-row-title">{job.title}</span>
       <span className="job-row-state">{job.state}</span>
+      <span className="job-row-backend" title="Model backend at launch">
+        {job.modelBackend}
+      </span>
     </li>
   );
 }

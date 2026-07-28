@@ -17,6 +17,8 @@ export type { JobState };
 export interface JobRow {
   id: string;
   state: JobState;
+  /** R89: the model backend active when this job was launched (sonnet|deepseek|unknown). */
+  modelBackend?: string;
   branch?: string | null;
   prUrl?: string | null;
   failureReason?: string | null;
@@ -27,6 +29,8 @@ export interface JobRow {
 export interface JobView {
   id: string;
   state: JobState;
+  /** R89: the model backend active when this job was launched (sonnet|deepseek|unknown). */
+  modelBackend: string;
   branch?: string;
   prUrl?: string;
   failureReason?: string;
@@ -41,7 +45,13 @@ const FAILED_STATES: readonly JobState[] = ["failed", "needs-attention"];
  * `failed`/`needs-attention`. Every other state (still in flight) exposes neither pair.
  */
 export function jobView(job: JobRow): JobView {
-  const view: JobView = { id: job.id, state: job.state };
+  const view: JobView = {
+    id: job.id,
+    state: job.state,
+    // R89: surface the model backend in the per-job detail — defaults to "unknown"
+    // for jobs launched before this field existed, never a false default.
+    modelBackend: job.modelBackend || "unknown",
+  };
   if (job.state === "completed") {
     view.branch = job.branch ?? undefined;
     view.prUrl = job.prUrl ?? undefined;

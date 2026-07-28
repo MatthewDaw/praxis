@@ -110,7 +110,11 @@ def job_view(job: "Job") -> dict[str, object]:
     reason together with the output of the command that produced it. State-specific fields are
     omitted (never fabricated) for a job that hasn't reached that state.
     """
-    view: dict[str, object] = {"id": job.id, "state": job.state.value}
+    view: dict[str, object] = {
+        "id": job.id,
+        "state": job.state.value,
+        "modelBackend": job.model_backend or "unknown",
+    }
     if job.state is JobState.COMPLETED:
         view["branch"] = job.branch
         view["pr_url"] = job.pr_url
@@ -196,6 +200,10 @@ class Job:
     #: :func:`mark_completed` when integration succeeds.
     branch: str | None = None
     pr_url: str | None = None
+    #: The model backend (``sonnet`` | ``deepseek``) active at the moment the job's session was
+    #: launched (R89). ``None`` for a job launched before this field existed — surfaced as an
+    #: explicit ``unknown`` value in views, never a false default.
+    model_backend: str | None = None
     group_id: str | None = None
     org: str = "default"
     claim_lease: Lease | None = None
