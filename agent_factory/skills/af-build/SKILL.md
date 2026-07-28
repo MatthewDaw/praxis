@@ -736,7 +736,17 @@ generator** — used only for the residue with no deterministic oracle, and only
 (form-filling, video) verifies by **human confirmation**: in an unattended run a low-confidence non-coding
 step **parks** a checkpoint for batch review; high-confidence steps proceed. For any acceptance criterion
 tagged **manual** (af-plan), in an attended run pause and hand it off for human confirmation; in an
-unattended run record it as a deferred owned decision and proceed. **A `verify="manual"` requirement's
+unattended run record it as a deferred owned decision and proceed.
+
+**NEVER emit a question and wait for a reply.** An unattended session has no one to answer it: the
+prompt sits on screen forever, the ticket never finishes, and the watchdog cannot even reap it because
+the spinner keeps animating so the pane never looks frozen. Observed 2026-07-28 — an appeal_engine
+session sat 24 minutes at 83% context on the literal text *"Do you confirm this satisfies the
+acceptance condition?"*, blocking its whole project until it was killed by hand. This applies to EVERY
+phrasing of it (asking for confirmation, approval, a preference, or "should I proceed?"), not just
+`verify="manual"` requirements. If you genuinely need a human, you have exactly two legitimate moves:
+record the deferred decision and PROCEED, or `block(cid, owner, reason)` and move to the next ticket.
+Stopping to ask is never one of them. **A `verify="manual"` requirement's
 pass counts only when it carries a human signal** — record it with `record_validation_pass(cid, vid,
 passed=True, source="human", ref=PLAN)`, never the default `source="worker"`. `all_validations_passed`
 refuses a manual requirement that was only worker-self-certified, so a worker-sourced self-pass leaves the

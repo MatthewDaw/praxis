@@ -302,6 +302,18 @@ while :; do
     if echo "$pane" | grep -qiE "please run /login|invalid api key|authentication_error"; then
       say "auth error, ending wait"; break
     fi
+    # A BILLING failure is terminal for the whole run, not a per-ticket blip: every
+    # subsequent session 402s the instant it starts, so restarting just burns a fresh
+    # STALL_POLLS window per ticket forever. Observed 2026-07-28: the DeepSeek balance
+    # ran out at 11:08 and the loop churned 46 stall/restart cycles over ~6 HOURS
+    # without completing anything, because the auth check above does not match a 402
+    # and a 402'd pane is otherwise indistinguishable from a frozen one. Halt loudly.
+    if echo "$pane" | grep -qiE "insufficient balance|402|quota exceeded|billing|payment required|credit balance is too low"; then
+      say "BILLING FAILURE (out of credits/quota) — halting the whole loop; top up and relaunch"
+      commit_wip
+      tmux kill-session -t "$SESSION" 2>/dev/null || true
+      exit 3
+    fi
     pane_hash=$(printf '%s' "$pane" | md5sum | cut -d' ' -f1)
     if [ "$pane_hash" = "$last_hash" ]; then
       same_count=$((same_count+1))
