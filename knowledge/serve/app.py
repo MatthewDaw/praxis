@@ -82,6 +82,10 @@ from knowledge.llm.llm_variants.openrouter_llm import OpenRouterLlm  # noqa: E40
 from knowledge.serve import batch_writer, db, graph_adapter  # noqa: E402
 from knowledge.serve import productivity_route  # noqa: E402
 from knowledge.serve.box_service_activity_tail import ActivityTailStore  # noqa: E402
+from knowledge.serve.box_service_backends import (  # noqa: E402
+    read_active_backend,
+    write_active_backend,
+)
 from knowledge.serve.box_service_jobs_view import order_jobs_for_view  # noqa: E402
 from knowledge.serve.box_service_store import JobStore  # noqa: E402
 from knowledge.serve.job_authz import (  # noqa: E402
@@ -1468,6 +1472,48 @@ def create_app(conn: Any | None = None) -> FastAPI:
         except AuthorizationError as exc:
             raise HTTPException(status_code=403, detail=str(exc))
         return {"jobId": job_id, "activity": activity}
+
+    # --- model-backend management (R88) ------------------------------------
+    @app.get("/backends/active")
+    def view_backend(
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Return the box's currently-active model backend (R88).
+
+        Any authenticated principal in the box's org may read it (mirrors the
+        permissive read authorisation used for job listings — org membership is
+        the only gate).
+        """
+        try:
+            backend = read_active_backend()
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+        return {"backend": backend}
+
+    @app.put("/backends/active")
+    def switch_backend(
+        body: dict[str, Any],
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """Switch the box's active model backend (R88).
+
+        Only an authenticated principal in the box's org may switch it —
+        mirroring the operator-scoped authorisation used for job-control actions
+        (resume, cancel).  Takes effect for sessions launched *after* the call;
+        sessions already running are never interrupted.
+        """
+        choice = str(body.get("backend", "")).strip()
+        if not choice:
+            raise HTTPException(status_code=400, detail="non-empty 'backend' field required")
+        try:
+            write_active_backend(choice)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"backend": choice}
 
     # --- snapshots (org-shared saved graph states inside a space) ----------
     @app.get("/snapshots")

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 
+from knowledge.serve.box_service_backends import backend_session_credential
 from knowledge.serve.box_service_models import Job, JobState, SessionInfo
 from knowledge.serve.build_session_env import build_session_environment, default_job_home
 from knowledge.serve.session_launcher import SessionLauncher
@@ -59,6 +60,14 @@ def launch_job_session(
     session_env = env if env is not None else build_session_environment(
         os.environ, home_dir=default_job_home(job.worktree_path)
     )
+    # R88: inject the active model-backend's credential into the launched session's
+    # environment so the session knows which API key to use.  Only the selected
+    # backend's credential is exposed — the other is never set (exclusivity guarantee).
+    # An unprovisioned box (no backend file yet, or no credential for the chosen
+    # backend) gets an empty injection — the session will still fail fast if no
+    # credential is available by any other path, rather than silently using the wrong
+    # one.
+    session_env = {**session_env, **backend_session_credential()}
     job.session_id = launcher.launch(
         cwd=job.worktree_path, command=command, name=job.id, extra_args=extra_args, env=session_env
     )

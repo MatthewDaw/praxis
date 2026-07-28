@@ -445,6 +445,73 @@ def praxis_job_activity(job_id: str) -> str:
 
 
 @mcp.tool()
+def praxis_view_backend() -> str:
+    """View the box's currently-active model backend (sonnet or deepseek) (R88).
+
+    Any authenticated operator in the box's org may view it — org membership is
+    the only gate for reads, mirroring the read-authorisation pattern used for
+    job listings.
+
+    Returns a human summary and a ``{"backend": "sonnet"|"deepseek"}`` block.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/backends/active",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    payload = resp.json()
+    backend = payload.get("backend", "")
+    return _structured(
+        f"Active model backend: {backend}.",
+        payload,
+    )
+
+
+@mcp.tool()
+def praxis_switch_backend(backend: str) -> str:
+    """Switch the box's active model backend to ``backend`` (``"sonnet"`` or
+    ``"deepseek"``) (R88).
+
+    Only an authenticated operator in the box's org may switch — mirroring the
+    operator-scoped authorisation used for job-control actions (resume, cancel).
+    Takes effect for sessions launched *after* the call; sessions already
+    running are never interrupted.  Persists the choice the same machine-wide
+    way ``af-backend`` does, with the same exclusivity guarantee (only the
+    selected backend's credential is exposed to launched sessions).
+
+    Pass ``"sonnet"`` or ``"deepseek"``.  Returns the new active backend on
+    success.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    if not backend or not backend.strip():
+        return "Pass a non-empty backend ('sonnet' or 'deepseek')."
+    try:
+        resp = httpx.put(
+            f"{identity.api_base()}/backends/active",
+            json={"backend": backend.strip()},
+            headers=_headers(),
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 400:
+            return f"Invalid backend: {exc.response.text}"
+        return _friendly(exc)
+    payload = resp.json()
+    return _structured(
+        f"Active model backend switched to {payload.get('backend', '')}.",
+        payload,
+    )
+
+
+@mcp.tool()
 def praxis_get_fact(cid: str, space: str | None = None, snapshot: str | None = None) -> str:
     """Fetch one fact's full detail, including its writer-supplied ``meta``.
 
