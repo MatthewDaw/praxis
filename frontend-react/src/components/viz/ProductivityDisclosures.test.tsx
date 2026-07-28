@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ProductivitySeries } from "../../api/contract";
 import {
   DEFAULT_STATIC_CAVEATS,
+  formatShortDate,
   ProductivitySeriesChart,
+  TicketsCompletedChart,
   type ProductivityDisclosures,
 } from "./ProductivitySeriesChart";
 
@@ -17,10 +19,13 @@ const SERIES: ProductivitySeries = {
   ticketsCompleted: [{ bucketStart: "2026-07-01", value: 1 }],
 };
 
+const TICKET_HISTORY_START = "2026-06-01T00:00:00+00:00";
+
 // Every disclosure condition D31 enumerates, on one load: the two static
-// caveats (branch/fork exclusion, fixed timezone), four per-load conditions
-// (rate-limited, N-unattributed, showing-first-N, stale-age), and the S4
-// ticket-history start date.
+// caveats (branch/fork exclusion, fixed timezone) and four per-load conditions
+// (rate-limited, N-unattributed, showing-first-N, stale-age). The S4
+// ticket-history start date is a separate chart's own prop (below), not part
+// of this disclosures object.
 const FULL_DISCLOSURES: ProductivityDisclosures = {
   staticCaveats: DEFAULT_STATIC_CAVEATS,
   perLoadConditions: [
@@ -29,7 +34,6 @@ const FULL_DISCLOSURES: ProductivityDisclosures = {
     "Showing only the first 500 of 1,240 matching points.",
     "Stale — this data was last refreshed 3 days ago.",
   ],
-  ticketHistoryStart: "2026-06-01",
 };
 
 afterEach(() => {
@@ -62,15 +66,14 @@ describe("ProductivitySeriesChart disclosures (R24)", () => {
     }
   });
 
-  it("captions the ticket-history start date inline beside the S4 legend entry, not in the shared footnote", () => {
-    render(<ProductivitySeriesChart series={SERIES} disclosures={FULL_DISCLOSURES} />);
+  it("captions the ticket-history start date inline beside the S4 legend entry, on the tickets chart itself", () => {
+    render(
+      <TicketsCompletedChart series={SERIES} instrumentationDate={TICKET_HISTORY_START} />,
+    );
 
     const caption = screen.getByTestId("productivity-s4-caption");
-    expect(caption).toHaveTextContent("2026-06-01");
+    expect(caption).toHaveTextContent(formatShortDate(TICKET_HISTORY_START));
     expect(caption.closest("li")).toHaveTextContent("Tickets completed (S4)");
-
-    const strip = screen.getByTestId("productivity-footnote-strip");
-    expect(strip).not.toHaveTextContent("2026-06-01");
   });
 
   it("states the default-branch-only, fork-exclusion, squash-attribution and other-owner-exclusion caveats (R26)", () => {
@@ -90,7 +93,7 @@ describe("ProductivitySeriesChart disclosures (R24)", () => {
     expect(strip).toHaveTextContent(/other individuals|owned by other/i);
   });
 
-  it("never drops a disclosure: no condition, caveat, or the start date, is entirely absent from the DOM", async () => {
+  it("never drops a disclosure: no condition or caveat is entirely absent from the DOM", async () => {
     render(<ProductivitySeriesChart series={SERIES} disclosures={FULL_DISCLOSURES} />);
 
     const affordance = screen.getByTestId("productivity-info-affordance");
@@ -102,8 +105,12 @@ describe("ProductivitySeriesChart disclosures (R24)", () => {
     for (const condition of FULL_DISCLOSURES.perLoadConditions) {
       expect(screen.getByText(condition)).toBeInTheDocument();
     }
-    expect(screen.getByTestId("productivity-s4-caption")).toHaveTextContent(
-      FULL_DISCLOSURES.ticketHistoryStart as string,
+  });
+
+  it("never drops the S4 ticket-history start date from the tickets chart's own legend", () => {
+    render(
+      <TicketsCompletedChart series={SERIES} instrumentationDate={TICKET_HISTORY_START} />,
     );
+    expect(screen.getByTestId("productivity-s4-caption")).toBeInTheDocument();
   });
 });

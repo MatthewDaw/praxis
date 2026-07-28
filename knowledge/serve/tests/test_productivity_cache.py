@@ -103,6 +103,40 @@ def test_second_identical_request_served_from_cache_without_github_call(ctx, mon
     assert body1["series"] == body2["series"]
 
 
+def test_bucket_unit_is_part_of_the_cache_key(ctx, monkeypatch):
+    """Two requests for the same range but different bin-by selections must NOT
+    share a cached response -- each ``bucket_unit`` gets its own GitHub call and
+    its own cache entry."""
+    monkeypatch.setenv("PRAXIS_DEV_USER_EMAIL", OWNER_EMAIL)
+    client, org = ctx["client"], ctx["org"]
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        productivity_route.github_commits, "fetch_commit_activity", _fake_fetch(calls)
+    )
+
+    res_default = client.get(
+        "/productivity", params={"range": "4weeks"}, headers={"X-Praxis-Org": org},
+    )
+    res_week = client.get(
+        "/productivity", params={"range": "4weeks", "bucketUnit": "week"},
+        headers={"X-Praxis-Org": org},
+    )
+    assert res_default.status_code == 200, res_default.text
+    assert res_week.status_code == 200, res_week.text
+    assert calls["n"] == 2, "a different bucket_unit must miss the cache and re-fetch"
+    assert res_default.json()["bucket_unit"] == "day"
+    assert res_week.json()["bucket_unit"] == "week"
+
+    # Repeating the week-bucketed request now hits cache -- no third GitHub call.
+    res_week_again = client.get(
+        "/productivity", params={"range": "4weeks", "bucketUnit": "week"},
+        headers={"X-Praxis-Org": org},
+    )
+    assert res_week_again.status_code == 200, res_week_again.text
+    assert calls["n"] == 2
+    assert res_week_again.json()["computed_at"] == res_week.json()["computed_at"]
+
+
 def test_request_past_ttl_is_a_genuine_miss_with_a_fresh_computed_at(ctx, monkeypatch):
     """Unit-level: a request whose cache entry has aged past its TTL is a miss
     (exercises :func:`productivity_cache.get`/``put`` directly with an explicit
@@ -110,7 +144,7 @@ def test_request_past_ttl_is_a_genuine_miss_with_a_fresh_computed_at(ctx, monkey
     monkeypatch.setenv("PRODUCTIVITY_CACHE_SHORT_TTL_SECONDS", "60")
     org, uid, range_ = ctx["org"], "dev-user", "week"
 
-    productivity_cache.put(org, uid, range_, {"computed_at": "t0"}, now=1_000_000.0)
+    productivity_cache.put(org, uid, range_, "", {"computed_at": "t0"}, now=1_000_000.0)
     assert productivity_cache.get(org, uid, range_, now=1_000_030.0) is not None  # inside TTL
     assert productivity_cache.get(org, uid, range_, now=1_000_061.0) is None  # past the 60s TTL
 

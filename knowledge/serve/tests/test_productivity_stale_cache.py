@@ -114,7 +114,7 @@ def test_failure_with_no_prior_cache_returns_the_truncated_result_unmarked_stale
 
 
 def test_get_stale_survives_ttl_eviction_of_the_fresh_store():
-    productivity_cache.put("org-1", "user-1", "week", {"computed_at": "t0", "v": 1}, now=0.0)
+    productivity_cache.put("org-1", "user-1", "week", "", {"computed_at": "t0", "v": 1}, now=0.0)
     # Expire the TTL-bound entry directly...
     assert productivity_cache.get("org-1", "user-1", "week", now=10_000.0) is None
     # ...but the last-known-good entry is untouched.

@@ -2495,6 +2495,50 @@ code,
   font-size: 0.88rem;
 }
 
+/* Collapsible per-repo / per-org breakdown sections — same disclosure idiom as
+   `.mount-switcher__bar`: a full-width button bar with a ▸/▾ chevron. */
+.productivity-panel__breakdown {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
+.productivity-panel__breakdown-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+.productivity-panel__breakdown-chevron {
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.productivity-panel__breakdown-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--h2);
+}
+
+.productivity-panel__breakdown-count {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.productivity-panel__breakdown-body {
+  margin-top: var(--space-3);
+}
+
 .productivity-panel__stale-notice {
   display: flex;
   align-items: center;
@@ -4388,6 +4432,45 @@ li.eval-runner__entry.is-checked {
   white-space: nowrap;
 }
 
+.productivity-chart {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.productivity-chart + .productivity-chart {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
+.productivity-chart__title {
+  margin: 0 0 var(--space-2);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--h2);
+}
+
+.productivity-chart__heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.productivity-chart__heading .productivity-chart__title {
+  margin: 0 0 var(--space-2);
+}
+
+.productivity-chart__bucket-caption {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
 .productivity-chart__legend {
   display: flex;
   flex-wrap: wrap;
@@ -4396,6 +4479,37 @@ li.eval-runner__entry.is-checked {
   margin: 0;
   padding: 0;
   font-size: 0.8rem;
+}
+
+/* Legend entries double as visibility toggles for the lines-of-code series; a toggled-off
+   entry stays readable but visibly de-emphasised (muted + struck through). */
+.productivity-chart__legend-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.productivity-chart__legend-toggle--off {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.productivity-chart__legend-toggle--off .productivity-chart__legend-swatch {
+  opacity: 0.35;
+}
+
+.productivity-chart__legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
 }
 
 .productivity-chart__s4-caption {

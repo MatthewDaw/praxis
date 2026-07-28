@@ -118,3 +118,56 @@ def test_fetch_uncached_degrades_to_none_on_failure():
     client = _FakeClient(value=None)
     with mock.patch("boto3.client", return_value=client):
         assert github_token.fetch_github_token_uncached() is None
+
+
+# --- local-dev override (PRAXIS_GITHUB_TOKEN) -----------------------------
+
+
+def test_local_override_wins_over_secrets_manager(monkeypatch):
+    """A developer running the server locally points it at their own `gh auth token`, which
+    can reach private org-owned repos the deployed fine-grained PAT cannot see at all."""
+    monkeypatch.setenv(
+        github_token.LOCAL_TOKEN_ENV_VAR, _fake_token("localdevvalue00000000000")
+    )
+    calls: list = []
+    client = _FakeClient(value=_fake_token("secretsmanagervalue000000"), calls=calls)
+    with mock.patch("boto3.client", return_value=client):
+        assert github_token.resolve_github_token() == _fake_token("localdevvalue00000000000")
+    assert calls == []  # Secrets Manager is never even consulted.
+
+
+def test_local_override_also_applies_to_the_uncached_reader(monkeypatch):
+    """The box service's push path reads uncached; it must see the same local credential
+    rather than silently authenticating as a different identity than the cached readers."""
+    monkeypatch.setenv(
+        github_token.LOCAL_TOKEN_ENV_VAR, _fake_token("localdevvalue00000000000")
+    )
+    client = _FakeClient(value=_fake_token("secretsmanagervalue000000"))
+    with mock.patch("boto3.client", return_value=client):
+        assert (
+            github_token.fetch_github_token_uncached()
+            == _fake_token("localdevvalue00000000000")
+        )
+
+
+def test_blank_local_override_falls_through_to_secrets_manager(monkeypatch):
+    """An exported-but-empty variable must not authenticate every GitHub call as an empty
+    bearer token -- it reads as "unset" and the normal deployed path still applies."""
+    monkeypatch.setenv(github_token.LOCAL_TOKEN_ENV_VAR, "   ")
+    client = _FakeClient(value=_fake_token("secretsmanagervalue000000"))
+    with mock.patch("boto3.client", return_value=client):
+        assert (
+            github_token.resolve_github_token() == _fake_token("secretsmanagervalue000000")
+        )
+
+
+def test_local_override_is_not_the_deploy_time_github_token_var(monkeypatch):
+    """``GITHUB_TOKEN`` is CDK's DEPLOY-time seed var; a developer with it exported for some
+    unrelated tool must not silently redirect the running server's credential."""
+    monkeypatch.delenv(github_token.LOCAL_TOKEN_ENV_VAR, raising=False)
+    monkeypatch.setenv("GITHUB_TOKEN", _fake_token("unrelatedtoolvalue0000000"))
+    client = _FakeClient(value=_fake_token("secretsmanagervalue000000"))
+    with mock.patch("boto3.client", return_value=client):
+        assert (
+            github_token.resolve_github_token() == _fake_token("secretsmanagervalue000000")
+        )

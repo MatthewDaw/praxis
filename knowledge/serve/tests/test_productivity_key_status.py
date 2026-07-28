@@ -91,7 +91,7 @@ def test_key_status_result_is_never_cached(monkeypatch):
 
     calls = {"n": 0}
 
-    def _build_series(conn, org_id, range_, *, now=None):
+    def _build_series(conn, org_id, range_, *, user_id="", now=None, bucket_unit=""):
         calls["n"] += 1
         return {"key_status": productivity_route.KEY_STATUS_MISSING}
 

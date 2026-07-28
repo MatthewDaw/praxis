@@ -3181,6 +3181,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
     def productivity(
         range: str = "week",
         force: bool = False,
+        bucketUnit: str = "",
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
@@ -3200,6 +3201,12 @@ def create_app(conn: Any | None = None) -> FastAPI:
         the cache READ for this one request; the per-principal global rate limit
         (``knowledge.serve.rate_limit``) still applies, so a client cannot bypass both
         the cache and the server-side request budget at once.
+
+        ``bucketUnit`` (the "bin by" control) is optional: empty/absent means "use this
+        range's default bucket width", exactly as before this param existed. When
+        non-empty it must be one of ``productivity_route.ALLOWED_BUCKET_UNITS``
+        (``"day"``/``"week"``/``"month"``) or the request is rejected with 400, mirroring
+        the ``range`` validation immediately below.
         """
         if productivity_route.kill_switch_enabled():
             return {"status": "disabled"}
@@ -3210,7 +3217,17 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 status_code=400,
                 detail=f"unknown range {range!r}; expected one of {sorted(productivity_route.ALLOWED_RANGES)}",
             )
-        return productivity_route.get_series_cached(conn, org, uid, range, force=force)
+        if bucketUnit and bucketUnit not in productivity_route.ALLOWED_BUCKET_UNITS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"unknown bucketUnit {bucketUnit!r}; expected one of "
+                    f"{sorted(productivity_route.ALLOWED_BUCKET_UNITS)}"
+                ),
+            )
+        return productivity_route.get_series_cached(
+            conn, org, uid, range, force=force, bucket_unit=bucketUnit
+        )
 
     @app.get("/productivity/buckets")
     def productivity_buckets(

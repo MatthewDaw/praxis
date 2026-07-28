@@ -123,6 +123,14 @@ export const PRODUCTIVITY_RANGES = [
 
 export type ProductivityRange = (typeof PRODUCTIVITY_RANGES)[number];
 
+// The "bin by" bucket-width override (independent of `range`, which only picks the
+// window span): a caller may explicitly request "day"/"week"/"month". "hour" is
+// deliberately excluded — it's an implicit-only default for range="day", never an
+// explicit override — mirroring the backend's `ALLOWED_BUCKET_UNITS`.
+export const PRODUCTIVITY_BUCKET_UNITS = ["day", "week", "month"] as const;
+
+export type ProductivityBucketUnit = (typeof PRODUCTIVITY_BUCKET_UNITS)[number];
+
 export interface ProductivitySeriesPoint {
   bucketStart: string;
   value: number;
@@ -132,6 +140,22 @@ export interface ProductivitySeries {
   linesAdded: ProductivitySeriesPoint[];
   linesDeleted: ProductivitySeriesPoint[];
   netLines: ProductivitySeriesPoint[];
+  ticketsCompleted: ProductivitySeriesPoint[];
+}
+
+/** The lines-of-code series (S1-S3 only -- S4 tickets-completed has no per-repo meaning,
+ * a GitHub repo is never joined to a Praxis project) for a single tracked repo. */
+export interface ProductivityRepoSeries {
+  linesAdded: ProductivitySeriesPoint[];
+  linesDeleted: ProductivitySeriesPoint[];
+  netLines: ProductivitySeriesPoint[];
+}
+
+/** The ticket series (S4 only -- S1-S3 have no per-org meaning, a GitHub repo is never
+ * joined to a Praxis org) for a single org the requesting user belongs to. */
+export interface ProductivityOrgSeries {
+  /** Human-facing org name; falls back to the org id when the backend omits one. */
+  name: string;
   ticketsCompleted: ProductivitySeriesPoint[];
 }
 
@@ -172,6 +196,15 @@ export interface ProductivityResponse {
    * "hourly"/"daily"/"weekly"/"monthly" — drives the chart's x-axis relabeling. */
   bucketUnit: string;
   series: ProductivitySeries;
+  /** S1-S3 broken down per tracked repo (keyed by `"owner/name"`), for every repo that
+   * returned real commit data this call -- a repo whose fetch failed is simply absent,
+   * never a confirmed-zero entry. `series` above always stays the summed total across
+   * every repo, so a caller can render one aggregate chart plus one small chart per repo. */
+  seriesByRepo: Record<string, ProductivityRepoSeries>;
+  /** S4 broken down per org the user belongs to (keyed by org id). Absent from older
+   * backends, in which case this is `{}` and no per-org breakdown renders. `series`
+   * above always stays the summed total across every org. */
+  seriesByOrg: Record<string, ProductivityOrgSeries>;
   /** The earliest `finished_at` ever recorded org-wide (S4's instrumentation
    * start date, R27/D27) — `null` when no ticket has ever finished. A range
    * whose start precedes this date means S4 has no real data before it: the
@@ -205,6 +238,41 @@ const SERIES_KEY_BY_RAW: Record<string, keyof ProductivitySeries> = {
   s3_net_lines: "netLines",
   s4_tickets_completed: "ticketsCompleted",
 };
+
+function toRepoSeries(raw: unknown): ProductivityRepoSeries {
+  const row = (raw ?? {}) as Record<string, unknown>;
+  return {
+    linesAdded: toSeriesPoints(row.s1_lines_added),
+    linesDeleted: toSeriesPoints(row.s2_lines_deleted),
+    netLines: toSeriesPoints(row.s3_net_lines),
+  };
+}
+
+function toSeriesByRepo(raw: unknown): Record<string, ProductivityRepoSeries> {
+  const row = (raw ?? {}) as Record<string, unknown>;
+  const out: Record<string, ProductivityRepoSeries> = {};
+  for (const [repo, repoSeries] of Object.entries(row)) {
+    out[repo] = toRepoSeries(repoSeries);
+  }
+  return out;
+}
+
+function toOrgSeries(raw: unknown, orgId: string): ProductivityOrgSeries {
+  const row = (raw ?? {}) as Record<string, unknown>;
+  return {
+    name: typeof row.name === "string" && row.name ? row.name : orgId,
+    ticketsCompleted: toSeriesPoints(row.s4_tickets_completed ?? row.ticketsCompleted),
+  };
+}
+
+function toSeriesByOrg(raw: unknown): Record<string, ProductivityOrgSeries> {
+  const row = (raw ?? {}) as Record<string, unknown>;
+  const out: Record<string, ProductivityOrgSeries> = {};
+  for (const [orgId, orgSeries] of Object.entries(row)) {
+    out[orgId] = toOrgSeries(orgSeries, orgId);
+  }
+  return out;
+}
 
 /** Parse a `GET /productivity` response body into the typed contract shape (R3/R33/R21). */
 export function parseProductivityResponse(payload: unknown): ProductivityResponse {
@@ -242,6 +310,8 @@ export function parseProductivityResponse(payload: unknown): ProductivityRespons
       netLines: toSeriesPoints(series.s3_net_lines),
       ticketsCompleted: toSeriesPoints(series.s4_tickets_completed),
     },
+    seriesByRepo: toSeriesByRepo(root.series_by_repo),
+    seriesByOrg: toSeriesByOrg(root.series_by_org),
     s4InstrumentationDate:
       typeof root.s4_instrumentation_date === "string" ? root.s4_instrumentation_date : null,
     ...(keyStatus ? { keyStatus } : {}),

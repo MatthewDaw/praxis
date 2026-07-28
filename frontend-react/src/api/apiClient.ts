@@ -8,6 +8,7 @@ import {
   buildUpdateBody,
   contractHeaders,
   parseProductivityResponse,
+  type ProductivityBucketUnit,
   type ProductivityRange,
   type ProductivityResponse,
 } from "./contract";
@@ -1190,10 +1191,13 @@ export async function getProductivity(
   range: ProductivityRange,
   auth?: string | ApiDataProviderAuth,
   force?: boolean,
+  bucketUnit?: ProductivityBucketUnit,
 ): Promise<ProductivityResponse> {
   const root = apiBaseUrl.replace(/\/$/, "");
   const { token, orgId, spaceId } = await resolveToken(auth);
-  const query = `range=${encodeURIComponent(range)}${force ? "&force=true" : ""}`;
+  const query =
+    `range=${encodeURIComponent(range)}${force ? "&force=true" : ""}` +
+    (bucketUnit ? `&bucketUnit=${encodeURIComponent(bucketUnit)}` : "");
   const response = await fetch(`${root}/productivity?${query}`, {
     method: "GET",
     headers: contractHeaders(token, orgId, spaceId),

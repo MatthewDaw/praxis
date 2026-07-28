@@ -150,3 +150,91 @@ def test_route_response_carries_bucket_unit_for_week(ctx, monkeypatch):
     body = res.json()
     assert body["bucket_unit"] == "day"
     assert len(body["series"]["s1_lines_added"]) == 7
+
+
+# --- bucket_unit override (bin-by control) ---
+
+
+def test_bucket_plan_default_unchanged_when_bucket_unit_omitted():
+    """Regression: an empty/omitted ``bucket_unit`` must reproduce every range's
+    pre-existing default width/count exactly."""
+    for range_, expected_unit, expected_count in (
+        (productivity_route.DAY, "hour", 24),
+        (productivity_route.WEEK, "day", 7),
+        (productivity_route.FOUR_WEEKS, "day", 28),
+        (productivity_route.TWELVE_MONTHS, "week", 52),
+        (productivity_route.ALLTIME, "month", 60),
+    ):
+        bucket_starts, _seconds, _start, _end, unit = productivity_route.bucket_plan(
+            range_, NOW
+        )
+        assert unit == expected_unit
+        assert len(bucket_starts) == expected_count
+
+
+def test_bucket_plan_explicit_week_override_on_four_weeks_covers_same_span():
+    """``bucket_unit="week"`` on range=4weeks yields ~4 weekly buckets covering the
+    same 28-day span, not the default 28 daily buckets."""
+    bucket_starts, seconds, start, end, unit = productivity_route.bucket_plan(
+        productivity_route.FOUR_WEEKS, NOW, "week"
+    )
+    assert unit == "week"
+    assert seconds == 7 * 86400.0
+    assert len(bucket_starts) == 4
+    assert (end - start).days == 28
+
+
+def test_bucket_plan_explicit_month_override_on_week_range():
+    bucket_starts, seconds, _start, _end, unit = productivity_route.bucket_plan(
+        productivity_route.WEEK, NOW, "month"
+    )
+    assert unit == "month"
+    assert seconds == 30 * 86400.0
+    # A 7-day span covered by 30-day buckets rounds up to a single bucket.
+    assert len(bucket_starts) == 1
+
+
+def test_bucket_plan_explicit_day_override_on_twelve_months():
+    bucket_starts, seconds, _start, _end, unit = productivity_route.bucket_plan(
+        productivity_route.TWELVE_MONTHS, NOW, "day"
+    )
+    assert unit == "day"
+    assert seconds == 86400.0
+    assert len(bucket_starts) >= 360  # ~364-day span in daily buckets
+
+
+def test_bucket_plan_rejects_hour_as_an_explicit_override():
+    """"hour" is an implicit-only default for range=day; never a valid explicit
+    override for any range."""
+    with pytest.raises(ValueError):
+        productivity_route.bucket_plan(productivity_route.DAY, NOW, "hour")
+
+
+def test_bucket_plan_rejects_unknown_bucket_unit():
+    with pytest.raises(ValueError):
+        productivity_route.bucket_plan(productivity_route.WEEK, NOW, "fortnight")
+
+
+def test_route_bucket_unit_week_on_four_weeks_range_returns_four_buckets(ctx, monkeypatch):
+    monkeypatch.setenv("PRAXIS_DEV_USER_EMAIL", OWNER_EMAIL)
+    client, org = ctx["client"], ctx["org"]
+    res = client.get(
+        "/productivity",
+        params={"range": "4weeks", "bucketUnit": "week"},
+        headers={"X-Praxis-Org": org},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["bucket_unit"] == "week"
+    assert len(body["series"]["s1_lines_added"]) == 4
+
+
+def test_route_invalid_bucket_unit_is_400(ctx, monkeypatch):
+    monkeypatch.setenv("PRAXIS_DEV_USER_EMAIL", OWNER_EMAIL)
+    client, org = ctx["client"], ctx["org"]
+    res = client.get(
+        "/productivity",
+        params={"range": "week", "bucketUnit": "hour"},
+        headers={"X-Praxis-Org": org},
+    )
+    assert res.status_code == 400, res.text

@@ -42,6 +42,20 @@ export const DB_SECRET_NAME = 'praxis/knowledge-graph/db';
  */
 export const GITHUB_TOKEN_SECRET_NAME = 'praxis/github/token';
 
+/**
+ * Secrets Manager name holding the OpenRouter API key used by the runtime
+ * embed/judge/distillation paths. Like the GitHub token above, the secret
+ * resource itself is created in `backend-service-stack.ts`; this constant is
+ * only the shared name.
+ *
+ * The key reaches the container through App Runner's `RuntimeEnvironmentSecrets`
+ * (an ARN reference App Runner resolves at launch), NOT `RuntimeEnvironmentVariables`
+ * — the latter is echoed verbatim by `apprunner describe-service` and the console,
+ * which is exactly how this key sat readable in plaintext to anyone holding
+ * `apprunner:DescribeService` until 2026-07-28.
+ */
+export const OPENROUTER_API_KEY_SECRET_NAME = 'praxis/openrouter/api-key';
+
 /** Postgres database name created on the KG instance. */
 export const DB_NAME = 'praxis_kg';
 
