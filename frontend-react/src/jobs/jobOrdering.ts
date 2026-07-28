@@ -24,6 +24,8 @@ export interface JobSummary {
   /** Epoch ms of the last observed heartbeat/activity, or the queued timestamp for a
    * job never yet claimed. `undefined` when nothing has been observed yet. */
   lastActivityAtMs?: number;
+  /** R89: the model backend active when this job was launched (sonnet|deepseek|unknown). */
+  modelBackend?: string;
 }
 
 /** True iff `job` needs operator attention — see the module doc for the three conditions. */

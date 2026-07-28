@@ -1435,6 +1435,10 @@ def create_app(conn: Any | None = None) -> FastAPI:
             "needsAttention": needs_attention,
             "failureReason": job.failure_reason,
             "groupId": job.group_id,
+            # R89: surface the model backend the job actually ran on.  A job launched before
+            # this field existed (None) renders as "unknown" so the operator always sees an
+            # explicit value, never a misleading default.
+            "modelBackend": job.model_backend or "unknown",
         }
 
     @app.get("/jobs")

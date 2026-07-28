@@ -68,6 +68,14 @@ def launch_job_session(
     # credential is available by any other path, rather than silently using the wrong
     # one.
     session_env = {**session_env, **backend_session_credential()}
+    # R89: record which backend was active at launch time so the operator can later
+    # confirm which billing meter each job used.  Reads the same persisted setting
+    # R88's backend_session_credential() reads — no separate I/O.
+    from knowledge.serve.box_service_backends import read_active_backend
+    try:
+        job.model_backend = read_active_backend()
+    except (FileNotFoundError, ValueError):
+        pass  # unprovisioned box — stays None, surfaced as "unknown" in views
     job.session_id = launcher.launch(
         cwd=job.worktree_path, command=command, name=job.id, extra_args=extra_args, env=session_env
     )

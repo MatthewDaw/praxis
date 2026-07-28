@@ -23,6 +23,8 @@ export interface Job {
   id: string;
   title: string;
   state: JobState;
+  /** R89: the model backend active when launched (sonnet|deepseek|unknown). */
+  modelBackend: string;
   /** The shared-barrier batch this job belongs to, or null/undefined when it is not grouped. */
   groupId?: string | null;
 }

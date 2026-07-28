@@ -17,6 +17,8 @@ export interface JobSummary {
   state: JobState;
   attentionNeeded: boolean;
   failureReason: string | null;
+  /** R89: the model backend active when this job was launched (sonnet|deepseek|unknown). */
+  modelBackend: string;
 }
 
 /**
