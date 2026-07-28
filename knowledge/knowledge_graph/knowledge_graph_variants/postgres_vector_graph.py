@@ -2875,8 +2875,9 @@ class PostgresVectorGraph(SearchableGraph):
         return int(row[0]) if row else 0
 
     def cache_count(self, space: str, snapshot: str) -> int:
-        """How many facts are in the snapshot ``(space, snapshot)`` (0 == absent)."""
-        self._require_live("cache_count")
+        """How many facts are in the snapshot ``(space, snapshot)`` (0 == absent).
+        Works for both live graphs and snapshot-bound graphs — queries the
+        ``snapshots`` table directly."""
         row = self._conn.execute(
             "SELECT count(*) FROM snapshots WHERE org_id=%s AND space=%s AND snapshot=%s",
             (self.org_id, space, snapshot),

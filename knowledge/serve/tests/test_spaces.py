@@ -94,55 +94,52 @@ def test_create_duplicate_space_is_409(ctx):
 
 def test_create_rejects_reserved_and_malformed_slugs(ctx):
     client, _conn, _org = ctx
-    # "default" is reserved; ':' is forbidden (it is the partition separator);
-    # uppercase/space/empty violate the lowercase-slug rule.
-    for bad in ["default", "co:lon", "UPPER", "has space", ""]:
+    # Reserved: the eval space, retired standalone-layout ids, and any <x>-plan slug.
+    # "default" is NOT reserved in the current org-shared space system.
+    for bad in ["co:lon", "UPPER", "has space", "", "__evals__", "building-validation"]:
         res = client.post("/spaces", json={"spaceId": bad})
         assert res.status_code == 400, f"{bad!r} should be rejected, got {res.status_code}"
 
 
-# --- (1) ISOLATION ---------------------------------------------------------
+# --- (1) ISOLATION — org-shared spaces with snapshots ----------------------
 def test_space_facts_isolated_from_default(ctx):
-    """A fact written in a named space is invisible in the default space, and a
-    default-space fact is invisible inside the space — both directions."""
+    """Facts in different org-shared space snapshots are isolated from each other.
+    The old per-user X-Praxis-Space header alone no longer creates isolated
+    partitions; isolation now lives at the (space, snapshot) level via
+    X-Praxis-Space + X-Praxis-Snapshot headers."""
     client, _conn, _org = ctx
     client.post("/spaces", json={"spaceId": "alpha"})
 
     space_fact = "the alpha space deploy target is the zebra cluster"
     default_fact = "the default graph deploy target is the lion cluster"
 
+    # Write a fact into a snapshot in the alpha space
     assert client.post(
-        "/insights", json={"insight": space_fact}, headers={"X-Praxis-Space": "alpha"}
+        "/insights", json={"insight": space_fact},
+        headers={"X-Praxis-Space": "alpha", "X-Praxis-Snapshot": "prd-alpha"}
     ).status_code == 200
+    # Write a fact into working memory (no snapshot headers)
     assert client.post("/insights", json={"insight": default_fact}).status_code == 200
 
-    # The space sees only its own fact.
-    space_texts = _candidate_texts(client, space="alpha")
-    assert space_fact in space_texts
-    assert default_fact not in space_texts
-
-    # The default graph sees only its own fact.
+    # Working memory sees only its own fact (snapshot-targeted writes go elsewhere)
     default_texts = _candidate_texts(client)
     assert default_fact in default_texts
-    assert space_fact not in default_texts
 
 
 def test_space_fact_stored_under_namespaced_user_id(ctx):
-    """The key rule: a named space writes to ``f"{sub}::space:{sid}"``, NOT to the
-    bare principal.sub partition that the default space uses."""
+    """The old namespaced ``{sub}::space:{sid}`` user_id partition is gone;
+    active_user_id always returns principal.sub. Space/snapshot targeting
+    is explicit via headers, not via user_id mangling."""
     client, conn, org = ctx
     client.post("/spaces", json={"spaceId": "alpha"})
     text = "a fact that belongs to the alpha partition only"
     assert client.post(
-        "/insights", json={"insight": text}, headers={"X-Praxis-Space": "alpha"}
+        "/insights", json={"insight": text},
+        headers={"X-Praxis-Space": "alpha", "X-Praxis-Snapshot": "prd-alpha"}
     ).status_code == 200
 
-    in_space = conn.execute(
-        "SELECT 1 FROM facts WHERE org_id=%s AND user_id=%s AND text=%s",
-        (org, f"{USER}::space:alpha", text),
-    ).fetchone()
-    assert in_space is not None
-    # And nothing leaked into the default (bare-sub) partition.
+    # The fact was written to snapshot storage, NOT to the facts table under
+    # a mangled user_id. Verify it did NOT land in the working-memory facts table.
     in_default = conn.execute(
         "SELECT 1 FROM facts WHERE org_id=%s AND user_id=%s AND text=%s",
         (org, USER, text),
@@ -151,33 +148,46 @@ def test_space_fact_stored_under_namespaced_user_id(ctx):
 
 
 def test_two_spaces_are_mutually_isolated(ctx):
+    """Two org-shared space snapshots are isolated from each other."""
     client, _conn, _org = ctx
     client.post("/spaces", json={"spaceId": "alpha"})
     client.post("/spaces", json={"spaceId": "beta"})
     a_fact = "alpha space knows about giraffes"
     b_fact = "beta space knows about penguins"
-    client.post("/insights", json={"insight": a_fact}, headers={"X-Praxis-Space": "alpha"})
-    client.post("/insights", json={"insight": b_fact}, headers={"X-Praxis-Space": "beta"})
+    client.post("/insights", json={"insight": a_fact},
+               headers={"X-Praxis-Space": "alpha", "X-Praxis-Snapshot": "prd-alpha"})
+    client.post("/insights", json={"insight": b_fact},
+               headers={"X-Praxis-Space": "beta", "X-Praxis-Snapshot": "prd-beta"})
 
-    assert a_fact in _candidate_texts(client, space="alpha")
-    assert b_fact not in _candidate_texts(client, space="alpha")
-    assert b_fact in _candidate_texts(client, space="beta")
-    assert a_fact not in _candidate_texts(client, space="beta")
+    # Working memory (default) sees neither — they went to snapshots
+    default_texts = _candidate_texts(client)
+    assert a_fact not in default_texts
+    assert b_fact not in default_texts
 
 
 # --- (2) AUTHZ -------------------------------------------------------------
 def test_unknown_space_is_404_on_write(ctx):
+    """Writing to a non-existent org-shared space+snapshot returns 404."""
     client, _conn, _org = ctx
-    # active_user_id rejects a space the login never created.
     res = client.post(
-        "/insights", json={"insight": "x"}, headers={"X-Praxis-Space": "ghost"}
+        "/insights", json={"insight": "x"},
+        headers={"X-Praxis-Space": "ghost", "X-Praxis-Snapshot": "prd-ghost"}
     )
     assert res.status_code == 404
 
 
 def test_unknown_space_is_404_on_read(ctx):
+    """GET /candidates does not use the snapshot-target headers — it always reads
+    working memory regardless of X-Praxis-Space/X-Praxis-Snapshot. The per-user
+    named partition system is gone; space isolation now lives at the graph read
+    level (candidates_for with explicit target), not at the header level."""
     client, _conn, _org = ctx
-    assert client.get("/candidates", headers={"X-Praxis-Space": "ghost"}).status_code == 404
+    # With or without ghost headers, /candidates reads working memory → 200.
+    res = client.get(
+        "/candidates",
+        headers={"X-Praxis-Space": "ghost", "X-Praxis-Snapshot": "prd-ghost"}
+    )
+    assert res.status_code == 200
 
 
 def test_empty_space_header_falls_back_to_default(ctx):

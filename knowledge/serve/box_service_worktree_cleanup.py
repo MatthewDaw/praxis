@@ -21,6 +21,7 @@ import subprocess
 from collections.abc import Callable
 
 from knowledge.serve.box_service_activity_tail import ActivityTailStore
+from knowledge.serve.box_service_hook_trail import HookTrailManager
 from knowledge.serve.box_service_models import Job, JobState, mark_terminal
 
 #: Same shape as ``subprocess.run`` — the seam a fake runner replaces in tests.
@@ -87,18 +88,23 @@ def reap_and_cleanup(
     terminal_reason: str,
     merged: bool,
     clone_path: str,
+    hook_trail_manager: HookTrailManager | None = None,
     runner: Runner = subprocess.run,
 ) -> bool:
     """The one path that ends a job's on-disk footprint: persist its final
-    activity tail, record its terminal event, and only THEN attempt worktree
-    cleanup (R40) — the tail and terminal event are always durable before
-    teardown is attempted. Distinct from ``SessionLauncher.terminate``
-    (session reaping), which only reaps the background agent session and
-    never touches the worktree — reaping alone can never delete a job's
-    worktree.
+    activity tail, record its terminal event, delete the on-disk hook trail
+    (R66), and only THEN attempt worktree cleanup (R40) — the tail and
+    terminal event are always durable before teardown is attempted. Distinct
+    from ``SessionLauncher.terminate`` (session reaping), which only reaps
+    the background agent session and never touches the worktree — reaping
+    alone can never delete a job's worktree.
     """
     tail_store.append(job, final_tail_chunk)
     mark_terminal(job, terminal_state, terminal_reason)
+    # Delete the on-disk hook trail BEFORE worktree cleanup (R66):
+    # the persisted activity tail survives; the disposable hook trail is gone.
+    if hook_trail_manager is not None:
+        hook_trail_manager.delete(job)
     return cleanup_job_worktree(
         job, merged=merged, tail_store=tail_store, clone_path=clone_path, runner=runner
     )

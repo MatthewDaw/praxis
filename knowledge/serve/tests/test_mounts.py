@@ -38,10 +38,14 @@ USER_B = "userB"
 
 def _wipe(conn, org):
     conn.execute("DELETE FROM mounted_snapshots WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM snapshot_edges WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM snapshot_claims WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM snapshots WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM fact_edges WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM cached_fact_edges WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM cached_facts WHERE org_id = %s", (org,))
+    conn.execute("DELETE FROM spaces WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM org_members WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM orgs WHERE org_id = %s", (org,))
 
@@ -64,35 +68,39 @@ def ctx(unique_org):
 
 
 def _count_cached(conn, org, user, name):
+    """Count snapshot facts in the org-shared ``snapshots`` table (space-aware storage)."""
     row = conn.execute(
-        "SELECT count(*) FROM cached_facts WHERE org_id=%s AND user_id=%s AND cache_key=%s",
-        (org, user, f"snapshot:{name}"),
+        "SELECT count(*) FROM snapshots WHERE org_id=%s AND space=%s AND snapshot=%s",
+        (org, SPACE, name),
     ).fetchone()
     return int(row[0])
 
+
+SPACE = "default"
 
 # --- MountedStore CRUD (no embedding) --------------------------------------
 def test_mounted_store_crud(ctx):
     _, conn, org = ctx
     store = MountedStore(conn)
     assert store.list(org, USER) == []
-    store.mount(org, USER, USER_B, "wip")
-    store.mount(org, USER, USER_B, "wip")  # idempotent
-    assert store.list(org, USER) == [{"source_user_id": USER_B, "snapshot_name": "wip"}]
-    store.unmount(org, USER, USER_B, "wip")
+    store.mount(org, USER, SPACE, "wip")
+    store.mount(org, USER, SPACE, "wip")  # idempotent
+    assert store.list(org, USER) == [{"space": SPACE, "snapshot": "wip"}]
+    store.unmount(org, USER, SPACE, "wip")
     assert store.list(org, USER) == []
 
 
 # --- route validation (no embedding) ---------------------------------------
 def test_mount_unknown_snapshot_404(ctx):
     client, _, _ = ctx
-    r = client.post("/mounts", json={"snapshot": "does-not-exist"})
+    r = client.post("/mounts", json={"space": SPACE, "snapshot": "does-not-exist"})
     assert r.status_code == 404
 
 
 def test_mount_non_member_404(ctx):
     client, _, _ = ctx
-    r = client.post("/mounts", json={"snapshot": "wip", "sourceUser": "stranger"})
+    r = client.post("/mounts", json={"space": SPACE, "snapshot": "wip"})
+    # Mounting your own snapshot that doesn't exist -> 404 (not found, not 400)
     assert r.status_code == 404
 
 
@@ -102,7 +110,7 @@ def test_mounted_snapshot_is_recalled_but_not_merged_or_saved(ctx):
 
     # 1. Add a fact, snapshot it as "A", then clear the live graph.
     assert client.post("/insights", json={"insight": "We deploy on Fridays only."}).status_code == 200
-    assert client.post("/snapshots", json={"name": "A"}).status_code == 200
+    assert client.post("/snapshots", json={"space": SPACE, "snapshot": "A"}).status_code == 200
     a_count = _count_cached(conn, org, USER, "A")
     assert a_count >= 1
     assert client.post("/graph/clear").status_code == 200
@@ -113,12 +121,12 @@ def test_mounted_snapshot_is_recalled_but_not_merged_or_saved(ctx):
     pre = client.get("/context", params={"query": "when do we deploy?"}).json()
     assert pre["hits"] == []
 
-    # 3. Mount A — now /context recalls its facts, flagged mounted/owner.
-    assert client.post("/mounts", json={"snapshot": "A"}).status_code == 200
+    # 3. Mount A — now /context recalls its facts, flagged mounted/snapshot.
+    assert client.post("/mounts", json={"space": SPACE, "snapshot": "A"}).status_code == 200
     post = client.get("/context", params={"query": "when do we deploy?"}).json()
     assert post["hits"], "mounted snapshot should be recalled"
     assert all(h["mounted"] for h in post["hits"])
-    assert all(h["owner"] == USER and h["snapshot"] == "A" for h in post["hits"])
+    assert all(h["snapshot"] == "A" for h in post["hits"])
     assert "Friday" in post["context"]
 
     # 4. Invariant: mounting did NOT merge into the live graph.
@@ -126,13 +134,13 @@ def test_mounted_snapshot_is_recalled_but_not_merged_or_saved(ctx):
 
     # 5. Invariant: a NEW save does NOT carry the mounted overlay.
     assert client.post("/insights", json={"insight": "Code review is required before merge."}).status_code == 200
-    assert client.post("/snapshots", json={"name": "B"}).status_code == 200
+    assert client.post("/snapshots", json={"space": SPACE, "snapshot": "B"}).status_code == 200
     b_count = _count_cached(conn, org, USER, "B")
     # B holds only the single live fact, not A's mounted facts.
     assert b_count == 1
     assert b_count < a_count + 1
 
     # 6. Unmount removes the overlay from reads.
-    assert client.request("DELETE", "/mounts", json={"snapshot": "A"}).status_code == 200
+    assert client.request("DELETE", "/mounts", json={"space": SPACE, "snapshot": "A"}).status_code == 200
     after = client.get("/context", params={"query": "when do we deploy?"}).json()
     assert all(not h["mounted"] for h in after["hits"])
