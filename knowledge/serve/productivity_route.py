@@ -46,7 +46,7 @@ _HOUR = 3600.0
 _DAY = 86400.0
 _WEEK = 7 * _DAY
 
-DEFAULT_OWNER_LOGIN = "mattdaw7"
+DEFAULT_OWNER_LOGIN = "MatthewDaw"
 DEFAULT_OWNER_EMAIL = "mattdaw7@gmail.com"
 
 # The three GitHub-token key statuses the panel must distinguish (R21): no token

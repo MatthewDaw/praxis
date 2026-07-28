@@ -2455,6 +2455,68 @@ code,
   margin-bottom: 0;
 }
 
+.productivity-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+  padding: var(--space-5);
+  margin-top: var(--space-4);
+}
+
+.productivity-panel__controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.productivity-panel__last-updated {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.productivity-panel__key-status {
+  background: var(--state-muted-bg);
+  color: var(--state-muted-text);
+  border: 1px solid var(--state-muted-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  font-size: 0.88rem;
+}
+
+.productivity-panel__error {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  font-size: 0.88rem;
+}
+
+.productivity-panel__stale-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-bottom: var(--space-3);
+}
+
+.stale-badge {
+  display: inline-block;
+  background: var(--state-proposed-bg);
+  color: var(--state-proposed-text);
+  border: 1px solid var(--state-proposed-border);
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
 /* ==========================================================================
    8. Responsive breakpoints
    ========================================================================== */
