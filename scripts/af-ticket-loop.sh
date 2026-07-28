@@ -43,12 +43,18 @@ export PYTHONPATH=/workspace/praxis/agent_factory/hooks:/workspace/praxis/agent_
 # text (a growing "Thinking for Ns..." timer, streamed tool output) inside any
 # 5-minute window; total pixel-for-pixel stillness that long is a strong signal
 # nothing is happening, not just a quiet stretch.
-# Raised from 10 (5min) after the 2026-07-28 deadlock: 5 minutes is inside the normal range
-# for a single long thinking block or a slow build/test tool call, so it reaped healthy
-# sessions. The failure this exists to catch (a session frozen mid-tool-call) previously sat
-# for a FULL HOUR, so 10 minutes still catches it an order of magnitude sooner than the 1h
-# timeout while leaving genuine long-running work alone.
-STALL_POLLS=20
+# Must stay ABOVE the longest tool timeout the agent itself uses, or this reaps healthy work.
+# Nothing is written to the session transcript while a Bash tool call is in flight, so a
+# legitimate `npx vitest run` with a 600000ms (10min) timeout is indistinguishable from a
+# hang — and af-build really does issue 10-minute test commands (observed 2026-07-28 on
+# sotos). 5min (the first attempt) and 10min (the second) both sat at or under that ceiling.
+# 15min clears it while still catching a real hang 4x faster than the 1h timeout.
+#
+# The hangs this catches are genuine and confirmed, not detector noise: one sotos session
+# wrote its last transcript entry at 04:51:15 and was still silent when reaped at 05:01:28 —
+# 10min13s with no tool call and no token, stalled waiting on a model response that never
+# arrived (the upstream API has no client-side timeout here).
+STALL_POLLS=30
 
 # How long (2s polls) to wait for Claude's own REPL to actually be ready before
 # sending the ticket prompt, instead of a blind fixed sleep. "bypass permissions
