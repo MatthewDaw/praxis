@@ -11,21 +11,18 @@ from __future__ import annotations
 
 import os
 import subprocess
-from collections.abc import Callable
 from pathlib import Path
 
-import pytest
 
 from knowledge.serve.box_service_activity_tail import ActivityTailStore
 from knowledge.serve.box_service_hook_trail import (
     DEFAULT_HOOK_TRAIL_BYTE_CAP,
     HookTrailManager,
 )
-from knowledge.serve.box_service_models import Job, JobState, mark_terminal
+from knowledge.serve.box_service_models import Job, JobState
 from knowledge.serve.box_service_store import JobStore
 from knowledge.serve.box_service_worktree_cleanup import (
     reap_and_cleanup,
-    WorktreeCleanupNotReadyError,
 )
 
 # ---------------------------------------------------------------------------

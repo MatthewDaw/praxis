@@ -90,7 +90,6 @@ from knowledge.serve.job_authz import (  # noqa: E402
     PrincipalKind,
 )
 from knowledge.serve.auth import Principal, make_current_user  # noqa: E402
-from knowledge.serve.box_service_store import JobStore  # noqa: E402
 from knowledge.serve.facts_candidates import (  # noqa: E402
     FactsCandidates,
     PromotionError,

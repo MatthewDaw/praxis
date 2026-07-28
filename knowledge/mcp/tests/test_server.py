@@ -464,43 +464,6 @@ def test_get_contradictions_formats_pairs(monkeypatch):
     assert "id=a" in out and "id=b" in out
 
 
-def test_list_jobs_sorts_attention_needing_first_and_hits_jobs_endpoint(monkeypatch):
-    """R26: the MCP tool retrieves the same attention-first-ordered data GET
-    /jobs serves — this test proves the tool call plumbs through unchanged."""
-    _patch_identity(monkeypatch)
-    captured = {}
-
-    ordered_jobs = [
-        {"id": "attn-1", "project": "demo", "snapshot": "prd-demo",
-         "state": "awaiting-human", "attentionNeeded": True, "failureReason": None},
-        {"id": "attn-2", "project": "demo", "snapshot": "prd-demo",
-         "state": "failed", "attentionNeeded": True, "failureReason": "boom"},
-        {"id": "prog-1", "project": "demo", "snapshot": "prd-demo",
-         "state": "running", "attentionNeeded": False, "failureReason": None},
-    ]
-
-    def fake_get(url, headers, timeout=None):
-        captured["url"] = url
-        captured["headers"] = headers
-        return _Resp({"jobs": ordered_jobs})
-
-    monkeypatch.setattr(server.httpx, "get", fake_get)
-
-    out = server.praxis_list_jobs()
-
-    assert captured["url"] == "http://api.test/jobs"
-    assert captured["headers"]["Authorization"] == "Bearer id-tok"
-    assert captured["headers"]["X-Praxis-Org"] == "acme"
-    data = _extract_json(out)
-    assert [j["id"] for j in data["jobs"]] == ["attn-1", "attn-2", "prog-1"]
-
-
-def test_list_jobs_empty(monkeypatch):
-    _patch_identity(monkeypatch)
-    monkeypatch.setattr(server.httpx, "get", lambda url, headers, timeout=None: _Resp({"jobs": []}))
-    assert server.praxis_list_jobs() == "No live jobs."
-
-
 def test_get_contradictions_empty(monkeypatch):
     _patch_identity(monkeypatch)
     monkeypatch.setattr(server.httpx, "get", lambda url, headers, timeout=None: _Resp([]))

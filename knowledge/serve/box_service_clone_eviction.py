@@ -15,7 +15,7 @@ import os
 import shutil
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from knowledge.serve.box_service_clone import RepoClone
 

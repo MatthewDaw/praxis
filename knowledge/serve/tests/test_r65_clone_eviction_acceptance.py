@@ -9,18 +9,15 @@ Coverage:
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
-from knowledge.serve.box_service_clone import RepoClone, RepoCloneManager
+from knowledge.serve.box_service_clone import RepoClone
 from knowledge.serve.box_service_clone_eviction import (
     DEFAULT_EVICTION_PERIOD_SECONDS,
     DEFAULT_HEADROOM_FLOOR_BYTES,
     CloneEvictionManager,
     clone_size_bytes,
-    measure_free_space,
 )
-from knowledge.serve.box_service_models import Job, JobState
 
 
 # ---------------------------------------------------------------------------
