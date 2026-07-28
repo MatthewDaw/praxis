@@ -1,5 +1,10 @@
 .idea/
-.claude/
+# .claude/ holds per-machine local state (settings.local.json carries live API keys,
+# worktrees/ is git-internal) that must never be tracked — EXCEPT commands/, which are
+# project-local slash-command definitions meant to ship with the repo (so a fresh clone,
+# or the EC2 devbox, gets /af-build-remote-jobs and /af-super-run without hand-setup).
+.claude/*
+!.claude/commands/
 .specify/
 .gstack/
 
