@@ -336,7 +336,14 @@ while :; do
   # prompt, tripped the stall check below, restarted, and killed the first one back --
   # a mutual-kill deadlock that burned 50 minutes and finished zero tickets before it
   # was spotted (2026-07-28). Children of this session's pane are exactly this project's.
-  pane_pid=$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)
+  # `|| true` is load-bearing: this script runs `set -euo pipefail`, and when the tmux
+  # session is ALREADY gone (the "session gone" path, or an operator killing a hung
+  # session by hand) `tmux list-panes` fails, pipefail propagates that through the pipe,
+  # the command substitution returns non-zero, and `set -e` silently kills the entire
+  # loop. That is exactly how both project loops died on 2026-07-28 — each time right
+  # after "committed WIP", never reaching "restarting fresh", leaving the project dead
+  # until noticed by hand. An absent pane is a NORMAL state here, not an error.
+  pane_pid=$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1 || true)
   tmux kill-session -t "$SESSION" 2>/dev/null || true
   [ -n "${pane_pid:-}" ] && pkill -P "$pane_pid" 2>/dev/null || true
   sleep 3
