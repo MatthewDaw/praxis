@@ -43,7 +43,12 @@ export PYTHONPATH=/workspace/praxis/agent_factory/hooks:/workspace/praxis/agent_
 # text (a growing "Thinking for Ns..." timer, streamed tool output) inside any
 # 5-minute window; total pixel-for-pixel stillness that long is a strong signal
 # nothing is happening, not just a quiet stretch.
-STALL_POLLS=10
+# Raised from 10 (5min) after the 2026-07-28 deadlock: 5 minutes is inside the normal range
+# for a single long thinking block or a slow build/test tool call, so it reaped healthy
+# sessions. The failure this exists to catch (a session frozen mid-tool-call) previously sat
+# for a FULL HOUR, so 10 minutes still catches it an order of magnitude sooner than the 1h
+# timeout while leaving genuine long-running work alone.
+STALL_POLLS=20
 
 # How long (2s polls) to wait for Claude's own REPL to actually be ready before
 # sending the ticket prompt, instead of a blind fixed sleep. "bypass permissions
@@ -154,7 +159,13 @@ while :; do
     pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
     if ! echo "$pane" | grep -qE "."; then say "session gone, ending wait"; break; fi
     if echo "$pane" | grep -qE "100% context used"; then say "context exhausted mid-ticket, ending wait"; break; fi
-    if echo "$pane" | grep -qiE "please run /login|401|expired"; then say "auth error, ending wait"; break; fi
+    # Deliberately NARROW. This used to also match bare "401" and "expired", which occur
+    # constantly in ordinary output (line numbers, token counts, diffs, prose) and killed
+    # healthy sessions on sight -- one such false positive is in the 2026-07-28 log with
+    # the API verified healthy (HTTP 200) at the same moment.
+    if echo "$pane" | grep -qiE "please run /login|invalid api key|authentication_error"; then
+      say "auth error, ending wait"; break
+    fi
     pane_hash=$(printf '%s' "$pane" | md5sum | cut -d' ' -f1)
     if [ "$pane_hash" = "$last_hash" ]; then
       same_count=$((same_count+1))
@@ -170,8 +181,16 @@ while :; do
   [ "$waited" -ge 3600 ] && say "ticket #$n timed out after 1h"
 
   commit_wip
+  # Kill ONLY this session's own claude, never every claude on the box. The old blanket
+  # `pkill -f "[c]laude --dangerously-skip-permissions"` matched the OTHER concurrently
+  # running project's session too, so with two loops up (sotos + appeal_engine) each
+  # restart murdered the other's in-flight ticket; that session then sat at a dead bash
+  # prompt, tripped the stall check below, restarted, and killed the first one back --
+  # a mutual-kill deadlock that burned 50 minutes and finished zero tickets before it
+  # was spotted (2026-07-28). Children of this session's pane are exactly this project's.
+  pane_pid=$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)
   tmux kill-session -t "$SESSION" 2>/dev/null || true
-  pkill -f "[c]laude --dangerously-skip-permissions" 2>/dev/null || true
+  [ -n "${pane_pid:-}" ] && pkill -P "$pane_pid" 2>/dev/null || true
   sleep 3
   say "session closed; restarting fresh for the next ticket"
 done
