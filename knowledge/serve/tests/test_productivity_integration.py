@@ -81,7 +81,12 @@ def _seed_finished_ticket(conn, org, ticket_id, finished_at: datetime):
             (
                 ticket_id, org, "a seeded finished ticket",
                 "productivity-eval", "prd-productivity-eval", "active", "requirement",
-                f'{{"finished_at": "{finished_at.isoformat()}"}}',
+                # `build_state` matters as much as `finished_at`: S4 selects on
+                # build_state == "finished" (the same predicate agent_factory's own
+                # _ticket_state uses to decide a ticket is done), and the real writer
+                # `release(state="finished")` always sets BOTH atomically. Seeding only
+                # finished_at produced a row that exists nowhere in production.
+                f'{{"build_state": "finished", "finished_at": "{finished_at.isoformat()}"}}',
             ),
         )
 
