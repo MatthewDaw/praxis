@@ -28,8 +28,129 @@
 #    check as a fourth exit condition, so a genuinely frozen session gets caught in
 #    minutes instead of an hour.
 #
+# v3: model-backend selection moved OUT of the machine-wide shell environment and INTO
+# this driver, made 2026-07-28. Backend used to be chosen by ~/.claude-backend.sh, sourced
+# from ~/.bashrc off a ~/.af-backend marker file, which meant three bad properties:
+#  - It was a MACHINE-WIDE mutation with no natural undo. Flipping the fleet to sonnet for
+#    one run left every future shell on the box (and every other project's loop) on sonnet
+#    until someone remembered to flip it back. "Remembered to flip it back" is not a
+#    control surface; it is a way to discover next month that a paid subscription drained
+#    into a background job nobody was watching.
+#  - It was INVISIBLE from the thing it controlled. The only way to know which backend a
+#    running loop had picked up was to attach to its TUI and squint, because the choice was
+#    made in a shell rc file that had already exited by the time the loop logged anything.
+#  - Its half-states were SILENT and expensive-in-the-wrong-direction. A leftover
+#    ANTHROPIC_BASE_URL pointing at DeepSeek does not error when you ask for "sonnet"; it
+#    cheerfully routes every request to DeepSeek and returns plausible output, so a run you
+#    believed was Sonnet 5 was actually deepseek-v4-pro and nothing anywhere said so.
+#    The mirror-image failure (leftover subscription token, no base URL) bills real money.
+# So the backend is now resolved ONCE, here, and applied PER LAUNCHED SESSION as an explicit
+# env preamble on the `claude` command line — which runs AFTER the tmux shell has sourced
+# ~/.bashrc, and therefore overrides whatever the machine-wide file did rather than hoping
+# it agrees. Each branch sets its own variables AND unsets the other branch's, so there is
+# no reachable half-configured state. Resolution order and the deliberately-cheap default:
+#
+#     AF_MODEL_BACKEND=deepseek|sonnet   (env var, per-run, wins)
+#       else contents of ~/.af-backend   (the existing `af-backend` command still works)
+#       else deepseek
+#
+# Anything unrecognized — empty, typo'd, "Sonnet", "sonet" — logs a warning and falls back
+# to DEEPSEEK, never to the subscription. A typo must cost nothing; only an exact, spelled
+# request may spend money.
+#
+# Verify BEFORE committing to a multi-hour run:
+#
+#     ./af-ticket-loop.sh --check                    # prints resolved backend + preflight
+#     AF_MODEL_BACKEND=sonnet ./af-ticket-loop.sh --check
+#
+# and the resolved backend is also logged as the first line of every real run, so any log
+# tail answers "what was this actually billing?" without attaching to a TUI.
+#
 # Usage: af-ticket-loop.sh <project> <worktree> <pg_port> <redis_port> [max_tickets]
+#        af-ticket-loop.sh --check
 set -euo pipefail
+
+# ---------------------------------------------------------------- backend selection ----
+DEEPSEEK_KEY_FILE="$HOME/.deepseek_key"
+OAUTH_TOKEN_FILE="$HOME/.claude/oauth-token.sh"
+CREDENTIALS_FILE="$HOME/.claude/.credentials.json"
+
+resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if preflight fails
+  local requested
+  requested="${AF_MODEL_BACKEND:-}"
+  [ -n "$requested" ] || [ ! -r "$HOME/.af-backend" ] || requested="$(tr -d ' \n\r' < "$HOME/.af-backend")"
+  [ -n "$requested" ] || requested="deepseek"
+
+  BACKEND="$requested"
+  case "$BACKEND" in
+    sonnet|deepseek) ;;
+    *) echo "[backend] WARNING: unrecognized backend '$BACKEND' — falling back to deepseek (never to a paid subscription)" >&2
+       BACKEND="deepseek" ;;
+  esac
+
+  if [ "$BACKEND" = "sonnet" ]; then
+    # Subscription mode. ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN must be UNSET, not
+    # merely overridden — a surviving DeepSeek base URL silently reroutes "sonnet" to
+    # DeepSeek with no error at all, which is the exact confusion this whole block exists
+    # to make impossible. ANTHROPIC_API_KEY is unset too: if it were set the CLI would bill
+    # pay-as-you-go API credits instead of the subscription, which is a different bill.
+    BACKEND_NOTE="Anthropic subscription (Claude Max), model=sonnet — spends Claude quota, NOT API credits"
+    if [ ! -r "$OAUTH_TOKEN_FILE" ] && [ ! -r "$CREDENTIALS_FILE" ]; then
+      echo "[backend] FATAL: sonnet requested but no subscription credential on this box." >&2
+      echo "[backend]   expected $OAUTH_TOKEN_FILE (long-lived token) or $CREDENTIALS_FILE (interactive login)." >&2
+      echo "[backend]   fix, once, as ec2-user:  claude setup-token   # then paste into $OAUTH_TOKEN_FILE as: export CLAUDE_CODE_OAUTH_TOKEN=..." >&2
+      echo "[backend]   or:                      claude   ->  /login" >&2
+      return 1
+    fi
+    CLAUDE_LAUNCH="unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY; [ -r \$HOME/.claude/oauth-token.sh ] && . \$HOME/.claude/oauth-token.sh; claude --model sonnet --dangerously-skip-permissions"
+
+    # The credential FILE existing proves nothing — a long-lived setup-token can be revoked
+    # or expire while the file sits there looking healthy, and the failure surfaces as every
+    # ticket dying at the REPL with "please run /login". Spend one throwaway prompt proving
+    # the credential is live before committing hours to it. Only an explicit auth rejection
+    # is fatal; a network blip or timeout is a warning, so a flaky moment can't block a
+    # run whose credential is actually fine.
+    local probe
+    probe="$(cd /tmp && bash -c "unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY; [ -r \$HOME/.claude/oauth-token.sh ] && . \$HOME/.claude/oauth-token.sh; timeout 120 claude --model sonnet -p 'Reply with exactly: PONG'" 2>&1 || true)"
+    if printf '%s' "$probe" | grep -qiE 'please run /login|invalid api key|authentication_error|oauth.*invalid|401'; then
+      echo "[backend] FATAL: sonnet credential present but REJECTED by Anthropic:" >&2
+      printf '%s\n' "$probe" | head -3 | sed 's/^/[backend]   /' >&2
+      echo "[backend]   fix, once, as ec2-user:  claude setup-token   # then write into $OAUTH_TOKEN_FILE as: export CLAUDE_CODE_OAUTH_TOKEN=..." >&2
+      echo "[backend]   or:                      claude   ->  /login" >&2
+      return 1
+    fi
+    printf '%s' "$probe" | grep -q 'PONG' || echo "[backend] WARNING: sonnet auth probe returned no PONG and no auth error (network/transient?) — continuing" >&2
+  else
+    # DeepSeek mode. The subscription token is unset rather than out-ranked: the CLI has
+    # been observed preferring a cached credential over an env token, so exclusivity is
+    # enforced instead of assumed. The key is read from the file BY THE REMOTE SHELL at
+    # launch time (note the escaped $(...)) so the secret never appears in this script's
+    # log, in the tmux pane, or in the shell history of the session it starts.
+    BACKEND_NOTE="DeepSeek direct, model=${AF_DEEPSEEK_MODEL:-deepseek-v4-pro} — spends DeepSeek prepaid balance, zero Claude quota"
+    if [ ! -r "$DEEPSEEK_KEY_FILE" ] || [ ! -s "$DEEPSEEK_KEY_FILE" ]; then
+      echo "[backend] FATAL: deepseek requested but $DEEPSEEK_KEY_FILE is missing or empty." >&2
+      echo "[backend]   fix: printf %s 'sk-...' > $DEEPSEEK_KEY_FILE && chmod 600 $DEEPSEEK_KEY_FILE" >&2
+      return 1
+    fi
+    CLAUDE_LAUNCH="unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; export ANTHROPIC_BASE_URL=${AF_DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}; export ANTHROPIC_MODEL=${AF_DEEPSEEK_MODEL:-deepseek-v4-pro}; export ANTHROPIC_AUTH_TOKEN=\"\$(tr -d ' \\n\\r' < \$HOME/.deepseek_key)\"; claude --dangerously-skip-permissions"
+  fi
+  return 0
+}
+
+if [ "${1:-}" = "--check" ]; then
+  marker='<absent>'; [ -r "$HOME/.af-backend" ] && marker="$(tr -d ' \n\r' < "$HOME/.af-backend")"
+  echo "requested   : AF_MODEL_BACKEND=${AF_MODEL_BACKEND:-<unset>}  ~/.af-backend=$marker"
+  if resolve_backend; then
+    echo "resolved    : $BACKEND"
+    echo "billing     : $BACKEND_NOTE"
+    echo "launch cmd  : $CLAUDE_LAUNCH"
+    echo "preflight   : OK"
+    exit 0
+  fi
+  echo "resolved    : ${BACKEND:-?}"
+  echo "preflight   : FAILED (see above) — a real run would refuse to start"
+  exit 1
+fi
 
 PROJECT="$1"; WT="$2"; PG="$3"; REDIS="$4"; MAX="${5:-999}"
 SESSION="af-$(basename "$WT")"   # per-worktree, so concurrent projects never collide on tmux session name
@@ -74,6 +195,12 @@ for k in ('PRAXIS_ORG', 'PRAXIS_API_KEY', 'PRAXIS_API_BASE_URL'):
 ")"
 
 say(){ echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$LOG"; }
+
+# Resolve the backend BEFORE any ticket work, and refuse to start a multi-hour run on a
+# half-configured one. Failing here costs seconds; failing three tickets in costs an hour
+# and a lease that has to be released by hand.
+resolve_backend || { say "FATAL: model backend preflight failed for '${BACKEND:-?}' — refusing to start"; exit 1; }
+say "backend=$BACKEND ($BACKEND_NOTE)"
 
 claimable(){  # -> count of incomplete|in_progress for PROJECT
   $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
@@ -138,7 +265,10 @@ while :; do
 
   tmux kill-session -t "$SESSION" 2>/dev/null || true
   tmux new-session -d -s "$SESSION" -c "$WT"
-  tmux send-keys -t "$SESSION" "cd $WT && claude --dangerously-skip-permissions" Enter
+  # The env preamble runs in the tmux shell AFTER ~/.bashrc has already sourced the
+  # machine-wide backend file, so it deliberately overrides that file rather than
+  # trusting it to agree with $AF_MODEL_BACKEND.
+  tmux send-keys -t "$SESSION" "cd $WT && $CLAUDE_LAUNCH" Enter
 
   ready=0
   for _ in $(seq 1 "$READY_POLL_MAX"); do

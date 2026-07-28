@@ -502,6 +502,13 @@ parse, a script) and emit a validation entry `{validation_id, covers: [requireme
 One validation may cover several requirements and several may cover one — what matters is that the **union of
 `covers` equals the full requirement set**. Then `pin_validations(cid, [...])`.
 
+**Author each `run` as the NARROWEST command that faithfully proves its requirement.** For a ticket-local
+requirement that means the specific test file/pattern (`npx vitest run src/foo/bar.test.ts`,
+`pytest tests/test_x.py::test_y`) — not the repo-wide suite. Reserve whole-repo commands for the wildcard
+gates that genuinely mean "the whole repo", because those are the ones that cost minutes and therefore run
+once, at the end (§5 *Test-run budget*). A narrow requirement pinned to a broad command silently converts
+every correction cycle into a full-suite pass.
+
 **The contract always includes the `<cid>::acceptance` floor, which is ALWAYS coverable** — it is the
 ticket's own binary acceptance condition, so you author the red→green acceptance test for it (write the
 failing test, watch it fail, make the change, watch it pass). That single validation alone lets the ticket
@@ -558,6 +565,16 @@ that satisfies the acceptance condition — nothing broader (resist scope creep 
 `heartbeat(cid, owner)` across long stretches so the lease stays live and isn't reclaimed out from under
 you.
 
+**d. Iterate on TARGETED tests — the whole-repo suite is NOT your feedback loop.** While building and while
+correcting, run **only the specific test file(s)/pattern covering the slice you are changing** —
+`npx vitest run src/foo/bar.test.ts`, `pytest tests/test_x.py::test_y`, `go test ./pkg/thing/...`. Derive
+that target ONCE from the files your diff touches, then reuse it every cycle. The whole-repo gates (full
+suite, build, repo-wide typecheck/lint) run **at most once per ticket, at the END** — see *Test-run budget*
+in §5. Why the rule exists: on a repo whose suite is ~1835 tests and ~2 minutes per pass, a single ticket
+invoked the FULL suite three separate times — from the repo root, then from a sub-package, then again with
+`--reporter=json` — and ran past 20 minutes without finishing, while tickets on a comparable repo that
+iterated on targeted tests finished in 10–14. Targeted tests return the same red→green signal in seconds.
+
 ## 5. VERIFY — intrinsic, always-on, external signals only
 
 A ticket is **not done because the agent believes it is** — it is done when an external signal says so.
@@ -600,13 +617,16 @@ actually observable (discover the commands; don't assume):
 
 | Gate | Signal | When |
 |---|---|---|
-| **Pre-flight** | schema / type-check / lint / AST parse | before trusting an edit |
-| **Tests** | the task's acceptance test(s) + the existing suite | the primary oracle |
+| **Pre-flight** | schema / type-check / lint / AST parse, scoped to the touched paths | before trusting an edit |
+| **Targeted tests** | the task's acceptance test(s), run by file/pattern | the primary oracle, every cycle |
 | **Build** | compile / bundle succeeds | for anything that must build |
+| **Whole-repo gates** | the FULL suite + repo-wide typecheck/lint/build | **once**, at the end of the ticket |
 
 - **The acceptance test must exist and must have failed before the change** (red→green). A test written to
   match the implementation proves nothing — if the acceptance condition has no test, write the failing test
-  first, watch it fail, then verify the change makes it pass.
+  first, watch it fail, then verify the change makes it pass. **Confirm red with the TARGETED run of that
+  test alone** — a whole-repo suite is not part of the red check (a wildcard suite/typecheck gate is not
+  expected to be red before your change, so running it there buys nothing and costs a full pass).
 - **Nothing about *what* must be proven lives in this skill or any file** — the validation *requirements*
   are resolved by query. This skill says only *how* to synthesize covering validations, run them, and
   record each pass. **The build NEVER waits on af-intake-plan to author per-ticket eval requirements**, and
@@ -618,18 +638,72 @@ actually observable (discover the commands; don't assume):
   *amend* exists to add a NEW general lens when one is discovered — a compounding improvement — never as a
   prerequisite for building an existing ticket.)
 
+**Test-run budget — targeted every cycle, the whole-repo suite ONCE per ticket, at the END.** Verification of
+a ticket has two phases and you never mix them:
+
+| Phase | What you run | How often |
+|---|---|---|
+| **Iterate** (§4c–d, and every correction-loop pass) | ONLY the targeted evals — the specific test file(s)/pattern covering your slice, plus typecheck/lint scoped to the touched paths | every cycle, freely |
+| **Final gate** (immediately before FINISH, §6) | the whole-repo pinned gates — full suite, repo build, repo-wide typecheck/lint | **ONCE**, after every targeted eval is already green |
+
+So: sequence your pinned validations. Run the narrow ones first and drive them green with targeted commands;
+run the wildcard whole-repo ones **last, together, in a single pass**, and only when you believe the ticket
+is done. `record_validation_pass` for each as usual — the budget changes *when* a gate runs, never *whether*
+it runs, and every pinned validation still has to pass before FINISH.
+
+**Never use the whole-repo suite as your iteration signal, and never re-run it to "compare against a
+baseline."** Why the rule exists: a ~1835-test suite costs ~2 minutes per pass, and one observed ticket paid
+that three times over — root, sub-package, then `--reporter=json` — mostly to work out whether some failures
+predated it. That ticket ran past 20 minutes without finishing. The provenance question it was answering is
+one you are forbidden to ask (next paragraph), so the re-runs bought nothing at all. A red final gate is
+re-run only **after you have actually changed something**, as part of the correction loop's bounded cycle —
+that is a fix cycle, not a fresh budget.
+
 **Whole-repo gates pin on EVERY ticket — leave the repo green with ONLY your slice.** The universal
 `applies_to:["*"]` gates (`backend-build`, `backend-vitest`, typecheck, lint, the suite) resolve onto
 **every** matching ticket through the wildcard lane, so each isolated per-ticket worker is responsible for
-leaving the **whole repo** compiling and its tests green using ONLY its own slice. Make your slice
-**self-consistent** — stub or adjust the callers your change touches so the shared build/test stays green
-even though a sibling ticket's half has not landed yet — or, if you genuinely cannot go green without a
+leaving the **whole repo** compiling and its tests green using ONLY its own slice. That per-ticket
+greenness invariant is **not** relaxed by the test-run budget above: the budget moves the whole-repo pass to
+the end of the ticket and caps it at one clean pass, it does **not** defer it past the ticket. Make your
+slice **self-consistent** — stub or adjust the callers your change touches so the shared build/test stays
+green even though a sibling ticket's half has not landed yet — or, if you genuinely cannot go green without a
 sibling's change, `block(cid, owner, reason)` and surface it. **NEVER weaken, skip, or scope-down a
 whole-repo gate to get your ticket green** — a red shared build is the gate doing its job, not an obstacle to
-route around. (A scope-level **integration gate** — running the whole-repo build/test ONCE at end-of-scope
-instead of on every ticket — is a possible alternative, but FLAG its tradeoff: intermediate tickets can merge
-non-green, so the repo is not guaranteed buildable between tickets. Present it as an option, never the
+route around. (Deferring the whole-repo gate to **end-of-SCOPE** — one integration gate for the entire run
+instead of one per ticket — is a genuinely different and weaker thing than the end-of-TICKET budget above,
+and is NOT what that budget authorizes. FLAG its tradeoff if anyone asks for it: intermediate tickets can
+merge non-green, so the repo is not guaranteed buildable between tickets. Present it as an option, never the
 default.)
+
+**FIX EVERYTHING THE GATES SURFACE — "my slice didn't cause it" is not a disposition.** When the end-of-ticket
+whole-repo pass (or any gate, at any point) comes back red, you **fix every failure it reports**, whether or
+not your change caused it. Do **not** spend a cycle establishing provenance: no re-running the suite on a
+stashed or reverted tree, no diffing against a "known baseline" of pre-existing failures, no reasoning about
+whether the breakage predates your claim. That triage is the single most expensive habit this section
+deletes — each provenance re-run is another full-suite pass (~2 minutes on the repo above), and the answer
+cannot change what you do next, because the disposition is identical either way: **fix it.** The ticket
+finishes only with the whole repo green, so an inherited failure is yours now. Fixing one is in scope by
+definition and is not scope creep (§4c's "nothing broader" governs *features*, not *repo greenness*).
+
+**Skipping is NEVER the resolution.** Deleting a failing test, `.skip()`/`xfail`/`it.todo`-ing it, narrowing
+its assertions, or excluding its path from the suite / lint / typecheck config is a **faked pass** — the same
+prohibition as weakening a whole-repo gate (above) and faking a validation (§6), and it is worse than an
+honest red because it hides the signal from every later ticket.
+
+**A discovered failure you genuinely cannot close from here ESCALATES — bounded, never silent.** Some
+inherited breakage is truly out of reach: it needs a credential or live infrastructure, an upstream/vendor
+fix, or a change large enough to be its own ticket. Route it through the tiers already defined below, in
+this order and no other:
+1. **Fix it** — the default, and the answer for the large majority. Attempt it under the correction loop's
+   max-attempts cap, driven by the captured failing signal.
+2. **Replan the fix once** (Strategy tier) after the cap trips — a different approach to the same failure.
+3. **Still red → `block(cid, owner, reason)`** naming the failing test(s), the captured signal, and why this
+   ticket's context cannot close it. That surfaces it for owner action and **excludes it from churn**, so the
+   run completes AROUND it (§6) rather than looping forever or shipping red under a green claim. When the
+   remainder is real work rather than an owner-only blocker, **also emit it as an `incomplete` ticket** the
+   way the WORK-review panel emits findings (§7), so it gets scheduled instead of forgotten.
+There is no fourth option: silently passing over a red test and grinding on it past the cap are both
+contract violations.
 
 **Correction loop — fires ONLY on an external signal.** On a failing gate or pinned validation, re-enter BUILD
 (§4c) with the **captured failing signal** as context. Never let "the model decided to revise" be a
@@ -642,6 +716,12 @@ transition. Four tiers with explicit trip conditions:
 
 A **circuit breaker** trips on repeated identical output or identical errors — that's degeneration, not
 progress; escalate rather than burn iterations.
+
+**Failures you did not cause run on the SAME tiers and the SAME budget.** They are neither exempt from being
+fixed nor entitled to a fresh attempt count — a ticket that burns its whole correction budget on inherited
+breakage escalates exactly like one that burns it on its own, ending at `block()` with the failing signal
+named. **Re-run only the failure you just worked on** while cycling; the whole-repo pass is re-taken once,
+after the cycle believes it is green — never once per attempt.
 
 **Structural-erosion check.** Passing tests are necessary, not sufficient: long iterative runs erode
 structure (complexity, duplication, file-spread) even while green. Track a per-iteration complexity-delta
@@ -809,15 +889,31 @@ splits that write into working memory and the ticket never reads back as done �
    Then write CUSTOM executable validations that COVER every MANDATORY resolved requirement (each declares
    covers:[req_id] and a `run` command whose exit code is the verdict). pin_validations(TICKET, [...], ref=PLAN).
    coverage_gap(TICKET, ref=PLAN) MUST be empty before you continue (coverage is enforced on the mandatory set only).
-4. CONFIRM RED  — run every pinned eval NOW, BEFORE writing any implementation. The acceptance test MUST
-   FAIL (red) for the right reason. An eval that passes before you write code proves nothing — fix it until
-   it genuinely fails. Do NOT write implementation in this step.
+4. CONFIRM RED  — run your TARGETED evals NOW, BEFORE writing any implementation: the acceptance test and any
+   other eval scoped to the files you are about to touch, invoked by file/pattern
+   (`npx vitest run path/to/x.test.ts`, `pytest tests/test_x.py::test_y`). The acceptance test MUST FAIL (red)
+   for the right reason. An eval that passes before you write code proves nothing — fix it until it genuinely
+   fails. Do NOT run the whole-repo evals here (full suite / repo build / repo-wide typecheck+lint): they are
+   not expected to be red, and each pass is expensive. Do NOT write implementation in this step.
 5. BUILD  — only now make the change that satisfies the acceptance condition; nothing broader.
-   heartbeat(TICKET, OWNER, ref=PLAN) across long stretches so the lease stays live.
-6. CONFIRM GREEN + RECORD  — re-run every pinned eval and the project's real external gates (typecheck /
-   build / lint / suite). record_validation_pass(TICKET, vid, passed=(exit_code==0), ran_at=now, ref=PLAN) per eval.
+   heartbeat(TICKET, OWNER, ref=PLAN) across long stretches so the lease stays live. While iterating, re-run
+   ONLY the targeted evals — never the whole-repo suite; that is the per-edit feedback loop.
+6. CONFIRM GREEN + RECORD  — with every targeted eval green, run the whole-repo evals + the project's real
+   external gates (typecheck / build / lint / full suite) ONE time, as the final gate.
+   record_validation_pass(TICKET, vid, passed=(exit_code==0), ran_at=now, ref=PLAN) per eval.
    On a failure, RE-ENTER step 5 with the captured failing signal as context — never revise from self-doubt
-   alone, never weaken an eval to pass.
+   alone, never weaken an eval to pass — then re-take the whole-repo pass only once you believe it is green
+   again. Budget: at most ONE whole-repo pass per fix cycle, never one per attempt and never as an iteration
+   signal (a ~1835-test suite costs ~2 minutes a pass; one ticket that ran it three times blew past 20
+   minutes without finishing).
+6b. FIX EVERY FAILURE THE GATES REPORT — including ones your slice did not cause. Do NOT investigate whether
+   a failure is pre-existing: do not re-run the suite on a stashed/reverted tree, do not compare against a
+   "known baseline". The disposition is the same either way — fix it — so the investigation is pure waste.
+   NEVER skip, delete, .skip()/xfail, loosen, or config-exclude a failing test to get green. If a failure is
+   genuinely unfixable from this ticket's context (needs a credential / live infra / an upstream fix / a
+   change big enough to be its own ticket), attempt it under the same bounded retry budget as any other
+   failure, then block(TICKET, OWNER, reason, ref=PLAN) naming the failing test(s) and the captured signal —
+   never silently pass over it, never loop on it forever.
 7. COMMIT  — BEFORE releasing, commit your work on YOUR OWN worktree branch: `git add -A` then
    `git commit -m "<type>(<scope>): <what the ticket delivered> (<TICKET requirement_id>)"`. Then assert the
    tree is CLEAN — `git status --porcelain` must print NOTHING. You build in an ISOLATED worktree, and the
@@ -834,7 +930,9 @@ splits that write into working memory and the ticket never reads back as done �
 
 NEVER build-first / test-after. NEVER fake, delete, or weaken an eval to get green. NEVER finish without
 all_validations_passed. NEVER release "finished" leaving uncommitted changes. NEVER ask af-intake-plan to
-author the eval requirements.
+author the eval requirements. NEVER run the whole-repo suite as your iteration signal or to establish a
+failure's provenance — targeted every cycle, whole-repo once at the end. NEVER leave a failing test unfixed
+because your ticket did not cause it; fix it, or block() it with the signal named.
 ```
 
 ## Long-horizon control (so the run survives length)
@@ -887,6 +985,14 @@ any other — external signal, recorded on the ticket, fail-closed.
 - **Never** record a validation pass on the requirement fact — passes go on the TICKET NODE via
   `record_validation_pass`.
 - **Never** skip verification — the build ALWAYS runs every pinned validation; verification is intrinsic.
+- **Never** use the whole-repo suite as the iteration signal, and never re-run it to work out whether a
+  failure is pre-existing — targeted tests every cycle, the whole-repo gates ONCE per ticket at the end, and
+  re-taken only after an actual fix. Repeated multi-minute suite passes and baseline-comparison triage are
+  the largest measured time sink in a ticket (§5 *Test-run budget*).
+- **Never** leave a failure a gate surfaced unfixed because your slice did not cause it — fix everything the
+  gates report, and if it is genuinely unfixable from this ticket, `block(cid, owner, reason)` it with the
+  failing signal named (and emit a follow-up ticket when it is real work). Skipping, deleting, `.skip()`-ing,
+  loosening, or config-excluding a failing test is a faked pass, never a resolution.
 - **Never** mark a ticket finished without `all_validations_passed(cid)` true (coverage complete + every
   validation green on an external signal, or human confirmation for non-coding); never fake a pass to escape.
 - **Never** let an uncoverable/credential-only requirement wedge the run — `block(cid, owner, reason)` it so
