@@ -445,6 +445,39 @@ def praxis_job_activity(job_id: str) -> str:
 
 
 @mcp.tool()
+def praxis_get_job(job_id: str) -> str:
+    """Fetch one job's full detail (R89), including which model backend (sonnet or
+    deepseek) was active when the job's session was launched — the per-job counterpart
+    to ``praxis_list_jobs``. The website's per-job detail reads the same backend
+    endpoint (``GET /jobs/{job_id}``), so an operator gets the same answer from either
+    surface.
+
+    Returns a human summary plus a structured JSON block with the job's ``id``,
+    ``state``, ``modelBackend``, and any state-specific fields (``branch``/``prUrl``
+    for a completed job, ``failureReason``/``commandOutput`` for a failed one).
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/jobs/{job_id}",
+            headers=_headers(),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            return f"Unknown job {job_id} — list ids with praxis_list_jobs."
+        return _friendly(exc)
+    payload = resp.json()
+    backend = payload.get("modelBackend", "unknown")
+    return _structured(
+        f"Job {job_id}: state={payload.get('state','?')}, backend={backend}.",
+        payload,
+    )
+
+
+@mcp.tool()
 def praxis_view_backend() -> str:
     """View the box's currently-active model backend (sonnet or deepseek) (R88).
 

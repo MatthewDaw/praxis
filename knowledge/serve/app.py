@@ -1477,6 +1477,26 @@ def create_app(conn: Any | None = None) -> FastAPI:
             raise HTTPException(status_code=403, detail=str(exc))
         return {"jobId": job_id, "activity": activity}
 
+    @app.get("/jobs/{job_id}")
+    def get_job(
+        job_id: str,
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+    ) -> dict[str, Any]:
+        """One job's full detail (R89), including the model backend it ran on
+        and every state-specific field the job view exposes — the per-job
+        counterpart to ``GET /jobs``.  Scoped to the requester's active org.
+
+        The MCP ``praxis_get_job`` tool and the website's per-job detail both
+        read this endpoint so the operator can confirm the backend (sonnet or
+        deepseek) a completed or in-flight job recorded at launch, alongside
+        the branch/PR URL or failure detail.
+        """
+        job = app.state.job_store.get(job_id)
+        if job is None or job.org != org:
+            raise HTTPException(status_code=404, detail=f"unknown job {job_id}")
+        return _job_view(job, needs_attention=False)
+
     # --- model-backend management (R88) ------------------------------------
     @app.get("/backends/active")
     def view_backend(
