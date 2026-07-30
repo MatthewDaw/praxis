@@ -531,8 +531,12 @@ sweep_worktrees(){
       git worktree remove --force "$path" 2>/dev/null && say "purged integrated worktree $path"
     else
       kept=$((kept+1))
+      # Name the branch, read from the worktree BEFORE it is removed. Resolving it from a commit sha
+      # afterwards yields nothing, which is what made every one of these lines read "remain on
+      # branch " with a blank -- the exact pointer someone needs to find the work later.
+      local wbr; wbr=$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
       git worktree remove --force "$path" 2>/dev/null \
-        && say "purged worktree $path — its commits remain on branch $(git -C "$WT" rev-parse --abbrev-ref "$head" 2>/dev/null || echo "$head")" \
+        && say "purged worktree $path — its commits remain on branch ${wbr:-<detached ${head:0:8}>}" \
         || say "WARNING: could not purge $path"
     fi
   done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
