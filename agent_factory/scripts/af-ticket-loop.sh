@@ -393,6 +393,21 @@ print(sum(1 for x in f if ((x.get('meta') or {}).get('build_state'))=='finished'
 PYEOF
 }
 
+finished_ids(){  # -> space-separated requirement_ids currently in build_state=finished
+  $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
+import sys
+import _praxis
+p=sys.argv[1]
+out=[]
+for f in _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}'):
+    m=f.get('meta') or {}
+    if m.get('build_state')=='finished':
+        rid=m.get('requirement_id') or f.get('id')
+        if rid: out.append(str(rid))
+print(' '.join(out))
+PYEOF
+}
+
 release_inprogress(){  # release any live lease before a fresh session claims (post-crash safety)
   $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
 import sys, time
@@ -434,18 +449,17 @@ commit_wip(){
 # file need a builder's judgment, so the merge is aborted and the ticket regressed to be rebuilt
 # against the now-integrated tree.
 integrate_round(){
-  local still_open="${1:-0}"
   cd "$WT"
-  local merged=0 conflicted=0 br ahead path
-  # ONLY integrate a round that actually closed. Branch names carry no ticket id, so with tickets
-  # still open there is no way to tell a finished ticket's branch from the half-built tree of a
-  # worker that was killed mid-BUILD -- possibly between "confirm red" and "confirm green". Merging
-  # blind would launder exactly the unverified edits the gates exist to catch, under cover of a green
-  # round. An unintegrated branch is recoverable; a laundered one is not.
-  if [ "$still_open" -gt 0 ]; then
-    say "SKIPPING integration: $still_open ticket(s) still open, so some agent branches hold partial work. Their branches are intact; the tickets regress and rebuild against the current tree."
-    return 0
-  fi
+  local merged=0 conflicted=0 skipped=0 br ahead path ids ok fin
+  # WHICH branch is safe to merge is decided per branch, by its TICKET's state -- not by the round's.
+  # A branch name carries no ticket id, but the worker's own commit subjects do: they end in the
+  # requirement id, e.g. "feat(af-clean): ... (R8)". So read the ids out of the branch's commits and
+  # merge only when every id it claims is FINISHED in Praxis. That admits a finished ticket's work
+  # even when a sibling in the same round died, and still refuses the half-built tree of a worker
+  # killed mid-BUILD -- possibly between confirm-red and confirm-green -- which would otherwise
+  # launder unverified edits under cover of a green round. An unintegrated branch is recoverable; a
+  # laundered one is not.
+  fin=" $(finished_ids) "
   # Commit anything loose first: `git merge` refuses to run on a dirty tree, and refusing to
   # integrate a whole round because one stray file is uncommitted is the wrong trade.
   commit_wip
@@ -456,6 +470,15 @@ integrate_round(){
     [ -n "$br" ] && [ "$br" != "HEAD" ] || continue
     ahead=$(git rev-list --count "HEAD..$br" 2>/dev/null || echo 0)
     [ "${ahead:-0}" -gt 0 ] || continue
+    ids=$(git log --format=%s "HEAD..$br" 2>/dev/null | sed -n 's/.*(\([A-Za-z][A-Za-z0-9_-]*[0-9][0-9]*\))[[:space:]]*$/\1/p' | sort -u)
+    if [ -z "$ids" ]; then
+      skipped=$((skipped+1)); say "skipping $br — its commits name no ticket, so its provenance cannot be established"; continue
+    fi
+    ok=1
+    for i in $ids; do
+      case "$fin" in *" $i "*) ;; *) ok=0; say "skipping $br — ticket $i is not finished, branch may hold partial work" ;; esac
+    done
+    [ "$ok" = "1" ] || { skipped=$((skipped+1)); continue; }
     if git merge --no-edit "$br" >/dev/null 2>&1; then
       merged=$((merged+1)); say "integrated $br ($ahead commit(s))"
     else
@@ -466,6 +489,7 @@ integrate_round(){
   done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
   [ "$merged" -gt 0 ] && say "round integrated: $merged branch(es) merged into $(git rev-parse --abbrev-ref HEAD)"
   [ "$conflicted" -gt 0 ] && say "WARNING: $conflicted branch(es) conflicted and were NOT integrated — their tickets need a rebuild against the merged tree"
+  [ "$skipped" -gt 0 ] && say "$skipped branch(es) skipped as unproven — their commits stay on their branches"
   return 0
 }
 
@@ -498,17 +522,22 @@ sweep_worktrees(){
       continue
     fi
     local head; head=$(git -C "$path" rev-parse HEAD 2>/dev/null || echo "")
+    # PURGE unconditionally. Removing a worktree KEEPS its branch, so an unintegrated commit is not
+    # lost by this -- it stays reachable on worktree-agent-* and is merged by integrate_round once
+    # its ticket is finished. Leaving the trees instead is what put 29 of them on one box and filled
+    # a 98GB volume, and what left 14 lying around here holding 10+ commits each. The tree is
+    # scratch; the branch is the artifact.
     if [ -n "$head" ] && git merge-base --is-ancestor "$head" HEAD 2>/dev/null; then
-      git worktree remove --force "$path" 2>/dev/null && say "reaped merged worktree $path"
-    elif [ "${AF_REAP_UNMERGED:-0}" = "1" ]; then
-      git worktree remove --force "$path" 2>/dev/null && say "reaped UNMERGED worktree $path (AF_REAP_UNMERGED=1 — its branch survives)"
+      git worktree remove --force "$path" 2>/dev/null && say "purged integrated worktree $path"
     else
       kept=$((kept+1))
-      say "WARNING: worktree $path holds UNMERGED commits — left in place. Integrate it, or re-run with AF_REAP_UNMERGED=1 to drop the worktree and keep the branch."
+      git worktree remove --force "$path" 2>/dev/null \
+        && say "purged worktree $path — its commits remain on branch $(git -C "$WT" rev-parse --abbrev-ref "$head" 2>/dev/null || echo "$head")" \
+        || say "WARNING: could not purge $path"
     fi
   done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
   git worktree prune 2>/dev/null || true
-  [ "$kept" -gt 0 ] && say "$kept unmerged worktree(s) still on disk — watch free space"
+  [ "$kept" -gt 0 ] && say "$kept worktree(s) purged before integration — their branches survive and merge once their tickets finish"
   return 0
 }
 
@@ -798,8 +827,16 @@ while :; do
   # Integrate FIRST, then sweep: the sweep only reaps worktrees whose branch is already an ancestor
   # of HEAD, so merging first is what turns this round's scratch into reclaimable space instead of
   # another dozen "unmerged, left in place" warnings.
-  integrate_round "$(batch_open "$@")"
-  # Sweep AFTER the session is dead, never while it is live: removing a worktree out from under a
+  # ORDER IS LOAD-BEARING and every step is mandatory before the next batch starts:
+  #   1. INTEGRATE — merge each finished ticket's branch into the integration branch.
+  #   2. PURGE     — remove every scratch worktree (branches survive), reclaiming the disk.
+  #   3. VERIFY    — check the merged result, below, before this round is considered done.
+  # Verification has to see the tree AFTER the merge, or it verifies nothing: the first attempt ran
+  # against an unmerged tree and correctly reported "there is no merged tree to verify". And all
+  # three must finish before the loop clears context and dispatches the next batch, or a round's
+  # work is carried forward unintegrated and unchecked into a session that no longer remembers it.
+  integrate_round
+  # Purge AFTER the session is dead, never while it is live: removing a worktree out from under a
   # running worker deletes the tree its evals are executing against.
   sweep_worktrees
 
