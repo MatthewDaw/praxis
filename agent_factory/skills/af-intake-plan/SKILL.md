@@ -7,14 +7,15 @@ description: >
   checks; af-intake-plan-validation writes the `planning-validation` lenses. FULL INTAKE takes af-plan's
   messy exhaustive brainstorm doc (+ optional clickable wireframe), extracts candidate requirements and
   surface↔requirement bindings DIRECTLY INTO PRAXIS, hardens them (self-consistency, contradictions,
-  dedup), then runs the planning audit — the cold-eyes architecture/external-service decisions,
-  underspecification routing, cross-requirement gaps, coverage+depth checks, and the data-driven
-  scope="planning" lenses (READ from the `planning-validation` snapshot) — convenes the ce-* plan-review
-  panel, and hands the human a clearable gate that ends in save_snapshot(space="<project>",
-  snapshot="prd-<project>"). As part of the audit it also DERIVES the build's known blind-spot guards —
-  the tricky edge cases and every-site refactors af-build tends to silently drop — and authors each as a
-  build-validation check by DELEGATING to af-intake-build-validation (it never writes the check section
-  itself, so the single-writer lock holds; see B5b). AMEND (C0) adds ONE genuinely-new requirement TICKET the plan is simply
+  dedup), then runs a DELIBERATELY SMALL validation: ONE cold-eyes challenge pass over the whole set
+  (five gap lenses swept once each, near-dups, missing acceptance), the forced architecture and
+  external-service decisions, a test strategy, and one executable mechanical gate — then blesses. The
+  ce-* plan-review panel is OPT-IN (default OFF; it fires only on a large or high-stakes plan, since the
+  challenge pass already ran cold eyes). Tickets are sized as coherent red-to-green units, target 15-25
+  per feature, merged by default rather than atomized per acceptance bullet. Where the plan contains an
+  every-site sweep it authors ONE completeness guard by DELEGATING to af-intake-build-validation (it
+  never writes the check section itself, so the single-writer lock holds).
+  AMEND (C0) adds ONE genuinely-new requirement TICKET the plan is simply
   missing; because tickets resolve by query and completion is gated on them, it enters the incomplete set
   automatically. Use when starting (or re-baselining) a project from a brainstorm/PRD + wireframe, or to
   graft a lone missing ticket onto an already-hardened plan. To add a CHECK — a build gate or a planning
@@ -52,7 +53,7 @@ is exactly:
 Praxis is a HARD dependency: if it is unreachable the factory STOPS (the gate blocks) — it never proceeds
 on a guess. The factory has a **SINGLE Stop hook — `build_completeness` — and it gates the BUILD phase
 only.** There is **no separate planning Stop hook**: planning is **human-gated**. The human clears the
-plan once `plan_gate` passes, contradictions are empty, and a panel-ran episode exists (all read live
+plan once `plan_gate` passes, contradictions are empty, and a validation episode exists (all read live
 from Praxis).
 
 **This skill's place in the methodology.** af-intake-plan runs UPSTREAM of the build loop and is the
@@ -138,10 +139,10 @@ silently.
 Before extracting, fix two axes with the human — **two** blocking questions, **one per turn** (never
 stacked). If af-plan's doc already records a rigor mode, confirm it rather than re-asking from blank.
 
-**0c-a. Rigor — how hard the audit pushes** (mirrors af-plan Step 1a): **Quick** runs each lens once;
-**Rigorous** runs the gap-lenses (failure-modes, security, data-lifecycle, rollback, who-pays)
-fire-or-pass per requirement and loops the completeness critic **until-dry** (B1, B5). Note the mode in
-the panel-ran episode (B8).
+**0c-a. Rigor — how DEEP the single challenge pass goes, never how WIDE** (mirrors af-plan Step 1a):
+**Quick** runs B1's pass once; **Rigorous** re-runs it until a fresh pass surfaces nothing new, capped
+at 3 passes. In both modes the five gap lenses sweep the whole set **once each** — rigor never turns
+them into a lens-by-requirement matrix. Note the mode in the B5 validation episode.
 
 **0c-b. Decision mode — how every genuine fork gets settled** once the resolve-before-you-ask ladder
 (Step 3a) cannot answer it from sources. This is the **attended/unattended axis made explicit** — the
@@ -151,11 +152,11 @@ human's answer sets it deliberately instead of it being inferred from Constituti
   3a), and the B4 architecture/provider decisions interactively.
 - **Autonomous (force decisions / unattended)** — never block on a fork: take the low-regret default on
   every one, record it with `praxis_record_episode` (decision + "forced default: source silent, owner
-  autonomous", alternatives not taken), and surface it for **override at the B9 gate** rather than
+  autonomous", alternatives not taken), and surface it for **override at the B5 bless gate** rather than
   asking mid-intake.
 
 Decision mode changes **only how a fork is settled** — it never weakens validation. The audit (Part B),
-the plan-review panel (B7), the mechanical gates (B6), and the human's final blessing (B9) are
+the mechanical gate (B3) and the final blessing (B5) are
 **unconditional** in both modes; in Autonomous mode the human still clears B9, reviewing the forced
 defaults there instead of one at a time. **Anti-masking guard:** a forced default may NEVER paper over a
 genuine high-regret/irreversible fork (auth model, data-loss semantics, money, PII exposure) — those
@@ -166,20 +167,48 @@ surface to the human even in Autonomous mode.
 Before extracting, **stamp the planning marker**: `_ticket_state.stamp_planning(project, owner)`. This
 writes a session-owned, heartbeated marker on the `prd-<project>` snapshot that ARMS the
 `plan_completeness` Stop hook — from here until bless the hook blocks the planning turn from ending until
-the plan mechanically blesses (B9). Re-stamp periodically to heartbeat it (the marker goes stale after
-`DEFAULT_PLANNING_TTL_S`). It is CLEARED at bless (B9). A build session stamps a *run* marker, not this
+the plan mechanically blesses (B5). Re-stamp periodically to heartbeat it (the marker goes stale after
+`DEFAULT_PLANNING_TTL_S`). It is CLEARED at bless (B5). A build session stamps a *run* marker, not this
 one, so the two Stop hooks never cross-fire.
 
 ## Step 1 — Extract candidates (two passes, then reconcile)
 
-**Pass A — behavioral, from the doc.** Atomize the rules into binary conditions. A good brainstorm doc
-is already near-structured (epics + acceptance + data model + API), so this is *atomize + mint binary
-conditions + dedupe across sections*, not invention. Over-generate; the hardening + audit gates are the
-filter.
+### SIZE THE TICKETS FIRST (read before extracting)
 
-**Pass B — surface, from the wireframe inventory.** Each screen, each state, each action becomes a
-candidate. This is where the implied states (offline / empty / invalid-invite / completed / fallback)
-become first-class requirements instead of being forgotten.
+A ticket is **one coherent unit of work an agent takes from red to green in a single sitting** — not
+one sentence from the doc, and not one bullet of acceptance criteria. Extraction's default failure
+mode is producing forty tiny tickets that each name a fragment of the same job, which inflates the
+build loop's overhead, multiplies claim/resolve/verify round-trips, and buries the real work in
+bookkeeping.
+
+**Target 15-25 tickets for a feature; treat 30+ as a signal you over-divided, not as thoroughness.**
+Merge by default. Concretely, these belong in ONE ticket, never split:
+
+- **A mechanism and the thing that feeds it** — a detector and the whitelist derived from it; a
+  corpus and the check that consumes it. Neither is shippable alone.
+- **A rule set authored in one place** — every rule that lands in the same prompt, rubric, or config
+  file is one authoring job, however many rules it contains.
+- **A classifier and its verdict states** — do not give each branch of one decision its own ticket.
+- **A change and the tests it breaks** — see the granularity rule in Step 5.
+- **A behavior and its own edge cases** — the edge cases belong in that ticket's acceptance
+  condition, which is exactly what acceptance conditions are for. A separate ticket per edge case is
+  the single biggest source of ticket sprawl.
+
+Split only when both halves are **independently shippable and independently verifiable**. When you
+cannot decide, merge — a ticket that is slightly too big costs one longer sitting, while two that
+should have been one costs a wedged dependency edge and two rounds of overhead.
+
+**Pass A — behavioral, from the doc.** Atomize the rules into binary conditions, then **group them
+back up** into the ticket-sized units above. A good brainstorm doc is already near-structured (epics
++ acceptance + data model + API), so this is *atomize → mint binary conditions → group → dedupe
+across sections*, not invention. Over-generate **candidate behaviors**, then consolidate before
+admitting — the grouping is yours to do here, not the audit's to clean up later.
+
+**Pass B — surface, from the wireframe inventory.** Each screen becomes a candidate, and its states
+and actions become **acceptance conditions on that screen's ticket** — not tickets of their own. This
+is where the implied states (offline / empty / invalid-invite / completed / fallback) stop being
+forgotten, and the way to keep them is to name them in the acceptance condition of the screen they
+belong to. One ticket per screen is the right grain; one per state is the sprawl.
 
 **Reconcile.** Merge duplicates by *concept* (the same rule stated twice is ONE candidate with two
 citations) so you don't admit five near-duplicates and lean entirely on Praxis dedup. **This Step-1
@@ -224,7 +253,7 @@ Field rules:
   doc gives one, use it; else leave a best-draft and flag it for the ambiguity forge (Step 2).
 - **`meta.verify`** — `"automated"` (a command the loop runs — the default) or `"manual"` (needs human
   confirmation). Drives the phase-gate split downstream. A **pure architecture-decision ticket is always
-  `"manual"`** (B4's HARD RULE); the plan gate rejects an `architecture-decision` ticket left
+  `"manual"`** (B2's HARD RULE); the plan gate rejects an `architecture-decision` ticket left
   `verify="automated"` (`R-DECISION-NOT-END-STATE`).
 - **`meta.surfaces`** — wireframe screen ids governed, or `["backend-only"]`. Seeds the `renders`
   bindings written in Step 4.
@@ -232,14 +261,14 @@ Field rules:
 - **`meta.depends_on`** — prerequisite requirement ids that must be `finished` before this one is
   buildable (the build-order DAG `af-build`'s `next_ready_ticket` walks). A best-draft now; the DAG is
   mapped and validated in **Step 5**. Empty for a requirement with no prerequisites. A prerequisite is a
-  real **build** dependency only — **NEVER a pure architecture-decision ticket** (B4's HARD RULE); the
+  real **build** dependency only — **NEVER a pure architecture-decision ticket** (B2's HARD RULE); the
   plan gate rejects any edge whose target is tagged `architecture-decision` (`R-NO-IMPL-DEPENDS-ON-DECISION`).
 - **`meta.scope`** — `"mvp"` or `"post-mvp"` (the tier tag only; NOT the project identity).
 - **`meta.tags`** — identity tags (concepts / surfaces / semantics). A ticket carries identity, **NEVER
   an authored list of its checks**; *which checks apply* is a fresh query (tag ∪ surface ∪ semantic)
   resolved at build time. Tag honestly so that query resolves correctly. A **pure architecture-decision
   ticket carries the NEUTRAL tag `["architecture-decision"]` ONLY** — never an impl-domain tag (`cdk`,
-  `token-verification`, `frontend`, `database`, …), so it resolves ZERO implementation checks (B4's HARD
+  `token-verification`, `frontend`, `database`, …), so it resolves ZERO implementation checks (B2's HARD
   RULE).
 
 ## Step 2 — Write candidates to Praxis (the write-path)
@@ -425,7 +454,7 @@ order or screen layout. The relations that create a genuine build-order dependen
 Set `meta.depends_on = [requirement_id, ...]` on each requirement via `praxis_edit_fact` (or at admit).
 A requirement with no prerequisite keeps `[]`.
 
-**A pure architecture DECISION is NEVER a prerequisite** (B4's HARD RULE). Every relation above is a real
+**A pure architecture DECISION is NEVER a prerequisite** (B2's HARD RULE). Every relation above is a real
 *build* dependency — something that must physically exist first. An architecture decision is a **choice**,
 not a build artifact: it is baked into the IMPL ticket's own content/acceptance, not listed as its
 `depends_on`. Making a decision a prerequisite is the Auth0→Cognito wedge (B4's worked example) — the
@@ -442,13 +471,14 @@ requirement, so the plan gate flags it dangling, the build loop never treats it 
 graph draws **no edge** (this is exactly why a snapshot authored with cids rendered no dependency edges).
 When you have only a target's fact id in hand, look up that fact's `meta.requirement_id` and store *that*.
 
-**The DAG is VALIDATED, not just authored — it is part of the mechanical gate (B6).** Run the plan gate
+**The DAG is VALIDATED, not just authored — it is part of the mechanical gate (B3).** Run the plan gate
 (`agent_factory.plan_gate.evaluate_plan`); its `R-NO-DANGLING-DEP` rule rejects a `depends_on` naming a
 requirement not in the plan, and `R-NO-DEP-CYCLE` rejects a cycle (A needs B needs A) — either of which
 would otherwise become a silent run-time **stall** when `next_ready_ticket` finds nothing claimable. A
 plan does not pass intake with a dangling or circular dependency.
 
-**Granularity — a non-independently-greenable change set is ONE ticket, never split peers.** `depends_on`
+**Granularity — see "SIZE THE TICKETS FIRST" in Step 1 for the sizing target (15-25, merge by
+default). This rule is its hard floor: a non-independently-greenable change set is ONE ticket, never split peers.** `depends_on`
 only orders tickets that each stand alone; it does NOT license splitting a single indivisible change across
 tickets that each need a *sibling's* edit to compile or pass. The universal-ish build gates
 (`backend-build`, `backend-vitest`) pin on **EVERY** backend ticket, so each isolated worker must leave the
@@ -460,472 +490,239 @@ ordered chain**, not two peers that each red `backend-vitest`.
 
 ---
 
-# PART B — PLANNING VALIDATION (the audit + the panel)
+# PART B — PLANNING VALIDATION (one challenge pass, one gate, one bless)
 
-Once candidates are admitted, hardened, and bound, intake runs **all planning validation** before the
-human can bless the plan. This is the cold-eyes pass whose entire output is **writes into Praxis** —
-requirement edits, new requirements, reconciled near-duplicates, and planning/validation checks — plus a
-single **panel-ran episode** that proves the audit happened. It authors **no state file**: there is no
-`plan-audit.json`, no findings state machine. An audit gap that isn't resolved lives in Praxis as an
-**incomplete requirement or check**.
+Validation is deliberately **SMALL**. An earlier version of this skill ran eleven audit steps and
+reliably turned a one-skill plan into a multi-hour ceremony that produced more planning artifact
+than the thing being planned. The steps that actually caught defects were the **cold-eyes
+challenge**, the **forced architecture decisions**, and the **mechanical gate**. Everything else is
+now opt-in or gone.
 
-**Why a separate cold-eyes pass, not inline:** a skeptic firing in the same breath that drafted a
-requirement is self-review — the weak kind (a model judging its own output inflates its pass rate). So
-dispatch the **read-only retrieval sub-agent** (`af-build` §1a) as the skeptic: it reads the admitted
-facts (`praxis_list_graph` / `get_context` on the live graph) plus the doc and wireframe and tries to
-**break** each requirement. It didn't write them, so it challenges harder. It also sees the **whole set**,
-so cross-requirement gaps (a missing interaction, an unhandled handoff) — invisible per-requirement —
-become visible.
+The one structural rule that survives: **the agent that drafted a requirement is never its only
+skeptic.** A model judging its own output inflates its pass rate, and a per-requirement reviewer
+cannot see cross-requirement gaps. So the challenge is one pass by a separate reader over the
+WHOLE set.
 
-## B1 — Adversarial challenge (cold eyes, every requirement)
+## B1 — One cold-eyes challenge pass (whole set, never per-requirement)
 
-For each admitted requirement, the skeptic files **≥1 falsifiable challenge** from: missing actor,
-unbounded condition, unhandled empty/error/boundary case, hidden dependency, idempotency, race/ordering,
-and **cross-requirement gap** (the case that falls between two requirements). In **rigorous** mode each
-gap-lens must explicitly **fire-or-pass** per requirement: `failure-modes`, `security`, `data-lifecycle`,
-`rollback`, `who-pays`.
+Dispatch ONE read-only sub-agent (`af-build` §1a) over the admitted facts plus the source doc. It
+did not write the requirements, so it challenges harder; it sees the whole set, so
+cross-requirement gaps surface. It reports, for the plan as a whole:
 
-**Evaluate the lenses by BATCH, not per-requirement (stop-sooner).** Take ONE lens and sweep it across
-ALL requirements in a single pass — five sweeps total — recording fire/pass per requirement, rather than
-re-deriving all five lenses for each requirement (5×N judgments, the dominant cost on a large plan). For
-a large plan, fan the five lens-sweeps out as a Workflow (one builder per lens). The same batch-by-
-dimension discipline applies to the technical sweep (B4) and the test-strategy derivation (B5).
+- **The five gap lenses, swept ONCE each across all requirements** — failure modes, security,
+  data lifecycle, rollback, who-pays-the-tradeoff. One sweep per lens. **Never a
+  lens-by-requirement matrix** — that is 5×N judgments for no extra signal and is what made the
+  old audit unaffordable.
+- **Near-duplicate / subsumed requirement pairs**, with which one is canonical.
+- **Any requirement carrying no binary acceptance condition.**
+- If the project's `planning-validation` snapshot holds lenses (authored by
+  **af-intake-plan-validation**), apply them as extra items in the same sweep — READ them, do not
+  pin them or build a coverage contract around them.
 
-A challenge isn't done until **closed by a Praxis write**:
-- **resolved** — the plan changed: `praxis_edit_fact` to tighten, or
-  `praxis_add_insight(category="requirement", ...)` to add the missing one. The edit/add IS the closure.
-- **dismissed** — doesn't hold: record *why* with a non-empty reason as `praxis_record_episode`.
-- **deferred** — a genuine owned-decision: record it as a deferred owned-decision episode (explicit, not
-  silent); if it still blocks the build, leave the affected requirement **incomplete** in Praxis.
+### VALIDATION FIXES THE PLAN — IT DOES NOT GROW IT
 
-## B1c — Sign the contract (a SEPARATE evaluator, adversarial, then signs)
+The audit's job is to **fill holes and correct bad posture in the tickets that already exist**. Its
+failure mode — the one that makes intake unaffordable — is closing every finding by minting a new
+ticket, so a 20-ticket plan comes out of validation at 45 with a pile of capability nobody asked
+for. **Validation should be roughly ticket-count-NEUTRAL.**
 
-The planner **never grades its own contract.** After extraction + the B1 challenge, dispatch a
-**separate, read-only evaluator sub-agent** (the read-only retrieval sub-agent contract) whose only job
-is to **falsify / cut / merge / tighten** the candidate testable assertions — then **sign** the result.
-The evaluator records ONE `contract-signed` episode carrying the assertion COUNT and its ACTIONS:
+**Hole vs. feature — apply this test before every finding.**
 
-```
-praxis_record_episode(
-  text = "contract-signed for prd-<project>: evaluator adversarially reviewed and signed the "
-         "testable-assertion contract",
-  # meta.episode payload mirrors contract_signature.build_signed_payload(n, actions, signer):
-  #   kind="contract-signed", n_assertions=<N>, actions={cut,merged,added}, signer="evaluator"
-  outcome = "signed",
-)
-```
+- A **hole** is a behavior the plan already claims but no ticket owns properly: an unfalsifiable or
+  missing acceptance condition, a wrong/missing `depends_on` edge, an unstated refusal on a
+  catastrophic path, a contradiction between two tickets, a near-dup pair. **Fix holes.**
+- A **feature** is capability the plan never claimed. "It would also be good if…" is a feature, no
+  matter how sensible. **Features are NOT findings.** Record one as a post-mvp note or an open
+  decision on the doc and move on — never as a ticket, and never as a widened acceptance condition.
 
-**Gate on ACTIONS, not a padded count (anti-Goodhart, KTD3).** The HARD bless predicate (`R-CONTRACT-SIGNED`,
-enforced by `plan_gate_check` at B6/B9) is "**signed AND ≥1 real evaluator action recorded**" — a
-signature over an unchanged draft (all-zero actions) does NOT pass. The count is recorded for visibility
-only; a requirement below ~10 concrete assertions is **FLAGGED for the evaluator** (`below_floor`), never
-hard-rejected. The predicate **fails CLOSED**: **no contract at all** (nothing threaded into the gate, an
-empty payload, or a payload whose `kind` is not `contract-signed`) also REJECTS, with its own reason text
-so you can tell "never negotiated" apart from "signed lazily". A plan that never had a contract signed is
-the *more* dangerous state, so it can never be the admit path.
+**Closure hierarchy — take the FIRST option that works, in this order:**
 
-## B2 — Near-duplicate / overlap challenges WRITE BACK to the graph
+1. **`praxis_edit_fact` on an existing ticket** — tighten a weak acceptance condition, correct the
+   posture, add the missing refusal, fix a `depends_on` edge. **This closes the large majority of
+   real findings and is the default.** An unowned behavior is almost always a missing clause in some
+   existing ticket's acceptance, not a missing ticket.
+2. **`praxis_reject_fact`** on the loser of a near-dup pair (canonical one survives).
+3. **A recorded episode** — for a dismissal (with the reason), a forced default, or a deferred
+   owned-decision. A decision is an episode, never a ticket, unless it needs the B2 HARD-RULE shape.
+4. **`praxis_add_insight` for a genuinely new ticket — the LAST resort, with a bar.** Permitted only
+   when the gap is a behavior that **no existing ticket could own even with an amended acceptance
+   condition**, and you can name why. **Hard cap: 2 new tickets per validation pass.** Wanting more
+   is not thoroughness — it means EXTRACTION was wrong, so go back and re-group Step 1 rather than
+   bolting findings onto a bad decomposition.
 
-The cold-eyes pass is the **only** dedup/reconcile step for any plan admitted via the `raw=True`
-fast-lane — `raw` deliberately skips Praxis dedup, so reconciliation is the audit's job, and a near-dup
-is **not closed until the graph reflects it**:
-- **redundant / subsumed** → keep the canonical fact and **`praxis_reject_fact`** the loser (drops it
-  from active queries). Record *why* + a cross-link, then **re-save the snapshot**.
-- **distinct-but-overlapping** → **`praxis_edit_fact`** to NARROW the overlapping fact (strip the
-  duplicated clause so it defers to the canonical one; `edit_fact` requires BOTH `title` and `content`).
-  Persist the relationship as a `references` entry in meta, then re-save the snapshot.
-- **genuinely distinct / complementary** → no graph change; record the cross-link rationale (an episode)
-  so a future reader knows the overlap was considered.
+A free-text "considered and fine" is not closure. But neither is a new ticket for something an edit
+could have carried.
 
-## B3 — Validate the plan against the planning checklist (the two-tier coverage GATE)
+**Record ONE episode when the pass completes**, naming the lens results, the near-dups
+reconciled, and the edits made. That episode IS the contract signature the mechanical gate reads
+(`R-CONTRACT-SIGNED`) — the evaluator's recorded ACTIONS are the signature, so there is no
+separate contract-negotiation step. Its text must name `prd-<project>`, because the gate scopes
+the signature to this project (an unscoped match once let one project's signature satisfy
+another's gate).
 
-The planning checklist is NOT applied freeform. A free-running audit reliably DROPS ~14% of the lenses
-(measured: the real pipeline surfaced 128/148 and silently missed 20). So intake runs the lenses as the
-**SAME two-tier validation `af-build` uses for code** — lens-application becomes a HARD coverage contract,
-not the agent's memory. Identical engine (`hooks/_ticket_state.py`); the only difference is the scope and
-the subject (the plan's Praxis facts, not built code). The plan-anchor `plan_subject` is the fact this
-`prd-<project>` plan's coverage contract hangs on.
+**Rigor (Step 0c) sets the DEPTH of this one pass, not its width.** Quick runs it once; Rigorous
+re-runs it until a fresh pass surfaces nothing new, capped at 3 passes.
 
-1. **RESOLVE** — `resolve_validation_requirements(plan_subject, project, scope="planning")` returns EVERY
-   active `scope="planning"` lens (global considerations; the whole plan must satisfy each — not
-   tag-bound). The lenses are read from a **DEDICATED `planning-validation` snapshot inside the project's
-   own space, by default** (the typed `project_ref` seam in `hooks/_ticket_state.py` resolves to
-   `(space=<project>, snapshot=planning-validation)`) — separate from the `prd-<project>` snapshot this
-   intake writes; ticket/plan writes are unaffected. **Override — slash argument ONLY** (no env seam):
-   `/af-intake-plan --checks-space=<space[:snapshot]>` reads the checklist from a different `(space, snapshot)`
-   this run (pass an `override=(space, snapshot)` pair into the resolve call). The extensible lenses
-   live ONLY in Praxis (added via `af-intake-plan-validation`, which writes them into the project space's
-   `planning-validation` snapshot); a lens added there is enforced on the next plan with no code change.
-2. **PIN the coverage contract** — `pin_requirements(plan_subject, lenses)`: every lens is now a
-   requirement this plan MUST cover.
-3. **SYNTHESIZE a covering validation per lens** — for each lens, author a concrete, runnable validation
-   that PROVES the plan satisfies it over the Praxis plan facts (its `run` is a check/query whose exit
-   code is the signal; it `covers` the lens id), then `pin_validations(plan_subject, [...])`. E.g. for
-   `external-service-provider-decision`: a check that enumerates every external-service-dependent
-   requirement and asserts a named provider decision exists (B4 is HOW you cover this lens); for a
-   states lens: every screen requirement has loading/empty/error; for a metric-definition lens: every
-   surfaced metric carries an exact definition. A lens whose `applies_when` this product doesn't meet is
-   covered by a validation that records *why it's N/A* (its pass), never silently skipped.
-4. **RUN + RECORD** — run each validation; `record_validation_pass(plan_subject, vid, passed)`.
-5. **CLOSE THE GAPS** — `coverage_gap(plan_subject)` must be EMPTY (a lens with no covering validation =
-   the plan is not validated) AND `all_validations_passed(plan_subject)` True. A FAILING lens validation
-   is a real plan hole: **admit the requirement that satisfies it, or — unattended — record the
-   low-regret forced-decision default as an episode** (B4), then re-run that validation. The plan is NOT
-   blessed until every lens is covered AND passes.
+## B2 — Forced technical decisions (architecture, external services, tests)
 
-This makes planning validation deterministic and identical in shape to build validation: **what the
-eval's depth scorer measures (lens × whole-plan) is exactly what this gate enforces** — add a lens to
-Praxis and it becomes both an eval hole and an intake gate failure, with no code change.
+Behavioral requirements say *what* the product does and routinely leave the *how* unspecified.
+Force the project-wide technical decisions **this** system needs to be buildable — derive them
+from the doc and the requirements, since a CLI, a web app, an ML pipeline, and a library need
+different ones. Resolve each on the Step-3a ladder (doc → mounted conventions → low-regret
+default recorded as an episode → ask per decision mode → defer), then persist it **by editing the
+requirement it governs** — or as an episode when it is a pure choice. Admitting a decision as its own
+ticket is the exception, not the default, and only in the B2 HARD-RULE shape below; a decision ticket
+that gates nothing will be closed by assertion and is better recorded as an episode.
 
-## B4 — Technical architecture sweep (end-to-end) → written into Praxis
+**Named, non-skippable: external-service providers.** Whenever any requirement implies an
+external service (email, SMS, push, payments, object storage, geocoding, …), the concrete
+provider/transport is a **forced decision** — choose it, record how it is configured and
+secreted, and require a dev/local transport that surfaces the side effect (e.g. logs the reset
+link). "Sends email" with no chosen transport is the canonical planning failure. Surface the
+**managed-vs-custom fork** explicitly: a managed auth provider may bundle credential email and
+remove the standalone choice entirely.
 
-Behavioral requirements describe *what* the product does; they routinely leave the *how* — the
-cross-cutting technical architecture — unspecified. This sweep forces every project-wide technical
-decision to be made explicitly (or consciously deferred), so the build never quietly invents an
-architecture nobody chose.
+**Test strategy, one pass.** Name the layers THIS platform needs (a library needs public-API
+contract tests; a mobile app needs a device/simulator layer; a data pipeline needs data-contract
+and eval gates) and give each a **binary, CI-enforced condition**. A layer with no binary
+condition is a hope, not a strategy. No until-dry critic loop.
 
-**Derive the decisions dynamically — there is NO fixed list.** Enumerate what *this* system needs to be
-buildable from the doc, the admitted requirements, and the *kind* of software it is. A web app differs
-from a CLI, an ML/data pipeline, a game, an embedded device, or a library. *Illustrative only* (a typical
-web app): auth + authz, data store + migrations, backend stack + API style, frontend framework + styling
-+ build tooling, hosting/deploy + CI + environments, secrets/config, external services, testing + the
-verify oracle, observability, data-privacy. These are prompts, not the list.
+**Every-site sweeps get ONE guard.** If the plan contains a change that must land at EVERY call
+site (a provider swap, a rename, a config-key migration, a banned-import purge), author a single
+completeness check — typically `! grep -rq '<old pattern>' <scope>` — by running
+**af-intake-build-validation** (the sole writer of `building-validation`). A half-done rename
+often still compiles green, which is why the acceptance floor alone does not catch it. One guard
+per sweep, not a guard per edge case.
 
-**Named, non-skippable decision — external-service providers (the forced provider decision).** Whenever
-ANY requirement implies an external service (email/SMTP or transactional email, SMS, push, payments,
-object/file storage, geocoding, …), the concrete **provider/transport is a forced decision**: choose it
-(per decision mode — in **Collaborate** push the user, in **Autonomous** take a low-regret default +
-`praxis_record_episode` and flag for override at B9), record how it is configured/
-secret'd, AND require a working **dev/local transport that surfaces the side effect** (e.g. logs the reset
-link). A "sends email" capability with no chosen transport is the canonical planning failure — the
-password-reset link never delivered because nothing was decided. Surface the **managed-vs-custom fork**
-explicitly, because a managed platform may bundle the service and remove the standalone choice: e.g. for
-auth credential emails (password reset, verification), **AWS Cognito** (or a similar managed auth
-provider) ships this email built-in — choosing it eliminates the separate email-transport decision,
-whereas custom/self-rolled auth additionally requires choosing + wiring a standalone transport (SES,
-Postmark, SMTP). Present that fork to the user rather than silently defaulting. The
-`external-service-provider-decision` planning check (pulled in B3) enforces this on every plan; leaving it
-unchosen is an anti-masking violation.
+### HARD RULE — a pure architecture DECISION is modeled as a decision, never as a disguised implementation ticket
 
-**Each decision becomes durable Praxis state.** Resolve each like an underspecified requirement (doc →
-mounted conventions → low-regret default + `praxis_record_episode` → ask → defer) and persist it: write
-the chosen decision **into the requirement(s) it governs** (`praxis_edit_fact`) or as a first-class
-architecture requirement (`praxis_add_insight(category="requirement", ...)`), and log rationale +
-alternatives as an episode. None may be silently skipped; a default may never paper over a genuine owner
-fork.
+A pure architecture decision ("we use Cognito, not Auth0") is a **CHOICE**, not a build target.
+Prefer recording it as an episode so it never enters the build set at all. If it is admitted as a
+`category="requirement"` ticket it MUST obey all of:
 
-### HARD RULE — a pure architecture DECISION is modeled as a decision, NEVER as a disguised implementation ticket
+- **Neutral tag ONLY** — `meta.tags = ["architecture-decision"]`, never an impl-domain tag
+  (`cdk`, `frontend`, `database`, …), so it resolves ZERO implementation checks.
+- **`meta.verify = "manual"`** — a human accepts or overrides it; a decision is never an
+  automated end-state.
+- **Decision-level acceptance** — `"<X> is the accepted design decision"`, never an
+  implementation end-state (`"cdk synth emits three UserPools"`) that duplicates a downstream
+  ticket.
+- **Never a `depends_on` prerequisite of its own implementation ticket.** Bake the decision into
+  the IMPL ticket's content/acceptance instead.
 
-A pure architecture decision ("we use AWS Cognito, not Auth0"; "the transport is Postmark") is a **CHOICE**,
-not a build target. Model it **EITHER** as an owned-decision / episode fact (**PREFERRED** —
-`praxis_record_episode`, so it never enters the build set at all), **OR** — if it is admitted as a
-`category="requirement"` ticket — it **MUST** obey **ALL** of the following. This is stated once, here,
-where architecture decisions are produced; the Step-1 field rules and the Step-5 `depends_on` section
-cross-reference it.
+**The gate enforces this** via `R-DECISION-NOT-END-STATE` and `R-NO-IMPL-DEPENDS-ON-DECISION`,
+recognizing a decision by the neutral tag OR the `meta.decision` marker. Note the corollary: do
+**not** put anything in `meta.decision` that is not an architecture decision — a flagged default
+belongs in `meta.flagged_default`, or the gate will demand `verify="manual"` on an ordinary
+ticket.
 
-- **NEUTRAL tag ONLY** — `meta.tags = ["architecture-decision"]`, **NEVER** an impl-domain tag (`cdk`,
-  `token-verification`, `frontend`, `database`, …). The neutral tag resolves **ZERO** implementation
-  checks, so the decision ticket carries no build gate it cannot itself satisfy.
-- **`meta.verify = "manual"`** — a human **accepts or overrides** the decision at the gate (the
-  flagged-default override point of Step 0c / B9). A decision is never an automated end-state.
-- **DECISION-LEVEL acceptance** — `"<X> is the accepted design decision"`, **NEVER** an implementation
-  end-state (`"cdk synth emits three UserPools"`, `"no @auth0/auth0-react import remains"`) that
-  duplicates a downstream implementation ticket.
-- **NEVER a `depends_on` prerequisite of its own implementation ticket.** The decision is baked into the
-  **IMPL ticket's content/acceptance** instead. Impl tickets depend ONLY on real build prerequisites (data
-  producer → consumer, entity → its surfaces, shared infra → first user — Step 5), never on a decision.
+**Why this rule exists (the wedge).** Five Auth0→Cognito decisions were once planned as tickets
+carrying impl-domain tags, impl end-state acceptance, and `depends_on` edges FROM the impl work
+that would satisfy them. They sat topologically FIRST but could only go green LAST, so a fresh
+build's entire ready frontier was decisions nothing could satisfy, and the run wedged
+immediately.
 
-**The plan gate mechanically enforces this.** `agent_factory.plan_gate.evaluate_plan` **REJECTS** the
-malformed shape via **`R-DECISION-NOT-END-STATE`** (a ticket tagged `architecture-decision` must be
-`verify="manual"`, never an automated end-state) and **`R-NO-IMPL-DEPENDS-ON-DECISION`** (no ticket may
-`depends_on` an `architecture-decision` ticket). The gate enforces these properties **only on a ticket
-that IS correctly tagged `architecture-decision`** — a decision mis-tagged with impl-domain tags is not
-even seen as a decision, which is exactly the mis-modeling this rule prevents up front. Once a decision is
-tagged correctly, the rest is enforced for free; the human's only job is to **model decisions as
-decisions**.
+## B3 — The mechanical gate (executable, not eyeballed)
 
-**Worked example of the anti-pattern — the Auth0→Cognito wedge (tickets D1–D5).** The Auth0→Cognito
-migration was planned as five decision tickets that EACH carried **impl-domain tags** (`cdk`,
-`token-verification`, `frontend`), had **impl end-state acceptance** (`"cdk synth emits three UserPools"`,
-`"no @auth0/auth0-react import remains"`), and were **`depends_on` prerequisites of the very impl tickets
-that would satisfy them.** So they sat topologically **FIRST** (everything depended on them) but could
-only go green **LAST** (only the downstream impl work satisfies an impl end-state). A fresh `/af-build`'s
-entire ready frontier was therefore decisions that **NOTHING could satisfy** — the run wedged immediately.
-Modeled correctly, D1–D5 collapse to a single **`verify="manual"`, `["architecture-decision"]`-tagged**
-ticket (or a recorded episode) with **decision-level acceptance and no dependents**, and the real
-UserPool/token/frontend work becomes **ordinary impl tickets** that bake the chosen design into their own
-acceptance and depend only on genuine build prerequisites.
+- **`python -m agent_factory.tools.plan_gate_check <project>`** — reads the LIVE `prd-<project>`
+  facts and runs `evaluate_plan` with the project pinned. **Non-zero exit is a HARD BLOCK on the
+  bless.** Surface its reasons verbatim. Exit `0` admitted, `1` rejected, `2` Praxis unreachable
+  or empty plan. It covers: `R-HAS-SOURCE` (every requirement's `source` equals `prd-<project>`),
+  binary acceptance present, no vague terms, no dangling concept reference, the signed contract
+  from B1, and the **build-order DAG** — `R-NO-DANGLING-DEP` and `R-NO-DEP-CYCLE`, either of
+  which would otherwise surface only as a run-time stall when `next_ready_ticket` finds nothing
+  claimable.
+- **Bidirectional surface coverage** — `praxis_surface_coverage(project, scope="mvp")` returns
+  both `uncoveredSurfaces` and `uncoveredRequirements` empty, or each exception justified. A
+  project with no surfaces at all (a CLI, a library) is `backend-only` by construction; say so
+  rather than reporting a vacuous clean.
+- **`meta.references` hygiene.** Every concept a requirement references must be `defined` by some
+  requirement or declared out of scope (`--out-of-scope`). Reference plan concepts only —
+  ambient vocabulary and pre-existing factory artifacts belong in `meta.citations`.
 
-## B5 — Test strategy is mandatory (derive the layers for THIS system)
+New gate edge cases earn a `case.yaml` under `evals/cases/plan_gate/` so the gate's coverage
+compounds (`pytest tests/test_eval_cases.py`).
 
-A plan with no test strategy (or one that skips a layer this platform lives or dies on) is exactly the
-silent gap mechanical checks wave through. An explicit, **platform-appropriate, automated test strategy +
-CI is a MANDATORY outcome of every audit**. **Derive the right LAYERS for THIS system; there is NO fixed
-checklist.** *Illustrative only:* a **library** → unit + public-API/contract tests + semver-aware release
-CI; a **web app** → unit + integration + e2e on critical flows + merge-gating CI/CD; a **mobile app** →
-unit + integration + UI/e2e on a real device or simulator + build/sign CI (the device/simulator layer is
-the one a generic plan silently omits); a **CLI** → unit + integration + a packaging/install smoke test;
-a **data/ML pipeline** → unit + data-contract/schema tests + pipeline integration + eval gates on model
-quality.
+## B4 — The plan-review panel (OPT-IN; default OFF)
 
-**Persist each chosen layer + the CI/CD setup as Praxis state with a BINARY acceptance condition** — the
-same bar as any requirement. The natural home is a **live validation check** per layer (`category="check"`,
-an applicability predicate, a binary criterion) and/or a first-class testing requirement. A layer with no
-binary, CI-enforced condition is not a strategy; it's a hope, and the build gate treats the requirement it
-should have produced as missing (incomplete).
+**Default OFF.** B1 already ran cold eyes over the whole set, so a second full panel is
+redundant on an ordinary plan. Convene the compound-engineering panel ONLY when a trigger fires:
 
-**Then run the completeness critic — the dynamic pushback.** Dispatch an *independent* cold-eyes
-sub-agent whose only job is: *"to actually build this system, what technical decisions are still
-unmade?"* It reads the doc + requirements + the decisions already written and names what's missing for
-**this** product, and **explicitly interrogates the test strategy** ("is it COMPLETE and APPROPRIATE for
-THIS platform?"). Write what it surfaces into Praxis, resolve those too, and **loop until it returns
-nothing new** (loop-until-dry). It does not sign off while a platform-appropriate layer or the CI gate is
-missing or unenforced.
+- more than 25 new/changed requirements since the last blessed snapshot, OR
+- the plan touches auth, payments, data migrations, or PII, OR
+- it introduces a new cross-cutting abstraction or framework.
 
-## B5b — Guard the build's known blind spots (author build-validation checks via af-intake-build-validation)
+When it runs, **two personas suffice** — `ce-coherence-reviewer` (contract/convention coherence)
+and `ce-feasibility-reviewer` (unsatisfiable targets) — plus `ce-security-lens-reviewer` on the
+high-stakes trigger only. Dedupe across personas first, then close each finding through **the same
+closure hierarchy as B1** — edit an existing ticket by default, a check for a rule that must hold
+across the plan, an episode for a dismissal, and a new ticket only under B1's last-resort bar. The
+panel's 2-new-ticket cap is shared with B1's, not additional to it: a review pass is not a licence to
+re-scope the plan.
 
-A hardened requirement whose acceptance *names* an edge case still does not make the build PROVE it:
-af-build self-reports "done" against the acceptance floor unless a declared **check** forces the case.
-Two failure classes survive every per-requirement audit yet are exactly what the build agent silently
-drops — this step turns each into a runnable build gate so "done" is gated on the behavior, not the
-agent's word:
+**A skip is recorded, never silent** — when no trigger fires, record a skip episode naming the
+size signal. If the panel IS triggered but the ce agents do not resolve, that is a **blocked
+review**: surface the remediation (`claude plugin install compound-engineering@compound-engineering-plugin`)
+and do not bless.
 
-1. **The tricky edge case** — the empty / offline / invalid / boundary / race / idempotency / partial-
-   failure case that is easy to code past. B1's adversarial lenses SURFACE these into requirement
-   acceptance; here you promote the highest-risk ones to a **runnable check** whose `run` is a test that
-   exercises exactly that case, so a build that skips the case exits non-zero and re-opens the ticket.
-2. **The every-site change (huge refactor / cross-cutting sweep)** — a change that must land in EVERY
-   file / call-site (a provider swap, an API/method rename, a config-key migration, a banned-import
-   purge). The build agent runs the sweep and misses N of M sites; per-requirement review never sees the
-   whole set, and a half-done rename often still COMPILES GREEN (the dangerous kind). The guard is a
-   **scan/grep check that asserts ZERO stragglers remain** — `! grep -rq '<old pattern>' <scope>` (or a
-   codemod/lint rule) — so an incomplete sweep exits non-zero. This is the correct home for the
-   "no `@auth0/auth0-react` import remains" assertion that **B4's HARD RULE forbids on a decision ticket**:
-   model it here as a build-validation scan check, not as an impl end-state on the architecture decision.
+## B5 — Bless
 
-Neither guard is a requirement (a check is not a plan fact) and this skill **may not write the
-`building-validation` section itself** (section-lock; the server refuses a `category="check"` fact in
-`prd-<project>`). So the split of labor is: **DERIVE the guard set HERE** — the plan-side judgment of
-WHICH cases and WHICH sweeps are high-risk — then **author each guard by RUNNING af-intake-build-validation**
-(the sole writer of `building-validation`), once per guard. af-intake-plan decides; the sibling writes.
+Record ONE episode asserting what ran (`af-intake-plan validated prd-<project>: challenge passes=<k>,
+lenses=[...], near-dups reconciled=[...], decisions written=[...], test layers=[...], every-site
+guards=[...], panel=<ran|skipped:reason>`), then report status against each predicate — never
+declare it yourself. All are read LIVE from Praxis:
 
-**Derive the guard set — batch across the whole plan, not per-requirement (stop-sooner, same discipline
-as B1/B4):**
-- **Edge-case guards** — from B1's fired lenses, keep the cases where the miss is EXPENSIVE OR INVISIBLE
-  (silent partial failure, data loss, auth bypass, race, idempotency, money/PII) AND the case is
-  automatable. Each becomes a check whose `run` is a test hitting exactly that case. Scope it per
-  af-intake-build-validation Step 1: **surface-bind** a UI case (`meta.surfaces` + the `renders` edge, so
-  it can never resolve onto a backend-only ticket), **tag-scope** a domain case (`["auth"]`), `["*"]`
-  only for a truly universal invariant.
-- **Every-site guards** — from B4's architecture decisions and any requirement describing a rename /
-  migration / purge across the codebase, name each cross-cutting change that must be TOTAL. Each becomes
-  a completeness check — typically `! grep -rq '<old>' <scope>` (zero stragglers) or a codemod/lint gate
-  — scoped `["*"]` so it re-runs on EVERY ticket until the sweep is total (a straggler in any ticket's
-  slice re-reds the gate).
+- Every requirement maps to ≥1 binary acceptance condition, or is an explicitly-deferred owned decision.
+- Every requirement carries `source="prd-<project>"`.
+- **`plan_gate_check` exits `0`** (B3) — a HARD BLOCK otherwise, reasons cleared first.
+- The `contradictions_checked` marker is set AND the contradiction queue is empty. An empty queue
+  with no marker is NOT evidence of consistency — the `raw=True` path skips detection, so
+  "empty" can mean "never ran". B1's pass is what earns the marker.
+- Every can't-miss failure class addressed-or-excluded with logged rationale (data loss, auth
+  bypass, irreversible action, silent partial failure).
+- Every every-site sweep carries its guard check (B2), or a recorded exception.
+- **Validation did not inflate the plan.** State the ticket count before and after Part B in the B5
+  episode. Net growth above **2 tickets** (B1's and B4's shared cap) means findings were closed by
+  minting scope instead of by fixing the tickets — go back and convert them to edits before blessing.
+  A validation pass that leaves the count flat, or lower after near-dup rejection, is the normal and
+  healthy outcome.
+- The B5 episode exists.
 
-Keep the set HIGH-SIGNAL: a guard for every trivial case is noise that slows every build. Guard the cases
-whose miss is costly or silent, and the sweeps whose partial application still builds green — not the
-obvious ones the acceptance floor already forces.
+The `plan_completeness` Stop hook (armed in Step 0d) blocks the planning turn until these hold,
+then **auto-blesses with no human**; the human is summoned only on a failing predicate, and an
+unresolvable predicate on an unchanged snapshot escalates after
+`FACTORY_PLAN_GATE_MAX_ATTEMPTS` (default 3) rather than re-blocking forever.
 
-**Author each guard through the sibling command.** For each derived guard run **`af-intake-build-validation`**
-with its criterion + `run` + `applies_to`/surface. That command owns the `building-validation` write, runs
-`resolve_preview --by-check` to confirm the guard lands ONLY on the intended tickets (tighten an over-broad
-tag before it ships), and closes on a zero-exit `resolve_preview --require-coverage`. Because the write goes
-through the sibling, the single-writer invariant on `building-validation` still holds — af-intake-plan never
-writes the check section directly.
-
-**Decision mode (Step 0c) applies to the guard set, not to whether it runs.** In **Collaborate**, confirm
-the derived guards with the human (which sweeps are truly total; which edge cases are worth a permanent
-gate) before authoring. In **Autonomous**, author the low-regret guards, record them via
-`praxis_record_episode`, and surface the list for override at B9. A guard is cheap to delete and expensive
-to omit, so bias toward authoring the every-site scan guards (near-zero false-positive) and the
-high-severity edge-case guards. Record the authored guard-check ids in the **B8 panel-ran episode** so the
-step cannot be silently skipped.
-
-### B5b-graded — seed the shared graded-check pool from the whole-plan audit
-
-The B1 lens findings (`failure-modes` / `security` / `data-lifecycle` / `rollback` / `who-pays`) are
-whole-plan **quality axes** — exactly what a graded rubric check encodes, and a view the ticket-local
-build agent cannot reconstruct. Author every quality finding as a **`candidate:true` pool entry** (via
-`af-intake-build-validation`, single-writer lock holds) — nothing dropped. Each carries:
-
-- a **`severity`** hint (higher for the expensive/invisible cross-ticket misses — data-loss, auth
-  bypass, silent partial failure, PII, security), which the gating function later weighs;
-- the **axis(es)** from the firing lens with a default **`threshold`** (the seeded-library value for
-  that axis — do NOT invent aggressive thresholds);
-- a **TIGHT** tag/surface scope (never `["*"]`).
-
-**af-intake-plan does NOT decide gating.** It is the FIRST writer to the shared pool. `af-build` later
-ADDS its own ticket-local search discoveries to the SAME pool; only THEN does a separate function — the
-rubric assembler (`agent_factory/src/agent_factory/rubric_assembly.py`), run per ticket at build time —
-determine what must be gated (promote high-severity candidates to individual gating validations, fold
-the rest into one min-of-candidates advisory aggregate). af-intake-plan authors **no `candidate:false`
-graded gate** and makes no mandatory-vs-advisory call; it only contributes candidates + severity hints.
-
-Record the authored candidate ids in the **B8 panel-ran episode** alongside the binary guards. See the
-pool + assembly model in
-`agent_factory/docs/plans/2026-07-21-002-feat-planning-time-rubric-seeding-plan.md`.
-
-## B6 — Cross-requirement coverage + depth (the mechanical gate)
-
-The mechanical half is executable, not eyeballed:
-- **Bidirectional coverage (H14, surfaces)** — `praxis_surface_coverage(project, scope="mvp")` must come
-  back with both `uncoveredSurfaces` AND `uncoveredRequirements` empty (or each exception justified).
-- **Dangling concept reference (H14, concepts)** — every domain concept a requirement *references* is
-  *defined* by some admitted requirement or explicitly declared out of scope. (This is the hole that let
-  an undefined "team streak" in: R2 referenced it, nothing defined it.) Tag each requirement with the
-  concepts it `defines`/`references`.
-- **The plan_gate (ENFORCED, mechanical — not prose)** — run **`python -m agent_factory.tools.plan_gate_check <project>`**.
-  It reads the **LIVE** `prd-<project>` requirement facts straight from Praxis, maps each to a Requirement
-  (threading its `tags`, `verify`, and `meta.decision` marker), and runs `evaluate_plan` over them with the
-  project pinned. **A non-zero exit is a HARD BLOCK on the bless** — the human literally cannot clear B9
-  while it exits non-zero. Surface its `reasons` **verbatim** (it prints them to stderr). Exit `0` =
-  admitted, `1` = rejected, `2` = Praxis unreachable or empty plan. Because it reads the `meta.decision`
-  marker, an **impl-tagged decision no longer slips**: a ticket carrying the decision marker is recognized
-  as a decision even when its tags are pure impl (no `architecture-decision` tag), so
-  `R-DECISION-NOT-END-STATE` and `R-NO-IMPL-DEPENDS-ON-DECISION` still bite. Pinning the project is what
-  makes the gate require every requirement's `source` to equal `prd-<project>` exactly (the `R-HAS-SOURCE`
-  rule), so a source-less or mis-scoped plan is mechanically **rejected** — the drift that went uncaught
-  when the gate ran without project+source. The same run also checks binary-acceptance present,
-  no-vague-term, no dangling concept reference, and the **build-order DAG** (Step 5): `R-NO-DANGLING-DEP`
-  rejects a `depends_on` naming a requirement not in the plan, and `R-NO-DEP-CYCLE` rejects a dependency
-  cycle — both would otherwise surface only as a run-time stall. Covered by `evals/cases/plan_gate/` (run
-  `pytest tests/test_eval_cases.py`); add a `case.yaml` whenever a fresh gate edge case is found, so the
-  gate's coverage compounds.
-
-## B7 — The plan-review panel (holistic cold-eyes, the emergent layer)
-
-The per-requirement audit (B1–B6) judges each item against its own contract. It does NOT stand back at
-the **whole artifact at once**, so a defect that is *correct per item but wrong in aggregate* sails
-through — e.g. a **source/scope contract inconsistency** (every requirement well-formed, but `source`
-convention and scope boundary disagree across the set) or an **unsatisfiable build target** (a manual /
-post-MVP item routed into the automated build set, individually plausible, collectively impossible).
-These are *emergent*: invisible per-requirement, obvious to a diverse panel reading the whole fact-set.
-So after the audit, convene the panel over the whole `prd-<project>` fact-set + tech decisions.
-
-**compound-engineering is the DEFAULT, required panel** — not "use them if installed." Its ce-* reviewer
-agents are the default cold-eyes review panel, spawned via the **Agent tool** (each a different reviewer
-with its own lens; they did not write the plan, so they challenge harder and disagree). **Do not reinvent
-reviewers.**
-
-**PRESENCE CHECK first.** Verify the ce reviewer agents resolve via the Agent tool / `/code-review`.
-- **Present** → spawn the panel.
-- **Absent** → do NOT proceed and do NOT record a panel-ran episode (this scope has not been reviewed);
-  surface the remediation (`claude plugin install compound-engineering@compound-engineering-plugin` /
-  `/reload-plugins`). A missing panel is a **blocked review**, never a silent pass — distinct from a
-  deliberate, recorded skip.
-
-**Lenses (≥1 independent reviewer each, over the WHOLE set — not one requirement):**
-
-| Lens | ce subagent type | Catches (e.g.) |
-|---|---|---|
-| contract / convention coherence | `ce-coherence-reviewer` | the source/scope inconsistency |
-| architecture / feasibility | `ce-feasibility-reviewer` | the unsatisfiable manual / post-MVP target |
-| scope / strategy | `ce-scope-guardian-reviewer` | scope creep, mismatch to STRATEGY |
-| security | `ce-security-lens-reviewer` | missing authz/PII/secret decisions across reqs |
-| completeness / product | `ce-product-lens-reviewer`, `ce-design-lens-reviewer` | gaps between requirements, unmet user journeys |
-
-**Emit each finding into Praxis** (deduped — merge multiple reviewers' reports of the same issue into one
-finding, carrying the strongest severity, BEFORE emitting): a **missing/changed requirement** → a new
-**ticket** (`meta.build_state="incomplete"`, identity tags/surfaces, NEVER an authored check list); a
-**"this must hold across the plan" rule** → a **check** (its own `meta.applies_to` predicate, which
-RESOLVEs onto matching tickets later). Create via `docs/af-memory-policy.md`. There is no separate review gate: the one
-`build_completeness` gate already refuses "done" while any emitted finding's ticket/check is incomplete.
-
-**Skippable — explicit policy, never silent.** Compute a size signal (new/changed requirements since the
-last blessed snapshot; `small` = `value <= threshold`, default 20). small AND attended → propose skip to
-the human, who confirms → record a skip episode; no confirm → run the panel. small AND unattended →
-auto-skip → record a skip episode so the heuristic compounds. NOT small → review is mandatory (a human MAY
-force-skip only with an explicit recorded reason). Every skip leaves a reason in a Praxis episode; a skip
-is the *absence* of a panel-ran episode plus the *presence* of a skip episode — never a fabricated
-panel-ran assertion.
-
-## B8 — Record the panel-ran episode (the only residue)
-
-When the sweep is done — every requirement challenged, every planning check applied, every architecture
-decision and test layer written into Praxis, the plan-review panel run — record **ONE**
-`praxis_record_episode` asserting the audit + panel ran for `prd-<project>`:
-
-```
-praxis_record_episode(
-  text = "af-intake-plan audit+panel ran for prd-<project>: challenged <N> requirements; "
-         "lenses fired=[...]; near-dups reconciled=[...]; arch decisions written=[...]; "
-         "test layers=[...]; blind-spot guards authored via af-intake-build-validation="
-         "[edge-case=<check_ids>, every-site=<check_ids>] (B5b); "
-         "tech-decision critic loop-until-dry passes=<k>, missing=[]; "
-         "plan panel composition=[...], findings emitted=<m>",
-  outcome = "succeeded",
-)
-```
-
-This is the **only** thing the validation leaves behind besides the graph edits. It is a tiny
-assertion-of-record so the act of auditing **cannot be silently skipped** — NOT a findings state machine,
-NOT a status manifest.
-
-## B9 — The gate blesses (auto when the predicate holds; human only on a failing predicate)
-
-Planning is guarded by the **`plan_completeness` Stop hook** (`hooks/plan_completeness_gate.py`, the
-second `Stop` entry): while the planning marker is armed (Step 0d) it BLOCKS the planning turn until the
-plan mechanically blesses, then **auto-blesses (ALLOWS) with no human**. The human is summoned **only on a
-failing predicate** — auto-bless raises *structural* rigor (it adds the signed-contract + contradictions-
-checked predicates); it does not replace the qualitative human review, which becomes **sampled on a
-failing predicate**. A bounded terminal escalation (`FACTORY_PLAN_GATE_MAX_ATTEMPTS`, default 3) means an
-unresolvable predicate on an unchanged snapshot escalates to a human instead of re-blocking forever.
-
-Report status against each condition; never declare it yourself. The plan blesses only once ALL hold,
-checked **live from Praxis**:
-- Every requirement maps to ≥1 binary acceptance condition (or is an explicitly-deferred owned decision).
-- Every requirement carries `source="prd-<project>"` (`R-HAS-SOURCE`).
-- **`python -m agent_factory.tools.plan_gate_check <project>` exits `0`** over the live requirements (B6) —
-  a non-zero exit is a **HARD BLOCK**; the gate cannot be cleared while plan_gate_check rejects, and its
-  reasons must be surfaced verbatim and cleared first. This now INCLUDES `R-CONTRACT-SIGNED`: a
-  **signed contract** (B1c) with recorded evaluator actions must exist, or the gate blocks.
-- The **`contradictions_checked` marker is set** for the snapshot AND zero unresolved contradictions (an
-  empty queue with no marker is NOT evidence of consistency — the raw-bulk path skips detection, KTD4);
-  no dangling concept reference (H14); bidirectional surface coverage clean (B6).
-- Every can't-miss failure class addressed-or-excluded with logged rationale (data loss, auth bypass,
-  irreversible action, silent partial failure).
-- **Every known every-site refactor and high-severity edge case carries a build-validation guard check**
-  (B5b) authored via af-intake-build-validation — or is explicitly recorded (episode) as not-guardable /
-  routed to a `verify="manual"` ticket. A high-risk sweep or edge case with no guard and no recorded
-  exception is an open blind spot, not a blessable plan.
-- The **panel-ran episode exists** (B8) — the audit and plan-review panel actually ran.
-
-**Stop by information-gain, not exhaustion.** When the next question's expected information gain is low
-and the gate is reachable, say so and STOP asking. Beware the under-specification trap: zero
-contradictions on a thin plan is not "done," it's "nothing was claimed yet."
+**Stop by information-gain.** When the next question's expected gain is low and the gate is
+reachable, say so and STOP. But beware the inverse: zero contradictions on a thin plan is not
+"done", it is "nothing was claimed yet".
 
 ### Blessing a plan that already lives in the snapshot (the DEFAULT)
 
-Because Step 2 writes candidates **directly into `prd-<project>`**, the plan is *already* durable when
-the gate clears. There is nothing to dump, so **blessing is a VERIFY-then-RELEASE, not a save**:
+Because Step 2 writes candidates **directly into `prd-<project>`**, the plan is already durable
+when the gate clears. Blessing is a **VERIFY-then-RELEASE, not a save**:
 
-1. **VERIFY the plan is where the build reads** — `praxis_facts_by(category="requirement",
+1. **VERIFY it is where the build reads** — `praxis_facts_by(category="requirement",
    space="<project>", snapshot="prd-<project>")` returns the expected count, and
-   `praxis_incomplete_requirements("<project>")` (**BARE** name) lists the tickets. That readback IS the
-   durability proof.
-2. **DO NOT CALL `save_snapshot`.** On this path it is not a no-op — it **OVERWRITES `prd-<project>`
-   with working memory**, destroying the plan you just authored and the planning marker fact on it.
-   Calling it here is a data-loss bug, not a belt-and-braces step.
+   `praxis_incomplete_requirements("<project>")` (**BARE** name) lists the tickets. That readback
+   IS the durability proof.
+2. **DO NOT CALL `save_snapshot`.** On this path it is not a no-op — it **OVERWRITES
+   `prd-<project>` with working memory**, destroying the plan you just authored and the planning
+   marker on it. Calling it here is a data-loss bug, not a belt-and-braces step.
 3. **CLEAR the planning marker** — `_ticket_state.clear_planning(project, owner)` — so the
    `plan_completeness` hook goes inert for this session.
 4. **Render the prose PRD** from the facts for human review.
 
-> **Legacy path (only if the plan was authored in working memory).** If — and only if — this intake
-> staged candidates in working memory, bless with `save_snapshot(space="<project>",
-> snapshot="prd-<project>")` (PRD-only; mounts aren't carried) BEFORE clearing the marker, and first
-> confirm working memory contains **nothing but** this plan's facts (`praxis_list_graph`) — otherwise
-> the save leaks every unrelated fact into the plan. Prefer converting to the direct-to-snapshot path
-> instead of auditing working memory.
+> **Legacy path (only if the plan was staged in working memory).** Bless with
+> `save_snapshot(space="<project>", snapshot="prd-<project>")` BEFORE clearing the marker, and
+> first confirm working memory contains **nothing but** this plan's facts (`praxis_list_graph`) —
+> otherwise the save leaks every unrelated fact into the plan. Prefer converting to the
+> direct-to-snapshot path.
 
-The `prd-<project>` snapshot is the durable plan; the build loop consumes it later. **Editing later is
-an in-place write to the snapshot** — `praxis_add_insight`/`praxis_edit_fact` with `space`/`snapshot`
-set, or Amend mode (Part C). Do NOT round-trip through
-`load_snapshot(mode="replace")` → edit → `save_snapshot` unless you intend to replace the entire
-snapshot from working memory. (The `prd-<project>` snapshot is MUTABLE — the build loop reads and writes
-ticket state on it directly; read-only applies only to mounts and load/dump copy semantics.)
+Editing later is an in-place write to the snapshot (`praxis_add_insight`/`praxis_edit_fact` with
+`space`/`snapshot` set, or Amend mode). Do NOT round-trip through
+`load_snapshot(mode="replace")` → edit → `save_snapshot`.
 
----
 
 # PART C — AMEND (add ONE missing ticket to the plan)
 
@@ -986,6 +783,8 @@ praxis_add_insight(
   source   = "prd-<project>",
   category = "requirement",
   meta     = { "build_state": "incomplete", "tags": ["<class-tag>", ...],
+               "acceptance": "<binary observable condition>",  # REQUIRED (see below)
+               "verify": "automated | manual",                 # REQUIRED (see below)
                "scope": "mvp | post-mvp", "surfaces": ["<screen-id>", ...],
                "requirement_id": "<R-id, OPTIONAL>" },  # include to make a re-file update-in-place
   space    = "<project>",          # REQUIRED — write into the plan snapshot itself,
@@ -1013,6 +812,13 @@ praxis_add_insight(
    snapshot) should now list it, or `praxis_facts_by(category="requirement", space="<project>",
    snapshot="prd-<project>")`.
 
+**`acceptance` + `verify` are mandatory, or the ticket is minted unclaimable.** af-build's
+`start_ticket` runs the pre-claim structural resumability probe BEFORE it leases: a ticket with neither
+an acceptance condition nor a resolved check, or with no `verify` mode, is never claimed — it is
+stamped `meta.under_specified` and routed back to intake. A C0 write missing them therefore lands in
+the incomplete set and then sits there looking merely queued, which is the silent stall this note
+exists to prevent. Declare both on the write.
+
 **No regression step for a new ticket.** A new ticket is born `build_state="incomplete"` with `source="prd-<project>"`,
 so it enters `incomplete_requirements` for free — there is nothing pre-existing to re-open. Confirm with
 `praxis_incomplete_requirements(<project>)` (BARE name). Never author a check list onto it — which checks
@@ -1037,6 +843,19 @@ apply is the build's fresh RESOLVE query (tag ∪ "*" ∪ surface), same as ever
 - **Never author a list of checks onto a candidate/ticket, and never pre-bind a check onto a requirement**
   — a ticket carries identity (tags, surfaces, semantics); which checks apply is a fresh query resolved
   later (RESOLVE at build, the audit at plan), never pre-bound here.
+- **Never let validation grow the plan.** The audit fills holes and corrects posture in the tickets
+  that exist; it is roughly ticket-count-NEUTRAL. Close a finding by EDITING an existing ticket
+  (B1's closure hierarchy); a new ticket is the last resort, capped at 2 per pass and shared with the
+  panel. Wanting more means extraction was wrong — re-group Step 1 instead of bolting findings on.
+- **Never treat a feature as a finding** — capability the plan never claimed is not a hole, however
+  sensible. Record it as a post-mvp note or an open decision; never as a ticket, and never by
+  widening an existing acceptance condition to smuggle it in.
+- **Never over-divide the plan** — a ticket is one coherent red-to-green sitting, not one sentence of
+  the doc, one acceptance bullet, or one edge case. Target 15-25 tickets and merge when undecided
+  (Step 1, "SIZE THE TICKETS FIRST"); 40 tiny tickets is a worse plan than 20 right-sized ones, not a
+  more thorough one.
+- **Never run a lens-by-requirement matrix** — the five gap lenses sweep the whole set ONCE each (B1).
+  5×N judgments buy no extra signal and are what made the old audit unaffordable.
 - **Never admit a candidate without `source="prd-<project>"`** — that is the project identity the
   completeness query and the `R-HAS-SOURCE` gate filter on; `meta.scope` (mvp/post-mvp) is NOT a
   substitute.
@@ -1059,18 +878,18 @@ apply is the build's fresh RESOLVE query (tag ∪ "*" ∪ surface), same as ever
   that fixes it (edit/add the requirement, declare the check, reject/narrow the duplicate + re-save the
   snapshot) or a recorded dismissal/deferral episode.
 - **Never bless a plan** while any audit-surfaced requirement/check is still incomplete, any open
-  challenge is unresolved, the panel-ran episode is missing, or `plan_gate` does not pass — and never with
+  challenge is unresolved, the B5 validation episode is missing, or `plan_gate` does not pass — and never with
   no automated test strategy, a platform-required test layer missing, or a CI gate lacking a binary
   condition.
-- **Never leave a known every-site refactor or high-severity edge case (B5b) without a build-validation
+- **Never leave a known every-site refactor (B2) without a build-validation
   guard check** — the every-site scan (`! grep -rq '<old>' <scope>`) and the tricky-case test are exactly
   what af-build silently drops; author each via af-intake-build-validation or record an explicit exception.
   And **never write the `building-validation` section directly from this skill** — DERIVE the guards here,
   DELEGATE the write to af-intake-build-validation (its sole writer), preserving the single-writer lock.
 - **Never pass on a missing ce panel** — if the compound-engineering reviewers aren't available, record NO
-  panel-ran episode and surface the remediation; absence is a blocked review, never a silent skip.
+  validation episode and surface the remediation; absence is a blocked review, never a silent skip.
 - **Never skip the audit or panel silently** — every skip records a reason as a Praxis episode; the
-  panel-ran episode is what proves it ran.
+  B5 validation episode is what proves it ran.
 - **Never pass the prefixed project name** to the completeness/incomplete endpoints — `prd-<project>`
   becomes `prd-prd-<project>`, returns EMPTY, and fakes completeness. Pass the BARE name.
 - **In Amend mode: never touch `pinned_checks` or the claim lease, and never build, fix, or run the

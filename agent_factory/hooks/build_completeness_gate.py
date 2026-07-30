@@ -136,7 +136,7 @@ def _plan_escalation_check(project: str) -> str:
 # factory work". A real builder session is saturated with these (it calls the praxis_* MCP tools and
 # stamps run markers); an ordinary coding/chat session in a repo that merely HAS a plan contains none.
 _FACTORY_SIGNALS = (
-    "af-build", "af-fulfill", "af-intake", "factory_project", "factory_gate",
+    "af-build", "af-intake", "factory_project", "factory_gate",
     "prd-", "praxis_", "mcp__praxis", "incomplete_requirements",
     "build_state", "claim_owner", "run_owner", "stamp_run", "building-validation",
 )

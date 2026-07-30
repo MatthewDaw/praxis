@@ -6,8 +6,7 @@ filter: the ``mvp`` tier crossed with ``automated`` verification -- the same
 partition ``agent_factory.build_target.select_build_target`` computes for the
 local build-completeness gate. The box service does not import the
 ``agent_factory`` plugin package (it is not deployed with the backend), so
-this module mirrors that selection locally, the same way
-``agent_factory.fulfill.requirements`` mirrors it for the fulfillment runtime.
+this module mirrors that selection locally.
 
 A ``post-mvp`` requirement, or an ``mvp`` requirement whose ``verify`` is
 ``manual`` (or anything unrecognized), is never consulted here -- it can

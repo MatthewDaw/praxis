@@ -224,7 +224,7 @@ mount -a
 chown ec2-user:ec2-user /workspace
 
 # --- Base dev tooling ---
-dnf install -y git tmux ripgrep gcc gcc-c++ make jq docker
+dnf install -y git tmux ripgrep gcc gcc-c++ make jq docker python3
 systemctl enable --now docker
 usermod -aG docker ec2-user
 

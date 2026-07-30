@@ -113,7 +113,14 @@ def read_contract(project: str) -> dict:
         episodes += _praxis.get_episodes(space=bare, snapshot=f"prd-{bare}")
     except PraxisUnreachable:  # a missing/unreadable snapshot is not a signature failure
         pass
-    episodes += _praxis.get_episodes()
+    # The snapshot lane above is project-scoped BY CONSTRUCTION (it reads prd-<bare> directly), so it
+    # stays authoritative and unfiltered. Working memory is NOT: it is one shared graph per principal,
+    # so an unscoped `is_signed` match there let one project's contract satisfy another's
+    # R-CONTRACT-SIGNED — a silent cross-project pass (observed: prd-af-clean admitting on
+    # prd-praxis's signature). Scope only that fallback lane, by the project name its text carries.
+    needle = f"prd-{bare}"
+    episodes += [e for e in _praxis.get_episodes()
+                 if needle in str(e.get("text") or e.get("content") or "")]
     signed = [e for e in episodes if _cs.is_signed(e)]
     if not signed:
         # NO signed contract episode exists — return the EMPTY dict (not {"signed": False, ...}) so

@@ -37,6 +37,12 @@ def _run(monkeypatch, items, session=OWNER):
     monkeypatch.setattr(_praxis, "incomplete_requirements", lambda project, **k: items)
     monkeypatch.setenv("FACTORY_PROJECT", "prd-team-app")
     monkeypatch.delenv("FACTORY_GATE_DISABLED", raising=False)
+    # The gate's _session_owner honours FACTORY_TICKET_OWNER OVER the stdin session_id, so an ambient
+    # value silently rewrites this test's owner and every marker/claim scenario below reads as
+    # "someone else's run" -> inert -> allow. af-build sets that variable during real builds, so
+    # without this delenv the suite fails whenever it runs inside a build (or any session that pinned
+    # an owner) rather than on its own merits.
+    monkeypatch.delenv("FACTORY_TICKET_OWNER", raising=False)
     monkeypatch.setattr(sys, "stdin",
                         io.StringIO(json.dumps({"session_id": session, "cwd": "/x/team-app"})))
     buf = io.StringIO()

@@ -2,8 +2,8 @@
 name = "agent-factory"
 version = "0.1.0"
 requires-python = ">=3.12"
-# pyyaml is a RUNTIME dependency (KTD4): the af-fulfill domain loader parses the pack's YAML
-# files at runtime. It was previously dev-only (the planning/validation gates used it in tests).
+# pyyaml is only reached from evals/ (dev tooling, exercised by tests) now that the fulfill domain
+# loader is gone; it can be demoted to the dev group whenever the lock is next regenerated.
 dependencies = [
     "pyyaml>=6.0.3",
 ]

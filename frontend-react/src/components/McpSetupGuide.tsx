@@ -552,19 +552,6 @@ export function McpSetupGuide({ email }: McpSetupGuideProps = {}) {
                 <code>prd-&lt;project&gt;</code> (state)
               </td>
             </tr>
-            <tr>
-              <td>
-                <code>/af-fulfill</code>
-              </td>
-              <td>
-                A separate runtime (not the coding loop): drive an END USER to supply the
-                facts a structured deliverable needs, against a Praxis requirement graph,
-                until the completeness gate opens, then produce the deliverable.
-              </td>
-              <td>
-                <em>(a session space)</em>
-              </td>
-            </tr>
           </tbody>
         </table>
       </div>
