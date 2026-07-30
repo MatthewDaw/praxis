@@ -312,6 +312,22 @@ for k in ('PRAXIS_ORG', 'PRAXIS_API_KEY', 'PRAXIS_API_BASE_URL'):
 
 say(){ echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$LOG"; }
 
+# --- portability: this driver runs on the Linux devbox AND on a developer's Mac (an iOS project
+# cannot close an xcodebuild gate on Linux, so "run it where the toolchain is" is a normal case, not
+# an exception). Two GNU-isms had to go; everything else is POSIX enough to be shared.
+free_gb_of(){   # -> integer GB available on the filesystem holding $1
+  local path="$1" out
+  # GNU coreutils first, then BSD/macOS `df -g`, whose Avail is the 4th column.
+  out=$(df -BG --output=avail "$path" 2>/dev/null | tail -1 | tr -dc '0-9')
+  [ -n "$out" ] || out=$(df -g "$path" 2>/dev/null | awk 'NR==2 {print $4}' | tr -dc '0-9')
+  echo "${out:-0}"
+}
+
+hash_text(){    # -> stable digest of stdin; md5sum is coreutils, md5 is BSD
+  if command -v md5sum >/dev/null 2>&1; then md5sum | cut -d' ' -f1
+  else md5 -q; fi
+}
+
 # Resolve the backend BEFORE any ticket work, and refuse to start a multi-hour run on a
 # half-configured one. Failing here costs seconds; failing three tickets in costs an hour
 # and a lease that has to be released by hand.
@@ -502,7 +518,7 @@ verify_round(){   # $1 = round number, $2.. = the round's ticket ids
     if echo "$pane" | grep -qiE "insufficient balance|402|quota exceeded|payment required|credit balance is too low"; then
       say "BILLING FAILURE during verification — halting"; tmux kill-session -t "$vsession" 2>/dev/null || true; exit 3
     fi
-    vhash=$(printf '%s' "$pane" | md5sum | cut -d' ' -f1)
+    vhash=$(printf '%s' "$pane" | hash_text)
     if [ "$vhash" = "$vlast" ]; then
       vstall=$((vstall+1))
       [ "$vstall" -ge "$STALL_POLLS" ] && { say "verify session frozen for $((STALL_POLLS*30/60))min — giving up on this round's verification"; break; }
@@ -563,14 +579,13 @@ while :; do
   # materializes one full checkout per worker, plus whatever dependency tree the project bootstraps in
   # each, and several loops now run on one box at once. A full volume does not fail loudly — it
   # corrupts writes mid-build and strands the run, which is strictly worse than refusing to start.
-  free_gb=$(df -BG --output=avail "$WT" 2>/dev/null | tail -1 | tr -dc '0-9')
-  free_gb=${free_gb:-0}
+  free_gb=$(free_gb_of "$WT")
   if [ "$free_gb" -lt "${AF_MIN_FREE_GB:-15}" ]; then
     # Reclaim first: merged worktrees from earlier rounds are pure scratch, and sweeping them is the
     # cheap fix that keeps a long run alive. Only halt if the disk is still tight afterwards.
     say "disk low: ${free_gb}G free — sweeping worktrees before deciding"
     sweep_worktrees
-    free_gb=$(df -BG --output=avail "$WT" 2>/dev/null | tail -1 | tr -dc '0-9'); free_gb=${free_gb:-0}
+    free_gb=$(free_gb_of "$WT")
     if [ "$free_gb" -lt "${AF_MIN_FREE_GB:-15}" ]; then
       say "HALTING — only ${free_gb}G free after sweeping, below the ${AF_MIN_FREE_GB:-15}G floor. A round of worktrees plus their dependency trees would exhaust the disk and corrupt the build. Reclaim space, then relaunch."
       exit 5
@@ -676,7 +691,7 @@ while :; do
       tmux kill-session -t "$SESSION" 2>/dev/null || true
       exit 3
     fi
-    pane_hash=$(printf '%s' "$pane" | md5sum | cut -d' ' -f1)
+    pane_hash=$(printf '%s' "$pane" | hash_text)
     if [ "$pane_hash" = "$last_hash" ]; then
       same_count=$((same_count+1))
       if [ "$same_count" -ge "$stall_polls" ]; then
