@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# One fresh `claude` session per ticket, ALWAYS — not just on stall.
+# One fresh `claude` session per BATCH of parallelizable tickets, ALWAYS — not just on stall.
+# (v1–v3 below describe the per-TICKET session this grew out of; v4 is why it is now per-batch.)
 #
 # af-build's inline (non-Workflow) fallback path keeps every ticket in ONE growing
 # CLI session, and that session's context has twice now hit 100% mid-build (once on
 # a 4-ticket tail, once on a single ticket) — each time losing progress that had to
 # be manually salvaged, a lease released, and the session restarted by hand. Rather
 # than detect and react to exhaustion, this driver prevents it structurally: it
-# never lets a session accumulate more than one ticket's worth of context.
+# never lets a session accumulate more than one ticket's worth of context. (v4
+# keeps that property while widening a session to one parallel BATCH, because the
+# batch's per-ticket work happens in worker subagents, not in the driving session.)
 #
 # Driven from an EC2 devbox (see .claude/commands/af-build-remote-jobs.md), one
 # instance per project, each in its own tmux session named `af-<worktree-basename>`.
@@ -66,8 +69,41 @@
 # and the resolved backend is also logged as the first line of every real run, so any log
 # tail answers "what was this actually billing?" without attaching to a TUI.
 #
+# v4: one fresh session per BATCH, not per ticket, made 2026-07-30.
+#
+# The per-ticket session was a context-exhaustion fix, but it also serialized a build that does not
+# need to be serial: af-build already knows how to fan the dependency-ready frontier out across
+# parallel isolated worktree workers, and the driver's prompt was the only thing forbidding it
+# ("build EXACTLY ONE ticket ... do NOT continue to a second"). A 20-ticket plan whose DAG is 6 wide
+# therefore ran as 20 sequential hour-capped sessions instead of ~4 rounds.
+#
+# So each round now computes the dependency-ready FRONTIER itself and hands af-build the whole batch
+# as an explicit id scope, capped at AF_BATCH_MAX (default 15). Because the batch ids ARE the run
+# scope, af-build's own completeness gate releases the session exactly when the batch is done — the
+# skill's fan-out loop re-queries the frontier filtered to that scope, finds it empty, and stops
+# without reaching for the next wave. The context-hygiene property that motivated v1 is preserved:
+# a session still dies at a bounded amount of work, and the parallel tickets' context lives in
+# per-worker subagents rather than accumulating in the driving session.
+#
+# Consequences the wait loop had to absorb:
+#  - "finished_count went up by one" is no longer round-completion, it is round PROGRESS. Breaking on
+#    it would kill a 15-ticket round the moment its first worker landed. Completion is now "every id
+#    in the batch is finished or blocked", and each finish instead RESETS the stall counter and
+#    extends the deadline, so a healthy long round is never reaped for being long.
+#  - The per-round timeout scales with batch size instead of a flat 1h.
+#  - Worktrees are swept after every round. af-build is supposed to reap its own, but a run that died
+#    mid-round leaves them behind, and 29 stranded worktrees once filled a 98GB volume. Merged ones
+#    are removed; unmerged ones are reported loudly and left alone unless AF_REAP_UNMERGED=1, because
+#    deleting an unmerged worktree destroys work rather than reclaiming scratch.
+#
+# Batch width is ALSO capped by the Workflow tool's own concurrency limit, min(16, cores-2), so a
+# small box runs a 15-wide batch a few workers at a time. That is a throughput ceiling, not a
+# correctness problem. Disk is the real constraint: each worktree is a full checkout plus, if the
+# project bootstraps per-worktree deps, a full dependency tree.
+#
 # Usage: af-ticket-loop.sh <project> <worktree> <pg_port> <redis_port> [max_tickets]
 #        af-ticket-loop.sh --check
+#        AF_BATCH_MAX=6 af-ticket-loop.sh ...   # narrower rounds on a small box
 set -euo pipefail
 
 # ---------------------------------------------------------------- backend selection ----
@@ -153,6 +189,9 @@ if [ "${1:-}" = "--check" ]; then
 fi
 
 PROJECT="$1"; WT="$2"; PG="$3"; REDIS="$4"; MAX="${5:-999}"
+# Largest frontier handed to a single session. 15 is the user-facing cap; the Workflow tool caps
+# actual concurrency at min(16, cores-2) underneath it, and disk caps it below that on a small box.
+BATCH_MAX="${AF_BATCH_MAX:-15}"
 SESSION="af-$(basename "$WT")"   # per-worktree, so concurrent projects never collide on tmux session name
 LOG="/workspace/af-ticket-loop.log"
 PY=/workspace/praxis/.venv/bin/python
@@ -213,6 +252,44 @@ print(sum(1 for x in f if ((x.get('meta') or {}).get('build_state')) in ('incomp
 PYEOF
 }
 
+ready_batch(){  # -> space-separated ids of the dependency-ready frontier, capped at $2
+  $PY - "$PROJECT" "${1:-15}" <<'PYEOF' 2>/dev/null
+import sys
+sys.path[:0]=['/workspace/praxis/agent_factory/hooks','/workspace/praxis/agent_factory/src']
+import _praxis, _ticket_state as ts
+p, cap = sys.argv[1], int(sys.argv[2])
+# ready_tickets must see the WHOLE requirement set, not just the incomplete slice: it derives the
+# "still unfinished" id set from what it is given, so a blocked or in_progress prerequisite that was
+# filtered out first would read as satisfied and a dependent ticket would be dispatched too early.
+facts = _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}')
+out = []
+for t in ts.ready_tickets(facts):
+    m = t.get('meta') or {}
+    rid = m.get('requirement_id') or t.get('id')
+    if rid:
+        out.append(str(rid))
+    if len(out) >= cap:
+        break
+print(' '.join(out))
+PYEOF
+}
+
+batch_open(){  # args: ids... -> how many are still incomplete|in_progress (blocked counts as done)
+  $PY - "$PROJECT" "$@" <<'PYEOF' 2>/dev/null
+import sys
+sys.path[:0]=['/workspace/praxis/agent_factory/hooks']
+import _praxis
+p, want = sys.argv[1], set(sys.argv[2:])
+n = 0
+for f in _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}'):
+    m = f.get('meta') or {}
+    ids = {str(f.get('id') or ''), str(m.get('requirement_id') or '')} - {''}
+    if (ids & want) and m.get('build_state') in ('incomplete', 'in_progress'):
+        n += 1
+print(n)
+PYEOF
+}
+
 finished_count(){
   $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
 import sys
@@ -247,21 +324,64 @@ commit_wip(){
   if [ -n "$(git status --porcelain)" ]; then
     git add -A
     git -c user.name="af-build" -c user.email="af-build@praxis.local" commit -q -m \
-      "wip: preserve in-flight output before per-ticket session restart (af-ticket-loop)"
+      "wip: preserve in-flight output before per-batch session restart (af-ticket-loop)"
     say "committed WIP: $(git log --oneline -1)"
   fi
 }
 
+# Sweep the round's worktrees. af-build is told to reap its own, but a session that died mid-round
+# leaves them behind and they accumulate across rounds — one observed run stranded 29, each holding a
+# full dependency tree, and filled the volume. A worktree whose branch is already an ancestor of the
+# integration branch is pure scratch and is removed; one that is NOT merged still holds unintegrated
+# commits, so it is reported rather than deleted. Removing a worktree keeps its branch either way.
+sweep_worktrees(){
+  cd "$WT"
+  local kept=0
+  while read -r path; do
+    [ -n "$path" ] || continue
+    [ "$path" = "$WT" ] && continue
+    local head; head=$(git -C "$path" rev-parse HEAD 2>/dev/null || echo "")
+    if [ -n "$head" ] && git merge-base --is-ancestor "$head" HEAD 2>/dev/null; then
+      git worktree remove --force "$path" 2>/dev/null && say "reaped merged worktree $path"
+    elif [ "${AF_REAP_UNMERGED:-0}" = "1" ]; then
+      git worktree remove --force "$path" 2>/dev/null && say "reaped UNMERGED worktree $path (AF_REAP_UNMERGED=1 — its branch survives)"
+    else
+      kept=$((kept+1))
+      say "WARNING: worktree $path holds UNMERGED commits — left in place. Integrate it, or re-run with AF_REAP_UNMERGED=1 to drop the worktree and keep the branch."
+    fi
+  done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
+  git worktree prune 2>/dev/null || true
+  [ "$kept" -gt 0 ] && say "$kept unmerged worktree(s) still on disk — watch free space"
+  return 0
+}
+
 n=0
+round=0
 while :; do
   left=$(claimable); left=${left:-999}
   say "$PROJECT claimable=$left"
   [ "$left" = "0" ] && { say "DONE — nothing claimable"; break; }
-  n=$((n+1))
-  [ "$n" -gt "$MAX" ] && { say "hit max_tickets=$MAX, stopping"; break; }
+  [ "$n" -ge "$MAX" ] && { say "hit max_tickets=$MAX, stopping"; break; }
+
+  release_inprogress >/dev/null
+
+  # Compute the frontier AFTER releasing dead leases, so a ticket stranded in_progress by a crashed
+  # session is eligible for this round instead of sitting out until someone notices.
+  budget=$((MAX - n)); [ "$budget" -lt "$BATCH_MAX" ] && cap="$budget" || cap="$BATCH_MAX"
+  batch=$(ready_batch "$cap")
+  if [ -z "$batch" ]; then
+    # Claimable work exists but nothing is dependency-ready: a cycle, or a chain rooted on a blocked
+    # ticket. Restarting sessions cannot fix that, so halt loudly instead of spinning.
+    say "DEPENDENCY STALL — $left claimable but nothing ready; every remaining ticket waits on an unfinished or blocked prerequisite. Fix the depends_on chain or unblock the root, then relaunch."
+    break
+  fi
+  set -- $batch
+  size=$#
+  ids_csv=$(printf '%s,' "$@"); ids_csv=${ids_csv%,}
+  round=$((round+1)); n=$((n+size))
+  say "round #$round: dispatching $size ticket(s) in parallel — $ids_csv"
 
   before=$(finished_count); before=${before:-0}
-  release_inprogress >/dev/null
 
   tmux kill-session -t "$SESSION" 2>/dev/null || true
   tmux new-session -d -s "$SESSION" -c "$WT"
@@ -278,20 +398,47 @@ while :; do
   done
   [ "$ready" = "0" ] && say "WARNING: claude REPL not confirmed ready after $((READY_POLL_MAX*2))s, sending anyway"
 
-  tmux send-keys -t "$SESSION" "/af-build $PROJECT — full scope. Build EXACTLY ONE ticket end-to-end (the next dependency-ready one), then STOP and report — do NOT continue to a second ticket in this session, even if more remain. Work ONLY on the already-checked-out branch, do NOT push. Postgres localhost:$PG$( [ -n "${REDIS:-}" ] && [ "$REDIS" != "none" ] && echo ", Redis localhost:$REDIS" )."
+  # The batch ids ARE the run scope, which is what makes one round per session self-limiting: af-build
+  # stamps its run marker on exactly these tickets, so its completeness gate releases the session when
+  # they are done and its fan-out loop finds an empty in-scope frontier rather than starting a wave the
+  # next session is meant to own. Parentheses are avoided in this string on purpose — if the REPL is not
+  # actually ready, the text lands on a bash prompt, and a stray paren there is a syntax error that
+  # leaves the session dead at a shell prompt.
+  tmux send-keys -t "$SESSION" "/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so fan them out in ONE parallel round via the ultracode Workflow, one isolated git worktree per ticket. When every ticket in the batch is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push. Postgres localhost:$PG$( [ -n "${REDIS:-}" ] && [ "$REDIS" != "none" ] && echo ", Redis localhost:$REDIS" )."
   sleep 3; tmux send-keys -t "$SESSION" Enter
-  say "submitted ticket #$n, waiting for it to finish or stall"
+  say "submitted round #$round with $size ticket(s), waiting for the batch to finish or stall"
 
-  # Wait for: finished count to increase (success), context exhaustion, auth error,
-  # the session to die, OR the pane going completely unchanged for STALL_POLLS polls
-  # in a row (a frozen session — see v2 note above).
+  # Wait for: every batch ticket to leave the open set (success), context exhaustion, auth error,
+  # the session to die, OR the pane going completely unchanged for STALL_POLLS polls in a row (a
+  # frozen session — see v2 note above).
+  #
+  # A per-ticket finish is PROGRESS, not completion: breaking on the first one would kill a 15-ticket
+  # round the moment its fastest worker landed, orphaning fourteen live workers and their worktrees.
+  # So each finish instead resets the stall counter and buys more wall clock, and the round ends only
+  # when the batch's open count hits zero. The deadline scales with batch size for the same reason.
+  deadline=$((3600 + (size - 1) * 1200))
+  # Pane stillness is a WEAKER hang signal on a parallel round than it was on a solo ticket: the
+  # driving session spends the round awaiting its Workflow rather than emitting tool output, and a
+  # quiet stretch between two workers landing is normal. Widen the window when more than one ticket
+  # is in flight — a genuinely dead round is still caught by the scaled deadline, and unlike v2 there
+  # is now an independent liveness signal in Praxis, the batch's open count.
+  stall_polls=$STALL_POLLS
+  [ "$size" -gt 1 ] && stall_polls=$((STALL_POLLS * 2))
   waited=0
   same_count=0
   last_hash=""
-  while [ "$waited" -lt 3600 ]; do
+  done_seen=$before
+  while [ "$waited" -lt "$deadline" ]; do
     sleep 30; waited=$((waited+30))
-    now=$(finished_count); now=${now:-$before}
-    if [ "$now" -gt "$before" ]; then say "ticket #$n finished ($before -> $now)"; break; fi
+    now=$(finished_count); now=${now:-$done_seen}
+    if [ "$now" -gt "$done_seen" ]; then
+      say "round #$round progress: $((now - before))/$size finished"
+      done_seen=$now
+      same_count=0                       # real progress is not a stall, whatever the pane looks like
+      waited=$((waited > 900 ? waited - 900 : 0))
+    fi
+    open=$(batch_open "$@"); open=${open:-1}
+    if [ "$open" = "0" ]; then say "round #$round complete — all $size ticket(s) finished or blocked"; break; fi
     pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
     if ! echo "$pane" | grep -qE "."; then say "session gone, ending wait"; break; fi
     if echo "$pane" | grep -qE "100% context used"; then say "context exhausted mid-ticket, ending wait"; break; fi
@@ -317,8 +464,8 @@ while :; do
     pane_hash=$(printf '%s' "$pane" | md5sum | cut -d' ' -f1)
     if [ "$pane_hash" = "$last_hash" ]; then
       same_count=$((same_count+1))
-      if [ "$same_count" -ge "$STALL_POLLS" ]; then
-        say "pane unchanged for $((STALL_POLLS*30/60))min — treating as frozen/stalled, ending wait"
+      if [ "$same_count" -ge "$stall_polls" ]; then
+        say "pane unchanged for $((stall_polls*30/60))min — treating as frozen/stalled, ending wait"
         break
       fi
     else
@@ -326,7 +473,7 @@ while :; do
       last_hash="$pane_hash"
     fi
   done
-  [ "$waited" -ge 3600 ] && say "ticket #$n timed out after 1h"
+  [ "$waited" -ge "$deadline" ] && say "round #$round timed out after $((deadline/60))min with $(batch_open "$@") ticket(s) still open"
 
   commit_wip
   # Kill ONLY this session's own claude, never every claude on the box. The old blanket
@@ -347,6 +494,27 @@ while :; do
   tmux kill-session -t "$SESSION" 2>/dev/null || true
   [ -n "${pane_pid:-}" ] && pkill -P "$pane_pid" 2>/dev/null || true
   sleep 3
-  say "session closed; restarting fresh for the next ticket"
+  # Sweep AFTER the session is dead, never while it is live: removing a worktree out from under a
+  # running worker deletes the tree its evals are executing against.
+  sweep_worktrees
+
+  # Circuit breaker. A round that finishes NOTHING will, on the next pass, release the same leases
+  # and dispatch the same frontier — so a persistent failure that isn't one of the specific panes
+  # matched above (a broken repo, a project whose env never comes up, a model that rejects every
+  # prompt) loops indefinitely at full cost. The DeepSeek-balance incident burned ~6 hours across 46
+  # such cycles before it was spotted, and the billing grep added afterwards only covers that one
+  # cause. Three fruitless rounds is the general version of that guard.
+  after=$(finished_count); after=${after:-$before}
+  if [ "$after" -gt "$before" ]; then
+    fruitless=0
+  else
+    fruitless=$((${fruitless:-0} + 1))
+    say "round #$round finished ZERO tickets ($fruitless in a row)"
+    if [ "$fruitless" -ge 3 ]; then
+      say "HALTING — 3 consecutive rounds finished nothing. Something is failing that a restart cannot fix; attach to the pane or read the log before relaunching."
+      exit 4
+    fi
+  fi
+  say "session closed; restarting fresh for the next batch"
 done
 say "af-ticket-loop finished for $PROJECT"
