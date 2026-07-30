@@ -186,12 +186,15 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     # to make impossible. ANTHROPIC_API_KEY is unset too: if it were set the CLI would bill
     # pay-as-you-go API credits instead of the subscription, which is a different bill.
     BACKEND_NOTE="Anthropic subscription (Claude Max), model=sonnet — spends Claude quota, NOT API credits"
+    # A credential FILE is one way to hold a subscription, not the only way: on macOS the CLI keeps
+    # its auth in the Keychain, so a perfectly working laptop has neither file. Refusing to start
+    # there would be a false negative on the machine that most obviously CAN run a build, so absence
+    # is only a warning. The live probe below is the real gate -- it asks Anthropic instead of
+    # inspecting the filesystem, and it is authoritative either way.
     if [ ! -r "$OAUTH_TOKEN_FILE" ] && [ ! -r "$CREDENTIALS_FILE" ]; then
-      echo "[backend] FATAL: sonnet requested but no subscription credential on this box." >&2
-      echo "[backend]   expected $OAUTH_TOKEN_FILE (long-lived token) or $CREDENTIALS_FILE (interactive login)." >&2
-      echo "[backend]   fix, once, as ec2-user:  claude setup-token   # then paste into $OAUTH_TOKEN_FILE as: export CLAUDE_CODE_OAUTH_TOKEN=..." >&2
-      echo "[backend]   or:                      claude   ->  /login" >&2
-      return 1
+      echo "[backend] note: no credential file ($OAUTH_TOKEN_FILE / $CREDENTIALS_FILE)." >&2
+      echo "[backend]   normal on macOS, where the CLI uses the Keychain. Probing the credential for real." >&2
+      echo "[backend]   if the probe rejects: claude -> /login   (or, headless: claude setup-token)" >&2
     fi
     CLAUDE_LAUNCH="unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY; [ -r \$HOME/.claude/oauth-token.sh ] && . \$HOME/.claude/oauth-token.sh; claude --model sonnet --dangerously-skip-permissions"
 
@@ -482,6 +485,13 @@ sweep_worktrees(){
 # and skipped for a single-ticket round, which merges exactly the tree its worker already validated.
 VERDICT="$AF_STATE_DIR/af-round-verdict-$PROJECT.json"
 
+# Told to the workers so they hit the right services. A project with neither -- an iOS app, say --
+# gets no clause at all rather than the literal "Postgres localhost:none", which reads as a real
+# host that is simply down and sends a worker debugging a connection that was never meant to exist.
+SERVICES=""
+[ -n "${PG:-}" ] && [ "$PG" != "none" ] && SERVICES=" Postgres localhost:$PG"
+[ -n "${REDIS:-}" ] && [ "$REDIS" != "none" ] && SERVICES="$SERVICES${SERVICES:+,} Redis localhost:$REDIS"
+
 verify_round(){   # $1 = round number, $2.. = the round's ticket ids
   local rnd="$1"; shift
   local ids_csv; ids_csv=$(printf '%s,' "$@"); ids_csv=${ids_csv%,}
@@ -634,7 +644,7 @@ while :; do
   # next session is meant to own. Parentheses are avoided in this string on purpose — if the REPL is not
   # actually ready, the text lands on a bash prompt, and a stray paren there is a syntax error that
   # leaves the session dead at a shell prompt.
-  tmux send-keys -t "$SESSION" "/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is capped at min of 16 and cores-2, which is only 2 on this box, and that would serialize the round for no reason. Instead spawn ONE Agent subagent per ticket, ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push. Postgres localhost:$PG$( [ -n "${REDIS:-}" ] && [ "$REDIS" != "none" ] && echo ", Redis localhost:$REDIS" )."
+  tmux send-keys -t "$SESSION" "/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is capped at min of 16 and cores-2, which is only 2 on this box, and that would serialize the round for no reason. Instead spawn ONE Agent subagent per ticket, ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push.$SERVICES."
   sleep 3; tmux send-keys -t "$SESSION" Enter
   say "submitted round #$round with $size ticket(s), waiting for the batch to finish or stall"
 
