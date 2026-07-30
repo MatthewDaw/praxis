@@ -17,7 +17,7 @@ import json
 import re
 from collections.abc import Callable
 
-from .rubric import Defect, Rubric, Verdict, evaluate
+from .rubric import DEFECT_TIER_ADVISE, DEFECT_TIER_ENFORCE, Defect, Rubric, Verdict, evaluate
 
 Complete = Callable[[str], str]
 
@@ -49,12 +49,15 @@ def build_judge_prompt(rubric: Rubric, code_diff: str) -> str:
         "- confidence is 1-10; use <"
         f"{rubric.confidence_floor} only when you are genuinely unsure.\n"
         "- To score an axis high you must have POSITIVE evidence of safety/correctness, not "
-        "merely the absence of a problem.\n\n"
+        "merely the absence of a problem.\n"
+        f"- tier is \"{DEFECT_TIER_ENFORCE}\" (the code CAN and MUST change to clear it) or "
+        f"\"{DEFECT_TIER_ADVISE}\" (informational/stylistic — no concrete remedy actually changes "
+        f"the code); omit it to default to \"{DEFECT_TIER_ENFORCE}\".\n\n"
         f"{_calibration_block(rubric)}"
         "Respond with ONLY a JSON object:\n"
         '{"axis_scores": {"<axis>": <0..1>, ...}, '
         '"defects": [{"file": "...", "line": <int|null>, "problem": "...", '
-        '"remedy": "...", "confidence": <1..10>}]}\n\n'
+        '"remedy": "...", "confidence": <1..10>, "tier": "enforce|advise"}]}\n\n'
         "DIFF:\n"
         f"{code_diff}\n"
     )
@@ -112,12 +115,16 @@ def parse_judge_output(text: str) -> tuple[dict[str, float], list[Defect]]:
         except (TypeError, ValueError, AttributeError) as exc:
             raise GradeError(f"defect confidence not an int: {d!r}") from exc
         line = d.get("line")
+        tier = str(d.get("tier") or DEFECT_TIER_ENFORCE).strip().casefold()
+        if tier not in (DEFECT_TIER_ENFORCE, DEFECT_TIER_ADVISE):
+            tier = DEFECT_TIER_ENFORCE  # an unrecognized tier degrades to the stricter default
         defects.append(Defect(
             problem=str(d.get("problem") or ""),
             remedy=str(d.get("remedy") or ""),
             confidence=confidence,
             file=str(d.get("file") or ""),
             line=int(line) if isinstance(line, (int, float)) else None,
+            tier=tier,
         ))
     return scores, defects
 
