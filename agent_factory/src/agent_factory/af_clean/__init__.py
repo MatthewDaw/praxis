@@ -15,4 +15,9 @@ rejected as a failed centralization rather than applied.
 ``exemptions`` (R3) lands the automatic exemption-manifest derivation: which paths af-clean must
 never propose for deletion because they are generated, vendored, a lockfile, or a
 language-convention immutable/fixture directory -- never a human-curated allowlist.
+
+``reachability`` (R19) lands the pre-clean read-only measurement pass and the tri-state deletion
+verdict: a code-derived call graph, per-symbol test coverage evidence gathered with zero edits,
+the reachable/unreachable x covered/uncovered grid (keep / keep+test-debt / delete-with-binding /
+quarantine), the bound-test-deletion guard, and staged excision to a fixed point across rounds.
 """
