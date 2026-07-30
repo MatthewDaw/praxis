@@ -78,7 +78,7 @@
 # therefore ran as 20 sequential hour-capped sessions instead of ~4 rounds.
 #
 # So each round now computes the dependency-ready FRONTIER itself and hands af-build the whole batch
-# as an explicit id scope, capped at AF_BATCH_MAX (default 15). Because the batch ids ARE the run
+# as an explicit id scope, capped at AF_BATCH_MAX (default 8). Because the batch ids ARE the run
 # scope, af-build's own completeness gate releases the session exactly when the batch is done — the
 # skill's fan-out loop re-queries the frontier filtered to that scope, finds it empty, and stops
 # without reaching for the next wave. The context-hygiene property that motivated v1 is preserved:
@@ -97,9 +97,14 @@
 #    deleting an unmerged worktree destroys work rather than reclaiming scratch.
 #
 # Batch width is ALSO capped by the Workflow tool's own concurrency limit, min(16, cores-2), so a
-# small box runs a 15-wide batch a few workers at a time. That is a throughput ceiling, not a
+# small box runs a wide batch a few workers at a time. That is a throughput ceiling, not a
 # correctness problem. Disk is the real constraint: each worktree is a full checkout plus, if the
 # project bootstraps per-worktree deps, a full dependency tree.
+#
+# The default width is 8, not the 15 first written here. Workers are I/O-bound on the model API, so
+# width does NOT need a core apiece — but it is not free either: every worker that reaches its
+# end-of-ticket whole-repo gate runs a real test suite, and enough of those landing together turn a
+# 4-core box into a queue. 8 keeps a wide frontier moving without betting the round on that pileup.
 #
 # v5: post-merge verification of each round, made 2026-07-30.
 #
@@ -212,9 +217,9 @@ if [ "${1:-}" = "--check" ]; then
 fi
 
 PROJECT="$1"; WT="$2"; PG="$3"; REDIS="$4"; MAX="${5:-999}"
-# Largest frontier handed to a single session. 15 is the user-facing cap; the Workflow tool caps
+# Largest frontier handed to a single session. 8 is the user-facing cap; the Workflow tool caps
 # actual concurrency at min(16, cores-2) underneath it, and disk caps it below that on a small box.
-BATCH_MAX="${AF_BATCH_MAX:-15}"
+BATCH_MAX="${AF_BATCH_MAX:-8}"
 SESSION="af-$(basename "$WT")"   # per-worktree, so concurrent projects never collide on tmux session name
 LOG="/workspace/af-ticket-loop.log"
 PY=/workspace/praxis/.venv/bin/python

@@ -51,7 +51,7 @@ growing CLI session and has hit 100% context mid-build twice; the loop script ru
 per BATCH with stall detection and is the maintained driver.
 
 **The loop is batch-parallel.** Each round it computes the dependency-ready frontier itself, caps it at
-`AF_BATCH_MAX` (default 15), and hands af-build that explicit id list as the run scope — so af-build fans
+`AF_BATCH_MAX` (default 8), and hands af-build that explicit id list as the run scope — so af-build fans
 the batch out across parallel per-ticket worktrees, the completeness gate releases the session when the
 batch is done, and the next round starts in fresh context. Tickets that depend on each other are never in
 the same batch. Pass `AF_BATCH_MAX=<n>` to narrow rounds on a small or disk-tight box; actual concurrency
