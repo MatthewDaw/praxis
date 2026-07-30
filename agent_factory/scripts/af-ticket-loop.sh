@@ -412,6 +412,23 @@ sweep_worktrees(){
   while read -r path; do
     [ -n "$path" ] || continue
     [ "$path" = "$WT" ] && continue
+    # ONLY agent scratch trees are removable. `git worktree list` reports every worktree of the
+    # repo, which includes the MAIN CHECKOUT and every sibling project worktree — and a build branch
+    # is normally ahead of main, so `is-ancestor main HEAD` is TRUE and the merged-check below would
+    # have happily deleted the factory checkout that all three loops execute from. Observed on the
+    # first real sweep, which reported "/workspace/praxis holds UNMERGED commits" — it was one
+    # ancestry check away from removing the repo root. Scratch trees always live under
+    # <repo>/.claude/worktrees/; nothing else is this function's business.
+    case "$path" in
+      */.claude/worktrees/*) ;;
+      *) continue ;;
+    esac
+    # Never yank a tree out from under a live worker: its evals are executing against these files.
+    if [ -n "$(ls /proc/*/cwd 2>/dev/null | head -1)" ] && \
+       readlink /proc/*/cwd 2>/dev/null | grep -qF "$path"; then
+      say "worktree $path is IN USE by a live process — skipping"
+      continue
+    fi
     local head; head=$(git -C "$path" rev-parse HEAD 2>/dev/null || echo "")
     if [ -n "$head" ] && git merge-base --is-ancestor "$head" HEAD 2>/dev/null; then
       git worktree remove --force "$path" 2>/dev/null && say "reaped merged worktree $path"
@@ -472,11 +489,15 @@ verify_round(){   # $1 = round number, $2.. = the round's ticket ids
   sleep 3; tmux send-keys -t "$vsession" Enter
   say "round #$rnd: post-merge verification dispatched over $ids_csv"
 
-  local vwaited=0 vstall=0 vhash="" vlast=""
+  local vwaited=0 vstall=0 vhash="" vlast="" vlastpane=""
   while [ "$vwaited" -lt "${AF_VERIFY_TIMEOUT_S:-2700}" ]; do
     sleep 30; vwaited=$((vwaited+30))
     [ -f "$VERDICT" ] && break
     pane=$(tmux capture-pane -t "$vsession" -p 2>/dev/null || echo "")
+    # Keep the last non-empty pane. When a verify session dies without a verdict the session is
+    # already gone by the time anyone looks, so without this the log says only "gone" and the reason
+    # is unrecoverable — which is exactly what happened on the stage's first real run.
+    echo "$pane" | grep -qE "." && vlastpane="$pane"
     if ! echo "$pane" | grep -qE "."; then say "verify session gone before writing a verdict"; break; fi
     if echo "$pane" | grep -qiE "insufficient balance|402|quota exceeded|payment required|credit balance is too low"; then
       say "BILLING FAILURE during verification — halting"; tmux kill-session -t "$vsession" 2>/dev/null || true; exit 3
@@ -499,6 +520,11 @@ verify_round(){   # $1 = round number, $2.. = the round's ticket ids
     # nothing on its own — but say so loudly, because an unverified merge is exactly the state the
     # stage exists to eliminate.
     say "WARNING: round #$rnd produced NO verification verdict — the merged tree is UNVERIFIED. Treat its green claim as unproven."
+    if [ -n "$vlastpane" ]; then
+      say "--- last verify pane before it died (why the verdict is missing) ---"
+      printf '%s\n' "$vlastpane" | tail -25 | sed 's/^/    /' | tee -a "$LOG"
+      say "--- end verify pane ---"
+    fi
     return 0
   fi
   # Read the sentinel with a parser, not grep: a bare grep for the word fail matches the notes prose
