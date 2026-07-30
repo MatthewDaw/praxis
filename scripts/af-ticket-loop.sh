@@ -492,6 +492,28 @@ while :; do
   [ "$left" = "0" ] && { say "DONE — nothing claimable"; break; }
   [ "$n" -ge "$MAX" ] && { say "hit max_tickets=$MAX, stopping"; break; }
 
+  # DISK PREFLIGHT — fail CLOSED, exactly like an unreachable Praxis.
+  #
+  # This guard used to live inside af-build's canonical fan-out workflow, and telling the round to use
+  # Agent subagents instead of the Workflow tool left it behind. It has to exist somewhere: a round
+  # materializes one full checkout per worker, plus whatever dependency tree the project bootstraps in
+  # each, and several loops now run on one box at once. A full volume does not fail loudly — it
+  # corrupts writes mid-build and strands the run, which is strictly worse than refusing to start.
+  free_gb=$(df -BG --output=avail "$WT" 2>/dev/null | tail -1 | tr -dc '0-9')
+  free_gb=${free_gb:-0}
+  if [ "$free_gb" -lt "${AF_MIN_FREE_GB:-15}" ]; then
+    # Reclaim first: merged worktrees from earlier rounds are pure scratch, and sweeping them is the
+    # cheap fix that keeps a long run alive. Only halt if the disk is still tight afterwards.
+    say "disk low: ${free_gb}G free — sweeping worktrees before deciding"
+    sweep_worktrees
+    free_gb=$(df -BG --output=avail "$WT" 2>/dev/null | tail -1 | tr -dc '0-9'); free_gb=${free_gb:-0}
+    if [ "$free_gb" -lt "${AF_MIN_FREE_GB:-15}" ]; then
+      say "HALTING — only ${free_gb}G free after sweeping, below the ${AF_MIN_FREE_GB:-15}G floor. A round of worktrees plus their dependency trees would exhaust the disk and corrupt the build. Reclaim space, then relaunch."
+      exit 5
+    fi
+    say "swept back to ${free_gb}G free — continuing"
+  fi
+
   release_inprogress >/dev/null
 
   # Compute the frontier AFTER releasing dead leases, so a ticket stranded in_progress by a crashed
