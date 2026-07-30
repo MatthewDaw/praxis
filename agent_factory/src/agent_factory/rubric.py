@@ -64,15 +64,28 @@ class Rubric:
         return tuple(a.name for a in self.axes)
 
 
+#: A defect the judge can fix by construction (the code CAN be changed to clear it) vs. one that is
+#: informational/stylistic and does not by itself justify blocking a ticket on its own. Defaults to
+#: ``"enforce"`` so every pre-existing (untiered) defect stays byte-compatible: it gates exactly as
+#: before. See :mod:`_graded_verify` — a verdict failing on ADVISE-tier defects only escalates as
+#: unremediable rather than looping the worker against feedback it has no ENFORCE-tier lever to act on.
+DEFECT_TIER_ENFORCE = "enforce"
+DEFECT_TIER_ADVISE = "advise"
+
+
 @dataclass(frozen=True)
 class Defect:
-    """A located, actionable problem the judge found. ``confidence`` is 1..10."""
+    """A located, actionable problem the judge found. ``confidence`` is 1..10.
+
+    ``tier`` is ``"enforce"`` (default) or ``"advise"`` — see :data:`DEFECT_TIER_ENFORCE`.
+    """
 
     problem: str
     remedy: str
     confidence: int
     file: str = ""
     line: int | None = None
+    tier: str = DEFECT_TIER_ENFORCE
 
 
 @dataclass(frozen=True)
