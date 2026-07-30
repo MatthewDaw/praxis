@@ -602,7 +602,8 @@ verify_round(){   # $1 = round number, $2.. = the round's ticket ids
     # already gone by the time anyone looks, so without this the log says only "gone" and the reason
     # is unrecoverable — which is exactly what happened on the stage's first real run.
     echo "$pane" | grep -qE "." && vlastpane="$pane"
-    if ! echo "$pane" | grep -qE "."; then say "verify session gone before writing a verdict"; break; fi
+    # Same rule as the build wait: a blank frame is a redraw, not a death.
+    if ! tmux has-session -t "$vsession" 2>/dev/null; then say "verify session gone before writing a verdict"; break; fi
     if echo "$pane" | grep -qiE "insufficient balance|402|quota exceeded|payment required|credit balance is too low"; then
       say "BILLING FAILURE during verification — halting"; tmux kill-session -t "$vsession" 2>/dev/null || true; exit 3
     fi
@@ -762,8 +763,15 @@ while :; do
     # Retain the last live frame. Three rounds died as a bare "session gone" with the pane already
     # destroyed, so the reason was unrecoverable each time and the same round was retried blind.
     echo "$pane" | grep -qE "." && lastpane="$pane"
-    if ! echo "$pane" | grep -qE "."; then
-      say "session gone, ending wait"
+    # An EMPTY capture does NOT mean the session died. The TUI clears the screen to redraw -- which is
+    # exactly what a worker's completion notification triggers -- so a poll can legitimately catch a
+    # blank frame from a perfectly healthy session. Believing that blank frame is what killed round
+    # after round: the driver logged "session gone" at 22:39:26 and its teardown killed the session at
+    # 22:39:27, while the transcript shows the session still processing a task-notification at that
+    # exact second, with both workers alive. Rounds scored zero because the driver murdered them.
+    # `tmux has-session` is the authoritative test, so ask it instead of inferring from pixels.
+    if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+      say "session gone (confirmed via has-session), ending wait"
       if [ -n "${lastpane:-}" ]; then
         say "--- last build pane before it died ---"
         printf '%s\n' "$lastpane" | grep -vE '^[[:space:]]*$' | tail -20 | sed 's/^/    /' | tee -a "$LOG"
