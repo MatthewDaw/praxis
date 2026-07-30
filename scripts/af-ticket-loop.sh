@@ -96,10 +96,16 @@
 #    are removed; unmerged ones are reported loudly and left alone unless AF_REAP_UNMERGED=1, because
 #    deleting an unmerged worktree destroys work rather than reclaiming scratch.
 #
-# Batch width is ALSO capped by the Workflow tool's own concurrency limit, min(16, cores-2), so a
-# small box runs a wide batch a few workers at a time. That is a throughput ceiling, not a
-# correctness problem. Disk is the real constraint: each worktree is a full checkout plus, if the
-# project bootstraps per-worktree deps, a full dependency tree.
+# The round is fanned out with parallel Agent SUBAGENTS, one per ticket in a single message, NOT with
+# the Workflow tool. That is deliberate and it is the whole reason a batch of 8 actually runs 8-wide:
+# Workflow caps concurrent agents at min(16, cores-2), which on this 4-core box is TWO. Measured, not
+# assumed — a 5-ticket round dispatched through Workflow reported "2/5 agents done" with exactly two
+# worktrees showing file activity while the other three waited. The Agent tool carries no such
+# core-derived cap and supports the same per-agent worktree isolation, so the prompt below spells out
+# both halves: do not use Workflow, and put every worker in ONE message so they are concurrent.
+#
+# Disk is then the real constraint: each worktree is a full checkout plus, if the project bootstraps
+# per-worktree deps, a full dependency tree.
 #
 # The default width is 8, not the 15 first written here. Workers are I/O-bound on the model API, so
 # width does NOT need a core apiece — but it is not free either: every worker that reaches its
