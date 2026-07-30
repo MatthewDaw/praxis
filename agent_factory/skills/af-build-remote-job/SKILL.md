@@ -6,9 +6,10 @@ description: >
   ON the box (worktree names and project names routinely differ), preflights that the ticket set has
   claimable work and non-empty building-validation checks, PATCHES the worktree's FACTORY_PROJECT
   (af-ticket-loop.sh does not, and a stale value makes the completeness gate resolve the wrong
-  project and go inert rather than loud), refuses to stomp a live loop session, launches
-  scripts/af-ticket-loop.sh detached under setsid so it survives the ssh closing, verifies it did not
-  die in its own backend preflight, and reports the tmux session plus observe/tail/stop commands.
+  project and go inert rather than loud), refuses to stomp a live loop session, REFRESHES the
+  plugin-shipped driver on the box so no project runs a stale copy, launches
+  agent_factory/scripts/af-ticket-loop.sh detached under setsid so it survives the ssh closing,
+  verifies it did not die in its own backend preflight, and reports the tmux session plus observe/tail/stop commands.
   Use when the human wants a build run on the devbox rather than locally. NOT for local builds — use
   af-build for those; and distinct from praxis's /af-build-remote-jobs alias, which builds the
   box-service dispatch feature locally. It never waits for the run to finish and never pushes.
@@ -32,7 +33,7 @@ So this drives the SSH + tmux path that is how runs actually get started today.
 | host | `ec2-user@52.22.249.49` |
 | key | `~/.ssh/praxis-devbox.pem` |
 | factory repo | `/workspace/praxis` (the loop script lives here regardless of target project) |
-| driver | `/workspace/praxis/scripts/af-ticket-loop.sh <project> <worktree> <pg> <redis|none> [max]` |
+| driver | `/workspace/praxis/agent_factory/scripts/af-ticket-loop.sh <project> <worktree> <pg> <redis|none> [max]` (ships with the plugin; all projects run this one file) |
 | tmux session | derived by the loop as `af-$(basename <worktree>)` |
 | loop log | `/workspace/af-ticket-loop.log` (plus the per-run log this command redirects to) |
 
@@ -142,15 +143,35 @@ exists, a build is in flight — report it and ask before killing.
 ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 'tmux ls 2>/dev/null || echo "(no sessions)"'
 ```
 
-**6. Launch detached** so the loop survives the SSH connection closing. Pass `none` for redis when
-the project has none; pass `[max]` only if the user bounded the run.
+**5b. Refresh the driver.** The loop ships INSIDE the plugin at
+`agent_factory/scripts/af-ticket-loop.sh`, and every project runs that one file — never a copy. Pull
+the factory repo before launching so a months-old driver cannot silently drive a new run. This is not
+hypothetical: one project ran for weeks under its own supervisor against a stale copy of this script
+while the canonical one had been rewritten twice, and nothing surfaced the divergence.
 
 ```bash
 ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
-  "cd /workspace && setsid nohup /workspace/praxis/scripts/af-ticket-loop.sh \
-     '<project>' '<worktree>' <pg> <redis|none> <max?> \
-     > /workspace/af-<project>-loop.log 2>&1 < /dev/null & echo started pid=\$!"
+  'cd /workspace/praxis && git fetch -q origin && git status --porcelain | head -3 && git pull --rebase -q && git log --oneline -1'
 ```
+
+A dirty or diverged checkout is a REPORT, not something to force past: another loop may be executing
+that file right now. If a stray per-project copy or launcher still exists, point it at the canonical
+script with a symlink rather than re-copying it.
+
+**6. Launch detached** so the loop survives the SSH connection closing. Pass `none` for redis when
+the project has none; pass `[max]` only if the user bounded the run. The driver locates its own hooks,
+interpreter, and state dir from its path, so nothing here is project-specific.
+
+```bash
+ssh -n -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
+  "cd /workspace && setsid nohup /workspace/praxis/agent_factory/scripts/af-ticket-loop.sh \
+     '<project>' '<worktree>' <pg> <redis|none> <max?> \
+     > /workspace/af-<project>-loop.log 2>&1 < /dev/null & disown; echo launched"
+```
+
+Optional knobs, prefixed before the command: `AF_MODEL_BACKEND=sonnet` (default deepseek),
+`AF_BATCH_MAX=<n>` (round width, default 8), `AF_MIN_FREE_GB=<n>` (disk floor, default 15),
+`AF_VERIFY_ROUND=0` (skip post-merge verification).
 
 **7. Confirm it came up** — the loop refuses to start on a half-configured model backend, and that
 failure is otherwise silent:
@@ -167,7 +188,11 @@ A `preflight: FAILED` line is a real stop — report it verbatim rather than ass
 - observe: `ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 -t 'tmux attach -t af-<worktree-basename>'`
 - tail: `... 'tail -f /workspace/af-<project>-loop.log'`
 - progress: `... '/workspace/af-progress-watch.sh'`
-- stop: `... 'pkill -f af-ticket-loop.sh; tmux kill-session -t af-<worktree-basename>'`
+- stop: `... 'pkill -f "af-ticket-loop.sh [<]project-initial>..."; tmux kill-session -t af-<worktree-basename>'`
+  — bracket ONE character of the pattern, e.g. `pkill -f "af-ticket-loop.sh [a]ppeal_engine"`. Without
+  the bracket the pattern matches the ssh command carrying it, so `pkill` kills itself first and the
+  rest of the line never runs: the loop dies while its claude session keeps building unsupervised, and
+  the failure is silent.
 
 ## Never
 
