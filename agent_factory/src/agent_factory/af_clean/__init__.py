@@ -11,4 +11,8 @@ enumerate its cognitive-load chunks, every finding declares which pole of the si
 (co-change or parameter-accretion) or it is dropped, an inline proposal against a helper with 3+
 live callers is refused, and a consolidation that would need a flag or branch per caller is
 rejected as a failed centralization rather than applied.
+
+``exemptions`` (R3) lands the automatic exemption-manifest derivation: which paths af-clean must
+never propose for deletion because they are generated, vendored, a lockfile, or a
+language-convention immutable/fixture directory -- never a human-curated allowlist.
 """

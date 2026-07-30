@@ -60,8 +60,10 @@ def test_worker_supplying_human_source_is_refused(monkeypatch):
     ts.record_validation_pass("R1", "v1", True, source="human", ref=PLAN)
 
     # 3) The effective source MUST be "worker" (not "human") — the worker cannot self-attest.
+    # (Pinned may also carry an auto-authored universal-lane entry (R33) alongside "v1" — that
+    # lane's own coverage is not what this test is about.)
     pinned = (fake._meta.get(ts.M_PINNED_CHECKS) or [])
-    assert len(pinned) == 1
+    assert any(e.get("validation_id") == "v1" for e in pinned)
     effective_source = pinned[0].get("source")
     assert effective_source == "worker", (
         f"Expected source='worker' (refused self-attest), got '{effective_source}'"
