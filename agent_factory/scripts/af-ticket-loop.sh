@@ -420,6 +420,45 @@ commit_wip(){
   fi
 }
 
+# Merge the round's work into the integration branch. THE DRIVER OWNS THIS, not the session.
+#
+# The round prompt asks the session to merge before it stops, and round after round it did not: four
+# tickets finished, every commit stayed on its own worktree-agent-* branch, and the post-merge
+# verifier -- correctly refusing to fabricate a merge -- reported "there is no merged tree to verify".
+# The sweep then logged twelve unmerged worktrees. Asking a session that is about to end its turn to
+# perform the one irreversible integration step is asking for exactly that: the work exists, is
+# green, and is invisible on the branch anyone would look at.
+#
+# Merging is mechanical, so the driver does it: deterministic, outlives the session, and observable
+# in the log. A conflict is NOT resolved here -- two dependency-independent tickets that touched one
+# file need a builder's judgment, so the merge is aborted and the ticket regressed to be rebuilt
+# against the now-integrated tree.
+integrate_round(){
+  cd "$WT"
+  local merged=0 conflicted=0 br ahead path
+  # Commit anything loose first: `git merge` refuses to run on a dirty tree, and refusing to
+  # integrate a whole round because one stray file is uncommitted is the wrong trade.
+  commit_wip
+  while read -r path; do
+    [ -n "$path" ] || continue
+    case "$path" in */.claude/worktrees/*) ;; *) continue ;; esac
+    br=$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    [ -n "$br" ] && [ "$br" != "HEAD" ] || continue
+    ahead=$(git rev-list --count "HEAD..$br" 2>/dev/null || echo 0)
+    [ "${ahead:-0}" -gt 0 ] || continue
+    if git merge --no-edit "$br" >/dev/null 2>&1; then
+      merged=$((merged+1)); say "integrated $br ($ahead commit(s))"
+    else
+      git merge --abort 2>/dev/null || true
+      conflicted=$((conflicted+1))
+      say "CONFLICT integrating $br — merge aborted, branch left intact for a rebuild"
+    fi
+  done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
+  [ "$merged" -gt 0 ] && say "round integrated: $merged branch(es) merged into $(git rev-parse --abbrev-ref HEAD)"
+  [ "$conflicted" -gt 0 ] && say "WARNING: $conflicted branch(es) conflicted and were NOT integrated — their tickets need a rebuild against the merged tree"
+  return 0
+}
+
 # Sweep the round's worktrees. af-build is told to reap its own, but a session that died mid-round
 # leaves them behind and they accumulate across rounds — one observed run stranded 29, each holding a
 # full dependency tree, and filled the volume. A worktree whose branch is already an ancestor of the
@@ -511,7 +550,7 @@ verify_round(){   # $1 = round number, $2.. = the round's ticket ids
 
   # No parentheses in this prompt, deliberately — if the REPL is not actually up the text lands on a
   # bash prompt, where a stray paren is a syntax error that kills the pane.
-  tmux send-keys -t "$vsession" "Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv. Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: for every ticket whose work does NOT survive integration, regress it in Praxis so the next round rebuilds it: record_outcome with success False, then release with state incomplete, on the prd-$PROJECT snapshot, and say plainly why. Do not attempt to fix it yourself. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, regressed which is an array of ticket ids you regressed, and notes which is one short string. Write that file LAST, after everything else is done, and then STOP."
+  tmux send-keys -t "$vsession" "Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv. Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: for every ticket whose work does NOT survive integration, regress it in Praxis so the next round rebuilds it: record_outcome with success False, then release with state incomplete, on the prd-$PROJECT snapshot, and say plainly why. Do not attempt to fix it yourself. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, regressed which is an array of ticket ids you regressed, and notes which is one short string. Write that file LAST, after everything else is done, and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. If you cannot verify at all, that is itself a verdict: write the JSON with verdict fail and notes saying why, rather than asking what to do."
   sleep 3; tmux send-keys -t "$vsession" Enter
   say "round #$rnd: post-merge verification dispatched over $ids_csv"
 
@@ -644,7 +683,7 @@ while :; do
   # next session is meant to own. Parentheses are avoided in this string on purpose — if the REPL is not
   # actually ready, the text lands on a bash prompt, and a stray paren there is a syntax error that
   # leaves the session dead at a shell prompt.
-  tmux send-keys -t "$SESSION" "/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is capped at min of 16 and cores-2, which is only 2 on this box, and that would serialize the round for no reason. Instead spawn ONE Agent subagent per ticket, ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. CRITICAL — do NOT end your turn while any ticket in that list is still unfinished. Waiting on agent-completion notifications is NOT enough: a turn that ends with workers in flight gets those workers STOPPED, and the round scores zero even though real work was happening. So HOLD the turn open by polling instead: run a shell sleep of 60 seconds, then re-query the build_state of every batch ticket from Praxis, and repeat that sleep-and-query cycle for as long as any of them is still incomplete or in_progress. Only after every batch ticket reads finished or blocked may you merge, reap, and report. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push.$SERVICES."
+  tmux send-keys -t "$SESSION" "/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is capped at min of 16 and cores-2, which is only 2 on this box, and that would serialize the round for no reason. Instead spawn ONE Agent subagent per ticket, ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. CRITICAL — do NOT end your turn while any ticket in that list is still unfinished. Waiting on agent-completion notifications is NOT enough: a turn that ends with workers in flight gets those workers STOPPED, and the round scores zero even though real work was happening. So HOLD the turn open by polling instead: run a shell sleep of 60 seconds, then re-query the build_state of every batch ticket from Praxis, and repeat that sleep-and-query cycle for as long as any of them is still incomplete or in_progress. Only after every batch ticket reads finished or blocked may you merge, reap, and report. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push.$SERVICES."
   sleep 3; tmux send-keys -t "$SESSION" Enter
   say "submitted round #$round with $size ticket(s), waiting for the batch to finish or stall"
 
@@ -746,6 +785,10 @@ while :; do
   tmux kill-session -t "$SESSION" 2>/dev/null || true
   [ -n "${pane_pid:-}" ] && pkill -P "$pane_pid" 2>/dev/null || true
   sleep 3
+  # Integrate FIRST, then sweep: the sweep only reaps worktrees whose branch is already an ancestor
+  # of HEAD, so merging first is what turns this round's scratch into reclaimable space instead of
+  # another dozen "unmerged, left in place" warnings.
+  integrate_round "$@"
   # Sweep AFTER the session is dead, never while it is live: removing a worktree out from under a
   # running worker deletes the tree its evals are executing against.
   sweep_worktrees
