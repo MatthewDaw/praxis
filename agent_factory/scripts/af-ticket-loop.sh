@@ -434,8 +434,18 @@ commit_wip(){
 # file need a builder's judgment, so the merge is aborted and the ticket regressed to be rebuilt
 # against the now-integrated tree.
 integrate_round(){
+  local still_open="${1:-0}"
   cd "$WT"
   local merged=0 conflicted=0 br ahead path
+  # ONLY integrate a round that actually closed. Branch names carry no ticket id, so with tickets
+  # still open there is no way to tell a finished ticket's branch from the half-built tree of a
+  # worker that was killed mid-BUILD -- possibly between "confirm red" and "confirm green". Merging
+  # blind would launder exactly the unverified edits the gates exist to catch, under cover of a green
+  # round. An unintegrated branch is recoverable; a laundered one is not.
+  if [ "$still_open" -gt 0 ]; then
+    say "SKIPPING integration: $still_open ticket(s) still open, so some agent branches hold partial work. Their branches are intact; the tickets regress and rebuild against the current tree."
+    return 0
+  fi
   # Commit anything loose first: `git merge` refuses to run on a dirty tree, and refusing to
   # integrate a whole round because one stray file is uncommitted is the wrong trade.
   commit_wip
@@ -788,7 +798,7 @@ while :; do
   # Integrate FIRST, then sweep: the sweep only reaps worktrees whose branch is already an ancestor
   # of HEAD, so merging first is what turns this round's scratch into reclaimable space instead of
   # another dozen "unmerged, left in place" warnings.
-  integrate_round "$@"
+  integrate_round "$(batch_open "$@")"
   # Sweep AFTER the session is dead, never while it is live: removing a worktree out from under a
   # running worker deletes the tree its evals are executing against.
   sweep_worktrees
