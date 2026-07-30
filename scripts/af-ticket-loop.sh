@@ -101,9 +101,32 @@
 # correctness problem. Disk is the real constraint: each worktree is a full checkout plus, if the
 # project bootstraps per-worktree deps, a full dependency tree.
 #
+# v5: post-merge verification of each round, made 2026-07-30.
+#
+# Batching exposed a gap that serial building hid. Every validation a ticket runs happens inside its
+# own isolated worktree, against a tree where its change is the only one present — so with a batch of
+# five, five green claims are made about five trees that no longer exist, and NOTHING has executed the
+# merged result. Dependency-independent is not semantically independent: two tickets can be green
+# alone and broken together, and a merge that resolves without a textual conflict proves nothing about
+# behavior. Serially this was survivable because the next ticket immediately re-ran the whole-repo
+# gates on the integrated tree; a batch has no such incidental check.
+#
+# So each round that lands anything is followed by a fresh verification session over the merged tree:
+# whole-repo gates, then independent adversarial lenses — integration conflict, per-ticket acceptance
+# re-run against the MERGED tree, and test-integrity — and tickets whose work does not survive
+# integration are regressed in Praxis so the next round rebuilds them. It borrows the shape of an
+# ultracode workflow without being one; the Workflow tool is not reachable from a shell driver, so the
+# parallel lenses are subagents inside that session. It builds nothing and pushes nothing.
+#
+# The verdict returns via a sentinel JSON file outside the repo, parsed with a JSON parser rather than
+# grep — a grep for "fail" matches the notes prose and would report a passing round as failed. A
+# missing verdict is reported as UNVERIFIED, never silently treated as a pass. AF_VERIFY_ROUND=0
+# disables the stage.
+#
 # Usage: af-ticket-loop.sh <project> <worktree> <pg_port> <redis_port> [max_tickets]
 #        af-ticket-loop.sh --check
 #        AF_BATCH_MAX=6 af-ticket-loop.sh ...   # narrower rounds on a small box
+#        AF_VERIFY_ROUND=0 af-ticket-loop.sh ...   # skip post-merge verification
 set -euo pipefail
 
 # ---------------------------------------------------------------- backend selection ----
@@ -355,6 +378,101 @@ sweep_worktrees(){
   return 0
 }
 
+# ------------------------------------------------------------------ post-merge round verification --
+#
+# Every validation a batch ran was run INSIDE an isolated per-ticket worktree, against a tree where
+# that ticket's change was the only one present. Nothing has ever executed the MERGED result. That is
+# a real gap, not a theoretical one: dependency-independent is not semantically independent — two
+# tickets can each be green alone and broken together, one can silently revert the other's edit to a
+# shared file, and a merge that resolves without a textual conflict proves nothing about behavior.
+#
+# So after each round is merged and swept, a FRESH session verifies the integrated tree. It borrows
+# the shape of an ultracode workflow — several independent lenses, adversarial rather than
+# confirmatory — but it is a plain session, not the Workflow tool, which is unavailable to a shell
+# driver. It builds nothing: its only writes are to Praxis, regressing tickets whose work does not
+# survive integration so the next round rebuilds them. That self-heals instead of shipping a green
+# claim over a broken merge.
+#
+# The verdict comes back through a sentinel file rather than pane scraping, and that file lives
+# OUTSIDE the repo so it can never be swept into a wip commit or mistaken for ticket output.
+#
+# AF_VERIFY_ROUND=0 disables it. Skipped when a round finished zero tickets — nothing was integrated —
+# and skipped for a single-ticket round, which merges exactly the tree its worker already validated.
+VERDICT="/workspace/af-round-verdict-$PROJECT.json"
+
+verify_round(){   # $1 = round number, $2.. = the round's ticket ids
+  local rnd="$1"; shift
+  local ids_csv; ids_csv=$(printf '%s,' "$@"); ids_csv=${ids_csv%,}
+  local vsession="$SESSION-verify"
+  rm -f "$VERDICT"
+
+  tmux kill-session -t "$vsession" 2>/dev/null || true
+  tmux new-session -d -s "$vsession" -c "$WT"
+  tmux send-keys -t "$vsession" "cd $WT && $CLAUDE_LAUNCH" Enter
+  local vready=0
+  for _ in $(seq 1 "$READY_POLL_MAX"); do
+    sleep 2
+    pane=$(tmux capture-pane -t "$vsession" -p 2>/dev/null || echo "")
+    if echo "$pane" | grep -qE "bypass permissions on"; then vready=1; break; fi
+  done
+  [ "$vready" = "0" ] && say "WARNING: verify REPL not confirmed ready, sending anyway"
+
+  # No parentheses in this prompt, deliberately — if the REPL is not actually up the text lands on a
+  # bash prompt, where a stray paren is a syntax error that kills the pane.
+  tmux send-keys -t "$vsession" "Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv. Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: for every ticket whose work does NOT survive integration, regress it in Praxis so the next round rebuilds it: record_outcome with success False, then release with state incomplete, on the prd-$PROJECT snapshot, and say plainly why. Do not attempt to fix it yourself. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, regressed which is an array of ticket ids you regressed, and notes which is one short string. Write that file LAST, after everything else is done, and then STOP."
+  sleep 3; tmux send-keys -t "$vsession" Enter
+  say "round #$rnd: post-merge verification dispatched over $ids_csv"
+
+  local vwaited=0 vstall=0 vhash="" vlast=""
+  while [ "$vwaited" -lt "${AF_VERIFY_TIMEOUT_S:-2700}" ]; do
+    sleep 30; vwaited=$((vwaited+30))
+    [ -f "$VERDICT" ] && break
+    pane=$(tmux capture-pane -t "$vsession" -p 2>/dev/null || echo "")
+    if ! echo "$pane" | grep -qE "."; then say "verify session gone before writing a verdict"; break; fi
+    if echo "$pane" | grep -qiE "insufficient balance|402|quota exceeded|payment required|credit balance is too low"; then
+      say "BILLING FAILURE during verification — halting"; tmux kill-session -t "$vsession" 2>/dev/null || true; exit 3
+    fi
+    vhash=$(printf '%s' "$pane" | md5sum | cut -d' ' -f1)
+    if [ "$vhash" = "$vlast" ]; then
+      vstall=$((vstall+1))
+      [ "$vstall" -ge "$STALL_POLLS" ] && { say "verify session frozen for $((STALL_POLLS*30/60))min — giving up on this round's verification"; break; }
+    else
+      vstall=0; vlast="$vhash"
+    fi
+  done
+
+  local pane_pid; pane_pid=$(tmux list-panes -t "$vsession" -F '#{pane_pid}' 2>/dev/null | head -1 || true)
+  tmux kill-session -t "$vsession" 2>/dev/null || true
+  [ -n "${pane_pid:-}" ] && pkill -P "$pane_pid" 2>/dev/null || true
+
+  if [ ! -f "$VERDICT" ]; then
+    # Absence of a verdict is NOT a pass. The round's tickets stay finished — this stage regresses
+    # nothing on its own — but say so loudly, because an unverified merge is exactly the state the
+    # stage exists to eliminate.
+    say "WARNING: round #$rnd produced NO verification verdict — the merged tree is UNVERIFIED. Treat its green claim as unproven."
+    return 0
+  fi
+  # Read the sentinel with a parser, not grep: a bare grep for the word fail matches the notes prose
+  # and would report a passing round as failed.
+  local summary
+  summary=$(python3 - "$VERDICT" <<'PYEOF' 2>/dev/null || echo "verdict=UNREADABLE"
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception as e:
+    print(f"verdict=UNPARSEABLE ({e})"); raise SystemExit
+reg = d.get("regressed") or []
+print("verdict=%s gates_green=%s regressed=%d%s :: %s" % (
+    d.get("verdict"), d.get("gates_green"), len(reg),
+    (" [" + ",".join(str(r) for r in reg) + "]") if reg else "",
+    str(d.get("notes", ""))[:200]))
+PYEOF
+)
+  say "round #$rnd verification: $summary"
+  rm -f "$VERDICT"
+  return 0
+}
+
 n=0
 round=0
 while :; do
@@ -507,6 +625,18 @@ while :; do
   after=$(finished_count); after=${after:-$before}
   if [ "$after" -gt "$before" ]; then
     fruitless=0
+    # Verify the MERGE, not the tickets — they were each proven alone, in a worktree that no longer
+    # exists. Runs only when something actually landed, and only after the build session is dead so
+    # the two never race on the same tree. It may regress tickets, which is why it runs BEFORE the
+    # next frontier is computed: a ticket it sends back reappears in the very next batch.
+    # Only for a genuinely parallel round. A 1-ticket batch is the old serial case: its worker branched
+    # from this HEAD, validated there, and merged straight back, so there is no cross-ticket
+    # interaction for this stage to find and a whole extra session would buy nothing.
+    if [ "${AF_VERIFY_ROUND:-1}" = "1" ] && [ "$size" -gt 1 ]; then
+      verify_round "$round" "$@"
+    elif [ "$size" -le 1 ]; then
+      say "round #$round: single-ticket batch — skipping post-merge verification, nothing merged alongside it"
+    fi
   else
     fruitless=$((${fruitless:-0} + 1))
     say "round #$round finished ZERO tickets ($fruitless in a row)"

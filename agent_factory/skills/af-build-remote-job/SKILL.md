@@ -58,6 +58,17 @@ the same batch. Pass `AF_BATCH_MAX=<n>` to narrow rounds on a small or disk-tigh
 is additionally capped by the Workflow tool at `min(16, cores-2)`. The loop reaps merged worktrees after
 every round and reports unmerged ones instead of deleting them (`AF_REAP_UNMERGED=1` to drop those too).
 
+**Every parallel round is verified after it merges.** Each ticket's validations ran inside its own
+worktree, against a tree where its change was the only one present, so a batch of five produces five
+green claims about five trees that no longer exist and none about the merged result. After a round
+lands, a fresh session re-runs the whole-repo gates on the integrated tree and dispatches independent
+adversarial lenses over the combined diff — integration conflict, per-ticket acceptance re-run against
+the MERGED tree, test integrity — and regresses in Praxis any ticket whose work does not survive
+integration, so the next round rebuilds it. It builds nothing and pushes nothing. Single-ticket rounds
+skip it, since they merge exactly the tree their worker already validated. `AF_VERIFY_ROUND=0` disables
+it; `AF_VERIFY_TIMEOUT_S` bounds it, default 2700. A round that produces no verdict is logged as
+UNVERIFIED, never as a pass.
+
 ## Steps
 
 **1. Resolve the project** from `$ARGUMENTS`. If absent, ask — a wrong name silently builds nothing.
