@@ -96,6 +96,13 @@ M_REQUIRED_VALIDATIONS = "required_validations"
 M_MANUAL_REQUIREMENTS = "manual_requirements"   # subset of required ids whose verify=="manual"
 M_REPORT_ONLY_REQUIREMENTS = "report_only_requirements"  # subset graded + recorded but NOT gating
 M_PINNED_CHECKS = "pinned_checks"           # entries are synthesized VALIDATIONS (see module doc)
+M_UNIVERSAL_CONTRACT = "universal_contract"  # the universal-lane requirement entries pinned at
+                                              # coverage-contract time (R33) -- pin_validations() reads
+                                              # this to AUTO-author their covering entries so a worker
+                                              # never has to hand-write one.
+M_GRADED_LOOP = "graded_loop"                # {validation_id: {iters, last_defects, last_hash}} (U6);
+                                              # reset to {} on a fresh claim (R33) so a re-picked ticket
+                                              # starts a fresh iteration budget.
 M_RUN_OWNER = "run_owner"
 M_RUN_AT = "run_at"
 M_RUN_SCOPE = "run_scope"
@@ -501,11 +508,17 @@ def pin_requirements(cid: str, requirements: list,
     # excluded from the completion gate — recorded separately so all_validations_passed can skip it.
     report_only_ids = [rid for r in requirements
                        if (rid := _check_id(r)) and _req_report_only(r)]
+    # The UNIVERSAL-lane entries (see :func:`universal_requirements`) carry their own frozen rubric
+    # and need no worker authorship -- stash them so :func:`pin_validations` can auto-append their
+    # covering entries every time it (re)pins, instead of requiring the worker to hand-author one.
+    universal_entries = [r for r in requirements
+                         if isinstance(r, dict) and (r.get("meta") or {}).get("universal")]
     return _praxis.patch_meta(cid, {
         M_REQUIRED_VALIDATIONS: req_ids,
         M_MANUAL_REQUIREMENTS: manual_ids,
         M_REPORT_ONLY_REQUIREMENTS: report_only_ids,
         M_PINNED_CHECKS: [],
+        M_UNIVERSAL_CONTRACT: universal_entries,
     }, **_ref_kw(ref))
 
 
@@ -547,6 +560,37 @@ def _norm_validation(v: Any, idx: int) -> dict:
     return entry
 
 
+def _universal_covering_entries(meta: dict, already_covered: set[str]) -> list[dict]:
+    """Auto-author the covering PINNED entries for every universal-lane requirement stashed by
+    :func:`pin_requirements` (``meta.universal_contract``) that ``already_covered`` does not yet
+    cover — the R33 "coverage authoring" guarantee: a non-exempt ticket reaches
+    :func:`all_validations_passed` with no hand-authored covering validation for the universal
+    lane, because the lane covers itself."""
+    out: list[dict] = []
+    for u in (meta.get(M_UNIVERSAL_CONTRACT) or []):
+        uid = _check_id(u)
+        if not uid or uid in already_covered:
+            continue
+        umeta = dict(u.get("meta") or {})
+        entry: dict = {
+            "validation_id": uid,
+            "covers": [uid],
+            "run": "",
+            "passed": None,
+            "ran_at": None,
+            "kind": "graded",
+            "universal": True,
+        }
+        if isinstance(umeta.get("rubric"), dict):
+            entry["rubric"] = umeta["rubric"]
+        src = str(umeta.get("source_check_id") or "").strip()
+        if src:
+            entry["source_check_id"] = src
+        out.append(entry)
+        already_covered.add(uid)
+    return out
+
+
 def pin_validations(cid: str, validations: list,
                     ref: Optional[tuple[str, str]] = None) -> dict:
     """Pin the worker-SYNTHESIZED concrete validations onto the ticket (the eval).
@@ -555,9 +599,24 @@ def pin_validations(cid: str, validations: list,
     ``patch_meta`` replaces ``pinned_checks`` wholesale, this TRUNCATES any prior validation state —
     the new set is THIS pass's eval. Does NOT touch ``required_validations`` (the coverage contract
     set at start): coverage is asserted at finish via :func:`coverage_gap` / :func:`all_validations_passed`.
+
+    R33: after the worker's own list is normalized, any UNIVERSAL-lane requirement
+    (``meta.universal_contract``, stashed by :func:`pin_requirements`) not already covered by the
+    worker's own entries gets its own auto-authored covering entry appended here — carrying its
+    frozen rubric, exactly like a worker-pinned graded check — so the worker never has to hand-write
+    one and the universal lane can never deadlock coverage. Reading the ticket's current meta for
+    this is best-effort: a caller exercising ONLY the pin-shape contract with a minimal fake (no
+    ``get_fact``) degrades to no auto-injection rather than raising — the universal lane is additive
+    sugar on top of the core pin path, never a hard dependency of it.
     """
     pinned = [_norm_validation(v, i) for i, v in enumerate(validations)]
     pinned = [p for p in pinned if p["validation_id"]]
+    try:
+        meta = _meta(cid, ref)
+    except Exception:  # noqa: BLE001 - best-effort; see docstring
+        meta = {}
+    covered = {c for p in pinned for c in (p.get("covers") or [])}
+    pinned.extend(_universal_covering_entries(meta, covered))
     return _praxis.patch_meta(cid, {M_PINNED_CHECKS: pinned}, **_ref_kw(ref))
 
 
@@ -718,6 +777,12 @@ def claim(cid: str, owner: str, ttl: int = DEFAULT_LEASE_TTL_S,
 
     Race note: two agents can both read a free ticket and both write — a rare, harmless double-claim
     (see module docstring). No server CAS is assumed.
+
+    R33: a ticket that was NOT already held under a live lease by ``owner`` (a genuine re-pick — free,
+    stale-reclaimed, or newly assigned to a different owner) gets its graded-check iteration budget
+    (``meta.graded_loop``) reset to empty. Without this, a ticket re-picked after a stale lease/owner
+    change would inherit a prior session's iteration count and could trip the escalation cap on its
+    very first fresh attempt; an idempotent renew by the SAME live owner leaves it untouched.
     """
     meta = _meta(cid, ref)
     if meta.get(M_BUILD_STATE) == "blocked":
@@ -725,16 +790,20 @@ def claim(cid: str, owner: str, ttl: int = DEFAULT_LEASE_TTL_S,
     now = time.time()
     if _lease_live(meta, now) and meta.get(M_CLAIM_OWNER) != owner:
         return False  # a different owner holds a live lease
+    fresh_pick = not (_lease_live(meta, now) and meta.get(M_CLAIM_OWNER) == owner)
     held_at = meta.get(M_CLAIM_AT)
     if meta.get(M_CLAIM_OWNER) != owner or held_at is None:
         held_at = now  # first claim by this owner stamps claim_at
-    _praxis.patch_meta(cid, {
+    patch: dict[str, Any] = {
         M_BUILD_STATE: "in_progress",
         M_CLAIM_OWNER: owner,
         M_CLAIM_AT: held_at,
         M_CLAIM_HEARTBEAT_AT: now,
         M_CLAIM_LEASE_TTL: int(ttl),
-    }, **_ref_kw(ref))
+    }
+    if fresh_pick:
+        patch[M_GRADED_LOOP] = {}
+    _praxis.patch_meta(cid, patch, **_ref_kw(ref))
     return True
 
 
@@ -1393,6 +1462,13 @@ def acceptance_requirement(cid: str, acceptance_text: str,
 # consumed, would deadlock the session. So they are OMITTED from the universal lane entirely.
 _UNIVERSAL_EXEMPT_TAGS = frozenset({"vendored", "generated", "config"})
 
+# PATH-PREDICATE exemption (R33): a ticket whose touched paths sit ENTIRELY inside one of these
+# language-convention immutable/generated directory names has nothing to minimize either, even
+# with no human-authored tag — a plain ``migrations/`` directory is neither gitignored nor
+# specially tagged, but must never be graded as if it were hand-authored application code. Mirrors
+# the tool-side immutable-dir signal af-clean's own exemption manifest uses (R3).
+_UNIVERSAL_EXEMPT_PATH_DIR_NAMES = frozenset({"migrations", "testdata", "__snapshots__", "fixtures"})
+
 
 def _universal_checks() -> list:
     """The ``promote_universal`` seeded checks. Lazily imports the (src-layout) package so importing
@@ -1404,22 +1480,45 @@ def _universal_checks() -> list:
         return []
 
 
-def _universal_exempt(ticket_meta: Optional[dict]) -> bool:
-    """True iff the ticket opts out of the universal lane (exempt tag or ``meta.universal_exempt``)."""
+def _path_dir_exempt(path: Any) -> bool:
+    """True iff any path SEGMENT of ``path`` is one of the immutable/generated directory names."""
+    norm = str(path or "").replace(os.sep, "/").strip("/")
+    return any(seg in _UNIVERSAL_EXEMPT_PATH_DIR_NAMES for seg in norm.split("/") if seg)
+
+
+def _paths_exempt(paths: Optional[list]) -> bool:
+    """True iff ``paths`` is non-empty and EVERY path is exempt — a ticket touching even one
+    non-exempt path is not covered by the path predicate (it still has real code to grade)."""
+    ps = [str(p) for p in (paths or []) if str(p or "").strip()]
+    return bool(ps) and all(_path_dir_exempt(p) for p in ps)
+
+
+def _universal_exempt(ticket_meta: Optional[dict], paths: Optional[list] = None) -> bool:
+    """True iff the ticket opts out of the universal lane: an exempt tag, ``meta.universal_exempt``,
+    or (R33) every one of ``paths`` sits inside an immutable/generated directory (see
+    :data:`_UNIVERSAL_EXEMPT_PATH_DIR_NAMES`). ``paths`` is evaluated in TWO phases by the caller —
+    declared paths at pin time (:func:`start_ticket` has no diff yet, so this is best-effort/usually
+    empty) and the ACTUAL touched paths re-checked at grade time (:mod:`_graded_verify`, which
+    already holds the code diff) — with the grade-time result winning whenever the two disagree.
+    """
     meta = ticket_meta or {}
     if meta.get("universal_exempt"):
         return True
     tags = _as_list(meta.get("tags")) + _as_list(meta.get("applies_to"))
-    return any(normalize_tag(t) in _UNIVERSAL_EXEMPT_TAGS for t in tags if t)
+    if any(normalize_tag(t) in _UNIVERSAL_EXEMPT_TAGS for t in tags if t):
+        return True
+    return _paths_exempt(paths)
 
 
-def universal_requirements(cid: str, ticket_meta: Optional[dict]) -> list[dict]:
+def universal_requirements(cid: str, ticket_meta: Optional[dict],
+                           paths: Optional[list] = None) -> list[dict]:
     """The universal graded requirements to inject onto ``cid`` — one per ``promote_universal`` seeded
-    check, unless the ticket is exempt. Each carries ``kind="graded"`` + its serialized rubric + a
-    stable id (the seeded ``check_id``) + a ``report_only`` flag, so a worker-synthesized validation
-    covers it and ``verify_graded_check`` grades it exactly like a pool graded check.
+    check, unless the ticket is exempt (tag/meta OR the R33 path predicate against ``paths``). Each
+    carries ``kind="graded"`` + its serialized rubric + a stable id (the seeded ``check_id``) + a
+    ``report_only`` flag, so a worker-synthesized validation covers it and ``verify_graded_check``
+    grades it exactly like a pool graded check.
     """
-    if _universal_exempt(ticket_meta):
+    if _universal_exempt(ticket_meta, paths=paths):
         return []
     out: list[dict] = []
     for chk in _universal_checks():
@@ -1443,7 +1542,8 @@ def universal_requirements(cid: str, ticket_meta: Optional[dict]) -> list[dict]:
 
 def contract_with_floor(cid: str, acceptance_text: str, resolved: list,
                         verify: str = "automated",
-                        ticket_meta: Optional[dict] = None) -> list:
+                        ticket_meta: Optional[dict] = None,
+                        paths: Optional[list] = None) -> list:
     """Compose the coverage contract: the resolved Praxis requirements PLUS the acceptance floor
     PLUS (when ``ticket_meta`` is given and the ticket is not exempt) the always-on universal lane.
 
@@ -1461,6 +1561,11 @@ def contract_with_floor(cid: str, acceptance_text: str, resolved: list,
     tag-independent. It is a no-op when ``ticket_meta`` is None (the pure callers — preview/tests keep
     their exact contract) or the contract is otherwise empty (the block path must survive, never be
     masked into buildable by a report-only universal).
+
+    ``paths`` (R33) is the PIN-TIME phase of the path-predicate exemption: the ticket's DECLARED
+    touched paths, if any — usually empty (:func:`start_ticket` has no diff to derive them from yet),
+    so this is a best-effort, conservative-by-default input. The authoritative re-check against the
+    ACTUAL touched paths happens at grade time (:mod:`_graded_verify`), which wins on disagreement.
     """
     reqs = list(resolved)
     text = str(acceptance_text or "").strip()
@@ -1470,7 +1575,7 @@ def contract_with_floor(cid: str, acceptance_text: str, resolved: list,
             reqs = [floor] + reqs
     if ticket_meta is not None and reqs:
         existing = {_check_id(r) for r in reqs}
-        for u in universal_requirements(cid, ticket_meta):
+        for u in universal_requirements(cid, ticket_meta, paths=paths):
             if u["id"] not in existing:
                 reqs.append(u)
                 existing.add(u["id"])
@@ -1527,9 +1632,13 @@ def start_ticket(cid: str, owner: str, project: str = "",
         _praxis.patch_meta(cid, {M_UNDER_SPECIFIED: None}, **_ref_kw(plan))
     # UNION of plan 003 (resumability guard, above) + plan 001 (universal lane): the contract is
     # composed AFTER the claim, threading ``ticket_meta=tmeta`` so plan 001's report-only universal
-    # minimalism check is injected onto every non-exempt ticket.
+    # minimalism check is injected onto every non-exempt ticket. ``paths`` is the R33 PIN-TIME phase
+    # of the path-predicate exemption: the ticket's own DECLARED touched paths (``meta.paths``), if
+    # any were authored — there is no diff yet at this point, so the grade-time re-check (which does
+    # have the diff) is what actually enforces/discharges the predicate; this is best-effort only.
     requirements = contract_with_floor(cid, tmeta.get("acceptance"), resolved,
-                                       verify=verify_mode, ticket_meta=tmeta)
+                                       verify=verify_mode, ticket_meta=tmeta,
+                                       paths=_as_list(tmeta.get("paths")))
     # COVERAGE-GAP WARNING (build-time visibility of the intake defect): a verify="automated" ticket
     # that resolves ZERO declared checks is buildable via its acceptance floor, but it means NO declared
     # gate exists for it — exactly the floor-only defect `resolve_preview --require-coverage` blocks at
