@@ -644,7 +644,7 @@ while :; do
   # next session is meant to own. Parentheses are avoided in this string on purpose — if the REPL is not
   # actually ready, the text lands on a bash prompt, and a stray paren there is a syntax error that
   # leaves the session dead at a shell prompt.
-  tmux send-keys -t "$SESSION" "/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is capped at min of 16 and cores-2, which is only 2 on this box, and that would serialize the round for no reason. Instead spawn ONE Agent subagent per ticket, ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push.$SERVICES."
+  tmux send-keys -t "$SESSION" "/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is capped at min of 16 and cores-2, which is only 2 on this box, and that would serialize the round for no reason. Instead spawn ONE Agent subagent per ticket, ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. CRITICAL — do NOT end your turn while any ticket in that list is still unfinished. Waiting on agent-completion notifications is NOT enough: a turn that ends with workers in flight gets those workers STOPPED, and the round scores zero even though real work was happening. So HOLD the turn open by polling instead: run a shell sleep of 60 seconds, then re-query the build_state of every batch ticket from Praxis, and repeat that sleep-and-query cycle for as long as any of them is still incomplete or in_progress. Only after every batch ticket reads finished or blocked may you merge, reap, and report. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push.$SERVICES."
   sleep 3; tmux send-keys -t "$SESSION" Enter
   say "submitted round #$round with $size ticket(s), waiting for the batch to finish or stall"
 
@@ -667,6 +667,7 @@ while :; do
   waited=0
   same_count=0
   last_hash=""
+  lastpane=""
   done_seen=$before
   while [ "$waited" -lt "$deadline" ]; do
     sleep 30; waited=$((waited+30))
@@ -680,7 +681,18 @@ while :; do
     open=$(batch_open "$@"); open=${open:-1}
     if [ "$open" = "0" ]; then say "round #$round complete — all $size ticket(s) finished or blocked"; break; fi
     pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
-    if ! echo "$pane" | grep -qE "."; then say "session gone, ending wait"; break; fi
+    # Retain the last live frame. Three rounds died as a bare "session gone" with the pane already
+    # destroyed, so the reason was unrecoverable each time and the same round was retried blind.
+    echo "$pane" | grep -qE "." && lastpane="$pane"
+    if ! echo "$pane" | grep -qE "."; then
+      say "session gone, ending wait"
+      if [ -n "${lastpane:-}" ]; then
+        say "--- last build pane before it died ---"
+        printf '%s\n' "$lastpane" | grep -vE '^[[:space:]]*$' | tail -20 | sed 's/^/    /' | tee -a "$LOG"
+        say "--- end build pane ---"
+      fi
+      break
+    fi
     if echo "$pane" | grep -qE "100% context used"; then say "context exhausted mid-ticket, ending wait"; break; fi
     # Deliberately NARROW. This used to also match bare "401" and "expired", which occur
     # constantly in ordinary output (line numbers, token counts, diffs, prose) and killed
