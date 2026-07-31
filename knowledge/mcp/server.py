@@ -1323,8 +1323,8 @@ def praxis_edit_fact(
     400 whose ``detail`` reads like "plan 'prd-<project>' is blessed — re-arm the planning
     marker (stamp_planning) to mutate this snapshot". Editing a fact in a blessed plan
     snapshot therefore requires arming the planning marker FIRST —
-    ``_ticket_state.stamp_planning(project, owner)`` (the af-intake-plan skill's Step 0d)
-    or ``POST /planning-marker`` — and only then re-issuing the edit. The same gate applies
+    ``praxis_planning_marker(project, owner=..., space=..., snapshot=...)``, then re-issue
+    the edit, then re-bless with ``clear=True``. The same gate applies
     to ``praxis_delete_fact`` against a blessed plan snapshot.
 
     ``on_conflict`` defaults to ``"none"``: an edit is a **literal write** — only
@@ -1542,8 +1542,8 @@ def praxis_delete_fact(
 
     A delete against a BLESSED ``prd-<project>`` plan snapshot is refused by the
     bless-state guard with a 400 — same rule as ``praxis_edit_fact``: re-arm the planning
-    marker first (``_ticket_state.stamp_planning(project, owner)``, i.e. af-intake-plan's
-    Step 0d, or ``POST /planning-marker``). The 400's ``detail`` names this explicitly.
+    marker first with ``praxis_planning_marker(project, owner=..., space=..., snapshot=...)``,
+    and re-bless with ``clear=True`` afterwards. The 400's ``detail`` names the guard.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -1566,6 +1566,67 @@ def praxis_delete_fact(
     except httpx.HTTPStatusError as exc:
         return _friendly(exc)
     return f"Deleted fact id={cid}."
+
+
+@mcp.tool()
+def praxis_planning_marker(
+    project: str,
+    owner: str | None = None,
+    clear: bool = False,
+    space: str | None = None,
+    snapshot: str | None = None,
+) -> str:
+    """ARM or DISARM a project's planning marker — the gate that allows edits to a blessed plan.
+
+    A ``prd-<project>`` plan snapshot is WRITE-PROTECTED once blessed: ``praxis_edit_fact`` and
+    ``praxis_delete_fact`` against it are refused with a 400 reading "plan '<snapshot>' is blessed
+    — re-arm the planning marker (stamp_planning) to mutate this snapshot". This tool is how you
+    follow that instruction. Without it the refusal is a dead end — arming used to live only in a
+    Python hook helper, so an agent working through these tools could not comply with the very
+    message it was handed, and reasonably concluded snapshot facts were simply not editable.
+
+    Read the marker's states carefully; they are easy to invert:
+
+    * ``planning_owner`` SET (and fresh) -> ARMED: the plan is open for editing.
+    * ``planning_owner`` NULL with ``blessed_at`` set -> BLESSED: edits are REFUSED. This is the
+      state a finished plan rests in, so "the marker was cleared" means blessed, NOT unprotected.
+
+    Pass ``owner`` (any stable session identifier) to ARM before a repair, then call again with
+    ``clear=True`` to re-bless when you are done — leaving a plan armed leaves it unprotected, and
+    the marker also goes stale on its own after an hour. Pass BOTH ``space`` and ``snapshot`` to
+    address the project's plan snapshot (``space=<project>``, ``snapshot="prd-<project>"``), which
+    is where the guard reads. With neither argument this only ensures the marker fact EXISTS
+    (the greenfield bootstrap) and changes no state.
+
+    Editing a ticket is usually better done with ``praxis_add_insight`` carrying the same
+    ``meta.requirement_id`` — that path is identity-keyed, updates in place, and is NOT
+    bless-guarded. Reach for arming when you need a meta-only edit, or to amend a fact that has no
+    identity key of its own.
+    """
+    if (hint := _not_ready()) is not None:
+        return hint
+    if owner and clear:
+        return "Pass either owner (to arm) or clear=True (to disarm), not both."
+    body: dict[str, object] = {"project": project}
+    if owner:
+        body["owner"] = owner
+    if clear:
+        body["clear"] = True
+    try:
+        resp = httpx.post(
+            f"{identity.api_base()}/planning-marker",
+            json=body,
+            headers=_headers(space, snapshot),
+            timeout=_WRITE_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return _friendly(exc)
+    m = resp.json()
+    state = {True: "ARMED (plan is editable)", False: "BLESSED (edits refused)"}.get(
+        m.get("armed"), "unchanged (marker ensured only)"
+    )
+    return _structured(f"planning marker for {project!r}: {state}", m)
 
 
 @mcp.tool()

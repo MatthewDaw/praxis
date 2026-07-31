@@ -3017,14 +3017,50 @@ def create_app(conn: Any | None = None) -> FastAPI:
         The optional ``category`` body parameter (defaults to ``"planning-marker"``) allows markers
         of different kinds to coexist per project — they use distinct identity keys so a planning
         marker and a marker of a new category do not overwrite one another.
+
+        ``owner`` ARMS the marker for a planning session (stamps ``planning_owner``/``planning_at``);
+        ``clear: true`` disarms it and records ``blessed_at``. Ensuring the fact EXISTS was never the
+        same thing as arming it, and until now arming lived only in ``_ticket_state.stamp_planning``
+        — a Python helper reachable from the hooks and from nothing else. That left an agent working
+        purely through the API in a dead end: an edit against a blessed plan is refused with "re-arm
+        the planning marker (stamp_planning) to mutate this snapshot", an instruction there was no
+        API to follow, so the refusal read as "snapshot facts are simply not editable". Arming is a
+        deliberate, auditable act, so it belongs on the marker's own endpoint rather than being
+        inferred from an edit.
         """
         project = str(body.get("project") or "").strip()
         category = str(body.get("category") or "").strip() or None
         if not project:
             raise HTTPException(status_code=400, detail="body must include 'project'")
+        owner = str(body.get("owner") or "").strip()
+        clear = body.get("clear") is True
+        if owner and clear:
+            raise HTTPException(
+                status_code=400,
+                detail="pass either 'owner' (to arm) or 'clear': true (to disarm), not both",
+            )
         g = graph_for(org, uid, target)
         marker_id = g.ensure_planning_marker(project, category=category)
-        return {"id": marker_id, "project": project, "category": category or "planning-marker"}
+        armed = None
+        if owner or clear:
+            marker = g.get_fact(marker_id)
+            meta = dict(getattr(marker, "meta", None) or {})
+            if owner:
+                meta.update({"planning_owner": owner, "planning_at": time.time()})
+                armed = True
+            else:
+                meta.update({
+                    "planning_owner": None, "planning_at": None, "blessed_at": time.time(),
+                })
+                armed = False
+            g.set_meta(marker_id, meta)
+        return {
+            "id": marker_id,
+            "project": project,
+            "category": category or "planning-marker",
+            "armed": armed,
+            "owner": owner or None,
+        }
 
     # --- build-run marker (factory build_completeness gate) -----------------
     @app.post("/build-marker")
