@@ -25,6 +25,7 @@ Run: uv run python -m knowledge.serve   (serves on http://localhost:8000)
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -45,8 +46,11 @@ from knowledge.observability.tracing import setup_tracing  # noqa: E402
 
 setup_tracing()
 
+logger = logging.getLogger(__name__)
+
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
 from slowapi import _rate_limit_exceeded_handler  # noqa: E402
 from slowapi.errors import RateLimitExceeded  # noqa: E402
 from slowapi.middleware import SlowAPIMiddleware  # noqa: E402
@@ -834,6 +838,37 @@ def create_app(conn: Any | None = None) -> FastAPI:
     app.state.job_store = JobStore()
     app.state.activity_tail_store = ActivityTailStore()
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+    @app.exception_handler(Exception)
+    def _unhandled_exception_detail(request: Request, exc: Exception) -> JSONResponse:
+        """Return a 500 whose body NAMES the failure instead of a bare "Internal Server Error".
+
+        Every deliberate refusal in this API raises ``HTTPException`` with a ``detail`` a caller
+        can act on. An UNHANDLED exception got none of that: FastAPI's default renders a bare
+        body, so an agent saw only "500" with nothing to correct against, and the only way to
+        localize it was to re-run the write with one variable changed at a time. That has now
+        cost several multi-hour diagnostic detours, each rediscovering that the error channel is
+        empty rather than that the endpoint is wrong.
+
+        The body carries the exception TYPE and message, plus the method and path. This is an
+        API-key-authenticated internal service, so the leak surface is other authenticated
+        callers of the same tenant — cheap next to handing an autonomous agent an error it
+        cannot reason about. The message is bounded so a giant driver traceback cannot become
+        the response body, and the full traceback still goes to the server log.
+        """
+        logger.exception("unhandled error on %s %s", request.method, request.url.path)
+        message = str(exc).strip() or exc.__class__.__name__
+        if len(message) > 500:
+            message = message[:500] + "… (truncated; see server log for the full trace)"
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": (
+                    f"{exc.__class__.__name__} on {request.method} {request.url.path}: {message}"
+                )
+            },
+        )
+
     app.add_middleware(SlowAPIMiddleware)
 
     def active_org(
