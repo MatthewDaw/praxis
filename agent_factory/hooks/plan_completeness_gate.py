@@ -226,12 +226,21 @@ def _contradictions_clean(project: str) -> tuple[bool, str]:
 
 def _lens_coverage_complete(project: str) -> tuple[bool, str]:
     """(ok, reason). Every planning-validation lens must be covered. A resolved lens whose meta lacks
-    a truthy ``covered``/``satisfied`` flag is a GAP. Zero lenses => trivially complete."""
+    a truthy ``covered``/``satisfied`` flag is a GAP. An EMPTY resolve (zero lenses) is its own
+    explicit zero-resolved signal, distinct from a satisfied coverage contract — an empty
+    planning-validation snapshot means lens coverage was never established, so it BLOCKS rather than
+    being treated as trivially complete (KTD/B1c: "zero lenses is trivially complete" was the bug)."""
     import _ticket_state as ts
 
     lenses = ts.resolve_validation_requirements(
         {"id": ts.planning_marker_id(project) or f"prd-{ts.planning_project(project)}::planning",
          "meta": {}}, project=project, scope="planning")
+    if not lenses:
+        return False, (
+            "planning-validation lens coverage is INCOMPLETE — ZERO lenses resolved from the "
+            "planning-validation snapshot (an empty snapshot is a zero-resolved signal, not a "
+            "satisfied coverage contract). Author at least one planning-validation lens "
+            "(af-intake-plan-validation) before the plan can bless.")
     gaps = []
     for lens in (lenses or []):
         meta = lens.get("meta") or {}
