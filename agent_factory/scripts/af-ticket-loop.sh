@@ -287,8 +287,7 @@ SESSION="af-$(basename "$WT")"   # per-worktree, so concurrent projects never co
 # (sotos-build, appeal_engine-build), so the ref-name form would have protected neither. `symbolic-ref`
 # is the right probe because it genuinely fails when detached; the SHA it falls back to resolves fine
 # from inside a worker's worktree, since they share one object store.
-INTEGRATION_REF="$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null \
-  || git -C "$WT" rev-parse HEAD 2>/dev/null || echo HEAD)"
+INTEGRATION_REF="$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || git -C "$WT" rev-parse HEAD 2>/dev/null || echo HEAD)"
 # State lives beside the worktrees, not inside them: a log or a verdict sentinel written into a repo
 # gets swept into a wip commit and read back as ticket output.
 AF_STATE_DIR="${AF_STATE_DIR:-$(dirname "$WT")}"
