@@ -32,6 +32,13 @@ from typing import Callable, Iterable, Optional
 # as "everything is unreachable".
 NO_SURFACE_ORACLE_AVAILABLE = "no-surface-oracle-available"
 
+# The same rule one level down: a call graph built from a repo where some file could not be read or
+# parsed is MISSING call edges, so "no caller found" may only mean "the caller's file did not
+# parse". An incomplete graph is treated exactly like an absent surface oracle -- nothing is
+# classified unreachable on it -- because a purge driven by evidence we know is incomplete is the
+# same must-not-happen case B16 guards, arrived at from the other direction.
+INCOMPLETE_SYMBOL_GRAPH = "incomplete-symbol-graph"
+
 # The B17 tri-state verdict grid's four cells.
 KEEP = "keep"
 KEEP_TEST_DEBT = "keep_test_debt"
@@ -62,9 +69,17 @@ class Symbol:
 
 @dataclass
 class SymbolGraph:
-    """The full repo call graph: every discovered symbol, keyed by id (``"{file}::{qualname}"``)."""
+    """The full repo call graph: every discovered symbol, keyed by id (``"{file}::{qualname}"``).
+
+    ``unparsed`` names the files the builder could NOT read or parse. It is part of the graph
+    because their absence is not neutral: a file that failed to parse contributes no call edges, so
+    a symbol whose only caller lives there looks caller-less and therefore unreachable. Carrying the
+    gap explicitly is what lets :func:`compute_reachability` refuse to classify anything unreachable
+    on an incomplete graph, instead of quietly reading missing evidence as absent evidence.
+    """
 
     symbols: dict[str, Symbol] = field(default_factory=dict)
+    unparsed: tuple[str, ...] = ()
 
     def callers_of(self, symbol_id: str) -> list[str]:
         return sorted(s.id for s in self.symbols.values() if symbol_id in s.calls)
@@ -116,12 +131,17 @@ def build_symbol_graph(repo_root: "str | Path") -> SymbolGraph:
 
     parsed: dict[str, tuple[ast.AST, str]] = {}
     defs_by_name: dict[str, list[str]] = {}
+    unparsed: list[str] = []
     for f in sorted(files):
         rel = f.relative_to(root).as_posix()
         try:
             text = f.read_text(encoding="utf-8", errors="ignore")
             tree = ast.parse(text)
         except (OSError, SyntaxError):
+            # RECORD the gap; do not merely skip. A dropped file drops its call edges too, which
+            # is indistinguishable downstream from "nothing calls this symbol" -- the exact
+            # confusion that turns an unreadable file into a deletion.
+            unparsed.append(rel)
             continue
         parsed[rel] = (tree, text)
         for node in ast.walk(tree):
@@ -146,6 +166,7 @@ def build_symbol_graph(repo_root: "str | Path") -> SymbolGraph:
                     lineno=node.lineno,
                     end_lineno=getattr(node, "end_lineno", node.lineno),
                 )
+    graph.unparsed = tuple(unparsed)
     return graph
 
 
@@ -261,7 +282,9 @@ def compute_reachability(
     An EMPTY surface set means no surface oracle is available at all -- af-clean must say so
     (:data:`NO_SURFACE_ORACLE_AVAILABLE`) and must not classify a single symbol unreachable on
     that basis (a purge on an empty surface set is exactly the §3.2 must-not-happen case B16
-    guards).
+    guards). An INCOMPLETE graph (``graph.unparsed`` non-empty) is refused on the same grounds
+    (:data:`INCOMPLETE_SYMBOL_GRAPH`): missing files mean missing call edges, so "no caller" is
+    unproven.
 
     When surfaces ARE present: a symbol is reachable if it is a root, a surface, defined inside an
     exempt path (exempt code is always parsed and always contributes reachability edges/roots --
@@ -276,6 +299,17 @@ def compute_reachability(
             unreachable=frozenset(),
             surface_oracle_available=False,
             note=NO_SURFACE_ORACLE_AVAILABLE,
+        )
+
+    if graph.unparsed:
+        # The graph is missing call edges from files that could not be read/parsed, so an absent
+        # caller proves nothing. Classify nothing unreachable and SAY WHY (:data:`INCOMPLETE_SYMBOL_GRAPH`
+        # plus the offending files) rather than let a scan gap read as dead code.
+        return ReachabilityResult(
+            reachable=frozenset(graph.symbols),
+            unreachable=frozenset(),
+            surface_oracle_available=True,
+            note=f"{INCOMPLETE_SYMBOL_GRAPH}: {', '.join(graph.unparsed)}",
         )
 
     live = set(roots) | set(surfaces)
@@ -446,7 +480,9 @@ def stage_excision_to_fixed_point(
     report = ExcisionReport()
 
     for round_number in range(1, max_rounds + 1):
-        round_graph = SymbolGraph(symbols=remaining)
+        # ``unparsed`` rides every round: dropping it would silently re-enable deletion on a graph
+        # we already know is missing call edges.
+        round_graph = SymbolGraph(symbols=remaining, unparsed=graph.unparsed)
         reachability = compute_reachability(
             round_graph, roots=roots, surfaces=surfaces, exempt_paths=exempt_paths,
         )

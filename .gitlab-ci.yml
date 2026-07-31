@@ -44,7 +44,7 @@ workflow:
 # Python: ruff (pyflakes + pycodestyle E4/E7/E9), config in pyproject.toml [tool.ruff].
 python-lint:
   stage: lint
-  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       changes: ["**/*.py", pyproject.toml, .gitlab-ci.yml]
@@ -105,7 +105,7 @@ go-lint:
 # out of sync with a production signature).
 python-test:
   stage: test
-  image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+  image: ghcr.io/astral-sh/uv:python3.14-bookworm-slim
   services:
     - name: pgvector/pgvector:pg16
       alias: postgres

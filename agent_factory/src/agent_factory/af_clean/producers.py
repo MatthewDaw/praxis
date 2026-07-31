@@ -158,19 +158,42 @@ def comment_findings(scope: Path, *, repo_root: Path | None = None,
     return out
 
 
+# ``detect_scar`` returns ``"advisory"`` for a scar and ``"eligible"`` for a clean construct -- it
+# NEVER returns the string ``"scar"``. Comparing against ``"scar"`` (as this did) matched nothing,
+# so this producer could not emit a single KEEP finding and the R23/B21 scar guard was inert: the
+# ``is_scar`` must-not-happen refusal in ``af_clean_witness.decide`` keys on the rule name only this
+# function produces, so it never fired either. Bind the constant to the detector's real vocabulary.
+_SCAR_VERDICT = "advisory"
+
+
 def scar_findings(repo_root: Path, candidates: Sequence[tuple[str, int]]) -> list[Finding]:
     """Defensive code with a bug-fix commit behind it, reported as a SCAR.
 
     These exist to STOP removals, not to propose them: a caller that has already decided to delete
     something checks here first and finds the blame evidence that the defence is load-bearing.
+
+    A blame that CANNOT be run (not a git repo, a file git does not track, a timeout) is reported as
+    a KEEP too, not skipped. This producer's whole job is to protect; "I could not check for a scar"
+    is not "there is no scar", and silently dropping the candidate would hand the applier a
+    construct with no protective evidence attached -- absence of evidence rendered as evidence of
+    absence, on the one signal that exists to stop a deletion.
     """
     out: list[Finding] = []
     for file_path, line in candidates:
         try:
             scar = detect_scar(Path(repo_root), file_path, line)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - any blame failure => unknown => protect
+            out.append(Finding(
+                rule="defensive-code-is-a-scar",
+                tier="advise",
+                location=Location(file=file_path, line=line),
+                pole="bloat",
+                proposal=(f"KEEP (unverified): blame could not be run here "
+                          f"({type(exc).__name__}: {exc}); scar status is UNKNOWN, so this defence "
+                          f"is protected rather than cleared for removal"),
+            ))
             continue
-        if str(scar.verdict).strip().casefold() != "scar":
+        if str(scar.verdict).strip().casefold() != _SCAR_VERDICT:
             continue
         out.append(Finding(
             rule="defensive-code-is-a-scar",

@@ -26,7 +26,7 @@ services:
       - key: PRAXIS_API_HOST
         value: 0.0.0.0
       - key: PYTHON_VERSION
-        value: "3.12"
+        value: "3.14"
       - key: PRAXIS_DB_URL
         sync: false
       # Cognito (PraxisAuthUserPoolStack outputs) — used to verify JWTs.
@@ -57,7 +57,7 @@ services:
         - pyproject.toml
     envVars:
       - key: PYTHON_VERSION
-        value: "3.12"
+        value: "3.14"
       # Phoenix REST API connection (read-only). Set as secrets in the Render
       # dashboard — Dominic provides the project identifier and read-only key.
       - key: PHOENIX_BASE_URL

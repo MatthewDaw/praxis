@@ -96,10 +96,21 @@ def _session_owner(data: dict) -> str:
 def _plan_escalation_check(project: str) -> str:
     """Check for a terminal plan escalation. Returns "" (empty) if the plan is clear, or a block
     reason string if the build phase must be refused. Raises PlanEscalationError on a corrupt counter
-    so the caller can fail LOUD."""
-    import _ticket_state as ts
+    so the caller can fail LOUD.
+
+    FAIL-CLOSED on an UNKNOWN answer. An unexpected error here means we could not determine whether
+    the plan is terminally escalated, and "could not determine" must never read as "clear" — that is
+    how a gate silently stops gating. The ONE exception is a Praxis transport/import failure, which
+    returns "" so it falls through to the dedicated PRAXIS UNREACHABLE block in :func:`main` (which
+    also BLOCKS, with a far better message); every other exception blocks right here.
+    """
     if not project:
         return ""
+    try:
+        import _ticket_state as ts  # inside the guard: a broken import must not fail open either
+        escalation_error = ts.PlanEscalationError
+    except Exception:  # noqa: BLE001 — a missing/broken helper is Praxis-unavailable-shaped
+        return ""  # main()'s fail-closed read re-raises the same import failure and BLOCKS
     try:
         if ts.is_plan_blocked(project):
             return (
@@ -115,7 +126,7 @@ def _plan_escalation_check(project: str) -> str:
                 f"an operator may clear the escalation explicitly via clear_plan_blocked('{project}').\n"
                 "  3. For emergency-only stand-down of THIS gate: FACTORY_GATE_DISABLED=1."
             )
-    except ts.PlanEscalationError as exc:
+    except escalation_error as exc:
         return (
             f"build-completeness gate: CORRUPT ESCALATION STATE for {project} — the plan escalation "
             f"counter cannot be read (PlanEscalationError). This is the 'named error' guard: a "
@@ -123,8 +134,21 @@ def _plan_escalation_check(project: str) -> str:
             f"zero and admitting a plan that should be blocked. Clear or repair the escalation state "
             f"on the planning marker before building. Detail: {exc}"
         )
-    except Exception:
-        return ""
+    except Exception as exc:  # noqa: BLE001 — classified below; NEVER swallowed into "clear"
+        is_unreachable, _ = classify_unreachable(exc)
+        if is_unreachable:
+            # Praxis (or its client module) is unavailable. Fall through: the fail-closed
+            # ``incomplete_requirements`` read in main() BLOCKS on the same failure with the
+            # preflight diagnostic attached, so this is a deferral to a better block, not a pass.
+            return ""
+        return (
+            f"build-completeness gate: PLAN ESCALATION STATE UNREADABLE for {project} — the "
+            f"escalation guard raised an unexpected {type(exc).__name__} ({exc}), so this gate could "
+            f"NOT determine whether the plan is terminally escalated. 'Unknown' is not 'clear': a "
+            f"guard that cannot answer refuses the build phase rather than silently admitting a plan "
+            f"that may be blocked. Repair the planning marker / escalation state, then re-run. "
+            f"(Emergency-only stand-down: FACTORY_GATE_DISABLED=1.)"
+        )
     return ""
 
 
@@ -481,13 +505,40 @@ def main() -> None:
     )
 
 
+def _shout_crash(exc: BaseException) -> None:
+    """LOUD, never silent: a crash in the gate's own logic means the gate did NOT enforce, and that
+    must be visible. The Stop block reason (stdout JSON) is swallowed by the headless ``claude -p``
+    retry loop, so stderr is the only channel a human/log actually sees — the same reason
+    :func:`_emit_preflight_once` exists. Also records the stand-down on the project's build marker
+    (best-effort) so a run that executed with a crashed gate cannot later be presented as gated."""
+    import traceback
+    sys.stderr.write(
+        "[build-completeness gate] GATE CRASHED — NOT ENFORCED for this Stop. The gate's own logic "
+        f"raised {type(exc).__name__}: {exc}. Build state was NOT verified; incomplete tickets or "
+        "unrun checks may remain. This is a bug in the gate, not a Praxis outage — fix it.\n"
+    )
+    traceback.print_exc(file=sys.stderr)
+    sys.stderr.flush()
+    try:
+        import _ticket_state as ts
+        proj = _active_project(os.getcwd())
+        if proj:
+            ts.stamp_gate_disable(proj, "GATE_CRASHED", type(exc).__name__)
+    except Exception:  # noqa: BLE001 — durable record is best-effort; the stderr shout is the floor
+        pass
+
+
 if __name__ == "__main__":
     try:
         main()
     except SystemExit:
         raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         # A crash in the gate's own logic must not wedge the agent forever. This catches only
         # UNEXPECTED errors AFTER the fail-closed Praxis check above (which BLOCKS on its own); a
-        # bug here should not masquerade as "Praxis down", so we exit cleanly (allow).
+        # bug here should not masquerade as "Praxis down", so we exit cleanly (allow) — but LOUDLY,
+        # never silently. A gate that disappears without a word is the exact failure this guard
+        # used to cause: three tickets went FINISHED with a mandatory check that had silently
+        # vanished, and nothing anywhere reported it.
+        _shout_crash(exc)
         sys.exit(0)

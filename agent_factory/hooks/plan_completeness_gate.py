@@ -390,12 +390,36 @@ def main() -> None:
     )
 
 
+def _shout_crash(exc: BaseException) -> None:
+    """LOUD, never silent: a crash here means the plan was NOT verified for this Stop. The block
+    reason (stdout JSON) is swallowed by the headless ``claude -p`` retry loop, so stderr is the
+    only channel a human/log sees. Also records the stand-down on the project's build marker
+    (best-effort) so a run that executed with a crashed gate is not later presented as gated."""
+    import traceback
+    sys.stderr.write(
+        "[plan-completeness gate] GATE CRASHED — NOT ENFORCED for this Stop. The gate's own logic "
+        f"raised {type(exc).__name__}: {exc}. The plan was NOT verified; it may not bless. This is "
+        "a bug in the gate, not a Praxis outage — fix it.\n"
+    )
+    traceback.print_exc(file=sys.stderr)
+    sys.stderr.flush()
+    try:
+        import _ticket_state as ts
+        proj = _active_project(os.getcwd())
+        if proj:
+            ts.stamp_gate_disable(proj, "PLAN_GATE_CRASHED", type(exc).__name__)
+    except Exception:  # noqa: BLE001 — durable record is best-effort; the stderr shout is the floor
+        pass
+
+
 if __name__ == "__main__":
     try:
         main()
     except SystemExit:
         raise
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         # A crash in the gate's OWN logic (after the fail-closed Praxis guard, which BLOCKS on its
-        # own) must not wedge the agent forever — exit cleanly (allow).
+        # own) must not wedge the agent forever — exit cleanly (allow), but LOUDLY. A gate that
+        # disappears without a word is the failure mode this whole guard class exists to prevent.
+        _shout_crash(exc)
         sys.exit(0)

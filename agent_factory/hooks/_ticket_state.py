@@ -61,6 +61,7 @@ not a lock: a lease whose heartbeat is older than its ttl is auto-reclaimable, s
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -1470,14 +1471,124 @@ _UNIVERSAL_EXEMPT_TAGS = frozenset({"vendored", "generated", "config"})
 _UNIVERSAL_EXEMPT_PATH_DIR_NAMES = frozenset({"migrations", "testdata", "__snapshots__", "fixtures"})
 
 
+class UniversalLaneUnavailable(RuntimeError):
+    """The ``promote_universal`` seeded-check library could not be loaded, so the universal lane
+    would silently contribute ZERO gates to the coverage contract.
+
+    This is raised, never swallowed: an unloadable library is indistinguishable from "there are no
+    universal checks" at the call site, and that ambiguity is exactly how a whole build run shipped
+    with its mandatory quality gate quietly absent (observed on sotos, 2026-07-31 — the build host's
+    ``python3`` was 3.9, which has no stdlib ``tomllib``, so the lazy import raised
+    ``ModuleNotFoundError`` and a bare ``except`` turned it into an empty lane).
+    """
+
+
+class _UniversalCheck(NamedTuple):
+    """A ``promote_universal`` seeded check as recovered from the out-of-process loader — the same
+    duck-type :func:`universal_requirements` reads off a real ``SeededCheck``, except ``rubric`` is
+    already the serialized dict (it crossed a process boundary as JSON)."""
+
+    check_id: str
+    criterion: str
+    report_only: bool
+    rubric: Optional[dict]
+
+
+# Loader run in a SIDECAR interpreter when this one cannot import the library itself (see
+# :func:`_universal_checks_out_of_process`). Emits the same fields :func:`universal_requirements` reads.
+_UNIVERSAL_LOADER_SRC = """
+import json
+from agent_factory.rubric import rubric_to_dict
+from agent_factory.seeded_checks import universal_seeded_checks
+print(json.dumps([
+    {"check_id": c.check_id, "criterion": c.criterion, "report_only": bool(c.report_only),
+     "rubric": rubric_to_dict(c.rubric) if c.rubric is not None else None}
+    for c in universal_seeded_checks()
+]))
+"""
+
+
+def _sidecar_pythons() -> list[str]:
+    """Interpreters to retry the seeded-check load in, most-explicit first. ``sys.executable`` is
+    deliberately absent — it is the one that just failed."""
+    hooks = os.path.dirname(os.path.abspath(__file__))
+    plugin = os.path.dirname(hooks)                 # …/agent_factory
+    repo = os.path.dirname(plugin)                  # the checkout that contains it
+    cands = [os.environ.get("PRAXIS_HOOK_PYTHON"), os.environ.get("AF_PYTHON"),
+             os.path.join(plugin, ".venv", "bin", "python"),
+             os.path.join(repo, ".venv", "bin", "python"),
+             "python3.14", "python3.13", "python3.12", "python3.11"]
+    # Actually EXCLUDE sys.executable, rather than only claiming to. Retrying the load in the
+    # interpreter that just failed cannot succeed, it just doubles the latency of every failure.
+    # It used to be absent by luck: sys.executable happened to be spelled differently from the
+    # repo-venv candidate. On 3.14 it resolves to exactly that path, so the "sidecar" list started
+    # handing back the failing interpreter -- and the guarantee was never enforced anywhere.
+    me = set()
+    if sys.executable:
+        me.add(sys.executable)
+        me.add(os.path.realpath(sys.executable))
+    out = []
+    for c in cands:
+        if not c or c in me:
+            continue
+        if os.path.isabs(c) and os.path.realpath(c) in me:
+            continue
+        out.append(c)
+    return out
+
+
+def _universal_checks_out_of_process() -> Optional[list]:
+    """Load the universal seeded checks in a sidecar interpreter, for the case where THIS one cannot
+    (e.g. it predates stdlib ``tomllib``). Returns ``None`` when no candidate interpreter worked —
+    the caller then raises rather than pretending the lane is empty."""
+    src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+    env = {**os.environ, "PYTHONPATH": src + os.pathsep + os.environ.get("PYTHONPATH", "")}
+    for py in _sidecar_pythons():
+        try:
+            out = subprocess.run([py, "-c", _UNIVERSAL_LOADER_SRC], capture_output=True, text=True,
+                                 env=env, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if out.returncode != 0:
+            continue
+        try:
+            rows = json.loads(out.stdout)
+        except ValueError:
+            continue
+        return [_UniversalCheck(check_id=str(r.get("check_id") or ""),
+                                criterion=str(r.get("criterion") or ""),
+                                report_only=bool(r.get("report_only")),
+                                rubric=r.get("rubric")) for r in rows]
+    return None
+
+
 def _universal_checks() -> list:
     """The ``promote_universal`` seeded checks. Lazily imports the (src-layout) package so importing
-    this stdlib-only hook never hard-depends on it; returns ``[]`` if it is unavailable."""
+    this stdlib-only hook never hard-depends on it.
+
+    NEVER returns ``[]`` on failure. If the in-process import does not work, the load is retried in a
+    sidecar interpreter; if that also fails, :class:`UniversalLaneUnavailable` is raised. An empty
+    return therefore means one thing only: the library loaded and declares no universal checks.
+    """
     try:
         from agent_factory.seeded_checks import universal_seeded_checks
         return universal_seeded_checks()
-    except Exception:  # noqa: BLE001 - the universal lane is best-effort; never break ticket start
-        return []
+    except Exception as exc:  # noqa: BLE001 - degraded to a sidecar load, or re-raised loudly below
+        recovered = _universal_checks_out_of_process()
+        if recovered is None:
+            raise UniversalLaneUnavailable(
+                f"could not load the promote_universal seeded checks ({type(exc).__name__}: {exc}). "
+                f"The universal quality lane would contribute ZERO gates, so this is fatal rather "
+                f"than silent. Run the hooks under an interpreter that can import "
+                f"agent_factory.seeded_checks (Python >= 3.11 for stdlib tomllib) — e.g. set "
+                f"PRAXIS_HOOK_PYTHON — and ensure agent_factory/seeded_checks.toml is present."
+            ) from exc
+        sys.stderr.write(
+            f"[af-build] WARNING: this interpreter ({sys.executable}) cannot import "
+            f"agent_factory.seeded_checks ({type(exc).__name__}: {exc}); the universal lane was "
+            f"loaded out-of-process instead. Point PRAXIS_HOOK_PYTHON at a Python >= 3.11.\n"
+        )
+        return recovered
 
 
 def _path_dir_exempt(path: Any) -> bool:
@@ -1522,16 +1633,19 @@ def universal_requirements(cid: str, ticket_meta: Optional[dict],
         return []
     out: list[dict] = []
     for chk in _universal_checks():
-        if getattr(chk, "rubric", None) is None:  # only graded universal checks are injectable
+        rubric = getattr(chk, "rubric", None)
+        if rubric is None:  # only graded universal checks are injectable
             continue
-        from agent_factory.rubric import rubric_to_dict
+        if not isinstance(rubric, dict):  # a real Rubric; the sidecar loader already serialized its own
+            from agent_factory.rubric import rubric_to_dict
+            rubric = rubric_to_dict(rubric)
         out.append({
             "id": chk.check_id,
             "text": chk.criterion,
             "meta": {
                 "check_id": chk.check_id,
                 "kind": "graded",
-                "rubric": rubric_to_dict(chk.rubric),
+                "rubric": rubric,
                 "report_only": bool(chk.report_only),
                 "universal": True,
                 "source_check_id": chk.check_id,

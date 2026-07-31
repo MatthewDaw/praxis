@@ -1,7 +1,7 @@
 [project]
 name = "agent-factory"
 version = "0.1.0"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 # pyyaml is only reached from evals/ (dev tooling, exercised by tests) now that the fulfill domain
 # loader is gone; it can be demoted to the dev group whenever the lock is next regenerated.
 dependencies = [

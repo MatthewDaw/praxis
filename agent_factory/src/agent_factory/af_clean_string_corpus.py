@@ -97,24 +97,47 @@ def _classify_context(raw: str, enclosing_call_name: str | None) -> str:
     return "prose"
 
 
-def build_corpus(root: Path) -> list[CorpusEntry]:
-    """Enumerate the B6 string-dispatch corpus for every ``.py`` file under ``root``.
+@dataclass(frozen=True)
+class CorpusScan:
+    """A corpus build plus the files it could NOT read/parse.
 
-    Secret-bearing files are skipped entirely (S3). A string literal whose value matches a
-    secret shape is never added to the corpus (redacted, never quoted) — S3's "no corpus
-    entry contains the key value" guarantee.
+    The gap is first-class because the corpus answers a protective question -- "is this symbol
+    referenced from a string?" -- and a file that failed to parse contributes no literals. Without
+    ``unscanned``, "not in the corpus" from a partial scan is indistinguishable from "not
+    string-referenced anywhere", which turns an unreadable file into a licence to delete.
+    """
+
+    entries: list[CorpusEntry]
+    unscanned: tuple[str, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        return not self.unscanned
+
+
+def build_corpus_scan(root: Path) -> CorpusScan:
+    """Enumerate the B6 string-dispatch corpus, RECORDING every file that could not be scanned.
+
+    Prefer this over :func:`build_corpus` anywhere the result gates a removal: only this form can
+    tell a caller that its evidence is incomplete.
+
+    Secret-bearing files are skipped entirely (S3) and are NOT reported as unscanned — excluding
+    them is a deliberate policy decision, not a failure to read.
     """
     entries: list[CorpusEntry] = []
+    unscanned: list[str] = []
     for path in sorted(root.rglob("*.py")):
         if is_secret_bearing_file(path):
             continue
         try:
             source = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
+            unscanned.append(str(path))
             continue
         try:
             tree = ast.parse(source)
         except SyntaxError:
+            unscanned.append(str(path))
             continue
 
         enclosing_call_by_node_id: dict[int, str | None] = {}
@@ -141,16 +164,34 @@ def build_corpus(root: Path) -> list[CorpusEntry]:
                     line=node.lineno,
                 )
             )
-    return entries
+    return CorpusScan(entries=entries, unscanned=tuple(unscanned))
 
 
-def quarantines(symbol: str, corpus: list[CorpusEntry]) -> bool:
+def build_corpus(root: Path) -> list[CorpusEntry]:
+    """The corpus entries alone — the LOSSY view (it cannot report an incomplete scan).
+
+    Kept for callers that only want to read/report literals. Anything deciding whether a symbol may
+    be deleted must use :func:`build_corpus_scan` and pass the whole scan to :func:`quarantines`.
+    """
+    return build_corpus_scan(root).entries
+
+
+def quarantines(symbol: str, corpus: "CorpusScan | list[CorpusEntry]") -> bool:
     """B20: does ``symbol`` quarantine (survive deletion) against this corpus?
 
-    True only when some entry contains ``symbol`` as a whole dispatch token *and* that
-    entry's context is ``"dispatch"``. Log/prose-context matches are recorded implicitly by
-    the corpus but never quarantine on their own.
+    True when some entry contains ``symbol`` as a whole dispatch token *and* that entry's context is
+    ``"dispatch"``. Log/prose-context matches are recorded implicitly by the corpus but never
+    quarantine on their own.
+
+    Given a :class:`CorpusScan` whose scan was INCOMPLETE, this returns True unconditionally: the
+    corpus could not be fully enumerated, so no answer of "this symbol is not string-referenced"
+    is available and the protective verdict is the only honest one. Passing a bare entry list
+    asserts, by omission, that the scan was complete.
     """
+    if isinstance(corpus, CorpusScan):
+        if not corpus.complete:
+            return True
+        corpus = corpus.entries
     return any(symbol in entry.tokens and entry.context == "dispatch" for entry in corpus)
 
 

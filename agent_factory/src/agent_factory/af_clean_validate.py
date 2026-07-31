@@ -247,6 +247,18 @@ def run_validation_and_remediation(
             cmd = meta.get("run") or chk.get("run")
             check_id = str(meta.get("check_id") or chk.get("id") or "check")
             if not cmd:
+                # A resolved check with no ``run`` command CANNOT be verified. Skipping it silently
+                # (the prior behavior) let the lane report PASSED while a check nobody ran counted
+                # as satisfied -- unrunnable rendered as passed. Fail the lane instead: an
+                # un-executable gate is a defect in the check, surfaced, never a free pass.
+                lane_status = FAILED
+                report.building_validation_results.append(
+                    PhaseResult(check_id, FAILED,
+                                detail="check has no `run` command — cannot be executed, so it "
+                                       "cannot be counted as passed")
+                )
+                report.warnings.append(
+                    f"building-validation check {check_id!r} has no run command and was not verified")
                 continue
             proc = runner(shlex.split(cmd), repo)
             status = PASSED if proc.returncode == 0 else FAILED

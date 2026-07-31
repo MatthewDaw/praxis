@@ -1,6 +1,6 @@
 # PRAXIS candidate API — App Runner container.
 # Run locally: docker build -t praxis-api . && docker run -p 8080:8080 praxis-api
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # uv: fast, reproducible installs from the committed uv.lock.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/

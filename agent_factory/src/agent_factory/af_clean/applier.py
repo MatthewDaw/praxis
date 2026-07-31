@@ -250,6 +250,16 @@ def apply_findings(
         subprocess.run(["git", "add", "-A"], cwd=root, capture_output=True, text=True)
         endorsed_changes = [c for c, f in zip(changes, edited) if f in applied_now]
         layers = build_layers({LAYER_COMMENTS: endorsed_changes or changes})
+        if validate_fn is None:
+            # B25's post-commit validation is what truncates the stack when a layer breaks the
+            # repo. With no validator supplied there is nothing to truncate ON -- every layer
+            # "validates" by definition. That is a real stand-down, so it is RECORDED rather than
+            # silently substituted: a caller reading the outcome can see the stack landed
+            # unvalidated instead of inferring, wrongly, that validation passed.
+            for f in applied_now:
+                outcome.reported.append(
+                    (f, "COMMIT-STACK VALIDATION SKIPPED: no validate_fn supplied, so no layer was "
+                        "checked after commit — the stack landed unvalidated"))
         outcome.commit_result = apply_commit_stack(
             layers, root,
             git_runner=git_runner,

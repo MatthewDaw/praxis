@@ -1,7 +1,7 @@
 [project]
 name = "praxis"
 version = "0.1.0"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "pydantic>=2.13.4",
     "pyyaml>=6.0.3",
@@ -54,4 +54,4 @@ testpaths = ["knowledge", "frontend/tests"]
 # Keep ruff's default lint set (pyflakes F + pycodestyle E4/E7/E9): high-signal,
 # low-noise — real bugs (unused imports/vars, undefined names) over style churn.
 # Widen `lint.select` deliberately if the team wants import-sorting/formatting too.
-target-version = "py312"
+target-version = "py314"

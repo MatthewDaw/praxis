@@ -17,7 +17,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from ..af_clean_validate import default_runner
+from ..af_clean_validate import default_runner, run_validation_and_remediation
 from .entry import resolve_scope, run_e1
 from .exemptions import derive_exemption_manifest
 from .applier import apply_findings as _apply_findings
@@ -72,9 +72,17 @@ def main(argv: list[str] | None = None) -> int:
     # decorative, and the entire back half of the engine was unreachable from the command line.
     applied_outcome: dict = {}
 
+    # The commit stack's post-commit validation (B25) is what truncates the stack when a layer
+    # breaks the repo. Passing nothing meant it defaulted to a constant True — the gate existed,
+    # was tested, and was wired to "always valid" on the only path a human actually runs. Give it
+    # the real validator unless the operator explicitly turned validation off.
+    def _validate_layer(path: Path) -> bool:
+        return run_validation_and_remediation(path, runner=default_runner).passed
+
     def _apply(findings):
         applied_outcome["outcome"] = _apply_findings(
-            repo_root, findings, skip_verify=args.skip_verify)
+            repo_root, findings, skip_verify=args.skip_verify,
+            validate_fn=None if args.no_validate else _validate_layer)
 
     result = run_e1(
         repo_root,

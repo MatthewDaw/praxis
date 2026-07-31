@@ -297,6 +297,17 @@ elif [ -x "$AF_REPO/.venv/bin/python" ]; then PY="$AF_REPO/.venv/bin/python"
 else PY="$(command -v python3)"; fi
 # Exported, so every embedded heredoc below imports the hooks without hardcoding a path of its own.
 export PYTHONPATH="$AF_PLUGIN_DIR/hooks:$AF_PLUGIN_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+# Exported for the same reason PYTHONPATH is, one level out: the per-ticket WORKERS are claude
+# sessions that type `python3` in their own Bash calls, and that resolves against THEIR PATH, not
+# against the interpreter this driver so carefully chose. On the box where the sotos run lost its
+# quality gate, /usr/bin/python3 was 3.9, `import tomllib` raised ModuleNotFoundError, and the
+# universal `minimalism-dry` lane silently evaluated to zero checks on every ticket. These are the
+# exact names `_ticket_state._sidecar_pythons()` already reads (PRAXIS_HOOK_PYTHON first, AF_PYTHON
+# second), so a hook that lands in a too-old interpreter can still recover the lane out-of-process
+# instead of pretending it is empty. Both are set, not one: PRAXIS_HOOK_PYTHON is the hook-side
+# name, AF_PYTHON is this driver's own override knob and must agree with what it resolved.
+export PRAXIS_HOOK_PYTHON="$PY"
+export AF_PYTHON="$PY"
 
 # How many consecutive 30s polls the pane may go completely unchanged before we
 # treat the session as frozen rather than quietly working (10 * 30s = 5 minutes).
@@ -357,6 +368,61 @@ hash_text(){    # -> stable digest of stdin; md5sum is coreutils, md5 is BSD
 # and a lease that has to be released by hand.
 resolve_backend || { say "FATAL: model backend preflight failed for '${BACKEND:-?}' — refusing to start"; exit 1; }
 say "backend=$BACKEND ($BACKEND_NOTE)"
+
+# Same contract as the backend preflight, for the interpreter: prove the universal quality lane can
+# actually LOAD before spending hours on tickets it is supposed to gate.
+#
+# This exists because it once failed silently end to end. seeded_checks.py does `import tomllib`
+# (stdlib, 3.11+); the build box's python3 was 3.9; `_universal_checks()` caught the
+# ModuleNotFoundError with a bare `except Exception: return []`; and the mandatory minimalism-dry
+# gate vanished from EVERY ticket. Three tickets reached FINISHED ungated and nothing anywhere said
+# a word. The hook side no longer fails open, but a run whose interpreter cannot load the lane still
+# has no business starting -- it would just fail loudly on every ticket instead of once, here.
+#
+# All three legs are checked because they fail differently: tomllib is the version leg, the package
+# import is the PYTHONPATH/layout leg, and a NON-EMPTY result is the seeded_checks.toml leg (a
+# missing or mis-parsed toml imports fine and yields zero checks, which is indistinguishable from
+# the outage this whole comment is about).
+preflight_universal_lane(){
+  local out rc
+  out="$("$PY" - <<'PYEOF' 2>&1
+import sys
+try:
+    import tomllib  # noqa: F401  -- the 3.11+ leg; this is the import that broke the sotos run
+except Exception as exc:
+    print("cannot import tomllib (needs Python >= 3.11): %s: %s" % (type(exc).__name__, exc))
+    sys.exit(1)
+try:
+    from agent_factory.seeded_checks import universal_seeded_checks
+except Exception as exc:
+    print("cannot import agent_factory.seeded_checks: %s: %s" % (type(exc).__name__, exc))
+    sys.exit(1)
+try:
+    checks = universal_seeded_checks()
+except Exception as exc:
+    print("universal_seeded_checks() raised: %s: %s" % (type(exc).__name__, exc))
+    sys.exit(1)
+if not checks:
+    print("universal_seeded_checks() returned an EMPTY list -- the universal lane would gate nothing")
+    sys.exit(1)
+print("%d universal check(s): %s" % (len(checks), ",".join(c.check_id for c in checks)))
+PYEOF
+)" && rc=0 || rc=$?
+  if [ "${rc:-0}" -ne 0 ]; then
+    say "FATAL: universal seeded-check preflight failed — refusing to start"
+    say "  interpreter : $PY  ($("$PY" -V 2>&1 || echo 'version unknown'))"
+    say "  failure     : ${out:-<no output>}"
+    say "  why fatal   : without this lane every ticket builds with NO universal quality gate, and"
+    say "                that is exactly how a whole run once finished tickets ungated in silence."
+    say "  remediation : point AF_PYTHON (or PRAXIS_HOOK_PYTHON) at a Python >= 3.11 that can import"
+    say "                agent_factory.seeded_checks — e.g. AF_PYTHON=$AF_REPO/.venv/bin/python — and"
+    say "                confirm $AF_PLUGIN_DIR/seeded_checks.toml exists and parses."
+    return 1
+  fi
+  say "universal lane OK via $PY — $out"
+  return 0
+}
+preflight_universal_lane || exit 1
 
 # Run a Praxis query so a transient backend failure CANNOT kill the driver.
 #
@@ -845,7 +911,7 @@ while :; do
   # next session is meant to own. Parentheses are avoided in this string on purpose — if the REPL is not
   # actually ready, the text lands on a bash prompt, and a stray paren there is a syntax error that
   # leaves the session dead at a shell prompt.
-  tmux send-keys -t "$SESSION" "/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is capped at min of 16 and cores-2, which is only 2 on this box, and that would serialize the round for no reason. Instead spawn ONE Agent subagent per ticket, ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. CRITICAL — REBASE FIRST, before reading a single file or writing a line of code. A worktree is created from the repo default branch, NOT from the branch this run integrates into, so every worker starts on the wrong base. The FIRST command each worker runs in its own worktree is: git merge --ff-only $INTEGRATION_REF — and if that is refused because the worktree has diverged, git rebase $INTEGRATION_REF instead. A worker that skips this authors its change against files the integration branch does not have, and its work will not apply back onto it even cherry-picked alone; that failure is silent, because the ticket still goes green in its own tree and only the round's merge discovers the work cannot land. If BOTH commands fail, do NOT build: record the blocker on the ticket and stop, because anything built on that base is unmergeable by construction. ONE deliberate amendment to that contract, and state it to every worker, precisely — this narrows WHICH tests run, it does not remove the ticket's gate. Each worker STILL runs, and still has to pass, every test related to the code it is changing: its red-to-green acceptance eval, every one of its pinned validations, the existing test files covering the modules it edited, the tests of any caller or dependent of what it changed, and typecheck plus lint SCOPED to the touched paths. A worker whose own related tests are red is NOT finished and must not release the ticket — that gate is unchanged and non-negotiable. What a worker skips is ONLY the repo-wide sweep: the full test suite across the whole repository, and repo-wide build, typecheck, or lint over paths it never touched. The repo-wide gates are run ONCE, on the MERGED tree, by this round's post-merge verification. The reason is measured: $size workers each running the full suite at end-of-ticket puts $size concurrent suites on a box with a handful of cores, and a suite that takes two minutes alone took twenty, with a worker burning 26 minutes and 259k tokens without producing a commit. Deferring the SWEEP is not removing a gate: each ticket is still gated on its own related tests, and the repo-wide sweep still runs before the round is done — once, on the tree that actually matters. All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. CRITICAL — do NOT end your turn while any ticket in that list is still unfinished. Waiting on agent-completion notifications is NOT enough: a turn that ends with workers in flight gets those workers STOPPED, and the round scores zero even though real work was happening. So HOLD the turn open by polling instead: run a shell sleep of 60 seconds, then re-query the build_state of every batch ticket from Praxis, and repeat that sleep-and-query cycle for as long as any of them is still incomplete or in_progress. Only after every batch ticket reads finished or blocked may you merge, reap, and report. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push. Every worker edits ONLY the files inside its OWN assigned worktree — the factory checkout that holds this driver and the af-build hooks is TOOLING, not the project, and editing it is out of bounds even when a ticket is about that code. Two reasons it matters: those hook files are imported at runtime by every project's loop on this machine, so a half-finished edit there can break builds that have nothing to do with this ticket; and edits made outside a worktree sit on no branch, so the round's merge step cannot see them and they are silently dropped when the round ends.$SERVICES."
+  tmux send-keys -t "$SESSION" "/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is capped at min of 16 and cores-2, which is only 2 on this box, and that would serialize the round for no reason. Instead spawn ONE Agent subagent per ticket, ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. CRITICAL — REBASE FIRST, before reading a single file or writing a line of code. A worktree is created from the repo default branch, NOT from the branch this run integrates into, so every worker starts on the wrong base. The FIRST command each worker runs in its own worktree is: git merge --ff-only $INTEGRATION_REF — and if that is refused because the worktree has diverged, git rebase $INTEGRATION_REF instead. A worker that skips this authors its change against files the integration branch does not have, and its work will not apply back onto it even cherry-picked alone; that failure is silent, because the ticket still goes green in its own tree and only the round's merge discovers the work cannot land. If BOTH commands fail, do NOT build: record the blocker on the ticket and stop, because anything built on that base is unmergeable by construction. ONE deliberate amendment to that contract, and state it to every worker, precisely — this narrows WHICH tests run, it does not remove the ticket's gate. Each worker STILL runs, and still has to pass, every test related to the code it is changing: its red-to-green acceptance eval, every one of its pinned validations, the existing test files covering the modules it edited, the tests of any caller or dependent of what it changed, and typecheck plus lint SCOPED to the touched paths. A worker whose own related tests are red is NOT finished and must not release the ticket — that gate is unchanged and non-negotiable. What a worker skips is ONLY the repo-wide sweep: the full test suite across the whole repository, and repo-wide build, typecheck, or lint over paths it never touched. The repo-wide gates are run ONCE, on the MERGED tree, by this round's post-merge verification. The reason is measured: $size workers each running the full suite at end-of-ticket puts $size concurrent suites on a box with a handful of cores, and a suite that takes two minutes alone took twenty, with a worker burning 26 minutes and 259k tokens without producing a commit. Deferring the SWEEP is not removing a gate: each ticket is still gated on its own related tests, and the repo-wide sweep still runs before the round is done — once, on the tree that actually matters. All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. CRITICAL — do NOT end your turn while any ticket in that list is still unfinished. Waiting on agent-completion notifications is NOT enough: a turn that ends with workers in flight gets those workers STOPPED, and the round scores zero even though real work was happening. So HOLD the turn open by polling instead: run a shell sleep of 60 seconds, then re-query the build_state of every batch ticket from Praxis, and repeat that sleep-and-query cycle for as long as any of them is still incomplete or in_progress. Only after every batch ticket reads finished or blocked may you merge, reap, and report. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push. Every worker edits ONLY the files inside its OWN assigned worktree — the factory checkout that holds this driver and the af-build hooks is TOOLING, not the project, and editing it is out of bounds even when a ticket is about that code. Two reasons it matters: those hook files are imported at runtime by every project's loop on this machine, so a half-finished edit there can break builds that have nothing to do with this ticket; and edits made outside a worktree sit on no branch, so the round's merge step cannot see them and they are silently dropped when the round ends. For ANY factory or Praxis python invocation, run $PY rather than a bare python3 — this run preflighted that interpreter and a bare python3 may resolve to an older one whose missing tomllib makes the universal quality checks load as an empty list. Pass that same path down to every subagent you spawn.$SERVICES."
   sleep 3; tmux send-keys -t "$SESSION" Enter
   say "submitted round #$round with $size ticket(s), waiting for the batch to finish or stall"
 
