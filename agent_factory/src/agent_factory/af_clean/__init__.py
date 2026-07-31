@@ -20,4 +20,9 @@ language-convention immutable/fixture directory -- never a human-curated allowli
 verdict: a code-derived call graph, per-symbol test coverage evidence gathered with zero edits,
 the reachable/unreachable x covered/uncovered grid (keep / keep+test-debt / delete-with-binding /
 quarantine), the bound-test-deletion guard, and staged excision to a fixed point across rounds.
+
+R25 lands the blind-verification seam (B23/B46 in
+``docs/brainstorms/2026-07-29-af-clean-requirements.md``): the Cleaner and the Verifier run in
+separate contexts, and the Verifier subprocess is launched with a payload narrowed to just the
+diff and the repo path.
 """
