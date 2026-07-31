@@ -21,7 +21,32 @@ from typing import Any
 #: Default argv for the blind verifier subprocess -- a fresh, non-interactive CLI
 #: invocation (OPEN-12 resolved: fresh process, not a Task-tool subagent), so the
 #: verifier cannot inherit the caller's tool context or conversation state.
-DEFAULT_ARGV: list[str] = ["claude", "-p", "--output-format", "json"]
+# The instruction the judge needs. It is built HERE, never by a caller, so B23 still holds: nothing
+# about how the diff was produced can reach the subprocess.
+_VERIFIER_INSTRUCTION = (
+    "You are a BLIND code-deletion verifier. You are shown ONLY a unified diff. You do not know "
+    "who produced it or why, and you must not assume it is correct.\n\n"
+    "Decide whether the deletion is safe: it must remove nothing that carries information or "
+    "behaviour. A comment that merely restates the identifier it annotates is safe to remove. A "
+    "comment carrying a reason, an invariant, a caveat, a date, or an incident reference is NOT. "
+    "Any change to executable code is NOT safe to endorse.\n\n"
+    'Reply with ONLY this JSON and nothing else: {"endorsed_hunk_ids": ["h1"]} to endorse the '
+    'diff, or {"endorsed_hunk_ids": []} to refuse it. No prose, no code fences.'
+)
+
+# The verifier is a JUDGE, not an agent, and the argv is what decides which one the CLI behaves as.
+# `--tools ""` gives it no tools; `--system-prompt` replaces the agentic prompt with the instruction
+# above. Measured on one identical diff:
+#   old argv (bare payload, default tools): 11 turns, 45s, $0.45, is_error -- and no verdict was
+#     ever POSSIBLE, because nothing told the model it was verifying anything.
+#   this argv:                               1 turn,   4s, $0.014, {"endorsed_hunk_ids": ["h1"]}
+# --max-turns is deliberately absent: capping it produced `error_max_turns` rather than an answer
+# (the cap counts the user's turn too). Removing the TOOLS is what makes it answer in one turn.
+DEFAULT_ARGV: list[str] = [
+    "claude", "-p", "--output-format", "json",
+    "--tools", "",
+    "--system-prompt", _VERIFIER_INSTRUCTION,
+]
 
 
 @dataclass(frozen=True)
@@ -60,6 +85,9 @@ def build_verifier_payload(
     """
     env = dict(base_env if base_env is not None else os.environ)
     env["AF_CLEAN_REPO_PATH"] = repo_path
+    # The payload keeps its original two-key shape. The task the judge needs rides in argv via
+    # --system-prompt instead, which is both where it belongs and what keeps this contract intact:
+    # nothing about how the diff was produced can reach the subprocess (B23).
     stdin = json.dumps({"diff": diff, "repo_path": repo_path})
     return VerifierPayload(
         argv=list(argv if argv is not None else DEFAULT_ARGV),
@@ -88,6 +116,20 @@ def parse_verifier_output(raw_stdout: str) -> VerifierVerdict:
         return VerifierVerdict()
     if not isinstance(data, dict):
         return VerifierVerdict()
+    # `claude -p --output-format json` wraps the model's answer in its OWN envelope, so the verdict
+    # arrives as a JSON string inside "result" rather than at the top level. Reading only the top
+    # level meant the parser could never see an endorsement -- it fail-closed on every real run.
+    if "endorsed_hunk_ids" not in data and isinstance(data.get("result"), str):
+        inner = data["result"].strip()
+        if inner.startswith("```"):
+            inner = inner.strip("`").split("\n", 1)[-1].rsplit("```", 1)[0]
+        try:
+            nested = json.loads(inner)
+        except (json.JSONDecodeError, TypeError):
+            return VerifierVerdict()
+        if not isinstance(nested, dict):
+            return VerifierVerdict()
+        data = nested
     ids = data.get("endorsed_hunk_ids")
     if not isinstance(ids, list):
         return VerifierVerdict()

@@ -315,3 +315,18 @@ def test_each_finding_gets_its_own_verdict(tmp_path):
     for payload in calls:
         # A hunk header is "@@ -1,6 +1,5 @@" -- two "@@" per hunk -- so count hunk STARTS.
         assert payload.count("@@ -") == 1, "a verification must cover exactly one change"
+
+
+def test_applied_work_is_committed(tmp_path):
+    """The commit stack must actually produce a commit. It silently did not, because argv from
+    apply_commit_stack already starts with "git" and the runner prepended a second one."""
+    repo = _repo(tmp_path, {"src/widget.py": SLOP})
+    head_before = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                                 capture_output=True, text=True).stdout.strip()
+    apply_findings(repo, comment_findings(repo), verifier_runner=_endorsing_verifier)
+    head_after = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                                capture_output=True, text=True).stdout.strip()
+    assert head_after != head_before, "endorsed work must land as a commit"
+    log = subprocess.run(["git", "log", "--oneline", "-1"], cwd=repo,
+                         capture_output=True, text=True).stdout
+    assert "af-clean" in log, f"commit should name af-clean, got: {log}"

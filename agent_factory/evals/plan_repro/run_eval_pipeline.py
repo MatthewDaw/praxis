@@ -30,15 +30,19 @@ import sys
 from pathlib import Path
 
 from evals.plan_repro._util import force_utf8_streams, load_repo_dotenv, retrying
-
-EVAL_PROJECT = "team-app-eval"   # the project name af-intake-plan plans under, inside the isolated space
-
+# The eval's project/space identity is owned by praxis_source (space == project, one definition).
+from evals.plan_repro.praxis_source import EVAL_PLAN_SNAPSHOT, EVAL_PROJECT
 
 def _drive_af_intake(space_id: str, prd_dir: Path, timeout: int) -> int:
-    """Run the REAL af-intake-plan unattended into the eval space via the headless claude CLI."""
+    """Run the REAL af-intake-plan unattended into the eval space via the headless claude CLI.
+
+    There is no space SELECTOR to set: under the tenancy model the agent addresses a space by the
+    PROJECT it is told to plan (space == project), emitting the explicit ``x-praxis-space`` +
+    ``x-praxis-snapshot`` pair per op. ``EVAL_SPACE_ID == EVAL_PROJECT`` is what puts the agent's
+    writes and the eval's seeded lenses in the same space.
+    """
     from evals.plan_repro.claude_cli import _claude_path, _subscription_env
     env = _subscription_env()               # bill the subscription, not an API key
-    env["PRAXIS_SPACE"] = space_id          # so the agent's Praxis writes land in the isolated space
     prompt = (
         f"Run /agent-factory:af-intake-plan in FULL INTAKE mode for project '{EVAL_PROJECT}', sourcing the PRD "
         f"from {prd_dir.as_posix()} (read every doc fully). UNATTENDED MODE — the owner is asleep, NEVER "
@@ -46,8 +50,9 @@ def _drive_af_intake(space_id: str, prd_dir: Path, timeout: int) -> int:
         "raises, choose the low-regret DEFAULT and record it as a Praxis episode, then proceed. Push in "
         "EVERY feature the PRD explicitly states as a requirement fact. Sweep ALL active scope='planning' "
         "checks and, for each that applies, admit the implied requirement(s) or record the forced-decision "
-        "default it raises. Write requirements + episodes to the ACTIVE Praxis space only. Do NOT save a "
-        "snapshot and do NOT clear the graph — just leave the admitted requirements + decision episodes."
+        f"default it raises. Write requirements + episodes into the project's own plan snapshot "
+        f"(space='{space_id}', snapshot='{EVAL_PLAN_SNAPSHOT}') and nowhere else. Do NOT clear the graph — "
+        "just leave the admitted requirements + decision episodes there."
     )
     print(f"  driving REAL af-intake-plan (unattended) into space '{space_id}' ...", flush=True)
     proc = subprocess.run(
@@ -63,15 +68,20 @@ def _drive_af_intake(space_id: str, prd_dir: Path, timeout: int) -> int:
 
 def _read_plan(space_id: str):
     """Read the produced plan from the eval space via the factory's own exhaustive Praxis client
-    (hooks/_praxis), scoped to the space. Requirements + decision episodes are scorable items."""
+    (hooks/_praxis). Requirements + decision episodes are scorable items.
+
+    The read is bound to the ``(space, prd-<project>)`` plan snapshot — the mutable snapshot
+    af-intake-plan writes requirements into. ``_praxis`` refuses a PARTIAL reference and reads
+    working memory when given neither, so the pair is passed explicitly on every call.
+    """
     import _praxis as px  # hooks/_praxis — added to sys.path in main()
     from evals.plan_repro.coverage import Feature
 
-    os.environ["PRAXIS_SPACE"] = space_id  # scope reads to the eval space (x-praxis-space header)
-
     def _facts(category):
         try:
-            return px.facts_by(category=category)
+            return px.facts_by(
+                category=category, space=space_id, snapshot=EVAL_PLAN_SNAPSHOT
+            )
         except Exception as exc:  # noqa: BLE001
             print(f"  facts_by(category={category!r}) failed: {exc}", flush=True)
             return []
@@ -124,8 +134,9 @@ def main() -> int:
         print(f"af-intake-plan produced {len(candidate)} scorable item(s) "
               f"(requirements + decision episodes)", flush=True)
         if not candidate:
-            print("NO requirements produced — af-intake-plan did not write to the space (check skill loaded / "
-                  "PRAXIS_SPACE targeting / Praxis auth). Cannot score.", flush=True)
+            print(f"NO requirements produced — af-intake-plan did not write to "
+                  f"({space_id}, {EVAL_PLAN_SNAPSHOT}) (check skill loaded / project name / Praxis "
+                  "auth). Cannot score.", flush=True)
             return 2
 
         complete = retrying(make_claude_cli_complete(timeout=150))

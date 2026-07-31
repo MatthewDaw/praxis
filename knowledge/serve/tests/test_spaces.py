@@ -1,10 +1,10 @@
 """Integration tests for spaces: per-login private working knowledge graphs.
 
-A *space* lets one login own MULTIPLE ``user_id`` partitions within an org. The
-backend derives the effective tenant ``user_id`` from the ``X-Praxis-Space``
-header (default/absent => ``principal.sub``; named ``<sid>`` =>
-``f"{principal.sub}::space:{sid}"``), so two requests from the SAME login drive
-DIFFERENT live graphs when they carry different space headers.
+A *space* is an org-shared folder of SNAPSHOTS, not a partition of working memory. The
+``{sub}::space:<sid>`` tenant mangling this file was originally written against is GONE:
+working memory always keys on ``principal.sub``, so a lone ``X-Praxis-Space`` selects
+nothing and is dropped. Only the PAIR ``X-Praxis-Space`` + ``X-Praxis-Snapshot`` names a
+graph other than working memory, and it names an org-shared snapshot.
 
 Like test_server.py, the server writes through the facade's REAL embedder (no
 fakes injected by create_app), so POST /insights embeds for real — these tests
@@ -45,8 +45,6 @@ USER = "dev-user"  # the PRAXIS_AUTH_DISABLED dev principal sub
 def _wipe(conn, org):
     conn.execute("DELETE FROM fact_edges WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM facts WHERE org_id = %s", (org,))
-    conn.execute("DELETE FROM cached_fact_edges WHERE org_id = %s", (org,))
-    conn.execute("DELETE FROM cached_facts WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM spaces WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM org_members WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM orgs WHERE org_id = %s", (org,))
@@ -177,17 +175,28 @@ def test_unknown_space_is_404_on_write(ctx):
 
 
 def test_unknown_space_is_404_on_read(ctx):
-    """GET /candidates does not use the snapshot-target headers — it always reads
-    working memory regardless of X-Praxis-Space/X-Praxis-Snapshot. The per-user
-    named partition system is gone; space isolation now lives at the graph read
-    level (candidates_for with explicit target), not at the header level."""
+    """Reading a non-existent org-shared space+snapshot returns 404 — on the LISTING too.
+
+    ``GET /candidates`` now honors the snapshot target like every by-id sibling
+    (``GET/PATCH/DELETE /candidates/{cid}``, ``promote``, ``reject``) and like the write
+    above, so all six agree about which graph a given header pair names. It used to ignore
+    the pair and answer 200 from working memory: an agent following the MCP tools' own
+    "find the id via praxis_list_graph" instruction before repairing a snapshot fact was
+    handed ids from a DIFFERENT graph, and a mistyped space looked like a healthy read.
+
+    404 (not an empty list) is the right answer for an unknown space here for the same
+    reason it is on the by-id routes: an empty listing reads as "that snapshot has no
+    facts", which is precisely the false negative an auditor must never be told.
+    """
     client, _conn, _org = ctx
-    # With or without ghost headers, /candidates reads working memory → 200.
     res = client.get(
         "/candidates",
         headers={"X-Praxis-Space": "ghost", "X-Praxis-Snapshot": "prd-ghost"}
     )
-    assert res.status_code == 200
+    assert res.status_code == 404
+    # A LONE space header still names no target at all (working memory keys on
+    # principal.sub), so it stays a plain 200 — the dashboard sends one on every request.
+    assert client.get("/candidates", headers={"X-Praxis-Space": "ghost"}).status_code == 200
 
 
 def test_empty_space_header_falls_back_to_default(ctx):

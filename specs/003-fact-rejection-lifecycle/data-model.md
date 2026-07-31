@@ -33,7 +33,7 @@ block above it and the `state` column comment in `schema.sql`.
       │
       └── delete (row removed; edges cascade)
 
-proposed ── delete ──▶ (removed)        active ── delete ──▶ 409 REFUSED (reject first)
+proposed ── delete ──▶ (removed)        active ── delete ──▶ (removed)   [any state, no reject first]
 ```
 
 - **proposed → active**: direct approval (`promote`) / `/insights` ingest at `state="active"`.
@@ -41,8 +41,21 @@ proposed ── delete ──▶ (removed)        active ── delete ──▶
   (`POST /candidates/{id}/reject`).
 - **rejected → active**: re-approval (FR-010); the currently-active contradictor is demoted to
   `rejected`; the `contradicted_by` edge persists; pair stays linked.
-- **delete**: allowed only from `proposed` or `rejected` (FR-014); removes the row and cascades all
-  `fact_edges`.
+- **delete**: allowed from **any** state — `proposed`, `active`, or `rejected` — removes the row and
+  cascades all `fact_edges`. (Originally FR-014 gated this to `proposed`/`rejected`; superseded, below.)
+
+**Superseded — delete no longer requires a prior reject (was FR-014)**: as decided in this spec,
+`DELETE` on an `active` fact was refused with **409 "reject the fact before deleting"**, so disposal
+had to run `active → rejected → deleted`. That gate is gone. `FactsCandidates.delete` is documented
+as "Hard-delete a fact in any state — no reject required first", the frontend's
+`canDeleteCandidate()` returns `true` unconditionally, and `test_delete_active_succeeds_without_reject`
+locks the new behaviour in. **Why it changed**: reject is not a soft delete. A rejected fact keeps
+its row **and** its `meta.requirement_id`, so rejecting instead of deleting leaves a **stranded
+twin** — two facts claiming one identity, one of them invisible to active-state queries yet still
+matched by every identity lookup (the ticket/check upserts key on `meta.*_id`, not on state). That is
+an observed corruption of a plan snapshot, not a hypothetical. Delete is now the default disposal;
+reject is reserved for the case where the retained row and its dependent-review propagation are
+genuinely wanted.
 
 **Invariant (FR-005, SC-002)**: no two facts joined by a contradiction relationship are both
 `active`. Enforced atomically at write time (last writer wins).

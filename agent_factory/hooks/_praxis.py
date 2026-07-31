@@ -510,7 +510,9 @@ def get_episodes(*, meta: dict | None = None, space: str | None = None,
 def get_contradictions(*, space: str | None = None, snapshot: str | None = None) -> list[dict]:
     """The flagged contradiction clusters (GET /contradictions) — mirror of ``praxis_get_contradictions``.
     Pass BOTH ``space`` and ``snapshot`` to review contradictions raised INSIDE an org-shared snapshot
-    (e.g. an ``on_conflict="surface"`` clash while authoring the plan); omit both for working memory.
+    (e.g. an ``on_conflict="surface"`` clash from authoring a NON-TICKET planning fact into the plan;
+    TICKET writes never reach the contradiction step at all — they are identity-keyed on
+    ``meta.requirement_id`` and carry no ``on_conflict``); omit both for working memory.
     Returns the cluster list (``[]`` when none flagged). Raises PraxisUnreachable on any error."""
     out = _request("GET", "/contradictions", space=space, snapshot=snapshot)
     if isinstance(out, list):

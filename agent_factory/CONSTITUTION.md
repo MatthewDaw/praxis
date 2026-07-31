@@ -162,13 +162,18 @@ Each pass is one slice of forward progress. Run this checklist top to bottom:
    execution — a bad requirement spawns thousands of bad lines, a bad plan hundreds, a bad line of
    code just one — so spend the rigor here, on the facts, not on re-reading generated code:*
    - Admit each requirement via `praxis_add_insight(..., source="prd-team-app",
-     category="requirement", meta={"requirement_id": "R<n>"}, on_conflict="surface")`.
-     For the **initial whole-plan admission or a large refactor** (≳20 reqs, or when the per-item
+     category="requirement", meta={"requirement_id": "R<n>"})` — **with NO `on_conflict` argument.**
+     This is the ticket-minting form: `meta.requirement_id` (with `meta.build_state`) routes it through
+     the identity-keyed upsert, which is what makes each write land as a distinct fact and a re-file
+     update that one ticket in place. Passing `on_conflict="surface"` routes it off that path into
+     `default_write_policy()`'s additive `Augmenter` instead, which merges the ticket into some other
+     fact and rejects tickets nobody named (§8). For the **initial whole-plan admission or a large refactor** (≳20 reqs, or when the per-item
      path times out at scale), admit in ONE round-trip with `praxis_add_insights(insights=[...],
      raw=True)` — fast, but it skips dedup + conflict detection, so the candidates must already be
      reconciled (intake) and the audit's cold-eyes conflict pass is the contradiction net (raw
      assumes clean, non-conflicting facts). Keep the per-item `on_conflict="surface"` form for
-     incremental edits / tickets, where live contradiction surfacing still matters.
+     incremental **non-ticket** edits (plain assertions, decisions, learnings — anything with no
+     `meta.build_state`), where live contradiction surfacing still matters; **never on a ticket.**
      **`source="prd-<project>"` (here `prd-team-app`) is the project identity** — it is what
      `praxis_incomplete_requirements(prd-team-app)` (§1) and the done-gate's `R-HAS-SOURCE` rule
      filter on, and is distinct from `meta.scope` (the mvp/post-mvp tier read by `build_target.py`).
@@ -269,9 +274,10 @@ When a Praxis or factory failure appears:
    in-flight agent's work overlap, commit only the non-overlapping eval files and note the
    overlap in the ledger. Never commit the tax-return files or another agent's WIP.
 7. **Repair polluted live state.** If the probe/bug corrupted the live `agent-factory` graph
-   (e.g. a merged/blended requirement), repair it: `edit_fact` (requires BOTH `title` and
-   `content`) to restore the clean fact; `reject_fact` then `delete_fact` to remove strays.
-   Re-`save_snapshot("prd-team-app")`.
+   (e.g. a merged/blended requirement), repair it: **`delete_fact` the bad/stray fact FIRST** (hard
+   removal, any state, no prior `reject_fact`), **then** `edit_fact` (requires BOTH `title` and
+   `content`) or re-file to restore the clean fact — that order, never the reverse, or you strand a
+   duplicate. Re-`save_snapshot("prd-team-app")`.
 8. **Resume the build loop** (§4) from where it stopped.
 
 ---
@@ -324,7 +330,23 @@ graph + git log, then continue. The ledger is the plan; the graph/commits are th
 Carry the knowledge-port policy (`docs/af-memory-policy.md`). Specifics that matter tonight:
 
 - **Confirm org after any reconnect** (`whoami`). Writes to the wrong org are silent data loss.
-- **Planning writes use `on_conflict="surface"`** so contradictions surface, never auto-resolve.
+- **NON-TICKET planning writes use `on_conflict="surface"`** so contradictions surface, never
+  auto-resolve. **A TICKET write NEVER carries `on_conflict`** — a `category="requirement"` write
+  carrying `meta.build_state`/`meta.requirement_id` must omit it (or use `raw=True`). `surface` selects
+  `default_write_policy()`, which contains the additive **`Augmenter`**; on a ticket it merges the write
+  into a fact you never named and flips unrelated hardened tickets to `state="rejected"` (invisible to
+  `praxis_incomplete_requirements`). `auto_resolve` has no Augmenter — that asymmetry is the bug.
+- **INVARIANT (cross-project, promote to the `constitution` snapshot): a plan-ticket write is
+  identity-keyed on `meta.requirement_id` and must never mutate, merge into, or reject a fact the caller
+  did not name.** Corollary: a write response naming an `id` the caller did not write — or reporting
+  `action:"merged"` on a ticket write — is a **corruption signal, not a success**. Stop, do not re-file,
+  and repair (re-arm the planning marker, `praxis_delete_fact` the damaged fact FIRST, then
+  `praxis_edit_fact`/re-file the corrected one, `praxis_promote_fact` back anything wrongly rejected,
+  then audit every `state="rejected"` fact in the snapshot). **Second corollary: identity-keyed
+  idempotence holds only when the lookup FINDS the incumbent — verify it, never assume it.** A re-file of
+  an already-existing `meta.requirement_id` must return `action:"updated"`; **`action:"added"` is a
+  silently-minted DUPLICATE**, not a success. Two active facts sharing one `meta.requirement_id` is the
+  residue (`prd-sotos` is in that state today, with two active `CHAT14` facts).
 - **Known Praxis bugs (each has a RED eval; fix when you reach them, else work around):**
   - *Sentence fragmentation* — a multi-sentence `add_insight` splits per sentence. Workaround:
     single semicolon-joined sentences. Eval: `requirement_not_fragmented_by_distillation`.
@@ -335,9 +357,13 @@ Carry the knowledge-port policy (`docs/af-memory-policy.md`). Specifics that mat
     distinct subject, or accept the merge and note it.
   - *Augmenter merges a tabular fact into an overlapping incumbent* despite the slot-guard.
     Eval: `tabular_field_not_merged_into_incumbent`.
-- **Manual graph repair:** `edit_fact` needs BOTH `title` and `content`; `delete_fact` needs a
-  prior `reject_fact`. `insert_fact` bypasses contradiction detection — do NOT use it for
-  requirements (you'd lose surfacing).
+- **Manual graph repair:** `edit_fact` needs BOTH `title` and `content`. **To REMOVE a fact, use
+  `delete_fact` — hard removal from any state, no prior `reject_fact` step, edges cascade.** Do NOT
+  reject-to-remove: a rejected fact keeps its row **and its `meta.requirement_id`**, stranding a twin
+  that a later re-file collides with (`prd-sotos` now holds two active `CHAT14` facts). `reject_fact` is
+  only for the narrow case where the row must survive for audit. **Ordering: delete the bad fact BEFORE
+  writing the corrected one, never after** — the reverse order strands the duplicate permanently.
+  `insert_fact` bypasses contradiction detection — do NOT use it for requirements (you'd lose surfacing).
 - **Save before clear/load.** Never `clear_graph`/`load_snapshot(replace)` without a current
   snapshot.
 

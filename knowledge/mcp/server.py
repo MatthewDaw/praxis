@@ -189,10 +189,106 @@ def _normalize_applicability(meta: dict | None) -> dict | None:
 
 
 def _friendly(exc: httpx.HTTPStatusError) -> str:
-    """Map auth failures to a clear hint; re-raise everything else."""
-    if exc.response.status_code in (401, 403):
+    """Turn an HTTP error into a message the caller can actually act on.
+
+    401/403 keep the login hint (nothing in the body helps there). Everything else
+    used to RE-RAISE, which reached the agent as a bare transport error — a 400 from
+    ``PATCH /candidates/{cid}`` would say "Client error '400 Bad Request'" and drop the
+    one thing that tells you how to fix it (e.g. "plan 'prd-sotos' is blessed — re-arm
+    the planning marker (stamp_planning) to mutate this snapshot"). So: surface the
+    body's ``detail``, falling back to the raw body text, then to the reason phrase,
+    alongside the status code and the URL path. The body may not be JSON (proxy HTML,
+    empty 502) — every lookup is defensive and can only degrade the message, never raise.
+    """
+    resp = exc.response
+    status = resp.status_code
+    if status in (401, 403):
         return _AUTH_HINT
-    raise exc
+    detail = ""
+    try:
+        payload = resp.json()
+    except Exception:  # noqa: BLE001 — non-JSON body (proxy HTML, empty) is expected
+        payload = None
+    if isinstance(payload, dict):
+        raw = payload.get("detail", payload.get("message", payload.get("error", "")))
+        detail = raw if isinstance(raw, str) else json.dumps(raw) if raw else ""
+    elif isinstance(payload, str):
+        detail = payload
+    if not detail:
+        try:
+            detail = (resp.text or "").strip()
+        except Exception:  # noqa: BLE001 — undecodable body; fall through to the reason
+            detail = ""
+    if not detail:
+        detail = resp.reason_phrase or "no detail returned"
+    if len(detail) > 1200:
+        detail = detail[:1200] + "… (truncated)"
+    path = ""
+    try:
+        path = resp.request.url.path
+    except Exception:  # noqa: BLE001 — no request attached (hand-built response in tests)
+        path = str(getattr(resp, "url", "") or "")
+    where = f" on {path}" if path else ""
+    return f"Praxis backend returned {status}{where}: {detail}"
+
+
+def _resolve_requirement_cid(
+    requirement_id: str, space: str | None, snapshot: str | None
+) -> tuple[str | None, str | None]:
+    """Resolve ONE ``meta.requirement_id`` to a fact id within ``(space, snapshot)``.
+
+    Returns ``(cid, None)`` on an unambiguous hit, else ``(None, message)``. Agents know a
+    ticket as "R7", not as a 32-hex uuid, and fumbling that uuid is how the wrong row gets
+    mutated — so the lifecycle tools accept the identity directly and resolve it here.
+
+    Deliberately strict:
+    * ``state="any"`` — a rejected/superseded twin still occupies the requirement_id and is
+      precisely what you are usually trying to delete, so it must be visible here.
+    * NO ``category`` filter — a fact corrupted by a bad merge can have a NULL or wrong
+      category, and pinning ``category="requirement"`` would hide the very rows we chase.
+    * MORE THAN ONE match is an ERROR, never a tiebreak: two facts sharing one
+      requirement_id IS the corruption signature. We name every id and state and let the
+      caller decide which one dies, addressing it by cid.
+    * ``(space, snapshot)`` is the search scope and is required — resolving an identity
+      against working memory when the ticket lives in ``prd-<project>`` would silently
+      find nothing (or, worse, someone else's like-named row).
+    """
+    if space is None or snapshot is None:
+        return None, (
+            f"requirement_id={requirement_id!r} needs BOTH space and snapshot — that pair is "
+            "the search scope (e.g. space=<project>, snapshot='prd-<project>'). "
+            "Pass a cid instead to act on a working-memory fact."
+        )
+    try:
+        resp = httpx.get(
+            f"{identity.api_base()}/facts/by",
+            params={"state": "any", "meta": json.dumps({"requirement_id": requirement_id})},
+            headers=_headers(space, snapshot),
+            timeout=_READ_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return None, _friendly(exc)
+    facts = resp.json().get("facts", []) or []
+    if not facts:
+        return None, (
+            f"No fact carries meta.requirement_id={requirement_id!r} in "
+            f"(space={space!r}, snapshot={snapshot!r}) in any state — list what is there with "
+            "praxis_facts_by(state='any', space=..., snapshot=...)."
+        )
+    if len(facts) > 1:
+        listing = "; ".join(
+            f"{f.get('id')} (state={f.get('state')}, category={f.get('category')!r})"
+            for f in facts
+        )
+        return None, (
+            f"AMBIGUOUS: {len(facts)} facts carry meta.requirement_id={requirement_id!r} in "
+            f"(space={space!r}, snapshot={snapshot!r}) — refusing to guess. Matches: {listing}. "
+            "Two facts sharing one requirement_id is itself a corruption signature (a rejected "
+            "twin, or a merge that minted a duplicate) — inspect them with praxis_get_fact and "
+            "delete the wrong one by its cid."
+        )
+    return str(facts[0].get("id")), None
 
 
 def _timeout_note(what: str) -> str:
@@ -624,6 +720,31 @@ def praxis_add_insight(
     ``praxis_resolve_contradiction``) instead of silently deciding. Use ``"surface"``
     when a human should adjudicate conflicts rather than the newest write winning.
 
+    **Do NOT pass ``on_conflict`` on a requirement-TICKET write** — a write carrying
+    ``category="requirement"`` with ``meta.build_state`` (and ``meta.requirement_id``).
+    ``on_conflict="surface"`` selects the additive-merge write policy, whose Augmenter
+    can silently fold your brand-new ticket into a DIFFERENT, merely topically-similar
+    existing ticket: the call returns ``action:"merged"`` with an ``id`` you never wrote
+    and ``contradictionsSurfaced: 0``, your ticket is never created, and the existing
+    ticket's ``content`` is overwritten — a corrupted plan snapshot that looks like a
+    success. On a ticket write the ``on_conflict`` argument should simply NOT APPEAR in the
+    call — not ``"surface"``, and not an explicit ``"auto_resolve"`` either; the backend
+    answers any supplied ``onConflict`` on this path with a loud ``note`` telling you it was
+    ignored and why. (``raw=True`` is likewise fine, and equally carries no Augmenter — which
+    is why only ``"surface"`` corrupts.) The ticket path is identity-keyed on
+    ``meta.requirement_id``: it upserts by that id — a re-file UPDATES the existing ticket in
+    place — and never dedups, merges, or rejects, so ``on_conflict`` does not tune anything
+    there; supplying it only risks diverting the write off that path and destroying data.
+    Send ``category="requirement"`` on a ticket write as well: the backend now also
+    recognises a ticket by its identity meta (``requirement_id`` + ``build_state``) when the
+    label is missing or wrong, and stamps the category back on, but that is a repair, not
+    the contract — label your writes.
+
+    The response's ``factsRejected`` lists the ids of facts this write actually took down
+    (``contradictionsSurfaced`` counts only *pending* contradictions and reads ``0`` even
+    when facts went dark). A NON-EMPTY ``factsRejected`` means your write invalidated other
+    knowledge — inspect those ids before moving on.
+
     ``derived_from`` records derivation provenance (gap H5): pass the ids of the
     facts this insight was derived from and the backend links a ``derived_from``
     edge (this fact -> each source) so an invalidated source can later surface
@@ -666,11 +787,20 @@ def praxis_add_insight(
     payload = resp.json()
     summary = payload.get("summary", "") or "insight stored"
     surfaced = payload.get("contradictionsSurfaced") or 0
+    # factsRejected is the honest casualty list: contradictionsSurfaced can read 0 while the
+    # write took other facts down, so surface both — and the backend's `note` (e.g. "onConflict
+    # ignored on the identity-keyed ticket path") must reach the agent, not be swallowed.
+    rejected = payload.get("factsRejected") or []
+    note = payload.get("note") or ""
     if surfaced:
         summary = (
             f"{summary} — {surfaced} pending contradiction(s) raised; "
             "review with praxis_get_contradictions"
         )
+    if rejected:
+        summary = f"{summary} — {len(rejected)} fact(s) rejected by this write"
+    if note:
+        summary = f"{summary} — note: {note}"
     return _structured(
         summary,
         {
@@ -679,6 +809,8 @@ def praxis_add_insight(
             "id": payload.get("id"),
             "onConflict": payload.get("onConflict"),
             "contradictionsSurfaced": surfaced,
+            "factsRejected": rejected,
+            "note": note,
         },
     )
 
@@ -722,9 +854,18 @@ def praxis_add_insights(
     items) that time out on the per-item LLM conflict check; leave it ``False`` for
     normal reconciled writes.
 
+    The same ticket-write rule as ``praxis_add_insight`` applies here and bites harder,
+    because ``on_conflict`` is batch-level: if any item is a requirement TICKET
+    (``category="requirement"`` with ``meta.build_state``/``meta.requirement_id``), do not
+    pass ``on_conflict`` at all — ``"surface"`` selects the additive-merge policy whose
+    Augmenter can fold a brand-new ticket into a different existing one, returning
+    ``action:"merged"`` with an id you never wrote while your ticket is never created.
+
     Returns a structured JSON block with one result per insight (in order), each
-    carrying ``ok``/``id``/``action``/``retrievable`` (read-your-writes confirmed)
-    and, on a per-item failure, an ``error`` — a bad item never aborts the rest.
+    carrying ``ok``/``id``/``action``/``retrievable`` (read-your-writes confirmed),
+    ``contradictionsSurfaced``/``factsRejected`` (the ids that item's write actually took
+    down — a non-empty list means other knowledge went dark, which the surfaced COUNT does
+    not tell you), and, on a per-item failure, an ``error`` — a bad item never aborts the rest.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -755,12 +896,17 @@ def praxis_add_insights(
     results = payload.get("results", [])
     ok = sum(1 for r in results if r.get("ok"))
     surfaced = sum(r.get("contradictionsSurfaced") or 0 for r in results)
+    # Same reasoning as praxis_add_insight: the surfaced COUNT reads 0 while facts go dark,
+    # so roll up factsRejected across the batch and say it out loud in the summary line.
+    rejected = sum(len(r.get("factsRejected") or []) for r in results)
     summary = f"stored {ok}/{payload.get('count', len(results))} insight(s)"
     if surfaced:
         summary += (
             f" — {surfaced} pending contradiction(s) raised; "
             "review with praxis_get_contradictions"
         )
+    if rejected:
+        summary += f" — {rejected} fact(s) rejected by this batch (see factsRejected per result)"
     return _structured(summary, {"count": payload.get("count"), "results": results})
 
 
@@ -1172,6 +1318,15 @@ def praxis_edit_fact(
     (e.g. an idempotent update of a check in ``building-validation``, or a ticket-state edit
     in ``prd-<project>``); omit both for a working-memory fact.
 
+    That snapshot support has ONE gate: a ``prd-<project>`` plan snapshot that has been
+    BLESSED is frozen, and an edit against it is refused by the bless-state guard with a
+    400 whose ``detail`` reads like "plan 'prd-<project>' is blessed — re-arm the planning
+    marker (stamp_planning) to mutate this snapshot". Editing a fact in a blessed plan
+    snapshot therefore requires arming the planning marker FIRST —
+    ``_ticket_state.stamp_planning(project, owner)`` (the af-intake-plan skill's Step 0d)
+    or ``POST /planning-marker`` — and only then re-issuing the edit. The same gate applies
+    to ``praxis_delete_fact`` against a blessed plan snapshot.
+
     ``on_conflict`` defaults to ``"none"``: an edit is a **literal write** — only
     this fact's own fields change and no other fact is touched. Editing a field is
     not an assertion of new knowledge to reconcile, so it must never silently reject
@@ -1254,13 +1409,31 @@ def praxis_record_derivation(fact_id: str, source_ids: list[str]) -> str:
 
 
 @mcp.tool()
-def praxis_promote_fact(cid: str, target_state: str | None = None) -> str:
+def praxis_promote_fact(
+    cid: str,
+    target_state: str | None = None,
+    space: str | None = None,
+    snapshot: str | None = None,
+) -> str:
     """Promote a fact through its lifecycle (the dashboard "promote" action).
 
     Moves a fact forward one step (e.g. ``proposed`` -> ``active``); pass
     ``target_state`` to force a specific destination, or omit it to let the
     backend advance to the next state. Find the id via ``praxis_list_graph``.
     Confirm with the user first — this changes what retrieval reads.
+
+    Omit BOTH ``space`` and ``snapshot`` to address a candidate in your working memory
+    (the default). Pass BOTH to address a fact that lives inside an ORG-SHARED snapshot —
+    the repair seam for plan state, e.g. un-rejecting (``target_state="active"``) a
+    requirement ticket in ``(space=<project>, snapshot="prd-<project>")`` that a bad
+    merge wrongly rejected. Without the pair the request resolves against working memory
+    and 404s on any snapshot-resident fact; passing exactly one of the pair raises.
+
+    This is also the un-reject: a rejected row is still there (that is the whole problem
+    with reject — see ``praxis_reject_fact``) and promoting it back to ``active`` revives
+    it. A DELETED fact is gone and there is nothing to promote, which is the point: use
+    ``praxis_delete_fact`` when a fact should not exist, and this tool when a fact that
+    should exist was wrongly hidden.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -1271,7 +1444,7 @@ def praxis_promote_fact(cid: str, target_state: str | None = None) -> str:
         resp = httpx.post(
             f"{identity.api_base()}/candidates/{cid}/promote",
             json=body,
-            headers=_headers(),
+            headers=_headers(space, snapshot),
             timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
@@ -1282,12 +1455,35 @@ def praxis_promote_fact(cid: str, target_state: str | None = None) -> str:
 
 
 @mcp.tool()
-def praxis_reject_fact(cid: str, reason: str | None = None) -> str:
-    """Reject a fact (the dashboard "reject" action).
+def praxis_reject_fact(
+    cid: str,
+    reason: str | None = None,
+    space: str | None = None,
+    snapshot: str | None = None,
+) -> str:
+    """SOFT-HIDE a fact, keeping the row (narrow/specialist — **to remove something, use
+    ``praxis_delete_fact``**).
 
-    Marks a proposed/active fact as rejected so retrieval stops reading it;
-    pass an optional ``reason`` for the audit trail. Find the id via
-    ``praxis_list_graph``. Confirm with the user first.
+    Reject does NOT remove anything. The row stays in the graph in state ``rejected``:
+    invisible to active queries, but still fetchable, still counted by readers that span
+    all states, and — for a requirement ticket — STILL OCCUPYING its
+    ``meta.requirement_id``. That last part is the trap: rejecting a ticket instead of
+    deleting it is exactly how a plan snapshot ends up with a stranded twin, two facts
+    claiming one ``requirement_id``, one of them a ghost nobody can see but every identity
+    lookup trips over. If the thing should not exist, delete it.
+
+    Use reject only when you specifically want the row PRESERVED: an audit trail of what
+    was asserted and disowned, or the stale-dependent review propagation (a rejection
+    flags every learning derived from this fact as suspect — see
+    ``praxis_get_stale_derivations``). Pass an optional ``reason`` for that audit trail.
+    Find the id via ``praxis_list_graph``. Confirm with the user first. A rejection is
+    reversible via ``praxis_promote_fact``.
+
+    Omit BOTH ``space`` and ``snapshot`` to address a candidate in your working memory
+    (the default). Pass BOTH to address a fact inside an ORG-SHARED snapshot, e.g. a
+    requirement ticket in ``(space=<project>, snapshot="prd-<project>")``. Without the
+    pair the request resolves against working memory and 404s on any snapshot-resident
+    fact; passing exactly one of the pair raises.
     """
     if (hint := _not_ready()) is not None:
         return hint
@@ -1298,7 +1494,7 @@ def praxis_reject_fact(cid: str, reason: str | None = None) -> str:
         resp = httpx.post(
             f"{identity.api_base()}/candidates/{cid}/reject",
             json=body,
-            headers=_headers(),
+            headers=_headers(space, snapshot),
             timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()
@@ -1309,21 +1505,61 @@ def praxis_reject_fact(cid: str, reason: str | None = None) -> str:
 
 
 @mcp.tool()
-def praxis_delete_fact(cid: str) -> str:
-    """Permanently delete a fact from the graph (the dashboard "delete" action).
+def praxis_delete_fact(
+    cid: str | None = None,
+    space: str | None = None,
+    snapshot: str | None = None,
+    requirement_id: str | None = None,
+) -> str:
+    """REMOVE a fact from the graph outright — the removal verb, for anything that should
+    not exist.
 
-    Unlike reject (which keeps the row in a rejected state and flags derived
-    dependents for review), this removes the fact entirely, in ANY state — no
-    reject required first. Its edges and claims cascade away with it. Find the id
-    via ``praxis_list_graph``. Confirm with the user first — this is irreversible;
-    prefer reject when you want the stale-dependent review propagation.
+    Deletes the fact in ANY state; no reject step is needed first, and its edges and claims
+    cascade away with it. This is what you want for a duplicate ticket, a mis-filed ticket,
+    a node a bad merge corrupted, or any fact that is simply wrong to have. It is
+    irreversible — confirm with the user first — but it genuinely removes the row and frees
+    its ``meta.requirement_id``, which ``praxis_reject_fact`` does NOT do (a rejected ticket
+    still holds its id and becomes a stranded twin). Reach for reject only in the narrow
+    case where you need the row preserved for audit or want the stale-dependent review
+    propagation.
+
+    Address the fact EITHER by ``cid`` (from ``praxis_list_graph`` / ``praxis_facts_by``)
+    OR by ``requirement_id`` — the identity a ticket actually carries in
+    ``meta.requirement_id`` (e.g. ``"R7"``), which saves fumbling an opaque 32-hex id.
+    Identity lookup requires BOTH ``space`` and ``snapshot`` (that pair is the search
+    scope), spans ALL states, and does not pin ``category`` — a corrupted ticket may have
+    lost its ``category="requirement"`` label and must still be findable. If more than one
+    fact carries that ``requirement_id`` this REFUSES and names every match with its state
+    rather than guessing: two facts sharing one ``requirement_id`` is the corruption
+    signature itself, and which one dies is a decision for you, not for a tiebreak rule.
+    Delete the twin you identified by its ``cid``.
+
+    Omit BOTH ``space`` and ``snapshot`` to address a candidate in your working memory
+    (the default). Pass BOTH to address a fact inside an ORG-SHARED snapshot, e.g. a
+    duplicate requirement ticket in ``(space=<project>, snapshot="prd-<project>")``.
+    Without the pair the request resolves against working memory and 404s on any
+    snapshot-resident fact; passing exactly one of the pair raises.
+
+    A delete against a BLESSED ``prd-<project>`` plan snapshot is refused by the
+    bless-state guard with a 400 — same rule as ``praxis_edit_fact``: re-arm the planning
+    marker first (``_ticket_state.stamp_planning(project, owner)``, i.e. af-intake-plan's
+    Step 0d, or ``POST /planning-marker``). The 400's ``detail`` names this explicitly.
     """
     if (hint := _not_ready()) is not None:
         return hint
+    if bool(cid) == bool(requirement_id):
+        return (
+            "Pass exactly one of cid or requirement_id "
+            "(cid for a known fact id, requirement_id to address a ticket by its identity)."
+        )
+    if requirement_id:
+        cid, err = _resolve_requirement_cid(requirement_id, space, snapshot)
+        if err is not None:
+            return err
     try:
         resp = httpx.delete(
             f"{identity.api_base()}/candidates/{cid}",
-            headers=_headers(),
+            headers=_headers(space, snapshot),
             timeout=_WRITE_TIMEOUT,
         )
         resp.raise_for_status()

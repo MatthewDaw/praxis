@@ -59,8 +59,6 @@ def _wipe(conn, org):
     conn.execute("DELETE FROM snapshot_edges WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM snapshot_claims WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM snapshots WHERE org_id = %s", (org,))
-    conn.execute("DELETE FROM cached_fact_edges WHERE org_id = %s", (org,))
-    conn.execute("DELETE FROM cached_facts WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM mounted_snapshots WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM api_keys WHERE org_id = %s", (org,))
     conn.execute("DELETE FROM spaces WHERE org_id = %s", (org,))

@@ -28,7 +28,7 @@ skills (same pattern as today's `constitution` / `general-pool` mounts).
 | Two read-only checklist snapshots | `save_snapshot` / `mount_snapshot` |
 | Validation-fail → regress a ticket so the coder re-picks it | `record_outcome("failed")` → requirement re-enters `incomplete_requirements` as `regressed` |
 | Bind a check to a surface/requirement | `meta.applies_to` + client filter, **or** the `renders`-edge binding (`bind_surface`) |
-| Dedup / conflict as checks accumulate | `on_conflict="surface"` + the contradiction machinery |
+| Dedup / conflict as checks accumulate | identity-keyed check upsert on `meta.check_id` — a `category="check"` write is redact-only server-side: no dedup, no merge, no contradiction step, so `on_conflict` does not apply (it only ever governed contradictions, never dedup) |
 | Coverage scoring for the **eval** | none — the golden is a checked-in file; `coverage.py` scores client-side |
 
 ## The one real enhancement — a thorough per-part retrieval query (NEEDED, not optional)

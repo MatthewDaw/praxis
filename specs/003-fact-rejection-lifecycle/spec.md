@@ -66,9 +66,11 @@ A reviewer can permanently delete a fact only when it is proposed (never went li
 
 **Independent Test**: Attempt to delete a live fact and confirm refusal with guidance to reject first. Reject it, then delete it and confirm it is gone along with its links. Delete a proposed fact directly and confirm success.
 
+**SUPERSEDED (delete gating only)**: the "live facts protected" premise of this story no longer holds — delete works from any state with no prior reject, because reject retains the row *and* its `meta.requirement_id` and so strands an identity twin. See FR-014 below. Scenario 1 is kept as the record of the original decision; scenarios 2 and 3 still hold.
+
 **Acceptance Scenarios**:
 
-1. **Given** a live fact, **When** a delete is attempted, **Then** it is refused with a message directing the user to reject the fact first.
+1. **Given** a live fact, **When** a delete is attempted, **Then** it is refused with a message directing the user to reject the fact first. *(superseded — the delete now succeeds)*
 2. **Given** a rejected or proposed fact, **When** it is deleted, **Then** the fact is removed permanently.
 3. **Given** a deleted fact that was linked to another fact's contradictions, **When** the deletion completes, **Then** the deleted fact no longer appears in any other fact's contradiction list and the remaining fact is otherwise unaffected.
 
@@ -101,7 +103,7 @@ A reviewer can permanently delete a fact only when it is proposed (never went li
 - **FR-012**: Users MUST be able to view, for a given fact, the facts it contradicts — both unresolved (pending) and resolved — each annotated with its current state.
 - **FR-013**: For a contradicted fact shown in review, the system MUST offer exactly one action determined by state: reject an active or proposed contradictor, or approve a rejected contradictor. Acting on a pending (unresolved) contradiction from this view MUST resolve it in place.
 - **FR-013a**: The system MUST provide a separate global view that lists all pending contradictions — those where one of the two facts is still pending (not yet rejected) — so unresolved conflicts can be found without opening each fact.
-- **FR-014**: Deletion of a fact MUST be permitted only when the fact is proposed or rejected. A delete targeting an active fact MUST be refused with guidance to reject it first.
+- **FR-014**: ~~Deletion of a fact MUST be permitted only when the fact is proposed or rejected. A delete targeting an active fact MUST be refused with guidance to reject it first.~~ **SUPERSEDED** — deletion MUST be permitted from **any** state, with no prior reject. Reject is not a step on the way to deletion: a rejected fact keeps its row **and** its `meta.requirement_id`, so rejecting instead of deleting strands an identity twin — two facts claiming one identity, one invisible to active-state queries yet still matched by every identity lookup. That was observed corrupting a plan snapshot. Shipped behavior: `FactsCandidates.delete` ("Hard-delete a fact in any state — no reject required first"), `canDeleteCandidate()` → `true`, `test_delete_active_succeeds_without_reject`. (FR-015 and FR-016 stand — delete still cascades the links, and reject remains a distinct, reversible operation.)
 - **FR-015**: Deleting a fact MUST remove all of its contradiction links so it no longer appears in any other fact's contradiction list, leaving the linked facts otherwise unchanged.
 - **FR-016**: Reject and delete MUST remain separate operations: reject is a reversible state change that keeps the fact and its links; delete is irreversible removal.
 - **FR-017**: The review surface MUST reflect state and link changes resulting from an action without requiring a manual page refresh.

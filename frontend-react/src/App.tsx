@@ -8,7 +8,6 @@ import {
 } from "./api/apiClient";
 import { recordFactOutcome } from "./api/contextClient";
 import { isProductivityDisabled } from "./api/productivityClient";
-import { canDeleteCandidate } from "./api/candidateModel";
 import { buildLocalLogSession } from "./api/localLogsProvider";
 import { CandidateCards } from "./components/CandidateCards";
 import { CandidateDetail } from "./components/CandidateDetail";
@@ -544,11 +543,11 @@ export default function App() {
 
   async function handleDelete(id: string) {
     setActionError(null);
-    const candidate = candidates.find((c) => c.id === id);
-    if (candidate && !canDeleteCandidate(candidate)) {
-      setActionError("Reject this fact before deleting it.");
-      return;
-    }
+    // No reject-first gate: delete is a hard removal from ANY state. The old
+    // "reject this fact before deleting it" path was unreachable (canDeleteCandidate
+    // is unconditionally true) and actively misleading — rejecting instead of
+    // deleting KEEPS the row and its meta.requirement_id, which is how a plan
+    // snapshot ends up with a stranded twin that every identity lookup trips over.
     try {
       await deleteCandidate(id);
       markGraphDirty();

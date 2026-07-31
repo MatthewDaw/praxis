@@ -166,7 +166,15 @@ in `get_contradictions`** settled by `resolve_contradiction`.
   7 proposed), one pending pair, neither rejected; `resolve_contradiction(keep_id=7)` superseded 3.
 - *Consequence:* the earlier rejected-pile workaround is **retired**; `af-intake-plan` and the
   knowledge-port policy (`docs/af-memory-policy.md`) now use `on_conflict="surface"` +
-  `get_contradictions` as the surface.
+  `get_contradictions` as the surface — **for NON-TICKET facts only**.
+- *Correction (2026-07):* `on_conflict` governs the contradiction step and nothing else — it was
+  never a dedup guard — and `"surface"` selects the write policy that also carries the additive-merge
+  `Augmenter`, which `auto_resolve`'s policy does not. A requirement TICKET write (carrying
+  `meta.build_state`) is now routed to an identity-keyed upsert keyed on `meta.requirement_id` and
+  must carry **no `on_conflict` at all**; passing `"surface"` there merged a new ticket into an
+  unrelated one and rejected three hardened tickets while reporting `contradictionsSurfaced: 0`.
+  Responses now also carry `factsRejected` (the ids a write actually rejected) — read it, not just
+  the contradiction counter.
 
 ### H10. Semantic-contradiction precision — **✅ SHIPPED (merged PR #74; verified 2026-06-25)**
 The semantic detector over-flagged compatible facts (e.g. "knowledge is stored in the KG" vs "code

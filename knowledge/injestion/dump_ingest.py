@@ -283,7 +283,9 @@ def ingest_dump(
     """Ingest one document: distill (granular claims), write, then resolve overlaps —
     same-slot+same-value -> merge (dedup); same-slot+different-value -> conflict.
 
-    ``on_conflict`` controls what a same-slot, different-value clash does:
+    ``on_conflict`` controls ONLY the same-slot, different-value branch — it is not a dedup
+    knob. The same-slot+same-value merge above runs unconditionally under either mode, so
+    neither value protects a write from being folded into an existing fact:
 
     * ``"auto_resolve"`` (default) — reject the losing fact and link it to the
       winner with a ``contradicted_by`` edge (newest approved truth wins).

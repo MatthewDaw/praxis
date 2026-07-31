@@ -1,5 +1,5 @@
 import { deriveGraphFromCandidates, cloneGraphSnapshot } from "./graphModel";
-import { canDeleteCandidate, candidateStateLabel } from "./candidateModel";
+import { candidateStateLabel } from "./candidateModel";
 import { buildPromoteBody, buildResolveBody } from "./contract";
 import type { DataProvider } from "./dataProvider";
 import type { Candidate } from "../types/candidate";
@@ -195,9 +195,9 @@ export function createInMemoryDataProvider(
       if (index < 0) {
         throw new Error(`Unknown candidate id: ${id}`);
       }
-      if (!canDeleteCandidate(candidates[index])) {
-        throw new Error("Reject this fact before deleting it.");
-      }
+      // No reject-first gate — the mock mirrors the real API, where delete is a hard
+      // removal from any state. (The guard it replaced was unreachable and encoded a
+      // contract the backend dropped: see facts_candidates.delete.)
       candidates = candidates
         .filter((c) => c.id !== id)
         .map((candidate) => ({

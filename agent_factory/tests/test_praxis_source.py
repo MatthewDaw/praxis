@@ -1,10 +1,17 @@
 """Unit tests for the eval's Praxis space lifecycle (evals/plan_repro/praxis_source.py).
 
 No network: fake clients are injected. Covers the seed artifact, the create -> clear -> seed
--> read round trip, teardown, and the read paths (filtered get_context + preferred facts_by).
+-> read round trip, teardown, the read paths (filtered get_context + preferred facts_by), and the
+fail-closed tenancy header pair (a check must be written to (space, planning-validation) — a
+partial reference is a misconfiguration, not a fallback).
 """
 
+import pytest
+
 from evals.plan_repro.praxis_source import (
+    EVAL_PLAN_SNAPSHOT,
+    PLANNING_CHECKS_SNAPSHOT,
+    _build_space_client,
     load_planning_checklist,
     load_seed_checklist,
     provision_and_load_checklist,
@@ -36,21 +43,21 @@ class _FakeFactsByClient:
 
 
 class _FakeSpaceClient:
-    """Full lifecycle stand-in: records create/clear and stores seeded facts for read-back."""
+    """Full lifecycle stand-in: records create/delete and stores seeded facts for read-back."""
 
     def __init__(self):
         self.created = []
-        self.cleared = 0
+        self.deleted = []
         self._store = []
 
     def create_space(self, space_id, name=""):
         self.created.append(space_id)
         return {"spaceId": space_id}
 
-    def clear_graph(self):
-        self.cleared += 1
+    def delete_snapshot(self, space, snapshot):
+        self.deleted.append((space, snapshot))
         self._store = []
-        return {"cleared": 0}
+        return {"space": space, "snapshot": snapshot, "deleted": True}
 
     def add_insight(self, insight, *, category=None, scope=None, source=None, on_conflict="auto_resolve"):
         self._store.append({"text": insight, "category": category, "scope": scope, "source": source})
@@ -106,15 +113,36 @@ def test_provision_creates_clears_seeds_and_reads_back(tmp_path):
     out = provision_and_load_checklist(client=fake, space_id="eval-test", artifact=art)
 
     assert fake.created == ["eval-test"]      # created its own space
-    assert fake.cleared == 1                  # cleared before seeding (clean slate)
+    # dropped BOTH eval snapshots before seeding (clean slate — a reused space starts empty)
+    assert fake.deleted == [
+        ("eval-test", PLANNING_CHECKS_SNAPSHOT),
+        ("eval-test", EVAL_PLAN_SNAPSHOT),
+    ]
     assert out == ["auth needs credential recovery", "screens need empty states"]  # round-tripped
     # seeded with the right tags so the read filter finds exactly these
     assert all(f["category"] == "check" and f["scope"] == "planning" for f in fake._store)
 
 
-def test_teardown_clears_the_space():
+def test_teardown_drops_the_eval_snapshots():
     fake = _FakeSpaceClient()
     fake._store = [{"text": "x"}]
-    teardown_eval_space(client=fake)
-    assert fake.cleared == 1
+    teardown_eval_space(space_id="eval-test", client=fake)
+    assert fake.deleted == [
+        ("eval-test", PLANNING_CHECKS_SNAPSHOT),
+        ("eval-test", EVAL_PLAN_SNAPSHOT),
+    ]
     assert fake._store == []
+
+
+# --- tenancy: the header pair is all-or-nothing --------------------------------
+
+
+@pytest.mark.parametrize(
+    "space,snapshot",
+    [("eval-test", None), (None, PLANNING_CHECKS_SNAPSHOT)],
+)
+def test_partial_snapshot_reference_is_refused(space, snapshot):
+    """A lone header is silently ignored by the server and the write lands in working memory —
+    where a category='check' write is a hard 400 and nothing reads it. Refuse it up front."""
+    with pytest.raises(ValueError):
+        _build_space_client(space=space, snapshot=snapshot)

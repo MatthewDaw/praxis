@@ -15,7 +15,14 @@ Contract (Praxis HTTP API):
       -> {"results": [{"id","action","surfaced"}], "count": int}  (server-side distillation)
   POST /insights {"insight": str, "scope": str|null, "category": str|null, "source": str|null,
                   "onConflict": "auto_resolve"|"surface"}
-      -> {"summary","action","id","onConflict","contradictionsSurfaced"}
+      -> {"summary","action","id","onConflict","contradictionsSurfaced","factsRejected",
+          "retrievable"}
+      ``onConflict`` governs the CONTRADICTION step only — it is not a dedup or
+      near-duplicate guard. ``contradictionsSurfaced`` counts pending contradiction
+      edges this write raised; ``factsRejected`` names the facts this write actually
+      knocked to ``rejected`` (always empty under ``surface``, which keeps both sides).
+      Read both: a write can report 0 surfaced contradictions and still have rejected
+      other facts.
 
 Tenancy model (org -> space -> snapshot + per-user working memory):
   Working-memory ops (``get_context``, ``ingest``, ``add_insight``) are scoped to the
@@ -205,10 +212,22 @@ class PraxisClient:
     ) -> dict[str, Any]:
         """Add a single explicit insight.
 
-        ``on_conflict`` is ``"auto_resolve"`` (default; a conflicting fact is
-        overwritten/rejected) or ``"surface"`` (keep both facts and raise a pending
-        contradiction for human review). Returns ``{"summary","action","id",
-        "onConflict","contradictionsSurfaced"}``.
+        ``on_conflict`` governs the CONTRADICTION step and nothing else — it is not a
+        dedup or near-duplicate guard. ``"auto_resolve"`` (default) rejects the losing
+        side of a detected contradiction; ``"surface"`` keeps both facts and raises a
+        pending contradiction for human review. Note that ``"surface"`` is NOT the
+        strictly-safer option: it selects the server's default write policy, which also
+        runs an additive-merge ``Augmenter`` that can fold a new fact into a topically
+        similar existing one and report ``action="merged"`` with an id you never wrote.
+
+        Returns ``{"summary","action","id","onConflict","contradictionsSurfaced",
+        "factsRejected","retrievable"}``. Check ``factsRejected`` — a write can surface
+        zero contradictions and still have rejected other facts.
+
+        This client cannot write requirement TICKETS: a ticket is a write carrying
+        ``meta.build_state``, and there is no ``meta`` parameter here by design. Ticket
+        writes go through the MCP tools / the factory's ``_praxis`` API, which route to
+        the server's identity-keyed upsert and pass no ``on_conflict`` at all.
         """
         body = {
             "insight": insight,

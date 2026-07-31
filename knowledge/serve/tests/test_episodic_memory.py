@@ -44,12 +44,12 @@ def client(unique_org):
     db.bootstrap()
     conn = db.connect()
     org = unique_org
-    for tbl in ("fact_edges", "facts", "cached_facts", "org_members", "orgs"):
+    for tbl in ("fact_edges", "facts", "org_members", "orgs"):
         conn.execute(f"DELETE FROM {tbl} WHERE org_id = %s", (org,))
     OrgsStore(conn).create_org(org, org, "pw", USER)
     app = create_app(conn)
     yield TestClient(app, headers={"X-Praxis-Org": org})
-    for tbl in ("fact_edges", "facts", "cached_facts", "org_members", "orgs"):
+    for tbl in ("fact_edges", "facts", "org_members", "orgs"):
         conn.execute(f"DELETE FROM {tbl} WHERE org_id = %s", (org,))
     conn.close()
 

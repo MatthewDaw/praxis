@@ -65,7 +65,9 @@ means a lens the pipeline reliably fails to act on; a persistent explicit hole m
   Q1 explicit coverage.
 - `depth.py` — Q2: applies each lens to the plan; classifies each applicable capability surfaced /
   flagged / **missing** (a depth hole).
-- `praxis_source.py` — the isolated Praxis-space lifecycle (create → clear → seed lenses → read → teardown).
+- `praxis_source.py` — the isolated Praxis-space lifecycle (create → drop snapshots → seed lenses → read →
+  teardown). The lenses are seeded into `(space=<eval project>, snapshot=planning-validation)` — the only
+  snapshot the server admits `scope="planning"` checks into, and the one `af-intake-plan` resolves from.
 - `claude_cli.py` — subscription-backed `Complete` (headless `claude`, no API key) for the planner + judges.
 - `planning-checklist.yaml` — the lens seed (the version-controlled checks the eval rounds through Praxis;
   the durable home is Praxis `scope="planning"` checks that `af-intake-plan` enforces).

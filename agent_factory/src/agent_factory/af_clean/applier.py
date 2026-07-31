@@ -122,7 +122,10 @@ def default_subprocess_runner(argv, **kwargs):
 
 
 def _git_runner(argv: list[str], cwd: Path):
-    return subprocess.run(["git", *argv], cwd=cwd, capture_output=True, text=True)
+    """Run a git command. ``apply_commit_stack`` passes argv that ALREADY starts with "git", so
+    prepending another one produced `git git add -A` -- which failed silently under
+    capture_output and left every run uncommitted while reporting success."""
+    return subprocess.run(list(argv), cwd=cwd, capture_output=True, text=True)
 
 
 def apply_findings(

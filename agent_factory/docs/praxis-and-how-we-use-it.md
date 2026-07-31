@@ -59,7 +59,7 @@ over the HTTP endpoints below and inherit the exact same `(org_id, user_id)` ten
 | `GET /health` | Liveness, no auth. |
 | `GET /me` | Who the key maps to: `{sub, email, orgs[]}`. Confirms which (org, principal) you're operating as. |
 | `POST /ingest` | `{documents:[{text,source}], state}` → server-side LLM **distillation** into atomic facts, then dedup/merge/contradiction reconciliation. Slow/async. |
-| `POST /insights` | `{insight, scope, category, source}` → add **one already-atomic, pre-approved fact**. No distillation; still runs dedup/merge/contradiction. |
+| `POST /insights` | `{insight, scope, category, source}` → add **one already-atomic, pre-approved fact**. No distillation; still runs dedup/merge/contradiction — **unless** the write is identity-keyed (a `category="check"` with `meta.check_id`, or a requirement TICKET with `meta.build_state`), which is upserted on that id with none of those steps and no `onConflict`. |
 | `GET /context?query=&top_k=&as_of=` | Returns `{context, hits:[{id,text,score,source,scope,category,mounted,owner,snapshot}]}` — currently-valid active facts, **hybrid-ranked (semantic + keyword)**, with provenance. Optional `as_of` for point-in-time recall; includes mounted overlay facts flagged `mounted`/`owner`. |
 | `GET /candidates?state=active\|proposed\|rejected\|all` | Audit what's stored, including anything dropped or superseded. |
 | `GET /graph?state=` | `{graph:{nodes,edges}}` — the fact graph with typed edges (`contradiction`, `contradicted_by`, `supersedes`). |
@@ -127,7 +127,7 @@ These are the non-obvious, verified behaviors. Our architecture lives or dies by
 | | `/ingest` | `/insights` |
 |---|---|---|
 | Input | Unstructured document(s) | One atomic fact |
-| Processing | LLM distillation → many facts → dedup/merge/contradiction | Direct insert → redact/dedup/merge/contradiction |
+| Processing | LLM distillation → many facts → dedup/merge/contradiction | Direct insert → redact/dedup/merge/contradiction — **except** identity-keyed writes (a `category="check"` carrying `meta.check_id`, or a requirement TICKET carrying `meta.build_state`), which are routed to a redact-only upsert: no dedup, no merge, no contradiction step |
 | Speed | Slow / async (minutes) | Fast / synchronous |
 | Loss risk | Lower than before (merge path), still real on tabular input | Low |
 | Use for | Raw source material we haven't pre-digested | Facts we already know and have shaped |
@@ -139,8 +139,12 @@ These are the non-obvious, verified behaviors. Our architecture lives or dies by
 - `category` — free-text aspect label, used in recall/matching. No server-side enum.
 - `state` — `active` (retrievable) · `proposed` · `rejected`.
 - `valid_at` / `invalid_at` — **world-time validity** (bitemporal). `invalid_at = NULL` means
-  currently valid; a superseded fact gets `invalid_at` set rather than being deleted.
-  `as_of` on `/context` filters on this window for point-in-time recall.
+  currently valid; a fact superseded *by the contradiction machinery* gets `invalid_at` set
+  rather than being deleted. `as_of` on `/context` filters on this window for point-in-time
+  recall. That is the machinery's own bookkeeping, **not** the way an agent removes a fact:
+  when you want a fact gone, use `praxis_delete_fact`. Rejecting it leaves the row in place
+  still holding its `meta.requirement_id`, so re-filing that requirement produces a second
+  fact and a stranded duplicate under one id.
 - `provenance` — `source`/`score` returned on every hit; use it to cite what grounded a decision.
 
 ### 1.6 Operational cautions

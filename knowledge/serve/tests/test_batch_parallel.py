@@ -29,7 +29,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 USER = "dev-user"
-_TABLES = ("fact_edges", "facts", "cached_facts", "org_members", "orgs")
+_TABLES = ("fact_edges", "facts", "org_members", "orgs")
 
 
 @pytest.fixture

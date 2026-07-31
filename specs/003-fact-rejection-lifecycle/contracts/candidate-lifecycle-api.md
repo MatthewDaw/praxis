@@ -61,16 +61,23 @@ Approve a fact to `active`.
   > acts on a fact id, which maps cleanly to this route). The `/contradictions/{pair}/resolve`
   > alternative is not used for re-approval.
 
-## `DELETE /candidates/{cid}` — *adds state gating (FR-014, FR-015)*
+## `DELETE /candidates/{cid}` — *cascading hard delete (FR-015)*
 
-Hard-delete a `proposed` or `rejected` fact; refuse on `active`.
+Hard-delete a fact in **any** state — `proposed`, `active`, or `rejected`. No prior reject required.
 
 - 200 → `{ deleted: cid }`
-- **409** if the fact is `active` → `{ detail: "reject the fact before deleting" }`.
 - 404 if unknown.
 - On success all `fact_edges` touching `{cid}` are removed (cascade); the fact no longer appears in
   any other fact's contradiction list (SC-005).
-- **Change**: today `delete` does no state check — add the precondition.
+
+  > **Superseded (FR-014 delete gating — removed)**: as originally specified this route added a
+  > state precondition and answered **409** `{ detail: "reject the fact before deleting" }` on an
+  > `active` fact, so disposal ran `active → rejected → deleted`. That gate no longer exists.
+  > `FactsCandidates.delete` is documented as "Hard-delete a fact in any state — no reject required
+  > first" and `test_delete_active_succeeds_without_reject` locks the behaviour in. **Why**: reject
+  > is not a soft delete — a rejected fact keeps its row *and* its `meta.requirement_id`, so
+  > rejecting instead of deleting strands a twin (see [data-model.md](../data-model.md#state-transitions)).
+  > Delete is now the default disposal; reject is for when the retained row is actually wanted.
 
 ## `GET /contradictions` — *pending only / link survives resolution*
 
@@ -110,6 +117,7 @@ Resolve a contradiction by keeping one side.
    SC-003).
 7. Reject/approve where the affected fact has another contradiction → `hasOtherContradictions: true`;
    the just-resolved A↔B link alone → `false` (US2 #4/#5, SC-007).
-8. `DELETE` an `active` fact → 409; `DELETE` a `proposed`/`rejected` fact → 200, edges gone, absent
-   from contradictors' lists (US3 #1–#3, SC-005).
+8. `DELETE` a fact in any state — `active` as well as `proposed`/`rejected` → 200, edges gone, absent
+   from contradictors' lists (US3 #1–#3, SC-005). *Superseded: this test originally asserted 409 on
+   `active`; it is now `test_delete_active_succeeds_without_reject`.*
 9. Seeded legacy `decayed` row reads back as `rejected` after the migration (FR-002, SC-006).

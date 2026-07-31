@@ -119,6 +119,16 @@ adds it.
 ([types/candidate.ts](../../frontend-react/src/types/candidate.ts)), so the contract is anticipated
 client-side.
 
+**Superseded (the gating half only; the cascade half stands)**: the state check was removed —
+`FactsCandidates.delete` hard-deletes from **any** state, "no reject required first", and
+`test_delete_active_succeeds_without_reject` asserts it. The rationale above assumed reject is a
+safe intermediate step toward disposal. It is not: a rejected fact keeps its row **and** its
+`meta.requirement_id`, so rejecting instead of deleting leaves two facts claiming one identity — one
+invisible to active-state queries but still matched by every identity lookup. That stranded twin was
+observed corrupting a plan snapshot, which is what reversed the decision: the posture is now
+delete-first, with reject reserved for when the retained row and its dependent-review propagation
+are actually wanted.
+
 ## Decision 6 — `flags` vs `fact_edges` duplication
 
 **Decision**: `fact_edges` is the single source of truth (already the case post-refactor); the

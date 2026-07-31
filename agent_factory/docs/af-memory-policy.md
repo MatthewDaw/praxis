@@ -255,6 +255,7 @@ findings state machine and **not** a local manifest.
 | Raw unstructured prose we have not digested | `praxis_ingest` | Server-side distillation. Slow/async — keep it off the critical path. |
 | **Tabular / templated input** (tables, row-per-field specs, `key: value` blocks) | **Linearize first, then `praxis_add_insight` per row** | Distillation silently under-emits on tables (gap H6). **Never raw-`ingest` a table.** |
 | A raw record that must bypass the pipeline for review | `praxis_insert_fact` | Lands in `proposed`; special cases only. |
+| A requirement **TICKET** (`meta.build_state` + `meta.requirement_id`) or a **CHECK** (`meta.check_id`) | `praxis_add_insight` with **no `on_conflict`** | Identity-keyed upsert: redact-only, no dedup, no merge, no contradiction step. Same id → updates in place; new id → a fresh distinct fact. |
 
 Prefer shaping facts and using `add_insight` over `ingest` wherever practical — it avoids
 both the latency and the distillation loss. For **several** facts at once, use
@@ -272,14 +273,34 @@ provenance citation), `category` (`"requirement"` / `"check"` / `"learning"` / e
 `derived_from=[ids]` (the facts a learning was built on — H5, so an invalidated basis later surfaces
 this fact as suspect via `praxis_get_stale_derivations`).
 
-**Conflict mode (`on_conflict`) — choose deliberately:**
+**Conflict mode (`on_conflict`) — choose deliberately. It governs the CONTRADICTION step and
+nothing else; it is *not* a dedup or near-duplicate guard:**
 - `on_conflict="surface"` — a detected contradiction is **surfaced, not resolved**: both facts
   kept (incumbent `active`, newcomer `proposed`, neither rejected), a pending pair appears in
   `praxis_get_contradictions` with a `pair_id`, settled by `praxis_resolve_contradiction`. **Use
-  this whenever a human should adjudicate** — all of plan-hardening, and any write where losing a
-  fact silently would be wrong.
+  this whenever a human should adjudicate** — non-ticket plan-hardening facts, and any write where
+  losing a fact silently would be wrong.
 - `on_conflict="auto_resolve"` (the default) — newest wins, loser silently → `rejected`, nothing
   flagged. Only use when you *intend* a confirmed overwrite (e.g. superseding a known-stale learning).
+
+> **`surface` is not the strictly-safer option.** It selects the server's `default_write_policy`,
+> which also carries the **`Augmenter`** (additive merge); `auto_resolve`'s policy does not. So the
+> safe-sounding human-in-the-loop mode is the one that can fold a brand-new fact into an unrelated
+> existing one and report `action:"merged"` with an id you never wrote.
+
+> **NEVER pass `on_conflict` on a requirement TICKET write** — any write carrying
+> `meta.build_state` (+ `meta.requirement_id`). A ticket is routed server-side to an
+> **identity-keyed upsert**: redact-only, no dedup, no additive merge, no contradiction step. Same
+> `requirement_id` → updates in place; a new id → a fresh distinct fact. `on_conflict` does not
+> apply and is reported back as ignored in the response `note`. Passing `on_conflict="surface"` on a
+> ticket write is what merged a new ticket into an unrelated one, destroyed its content, and flipped
+> three unrelated hardened tickets to `rejected` — with `contradictionsSurfaced: 0`.
+
+**Read `factsRejected`, not just `contradictionsSurfaced`.** Every `/insights` and
+`/insights/batch` result carries a `factsRejected` list naming the facts the write actually knocked
+to `rejected`. A write can report zero surfaced contradictions and still have rejected several
+facts, so `contradictionsSurfaced: 0` alone never means "nothing else was touched". Under `surface`
+a non-empty `factsRejected` means the write did **not** take the path you asked for.
 
 **Write serially — never fire parallel write bursts.** Conflict-checked writes are expensive
 (inline semantic-judge LLM call) and concurrent bursts have driven the backend to 500 on all
@@ -363,7 +384,15 @@ siblings (B). A is shimmed locally; B is server-side and can only be *caught*, n
   verified, call **`praxis_record_outcome(fact_id, "succeeded"|"failed")`** — repeated failures sink
   a fact in retrieval, proven facts hold. This is what makes the pool get *more accurate*, not just
   bigger. When a basis fact is invalidated, check **`praxis_get_stale_derivations`** /
-  `praxis_dependents` for the learnings now suspect, and re-verify or reject them.
+  `praxis_dependents` for the learnings now suspect, and re-verify or **delete** them.
+
+**Removing a fact: DELETE it — do not reject it.** `praxis_delete_fact` is the default way to get
+rid of a fact you no longer want. Rejection is not a removal: a `rejected` fact stays in the graph
+and **keeps its `meta.requirement_id`**, so the id is still occupied — re-filing that requirement
+mints a second fact and the snapshot ends up carrying a stranded duplicate under one id. Reserve
+`praxis_reject_fact` for what it actually means (recording the losing side of an adjudicated
+contradiction, text and edges preserved for audit); when the intent is "this should not be here",
+delete.
 
 ## 7. Never
 
@@ -376,3 +405,6 @@ siblings (B). A is shimmed locally; B is server-side and can only be *caught*, n
 - Never operate in the `praxis` org.
 - Never raw-`ingest` tabular input.
 - Never write an unverified learning back to the pool.
+- Never pass `on_conflict` on a requirement TICKET write (anything carrying `meta.build_state`).
+- Never reject a fact you actually mean to remove — delete it; a `rejected` fact keeps its
+  `meta.requirement_id` and leaves a stranded duplicate behind.

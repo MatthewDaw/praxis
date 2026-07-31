@@ -53,7 +53,7 @@ def seeded(request, monkeypatch):
     conn = db.connect()
 
     def _clean():
-        for t in ("fact_edges", "facts", "cached_facts", "snapshots",
+        for t in ("fact_edges", "facts", "snapshots",
                   "org_members", "orgs", "spaces"):
             try:
                 conn.execute(f"DELETE FROM {t} WHERE org_id = %s", (org,))

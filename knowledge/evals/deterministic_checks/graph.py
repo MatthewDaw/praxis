@@ -933,8 +933,11 @@ def requirement_not_fragmented_by_distillation(
     ctrl_org = "eval_fragment_ctrl_" + uuid.uuid4().hex[:12]
 
     def _ingest(text: str, org_id: str):
-        # Mirror app.add_insight(on_conflict="surface") EXACTLY: the surface write policy plus
-        # the llm=None PromptIngestor that build_trio wires for the insight path.
+        # Mirror app.add_insight(on_conflict="surface") EXACTLY for a requirement ASSERTION:
+        # the surface write policy plus the llm=None PromptIngestor that build_trio wires for
+        # the insight path. NB this payload carries no meta.build_state, so it is deliberately
+        # NOT a requirement TICKET — a ticket write is routed to the identity-keyed
+        # _requirement_upsert on a redact-only graph and never reaches this policy at all.
         graph = PostgresVectorGraph(conn, org_id, user, embedder=emb, policy=default_write_policy())
         _, ingestor, _ = build_trio(graph=graph, llm=None)
         ingestor.ingest(
@@ -1013,10 +1016,14 @@ def contradicting_requirement_not_merged(
 ) -> CheckResult:
     """A directly-contradicting same-subject requirement must SURFACE, never be merged.
 
-    The agent factory admits each requirement via ``add_insight(on_conflict="surface")`` and
-    depends on a contradiction being *flagged* (a pending pair in ``GET /contradictions``) so
-    the human can adjudicate -- this is the planning loop's self-consistency mechanism. But
-    under ``surface`` (= ``default_write_policy``), the Mem0-style **Augmenter** runs its
+    SCOPE: this check is about the reconciled write path -- non-ticket requirement ASSERTIONS
+    admitted via ``add_insight(on_conflict="surface")``, which depend on a contradiction being
+    *flagged* (a pending pair in ``GET /contradictions``) so the human can adjudicate. It is NOT
+    about requirement TICKETS: a write carrying ``meta.build_state`` is now routed to the
+    identity-keyed ``_requirement_upsert`` on a redact-only graph, which never merges, never
+    dedups and never runs a contradiction step, and must be written with NO ``on_conflict`` at
+    all. The bug below is exactly why: under ``surface`` (= ``default_write_policy``), the
+    Mem0-style **Augmenter** runs its
     additive merge BEFORE the ConflictFlagger fires, so a newcomer the Augmenter judges to be
     "about the same subject" as the incumbent is folded into it -- even when the two
     **contradict**. ``write()`` returns the incumbent's id, ``contradictionsSurfaced=0``, and

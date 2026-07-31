@@ -230,6 +230,10 @@ def _write_insight(
     """
     before = graph.search(insight, top_k=1, state=None)
     before_contradictions = set(graph.all_edges("contradiction"))
+    # Facts this write REJECTS are linked by a ``contradicted_by`` edge, not a ``contradiction``
+    # one, so counting only the latter reported ``contradictionsSurfaced: 0`` while auto_resolve
+    # was rejecting three facts the caller never named — a silently lying counter. Diff both.
+    before_resolved = set(graph.all_edges("contradicted_by"))
     ingestor.ingest(  # human-gated -> live knowledge
         insight,
         state="active",
@@ -247,6 +251,7 @@ def _write_insight(
     )
     after = graph.search(insight, top_k=1, state=None)
     new_contradictions = set(graph.all_edges("contradiction")) - before_contradictions
+    new_resolved = set(graph.all_edges("contradicted_by")) - before_resolved
     prior = before[0].fact if before else None
     top = after[0].fact if after else None
     # H5: link derivation provenance from the resulting fact to its sources, so an
@@ -265,12 +270,33 @@ def _write_insight(
         action = "merged"
     else:
         action = "added"
+    # Name every fact this write REJECTED. A ``contradicted_by`` edge always runs
+    # winner -> loser (see ``_overwrite``/``resolve``), so the side that is not the fact
+    # we just wrote is the loser. Reporting the ids — not just a count — is what lets a
+    # caller notice that a write it believed was additive took three other facts down
+    # with it, instead of having to go audit ``state="rejected"`` after the fact.
+    written_id = top.id if top is not None else None
+    facts_rejected = sorted(
+        {(dst if src == written_id else src) for src, dst, _kind in new_resolved}
+        - {written_id}
+    )
+    summary = f"{action} insight"
+    if facts_rejected:
+        summary = (
+            f"{summary} — REJECTED {len(facts_rejected)} other fact(s) as contradiction "
+            f"loser(s): {', '.join(facts_rejected)}"
+        )
     return {
-        "summary": f"{action} insight",
+        "summary": summary,
         "action": action,
-        "id": top.id if top is not None else None,
+        "id": written_id,
         "onConflict": on_conflict,
         "contradictionsSurfaced": len(new_contradictions),
+        # The honest counterpart to contradictionsSurfaced: facts whose state this write
+        # actually changed. ``surface`` should always leave this empty (it keeps both
+        # sides); a non-empty list under ``surface`` means the write did not take the
+        # path the caller asked for.
+        "factsRejected": facts_rejected,
         "retrievable": top is not None,
     }
 
@@ -306,11 +332,18 @@ def _check_upsert(
     check_id = str(meta.get("check_id") or "").strip()
     existing = None
     if check_id:
-        for f in graph.facts_by(
-            category=CHECK_CATEGORY, state=None, meta_filter={"check_id": check_id}
-        ):
-            existing = f
-            break
+        # Key on the check_id ALONE, for the same reason :func:`_requirement_upsert` does: a check
+        # that ever landed off this path carries a NULL category, and a category-filtered identity
+        # lookup would not see it — so the idempotent re-author that is supposed to heal it would
+        # mint a second check for the same check_id instead. Prefer a live match over a rejected
+        # one so the re-author updates the check readers actually resolve.
+        candidates_ = [
+            f
+            for f in graph.facts_by(state=None, meta_filter={"check_id": check_id})
+            if str(getattr(f, "category", None) or "") in ("", CHECK_CATEGORY)
+        ]
+        active_ = [f for f in candidates_ if getattr(f, "state", None) == "active"]
+        existing = (active_ or candidates_ or [None])[0]
     if existing is not None:
         graph.update_fact(
             existing.id,
@@ -339,6 +372,19 @@ def _check_upsert(
     }
 
 
+def _meaningful_on_conflict(raw_on_conflict: Any) -> str | None:
+    """The caller's ``onConflict`` when it actually expresses an intent, else ``None``.
+
+    Clients put ``onConflict`` on the wire unconditionally (the MCP parameter defaults to
+    ``"auto_resolve"``), so "the key is present" cannot distinguish a caller who chose a conflict
+    mode from one who never thought about it. Warning on presence alone would fire on every
+    well-behaved ticket write, and a warning that fires always is a warning nobody reads. Only a
+    departure from the default is a choice worth reporting back.
+    """
+    value = str(raw_on_conflict or "").strip().lower()
+    return value if value and value != "auto_resolve" else None
+
+
 def _is_requirement_ticket(category: str | None, meta: dict | None) -> bool:
     """True iff this write is a requirement TICKET — a build unit, not a knowledge assertion.
 
@@ -347,10 +393,22 @@ def _is_requirement_ticket(category: str | None, meta: dict | None) -> bool:
     AMEND (C0), the WORK-review remediation emit, and the plan panel mint — every "add a NEW ticket"
     path. A plain requirement ASSERTION extracted during full intake carries no ``build_state`` and is
     left on the normal reconciled path, so this guard changes only the add-a-ticket flows.
+
+    The ``category`` label alone is NOT trusted to decide this. A caller that ships the ticket
+    IDENTITY (``meta.requirement_id`` + ``meta.build_state``) but forgets ``category="requirement"``
+    used to fall through to the reconciled path, where the ``Augmenter`` additively merged the new
+    ticket into a topically-similar existing one — the observed prd-sotos corruption (a brand-new
+    ticket vanished into another ticket's ``content``, and the response named an id the caller never
+    wrote). Identity keys are self-describing, so they are sufficient evidence on their own;
+    :func:`_requirement_upsert` then stamps the missing ``category`` so the fact is queryable as the
+    ticket it always was.
     """
-    if str(category or "").strip() != REQUIREMENT_CATEGORY:
+    meta = meta or {}
+    if not str(meta.get("build_state") or "").strip():
         return False
-    return bool(str((meta or {}).get("build_state") or "").strip())
+    if str(category or "").strip() == REQUIREMENT_CATEGORY:
+        return True
+    return bool(str(meta.get("requirement_id") or "").strip())
 
 
 def _requirement_upsert(
@@ -360,6 +418,7 @@ def _requirement_upsert(
     source: str | None,
     scope: str | None,
     meta: dict | None,
+    on_conflict_requested: str | None = None,
 ) -> dict[str, Any]:
     """Identity-keyed write for a requirement TICKET — NEVER text-deduped or reconciled.
 
@@ -379,16 +438,62 @@ def _requirement_upsert(
     The caller passes a REDACT-ONLY ``graph`` (``policy=[Redactor()]`` — no Deduper, no
     ConflictOverwriter), so the insert can never merge, overwrite, or raise a contradiction; secrets
     are still scrubbed. The write-time section invariant still enforces the fact fits its snapshot.
+
+    ``on_conflict_requested`` is the caller's ``onConflict`` when they supplied one. It is NOT
+    honored — there is no conflict step on this path — but it is reported back in ``note`` rather
+    than silently swallowed, because a caller who passes it is working from the belief that it
+    guards the write, and that belief is what produced the prd-sotos corruption.
     """
     meta = dict(meta or {})
     rid = str(meta.get("requirement_id") or "").strip()
-    existing = None
-    if rid:
-        for f in graph.facts_by(
-            category=REQUIREMENT_CATEGORY, state=None, meta_filter={"requirement_id": rid}
-        ):
-            existing = f
-            break
+    # Identity is the requirement_id ALONE. This lookup used to also filter on
+    # category="requirement", which quietly broke the recovery case it matters most for: a ticket
+    # that landed on the wrong path has a NULL category, so the identity lookup could not see it
+    # and a corrected re-write minted a SECOND active fact for the same requirement_id instead of
+    # healing the first — manufacturing the very duplicate this path exists to prevent. Match on
+    # the key, then heal the category on write.
+    matches = (
+        [
+            f
+            for f in graph.facts_by(state=None, meta_filter={"requirement_id": rid})
+            if str(getattr(f, "category", None) or "") in ("", REQUIREMENT_CATEGORY)
+        ]
+        if rid
+        else []
+    )
+    # Prefer the LIVE ticket as the upsert target. Ordering out of facts_by is not guaranteed, and
+    # picking a rejected twin would rewrite a dead row while the active one kept the stale text —
+    # a re-file that reports "updated" and changes nothing a reader can see.
+    active = [f for f in matches if getattr(f, "state", None) == "active"]
+    existing = (active or matches or [None])[0]
+    notes: list[str] = []
+    # A ticket write is identity-keyed, so it settles NOTHING by conflict. Say so out loud when the
+    # caller asked for a conflict mode, instead of returning a bare "n/a" they will read as "fine".
+    if on_conflict_requested:
+        notes.append(
+            f"onConflict={on_conflict_requested!r} was IGNORED: a requirement ticket is "
+            f"identity-keyed on meta.requirement_id, so this write ran no dedup, no additive "
+            f"merge and no contradiction step. Do not pass onConflict on a ticket write — on the "
+            f"reconciled path 'surface' selects the additive-merge policy, which silently folds a "
+            f"new ticket into a different existing one."
+        )
+    # Uniqueness guard. This path can no longer CREATE a second active fact for one
+    # requirement_id, but snapshots corrupted before the fix still hold such pairs, and a caller
+    # upserting into one is editing an ambiguous identity — only one of the twins gets the new
+    # text and every reader sees whichever it happens to hit. Flag it loudly and name the twins.
+    # It is deliberately not a hard refusal: the caller repairing the damage is exactly who needs
+    # this write to succeed, and refusing here would strand them with no path at all (which is how
+    # this snapshot got into its current state). plan_gate_check REJECTS the plan on this, so the
+    # condition still cannot survive to a bless.
+    duplicate_ids = sorted(f.id for f in active) if len(active) > 1 else []
+    if duplicate_ids:
+        notes.append(
+            f"DUPLICATE IDENTITY: {len(active)} ACTIVE facts already share "
+            f"meta.requirement_id={rid!r} ({', '.join(duplicate_ids)}). This is corruption "
+            f"residue — the identity-keyed path cannot produce it. Only {existing.id} was "
+            f"updated; delete the stale twin(s) with praxis_delete_fact(space=..., snapshot=...)."
+        )
+    note = " ".join(notes) or None
     if existing is not None:
         graph.update_fact(
             existing.id,
@@ -403,7 +508,10 @@ def _requirement_upsert(
             "id": existing.id,
             "onConflict": "n/a",
             "contradictionsSurfaced": 0,
-            "retrievable": True,
+            "factsRejected": [],
+            "note": note,
+            "duplicateIds": duplicate_ids,
+            "retrievable": _ticket_retrievable(graph, existing.id, rid),
         }
     fid = graph.write(
         insight, state="active", source=source, scope=scope,
@@ -415,8 +523,40 @@ def _requirement_upsert(
         "id": fid,
         "onConflict": "n/a",
         "contradictionsSurfaced": 0,
-        "retrievable": fid is not None,
+        "factsRejected": [],
+        "note": note,
+        "duplicateIds": duplicate_ids,
+        "retrievable": _ticket_retrievable(graph, fid, rid),
     }
+
+
+def _ticket_retrievable(
+    graph: PostgresVectorGraph, fact_id: str | None, rid: str
+) -> bool:
+    """Read the just-written ticket back under the predicate its READERS actually use.
+
+    af-intake-plan's bless step is a readback — "that readback IS the durability proof" — and
+    every reader of a ticket (``plan_gate_check``, ``incomplete_requirements``, the af-build
+    RESOLVE query) selects on ``category="requirement"``, not by id. Confirming the write with
+    ``graph.get_fact(id)``, or with the semantic ``search`` the reconciled path uses, therefore
+    proves the wrong thing: a ticket that landed without its category answers "yes, retrievable"
+    and is still permanently invisible to every categorical query — which is exactly how seven
+    orphaned tickets sat in prd-sotos reporting success while the gate said they did not exist.
+
+    So re-read through the EXHAUSTIVE primitive on the reader's own predicates. One indexed
+    query, and a False here is a loud write-time failure instead of an orphan an agent discovers
+    minutes later and "fixes" by writing a duplicate.
+    """
+    if fact_id is None:
+        return False
+    if not rid:
+        return graph.get_fact(fact_id) is not None
+    return any(
+        f.id == fact_id
+        for f in graph.facts_by(
+            category=REQUIREMENT_CATEGORY, state=None, meta_filter={"requirement_id": rid}
+        )
+    )
 
 
 def _batch_result_from_outcome(
@@ -446,13 +586,32 @@ def _batch_result_from_outcome(
         action = "merged"
     else:
         action = "added"
+    # Parity with ``_write_insight``: an "overwrite" decision REJECTS its losers, so name them
+    # instead of letting the item report a bare "added" with contradictionsSurfaced: 0 while
+    # other facts silently went dark.
+    facts_rejected: list[str] = []
+    if decision.action == "overwrite":
+        facts_rejected = sorted(
+            {
+                str(fid)
+                for fid in [decision.update_target_id, *(decision.supersede_ids or [])]
+                if fid and fid != outcome.fact_id
+            }
+        )
+    summary = f"{action} insight"
+    if facts_rejected:
+        summary = (
+            f"{summary} — REJECTED {len(facts_rejected)} other fact(s) as contradiction "
+            f"loser(s): {', '.join(facts_rejected)}"
+        )
     return {
         "ok": True,
-        "summary": f"{action} insight",
+        "summary": summary,
         "action": action,
         "id": outcome.fact_id,
         "onConflict": on_conflict,
         "contradictionsSurfaced": contradictions,
+        "factsRejected": facts_rejected,
         "retrievable": outcome.fact_id is not None,
     }
 
@@ -721,6 +880,20 @@ def create_app(conn: Any | None = None) -> FastAPI:
         is absent they use the requester's working memory. This is the seam that
         lets the factory read/mutate a project snapshot (checks + ``prd-<project>``
         tickets) without any ``{sub}::space:`` mangling.
+
+        A LONE ``X-Praxis-Space`` is deliberately DROPPED, not honored and not refused.
+        Working memory is one pool per ``(org, principal.sub)``; ``space`` partitions
+        SNAPSHOTS, never the live graph (the tenancy redesign removed the old
+        ``{sub}::space:`` mangling that made a space header select a working graph). It is
+        not refused because the dashboard sends the active space id on EVERY request by
+        contract (``frontend-react/src/api/contract.ts``), so a 400 here would break every
+        live read for any user who has selected a space.
+
+        The cost of dropping it is real and worth naming: a live ``/facts/by`` read is
+        org+user scoped, so several projects' tickets share ONE pool and ``requirement_id``
+        values collide ACROSS projects (``R1``..``R40`` can exist twice over). Anything that
+        keys on ``requirement_id`` must therefore address the project's plan SNAPSHOT (both
+        headers) — a bare read is not project-scoped and never was.
         """
         space = (x_praxis_space or "").strip()
         snapshot = (x_praxis_snapshot or "").strip()
@@ -1142,8 +1315,18 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> list[dict[str, Any]]:
-        return candidates_for(org, uid).list(state)
+        """List the target's candidates — the (space, snapshot) graph, else working memory.
+
+        The LISTING must resolve to the same graph every by-id sibling does (GET/PATCH/DELETE
+        /candidates/{cid}, promote, reject). Without the target it always listed the caller's
+        private working memory while those siblings honored the headers, so an agent told (by
+        the MCP tools' own docstrings) to "find the id via praxis_list_graph" before repairing a
+        snapshot-resident fact was handed ids from a DIFFERENT graph — a listing that silently
+        answers about the wrong store is worse than one that errors.
+        """
+        return candidates_for(org, uid, target).list(state)
 
     @app.get("/candidates/{cid}")
     def get_candidate(
@@ -1158,6 +1341,12 @@ def create_app(conn: Any | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
         return c
 
+    # promote/reject honor the (space, snapshot) target exactly like GET/PATCH/DELETE
+    # /candidates already do. Without it these two resolved only to the caller's working
+    # memory and 404'd on every snapshot-resident fact — so a plan ticket that a bad merge
+    # had wrongly flipped to `rejected` was unrecoverable: rejected facts are invisible to
+    # active queries, so the build silently never sees them, and there was no un-reject path
+    # at all. Un-rejecting is the repair verb, so it must reach where the plan actually lives.
     @app.post("/candidates/{cid}/promote")
     def promote(
         cid: str,
@@ -1165,9 +1354,10 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         try:
-            return candidates_for(org, uid).promote(cid, body.get("targetState"))
+            return candidates_for(org, uid, target).promote(cid, body.get("targetState"))
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
         except PromotionError as exc:
@@ -1180,9 +1370,10 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         try:
-            return candidates_for(org, uid).reject(cid, body.get("reason"))
+            return candidates_for(org, uid, target).reject(cid, body.get("reason"))
         except KeyError:
             raise HTTPException(status_code=404, detail=f"unknown candidate {cid}")
 
@@ -1413,6 +1604,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
     ) -> dict[str, Any]:
         """Truncate the requester's working memory only (scoped to org_id + user_id).
 
@@ -1420,7 +1612,28 @@ def create_app(conn: Any | None = None) -> FastAPI:
         ``(org, uid)``; other users' working memory and all org-shared snapshots
         are untouched. Implemented as a load of zero snapshots, which truncates
         working memory without refilling.
+
+        A ``(space, snapshot)`` header pair is REFUSED rather than ignored. This route can
+        only ever clear working memory, and the plan_repro eval sent the headers believing
+        they scoped the wipe to "the eval space" — on a shared key that silently destroyed
+        unrelated working memory instead. Everywhere else in this API a header pair is an
+        explicit, deliberate act (the dashboard sends a lone space header, which still means
+        nothing here; the MCP client refuses to send half a pair), so a pair arriving on a
+        DESTRUCTIVE route is a caller whose mental model of the blast radius is wrong — and
+        the wipe is irreversible, so it must not proceed on a guess. Deleting a snapshot is
+        ``DELETE /snapshots``, a different verb with a different name for a reason.
         """
+        if target is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "POST /graph/clear only ever truncates YOUR OWN working memory — it "
+                    "cannot clear a (space, snapshot), and passing X-Praxis-Space + "
+                    "X-Praxis-Snapshot would have wiped your working memory instead of the "
+                    "snapshot you named. Drop the headers to clear working memory on "
+                    "purpose, or use DELETE /snapshots to drop a snapshot."
+                ),
+            )
         g = live_graph(org, uid)
         removed = len(g.all_facts())
         g.load_caches([])
@@ -1813,13 +2026,25 @@ def create_app(conn: Any | None = None) -> FastAPI:
 
     # --- skill sharing: browse another member's facts + fold them in -------
     def _fact_brief(fact: Any) -> dict[str, Any]:
-        """Compact read model for the browse view (one fact in a source)."""
+        """Compact read model for the browse view (one fact in a source).
+
+        ``category`` and ``meta`` are part of the brief because this projection is what an
+        auditor sees: it is the only read over an org-shared snapshot that needs no working-memory
+        target, so verification tooling (and ``praxis_browse_snapshot``) is built on it. Without
+        the identity keys it carries — ``requirement_id``, ``build_state``, ``check_id`` — such a
+        tool is STRUCTURALLY unable to notice a ticket that was merged into another, mis-stated, or
+        left with a NULL category by a bad write: every symptom of that corruption class lives in
+        exactly the two fields the brief used to drop. Callers that only render text/scope ignore
+        the extra keys (the dashboard maps fields by name), so widening is additive.
+        """
         return {
             "id": fact.id,
             "text": fact.text,
             "scope": fact.scope,
             "clusterLabel": fact.cluster_label,
             "state": fact.state,
+            "category": fact.category,
+            "meta": fact.meta or {},
         }
 
     def _group_facts(facts: list[Any]) -> list[dict[str, Any]]:
@@ -2257,6 +2482,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 source=body.get("source"),
                 scope=body.get("scope"),
                 meta=meta,
+                on_conflict_requested=_meaningful_on_conflict(body.get("onConflict")),
             )
         # raw: trusted fast lane — redact only, no Deduper / LLM conflict steps.
         # auto_resolve: ConflictOverwriter turns a confirmed contradiction into a
@@ -2394,6 +2620,13 @@ def create_app(conn: Any | None = None) -> FastAPI:
         results: list[dict[str, Any] | None] = [None] * len(insights)
         to_decide: list[dict[str, Any]] = []
         decide_index: list[int] = []
+        # A requirement TICKET is identity-keyed and must never reach the reconciled write,
+        # in bulk exactly as on POST /insights — the batch lane's policy carries the Deduper
+        # and (under "surface") the additive Augmenter, which is what merged a brand-new
+        # ticket into an unrelated one. Handle ticket items serially inline, the same shape
+        # the episodic branch below already uses, on their own REDACT-ONLY graph. Built
+        # lazily so a batch with no tickets pays nothing.
+        ticket_graph: PostgresVectorGraph | None = None
         for i, item in enumerate(insights):
             if not isinstance(item, dict):
                 results[i] = {"ok": False, "error": "each insight must be an object", "index": i}
@@ -2405,6 +2638,29 @@ def create_app(conn: Any | None = None) -> FastAPI:
             item_meta = item.get("meta")
             if item_meta is not None and not isinstance(item_meta, dict):
                 results[i] = {"ok": False, "error": "meta must be an object", "index": i}
+                continue
+            # Ticket routing runs BEFORE the raw stamp, mirroring POST /insights (which routes
+            # on category/meta before it reads ``raw`` at all): the identity-keyed path is
+            # already pipeline-exempt, so a ticket has no business carrying meta['forced'] and
+            # must not round-trip differently depending on how the batch was flagged.
+            if _is_requirement_ticket(item.get("category"), item_meta):
+                if ticket_graph is None:
+                    ticket_graph = graph_for(org, uid, target, policy=[Redactor()])
+                try:
+                    res = _requirement_upsert(
+                        ticket_graph,
+                        insight=text,
+                        source=item.get("source"),
+                        scope=item.get("scope"),
+                        meta=item_meta,
+                        on_conflict_requested=_meaningful_on_conflict(
+                            body.get("onConflict")
+                        ),
+                    )
+                    res["ok"] = True
+                except Exception as exc:  # noqa: BLE001 - report, don't abort the batch
+                    res = {"ok": False, "error": str(exc), "index": i}
+                results[i] = res
                 continue
             # raw batch: stamp meta['forced'] so each item is a permanently-exempt force
             # insert — the write path bypasses the pipeline for it, it round-trips as
@@ -2500,6 +2756,39 @@ def create_app(conn: Any | None = None) -> FastAPI:
         )
         if total_bytes > _MAX_BODY_BYTES:
             raise HTTPException(status_code=413, detail="documents too large")
+        # A requirement TICKET can never enter the distillation lane. /ingest runs
+        # ``ingest_dump`` over a REDACT+DEDUPE graph — the reconciled pipeline whose merge steps
+        # folded a brand-new ticket into a topically-similar existing one and destroyed its
+        # content (the prd-sotos corruption; see _requirement_upsert). /insights and
+        # /insights/batch close that door by routing ticket-shaped writes to the identity-keyed
+        # upsert; that rescue is NOT available here, because a document is not a fact: one text
+        # distills into MANY facts and the document's ``meta`` is stamped on every one of them,
+        # so honoring ``meta.requirement_id`` would mint N active facts sharing one identity —
+        # manufacturing exactly the duplicate-identity damage the upsert exists to prevent. A
+        # ticket arriving as a "document" is therefore a caller error with no correct handling,
+        # so refuse it LOUDLY (the precedent the batch lane sets for category='check') and name
+        # the endpoint that writes a ticket correctly. Checked before the size cap's sibling
+        # validations run any LLM work.
+        for i, doc in enumerate(documents):
+            if not isinstance(doc, dict):
+                continue  # per-document shape errors are reported in the ingest loop below
+            doc_meta = doc.get("meta")
+            if _is_requirement_ticket(
+                doc.get("category"), doc_meta if isinstance(doc_meta, dict) else None
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"documents[{i}] is a requirement TICKET (meta.build_state + "
+                        "meta.requirement_id/category='requirement'), not a raw document. "
+                        "/ingest distills one document into many facts through the dedup/merge "
+                        "pipeline, which cannot preserve a ticket's meta.requirement_id identity "
+                        "and has silently merged new tickets into unrelated ones. Author the "
+                        "ticket with POST /insights (or /insights/batch) targeting the plan "
+                        "snapshot via X-Praxis-Space + X-Praxis-Snapshot — that path is "
+                        "identity-keyed on meta.requirement_id and never merges."
+                    ),
+                )
         state = str(body.get("state") or "active").strip().lower()
         if state not in ("active", "proposed"):
             raise HTTPException(status_code=400, detail="state must be 'active' or 'proposed'")

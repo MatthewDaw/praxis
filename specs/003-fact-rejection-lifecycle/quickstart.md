@@ -42,7 +42,10 @@ Per Constitution Principle II (test-first, non-negotiable):
 2. **Resolve keeps the link** — `POST /contradictions/{pair}/resolve` flips the edge
    `contradiction`→`contradicted_by` instead of deleting it; the resolved pair is still discoverable
    from either fact.
-3. **Delete gating** — `DELETE` an `active` fact → 409; `proposed`/`rejected` → 200 and edges gone.
+3. **Delete cascade** — `DELETE` a fact in any state → 200 and edges gone. *(Superseded: originally
+   "delete gating — `active` → 409, reject first". The gate was removed; a hard delete needs no
+   prior reject, because a rejected fact keeps its row and its `meta.requirement_id` and strands an
+   identity twin. See [data-model.md](data-model.md#state-transitions).)*
 4. **State swap** — re-approving a `rejected` loser flips both states and keeps the link.
 5. **Ripple flag** — a rejected fact with another contradiction reports `hasOtherContradictions: true`;
    the just-resolved pair alone reports `false`.
@@ -57,7 +60,7 @@ uv run python -m knowledge.serve     # serves http://localhost:8000
 #   GET    /candidates/{id}                 # contradictions incl. status: pending|resolved
 #   POST   /candidates/{id}/reject          # -> hasOtherContradictions
 #   POST   /candidates/{id}/promote         # proposed->active, and rejected->active (re-approval)
-#   DELETE /candidates/{id}                 # 409 if active
+#   DELETE /candidates/{id}                 # hard delete from any state (no reject first)
 #   GET    /contradictions                  # pending pairs (kind='contradiction')
 #   POST   /contradictions/{pair}/resolve   # flips edge, keeps link
 ```

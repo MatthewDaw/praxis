@@ -314,6 +314,22 @@ into a similar existing ticket. Setting `meta.requirement_id` makes a re-file up
 place, which is what makes the whole extraction **idempotent and resumable**. Every record MUST carry
 `source="prd-<project>"`; check each result's `ok`/`id`/`action`.
 
+> **Re-file idempotence is CONDITIONAL — verify it, never assume it (DEFECT 6).** A re-file updates in
+> place **only when the identity lookup can actually FIND the incumbent.** It historically could not, and
+> a re-file of an *already-existing* `meta.requirement_id` then **silently minted a duplicate**: `prd-sotos`
+> holds two active facts both carrying `meta.requirement_id="CHAT14"`. Both halves of that failure were in
+> `knowledge/serve/app.py` — the write reached the server without `category="requirement"` and so missed
+> the identity-keyed path entirely, and the identity lookup itself filtered on `category="requirement"`,
+> so it could not see the incumbent (whose category was NULL for that same reason) and inserted a fresh
+> row. Both are fixed, so the guarantee is real going forward — but **do not read "idempotent and
+> resumable" as unconditional**; that phrasing is exactly what led an operator to re-file during a repair
+> and end up with a twin.
+>
+> **The observable proof is `action`.** A genuine upsert returns **`action:"updated"`**. **`action:"added"`
+> on a re-file of an id you believe already exists is a DUPLICATE, not a success** — it means the lookup
+> missed. **Check `action` on EVERY re-file**, and on `"added"` stop immediately and reconcile (Part C
+> "Residue check" + Recovery) rather than writing anything further.
+
 `raw=True` still embeds each fact (retrievable) and still redacts secrets, but **skips Praxis dedup AND
 the per-item LLM conflict check** — avoiding the timeout the normal path hits at scale and the dedup that
 wrongly collapses near-duplicate requirements. **You own clean, non-conflicting data on this path** —
@@ -331,9 +347,14 @@ the contradiction net.**
 > and (2) the audit's cold-eyes cross-requirement conflict pass (Part B). Treat the audit, not the empty
 > queue, as the contradiction gate for bulk inserts.
 
-**Incremental edits use the surfacing path.** A single requirement add/change later (not a fresh bulk
-intake) uses `praxis_add_insight(..., on_conflict="surface")` — which keeps **live contradiction
-surfacing** (the per-item conflict/claim check). With `on_conflict="surface"` a detected contradiction is
+**Incremental edits to NON-TICKET facts use the surfacing path.** A single *non-ticket* requirement
+assertion / decision / learning add-or-change later (not a fresh bulk intake, and carrying **no
+`meta.build_state`**) uses `praxis_add_insight(..., on_conflict="surface")` — which keeps **live
+contradiction surfacing** (the per-item conflict/claim check). **This path is forbidden on a TICKET
+write** (`category="requirement"` + `meta.build_state`/`meta.requirement_id`): `surface` selects the
+policy carrying the additive `Augmenter`, which merges the ticket into a fact you never named and rejects
+unrelated hardened tickets — see the HARD PROHIBITION in Part C. Ticket writes omit `on_conflict` or pass
+`raw=True`. With `on_conflict="surface"` a detected contradiction is
 **surfaced, not auto-resolved**: both facts are kept (incumbent `active`, newcomer `proposed`, neither
 rejected) and a pending pair appears in `praxis_get_contradictions` with a resolvable `pair_id`; the
 human settles it with `praxis_resolve_contradiction(pair_id, keep_id | "all" | custom_text)`. **Never**
@@ -352,7 +373,8 @@ admitted requirement MUST carry `source="prd-<project>"`.
   surface with no backing requirement = `uncoveredSurfaces`, every mvp requirement with no surface and no
   `backend-only` = `uncoveredRequirements`); and a short **flagged list** (low-confidence extractions,
   doc↔wireframe conflicts you preserved, placeholder acceptance conditions). If a candidate is wrong, the
-  human **edits the fact in Praxis directly** (`praxis_edit_fact` / `praxis_reject_fact`) — corrections
+  human **edits the fact in Praxis directly** (`praxis_edit_fact`, or `praxis_delete_fact` to remove one
+  outright — prefer delete over reject; see the Recovery section in Part C) — corrections
   happen there, not in a side file. On approval, continue to hardening.
 - **Unattended (Constitution / owner asleep): do not pause** — there is no one to approve. The candidates
   are already in Praxis; record a `praxis_record_episode` ("intake: extracted N candidates, auto-admitted,
@@ -393,8 +415,9 @@ acceptance condition** ("when X, the system does Y, observable via Z"). When an 
 `meta`): automated = a command the loop runs (test/build/type-check/lint — the default; always prefer
 it); manual = needs a human to confirm (UX feel, a visual) and the executor **may not self-check it**.
 
-**c. KG self-consistency (incremental edits).** For incremental edits made on `on_conflict="surface"`,
-the surface is **`praxis_get_contradictions`** — read it, present each pending pair as a paired diff
+**c. KG self-consistency (incremental NON-TICKET edits).** For incremental edits made on
+`on_conflict="surface"` — non-ticket facts only, never a write carrying `meta.build_state`/
+`meta.requirement_id` — the surface is **`praxis_get_contradictions`** — read it, present each pending pair as a paired diff
 ("Req A: sessions expire in 24h / Req C: sessions are persistent"), and the human settles each with
 `praxis_resolve_contradiction(pair_id, keep=…)` (`keep="<id>"` to keep one side, `keep="all"` for a false
 positive where both genuinely hold, or `custom_text` to reconcile). You never settle it yourself. A
@@ -410,9 +433,11 @@ set), set `contradictions_checked=true` on the planning marker; a raw-bulk write
 net must leave it **`false`** honestly. The gate blocks until it is `true` AND the queue is empty.
 
 **d. A human correction is a fact, not an override.** When the human corrects a *factual* claim, admit it
-the same way (`add_insight(..., on_conflict="surface")`) so a correction that is itself wrong, or clashes
-with something settled, *surfaces* and is reconciled rather than silently absorbed. When a correction
-invalidates earlier research, re-open and re-edit the affected requirements directly.
+the same way (`add_insight(..., on_conflict="surface")` — again, non-ticket facts only) so a correction
+that is itself wrong, or clashes with something settled, *surfaces* and is reconciled rather than silently
+absorbed. A correction to a TICKET is an in-place `praxis_edit_fact` on that `meta.requirement_id`, never
+a `surface` write. When a correction invalidates earlier research, re-open and re-edit the affected
+requirements directly.
 
 **Escape hatch:** a requirement the human deliberately owns but can't yet make testable is recorded as an
 **owned-decision** fact (tagged as such), not forced binary — but it cannot pass the done-gate until it
@@ -541,7 +566,9 @@ for. **Validation should be roughly ticket-count-NEUTRAL.**
    posture, add the missing refusal, fix a `depends_on` edge. **This closes the large majority of
    real findings and is the default.** An unowned behavior is almost always a missing clause in some
    existing ticket's acceptance, not a missing ticket.
-2. **`praxis_reject_fact`** on the loser of a near-dup pair (canonical one survives).
+2. **`praxis_delete_fact`** on the loser of a near-dup pair (canonical one survives). **Delete, not
+   reject** — a rejected fact keeps its row AND its `meta.requirement_id`, which strands a twin that a
+   later re-file collides with. Use `praxis_reject_fact` only when the row must survive for audit.
 3. **A recorded episode** — for a dismissal (with the reason), a forced default, or a deferred
    owned-decision. A decision is an episode, never a ticket, unless it needs the B2 HARD-RULE shape.
 4. **`praxis_add_insight` for a genuinely new ticket — the LAST resort, with a bar.** Permitted only
@@ -631,7 +658,17 @@ immediately.
   binary acceptance present, no vague terms, no dangling concept reference, the signed contract
   from B1, and the **build-order DAG** — `R-NO-DANGLING-DEP` and `R-NO-DEP-CYCLE`, either of
   which would otherwise surface only as a run-time stall when `next_ready_ticket` finds nothing
-  claimable.
+  claimable. It also catches the identity/silent-rejection defects directly:
+  - **A duplicate `meta.requirement_id` among ACTIVE facts → REJECT.** This is the residue of a
+    re-file that missed the identity lookup (DEFECT 6, Step 2) or of an additive merge; the gate
+    refuses to bless a snapshot holding a twin.
+  - **A fact active with `provenance="prd-<project>"` but absent from the gate's own enumeration →
+    HARD ERROR, never a silent omission.** A plan fact the gate cannot see is a fact the build
+    cannot see.
+  - **A `category="requirement"` fact that moved to `rejected` with no explicit human-gate audit
+    entry → WARNING.** That is the fingerprint of the silent-rejection defect: something rejected a
+    ticket nobody named. Treat a warning here as a prompt to run the rejected-fact audit (Part C
+    Recovery step 5) before blessing.
 - **Bidirectional surface coverage** — `praxis_surface_coverage(project, scope="mvp")` returns
   both `uncoveredSurfaces` and `uncoveredRequirements` empty, or each exception justified. A
   project with no surfaces at all (a CLI, a library) is `backend-only` by construction; say so
@@ -741,23 +778,47 @@ refuses a `category="check"` fact in the `prd-<project>` plan — so a check can
 plan even by mistake.
 
 **Amend is additive, never a content edit.** C0 adds a requirement that *did not exist*; it does not
-rewrite an existing ticket's statement/acceptance — that is a re-baseline FULL INTAKE (Step-3
-`on_conflict="surface"` edit). Praxis is a HARD dependency: if the write cannot reach Praxis, **fail
+rewrite an existing ticket's statement/acceptance — that is a re-baseline FULL INTAKE (a Step-3 in-place
+`praxis_edit_fact` on that `meta.requirement_id`; never an `on_conflict="surface"` write, which is for
+non-ticket facts only). Praxis is a HARD dependency: if the write cannot reach Praxis, **fail
 closed** (error and stop) — never fall back to a file.
 
-> **`on_conflict="surface"` is NOT a dedup guard for an additive ticket.** `on_conflict` governs
-> **contradictions only** — an *additive, non-contradictory* near-duplicate is invisible to it. Before
-> this was fixed, a C0 write for a genuinely-new ticket that was merely *topically similar* to an
-> existing one was silently **merged** by the ingestion dedup into the nearest fact (`action:"merged"`),
-> appending its text into that fact's `content` — even a already-`finished` ticket's — corrupting it. So
-> do NOT rely on `surface` to keep a new ticket distinct. What keeps it distinct is the **ticket-identity
-> write path**: because a C0 write is `category="requirement"` carrying `meta.build_state="incomplete"`,
-> the server routes it through an **identity-keyed upsert** (keyed on `meta.requirement_id`, redact-only,
-> NO text-dedup) — a distinct/new `requirement_id` (or none) always lands as a **fresh distinct fact**,
-> and only a write reusing an EXISTING `requirement_id` updates that one ticket in place. A new ticket can
-> therefore never mutate a different (or finished) ticket. To decide "is this actually an edit of an
-> existing ticket?", judge it yourself first (`praxis_facts_by` / `praxis_get_context` for a near-dup); if
-> it IS a restatement of existing content, that is a re-baseline (FULL INTAKE), not C0.
+> **HARD PROHIBITION — NEVER pass `on_conflict` on a ticket write.** A ticket write is any
+> `category="requirement"` write carrying `meta.build_state` / `meta.requirement_id`. The only two
+> supported shapes are **omit `on_conflict` entirely** or **`raw=True`**. Passing it is not
+> harmless-and-ignored — it is **destructive**.
+>
+> **The mechanism.** `on_conflict="surface"` selects `default_write_policy()`, and that policy contains an
+> **`Augmenter`** — a Mem0-style ADDITIVE MERGE step. The `auto_resolve` policy does NOT contain the
+> Augmenter. That asymmetry is the whole bug: passing `on_conflict="surface"` on a ticket write is exactly
+> what routes it off the identity-keyed path and ENABLES the additive merge. (The old note here claimed
+> `on_conflict` "only ever gated contradictions, never additive near-dup merges" — that is false on the
+> facts, and "irrelevant" wrongly invited passing it anyway.)
+>
+> **Failure signature — recognise it and stop.** A live reproduction against the prod backend:
+>
+> ```
+> request : a NEW ticket, on_conflict="surface"
+> response: {"summary":"merged insight","action":"merged","id":"<an id the caller never wrote>",
+>            "contradictionsSurfaced":0}
+> result  : the new ticket was NEVER created; the OTHER ticket's content was destroyed;
+>           unrelated already-hardened tickets were flipped to state="rejected" and are
+>           therefore invisible to active queries (praxis_incomplete_requirements stops
+>           listing them, so the build silently never sees them)
+> ```
+>
+> A response naming an `id` you did not write, or `action:"merged"` on a ticket write, is **corruption, not
+> success** — stop and run the Recovery + audit steps below.
+>
+> **What actually keeps a new ticket distinct is the ticket-identity write path**, and nothing else:
+> because a C0 write is `category="requirement"` carrying `meta.build_state="incomplete"`, the server
+> routes it through an **identity-keyed upsert** (keyed on `meta.requirement_id`, redact-only, NO
+> text-dedup, no Augmenter) — a distinct/new `requirement_id` (or none) always lands as a **fresh distinct
+> fact**, and only a write reusing an EXISTING `requirement_id` updates that one ticket in place. A new
+> ticket can therefore never mutate a different (or finished) ticket — *provided the write does not carry
+> `on_conflict`*. To decide "is this actually an edit of an existing ticket?", judge it yourself first
+> (`praxis_facts_by` / `praxis_get_context` for a near-dup); if it IS a restatement of existing content,
+> that is a re-baseline (FULL INTAKE), not C0.
 
 ## C0 — New ticket (a genuinely-new requirement, nothing to edit)
 
@@ -786,7 +847,8 @@ praxis_add_insight(
                "acceptance": "<binary observable condition>",  # REQUIRED (see below)
                "verify": "automated | manual",                 # REQUIRED (see below)
                "scope": "mvp | post-mvp", "surfaces": ["<screen-id>", ...],
-               "requirement_id": "<R-id, OPTIONAL>" },  # include to make a re-file update-in-place
+               "requirement_id": "<R-id, OPTIONAL>" },  # re-file updates in place ONLY if the lookup
+                                                        # finds the incumbent — verify action=="updated"
   space    = "<project>",          # REQUIRED — write into the plan snapshot itself,
   snapshot = "prd-<project>",      # NOT working memory (invisible to the build)
 )
@@ -794,16 +856,74 @@ praxis_add_insight(
 
 1. **The `build_state="incomplete"` on this write is what makes it a TICKET**, and the server routes a
    requirement ticket through the identity-keyed path — so it lands as a **distinct new fact**
-   (`action:"added"`) and is NEVER text-merged into a similar existing ticket. `on_conflict` is
-   irrelevant here (it only ever gated contradictions, never additive near-dup merges), so do not pass it
-   expecting it to guard the dup. **Optionally set `meta.requirement_id`:** with it, re-filing the *same*
-   ticket updates that one fact in place (a true restatement) instead of minting a twin; without it, every
-   write is a fresh fact. If the "new" requirement is really an EDIT of an existing ticket's content, you
-   are in the wrong path — that content edit belongs to FULL INTAKE (Step-3), not Amend.
-   **Recovery (a pre-fix corrupted ticket):** if an older plan has a ticket whose `content` was appended
-   into by a silent merge, restore it with `praxis_edit_fact(<id>, content="<original>", on_conflict="none")`
-   (a literal in-place rewrite, no reconcile), then re-file the intended new ticket — which now lands
-   distinct.
+   (`action:"added"`) and is NEVER text-merged into a similar existing ticket. **Do NOT pass
+   `on_conflict` on this write** — it is not ignored: `on_conflict="surface"` selects the policy carrying
+   the additive `Augmenter`, which merges the new ticket into some other fact and rejects tickets you
+   never named (see the HARD PROHIBITION above). Omit it, or pass `raw=True`. **Optionally set
+   `meta.requirement_id`:** with it, re-filing the *same* ticket updates that one fact in place (a true
+   restatement) instead of minting a twin — **but only when the identity lookup actually finds the
+   incumbent** (see "Re-file idempotence is CONDITIONAL" in Step 2); without it, every write is a fresh
+   fact. **Check `action` on every re-file:** `"updated"` is the upsert; **`"added"` on a re-file of an id
+   you believe already exists is a DUPLICATE, not a success** — stop and reconcile before writing anything
+   else. If the "new" requirement is really an EDIT of an existing ticket's content, you are in the wrong
+   path — that content edit belongs to FULL INTAKE (Step-3), not Amend.
+
+   **Recovery (a ticket a merge corrupted).** A snapshot fact cannot be edited or deleted while the plan
+   is blessed — the bless-state guard refuses edits/deletes on a `prd-<project>` snapshot unless the
+   planning marker is armed, so a bare `praxis_edit_fact` **400s**.
+
+   > **ORDERING CONSTRAINT — REMOVE THE BAD FACT BEFORE WRITING THE CORRECTED ONE, NEVER AFTER.** The
+   > natural instinct on discovering damage is to write the good version first and clean up second; doing
+   > it in that order **strands a duplicate permanently** (the corrected write lands as a second active
+   > fact, and now the id you would delete by is ambiguous). Delete first, then write. Every time.
+
+   The working sequence:
+   1. **Re-arm the planning marker first** — `_ticket_state.stamp_planning(project, owner)` (this skill's
+      own Step 0d), or `POST /planning-marker`. Nothing below works until it is armed.
+   2. **REMOVE the bad fact — `praxis_delete_fact(cid, space="<project>", snapshot="prd-<project>")`.**
+      This is the default removal verb: a HARD removal that works from ANY state, needs no prior reject
+      step, and cascades edges. **Do NOT reject instead** — `praxis_reject_fact` keeps the row, and **a
+      rejected fact STILL HOLDS its `meta.requirement_id`**, so rejecting is precisely how a snapshot ends
+      up with a stranded twin that later re-files collide with. Reserve `praxis_reject_fact(cid,
+      space=..., snapshot=...)` for the narrow case where the row must be **preserved for audit**. Always
+      pass the `space`/`snapshot` pair — both are snapshot-aware.
+   3. **THEN write the corrected fact** — either a literal in-place rewrite of a fact you are keeping
+      (`praxis_edit_fact(<id>, content="<original>", on_conflict="none", space="<project>",
+      snapshot="prd-<project>")`, no reconcile), or a fresh re-file of the intended ticket, which now
+      lands distinct because the bad fact is already gone. Check `action` on the result.
+   4. **Un-reject a fact a bad merge wrongly rejected** — `praxis_promote_fact(cid,
+      target_state="active", space="<project>", snapshot="prd-<project>")` restores it to the active set.
+      (Promote back what should be live; **delete** what should not exist at all.)
+   5. **AUDIT — always, on seeing the failure signature.** A silent auto-resolve rejects facts the caller
+      never named, so enumerate every `state="rejected"` fact in the snapshot
+      (`praxis_facts_by(category="requirement", space="<project>", snapshot="prd-<project>",
+      state="rejected")`) and promote back each one that should still be live, deleting the rest so no
+      stranded `meta.requirement_id` survives. Skipping this leaves hardened tickets invisible to
+      `praxis_incomplete_requirements`, so the build silently never sees them.
+   6. **Clear the planning marker at bless** — `_ticket_state.clear_planning(project, owner)` (B5 step 3),
+      so the `plan_completeness` hook goes inert again.
+
+   ### Residue check — TWO ACTIVE FACTS SHARING ONE `meta.requirement_id`
+
+   The lasting, findable residue is **two active facts in the same snapshot carrying the same
+   `meta.requirement_id`** — the identity-keyed path can never produce that, so its presence proves a
+   ticket write went down the reconciled path, or that a re-file missed the identity lookup and minted a
+   duplicate (DEFECT 6, Step 2). Check it with `praxis_facts_by(category="requirement", space="<project>",
+   snapshot="prd-<project>", state="any")`, then group the results by `meta.requirement_id`: any id with
+   more than one active fact is a corrupted pair. `prd-sotos` is in exactly this state today — two active
+   facts both carrying `meta.requirement_id="CHAT14"`.
+
+   **Which fact of the pair is the affected one** — its `auditTrail` carries entries by actor `pipeline`
+   (`distilled` / `scored`) rather than by the intake owner. That is the cheap way to sweep for OTHER
+   affected projects without re-reading every plan. **Read it precisely:** those `pipeline` entries are
+   **synthesized at read time** for any fact whose `meta` carries no `auditTrail` of its own, so the
+   signal means *"this fact never carried an intake-owner audit trail"* — which is still exactly the right
+   discriminator. It is **not** evidence that an async background job rewrote the fact; that was
+   investigated and refuted, so do not report it that way.
+
+   Reconcile a pair by **deleting** the twin FIRST (Recovery step 2 — never rejecting it, which leaves the
+   `requirement_id` stranded), then repairing or re-filing the canonical fact (step 3), and run the
+   rejected-fact audit (step 5) alongside it.
 2. If it renders a surface, bind it against the SAME snapshot:
    `praxis_bind_surface(requirement_id, screen_id, project, space="<project>", snapshot="prd-<project>")`
    (the `renders` edge) so surface-bound checks resolve onto it at build.
@@ -860,8 +980,25 @@ apply is the build's fresh RESOLVE query (tag ∪ "*" ∪ surface), same as ever
   completeness query and the `R-HAS-SOURCE` gate filter on; `meta.scope` (mvp/post-mvp) is NOT a
   substitute.
 - **Never write a planning fact on `auto_resolve`** — it silently rejects the loser and hides the
-  conflict; incremental edits use `on_conflict="surface"`, fresh bulk uses `raw=True` (with the audit as
-  the contradiction net).
+  conflict. `on_conflict="surface"` is the incremental-edit path for **NON-TICKET categories ONLY**
+  (plain requirement assertions extracted during full intake, decisions, learnings — anything with **no
+  `meta.build_state`**); fresh bulk uses `raw=True` (with the audit as the contradiction net).
+- **Never pass `on_conflict` on a TICKET write** — any `category="requirement"` write carrying
+  `meta.build_state` / `meta.requirement_id`. `on_conflict="surface"` selects the policy containing the
+  additive `Augmenter`, which merges the new ticket into a fact you never named and flips unrelated
+  hardened tickets to `state="rejected"` (invisible to `praxis_incomplete_requirements`). Omit it, or
+  pass `raw=True`. An `action:"merged"` response, or one naming an id you did not write, is corruption —
+  see the HARD PROHIBITION and Recovery in Part C.
+- **Never assume a re-file updated in place — check `action`.** `"updated"` is the upsert;
+  **`"added"` on a re-file of an id you believe already exists is a DUPLICATE** (the identity lookup
+  missed). Stop and reconcile (Part C "Residue check") rather than writing anything further.
+- **Never REJECT a fact you mean to REMOVE — delete it.** `praxis_delete_fact(cid, space=..., snapshot=...)`
+  is the default removal verb: hard removal from any state, no prior reject step, edges cascade. A
+  rejected fact keeps its row **and its `meta.requirement_id`**, which strands a twin that later re-files
+  collide with — that is how `prd-sotos` ended up with two active `CHAT14` facts. `praxis_reject_fact` is
+  only for the narrow case where the row must be preserved for audit.
+- **Never write the corrected fact before removing the bad one** — during any repair, DELETE first, then
+  write. The reverse order strands a duplicate permanently (Part C Recovery).
 - **Never treat a write timeout as a failure** — the write usually landed; **read back** (`list_graph` /
   `get_context`) before retrying, or you'll create duplicates.
 - **Never admit a plan through working memory** — write candidates DIRECTLY into
@@ -875,8 +1012,8 @@ apply is the build's fresh RESOLVE query (tag ∪ "*" ∪ surface), same as ever
 - **Never let the agent that drafted a requirement be its only skeptic** — the audit and the plan panel
   are cold-eyes sub-agents / ce-* reviewers.
 - **Never "close" a challenge or near-dup with a free-text note alone** — close it with the Praxis write
-  that fixes it (edit/add the requirement, declare the check, reject/narrow the duplicate + re-save the
-  snapshot) or a recorded dismissal/deferral episode.
+  that fixes it (edit/add the requirement, declare the check, DELETE the duplicate — not reject it, which
+  strands its `meta.requirement_id`) or a recorded dismissal/deferral episode.
 - **Never bless a plan** while any audit-surfaced requirement/check is still incomplete, any open
   challenge is unresolved, the B5 validation episode is missing, or `plan_gate` does not pass — and never with
   no automated test strategy, a platform-required test layer missing, or a CI gate lacking a binary
@@ -898,7 +1035,10 @@ apply is the build's fresh RESOLVE query (tag ∪ "*" ∪ surface), same as ever
   records.
 - **In Amend mode: never edit an existing requirement's content** — C0 is strictly additive (a ticket
   that did not exist). A rewrite of an existing statement/acceptance is a re-baseline FULL INTAKE, not an
-  amend; the `on_conflict="surface"` guard on the C0 write exists to catch this and bounce it there.
+  amend. Nothing on the write catches this for you: the C0 write carries **no `on_conflict`**, and the
+  guard that keeps it from mutating another ticket is the **identity-keying on `meta.requirement_id`**,
+  not a conflict mode. Judge it yourself (`praxis_facts_by` / `praxis_get_context`) before writing, and
+  bounce a restatement to FULL INTAKE.
 
 ## Compounding
 

@@ -61,7 +61,10 @@ def decide(pending: list[dict], *, project: str = "") -> str:
         f"{lines}\n"
         "File each one now, per the af-rapid-queue skill: write it into "
         "(space=<project>, snapshot=prd-<project>) as a requirement with "
-        'meta.build_state="incomplete", then retire the spool entry with '
+        'meta.build_state="incomplete" and NO onConflict argument (a ticket write is '
+        "identity-keyed on meta.requirement_id; passing onConflict routes it onto the "
+        "reconciled path, which merges the new ticket into an existing one), then retire "
+        "the spool entry with "
         "`python3 <plugin>/hooks/rapid_queue.py filed <qid> <ticket-id>`. Do NOT start building "
         "them here — filing is the whole job; af-build drains them. If Praxis is unreachable, say "
         "so and leave them queued; they will be offered again at the next boundary."

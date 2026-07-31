@@ -113,6 +113,8 @@ description: "Task list for REJECTED state + retained-contradiction lifecycle"
 
 **Independent Test (backend)**: `DELETE` an active fact → 409; `proposed`/`rejected` → 200 with `fact_edges` gone and the fact absent from other facts' contradiction lists.
 
+**SUPERSEDED — the delete gate built in this phase was later removed.** T028–T031 (and T038 in Phase 6) are kept as the record of what was built and are no longer the contract. Current behavior: a hard delete works from **any** state with no prior reject — `FactsCandidates.delete` ("Hard-delete a fact in any state — no reject required first"), `canDeleteCandidate()` returns `true` unconditionally, and `test_delete_active_succeeds_without_reject` replaced the 409 assertion. Reason: reject is not a soft delete — a rejected fact keeps its row **and** its `meta.requirement_id`, so rejecting instead of deleting strands an identity twin in a plan snapshot (one fact invisible to active-state queries but still matched by every identity lookup — observed, not hypothetical). See [data-model.md](data-model.md#state-transitions).
+
 ### Tests for User Story 3 — backend (write first, must fail)
 
 - [X] T028 [P] [US3] Test `DELETE /candidates/{id}`: `active` → 409 with reject-first guidance; `proposed`/`rejected` → 200 and `fact_edges` gone; the fact disappears from other facts' contradiction lists, in `knowledge/serve/tests/test_server.py` (US3 #1–#3, SC-005).
@@ -145,7 +147,7 @@ description: "Task list for REJECTED state + retained-contradiction lifecycle"
 - [X] T035 [P] [US2] Update `frontend-react/src/components/ContradictionPanel.tsx` to show each contradictor with its `state` + pending/resolved `status` and exactly one state-gated action: "Reject" for active/proposed, "Approve" for rejected (FR-013).
 - [X] T036 [P] [US2] Update `frontend-react/src/components/ContradictionsReview.tsx` to render the global pending-contradictions view from `GET /contradictions` (FR-013a).
 - [X] T037 [US2] Show the review notice when an action returns `hasOtherContradictions: true` (link to the affected fact), and refresh affected facts after each action without a manual reload (FR-008, FR-017, SC-007).
-- [X] T038 [P] [US3] Handle the 409 on delete-of-active using the existing `ApiConflictError { statusCode: 409 }` and show "reject the fact first" guidance (the delete call site / its colocated test in `frontend-react/src/api/`).
+- [X] T038 [P] [US3] Handle the 409 on delete-of-active using the existing `ApiConflictError { statusCode: 409 }` and show "reject the fact first" guidance (the delete call site / its colocated test in `frontend-react/src/api/`). — *superseded with the Phase 5 gate: `canDeleteCandidate()` now returns `true` for every state and the server never answers 409 here.*
 
 **Checkpoint**: All three user stories are functional end-to-end.
 

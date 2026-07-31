@@ -337,6 +337,54 @@ hash_text(){    # -> stable digest of stdin; md5sum is coreutils, md5 is BSD
 resolve_backend || { say "FATAL: model backend preflight failed for '${BACKEND:-?}' — refusing to start"; exit 1; }
 say "backend=$BACKEND ($BACKEND_NOTE)"
 
+# Run a Praxis query so a transient backend failure CANNOT kill the driver.
+#
+# Every query below is invoked as `var=$(query)` and swallows its own stderr with 2>/dev/null.
+# Under `set -euo pipefail` that combination is lethal and completely silent: one non-zero exit
+# from the python — an API 5xx, a DNS blip, a connection reset — makes the assignment fail, `set -e`
+# terminates the whole script, and the redirected stderr means NOTHING is written to the log. The
+# run just stops mid-round, looking from the outside exactly like a healthy loop that went quiet.
+# That is how the appeal_engine run died on 2026-07-31: last line "round #3 progress: 3/4 finished"
+# at 03:44, no error, no signal, no OOM, driver gone, its tmux session left orphaned for hours.
+#
+# The `${var:-default}` fallbacks at each call site were written to survive exactly this, but they
+# are unreachable dead code as long as `set -e` fires on the assignment first. Routing every query
+# through here is what makes them live: the query runs inside an `if`, where `set -e` is suspended,
+# so a failure returns a status the caller can actually see and decide about.
+#
+# Transient by assumption, so retry with backoff before giving up; a hard failure returns 1, and
+# each call site declares what that means for it.
+#
+# Success is judged by EXIT STATUS alone, never by whether stdout is empty. `ready_batch` prints
+# nothing for a genuine dependency stall, and that is a real answer the loop must be free to act on
+# — treating empty-but-successful as a failure would retry a true stall forever instead of halting
+# loudly, trading a silent death for a silent spin.
+praxis_q(){  # args: query-fn [args...] -> its stdout; 1 if it never succeeded
+  local out="" i
+  for i in 1 2 3 4 5; do
+    if out=$("$@" 2>/dev/null); then printf '%s' "$out"; return 0; fi
+    # Linear backoff, ~2.5min total across 5 attempts. Overridable so the regression test can drive
+    # the retry path without sleeping through it.
+    sleep $((i * ${AF_QUERY_BACKOFF_S:-10}))
+  done
+  return 1
+}
+
+# Consecutive-outage bookkeeping for the passes that genuinely cannot proceed without Praxis.
+# Riding out a blip is right; spinning forever against a backend that is actually down is not, so a
+# long enough streak halts loudly — the same contract as a dependency stall, and the opposite of the
+# silent death this whole mechanism replaces.
+outages=0
+outage(){  # args: what-failed -> waits, or halts the run once the streak is too long
+  outages=$((outages + 1))
+  if [ "$outages" -ge "${AF_MAX_OUTAGES:-10}" ]; then
+    say "HALTING — Praxis unreachable for $outages consecutive passes (last: $1). Nothing can be claimed, dispatched or verified until it is back; check the backend, then relaunch."
+    exit 6
+  fi
+  say "Praxis unreachable ($1) — outage $outages/${AF_MAX_OUTAGES:-10}, waiting 60s before retrying this pass"
+  sleep 60
+}
+
 claimable(){  # -> count of incomplete|in_progress for PROJECT
   $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
 import sys
@@ -660,7 +708,8 @@ PYEOF
 n=0
 round=0
 while :; do
-  left=$(claimable); left=${left:-999}
+  if ! left=$(praxis_q claimable); then outage "claimable"; continue; fi
+  left=${left:-999}
   say "$PROJECT claimable=$left"
   [ "$left" = "0" ] && { say "DONE — nothing claimable"; break; }
   [ "$n" -ge "$MAX" ] && { say "hit max_tickets=$MAX, stopping"; break; }
@@ -686,25 +735,33 @@ while :; do
     say "swept back to ${free_gb}G free — continuing"
   fi
 
-  release_inprogress >/dev/null
+  # Degraded, not fatal: a lease that goes unreleased costs this round one ticket, whereas dying
+  # here costs the whole run — and dying here is what `set -e` did before the `|| say`.
+  release_inprogress >/dev/null 2>&1 || say "WARNING: could not release stale leases this pass — a crashed session's ticket may sit out this round"
 
   # Compute the frontier AFTER releasing dead leases, so a ticket stranded in_progress by a crashed
   # session is eligible for this round instead of sitting out until someone notices.
   budget=$((MAX - n)); [ "$budget" -lt "$BATCH_MAX" ] && cap="$budget" || cap="$BATCH_MAX"
-  batch=$(ready_batch "$cap")
+  if ! batch=$(praxis_q ready_batch "$cap"); then outage "ready_batch"; continue; fi
   if [ -z "$batch" ]; then
     # Claimable work exists but nothing is dependency-ready: a cycle, or a chain rooted on a blocked
     # ticket. Restarting sessions cannot fix that, so halt loudly instead of spinning.
     say "DEPENDENCY STALL — $left claimable but nothing ready; every remaining ticket waits on an unfinished or blocked prerequisite. Fix the depends_on chain or unblock the root, then relaunch."
     break
   fi
+  outages=0   # a computed frontier proves Praxis is back; the streak only counts CONSECUTIVE failures
   set -- $batch
   size=$#
   ids_csv=$(printf '%s,' "$@"); ids_csv=${ids_csv%,}
+
+  # Read the baseline BEFORE the round counters move. This is the last query that can still abort the
+  # pass cleanly, and retrying a pass that had already claimed a round number would skip numbers in
+  # the log and over-count `n` against MAX.
+  if ! before=$(praxis_q finished_count); then outage "finished_count baseline"; continue; fi
+  before=${before:-0}
+
   round=$((round+1)); n=$((n+size))
   say "round #$round: dispatching $size ticket(s) in parallel — $ids_csv"
-
-  before=$(finished_count); before=${before:-0}
 
   tmux kill-session -t "$SESSION" 2>/dev/null || true
   tmux new-session -d -s "$SESSION" -c "$WT"
@@ -754,14 +811,20 @@ while :; do
   done_seen=$before
   while [ "$waited" -lt "$deadline" ]; do
     sleep 30; waited=$((waited+30))
-    now=$(finished_count); now=${now:-$done_seen}
+    # Mid-round, a Praxis blip is NOT worth reacting to: the batch is live in its own session and
+    # still working. Fall back to the last known counts so the poll is a no-op, and let the deadline
+    # and the pane-stillness check keep watching. This is the single poll that killed the run.
+    now=$(praxis_q finished_count) || now=$done_seen
+    now=${now:-$done_seen}
     if [ "$now" -gt "$done_seen" ]; then
       say "round #$round progress: $((now - before))/$size finished"
       done_seen=$now
       same_count=0                       # real progress is not a stall, whatever the pane looks like
       waited=$((waited > 900 ? waited - 900 : 0))
     fi
-    open=$(batch_open "$@"); open=${open:-1}
+    # Same reasoning: an unanswerable "are they done yet?" means keep waiting, never end the round.
+    open=$(praxis_q batch_open "$@") || open=1
+    open=${open:-1}
     if [ "$open" = "0" ]; then say "round #$round complete — all $size ticket(s) finished or blocked"; break; fi
     pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
     # Retain the last live frame. Three rounds died as a bare "session gone" with the pane already
@@ -858,8 +921,16 @@ while :; do
   # prompt) loops indefinitely at full cost. The DeepSeek-balance incident burned ~6 hours across 46
   # such cycles before it was spotted, and the billing grep added afterwards only covers that one
   # cause. Three fruitless rounds is the general version of that guard.
-  after=$(finished_count); after=${after:-$before}
-  if [ "$after" -gt "$before" ]; then
+  # An unanswerable tally must not feed the circuit breaker in either direction: scoring it fruitless
+  # on a blip walks a healthy run toward the 3-strike halt, and scoring it productive hides a real
+  # failure. Say so instead, and leave the streak exactly where it was.
+  if ! after=$(praxis_q finished_count); then
+    say "WARNING: Praxis unreachable after round #$round — cannot tell what landed, so this round counts as neither productive nor fruitless and its merged tree goes UNVERIFIED. Treat any green claim from it as unproven."
+    after=""
+  fi
+  if [ -z "${after:-}" ]; then
+    :   # unanswerable — deliberately touch neither `fruitless` nor the verification stage
+  elif [ "$after" -gt "$before" ]; then
     fruitless=0
     # Verify the MERGE, not the tickets — they were each proven alone, in a worktree that no longer
     # exists. Runs only when something actually landed, and only after the build session is dead so
