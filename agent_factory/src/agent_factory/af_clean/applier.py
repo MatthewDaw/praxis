@@ -173,7 +173,6 @@ def apply_findings(
     pending: dict[str, str] = {}       # file -> final text
     changes: list[LayerChange] = []
     edited: list[Finding] = []
-    diff_parts: list[str] = []
     for f in sorted(cleared, key=lambda x: (x.location.file, -(x.location.line or 0))):
         rel = f.location.file
         current = pending.get(rel)
@@ -188,38 +187,71 @@ def apply_findings(
     if not edited:
         return outcome
 
-    for rel, after in pending.items():
-        before = (root / rel).read_text(encoding="utf-8")
-        diff_parts.extend(difflib.unified_diff(
+    # 3. BLIND VERIFICATION, ONE FINDING AT A TIME.
+    #
+    # The unit of verification is a single change, which is what makes "partial endorsement"
+    # impossible by construction rather than by interpretation.
+    #
+    # The alternative would be to verify a batch and apply only the endorsed hunks -- the module
+    # even ships apply_endorsed_hunks for it -- but that requires mapping the verifier's
+    # endorsed_hunk_ids back to hunks, and NOTHING assigns those ids: no code builds a Hunk, and
+    # build_verifier_payload sends only {"diff", "repo_path"}, so the verifier is never given an id
+    # vocabulary to endorse against. Any id it returns is its own invention, and a mapping built on
+    # that would be a guess. Two earlier bugs in this module came from exactly that habit.
+    #
+    # With one change per verdict, a non-empty endorsement can only mean this change, and a refusal
+    # can only refuse this change. The cost is one verifier call per finding; the alternative is not
+    # slower, it is unsound.
+    verified: dict[str, str] = {}          # file -> text with endorsed removals applied
+    applied_now: list[Finding] = []
+    base_text: dict[str, str] = {rel: (root / rel).read_text(encoding="utf-8") for rel in pending}
+
+    # Highest line first again: each endorsed removal shifts the lines below it.
+    for f in sorted(edited, key=lambda x: (x.location.file, -(x.location.line or 0))):
+        rel = f.location.file
+        current = verified.get(rel, base_text[rel])
+        pair = _strip_comment_line(root, f, current_text=current)
+        if pair is None:
+            outcome.reported.append((f, "line no longer matches the finding; refused"))
+            continue
+        before, after = pair
+
+        if verifier_runner is None:
+            # Tag EVERY finding, not just the first: an audit that records the caveat once loses it
+            # the moment anyone filters by finding.
+            outcome.reported.append(
+                (f, "VERIFICATION SKIPPED (--skip-verify): applied without blind endorsement"))
+            verified[rel] = after
+            applied_now.append(f)
+            continue
+
+        diff = "".join(difflib.unified_diff(
             before.splitlines(keepends=True), after.splitlines(keepends=True),
             fromfile=f"a/{rel}", tofile=f"b/{rel}"))
-
-    # 3. BLIND VERIFICATION of the proposed diff. The verifier sees the diff and the repo, never the
-    #    reasoning that produced it, so it cannot be talked into agreeing.
-    diff = "".join(diff_parts)
-    if verifier_runner is not None:
         verdict = run_verifier(diff, str(root), runner=verifier_runner)
-        endorsed = getattr(verdict, "endorsed_hunk_ids", frozenset())
-        if not endorsed:
-            # Nothing to restore — the tree was never touched. A refusal costs one wasted patch.
-            outcome.verifier_rejected.extend(edited)
-            return outcome
-    else:
-        outcome.reported.append(
-            (edited[0], "VERIFICATION SKIPPED (--skip-verify): applied without blind endorsement"))
+        if getattr(verdict, "endorsed_hunk_ids", frozenset()):
+            verified[rel] = after
+            applied_now.append(f)
+        else:
+            outcome.verifier_rejected.append(f)
+
+    if not applied_now:
+        # Nothing to restore — the tree was never touched. A refusal costs one wasted patch.
+        return outcome
 
     # 4. WRITE, then commit. Only endorsed work reaches the disk at all.
-    for rel, after in pending.items():
-        (root / rel).write_text(after, encoding="utf-8")
+    for rel, text in verified.items():
+        (root / rel).write_text(text, encoding="utf-8")
 
     if git_runner is not None:
         subprocess.run(["git", "add", "-A"], cwd=root, capture_output=True, text=True)
-        layers = build_layers({LAYER_COMMENTS: changes})
+        endorsed_changes = [c for c, f in zip(changes, edited) if f in applied_now]
+        layers = build_layers({LAYER_COMMENTS: endorsed_changes or changes})
         outcome.commit_result = apply_commit_stack(
             layers, root,
             git_runner=git_runner,
             apply_layer_files=lambda _layer: None,   # the tree already carries the edits
             validate_fn=validate_fn or (lambda _p: True),
         )
-    outcome.applied.extend(edited)
+    outcome.applied.extend(applied_now)
     return outcome

@@ -131,9 +131,12 @@ from agent_factory.af_clean.producers import comment_findings
 
 
 def _endorsing_verifier(argv, **kwargs):
-    """A verifier that endorses every hunk it is shown."""
+    """A verifier that endorses every hunk it is shown, with a DISTINCT id per hunk — which is what
+    a real verdict looks like, and what makes 'endorsed everything' distinguishable from 'endorsed
+    one hunk twice'."""
     diff = kwargs.get("input") or ""
-    ids = [ln.split()[-1] for ln in diff.splitlines() if ln.startswith("@@")] or ["h1"]
+    n = sum(1 for ln in diff.splitlines() if ln.startswith("@@")) or 1
+    ids = [f"h{i}" for i in range(1, n + 1)]
     return SimpleNamespace(stdout=_json.dumps({"endorsed_hunk_ids": ids, "verdict": "endorse"}))
 
 
@@ -243,3 +246,72 @@ def test_silent_verifier_applies_nothing(tmp_path):
                          verifier_runner=lambda argv, **kw: _NS(stdout=""))
     assert out.applied == []
     assert (repo / "src/widget.py").read_text() == before
+
+
+def test_endorsement_is_per_file_and_a_refusal_does_not_spread(tmp_path):
+    """The verifier answers with hunk ids that cannot be mapped back to files, so each file's patch
+    is verified on its own. Refusing one file must not block the other, and endorsing one must not
+    approve its neighbour."""
+    from types import SimpleNamespace as _NS
+    import json as _j
+
+    repo = _repo(tmp_path, {"src/keep.py": SLOP, "src/drop.py": SLOP})
+    keep_before = (repo / "src/keep.py").read_text()
+
+    def _endorses_only_drop(argv, **kw):
+        diff = kw.get("input") or ""
+        ok = "drop.py" in diff
+        return _NS(stdout=_j.dumps({"endorsed_hunk_ids": ["h1"] if ok else [],
+                                    "verdict": "endorse" if ok else "refuse"}))
+
+    out = apply_findings(repo, comment_findings(repo), verifier_runner=_endorses_only_drop)
+    assert "# increment counter" not in (repo / "src/drop.py").read_text(), "endorsed file must apply"
+    assert (repo / "src/keep.py").read_text() == keep_before, "refused file must be untouched"
+    assert out.applied and out.verifier_rejected
+
+
+def test_refusing_one_finding_in_a_file_keeps_the_others(tmp_path):
+    """The case neither the batch nor the per-file design could express: two removals in ONE file,
+    one endorsed and one refused. Verification is per finding, so a refusal removes exactly its own
+    change and nothing else -- no 'partial endorsement' to interpret."""
+    from types import SimpleNamespace as _NS
+    import json as _j
+
+    repo = _repo(tmp_path, {"src/widget.py": SLOP + '''
+    def set_name(self, name):
+        # set the name
+        self.name = name
+'''})
+
+    def _refuses_only_the_set_name_removal(argv, **kw):
+        diff = kw.get("input") or ""
+        refuse = "set the name" in diff
+        return _NS(stdout=_j.dumps({"endorsed_hunk_ids": [] if refuse else ["h1"]}))
+
+    out = apply_findings(repo, comment_findings(repo),
+                         verifier_runner=_refuses_only_the_set_name_removal)
+    text = (repo / "src/widget.py").read_text()
+    assert "# increment counter" not in text, "the endorsed removal must land"
+    assert "# set the name" in text, "the refused removal must survive untouched"
+    assert len(out.applied) == 1 and len(out.verifier_rejected) == 1
+    assert "INC-441" in text and "self.name = name" in text
+
+
+def test_each_finding_gets_its_own_verdict(tmp_path):
+    """One change per verification is what makes partial endorsement impossible by construction."""
+    repo = _repo(tmp_path, {"src/widget.py": SLOP + '''
+    def set_name(self, name):
+        # set the name
+        self.name = name
+'''})
+    calls: list[str] = []
+
+    def _counting(argv, **kw):
+        calls.append(kw.get("input") or "")
+        return _endorsing_verifier(argv, **kw)
+
+    apply_findings(repo, comment_findings(repo), verifier_runner=_counting)
+    assert len(calls) == 2, "each finding must be verified on its own"
+    for payload in calls:
+        # A hunk header is "@@ -1,6 +1,5 @@" -- two "@@" per hunk -- so count hunk STARTS.
+        assert payload.count("@@ -") == 1, "a verification must cover exactly one change"
