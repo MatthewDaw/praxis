@@ -117,6 +117,46 @@ def _audit_entry(
     return entry
 
 
+# An audit trail is provenance, not a log. Left unbounded it grows once per WRITE,
+# and af-build writes on every lease heartbeat — one observed plan carried 4851
+# entries across 169 tickets (worst single ticket: 174), which was 51% of the whole
+# 1.34MB plan payload. Every build round re-reads that payload for every ticket it
+# considers, so the spam is paid as latency and context on each pass forever after.
+# Keeping the head (who created it, the first real transitions) and a recent window
+# preserves everything provenance is actually consulted for.
+_AUDIT_TRAIL_HEAD = 3
+_AUDIT_TRAIL_TAIL = 20
+
+# Meta keys that carry af-build's lease/heartbeat/run bookkeeping rather than the
+# fact's content. A patch confined to these is machine state, not an authored edit.
+_LEASE_BOOKKEEPING_KEYS = frozenset({
+    "build_state", "claim_owner", "claim_at", "claim_lease_ttl", "claim_heartbeat_at",
+    "run_owner", "run_at", "run_scope", "finished_at", "pinned_checks",
+    "required_validations", "report_only_requirements", "universal_contract",
+    "graded_loop", "under_specified",
+})
+
+
+def _compact_audit_trail(trail: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bound an audit trail to head + recent window, leaving a marker for the gap.
+
+    Returns the trail unchanged when it is already within budget, so a normal fact
+    is untouched and the marker only ever appears on one that actually overflowed.
+    """
+    budget = _AUDIT_TRAIL_HEAD + _AUDIT_TRAIL_TAIL
+    if len(trail) <= budget:
+        return trail
+    dropped = len(trail) - budget
+    marker = {
+        "action": "compacted",
+        "timestamp": _now(),
+        "provenance": str((trail[0] or {}).get("provenance", "")),
+        "actor": "praxis",
+        "note": f"{dropped} intermediate audit entries elided to bound the trail",
+    }
+    return [*trail[:_AUDIT_TRAIL_HEAD], marker, *trail[-_AUDIT_TRAIL_TAIL:]]
+
+
 def _short_title(text: str) -> str:
     text = (text or "").strip()
     return text if len(text) <= 60 else f"{text[:57].rstrip()}…"
@@ -229,7 +269,7 @@ class FactsCandidates:
     ) -> None:
         meta = dict(fact.meta or {})
         provenance = str(fact.source or meta.get("provenance", ""))
-        trail = list(meta.get("auditTrail", []))
+        trail = _compact_audit_trail(list(meta.get("auditTrail", [])))
         trail.append(_audit_entry(provenance, action, actor=actor, note=note))
         meta["auditTrail"] = trail
         self.graph.set_meta(fact.id, meta)
@@ -501,6 +541,19 @@ class FactsCandidates:
         category = None
         if "category" in body and body["category"] not in (None, ""):
             category = str(body["category"]).strip()
+        # A patch that only moves lease/build bookkeeping is not an EDIT of the
+        # fact — it is af-build refreshing a heartbeat, and it recurs once per
+        # minute for the life of every claim. Auditing those buried the real
+        # entries and made the trail the single largest component of the plan
+        # payload. The state still changes and is still readable on the fact; only
+        # the audit entry (which said nothing but "a heartbeat happened") is
+        # skipped, so who edited the CONTENT stays answerable.
+        bookkeeping_only = (
+            isinstance(body.get("meta"), dict)
+            and bool(body["meta"])
+            and set(body["meta"]) <= _LEASE_BOOKKEEPING_KEYS
+            and not any(k in body for k in ("content", "title", "provenance", "category"))
+        )
         if isinstance(body.get("meta"), dict):
             meta.update(body["meta"])
         derived_from = [str(s) for s in (body.get("derivedFrom") or []) if s]
@@ -529,7 +582,8 @@ class FactsCandidates:
         fact = self.graph.get_fact(cid)
         assert fact is not None
         actor = planning_owner if post_bless else "human-gate"
-        self._append_audit(fact, "edited", actor=actor)
+        if not bookkeeping_only:
+            self._append_audit(fact, "edited", actor=actor)
         # Opt-in reconciliation: apply the contradictions detected above. Default
         # "none" detected nothing, so a plain edit stays a literal write with no side
         # effects on any other fact.

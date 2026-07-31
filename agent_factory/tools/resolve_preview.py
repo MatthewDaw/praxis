@@ -139,6 +139,22 @@ def _preview_ticket(ticket, bare, override):
     return _resolve_ticket(ticket, bare, override)[0]
 
 
+# Markers of a check whose ``run`` shells a TEST SUITE rather than asserting a static
+# property. Cost matters only in combination with reach: a wildcard check pins onto every
+# ticket, so an expensive one is paid once per ticket per pass. Observed: two wildcard
+# checks running pytest cost 9.4s and 37.4s each, i.e. ~47s x every incomplete ticket on
+# every pass — hours of duplicated work on a real plan, re-proving whole-repo invariants
+# that the post-merge verification round and the pre-push gate already re-run once.
+_TEST_RUNNER_MARKERS = ("pytest", "vitest", "jest", "go test", "cargo test", "rspec",
+                        "phpunit", "npm test", "yarn test", "pnpm test", "unittest")
+
+
+def _is_expensive_run(run: str) -> bool:
+    """True when a check's ``run`` invokes a test runner (as opposed to a grep/static assert)."""
+    low = (run or "").lower()
+    return any(marker in low for marker in _TEST_RUNNER_MARKERS)
+
+
 def _bleeds_across_concerns(landed_tagsets, applies):
     """Heuristic flag for an over-broad ``applies_to``: a NON-wildcard check bleeds across unrelated
     concerns when it lands on 2+ tickets that share NO identity tag in common *beyond the check's own
@@ -191,7 +207,15 @@ def _by_check_view(tickets, checks_ref):
         lines.append(f"    applies_to: {applies_raw or '(none)'}")
         lines.append(f"    fan-out {len(landed_ids)} ticket(s): "
                      f"{', '.join(landed_ids) or '(none)'}")
-        if wildcard:
+        if wildcard and _is_expensive_run(str(chk_meta.get("run") or "")):
+            lines.append(
+                f"    ** EXPENSIVE WILDCARD — runs a test suite AND pins onto every ticket, so it "
+                f"costs its runtime x {len(landed_ids)} on every pass. Reserve '*' for CHEAP, "
+                f"genuinely universal assertions (a grep, a lint, a static invariant). If this "
+                f"check needs a suite, either scope applies_to to the tags it truly governs, or "
+                f"reduce the per-ticket run to the static assertion that proves its own statement "
+                f"and let the suite run once in the post-merge verification round. **")
+        elif wildcard:
             lines.append("    [wildcard '*' — pins onto EVERY incomplete ticket by design]")
         elif _bleeds_across_concerns([tagset for _, tagset in landed], applies):
             lines.append("    ** POTENTIALLY TOO BROAD — lands on tickets across unrelated tags; "

@@ -71,8 +71,19 @@ A validation check is a build-time gate. From the one-liner infer:
 
 **`applies_to` hygiene — this is what makes frontend/backend separation AUTOMATIC (mechanical, not LLM
 judgment):**
-- **Universal gate** (typecheck, build, lint, test — must run on EVERY ticket) → `applies_to: ["*"]`.
-  The wildcard lane resolves it onto every ticket, including tag-less/backend ones.
+- **Universal gate** → `applies_to: ["*"]`, but ONLY when the check is both genuinely universal
+  **and CHEAP**. The wildcard lane resolves it onto every ticket, including tag-less/backend ones,
+  so its runtime is multiplied by the size of the incomplete set on EVERY pass. Reserve it for
+  fast, whole-repo assertions — a lint, a typecheck, a grep, a static invariant, the basic
+  code-cleanliness rules that genuinely bear on any diff.
+  **A wildcard check must not shell a TEST SUITE.** Two wildcard checks that ran `pytest` were
+  measured at 9.4s and 37.4s: ~47s × every incomplete ticket × every pass — hours of duplicated
+  work re-proving whole-repo invariants that the post-merge verification round and the pre-push
+  gate already run once on the integrated tree. When a rule needs a suite, do one of:
+  (a) scope `applies_to` to the tags it actually governs, or (b) make the PER-TICKET `run` the
+  static assertion that proves the check's own statement (usually a grep) and leave the suite to
+  the verification round. `python -m agent_factory.tools.resolve_preview` flags an expensive
+  wildcard and prints its fan-out, so check the preview before blessing a `["*"]` check.
 - **Context gate** (a rule tied to a domain class — auth, notifications, seed) → a **specific tag**
   (`["auth"]`), so it lands ONLY on tickets carrying that tag.
 - **Frontend/UI gate** (Playwright E2E, visual-render, axe a11y, no-console-errors) → **surface-bind it**
