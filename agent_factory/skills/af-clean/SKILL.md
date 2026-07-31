@@ -74,6 +74,21 @@ into agreeing with you. A deletion that only you believe in does not ship.
 `entry.run_e1(repo_root, path, produce_findings=..., apply_findings=..., dry_run=...)` wires
 6→10 together and returns an `E1Result` carrying findings plus the validation report.
 
+## Just run it
+
+```bash
+python -m agent_factory.af_clean [path] [--repo-root DIR] [--apply] [--no-validate]
+```
+
+`producers.default_producer()` supplies step 6 and the CLI supplies 1–5 and 10, so the command
+works with no wiring. **Dry run is the default** — `--apply` is the explicit opt-in, because the two
+mistakes are not symmetric: a dry run that should have applied costs one command, an apply that
+should not have run edits someone's repository.
+
+Step 10 makes E1 slow on a large repo: it discovers and runs the project's real test suite. That is
+the point — findings that break the build are not findings — but use `--no-validate` when you only
+want the report.
+
 ## Report advisorily — there is no verdict to give
 
 `E1Result` deliberately has **no top-level pass/fail field**. This is someone's repository, not a
