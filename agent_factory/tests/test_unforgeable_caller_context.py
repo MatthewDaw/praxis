@@ -37,6 +37,8 @@ def _install(monkeypatch, meta):
     monkeypatch.setattr(ts, "_praxis", fake)
     monkeypatch.setattr(ts._praxis, "facts_by", lambda *a, **k: [], raising=False)
     monkeypatch.setattr(ts._praxis, "surface_checks", lambda *a, **k: [], raising=False)
+    # This test is scoped to caller-context forgery, not the (separately-tested) universal lane.
+    monkeypatch.setattr(ts, "_universal_checks", lambda: [])
     return fake
 
 

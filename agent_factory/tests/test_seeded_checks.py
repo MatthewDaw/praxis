@@ -106,16 +106,25 @@ def test_axis_threshold_out_of_range_rejected(tmp_path):
 
 
 def test_ships_minimalism_dry_universal():
-    """U5: the always-on ``minimalism-dry`` graded check ships report-only, in the universal lane,
-    with strict axes and literal good/slop anchors demonstrating strict minimization."""
+    """U5: the always-on ``minimalism-dry`` graded check ships GATING, in the universal lane,
+    with strict axes and literal good/slop anchors demonstrating strict minimization. It shipped
+    report-only during calibration (R39); the anchors below are now proven and it gates."""
     checks = {c.check_id: c for c in load_seeded_checks()}
     m = checks["minimalism-dry"]
     assert m.kind == GRADED and m.applies_to == ("*",)
-    assert m.promote_universal is True and m.report_only is True  # ships report-only (calibration)
-    assert {a.name for a in m.rubric.axes} == {"minimalism", "deduplication", "dry"}
+    assert m.promote_universal is True and m.report_only is False  # calibrated — now gates
+    # "proportionality" is "minimalism" re-guided (R39/B36): same axis, now scores a fragmented
+    # diff low alongside a bloated one, instead of needing a second opposite-signed axis.
+    assert {a.name for a in m.rubric.axes} == {"proportionality", "deduplication", "dry"}
     assert m.rubric.anchors is not None
     # >=3 anchors demonstrating strict minimization (dead-code/speculative vs minimal; copy-paste vs DRY).
     assert len(m.rubric.anchors.good) >= 3 and len(m.rubric.anchors.slop) >= 3
+    # A fragmentation-shaped diff is among the slop anchors, scoring the same axis as bloat.
+    assert any("_get_price" in s and "_get_quantity" in s for s in m.rubric.anchors.slop)
+    # >=4 NEGATIVE anchors (B37) — one per named false-positive shape the judge must not flag.
+    assert len(m.rubric.anchors.negative) >= 4
+    # One negative anchor is TypeScript — the rubric grades a TS diff, not just Python.
+    assert any("unknown" in s and "function " in s for s in m.rubric.anchors.negative)
     # It is the (only) member of the universal lane the library ships today.
     assert "minimalism-dry" in {c.check_id for c in universal_seeded_checks(list(checks.values()))}
 
@@ -125,8 +134,9 @@ def test_minimalism_dry_prompt_embeds_anchors_verbatim():
     m = {c.check_id: c for c in load_seeded_checks()}["minimalism-dry"]
     prompt = build_judge_prompt(m.rubric, "DIFF")
     assert "CALIBRATION" in prompt
-    for snippet in (*m.rubric.anchors.good, *m.rubric.anchors.slop):
+    for snippet in (*m.rubric.anchors.good, *m.rubric.anchors.slop, *m.rubric.anchors.negative):
         assert snippet in prompt  # verbatim — the reproducibility claim
+    assert "LOOKS LIKE SLOP BUT IS NOT" in prompt  # negative anchors are labeled, not silently mixed in
 
 
 def test_adding_one_entry_is_the_only_edit(tmp_path):

@@ -1540,6 +1540,40 @@ def universal_requirements(cid: str, ticket_meta: Optional[dict],
     return out
 
 
+def migrate_pinned_universal(ticket_meta: dict, check_id: str, new_rubric: dict) -> Optional[dict]:
+    """PURE (B36): the meta patch that brings any FROZEN pinned entry for ``check_id`` on ONE ticket
+    back in sync with the current seeded rubric — needed because :func:`_norm_validation` freezes a
+    graded entry's rubric at synthesis time, so an axis re-guidance or anchor edit to
+    ``seeded_checks.toml`` never reaches a pinned entry a worker already synthesized. Returns ``None``
+    (no-op) when the ticket carries no such entry, or it already matches — never patches unnecessarily.
+    """
+    pinned = list(ticket_meta.get(M_PINNED_CHECKS) or [])
+    changed = False
+    out = []
+    for e in pinned:
+        if e.get("source_check_id") == check_id and e.get("rubric") != new_rubric:
+            e = {**e, "rubric": new_rubric}
+            changed = True
+        out.append(e)
+    return {M_PINNED_CHECKS: out} if changed else None
+
+
+def migrate_universal_pinned_entries(tickets: list[dict], check_id: str, new_rubric: dict,
+                                     ref: Optional[tuple[str, str]] = None) -> list[str]:
+    """Apply :func:`migrate_pinned_universal` across every ticket fact in ``tickets`` whose meta
+    carries a stale frozen entry for ``check_id``. Returns the ids actually patched (I/O boundary —
+    the pure decision lives in :func:`migrate_pinned_universal`, this only drives the patch calls)."""
+    migrated: list[str] = []
+    for t in tickets:
+        cid = str(t.get("id") or "")
+        meta = t.get("meta") or {}
+        patch = migrate_pinned_universal(meta, check_id, new_rubric)
+        if patch is not None and cid:
+            _praxis.patch_meta(cid, patch, **_ref_kw(ref))
+            migrated.append(cid)
+    return migrated
+
+
 def contract_with_floor(cid: str, acceptance_text: str, resolved: list,
                         verify: str = "automated",
                         ticket_meta: Optional[dict] = None,

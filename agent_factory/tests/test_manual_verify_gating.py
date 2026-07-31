@@ -36,9 +36,11 @@ class FakePraxis:
 def _install(monkeypatch, meta):
     fake = FakePraxis(meta)
     monkeypatch.setattr(ts, "_praxis", fake)
-    # Only the acceptance floor should resolve: no checks, no surfaces.
+    # Only the acceptance floor should resolve: no checks, no surfaces, no universal lane —
+    # this test is scoped to manual-verify gating, not the (separately-tested) universal check.
     monkeypatch.setattr(ts._praxis, "facts_by", lambda *a, **k: [], raising=False)
     monkeypatch.setattr(ts._praxis, "surface_checks", lambda *a, **k: [], raising=False)
+    monkeypatch.setattr(ts, "_universal_checks", lambda: [])
     return fake
 
 

@@ -101,14 +101,18 @@ check_id = "minimalism-dry"
 kind = "graded"
 applies_to = ["*"]
 promote_universal = true
-report_only = true
-criterion = "The change is the minimum code that does the job — no dead or speculative code, no duplication, and shared logic factored once (DRY)."
+report_only = false
+criterion = "The change is the minimum code that does the job — no dead or speculative code, no duplication, no needless fragmentation, and shared logic factored once (DRY)."
 confidence_floor = 8
-judge_prompt = "Grade strictly to the CALIBRATION anchors, not an external opinion of taste. Fail only on a LOCATED (file:line) instance of dead/speculative code, copy-pasted logic, or a needless abstraction — never on vague dissatisfaction. Do not re-run tests."
+judge_prompt = "Grade strictly to the CALIBRATION anchors, not an external opinion of taste. Fail only on a LOCATED (file:line) instance of dead/speculative code, copy-pasted logic, needless fragmentation, or a needless abstraction — never on vague dissatisfaction. A NEGATIVE anchor's shape is never itself a defect. Do not re-run tests."
+# "proportionality" is minimalism RE-GUIDED (B36): the axis schema is score>=threshold with no way
+# to fail high, so both poles of slop — bloat (dead/speculative code) AND fragmentation (splitting one
+# easy-to-read block into several tiny once-called helpers/files) — are graded as violations of the
+# SAME axis, at the SAME direction (low score), rather than needing a second, opposite-signed axis.
 [[check.axes]]
-name = "minimalism"
+name = "proportionality"
 threshold = 0.8
-guidance = "Every line earns its place: no dead code, unused symbols, speculative abstraction, or premature generality. The simplest thing that works."
+guidance = "Every line AND every abstraction earns its place: no dead code, unused symbols, speculative generality, or needless fragmentation (splitting a single easy-to-read block into multiple tiny helpers/files that are each used exactly once, for no reason beyond 'smaller'). Sized proportionally to what it does — neither bloated nor fragmented."
 [[check.axes]]
 name = "deduplication"
 threshold = 0.8
@@ -133,4 +137,19 @@ slop = [
   "title_slug = title.strip().lower().replace(' ', '-')\ntag_slug = tag.strip().lower().replace(' ', '-')\ncategory_slug = category.strip().lower().replace(' ', '-')",
   # Dead code — locals and a flag that are computed but never used:
   "def parse(line):\n    parts = line.split('=', 1)\n    key = parts[0]\n    value = parts[1]\n    joined = '\\n'.join(parts)  # computed, never used\n    debug = False              # speculative flag, always False\n    return key.strip(), value.strip()",
+  # Fragmentation — one easy-to-read block split into three helpers, each called exactly once:
+  "def _get_price(item):\n    return item.price\n\ndef _get_quantity(item):\n    return item.quantity\n\ndef total(items):\n    return sum(_get_price(i) * _get_quantity(i) for i in items)",
+]
+# NEGATIVE anchors (B37): code that LOOKS slop-shaped but is a legitimate, named pattern — the judge
+# must NOT flag these shapes. One per named false-positive shape (F-D); the first is TypeScript,
+# proving the rubric grades a TS diff as readily as a Python one.
+negative = [
+  # Shape: legitimate unknown-narrowing guard (TypeScript) — looks verbose, but each check is load-bearing.
+  "function isUser(x: unknown): x is User {\n  return typeof x === 'object' && x !== null && 'id' in x && 'name' in x;\n}",
+  # Shape: deliberate, documented silent catch — not dead/speculative, the no-op IS the behavior.
+  "try:\n    cache.delete(key)\nexcept KeyError:\n    pass  # already evicted by TTL; deleting a missing key is an intentional no-op",
+  # Shape: twice-used thin primitive — one line, but DRY-ing two real call sites, not speculative.
+  "def _clamp(x, lo, hi):\n    return max(lo, min(hi, x))\n\nvolume = _clamp(volume, 0, 100)\nbrightness = _clamp(brightness, 0, 100)",
+  # Shape: computed-key lookup table — a dict comprehension, not fragmentation into per-key branches.
+  "HANDLERS = {f\"on_{event}\": handler for event, handler in _EVENT_SPECS}",
 ]
