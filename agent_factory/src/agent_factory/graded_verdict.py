@@ -64,13 +64,15 @@ def _calibration_block(rubric: Rubric) -> str:
     """The verbatim good/slop anchor block, or ``""`` when the rubric carries no anchors (so the
     prompt stays byte-identical to the pre-anchor form)."""
     anchors = rubric.anchors
-    if anchors is None or not (anchors.good or anchors.slop):
+    if anchors is None or not (anchors.good or anchors.slop or anchors.negative):
         return ""
     lines = ["CALIBRATION — grade to these worked examples, not an external opinion of taste:"]
     for snippet in anchors.good:
         lines.append(f"[GOOD — meets the standard]\n{snippet}")
     for snippet in anchors.slop:
         lines.append(f"[SLOP — violates the standard]\n{snippet}")
+    for snippet in anchors.negative:
+        lines.append(f"[LOOKS LIKE SLOP BUT IS NOT — do not flag this shape]\n{snippet}")
     return "\n\n".join(lines) + "\n\n"
 
 

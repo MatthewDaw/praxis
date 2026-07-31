@@ -50,6 +50,26 @@ def test_roundtrips_through_to_dict():
 def test_partial_anchors_default_missing_side_to_empty():
     r = rubric_from_dict({"axes": _AXES, "anchors": {"good": ["only good"]}})
     assert r.anchors.good == ("only good",) and r.anchors.slop == ()
+    assert r.anchors.negative == ()
+
+
+def test_parses_negative_anchors():
+    r = rubric_from_dict({
+        "axes": _AXES,
+        "anchors": {"good": ["g"], "slop": ["s"], "negative": ["looks slop, isn't"]},
+    })
+    assert r.anchors.negative == ("looks slop, isn't",)
+
+
+def test_negative_anchors_roundtrip_when_present_omitted_when_absent():
+    with_negative = rubric_from_dict({
+        "axes": _AXES, "anchors": {"good": ["g"], "slop": ["s"], "negative": ["n"]},
+    })
+    d = rubric_to_dict(with_negative)
+    assert d["anchors"]["negative"] == ["n"]
+
+    without_negative = rubric_from_dict({"axes": _AXES, "anchors": {"good": ["g"], "slop": ["s"]}})
+    assert "negative" not in rubric_to_dict(without_negative)["anchors"]  # byte-compatible when empty
 
 
 @pytest.mark.parametrize("bad", [

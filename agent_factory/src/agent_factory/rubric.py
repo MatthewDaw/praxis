@@ -44,10 +44,17 @@ class Anchors:
     text injected into the judge prompt (see :func:`graded_verdict.build_judge_prompt`) — NO scoring,
     NO versioning, no infrastructure. Their whole job is reproducibility: the same snippets always
     frame the same judgment.
+
+    ``negative`` anchors are a third, optional side: code that LOOKS slop-shaped (repetitive,
+    indirect, narrowly-used) but is a legitimate pattern — e.g. a type-narrowing guard, a documented
+    silent catch, a twice-used thin primitive, a computed-key lookup table. They pin the judge away
+    from false positives on exactly the shapes graders over-flag; empty by default so an anchor set
+    with only good/slop stays byte-identical to before this side existed.
     """
 
     good: tuple[str, ...] = ()
     slop: tuple[str, ...] = ()
+    negative: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -127,14 +134,14 @@ def _anchors_from_dict(raw: object) -> Anchors | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
-        raise ValueError("rubric anchors must be a mapping of {good:[...], slop:[...]}")
+        raise ValueError("rubric anchors must be a mapping of {good:[...], slop:[...], negative:[...]}")
     sides: dict[str, tuple[str, ...]] = {}
-    for side in ("good", "slop"):
+    for side in ("good", "slop", "negative"):
         vals = raw.get(side, [])
         if not isinstance(vals, (list, tuple)):
             raise ValueError(f"rubric anchors {side!r} must be a list of strings")
         sides[side] = tuple(str(v) for v in vals)
-    return Anchors(good=sides["good"], slop=sides["slop"])
+    return Anchors(good=sides["good"], slop=sides["slop"], negative=sides["negative"])
 
 
 def rubric_to_dict(rubric: Rubric) -> dict:
@@ -153,6 +160,8 @@ def rubric_to_dict(rubric: Rubric) -> dict:
     }
     if rubric.anchors is not None:
         data["anchors"] = {"good": list(rubric.anchors.good), "slop": list(rubric.anchors.slop)}
+        if rubric.anchors.negative:  # omitted when empty — byte-compatible with pre-negative anchors
+            data["anchors"]["negative"] = list(rubric.anchors.negative)
     return data
 
 

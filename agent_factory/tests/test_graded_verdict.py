@@ -107,6 +107,18 @@ def test_no_anchor_prompt_is_byte_identical():
                                           criterion=plain.criterion), "DIFFBODY")
 
 
+def test_negative_anchors_injected_under_their_own_heading():
+    """R39/B37: a NEGATIVE anchor (looks slop-shaped but is legitimate) is injected verbatim under a
+    distinct heading so the judge is told NOT to flag that shape — never silently mixed into slop."""
+    from agent_factory.graded_verdict import build_judge_prompt
+    negative = ["def _clamp(x, lo, hi):\n    return max(lo, min(hi, x))"]
+    p = build_judge_prompt(Rubric(axes=(Axis("minimalism", 0.8),), criterion="strict minimization",
+                                  anchors=Anchors(negative=tuple(negative))), "DIFFBODY")
+    assert "CALIBRATION" in p
+    assert "LOOKS LIKE SLOP BUT IS NOT" in p
+    assert negative[0] in p
+
+
 def test_anchor_calibration_moves_the_verdict_end_to_end():
     """Behavioral (not just string) check: a calibrated rubric run through a judge that grades to
     the anchors FAILS a known-slop diff and PASSES a known-good diff — the reproducibility claim."""
