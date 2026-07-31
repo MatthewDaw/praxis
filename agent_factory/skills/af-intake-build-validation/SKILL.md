@@ -109,6 +109,24 @@ praxis_add_insight(
   gate will be swallowed. `on_conflict` does not apply to checks (the write never merges, overwrites, or
   raises a contradiction); `raw`/`auto_resolve`/`surface` are all irrelevant here.
 
+- **Do not author a command that already exists.** Before writing, list the section and compare `meta.run`
+  against every active check. An identical command under a new `check_id` is not a second gate — it is the
+  same gate billed twice to every ticket that resolves both. If the intent is genuinely new but the command
+  is not, the right move is widening the EXISTING check's `applies_to`, not adding a twin. (Resolution
+  collapses byte-identical `run`s as a backstop, but a plan that never accumulates them is cleaner.)
+- **Scope an expensive command to its module — `meta.when_changed`.** A check whose command names its own
+  workspace (`npm --prefix backend test`, `cd frontend && ...`, `make -C svc`) is scoped automatically: a
+  ticket that touches no path under that module skips it. When the command does NOT name its module — a
+  bare `pytest`, a repo-root script — declare the predicate explicitly:
+
+  ```
+  "run": "pytest services/billing", "when_changed": ["services/billing/**", "shared/**"]
+  ```
+
+  Include every directory whose change could break the check (a shared types/ package usually belongs in
+  the list). A check with no predicate and no inferable module runs on EVERY ticket — correct but the
+  slowest option, so declare one for anything that costs real minutes.
+
 The check takes effect on the **next build run** with no further action: at each ticket's RESOLVE step
 `resolve_validation_requirements` picks it up by tag/surface match, `pin_requirements` writes it into that
 ticket's coverage contract, and the ticket is FINISHED iff every pinned validation covering it passed.

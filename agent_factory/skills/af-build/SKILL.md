@@ -591,6 +591,28 @@ record_validation_pass(cid, validation_id, passed=(exit_code == 0), ran_at=now)
 
 This MERGES into the ticket's `pinned_checks` entry via `patch_meta` — **never onto the requirement fact**.
 
+**SCOPE the run to what the ticket actually touched.** A monorepo's universal `npm --prefix backend test`
+gate makes a frontend-only ticket run the whole backend suite to prove nothing about its own change. Before
+running, split the pinned set against the ticket's diff:
+
+```
+from _ticket_state import scope_checks_to_changes   # hooks/
+changed = git_diff_name_only(INTEGRATION_REF)       # the ticket's own changed paths
+to_run, skipped = scope_checks_to_changes(pinned, changed)
+```
+
+Each check's module comes from its own command (`--prefix` / `cd` / `-C`), or from an authored
+`meta.when_changed` glob list when the command is not self-describing. Record every entry in `skipped` as a
+SKIP with its `meta.skipped_reason` — a skipped check is **never** recorded as a pass, and the completion
+gate must see the distinction. The function fails SAFE in all three ambiguous cases (a check that names no
+module, an unknown diff, or a change outside every known module root all run **everything**), so widening
+the blast radius is always the default when the evidence is thin.
+
+Resolution already folds byte-identical commands together (`collapse_duplicate_runs`), so a plan carrying
+both a universal gate and an older lane-scoped check with the same `run` executes it **once**; the survivor
+lists the ids it stands in for in `meta.collapsed_duplicates`. Neither mechanism ever drops a distinct
+command — if two checks run different things, both still run.
+
 **GRADED validations (`kind:"graded"`) — subjective judgment, still one boolean.** A validation the worker
 synthesized from a seeded rubric candidate (see §3 / `agent_factory/seeded_checks.toml`) has no exit-code
 command; its verdict is a min-of-axes rubric judgment. Run it through the graded harness instead of a shell

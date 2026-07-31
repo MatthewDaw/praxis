@@ -61,8 +61,10 @@ not a lock: a lease whose heartbeat is older than its ttl is auto-reclaimable, s
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -323,6 +325,164 @@ def _scope_of(check: Any) -> str:
     return str(check.get("scope") or (check.get("meta") or {}).get("scope") or "")
 
 
+def _run_key(check: Any) -> str:
+    """The executable identity of a check: its ``meta.run`` command, whitespace-normalized.
+
+    Empty for a check that carries no command (a graded/rubric entry). Two checks sharing a non-empty
+    key are the SAME work — running both costs the same minutes twice and proves nothing extra.
+    """
+    if not isinstance(check, dict):
+        return ""
+    meta = check.get("meta") or {}
+    run = str(meta.get("run") or check.get("run") or "")
+    return " ".join(run.split())
+
+
+def _is_wildcard(check: Any) -> bool:
+    """True iff the check is authored ``applies_to:["*"]`` — the universal lane."""
+    if not isinstance(check, dict):
+        return False
+    return any(normalize_tag(t) == "*" for t in _as_list((check.get("meta") or {}).get("applies_to")))
+
+
+def _declared_scope_globs(check: Any) -> list[str]:
+    """Explicit path predicate authored on the check (``meta.when_changed``), if any."""
+    if not isinstance(check, dict):
+        return []
+    meta = check.get("meta") or {}
+    return [str(g).strip() for g in _as_list(meta.get("when_changed") or meta.get("when_paths"))
+            if str(g).strip()]
+
+
+_MODULE_HINTS = (
+    re.compile(r"--prefix[=\s]+([\w.\-/]+)"),          # npm --prefix backend run test
+    re.compile(r"(?:^|[;&|]\s*)cd\s+([\w.\-/]+)"),     # cd frontend && npm test
+    re.compile(r"-C\s+([\w.\-/]+)"),                   # make -C service-a
+    re.compile(r"(?:^|\s)--(?:cwd|dir|project-dir)[=\s]+([\w.\-/]+)"),
+)
+
+
+def infer_module_roots(check: Any) -> list[str]:
+    """The module directories a check's command actually operates in, read off the command itself.
+
+    A monorepo command names its own workspace — ``npm --prefix backend test``, ``cd frontend && ...``,
+    ``make -C service-a`` — so the scope of a check is usually derivable without anyone authoring it.
+    Returns [] when the command names no module (a repo-wide command like ``npx knip`` or a bare grep),
+    which the caller must treat as "always applicable" rather than "applies to nothing".
+    """
+    run = _run_key(check)
+    if not run:
+        return []
+    roots: list[str] = []
+    for pat in _MODULE_HINTS:
+        for m in pat.finditer(run):
+            root = m.group(1).strip("/. ")
+            if root and root not in (".", "..") and not root.startswith("-") and root not in roots:
+                roots.append(root)
+    return roots
+
+
+def check_scope_globs(check: Any, *, infer: bool = True) -> list[str]:
+    """The path predicate for a check: authored ``meta.when_changed`` if present, else inferred from
+    the command's own module roots. Empty means unscoped — the check runs for every change."""
+    declared = _declared_scope_globs(check)
+    if declared:
+        return declared
+    return [f"{root}/**" for root in infer_module_roots(check)] if infer else []
+
+
+def _path_matches(path: str, glob: str) -> bool:
+    """``fnmatch`` with ``**`` meaning "this directory and everything under it"."""
+    path = str(path).strip().lstrip("./")
+    if glob.endswith("/**"):
+        root = glob[:-3].strip("/")
+        return path == root or path.startswith(root + "/")
+    return fnmatch.fnmatch(path, glob)
+
+
+def scope_checks_to_changes(checks: list, changed_paths: Any, *, infer: bool = True) -> tuple[list, list]:
+    """Split a resolved check set into (RUN, SKIP) for a diff — so an edit confined to one module does
+    not pay for every other module's suite.
+
+    The lever this exists for: a universal ``npm --prefix backend test`` gate on a monorepo makes a
+    frontend-only ticket run the entire backend suite to prove nothing about its own change. Scoping
+    that to ``backend/**`` is the single biggest wall-clock win available to a build loop.
+
+    Three deliberate fail-SAFE rules, because a silently skipped gate is worse than a slow one:
+
+    1. An UNSCOPED check (no ``when_changed``, no inferable module root — e.g. ``npx knip``, a
+       repo-wide grep) always runs. Absence of a predicate never means "applies to nothing".
+    2. An UNKNOWN diff (``changed_paths`` empty or None) runs everything. We skip on evidence, never
+       on the absence of it.
+    3. A change OUTSIDE every module root the check set knows about — a root ``package.json``, CI
+       config, a shared/ directory — runs everything. Cross-cutting edits are exactly the ones whose
+       blast radius is not confined to the module they were typed in.
+
+    Returns ``(to_run, skipped)``; each skipped check is annotated with ``meta.skipped_reason`` so the
+    completion record shows a SKIP, never a silent pass.
+    """
+    checks = list(checks)
+    paths = [str(p).strip().lstrip("./") for p in _as_list(changed_paths) if str(p).strip()]
+    if not paths:
+        return checks, []  # rule 2 — unknown diff, run everything
+
+    scoped = [(chk, check_scope_globs(chk, infer=infer)) for chk in checks]
+    known_roots = {g[:-3].strip("/") for _, globs in scoped for g in globs if g.endswith("/**")}
+    if any(not any(p == r or p.startswith(r + "/") for r in known_roots) for p in paths):
+        return checks, []  # rule 3 — a change outside every known module; blast radius is unbounded
+
+    to_run, skipped = [], []
+    for chk, globs in scoped:
+        if not globs or any(_path_matches(p, g) for p in paths for g in globs):
+            to_run.append(chk)  # rule 1 covers the `not globs` half
+            continue
+        chk = dict(chk)
+        chk["meta"] = dict(chk.get("meta") or {})
+        chk["meta"]["skipped_reason"] = (
+            f"no changed path matches {globs} — this ticket edits none of the module(s) it covers")
+        skipped.append(chk)
+    return to_run, skipped
+
+
+def collapse_duplicate_runs(checks: list) -> list:
+    """Collapse checks whose ``meta.run`` is byte-identical (after whitespace normalization) down to
+    ONE, so a ticket never executes the same command twice.
+
+    This is the generic form of a fix every project otherwise has to make by hand: a plan accumulates
+    a universal gate (``npm run build && npm test`` on ``applies_to:["*"]``) plus older lane-scoped
+    checks that happen to run the exact same command, and every ticket then pays that suite two or
+    three times over. Nothing is proven by the repeats — identical command, identical exit code.
+
+    Applied per PARTITION by the callers (gating set and candidate pool separately), never across the
+    boundary: collapsing a gating check into a non-gating one would silently drop a gate.
+
+    The survivor is deterministic — the broadest applicability wins (a ``["*"]`` universal subsumes a
+    lane-scoped duplicate), ties broken by check id. It carries ``meta.collapsed_duplicates`` listing
+    the ids it stands in for, so the coverage contract records what was folded in rather than losing
+    it silently. Checks with no ``run`` are never collapsed: a graded entry's identity is its text.
+    """
+    by_run: dict[str, list] = {}
+    out: list = []
+    for chk in checks:
+        key = _run_key(chk)
+        if not key:
+            out.append(chk)  # no command — identity is the text, never a duplicate
+            continue
+        by_run.setdefault(key, []).append(chk)
+
+    for group in by_run.values():
+        if len(group) == 1:
+            out.append(group[0])
+            continue
+        winner, *losers = sorted(group, key=lambda c: (not _is_wildcard(c), _check_id(c)))
+        # Shallow-copy so the annotation never mutates the caller's/cache's fact dict.
+        winner = dict(winner)
+        winner["meta"] = dict(winner.get("meta") or {})
+        winner["meta"]["collapsed_duplicates"] = [cid for c in losers if (cid := _check_id(c))]
+        out.append(winner)
+    return out
+
+
 # --------------------------------------------------------------------------- requirement resolution
 
 def resolve_validation_requirements(ticket: Any, project: str = "",
@@ -385,7 +545,7 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
     # (U1): GATING checks (candidate:false / absent) form the coverage contract; candidate:true
     # entries are the NON-GATING shared pool, returned separately by :func:`pool_candidates`.
     seen = _matching_checks(ticket, project, scope, space, snapshot)
-    return [v for v in seen.values() if not _is_candidate(v)]
+    return collapse_duplicate_runs([v for v in seen.values() if not _is_candidate(v)])
 
 
 def _is_candidate(chk: Any) -> bool:
@@ -456,7 +616,7 @@ def pool_candidates(ticket: Any, project: str = "", scope: str = "validation",
     """
     space, snapshot = _checks_target(project, scope, override)
     seen = _matching_checks(ticket, project, scope, space, snapshot)
-    return [v for v in seen.values() if _is_candidate(v)]
+    return collapse_duplicate_runs([v for v in seen.values() if _is_candidate(v)])
 
 
 def retrieve_advisory_checks(ticket: Any, project: str = "", scope: str = "validation",
