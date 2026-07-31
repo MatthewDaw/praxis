@@ -255,6 +255,16 @@ After §0 stamps the run marker, compute the dependency-ready frontier (id-only,
 - **≤1 ready** (a strictly-linear DAG, or a single remaining ticket), **OR the `Workflow` tool is genuinely
   absent from this session's tools** → and ONLY then → run the inline per-ticket loop (§1→§7) yourself. A
   fleet buys nothing on a one-wide frontier. These two are the ONLY sanctioned inline paths.
+- **An EXPLICIT id list from an external driver** (`af-ticket-loop.sh` submits a round as
+  `/af-build <project> ID,ID,...`) → fan out with **`Agent` subagents, ALL spawned in ONE message**, NOT the
+  Workflow tool. This is a THIRD sanctioned path, and on a small box it is the only one that delivers the
+  fan-out this section demands: `Workflow` caps concurrent agents at `min(16, cores-2)`, which is **2** on a
+  4-core box, so routing an 8-ticket round through it silently serializes the round into four sequential
+  pairs while reporting success. The driver has already computed the frontier and proven the ids are
+  mutually independent, so the Workflow tool's scheduling buys nothing here — its only effect is its cap.
+  Everything else is unchanged: one decision-making agent per ticket, each with `isolation: "worktree"`,
+  each handed the §8 worker contract verbatim. Fanning out narrower than the id list you were given is a
+  BUG, exactly as it is above.
 
 **§1–§7 below ARE the per-ticket worker contract** — the exact loop each parallel Workflow worker runs (the
 §8 block hands it to them verbatim, one worker per ready ticket). Read them as *what the workers do*, not as
@@ -882,6 +892,29 @@ only with an explicit recorded reason). A skip is the *absence* of a panel-ran e
 of a skip episode; never fabricate a panel-ran assertion and never edit config to get past the panel.
 
 ## 8. The per-ticket worker contract (spawn every fanned-out worker with THIS)
+
+### You are one of N — share the box (state this to every worker)
+
+A fanned-out worker is **not alone on the machine**. Its own thinking is API-bound and costs almost nothing
+locally, so a wide fan-out is cheap — right up until every worker starts a test runner at the same moment,
+at which point N workers contend for the same few cores and the round collapses. Measured on a 4-core box: a
+suite that ran in two minutes alone took **twenty** under sibling load, and one worker burned 26 minutes and
+259k tokens without producing a commit. Three rules keep a wide round cheap:
+
+- **Run test runners SINGLE-THREADED.** Modern runners default to one worker per core, so N sibling workers
+  each spawning a full pool oversubscribes the box by N× — 8 workers on 4 cores becomes 32 processes fighting
+  for 4. Pass the runner's concurrency flag explicitly (`vitest --pool=threads --poolOptions.threads.maxThreads=1`,
+  `jest -w=1`, `pytest -p no:xdist`, `go test -p 1`). One thread per worker, N workers, N threads total.
+- **Run only the tests your change implicates.** Your gate is the tests covering what you edited plus their
+  callers — not the whole repo. Most runners take a changed-files form (`vitest related <files>`,
+  `jest --findRelatedTests <files>`); use it. The repo-wide sweep runs ONCE, later, on the merged tree.
+- **Seed dependencies, do not reinstall them.** A fresh worktree has no `node_modules`/`venv`, and N
+  concurrent installs is both the disk and the CPU spike. Hardlink them from the integration checkout
+  instead — `cp -al <integration-checkout>/node_modules ./node_modules` is near-instant and shares blocks
+  rather than duplicating GBs. Reinstall only if the ticket actually changes a manifest.
+
+None of this narrows WHICH failures gate the ticket — the same tests must pass. It changes only how many
+cores each worker takes while proving it.
 
 This is the **single canonical, verbatim** statement of the per-ticket loop — the same EVAL-FIRST ordering
 §1–§6 walk, condensed into one self-contained prompt that **travels with a spawned worker**. The §1–§6 prose
