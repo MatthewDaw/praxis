@@ -903,8 +903,17 @@ suite that ran in two minutes alone took **twenty** under sibling load, and one 
 
 - **Run test runners SINGLE-THREADED.** Modern runners default to one worker per core, so N sibling workers
   each spawning a full pool oversubscribes the box by N× — 8 workers on 4 cores becomes 32 processes fighting
-  for 4. Pass the runner's concurrency flag explicitly (`vitest --pool=threads --poolOptions.threads.maxThreads=1`,
-  `jest -w=1`, `pytest -p no:xdist`, `go test -p 1`). One thread per worker, N workers, N threads total.
+  for 4. Pass the runner's concurrency flag explicitly (`vitest --maxWorkers=1`, `jest -w=1`,
+  `pytest -p no:xdist`, `go test -p 1`). One thread per worker, N workers, N threads total. **Verify the flag
+  against the installed version before relying on it** — a wrong flag is not ignored, it aborts the run
+  (`vitest --poolOptions.threads.maxThreads=1` is valid config-file syntax but dies on the v4 CLI with
+  "Unknown option", so a worker "running its tests single-threaded" would actually be running none).
+- **Namespace any SHARED test infrastructure by checkout.** One database server usually serves every worker,
+  and a harness that names its scratch state with a constant (`__test_template__`, a fixed schema, a fixed
+  redis db index, a fixed port) turns that into shared mutable state across workers: one worker's setup
+  drops or rebuilds what another is mid-way through using. It surfaces as flaky tests, never as an honest
+  resource error. Derive such names from the checkout path (or a per-worker env var) so concurrent runs
+  cannot see each other, and make sure teardown drops what setup created.
 - **Run only the tests your change implicates.** Your gate is the tests covering what you edited plus their
   callers — not the whole repo. Most runners take a changed-files form (`vitest related <files>`,
   `jest --findRelatedTests <files>`); use it. The repo-wide sweep runs ONCE, later, on the merged tree.
