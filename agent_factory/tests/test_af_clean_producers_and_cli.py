@@ -119,3 +119,127 @@ def test_cli_refuses_a_non_git_directory(tmp_path):
     )
     assert out.returncode == 2
     assert "not a git repository" in out.stderr
+
+
+# --------------------------------------------------------------- the apply path (gate → verify → commit)
+
+import json as _json
+from types import SimpleNamespace
+
+from agent_factory.af_clean.applier import apply_findings
+from agent_factory.af_clean.producers import comment_findings
+
+
+def _endorsing_verifier(argv, **kwargs):
+    """A verifier that endorses every hunk it is shown."""
+    diff = kwargs.get("input") or ""
+    ids = [ln.split()[-1] for ln in diff.splitlines() if ln.startswith("@@")] or ["h1"]
+    return SimpleNamespace(stdout=_json.dumps({"endorsed_hunk_ids": ids, "verdict": "endorse"}))
+
+
+def _refusing_verifier(argv, **kwargs):
+    """A verifier that endorses nothing — the case that must leave no trace."""
+    return SimpleNamespace(stdout=_json.dumps({"endorsed_hunk_ids": [], "verdict": "refuse"}))
+
+
+def test_apply_removes_slop_and_keeps_the_why_comment(tmp_path):
+    repo = _repo(tmp_path, {"src/widget.py": SLOP})
+    out = apply_findings(repo, comment_findings(repo), verifier_runner=_endorsing_verifier)
+    text = (repo / "src/widget.py").read_text()
+    assert "# increment counter" not in text
+    assert "INC-441" in text, "a comment carrying a reason must survive the applier"
+    assert "counter = counter + 1" in text, "code must be untouched"
+    assert len(out.applied) >= 1
+
+
+def test_verifier_refusal_leaves_no_trace(tmp_path):
+    """An unendorsed edit must be fully restored: a tree still carrying rejected changes is how a
+    refusal becomes an accidental commit later."""
+    repo = _repo(tmp_path, {"src/widget.py": SLOP})
+    before = (repo / "src/widget.py").read_text()
+    out = apply_findings(repo, comment_findings(repo), verifier_runner=_refusing_verifier)
+    assert (repo / "src/widget.py").read_text() == before
+    assert out.applied == [] and out.verifier_rejected
+
+
+def test_advise_only_findings_are_reported_not_applied(tmp_path):
+    """The gate, not the applier, decides — an advise-tier rule can never delete."""
+    from agent_factory.af_clean.findings import Finding, Location
+    repo = _repo(tmp_path, {"src/widget.py": SLOP})
+    advisory = Finding(rule="some-judgment-call", tier="advise",
+                       location=Location(file="src/widget.py", line=3), pole="bloat")
+    out = apply_findings(repo, [advisory], verifier_runner=_endorsing_verifier)
+    assert out.applied == [] and out.reported
+
+
+def test_scar_findings_are_never_applied(tmp_path):
+    """Defensive code with a bug-fix commit behind it is load-bearing; the gate refuses it
+    unconditionally, regardless of tier."""
+    from agent_factory.af_clean.findings import Finding, Location
+    repo = _repo(tmp_path, {"src/widget.py": SLOP})
+    scar = Finding(rule="defensive-code-is-a-scar", tier="enforce",
+                   location=Location(file="src/widget.py", line=5), pole="bloat")
+    out = apply_findings(repo, [scar], verifier_runner=_endorsing_verifier)
+    assert out.applied == []
+
+
+def test_stale_line_number_is_refused(tmp_path):
+    """Deleting by a line number that no longer holds a comment is how a cleaner corrupts a repo."""
+    from agent_factory.af_clean.findings import Finding, Location
+    repo = _repo(tmp_path, {"src/widget.py": SLOP})
+    stale = Finding(rule="comment-no-information-gain", tier="advise",
+                    location=Location(file="src/widget.py", line=4), pole="bloat")  # code, not comment
+    out = apply_findings(repo, [stale], verifier_runner=_endorsing_verifier)
+    assert out.applied == [] and "counter = counter + 1" in (repo / "src/widget.py").read_text()
+
+
+def test_nothing_is_written_before_verification(tmp_path):
+    """The window that mattered: a run killed mid-verification must not leave a half-cleaned repo.
+    The verifier judges a PROPOSAL, so the tree is untouched until it endorses."""
+    repo = _repo(tmp_path, {"src/widget.py": SLOP})
+    before = (repo / "src/widget.py").read_text()
+    seen: dict = {}
+
+    def _verifier_that_inspects_the_tree(argv, **kwargs):
+        seen["tree_at_verify_time"] = (repo / "src/widget.py").read_text()
+        return _refusing_verifier(argv, **kwargs)
+
+    apply_findings(repo, comment_findings(repo),
+                   verifier_runner=_verifier_that_inspects_the_tree)
+    assert seen["tree_at_verify_time"] == before, "tree was edited before the verifier ruled"
+    assert (repo / "src/widget.py").read_text() == before
+
+
+def test_multiple_findings_in_one_file_compose(tmp_path):
+    """Two removals in one file must compose, not be computed against stale disk text."""
+    repo = _repo(tmp_path, {"src/widget.py": SLOP + '''
+    def set_name(self, name):
+        # set the name
+        self.name = name
+'''})
+    out = apply_findings(repo, comment_findings(repo), verifier_runner=_endorsing_verifier)
+    text = (repo / "src/widget.py").read_text()
+    assert "# increment counter" not in text and "# set the name" not in text
+    assert len(out.applied) == 2
+    assert "INC-441" in text and "self.name = name" in text
+
+
+def test_default_runner_turns_a_hanging_verifier_into_no_endorsement():
+    """A verifier that never answers has not endorsed anything. An observed run sat past nine
+    minutes, so the subprocess is bounded -- and a timeout must read as silence, never as assent."""
+    from agent_factory.af_clean.applier import default_subprocess_runner
+
+    result = default_subprocess_runner(["sleep", "5"], timeout=0.2, capture_output=True, text=True)
+    assert result.stdout == "", "a timed-out verifier must produce no endorsement"
+
+
+def test_silent_verifier_applies_nothing(tmp_path):
+    """Empty verifier output endorses nothing, so the tree stays exactly as it was."""
+    from types import SimpleNamespace as _NS
+
+    repo = _repo(tmp_path, {"src/widget.py": SLOP})
+    before = (repo / "src/widget.py").read_text()
+    out = apply_findings(repo, comment_findings(repo),
+                         verifier_runner=lambda argv, **kw: _NS(stdout=""))
+    assert out.applied == []
+    assert (repo / "src/widget.py").read_text() == before

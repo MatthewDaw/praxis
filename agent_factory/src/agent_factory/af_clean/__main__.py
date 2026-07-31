@@ -20,6 +20,7 @@ from pathlib import Path
 from ..af_clean_validate import default_runner
 from .entry import resolve_scope, run_e1
 from .exemptions import derive_exemption_manifest
+from .applier import apply_findings as _apply_findings
 from .producers import default_producer
 from .toolchain import detect_toolchain
 
@@ -46,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="actually apply findings (default is a dry run that changes nothing)")
     ap.add_argument("--no-validate", action="store_true",
                     help="skip the validation+remediation step (it is on by default for E1)")
+    ap.add_argument("--skip-verify", action="store_true",
+                    help="apply WITHOUT blind verification — unsafe, and says so in the output")
     args = ap.parse_args(argv)
 
     repo_root = Path(args.repo_root).resolve()
@@ -59,15 +62,25 @@ def main(argv: list[str] | None = None) -> int:
     exempt = _exempt_prefixes(manifest)
 
     langs = getattr(toolchain, "languages", None) or getattr(toolchain, "toolchains", ()) or ()
-    print(f"af-clean: scope={scope}")
-    print(f"af-clean: languages detected={len(langs)}  exempt paths={len(exempt)}")
-    print(f"af-clean: mode={'APPLY' if args.apply else 'dry-run (nothing will be written)'}")
+    print(f"af-clean: scope={scope}", flush=True)
+    print(f"af-clean: languages detected={len(langs)}  exempt paths={len(exempt)}", flush=True)
+    print(f"af-clean: mode={'APPLY' if args.apply else 'dry-run (nothing will be written)'}", flush=True)
+    if args.apply and args.skip_verify:
+        print("af-clean: WARNING — blind verification disabled; edits land on your say-so alone.")
+
+    # --apply now actually applies: gate -> blind verify -> commit stack. Without this the flag was
+    # decorative, and the entire back half of the engine was unreachable from the command line.
+    applied_outcome: dict = {}
+
+    def _apply(findings):
+        applied_outcome["outcome"] = _apply_findings(
+            repo_root, findings, skip_verify=args.skip_verify)
 
     result = run_e1(
         repo_root,
         args.path,
         produce_findings=default_producer(exempt=exempt),
-        apply_findings=None,
+        apply_findings=_apply if args.apply else None,
         dry_run=not args.apply,
         runner=default_runner,
         validate_kwargs=None if not args.no_validate else {"commands": {}},
@@ -81,6 +94,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  [{f.tier}] {where}  {f.rule}" + (f" — {f.proposal}" if f.proposal else ""))
     if len(findings) > 200:
         print(f"  ... and {len(findings) - 200} more")
+
+    outcome = applied_outcome.get("outcome")
+    if outcome is not None:
+        print(f"\naf-clean: {outcome.summary()}", flush=True)
+        for f, reason in outcome.reported[:20]:
+            loc = f.location
+            print(f"  reported (not applied) {loc.file}:{loc.line} — {reason}")
 
     report = getattr(result, "validation", None) or getattr(result, "validation_report", None)
     if report is not None:
