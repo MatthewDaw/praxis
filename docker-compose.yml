@@ -19,8 +19,13 @@ services:
       POSTGRES_PASSWORD: praxis
       POSTGRES_DB: praxis_kg
     ports:
-      # Host 5433 -> container 5432, matching PRAXIS_DB_URL in .env.
-      - "5433:5432"
+      # Host PRAXIS_DB_PORT (default 5433) -> container 5432. Overridable because 5433 is a
+      # popular "second Postgres" port and a collision is fatal, not degraded: compose fails
+      # with "port is already allocated" and the local DB never starts, which pushes people
+      # straight back to pointing the suite at the deployed RDS. On this machine 5433 is
+      # already held by an unrelated medplum stack. Keep it in step with `local_db_port` in
+      # the justfile when overriding.
+      - "${PRAXIS_DB_PORT:-5433}:5432"
     volumes:
       - praxis-db-kg-data:/var/lib/postgresql/data
       # Pre-create the pgvector extension before the first app connection so the

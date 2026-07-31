@@ -29,19 +29,28 @@ pytestmark = pytest.mark.skipif(
 
 OWNER_EMAIL = productivity_route.DEFAULT_OWNER_EMAIL
 
+# Commit timestamps must be RELATIVE to now, not absolute. These were pinned to
+# 2026-07-24 and the tests assert over ``range=week`` — a rolling 7-day window — so they
+# passed until that date fell out the back of the window and then failed every run
+# thereafter, with a bare ``assert 0 == 12`` that reads like a broken aggregation rather
+# than an expired fixture. Anchor one day back: comfortably inside every supported range,
+# and never "in the future" for a bucket boundary in any timezone.
+_COMMIT_AT = datetime.now(timezone.utc) - timedelta(days=1)
+_COMMIT_TS = _COMMIT_AT.strftime("%Y-%m-%dT%H:00:00Z")
+
 FAKE_ACTIVITY = {
     "repositories": {
         "acme/repo": [
             {
                 "additions": 12,
                 "deletions": 4,
-                "committedDate": "2026-07-24T10:00:00Z",
+                "committedDate": _COMMIT_TS,
                 "author_login": productivity_route.DEFAULT_OWNER_LOGIN,
             },
             {
                 "additions": 999,
                 "deletions": 999,
-                "committedDate": "2026-07-24T11:00:00Z",
+                "committedDate": _COMMIT_TS,
                 "author_login": "someone-else",
             },
         ]

@@ -36,12 +36,16 @@ health:
 # there, commented out, directly above it) — so anything that just loads .env is
 # talking to production. `just test` below pins the local URL instead, and the
 # suite refuses outright to run against a non-local database.
-local_db_url := "postgresql://praxis:praxis@localhost:5433/praxis_kg"
+# Host port for the local DB. Overridable because 5433 often collides with another
+# project's Postgres; a collision stops the container entirely, and the fallback people
+# reach for is pointing the suite back at prod. Keep in step with docker-compose.yml.
+local_db_port := env_var_or_default("PRAXIS_DB_PORT", "5433")
+local_db_url := "postgresql://praxis:praxis@localhost:" + local_db_port + "/praxis_kg"
 
 # Start the local pgvector Postgres (idempotent; waits until it accepts connections).
 db-up:
     docker compose up -d --wait db
-    @echo "Local DB ready at postgresql://praxis:praxis@localhost:5433/praxis_kg"
+    @echo "Local DB ready at {{local_db_url}}"
     @echo "Run 'just db-bootstrap' once to apply the schema, then 'just backend'."
 
 # Apply the yoyo migrations under migrations/ to the local DB. Idempotent.

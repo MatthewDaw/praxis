@@ -441,6 +441,23 @@ print(sum(1 for x in f if ((x.get('meta') or {}).get('build_state'))=='finished'
 PYEOF
 }
 
+known_ids(){  # -> space-separated requirement_ids for PROJECT, in ANY build_state
+  # The set of ids this project is entitled to have an opinion about. Integration uses it to tell
+  # "a ticket of ours that isn't done" (a real veto) from "an id belonging to somebody else's
+  # tracker" (not our business) -- see integrate_round for why conflating the two stalls a build.
+  $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
+import sys
+import _praxis
+p=sys.argv[1]
+out=[]
+for f in _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}'):
+    m=f.get('meta') or {}
+    rid=m.get('requirement_id') or f.get('id')
+    if rid: out.append(str(rid))
+print(' '.join(out))
+PYEOF
+}
+
 finished_ids(){  # -> space-separated requirement_ids currently in build_state=finished
   $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
 import sys
@@ -498,7 +515,7 @@ commit_wip(){
 # against the now-integrated tree.
 integrate_round(){
   cd "$WT"
-  local merged=0 conflicted=0 skipped=0 br ahead path ids ok fin
+  local merged=0 conflicted=0 skipped=0 br ahead path ids raw i ok fin known
   # WHICH branch is safe to merge is decided per branch, by its TICKET's state -- not by the round's.
   # A branch name carries no ticket id, but the worker's own commit subjects do: they end in the
   # requirement id, e.g. "feat(af-clean): ... (R8)". So read the ids out of the branch's commits and
@@ -507,7 +524,25 @@ integrate_round(){
   # killed mid-BUILD -- possibly between confirm-red and confirm-green -- which would otherwise
   # launder unverified edits under cover of a green round. An unintegrated branch is recoverable; a
   # laundered one is not.
-  fin=" $(finished_ids) "
+  #
+  # The id scan is scoped to THIS PROJECT's requirements, and that scoping is load-bearing. The
+  # "(ID)" suffix is a convention the whole world shares, not a factory signature: a host repo's own
+  # history is full of "(BES-115)"-style tracker ids, and `HEAD..$br` contains that history whenever
+  # the integration branch has drifted behind the base workers branch from. Treating a foreign id as
+  # a ticket asks Praxis about a requirement it has never heard of, gets "not finished" by default,
+  # and vetoes a branch whose real ticket is finished and sitting at its tip. Observed 2026-07-31 on
+  # proposed-side-buildout: `consolidate/all-work` sat 351 commits behind upstream, so every worker
+  # branch dragged in ~26 BES-* ids, every merge was skipped as "unproven", and four green rounds
+  # landed exactly nothing while Praxis went on reporting the tickets finished.
+  #
+  # So: an id we do not own is not evidence of anything and is ignored. An id we DO own and that is
+  # not finished still vetoes the branch -- that is the property this check exists for, unchanged.
+  if ! fin=$(praxis_q finished_ids) || ! known=$(praxis_q known_ids); then
+    say "SKIPPING INTEGRATION this round — Praxis unreachable, so no branch's provenance can be established. Branches stay put and integrate next round; nothing is lost."
+    return 0
+  fi
+  fin=" $fin "
+  known=" $known "
   # Commit anything loose first: `git merge` refuses to run on a dirty tree, and refusing to
   # integrate a whole round because one stray file is uncommitted is the wrong trade.
   commit_wip
@@ -518,9 +553,14 @@ integrate_round(){
     [ -n "$br" ] && [ "$br" != "HEAD" ] || continue
     ahead=$(git rev-list --count "HEAD..$br" 2>/dev/null || echo 0)
     [ "${ahead:-0}" -gt 0 ] || continue
-    ids=$(git log --format=%s "HEAD..$br" 2>/dev/null | sed -n 's/.*(\([A-Za-z][A-Za-z0-9_-]*[0-9][0-9]*\))[[:space:]]*$/\1/p' | sort -u)
+    raw=$(git log --format=%s "HEAD..$br" 2>/dev/null | sed -n 's/.*(\([A-Za-z][A-Za-z0-9_-]*[0-9][0-9]*\))[[:space:]]*$/\1/p' | sort -u)
+    # Keep only ids this project actually owns; everything else is another tracker's history.
+    ids=""
+    for i in $raw; do
+      case "$known" in *" $i "*) ids="${ids:+$ids }$i" ;; esac
+    done
     if [ -z "$ids" ]; then
-      skipped=$((skipped+1)); say "skipping $br — its commits name no ticket, so its provenance cannot be established"; continue
+      skipped=$((skipped+1)); say "skipping $br — none of its commits name a $PROJECT ticket, so its provenance cannot be established"; continue
     fi
     ok=1
     for i in $ids; do
