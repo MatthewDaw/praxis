@@ -159,7 +159,10 @@ def test_factory_project_from_dotenv_wins_over_cwd_basename(monkeypatch, tmp_pat
     A repo checked out as ``bestie-api`` building the ``google-shopping-scraper`` Praxis project."""
     monkeypatch.delenv("FACTORY_PROJECT", raising=False)  # absent from the REAL environment
     (tmp_path / ".env").write_text("FACTORY_PROJECT=google-shopping-scraper\n", encoding="utf-8")
-    # _praxis._load_dotenv searches Path.cwd()/.env among its candidates — point it at our tmp .env.
+    # _load_dotenv takes the FIRST .env it finds, searching <repo>/.env (from its own __file__)
+    # BEFORE cwd/.env. On a developer checkout that repo .env exists and wins, so patching cwd alone
+    # leaves the test asserting against the developer's file. Point BOTH candidates at the tmp .env.
+    monkeypatch.setattr(_praxis, "__file__", str(tmp_path / "hooks" / "_praxis.py"))
     monkeypatch.setattr(_praxis.Path, "cwd", lambda: tmp_path)
 
     project = _resolved_project(monkeypatch, cwd="/repos/bestie-api")

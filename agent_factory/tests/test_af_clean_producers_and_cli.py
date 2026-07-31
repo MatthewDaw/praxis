@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json as _json
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -102,7 +103,7 @@ def test_cli_dry_run_reports_and_writes_nothing(tmp_path):
     repo = _repo(tmp_path, {"src/widget.py": SLOP})
     before = (repo / "src/widget.py").read_text()
     out = subprocess.run(
-        ["python", "-m", "agent_factory.af_clean", "--repo-root", str(repo)],
+        [sys.executable, "-m", "agent_factory.af_clean", "--repo-root", str(repo)],
         capture_output=True, text=True,
         cwd=Path(__file__).resolve().parents[1] / "src",
     )
@@ -114,7 +115,7 @@ def test_cli_dry_run_reports_and_writes_nothing(tmp_path):
 
 def test_cli_refuses_a_non_git_directory(tmp_path):
     out = subprocess.run(
-        ["python", "-m", "agent_factory.af_clean", "--repo-root", str(tmp_path)],
+        [sys.executable, "-m", "agent_factory.af_clean", "--repo-root", str(tmp_path)],
         capture_output=True, text=True,
         cwd=Path(__file__).resolve().parents[1] / "src",
     )
