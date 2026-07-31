@@ -31,10 +31,12 @@ health:
     curl -s http://localhost:8000/health
 
 # --- Local Postgres (pgvector) -----------------------------------------------
-# The database the backend uses for local dev. The repo .env points
-# PRAXIS_DB_URL at this container (localhost:5433/praxis_kg) and the backend
-# loads .env on startup, so once it's up + bootstrapped nothing reaches AWS
-# Secrets Manager / prod RDS.
+# The database local dev and the test suite should use. NOTE: the repo .env
+# currently points PRAXIS_DB_URL at the DEPLOYED RDS instance (the local URL is
+# there, commented out, directly above it) — so anything that just loads .env is
+# talking to production. `just test` below pins the local URL instead, and the
+# suite refuses outright to run against a non-local database.
+local_db_url := "postgresql://praxis:praxis@localhost:5433/praxis_kg"
 
 # Start the local pgvector Postgres (idempotent; waits until it accepts connections).
 db-up:
@@ -43,12 +45,14 @@ db-up:
     @echo "Run 'just db-bootstrap' once to apply the schema, then 'just backend'."
 
 # Apply the yoyo migrations under migrations/ to the local DB. Idempotent.
+# Pins the local DSN: bare `python -m knowledge.serve.db` loads .env, which
+# currently resolves to prod RDS — this recipe must never migrate production.
 db-bootstrap:
-    uv run python -m knowledge.serve.db
+    PRAXIS_DB_URL={{local_db_url}} uv run python -m knowledge.serve.db
 
-# Print the local DB connection string (already set as PRAXIS_DB_URL in .env).
+# Print the local DB connection string.
 db-url:
-    @echo "postgresql://praxis:praxis@localhost:5433/praxis_kg"
+    @echo "{{local_db_url}}"
 
 # Open a psql shell in the running local DB.
 db-shell:
@@ -57,6 +61,18 @@ db-shell:
 # Stop and remove the local Postgres container and its data volume.
 db-down:
     docker compose down -v
+
+# --- Tests -------------------------------------------------------------------
+
+# Run the Python suite against the LOCAL Postgres (run `just db-up` first).
+test *ARGS:
+    PRAXIS_DB_URL={{local_db_url}} uv run pytest {{ARGS}}
+
+# Run only the DB-free tests (no Docker needed). knowledge/serve/tests is
+# excluded because importing knowledge.serve.app builds `app = create_app()` at
+# module scope, which errors at collection with no DSN.
+test-nodb *ARGS:
+    PRAXIS_DB_DISABLED=1 uv run pytest --ignore=knowledge/serve/tests {{ARGS}}
 
 # Start the local observability UI (Arize Phoenix) on http://localhost:6006 (Docker)
 observability:
