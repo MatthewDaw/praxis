@@ -363,6 +363,45 @@ hash_text(){    # -> stable digest of stdin; md5sum is coreutils, md5 is BSD
   else md5 -q; fi
 }
 
+# Every pid in a tmux session's process tree: the pane process and all its descendants
+# (claude -> bash -> pytest). Printed one per line; empty when the session is gone.
+session_pids(){  # $1 = tmux session name
+  local ppid gen next k depth=0
+  ppid=$(tmux list-panes -t "$1" -F '#{pane_pid}' 2>/dev/null | head -1 || true)
+  [ -z "${ppid:-}" ] && return 0
+  printf '%s\n' "$ppid"; gen="$ppid"
+  while [ -n "$gen" ] && [ "$depth" -lt 8 ]; do
+    next=""
+    for k in $gen; do
+      local c; c=$(pgrep -P "$k" 2>/dev/null || true)
+      [ -n "$c" ] && { printf '%s\n' $c; next="$next $c"; }
+    done
+    gen="$next"; depth=$((depth+1))
+  done
+}
+
+# Total CPU-seconds consumed so far by a session's whole process tree.
+session_cpu(){  # $1 = tmux session name
+  session_pids "$1" | while read -r p; do [ -n "$p" ] && ps -o time= -p "$p" 2>/dev/null; done \
+    | awk -F: '{ s=$NF+0; if (NF>1) s+=$(NF-1)*60; if (NF>2) s+=$(NF-2)*3600; t+=s } END { printf "%d", t+0 }'
+}
+
+# Is real work still running underneath a session whose pane has gone quiet?
+# The pane-stillness heuristic cannot see a single long tool call: a test suite prints
+# nothing for its whole run, so a healthy verification looks identical to a hung one.
+# Ask the OS instead — but compare CPU across a short interval rather than reading it
+# once, because `ps` TIME is CUMULATIVE: a session that worked earlier and is now wedged
+# at a prompt still shows a large total, which would suppress the stall detector forever.
+# A rising total means work is happening NOW. Returns 0 (busy) / 1 (idle); never fails.
+verify_children_busy(){  # $1 = tmux session name
+  local before after
+  before=$(session_cpu "$1"); [ -z "${before:-}" ] && return 1
+  sleep 3
+  after=$(session_cpu "$1"); [ -z "${after:-}" ] && return 1
+  [ "$after" -gt "$before" ] 2>/dev/null && return 0
+  return 1
+}
+
 # Resolve the backend BEFORE any ticket work, and refuse to start a multi-hour run on a
 # half-configured one. Failing here costs seconds; failing three tickets in costs an hour
 # and a lease that has to be released by hand.
@@ -789,6 +828,18 @@ verify_round(){   # $1 = round number, $2.. = the round's ticket ids
     vhash=$(printf '%s' "$pane" | hash_text)
     if [ "$vhash" = "$vlast" ]; then
       vstall=$((vstall+1))
+      # A still pane is NOT proof of a frozen session here. Verification's whole job is to run the
+      # repo-wide suite ONCE on the merged tree, and that is a single tool call that prints nothing
+      # while it runs — on a real project it lasted 21-28min against a 15min stall threshold, so the
+      # detector reaped healthy work every round and the loop logged UNVERIFIED forever (observed:
+      # "verify session frozen for 15min" at 28min in, with pytest still running). STALL_POLLS' own
+      # comment already states the invariant this violates: it must stay ABOVE the longest tool
+      # timeout the agent uses. So before calling it frozen, ask the OS whether real work is still
+      # happening underneath the quiet pane.
+      if [ "$vstall" -ge "$STALL_POLLS" ] && verify_children_busy "$vsession"; then
+        say "verify pane still for $((vstall*30/60))min but a child process is live (long suite) — not frozen, still waiting"
+        vstall=0
+      fi
       [ "$vstall" -ge "$STALL_POLLS" ] && { say "verify session frozen for $((STALL_POLLS*30/60))min — giving up on this round's verification"; break; }
     else
       vstall=0; vlast="$vhash"
