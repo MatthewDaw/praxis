@@ -8,11 +8,12 @@ vocabulary that never matched, and comments judged without the signature they re
 
 from __future__ import annotations
 
+import json as _json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
-import pytest
-
+from agent_factory.af_clean.applier import apply_findings
 from agent_factory.af_clean.producers import (
     _annotated_tokens,
     comment_findings,
@@ -122,12 +123,6 @@ def test_cli_refuses_a_non_git_directory(tmp_path):
 
 
 # --------------------------------------------------------------- the apply path (gate → verify → commit)
-
-import json as _json
-from types import SimpleNamespace
-
-from agent_factory.af_clean.applier import apply_findings
-from agent_factory.af_clean.producers import comment_findings
 
 
 def _endorsing_verifier(argv, **kwargs):
