@@ -917,13 +917,59 @@ suite that ran in two minutes alone took **twenty** under sibling load, and one 
 - **Run only the tests your change implicates.** Your gate is the tests covering what you edited plus their
   callers — not the whole repo. Most runners take a changed-files form (`vitest related <files>`,
   `jest --findRelatedTests <files>`); use it. The repo-wide sweep runs ONCE, later, on the merged tree.
-- **Seed dependencies, do not reinstall them.** A fresh worktree has no `node_modules`/`venv`, and N
-  concurrent installs is both the disk and the CPU spike. Hardlink them from the integration checkout
-  instead — `cp -al <integration-checkout>/node_modules ./node_modules` is near-instant and shares blocks
-  rather than duplicating GBs. Reinstall only if the ticket actually changes a manifest.
+- **Seed dependencies, do not reinstall them — and seed EVERY workspace.** A fresh worktree has no
+  `node_modules`/`venv`, and N concurrent installs is both the disk and the CPU spike. Hardlink them from
+  the integration checkout instead — `cp -al <checkout>/node_modules ./node_modules` is near-instant and
+  shares blocks rather than duplicating GBs. Do it for **every** workspace that has one — repo root AND
+  each package (`backend/`, `frontend/`, `cdk/`, …), enumerated rather than assumed. Seeding only the
+  obvious two is a trap: the gap never surfaces as a missing directory, it surfaces much later as a check
+  that is inexplicably slow or broken when it finally reaches that package (observed: a worker 35 minutes
+  into a ticket, discovering `cdk/node_modules` was absent only when an infrastructure test tried to
+  synthesize). One loop costs seconds:
+
+  ```
+  for d in $(cd <checkout> && ls -d node_modules */node_modules 2>/dev/null); do
+    [ -e "./$d" ] || cp -al "<checkout>/$d" "./$d"
+  done
+  ```
+
+  Reinstall only if the ticket actually changes a manifest.
+- **Do NOT go hunting for the factory's own code.** Your launcher already exported `PYTHONPATH` (the hooks
+  and `src` dirs) and named the interpreter to use: import `_ticket_state` / `_praxis` and call them.
+  Searching for them burns minutes and can wedge the box — `find / -maxdepth 6 -iname "_ticket_state.py"`
+  walks every mounted filesystem, including other projects' worktrees and their dependency trees, while N
+  siblings do the same. If an import genuinely fails, report it as a blocker: a stale copy found by
+  searching is worse than a clean failure.
 
 None of this narrows WHICH failures gate the ticket — the same tests must pass. It changes only how many
 cores each worker takes while proving it.
+
+### FIRST: check whether the ticket is already satisfied (before reading anything)
+
+A ticket can arrive already built — its work landed in an earlier run, a sibling ticket implemented it, or
+the state was regressed for re-verification while the code stayed in the tree. Treating that case as a
+fresh build is the single most expensive mistake a worker makes: observed 36 minutes and 164k tokens on a
+ticket whose implementation was already on the integration branch, 17 of those minutes spent reading code
+to decide how to write something that existed.
+
+So the FIRST thing you do, before exploring the codebase, is ask whether the acceptance condition already
+holds on the integration ref:
+
+1. Look for the ticket's own acceptance artifacts by id — a test named for it, a script, the module its
+   acceptance names. `git log --oneline --fixed-strings --grep="(TICKET)"` on the integration branch
+   answers this in seconds.
+2. If they exist, RUN them. Green means the ticket is satisfied.
+3. **Then verify, do not rebuild.** Run its pinned validations against the existing tree and FINISH it.
+   Record in the completion note that the work was pre-existing and what proved it.
+
+This is not a licence to self-certify: the acceptance evidence still has to be produced and pass, exactly
+as for built work. What changes is that you STOP once it does, instead of writing a second implementation
+of something that already works. If the evidence does NOT pass, you are in the normal build path — proceed
+red-to-green as usual.
+
+A corollary for the eval-first ordering below: when a ticket is already satisfied, its acceptance test
+cannot be made to fail, and "confirm red" is unachievable by construction. Do not thrash trying to force a
+red — record that the condition already holds, with the passing evidence, and finish.
 
 This is the **single canonical, verbatim** statement of the per-ticket loop — the same EVAL-FIRST ordering
 §1–§6 walk, condensed into one self-contained prompt that **travels with a spawned worker**. The §1–§6 prose
