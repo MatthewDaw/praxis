@@ -22,12 +22,22 @@ string presented, the ordinary ``_ticket_state.claim`` idempotent-renew / stale-
 (``hooks/_ticket_state.py::claim``) picks the prior claims back up on its own, and the run marker's
 ``run_owner`` already matches, so the gate arms immediately rather than going inert — no separate
 "takeover" mutation is needed, because nothing about the owner ever changed.
+
+RESUME VS. THE BACKSTOP REAPER (R30). A liveness check the reaper polls is read-then-act against a
+background process — stale by construction the instant an operator resumes between the reaper's read
+and its act, which could tear down the very session resume just launched. So before ``resume_job``
+calls ``launch``, it takes the job-control lease (``box_service_job_control.take_control_lease``);
+``box_service_reaper.reap_terminal_session`` refuses to act on any job holding a live one. Whichever
+side gets there first wins outright — the reaper never contends for the lease, it only reads it — so a
+reap "pending" for this job at the moment of resume is cancelled by having nothing left to act on.
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 
+from knowledge.serve.box_service_job_control import take_control_lease
 from knowledge.serve.box_service_models import Job, JobState
 
 #: The env var name the resumed session's ``build_completeness_gate._session_owner`` override reads
@@ -55,15 +65,18 @@ def can_resume(job: Job) -> bool:
     return job.state in RESUMABLE_STATES
 
 
-def resume_job(job: Job, launch: Launch) -> Job:
+def resume_job(job: Job, launch: Launch, *, now: float | None = None) -> Job:
     """Resume ``job`` (the operator-triggered control action, callable identically from the website
     handler and the MCP tool — both are thin callers of this one function).
 
     Refuses (raises :class:`ResumeError`) when the job already completed, or has no job-scoped owner
-    id recorded yet (a job that never successfully launched once has nothing to resume UNDER). On
-    success, calls ``launch(job)`` — which the caller wires to the real session launcher, injecting
-    ``job.run_owner`` as ``FACTORY_TICKET_OWNER`` — records the new session id, returns the job to
-    ``running``, and clears any stale failure bookkeeping so the job reads as freshly in-flight.
+    id recorded yet (a job that never successfully launched once has nothing to resume UNDER).
+    Otherwise, BEFORE calling ``launch``, takes the job-control lease under ``job.run_owner`` (R30) —
+    so the backstop reaper sees the lease held and refuses to act for the rest of this race window,
+    even if a reap for this job was already pending. Then calls ``launch(job)`` — which the caller
+    wires to the real session launcher, injecting ``job.run_owner`` as ``FACTORY_TICKET_OWNER`` —
+    records the new session id, returns the job to ``running``, and clears any stale failure
+    bookkeeping so the job reads as freshly in-flight.
 
     ``job.run_owner`` itself is NEVER reassigned here: continuity of that single value across every
     relaunch (first dispatch and every subsequent resume) is exactly what keeps the prior run's ticket
@@ -74,6 +87,9 @@ def resume_job(job: Job, launch: Launch) -> Job:
         raise ResumeError(f"job {job.id} already completed — nothing to resume")
     if not job.run_owner:
         raise ResumeError(f"job {job.id} has no job-scoped owner id recorded — it never launched")
+
+    now = time.time() if now is None else now
+    take_control_lease(job, job.run_owner, now=now)
 
     job.session_id = launch(job)
     job.state = JobState.RUNNING
