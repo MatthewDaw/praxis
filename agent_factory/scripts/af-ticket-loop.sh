@@ -408,6 +408,44 @@ verify_children_busy(){  # $1 = tmux session name
 resolve_backend || { say "FATAL: model backend preflight failed for '${BACKEND:-?}' — refusing to start"; exit 1; }
 say "backend=$BACKEND ($BACKEND_NOTE)"
 
+# ---------------------------------------------------------------------------
+# Package caches MUST sit on the worktree's own filesystem.
+#
+# Every round creates one git worktree per ticket, and each needs a usable
+# environment. uv and pnpm materialize those by HARDLINK from their cache, so the
+# Nth environment costs ~0 bytes — but a hardlink cannot cross a filesystem
+# boundary, and when the cache lives on a different mount they SILENTLY become
+# full copies. Nothing errors; the run just gets slower and fatter until the disk
+# floor stops it.
+#
+# af-build's skill has documented this as something the operator must export.
+# Measured on a box where nobody had: worktrees were 2.9G each (a 668M venv copied
+# per ticket), the batch had to be capped at 4 to fit, and the 30G root filled
+# while 52G sat unused on the worktree volume. Pointing the cache at the worktree
+# filesystem took the same worktrees to 42M-1.1G.
+#
+# So the driver sets it rather than hoping. If the operator set one explicitly on a
+# DIFFERENT filesystem, say so loudly instead of degrading in silence.
+# AF_CACHE_ROOT overrides the location.
+fs_of(){ df -P "$1" 2>/dev/null | awk 'NR==2{print $1}'; }
+_wt_fs="$(fs_of "$WT")"
+AF_CACHE_ROOT="${AF_CACHE_ROOT:-$(dirname "$WT")/.af-pkg-cache}"
+mkdir -p "$AF_CACHE_ROOT" 2>/dev/null || true
+for _spec in "UV_CACHE_DIR:uv" "PIP_CACHE_DIR:pip" "npm_config_cache:npm"; do
+  _var="${_spec%%:*}"; _sub="${_spec##*:}"
+  eval "_cur=\${$_var:-}"
+  if [ -z "$_cur" ]; then
+    mkdir -p "$AF_CACHE_ROOT/$_sub" 2>/dev/null || true
+    export "$_var=$AF_CACHE_ROOT/$_sub"
+  elif [ -n "$_wt_fs" ] && [ "$(fs_of "$_cur")" != "$_wt_fs" ]; then
+    say "WARNING: $_var=$_cur is on a different filesystem than the worktree $WT."
+    say "         uv/pnpm hardlinks degrade to full COPIES across that boundary, so every"
+    say "         per-ticket environment costs its full size instead of ~0. Point it at"
+    say "         $AF_CACHE_ROOT/$_sub, or unset it and let this driver choose."
+  fi
+done
+say "pkg caches under $AF_CACHE_ROOT (worktree fs ${_wt_fs:-unknown}) — hardlink-eligible"
+
 # Same contract as the backend preflight, for the interpreter: prove the universal quality lane can
 # actually LOAD before spending hours on tickets it is supposed to gate.
 #
