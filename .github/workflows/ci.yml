@@ -190,6 +190,20 @@ jobs:
       - name: Run tests
         run: uv run --no-sync pytest -q
 
+      # agent_factory is a SEPARATE pytest project (its own pyproject, its own rootdir) and was in
+      # no testpath at all, so 878 tests — the af-build loop, the gates, af-clean — had never run in
+      # CI while `pytest -q` reported green.
+      #
+      # It is a second INVOCATION, not an extra testpath, and that is deliberate. Merging the trees
+      # fails two ways: seven test files share a basename across the two suites (pytest cannot name
+      # two `test_blocked_on_question` modules), and `--import-mode=importlib` does not rescue it —
+      # the repo directory `agent_factory/` then shadows the real package under `agent_factory/src/`,
+      # so every `agent_factory.*` import dies. Invoked on its own path, pytest resolves
+      # agent_factory/pyproject.toml as the config and its own pythonpath applies. Two projects, two
+      # runs.
+      - name: Run agent_factory tests
+        run: uv run --no-sync pytest -q agent_factory/tests
+
   # THE single required status check. Every heavyweight job above is change-filtered, so on
   # any given PR some of them are legitimately SKIPPED — and GitHub counts a skipped required
   # check as "never reported", which leaves the PR pending forever. Requiring the individual

@@ -47,17 +47,8 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-# agent_factory/{src,} mirror what agent_factory/pyproject.toml declares as `["src", "."]`. Both are
-# needed HERE because pytest applies the config file it resolved for the RUN, not one per test path:
-# invoked at the root, agent_factory's own pythonpath never loads, and its tests import `hooks` and
-# `evals` as top-level modules.
-pythonpath = [".", "frontend", "agent_factory", "agent_factory/src"]
-# agent_factory/tests is in here deliberately. It has its own pyproject + venv, and because of that
-# it was in NO testpath — so the whole factory (the af-build loop, the gates, af-clean) shipped
-# untested by CI while `pytest -q` reported green. It runs fine from the root env; agent_factory's
-# own venv is the one that cannot run it (test_tag_normalization imports knowledge.mcp.server,
-# which needs httpx, a root dependency). Run it from here, not from there.
-testpaths = ["knowledge", "frontend/tests", "agent_factory/tests"]
+pythonpath = [".", "frontend"]
+testpaths = ["knowledge", "frontend/tests"]
 
 [tool.ruff]
 # Keep ruff's default lint set (pyflakes F + pycodestyle E4/E7/E9): high-signal,
