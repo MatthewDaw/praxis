@@ -5,10 +5,10 @@
 # dorny/paths-filter (same approach as deploy.yml) so only the stack a change
 # actually touches is checked.
 #
-# Triggers: pull requests (the merge gate) and direct pushes to main (a lint-only
-# safety net for anything that lands without a PR). The python-test job runs on
-# PRs only — it is the heavyweight job and main is already green via the PR gate,
-# so there is nothing to re-verify post-merge.
+# Triggers: pull requests (the merge gate) and direct pushes to main. Both run the
+# same change-gated set, including the heavyweight python-test job — work lands on
+# main without a PR often enough that "the PR gate already checked it" is not a
+# safe assumption to skip testing on.
 #
 # Runs fully keyless: the embedder/LLM-dependent integration tests skip cleanly
 # without OPENROUTER_API_KEY, and the cassette-backed tests replay offline. No
@@ -143,11 +143,17 @@ jobs:
           npm run test -- src/components/ProductivityPanel.stateDistinction.test.tsx
 
   # Python suite against an ephemeral pgvector service (yoyo migrations are the
-  # schema source of truth, applied via `knowledge.serve.db`). PRs only — the
-  # heavyweight job, and main is already green via the PR gate. Keyless: see header.
+  # schema source of truth, applied via `knowledge.serve.db`). Keyless: see header.
+  #
+  # Runs on PUSHES TO MAIN as well as PRs. It used to be PR-only, reasoning that main is already
+  # green via the PR gate — but that only holds for changes that went THROUGH a PR, and work lands
+  # here directly often enough that the assumption is not load-bearing. The failure mode is the bad
+  # kind: `ci-gate` treats a skipped job as a pass, so a direct-to-main push went green with the
+  # test job skipped and lint the only thing that actually ran. A gate whose green means "we did not
+  # check" is worse than no gate, because it is believed.
   python-test:
     needs: changes
-    if: ${{ needs.changes.outputs.python == 'true' && github.event_name == 'pull_request' }}
+    if: ${{ needs.changes.outputs.python == 'true' }}
     runs-on: ubuntu-latest
     services:
       postgres:
