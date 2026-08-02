@@ -52,12 +52,21 @@ growing CLI session and has hit 100% context mid-build twice; the loop script ru
 per BATCH with stall detection and is the maintained driver.
 
 **The loop is batch-parallel.** Each round it computes the dependency-ready frontier itself, caps it at
-`AF_BATCH_MAX` (default 8), and hands af-build that explicit id list as the run scope — so af-build fans
+`AF_BATCH_MAX` (default 16), and hands af-build that explicit id list as the run scope — so af-build fans
 the batch out across parallel per-ticket worktrees, the completeness gate releases the session when the
 batch is done, and the next round starts in fresh context. Tickets that depend on each other are never in
-the same batch. Pass `AF_BATCH_MAX=<n>` to narrow rounds on a small or disk-tight box; actual concurrency
-is additionally capped by the Workflow tool at `min(16, cores-2)`. The loop reaps merged worktrees after
-every round and reports unmerged ones instead of deleting them (`AF_REAP_UNMERGED=1` to drop those too).
+the same batch.
+
+`AF_BATCH_MAX` is the ONLY parallelism cap in this path, and nothing narrows it underneath. The round
+fans out with `Agent` subagents, which carry no core-derived cap — the driver explicitly forbids the
+`Workflow` tool for exactly that reason, so the Workflow concurrency limit never applies here. (An
+earlier version of this line claimed concurrency was "additionally capped by the Workflow tool"; that
+was wrong, and it made small rounds look like a hard ceiling when they were only a default.) **DISK is
+the real ceiling**: each worker is a full checkout plus, where the project bootstraps per-worktree
+deps, a full dependency tree — so size `AF_BATCH_MAX` from the volume, not the core count.
+`AF_MIN_FREE_GB` (default 15) aborts a round that will not fit, but cannot reclaim disk spent
+mid-round. The loop reaps merged worktrees after every round and reports unmerged ones instead of
+deleting them (`AF_REAP_UNMERGED=1` to drop those too).
 
 **Every parallel round is verified after it merges.** Each ticket's validations ran inside its own
 worktree, against a tree where its change was the only one present, so a batch of five produces five
