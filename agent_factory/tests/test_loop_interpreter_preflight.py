@@ -140,14 +140,14 @@ def test_export_happens_after_py_is_resolved():
 
 
 def test_dispatch_prompt_tells_workers_which_interpreter_to_use():
-    send = next(l for l in SRC.splitlines() if "/af-build $PROJECT $ids_csv" in l)
+    send = next(line for line in SRC.splitlines() if "/af-build $PROJECT $ids_csv" in line)
     assert "$PY" in send, "workers are never told the resolved interpreter"
     assert "python3" in send, "the prompt must name what NOT to use"
 
 
 def test_dispatch_prompt_addition_stays_short():
     """That prompt string is enormous and costs tokens every round; the addition is two sentences."""
-    send = next(l for l in SRC.splitlines() if "/af-build $PROJECT $ids_csv" in l)
+    send = next(line for line in SRC.splitlines() if "/af-build $PROJECT $ids_csv" in line)
     addition = send[send.index("For ANY factory or Praxis python invocation") : send.index("$SERVICES")]
     assert len(addition) < 500, f"prompt addition is {len(addition)} chars"
 
@@ -155,7 +155,7 @@ def test_dispatch_prompt_addition_stays_short():
 def test_dispatch_prompt_is_still_one_double_quoted_send_keys():
     """The interpreter path is only useful if it interpolates -- and the existing $INTEGRATION_REF
     contract depends on the same quoting."""
-    send = next(l for l in SRC.splitlines() if "/af-build $PROJECT $ids_csv" in l)
+    send = next(line for line in SRC.splitlines() if "/af-build $PROJECT $ids_csv" in line)
     assert re.search(r'tmux send-keys -t "\$SESSION" "', send), "prompt is not double-quoted"
     r = subprocess.run(
         ["bash", "-c", 'PY=/v/bin/python; echo "use: $PY not python3"'],

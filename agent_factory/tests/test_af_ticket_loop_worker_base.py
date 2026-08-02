@@ -30,7 +30,7 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "af-ticket-loop.sh"
 SRC = SCRIPT.read_text()
 
-REF_ASSIGN = next(l for l in SRC.splitlines() if l.startswith("INTEGRATION_REF="))
+REF_ASSIGN = next(line for line in SRC.splitlines() if line.startswith("INTEGRATION_REF="))
 
 # The resolution expression the driver uses, lifted here so the behavioural tests exercise the real
 # thing rather than a paraphrase of it.
@@ -39,7 +39,9 @@ RESOLVE = 'git -C {d} symbolic-ref --quiet --short HEAD 2>/dev/null || git -C {d
 
 def _repo(d: str, *, detached: bool) -> str:
     """Init a one-commit repo at `d`; return its HEAD sha. Detach if asked."""
-    run = lambda *a: subprocess.run(a, cwd=d, capture_output=True, text=True, check=False)
+    def run(*a):
+        return subprocess.run(a, cwd=d, capture_output=True, text=True, check=False)
+
     run("git", "init", "-q", "-b", "trunk")
     run("git", "config", "user.email", "t@t")
     run("git", "config", "user.name", "t")
@@ -132,5 +134,5 @@ def test_ref_is_interpolated_not_literal():
     assert "git rebase my-branch" in r.stdout
 
     # And the real prompt line must use a double-quoted send-keys, not a single-quoted one.
-    send = next(l for l in SRC.splitlines() if "/af-build $PROJECT $ids_csv" in l)
+    send = next(line for line in SRC.splitlines() if "/af-build $PROJECT $ids_csv" in line)
     assert re.search(r'tmux send-keys -t "\$SESSION" "', send), "prompt is not double-quoted"
