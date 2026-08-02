@@ -776,8 +776,25 @@ integrate_round(){
 # full dependency tree, and filled the volume. A worktree whose branch is already an ancestor of the
 # integration branch is pure scratch and is removed; one that is NOT merged still holds unintegrated
 # commits, so it is reported rather than deleted. Removing a worktree keeps its branch either way.
+# Scratch roots this loop may reap, enumerated rather than assumed. Trees have been created in BOTH
+# layouts: <repo>/.claude/worktrees/<id> (Agent `isolation: worktree`) and <repo>_worktrees/<TICKET>
+# (the older per-ticket layout). The sweep used to match only the first, so six trees under
+# /workspace/appeal_engine_worktrees survived every sweep this driver ever ran and had to be removed
+# by hand. Anything outside these roots — the main checkout, a sibling project — is never touched.
+af_scratch_roots(){
+  printf '%s\n' "$WT/.claude/worktrees" "${WT}_worktrees"
+}
+
+af_is_scratch(){   # $1 = candidate path
+  local p="$1" root
+  while read -r root; do
+    case "$p" in "$root"/*) return 0 ;; esac
+  done < <(af_scratch_roots)
+  return 1
+}
+
 sweep_worktrees(){
-  cd "$WT"
+  cd "$WT" || return 0
   local kept=0
   while read -r path; do
     [ -n "$path" ] || continue
@@ -787,12 +804,9 @@ sweep_worktrees(){
     # is normally ahead of main, so `is-ancestor main HEAD` is TRUE and the merged-check below would
     # have happily deleted the factory checkout that all three loops execute from. Observed on the
     # first real sweep, which reported "/workspace/praxis holds UNMERGED commits" — it was one
-    # ancestry check away from removing the repo root. Scratch trees always live under
-    # <repo>/.claude/worktrees/; nothing else is this function's business.
-    case "$path" in
-      */.claude/worktrees/*) ;;
-      *) continue ;;
-    esac
+    # ancestry check away from removing the repo root. Scratch trees live under one of the roots
+    # af_scratch_roots names; nothing else is this function's business.
+    af_is_scratch "$path" || continue
     # Never yank a tree out from under a live worker: its evals are executing against these files.
     if [ -n "$(ls /proc/*/cwd 2>/dev/null | head -1)" ] && \
        readlink /proc/*/cwd 2>/dev/null | grep -qF "$path"; then
@@ -819,9 +833,54 @@ sweep_worktrees(){
     fi
   done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
   git worktree prune 2>/dev/null || true
+
+  # ORPHANED DIRECTORIES. A tree whose registration is already gone is invisible to
+  # `git worktree list`, and `git worktree prune` drops the stale registration WITHOUT deleting the
+  # directory it pointed at — so a registry-driven sweep can never reach it, however often it runs.
+  # Observed 2026-08-02: .claude/worktrees held seven directories and exactly one live registration;
+  # the other six were unreachable by any sweep and had to be rm -rf'd by hand. Reap by directory
+  # too, not only by registry.
+  # Membership is tested against the REGISTRY, not by asking git about the directory. `git -C <dir>
+  # rev-parse --git-dir` walks UPWARD and finds the enclosing repo, so it succeeds for every plain
+  # directory inside the checkout — the first version of this check used it and skipped 100% of
+  # orphans as "still live". Verified by test before shipping.
+  local root d registered
+  registered=$(git worktree list --porcelain | awk '/^worktree /{print $2}')
+  while read -r root; do
+    [ -d "$root" ] || continue
+    for d in "$root"/*; do
+      [ -d "$d" ] || continue
+      printf '%s\n' "$registered" | grep -qxF "$d" && continue
+      if readlink /proc/*/cwd 2>/dev/null | grep -qF "$d"; then
+        say "orphan dir $d is IN USE by a live process — skipping"
+        continue
+      fi
+      rm -rf "$d" && say "removed orphaned worktree dir $d"
+    done
+    rmdir "$root" 2>/dev/null || true
+  done < <(af_scratch_roots)
+
   [ "$kept" -gt 0 ] && say "$kept worktree(s) purged before integration — their branches survive and merge once their tickets finish"
   return 0
 }
+
+# Cleanup is an INVARIANT, not a happy-path step.
+#
+# sweep_worktrees used to run in exactly two places: the disk preflight, and after integrate_round
+# inside the loop. Every OTHER way this script can end therefore leaked the round's trees — the
+# DEPENDENCY STALL break, the Praxis-outage exit 6, the fruitless-round exit 4, exit 3, exit 5, and
+# any operator `tmux kill-session`. On one box that left 8 trees holding 10GB, on a volume the same
+# script halts the build to protect. A trap makes the sweep unconditional: whatever happens, the
+# scratch trees go, and their branches (the actual artifacts) survive.
+af_cleanup_on_exit(){
+  local rc=$?
+  set +e
+  if [ -n "${WT:-}" ] && [ -e "${WT}/.git" ]; then
+    sweep_worktrees || true
+  fi
+  return "$rc"
+}
+trap af_cleanup_on_exit EXIT INT TERM
 
 # ------------------------------------------------------------------ post-merge round verification --
 #
