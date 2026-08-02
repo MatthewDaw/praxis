@@ -78,7 +78,7 @@
 # therefore ran as 20 sequential hour-capped sessions instead of ~4 rounds.
 #
 # So each round now computes the dependency-ready FRONTIER itself and hands af-build the whole batch
-# as an explicit id scope, capped at AF_BATCH_MAX (default 8). Because the batch ids ARE the run
+# as an explicit id scope, capped at AF_BATCH_MAX (default 16). Because the batch ids ARE the run
 # scope, af-build's own completeness gate releases the session exactly when the batch is done — the
 # skill's fan-out loop re-queries the frontier filtered to that scope, finds it empty, and stops
 # without reaching for the next wave. The context-hygiene property that motivated v1 is preserved:
@@ -97,12 +97,19 @@
 #    deleting an unmerged worktree destroys work rather than reclaiming scratch.
 #
 # The round is fanned out with parallel Agent SUBAGENTS, one per ticket in a single message, NOT with
-# the Workflow tool. That is deliberate and it is the whole reason a batch of 8 actually runs 8-wide:
-# Workflow caps concurrent agents at min(16, cores-2), which on this 4-core box is TWO. Measured, not
+# the Workflow tool. That is deliberate and it is the whole reason a batch of N actually runs N-wide:
+# Workflow derives its concurrency from CPU count, so on a small box it throttles hard. Measured, not
 # assumed — a 5-ticket round dispatched through Workflow reported "2/5 agents done" with exactly two
 # worktrees showing file activity while the other three waited. The Agent tool carries no such
 # core-derived cap and supports the same per-agent worktree isolation, so the prompt below spells out
 # both halves: do not use Workflow, and put every worker in ONE message so they are concurrent.
+#
+# Do NOT delete that instruction as redundant. It is the only thing standing between this loop and a
+# core-derived throttle: an agent that reaches for Workflow as the "obvious" parallel primitive gets
+# silently narrowed to a couple of concurrent workers, and the round then looks merely slow rather
+# than broken. The specific number is deliberately NOT hardcoded here — it is computed per box at run
+# time (WORKFLOW_CAP, below) so this shared multi-project driver never asserts one machine's
+# arithmetic as a universal fact.
 #
 # Disk is then the real constraint: each worktree is a full checkout plus, if the project bootstraps
 # per-worktree deps, a full dependency tree.
@@ -152,7 +159,9 @@
 #        af-ticket-loop.sh --check
 #
 # Knobs, all optional:
-#   AF_BATCH_MAX=6         narrower rounds on a small or disk-tight box (default 8)
+#   AF_BATCH_MAX=32        round width (default 16). NOT narrowed by CPU underneath -- the round
+#                          fans out with Agent subagents, which carry no core-derived cap. DISK is
+#                          the real ceiling: each worker is a full checkout (+ deps if bootstrapped).
 #   AF_VERIFY_ROUND=0      skip post-merge verification (default on, multi-ticket rounds only)
 #   AF_VERIFY_TIMEOUT_S    bound that verification (default 2700)
 #   AF_MIN_FREE_GB=25      raise the disk floor a round must clear (default 15)
@@ -263,9 +272,26 @@ AF_PLUGIN_DIR="${AF_PLUGIN_DIR:-$(dirname "$(dirname "$SELF")")}"
 AF_REPO="${AF_REPO:-$(dirname "$AF_PLUGIN_DIR")}"
 
 PROJECT="$1"; WT="$2"; PG="$3"; REDIS="$4"; MAX="${5:-999}"
-# Largest frontier handed to a single session. 8 is the user-facing cap; the Workflow tool caps
-# actual concurrency at min(16, cores-2) underneath it, and disk caps it below that on a small box.
-BATCH_MAX="${AF_BATCH_MAX:-8}"
+# Largest frontier handed to a single session, and the ONLY parallelism cap this driver enforces.
+#
+# It is NOT further narrowed underneath: the round fans out with Agent subagents, which carry no
+# core-derived cap, so a batch of N really does run N-wide. (An earlier version of this comment
+# claimed the Workflow tool capped concurrency beneath this number — that was wrong, because this
+# loop never calls Workflow. The false claim made small rounds look inevitable when they were only
+# a default.)
+#
+# DISK is the real ceiling, not CPU: each worker gets a full checkout plus, where the project
+# bootstraps per-worktree deps, a full dependency tree. Measure a round's footprint on the target
+# volume and set AF_BATCH_MAX from that; the AF_MIN_FREE_GB floor aborts a round that would not fit,
+# but it cannot un-spend disk already consumed mid-round.
+BATCH_MAX="${AF_BATCH_MAX:-16}"
+
+# What the Workflow tool WOULD narrow us to on this specific machine, computed rather than assumed.
+# Only used to explain, in the dispatch prompt, why the round must not go through Workflow — nothing
+# in this driver is limited by it.
+_cores="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+WORKFLOW_CAP=$(( _cores - 2 )); [ "$WORKFLOW_CAP" -gt 16 ] && WORKFLOW_CAP=16
+[ "$WORKFLOW_CAP" -lt 1 ] && WORKFLOW_CAP=1
 SESSION="af-$(basename "$WT")"   # per-worktree, so concurrent projects never collide on tmux session name
 # What this run integrates INTO -- whatever the project worktree has checked out. Workers must be
 # told it explicitly, because they do not start on it: `isolation: worktree` creates each worker's
@@ -1000,7 +1026,7 @@ while :; do
   # next session is meant to own. Parentheses are avoided in this string on purpose — if the REPL is not
   # actually ready, the text lands on a bash prompt, and a stray paren there is a syntax error that
   # leaves the session dead at a shell prompt.
-  tmux send-keys -t "$SESSION" "/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is capped at min of 16 and cores-2, which is only 2 on this box, and that would serialize the round for no reason. Instead spawn ONE Agent subagent per ticket, ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. CRITICAL — REBASE FIRST, before reading a single file or writing a line of code. A worktree is created from the repo default branch, NOT from the branch this run integrates into, so every worker starts on the wrong base. The FIRST command each worker runs in its own worktree is: git merge --ff-only $INTEGRATION_REF — and if that is refused because the worktree has diverged, git rebase $INTEGRATION_REF instead. A worker that skips this authors its change against files the integration branch does not have, and its work will not apply back onto it even cherry-picked alone; that failure is silent, because the ticket still goes green in its own tree and only the round's merge discovers the work cannot land. If BOTH commands fail, do NOT build: record the blocker on the ticket and stop, because anything built on that base is unmergeable by construction. ONE deliberate amendment to that contract, and state it to every worker, precisely — this narrows WHICH tests run, it does not remove the ticket's gate. Each worker STILL runs, and still has to pass, every test related to the code it is changing: its red-to-green acceptance eval, every one of its pinned validations, the existing test files covering the modules it edited, the tests of any caller or dependent of what it changed, and typecheck plus lint SCOPED to the touched paths. A worker whose own related tests are red is NOT finished and must not release the ticket — that gate is unchanged and non-negotiable. What a worker skips is ONLY the repo-wide sweep: the full test suite across the whole repository, and repo-wide build, typecheck, or lint over paths it never touched. The repo-wide gates are run ONCE, on the MERGED tree, by this round's post-merge verification. The reason is measured: $size workers each running the full suite at end-of-ticket puts $size concurrent suites on a box with a handful of cores, and a suite that takes two minutes alone took twenty, with a worker burning 26 minutes and 259k tokens without producing a commit. Deferring the SWEEP is not removing a gate: each ticket is still gated on its own related tests, and the repo-wide sweep still runs before the round is done — once, on the tree that actually matters. All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. CRITICAL — do NOT end your turn while any ticket in that list is still unfinished. Waiting on agent-completion notifications is NOT enough: a turn that ends with workers in flight gets those workers STOPPED, and the round scores zero even though real work was happening. So HOLD the turn open by polling instead: run a shell sleep of 60 seconds, then re-query the build_state of every batch ticket from Praxis, and repeat that sleep-and-query cycle for as long as any of them is still incomplete or in_progress. Only after every batch ticket reads finished or blocked may you merge, reap, and report. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push. Every worker edits ONLY the files inside its OWN assigned worktree — the factory checkout that holds this driver and the af-build hooks is TOOLING, not the project, and editing it is out of bounds even when a ticket is about that code. Two reasons it matters: those hook files are imported at runtime by every project's loop on this machine, so a half-finished edit there can break builds that have nothing to do with this ticket; and edits made outside a worktree sit on no branch, so the round's merge step cannot see them and they are silently dropped when the round ends. For ANY factory or Praxis python invocation, run $PY rather than a bare python3 — this run preflighted that interpreter and a bare python3 may resolve to an older one whose missing tomllib makes the universal quality checks load as an empty list. Pass that same path down to every subagent you spawn.$SERVICES."
+  tmux send-keys -t "$SESSION" "/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is derived from CPU count and on THIS machine resolves to $WORKFLOW_CAP concurrent agent(s), which would throttle a $size-wide round for no reason. Instead spawn ONE Agent subagent per ticket, ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. CRITICAL — REBASE FIRST, before reading a single file or writing a line of code. A worktree is created from the repo default branch, NOT from the branch this run integrates into, so every worker starts on the wrong base. The FIRST command each worker runs in its own worktree is: git merge --ff-only $INTEGRATION_REF — and if that is refused because the worktree has diverged, git rebase $INTEGRATION_REF instead. A worker that skips this authors its change against files the integration branch does not have, and its work will not apply back onto it even cherry-picked alone; that failure is silent, because the ticket still goes green in its own tree and only the round's merge discovers the work cannot land. If BOTH commands fail, do NOT build: record the blocker on the ticket and stop, because anything built on that base is unmergeable by construction. ONE deliberate amendment to that contract, and state it to every worker, precisely — this narrows WHICH tests run, it does not remove the ticket's gate. Each worker STILL runs, and still has to pass, every test related to the code it is changing: its red-to-green acceptance eval, every one of its pinned validations, the existing test files covering the modules it edited, the tests of any caller or dependent of what it changed, and typecheck plus lint SCOPED to the touched paths. A worker whose own related tests are red is NOT finished and must not release the ticket — that gate is unchanged and non-negotiable. What a worker skips is ONLY the repo-wide sweep: the full test suite across the whole repository, and repo-wide build, typecheck, or lint over paths it never touched. The repo-wide gates are run ONCE, on the MERGED tree, by this round's post-merge verification. The reason is measured: $size workers each running the full suite at end-of-ticket puts $size concurrent suites on a box with a handful of cores, and a suite that takes two minutes alone took twenty, with a worker burning 26 minutes and 259k tokens without producing a commit. Deferring the SWEEP is not removing a gate: each ticket is still gated on its own related tests, and the repo-wide sweep still runs before the round is done — once, on the tree that actually matters. All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. CRITICAL — do NOT end your turn while any ticket in that list is still unfinished. Waiting on agent-completion notifications is NOT enough: a turn that ends with workers in flight gets those workers STOPPED, and the round scores zero even though real work was happening. So HOLD the turn open by polling instead: run a shell sleep of 60 seconds, then re-query the build_state of every batch ticket from Praxis, and repeat that sleep-and-query cycle for as long as any of them is still incomplete or in_progress. Only after every batch ticket reads finished or blocked may you merge, reap, and report. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push. Every worker edits ONLY the files inside its OWN assigned worktree — the factory checkout that holds this driver and the af-build hooks is TOOLING, not the project, and editing it is out of bounds even when a ticket is about that code. Two reasons it matters: those hook files are imported at runtime by every project's loop on this machine, so a half-finished edit there can break builds that have nothing to do with this ticket; and edits made outside a worktree sit on no branch, so the round's merge step cannot see them and they are silently dropped when the round ends. For ANY factory or Praxis python invocation, run $PY rather than a bare python3 — this run preflighted that interpreter and a bare python3 may resolve to an older one whose missing tomllib makes the universal quality checks load as an empty list. Pass that same path down to every subagent you spawn.$SERVICES."
   sleep 3; tmux send-keys -t "$SESSION" Enter
   say "submitted round #$round with $size ticket(s), waiting for the batch to finish or stall"
 

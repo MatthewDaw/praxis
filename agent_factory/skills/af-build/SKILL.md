@@ -258,10 +258,13 @@ After §0 stamps the run marker, compute the dependency-ready frontier (id-only,
 - **An EXPLICIT id list from an external driver** (`af-ticket-loop.sh` submits a round as
   `/af-build <project> ID,ID,...`) → fan out with **`Agent` subagents, ALL spawned in ONE message**, NOT the
   Workflow tool. This is a THIRD sanctioned path, and on a small box it is the only one that delivers the
-  fan-out this section demands: `Workflow` caps concurrent agents at `min(16, cores-2)`, which is **2** on a
-  4-core box, so routing an 8-ticket round through it silently serializes the round into four sequential
-  pairs while reporting success. The driver has already computed the frontier and proven the ids are
+  fan-out this section demands: `Workflow` derives its concurrency from the machine's CPU count, so on a
+  small box routing an N-ticket round through it silently serializes that round into sequential clumps
+  while reporting success. Compute that number for the box you are actually on rather than quoting one —
+  a figure hardcoded for a 4-core host is wrong everywhere else, and reads as a universal ceiling when it
+  is only one machine's arithmetic. The driver has already computed the frontier and proven the ids are
   mutually independent, so the Workflow tool's scheduling buys nothing here — its only effect is its cap.
+  `Agent` subagents carry no core-derived cap, which is why a batch of N genuinely runs N-wide.
   Everything else is unchanged: one decision-making agent per ticket, each with `isolation: "worktree"`,
   each handed the §8 worker contract verbatim. Fanning out narrower than the id list you were given is a
   BUG, exactly as it is above.
