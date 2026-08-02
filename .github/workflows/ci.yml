@@ -124,11 +124,14 @@ jobs:
   # Frontend (React/Vite) productivity panel test: `vitest run` via the repo's
   # `test` script, scoped to the productivity suite (the wider frontend suite
   # carries pre-existing unrelated failures outside this pipeline's scope).
-  # PRs only — the heavyweight job, and main is already green via the PR gate
-  # (mirrors python-test below).
+  #
+  # Runs on pushes to main as well as PRs, for the same reason as python-test below:
+  # "main is already green via the PR gate" only holds for what went through a PR, and
+  # `ci-gate` reads a skipped job as a pass — so a direct push landed green with this
+  # job never having run.
   frontend-test:
     needs: changes
-    if: ${{ needs.changes.outputs.frontend == 'true' && github.event_name == 'pull_request' }}
+    if: ${{ needs.changes.outputs.frontend == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
