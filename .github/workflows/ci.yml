@@ -46,7 +46,11 @@ jobs:
           filters: |
             python:
               - '**/*.py'
-              - 'pyproject.toml'
+              # Every TOML, not just the root pyproject. agent_factory/seeded_checks.toml is the
+              # gate library — parsed at load time, and a malformed entry raises there — yet it
+              # matched no filter, so a commit editing it ran ZERO jobs and still reported green.
+              # Any TOML in this repo is python-consumed config; treat it as python.
+              - '**/*.toml'
               - 'uv.lock'
               - '.github/workflows/ci.yml'
             frontend:
