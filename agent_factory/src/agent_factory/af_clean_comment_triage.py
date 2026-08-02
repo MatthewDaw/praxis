@@ -6,6 +6,9 @@ context is presumed to carry WHY -- a reason, a non-obvious invariant, a cost, o
 alternative -- and is protected. Ambiguous comments (neither a clean restatement nor a clear
 rationale) survive by default: keep-by-default protects a comment's existence, never its accuracy.
 
+Structural dividers are protected outright, ahead of any overlap math: a banner's label names the
+section beneath it, which makes it score as a perfect restatement when it is nothing of the kind.
+
 This module never deletes anything itself -- it only classifies. The caller (whatever proposes a
 comment-removal diff) is expected to only ever act on an ``eligible`` verdict.
 """
@@ -36,6 +39,15 @@ _STOPWORDS = frozenset({
 })
 
 _WORD_RE = re.compile(r"[a-zA-Z0-9]+")
+
+# A structural DIVIDER: a run of repeated rule characters, as in
+#   # --- orgs --------------------------------------------------------------
+#   # =========================================================================
+# Token-overlap says nothing useful about these. The label in a banner is SUPPOSED to name the
+# section beneath it, so it scores a perfect overlap and reads as a pure restatement -- five of
+# these were proposed for deletion on a real repo. A divider is layout, not a claim about the code,
+# and removing it silently reflows a file's structure.
+_DIVIDER = re.compile(r"([-=*#~_+])\1{3,}")
 
 
 class CommentFinding(NamedTuple):
@@ -85,6 +97,13 @@ def classify_comment(text: str, identifier_tokens: Iterable[str]) -> CommentFind
         return CommentFinding(
             text, "protected",
             f"comment states a reason/invariant/cost/rejected-alternative ({text!r}); protected",
+        )
+
+    if _DIVIDER.search(text):
+        return CommentFinding(
+            text, "protected",
+            "comment is a structural divider/banner, not a claim about the code it precedes; "
+            "its label naming the section below is the POINT, not a restatement",
         )
 
     content = _words(text)

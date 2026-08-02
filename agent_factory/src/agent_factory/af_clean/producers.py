@@ -24,8 +24,10 @@ reported at ``advise``, and scars are reported as evidence AGAINST removal, neve
 
 from __future__ import annotations
 
+import io
 import re
 import subprocess
+import tokenize
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
@@ -121,6 +123,28 @@ def _annotated_tokens(lines: Sequence[str], idx: int) -> frozenset[str]:
     return frozenset(tokens)
 
 
+def _python_comments(text: str) -> dict[int, str] | None:
+    """``{1-based line: comment text}`` for the REAL comments in Python source, via ``tokenize``.
+
+    Line-scanning for a leading ``#`` cannot tell a comment from a ``#`` inside a string literal,
+    and that is not a hypothetical: on a real run it proposed deleting the comments inside af-clean's
+    OWN test fixtures — the ``SLOP = '''...'''`` constants written to look like slop so the detector
+    can be tested against them. Six of eighteen findings, and acting on any of them would have
+    broken the tests that prove the detector works.
+
+    Returns ``None`` when the file will not tokenize (a syntax error, an exotic encoding), so the
+    caller falls back to the line scan rather than silently reporting a file has no comments.
+    """
+    comments: dict[int, str] = {}
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type == tokenize.COMMENT:
+                comments[tok.start[0]] = tok.string.lstrip("#").strip()
+    except (tokenize.TokenError, SyntaxError, IndentationError, UnicodeDecodeError, ValueError):
+        return None
+    return comments
+
+
 def comment_findings(scope: Path, *, repo_root: Path | None = None,
                      exempt: Iterable[str] = ()) -> list[Finding]:
     """Comments whose triage verdict is slop, as ``advise``-tier located findings.
@@ -133,17 +157,33 @@ def comment_findings(scope: Path, *, repo_root: Path | None = None,
     for path in iter_source_files(scope, exempt):
         prefixes = _LINE_COMMENT.get(path.suffix, ())
         try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            source = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        lines = source.splitlines()
+        # Python gets a real tokenizer; everything else keeps the line scan. The same string-literal
+        # blindness exists for `//` inside a JS/TS string, but a correct fix there needs a parser per
+        # language, and a half-parser that gets it wrong on template literals would be worse than a
+        # heuristic that is honest about being one.
+        tokenized = _python_comments(source) if path.suffix == ".py" else None
+
         for idx, raw in enumerate(lines):
-            stripped = raw.strip()
-            prefix = next((p for p in prefixes if stripped.startswith(p)), None)
-            if prefix is None:
-                continue
-            text = stripped[len(prefix):].strip()
-            if not text:
-                continue
+            if tokenized is not None:
+                # Own-line comments only, exactly as the line scan found them. tokenize also yields
+                # TRAILING comments (`x = 1  # why`), but the applier removes whole LINES, so a
+                # finding on one of those could only ever be refused — and the widening would be
+                # invisible noise rather than a capability.
+                text = tokenized.get(idx + 1)
+                if not text or not raw.strip().startswith("#"):
+                    continue
+            else:
+                stripped = raw.strip()
+                prefix = next((p for p in prefixes if stripped.startswith(p)), None)
+                if prefix is None:
+                    continue
+                text = stripped[len(prefix):].strip()
+                if not text:
+                    continue
             verdict = classify_comment(text, _annotated_tokens(lines, idx))
             # "eligible" is the ONLY removable verdict. "protected" carries a WHY marker and
             # "ambiguous" survives by default -- the triage module deliberately makes survival the

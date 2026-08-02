@@ -221,7 +221,23 @@ def run_validation_and_remediation(
         if not cmd:
             report.phases.append(PhaseResult(name, SKIPPED, detail="no command discovered"))
             return
-        proc = runner(shlex.split(cmd), repo)
+        try:
+            proc = runner(shlex.split(cmd), repo)
+        except (OSError, subprocess.SubprocessError) as exc:
+            # The command could not be SPAWNED (argv[0] missing -- a discovered `python` on a box
+            # that only has `python3` -- or a timeout). This used to propagate and kill the whole
+            # run: `python -m agent_factory.af_clean` with no flags, the documented default, died on
+            # an unhandled FileNotFoundError before printing a single finding.
+            #
+            # FAILED, never SKIPPED. "The phase did not run" and "the phase passed" must not be the
+            # same observable outcome -- that is the exact confusion this module exists to prevent,
+            # and skipping here would let a validation step that checked nothing report a pass.
+            report.phases.append(PhaseResult(
+                name, FAILED, command=cmd,
+                detail=f"command could not be run ({type(exc).__name__}: {exc}); phase DID NOT RUN, "
+                       "so its result is unknown rather than passing",
+            ))
+            return
         status = PASSED if proc.returncode == 0 else FAILED
         report.phases.append(
             PhaseResult(name, status, command=cmd, detail=(proc.stdout or "") + (proc.stderr or ""))

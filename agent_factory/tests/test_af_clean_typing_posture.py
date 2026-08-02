@@ -22,6 +22,7 @@ from agent_factory.af_clean.findings import (
     Location,
     admit_finding,
 )
+from agent_factory.af_clean.producers import comment_findings
 from agent_factory.af_clean.typing_posture import (
     CheckerRun,
     detect_checker_abort,
@@ -301,3 +302,91 @@ def test_run_verifier_passes_the_class_through():
     assert verdict.endorsed_hunk_ids == frozenset({"h1"})
     assert seen["argv"][-1] == instruction_for("js-to-ts")
     assert "SECRET" not in " ".join(seen["argv"])
+
+
+# ------------------------------------------- false positives found by running af-clean on praxis
+#
+# A real dry run produced 18 findings, of which 11 were wrong in two distinct ways. Both are pinned
+# here because both would silently return the moment the detector is touched.
+
+
+def test_a_section_divider_is_protected_not_eligible():
+    """`# --- orgs ---...` scored a perfect overlap: a banner's label names the section beneath it,
+    which is the POINT of a banner, not a restatement of it."""
+    from agent_factory.af_clean_comment_triage import classify_comment
+
+    verdict = classify_comment(
+        "--- orgs --------------------------------------------------------------",
+        {"orgs"},
+    )
+    assert verdict.verdict == "protected"
+
+
+def test_a_bare_rule_line_is_protected():
+    from agent_factory.af_clean_comment_triage import classify_comment
+
+    assert classify_comment("=" * 70, set()).verdict == "protected"
+    assert classify_comment("#" * 40 + " main", {"main"}).verdict == "protected"
+
+
+def test_a_short_dash_is_not_mistaken_for_a_divider():
+    """Three chars is a hyphenated phrase or an em-dash, not a rule. Only 4+ repeats are layout."""
+    from agent_factory.af_clean_comment_triage import classify_comment
+
+    assert classify_comment("increment counter", {"increment", "counter"}).verdict == "eligible"
+
+
+def test_a_hash_inside_a_string_literal_is_not_a_comment(tmp_path):
+    """af-clean proposed deleting the comments inside its OWN test fixtures — the `SLOP = '''...'''`
+    constants written to look like slop so the detector can be tested against them."""
+    src = tmp_path / "test_fixture.py"
+    src.write_text(
+        "SLOP = '''class Widget:\n"
+        "    def increment_counter(self, counter):\n"
+        "        # increment counter\n"
+        "        counter = counter + 1\n"
+        "'''\n"
+    )
+    assert comment_findings(tmp_path) == []
+
+
+def test_a_real_comment_in_the_same_file_is_still_found(tmp_path):
+    """The tokenizer must not silence the detector — only the string-literal false positives."""
+    src = tmp_path / "widget.py"
+    src.write_text(
+        "SLOP = '''# increment counter'''\n\n"
+        "def increment_counter(self, counter):\n"
+        "    # increment counter\n"
+        "    return counter + 1\n"
+    )
+    findings = comment_findings(tmp_path)
+    assert [f.location.line for f in findings] == [4], "only the real comment, at its real line"
+
+
+def test_a_file_that_will_not_tokenize_falls_back_to_the_line_scan(tmp_path):
+    """A syntax error must not mean 'this file has no comments' — that would silently shrink the
+    detector's reach on exactly the files most likely to be a mess."""
+    src = tmp_path / "broken.py"
+    src.write_text("def increment_counter(self, counter):\n    # increment counter\n    ((((\n")
+    assert [f.location.line for f in comment_findings(tmp_path)] == [2]
+
+
+# ------------------------------------------------- a validation command that cannot even be spawned
+
+
+def test_an_unspawnable_command_fails_the_phase_instead_of_killing_the_run():
+    """`python -m agent_factory.af_clean` with no flags — the documented default — died on an
+    unhandled FileNotFoundError when discovery produced a `python` command on a box that has only
+    `python3`. It must be a FAILED phase, never SKIPPED: 'did not run' and 'passed' must not be the
+    same observable outcome."""
+    from agent_factory.af_clean_validate import FAILED, run_validation_and_remediation
+
+    def _missing_binary(argv, cwd):
+        raise FileNotFoundError(2, "No such file or directory", argv[0])
+
+    report = run_validation_and_remediation(
+        ".", runner=_missing_binary, commands={"test": "python -m pytest"}, iteration_cap=0)
+    phase = next(p for p in report.phases if p.name == "full_test_suite")
+    assert phase.status == FAILED
+    assert "DID NOT RUN" in phase.detail
+    assert report.overall_status != "passed"
