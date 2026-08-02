@@ -106,7 +106,9 @@ describe("AuditTimeline", () => {
     const parsed = trailFromStoredMeta();
     expect(parsed).toHaveLength(STORED_TRAIL.length);
     parsed.forEach((entry, i) => {
-      const stored = STORED_TRAIL[i] as Record<string, string>;
+      // `as unknown as` because the union's optional members (`note?: undefined`) do not overlap
+      // an index signature of `string`, so a direct assertion is a TS2352 error.
+      const stored = STORED_TRAIL[i] as unknown as Record<string, string | undefined>;
       expect(entry.action).toBe(stored.action);
       expect(entry.actor).toBe(stored.actor);
       expect(entry.timestamp).toBe(stored.timestamp);

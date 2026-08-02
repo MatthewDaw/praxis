@@ -12,6 +12,7 @@ arm -> edit succeeds -> re-bless -> edit refused again.
 
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -86,6 +87,10 @@ def _marker_meta(graph, marker_id):
     return dict(getattr(graph.get_fact(marker_id), "meta", None) or {})
 
 
+@pytest.mark.skipif(
+    not os.getenv("OPENROUTER_API_KEY"),
+    reason="the edit path runs LLM contradiction detection, which needs OPENROUTER_API_KEY",
+)
 def test_arm_then_edit_then_rebless(seeded):
     """The round trip the guard's error message promises, end to end."""
     c, h, fid = seeded["client"], seeded["headers"], seeded["fact_id"]
