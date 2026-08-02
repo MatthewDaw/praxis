@@ -30,9 +30,15 @@ def _repo(tmp_path: Path, files: dict[str, str]) -> Path:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(body, encoding="utf-8")
     subprocess.run(["git", "init", "-q", "."], cwd=tmp_path, check=True)
+    # Identity on the REPO, not just on our own commit. af-clean's commit stack runs `git commit`
+    # in here itself, and it must not inherit one -- a real repo has an identity configured, a
+    # bare `git init` under CI does not (the runner's hostname is `(none)`, so git's auto-detection
+    # fails rather than guessing), and the failure is silent: the runner captures output, the stack
+    # records the error in its git_log, and the test sees only "HEAD did not move".
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True)
     subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t",
-                    "commit", "-qm", "init"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=tmp_path, check=True)
     return tmp_path
 
 
