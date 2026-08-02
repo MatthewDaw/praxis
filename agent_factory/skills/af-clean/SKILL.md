@@ -33,6 +33,25 @@ Deletion additionally requires **evidence you did not generate**: the blind veri
 (`verifier.run_verifier`) sees the diff and the repo, never your reasoning, so it cannot be talked
 into agreeing with you. A deletion that only you believe in does not ship.
 
+**The verifier's question is split by change class.** Blindness is only half the property; the
+other half is that the judge is asked about the change it was actually handed. Every finding carries
+a `change_class`, and `verifier.instruction_for` maps it to its own question:
+
+| Class | What the blind verifier is asked |
+|---|---|
+| `deletion` | Is this genuinely unreachable, and is nothing observable lost? |
+| `consolidation` | Do all former call sites behave identically? What divergence is the merge erasing? |
+| `annotation` | Is each type CORRECT (not merely accepted), and is the diff behaviour-neutral? |
+| `lint-fix` | Purely stylistic, or did the auto-fix change semantics? |
+| `js-to-ts` | Same emitted behaviour, no `any` smuggled in to compile, no import-graph change? |
+| `report-only` | Nothing — it proposes no edit, so it never reaches a verifier. |
+
+A class with no question **raises** rather than falling back to the deletion one. That fallback is
+the failure mode this split exists to prevent: a verifier still asking "is this deletion safe?"
+about an added annotation is rubber-stamping, not verifying. Note the annotation row especially — a
+wrong-but-accepted annotation is the dangerous case, since `x: Any` and `x: str` both satisfy the
+checker and only one is true. Callers SELECT a class; they never write the question, so B23 holds.
+
 ## The run
 
 1. **Resolve scope.** `entry.resolve_scope(repo_root, path)` — the repo root when the caller named
@@ -59,20 +78,36 @@ into agreeing with you. A deletion that only you believe in does not ship.
      slop. Blame the lines before proposing removal: code added by a bug-fix commit is load-bearing
      evidence that the defence is real.
    - `af_clean_string_corpus` — string-dispatch corpus with whole-token quarantine matching.
-7. **Verify blind.** `verifier.build_verifier_payload(...)` → `verifier.run_verifier(...)` →
+   - `typing_posture` — the typing/lint POSTURE detections. These report, they never edit.
+7. **Ask whether the checkers actually ran.** `typing_posture.typing_posture_findings` answers the
+   question nothing else in a pipeline asks: **a checker that did not run is indistinguishable from
+   a checker that passed.** `detect_checker_abort` catches an abort marker (`errors prevented
+   further checking`, a tsconfig parse failure, a pytest collection error) or an implausible
+   analysed-file count — a real run once reported 74 errors when the true number was 2261, because
+   one unresolvable import stopped mypy after a fraction of the tree and the subtotal was consumed
+   as a total. `detect_unenforced_checker` catches a configured gate nothing invokes, and the
+   subtler case where the config documents one gate command while CI runs a wider one.
+   `detect_missing_checker` reports an ecosystem with no gate at all. `detect_new_javascript`
+   reports a NEW `.js`/`.jsx` in a repo that already configures TypeScript.
+
+   **af-clean satisfies the gate the repo chose; it does not choose the gate.** Turning a checker
+   on, flipping `strict`, wiring CI, or bulk-converting a language are repo-wide policy decisions
+   producing unbounded work — flipping `strict` in the motivating repo produced 2141 errors across
+   133 files. All of it is `change_class="report-only"`: located, admitted, reported, never applied.
+8. **Verify blind.** `verifier.build_verifier_payload(...)` → `verifier.run_verifier(...)` →
    `verifier.parse_verifier_output(...)`.
-8. **Apply only through the witness gate.** `af_clean_witness` — the applier is witness-tiered and
+9. **Apply only through the witness gate.** `af_clean_witness` — the applier is witness-tiered and
    the aggression dial is pinned at its floor. Findings that do not clear their tier are REPORTED,
    not applied.
-9. **Commit as a risk-stratified stack.** `commit_stack` — layered by risk so a regression is undone
+10. **Commit as a risk-stratified stack.** `commit_stack` — layered by risk so a regression is undone
    by reverting one layer, not by unpicking a mixed commit. It refuses forbidden git operations
    (`ForbiddenGitOperation`) and its unwind is safe in a shared checkout.
-10. **Validate and remediate.** `af_clean_validate.run_validation_and_remediation(...)` — E1 invokes
+11. **Validate and remediate.** `af_clean_validate.run_validation_and_remediation(...)` — E1 invokes
     this ITSELF, because nothing else in an ad-hoc repo run will. (E2 does not: af-build already
     validates at end of run.)
 
 `entry.run_e1(repo_root, path, produce_findings=..., apply_findings=..., dry_run=...)` wires
-6→10 together and returns an `E1Result` carrying findings plus the validation report.
+6→11 together and returns an `E1Result` carrying findings plus the validation report.
 
 ## Just run it
 
@@ -80,12 +115,12 @@ into agreeing with you. A deletion that only you believe in does not ship.
 python -m agent_factory.af_clean [path] [--repo-root DIR] [--apply] [--no-validate]
 ```
 
-`producers.default_producer()` supplies step 6 and the CLI supplies 1–5 and 10, so the command
+`producers.default_producer()` supplies steps 6–7 and the CLI supplies 1–5 and 11, so the command
 works with no wiring. **Dry run is the default** — `--apply` is the explicit opt-in, because the two
 mistakes are not symmetric: a dry run that should have applied costs one command, an apply that
 should not have run edits someone's repository.
 
-Step 10 makes E1 slow on a large repo: it discovers and runs the project's real test suite. That is
+Step 11 makes E1 slow on a large repo: it discovers and runs the project's real test suite. That is
 the point — findings that break the build are not findings — but use `--no-validate` when you only
 want the report.
 
@@ -101,6 +136,27 @@ was skipped and why. Do not editorialise about code quality beyond the located f
 dry-run changes what is written, never what is found. Offer it first on a repo you have not cleaned
 before, and on any repo with uncommitted work.
 
+## The `typed-and-linted` axis
+
+`agent_factory/seeded_checks.toml` carries a universal graded check, `typed-and-linted`, alongside
+`minimalism-dry`. Three axes: `annotation-completeness`, `no-escape-hatches`, and `gate-integrity`.
+It ships `report_only = true` (grades and records, does not block) until the anchors calibrate.
+
+`gate-integrity`'s threshold is **1.0** on purpose — it is the only binary axis in the file, because
+either the tool ran or its verdict is worthless. An aborted checker reporting few errors scores
+zero there regardless of how short the error list is, and the other axes are then *unscorable*, not
+optimistically passed.
+
+Remediation under this axis stays af-clean-shaped, which means it stays LOCATED:
+
+- **IN** — annotations that satisfy a checker the repo has ALREADY configured; typing shared
+  fixtures/helpers ONCE at the definition site (in the motivating repo 4 fixture names accounted for
+  858 of 1336 `no-untyped-def` errors, and annotating them at conftest level collapsed most of the
+  downstream residue for free); removing a now-unnecessary `type: ignore`; auto-fixable lint
+  violations the configured linter fixes itself.
+- **OUT** — turning ON a checker that is not configured, flipping `strict` where it is off, or any
+  change that leaves the repo redder than it found it. Those are project tickets, not a cleanup pass.
+
 ## Never
 
 - Never delete on your own say-so — blind verification is not optional and cannot be self-served.
@@ -109,3 +165,7 @@ before, and on any repo with uncommitted work.
 - Never collapse E1 and E2 into one path: E2 is diff-scoped by construction and must not be able to
   reach outside its ticket's diff.
 - Never treat "cannot tell" from the reachability pass as unreachable.
+- Never read a checker's error count without first asking whether the checker finished. A subtotal
+  from an aborted run is not a total, and a gate that consumes it is measuring nothing.
+- Never verify a change against another class's question. `instruction_for` raises for a reason.
+- Never turn a checker on, flip `strict`, wire CI, or bulk-convert a language. Report it.

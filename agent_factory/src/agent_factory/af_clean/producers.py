@@ -12,6 +12,11 @@ This module is that path. It converts the detectors that already exist
 emitted with a real ``Location``, because the admission gate drops unlocated claims and a producer
 that cannot say where it is looking has not found anything.
 
+It also carries the typing/lint POSTURE detections (:mod:`.typing_posture`), which are findings in
+the same sense — located, admitted, reported — but propose no edit at all: they answer "did the
+checker actually run, and does anything enforce it?", a question whose remedy is always a human
+decision.
+
 Deliberately NOT here: deletion proposals. A producer runs before blind verification, so anything
 it emits at ``enforce`` tier would be a deletion nobody has corroborated yet. Comment slop is
 reported at ``advise``, and scars are reported as evidence AGAINST removal, never for it.
@@ -20,12 +25,14 @@ reported at ``advise``, and scars are reported as evidence AGAINST removal, neve
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
 from ..af_clean_comment_triage import classify_comment, signature_tokens
 from ..af_clean_scar_detection import detect_scar
 from .findings import Finding, Location
+from .typing_posture import CheckerRun, typing_posture_findings
 
 # Comment syntax per suffix. Only line comments: a block comment spans lines, and a finding that
 # cannot name ONE line is not located enough to admit.
@@ -206,11 +213,60 @@ def scar_findings(repo_root: Path, candidates: Sequence[tuple[str, int]]) -> lis
     return out
 
 
-def default_producer(*, exempt: Iterable[str] = ()):
-    """The repo-scoped producer ``run_e1`` expects: ``(scope: Path) -> Sequence[Finding]``."""
+def git_added_paths(repo_root: Path, base_ref: str = "") -> list[str]:
+    """Repo-relative paths ADDED since ``base_ref`` (default: the merge-base with the default
+    branch), plus untracked files. Empty when git cannot answer — an unanswerable question is not
+    evidence that nothing was added, and the only consumer of this list emits findings ABOUT the
+    paths in it, so an empty list under-reports rather than mis-reports.
+    """
+    def _git(*args: str) -> str:
+        try:
+            proc = subprocess.run(["git", *args], cwd=repo_root, capture_output=True,
+                                  text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return proc.stdout if proc.returncode == 0 else ""
+
+    base = base_ref
+    if not base:
+        for candidate in ("origin/main", "origin/master", "main", "master"):
+            merge_base = _git("merge-base", "HEAD", candidate).strip()
+            if merge_base:
+                base = merge_base
+                break
+    added: list[str] = []
+    if base:
+        for line in _git("diff", "--name-status", "--diff-filter=A", base, "HEAD").splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                added.append(parts[-1].strip())
+    added.extend(p.strip() for p in _git("ls-files", "--others", "--exclude-standard").splitlines())
+    return [p for p in dict.fromkeys(added) if p]
+
+
+def default_producer(*, exempt: Iterable[str] = (), repo_root: Path | None = None,
+                     checker_runs: Sequence[CheckerRun] = ()):
+    """The repo-scoped producer ``run_e1`` expects: ``(scope: Path) -> Sequence[Finding]``.
+
+    Posture findings are keyed off ``repo_root``, not the scope: a checker's configuration and its
+    enforcement live at the repo root even when the caller scoped the run to one subtree, and a
+    subtree cannot answer "is this gate enforced?" about the repo that contains it.
+    """
     exempt = tuple(exempt)
+    checker_runs = tuple(checker_runs)
 
     def produce(scope: Path) -> Sequence[Finding]:
-        return comment_findings(Path(scope), exempt=exempt)
+        scope = Path(scope)
+        root = Path(repo_root) if repo_root is not None else scope
+        return [
+            *comment_findings(scope, repo_root=root, exempt=exempt),
+            *typing_posture_findings(
+                root,
+                checker_runs=checker_runs,
+                census_file_count=sum(1 for _ in iter_source_files(scope, exempt)),
+                added_paths=git_added_paths(root),
+                exempt=exempt,
+            ),
+        ]
 
     return produce

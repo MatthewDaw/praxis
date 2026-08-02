@@ -29,7 +29,7 @@ from typing import Callable, Sequence
 
 from ..af_clean_witness import Decision, Proposal, decide
 from .commit_stack import LAYER_COMMENTS, LayerChange, apply_commit_stack, build_layers
-from .findings import Finding
+from .findings import CLASS_REPORT_ONLY, Finding
 from .verifier import run_verifier
 
 # The comment rules whose eligible verdict is a literal restatement, so an instance may carry a
@@ -156,6 +156,12 @@ def apply_findings(
     # 1. WITNESS GATE, first and cheap.
     cleared: list[Finding] = []
     for f in findings:
+        # A report-only finding proposes no edit — there is nothing to gate, verify, or commit, and
+        # no verifier question exists for it. Short-circuit rather than letting it reach a gate that
+        # would have to invent an interpretation of it.
+        if f.change_class == CLASS_REPORT_ONLY:
+            outcome.reported.append((f, "report-only finding: proposes no edit, for a human to action"))
+            continue
         decision: Decision = decide(_proposal_for(f))
         if str(decision.action).strip().casefold() == "apply":
             cleared.append(f)
@@ -231,7 +237,10 @@ def apply_findings(
         diff = "".join(difflib.unified_diff(
             before.splitlines(keepends=True), after.splitlines(keepends=True),
             fromfile=f"a/{rel}", tofile=f"b/{rel}"))
-        verdict = run_verifier(diff, str(root), runner=verifier_runner)
+        # The judge is asked about the class of change this finding actually proposes. Passing the
+        # finding's own class rather than letting the default stand is what keeps the verifier
+        # honest as af-clean grows verbs past deletion.
+        verdict = run_verifier(diff, str(root), change_class=f.change_class, runner=verifier_runner)
         if getattr(verdict, "endorsed_hunk_ids", frozenset()):
             verified[rel] = after
             applied_now.append(f)

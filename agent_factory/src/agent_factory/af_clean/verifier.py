@@ -8,6 +8,14 @@ single construction point for the subprocess argv/env/stdin and it only ever rea
 ``diff`` and ``repo_path`` -- there is no code path by which the other three can reach
 the subprocess. Any hunk the verifier's verdict does not affirmatively endorse is
 dropped from the patch by :func:`apply_endorsed_hunks` before the cleaner applies it.
+
+**The question is split by change class.** Blindness is only half the property; the other half is
+that the judge is asked about the change it was actually given. A verifier that keeps asking "is
+this deletion safe?" while af-clean grows non-deletion verbs -- consolidation, annotation, lint
+fixes, JS->TS -- approves whole classes of change nobody ever checked, which is precisely the
+failure the blind verifier exists to prevent. So each class carries its own question
+(:data:`_CLASS_QUESTIONS`), a caller SELECTS a class rather than writing prose, and a class with no
+question raises instead of falling back to the deletion one.
 """
 
 from __future__ import annotations
@@ -18,21 +26,102 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from .findings import (
+    CLASS_ANNOTATION,
+    CLASS_CONSOLIDATION,
+    CLASS_DELETION,
+    CLASS_JS_TO_TS,
+    CLASS_LINT_FIX,
+    CLASS_REPORT_ONLY,
+)
+
 #: Default argv for the blind verifier subprocess -- a fresh, non-interactive CLI
 #: invocation (OPEN-12 resolved: fresh process, not a Task-tool subagent), so the
 #: verifier cannot inherit the caller's tool context or conversation state.
 # The instruction the judge needs. It is built HERE, never by a caller, so B23 still holds: nothing
 # about how the diff was produced can reach the subprocess.
-_VERIFIER_INSTRUCTION = (
-    "You are a BLIND code-deletion verifier. You are shown ONLY a unified diff. You do not know "
+_PREAMBLE = (
+    "You are a BLIND code-change verifier. You are shown ONLY a unified diff. You do not know "
     "who produced it or why, and you must not assume it is correct.\n\n"
-    "Decide whether the deletion is safe: it must remove nothing that carries information or "
-    "behaviour. A comment that merely restates the identifier it annotates is safe to remove. A "
-    "comment carrying a reason, an invariant, a caveat, a date, or an incident reference is NOT. "
-    "Any change to executable code is NOT safe to endorse.\n\n"
-    'Reply with ONLY this JSON and nothing else: {"endorsed_hunk_ids": ["h1"]} to endorse the '
+)
+
+_REPLY_FORMAT = (
+    '\n\nReply with ONLY this JSON and nothing else: {"endorsed_hunk_ids": ["h1"]} to endorse the '
     'diff, or {"endorsed_hunk_ids": []} to refuse it. No prose, no code fences.'
 )
+
+# ONE QUESTION PER CHANGE CLASS.
+#
+# The whole safety story of af-clean rests on the verifier answering a question the cleaner did not
+# write. That only holds while the question MATCHES the change. A verifier still asking "is this
+# deletion safe?" about an added type annotation is not verifying anything -- it is rubber-stamping,
+# and it would be the blind-verifier design defeating itself. So every widening of af-clean's verbs
+# ships its own question here, and a class with no question cannot be verified at all (see
+# :func:`instruction_for`).
+_CLASS_QUESTIONS: dict[str, str] = {
+    CLASS_DELETION: (
+        "Decide whether the deletion is safe: it must remove nothing that carries information or "
+        "behaviour. A comment that merely restates the identifier it annotates is safe to remove. A "
+        "comment carrying a reason, an invariant, a caveat, a date, or an incident reference is NOT. "
+        "Any change to executable code is NOT safe to endorse."
+    ),
+    CLASS_CONSOLIDATION: (
+        "Two or more near-identical constructs have been merged into one. Decide whether EVERY "
+        "former call site behaves identically afterwards. Look specifically for a divergence "
+        "between the 'duplicates' that the merge ERASES: a different default, a different error "
+        "branch, a different order of effects, a different type at one site only. If the merged "
+        "form requires the callers to differ by a flag or a branch, that is a failed "
+        "centralization -- refuse it. Endorse only if the behaviour at every site is unchanged."
+    ),
+    CLASS_ANNOTATION: (
+        "Type annotations have been added or tightened. Judge CORRECTNESS, not acceptance: a "
+        "checker accepting an annotation does not make it true. Refuse if any added type is wider "
+        "than the value it describes (`Any`, `object`, a bare `dict`/`Array`, an over-broad union) "
+        "where a precise type is evident from the code, and refuse any new `# type: ignore`, "
+        "`@ts-ignore`, `@ts-expect-error`, or checker-exclusion added to make the diff pass. "
+        "Refuse any change to runtime behaviour: an annotation diff must be behaviour-neutral. "
+        "Endorse only if every added type is both CORRECT and behaviour-neutral."
+    ),
+    CLASS_LINT_FIX: (
+        "A linter's fix has been applied. Decide whether it is purely stylistic. Refuse if it "
+        "changed semantics -- a rewritten comparison (`==` to `is`, or a reordered boolean), a "
+        "changed iteration order, a removed side effect, a narrowed exception clause, an altered "
+        "truthiness test. Formatting, import ordering, whitespace, and unused-import removal are "
+        "safe. Endorse only if the emitted behaviour is identical."
+    ),
+    CLASS_JS_TO_TS: (
+        "A JavaScript file has been converted to TypeScript. Decide whether the emitted behaviour "
+        "is unchanged. Refuse if `any`, a non-null assertion (`!`), or a cast was introduced to "
+        "make it compile rather than because it is true; refuse if the import graph changed "
+        "(a moved file, a rewritten specifier, a changed default/named export shape); refuse if "
+        "any statement's runtime meaning differs. Endorse only a rename plus honest types."
+    ),
+}
+
+
+#: Classes that propose no edit, and so have no verifier question by construction. A posture report
+#: is actioned by a human; there is no diff for a judge to endorse.
+UNVERIFIABLE_CLASSES = frozenset({CLASS_REPORT_ONLY})
+
+
+def instruction_for(change_class: str) -> str:
+    """The blind verifier's full system prompt for ``change_class``.
+
+    Raises ``ValueError`` for a class with no question -- including ``report-only``, which proposes
+    no edit and therefore must never be sent to a verifier at all. Failing loudly here is the point:
+    silently falling back to the deletion question is exactly the rubber-stamp this split exists to
+    prevent.
+    """
+    question = _CLASS_QUESTIONS.get(change_class)
+    if question is None:
+        raise ValueError(
+            f"no blind-verifier question for change class {change_class!r}; a change class without "
+            "its own question cannot be verified"
+        )
+    return _PREAMBLE + question + _REPLY_FORMAT
+
+
+_VERIFIER_INSTRUCTION = instruction_for(CLASS_DELETION)
 
 # The verifier is a JUDGE, not an agent, and the argv is what decides which one the CLI behaves as.
 # `--tools ""` gives it no tools; `--system-prompt` replaces the agentic prompt with the instruction
@@ -47,6 +136,13 @@ DEFAULT_ARGV: list[str] = [
     "--tools", "",
     "--system-prompt", _VERIFIER_INSTRUCTION,
 ]
+
+
+def argv_for(change_class: str) -> list[str]:
+    """:data:`DEFAULT_ARGV` with the question for ``change_class`` in the system-prompt slot."""
+    argv = list(DEFAULT_ARGV)
+    argv[-1] = instruction_for(change_class)
+    return argv
 
 
 @dataclass(frozen=True)
@@ -73,6 +169,7 @@ def build_verifier_payload(
     diff: str,
     repo_path: str,
     *,
+    change_class: str = CLASS_DELETION,
     argv: Sequence[str] | None = None,
     base_env: Mapping[str, str] | None = None,
 ) -> VerifierPayload:
@@ -82,6 +179,10 @@ def build_verifier_payload(
     ``repo_path`` alone -- this is the sole construction point for the verifier
     payload, so no caller can smuggle a transcript, findings list, or rationale into
     it (B23).
+
+    ``change_class`` selects WHICH question the judge is asked. It is a class name, never prose:
+    the caller cannot write the question, only choose from the fixed set in :data:`_CLASS_QUESTIONS`,
+    so the split widens what af-clean can verify without reopening the channel B23 closes.
     """
     env = dict(base_env if base_env is not None else os.environ)
     env["AF_CLEAN_REPO_PATH"] = repo_path
@@ -90,7 +191,7 @@ def build_verifier_payload(
     # nothing about how the diff was produced can reach the subprocess (B23).
     stdin = json.dumps({"diff": diff, "repo_path": repo_path})
     return VerifierPayload(
-        argv=list(argv if argv is not None else DEFAULT_ARGV),
+        argv=list(argv if argv is not None else argv_for(change_class)),
         env=env,
         stdin=stdin,
     )
@@ -143,6 +244,7 @@ def run_verifier(
     diff: str,
     repo_path: str,
     *,
+    change_class: str = CLASS_DELETION,
     transcript: Any = None,
     findings: Any = None,
     rationale: Any = None,
@@ -152,12 +254,16 @@ def run_verifier(
 ) -> VerifierVerdict:
     """Launch the blind verifier subprocess and return its verdict.
 
+    ``change_class`` picks the question asked of the diff (see :func:`instruction_for`); it defaults
+    to ``"deletion"``, the question this verifier asked before the split.
+
     ``transcript``/``findings``/``rationale`` exist only so a caller sitting on that
     context can pass it through one call without a special-cased signature; none of
     the three ever reaches the subprocess -- :func:`build_verifier_payload` builds the
     argv/env/stdin from ``diff`` and ``repo_path`` alone (B23).
     """
-    payload = build_verifier_payload(diff, repo_path, argv=argv, base_env=base_env)
+    payload = build_verifier_payload(
+        diff, repo_path, change_class=change_class, argv=argv, base_env=base_env)
     result = runner(
         payload.argv,
         input=payload.stdin,

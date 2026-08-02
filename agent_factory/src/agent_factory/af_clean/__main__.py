@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     result = run_e1(
         repo_root,
         args.path,
-        produce_findings=default_producer(exempt=exempt),
+        produce_findings=default_producer(exempt=exempt, repo_root=repo_root),
         apply_findings=_apply if args.apply else None,
         dry_run=not args.apply,
         runner=default_runner,

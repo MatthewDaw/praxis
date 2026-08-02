@@ -153,3 +153,68 @@ negative = [
   # Shape: computed-key lookup table — a dict comprehension, not fragmentation into per-key branches.
   "HANDLERS = {f\"on_{event}\": handler for event, handler in _EVENT_SPECS}",
 ]
+
+# ---------------------------------------------------------------------------------------------------
+# UNIVERSAL typing/lint posture gate. Same universal lane as `minimalism-dry`, and ships
+# report_only = true for the same reason: it GRADES and RECORDS on every non-exempt ticket while the
+# anchors calibrate, and flipping the one flag makes it gate.
+#
+# Applicability is resolved PER FILE from the repo's own toolchain (af_clean.toolchain.detect_toolchain),
+# never from file extension: the axis is INERT where no checker is configured. Turning a checker ON,
+# or flipping `strict` where it is off, is deliberately NOT this check's job — that is a repo-wide
+# policy decision producing unbounded work, and af_clean.typing_posture reports it instead. The rule
+# of thumb: af-clean satisfies the gate the repo chose; it does not choose the gate.
+[[check]]
+check_id = "typed-and-linted"
+kind = "graded"
+applies_to = ["*"]
+promote_universal = true
+report_only = true
+criterion = "Code added or touched by this change is fully typed and lint-clean under the repo's own configured toolchain, and the checkers actually ran to completion."
+confidence_floor = 5
+judge_prompt = "Score each axis 0-1 against the diff and the checker output. Read the checker's SUMMARY LINE, not just its exit code. If the tool aborted, gate-integrity is 0 regardless of how few errors were listed, and the other axes are unscorable — say so rather than guessing. Grade only against the checker the repo has ALREADY configured: if none is configured for a file's language, this check is inert for that file and every axis passes. Cite file:line for any defect."
+[[check.axes]]
+name = "annotation-completeness"
+threshold = 0.9
+guidance = "Every function, method and exported symbol the diff adds or touches carries parameter and return annotations. Score low for a bare `def f(x):` or an untyped exported function. Bare generics (`dict` rather than `dict[str, X]`, `Array` rather than `Array<X>`) count as incomplete."
+[[check.axes]]
+name = "no-escape-hatches"
+threshold = 0.95
+guidance = "Type errors are FIXED, not silenced. Score low for a new blanket `# type: ignore`, `@ts-ignore`, `@ts-expect-error` without a linked reason, `any`/`Any` used to widen away a real error, a new `exclude` entry, or a lint-rule disable comment. A pre-existing, documented exemption (a vendored tree) is not a violation; a NEW one to make this diff pass is."
+# threshold 1.0 on purpose: this is the only BINARY axis here. Either the tool ran or its verdict is
+# worthless, and an aborted checker reporting few errors must never score as clean — that exact
+# mistake turned a real 2261-error backend into a quoted "74 errors" that a build gate consumed.
+[[check.axes]]
+name = "gate-integrity"
+threshold = 1.0
+guidance = "The checker completed. Score ZERO if its output contains an abort marker (`errors prevented further checking`, a tsconfig parse failure, a pytest collection error) or if the file count it reports analysing is implausible against the repo census. An aborted checker reporting few errors must never score as clean."
+[check.anchors]
+good = [
+  # Fully annotated, precise generics, no escape hatch:
+  "def read_text(path: str | Path) -> str | None:\n    try:\n        return Path(path).read_text(encoding='utf-8')\n    except OSError:\n        return None",
+  # The fixture typed ONCE at its definition site, collapsing the errors at every call site:
+  "@pytest.fixture\ndef client(app: FastAPI) -> TestClient:\n    return TestClient(app)",
+  # TypeScript: the error is FIXED by narrowing, not silenced by a cast:
+  "function label(x: string | null): string {\n  return x === null ? 'unknown' : x;\n}",
+]
+slop = [
+  # Untyped signature in a repo whose mypy is configured strict:
+  "def read_text(path):\n    return open(path).read()",
+  # The error silenced rather than fixed — a blanket ignore with no reason:
+  "result = client.fetch(url)  # type: ignore",
+  # `any` smuggled in to make the compiler stop complaining:
+  "function label(x: any): string {\n  return x;\n}",
+  # A new exclude entry added so the checker stops looking at the file this diff touched:
+  "[tool.mypy]\nexclude = ['appeal_api/services/scoring.py']",
+]
+# NEGATIVE anchors: shapes that LOOK like escape hatches or missing annotations but are neither.
+negative = [
+  # Shape: a NARROW, reasoned, linked ignore — the documented exemption, not a blanket silence.
+  "# type: ignore[arg-type]  # upstream stub is wrong: httpx/httpx#3182, drop when >0.28 lands\nclient = Client(transport=transport)",
+  # Shape: `Any` as the TRUE type — a passthrough that genuinely does not constrain its value.
+  "def identity(value: Any) -> Any:\n    return value",
+  # Shape: an inferred local with no annotation — annotation-completeness grades SIGNATURES, not locals.
+  "def total(items: list[Item]) -> int:\n    running = 0\n    for item in items:\n        running += item.price\n    return running",
+  # Shape: an untyped file in a language the repo configures NO checker for — the axis is inert here.
+  "#!/usr/bin/env bash\nset -euo pipefail\nexec python -m appeal_api \"$@\"",
+]
