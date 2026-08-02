@@ -51,6 +51,10 @@ jobs:
               # matched no filter, so a commit editing it ran ZERO jobs and still reported green.
               # Any TOML in this repo is python-consumed config; treat it as python.
               - '**/*.toml'
+              # The skills tree is a python INPUT, not documentation: test_job_mailbox pins a
+              # sha256 of af-build/SKILL.md. Merge c3076ef edited that file, went fully green
+              # because a .md matched no filter, and left main red for the next commit to discover.
+              - 'agent_factory/skills/**'
               - 'uv.lock'
               - '.github/workflows/ci.yml'
             frontend:

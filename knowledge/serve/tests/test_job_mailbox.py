@@ -77,4 +77,14 @@ def test_local_run_has_no_mailbox_and_af_builds_instructions_are_untouched():
     # af-build's own instruction text is byte-identical to the unmodified skill
     baseline = (_SKILL_DIR / ".skill-baseline-sha256").read_text().strip()
     actual = hashlib.sha256((_SKILL_DIR / "SKILL.md").read_bytes()).hexdigest()
-    assert actual == baseline
+    # This guard fires on ANY edit to af-build's SKILL.md, including a perfectly legitimate one, and
+    # it has now caught two of those and zero tampering attempts. That is the design — it cannot
+    # tell intent — so the failure has to say what to do about it, or the next person meets a bare
+    # hash mismatch in an unrelated test file and has to reverse-engineer the remedy.
+    assert actual == baseline, (
+        "af-build/SKILL.md changed but its baseline did not.\n"
+        "If the edit was deliberate, re-stamp it:\n"
+        "    shasum -a 256 agent_factory/skills/af-build/SKILL.md | cut -d' ' -f1 \\\n"
+        "      > agent_factory/skills/af-build/.skill-baseline-sha256\n"
+        "If you did NOT edit af-build's instructions, something else rewrote them — investigate."
+    )
