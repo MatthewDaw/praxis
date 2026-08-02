@@ -157,6 +157,20 @@ def _compact_audit_trail(trail: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [*trail[:_AUDIT_TRAIL_HEAD], marker, *trail[-_AUDIT_TRAIL_TAIL:]]
 
 
+def _supplied_trail(user_meta: dict[str, Any]) -> list[dict[str, Any]]:
+    """The caller's own ``meta.auditTrail``, kept only if it is actually a trail.
+
+    ``meta`` is free-form, so a caller can put anything under this key; a non-list, or a
+    list with non-object entries, is not provenance and is dropped rather than persisted
+    as a trail the readers would then have to defend against. A well-formed trail is
+    carried through verbatim (see ``create``).
+    """
+    trail = user_meta.get("auditTrail")
+    if not isinstance(trail, list):
+        return []
+    return [dict(e) for e in trail if isinstance(e, dict)]
+
+
 def _short_title(text: str) -> str:
     text = (text or "").strip()
     return text if len(text) <= 60 else f"{text[:57].rstrip()}…"
@@ -379,16 +393,24 @@ class FactsCandidates:
         provenance = str(body.get("provenance") or f"human-gate/manual:{_now()}")
         # Structured fields (H12): a raw insert may still carry the same structured
         # data add_insight does — category, free-form meta, and derivation sources —
-        # so the manual-repair path doesn't drop them. User meta merges under the
-        # facade-owned keys (title/auditTrail always win).
+        # so the manual-repair path doesn't drop them. User meta merges under the one
+        # facade-owned key, ``title``, which mirrors the required ``title`` field.
         category = body.get("category")
         category = str(category).strip() if category not in (None, "") else None
         user_meta = body.get("meta") if isinstance(body.get("meta"), dict) else {}
         derived_from = [str(s) for s in (body.get("derivedFrom") or []) if s]
+        # A supplied auditTrail is MERGED, not replaced. This is the seam every
+        # snapshot-to-snapshot move, split, and manual repair goes through, and the trail
+        # is exactly the provenance such a move has to carry across. Overwriting it lost a
+        # ticket's whole history silently, leaving one plausible "created" entry that read
+        # as if the ticket had been authored fresh. Appending keeps both properties: the
+        # history arrives, and the create is still recorded as having happened.
         meta: dict[str, Any] = {
             **user_meta,
             "title": title,
-            "auditTrail": [_audit_entry(provenance, "created")],
+            "auditTrail": _compact_audit_trail(
+                [*_supplied_trail(user_meta), _audit_entry(provenance, "created")]
+            ),
         }
         fid = self.graph.write(
             content,

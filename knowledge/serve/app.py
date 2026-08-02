@@ -2983,6 +2983,29 @@ def create_app(conn: Any | None = None) -> FastAPI:
             "meta": dict(fact.meta or {}),
         }
 
+    def _provenance_view(fact: Any) -> dict[str, Any]:
+        """Just a fact's identity and its audit trail — the ``fields=provenance`` projection.
+
+        An exhaustive ``facts_by`` over a real plan snapshot returns the full text of every
+        requirement (~1.2 MB across 170 tickets), which overruns an agent's context and makes
+        "just read the trail" impractical exactly when a move or repair needs it. This drops
+        the bodies and keeps the provenance, so reading history costs a fraction of the fact.
+        ``auditTrailCount`` is stated so a caller can see the length without walking it.
+        """
+        meta = dict(fact.meta or {})
+        trail = meta.get("auditTrail")
+        trail = trail if isinstance(trail, list) else []
+        return {
+            "id": fact.id,
+            "title": meta.get("title"),
+            "state": fact.state,
+            "source": getattr(fact, "source", None),
+            "category": getattr(fact, "category", None),
+            "requirement_id": meta.get("requirement_id"),
+            "auditTrail": trail,
+            "auditTrailCount": len(trail),
+        }
+
     def _requirement_completeness_view(item: dict[str, Any]) -> dict[str, Any]:
         view = _derivation_view(item["fact"])
         view.update(
@@ -3282,6 +3305,7 @@ def create_app(conn: Any | None = None) -> FastAPI:
         scope: str | None = None,
         state: str = "active",
         meta: str | None = None,
+        fields: str = "full",
         principal: Principal = Depends(current_user),
         org: str = Depends(active_org),
         uid: str = Depends(active_user_id),
@@ -3295,7 +3319,22 @@ def create_app(conn: Any | None = None) -> FastAPI:
         ``state=any`` (or empty) to enumerate across all lifecycle states. ``meta`` is
         a JSON object string (e.g. ``{"scope":"validation","applies_to":"s-home"}``);
         each key matches by scalar equality OR array-membership. 400 on invalid JSON.
+
+        Whichever projection is asked for, the enumeration and every fact's audit trail
+        are COMPLETE — no entry cap, no truncation. (Trails are bounded once, at write
+        time, and an elision always leaves a visible ``action="compacted"`` marker
+        entry, so a shortened trail is never silently short.)
+
+        ``fields`` selects the projection: ``"full"`` (default) is the whole fact
+        including ``text`` and all of ``meta``; ``"provenance"`` returns only identity
+        plus ``auditTrail``/``auditTrailCount``, for reading history across a large
+        snapshot without pulling every body. 400 on any other value.
         """
+        fields = (fields or "full").strip().lower()
+        if fields not in ("full", "provenance"):
+            raise HTTPException(
+                status_code=400, detail="fields must be 'full' or 'provenance'"
+            )
         state_filter: str | None = state
         if state in ("", "any", "all"):
             state_filter = None
@@ -3307,7 +3346,8 @@ def create_app(conn: Any | None = None) -> FastAPI:
             state=state_filter,
             meta_filter=meta_filter,
         )
-        return {"facts": [_derivation_view(f) for f in facts]}
+        view = _provenance_view if fields == "provenance" else _derivation_view
+        return {"facts": [view(f) for f in facts]}
 
     @app.get("/facts/{fact_id}/surfaces")
     def surfaces_for_requirement(

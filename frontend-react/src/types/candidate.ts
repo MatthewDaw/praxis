@@ -13,12 +13,20 @@ export interface ConfidenceBreakdown {
   breadthRationale?: string;
 }
 
+/**
+ * One provenance event on a fact. Entry shapes are heterogeneous in real data — a
+ * `human-gate` edit, an `af-build/<project>` edit, and a `compacted` marker carrying a
+ * `note` all coexist on the same trail — so the known fields are optional-by-default
+ * (normalized to "") and anything else the writer recorded is preserved under `extra`
+ * rather than dropped on the floor.
+ */
 export interface AuditEntry {
   action: string;
   timestamp: string;
   provenance: string;
   actor: string;
   note?: string;
+  extra?: Record<string, unknown>;
 }
 
 export type ContradictionStatus = "pending" | "resolved";

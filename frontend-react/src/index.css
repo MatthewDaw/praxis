@@ -895,6 +895,36 @@ code,
   margin-top: 2px;
 }
 
+/* The entry count is stated above a collapsed trail so a truncated view never reads
+   as a short history. */
+.audit-timeline__count {
+  font-size: 0.82rem;
+  margin: 0 0 var(--space-2);
+}
+
+/* A note is the only record that entries were deliberately elided (the `compacted`
+   marker) — give it its own line rather than trailing it off the meta row. */
+.audit-timeline__note {
+  font-size: 0.82rem;
+  margin-top: var(--space-1);
+  padding-left: var(--space-2);
+  border-left: 2px solid var(--line);
+  color: var(--h2);
+}
+
+.audit-timeline__extra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.audit-timeline__toggle {
+  margin-top: var(--space-2);
+}
+
 .status-ok {
   display: flex;
   align-items: center;

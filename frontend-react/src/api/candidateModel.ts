@@ -228,19 +228,36 @@ function parseBreakdown(raw: unknown): ConfidenceBreakdown | undefined {
   };
 }
 
+const AUDIT_ENTRY_KEYS = new Set(["action", "timestamp", "provenance", "actor", "note"]);
+
+/**
+ * Normalize a stored trail for display. Entries are heterogeneous — writers differ in
+ * which keys they set — so a missing key becomes a placeholder rather than dropping the
+ * entry, and unrecognized keys are kept under `extra` so a renderer can surface them.
+ * Order is preserved verbatim: the trail IS the chronology.
+ */
 function parseAuditTrail(raw: unknown): AuditEntry[] {
   if (!Array.isArray(raw)) {
     return [];
   }
   return raw
     .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
-    .map((item) => ({
-      action: String(item.action ?? "event"),
-      timestamp: String(item.timestamp ?? ""),
-      provenance: String(item.provenance ?? ""),
-      actor: String(item.actor ?? "system"),
-      note: item.note != null ? String(item.note) : undefined,
-    }));
+    .map((item) => {
+      const extra: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(item)) {
+        if (!AUDIT_ENTRY_KEYS.has(key)) {
+          extra[key] = value;
+        }
+      }
+      return {
+        action: String(item.action ?? "event"),
+        timestamp: String(item.timestamp ?? ""),
+        provenance: String(item.provenance ?? ""),
+        actor: String(item.actor ?? "system"),
+        note: item.note != null ? String(item.note) : undefined,
+        extra,
+      };
+    });
 }
 
 export function candidateFromMapping(data: RawCandidate): Candidate {

@@ -654,6 +654,12 @@ def praxis_get_fact(cid: str, space: str | None = None, snapshot: str | None = N
     memory. A fact written to a snapshot is NOT in working memory, so verifying a check you
     just authored requires the same ``(space, snapshot)`` you wrote it to.
 
+    The returned ``meta.auditTrail`` is COMPLETE — every entry, oldest first, with no
+    cap or truncation on this read. (A trail is bounded once at WRITE time, and that
+    elision always leaves a visible ``action="compacted"`` entry naming how many were
+    dropped.) To audit provenance across MANY facts without pulling their bodies, use
+    ``praxis_facts_by(..., fields="provenance")``.
+
     Returns a human summary plus a structured JSON block with the full candidate
     detail (``id``/``title``/``content``/``state``/``source``/``scope``/
     ``category``/``meta``/``auditTrail``...).
@@ -1263,7 +1269,14 @@ def praxis_insert_fact(
     (which runs the full ingestion pipeline and lands active) instead.
 
     ``category`` tags the fact's kind (e.g. ``"requirement"``/``"learning"``);
-    ``meta`` is a free-form object persisted onto the fact (structured provenance);
+    ``meta`` is a free-form object persisted onto the fact (structured provenance).
+    Two keys in it are not stored verbatim: ``title`` mirrors the required ``title``
+    argument, and a supplied ``auditTrail`` is MERGED — its entries are kept in order
+    and the backend appends its own ``"created"`` entry after them. That is what makes
+    a snapshot-to-snapshot move carry a ticket's history across intact while still
+    recording that the move happened; read it back with ``praxis_get_fact`` or
+    ``praxis_facts_by(..., fields="provenance")``. A supplied trail that is not a list
+    of objects is not provenance and is dropped.
     ``derived_from`` is the ids of the facts this one was derived from — the backend
     links a ``derived_from`` edge (this fact -> each source) so an invalidated source
     can later surface this fact as suspect (gap H5). These let a manual-repair insert
@@ -2673,6 +2686,7 @@ def praxis_facts_by(
     scope: str | None = None,
     state: str = "active",
     meta_filter: dict | None = None,
+    fields: str = "full",
     space: str | None = None,
     snapshot: str | None = None,
 ) -> str:
@@ -2694,12 +2708,24 @@ def praxis_facts_by(
     single tag or a list). Example: ``category="check"`` with
     ``meta_filter={"scope":"validation","applies_to":"auth"}``.
 
+    READING PROVENANCE: every fact view carries its COMPLETE ``meta.auditTrail`` — no
+    entry cap and no truncation on this path, in working memory or in a snapshot. (A
+    trail is bounded once at WRITE time, and an elision always leaves a visible
+    ``action="compacted"`` entry saying how many were dropped, so a shortened trail is
+    never silently short.) Because an exhaustive read of a real plan snapshot returns
+    every requirement's full text (~1.2 MB across 170 tickets, enough to overrun a
+    context), pass ``fields="provenance"`` to get identity + ``auditTrail`` +
+    ``auditTrailCount`` per fact and nothing else — the cheap way to audit history
+    across a whole snapshot. ``fields="full"`` (default) returns the whole fact.
+
     Returns a human summary plus a structured JSON block with ``facts`` — one fact view
     per match.
     """
     if (hint := _not_ready()) is not None:
         return hint
     params: dict[str, str] = {"state": state}
+    if fields and fields != "full":
+        params["fields"] = fields
     if category is not None:
         params["category"] = category
     if source is not None:
