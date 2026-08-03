@@ -900,13 +900,27 @@ resolve_conflicts(){   # $1 = round number
   local rsession="af-resolve-$(basename "$WT")"
   tmux kill-session -t "$rsession" 2>/dev/null || true
   tmux new-session -d -s "$rsession" -c "$WT"
+  # LAUNCH THE AGENT. Omitting this line leaves a bare login shell in the pane, and every later
+  # send-keys types the prompt at a bash prompt instead of into Claude: bash dies on the first
+  # parenthesis, the resolver reports itself dispatched, and NOT ONE branch is merged. That is
+  # exactly how a project reached 11 orphans while the log claimed the resolver ran each round.
+  tmux send-keys -t "$rsession" "cd $WT && $CLAUDE_LAUNCH" Enter
   local rready=0 i
   for i in $(seq 1 60); do
     sleep 2
     pane=$(tmux capture-pane -p -t "$rsession" 2>/dev/null || true)
     if echo "$pane" | grep -qE "bypass permissions on"; then rready=1; break; fi
   done
-  [ "$rready" = "1" ] || say "conflict resolver: pane never signalled ready — sending anyway"
+  # A pane that never signals ready has NO AGENT in it. Sending the prompt anyway is strictly worse
+  # than not sending it: it silently does nothing while logging as though resolution was attempted,
+  # and the branches stay stranded with no signal that anyone must intervene. Fail loudly instead and
+  # leave $CONFLICTS intact so the next round — or a rerun — still sees every branch as owed.
+  if [ "$rready" != "1" ]; then
+    say "FATAL: conflict resolver pane never signalled ready — no agent in the session, NOT sending the prompt"
+    say "FATAL: $n branch(es) remain unmerged and still queued in $CONFLICTS; re-run --resolve-orphans once the model backend is healthy"
+    tmux kill-session -t "$rsession" 2>/dev/null || true
+    return 1
+  fi
   sleep 3; tmux send-keys -t "$rsession" Enter
 
   tmux send-keys -t "$rsession" "You are resolving MERGE CONFLICTS for build round $rnd of project $PROJECT, in the checkout at $WT which is already on the integration branch. Each line of $CONFLICTS is a TAB-separated branch name and the ticket id(s) whose work it carries. These branches were built and passed their own gates; they conflict only because sibling work landed first. Do NOT build features, do NOT claim tickets, do NOT push. THE ONE ABSOLUTE RULE: EVERY branch listed MUST end up merged. Leaving a branch unmerged is not an available outcome — a branch nobody merges strands a ticket that reads finished with its work nowhere, and that is the failure this stage exists to eliminate. You always finish with a merge commit for every branch. For EACH branch in order: run git merge --no-ff <branch>, and resolve every conflicted file by UNDERSTANDING BOTH SIDES rather than picking one. Conflicts here are almost always semantic: a file one side deleted and the other edited, a helper one side moved and the other extended, a registry both sides appended to. Keep the intent of BOTH changes wherever you honestly can. If one side DELETED a file the other modified, the deletion almost always wins and the other side change must be re-applied to whatever replaced it — read the deleting commit message to find what superseded it, and never resurrect a deliberately deleted file. When a specific hunk genuinely CANNOT preserve both intents — the two changes are contradictory, or choosing needs a product decision you cannot make — do NOT stall and do NOT abandon the branch. Resolve that hunk by taking the INTEGRATION side (the tree as it already is, which is proven), finish the merge, and record precisely what you dropped: which ticket owned it, which file and behaviour was lost, and what a rebuild has to re-establish. Dropping intent is acceptable ONLY when it is recorded — the ticket is then rebuilt from the current tree, which is the honest repair. Silently taking one side to make a merge succeed is the one thing you must never do. After each branch, PROVE the merged tree: run the repo build and typecheck, and the tests covering the files you touched. If a merge you just made breaks the tree and you cannot fix it, still keep the merge but record the whole branch as dropped-intent so its ticket is rebuilt. Commit each merge with a message naming the branch, the ticket id(s), what conflicted, what you kept from each side, and anything you dropped. When every branch is merged, write JSON to $RESOLVED with exactly these keys: merged which is an array of EVERY branch name you merged (this must list every branch in $CONFLICTS — there is no other outcome), and dropped_intent which is an array of objects each with branch, tickets, and reason stating concretely what was lost and what a rebuild must re-establish (empty array if you preserved everything). Write that file LAST and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question. Work ONLY inside $WT, on the already-checked-out branch, and do NOT push."
@@ -1512,42 +1526,6 @@ PYEOF
   rm -f "$VERDICT"
   return 0
 }
-
-# --resolve-orphans: land every pre-existing unmerged worker branch, then stop.
-#
-# The per-round path only ever sees the CURRENT round's branches: integrate_round iterates
-# `git worktree list`, and reap_branches regresses a lying ticket but never merges one. So branches
-# stranded by EARLIER rounds — before the resolver existed, or after a crash — are invisible to both
-# and simply accumulate; one project reached 11 of them, three with tickets still reading finished.
-# This mode is the cleanup path for that backlog: it seeds the same handoff file integrate_round
-# writes and runs the same resolver, so orphans get exactly the guarantees a live round gets —
-# always merged, nothing silently dropped, invariant verified against git.
-if [ "${1:-}" = "--resolve-orphans" ]; then
-  PROJECT="${2:?usage: af-ticket-loop.sh --resolve-orphans <project> <worktree>}"
-  WT="${3:?usage: af-ticket-loop.sh --resolve-orphans <project> <worktree>}"
-  AF_STATE_DIR="${AF_STATE_DIR:-$(dirname "$WT")}"
-  CONFLICTS="$AF_STATE_DIR/af-round-conflicts-$PROJECT.tsv"
-  RESOLVED="$AF_STATE_DIR/af-round-resolved-$PROJECT.json"
-  LOG="${AF_LOG:-$AF_STATE_DIR/af-$PROJECT-loop.log}"
-  resolve_backend || { say "FATAL: model backend preflight failed"; exit 1; }
-  cd "$WT" || { say "FATAL: no worktree at $WT"; exit 1; }
-  : > "$CONFLICTS"
-  n_orphan=0
-  while read -r br; do
-    [ -n "$br" ] || continue
-    af_is_worker_branch "$br" || continue
-    git merge-base --is-ancestor "$br" HEAD 2>/dev/null && continue   # already landed
-    ids=$(git log --format=%s "HEAD..$br" 2>/dev/null | grep -oE '\((REM|SSW|HIP|R|F|FH|OBS|CHAT|P1|P2|SS|SSW)-[0-9]+\)' | tr -d '()' | sort -u | tr '\n' ' ')
-    printf '%s\t%s\n' "$br" "$ids" >> "$CONFLICTS"
-    n_orphan=$((n_orphan+1))
-    say "orphan branch queued: $br (ticket(s):$ids )"
-  done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
-  if [ "$n_orphan" = "0" ]; then say "no orphan worker branches — nothing to resolve"; exit 0; fi
-  say "--resolve-orphans: $n_orphan branch(es) to land"
-  resolve_conflicts "orphans"
-  say "--resolve-orphans: done"
-  exit 0
-fi
 
 # --resolve-orphans <project> <worktree>: land every stranded worker branch, then stop.
 # Same sweep and same resolver the round flow runs — this just lets an operator clear a backlog
