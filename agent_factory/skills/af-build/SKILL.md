@@ -68,6 +68,17 @@ To drive the (optionally scoped) build set to done you run **exactly this loop**
    requirement id(s) it `covers` and a `run` command whose exit code is the signal), then
    `pin_validations(cid, [...])`. A coverage-back-check (`coverage_gap(cid)` must be empty) is part of
    doneness: a requirement with no covering validation means the ticket is **not** verifiable-done.
+4b. **READ WHY IT CAME BACK** — before writing a line of code, check the ticket's
+   `meta.regression_detail` and `meta.audit_disposition`. A ticket in the incomplete set is either
+   never-built or **regressed**, and a regressed one carries a report from whatever sent it back:
+   `reason` (what failed), `evidence` (the failing test/gate and its error text), `required_fix`
+   (what the rebuild must address). When `regression_detail.source` is `post-merge-verification`,
+   this ticket's own worktree build was GREEN and it failed only once merged — so repeating the
+   original approach reproduces the same failure, and the fix is almost always integration-level (a
+   registry/manifest/seed row the merged tree needs, or a collision with work that landed after)
+   rather than anything wrong inside the ticket's own diff. Treat that report as part of the
+   acceptance condition and rebuild against the CURRENT integrated tree. Skipping it is not a
+   shortcut — it re-derives at full cost a diagnosis another agent already paid for and wrote down.
 5. **BUILD** — do the work to satisfy the ticket's binary acceptance condition.
 6. **VERIFY** — run **EVERY** pinned validation; record each pass **ON THE TICKET NODE** (never on the
    requirement fact — requirements are read-only during builds). **External signals only** (exit codes /
@@ -895,6 +906,18 @@ only with an explicit recorded reason). A skip is the *absence* of a panel-ran e
 of a skip episode; never fabricate a panel-ran assertion and never edit config to get past the panel.
 
 ## 8. The per-ticket worker contract (spawn every fanned-out worker with THIS)
+
+### First: read why this ticket came back (state this to every worker)
+
+Before reading a file or writing a line, read your ticket's `meta.regression_detail` and
+`meta.audit_disposition`. An incomplete ticket is either never-built or **regressed**, and a regressed
+one carries the report from whatever sent it back — `reason`, `evidence` (the failing test/gate and its
+error text), `required_fix`. If `regression_detail.source` is `post-merge-verification`, the previous
+attempt's worktree build was **green** and it failed only after merging: repeating that approach
+reproduces the failure exactly, because the defect is integration-level (a registry/manifest/seed the
+merged tree needs, or a collision with work that landed afterwards), not inside the ticket's own diff.
+Treat the report as part of your acceptance condition and build against the CURRENT integrated tree.
+Absent that field, this is a first build and there is nothing to read.
 
 ### You are one of N — share the box (state this to every worker)
 

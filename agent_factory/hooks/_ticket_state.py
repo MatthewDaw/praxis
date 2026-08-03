@@ -1958,5 +1958,77 @@ def start_ticket(cid: str, owner: str, project: str = "",
             f"Author a building-validation check for its tags (see af-intake-build-validation) or "
             f"confirm it should be verify=manual.\n"
         )
+    # BRIEFING: hand the worker everything the ticket already knows, at claim time.
+    #
+    # A regressed ticket carried a full failure report in meta (why it came back, the failing test,
+    # what the rebuild must address) and NOTHING read it: `audit_disposition` appeared four times in
+    # the codebase and every one was a write. So a worker re-claimed a ticket that post-merge
+    # verification had already diagnosed, saw only the original acceptance condition, and re-derived
+    # the same diagnosis from scratch — or repeated the approach that had just failed.
+    #
+    # Emitting on stderr (same channel as the coverage warning above) rather than changing the return
+    # type keeps every existing caller working, and lands the briefing in the worker's own command
+    # output at the moment it claims — it cannot be skipped by not knowing which field to read.
+    sys.stderr.write(ticket_briefing(cid, tmeta))
     pin_requirements(cid, requirements, ref=plan)
     return requirements
+
+
+# Ticket-meta keys that are plumbing, not working context. Everything NOT in here is surfaced to the
+# worker, so a field added later shows up automatically instead of waiting for someone to remember it.
+_BRIEFING_SKIP = frozenset({
+    "build_state", "claim_owner", "claim_at", "claim_heartbeat_at", "claim_lease_ttl",
+    "pinned_checks", "auditTrail", "embedding", "requirement_id", "title",
+})
+
+
+def ticket_briefing(cid: str, meta: Optional[dict]) -> str:
+    """Everything a cold worker should know before touching this ticket, as printable text.
+
+    Ordered by what changes the worker's first action: why it came back (a regressed ticket's
+    report), then its contract, then the rest of its authored context. Returns "" when there is
+    nothing worth saying, so a first build stays quiet.
+    """
+    m = dict(meta or {})
+    lines: list[str] = []
+
+    detail = m.get("regression_detail")
+    disposition = str(m.get("audit_disposition") or "").strip()
+    if detail or disposition:
+        lines.append(f"[af-build] TICKET {cid} CAME BACK — read this before writing code.")
+        if isinstance(detail, dict):
+            src = str(detail.get("source") or "").strip()
+            if src:
+                lines.append(f"  source        : {src}")
+            for key, label in (("reason", "what failed"), ("evidence", "evidence"),
+                               ("required_fix", "the rebuild must")):
+                val = str(detail.get(key) or "").strip()
+                if val:
+                    lines.append(f"  {label:<14}: {val}")
+            if str(detail.get("source") or "") == "post-merge-verification":
+                lines.append("  NOTE          : the previous attempt was GREEN in its own worktree and "
+                             "failed only once merged, so repeating that approach reproduces the "
+                             "failure. The defect is integration-level — build against the CURRENT "
+                             "integrated tree.")
+        elif detail:
+            lines.append(f"  detail        : {detail}")
+        if disposition and not isinstance(detail, dict):
+            lines.append(f"  disposition   : {disposition}")
+
+    if m.get("block_reason"):
+        lines.append(f"[af-build] TICKET {cid} was previously BLOCKED: {m['block_reason']}")
+    if m.get(M_UNDER_SPECIFIED):
+        lines.append(f"[af-build] TICKET {cid} was routed under_specified on: {m[M_UNDER_SPECIFIED]}")
+
+    # Everything else the ticket carries, so "all the information" is not a curated subset.
+    rest = {k: v for k, v in m.items()
+            if k not in _BRIEFING_SKIP and k not in ("regression_detail", "audit_disposition",
+                                                     "block_reason", M_UNDER_SPECIFIED)
+            and v not in (None, "", [], {})}
+    if rest and lines:
+        lines.append(f"[af-build] TICKET {cid} other authored context:")
+        for k in sorted(rest):
+            v = str(rest[k])
+            lines.append(f"  {k:<14}: {v if len(v) <= 400 else v[:400] + ' …'}")
+
+    return ("\n".join(lines) + "\n") if lines else ""

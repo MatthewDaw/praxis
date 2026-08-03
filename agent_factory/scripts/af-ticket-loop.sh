@@ -1133,7 +1133,7 @@ verify_round(){   # $1 = round number, $2.. = the round's ticket ids
 
   # No parentheses in this prompt, deliberately — if the REPL is not actually up the text lands on a
   # bash prompt, where a stray paren is a syntax error that kills the pane.
-  tmux send-keys -t "$vsession" "Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv. Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. THIS IS THE ONLY PLACE THOSE GATES RUN: the workers were told to skip them so that N of them would not run N concurrent suites, so you are the authoritative repo-wide gate for this round and nothing else has proven the merged tree compiles or passes. If any gate is red, identify which ticket's change caused it and regress that ticket per step 3; if you genuinely cannot attribute it, regress the whole batch rather than passing a red tree. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. If this round merged only ONE ticket, the cross-ticket lens is trivially satisfied and you may skip lens A, but step 1's gates and lenses B and C still run in full — they are the only repo-wide check this ticket gets. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: NAME every ticket whose work does NOT survive integration. Do NOT write that regression to Praxis yourself and do not try to fix the ticket — the loop that dispatched you performs the regression from your verdict, using a write path it already owns. Your job is the judgement, not the write. This split is deliberate: when verifiers were asked to do their own Praxis write, nine consecutive rounds reported zero regressions while their own notes named the failing tickets, so every one of those tickets stayed marked finished on work that had failed integration. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, regressed which is an array of the ticket ids that must be regressed (name them even though you are not the one writing it — an empty array means you are asserting every ticket survived integration), and notes which is one short string. Write that file LAST, after everything else is done, and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. If you cannot verify at all, that is itself a verdict: write the JSON with verdict fail and notes saying why, rather than asking what to do."
+  tmux send-keys -t "$vsession" "Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv. Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. THIS IS THE ONLY PLACE THOSE GATES RUN: the workers were told to skip them so that N of them would not run N concurrent suites, so you are the authoritative repo-wide gate for this round and nothing else has proven the merged tree compiles or passes. If any gate is red, identify which ticket's change caused it and regress that ticket per step 3; if you genuinely cannot attribute it, regress the whole batch rather than passing a red tree. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. If this round merged only ONE ticket, the cross-ticket lens is trivially satisfied and you may skip lens A, but step 1's gates and lenses B and C still run in full — they are the only repo-wide check this ticket gets. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: NAME every ticket whose work does NOT survive integration. Do NOT write that regression to Praxis yourself and do not try to fix the ticket — the loop that dispatched you performs the regression from your verdict, using a write path it already owns. Your job is the judgement, not the write. This split is deliberate: when verifiers were asked to do their own Praxis write, nine consecutive rounds reported zero regressions while their own notes named the failing tickets, so every one of those tickets stayed marked finished on work that had failed integration. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, notes which is one short string, and regressed which is an array of OBJECTS — one per ticket that must be regressed, each with four string fields: id the ticket id, reason what actually failed stated concretely, evidence the exact failing test name, gate, file and error text or the precise merge symptom, and fix what the rebuild must do differently. An empty array asserts every ticket survived integration. Write these for the NEXT WORKER, not for a log: it will claim the ticket cold with no memory of this round, so a bare id or a vague "tests failed" wastes an entire rebuild while it re-derives what you already know. Name the failing test, quote the error, and say what the fix has to address. Good: {"id":"REM-10","reason":"its new default-prefix-attribution controller is unregistered in RESTRICTED_RECORD_MANIFEST and the permission_pages seed","evidence":"chat14-restricted-record-manifest.test.ts and chat16-chart-access-record.test.ts both fail on the merged tree with 'scope not registered'","fix":"register the new controller/scope in RESTRICTED_RECORD_MANIFEST and add its permission_pages seed row, then re-run both suites against the merged tree"}. Bad: {"id":"REM-10","reason":"failed","evidence":"","fix":"fix it"}. Write that file LAST, after everything else is done, and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. If you cannot verify at all, that is itself a verdict: write the JSON with verdict fail and notes saying why, rather than asking what to do."
   sleep 3; tmux send-keys -t "$vsession" Enter
   say "round #$rnd: post-merge verification dispatched over $ids_csv"
 
@@ -1216,36 +1216,86 @@ PYEOF
   # their work had failed integration or was never merged at all. A gate that detects and cannot
   # record is advisory, and reads exactly like a passing round.
   #
-  # regress_ticket() below is the SAME helper reap_branches already uses successfully, so the write
-  # path is known-good. The agent's only job now is to NAME the tickets; acting on that name is
-  # ours. Regressing is idempotent, so an agent that did manage its own write costs nothing here.
-  local reg_ids rid regressed_n=0
-  reg_ids=$(python3 - "$VERDICT" <<'PYEOF' 2>/dev/null || true
+  # The write path is _praxis.patch_meta -- the same one regress_ticket()/reap_branches already use
+  # successfully, so it is known-good. Done in ONE python pass rather than a shell for-loop because
+  # each regression now carries a multi-line failure report, and round-tripping that through shell
+  # word-splitting would mangle exactly the detail this exists to preserve.
+  #
+  # WHAT THE NEXT WORKER GETS. A bare id tells it that a ticket failed, not what to fix, and the
+  # verdict's `notes` is one truncated string for the whole round. So the verifier now reports a
+  # per-ticket object, and every field lands on the ticket:
+  #   meta.regression_detail  the structured report (what failed / evidence / what the rebuild must do)
+  #   meta.audit_disposition  a human-readable summary, which is what surfaces in listings
+  # Both are read straight off the ticket by whoever claims it next, so the rebuild starts from the
+  # actual failure instead of re-deriving it.
+  local regressed_n
+  regressed_n=$($PY - "$PROJECT" "$rnd" "$VERDICT" <<'PYEOF' 2>/dev/null || echo 0
 import json, sys
+import _praxis
+
+proj, rnd, path = sys.argv[1], sys.argv[2], sys.argv[3]
+kw = dict(space=proj, snapshot=f"prd-{proj}")
 try:
-    d = json.load(open(sys.argv[1]))
+    d = json.load(open(path))
 except Exception:
-    raise SystemExit
-# "regressed" is the agent's historical key; "should_regress" is the honest name for what it
-# actually reports. Accept both so an older prompt keeps working.
-ids = (d.get("regressed") or []) + (d.get("should_regress") or [])
-seen = set()
-for i in ids:
-    i = str(i).strip()
-    if i and i not in seen:
-        seen.add(i)
-        print(i)
+    print(0); raise SystemExit
+
+# Accept three shapes so no verdict is ever silently dropped on a schema change:
+#   "regressed": ["R1", ...]                                    (legacy / bare ids)
+#   "regressed": [{"id": "R1", "reason": ..., "evidence": ..., "fix": ...}, ...]
+#   "should_regress": [...]                                     (either of the above)
+entries, seen = [], set()
+for item in (d.get("regressed") or []) + (d.get("should_regress") or []):
+    if isinstance(item, dict):
+        rid = str(item.get("id") or item.get("ticket") or "").strip()
+        detail = {k: v for k, v in item.items() if k not in ("id", "ticket")}
+    else:
+        rid, detail = str(item).strip(), {}
+    if rid and rid not in seen:
+        seen.add(rid); entries.append((rid, detail))
+
+if not entries:
+    print(0); raise SystemExit
+
+by_rid = {}
+for f in _praxis.facts_by(category="requirement", **kw) or []:
+    m = f.get("meta") or {}
+    by_rid[str(m.get("requirement_id") or f.get("id"))] = f
+
+n = 0
+for rid, detail in entries:
+    f = by_rid.get(rid)
+    if not f:
+        sys.stderr.write(f"regress: no ticket {rid} in prd-{proj}\n"); continue
+    reason   = str(detail.get("reason") or detail.get("why") or d.get("notes") or "").strip()
+    evidence = str(detail.get("evidence") or detail.get("failing") or "").strip()
+    fix      = str(detail.get("fix") or detail.get("required") or "").strip()
+    parts = [f"REGRESSED by post-merge verification of round #{rnd}: this ticket read finished, "
+             f"but its work did not survive integration into the merged tree."]
+    if reason:   parts.append(f"WHAT FAILED: {reason}")
+    if evidence: parts.append(f"EVIDENCE: {evidence}")
+    if fix:      parts.append(f"THE REBUILD MUST: {fix}")
+    parts.append("Rebuild against the CURRENT integrated tree, not the tree this ticket was "
+                 "originally written against — the failure is an integration failure, so the "
+                 "original worktree's green result does not carry over.")
+    summary = " ".join(parts)
+    _praxis.patch_meta(f["id"], {
+        "build_state": "incomplete",
+        "claim_owner": None, "claim_at": None,
+        "claim_heartbeat_at": None, "claim_lease_ttl": None,
+        "audit_disposition": summary,
+        "regression_detail": {"round": rnd, "source": "post-merge-verification",
+                              "reason": reason, "evidence": evidence, "required_fix": fix},
+    }, **kw)
+    n += 1
+    sys.stderr.write(f"regressed {rid} :: {(reason or 'no reason given')[:160]}\n")
+print(n)
 PYEOF
 )
-  for rid in $reg_ids; do
-    if praxis_q regress_ticket "$rid" "verification of round #$rnd" >/dev/null; then
-      regressed_n=$((regressed_n + 1))
-      say "regressed $rid — its work did not survive integration; the next round rebuilds it"
-    else
-      say "WARNING: could not regress $rid in Praxis — it will keep reading finished while its work is unintegrated. Fix by hand."
-    fi
-  done
-  [ "$regressed_n" -gt 0 ] && say "round #$rnd: $regressed_n ticket(s) regressed by the loop from the verifier's verdict"
+  case "$regressed_n" in ''|*[!0-9]*) regressed_n=0 ;; esac
+  if [ "$regressed_n" -gt 0 ]; then
+    say "round #$rnd: $regressed_n ticket(s) regressed with a failure report attached — the next round rebuilds them"
+  fi
 
   rm -f "$VERDICT"
   return 0
