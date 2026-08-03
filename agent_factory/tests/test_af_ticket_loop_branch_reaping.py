@@ -43,7 +43,7 @@ def _extract(*names: str) -> str:
     src = SCRIPT.read_text().splitlines()
     out = []
     for name in names:
-        start = next(i for i, l in enumerate(src) if l.startswith(f"{name}(){{"))
+        start = next(i for i, line in enumerate(src) if line.startswith(f"{name}(){{"))
         end = next(i for i in range(start + 1, len(src)) if src[i] == "}")
         out.append("\n".join(src[start : end + 1]))
     assert len(out) == len(names)
