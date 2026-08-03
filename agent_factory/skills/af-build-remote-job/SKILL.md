@@ -65,8 +65,12 @@ was wrong, and it made small rounds look like a hard ceiling when they were only
 the real ceiling**: each worker is a full checkout plus, where the project bootstraps per-worktree
 deps, a full dependency tree — so size `AF_BATCH_MAX` from the volume, not the core count.
 `AF_MIN_FREE_GB` (default 15) aborts a round that will not fit, but cannot reclaim disk spent
-mid-round. The loop reaps merged worktrees after every round and reports unmerged ones instead of
-deleting them (`AF_REAP_UNMERGED=1` to drop those too).
+mid-round. After every round — and on every abnormal exit, via the cleanup trap — the loop purges the
+round's worktrees unconditionally (the tree is scratch, the branch is the artifact) and then reaps the
+branches whose work has landed, ending with a `N branches reaped, M unmerged branches remain: <names>`
+line. An empty survivor list is the normal case; a named survivor is real orphaned work, and a ticket
+that reads `finished` while its commits sit unmerged fails the round and is regressed for rebuild.
+`AF_KEEP_BRANCHES=1` reports instead of reaping, for debugging a bad round.
 
 **Every parallel round is verified after it merges.** Each ticket's validations ran inside its own
 worktree, against a tree where its change was the only one present, so a batch of five produces five

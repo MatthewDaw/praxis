@@ -92,9 +92,11 @@
 #    extends the deadline, so a healthy long round is never reaped for being long.
 #  - The per-round timeout scales with batch size instead of a flat 1h.
 #  - Worktrees are swept after every round. af-build is supposed to reap its own, but a run that died
-#    mid-round leaves them behind, and 29 stranded worktrees once filled a 98GB volume. Merged ones
-#    are removed; unmerged ones are reported loudly and left alone unless AF_REAP_UNMERGED=1, because
-#    deleting an unmerged worktree destroys work rather than reclaiming scratch.
+#    mid-round leaves them behind, and 29 stranded worktrees once filled a 98GB volume. The tree is
+#    scratch and is purged unconditionally; the BRANCH is the artifact and survives the purge.
+#  - Branches are then reaped in turn, because a surviving branch is only an artifact until its work
+#    lands. See reap_branches: a run that leaves residue destroys the signal it needs to report a
+#    genuine orphan.
 #
 # The round is fanned out with parallel Agent SUBAGENTS, one per ticket in a single message, NOT with
 # the Workflow tool. That is deliberate and it is the whole reason a batch of N actually runs N-wide:
@@ -165,7 +167,7 @@
 #   AF_VERIFY_ROUND=0      skip post-merge verification (default on, multi-ticket rounds only)
 #   AF_VERIFY_TIMEOUT_S    bound that verification (default 2700)
 #   AF_MIN_FREE_GB=25      raise the disk floor a round must clear (default 15)
-#   AF_REAP_UNMERGED=1     also drop worktrees holding unintegrated commits (branch survives)
+#   AF_KEEP_BRANCHES=1     report worker branches instead of reaping them (debugging a bad round)
 #   AF_MODEL_BACKEND       sonnet | deepseek (see v3)
 #   AF_PLUGIN_DIR / AF_REPO / AF_PYTHON / AF_STATE_DIR / AF_LOG   for an unusual layout
 set -euo pipefail
@@ -314,6 +316,11 @@ SESSION="af-$(basename "$WT")"   # per-worktree, so concurrent projects never co
 # is the right probe because it genuinely fails when detached; the SHA it falls back to resolves fine
 # from inside a worker's worktree, since they share one object store.
 INTEGRATION_REF="$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || git -C "$WT" rev-parse HEAD 2>/dev/null || echo HEAD)"
+# Last id sets integrate_round successfully read out of Praxis, space-padded. reap_branches uses them
+# to tell a ticket of ours from a foreign tracker's, and the EXIT trap reuses whatever the last round
+# managed to read — an empty set only narrows what the reap is willing to touch, never widens it.
+AF_KNOWN_IDS=" "
+AF_FINISHED_IDS=" "
 # State lives beside the worktrees, not inside them: a log or a verdict sentinel written into a repo
 # gets swept into a wip commit and read back as ticket output.
 AF_STATE_DIR="${AF_STATE_DIR:-$(dirname "$WT")}"
@@ -663,6 +670,31 @@ print(' '.join(out))
 PYEOF
 }
 
+regress_ticket(){  # args: requirement_id branch -> send a lying "finished" ticket back to incomplete
+  # A ticket reads finished and its commits are sitting on a branch the integration ref has never
+  # seen and never will. The ticket is wrong, not the branch: it was marked done and its work did not
+  # land. Returning it to incomplete is what makes the next round rebuild it -- the same mechanism the
+  # post-merge verifier uses when integration rejects a ticket.
+  $PY - "$PROJECT" "$1" "$2" <<'PYEOF' 2>/dev/null
+import sys
+import _praxis
+p, rid, br = sys.argv[1], sys.argv[2], sys.argv[3]
+kw = dict(space=p, snapshot=f'prd-{p}')
+for f in _praxis.facts_by(category='requirement', **kw):
+    m = f.get('meta') or {}
+    if str(m.get('requirement_id') or f.get('id')) != rid:
+        continue
+    _praxis.patch_meta(f['id'], {'build_state': 'incomplete', 'claim_owner': None, 'claim_at': None,
+        'claim_heartbeat_at': None, 'claim_lease_ttl': None,
+        'audit_disposition': f'regressed by af-ticket-loop: read finished, but its commits never '
+                             f'reached the integration branch -- they exist only on {br}, and no '
+                             f'replacement for this ticket landed either. Rebuild against the '
+                             f'integrated tree.'}, **kw)
+    print('regressed', rid)
+    break
+PYEOF
+}
+
 release_inprogress(){  # release any live lease before a fresh session claims (post-crash safety)
   $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
 import sys, time
@@ -703,9 +735,26 @@ commit_wip(){
 # in the log. A conflict is NOT resolved here -- two dependency-independent tickets that touched one
 # file need a builder's judgment, so the merge is aborted and the ticket regressed to be rebuilt
 # against the now-integrated tree.
+# Requirement ids named by a set of commits, filtered to the ones THIS PROJECT owns.
+#
+# Workers end a commit subject with the ticket id -- "feat(af-clean): ... (R8)" -- and that suffix is
+# the only link from a branch back to a ticket. It is also a convention the whole world shares, so the
+# raw scan is filtered against the ids Praxis says we own before any of it is believed; see the long
+# note in integrate_round for the run this filter exists to prevent.
+# $1 = a git log range/rev, $2 = the known-id set, space-padded on both sides.
+af_owned_ids(){
+  local raw i out=""
+  raw=$(git log --format=%s "$1" 2>/dev/null \
+        | sed -n 's/.*(\([A-Za-z][A-Za-z0-9_-]*[0-9][0-9]*\))[[:space:]]*$/\1/p' | sort -u)
+  for i in $raw; do
+    case "$2" in *" $i "*) out="${out:+$out }$i" ;; esac
+  done
+  printf '%s' "$out"
+}
+
 integrate_round(){
   cd "$WT"
-  local merged=0 conflicted=0 skipped=0 br ahead path ids raw i ok fin known
+  local merged=0 conflicted=0 skipped=0 br ahead path ids i ok fin known
   # WHICH branch is safe to merge is decided per branch, by its TICKET's state -- not by the round's.
   # A branch name carries no ticket id, but the worker's own commit subjects do: they end in the
   # requirement id, e.g. "feat(af-clean): ... (R8)". So read the ids out of the branch's commits and
@@ -733,6 +782,11 @@ integrate_round(){
   fi
   fin=" $fin "
   known=" $known "
+  # Cached for the EXIT trap, which reaps branches on paths where Praxis is unreachable or where
+  # asking it would mean a 2.5-minute retry storm inside a signal handler. A stale-but-real id set is
+  # what lets the trap still recognise a `build/<TICKET>` branch as ours rather than as a human's.
+  AF_KNOWN_IDS="$known"
+  AF_FINISHED_IDS="$fin"
   # Commit anything loose first: `git merge` refuses to run on a dirty tree, and refusing to
   # integrate a whole round because one stray file is uncommitted is the wrong trade.
   commit_wip
@@ -743,12 +797,8 @@ integrate_round(){
     [ -n "$br" ] && [ "$br" != "HEAD" ] || continue
     ahead=$(git rev-list --count "HEAD..$br" 2>/dev/null || echo 0)
     [ "${ahead:-0}" -gt 0 ] || continue
-    raw=$(git log --format=%s "HEAD..$br" 2>/dev/null | sed -n 's/.*(\([A-Za-z][A-Za-z0-9_-]*[0-9][0-9]*\))[[:space:]]*$/\1/p' | sort -u)
     # Keep only ids this project actually owns; everything else is another tracker's history.
-    ids=""
-    for i in $raw; do
-      case "$known" in *" $i "*) ids="${ids:+$ids }$i" ;; esac
-    done
+    ids=$(af_owned_ids "HEAD..$br" "$known")
     if [ -z "$ids" ]; then
       skipped=$((skipped+1)); say "skipping $br — none of its commits name a $PROJECT ticket, so its provenance cannot be established"; continue
     fi
@@ -864,6 +914,148 @@ sweep_worktrees(){
   return 0
 }
 
+# ------------------------------------------------------------------------------ branch reaping --
+#
+# A finished ticket owns no branches. A completed run leaves ZERO worker branches -- not fewer, zero.
+#
+# Worktree removal deliberately KEEPS the branch, and that is the safety property that makes purging a
+# scratch tree lossless: the tree is scratch, the branch is the artifact. But nothing ever revisited
+# the branch afterwards. One branch is created per worker, per ticket, per round, and lived forever.
+# Measured on /workspace/appeal_engine, three runs of an 11-ticket project: 38 branches, of which 34
+# were fully merged into main -- pure residue -- and 4 "unmerged", none of which held work worth
+# keeping. One was already upstream by patch-id, two were attempts the post-merge verifier REJECTED
+# and rebuilt (main carries the corrected versions; one differed only by the five lint-baseline lines
+# that made the rebuild pass), and one was a stale baseline re-anchor superseded months of commits ago.
+#
+# The cost is not disk. "Unmerged branch" is supposed to be a loud, rare signal meaning THIS WORK NEVER
+# LANDED, LOOK AT IT -- and it was buried under dozens of identical worktree-agent-* names that meant
+# nothing. A cleanup pass that leaves residue does not merely waste space, it destroys the signal the
+# same system depends on to report its real failures.
+#
+# Four dispositions, decided per branch, and only the first two delete anything:
+#   REAPED      no commit of its own is missing from the integration ref (ancestry, or patch-equivalent
+#               upstream after a rebuild/cherry-pick). Nothing to recover; deleting it loses nothing.
+#   SUPERSEDED  it holds unique commits, but a LATER commit for the same ticket did land. The verifier
+#               rejected this attempt and a rebuild replaced it, so it is dead by construction.
+#   FAILURE     it holds unique commits for a ticket Praxis calls `finished`, and NOTHING for that
+#               ticket ever landed. The ticket is lying. Keep the branch, regress the ticket, fail the
+#               round loudly. This exact case happened and was caught only by luck: round #2's verifier
+#               noticed "LADDER-1 (5a3ddd6) was never merged into main (only on branch
+#               worktree-agent-a2bece339fa2dbd7d)". Branch bookkeeping did not, and would have left it
+#               sitting there forever looking like ordinary residue.
+#   SURVIVOR    unique commits whose ticket is NOT finished, or whose provenance cannot be established.
+#               Work still in flight. Reported by name, never deleted.
+#
+# Equivalence is tested with `git cherry`, not ancestry. Plain ancestry misses a rebuilt or
+# cherry-picked equivalent, which is exactly what made three of those four branches look unmerged.
+
+# Which refs this driver is allowed to touch. Deliberately narrow: everything else -- main, the
+# integration branch, fix/*, wip/*, anything a human named -- is out of bounds no matter how merged it
+# looks. `worktree-agent-*` and `worktree-wf_*` are minted by the Agent/Workflow `isolation: worktree`
+# machinery and carry no human meaning. `build/<X>` is the older per-ticket layout and is ambiguous by
+# name alone, so it counts as ours ONLY when X is an id Praxis says this project owns -- a human's
+# `build/login-redesign` is never matched, and neither is a sibling project's ticket.
+af_is_worker_branch(){   # $1 = branch name
+  case "$1" in
+    worktree-agent-*|worktree-wf_*) return 0 ;;
+    build/*) case "${AF_KNOWN_IDS:-}" in *" ${1#build/} "*) return 0 ;; esac ;;
+  esac
+  return 1
+}
+
+reap_branches(){
+  cd "$WT" || return 0
+  local br live uniq ids i sup reaped=0 failed=0 survivors="" reason status head_br
+  # Compare against HEAD, never against the INTEGRATION_REF captured at startup. On a detached
+  # checkout -- which is what both build worktrees on this box are -- INTEGRATION_REF is a fixed sha
+  # that does NOT move as integrate_round merges into HEAD, so every branch this round just landed
+  # would still read as unique work, and a finished ticket's branch would be reported as a hard
+  # failure. HEAD is what integrate_round merged into, so HEAD is what "did it land" means here.
+  head_br=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
+  # A branch checked out anywhere -- this checkout, a live worker's tree, a sibling project sharing the
+  # ref store -- is in flight. git refuses to delete it anyway; skipping first keeps the log honest.
+  live=$(git worktree list --porcelain | awk '/^branch /{sub("refs/heads/","",$2); print $2}')
+  while read -r br; do
+    [ -n "$br" ] || continue
+    [ -n "$head_br" ] && [ "$br" = "$head_br" ] && continue
+    af_is_worker_branch "$br" || continue
+    printf '%s\n' "$live" | grep -qxF "$br" && continue
+    # `+` = a commit with no equivalent upstream; `-` = already there under a different sha.
+    uniq=$(git cherry HEAD "$br" 2>/dev/null | sed -n 's/^+ //p')
+    if [ -z "$uniq" ]; then
+      # Let git enforce the safe case rather than the caller's belief about it. `-d` refuses anything
+      # it does not consider merged, so it is tried FIRST and its refusal is meaningful. It refuses a
+      # patch-equivalent branch too (ancestry is all it knows), and that is the one case where `git
+      # cherry` is the better authority -- so `-D` is reached only after cherry has already proven
+      # every commit is upstream, and it says so in the log.
+      if [ "${AF_KEEP_BRANCHES:-0}" = "1" ]; then
+        survivors="${survivors:+$survivors }$br"
+      elif git branch -d "$br" >/dev/null 2>&1; then
+        reaped=$((reaped+1))
+      elif git branch -D "$br" >/dev/null 2>&1; then
+        reaped=$((reaped+1))
+        say "reaped $br — not an ancestor of ${head_br:-HEAD}, but every commit of it is already upstream by patch-id"
+      else
+        survivors="${survivors:+$survivors }$br"
+        say "WARNING: could not delete $br"
+      fi
+      continue
+    fi
+    # Unique commits. Whose, and did that ticket land some other way?
+    ids=$(af_owned_ids "HEAD..$br" "${AF_KNOWN_IDS:- }")
+    status=superseded; reason=""
+    if [ -z "$ids" ]; then
+      status=survivor; reason="its commits name no $PROJECT ticket, so its provenance cannot be established"
+    fi
+    for i in $ids; do
+      # A commit naming this ticket that is on the integration ref and NOT on this branch is a landed
+      # replacement -- the rebuild that superseded this attempt.
+      sup=$(git log -E --grep="\($i\)[[:space:]]*\$" --format='%h %s' -n 1 HEAD --not "$br" 2>/dev/null || true)
+      if [ -n "$sup" ]; then
+        reason="${reason:+$reason; }$i superseded by ${sup%% *}"
+        continue
+      fi
+      case "${AF_FINISHED_IDS:- }" in
+        *" $i "*)
+          status=failure
+          say "ROUND FAILED — ticket $i reads finished in Praxis, but its work is NOT on ${head_br:-HEAD} and no replacement for it landed. The commits exist only on branch $br:"
+          git log --format='  %h %s' "HEAD..$br" 2>/dev/null | while read -r l; do say "$l"; done
+          if praxis_q regress_ticket "$i" "$br" >/dev/null; then
+            say "regressed $i to incomplete — the next round rebuilds it. Branch $br is KEPT."
+          else
+            say "WARNING: could not regress $i in Praxis — it will keep reading finished while its work sits unmerged on $br. Fix by hand."
+          fi
+          ;;
+        *)
+          [ "$status" = failure ] || status=survivor
+          reason="${reason:+$reason; }$i is not finished — work still in flight"
+          ;;
+      esac
+    done
+    case "$status" in
+      superseded)
+        if [ "${AF_KEEP_BRANCHES:-0}" = "1" ]; then
+          survivors="${survivors:+$survivors }$br"
+        else
+          # Named before deletion, with the tip sha, because this is the one reap that drops commits
+          # that are not upstream in any form. The sha keeps them recoverable until gc.
+          say "reaped $br (tip $(git rev-parse --short "$br" 2>/dev/null)) — a superseded attempt: $reason"
+          git branch -D "$br" >/dev/null 2>&1 && reaped=$((reaped+1)) || say "WARNING: could not delete $br"
+        fi
+        ;;
+      failure)  failed=$((failed+1)); survivors="${survivors:+$survivors }$br" ;;
+      survivor) survivors="${survivors:+$survivors }$br"; say "keeping $br — $reason" ;;
+    esac
+  done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
+
+  # The report line. An empty survivor list is the NORMAL case and has to be visibly normal, or a real
+  # orphan goes on looking exactly like the residue this whole function exists to delete.
+  set -- $survivors
+  say "$reaped branches reaped, $# unmerged branches remain:${survivors:+ $survivors}"
+  [ "$failed" -gt 0 ] && { say "$failed ticket(s) were marked finished with their work unmerged — see above. This round FAILED its branch-integrity check."; return 1; }
+  return 0
+}
+
 # Cleanup is an INVARIANT, not a happy-path step.
 #
 # sweep_worktrees used to run in exactly two places: the disk preflight, and after integrate_round
@@ -872,11 +1064,22 @@ sweep_worktrees(){
 # any operator `tmux kill-session`. On one box that left 8 trees holding 10GB, on a volume the same
 # script halts the build to protect. A trap makes the sweep unconditional: whatever happens, the
 # scratch trees go, and their branches (the actual artifacts) survive.
+#
+# Branch reaping rides the same trap for the same reason. It has to run AFTER the sweep, because git
+# refuses to delete a branch that is still checked out in a worktree -- reaping first would report
+# every one of the round's branches as undeletable. The reap needs no Praxis for its main job: whether
+# a branch's commits are already upstream is a pure git question, and the cached id sets are only used
+# to classify what is left over.
 af_cleanup_on_exit(){
   local rc=$?
   set +e
   if [ -n "${WT:-}" ] && [ -e "${WT}/.git" ]; then
     sweep_worktrees || true
+    # No backoff inside a signal handler. reap_branches may need to regress a lying ticket, and
+    # praxis_q's linear backoff would sit here for ~2.5 minutes per attempt after an operator's
+    # `tmux kill-session` — in the only case it can happen, a Praxis that is down and cannot accept
+    # the write anyway. Still retries, just without sleeping through a shutdown.
+    AF_QUERY_BACKOFF_S=0 reap_branches || true
   fi
   return "$rc"
 }
@@ -1205,8 +1408,10 @@ while :; do
   # another dozen "unmerged, left in place" warnings.
   # ORDER IS LOAD-BEARING and every step is mandatory before the next batch starts:
   #   1. INTEGRATE — merge each finished ticket's branch into the integration branch.
-  #   2. PURGE     — remove every scratch worktree (branches survive), reclaiming the disk.
-  #   3. VERIFY    — check the merged result, below, before this round is considered done.
+  #   2. PURGE     — remove every scratch worktree (branches survive it), reclaiming the disk.
+  #   3. REAP      — delete every branch whose work has landed, and NAME whatever is left. Must follow
+  #                  the purge: git will not delete a branch that is still checked out somewhere.
+  #   4. VERIFY    — check the merged result, below, before this round is considered done.
   # Verification has to see the tree AFTER the merge, or it verifies nothing: the first attempt ran
   # against an unmerged tree and correctly reported "there is no merged tree to verify". And all
   # three must finish before the loop clears context and dispatches the next batch, or a round's
@@ -1215,6 +1420,9 @@ while :; do
   # Purge AFTER the session is dead, never while it is live: removing a worktree out from under a
   # running worker deletes the tree its evals are executing against.
   sweep_worktrees
+  # `|| true` because a branch-integrity failure regresses its ticket and must NOT abort the run under
+  # `set -e`: the next round is precisely what rebuilds it. The failure is loud in the log either way.
+  reap_branches || true
 
   # Circuit breaker. A round that finishes NOTHING will, on the next pass, release the same leases
   # and dispatch the same frontier — so a persistent failure that isn't one of the specific panes
