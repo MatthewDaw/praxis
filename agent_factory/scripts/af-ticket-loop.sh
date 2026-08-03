@@ -161,6 +161,14 @@
 #        af-ticket-loop.sh --check
 #
 # Knobs, all optional:
+#   AF_WATCH=1             do not exit when the ticket set drains or stalls -- wait and re-query, so
+#                          tickets authored AFTER the run started are picked up without a relaunch.
+#                          This is what makes an unattended build loop self-sustaining; without it
+#                          every project needs its own external supervisor, which is how three
+#                          separate restart bugs got written outside this repo.
+#   AF_WATCH_POLL_S=300    how often watch mode re-queries (default 300)
+#   AF_WATCH_STOP=<path>   stop sentinel; `touch` it to end a watching run cleanly
+#                          (default: <parent-of-worktree>/af-watch-stop-<worktree>)
 #   AF_BATCH_MAX=32        round width (default 16). NOT narrowed by CPU underneath -- the round
 #                          fans out with Agent subagents, which carry no core-derived cap. DISK is
 #                          the real ceiling: each worker is a full checkout (+ deps if bootstrapped).
@@ -295,6 +303,8 @@ _cores="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 WORKFLOW_CAP=$(( _cores - 2 )); [ "$WORKFLOW_CAP" -gt 16 ] && WORKFLOW_CAP=16
 [ "$WORKFLOW_CAP" -lt 1 ] && WORKFLOW_CAP=1
 SESSION="af-$(basename "$WT")"   # per-worktree, so concurrent projects never collide on tmux session name
+# AF_WATCH stop sentinel — per-worktree, so stopping one project never stops another.
+WATCH_STOP="${AF_WATCH_STOP:-$(dirname "$WT")/af-watch-stop-$(basename "$WT")}"
 # What this run integrates INTO -- whatever the project worktree has checked out. Workers must be
 # told it explicitly, because they do not start on it: `isolation: worktree` creates each worker's
 # tree from the repo's default branch (`refs/remotes/origin/HEAD`, i.e. origin/main), NOT from the
@@ -1307,7 +1317,24 @@ while :; do
   if ! left=$(praxis_q claimable); then outage "claimable"; continue; fi
   left=${left:-999}
   say "$PROJECT claimable=$left"
-  [ "$left" = "0" ] && { say "DONE — nothing claimable"; break; }
+  if [ "$left" = "0" ]; then
+    # WATCH MODE: a drained set is not the end of the work, only the end of the work that EXISTED
+    # when the run started. Without this the loop exits here, and every ticket authored afterwards is
+    # invisible until a human relaunches it — which is precisely the gap that got papered over with a
+    # per-project supervisor script living outside this repo. Three bugs in that script (restart-on-
+    # any-exit through a billing failure; treating a dependency stall as a clean drain and relaunching
+    # 340 times in 8 hours; a grep pattern that matched its own command line) were all re-derivations
+    # of state this loop already knows precisely. So the wait belongs HERE, where the distinction is
+    # free: a DELIBERATE halt is an `exit`, and only a genuine drain reaches this branch.
+    if [ "${AF_WATCH:-0}" = "1" ]; then
+      [ "${watch_said_drain:-0}" = "1" ] || { say "drained — nothing claimable; WATCHING for new tickets every ${AF_WATCH_POLL_S:-300}s (AF_WATCH=1). Stop with: touch $WATCH_STOP"; watch_said_drain=1; }
+      [ -f "$WATCH_STOP" ] && { say "watch stop file present ($WATCH_STOP) — exiting"; break; }
+      sleep "${AF_WATCH_POLL_S:-300}"
+      continue
+    fi
+    say "DONE — nothing claimable"; break
+  fi
+  watch_said_drain=0
   [ "$n" -ge "$MAX" ] && { say "hit max_tickets=$MAX, stopping"; break; }
 
   # DISK PREFLIGHT — fail CLOSED, exactly like an unreachable Praxis.
@@ -1342,9 +1369,26 @@ while :; do
   if [ -z "$batch" ]; then
     # Claimable work exists but nothing is dependency-ready: a cycle, or a chain rooted on a blocked
     # ticket. Restarting sessions cannot fix that, so halt loudly instead of spinning.
-    say "DEPENDENCY STALL — $left claimable but nothing ready; every remaining ticket waits on an unfinished or blocked prerequisite. Fix the depends_on chain or unblock the root, then relaunch."
+    say "DEPENDENCY STALL — $left claimable but nothing ready; every remaining ticket waits on an unfinished or blocked prerequisite. Fix the depends_on chain or unblock the root."
+    if [ "${AF_WATCH:-0}" = "1" ]; then
+      # Watching a stall is safe HERE and was not safe from outside. An external supervisor could only
+      # see exit 0 — identical to a clean drain — so it relaunched the whole loop: fresh session, fresh
+      # preflight, fresh model-backend probe, 340 times over 8 hours. In-process the cost is a sleep
+      # and one Praxis query, and the moment a human unblocks the root ticket the very next poll picks
+      # it up. Re-announce only when the claimable count MOVES, so a stall that nobody has fixed yet
+      # stays one line in the log instead of a wall of them.
+      if [ "${watch_stall_at:-}" != "$left" ]; then
+        say "WATCHING through the stall (AF_WATCH=1) — re-checking every ${AF_WATCH_POLL_S:-300}s; unblocking a root ticket resumes the run with no relaunch. Stop with: touch $WATCH_STOP"
+        watch_stall_at="$left"
+      fi
+      [ -f "$WATCH_STOP" ] && { say "watch stop file present ($WATCH_STOP) — exiting"; break; }
+      sleep "${AF_WATCH_POLL_S:-300}"
+      continue
+    fi
+    say "Then relaunch, or run with AF_WATCH=1 so the loop waits for the fix instead of exiting."
     break
   fi
+  watch_stall_at=""
   outages=0   # a computed frontier proves Praxis is back; the streak only counts CONSECUTIVE failures
   set -- $batch
   size=$#

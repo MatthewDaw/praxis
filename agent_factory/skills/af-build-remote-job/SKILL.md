@@ -177,14 +177,30 @@ interpreter, and state dir from its path, so nothing here is project-specific.
 
 ```bash
 ssh -n -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
-  "cd /workspace && setsid nohup /workspace/praxis/agent_factory/scripts/af-ticket-loop.sh \
+  "cd /workspace && AF_WATCH=1 setsid nohup /workspace/praxis/agent_factory/scripts/af-ticket-loop.sh \
      '<project>' '<worktree>' <pg> <redis|none> <max?> \
      > /workspace/af-<project>-loop.log 2>&1 < /dev/null & disown; echo launched"
 ```
 
+**`AF_WATCH=1` belongs on every remote run — leave it on.** Without it the loop exits the moment the
+set drains, so any ticket authored afterwards is invisible until a human relaunches. That gap is what
+gets filled with a hand-written supervisor script living outside this repo, and that is not
+hypothetical: one was written, and it carried three separate restart bugs — it relaunched straight
+through a billing failure; it could not distinguish a dependency stall from a clean drain (both exit
+`0`) and relaunched **340 times in 8 hours**; and its process-match pattern matched its own command
+line, so it would have spawned a duplicate of itself. Every one of those was an outside re-derivation
+of state this loop already knows exactly. **Do not write a supervisor. If a run needs to keep going,
+that behaviour belongs in the loop.**
+
+Stop a watching run with `touch <parent-of-worktree>/af-watch-stop-<worktree-basename>` (or whatever
+`AF_WATCH_STOP` names) — it exits cleanly at the next poll. A DELIBERATE halt (preflight failure,
+billing, or any unrecoverable condition) still exits immediately and is never waited through: watch
+mode only ever waits on a genuine drain or a dependency stall, both of which a human resolves without
+restarting anything.
+
 Optional knobs, prefixed before the command: `AF_MODEL_BACKEND=sonnet` (default deepseek),
-`AF_BATCH_MAX=<n>` (round width, default 8), `AF_MIN_FREE_GB=<n>` (disk floor, default 15),
-`AF_VERIFY_ROUND=0` (skip post-merge verification).
+`AF_BATCH_MAX=<n>` (round width, default 16), `AF_MIN_FREE_GB=<n>` (disk floor, default 15),
+`AF_VERIFY_ROUND=0` (skip post-merge verification), `AF_WATCH_POLL_S=<n>` (watch cadence, default 300).
 
 **7. Confirm it came up** — the loop refuses to start on a half-configured model backend, and that
 failure is otherwise silent:
