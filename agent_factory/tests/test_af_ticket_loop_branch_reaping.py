@@ -120,7 +120,14 @@ def test_patch_equivalent_branch_is_reaped_despite_not_being_an_ancestor(repo: P
     """`git cherry`, not ancestry. Three of the four appeal_engine survivors looked unmerged for
     exactly this reason: the work was upstream under a different sha."""
     _worker_branch(repo, "worktree-agent-dup", "a.py", "a = 1\n", "feat: a (R8)")
-    _git(repo, "cherry-pick", _git(repo, "rev-parse", "worktree-agent-dup"))
+    # The integrator is a DIFFERENT identity from the worker (as in a real landing), and
+    # naming it matters twice over: a bare CI runner has no git identity at all, so an
+    # undecorated cherry-pick dies with "Committer identity unknown"; and reusing the
+    # worker's identity would make the replayed commit byte-identical to the original
+    # (same tree, parent, message, author) and collapse it to the SAME sha — destroying
+    # the patch-equivalent-but-different-sha condition this test exists to exercise.
+    _git(repo, "-c", "user.name=integrator", "-c", "user.email=i@i",
+         "cherry-pick", _git(repo, "rev-parse", "worktree-agent-dup"))
     _commit(repo, "later.py", "later = 1\n", "chore: unrelated later commit")
     assert _git(repo, "rev-list", "--count", "main..worktree-agent-dup") == "1"
 
