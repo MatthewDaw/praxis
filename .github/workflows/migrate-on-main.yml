@@ -9,14 +9,20 @@
 #     + the dependency/lock files that affect how migrations install/run).
 #   - workflow_dispatch, for unconditional manual runs.
 #
-# Required GitHub secrets (configure under Settings -> Secrets and variables -> Actions):
-#   - PRAXIS_DB_URL  (preferred)  — a libpq/SQLAlchemy-style Postgres DSN. When set,
-#                                   db.py uses it directly and AWS is not consulted.
-#   OR, as a fallback, the AWS trio so db.py can resolve the DSN from Secrets Manager
-#   (secret name PRAXIS_DB_SECRET, default "praxis/knowledge-graph/db"):
+# Required GitHub secrets (configure under Settings -> Secrets and variables -> Actions).
+# The AWS trio is what this repo uses — db.py resolves the DSN from Secrets Manager
+# (secret name PRAXIS_DB_SECRET, default "praxis/knowledge-graph/db"), which is the
+# same RDS-managed secret the deployed app reads, so a credential rotation reaches CI
+# with nothing to update here:
 #   - AWS_ACCESS_KEY_ID
 #   - AWS_SECRET_ACCESS_KEY
 #   - AWS_REGION     (e.g. us-east-1)
+#
+# PRAXIS_DB_URL is an OPTIONAL override, deliberately NOT set as a repo secret. It used
+# to be, holding the local dev URL, which is what broke this workflow for two months
+# (see below) — and a copy of the prod DSN here would be a second producer of a truth
+# Secrets Manager already owns, going stale the first time the password rotates. Set it
+# only to point a run at some other database on purpose; a loopback value is ignored.
 #
 # SCHEMA SOURCE OF TRUTH:
 #   * migrations/ is the whole schema. `0000_initial.sql` creates everything; every
