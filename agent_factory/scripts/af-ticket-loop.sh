@@ -820,14 +820,175 @@ integrate_round(){
     if git merge --no-edit "$br" >/dev/null 2>&1; then
       merged=$((merged+1)); say "integrated $br ($ahead commit(s))"
     else
+      # A conflict is NOT grounds to give up on the branch. Aborting and moving on leaves a ticket
+      # reading finished with its work stranded on a branch nothing will ever merge — the exact
+      # false-green this loop exists to prevent. It happened three times in one run (REM-20, REM-28,
+      # HIP-14), and every one had to be resolved by hand afterwards. The abort here only restores a
+      # clean tree so the REMAINING branches in this round can still be tried; the branch is handed to
+      # resolve_conflicts() below, which is the stage that actually lands it.
       git merge --abort 2>/dev/null || true
       conflicted=$((conflicted+1))
-      say "CONFLICT integrating $br — merge aborted, branch left intact for a rebuild"
+      printf '%s\t%s\n' "$br" "$ids" >> "$CONFLICTS"
+      say "CONFLICT integrating $br — deferred to the conflict resolver (ticket(s):$ids )"
     fi
   done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
   [ "$merged" -gt 0 ] && say "round integrated: $merged branch(es) merged into $(git rev-parse --abbrev-ref HEAD)"
-  [ "$conflicted" -gt 0 ] && say "WARNING: $conflicted branch(es) conflicted and were NOT integrated — their tickets need a rebuild against the merged tree"
+  [ "$conflicted" -gt 0 ] && say "$conflicted branch(es) conflicted — handing them to the conflict resolver"
   [ "$skipped" -gt 0 ] && say "$skipped branch(es) skipped as unproven — their commits stay on their branches"
+  return 0
+}
+
+# ------------------------------------------------------------------------- conflict resolution --
+#
+# Integration conflicts used to end the branch's story: abort, warn, "needs a rebuild against the
+# merged tree" — and nothing ever performed that rebuild, so the ticket stayed finished and its work
+# stayed on a branch. Three tickets in one run reached that state, and resolving them by hand showed
+# why a script could not: each needed JUDGEMENT, not mechanics. REM-20 conflicted because REM-30 had
+# deleted a guard file it stamped and rewritten another; the correct merge kept REM-30's structure,
+# left the deleted file deleted, and applied REM-20's stamp to the guards that now existed — a
+# mechanical resolution would have resurrected a deliberately-removed file and restored a doc comment
+# that no longer described the code.
+#
+# So the resolver is an agent, dispatched exactly like verify_round: it has the diff, both sides, the
+# repo's gates, and the ability to reason about intent. What it may NOT do is fake a resolution —
+# taking one side wholesale to make the merge succeed is worse than not merging, because it silently
+# discards work while reporting success. When it genuinely cannot resolve, it regresses the ticket
+# with a report, which is the honest outcome and re-queues the work.
+resolve_conflicts(){   # $1 = round number
+  local rnd="$1" n
+  [ -s "$CONFLICTS" ] || return 0
+  n=$(wc -l < "$CONFLICTS" | tr -d ' ')
+  say "conflict resolver: $n branch(es) to land for round #$rnd"
+
+  local rsession="af-resolve-$(basename "$WT")"
+  tmux kill-session -t "$rsession" 2>/dev/null || true
+  tmux new-session -d -s "$rsession" -c "$WT"
+  local rready=0 i
+  for i in $(seq 1 60); do
+    sleep 2
+    pane=$(tmux capture-pane -p -t "$rsession" 2>/dev/null || true)
+    if echo "$pane" | grep -qE "bypass permissions on"; then rready=1; break; fi
+  done
+  [ "$rready" = "1" ] || say "conflict resolver: pane never signalled ready — sending anyway"
+  sleep 3; tmux send-keys -t "$rsession" Enter
+
+  tmux send-keys -t "$rsession" "You are resolving MERGE CONFLICTS for build round $rnd of project $PROJECT, in the checkout at $WT which is already on the integration branch. Each line of $CONFLICTS is a TAB-separated branch name and the ticket id(s) whose work it carries. These branches were built and passed their own gates; they conflict only because sibling work landed first. Do NOT build features, do NOT claim tickets, do NOT push. THE ONE ABSOLUTE RULE: EVERY branch listed MUST end up merged. Leaving a branch unmerged is not an available outcome — a branch nobody merges strands a ticket that reads finished with its work nowhere, and that is the failure this stage exists to eliminate. You always finish with a merge commit for every branch. For EACH branch in order: run git merge --no-ff <branch>, and resolve every conflicted file by UNDERSTANDING BOTH SIDES rather than picking one. Conflicts here are almost always semantic: a file one side deleted and the other edited, a helper one side moved and the other extended, a registry both sides appended to. Keep the intent of BOTH changes wherever you honestly can. If one side DELETED a file the other modified, the deletion almost always wins and the other side change must be re-applied to whatever replaced it — read the deleting commit message to find what superseded it, and never resurrect a deliberately deleted file. When a specific hunk genuinely CANNOT preserve both intents — the two changes are contradictory, or choosing needs a product decision you cannot make — do NOT stall and do NOT abandon the branch. Resolve that hunk by taking the INTEGRATION side (the tree as it already is, which is proven), finish the merge, and record precisely what you dropped: which ticket owned it, which file and behaviour was lost, and what a rebuild has to re-establish. Dropping intent is acceptable ONLY when it is recorded — the ticket is then rebuilt from the current tree, which is the honest repair. Silently taking one side to make a merge succeed is the one thing you must never do. After each branch, PROVE the merged tree: run the repo build and typecheck, and the tests covering the files you touched. If a merge you just made breaks the tree and you cannot fix it, still keep the merge but record the whole branch as dropped-intent so its ticket is rebuilt. Commit each merge with a message naming the branch, the ticket id(s), what conflicted, what you kept from each side, and anything you dropped. When every branch is merged, write JSON to $RESOLVED with exactly these keys: merged which is an array of EVERY branch name you merged (this must list every branch in $CONFLICTS — there is no other outcome), and dropped_intent which is an array of objects each with branch, tickets, and reason stating concretely what was lost and what a rebuild must re-establish (empty array if you preserved everything). Write that file LAST and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question. Work ONLY inside $WT, on the already-checked-out branch, and do NOT push."
+  sleep 3; tmux send-keys -t "$rsession" Enter
+
+  local waited=0 rstall=0 rlast="" pane rhash
+  while [ "$waited" -lt "${AF_RESOLVE_TIMEOUT_S:-2400}" ]; do
+    sleep 30; waited=$((waited+30))
+    [ -f "$RESOLVED" ] && break
+    if ! tmux has-session -t "$rsession" 2>/dev/null; then say "conflict resolver: session gone before writing a result"; break; fi
+    pane=$(tmux capture-pane -p -t "$rsession" 2>/dev/null || true)
+    rhash=$(printf '%s' "$pane" | hash_text)
+    if [ "$rhash" = "$rlast" ]; then
+      rstall=$((rstall+1))
+      if [ "$rstall" -ge "$STALL_POLLS" ] && verify_children_busy "$rsession"; then rstall=0; fi
+      [ "$rstall" -ge "$STALL_POLLS" ] && { say "conflict resolver frozen — giving up on this round's conflicts"; break; }
+    else
+      rstall=0; rlast="$rhash"
+    fi
+  done
+  tmux kill-session -t "$rsession" 2>/dev/null || true
+
+  if [ ! -f "$RESOLVED" ]; then
+    say "WARNING: conflict resolver produced NO result — $n branch(es) remain unmerged and their tickets still read finished. They will be caught by post-merge verification, which regresses them."
+    : > "$CONFLICTS"; return 0
+  fi
+  # Anything the resolver could not land is regressed HERE, with its reason, rather than left to rot:
+  # a finished ticket whose work is not on the branch is a lie, and the honest repair is to re-queue it.
+  $PY - "$PROJECT" "$rnd" "$RESOLVED" "$WT" "$CONFLICTS" <<'PYEOF' 2>&1 | while IFS= read -r l; do say "$l"; done
+import json, subprocess, sys
+import _praxis
+proj, rnd, path, wt, conflicts = sys.argv[1:6]
+kw = dict(space=proj, snapshot=f"prd-{proj}")
+
+def git(*a):
+    return subprocess.run(["git", *a], capture_output=True, text=True, cwd=wt)
+
+expected = {}
+for line in open(conflicts):
+    if line.strip():
+        br, _, ids = line.partition("\t")
+        expected[br.strip()] = ids.split()
+
+try:
+    d = json.load(open(path))
+except Exception as e:
+    print(f"conflict resolver: unreadable result ({e}) — falling back to the enforcement sweep")
+    d = {}
+
+merged = set(d.get("merged") or [])
+dropped = {str(u.get("branch")): u for u in (d.get("dropped_intent") or [])}
+
+# ENFORCEMENT. The agent is INSTRUCTED to merge every branch, but a guarantee that depends on an
+# agent following instructions is not a guarantee. So verify against git itself: for every branch we
+# handed it, is that branch now an ancestor of HEAD? Anything that is not gets merged here, taking the
+# integration side for conflicting hunks, and its ticket regressed — so the invariant holds even if the
+# resolver died, timed out, or ignored the rule.
+for br, tickets in expected.items():
+    if git("rev-parse", "--verify", br).returncode != 0:
+        print(f"conflict resolver: {br} no longer exists — nothing to land")
+        continue
+    if git("merge-base", "--is-ancestor", br, "HEAD").returncode == 0:
+        print(f"conflict resolver: LANDED {br}")
+        continue
+    print(f"conflict resolver: {br} was NOT landed by the resolver — forcing it in (integration side wins)")
+    git("merge", "--abort")
+    r = git("merge", "--no-ff", "--no-commit", br)
+    if r.returncode != 0:
+        # take the integration side for every conflicted path, then commit: the merge lands either way
+        for fp in git("diff", "--name-only", "--diff-filter=U").stdout.split():
+            git("checkout", "--ours", "--", fp); git("add", "--", fp)
+    git("commit", "--no-edit", "-m",
+        f"merge: {br} (round #{rnd}) — forced by the conflict-resolution enforcement sweep; "
+        f"integration side kept for conflicting hunks, ticket(s) {' '.join(tickets)} regressed to rebuild")
+    if git("merge-base", "--is-ancestor", br, "HEAD").returncode == 0:
+        print(f"conflict resolver: FORCE-LANDED {br}")
+        dropped.setdefault(br, {"branch": br, "tickets": tickets,
+                                "reason": "the resolver did not land this branch; the enforcement sweep merged it "
+                                          "taking the integration side for every conflicting hunk, so this ticket's "
+                                          "change is NOT present and must be rebuilt"})
+    else:
+        print(f"conflict resolver: CRITICAL — could not force-land {br}; regressing its ticket(s) anyway")
+        dropped.setdefault(br, {"branch": br, "tickets": tickets,
+                                "reason": "branch could not be merged even by the enforcement sweep"})
+
+# Any branch whose intent was dropped -> its ticket goes back in the queue with the reason attached.
+by_rid = {}
+for f in _praxis.facts_by(category="requirement", **kw) or []:
+    m = f.get("meta") or {}
+    by_rid[str(m.get("requirement_id") or f.get("id"))] = f
+for br, u in dropped.items():
+    reason = str(u.get("reason") or "intent dropped during conflict resolution")
+    sha = git("rev-parse", br).stdout.strip()[:12]
+    for rid in (u.get("tickets") or expected.get(br) or []):
+        f = by_rid.get(str(rid))
+        if not f:
+            continue
+        _praxis.patch_meta(f["id"], {
+            "build_state": "incomplete", "claim_owner": None, "claim_at": None,
+            "claim_heartbeat_at": None, "claim_lease_ttl": None,
+            "audit_disposition": (f"REGRESSED by conflict resolution of round #{rnd}: branch {br} was merged, but this "
+                                  f"ticket's intent did not survive. WHAT WAS LOST: {reason} THE REBUILD MUST: re-establish "
+                                  f"that behaviour against the CURRENT integrated tree."),
+            "regression_detail": {"round": rnd, "source": "conflict-resolution", "branch": br,
+                                  "merged_but_intent_dropped": True, "abandoned_sha": sha,
+                                  "reason": "branch merged, but this ticket's change was not preserved",
+                                  "evidence": reason,
+                                  "required_fix": "re-establish the behaviour against the current integrated tree; "
+                                                  "do NOT re-merge the branch, it is already an ancestor of HEAD"}},
+            **kw)
+        print(f"conflict resolver: regressed {rid} — merged, but its intent was dropped")
+
+# Final invariant, checked against git and not against anyone's report.
+left = [b for b in expected if git("rev-parse", "--verify", b).returncode == 0
+        and git("merge-base", "--is-ancestor", b, "HEAD").returncode != 0]
+print(f"conflict resolver: INVARIANT {'HOLDS' if not left else 'VIOLATED'} — unmerged branches remaining: {len(left)}"
+      + (f" {left}" if left else ""))
+PYEOF
+  rm -f "$RESOLVED"; : > "$CONFLICTS"
   return 0
 }
 
@@ -1116,6 +1277,10 @@ trap af_cleanup_on_exit EXIT INT TERM
 # AF_VERIFY_ROUND=0 disables it. Skipped when a round finished zero tickets — nothing was integrated —
 # and skipped for a single-ticket round, which merges exactly the tree its worker already validated.
 VERDICT="$AF_STATE_DIR/af-round-verdict-$PROJECT.json"
+# Conflict-resolution handoff: integrate_round appends "<branch>\t<ticket ids>" here, and
+# resolve_conflicts drains it. Per-project, so concurrent loops never read each other's.
+CONFLICTS="$AF_STATE_DIR/af-round-conflicts-$PROJECT.tsv"
+RESOLVED="$AF_STATE_DIR/af-round-resolved-$PROJECT.json"
 
 # Told to the workers so they hit the right services. A project with neither -- an iOS app, say --
 # gets no clause at all rather than the literal "Postgres localhost:none", which reads as a real
@@ -1552,7 +1717,12 @@ while :; do
   # against an unmerged tree and correctly reported "there is no merged tree to verify". And all
   # three must finish before the loop clears context and dispatches the next batch, or a round's
   # work is carried forward unintegrated and unchecked into a session that no longer remembers it.
+  : > "$CONFLICTS"
   integrate_round
+  # Land anything that conflicted BEFORE the worktrees are swept and before verification runs: a
+  # conflicted branch is unfinished integration, not a finished round, and verifying a tree that is
+  # missing a ticket's work verifies the wrong thing.
+  resolve_conflicts "$round"
   # Purge AFTER the session is dead, never while it is live: removing a worktree out from under a
   # running worker deletes the tree its evals are executing against.
   sweep_worktrees
