@@ -32,6 +32,9 @@ from fastapi.testclient import TestClient
 load_dotenv()
 
 from knowledge import finished_at  # noqa: E402
+from knowledge.knowledge_graph.knowledge_graph_variants import (  # noqa: E402
+    postgres_vector_graph,
+)
 from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (  # noqa: E402
     PostgresVectorGraph,
 )
@@ -61,7 +64,12 @@ EPOCH_SHAPED = "1785205768.1511981"
 
 
 @pytest.fixture
-def env(unique_org):
+def env(unique_org, monkeypatch):
+    # The app builds its OWN graphs, so the embedder seam is swapped at module level —
+    # otherwise the /insights ticket-upsert case reaches for a real OpenRouter key and
+    # fails anywhere one is not configured (CI). The lease/patch routes touch meta only
+    # and never embed, so this matters solely for the write path.
+    monkeypatch.setattr(postgres_vector_graph, "OpenRouterEmbedder", FakeEmbedder)
     db.bootstrap()
     conn = db.connect()
     org = unique_org
