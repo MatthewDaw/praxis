@@ -28,6 +28,7 @@ from typing import Any
 import psycopg
 from pgvector import Vector
 
+from knowledge import finished_at
 from knowledge.knowledge_graph.knowledge_graph_def import Claim, Fact, SearchHit
 from knowledge.knowledge_graph.parent_searchable_graph import SearchableGraph
 from knowledge.knowledge_graph.write_policy.parent_write_step import WriteStep
@@ -1228,7 +1229,8 @@ class PostgresVectorGraph(SearchableGraph):
         record_outcome + set_meta is 2·N HTTP round-trips (≈66 for a 33-ticket plan) and
         times out; this collapses the regress to a single ``id = ANY(...)`` UPDATE. The
         outcome bump is what drives completeness (the derivation reads ``last_outcome``);
-        the ``build_state`` stamp keeps the ticket's own state field consistent with it.
+        the ``build_state`` stamp keeps the ticket's own state field consistent with it,
+        and REMOVES any ``meta.finished_at`` — the ticket is no longer finished.
         Returns the ids actually updated (missing ids are silently skipped). ``meta`` is a
         jsonb column, so ``||`` merges the one key without disturbing the rest of the meta.
 
@@ -1251,15 +1253,27 @@ class PostgresVectorGraph(SearchableGraph):
         # Ids carrying detail need their own merged jsonb, so they cannot ride the single
         # bulk UPDATE. Everything else still does — the common whole-plan regress passes no
         # detail at all and remains exactly one round-trip.
+        # A regressed ticket is not finished, so its completion timestamp is REMOVED
+        # (``- 'finished_at'``) — leaving a stale one would let a ticket that came back
+        # keep reading as done work in every finished-by-date report. A caller cannot
+        # smuggle one in through ``detail`` either: the server owns it
+        # (:mod:`knowledge.finished_at`).
+        unfinish = f"- '{finished_at.FINISHED_AT}'"
         for cid in [i for i in ids if i in detail]:
             patch = dict(detail[cid])
+            finished_at.drop_client_value(patch)
             patch["build_state"] = "incomplete"
             rows = self._conn.execute(
                 f"UPDATE {self._facts_table} SET "
                 f"failure_count = failure_count + 1, last_outcome = 'failed', "
-                f"meta = COALESCE(meta, '{{}}'::jsonb) || %s::jsonb "
+                f"meta = (COALESCE(meta, '{{}}'::jsonb) {unfinish}) || %s::jsonb "
                 f"WHERE {key_pred} AND id = %s RETURNING id",
-                (*key_params, json.dumps(patch), cid),
+                # Positional binding: the jsonb patch is the FIRST %s in the statement
+                # (it sits in the SET clause), so it must precede the partition-key
+                # params. Passing them the other way round bound the org id where the
+                # jsonb belonged and failed the whole write with "invalid input syntax
+                # for type json" — the detail path never actually landed.
+                (json.dumps(patch), *key_params, cid),
             ).fetchall()
             updated.extend(r[0] for r in rows)
 
@@ -1268,7 +1282,8 @@ class PostgresVectorGraph(SearchableGraph):
             rows = self._conn.execute(
                 f"UPDATE {self._facts_table} SET "
                 f"failure_count = failure_count + 1, last_outcome = 'failed', "
-                f"""meta = COALESCE(meta, '{{}}'::jsonb) || '{{"build_state": "incomplete"}}'::jsonb """
+                f"meta = (COALESCE(meta, '{{}}'::jsonb) {unfinish}) "
+                f"""|| '{{"build_state": "incomplete"}}'::jsonb """
                 f"WHERE {key_pred} AND id = ANY(%s) RETURNING id",
                 (*key_params, bulk),
             ).fetchall()
@@ -2477,25 +2492,58 @@ class PostgresVectorGraph(SearchableGraph):
         :class:`LeaseConflict` and an unknown fact ``KeyError``. ``finished`` clears
         the lease only — completeness stays derived from outcomes elsewhere.
 
-        ``finished`` also stamps ``meta.finished_at`` with the DB's wall clock as a
-        fixed-format, zero-padded UTC ISO-8601 string (e.g.
-        ``"2026-07-25T03:50:06.740712+00:00"`` — the exact shape migration 0013's
-        ``snapshots_finished_at_idx`` indexes for range queries). ``incomplete``
-        never sets it, so a ticket that yields without finishing carries none.
+        ``finished`` also stamps ``meta.finished_at`` from the DB's wall clock — the
+        server owns that timestamp and no caller supplies it
+        (:mod:`knowledge.finished_at`). ``incomplete`` REMOVES it, so a ticket that
+        yields carries none and cannot read back as done work it did not complete.
         """
         if state not in ("finished", "incomplete"):
             raise ValueError("state must be 'finished' or 'incomplete'")
-        # ``meta - 'k1' - 'k2' ...`` removes the lease keys; then merge the new
-        # build_state (+ finished_at, for ``finished`` only). Both preserve every
-        # unrelated key.
-        strip = " ".join(f"- '{k}'" for k in _LEASE_META_KEYS)
+
+        # A ticket may not finish with an EMPTY pinned check set. The pinned set is the
+        # contract this pass is judged against, so an empty one means FINISH has nothing to
+        # enforce and the ticket certifies itself -- the strongest-looking state in the
+        # system resting on no evidence at all. Not hypothetical: an audit of one
+        # 260-ticket plan found 9 finished tickets with zero pinned checks, an entire
+        # auth-migration lane, each self-certified because its RESOLVE step never ran.
+        # Nothing failed; the absence of a signal read as success.
+        #
+        # Refused HERE rather than in a client because this is the chokepoint every finish
+        # path funnels through, so a caller cannot route around it. ``incomplete`` is never
+        # blocked -- yielding with no checks is honest; only CLAIMING DONE needs a contract.
+        #
+        # The escape hatch is explicit and recorded, never implicit: set
+        # ``meta.checks_waived_reason``. A deliberate exception then reads as one in the
+        # data, instead of being indistinguishable from checks that silently never resolved.
+        if state == "finished":
+            gk_pred, gk_params = self._key_pred()
+            grow = self._conn.execute(
+                f"SELECT meta FROM {self._facts_table} WHERE {gk_pred} AND id = %s",
+                (*gk_params, fact_id),
+            ).fetchone()
+            if grow is None:
+                raise KeyError(fact_id)
+            gmeta = grow[0] if isinstance(grow[0], dict) else json.loads(grow[0])
+            if not (gmeta.get("pinned_checks") or []) and not str(
+                gmeta.get("checks_waived_reason") or ""
+            ).strip():
+                raise ValueError(
+                    f"refusing to finish {fact_id}: pinned_checks is empty, so nothing "
+                    "gates this ticket and it would certify itself. Pin the checks it must "
+                    "pass, or set meta.checks_waived_reason to record why it has none."
+                )
+        # ``meta - 'k1' - 'k2' ...`` removes the lease keys (and, when yielding,
+        # finished_at); then merge the new build_state (+ finished_at when finishing).
+        # Both preserve every unrelated key.
+        strip_keys = list(_LEASE_META_KEYS) + (
+            [] if state == "finished" else [finished_at.FINISHED_AT]
+        )
+        strip = " ".join(f"- '{k}'" for k in strip_keys)
         key_pred, key_params = self._key_pred()
         if state == "finished":
             set_expr = (
-                "jsonb_build_object("
-                "  'build_state', %s::text, "
-                "  'finished_at', to_char(now() AT TIME ZONE 'utc', "
-                "                         'YYYY-MM-DD\"T\"HH24:MI:SS.US') || '+00:00')"
+                "jsonb_build_object('build_state', %s::text, "
+                f"                   'finished_at', {finished_at.SQL_NOW_ISO_UTC})"
             )
         else:
             set_expr = "jsonb_build_object('build_state', %s::text)"
