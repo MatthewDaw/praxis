@@ -161,6 +161,12 @@
 #        af-ticket-loop.sh --check
 #
 # Knobs, all optional:
+# Modes:
+#   af-ticket-loop.sh --resolve-orphans <project> <worktree>
+#                          land every stranded worker branch and stop. Same sweep + resolver the
+#                          round flow runs; use it to clear an existing backlog without waiting
+#                          for a round. Every round ALSO sweeps, so a backlog cannot re-form.
+#
 #   AF_WATCH=1             do not exit when the ticket set drains or stalls -- wait and re-query, so
 #                          tickets authored AFTER the run started are picked up without a relaunch.
 #                          This is what makes an unattended build loop self-sustaining; without it
@@ -281,7 +287,11 @@ SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 AF_PLUGIN_DIR="${AF_PLUGIN_DIR:-$(dirname "$(dirname "$SELF")")}"
 AF_REPO="${AF_REPO:-$(dirname "$AF_PLUGIN_DIR")}"
 
-PROJECT="$1"; WT="$2"; PG="$3"; REDIS="$4"; MAX="${5:-999}"
+# --resolve-orphans is a MODE flag, not the project: shift it off so the positional parsing below
+# stays identical for both entry points (otherwise PROJECT would literally be "--resolve-orphans").
+AF_MODE=""
+if [ "${1:-}" = "--resolve-orphans" ]; then AF_MODE="resolve-orphans"; shift; fi
+PROJECT="$1"; WT="$2"; PG="${3:-}"; REDIS="${4:-}"; MAX="${5:-999}"
 # Largest frontier handed to a single session, and the ONLY parallelism cap this driver enforces.
 #
 # It is NOT further narrowed underneath: the round fans out with Agent subagents, which carry no
@@ -835,6 +845,33 @@ integrate_round(){
   [ "$merged" -gt 0 ] && say "round integrated: $merged branch(es) merged into $(git rev-parse --abbrev-ref HEAD)"
   [ "$conflicted" -gt 0 ] && say "$conflicted branch(es) conflicted — handing them to the conflict resolver"
   [ "$skipped" -gt 0 ] && say "$skipped branch(es) skipped as unproven — their commits stay on their branches"
+  return 0
+}
+
+# Queue EVERY unmerged worker branch for resolution, not just this round's conflicts.
+#
+# integrate_round only ever sees the current round's worktrees, and reap_branches regresses a lying
+# ticket but never merges one. So a branch stranded by an EARLIER round — one that conflicted before
+# the resolver existed, or whose session died mid-merge — is invisible to both and simply accumulates.
+# One project reached ELEVEN, three of them with tickets still reading finished, and none of it was
+# noticed until someone counted branches by hand. Sweeping here makes that state unreachable: every
+# round lands every outstanding branch, so "orphan" is a condition that cannot survive a single round.
+queue_orphan_branches(){
+  cd "$WT" || return 0
+  local br ids queued=0 already
+  while read -r br; do
+    [ -n "$br" ] || continue
+    af_is_worker_branch "$br" || continue
+    git merge-base --is-ancestor "$br" HEAD 2>/dev/null && continue        # already landed
+    already=$(cut -f1 "$CONFLICTS" 2>/dev/null | grep -xF "$br" || true)
+    [ -n "$already" ] && continue                                          # this round already queued it
+    ids=$(git log --format=%s "HEAD..$br" 2>/dev/null \
+          | grep -oE '\((REM|SSW|HIP|OBS|CHAT|FH|SS|P1|P2|R|F)-[0-9]+\)' | tr -d '()' | sort -u | tr '\n' ' ')
+    printf '%s\t%s\n' "$br" "$ids" >> "$CONFLICTS"
+    queued=$((queued+1))
+    say "orphan branch from an earlier round queued for landing: $br (ticket(s):$ids )"
+  done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
+  [ "$queued" -gt 0 ] && say "$queued orphan branch(es) swept into this round's resolution"
   return 0
 }
 
@@ -1476,6 +1513,55 @@ PYEOF
   return 0
 }
 
+# --resolve-orphans: land every pre-existing unmerged worker branch, then stop.
+#
+# The per-round path only ever sees the CURRENT round's branches: integrate_round iterates
+# `git worktree list`, and reap_branches regresses a lying ticket but never merges one. So branches
+# stranded by EARLIER rounds — before the resolver existed, or after a crash — are invisible to both
+# and simply accumulate; one project reached 11 of them, three with tickets still reading finished.
+# This mode is the cleanup path for that backlog: it seeds the same handoff file integrate_round
+# writes and runs the same resolver, so orphans get exactly the guarantees a live round gets —
+# always merged, nothing silently dropped, invariant verified against git.
+if [ "${1:-}" = "--resolve-orphans" ]; then
+  PROJECT="${2:?usage: af-ticket-loop.sh --resolve-orphans <project> <worktree>}"
+  WT="${3:?usage: af-ticket-loop.sh --resolve-orphans <project> <worktree>}"
+  AF_STATE_DIR="${AF_STATE_DIR:-$(dirname "$WT")}"
+  CONFLICTS="$AF_STATE_DIR/af-round-conflicts-$PROJECT.tsv"
+  RESOLVED="$AF_STATE_DIR/af-round-resolved-$PROJECT.json"
+  LOG="${AF_LOG:-$AF_STATE_DIR/af-$PROJECT-loop.log}"
+  resolve_backend || { say "FATAL: model backend preflight failed"; exit 1; }
+  cd "$WT" || { say "FATAL: no worktree at $WT"; exit 1; }
+  : > "$CONFLICTS"
+  n_orphan=0
+  while read -r br; do
+    [ -n "$br" ] || continue
+    af_is_worker_branch "$br" || continue
+    git merge-base --is-ancestor "$br" HEAD 2>/dev/null && continue   # already landed
+    ids=$(git log --format=%s "HEAD..$br" 2>/dev/null | grep -oE '\((REM|SSW|HIP|R|F|FH|OBS|CHAT|P1|P2|SS|SSW)-[0-9]+\)' | tr -d '()' | sort -u | tr '\n' ' ')
+    printf '%s\t%s\n' "$br" "$ids" >> "$CONFLICTS"
+    n_orphan=$((n_orphan+1))
+    say "orphan branch queued: $br (ticket(s):$ids )"
+  done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
+  if [ "$n_orphan" = "0" ]; then say "no orphan worker branches — nothing to resolve"; exit 0; fi
+  say "--resolve-orphans: $n_orphan branch(es) to land"
+  resolve_conflicts "orphans"
+  say "--resolve-orphans: done"
+  exit 0
+fi
+
+# --resolve-orphans <project> <worktree>: land every stranded worker branch, then stop.
+# Same sweep and same resolver the round flow runs — this just lets an operator clear a backlog
+# without waiting for a round, and is how an existing pile gets cleaned the first time.
+if [ "$AF_MODE" = "resolve-orphans" ]; then
+  cd "$WT" || { say "FATAL: no worktree at $WT"; exit 1; }
+  : > "$CONFLICTS"
+  queue_orphan_branches
+  if [ ! -s "$CONFLICTS" ]; then say "no orphan worker branches — nothing to land"; exit 0; fi
+  resolve_conflicts "orphans"
+  say "--resolve-orphans: done"
+  exit 0
+fi
+
 n=0
 round=0
 while :; do
@@ -1719,6 +1805,10 @@ while :; do
   # work is carried forward unintegrated and unchecked into a session that no longer remembers it.
   : > "$CONFLICTS"
   integrate_round
+  # REQUIRED, not optional: sweep in any branch stranded by an earlier round so the resolver lands it
+  # too. Without this the resolver only ever fixes the round that created the conflict, and anything
+  # older stays orphaned forever — which is precisely how 11 accumulated.
+  queue_orphan_branches
   # Land anything that conflicted BEFORE the worktrees are swept and before verification runs: a
   # conflicted branch is unfinished integration, not a finished round, and verifying a tree that is
   # missing a ticket's work verifies the wrong thing.
