@@ -92,12 +92,12 @@ no timestamp. Two producers is exactly how this key ended up with two incompatib
 one plan (an ISO string from the server, an epoch float from the ticket loop), which silently
 dropped rows out of `snapshots_finished_at_idx`'s text range scans.
 
-**Known hole (deliberate):** a `finished` transition through `patch_meta` is not lease-checked,
-so a non-holder can mark a ticket done. That is load-bearing, not an oversight — `release()`
-HONORS a completion whose lease was taken over mid-ticket (see its docstring: refusing it
-caused an unbounded silent rebuild loop). The completion is still dated by the server, so it
-can be seen and audited for what it is; the lease-checked path (`POST
-/requirements/{cid}/release`) remains available for callers that hold one.
+**Deliberate asymmetry:** a `finished` release is honored even when the lease was taken over
+mid-ticket (`release()` sends `honor_takeover`), because refusing it caused an unbounded silent
+rebuild loop — see its docstring. A YIELD is never honored that way: a stale owner must not
+regress a ticket another agent is actively building. The completion is still dated by the server
+and still refused outright if nothing gates the ticket, so an honored takeover is auditable for
+what it is.
 
 `pinned_checks` entry: `{ "validation_id": str, "covers": list[str], "run": str,
 "passed": bool｜null, "ran_at": float｜null }` (null = not yet run). The key name is retained for
@@ -151,12 +151,35 @@ nothing dangles. **"A build run is active"** ≡ this session owns a live `in_pr
 non-stale whole-set `run_owner` marker scopes work to it — read from Praxis, NOT a local file flag. The
 run marker is what lets the gate enforce the *whole scoped set*, not just a currently-held ticket.
 
-**Race-tolerance (v1).** `claim` is a read-modify-write over `patch_meta` (PATCH `/candidates/{cid}`,
-which MERGES meta). No server-side CAS is assumed. Two agents can both claim a free/stale ticket — a
-rare, HARMLESS double-claim (idempotent wasted work), not corruption.
+**Where build state is written — NOT `patch_meta`.** `PATCH /candidates/{cid}` is subject to the
+S12 bless guard, which refuses edits to a blessed `prd-<project>` snapshot unless the planning
+marker is re-armed. That is right for PLAN CONTENT and fatal for build state, which is what the
+loop learns while *executing* the plan: on a blessed plan — the only kind a build runs against —
+claim, check-pin and finish were all refused, so workers could not claim, `pinned_checks` stayed
+`[]` (which reads afterwards as "RESOLVE never ran"), and the only workaround was to unbless the
+plan as a side effect of building it. Build state therefore travels on its own, unguarded routes:
 
-**Note on key deletion.** `patch_meta` MERGES (it cannot delete keys), so `release` NULLs the lease
-keys rather than removing them; `_lease_live` treats null heartbeat/ttl as not-live.
+| write | route |
+| --- | --- |
+| `claim` | `POST /requirements/{cid}/claim` |
+| `release` (finish / yield) | `POST /requirements/{cid}/release` |
+| regress a set | `POST /requirements/regress` |
+| pins, block, run marker, heartbeat | `POST /requirements/{cid}/build-state` |
+
+The build-state route accepts ONLY build-lifecycle keys (`BUILD_STATE_META_KEYS` in
+`postgres_vector_graph.py`) and only the `blocked` transition, so its writable surface is disjoint
+from what the bless guard protects rather than a hole in it. The only `patch_meta` calls left in
+`_ticket_state.py` write the PLANNING MARKER — the guard's own control surface, which it exempts
+by name.
+
+**Race-tolerance.** The claim endpoint's grant is ATOMIC at the row level (one conditional
+`UPDATE`), so two agents racing the same free/stale ticket produce exactly one winner. The
+double-claim the earlier client-side read-modify-write accepted as "rare and harmless" can no
+longer occur.
+
+**Note on key deletion.** On the build-state and release routes a `null` value REMOVES the key, so
+the lease and run marker are genuinely cleared rather than nulled. `_lease_live` treats an absent
+(or null) heartbeat/ttl as not-live either way.
 
 ## Requirement resolution is a query (tag union surface)
 
@@ -248,7 +271,11 @@ incomplete_requirements(project: str, *, exclude_leased: bool = False, space: st
 # thread that (space, snapshot) reference so ticket reads/writes hit the project snapshot.
 get_fact(cid: str, *, space: str|None = None, snapshot: str|None = None) -> dict   # full fact incl meta
 facts_by(category: str|None = None, meta: dict|None = None, state: str = "active", space: str|None = None, snapshot: str|None = None) -> list[dict]
-patch_meta(cid: str, meta_dict: dict, *, space: str|None = None, snapshot: str|None = None) -> dict   # MERGE meta (build_state/claim/pinned_checks)
+patch_meta(cid: str, meta_dict: dict, *, space: str|None = None, snapshot: str|None = None) -> dict   # MERGE meta — PLAN CONTENT only; the S12 bless guard refuses this on a blessed plan
+write_build_state(cid: str, meta_dict: dict, *, owner: str|None = None, space=None, snapshot=None) -> dict  # pins/block/run marker — sanctioned + UNGUARDED (null value removes a key)
+claim_requirement(cid: str, owner: str, ttl: int, *, space=None, snapshot=None) -> dict|None                # atomic lease grant; None == a live lease holds it
+release_requirement(cid: str, owner: str, state: str, *, honor_takeover: bool = False, space=None, snapshot=None) -> dict|None  # finish/yield; refuses a finish nothing gates
+regress_requirements(project: str, ids: list, detail: dict|None = None, *, space=None, snapshot=None) -> dict   # bulk return-to-incomplete + failure outcome
 record_outcome(cid: str, success: bool, *, space: str|None = None, snapshot: str|None = None) -> dict
 surface_checks(project: str, screen_id: str, scope: str|None = None, space: str|None = None, snapshot: str|None = None) -> list[dict]
     # (space, snapshot)= override x-praxis-space + x-praxis-snapshot for this read only (the checks-snapshot seam)

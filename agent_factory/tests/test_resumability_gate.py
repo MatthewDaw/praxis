@@ -23,9 +23,10 @@ if _HOOKS not in sys.path:
     sys.path.insert(0, _HOOKS)
 
 import _ticket_state as ts  # noqa: E402
+from _fake_praxis import SanctionedWrites  # noqa: E402
 
 
-class FakePraxis:
+class FakePraxis(SanctionedWrites):
     def __init__(self, meta):
         self._meta = dict(meta)
 

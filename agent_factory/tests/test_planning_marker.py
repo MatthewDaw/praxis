@@ -18,9 +18,10 @@ if _HOOKS not in sys.path:
     sys.path.insert(0, _HOOKS)
 
 import _ticket_state as ts  # noqa: E402
+from _fake_praxis import SanctionedWrites  # noqa: E402
 
 
-class FakePraxis:
+class FakePraxis(SanctionedWrites):
     """A tiny in-memory Praxis: get_fact reads a fact's stored meta (404-tolerant), patch_meta merges.
     Records the (space, snapshot) each write bound to so binding can be asserted.
 

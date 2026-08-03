@@ -20,9 +20,10 @@ if _HOOKS not in sys.path:
 
 import _praxis  # noqa: E402
 import _ticket_state as ts  # noqa: E402
+from _fake_praxis import SanctionedWrites  # noqa: E402
 
 
-class FakePraxis:
+class FakePraxis(SanctionedWrites):
     """In-memory Praxis that tracks build-marker writes."""
 
     def __init__(self):

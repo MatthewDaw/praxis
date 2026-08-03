@@ -129,6 +129,16 @@ class PraxisUnreachable(RuntimeError):
     """Praxis could not be reached / authenticated / queried. Callers MUST fail closed (BLOCK)."""
 
 
+class PraxisConflict(PraxisUnreachable):
+    """A lease operation lost to a different live owner (HTTP 409).
+
+    A SUBCLASS of :class:`PraxisUnreachable` on purpose: every existing gate catches the
+    parent and fails closed, and losing a lease must keep failing closed for them. Only the
+    lease helpers that have a meaningful answer to "somebody else holds it" (claim -> return
+    False and move to the next ticket; yield -> refuse) catch this narrower type. It is NOT
+    an outage: the round-trip succeeded and the server answered a definite no."""
+
+
 # --------------------------------------------------------------------------- auth
 
 def _api_base() -> str:
@@ -310,7 +320,11 @@ def _request(method: str, path: str, *, params: dict | None = None,
             detail = exc.read().decode("utf-8")[:300]
         except Exception:  # noqa: BLE001
             pass
-        raise PraxisUnreachable(f"Praxis {method} {path} -> HTTP {exc.code}: {detail}") from exc
+        # 409 is the lease endpoints' definite "a different live owner holds this" — a real
+        # answer, not an outage. Raised as the PraxisUnreachable SUBCLASS so gates that catch
+        # the parent still fail closed, while the lease helpers can tell the two apart.
+        cls = PraxisConflict if exc.code == 409 else PraxisUnreachable
+        raise cls(f"Praxis {method} {path} -> HTTP {exc.code}: {detail}") from exc
     except Exception as exc:  # noqa: BLE001  (URLError, timeout, JSON, ...)
         raise PraxisUnreachable(f"Praxis {method} {path} failed: {exc}") from exc
 
@@ -412,6 +426,86 @@ def regress_requirements(project: str, ids: list, detail: dict | None = None, *,
         body["detail"] = detail
     return _request("POST", "/requirements/regress", body=body,
                     space=space, snapshot=snapshot)
+
+
+def write_build_state(cid: str, meta_dict: dict, *, owner: str | None = None,
+                      space: str | None = None, snapshot: str | None = None) -> dict:
+    """Write a ticket's BUILD STATE (POST /requirements/{cid}/build-state).
+
+    USE THIS, NOT ``patch_meta``, for anything the build loop LEARNS while executing a plan:
+    the coverage contract and pinned checks, a terminal block, the whole-set run marker, a
+    swept lease. A blessed ``prd-<project>`` plan refuses candidate edits (the S12 bless
+    guard), so ``patch_meta`` fails closed with "plan is blessed — re-arm the planning
+    marker" — and re-arming it to record build state would unbless the plan as a side effect
+    of BUILDING. This endpoint is the sanctioned build-state path and is not guarded.
+
+    It is not a hole in the guard either: the server accepts ONLY build-lifecycle keys
+    (``PostgresVectorGraph.BUILD_STATE_META_KEYS``) and rejects plan content — text, tags,
+    surfaces, acceptance, depends_on — with a 400. Those still go through ``patch_meta``
+    behind a re-armed planning marker, which is exactly right, because changing them
+    changes the PLAN.
+
+    Values REPLACE wholesale (a re-pin TRUNCATES prior per-check state — it is this pass's
+    contract, not an append) and ``None`` REMOVES the key. Pass ``owner`` to require that
+    owner still holds the lease (raises :class:`PraxisConflict` otherwise); omit it for the
+    run-marker writes that legitimately happen before any ticket is claimed.
+
+    ``build_state`` may only be set to ``"blocked"`` here — claim / release / regress own
+    the other transitions so their guards cannot be routed around.
+    """
+    body: dict[str, Any] = {"meta": meta_dict}
+    if owner:
+        body["owner"] = owner
+    out = _request("POST", f"/requirements/{cid}/build-state", body=body,
+                   space=space, snapshot=snapshot)
+    return out or {}
+
+
+def claim_requirement(cid: str, owner: str, ttl: int, *, space: str | None = None,
+                      snapshot: str | None = None) -> dict | None:
+    """Lease ticket ``cid`` to ``owner`` (POST /requirements/{cid}/claim); ``None`` on conflict.
+
+    USE THIS, NOT ``patch_meta``, to take a ticket — see :func:`write_build_state` for why the
+    bless guard makes the candidate-edit path unusable on a blessed plan. Beyond dodging the
+    guard, the grant here is ATOMIC at the DB row level: two agents racing the same free ticket
+    produce exactly one winner, where the read-modify-write it replaces produced two.
+
+    Returns the claim view on grant, or ``None`` when a DIFFERENT owner holds a live lease
+    (HTTP 409) — a normal outcome the caller answers by moving to the next ticket, not an
+    outage. Every other failure still raises :class:`PraxisUnreachable`."""
+    try:
+        out = _request("POST", f"/requirements/{cid}/claim",
+                       body={"owner": owner, "lease_ttl_seconds": int(ttl)},
+                       space=space, snapshot=snapshot)
+    except PraxisConflict:
+        return None
+    return (out or {}).get("claim") or {}
+
+
+def release_requirement(cid: str, owner: str, state: str, *, honor_takeover: bool = False,
+                        space: str | None = None, snapshot: str | None = None) -> dict | None:
+    """Release ``owner``'s lease with a terminal ``state`` (POST /requirements/{cid}/release).
+
+    USE THIS, NOT ``patch_meta``, to finish or yield a ticket — see :func:`write_build_state`
+    for why the bless guard makes the candidate-edit path unusable on a blessed plan. It is
+    also the chokepoint that refuses to finish a ticket nothing gates (empty ``pinned_checks``
+    with no ``meta.checks_waived_reason``), which is why RESOLVE's pin must land BEFORE the
+    finish, and it stamps the server-owned ``finished_at``.
+
+    ``honor_takeover`` (``finished`` only) records the completion even if the lease has since
+    moved on — completion is a fact about the world, not about who holds a lease.
+
+    Returns the claim view, or ``None`` when the release was refused for lease reasons
+    (HTTP 409). Every other failure raises :class:`PraxisUnreachable`."""
+    body: dict[str, Any] = {"owner": owner, "state": state}
+    if honor_takeover:
+        body["honor_takeover"] = True
+    try:
+        out = _request("POST", f"/requirements/{cid}/release", body=body,
+                       space=space, snapshot=snapshot)
+    except PraxisConflict:
+        return None
+    return (out or {}).get("claim") or {}
 
 
 def record_outcome(cid: str, success: bool, *, space: str | None = None,

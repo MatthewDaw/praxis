@@ -13,6 +13,7 @@ if _HOOKS not in sys.path:
     sys.path.insert(0, _HOOKS)
 
 import _ticket_state as ts  # noqa: E402
+from _fake_praxis import SanctionedWrites  # noqa: E402
 
 PLAN = ("team-app", "prd-team-app")
 
@@ -43,7 +44,7 @@ def test_pure_migration_ignores_other_checks_and_absent_entries():
     assert ts.migrate_pinned_universal({}, "minimalism-dry", NEW_RUBRIC) is None
 
 
-class FakePraxis:
+class FakePraxis(SanctionedWrites):
     def __init__(self):
         self.patches: dict[str, dict] = {}
 

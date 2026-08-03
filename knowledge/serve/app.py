@@ -3553,14 +3553,25 @@ def create_app(conn: Any | None = None) -> FastAPI:
         ticket finishes or an agent yields cleanly: drops the lease keys and records
         ``build_state`` (MERGED into ``meta``, never clobbering other keys). ``200
         {claim}`` on success; ``409`` if ``owner`` no longer holds the lease; ``404``
-        if unknown; ``400`` for a bad ``state``. ``finished`` clears the lease only —
-        outcome-derived completeness is unchanged."""
+        if unknown; ``400`` for a bad ``state``. ``finished`` clears the lease AND the
+        whole-set run marker (the ticket has left the run); a yield keeps the marker so
+        the run holds the ticket in scope and re-does it. Outcome-derived completeness
+        is unchanged.
+
+        ``"honor_takeover": true`` (``finished`` only) records the completion even when
+        the lease has since moved to another owner. Completion is a fact about the
+        world, not about who holds a lease: dropping a finished, check-passing ticket
+        because its lease expired mid-build sends it round for another rebuild whose
+        finish races exactly the same way — an unbounded loop that burns a run's budget
+        while recording nothing. A YIELD is never honored that way."""
         owner = str(body.get("owner") or "").strip()
         if not owner:
             raise HTTPException(status_code=400, detail="body must include 'owner'")
         state = str(body.get("state") or "").strip()
         try:
-            claim = graph_for(org, uid, target).release_requirement(cid, owner, state)
+            claim = graph_for(org, uid, target).release_requirement(
+                cid, owner, state, honor_takeover=bool(body.get("honor_takeover"))
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except KeyError:
@@ -3575,6 +3586,71 @@ def create_app(conn: Any | None = None) -> FastAPI:
                 },
             )
         return {"id": cid, "claim": claim}
+
+    @app.post("/requirements/{cid}/build-state")
+    def write_requirement_build_state(
+        cid: str,
+        body: dict[str, Any] = Body(default={}),
+        principal: Principal = Depends(current_user),
+        org: str = Depends(active_org),
+        uid: str = Depends(active_user_id),
+        target: tuple[str, str] | None = Depends(snapshot_target),
+    ) -> dict[str, Any]:
+        """Write BUILD STATE onto ticket ``cid`` — the sanctioned, UNGUARDED route.
+
+        Body: ``{"meta": {<build-state key>: <value>, ...}, "owner": str?}``.
+
+        WHY IT IS NOT ``PATCH /candidates/{cid}``. That path is subject to the S12 bless
+        guard, which refuses edits to a blessed ``prd-<project>`` snapshot unless the
+        planning marker is re-armed. That is right for PLAN CONTENT. Build state is not
+        plan content — it is what the loop learns while EXECUTING the plan — so on a
+        blessed plan the guard made claiming, pinning checks and finishing impossible,
+        and the only workaround was to unbless the plan as a side effect of building.
+        This route carries build state around the guard instead of punching a hole in
+        it: the keys it accepts (``PostgresVectorGraph.BUILD_STATE_META_KEYS``) are
+        DISJOINT from the plan content the guard protects, and anything else is a
+        ``400``.
+
+        ``pinned_checks`` and every other list/object value REPLACE wholesale — a
+        re-pin is this pass's contract, so it TRUNCATES prior per-check state. A
+        ``null`` value REMOVES the key (how the lease and run marker are cleared).
+
+        ``owner``, when supplied, requires that owner to still hold the lease (``409``
+        otherwise), so a worker whose ticket was taken over cannot keep writing to it.
+        It is omitted by the whole-set run-marker writer, which stamps every ticket in
+        scope BEFORE any of them is claimed.
+
+        ``build_state`` may only be set to ``"blocked"`` here. ``in_progress`` /
+        ``finished`` / ``incomplete`` each have a dedicated endpoint whose guards
+        (atomic lease grant, "something must gate a finish", record-the-failure-outcome)
+        a generic meta write would otherwise route around.
+
+        ``200 {meta}``; ``400`` for a non-build-state key or a barred transition;
+        ``404`` unknown; ``409`` when ``owner`` no longer holds the lease."""
+        meta_patch = body.get("meta")
+        if not isinstance(meta_patch, dict) or not meta_patch:
+            raise HTTPException(
+                status_code=400, detail="body must include a non-empty 'meta' object"
+            )
+        owner = str(body.get("owner") or "").strip() or None
+        try:
+            meta = graph_for(org, uid, target).write_build_state(
+                cid, meta_patch, owner=owner
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"unknown requirement {cid}")
+        except LeaseConflict as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "not the lease owner",
+                    "owner": exc.owner,
+                    "remainingSeconds": exc.remaining,
+                },
+            )
+        return {"id": cid, "meta": meta}
 
     @app.get("/requirements/completeness")
     def completeness_summary(

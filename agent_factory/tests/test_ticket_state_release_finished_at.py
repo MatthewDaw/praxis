@@ -24,9 +24,10 @@ if _HOOKS not in sys.path:
     sys.path.insert(0, _HOOKS)
 
 import _ticket_state as ts  # noqa: E402
+from _fake_praxis import SanctionedWrites  # noqa: E402
 
 
-class _FakePraxis:
+class _FakePraxis(SanctionedWrites):
     """Records patch_meta calls and lets _meta() read back the fact's current meta."""
 
     def __init__(self, initial_meta):

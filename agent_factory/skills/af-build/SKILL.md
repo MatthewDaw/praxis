@@ -441,9 +441,10 @@ next `start_ticket` then clears the marker and claims. A resumable ticket claims
 On a resumable ticket, `start_ticket` does three things atomically:
 
 1. **Claim the lease.** `incomplete → in_progress`, stamping `meta.claim_owner`, `meta.claim_at`,
-   `meta.claim_heartbeat_at`, `meta.claim_lease_ttl` (default `DEFAULT_LEASE_TTL_S = 900`) via the
-   race-tolerant `patch_meta` read-modify-write. Returns `None` if a live lease already holds it (or the
-   ticket is `blocked`) — skip it.
+   `meta.claim_heartbeat_at`, `meta.claim_lease_ttl` (default `DEFAULT_LEASE_TTL_S = 900`) via
+   `POST /requirements/{cid}/claim`, whose grant is atomic. (NOT `patch_meta`: a blessed
+   `prd-<project>` plan refuses candidate edits, so that route could not claim a ticket at all.)
+   Returns `None` if a live lease already holds it (or the ticket is `blocked`) — skip it.
 2. **Resolve the MANDATORY (precise) requirements — a fresh QUERY, never a list authored on the ticket.**
    The ticket carries identity only (its tags/surfaces); the requirement set is computed live from the
    `category="check"` facts in `(space=<project>, snapshot=building-validation)` — read there while ticket
@@ -613,7 +614,9 @@ verdict — not the agent's reading of it. Record the result on the ticket:
 record_validation_pass(cid, validation_id, passed=(exit_code == 0), ran_at=now)
 ```
 
-This MERGES into the ticket's `pinned_checks` entry via `patch_meta` — **never onto the requirement fact**.
+This MERGES into the ticket's `pinned_checks` entry via the sanctioned build-state route
+(`POST /requirements/{cid}/build-state`) — **never onto the requirement fact**, and never through
+`patch_meta`, which a blessed plan refuses.
 
 **SCOPE the run to what the ticket actually touched.** A monorepo's universal `npm --prefix backend test`
 gate makes a frontend-only ticket run the whole backend suite to prove nothing about its own change. Before

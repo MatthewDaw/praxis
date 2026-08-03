@@ -319,6 +319,54 @@ _LEASE_META_KEYS = (
     "claim_lease_ttl",
 )
 
+# The WHOLE-SET run marker: which build run a ticket belongs to, heartbeated for as long
+# as that run is alive. Distinct from the per-ticket lease above — the marker outlives any
+# single claim, which is what closes the Stop gate's between-tickets window.
+_RUN_MARKER_META_KEYS = (
+    "run_owner",
+    "run_at",
+    "run_scope",
+)
+
+# The CLOSED set of meta keys a build loop may write through the sanctioned build-state
+# route (:meth:`PostgresVectorGraph.write_build_state`). Every one of these is something
+# the loop LEARNS while executing a plan, not something the plan SAYS — which is exactly
+# why writing them must not require unblessing the plan. Anything absent from this list
+# is plan content and stays behind the S12 bless guard on the candidate-edit path.
+#
+# Do NOT add a key here to make a write convenient. Ask first: if this value changed,
+# would a reader say the PLAN changed? If yes, it is plan content and belongs on the
+# guarded path.
+BUILD_STATE_META_KEYS = frozenset(
+    {
+        # the coverage contract + the eval, (re)pinned at every ticket start
+        "pinned_checks",
+        "required_validations",
+        "manual_requirements",
+        "report_only_requirements",
+        "universal_contract",
+        "graded_loop",
+        # terminal-block bookkeeping (the transition itself is gated below)
+        "build_state",
+        "block_reason",
+        # the whole-set run marker the Stop gate arms on
+        *_RUN_MARKER_META_KEYS,
+        # the per-ticket lease (cleared on block / swept after a crashed session)
+        *_LEASE_META_KEYS,
+        # WHY a ticket moved, written alongside the move
+        "audit_disposition",
+        "regression_detail",
+        # an intake-time structural probe result, re-derived per pass
+        "under_specified",
+    }
+)
+
+# The only ``build_state`` value the build-state route will set. ``in_progress``,
+# ``finished`` and ``incomplete`` each have a dedicated endpoint whose guards (atomic
+# lease grant / "something must gate a finish" / record-the-failure-outcome) would be
+# bypassed if a client could stamp them through a generic meta write.
+BUILD_STATE_TRANSITIONS = frozenset({"blocked"})
+
 class LeaseConflict(Exception):
     """A claim/heartbeat lost to (or was blocked by) a different live lease.
 
@@ -2481,16 +2529,25 @@ class PostgresVectorGraph(SearchableGraph):
         meta = row[0] if isinstance(row[0], dict) else json.loads(row[0])
         return self._claim_view(meta, self._server_epoch())
 
-    def release_requirement(self, fact_id: str, owner: str, state: str) -> dict:
+    def release_requirement(
+        self, fact_id: str, owner: str, state: str, honor_takeover: bool = False
+    ) -> dict:
         """Clear ``owner``'s lease and record a terminal ``build_state``.
 
         Sets ``build_state`` to ``finished`` (ticket done) or ``incomplete`` (yielded
         cleanly) and DROPS the lease keys (``claim_owner``/``claim_at``/
         ``claim_heartbeat_at``/``claim_lease_ttl``), MERGING into ``meta`` so every
         other key (``tags``/``surfaces``/``requirement_id``/``pinned_checks``...) is
-        preserved. Only the holding owner may release; a mismatch is
-        :class:`LeaseConflict` and an unknown fact ``KeyError``. ``finished`` clears
-        the lease only — completeness stays derived from outcomes elsewhere.
+        preserved. Only the holding owner (or anyone, on an UNCLAIMED ticket) may
+        release; a mismatch is :class:`LeaseConflict` and an unknown fact ``KeyError``.
+        A ``finished`` release
+        also clears the whole-set run marker (``run_owner``/``run_at``/``run_scope``) —
+        the ticket has left the active run; a yield KEEPS it, so the run's gate holds
+        the ticket in scope and forces it to be re-done. Completeness itself stays
+        derived from outcomes elsewhere.
+
+        ``honor_takeover`` (``finished`` only) drops the lease-owner predicate — see the
+        asymmetry comment at the write below.
 
         ``finished`` also stamps ``meta.finished_at`` from the DB's wall clock — the
         server owns that timestamp and no caller supplies it
@@ -2532,11 +2589,15 @@ class PostgresVectorGraph(SearchableGraph):
                     "gates this ticket and it would certify itself. Pin the checks it must "
                     "pass, or set meta.checks_waived_reason to record why it has none."
                 )
-        # ``meta - 'k1' - 'k2' ...`` removes the lease keys (and, when yielding,
-        # finished_at); then merge the new build_state (+ finished_at when finishing).
-        # Both preserve every unrelated key.
+        # ``meta - 'k1' - 'k2' ...`` removes the lease keys (and, when finishing, the
+        # whole-set run marker — a finished ticket has left the run; when yielding,
+        # finished_at instead, since the run must keep the ticket in scope). Then merge
+        # the new build_state (+ finished_at when finishing). Both preserve every
+        # unrelated key.
         strip_keys = list(_LEASE_META_KEYS) + (
-            [] if state == "finished" else [finished_at.FINISHED_AT]
+            list(_RUN_MARKER_META_KEYS)
+            if state == "finished"
+            else [finished_at.FINISHED_AT]
         )
         strip = " ".join(f"- '{k}'" for k in strip_keys)
         key_pred, key_params = self._key_pred()
@@ -2547,18 +2608,142 @@ class PostgresVectorGraph(SearchableGraph):
             )
         else:
             set_expr = "jsonb_build_object('build_state', %s::text)"
+        # LEASE TAKEOVER, asymmetric on purpose. A finish may be honored even when the
+        # lease has moved on: completion is a fact about the WORLD (the work is built and
+        # its pinned checks passed), not a fact about who holds a lease. Refusing it meant
+        # a worker whose lease expired mid-ticket had its finished work silently dropped,
+        # the ticket handed out again, rebuilt, and the same race repeated — an unbounded
+        # rebuild loop that burns a run's whole budget converging on nothing. A YIELD is
+        # never honored that way: it is a claim about the CURRENT attempt, so a stale
+        # owner must not regress a ticket somebody else is actively building.
+        # An UNCLAIMED ticket is released by anyone. The owner check exists to stop a stale
+        # owner clobbering an ACTIVE build; where no lease is held there is no active build
+        # to protect, and refusing would strand work whose lease was already swept (the
+        # post-crash sweep drops leases on tickets that are still being finished).
+        owner_pred = "  AND (meta->>'claim_owner' = %s OR meta->>'claim_owner' IS NULL) "
+        owner_params: tuple = (owner,)
+        if honor_takeover and state == "finished":
+            owner_pred, owner_params = "", ()
         row = self._conn.execute(
             f"UPDATE {self._facts_table} SET meta = (meta {strip}) "
             f"  || {set_expr} "
             f"WHERE {key_pred} AND id = %s "
-            "  AND meta->>'claim_owner' = %s "
+            f"{owner_pred}"
             "RETURNING meta",
-            (state, *key_params, fact_id, owner),
+            (state, *key_params, fact_id, *owner_params),
         ).fetchone()
         if row is None:
             self._lease_conflict(fact_id)
         meta = row[0] if isinstance(row[0], dict) else json.loads(row[0])
         return self._claim_view(meta, self._server_epoch())
+
+    def write_build_state(
+        self, fact_id: str, patch: dict, owner: str | None = None
+    ) -> dict:
+        """Write BUILD STATE (never plan content) onto a ticket, MERGING into ``meta``.
+
+        WHY THIS EXISTS. Every other meta write from the build loop went through
+        ``PATCH /candidates/{cid}`` (``CandidateService.edit``), which is subject to the
+        S12 bless guard: once a ``prd-<project>`` plan is blessed, an edit is refused
+        unless the planning marker is re-armed. That is CORRECT for plan content — a
+        blessed plan must not drift under the reader's feet. It is fatal for build
+        state, which is not plan content at all: it is what the loop learns while
+        EXECUTING the blessed plan. With no sanctioned route, a blessed plan could not
+        be claimed, could not have its checks pinned, and could not be finished — the
+        loop dispatched work no worker could claim — and the only workaround was to
+        unbless and re-bless the plan as a side effect of BUILDING, which is worse than
+        the disease.
+
+        So build state gets its own route, and the guard is left alone.
+
+        WHAT MAY BE WRITTEN. Only keys in :data:`BUILD_STATE_META_KEYS` — a closed,
+        explicit list of the ticket's build lifecycle fields. Anything else (``text``,
+        ``tags``, ``surfaces``, ``acceptance``, ``requirement_id``, ``depends_on``, ...)
+        is PLAN CONTENT and is refused here with ``ValueError``: it belongs on the
+        guarded candidate-edit path, behind a re-armed planning marker, exactly as
+        before. This route is therefore not a hole in the bless guard — its writable
+        surface is disjoint from what the guard protects.
+
+        ``build_state`` ITSELF is the one lifecycle field this route will not transition
+        for you, except to ``"blocked"`` (:data:`BUILD_STATE_TRANSITIONS`).
+        ``in_progress`` belongs to :meth:`claim_requirement` (atomic lease grant),
+        ``finished`` and a clean yield to :meth:`release_requirement` (which enforces
+        that something actually gates a finish), and a regression to
+        :meth:`regress_requirements` (which also records the failure outcome). Letting a
+        client stamp ``finished`` here would route straight around the finish guard, so
+        it cannot.
+
+        ``pinned_checks`` (like every list/object value) REPLACES wholesale, it does not
+        append: the pinned set is THIS pass's contract, so re-pinning TRUNCATES any
+        prior per-check validation state. A key whose value is ``None`` is REMOVED from
+        ``meta`` — the callers that "clear" the lease or the run marker mean absence,
+        and a merge cannot express that any other way.
+
+        ``owner``, when given, requires that ``owner`` still hold the lease (as
+        :meth:`release_requirement` does) and raises :class:`LeaseConflict` otherwise —
+        so a worker whose lease was taken over cannot keep pinning checks onto a ticket
+        somebody else is now building. It is OPTIONAL because the legitimate writer of
+        the whole-set run marker (``run_owner``/``run_at``/``run_scope``) stamps it
+        BEFORE any ticket is claimed and holds no lease at all.
+
+        Returns the updated ``meta``. ``KeyError`` if the fact does not exist.
+        """
+        if not isinstance(patch, dict) or not patch:
+            raise ValueError("patch must be a non-empty object of build-state keys")
+
+        patch = dict(patch)
+        finished_at.drop_client_value(patch)  # the server owns that clock, never a caller
+
+        rejected = sorted(k for k in patch if k not in BUILD_STATE_META_KEYS)
+        if rejected:
+            raise ValueError(
+                f"{rejected} is not build state. This route writes ONLY the build "
+                f"lifecycle keys {sorted(BUILD_STATE_META_KEYS)}; plan content must go "
+                "through the guarded candidate-edit path with the planning marker "
+                "re-armed."
+            )
+
+        if finished_at.BUILD_STATE in patch:
+            state = patch[finished_at.BUILD_STATE]
+            if state not in BUILD_STATE_TRANSITIONS:
+                raise ValueError(
+                    f"build_state={state!r} may not be set here. This route only makes "
+                    f"the {sorted(BUILD_STATE_TRANSITIONS)} transition; use claim / "
+                    "release / regress for the others so their own guards still apply."
+                )
+
+        if owner is not None:
+            ok_pred, ok_params = self._key_pred()
+            held = self._conn.execute(
+                f"SELECT meta->>'claim_owner' FROM {self._facts_table} "
+                f"WHERE {ok_pred} AND id = %s",
+                (*ok_params, fact_id),
+            ).fetchone()
+            if held is None:
+                raise KeyError(fact_id)
+            if held[0] != owner:
+                self._lease_conflict(fact_id)  # raises LeaseConflict (or KeyError)
+
+        # ``meta - 'k'`` removes, ``meta || {...}`` merges. Doing both in ONE statement
+        # keeps a clear-and-set patch (e.g. block: drop the lease, set block_reason)
+        # atomic — a reader never observes the half-applied middle.
+        drop = [k for k, v in patch.items() if v is None]
+        merge = {k: v for k, v in patch.items() if v is not None}
+        strip = " ".join(f"- '{k}'" for k in drop)
+        key_pred, key_params = self._key_pred()
+        params: list[Any] = []
+        set_expr = f"COALESCE(meta, '{{}}'::jsonb) {strip}"
+        if merge:
+            set_expr = f"({set_expr}) || %s::jsonb"
+            params.append(json.dumps(merge))
+        row = self._conn.execute(
+            f"UPDATE {self._facts_table} SET meta = {set_expr} "
+            f"WHERE {key_pred} AND id = %s RETURNING meta",
+            (*params, *key_params, fact_id),
+        ).fetchone()
+        if row is None:
+            raise KeyError(fact_id)
+        return row[0] if isinstance(row[0], dict) else json.loads(row[0])
 
     def wipe_cache(self) -> int:
         """Delete every fact in this snapshot-bound graph's ``(space, snapshot)``.

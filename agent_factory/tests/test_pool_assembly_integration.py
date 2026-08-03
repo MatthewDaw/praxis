@@ -16,10 +16,11 @@ for p in (_HOOKS, _SRC):
         sys.path.insert(0, p)
 
 import _ticket_state as ts  # noqa: E402
+from _fake_praxis import SanctionedWrites  # noqa: E402
 from agent_factory import rubric_assembly as ra  # noqa: E402
 
 
-class _Spy:
+class _Spy(SanctionedWrites):
     def __init__(self):
         self.patches = []
 

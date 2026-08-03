@@ -26,11 +26,12 @@ if _HOOKS not in sys.path:
     sys.path.insert(0, _HOOKS)
 
 import _ticket_state as ts  # noqa: E402
+from _fake_praxis import SanctionedWrites  # noqa: E402
 
 PLAN = ("team-app", "prd-team-app")
 
 
-class FakePraxis:
+class FakePraxis(SanctionedWrites):
     """Persists one ticket's meta across get_fact/patch_meta (MERGE), like the live server's PATCH."""
 
     def __init__(self, meta=None):

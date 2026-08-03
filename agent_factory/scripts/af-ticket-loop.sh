@@ -717,19 +717,29 @@ PYEOF
 }
 
 release_inprogress(){  # release any live lease before a fresh session claims (post-crash safety)
+  # This used to BRACKET its writes in stamp_planning/clear_planning: a blessed plan refuses
+  # candidate edits (the S12 bless guard), so the sweep re-armed the planning marker to get its
+  # patch_meta through -- i.e. it UNBLESSED and re-blessed the plan as a side effect of BUILDING,
+  # and left the plan unblessed outright if the loop died mid-sweep. Regressing a ticket is build
+  # state, so it now goes through the sanctioned, unguarded /requirements/regress endpoint, which
+  # needs no marker at all. Do not reintroduce the bracket.
   $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
-import sys, time
-import _praxis, _ticket_state as ts
-p=sys.argv[1]; kw=dict(space=p, snapshot=f'prd-{p}'); owner='af-ticket-loop'
-ts.stamp_planning(p, owner)
+import sys
+import _praxis
+p=sys.argv[1]; kw=dict(space=p, snapshot=f'prd-{p}')
+NOTE=('lease released by af-ticket-loop: prior session ended (context cap or crash), '
+      'returning to incomplete for a fresh session.')
+stranded={}
 for f in _praxis.facts_by(category='requirement', **kw):
     m=f.get('meta') or {}
     if m.get('build_state')=='in_progress':
-        _praxis.patch_meta(f['id'], {'build_state':'incomplete','claim_owner':None,'claim_at':None,
-            'claim_heartbeat_at':None,'claim_lease_ttl':None,
-            'audit_disposition':'lease released by af-ticket-loop: prior session ended (context cap or crash), returning to incomplete for a fresh session.'}, **kw)
+        # Null the lease keys alongside the regress so nothing dangles, and record WHY -- the next
+        # worker's briefing reads audit_disposition back.
+        stranded[f['id']]={'claim_owner':None,'claim_at':None,'claim_heartbeat_at':None,
+                           'claim_lease_ttl':None,'audit_disposition':NOTE}
         print('released', m.get('requirement_id'))
-ts.clear_planning(p, owner)
+if stranded:
+    _praxis.regress_requirements(p, list(stranded), detail=stranded, **kw)
 PYEOF
 }
 
