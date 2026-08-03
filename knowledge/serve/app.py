@@ -55,6 +55,7 @@ from slowapi import _rate_limit_exceeded_handler  # noqa: E402
 from slowapi.errors import RateLimitExceeded  # noqa: E402
 from slowapi.middleware import SlowAPIMiddleware  # noqa: E402
 
+from knowledge import finished_at  # noqa: E402
 from knowledge.knowledge_graph.knowledge_graph_variants.org_source_reader import (  # noqa: E402
     OrgSourceReader,
 )
@@ -449,6 +450,10 @@ def _requirement_upsert(
     guards the write, and that belief is what produced the prd-sotos corruption.
     """
     meta = dict(meta or {})
+    # A ticket write carries ``build_state`` by definition (that is what makes it a ticket),
+    # so it is a finish path like any other: the caller's ``finished_at`` is discarded and the
+    # server dates the transition. See :mod:`knowledge.finished_at`.
+    finished_at.drop_client_value(meta)
     rid = str(meta.get("requirement_id") or "").strip()
     # Identity is the requirement_id ALONE. This lookup used to also filter on
     # category="requirement", which quietly broke the recovery case it matters most for: a ticket
@@ -499,11 +504,12 @@ def _requirement_upsert(
         )
     note = " ".join(notes) or None
     if existing is not None:
+        merged = {**(existing.meta or {}), **meta}
         graph.update_fact(
             existing.id,
             text=insight,
             source=source,
-            meta={**(existing.meta or {}), **meta},
+            meta=finished_at.resolve(meta, merged),
             category=REQUIREMENT_CATEGORY,
         )
         return {
@@ -519,7 +525,7 @@ def _requirement_upsert(
         }
     fid = graph.write(
         insight, state="active", source=source, scope=scope,
-        category=REQUIREMENT_CATEGORY, meta=meta,
+        category=REQUIREMENT_CATEGORY, meta=finished_at.resolve(meta, dict(meta)),
     )
     return {
         "summary": "requirement ticket stored",

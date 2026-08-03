@@ -15,23 +15,24 @@ org made real completions in the user's other orgs read as a flat zero.
 
 Every finished ticket is dated by ``meta.finished_at`` when it was stamped, or
 by its own ``created_at`` column otherwise (D33): ``finished_at`` is a fairly
-recent addition (stamped by TWO independent writers that disagree on shape —
-the backend's own lease-release path, ``postgres_vector_graph.
-release_requirement``/migration 0013, writes a fixed-format UTC ISO-8601
-string; ``agent_factory``'s ticket-loop, ``_ticket_state.release``, writes a
-raw ``time.time()`` epoch-seconds float; :func:`_parse_finished_at` accepts
-both), so most tickets finished before it existed carry no ``finished_at`` at
-all. Rather than drop that real, completed work from the count entirely, a
-finished ticket with no ``finished_at`` is dated to its own creation date —
-every ticket marked complete counts toward some bucket.
+recent addition, so most tickets finished before it existed carry none at all.
+Rather than drop that real, completed work from the count entirely, a finished
+ticket with no ``finished_at`` is dated to its own creation date — every ticket
+marked complete counts toward some bucket.
+
+The timestamp itself is server-owned and single-shape (:mod:`knowledge.finished_at`);
+``finished_at.parse`` is used here because it also reads the legacy epoch shape a
+restored older snapshot can still carry.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import psycopg
+
+from knowledge import finished_at
 
 
 def _org_id_list(org_ids: str | Sequence[str]) -> list[str]:
@@ -65,23 +66,6 @@ _FINISHED_TICKET_WHERE = (
 )
 
 
-def _parse_finished_at(raw: str) -> datetime | None:
-    """Parse a ``finished_at`` value in either shape it's written in (see module
-    docstring): a UTC ISO-8601 string, or a bare epoch-seconds float rendered as
-    text (e.g. ``"1785205768.1511981"``). Returns ``None`` for anything that
-    matches neither, so one malformed value never fails the whole series."""
-    try:
-        finished = datetime.fromisoformat(raw)
-    except ValueError:
-        try:
-            finished = datetime.fromtimestamp(float(raw), tz=timezone.utc)
-        except (TypeError, ValueError, OverflowError, OSError):
-            return None
-    if finished.tzinfo is None:
-        finished = finished.replace(tzinfo=timezone.utc)
-    return finished
-
-
 def bucket_counts(
     finished_ats: list[str | None],
     bucket_starts: list[datetime],
@@ -97,7 +81,7 @@ def bucket_counts(
     for raw in finished_ats:
         if not raw:
             continue
-        finished = _parse_finished_at(raw)
+        finished = finished_at.parse(raw)
         if finished is None:
             continue
         for i, start in enumerate(bucket_starts):
@@ -139,8 +123,8 @@ def fetch_ticket_finished_ats_by_org(
         f"SELECT org_id, {_FINISHED_AT_EXPR} FROM snapshots {_FINISHED_TICKET_WHERE}",
         (ids,),
     ).fetchall()
-    for org_id, finished_at in rows:
-        by_org.setdefault(org_id, []).append(finished_at)
+    for org_id, stamp in rows:
+        by_org.setdefault(org_id, []).append(stamp)
     return by_org
 
 
@@ -190,7 +174,7 @@ def instrumentation_date(finished_ats: list[str | None]) -> str | None:
     and annotate ("ticket history starts <date>") rather than render as a truthful
     zero.
     """
-    parsed = [_parse_finished_at(raw) for raw in finished_ats if raw]
+    parsed = [finished_at.parse(raw) for raw in finished_ats if raw]
     parsed = [dt for dt in parsed if dt is not None]
     if not parsed:
         return None

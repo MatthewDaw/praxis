@@ -1,17 +1,22 @@
-"""Locks the release() finished_at contract (ticket a34d3f2293ec451cb553cdddb3b27800):
+"""release() must not stamp a completion timestamp — the SERVER owns it.
 
-A ticket whose build_state is set to "finished" through release() must carry a
-``finished_at`` timestamp (epoch seconds) in its meta, stamped within one second of the
-release() call. A ticket that is released as "incomplete" (or never released) must NOT
-carry a finished_at — leaving it, or a stale one from a prior finish, would let a ticket
-read back as done work it never actually completed this cycle.
+``meta.finished_at`` used to have two producers that disagreed on shape: the
+backend's lease-release path wrote a fixed-format UTC ISO-8601 string, and this
+client wrote a bare ``time.time()`` float, so one plan carried both. The epoch rows
+sort as text outside ``snapshots_finished_at_idx``'s ISO range bounds and silently
+drop out of any range query — a short answer, not an error.
 
-These tests stub ``_praxis.get_fact``/``_praxis.patch_meta`` so they never touch the
-network — pure behavior lock on the patch dict release() builds.
+The fix is one producer, not two that agree: a client cannot know when a write it
+has not made yet will land, so it does not guess. ``release()`` writes
+``build_state`` and the server dates it (``knowledge/finished_at.py``). These tests
+lock that no client write path sends a ``finished_at`` at all, so a second producer
+cannot come back.
+
+Stubs ``_praxis`` so nothing touches the network — a pure behavior lock on the patch
+dicts the hook builds.
 """
 
 import sys
-import time
 from pathlib import Path
 
 _HOOKS = str(Path(__file__).resolve().parent.parent / "hooks")
@@ -47,38 +52,41 @@ def _patched(monkeypatch, initial_meta):
     return fake
 
 
-def test_release_finished_stamps_finished_at_within_one_second(monkeypatch):
+def test_release_finished_sets_build_state_and_never_finished_at(monkeypatch):
     fake = _patched(monkeypatch, {"claim_owner": "me"})
-    before = time.time()
-    ok = ts.release("T1", "me", state="finished")
-    after = time.time()
 
-    assert ok is True
+    assert ts.release("T1", "me", state="finished") is True
+
     assert fake.patches, "release() must call patch_meta"
-    last_patch = fake.patches[-1]
-    assert "finished_at" in last_patch, "finished build_state must stamp finished_at"
-    stamped = last_patch["finished_at"]
-    assert isinstance(stamped, (int, float))
-    assert before - 1 <= stamped <= after + 1
-
-    # And it reads back on the (fake) ticket's meta.
-    assert fake.meta.get("build_state") == "finished"
-    assert "finished_at" in fake.meta
+    assert fake.patches[-1]["build_state"] == "finished", "the server dates THIS write"
+    for sent in fake.patches:
+        assert "finished_at" not in sent, (
+            "the client must not stamp a completion timestamp — it does not own the "
+            "clock, and a second producer is exactly the shape drift this removed"
+        )
 
 
 def test_release_incomplete_never_stamps_finished_at(monkeypatch):
     fake = _patched(monkeypatch, {"claim_owner": "me"})
-    ok = ts.release("T2", "me", state="incomplete")
 
-    assert ok is True
+    assert ts.release("T2", "me", state="incomplete") is True
+
     assert fake.meta.get("build_state") == "incomplete"
-    assert "finished_at" not in fake.meta
-    for patch in fake.patches:
-        assert patch.get("finished_at") is None or "finished_at" not in patch
+    for sent in fake.patches:
+        assert "finished_at" not in sent
 
 
-def test_ticket_never_finished_carries_no_finished_at(monkeypatch):
-    # A ticket that is merely claimed/in-progress (never released as finished) must not
-    # carry a finished_at at all.
-    fake = _patched(monkeypatch, {"claim_owner": "me", "build_state": "in_progress"})
-    assert "finished_at" not in fake.meta
+def test_no_client_lifecycle_write_stamps_finished_at(monkeypatch):
+    """Not just release(): no lifecycle write in the hook sends a finished_at."""
+    fake = _patched(monkeypatch, {})
+
+    ts.claim("T3", "me")
+    ts.heartbeat("T3", "me")
+    ts.stamp_run(["T3"], "me")
+    ts.record_validation_pass("T3", "v1", True)
+    ts.release("T3", "me", state="finished")
+    ts.block("T3", "me", "needs a credential")
+
+    assert fake.patches
+    for sent in fake.patches:
+        assert "finished_at" not in sent

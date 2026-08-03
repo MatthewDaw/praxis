@@ -82,6 +82,22 @@ reads/writes below (the checks-snapshot seam and the mutable `prd-<project>` tic
 | `run_owner`            | `str`                             | Session id of the active whole-set build run this ticket is in. |
 | `run_at`               | `float` (epoch seconds)           | Run-marker heartbeat; run is STALE when `now - run_at > DEFAULT_RUN_TTL_S`. |
 | `run_scope`            | `str`                             | Human label of the run's scope (for the gate's report).        |
+| `finished_at`          | `str` (UTC ISO-8601)              | **SERVER-WRITTEN, read-only to every client.** When this ticket last reached `finished`. |
+
+`finished_at` is the one meta key a client never writes. The server stamps it from its own
+clock on any write that sets `build_state="finished"`, clears it on any write that sets
+`build_state` to anything else, and discards a caller-supplied value — see
+`knowledge/finished_at.py`. So a worker sets `build_state` and nothing else; `release()` sends
+no timestamp. Two producers is exactly how this key ended up with two incompatible shapes in
+one plan (an ISO string from the server, an epoch float from the ticket loop), which silently
+dropped rows out of `snapshots_finished_at_idx`'s text range scans.
+
+**Known hole (deliberate):** a `finished` transition through `patch_meta` is not lease-checked,
+so a non-holder can mark a ticket done. That is load-bearing, not an oversight — `release()`
+HONORS a completion whose lease was taken over mid-ticket (see its docstring: refusing it
+caused an unbounded silent rebuild loop). The completion is still dated by the server, so it
+can be seen and audited for what it is; the lease-checked path (`POST
+/requirements/{cid}/release`) remains available for callers that hold one.
 
 `pinned_checks` entry: `{ "validation_id": str, "covers": list[str], "run": str,
 "passed": bool｜null, "ran_at": float｜null }` (null = not yet run). The key name is retained for

@@ -26,6 +26,7 @@ import time as _time
 from datetime import datetime, timezone
 from typing import Any
 
+from knowledge import finished_at
 from knowledge.knowledge_graph.knowledge_graph_variants.postgres_vector_graph import (
     PostgresVectorGraph,
     default_write_policy,
@@ -577,7 +578,14 @@ class FactsCandidates:
             and not any(k in body for k in ("content", "title", "provenance", "category"))
         )
         if isinstance(body.get("meta"), dict):
-            meta.update(body["meta"])
+            # The server owns ``finished_at``: a caller's value is discarded, and a
+            # ``build_state`` transition in this patch dates the ticket from the
+            # server clock. This is the path ``_praxis.patch_meta`` takes, so a build
+            # worker sets build_state and nothing else. See :mod:`knowledge.finished_at`.
+            incoming = dict(body["meta"])
+            finished_at.drop_client_value(incoming)
+            meta.update(incoming)
+            finished_at.resolve(incoming, meta)
         derived_from = [str(s) for s in (body.get("derivedFrom") or []) if s]
         # Only the resulting CONTENT must be non-empty; a meta-only patch must not
         # be blocked on a fact that already has valid content.

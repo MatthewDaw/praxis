@@ -70,6 +70,11 @@ def env(unique_org):
     conn.close()
 
 
+# A finish is refused when ``pinned_checks`` is empty — nothing would gate the ticket
+# and it would certify itself. Tests that finish a ticket seed this.
+PINNED = [{"validation_id": "v1", "covers": ["c1"], "run": "true", "passed": True}]
+
+
 def _req(graph, text="The home screen lists today's tasks.", **extra):
     """Seed one active requirement ticket scoped to ``prd-team-app``."""
     return graph.write(
@@ -156,8 +161,11 @@ def test_heartbeat_renews_then_409_after_lease_lost(env):
 # --- release ---------------------------------------------------------------
 def test_release_finished_clears_lease_and_preserves_other_meta(env):
     client, graph, _ = env
-    # Seed with sibling meta keys the release MUST NOT clobber.
-    rid = _req(graph, meta={"requirement_id": "R1", "tags": ["auth"]})
+    # Seed with sibling meta keys the release MUST NOT clobber. ``pinned_checks`` is
+    # what gates the finish (a ticket nothing gates is refused, so it cannot
+    # self-certify), so a ticket that finishes carries one.
+    rid = _req(graph, meta={"requirement_id": "R1", "tags": ["auth"],
+                            "pinned_checks": PINNED})
     client.post(f"/requirements/{rid}/claim", json={"owner": "agent-a"})
 
     res = client.post(
@@ -180,7 +188,7 @@ def test_release_finished_stamps_finished_at(env):
     the call, as a fixed-format zero-padded UTC ISO-8601 string (the shape indexed
     by migration 0013's ``snapshots_finished_at_idx``)."""
     client, graph, _ = env
-    rid = _req(graph)
+    rid = _req(graph, meta={"pinned_checks": PINNED})
     client.post(f"/requirements/{rid}/claim", json={"owner": "agent-a"})
 
     before = datetime.now(timezone.utc)
@@ -217,7 +225,9 @@ def test_release_incomplete_carries_no_finished_at(env):
 
 def test_release_rejects_bad_state_and_non_owner(env):
     client, graph, _ = env
-    rid = _req(graph)
+    # Pinned, so the refusal under test is the OWNERSHIP one and not the
+    # nothing-gates-this-ticket guard that also fronts this route.
+    rid = _req(graph, meta={"pinned_checks": PINNED})
     client.post(f"/requirements/{rid}/claim", json={"owner": "agent-a"})
     assert (
         client.post(
