@@ -704,12 +704,13 @@ for f in _praxis.facts_by(category='requirement', **kw):
     m = f.get('meta') or {}
     if str(m.get('requirement_id') or f.get('id')) != rid:
         continue
-    _praxis.patch_meta(f['id'], {'build_state': 'incomplete', 'claim_owner': None, 'claim_at': None,
+    _praxis.regress_requirements(p, [f['id']], {f['id']: {
+        'claim_owner': None, 'claim_at': None,
         'claim_heartbeat_at': None, 'claim_lease_ttl': None,
         'audit_disposition': f'regressed by af-ticket-loop: read finished, but its commits never '
                              f'reached the integration branch -- they exist only on {br}, and no '
                              f'replacement for this ticket landed either. Rebuild against the '
-                             f'integrated tree.'}, **kw)
+                             f'integrated tree.'}}, **kw)
     print('regressed', rid)
     break
 PYEOF
@@ -1018,8 +1019,8 @@ for br, u in dropped.items():
         f = by_rid.get(str(rid))
         if not f:
             continue
-        _praxis.patch_meta(f["id"], {
-            "build_state": "incomplete", "claim_owner": None, "claim_at": None,
+        _praxis.regress_requirements(p, [f["id"]], {f["id"]: {
+            "claim_owner": None, "claim_at": None,
             "claim_heartbeat_at": None, "claim_lease_ttl": None,
             "audit_disposition": (f"REGRESSED by conflict resolution of round #{rnd}: branch {br} was merged, but this "
                                   f"ticket's intent did not survive. WHAT WAS LOST: {reason} THE REBUILD MUST: re-establish "
@@ -1029,7 +1030,7 @@ for br, u in dropped.items():
                                   "reason": "branch merged, but this ticket's change was not preserved",
                                   "evidence": reason,
                                   "required_fix": "re-establish the behaviour against the current integrated tree; "
-                                                  "do NOT re-merge the branch, it is already an ancestor of HEAD"}},
+                                                  "do NOT re-merge the branch, it is already an ancestor of HEAD"}}},
             **kw)
         print(f"conflict resolver: regressed {rid} — merged, but its intent was dropped")
 
@@ -1505,14 +1506,13 @@ for rid, detail in entries:
                  "originally written against — the failure is an integration failure, so the "
                  "original worktree's green result does not carry over.")
     summary = " ".join(parts)
-    _praxis.patch_meta(f["id"], {
-        "build_state": "incomplete",
+    _praxis.regress_requirements(p, [f["id"]], {f["id"]: {
         "claim_owner": None, "claim_at": None,
         "claim_heartbeat_at": None, "claim_lease_ttl": None,
         "audit_disposition": summary,
         "regression_detail": {"round": rnd, "source": "post-merge-verification",
                               "reason": reason, "evidence": evidence, "required_fix": fix},
-    }, **kw)
+    }}, **kw)
     n += 1
     sys.stderr.write(f"regressed {rid} :: {(reason or 'no reason given')[:160]}\n")
 print(n)

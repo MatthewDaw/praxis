@@ -1467,9 +1467,19 @@ def create_app(conn: Any | None = None) -> FastAPI:
         ids = [str(i).strip() for i in (body.get("ids") or []) if str(i).strip()]
         if not ids:
             raise HTTPException(status_code=400, detail="body must include a non-empty 'ids'")
+        # Optional ``{"detail": {id: {meta key: value}}}`` — WHY each ticket came back, merged
+        # into that ticket's meta by the same UPDATE. Carried here rather than by a follow-up
+        # PATCH /candidates/{id} because a blessed plan refuses candidate edits (the S12 bless
+        # guard) while build-state writes must keep working. See the graph store's docstring.
+        raw_detail = body.get("detail")
+        detail = (
+            {str(k): v for k, v in raw_detail.items() if isinstance(v, dict)}
+            if isinstance(raw_detail, dict)
+            else {}
+        )
         target = _project_target(org, uid, project, target)
         try:
-            regressed = graph_for(org, uid, target).regress_requirements(ids)
+            regressed = graph_for(org, uid, target).regress_requirements(ids, detail or None)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001 — never a bare/empty 500

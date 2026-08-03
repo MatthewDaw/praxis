@@ -1217,7 +1217,9 @@ class PostgresVectorGraph(SearchableGraph):
             (outcome, *key_params, fact_id),
         )
 
-    def regress_requirements(self, fact_ids: list[str]) -> list[str]:
+    def regress_requirements(
+        self, fact_ids: list[str], detail: dict[str, dict] | None = None
+    ) -> list[str]:
         """Bulk-regress a set of ticket facts in ONE round-trip: for every id, record a
         failure outcome (``failure_count += 1``, ``last_outcome='failed'``) AND stamp
         ``meta.build_state='incomplete'``, so each re-enters ``incomplete_requirements``.
@@ -1229,19 +1231,49 @@ class PostgresVectorGraph(SearchableGraph):
         the ``build_state`` stamp keeps the ticket's own state field consistent with it.
         Returns the ids actually updated (missing ids are silently skipped). ``meta`` is a
         jsonb column, so ``||`` merges the one key without disturbing the rest of the meta.
+
+        ``detail`` optionally carries extra meta to merge per id (``{id: {key: value}}``) —
+        WHY the ticket came back: the verifier's regression_detail, audit_disposition, and
+        the like. It belongs on THIS path rather than a follow-up ``PATCH /candidates/{id}``
+        because a blessed plan refuses candidate edits (the S12 bless guard) while
+        build-state writes must keep working: a build loop that has to re-arm the planning
+        marker to record a regression would unbless the plan as a side effect of building.
+        Regression detail IS build state, so it is written by the build-state endpoint.
+        Ids present in ``detail`` are updated individually; the rest keep the bulk path.
         """
         ids = [str(f).strip() for f in (fact_ids or []) if str(f).strip()]
         if not ids:
             return []
+        detail = {str(k): v for k, v in (detail or {}).items() if isinstance(v, dict)}
         key_pred, key_params = self._key_pred()
-        rows = self._conn.execute(
-            f"UPDATE {self._facts_table} SET "
-            f"failure_count = failure_count + 1, last_outcome = 'failed', "
-            f"""meta = COALESCE(meta, '{{}}'::jsonb) || '{{"build_state": "incomplete"}}'::jsonb """
-            f"WHERE {key_pred} AND id = ANY(%s) RETURNING id",
-            (*key_params, ids),
-        ).fetchall()
-        return [r[0] for r in rows]
+        updated: list[str] = []
+
+        # Ids carrying detail need their own merged jsonb, so they cannot ride the single
+        # bulk UPDATE. Everything else still does — the common whole-plan regress passes no
+        # detail at all and remains exactly one round-trip.
+        for cid in [i for i in ids if i in detail]:
+            patch = dict(detail[cid])
+            patch["build_state"] = "incomplete"
+            rows = self._conn.execute(
+                f"UPDATE {self._facts_table} SET "
+                f"failure_count = failure_count + 1, last_outcome = 'failed', "
+                f"meta = COALESCE(meta, '{{}}'::jsonb) || %s::jsonb "
+                f"WHERE {key_pred} AND id = %s RETURNING id",
+                (*key_params, json.dumps(patch), cid),
+            ).fetchall()
+            updated.extend(r[0] for r in rows)
+
+        bulk = [i for i in ids if i not in detail]
+        if bulk:
+            rows = self._conn.execute(
+                f"UPDATE {self._facts_table} SET "
+                f"failure_count = failure_count + 1, last_outcome = 'failed', "
+                f"""meta = COALESCE(meta, '{{}}'::jsonb) || '{{"build_state": "incomplete"}}'::jsonb """
+                f"WHERE {key_pred} AND id = ANY(%s) RETURNING id",
+                (*key_params, bulk),
+            ).fetchall()
+            updated.extend(r[0] for r in rows)
+        return updated
 
     def _search_keyword(
         self,

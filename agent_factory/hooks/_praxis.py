@@ -393,6 +393,27 @@ def delete_fact(cid: str, *, space: str | None = None,
     return _request("DELETE", f"/candidates/{cid}", space=space, snapshot=snapshot)
 
 
+def regress_requirements(project: str, ids: list, detail: dict | None = None, *,
+                         space: str | None = None, snapshot: str | None = None) -> dict:
+    """Regress a SET of tickets so each re-enters the incomplete set (POST /requirements/regress).
+
+    USE THIS, NOT ``patch_meta``, to write build state onto a ticket. A blessed ``prd-<project>``
+    plan refuses candidate edits (the S12 bless guard), so ``patch_meta`` fails closed with
+    "plan is blessed — re-arm the planning marker" — and re-arming it to record a build outcome
+    would unbless the plan as a side effect of building. This endpoint is the sanctioned
+    build-state path and is not guarded.
+
+    ``ids`` are FACT ids (cids), never ``requirement_id`` values like "REM-10": passing the latter
+    silently returns ``count: 0``, so always resolve the cid first and always check ``count``.
+    ``detail`` optionally merges extra meta per id (``{cid: {"regression_detail": ...}}``) —
+    the WHY that the next worker's briefing reads back."""
+    body = {"project": project, "ids": [str(i) for i in (ids or [])]}
+    if detail:
+        body["detail"] = detail
+    return _request("POST", "/requirements/regress", body=body,
+                    space=space, snapshot=snapshot)
+
+
 def record_outcome(cid: str, success: bool, *, space: str | None = None,
                    snapshot: str | None = None) -> dict:
     """Record a verified build/check outcome on the fact (POST /facts/{cid}/outcome). Pass the
