@@ -68,6 +68,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from typing import Any, NamedTuple, Optional
 
 import _praxis
@@ -109,7 +110,7 @@ M_GRADED_LOOP = "graded_loop"                # {validation_id: {iters, last_defe
 M_RUN_OWNER = "run_owner"
 M_RUN_AT = "run_at"
 M_RUN_SCOPE = "run_scope"
-M_FINISHED_AT = "finished_at"                # epoch seconds, stamped by release(state="finished") only
+M_FINISHED_AT = "finished_at"                # ISO-8601 UTC, stamped by release(state="finished") only
 M_UNDER_SPECIFIED = "under_specified"   # [missing structural fields] — routed to intake, never claimed (plan 003)
 M_PLANNING_OWNER = "planning_owner"         # session id of the active planning (intake) session (plan 002)
 M_PLANNING_AT = "planning_at"               # epoch seconds, planning-marker heartbeat; stale => dead (plan 002)
@@ -1063,7 +1064,15 @@ def release(cid: str, owner: str, state: str,
     if state == "finished":
         for k in _RUN_KEYS:
             patch[k] = None  # left the run cleanly
-        patch[M_FINISHED_AT] = time.time()
+        # ISO-8601 UTC, byte-identical in shape to what the server's
+        # release_requirement() stamps. This used to write a bare time.time() float,
+        # which produced TWO incompatible finished_at shapes in the same plan:
+        # productivity_series._parse_finished_at tolerates both, but migration 0013's
+        # snapshots_finished_at_idx is a text index over the ISO shape, so epoch rows
+        # sort as text and silently drop out of any range query that uses it.
+        patch[M_FINISHED_AT] = (
+            datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "+00:00"
+        )
     _praxis.patch_meta(cid, patch, **_ref_kw(ref))
     return True
 
