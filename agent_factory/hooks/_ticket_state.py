@@ -128,6 +128,11 @@ M_UNIVERSAL_CONTRACT = "universal_contract"  # the universal-lane requirement en
                                               # coverage-contract time (R33) -- pin_validations() reads
                                               # this to AUTO-author their covering entries so a worker
                                               # never has to hand-write one.
+M_AUTHORED_RUNS = "authored_runs"            # {validation_id: run} captured from the DECLARED check
+                                              # facts at coverage-contract time. pin_validations()
+                                              # overrides the worker's synthesized `run` with the
+                                              # authored one wherever a check declares a concrete
+                                              # command, so a check cannot be neutered at pin time.
 M_GRADED_LOOP = "graded_loop"                # {validation_id: {iters, last_defects, last_hash}} (U6);
                                               # reset to {} on a fresh claim (R33) so a re-picked ticket
                                               # starts a fresh iteration budget.
@@ -707,12 +712,23 @@ def pin_requirements(cid: str, requirements: list,
     # covering entries every time it (re)pins, instead of requiring the worker to hand-author one.
     universal_entries = [r for r in requirements
                          if isinstance(r, dict) and (r.get("meta") or {}).get("universal")]
+    # AUTHORED RUNS. A check that declares a concrete ``meta.run`` states the command that proves it;
+    # the worker may not restate it. Capture those commands here, keyed by the same id the pinned
+    # entry carries, so :func:`pin_validations` can override a synthesized ``run`` with the authored
+    # one. Without this the worker's ``run`` was taken verbatim, so a declared check could be pinned
+    # under its own id with an unrelated (invariably weaker) command and recorded as passing it —
+    # observed live: a 3800-char check asserting byte floors and layer ids was pinned as a 171-char
+    # "start the server and curl one route", and the ticket finished green over a stub UI.
+    authored_runs = {rid: run for r in requirements
+                     if isinstance(r, dict) and (rid := _check_id(r))
+                     and (run := str((r.get("meta") or {}).get("run") or "").strip())}
     return _praxis.write_build_state(cid, {
         M_REQUIRED_VALIDATIONS: req_ids,
         M_MANUAL_REQUIREMENTS: manual_ids,
         M_REPORT_ONLY_REQUIREMENTS: report_only_ids,
         M_PINNED_CHECKS: [],
         M_UNIVERSAL_CONTRACT: universal_entries,
+        M_AUTHORED_RUNS: authored_runs,
     }, **_ref_kw(ref))
 
 
@@ -785,6 +801,40 @@ def _universal_covering_entries(meta: dict, already_covered: set[str]) -> list[d
     return out
 
 
+def _apply_authored_runs(pinned: list[dict], meta: dict) -> list[dict]:
+    """Make a DECLARED check's own command authoritative over the worker's synthesized one.
+
+    ``pin_requirements`` stashes ``{validation_id: run}`` for every resolved check that declares a
+    concrete ``meta.run`` (:data:`M_AUTHORED_RUNS`). A pinned entry claiming one of those ids gets the
+    authored command written back over whatever the worker supplied, and is stamped
+    ``run_source="authored"``; entries with no authored counterpart keep the worker's command and are
+    stamped ``run_source="worker"``, so the two are distinguishable in the record afterwards.
+
+    Worker authorship remains the path for everything a check does NOT spell out — the acceptance
+    floor (``<cid>::acceptance``), graded/rubric checks (which carry a frozen ``rubric`` and no
+    ``run``), and any check that deliberately leaves the command to the builder. This narrows
+    authorship to exactly the commands nobody declared, rather than removing it.
+
+    Why this exists: the pin path took ``run`` verbatim from the worker, so a check could be pinned
+    under its own ``validation_id`` carrying a command that tested something else entirely, pass, and
+    finish the ticket. Measured on a live plan, 7 of 20 pinned checks did not match their stored
+    definition — including a 3800-char UI check pinned as 171 chars and a lint/typecheck gate cut from
+    166 to 74. Every one of those substitutions was weaker than the check it displaced.
+    """
+    authored = meta.get(M_AUTHORED_RUNS) or {}
+    if not isinstance(authored, dict):
+        authored = {}
+    for entry in pinned:
+        vid = entry.get("validation_id")
+        declared = str(authored.get(vid) or "").strip() if vid else ""
+        if declared:
+            entry["run"] = declared
+            entry["run_source"] = "authored"
+        else:
+            entry.setdefault("run_source", "worker")
+    return pinned
+
+
 def pin_validations(cid: str, validations: list,
                     ref: Optional[tuple[str, str]] = None) -> dict:
     """Pin the worker-SYNTHESIZED concrete validations onto the ticket (the eval).
@@ -809,6 +859,7 @@ def pin_validations(cid: str, validations: list,
         meta = _meta(cid, ref)
     except Exception:  # noqa: BLE001 - best-effort; see docstring
         meta = {}
+    _apply_authored_runs(pinned, meta)
     covered = {c for p in pinned for c in (p.get("covers") or [])}
     pinned.extend(_universal_covering_entries(meta, covered))
     return _praxis.write_build_state(cid, {M_PINNED_CHECKS: pinned}, **_ref_kw(ref))
