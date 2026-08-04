@@ -630,6 +630,23 @@ contract tests; a mobile app needs a device/simulator layer; a data pipeline nee
 and eval gates) and give each a **binary, CI-enforced condition**. A layer with no binary
 condition is a hope, not a strategy. No until-dry critic loop.
 
+**The artifact must RUN, not merely compile — non-skippable.** Every plan declares at least one
+guard that EXECUTES the thing being built: the project's build/compile step, plus a smoke
+invocation of its real entrypoint (a CLI runs `--help`; a service binds and answers a route; a
+library imports its public surface; a pipeline processes one fixture end to end). Derive them
+here; author them via **af-intake-build-validation**. Lint, typecheck, and the unit suite do
+**not** satisfy this — all three go green on a tree whose entrypoint does not exist, because each
+only inspects the code that IS there. Name the entrypoint and its invocation inside the check's
+`run` so the target is a contract the build READS, not one it infers.
+
+**Why this rule exists.** A UI ticket whose text required a service that "binds to localhost or a
+private network" with run state that "survives a closed browser session" went green under
+`verify="automated"` against a package containing no server, no route, and not one line of HTML.
+Its checks were `ruff` + `mypy` + `pytest tests/ui`, and the suite dutifully tested the dataclasses
+that did exist. Nothing in the plan ever started the thing. Two dependent tickets then blocked on a
+human sign-off nobody could give — there was nothing to look at — and the build loop idled for
+eleven hours against a stall it could not clear.
+
 **Every-site sweeps get ONE guard.** If the plan contains a change that must land at EVERY call
 site (a provider swap, a rename, a config-key migration, a banned-import purge), author a single
 completeness check — typically `! grep -rq '<old pattern>' <scope>` — by running
@@ -1034,6 +1051,10 @@ apply is the build's fresh RESOLVE query (tag ∪ "*" ∪ surface), same as ever
   challenge is unresolved, the B5 validation episode is missing, or `plan_gate` does not pass — and never with
   no automated test strategy, a platform-required test layer missing, or a CI gate lacking a binary
   condition.
+- **Never bless a plan whose checks never RUN the artifact (B2)** — it needs the build/compile step
+  AND a smoke invocation of the real entrypoint, authored via af-intake-build-validation. Lint,
+  typecheck and the unit suite all pass on a tree whose entrypoint was never written, so a plan
+  carrying only those has no gate that would notice the product missing.
 - **Never leave a known every-site refactor (B2) without a build-validation
   guard check** — the every-site scan (`! grep -rq '<old>' <scope>`) and the tricky-case test are exactly
   what af-build silently drops; author each via af-intake-build-validation or record an explicit exception.
