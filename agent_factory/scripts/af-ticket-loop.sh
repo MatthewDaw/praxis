@@ -182,6 +182,20 @@
 #   AF_VERIFY_TIMEOUT_S    bound that verification (default 2700)
 #   AF_MIN_FREE_GB=25      raise the disk floor a round must clear (default 15)
 #   AF_KEEP_BRANCHES=1     report worker branches instead of reaping them (debugging a bad round)
+#   AF_HUMAN_BRANCHES      space-separated globs of branches a HUMAN owns, ADDED to the built-in
+#                          main/master/develop/trunk/release-*/hotfix-* defaults. Branch ownership is
+#                          default-inclusive -- anything not exempt here and not merged is treated as
+#                          factory work owed a merge -- so this is the one place to register a
+#                          long-lived hand-made branch that must not trip the straggler invariant.
+#
+# Exit codes:
+#   0  clean drain, or a dependency stall the operator must unblock
+#   1  preflight failure (bad args, no worktree, model backend, universal lane)
+#   3  billing/credit failure
+#   4  three consecutive fruitless rounds   5  disk floor   6  Praxis unreachable
+#   7  STRAGGLERS: the run left unmerged worker branches and/or leftover worktrees behind. Nothing is
+#      ever deleted to reach a green invariant, so the work named in the log is intact -- land it
+#      (`--resolve-orphans`) and relaunch.
 #   AF_MODEL_BACKEND       sonnet | deepseek (see v3)
 #   AF_PLUGIN_DIR / AF_REPO / AF_PYTHON / AF_STATE_DIR / AF_LOG   for an unusual layout
 set -euo pipefail
@@ -869,15 +883,15 @@ integrate_round(){
 # round lands every outstanding branch, so "orphan" is a condition that cannot survive a single round.
 queue_orphan_branches(){
   cd "$WT" || return 0
+  unset AF_WT_BRANCH_CACHE   # each pass re-reads the worktree set the ownership rule is derived from
   local br ids queued=0 already
   while read -r br; do
     [ -n "$br" ] || continue
-    af_is_worker_branch "$br" || continue
+    af_is_owed_merge "$br" || continue
     git merge-base --is-ancestor "$br" HEAD 2>/dev/null && continue        # already landed
     already=$(cut -f1 "$CONFLICTS" 2>/dev/null | grep -xF "$br" || true)
     [ -n "$already" ] && continue                                          # this round already queued it
-    ids=$(git log --format=%s "HEAD..$br" 2>/dev/null \
-          | grep -oE '\((REM|SSW|HIP|OBS|CHAT|FH|SS|P1|P2|R|F)-[0-9]+\)' | tr -d '()' | sort -u | tr '\n' ' ')
+    ids=$(af_branch_ids "HEAD..$br")
     printf '%s\t%s\n' "$br" "$ids" >> "$CONFLICTS"
     queued=$((queued+1))
     say "orphan branch from an earlier round queued for landing: $br (ticket(s):$ids )"
@@ -1068,17 +1082,42 @@ af_scratch_roots(){
   printf '%s\n' "$WT/.claude/worktrees" "${WT}_worktrees"
 }
 
+# A third layout, SIBLING to the checkout rather than under a root: `<WT>-wt-<TICKET>`. The sotos run
+# of 2026-08-03 left /workspace/sotos-wt-HIP23 and /workspace/sotos-wt-HIP27 behind, and neither was
+# under either root above, so every sweep this driver ran walked straight past them. Matched as a
+# glob, not a root, because there is no directory to enumerate.
+af_scratch_globs(){
+  printf '%s\n' "${WT}-wt-*" "${WT}-worktree-*" "${WT}_wt_*"
+}
+
 af_is_scratch(){   # $1 = candidate path
-  local p="$1" root
+  local p="$1" root g
   while read -r root; do
     case "$p" in "$root"/*) return 0 ;; esac
   done < <(af_scratch_roots)
+  while read -r g; do
+    case "$p" in $g) return 0 ;; esac
+  done < <(af_scratch_globs)
+  return 1
+}
+
+# LOCKED worktrees. `git worktree remove` and `git worktree prune` both REFUSE a locked tree, so a
+# sweep that does not unlock first silently no-ops on exactly the trees most likely to be stale --
+# two of the four leftovers from the sotos run were locked, and every sweep "succeeded" without
+# touching them. Unlock, then remove; `--force --force` is the fallback for a git old enough or a
+# lock stubborn enough that `unlock` did not take. A failure after all three is REPORTED LOUDLY, never
+# swallowed: the whole point is that a sweep which cannot do its job says so.
+af_force_remove_worktree(){   # $1 = path
+  git worktree unlock "$1" >/dev/null 2>&1 || true
+  git worktree remove --force "$1" >/dev/null 2>&1 && return 0
+  git worktree remove --force --force "$1" >/dev/null 2>&1 && return 0
   return 1
 }
 
 sweep_worktrees(){
   cd "$WT" || return 0
   local kept=0
+  unset AF_WT_BRANCH_CACHE   # this function mutates the worktree set the ownership rule reads
   while read -r path; do
     [ -n "$path" ] || continue
     [ "$path" = "$WT" ] && continue
@@ -1103,16 +1142,18 @@ sweep_worktrees(){
     # a 98GB volume, and what left 14 lying around here holding 10+ commits each. The tree is
     # scratch; the branch is the artifact.
     if [ -n "$head" ] && git merge-base --is-ancestor "$head" HEAD 2>/dev/null; then
-      git worktree remove --force "$path" 2>/dev/null && say "purged integrated worktree $path"
+      af_force_remove_worktree "$path" \
+        && say "purged integrated worktree $path" \
+        || say "WARNING: could not purge integrated worktree $path — it may be locked by a process that outlived its run; remove it by hand"
     else
       kept=$((kept+1))
       # Name the branch, read from the worktree BEFORE it is removed. Resolving it from a commit sha
       # afterwards yields nothing, which is what made every one of these lines read "remain on
       # branch " with a blank -- the exact pointer someone needs to find the work later.
       local wbr; wbr=$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-      git worktree remove --force "$path" 2>/dev/null \
+      af_force_remove_worktree "$path" \
         && say "purged worktree $path — its commits remain on branch ${wbr:-<detached ${head:0:8}>}" \
-        || say "WARNING: could not purge $path"
+        || say "WARNING: could not purge $path (branch ${wbr:-<detached ${head:0:8}>}) — remove it by hand; the terminal straggler invariant will keep failing until it is gone"
     fi
   done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
   git worktree prune 2>/dev/null || true
@@ -1142,7 +1183,21 @@ sweep_worktrees(){
     done
     rmdir "$root" 2>/dev/null || true
   done < <(af_scratch_roots)
+  # Same treatment for the sibling `<WT>-wt-<TICKET>` layout, which has no root directory to walk.
+  local g
+  while read -r g; do
+    for d in $g; do
+      [ -d "$d" ] || continue
+      printf '%s\n' "$registered" | grep -qxF "$d" && continue
+      if readlink /proc/*/cwd 2>/dev/null | grep -qF "$d"; then
+        say "orphan dir $d is IN USE by a live process — skipping"
+        continue
+      fi
+      rm -rf "$d" && say "removed orphaned worktree dir $d"
+    done
+  done < <(af_scratch_globs)
 
+  unset AF_WT_BRANCH_CACHE
   [ "$kept" -gt 0 ] && say "$kept worktree(s) purged before integration — their branches survive and merge once their tickets finish"
   return 0
 }
@@ -1182,22 +1237,109 @@ sweep_worktrees(){
 # Equivalence is tested with `git cherry`, not ancestry. Plain ancestry misses a rebuilt or
 # cherry-picked equivalent, which is exactly what made three of those four branches look unmerged.
 
-# Which refs this driver is allowed to touch. Deliberately narrow: everything else -- main, the
-# integration branch, fix/*, wip/*, anything a human named -- is out of bounds no matter how merged it
-# looks. `worktree-agent-*` and `worktree-wf_*` are minted by the Agent/Workflow `isolation: worktree`
-# machinery and carry no human meaning. `build/<X>` is the older per-ticket layout and is ambiguous by
-# name alone, so it counts as ours ONLY when X is an id Praxis says this project owns -- a human's
-# `build/login-redesign` is never matched, and neither is a sibling project's ticket.
-af_is_worker_branch(){   # $1 = branch name
-  case "$1" in
-    worktree-agent-*|worktree-wf_*) return 0 ;;
-    build/*) case "${AF_KNOWN_IDS:-}" in *" ${1#build/} "*) return 0 ;; esac ;;
-  esac
+# ------------------------------------------------------------------ WHO OWNS A BRANCH --
+#
+# TWO questions, deliberately answered by two different rules, because they carry opposite risks:
+#
+#   "is this branch OWED A MERGE?"   -> af_is_owed_merge. DEFAULT-INCLUSIVE. Getting it wrong means a
+#                                       ticket reads finished with its work nowhere. Being over-broad
+#                                       costs a log line; being under-broad costs the whole guarantee.
+#   "may this driver DELETE it?"     -> af_is_factory_named. DELIBERATELY NARROW. Getting it wrong
+#                                       destroys someone's work. Nothing here ever deletes a branch
+#                                       carrying commits that are not already upstream.
+#
+# This split exists because the single old test was an ALLOWLIST OF NAMES -- worktree-agent-*,
+# worktree-wf_*, build/<known-id> -- used for BOTH questions. On 2026-08-03 a sotos run finished all
+# 260 tickets, logged `claimable=0` and `drained -- nothing claimable`, and left behind two branches
+# named `af-build/HIP-23` and `af-build/HIP-27` holding commits that were on no integration branch,
+# plus two LOCKED `.claude/worktrees/agent-<hex>` trees. Nothing in this script mints `af-build/*`; a
+# worker/skill chose that name. The allowlist did not match it, so queue_orphan_branches skipped it,
+# reap_branches skipped it, and the round reported success. Two tickets read `finished` with their
+# work nowhere -- precisely the lie every function in this section exists to make impossible.
+#
+# A guarantee that depends on guessing every name a worker might invent is not a guarantee, and its
+# failure mode is SILENCE. So ownership is now derived from FACTS:
+#
+#   FACT 1  a branch checked out in a worktree of this repo is factory work by definition. Name
+#           irrelevant: `git worktree list --porcelain` is authoritative.
+#   FACT 2  every other local branch is owed a merge UNLESS a human explicitly owns it. The exemption
+#           list is short, explicit, and extendable only on purpose (AF_HUMAN_BRANCHES).
+#
+# A NEW name cannot be missed, because no name is required to match anything.
+
+# The ONLY way out of "owed a merge". Kept narrow on purpose: the integration branch itself, the
+# handful of universally-human trunk/release refs, and whatever a human deliberately registers in
+# AF_HUMAN_BRANCHES (space-separated glob patterns, ADDED to the defaults rather than replacing them,
+# so nobody can accidentally exempt everything by setting it).
+af_is_human_branch(){   # $1 = branch name
+  local b="$1" p head_br
+  local defaults='main master develop trunk release/* releases/* hotfix/*'
+  head_br=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
+  [ -n "$head_br" ] && [ "$b" = "$head_br" ] && return 0
+  [ -n "${INTEGRATION_REF:-}" ] && [ "$b" = "$INTEGRATION_REF" ] && return 0
+  for p in $defaults ${AF_HUMAN_BRANCHES:-}; do
+    case "$b" in $p) return 0 ;; esac
+  done
   return 1
+}
+
+# FACT 1. Checked out in some worktree OTHER than the integration checkout => factory work, whatever
+# it is called. This is the name-independent half of the rule and it is why an invented prefix cannot
+# hide: the worker had to check the branch out somewhere to commit on it.
+af_is_worktree_branch(){   # $1 = branch name
+  local b
+  # Cached per pass: this is consulted once per local branch by three callers, and a repo with a few
+  # hundred branches would otherwise fork `git worktree list` a thousand times a round. Every mutator
+  # of the worktree set (sweep_worktrees) clears it, and a STALE cache errs toward "owned", which is
+  # the safe direction for a default-inclusive rule.
+  if [ -z "${AF_WT_BRANCH_CACHE+x}" ]; then
+    AF_WT_BRANCH_CACHE=$(git worktree list --porcelain 2>/dev/null \
+      | awk -v self="${WT:-}" '/^worktree /{p=$2} /^branch /{sub("refs/heads/","",$2); if (p != self) print $2}')
+  fi
+  while read -r b; do
+    [ -n "$b" ] || continue
+    [ "$b" = "$1" ] && return 0
+  done <<< "$AF_WT_BRANCH_CACHE"
+  return 1
+}
+
+# Default-inclusive. Used by queue_orphan_branches, reap_branches and the terminal invariant.
+af_is_owed_merge(){   # $1 = branch name
+  af_is_worktree_branch "$1" && return 0
+  af_is_human_branch "$1" && return 1
+  return 0
+}
+
+# Narrow, and the ONLY gate on deletion. `worktree-agent-*`/`worktree-wf_*` are minted by the
+# Agent/Workflow `isolation: worktree` machinery and carry no human meaning. Beyond those, a branch is
+# ours when its LAST path segment is a requirement id Praxis says THIS PROJECT owns -- which is a
+# fact, not a name guess, and covers `build/HIP-23`, `af-build/HIP-23` and any future prefix alike,
+# while never matching a human's `build/login-redesign` or a sibling project's ticket. An empty
+# AF_KNOWN_IDS therefore makes this answer NO (nothing is deleted), never yes -- and, crucially, it no
+# longer makes af_is_owed_merge answer no, which is the second silent-miss path the old code had.
+af_is_factory_named(){   # $1 = branch name
+  case "$1" in worktree-agent-*|worktree-wf_*) return 0 ;; esac
+  case "${AF_KNOWN_IDS:-}" in *" ${1##*/} "*) return 0 ;; esac
+  return 1
+}
+
+# Ticket ids named by a branch's commits. Filtered to ids we own when Praxis has told us what we own;
+# unfiltered when it has not, because "we could not ask" must never read as "no ids, skip it". The
+# hardcoded `(REM|SSW|HIP|...)` prefix alternation this replaces was a third allowlist, and a project
+# whose ids used a new prefix would have gone unqueued in exactly the same silent way.
+af_branch_ids(){   # $1 = git range
+  case "${AF_KNOWN_IDS:-}" in
+    ''|' ')
+      git log --format=%s "$1" 2>/dev/null \
+        | sed -n 's/.*(\([A-Za-z][A-Za-z0-9_-]*[0-9][0-9]*\))[[:space:]]*$/\1/p' | sort -u | tr '\n' ' '
+      ;;
+    *) af_owned_ids "$1" "$AF_KNOWN_IDS" ;;
+  esac
 }
 
 reap_branches(){
   cd "$WT" || return 0
+  unset AF_WT_BRANCH_CACHE
   local br live uniq ids i sup reaped=0 failed=0 survivors="" reason status head_br
   # Compare against HEAD, never against the INTEGRATION_REF captured at startup. On a detached
   # checkout -- which is what both build worktrees on this box are -- INTEGRATION_REF is a fixed sha
@@ -1211,11 +1353,16 @@ reap_branches(){
   while read -r br; do
     [ -n "$br" ] || continue
     [ -n "$head_br" ] && [ "$br" = "$head_br" ] && continue
-    af_is_worker_branch "$br" || continue
+    af_is_owed_merge "$br" || continue
     printf '%s\n' "$live" | grep -qxF "$br" && continue
     # `+` = a commit with no equivalent upstream; `-` = already there under a different sha.
     uniq=$(git cherry HEAD "$br" 2>/dev/null | sed -n 's/^+ //p')
     if [ -z "$uniq" ]; then
+      # Fully upstream, so nothing can be lost either way -- but DELETION is still gated on the narrow
+      # test. The iteration above is default-inclusive so that no straggler can hide behind a novel
+      # name; that breadth must not turn into a licence to delete a human's already-merged `fix/*`.
+      # Not ours to delete and nothing is owed: leave it, silently, as before.
+      af_is_factory_named "$br" || continue
       # Let git enforce the safe case rather than the caller's belief about it. `-d` refuses anything
       # it does not consider merged, so it is tried FIRST and its refusal is meaningful. It refuses a
       # patch-equivalent branch too (ancestry is all it knows), and that is the one case where `git
@@ -1267,7 +1414,10 @@ reap_branches(){
     done
     case "$status" in
       superseded)
-        if [ "${AF_KEEP_BRANCHES:-0}" = "1" ]; then
+        # Same asymmetry as above: this is the one reap that drops commits which are upstream in NO
+        # form, so it happens only for a branch the narrow test proves is factory-minted. Anything
+        # else is kept and reported, however superseded it looks.
+        if [ "${AF_KEEP_BRANCHES:-0}" = "1" ] || ! af_is_factory_named "$br"; then
           survivors="${survivors:+$survivors }$br"
         else
           # Named before deletion, with the tip sha, because this is the one reap that drops commits
@@ -1287,6 +1437,93 @@ reap_branches(){
   say "$reaped branches reaped, $# unmerged branches remain:${survivors:+ $survivors}"
   [ "$failed" -gt 0 ] && { say "$failed ticket(s) were marked finished with their work unmerged — see above. This round FAILED its branch-integrity check."; return 1; }
   return 0
+}
+
+# -------------------------------------------------------------- the terminal straggler invariant --
+#
+# Everything above is best-effort machinery. THIS is the thing that makes "no stragglers" a property
+# of the run rather than a hope, because it is checked against git immediately before the loop is
+# allowed to say the word "drained".
+#
+# The gap it closes: on 2026-08-03 a sotos run logged `claimable=0` and `drained -- nothing claimable`
+# while two branches held unmerged commits for tickets Praxis called finished, and two LOCKED
+# worktrees sat at the pre-build commit. Every individual stage had "succeeded". There was a
+# HOLDS/VIOLATED assertion, but it lived inside the conflict resolver and only ever looked at the
+# branches that resolver had been handed -- so a branch nothing queued was invisible to it too. An
+# invariant that is only consulted by the code path that already knew about the problem is not an
+# invariant.
+#
+# Two facts are asserted, both read from git, neither from any stage's report:
+#   1. ZERO branches that are owed a merge and hold commits upstream carries in no form.
+#   2. ZERO leftover worktrees -- any scratch tree at all, plus any other worktree of this repo
+#      sitting on a branch that is owed a merge.
+# Note (2) reports trees OUTSIDE the sweepable roots as well. Sweeping stays narrow (only delete what
+# is provably scratch) while reporting stays broad, so an unfamiliar layout produces a loud failure
+# instead of a silent miss -- the sotos `<WT>-wt-<ID>` trees were exactly that shape.
+af_stragglers(){   # prints one line per straggler; EMPTY output means clean
+  cd "$WT" 2>/dev/null || return 0
+  local br p wt_br
+  unset AF_WT_BRANCH_CACHE   # read the world fresh: this is the assertion, not a fast path
+  while read -r br; do
+    [ -n "$br" ] || continue
+    af_is_owed_merge "$br" || continue
+    git merge-base --is-ancestor "$br" HEAD 2>/dev/null && continue
+    # `git cherry`, same authority reap_branches uses: a rebuilt or cherry-picked equivalent has
+    # landed and is not a straggler, however its sha reads.
+    [ -n "$(git cherry HEAD "$br" 2>/dev/null | sed -n 's/^+ //p')" ] || continue
+    printf 'unmerged branch %s (%s commit(s) not on %s)\n' "$br" \
+      "$(git rev-list --count "HEAD..$br" 2>/dev/null || echo '?')" \
+      "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)"
+  done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
+  while read -r p; do
+    [ -n "$p" ] || continue
+    [ "$p" = "$WT" ] && continue
+    wt_br=$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    if af_is_scratch "$p"; then
+      printf 'leftover worktree %s (branch %s)\n' "$p" "${wt_br:-<detached>}"
+      continue
+    fi
+    [ -n "$wt_br" ] && [ "$wt_br" != HEAD ] && af_is_owed_merge "$wt_br" \
+      && printf 'leftover worktree %s (branch %s)\n' "$p" "$wt_br"
+  done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
+  return 0
+}
+
+# Exit code 7 -- a NEW code, deliberately not reused. The existing semantics are 0 = clean drain or
+# dependency stall, 1 = preflight, 3 = billing, 4/5/6 = unrecoverable-but-understood halts, and every
+# one of those is a state an operator or supervisor already knows how to read. Folding a straggler
+# into any of them would either make it look like a clean drain (the exact lie being fixed) or
+# misattribute it to a cause that is not what happened. 7 means one thing: THE RUN LEFT WORK BEHIND.
+AF_EXIT_STRAGGLERS=7
+
+# $1 = where we are, $2 = 1 to make it fatal (terminal paths), 0 to log-and-continue (round tails,
+# where an unmerged branch for a ticket still in flight is legitimate and the next round lands it).
+# In BOTH modes a straggler forces a real resolution attempt first -- reporting is not the remedy.
+af_assert_no_stragglers(){
+  local where="$1" fatal="${2:-1}" s l
+  s=$(af_stragglers)
+  if [ -n "$s" ]; then
+    say "STRAGGLERS PRESENT at $where — forcing a resolution pass before anything reports success:"
+    printf '%s\n' "$s" | while read -r l; do say "  $l"; done
+    : > "$CONFLICTS"
+    queue_orphan_branches || true
+    resolve_conflicts "straggler-sweep@$where" || true
+    sweep_worktrees || true
+    AF_QUERY_BACKOFF_S=0 reap_branches || true
+    s=$(af_stragglers)
+  fi
+  if [ -z "$s" ]; then
+    say "straggler invariant HOLDS at $where — zero unmerged worker branches, zero leftover worktrees"
+    return 0
+  fi
+  say "STRAGGLER INVARIANT VIOLATED at $where — resolution ran and did NOT clear these:"
+  printf '%s\n' "$s" | while read -r l; do say "  $l"; done
+  if [ "$fatal" != "1" ]; then
+    say "not terminal yet — the next round retries. If they are still here at drain the run FAILS."
+    return 1
+  fi
+  say "This run is NOT clean and will not be reported as drained. Nothing was deleted: every branch above still holds its commits. Land them by hand, or rerun: af-ticket-loop.sh --resolve-orphans $PROJECT $WT"
+  exit "${AF_EXIT_STRAGGLERS:-7}"
 }
 
 # Cleanup is an INVARIANT, not a happy-path step.
@@ -1544,8 +1781,15 @@ if [ "$AF_MODE" = "resolve-orphans" ]; then
   cd "$WT" || { say "FATAL: no worktree at $WT"; exit 1; }
   : > "$CONFLICTS"
   queue_orphan_branches
-  if [ ! -s "$CONFLICTS" ]; then say "no orphan worker branches — nothing to land"; exit 0; fi
+  if [ ! -s "$CONFLICTS" ]; then
+    # "Nothing queued" is a claim, not a fact. Assert against git before believing it — the queue is
+    # exactly what missed af-build/HIP-23.
+    af_assert_no_stragglers "--resolve-orphans"
+    say "no orphan worker branches — nothing to land"; exit 0
+  fi
   resolve_conflicts "orphans"
+  sweep_worktrees || true
+  af_assert_no_stragglers "--resolve-orphans"
   say "--resolve-orphans: done"
   exit 0
 fi
@@ -1565,6 +1809,11 @@ while :; do
     # 340 times in 8 hours; a grep pattern that matched its own command line) were all re-derivations
     # of state this loop already knows precisely. So the wait belongs HERE, where the distinction is
     # free: a DELIBERATE halt is an `exit`, and only a genuine drain reaches this branch.
+    # THE DRAIN GATE. Nothing claimable means nothing is in flight, so ANY branch still owed a merge
+    # and ANY leftover worktree is a straggler by definition — there is no future round to land it.
+    # This is the assertion whose absence let a sotos run print `drained — nothing claimable` on top
+    # of two unmerged af-build/* branches. It is fatal: a run that left work behind must not exit 0.
+    if [ "${watch_said_drain:-0}" != "1" ]; then af_assert_no_stragglers "drain"; fi
     if [ "${AF_WATCH:-0}" = "1" ]; then
       [ "${watch_said_drain:-0}" = "1" ] || { say "drained — nothing claimable; WATCHING for new tickets every ${AF_WATCH_POLL_S:-300}s (AF_WATCH=1). Stop with: touch $WATCH_STOP"; watch_said_drain=1; }
       [ -f "$WATCH_STOP" ] && { say "watch stop file present ($WATCH_STOP) — exiting"; break; }
@@ -1807,6 +2056,10 @@ while :; do
   # `|| true` because a branch-integrity failure regresses its ticket and must NOT abort the run under
   # `set -e`: the next round is precisely what rebuilds it. The failure is loud in the log either way.
   reap_branches || true
+  # Non-fatal at a round boundary: a branch for a ticket still in flight is legitimate here, and the
+  # next round lands it. It still forces a resolution pass and still logs loudly, so a straggler is
+  # visible from the round it appears in rather than only at the end of the run.
+  af_assert_no_stragglers "round #$round" 0 || true
 
   # Circuit breaker. A round that finishes NOTHING will, on the next pass, release the same leases
   # and dispatch the same frontier — so a persistent failure that isn't one of the specific panes
@@ -1850,4 +2103,8 @@ while :; do
   fi
   say "session closed; restarting fresh for the next batch"
 done
+# EVERY `break` above lands here — drain, max_tickets, dependency stall, watch-stop. None of them is
+# allowed to announce a finished run over work that never landed, so the invariant is asserted once
+# more on the way out, where it covers the paths the drain gate does not.
+af_assert_no_stragglers "exit"
 say "af-ticket-loop finished for $PROJECT"
