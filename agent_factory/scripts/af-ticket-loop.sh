@@ -191,6 +191,21 @@ DEEPSEEK_KEY_FILE="$HOME/.deepseek_key"
 OAUTH_TOKEN_FILE="$HOME/.claude/oauth-token.sh"
 CREDENTIALS_FILE="$HOME/.claude/.credentials.json"
 
+# Reads claudeAiOauth.subscriptionType out of the credentials file: "max", "pro", or
+# empty when there is no readable file (macOS keeps auth in the Keychain, so absence is
+# normal and must not be treated as failure). Never prints the token.
+_credential_subscription_type(){
+  [ -r "$CREDENTIALS_FILE" ] || { echo ""; return 0; }
+  python3 - "$CREDENTIALS_FILE" <<'PYEOF' 2>/dev/null || echo ""
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print(""); raise SystemExit(0)
+print((d.get("claudeAiOauth") or {}).get("subscriptionType", ""))
+PYEOF
+}
+
 resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if preflight fails
   local requested
   requested="${AF_MODEL_BACKEND:-}"
@@ -210,7 +225,16 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     # DeepSeek with no error at all, which is the exact confusion this whole block exists
     # to make impossible. ANTHROPIC_API_KEY is unset too: if it were set the CLI would bill
     # pay-as-you-go API credits instead of the subscription, which is a different bill.
-    BACKEND_NOTE="Anthropic subscription (Claude Max), model=sonnet — spends Claude quota, NOT API credits"
+    # READ the credential rather than asserting a bill. The old line was a
+    # constant: it printed "Claude Max ... NOT API credits" no matter which
+    # credential the session actually picked up, and was confidently wrong for
+    # every run on this box. A billing claim nobody verifies is worse than none.
+    _sub="$(_credential_subscription_type)"
+    case "$_sub" in
+      max|pro)  BACKEND_NOTE="Anthropic subscription (Claude ${_sub}), model=sonnet — spends Claude quota, NOT API credits" ;;
+      "")       BACKEND_NOTE="model=sonnet — credential type UNKNOWN (no readable .credentials.json); billing NOT verified" ;;
+      *)        BACKEND_NOTE="model=sonnet — credential reports '${_sub}', NOT a Max/Pro subscription; this may bill API credits" ;;
+    esac
     # A credential FILE is one way to hold a subscription, not the only way: on macOS the CLI keeps
     # its auth in the Keychain, so a perfectly working laptop has neither file. Refusing to start
     # there would be a false negative on the machine that most obviously CAN run a build, so absence
@@ -221,7 +245,14 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
       echo "[backend]   normal on macOS, where the CLI uses the Keychain. Probing the credential for real." >&2
       echo "[backend]   if the probe rejects: claude -> /login   (or, headless: claude setup-token)" >&2
     fi
-    CLAUDE_LAUNCH="unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY; [ -r \$HOME/.claude/oauth-token.sh ] && . \$HOME/.claude/oauth-token.sh; claude --model sonnet --dangerously-skip-permissions"
+    # CLAUDE_CODE_OAUTH_TOKEN is unset, NOT sourced. ~/.claude/oauth-token.sh exports
+    # that variable, and an env token OVERRIDES ~/.claude/.credentials.json -- so
+    # sourcing it silently decides the bill. Measured on the devbox: identical launch
+    # WITH the file sourced banners "Claude API", WITHOUT it banners "Claude Max",
+    # while .credentials.json held subscriptionType=max the whole time. The loop was
+    # therefore spending API credits while printing that it was not.
+    # The credentials file is the subscription; let the CLI read it.
+    CLAUDE_LAUNCH="unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN; claude --model sonnet --dangerously-skip-permissions"
 
     # The credential FILE existing proves nothing — a long-lived setup-token can be revoked
     # or expire while the file sits there looking healthy, and the failure surfaces as every
