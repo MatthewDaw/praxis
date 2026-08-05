@@ -647,6 +647,42 @@ print(' '.join(out))
 PYEOF
 }
 
+stall_roots(){  # -> one line per blocking root: "<id> <state> blocks N: <dependents>"
+  # A stall names its ROOT. The message used to say "unblock the root" without saying which — so a
+  # human (or an agent) had to walk 30 tickets' depends_on edges by hand to find it. Observed: a
+  # bucket-creation ticket blocked on a check only its DEPENDENT could satisfy, and a 30-ticket plan
+  # went to zero ready with nothing naming the one ticket holding it.
+  $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
+import sys
+import _praxis
+p = sys.argv[1]
+facts = _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}') or []
+state, deps = {}, {}
+for f in facts:
+    m = f.get('meta') or {}
+    rid = str(m.get('requirement_id') or f.get('id') or '')
+    if not rid:
+        continue
+    state[rid] = m.get('build_state')
+    deps[rid] = [str(d) for d in (m.get('depends_on') or [])]
+# A root is anything not finished that nothing unfinished precedes -- i.e. it is itself waiting on
+# nobody. Those are the only tickets a human can act on; everything else is downstream of them.
+unfinished = {r for r, s in state.items() if s != 'finished'}
+roots = [r for r in unfinished if not (set(deps.get(r, ())) & unfinished)]
+def blocked_behind(root):
+    seen, frontier = set(), [root]
+    while frontier:
+        cur = frontier.pop()
+        for r in unfinished:
+            if cur in deps.get(r, ()) and r not in seen:
+                seen.add(r); frontier.append(r)
+    return sorted(seen)
+for r in sorted(roots):
+    behind = blocked_behind(r)
+    print(f"{r} [{state.get(r)}] blocks {len(behind)}: {', '.join(behind[:8])}{' ...' if len(behind) > 8 else ''}")
+PYEOF
+}
+
 batch_open(){  # args: ids... -> how many are still incomplete|in_progress (blocked counts as done)
   $PY - "$PROJECT" "$@" <<'PYEOF' 2>/dev/null
 import sys
@@ -1857,7 +1893,14 @@ while :; do
   if [ -z "$batch" ]; then
     # Claimable work exists but nothing is dependency-ready: a cycle, or a chain rooted on a blocked
     # ticket. Restarting sessions cannot fix that, so halt loudly instead of spinning.
-    say "DEPENDENCY STALL — $left claimable but nothing ready; every remaining ticket waits on an unfinished or blocked prerequisite. Fix the depends_on chain or unblock the root."
+    say "DEPENDENCY STALL — $left claimable but nothing ready; every remaining ticket waits on an unfinished or blocked prerequisite."
+    # Name the root(s). Best-effort: a failed query must not turn a stall into an outage.
+    if roots=$(stall_roots 2>/dev/null) && [ -n "$roots" ]; then
+      say "STALL ROOT(S) — act on these; everything else is downstream:"
+      printf '%s\n' "$roots" | while IFS= read -r line; do [ -n "$line" ] && say "    $line"; done
+    else
+      say "  (could not resolve the stall root — walk depends_on by hand)"
+    fi
     if [ "${AF_WATCH:-0}" = "1" ]; then
       # Watching a stall is safe HERE and was not safe from outside. An external supervisor could only
       # see exit 0 — identical to a clean drain — so it relaunched the whole loop: fresh session, fresh
