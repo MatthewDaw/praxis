@@ -797,6 +797,25 @@ def _universal_covering_entries(meta: dict, already_covered: set[str]) -> list[d
     return out
 
 
+_CD_PREFIX = re.compile(r"^\s*cd\s+[^\s&;|]+\s*&&\s*")
+
+
+def _same_command(a: str, b: str) -> bool:
+    """Whether two pinned commands are the same gate.
+
+    Exact text, except for a leading ``cd <path> &&``. Every ticket builds in its own worktree, so a
+    worker legitimately prefixes the authored command to run it there — observed on R29 as
+    ``cd /workspace/.../worktrees/agent-a224da98e3ea29e88 && <the authored command verbatim>``.
+    Treating that as a substitution would reject honest work on every ticket, which is a worse
+    failure than the one this guard exists to stop.
+
+    Only the leading prefix is forgiven. Anything the worker appends, removes, or rewrites inside
+    the command still counts as a different gate — that is where the real substitutions lived
+    (a 3800-char check pinned as 171, a lint gate cut from 166 to 74).
+    """
+    return _CD_PREFIX.sub("", a or "").strip() == _CD_PREFIX.sub("", b or "").strip()
+
+
 def _declared_runs(ref: Optional[tuple[str, str]] = None) -> dict[str, str]:
     """``{check fact id: authored run}`` for every check declaring a concrete command in this
     project's ``building-validation`` snapshot.
@@ -1027,7 +1046,7 @@ def all_validations_passed(ticket: Any, ref: Optional[tuple[str, str]] = None) -
             continue  # no authored command (acceptance floor, graded rubric) — worker authorship stands
         if not any(
             bool(e.get("passed"))
-            and (e.get("run") or "").strip() == want
+            and _same_command(e.get("run") or "", want)
             and rid in {str(c) for c in (e.get("covers") or [])}
             for e in pinned
         ):

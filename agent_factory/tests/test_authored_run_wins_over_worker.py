@@ -100,3 +100,23 @@ def test_gate_unaffected_where_no_command_is_declared():
     fid = "r1::acceptance"
     meta = _meta([fid], [{"validation_id": "v-a", "covers": [fid], "run": "pytest -q", "passed": True}])
     assert _gate(meta, {}) is True
+
+
+def test_a_worktree_cd_prefix_is_the_same_gate():
+    """Every ticket builds in its own worktree; prefixing the authored command to run it there is
+    honest, and rejecting it would fail every ticket. Observed live on R29."""
+    wt = "cd /workspace/farming_analysis/.claude/worktrees/agent-a224da98e3ea29e88 && "
+    meta = _meta([CHECK], [{"validation_id": "v-x", "covers": [CHECK],
+                            "run": wt + REAL, "passed": True}])
+    assert _gate(meta, {CHECK: REAL}) is True
+
+
+def test_only_the_leading_prefix_is_forgiven():
+    """A command rewritten anywhere else is still a different gate."""
+    wt = "cd /tmp/wt && "
+    meta = _meta([CHECK], [{"validation_id": "v-x", "covers": [CHECK],
+                            "run": wt + WEAK, "passed": True}])
+    assert _gate(meta, {CHECK: REAL}) is False
+    trailing = _meta([CHECK], [{"validation_id": "v-y", "covers": [CHECK],
+                                "run": REAL + " || true", "passed": True}])
+    assert _gate(trailing, {CHECK: REAL}) is False
