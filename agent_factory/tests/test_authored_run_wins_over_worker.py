@@ -146,3 +146,39 @@ def test_actual_mock_usage_is_still_caught():
                 "aws --endpoint-url=http://localhost:4566 s3 ls",
                 "pytest --with pytest -k x  # mock_aws fixture"):
         assert pg._MOCKED_RE.search(run), run
+
+
+# --- R-EXTERNAL-STATE-NEEDS-LIVE-CHECK: weak terms need an infrastructure context ----------------
+
+def _req(**kw):
+    from agent_factory.plan_gate import Requirement
+    kw.setdefault("id", "R1"); kw.setdefault("source", "prd-p")
+    kw.setdefault("acceptance", "it holds"); kw.setdefault("verify", "automated")
+    return Requirement(**kw)
+
+
+def _verdict(req, checks):
+    from agent_factory.plan_gate import evaluate_plan
+    return evaluate_plan([req], project="p", contract={"signed": True, "actions_recorded": True},
+                         checks=checks)
+
+
+def test_ordinary_english_instance_on_a_non_infra_ticket_is_ignored():
+    """Caught by running the rule across four unrelated plans: a text-analysis project was flagged on
+    'one rule yields an auto-appliable lexical instance and a report-only semantic instance'."""
+    r = _req(text="One rule yields an auto-appliable lexical instance and a semantic instance.",
+             tags=["rules", "lexical"])
+    assert _verdict(r, []).admitted is True
+
+
+def test_the_same_weak_term_counts_on_an_infrastructure_ticket():
+    r = _req(text="The pipeline provisions an instance for the expensive stage.",
+             tags=["infrastructure", "compute"])
+    v = _verdict(r, [])
+    assert v.admitted is False
+    assert v.rule_ids == ["R-EXTERNAL-STATE-NEEDS-LIVE-CHECK"]
+
+
+def test_a_strong_term_stands_alone_without_any_tag():
+    r = _req(text="The corpus is transferred to S3 under raw/.", tags=[])
+    assert _verdict(r, []).admitted is False

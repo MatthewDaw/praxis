@@ -64,15 +64,35 @@ R_EXTERNAL_STATE_LIVE = "R-EXTERNAL-STATE-NEEDS-LIVE-CHECK"  # a ticket claiming
 # constant. Every acceptance condition was honest prose. Every check verified inputs the ticket itself
 # invented. The gap was structural, so the fix is too: if a ticket's own words claim external state,
 # SOMETHING it resolves must go and look.
-_EXTERNAL_STATE_RE = re.compile(
+# Two tiers, because a single flat vocabulary produced false positives immediately. Run across four
+# unrelated plans, the flat version flagged af-clean — a TEXT-ANALYSIS project with no cloud surface —
+# on the sentence "one rule yields an auto-appliable lexical instance and a report-only semantic
+# instance". "instance", "queue", "topic", "endpoint" and "lambda" are ordinary technical English
+# before they are infrastructure.
+#
+# STRONG terms name a specific external system and stand alone.
+_EXTERNAL_STRONG_RE = re.compile(
     r"\b("
-    r"s3|bucket|object storage|uploaded|upload(?:s|ed)? to|transferred to|"
-    r"ec2|instance|provision(?:ed|s)?|terminat(?:e|ed|es)|"
-    r"deploy(?:ed|s|ment)?|endpoint|serves?|serving|binds? to|listens? on|"
-    r"dns|https?://|api gateway|lambda|queue|topic"
+    r"s3|ec2|rds|dynamodb|cloudfront|api gateway|object storage|"
+    r"bucket|uploads? to|uploaded to|transferred to|binds? to|listens? on|"
+    r"dns record|https?://"
     r")\b",
     re.IGNORECASE,
 )
+# WEAK terms are infrastructure ONLY in an infrastructure context, so they need corroboration —
+# either a STRONG term elsewhere in the same ticket, or an infra-ish identity tag.
+_EXTERNAL_WEAK_RE = re.compile(
+    r"\b("
+    r"instance|provision(?:ed|s|ing)?|terminat(?:e|ed|es|ion)|"
+    r"deploy(?:ed|s|ment)?|endpoint|serves?|serving|queue|topic|lambda|dns"
+    r")\b",
+    re.IGNORECASE,
+)
+# Tags that make a WEAK term count. Identity the plan already carries — no new authoring burden.
+_INFRA_TAGS = frozenset({
+    "infrastructure", "deployment", "deploy", "aws", "cloud", "ec2", "s3", "iam",
+    "terraform", "cdk", "networking", "compute", "provisioning", "acquisition", "hosting",
+})
 # Commands that actually leave the process and touch something. A check whose run is only pytest/ruff/
 # mypy/grep proves the tree, never the world.
 _LIVE_COMMAND_RE = re.compile(
@@ -348,7 +368,13 @@ def evaluate_plan(
         for r in requirements:
             if r.id in decision_ids or _norm(r.verify) == "manual":
                 continue
-            claim = _EXTERNAL_STATE_RE.search(f"{r.text} {r.acceptance}")
+            blob = f"{r.text} {r.acceptance}"
+            claim = _EXTERNAL_STRONG_RE.search(blob)
+            if claim is None:
+                # A weak term counts only in an infrastructure context: an infra identity tag on the
+                # ticket. Without that corroboration it is ordinary technical English and is ignored.
+                if {_norm(x) for x in r.tags} & _INFRA_TAGS:
+                    claim = _EXTERNAL_WEAK_RE.search(blob)
             if not claim:
                 continue
             if live_any or ({_norm(t) for t in r.tags} & live_tags):
