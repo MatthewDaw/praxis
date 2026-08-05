@@ -1153,7 +1153,7 @@ for br, u in dropped.items():
         f = by_rid.get(str(rid))
         if not f:
             continue
-        _praxis.regress_requirements(p, [f["id"]], {f["id"]: {
+        _praxis.regress_requirements(proj, [f["id"]], {f["id"]: {
             "claim_owner": None, "claim_at": None,
             "claim_heartbeat_at": None, "claim_lease_ttl": None,
             "audit_disposition": (f"REGRESSED by conflict resolution of round #{rnd}: branch {br} was merged, but this "
@@ -1863,7 +1863,7 @@ for rid, detail in entries:
                  "originally written against — the failure is an integration failure, so the "
                  "original worktree's green result does not carry over.")
     summary = " ".join(parts)
-    _praxis.regress_requirements(p, [f["id"]], {f["id"]: {
+    _praxis.regress_requirements(proj, [f["id"]], {f["id"]: {
         "claim_owner": None, "claim_at": None,
         "claim_heartbeat_at": None, "claim_lease_ttl": None,
         "audit_disposition": summary,
