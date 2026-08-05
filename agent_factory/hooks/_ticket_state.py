@@ -719,16 +719,12 @@ def pin_requirements(cid: str, requirements: list,
     # under its own id with an unrelated (invariably weaker) command and recorded as passing it —
     # observed live: a 3800-char check asserting byte floors and layer ids was pinned as a 171-char
     # "start the server and curl one route", and the ticket finished green over a stub UI.
-    authored_runs = {rid: run for r in requirements
-                     if isinstance(r, dict) and (rid := _check_id(r))
-                     and (run := str((r.get("meta") or {}).get("run") or "").strip())}
     return _praxis.write_build_state(cid, {
         M_REQUIRED_VALIDATIONS: req_ids,
         M_MANUAL_REQUIREMENTS: manual_ids,
         M_REPORT_ONLY_REQUIREMENTS: report_only_ids,
         M_PINNED_CHECKS: [],
         M_UNIVERSAL_CONTRACT: universal_entries,
-        M_AUTHORED_RUNS: authored_runs,
     }, **_ref_kw(ref))
 
 
@@ -801,7 +797,40 @@ def _universal_covering_entries(meta: dict, already_covered: set[str]) -> list[d
     return out
 
 
-def _apply_authored_runs(pinned: list[dict], meta: dict) -> list[dict]:
+def _declared_runs(ref: Optional[tuple[str, str]] = None) -> dict[str, str]:
+    """``{check fact id: authored run}`` for every check declaring a concrete command in this
+    project's ``building-validation`` snapshot.
+
+    Read LIVE rather than copied onto the ticket. An earlier version stashed this map in ticket meta
+    at pin time, which silently did nothing: ``write_build_state`` only accepts the server's
+    ``BUILD_STATE_META_KEYS``, so an unregistered key is dropped in transit — the write returns
+    success and the field never lands. Reading the checks directly needs no new key, no server
+    change, and compares against the check as authored right now.
+    """
+    space = ""
+    if ref and ref[0]:
+        space = str(ref[0])
+    if not space:
+        space = os.environ.get("FACTORY_PROJECT", "") or ""
+    if not space:
+        return {}
+    # A minimal fake client (the sanctioned-routes test injects one) has no reader — degrade to "no
+    # declared commands" for that SHAPE only. A real client that raises is left to propagate: a
+    # lookup failure must surface, never quietly re-open the substitution hole this closes.
+    reader = getattr(_praxis, "facts_by", None)
+    if reader is None:
+        return {}
+    out: dict[str, str] = {}
+    for c in (reader(category="check", space=space,
+                     snapshot="building-validation") or []):
+        cid = c.get("id") or c.get("cid")
+        run = str(((c.get("meta") or {}).get("run")) or "").strip()
+        if cid and run:
+            out[str(cid)] = run
+    return out
+
+
+def _apply_authored_runs(pinned: list[dict], authored: dict) -> list[dict]:
     """Make a DECLARED check's own command authoritative over the worker's synthesized one.
 
     ``pin_requirements`` stashes ``{validation_id: run}`` for every resolved check that declares a
@@ -821,15 +850,22 @@ def _apply_authored_runs(pinned: list[dict], meta: dict) -> list[dict]:
     definition — including a 3800-char UI check pinned as 171 chars and a lint/typecheck gate cut from
     166 to 74. Every one of those substitutions was weaker than the check it displaced.
     """
-    authored = meta.get(M_AUTHORED_RUNS) or {}
     if not isinstance(authored, dict):
         authored = {}
     for entry in pinned:
-        vid = entry.get("validation_id")
-        declared = str(authored.get(vid) or "").strip() if vid else ""
-        if declared:
-            entry["run"] = declared
+        # Key on what the entry COVERS, not on its own id. A worker pins under an id it invents
+        # (`v-static-hygiene`) while declaring `covers: [<real check fact id>]`, so matching on
+        # validation_id misses every substitution — which is exactly how a 166-char lint gate was
+        # pinned as 74 chars under a `v-` alias and recorded green.
+        hits = [authored[c] for c in (str(x) for x in (entry.get("covers") or []))
+                if str(authored.get(c) or "").strip()]
+        if len(hits) == 1:
+            entry["run"] = hits[0]
             entry["run_source"] = "authored"
+        elif len(hits) > 1:
+            # One entry claiming to cover two checks that each declare their own command cannot
+            # honour both. Leave it alone; the gate refuses it.
+            entry.setdefault("run_source", "ambiguous")
         else:
             entry.setdefault("run_source", "worker")
     return pinned
@@ -859,7 +895,7 @@ def pin_validations(cid: str, validations: list,
         meta = _meta(cid, ref)
     except Exception:  # noqa: BLE001 - best-effort; see docstring
         meta = {}
-    _apply_authored_runs(pinned, meta)
+    _apply_authored_runs(pinned, _declared_runs(ref))
     covered = {c for p in pinned for c in (p.get("covers") or [])}
     pinned.extend(_universal_covering_entries(meta, covered))
     return _praxis.write_build_state(cid, {M_PINNED_CHECKS: pinned}, **_ref_kw(ref))
@@ -979,6 +1015,23 @@ def all_validations_passed(ticket: Any, ref: Optional[tuple[str, str]] = None) -
     gating_pinned = [e for e in pinned if not _covers_only(e, report_only)]
     if not all(bool(e.get("passed")) for e in gating_pinned):
         return False
+    # A DECLARED check's own command is the only thing that can satisfy it. Coverage alone is not
+    # enough: the gate used to accept any entry naming the check in `covers`, whatever command it
+    # actually ran, so a worker could cover a 3800-char check with `curl /runs`, or with the EMPTY
+    # command `record_validation_pass` appends for an unpinned id, and finish green. Observed live:
+    # a bucket-creation ticket finished having created no bucket, with six entries carrying run="".
+    declared = _declared_runs(ref)
+    for rid in required:
+        want = str(declared.get(rid) or "").strip()
+        if not want:
+            continue  # no authored command (acceptance floor, graded rubric) — worker authorship stands
+        if not any(
+            bool(e.get("passed"))
+            and (e.get("run") or "").strip() == want
+            and rid in {str(c) for c in (e.get("covers") or [])}
+            for e in pinned
+        ):
+            return False
     # Manual requirements need an EXTERNAL/human-sourced pass — the worker may not self-certify them.
     manual = {str(r) for r in (meta.get(M_MANUAL_REQUIREMENTS) or []) if r}
     for req in manual:
