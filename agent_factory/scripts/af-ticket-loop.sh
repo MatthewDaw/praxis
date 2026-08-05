@@ -647,6 +647,49 @@ print(' '.join(out))
 PYEOF
 }
 
+finding_guard(){  # args: round-no ids... -> regresses any ticket that answered a finding with nothing
+  # A ticket carrying an OPEN post-merge verification finding may not close by changing nothing.
+  #
+  # The finding is the only thing that can see a defect living BETWEEN tickets, and it is written as
+  # prose on the ticket while the completion gate reads only pinned checks. Prose loses: one ticket
+  # was regressed with a report naming the defect, the evidence and the fix, and closed again TWICE
+  # with its file untouched, because every pinned check stayed green against tests that hand-built
+  # the very shape the finding said was wrong.
+  #
+  # Deliberately NOT "an open finding blocks completion": verification runs only AFTER a ticket
+  # finishes and merges, so blocking the finish would mean it could never reach the verification
+  # that clears it. Any genuine attempt satisfies this guard; only doing nothing does not.
+  $PY - "$PROJECT" "$1" "${AF_ROUND_BASE:-HEAD}" "${@:2}" <<'PYEOF' 2>/dev/null
+import subprocess, sys
+import _praxis, _ticket_state as ts
+proj, rnd, base = sys.argv[1], sys.argv[2], sys.argv[3]
+want = set(sys.argv[4:])
+kw = dict(space=proj, snapshot=f"prd-{proj}")
+n = 0
+for f in _praxis.facts_by(category="requirement", **kw) or []:
+    m = f.get("meta") or {}
+    rid = str(m.get("requirement_id") or f.get("id"))
+    if rid not in want or m.get("build_state") != "finished":
+        continue
+    try:
+        out = subprocess.run(["git", "log", "--oneline", f"{base}..HEAD", f"--grep={rid}"],
+                             capture_output=True, text=True, timeout=30).stdout.strip()
+    except Exception:
+        out = "unknown"          # cannot prove absence -> do not accuse
+    if out:
+        continue
+    why = ts.finding_unanswered_without_change(m, 0)
+    if not why:
+        continue
+    _praxis.regress_requirements(proj, [f["id"]], {f["id"]: {
+        "audit_disposition": f"ROUND #{rnd}: {why}",
+    }}, **kw)
+    sys.stderr.write(f"finding-guard regressed {rid}\n")
+    n += 1
+print(n)
+PYEOF
+}
+
 stall_roots(){  # -> one line per blocking root: "<id> <state> blocks N: <dependents>"
   # A stall names its ROOT. The message used to say "unblock the root" without saying which — so a
   # human (or an agent) had to walk 30 tickets' depends_on edges by hand to find it. Observed: a
@@ -1804,6 +1847,15 @@ PYEOF
   case "$regressed_n" in ''|*[!0-9]*) regressed_n=0 ;; esac
   if [ "$regressed_n" -gt 0 ]; then
     say "round #$rnd: $regressed_n ticket(s) regressed with a failure report attached — the next round rebuilds them"
+  fi
+
+  # A ticket may not answer an OPEN verification finding by changing nothing. Runs AFTER the
+  # regress pass above so a ticket this round already regressed is not counted twice.
+  local fg
+  fg=$(finding_guard "$rnd" "$@" 2>/dev/null || echo 0)
+  case "$fg" in ''|*[!0-9]*) fg=0 ;; esac
+  if [ "$fg" -gt 0 ]; then
+    say "round #$rnd: $fg ticket(s) closed an OPEN verification finding with ZERO commits — regressed. A finding is not answered by changing nothing."
   fi
 
   rm -f "$VERDICT"

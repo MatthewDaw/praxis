@@ -816,6 +816,56 @@ def _same_command(a: str, b: str) -> bool:
     return _CD_PREFIX.sub("", a or "").strip() == _CD_PREFIX.sub("", b or "").strip()
 
 
+M_REGRESSION_DETAIL = "regression_detail"   # written by the post-merge verification round
+
+
+def open_finding(meta: dict) -> Optional[dict]:
+    """The post-merge verification finding this ticket still owes an answer to, or ``None``.
+
+    The verification round is the only thing that can see a defect living BETWEEN tickets — two
+    modules each individually green whose interfaces do not meet. It writes its judgement to
+    ``meta.regression_detail`` and the loop regresses the ticket. But the completion gate reads only
+    pinned checks, so the finding is prose competing against "all your checks are green", and prose
+    loses: one ticket was regressed with a precise report naming the defect, the evidence and the
+    fix, and closed again TWICE without its file being touched.
+
+    A finding is answered when a later verification round confirms the ticket survived integration
+    (which stamps ``resolved``), or when a human dismisses it. It is NOT answered by the worker
+    saying so — that is the self-certification this exists to stop.
+    """
+    d = meta.get(M_REGRESSION_DETAIL)
+    if not isinstance(d, dict) or d.get("resolved"):
+        return None
+    return d if str(d.get("reason") or "").strip() else None
+
+
+def finding_unanswered_without_change(meta: dict, commits: int) -> Optional[str]:
+    """Why a ``finished`` ticket carrying an open finding must NOT count, or ``None`` if it may.
+
+    Deliberately NOT "an open finding blocks completion": verification runs only AFTER a ticket
+    finishes and merges, so blocking the finish would mean the ticket could never reach the
+    verification that clears it — a guaranteed deadlock, and this repo has already lost hours to two
+    of those from over-eager gating.
+
+    The rule instead targets what actually happened: a ticket told exactly what was wrong produced
+    NO CHANGE and closed anyway. Any real attempt satisfies this; only doing nothing does not.
+    """
+    f = open_finding(meta)
+    if f is None or commits > 0:
+        return None
+    reason = str(f.get("reason") or "").strip()
+    return ("finished with an OPEN verification finding and contributed no commits — the rebuild "
+            "changed nothing, so the finding stands unanswered: " + reason[:400])
+
+
+def resolve_finding(meta: dict) -> dict:
+    """Mark the finding answered — called when a verification round confirms the ticket survived."""
+    d = dict(meta.get(M_REGRESSION_DETAIL) or {})
+    if d:
+        d["resolved"] = True
+    return d
+
+
 def _declared_runs(ref: Optional[tuple[str, str]] = None) -> dict[str, str]:
     """``{check fact id: authored run}`` for every check declaring a concrete command in this
     project's ``building-validation`` snapshot.
