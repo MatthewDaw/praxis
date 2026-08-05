@@ -224,3 +224,57 @@ negative = [
   # Shape: an untyped file in a language the repo configures NO checker for — the axis is inert here.
   "#!/usr/bin/env bash\nset -euo pipefail\nexec python -m appeal_api \"$@\"",
 ]
+
+# --- Proof-against-reality family -----------------------------------------------------------------
+# Three shapes for one recurring defect: a ticket whose acceptance is honest prose, whose tests pass,
+# and which changed nothing. Each was paid for by a real plan where five tickets reached
+# build_state="finished" having done no work. They are OPT-IN candidates, not universals — the
+# check-authoring agent promotes the ones a given ticket needs.
+
+[[check]]
+check_id = "external-claim-proven-against-reality"
+kind = "graded"
+applies_to = ["*"]
+criterion = "Where the ticket claims to change something outside the repo, the evidence is an observation of that system rather than a mock of it."
+confidence_floor = 6
+judge_prompt = "Read what the ticket CLAIMS, then ask what would still be true if the external system were switched off. If the tests would pass unchanged, the claim is unproven — say so and cite the file:line of the mock, fixture or stub standing in for reality. Mocked clients are legitimate in unit tests; the defect is a mock being the ONLY evidence for an external claim. Do not penalise a ticket that makes no external claim."
+[[check.axes]]
+name = "evidence_touches_the_system"
+threshold = 0.8
+guidance = "Something in the ticket's evidence queries the real bucket / instance / endpoint / database it claims to have changed. A moto, localstack or responses stub is not that. Observed: three acquisition tickets passed against a mocked S3 with no bucket in the account."
+[[check.axes]]
+name = "absence_is_reported"
+threshold = 0.6
+guidance = "Where the external system genuinely cannot be reached at build time, the ticket says so explicitly rather than quietly substituting a mock and reporting green."
+
+[[check]]
+check_id = "measurement-not-constant"
+kind = "graded"
+applies_to = ["*"]
+criterion = "A value the ticket presents as measured is computed from its inputs, not returned from a constant or selected by a branch."
+confidence_floor = 6
+judge_prompt = "For every number the ticket reports as an error, score, offset, count or rate, trace where it comes from. A module-level constant returned as a 'measured' value is the defect — regardless of how plausible the constant is or how thorough the tests around it look. Ask: would this value differ if the input differed? Cite file:line."
+[[check.axes]]
+name = "derived_from_input"
+threshold = 0.8
+guidance = "Reported measurements are functions of the data. Observed: a reconstruction ticket returned reprojection_error_m from PHASE_CORRELATION_REPROJECTION_ERROR_M, a module constant, and its test asserted that constant was below another constant."
+[[check.axes]]
+name = "varies_across_inputs"
+threshold = 0.7
+guidance = "Two different inputs would produce two different outputs. A test that only ever exercises one input cannot distinguish a measurement from a constant."
+
+[[check]]
+check_id = "rendered-surface-has-substance"
+kind = "graded"
+applies_to = ["ui", "frontend", "surface"]
+criterion = "A surface the ticket claims to render carries the content its specification enumerates, not a placeholder that satisfies an existence check."
+confidence_floor = 6
+judge_prompt = "Compare what the surface actually renders against what the ticket's own text enumerates — every named field, state, control and vocabulary value. Judge the rendered output, not the data structures behind it. Cite what is specified but absent."
+[[check.axes]]
+name = "specified_content_present"
+threshold = 0.75
+guidance = "Named layers, fields, states and enumerated values from the spec appear in the rendered output. Observed: a map view specifying five toggleable layers, an orthophoto overlay and an honesty panel shipped as '<h1>Map view</h1>' and passed a check asserting the route returned HTML."
+[[check.axes]]
+name = "not_built_to_the_assertion"
+threshold = 0.6
+guidance = "The surface is not a minimal artefact shaped to satisfy the literal strings a check greps for. Emitting exactly the four enumerated values as bare unstyled buttons, with nothing else the spec describes, is this failure."
