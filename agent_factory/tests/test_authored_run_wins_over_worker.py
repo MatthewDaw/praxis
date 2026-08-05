@@ -120,3 +120,29 @@ def test_only_the_leading_prefix_is_forgiven():
     trailing = _meta([CHECK], [{"validation_id": "v-y", "covers": [CHECK],
                                 "run": REAL + " || true", "passed": True}])
     assert _gate(trailing, {CHECK: REAL}) is False
+
+
+# --- R-EXTERNAL-STATE-NEEDS-LIVE-CHECK: mock detection matches USAGE, not vocabulary -------------
+
+def _pg():
+    import agent_factory.plan_gate as pg
+    return pg
+
+
+def test_a_real_aws_check_is_not_disqualified_by_prose_mentioning_moto():
+    """Caught live: `aws s3 ls ...` whose failure message read "a moto mock does not satisfy this
+    check" was treated as mocked. The check was right; the rule punished it for saying so."""
+    pg = _pg()
+    run = ('bash -c \'aws s3 ls s3://farm/raw/ --recursive || '
+           'fail "no bucket — a moto mock does not satisfy this check, which queries live AWS"\'')
+    assert pg._LIVE_COMMAND_RE.search(run)
+    assert not pg._MOCKED_RE.search(run)
+
+
+def test_actual_mock_usage_is_still_caught():
+    pg = _pg()
+    for run in ("uv run --with pytest --with moto pytest tests/acquisition -q",
+                "python -c 'from moto import mock_aws'",
+                "aws --endpoint-url=http://localhost:4566 s3 ls",
+                "pytest --with pytest -k x  # mock_aws fixture"):
+        assert pg._MOCKED_RE.search(run), run

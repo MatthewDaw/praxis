@@ -1,0 +1,30 @@
+# A check that LOOKS live but runs against moto does not count. This is the subtlest form of the
+# defect: the command names aws/boto3, so a naive scan would pass it, while the external world stays
+# untouched. Mocked acquisition tests are exactly how the original plan self-certified.
+id: plan_gate_external_state_mocked_check_rejected
+component: plan_gate
+input:
+  project: farm
+  # supplied so this case isolates the rule under test; the
+  # contract rule fails closed and would otherwise co-fire.
+  contract:
+    signed: true
+    actions_recorded: true
+  checks:
+    - check_id: tests-acquisition-mocked
+      applies_to: ["acquisition"]
+      run: "uv run --with pytest --with moto python -m pytest tests/acquisition -q  # boto3 via moto"
+  requirements:
+    - id: R1
+      text: "The pipeline provisions an EC2 instance for the expensive stage and terminates it after."
+      acceptance: "A completed run leaves no running instance."
+      defines: ["ephemeral compute"]
+      references: []
+      source: "prd-farm"
+      tags: ["acquisition"]
+      verify: "automated"
+  out_of_scope: []
+rule_ids: ["R-EXTERNAL-STATE-NEEDS-LIVE-CHECK"]
+deterministic_checks:
+  - name: gate_rejects
+    ref: "evals.checks:gate_rejects"

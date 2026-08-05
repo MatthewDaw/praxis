@@ -52,6 +52,25 @@ _ABSENT_CONTRACT_MSG = (
 )
 
 EXPECTED_VERDICTS = {
+    "plan_gate_external_state_without_live_check_rejected": {
+        "admitted": False,
+        "rule_ids": ["R-EXTERNAL-STATE-NEEDS-LIVE-CHECK"],
+        "messages": [
+            'R1: claims external state (\'transferred to\') but resolves no check whose command queries that system. A mocked client, a fixture or a constant proves the code\'s shape while the external world stays untouched — author a check whose run actually looks (aws/rclone/curl/...), or mark the ticket verify="manual".',
+        ],
+    },
+    "plan_gate_external_state_mocked_check_rejected": {
+        "admitted": False,
+        "rule_ids": ["R-EXTERNAL-STATE-NEEDS-LIVE-CHECK"],
+        "messages": [
+            'R1: claims external state (\'provisions\') but resolves no check whose command queries that system. A mocked client, a fixture or a constant proves the code\'s shape while the external world stays untouched — author a check whose run actually looks (aws/rclone/curl/...), or mark the ticket verify="manual".',
+        ],
+    },
+    "plan_gate_external_state_with_live_check_admitted": {
+        "admitted": True,
+        "rule_ids": [],
+        "messages": [],
+    },
     "plan_gate_well_formed_admitted": {
         "admitted": True,
         "rule_ids": [],

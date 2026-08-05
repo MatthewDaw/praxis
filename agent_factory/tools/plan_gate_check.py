@@ -418,8 +418,20 @@ def check_plan(project: str, out_of_scope: list[str] | None = None):
     everything = _praxis.facts_by(state="any", space=bare, snapshot=f"prd-{bare}")
     requirements = [requirement_from_fact(f) for f in facts]
     contract = read_contract(bare)
+    # The DECLARED build-validation checks, threaded in the same way as the contract so the pure gate
+    # never reads Praxis itself. R-EXTERNAL-STATE-NEEDS-LIVE-CHECK needs them to answer "does anything
+    # this ticket resolves actually go and look at the external system it claims?". An unreadable
+    # section degrades to [] rather than None: [] means "no live checks exist", which makes the rule
+    # FIRE on external-state tickets. None would make it stand down, and a silent stand-down is the
+    # failure mode the rule exists to prevent.
+    try:
+        check_facts = _praxis.facts_by(category="check", space=bare,
+                                       snapshot="building-validation") or []
+    except Exception:  # noqa: BLE001 - fail toward firing, never toward silence
+        check_facts = []
+    checks = [dict(f.get("meta") or {}) for f in check_facts]
     verdict = evaluate_plan(requirements, out_of_scope=out_of_scope or [], project=bare,
-                            contract=contract)
+                            contract=contract, checks=checks)
     reasons = list(verdict.reasons)
     reasons += duplicate_requirement_id_reasons(facts)
     reasons += invisible_ticket_reasons(facts, everything, bare)
