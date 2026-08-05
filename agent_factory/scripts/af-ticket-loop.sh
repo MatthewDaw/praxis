@@ -1769,6 +1769,23 @@ while :; do
     pane_hash=$(printf '%s' "$pane" | hash_text)
     if [ "$pane_hash" = "$last_hash" ]; then
       same_count=$((same_count+1))
+      # A still pane is not a dead worker. The TUI emits nothing while a single long
+      # tool call runs -- a full pytest, a docker build, a graded judge call with its
+      # own 600s timeout -- so a healthy ticket goes quiet for far longer than the
+      # 15min threshold. The verify wait below already learned this the hard way
+      # ("verify session frozen for 15min" at 28min in, with pytest still running) and
+      # was given this exact guard; the round wait, which is where the actual BUILD
+      # happens, never got it. Observed 2026-08-05: DATA-1 ran 29min, was reaped as
+      # frozen, and three such rounds in a row tripped the HALT -- the driver killed
+      # its own healthy work and then concluded something unfixable was wrong.
+      #
+      # STALL_POLLS' own comment states the invariant this violates: it must stay
+      # ABOVE the longest tool timeout the agent uses. Rather than guess that number,
+      # ask the OS whether real work is still happening underneath the quiet pane.
+      if [ "$same_count" -ge "$stall_polls" ] && verify_children_busy "$SESSION"; then
+        say "build pane still for $((same_count*30/60))min but a child process is live (long tool call) — not frozen, still waiting"
+        same_count=0
+      fi
       if [ "$same_count" -ge "$stall_polls" ]; then
         say "pane unchanged for $((stall_polls*30/60))min — treating as frozen/stalled, ending wait"
         break
