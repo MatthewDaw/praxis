@@ -1878,6 +1878,7 @@ class _UniversalCheck(NamedTuple):
     criterion: str
     report_only: bool
     rubric: Optional[dict]
+    applies_to: tuple = ("*",)
 
 
 # Loader run in a SIDECAR interpreter when this one cannot import the library itself (see
@@ -1888,6 +1889,7 @@ from agent_factory.rubric import rubric_to_dict
 from agent_factory.seeded_checks import universal_seeded_checks
 print(json.dumps([
     {"check_id": c.check_id, "criterion": c.criterion, "report_only": bool(c.report_only),
+     "applies_to": list(c.applies_to),
      "rubric": rubric_to_dict(c.rubric) if c.rubric is not None else None}
     for c in universal_seeded_checks()
 ]))
@@ -1944,7 +1946,8 @@ def _universal_checks_out_of_process() -> Optional[list]:
         return [_UniversalCheck(check_id=str(r.get("check_id") or ""),
                                 criterion=str(r.get("criterion") or ""),
                                 report_only=bool(r.get("report_only")),
-                                rubric=r.get("rubric")) for r in rows]
+                                rubric=r.get("rubric"),
+                                applies_to=tuple(r.get("applies_to") or ("*",))) for r in rows]
     return None
 
 
@@ -2014,14 +2017,28 @@ def universal_requirements(cid: str, ticket_meta: Optional[dict],
     carries ``kind="graded"`` + its serialized rubric + a stable id (the seeded ``check_id``) + a
     ``report_only`` flag, so a worker-synthesized validation covers it and ``verify_graded_check``
     grades it exactly like a pool graded check.
+
+    A universal check authored ``applies_to = ["*"]`` injects onto every non-exempt ticket. One with
+    a NARROWER ``applies_to`` is a TAG-SCOPED universal: still mandatory (never opt-in — this is how
+    ``rendered-surface-has-substance`` reaches every ui ticket without an authoring agent choosing
+    it), but injected only where its tags intersect the ticket's (``meta.tags`` ∪ ``meta.applies_to``,
+    both sides via :func:`normalize_tag`, matching the RESOLVE lanes). A backend ticket never
+    carries a UI-only universal.
     """
     if _universal_exempt(ticket_meta, paths=paths):
         return []
+    meta = ticket_meta or {}
+    ticket_tags = {normalize_tag(t)
+                   for t in _as_list(meta.get("tags")) + _as_list(meta.get("applies_to"))
+                   if normalize_tag(t)}
     out: list[dict] = []
     for chk in _universal_checks():
         rubric = getattr(chk, "rubric", None)
         if rubric is None:  # only graded universal checks are injectable
             continue
+        offer = {normalize_tag(t) for t in (getattr(chk, "applies_to", None) or ("*",))}
+        if "*" not in offer and not (offer & ticket_tags):
+            continue  # tag-scoped universal; this ticket is outside its scope
         if not isinstance(rubric, dict):  # a real Rubric; the sidecar loader already serialized its own
             from agent_factory.rubric import rubric_to_dict
             rubric = rubric_to_dict(rubric)
@@ -2091,8 +2108,9 @@ def contract_with_floor(cid: str, acceptance_text: str, resolved: list,
     acceptance floor is itself manual (worker-self-certification barred).
 
     ``ticket_meta`` (the ticket's own meta, passed by :func:`start_ticket`) drives the UNIVERSAL lane:
-    the ``promote_universal`` seeded checks are appended (deduped by id) on every NON-exempt ticket,
-    tag-independent. It is a no-op when ``ticket_meta`` is None (the pure callers — preview/tests keep
+    the ``promote_universal`` seeded checks are appended (deduped by id) on every NON-exempt ticket
+    (tag-independent for ``applies_to:["*"]`` universals; a narrower ``applies_to`` scopes the
+    mandate to matching-tagged tickets — see :func:`universal_requirements`). It is a no-op when ``ticket_meta`` is None (the pure callers — preview/tests keep
     their exact contract) or the contract is otherwise empty (the block path must survive, never be
     masked into buildable by a report-only universal).
 

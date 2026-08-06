@@ -92,6 +92,30 @@ judgment):**
   agent's N/A judgment. Do **not** author a UI check as `["*"]`+`applies_when` and lean on the agent to
   skip it.
 
+**Wireframe-bound surfaces: GENERATE the check, do not hand-write it.** When the request is "this
+screen must match the wireframe" (or af-intake-plan delegates a just-bound surface to you), do not
+invent greps or byte floors — a stylistically empty page clears both (observed: a route rendering
+`<h1>Map view</h1>` with zero CSS passed a 1200-byte floor plus every string grep). Derive the
+definition mechanically from the binding instead:
+
+```
+python -m agent_factory.wireframe_conformance emit --project <project> \
+    --url-template http://localhost:<port>/{screen} \
+    --wireframe <binding.file> --screen <binding.screen_id> --states <binding.states>
+```
+
+(or `--bindings-json <praxis_list_surface_bindings dump>` for one definition per binding). Each emitted
+definition is already in Step 2 shape — surface-bound via `meta.surfaces`, `check_id
+wireframe-conformance-<screen>` — and its `run` chains TWO gates: the static parser (stylesheet floor
+derived from the wireframe's own `<style>` size, structural class + control inventory, declared states,
+no remote asset URLs) and the browser-rendered gate (`agent_factory.wireframe_browser_check`:
+computed-style + layout-geometry comparison of wireframe vs built page in the same headless Chromium,
+side-by-side screenshot evidence MANDATORY — a run with no artifact fails, and a missing
+Playwright/Chromium exits 2 loudly rather than skipping). You still WRITE the fact yourself per Step 2 —
+the generator only produces the definition; the single-writer lock on `building-validation` stays with
+this skill. The one judgment left to you is the `--url-template` (how this repo serves a screen) and
+whether the ticket asserts tap-target sizes (`--min-tap-px 44` appended to the browser command).
+
 ## Step 1b — A check must assert REALITY, not shape (read before writing the `run`)
 
 The dominant failure of authored checks is not that they are missing — it is that they **verify inputs

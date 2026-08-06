@@ -263,10 +263,23 @@ name = "varies_across_inputs"
 threshold = 0.7
 guidance = "Two different inputs would produce two different outputs. A test that only ever exercises one input cannot distinguish a measurement from a constant."
 
+# PROMOTED to the mandatory lane (tag-SCOPED universal): this check described, verbatim, the failure
+# that shipped anyway — three farming_analysis UI tickets went green on all nine pinned checks while
+# rendering f"<html>…<h1>{heading}</h1>…" with zero CSS — because it lived only in the OPT-IN
+# candidate lane and no authoring agent folded it in. promote_universal injects it via
+# _ticket_state.contract_with_floor; unlike the tag-independent universals above, its applies_to is
+# narrower than ["*"], so the injector scopes it to tickets whose tags intersect {ui, frontend,
+# surface} — a backend ticket never sees it. GATING (report_only = false) rather than the
+# report-only calibration rollout: its axes were authored FROM an observed real failure (they are
+# already calibrated against the defect they exist to block), and a report-only rollout would
+# re-create exactly the shipped-unstyled-anyway incident it exists to prevent. Same deliberate call
+# as typed-and-linted above — watch the blocked-ticket rate and loosen thresholds if it misfires.
 [[check]]
 check_id = "rendered-surface-has-substance"
 kind = "graded"
 applies_to = ["ui", "frontend", "surface"]
+promote_universal = true
+report_only = false
 criterion = "A surface the ticket claims to render carries the content its specification enumerates, not a placeholder that satisfies an existence check."
 confidence_floor = 6
 judge_prompt = "Compare what the surface actually renders against what the ticket's own text enumerates — every named field, state, control and vocabulary value. Judge the rendered output, not the data structures behind it. Cite what is specified but absent."
