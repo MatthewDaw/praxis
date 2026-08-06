@@ -180,7 +180,7 @@ def verify_graded_check(cid: str, validation_id: str, code_diff: str, complete: 
                       f"looping")
         loop["cache_repeats"] = repeats
         loop_all[str(validation_id)] = loop
-        ts._praxis.patch_meta(cid, {M_GRADED_LOOP: loop_all}, **ts._ref_kw(ref))
+        ts._praxis.write_build_state(cid, {M_GRADED_LOOP: loop_all}, **ts._ref_kw(ref))
         return GradedResult(v, cached=True, iterations=int(loop.get("iters", 0)),
                             should_block=should_block, block_reason=reason)
 
@@ -209,7 +209,7 @@ def verify_graded_check(cid: str, validation_id: str, code_diff: str, complete: 
 
     loop.update(iters=iters, last_defects=n_defects, last_hash=h, cache_repeats=0)
     loop_all[str(validation_id)] = loop
-    ts._praxis.patch_meta(cid, {M_GRADED_LOOP: loop_all}, **ts._ref_kw(ref))
+    ts._praxis.write_build_state(cid, {M_GRADED_LOOP: loop_all}, **ts._ref_kw(ref))
     ts.record_validation_pass(cid, validation_id, v.passed, ran_at=now,
                               source=GRADED_SOURCE, verdict=_verdict_payload(v, h), ref=ref)
     return GradedResult(v, cached=False, iterations=iters,
