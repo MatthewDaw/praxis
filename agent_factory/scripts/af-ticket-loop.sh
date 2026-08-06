@@ -491,12 +491,35 @@ session_cpu(){  # $1 = tmux session name
 # once, because `ps` TIME is CUMULATIVE: a session that worked earlier and is now wedged
 # at a prompt still shows a large total, which would suppress the stall detector forever.
 # A rising total means work is happening NOW. Returns 0 (busy) / 1 (idle); never fails.
+# Recent writes under the project worktree. A worker that is BLOCKED ON I/O --
+# polling a log while a detached OCR/build process grinds -- burns no CPU in its
+# own process tree, so the CPU test below calls it idle while it is plainly
+# working. Observed 2026-08-05: a COV-1B worker sat at "Polling real_final.log
+# for OCR" for 48min having emitted 358k tokens, was reported not-busy, and the
+# round was reaped as frozen. File mtime measures PROGRESS directly instead of
+# inferring it from CPU, which is the property actually wanted here.
+worktree_recently_written(){   # $1 = worktree path, $2 = minutes
+  local wt="${1:-}" mins="${2:-10}"
+  [ -n "$wt" ] && [ -d "$wt" ] || return 1
+  # -mmin -N is cheap and stops at the first hit. Skip .git plumbing, whose
+  # mtimes move for reasons unrelated to a worker making progress.
+  find "$wt" -path "$wt/.git" -prune -o -type f -mmin "-$mins" -print 2>/dev/null \
+    | head -1 | grep -q . && return 0
+  return 1
+}
+
 verify_children_busy(){  # $1 = tmux session name
   local before after
-  before=$(session_cpu "$1"); [ -z "${before:-}" ] && return 1
-  sleep 3
-  after=$(session_cpu "$1"); [ -z "${after:-}" ] && return 1
-  [ "$after" -gt "$before" ] 2>/dev/null && return 0
+  # Signal A: the session's own process tree is burning CPU.
+  before=$(session_cpu "$1")
+  if [ -n "${before:-}" ]; then
+    sleep 3
+    after=$(session_cpu "$1")
+    [ -n "${after:-}" ] && [ "$after" -gt "$before" ] 2>/dev/null && return 0
+  fi
+  # Signal B: something under the worktree was written recently. Either signal is
+  # sufficient -- both are positive evidence of life, and a quiet pane is not.
+  worktree_recently_written "${WT:-}" "${AF_BUSY_WRITE_MINS:-10}" && return 0
   return 1
 }
 
@@ -2084,7 +2107,13 @@ while :; do
   # round the moment its fastest worker landed, orphaning fourteen live workers and their worktrees.
   # So each finish instead resets the stall counter and buys more wall clock, and the round ends only
   # when the batch's open count hits zero. The deadline scales with batch size for the same reason.
-  deadline=$((3600 + (size - 1) * 1200))
+  # AF_ROUND_DEADLINE_S overrides the per-round wall clock. The 3600s default is
+  # fine for a code ticket and far too short for one whose acceptance runs a real
+  # workload: COV-1B drives PaddleOCR over a corpus, and rounds 1 and 2 of
+  # 2026-08-05 were both killed at exactly 60min with the ticket still open and
+  # its worker still writing. Killing a round does not just lose time -- the
+  # worktree purge discards everything the worker had not committed.
+  deadline=$(( ${AF_ROUND_DEADLINE_S:-3600} + (size - 1) * 1200 ))
   # Pane stillness is a WEAKER hang signal on a parallel round than it was on a solo ticket: the
   # driving session spends the round awaiting its Workflow rather than emitting tool output, and a
   # quiet stretch between two workers landing is normal. Widen the window when more than one ticket
