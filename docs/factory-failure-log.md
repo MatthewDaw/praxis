@@ -126,16 +126,59 @@ start, or in `--resolve-orphans`, that clears open findings on finished tickets 
 
 ---
 
-## F5 — Blocked tickets with no recorded reason *(open)*
+## F5 — ~~Blocked tickets with no recorded reason~~ **RETRACTED — this was my error, not a defect**
 
-**Found:** 2026-08-06, taolu. **No fix.**
+**Filed:** 2026-08-06. **Retracted the same day.** Kept rather than deleted, because the mistake is a
+better lesson than the claim was.
 
-Three tickets (T16, T19, T22) sit in `build_state="blocked"` with `audit_disposition = None`. A blocked
-ticket is never claimed, so these will never build — and nothing on the ticket says why, who blocked it,
-or what would unblock it. From outside, a blocked ticket and a forgotten one are indistinguishable.
+I reported that T16, T19 and T22 sat `blocked` with no reason recorded, and asked for `blocked` to
+require a reason at write time. **The reason was recorded all along**, in `meta.block_reason`. I queried
+`audit_disposition`, found `None`, and concluded from a partial check — the exact failure pattern this
+log exists to catalogue (S1's cousin: asserting from the absence of evidence you did not actually look
+for).
 
-**Wanted:** `blocked` should require a reason at write time, the way a regression requires a failure
-report. A state that stops work forever and explains nothing is worse than a failure.
+The real block reasons are excellent. All three tickets are `verify="manual"`, built everything
+mechanically provable, and then correctly refused to self-certify:
+
+- **T16** — consent-gated capture, published retention schedule, bystander rejection and deletion all
+  proven end-to-end; all five non-manual validations pinned and green; `coverage_gap` empty. Needs
+  counsel to review the posture against BIPA/CUBI/MHMD and record a human-sourced pass.
+- **T22** — all five legal areas analysed with documented dispositions, artifact committed. Its own note:
+  *"No further worker action can move this ticket forward."*
+- **T19** — probe built, landing page live, threshold pre-registered *before* any result exists. Needs a
+  30-day window to elapse and a human to read real market signal.
+
+**This is `verify="manual"` working as designed.** `_derive_effective_source` structurally forces a build
+worker to `WORKER_PASS_SOURCE`, so it cannot self-certify legal sign-off — which is precisely the
+protection whose *absence* elsewhere produced F1–F4.
+
+**The residual, much smaller, ask:** `block_reason` is not surfaced anywhere an operator looks. The drain
+summary and the loop log both stay silent, so a correctly-blocked ticket and a forgotten one still look
+alike **from outside** — which is what misled me. Print blocked ids and their reasons at drain.
+
+---
+
+## F8 — A graded judge that cannot converge on a pre-existing codebase *(open)*
+
+**Found:** 2026-08-06, taolu T19 — surfaced inside T19's `block_reason`, i.e. found by the worker and
+recorded honestly rather than hidden. **No fix.**
+
+`typed-and-linted` is a graded (LLM-judged) check. On T19 it failed **five consecutive fix-and-regrade
+cycles**, sitting at `min_axis ≈ 0.92–0.93` on annotation-completeness. Each concrete located defect the
+judge named *was fixed* — `mocap_joints`, `evaluate`, `canonical_timeline`, `landmarker`,
+`assign_possessions`, `seen`. The judge then surfaced new advise-tier nits in **pre-existing, mostly
+untouched functions** that merely live in the files the ticket edited.
+
+That is whack-a-mole against a large untyped legacy surface, not a defect in the ticket's own new code —
+and it is unbounded: the ticket can never converge because the judge's supply of nits is the whole file,
+not the diff.
+
+**Why this matters beyond one ticket.** A graded gate scoped to *files touched* rather than *lines
+changed* makes every ticket liable for the entire history of every file it opens. The cost is paid in
+full rebuild cycles, and it is silent — the ticket just keeps failing.
+
+**Wanted:** scope graded judgement to the diff, or exempt pre-existing lines, or cap regrade cycles and
+promote the residue to an advisory finding instead of a blocking one.
 
 ---
 
