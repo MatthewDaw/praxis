@@ -50,13 +50,38 @@ CANONICAL META KEYS (on the requirement/ticket node):
 (``pinned_checks`` keeps its key name for back-compat with the Praxis server claim view and the eval
 harness; its entries now describe synthesized VALIDATIONS, not raw checks.)
 
-RACE-TOLERANCE (v1)
--------------------
-Claiming is a read-modify-write over ``patch_meta`` (PATCH /candidates/{cid}, which MERGES meta).
-There is NO server-side CAS here: we read the live lease, decide locally, then write. Two agents can
-therefore both decide a stale/free ticket is theirs and both write — a rare double-claim. That is
-HARMLESS wasted work (idempotent rebuild), not corruption, so v1 accepts it. The lease is a LEASE,
-not a lock: a lease whose heartbeat is older than its ttl is auto-reclaimable, so nothing dangles.
+WHERE BUILD STATE IS WRITTEN (and why it is NOT ``patch_meta``)
+---------------------------------------------------------------
+Every key above is BUILD STATE: what the loop LEARNS while executing a plan. It is not plan
+content, and it is deliberately NOT written through ``PATCH /candidates/{cid}`` (``patch_meta``),
+which is subject to the S12 bless guard: once ``prd-<project>`` is blessed, that path refuses
+edits unless the planning marker is re-armed. Correct for the plan; fatal for the build. On a
+blessed plan every claim, every check pin and every finish was refused — the loop dispatched
+tickets no worker could take, no worktree and no branch was ever created, and a pin refused in
+silence left ``pinned_checks: []`` that read afterwards as "RESOLVE never ran". The only
+workaround was to unbless and re-bless the plan around each write, i.e. to mutate the plan as a
+side effect of building it.
+
+So build state goes through the sanctioned, UNGUARDED endpoints instead, and the guard is left
+exactly as it is:
+
+  * ``POST /requirements/{cid}/claim``        -> :func:`claim`
+  * ``POST /requirements/{cid}/release``      -> :func:`release`
+  * ``POST /requirements/regress``            -> ``_praxis.regress_requirements``
+  * ``POST /requirements/{cid}/build-state``  -> everything else here (pins, block, run marker)
+
+The server accepts ONLY build-lifecycle keys on that last route, so its writable surface is
+disjoint from what the bless guard protects rather than a hole in it. The only ``patch_meta``
+calls left in this module write the PLANNING MARKER — the guard's own control surface, which it
+exempts by name.
+
+LEASES
+------
+A claim is a LEASE, not a lock: one whose heartbeat is older than its ttl is auto-reclaimable, so
+a dead agent never leaves a ticket dangling. The grant itself is now ATOMIC server-side (a single
+conditional UPDATE), so two agents racing the same free ticket produce exactly one winner — the
+double-claim the earlier client-side read-modify-write accepted as "rare and harmless" can no
+longer occur at all.
 """
 
 from __future__ import annotations
@@ -103,13 +128,20 @@ M_UNIVERSAL_CONTRACT = "universal_contract"  # the universal-lane requirement en
                                               # coverage-contract time (R33) -- pin_validations() reads
                                               # this to AUTO-author their covering entries so a worker
                                               # never has to hand-write one.
+M_AUTHORED_RUNS = "authored_runs"            # {validation_id: run} captured from the DECLARED check
+                                              # facts at coverage-contract time. pin_validations()
+                                              # overrides the worker's synthesized `run` with the
+                                              # authored one wherever a check declares a concrete
+                                              # command, so a check cannot be neutered at pin time.
 M_GRADED_LOOP = "graded_loop"                # {validation_id: {iters, last_defects, last_hash}} (U6);
                                               # reset to {} on a fresh claim (R33) so a re-picked ticket
                                               # starts a fresh iteration budget.
 M_RUN_OWNER = "run_owner"
 M_RUN_AT = "run_at"
 M_RUN_SCOPE = "run_scope"
-M_FINISHED_AT = "finished_at"                # epoch seconds, stamped by release(state="finished") only
+M_FINISHED_AT = "finished_at"                # READ-ONLY here. The SERVER stamps/clears this off any
+                                             # build_state write (ISO-8601 UTC); a client never writes
+                                             # it — see knowledge/finished_at.py.
 M_UNDER_SPECIFIED = "under_specified"   # [missing structural fields] — routed to intake, never claimed (plan 003)
 M_PLANNING_OWNER = "planning_owner"         # session id of the active planning (intake) session (plan 002)
 M_PLANNING_AT = "planning_at"               # epoch seconds, planning-marker heartbeat; stale => dead (plan 002)
@@ -659,6 +691,12 @@ def pin_requirements(cid: str, requirements: list,
     """Pin the resolved REQUIREMENT ids as this pass's coverage contract and TRUNCATE any prior
     synthesized validations. After this, the ticket lists what must be covered (``required_validations``)
     and has an empty validation set (``pinned_checks``) the worker must now author + pin.
+
+    Written through the sanctioned build-state route, not ``patch_meta``: a blessed plan refuses
+    candidate edits, and a pin refused there is the exact failure that leaves a ticket with an
+    EMPTY ``pinned_checks`` — which then reads as "RESOLVE never ran" and (before the finish guard)
+    let the ticket self-certify. Ordering matters for the same reason: this pin must land BEFORE any
+    finish, or the server's finish guard refuses the release.
     """
     req_ids = [rid for rid in (_check_id(r) for r in requirements) if rid]
     # A MANUAL requirement (verify=="manual") is recorded separately so completion can require an
@@ -674,7 +712,14 @@ def pin_requirements(cid: str, requirements: list,
     # covering entries every time it (re)pins, instead of requiring the worker to hand-author one.
     universal_entries = [r for r in requirements
                          if isinstance(r, dict) and (r.get("meta") or {}).get("universal")]
-    return _praxis.patch_meta(cid, {
+    # AUTHORED RUNS. A check that declares a concrete ``meta.run`` states the command that proves it;
+    # the worker may not restate it. Capture those commands here, keyed by the same id the pinned
+    # entry carries, so :func:`pin_validations` can override a synthesized ``run`` with the authored
+    # one. Without this the worker's ``run`` was taken verbatim, so a declared check could be pinned
+    # under its own id with an unrelated (invariably weaker) command and recorded as passing it —
+    # observed live: a 3800-char check asserting byte floors and layer ids was pinned as a 171-char
+    # "start the server and curl one route", and the ticket finished green over a stub UI.
+    return _praxis.write_build_state(cid, {
         M_REQUIRED_VALIDATIONS: req_ids,
         M_MANUAL_REQUIREMENTS: manual_ids,
         M_REPORT_ONLY_REQUIREMENTS: report_only_ids,
@@ -752,12 +797,155 @@ def _universal_covering_entries(meta: dict, already_covered: set[str]) -> list[d
     return out
 
 
+_CD_PREFIX = re.compile(r"^\s*cd\s+[^\s&;|]+\s*&&\s*")
+
+
+def _same_command(a: str, b: str) -> bool:
+    """Whether two pinned commands are the same gate.
+
+    Exact text, except for a leading ``cd <path> &&``. Every ticket builds in its own worktree, so a
+    worker legitimately prefixes the authored command to run it there — observed on R29 as
+    ``cd /workspace/.../worktrees/agent-a224da98e3ea29e88 && <the authored command verbatim>``.
+    Treating that as a substitution would reject honest work on every ticket, which is a worse
+    failure than the one this guard exists to stop.
+
+    Only the leading prefix is forgiven. Anything the worker appends, removes, or rewrites inside
+    the command still counts as a different gate — that is where the real substitutions lived
+    (a 3800-char check pinned as 171, a lint gate cut from 166 to 74).
+    """
+    return _CD_PREFIX.sub("", a or "").strip() == _CD_PREFIX.sub("", b or "").strip()
+
+
+M_REGRESSION_DETAIL = "regression_detail"   # written by the post-merge verification round
+
+
+def open_finding(meta: dict) -> Optional[dict]:
+    """The post-merge verification finding this ticket still owes an answer to, or ``None``.
+
+    The verification round is the only thing that can see a defect living BETWEEN tickets — two
+    modules each individually green whose interfaces do not meet. It writes its judgement to
+    ``meta.regression_detail`` and the loop regresses the ticket. But the completion gate reads only
+    pinned checks, so the finding is prose competing against "all your checks are green", and prose
+    loses: one ticket was regressed with a precise report naming the defect, the evidence and the
+    fix, and closed again TWICE without its file being touched.
+
+    A finding is answered when a later verification round confirms the ticket survived integration
+    (which stamps ``resolved``), or when a human dismisses it. It is NOT answered by the worker
+    saying so — that is the self-certification this exists to stop.
+    """
+    d = meta.get(M_REGRESSION_DETAIL)
+    if not isinstance(d, dict) or d.get("resolved"):
+        return None
+    return d if str(d.get("reason") or "").strip() else None
+
+
+def finding_unanswered_without_change(meta: dict, commits: int) -> Optional[str]:
+    """Why a ``finished`` ticket carrying an open finding must NOT count, or ``None`` if it may.
+
+    Deliberately NOT "an open finding blocks completion": verification runs only AFTER a ticket
+    finishes and merges, so blocking the finish would mean the ticket could never reach the
+    verification that clears it — a guaranteed deadlock, and this repo has already lost hours to two
+    of those from over-eager gating.
+
+    The rule instead targets what actually happened: a ticket told exactly what was wrong produced
+    NO CHANGE and closed anyway. Any real attempt satisfies this; only doing nothing does not.
+    """
+    f = open_finding(meta)
+    if f is None or commits > 0:
+        return None
+    reason = str(f.get("reason") or "").strip()
+    return ("finished with an OPEN verification finding and contributed no commits — the rebuild "
+            "changed nothing, so the finding stands unanswered: " + reason[:400])
+
+
+def resolve_finding(meta: dict) -> dict:
+    """Mark the finding answered — called when a verification round confirms the ticket survived."""
+    d = dict(meta.get(M_REGRESSION_DETAIL) or {})
+    if d:
+        d["resolved"] = True
+    return d
+
+
+def _declared_runs(ref: Optional[tuple[str, str]] = None) -> dict[str, str]:
+    """``{check fact id: authored run}`` for every check declaring a concrete command in this
+    project's ``building-validation`` snapshot.
+
+    Read LIVE rather than copied onto the ticket. An earlier version stashed this map in ticket meta
+    at pin time, which silently did nothing: ``write_build_state`` only accepts the server's
+    ``BUILD_STATE_META_KEYS``, so an unregistered key is dropped in transit — the write returns
+    success and the field never lands. Reading the checks directly needs no new key, no server
+    change, and compares against the check as authored right now.
+    """
+    space = ""
+    if ref and ref[0]:
+        space = str(ref[0])
+    if not space:
+        space = os.environ.get("FACTORY_PROJECT", "") or ""
+    if not space:
+        return {}
+    # A minimal fake client (the sanctioned-routes test injects one) has no reader — degrade to "no
+    # declared commands" for that SHAPE only. A real client that raises is left to propagate: a
+    # lookup failure must surface, never quietly re-open the substitution hole this closes.
+    reader = getattr(_praxis, "facts_by", None)
+    if reader is None:
+        return {}
+    out: dict[str, str] = {}
+    for c in (reader(category="check", space=space,
+                     snapshot="building-validation") or []):
+        cid = c.get("id") or c.get("cid")
+        run = str(((c.get("meta") or {}).get("run")) or "").strip()
+        if cid and run:
+            out[str(cid)] = run
+    return out
+
+
+def _apply_authored_runs(pinned: list[dict], authored: dict) -> list[dict]:
+    """Make a DECLARED check's own command authoritative over the worker's synthesized one.
+
+    ``pin_requirements`` stashes ``{validation_id: run}`` for every resolved check that declares a
+    concrete ``meta.run`` (:data:`M_AUTHORED_RUNS`). A pinned entry claiming one of those ids gets the
+    authored command written back over whatever the worker supplied, and is stamped
+    ``run_source="authored"``; entries with no authored counterpart keep the worker's command and are
+    stamped ``run_source="worker"``, so the two are distinguishable in the record afterwards.
+
+    Worker authorship remains the path for everything a check does NOT spell out — the acceptance
+    floor (``<cid>::acceptance``), graded/rubric checks (which carry a frozen ``rubric`` and no
+    ``run``), and any check that deliberately leaves the command to the builder. This narrows
+    authorship to exactly the commands nobody declared, rather than removing it.
+
+    Why this exists: the pin path took ``run`` verbatim from the worker, so a check could be pinned
+    under its own ``validation_id`` carrying a command that tested something else entirely, pass, and
+    finish the ticket. Measured on a live plan, 7 of 20 pinned checks did not match their stored
+    definition — including a 3800-char UI check pinned as 171 chars and a lint/typecheck gate cut from
+    166 to 74. Every one of those substitutions was weaker than the check it displaced.
+    """
+    if not isinstance(authored, dict):
+        authored = {}
+    for entry in pinned:
+        # Key on what the entry COVERS, not on its own id. A worker pins under an id it invents
+        # (`v-static-hygiene`) while declaring `covers: [<real check fact id>]`, so matching on
+        # validation_id misses every substitution — which is exactly how a 166-char lint gate was
+        # pinned as 74 chars under a `v-` alias and recorded green.
+        hits = [authored[c] for c in (str(x) for x in (entry.get("covers") or []))
+                if str(authored.get(c) or "").strip()]
+        if len(hits) == 1:
+            entry["run"] = hits[0]
+            entry["run_source"] = "authored"
+        elif len(hits) > 1:
+            # One entry claiming to cover two checks that each declare their own command cannot
+            # honour both. Leave it alone; the gate refuses it.
+            entry.setdefault("run_source", "ambiguous")
+        else:
+            entry.setdefault("run_source", "worker")
+    return pinned
+
+
 def pin_validations(cid: str, validations: list,
                     ref: Optional[tuple[str, str]] = None) -> dict:
     """Pin the worker-SYNTHESIZED concrete validations onto the ticket (the eval).
 
-    Each entry: ``{validation_id, covers:[req_id,...], run, passed=None, ran_at=None}``. Because
-    ``patch_meta`` replaces ``pinned_checks`` wholesale, this TRUNCATES any prior validation state —
+    Each entry: ``{validation_id, covers:[req_id,...], run, passed=None, ran_at=None}``. Because the
+    build-state write replaces ``pinned_checks`` wholesale, this TRUNCATES any prior validation state —
     the new set is THIS pass's eval. Does NOT touch ``required_validations`` (the coverage contract
     set at start): coverage is asserted at finish via :func:`coverage_gap` / :func:`all_validations_passed`.
 
@@ -776,9 +964,10 @@ def pin_validations(cid: str, validations: list,
         meta = _meta(cid, ref)
     except Exception:  # noqa: BLE001 - best-effort; see docstring
         meta = {}
+    _apply_authored_runs(pinned, _declared_runs(ref))
     covered = {c for p in pinned for c in (p.get("covers") or [])}
     pinned.extend(_universal_covering_entries(meta, covered))
-    return _praxis.patch_meta(cid, {M_PINNED_CHECKS: pinned}, **_ref_kw(ref))
+    return _praxis.write_build_state(cid, {M_PINNED_CHECKS: pinned}, **_ref_kw(ref))
 
 
 def record_validation_pass(cid: str, validation_id: str, passed: bool,
@@ -831,7 +1020,7 @@ def record_validation_pass(cid: str, validation_id: str, passed: bool,
     patch: dict[str, Any] = {M_PINNED_CHECKS: pinned}
     if meta.get(M_CLAIM_OWNER) and meta.get(M_BUILD_STATE) == "in_progress":
         patch[M_CLAIM_HEARTBEAT_AT] = time.time()  # implicit heartbeat — see docstring
-    return _praxis.patch_meta(cid, patch, **_ref_kw(ref))
+    return _praxis.write_build_state(cid, patch, **_ref_kw(ref))
 
 
 def coverage_gap(ticket: Any, ref: Optional[tuple[str, str]] = None) -> list[str]:
@@ -895,6 +1084,23 @@ def all_validations_passed(ticket: Any, ref: Optional[tuple[str, str]] = None) -
     gating_pinned = [e for e in pinned if not _covers_only(e, report_only)]
     if not all(bool(e.get("passed")) for e in gating_pinned):
         return False
+    # A DECLARED check's own command is the only thing that can satisfy it. Coverage alone is not
+    # enough: the gate used to accept any entry naming the check in `covers`, whatever command it
+    # actually ran, so a worker could cover a 3800-char check with `curl /runs`, or with the EMPTY
+    # command `record_validation_pass` appends for an unpinned id, and finish green. Observed live:
+    # a bucket-creation ticket finished having created no bucket, with six entries carrying run="".
+    declared = _declared_runs(ref)
+    for rid in required:
+        want = str(declared.get(rid) or "").strip()
+        if not want:
+            continue  # no authored command (acceptance floor, graded rubric) — worker authorship stands
+        if not any(
+            bool(e.get("passed"))
+            and _same_command(e.get("run") or "", want)
+            and rid in {str(c) for c in (e.get("covers") or [])}
+            for e in pinned
+        ):
+            return False
     # Manual requirements need an EXTERNAL/human-sourced pass — the worker may not self-certify them.
     manual = {str(r) for r in (meta.get(M_MANUAL_REQUIREMENTS) or []) if r}
     for req in manual:
@@ -930,41 +1136,38 @@ def claim(cid: str, owner: str, ttl: int = DEFAULT_LEASE_TTL_S,
           ref: Optional[tuple[str, str]] = None) -> bool:
     """Claim a ticket (incomplete -> in_progress) for ``owner``, race-tolerantly.
 
-    Read the live lease, then claim IFF the ticket is free to claim: not in_progress, OR ``owner``
-    already holds it (idempotent renew), OR the existing lease is STALE (auto-reclaim). On success
-    stamps claim_owner/claim_at/claim_heartbeat_at/claim_lease_ttl and sets build_state=in_progress.
+    The grant is made by the SERVER (``POST /requirements/{cid}/claim``), which applies the same
+    rule as one conditional UPDATE: granted iff the ticket is not in_progress, OR ``owner`` already
+    holds it (idempotent renew), OR the existing lease is STALE (auto-reclaim a dead agent). It
+    stamps claim_owner/claim_at/claim_heartbeat_at/claim_lease_ttl and build_state=in_progress.
     Returns True if we now hold the lease, False if a DIFFERENT owner holds a LIVE lease, or the
     ticket is terminally ``blocked`` (needs owner action, not a build claim).
 
-    Race note: two agents can both read a free ticket and both write — a rare, harmless double-claim
-    (see module docstring). No server CAS is assumed.
+    WHY NOT ``patch_meta``. Two reasons, and the first is fatal. (1) A blessed ``prd-<project>``
+    plan REFUSES candidate edits (the S12 bless guard), so the read-modify-write this used to be
+    failed closed on every ticket of every blessed plan — the loop dispatched work that no worker
+    could claim, and no worktree or branch was ever created. Build state is not plan content, so it
+    goes through the sanctioned, unguarded route instead of unblessing the plan to build it.
+    (2) The server's grant is ATOMIC at the row level, so the double-claim this function used to
+    accept as "rare and harmless" cannot happen at all: two agents racing a free ticket produce
+    exactly one 200 and one 409.
 
     R33: a ticket that was NOT already held under a live lease by ``owner`` (a genuine re-pick — free,
     stale-reclaimed, or newly assigned to a different owner) gets its graded-check iteration budget
     (``meta.graded_loop``) reset to empty. Without this, a ticket re-picked after a stale lease/owner
     change would inherit a prior session's iteration count and could trip the escalation cap on its
-    very first fresh attempt; an idempotent renew by the SAME live owner leaves it untouched.
+    very first fresh attempt; an idempotent renew by the SAME live owner leaves it untouched. That
+    reset is a SEPARATE build-state write because it is factory policy, not lease mechanics — the
+    claim endpoint has no business knowing about graded loops.
     """
     meta = _meta(cid, ref)
     if meta.get(M_BUILD_STATE) == "blocked":
         return False  # blocked needs owner action (af-intake-plan amend / accept), not a build claim
-    now = time.time()
-    if _lease_live(meta, now) and meta.get(M_CLAIM_OWNER) != owner:
-        return False  # a different owner holds a live lease
-    fresh_pick = not (_lease_live(meta, now) and meta.get(M_CLAIM_OWNER) == owner)
-    held_at = meta.get(M_CLAIM_AT)
-    if meta.get(M_CLAIM_OWNER) != owner or held_at is None:
-        held_at = now  # first claim by this owner stamps claim_at
-    patch: dict[str, Any] = {
-        M_BUILD_STATE: "in_progress",
-        M_CLAIM_OWNER: owner,
-        M_CLAIM_AT: held_at,
-        M_CLAIM_HEARTBEAT_AT: now,
-        M_CLAIM_LEASE_TTL: int(ttl),
-    }
+    fresh_pick = not (_lease_live(meta) and meta.get(M_CLAIM_OWNER) == owner)
+    if _praxis.claim_requirement(cid, owner, int(ttl), **_ref_kw(ref)) is None:
+        return False  # a different owner holds a live lease (409)
     if fresh_pick:
-        patch[M_GRADED_LOOP] = {}
-    _praxis.patch_meta(cid, patch, **_ref_kw(ref))
+        _praxis.write_build_state(cid, {M_GRADED_LOOP: {}}, owner=owner, **_ref_kw(ref))
     return True
 
 
@@ -981,7 +1184,10 @@ def heartbeat(cid: str, owner: str, ref: Optional[tuple[str, str]] = None) -> bo
     patch: dict[str, Any] = {M_CLAIM_HEARTBEAT_AT: time.time()}
     if meta.get(M_RUN_OWNER) == owner:
         patch[M_RUN_AT] = time.time()
-    _praxis.patch_meta(cid, patch, **_ref_kw(ref))
+    # The build-state route rather than the dedicated /heartbeat endpoint: this write bumps the
+    # WHOLE-SET run marker in the same round-trip, and /heartbeat only knows about the per-ticket
+    # lease. Splitting it would cost an extra call and let the two drift apart mid-run.
+    _praxis.write_build_state(cid, patch, owner=owner, **_ref_kw(ref))
     return True
 
 
@@ -1006,11 +1212,21 @@ def release(cid: str, owner: str, state: str,
             ref: Optional[tuple[str, str]] = None) -> bool:
     """Release ``owner``'s lease and set a terminal build_state ("finished" or "incomplete").
 
-    Drops the lease keys (so nothing dangles) and stamps build_state, MERGING so identity keys
+    The SERVER performs the write (``POST /requirements/{cid}/release``) — the sanctioned,
+    unguarded build-state route, because a blessed ``prd-<project>`` plan refuses candidate edits
+    (the S12 bless guard) and a build must not have to unbless the plan to record that it finished.
+
+    It drops the lease keys (so nothing dangles) and stamps build_state, MERGING so identity keys
     (tags/surfaces/required_validations/pinned_checks) survive. On ``finished`` the run marker is
-    also cleared (the ticket has left the active run). On ``incomplete`` the run marker is KEPT so
-    the whole-set gate keeps the ticket in scope and forces it to be re-done (a clean yield does not
-    end the run). ``patch_meta`` cannot delete keys, so cleared keys are NULLED out.
+    also cleared (the ticket has left the active run) and the server stamps ``finished_at``. On
+    ``incomplete`` the run marker is KEPT so the whole-set gate keeps the ticket in scope and forces
+    it to be re-done (a clean yield does not end the run).
+
+    A ``finished`` release is REFUSED by the server when the ticket has no pinned checks and no
+    ``meta.checks_waived_reason`` — a ticket nothing gates would certify itself. So RESOLVE's
+    :func:`pin_requirements` / :func:`pin_validations` must have landed before this call; that
+    surfaces here as a raised :class:`PraxisUnreachable` (HTTP 400), loudly, rather than a silent
+    self-certification.
 
     LEASE TAKEOVER — the two states are deliberately NOT symmetric on an owner mismatch:
 
@@ -1057,14 +1273,18 @@ def release(cid: str, owner: str, state: str,
             f"lease expired while this ticket was still being worked, so it was handed out twice. "
             f"Widen AF_LEASE_TTL_S if this recurs.\n"
         )
-    patch: dict[str, Any] = {M_BUILD_STATE: state}
-    for k in _LEASE_KEYS:
-        patch[k] = None  # MERGE can't remove keys; null them so _lease_live reads not-live
-    if state == "finished":
-        for k in _RUN_KEYS:
-            patch[k] = None  # left the run cleanly
-        patch[M_FINISHED_AT] = time.time()
-    _praxis.patch_meta(cid, patch, **_ref_kw(ref))
+    # The lease keys and (on finish) the run marker are dropped SERVER-side, in the same statement
+    # as the build_state stamp, so no reader observes the half-applied middle. ``honor_takeover``
+    # carries the asymmetry above across the wire: a finish survives a takeover, a yield does not
+    # (and a yield by a non-holder was already refused above, so it never reaches here).
+    # NOTE: no finished_at here. The SERVER dates a completion off this build_state write (it owns
+    # the clock); a client stamping one only invents a second producer to disagree with it. See the
+    # M_FINISHED_AT comment above.
+    released = _praxis.release_requirement(cid, owner, state,
+                                           honor_takeover=(state == "finished"),
+                                           **_ref_kw(ref))
+    if released is None:  # 409 — the lease moved on under a yield; nothing was written
+        return False
     return True
 
 
@@ -1087,7 +1307,10 @@ def block(cid: str, owner: str, reason: str,
         patch[k] = None
     for k in _RUN_KEYS:
         patch[k] = None
-    _praxis.patch_meta(cid, patch, **_ref_kw(ref))
+    # "blocked" is the ONE build_state transition the build-state route makes (claim / release /
+    # regress own the others, so their guards cannot be bypassed) — a block is pure build state:
+    # it records what the loop learned, and changes nothing the plan says.
+    _praxis.write_build_state(cid, patch, **_ref_kw(ref))
     return True
 
 
@@ -1127,8 +1350,11 @@ def stamp_run(cids: list[str], owner: str, scope: str = "all",
     for cid in cids:
         if not cid:
             continue
-        _praxis.patch_meta(str(cid), {M_RUN_OWNER: owner, M_RUN_AT: now, M_RUN_SCOPE: str(scope)},
-                           **_ref_kw(ref))
+        # No ``owner=`` here: the run marker is stamped over the whole in-scope set BEFORE any of
+        # those tickets is claimed, so the stamper holds no lease on any of them.
+        _praxis.write_build_state(str(cid),
+                                  {M_RUN_OWNER: owner, M_RUN_AT: now, M_RUN_SCOPE: str(scope)},
+                                  **_ref_kw(ref))
         n += 1
     return n
 
@@ -1144,7 +1370,7 @@ def refresh_run(cids: list[str], owner: str,
         if not cid:
             continue
         if _meta(cid, ref).get(M_RUN_OWNER) == owner:
-            _praxis.patch_meta(str(cid), {M_RUN_AT: now}, **_ref_kw(ref))
+            _praxis.write_build_state(str(cid), {M_RUN_AT: now}, **_ref_kw(ref))
             n += 1
     return n
 
@@ -1161,7 +1387,7 @@ def clear_run(cids: list[str], owner: str,
         if not cid:
             continue
         if _meta(cid, ref).get(M_RUN_OWNER) == owner:
-            _praxis.patch_meta(str(cid), {k: None for k in _RUN_KEYS}, **_ref_kw(ref))
+            _praxis.write_build_state(str(cid), {k: None for k in _RUN_KEYS}, **_ref_kw(ref))
             n += 1
     return n
 
@@ -1843,7 +2069,7 @@ def migrate_universal_pinned_entries(tickets: list[dict], check_id: str, new_rub
         meta = t.get("meta") or {}
         patch = migrate_pinned_universal(meta, check_id, new_rubric)
         if patch is not None and cid:
-            _praxis.patch_meta(cid, patch, **_ref_kw(ref))
+            _praxis.write_build_state(cid, patch, **_ref_kw(ref))
             migrated.append(cid)
     return migrated
 
@@ -1927,17 +2153,17 @@ def start_ticket(cid: str, owner: str, project: str = "",
     # localized/additive — it is shared with plan 001's claim path.
     probe = resumability_report({**tmeta, "verify": verify_mode}, resolved)
     if not probe["resumable"]:
-        _praxis.patch_meta(cid, {M_UNDER_SPECIFIED: probe["missing"]}, **_ref_kw(plan))
+        _praxis.write_build_state(cid, {M_UNDER_SPECIFIED: probe["missing"]}, **_ref_kw(plan))
         return None
     # --- END RESUMABILITY GUARD --------------------------------------------------------------------
 
     if not claim(cid, owner, ttl=ttl, ref=plan):
         return None
     # The probe passed — if a prior pass had routed this ticket under_specified, that gap is now
-    # resolved, so clear the marker (patch_meta can't delete keys; NULL it). Only written when set,
+    # resolved, so clear the marker (a None value REMOVES the key). Only written when set,
     # so a ticket that was never routed claims byte-identically to before.
     if tmeta.get(M_UNDER_SPECIFIED):
-        _praxis.patch_meta(cid, {M_UNDER_SPECIFIED: None}, **_ref_kw(plan))
+        _praxis.write_build_state(cid, {M_UNDER_SPECIFIED: None}, **_ref_kw(plan))
     # UNION of plan 003 (resumability guard, above) + plan 001 (universal lane): the contract is
     # composed AFTER the claim, threading ``ticket_meta=tmeta`` so plan 001's report-only universal
     # minimalism check is injected onto every non-exempt ticket. ``paths`` is the R33 PIN-TIME phase

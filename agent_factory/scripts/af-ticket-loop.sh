@@ -182,6 +182,20 @@
 #   AF_VERIFY_TIMEOUT_S    bound that verification (default 2700)
 #   AF_MIN_FREE_GB=25      raise the disk floor a round must clear (default 15)
 #   AF_KEEP_BRANCHES=1     report worker branches instead of reaping them (debugging a bad round)
+#   AF_HUMAN_BRANCHES      space-separated globs of branches a HUMAN owns, ADDED to the built-in
+#                          main/master/develop/trunk/release-*/hotfix-* defaults. Branch ownership is
+#                          default-inclusive -- anything not exempt here and not merged is treated as
+#                          factory work owed a merge -- so this is the one place to register a
+#                          long-lived hand-made branch that must not trip the straggler invariant.
+#
+# Exit codes:
+#   0  clean drain, or a dependency stall the operator must unblock
+#   1  preflight failure (bad args, no worktree, model backend, universal lane)
+#   3  billing/credit failure
+#   4  three consecutive fruitless rounds   5  disk floor   6  Praxis unreachable
+#   7  STRAGGLERS: the run left unmerged worker branches and/or leftover worktrees behind. Nothing is
+#      ever deleted to reach a green invariant, so the work named in the log is intact -- land it
+#      (`--resolve-orphans`) and relaunch.
 #   AF_MODEL_BACKEND       sonnet | deepseek (see v3)
 #   AF_PLUGIN_DIR / AF_REPO / AF_PYTHON / AF_STATE_DIR / AF_LOG   for an unusual layout
 set -euo pipefail
@@ -260,8 +274,29 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     # the credential is live before committing hours to it. Only an explicit auth rejection
     # is fatal; a network blip or timeout is a warning, so a flaky moment can't block a
     # run whose credential is actually fine.
-    local probe
-    probe="$(cd /tmp && bash -c "unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY; [ -r \$HOME/.claude/oauth-token.sh ] && . \$HOME/.claude/oauth-token.sh; timeout 120 claude --model sonnet -p 'Reply with exactly: PONG'" 2>&1 || true)"
+    # The probe must test THE SAME credential the sessions will use and reach the
+    # model the same way, or it is theatre. Two corrections:
+    #
+    #  1. It used to source oauth-token.sh, which exports CLAUDE_CODE_OAUTH_TOKEN
+    #     and OVERRIDES ~/.claude/.credentials.json. The launch line no longer does
+    #     that (it unsets the variable so the subscription credential wins), so a
+    #     probe that still sourced it was validating a different identity than the
+    #     one about to run — on this box, an API/org token instead of Claude Max.
+    #
+    #  2. Installed plugins mute headless `claude -p`: it exits 0 having printed
+    #     NOTHING. That is why this probe warned "no PONG" on every single run
+    #     while the credential was perfectly healthy, and a warning that fires
+    #     always is a warning nobody reads. Point the probe at a config dir holding
+    #     only the credential, exactly as the graded judge does (see
+    #     evals/plan_repro/claude_cli.py). The credential is symlinked, never
+    #     copied, so no secret is duplicated and a re-login is picked up.
+    local probe probe_cfg
+    probe_cfg="${TMPDIR:-/tmp}/af-probe-claude-config"
+    mkdir -p "$probe_cfg" 2>/dev/null || true
+    if [ -r "$CREDENTIALS_FILE" ]; then
+      ln -sf "$CREDENTIALS_FILE" "$probe_cfg/.credentials.json" 2>/dev/null || true
+    fi
+    probe="$(cd /tmp && bash -c "unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN; export CLAUDE_CONFIG_DIR='$probe_cfg'; timeout 120 claude --model sonnet -p 'Reply with exactly: PONG'" 2>&1 || true)"
     if printf '%s' "$probe" | grep -qiE 'please run /login|invalid api key|authentication_error|oauth.*invalid|401'; then
       echo "[backend] FATAL: sonnet credential present but REJECTED by Anthropic:" >&2
       printf '%s\n' "$probe" | head -3 | sed 's/^/[backend]   /' >&2
@@ -477,12 +512,35 @@ session_cpu(){  # $1 = tmux session name
 # once, because `ps` TIME is CUMULATIVE: a session that worked earlier and is now wedged
 # at a prompt still shows a large total, which would suppress the stall detector forever.
 # A rising total means work is happening NOW. Returns 0 (busy) / 1 (idle); never fails.
+# Recent writes under the project worktree. A worker that is BLOCKED ON I/O --
+# polling a log while a detached OCR/build process grinds -- burns no CPU in its
+# own process tree, so the CPU test below calls it idle while it is plainly
+# working. Observed 2026-08-05: a COV-1B worker sat at "Polling real_final.log
+# for OCR" for 48min having emitted 358k tokens, was reported not-busy, and the
+# round was reaped as frozen. File mtime measures PROGRESS directly instead of
+# inferring it from CPU, which is the property actually wanted here.
+worktree_recently_written(){   # $1 = worktree path, $2 = minutes
+  local wt="${1:-}" mins="${2:-10}"
+  [ -n "$wt" ] && [ -d "$wt" ] || return 1
+  # -mmin -N is cheap and stops at the first hit. Skip .git plumbing, whose
+  # mtimes move for reasons unrelated to a worker making progress.
+  find "$wt" -path "$wt/.git" -prune -o -type f -mmin "-$mins" -print 2>/dev/null \
+    | head -1 | grep -q . && return 0
+  return 1
+}
+
 verify_children_busy(){  # $1 = tmux session name
   local before after
-  before=$(session_cpu "$1"); [ -z "${before:-}" ] && return 1
-  sleep 3
-  after=$(session_cpu "$1"); [ -z "${after:-}" ] && return 1
-  [ "$after" -gt "$before" ] 2>/dev/null && return 0
+  # Signal A: the session's own process tree is burning CPU.
+  before=$(session_cpu "$1")
+  if [ -n "${before:-}" ]; then
+    sleep 3
+    after=$(session_cpu "$1")
+    [ -n "${after:-}" ] && [ "$after" -gt "$before" ] 2>/dev/null && return 0
+  fi
+  # Signal B: something under the worktree was written recently. Either signal is
+  # sufficient -- both are positive evidence of life, and a quiet pane is not.
+  worktree_recently_written "${WT:-}" "${AF_BUSY_WRITE_MINS:-10}" && return 0
   return 1
 }
 
@@ -664,6 +722,85 @@ print(' '.join(out))
 PYEOF
 }
 
+finding_guard(){  # args: round-no ids... -> regresses any ticket that answered a finding with nothing
+  # A ticket carrying an OPEN post-merge verification finding may not close by changing nothing.
+  #
+  # The finding is the only thing that can see a defect living BETWEEN tickets, and it is written as
+  # prose on the ticket while the completion gate reads only pinned checks. Prose loses: one ticket
+  # was regressed with a report naming the defect, the evidence and the fix, and closed again TWICE
+  # with its file untouched, because every pinned check stayed green against tests that hand-built
+  # the very shape the finding said was wrong.
+  #
+  # Deliberately NOT "an open finding blocks completion": verification runs only AFTER a ticket
+  # finishes and merges, so blocking the finish would mean it could never reach the verification
+  # that clears it. Any genuine attempt satisfies this guard; only doing nothing does not.
+  $PY - "$PROJECT" "$1" "${AF_ROUND_BASE:-HEAD}" "${@:2}" <<'PYEOF' 2>/dev/null
+import subprocess, sys
+import _praxis, _ticket_state as ts
+proj, rnd, base = sys.argv[1], sys.argv[2], sys.argv[3]
+want = set(sys.argv[4:])
+kw = dict(space=proj, snapshot=f"prd-{proj}")
+n = 0
+for f in _praxis.facts_by(category="requirement", **kw) or []:
+    m = f.get("meta") or {}
+    rid = str(m.get("requirement_id") or f.get("id"))
+    if rid not in want or m.get("build_state") != "finished":
+        continue
+    try:
+        out = subprocess.run(["git", "log", "--oneline", f"{base}..HEAD", f"--grep={rid}"],
+                             capture_output=True, text=True, timeout=30).stdout.strip()
+    except Exception:
+        out = "unknown"          # cannot prove absence -> do not accuse
+    if out:
+        continue
+    why = ts.finding_unanswered_without_change(m, 0)
+    if not why:
+        continue
+    _praxis.regress_requirements(proj, [f["id"]], {f["id"]: {
+        "audit_disposition": f"ROUND #{rnd}: {why}",
+    }}, **kw)
+    sys.stderr.write(f"finding-guard regressed {rid}\n")
+    n += 1
+print(n)
+PYEOF
+}
+
+stall_roots(){  # -> one line per blocking root: "<id> <state> blocks N: <dependents>"
+  # A stall names its ROOT. The message used to say "unblock the root" without saying which — so a
+  # human (or an agent) had to walk 30 tickets' depends_on edges by hand to find it. Observed: a
+  # bucket-creation ticket blocked on a check only its DEPENDENT could satisfy, and a 30-ticket plan
+  # went to zero ready with nothing naming the one ticket holding it.
+  $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
+import sys
+import _praxis
+p = sys.argv[1]
+facts = _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}') or []
+state, deps = {}, {}
+for f in facts:
+    m = f.get('meta') or {}
+    rid = str(m.get('requirement_id') or f.get('id') or '')
+    if not rid:
+        continue
+    state[rid] = m.get('build_state')
+    deps[rid] = [str(d) for d in (m.get('depends_on') or [])]
+# A root is anything not finished that nothing unfinished precedes -- i.e. it is itself waiting on
+# nobody. Those are the only tickets a human can act on; everything else is downstream of them.
+unfinished = {r for r, s in state.items() if s != 'finished'}
+roots = [r for r in unfinished if not (set(deps.get(r, ())) & unfinished)]
+def blocked_behind(root):
+    seen, frontier = set(), [root]
+    while frontier:
+        cur = frontier.pop()
+        for r in unfinished:
+            if cur in deps.get(r, ()) and r not in seen:
+                seen.add(r); frontier.append(r)
+    return sorted(seen)
+for r in sorted(roots):
+    behind = blocked_behind(r)
+    print(f"{r} [{state.get(r)}] blocks {len(behind)}: {', '.join(behind[:8])}{' ...' if len(behind) > 8 else ''}")
+PYEOF
+}
+
 batch_open(){  # args: ids... -> how many are still incomplete|in_progress (blocked counts as done)
   $PY - "$PROJECT" "$@" <<'PYEOF' 2>/dev/null
 import sys
@@ -748,19 +885,29 @@ PYEOF
 }
 
 release_inprogress(){  # release any live lease before a fresh session claims (post-crash safety)
+  # This used to BRACKET its writes in stamp_planning/clear_planning: a blessed plan refuses
+  # candidate edits (the S12 bless guard), so the sweep re-armed the planning marker to get its
+  # patch_meta through -- i.e. it UNBLESSED and re-blessed the plan as a side effect of BUILDING,
+  # and left the plan unblessed outright if the loop died mid-sweep. Regressing a ticket is build
+  # state, so it now goes through the sanctioned, unguarded /requirements/regress endpoint, which
+  # needs no marker at all. Do not reintroduce the bracket.
   $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
-import sys, time
-import _praxis, _ticket_state as ts
-p=sys.argv[1]; kw=dict(space=p, snapshot=f'prd-{p}'); owner='af-ticket-loop'
-ts.stamp_planning(p, owner)
+import sys
+import _praxis
+p=sys.argv[1]; kw=dict(space=p, snapshot=f'prd-{p}')
+NOTE=('lease released by af-ticket-loop: prior session ended (context cap or crash), '
+      'returning to incomplete for a fresh session.')
+stranded={}
 for f in _praxis.facts_by(category='requirement', **kw):
     m=f.get('meta') or {}
     if m.get('build_state')=='in_progress':
-        _praxis.patch_meta(f['id'], {'build_state':'incomplete','claim_owner':None,'claim_at':None,
-            'claim_heartbeat_at':None,'claim_lease_ttl':None,
-            'audit_disposition':'lease released by af-ticket-loop: prior session ended (context cap or crash), returning to incomplete for a fresh session.'}, **kw)
+        # Null the lease keys alongside the regress so nothing dangles, and record WHY -- the next
+        # worker's briefing reads audit_disposition back.
+        stranded[f['id']]={'claim_owner':None,'claim_at':None,'claim_heartbeat_at':None,
+                           'claim_lease_ttl':None,'audit_disposition':NOTE}
         print('released', m.get('requirement_id'))
-ts.clear_planning(p, owner)
+if stranded:
+    _praxis.regress_requirements(p, list(stranded), detail=stranded, **kw)
 PYEOF
 }
 
@@ -796,8 +943,19 @@ commit_wip(){
 # $1 = a git log range/rev, $2 = the known-id set, space-padded on both sides.
 af_owned_ids(){
   local raw i out=""
+  # The id must merely CONTAIN a digit, not END in one. The previous pattern
+  # required a trailing [0-9][0-9]*, so any ticket whose id ends in a letter was
+  # unmatchable no matter how correctly the commit was written: (DATA-1) and
+  # (OBS-27) matched, (COV-1B) never did. That silently stranded 42 files and
+  # ~1800 insertions of finished work on 2026-08-06, and it would have stranded
+  # them again on a re-run, because the commit subject was not the problem.
+  #
+  # Still deliberately narrow: anchored to a TRAILING (...) so a conventional-commit
+  # scope cannot be mistaken for an id, and every candidate is intersected with
+  # this project's known id set below, so another tracker's (JIRA-42) is ignored.
   raw=$(git log --format=%s "$1" 2>/dev/null \
-        | sed -n 's/.*(\([A-Za-z][A-Za-z0-9_-]*[0-9][0-9]*\))[[:space:]]*$/\1/p' | sort -u)
+        | sed -n 's/.*(\([A-Za-z][A-Za-z0-9_-]*\))[[:space:]]*$/\1/p' \
+        | grep '[0-9]' | sort -u)
   for i in $raw; do
     case "$2" in *" $i "*) out="${out:+$out }$i" ;; esac
   done
@@ -852,7 +1010,19 @@ integrate_round(){
     # Keep only ids this project actually owns; everything else is another tracker's history.
     ids=$(af_owned_ids "HEAD..$br" "$known")
     if [ -z "$ids" ]; then
-      skipped=$((skipped+1)); say "skipping $br — none of its commits name a $PROJECT ticket, so its provenance cannot be established"; continue
+      # LOUD on purpose. This is finished work being left behind, not a routine
+      # skip: the branch holds commits nobody will merge, and because workers
+      # branch from origin/main the next round rebuilds all of it from scratch.
+      # Observed 2026-08-06: 42 files / ~1800 insertions stranded because the
+      # subjects read `feat(cov1b):` instead of ending in `(COV-1B)`. Naming the
+      # actual subjects turns a five-second fix into a five-second fix, instead
+      # of an hour of silent rework.
+      skipped=$((skipped+1))
+      say "WARNING: STRANDING $br ($ahead commit(s)) — no commit subject ends in a $PROJECT ticket id, so provenance cannot be established and this work will NOT be merged"
+      say "  subjects seen:"
+      git log --format='    %h %s' "HEAD..$br" 2>/dev/null | head -5 | tee -a "$LOG"
+      say "  fix: the id must be TRAILING and exact, e.g. 'feat(scope): what it did (${known%% *})' — a conventional-commit scope does not count"
+      continue
     fi
     ok=1
     for i in $ids; do
@@ -890,15 +1060,15 @@ integrate_round(){
 # round lands every outstanding branch, so "orphan" is a condition that cannot survive a single round.
 queue_orphan_branches(){
   cd "$WT" || return 0
+  unset AF_WT_BRANCH_CACHE   # each pass re-reads the worktree set the ownership rule is derived from
   local br ids queued=0 already
   while read -r br; do
     [ -n "$br" ] || continue
-    af_is_worker_branch "$br" || continue
+    af_is_owed_merge "$br" || continue
     git merge-base --is-ancestor "$br" HEAD 2>/dev/null && continue        # already landed
     already=$(cut -f1 "$CONFLICTS" 2>/dev/null | grep -xF "$br" || true)
     [ -n "$already" ] && continue                                          # this round already queued it
-    ids=$(git log --format=%s "HEAD..$br" 2>/dev/null \
-          | grep -oE '\((REM|SSW|HIP|OBS|CHAT|FH|SS|P1|P2|R|F)-[0-9]+\)' | tr -d '()' | sort -u | tr '\n' ' ')
+    ids=$(af_branch_ids "HEAD..$br")
     printf '%s\t%s\n' "$br" "$ids" >> "$CONFLICTS"
     queued=$((queued+1))
     say "orphan branch from an earlier round queued for landing: $br (ticket(s):$ids )"
@@ -1050,7 +1220,7 @@ for br, u in dropped.items():
         f = by_rid.get(str(rid))
         if not f:
             continue
-        _praxis.regress_requirements(p, [f["id"]], {f["id"]: {
+        _praxis.regress_requirements(proj, [f["id"]], {f["id"]: {
             "claim_owner": None, "claim_at": None,
             "claim_heartbeat_at": None, "claim_lease_ttl": None,
             "audit_disposition": (f"REGRESSED by conflict resolution of round #{rnd}: branch {br} was merged, but this "
@@ -1089,17 +1259,42 @@ af_scratch_roots(){
   printf '%s\n' "$WT/.claude/worktrees" "${WT}_worktrees"
 }
 
+# A third layout, SIBLING to the checkout rather than under a root: `<WT>-wt-<TICKET>`. The sotos run
+# of 2026-08-03 left /workspace/sotos-wt-HIP23 and /workspace/sotos-wt-HIP27 behind, and neither was
+# under either root above, so every sweep this driver ran walked straight past them. Matched as a
+# glob, not a root, because there is no directory to enumerate.
+af_scratch_globs(){
+  printf '%s\n' "${WT}-wt-*" "${WT}-worktree-*" "${WT}_wt_*"
+}
+
 af_is_scratch(){   # $1 = candidate path
-  local p="$1" root
+  local p="$1" root g
   while read -r root; do
     case "$p" in "$root"/*) return 0 ;; esac
   done < <(af_scratch_roots)
+  while read -r g; do
+    case "$p" in $g) return 0 ;; esac
+  done < <(af_scratch_globs)
+  return 1
+}
+
+# LOCKED worktrees. `git worktree remove` and `git worktree prune` both REFUSE a locked tree, so a
+# sweep that does not unlock first silently no-ops on exactly the trees most likely to be stale --
+# two of the four leftovers from the sotos run were locked, and every sweep "succeeded" without
+# touching them. Unlock, then remove; `--force --force` is the fallback for a git old enough or a
+# lock stubborn enough that `unlock` did not take. A failure after all three is REPORTED LOUDLY, never
+# swallowed: the whole point is that a sweep which cannot do its job says so.
+af_force_remove_worktree(){   # $1 = path
+  git worktree unlock "$1" >/dev/null 2>&1 || true
+  git worktree remove --force "$1" >/dev/null 2>&1 && return 0
+  git worktree remove --force --force "$1" >/dev/null 2>&1 && return 0
   return 1
 }
 
 sweep_worktrees(){
   cd "$WT" || return 0
   local kept=0
+  unset AF_WT_BRANCH_CACHE   # this function mutates the worktree set the ownership rule reads
   while read -r path; do
     [ -n "$path" ] || continue
     [ "$path" = "$WT" ] && continue
@@ -1124,16 +1319,18 @@ sweep_worktrees(){
     # a 98GB volume, and what left 14 lying around here holding 10+ commits each. The tree is
     # scratch; the branch is the artifact.
     if [ -n "$head" ] && git merge-base --is-ancestor "$head" HEAD 2>/dev/null; then
-      git worktree remove --force "$path" 2>/dev/null && say "purged integrated worktree $path"
+      af_force_remove_worktree "$path" \
+        && say "purged integrated worktree $path" \
+        || say "WARNING: could not purge integrated worktree $path — it may be locked by a process that outlived its run; remove it by hand"
     else
       kept=$((kept+1))
       # Name the branch, read from the worktree BEFORE it is removed. Resolving it from a commit sha
       # afterwards yields nothing, which is what made every one of these lines read "remain on
       # branch " with a blank -- the exact pointer someone needs to find the work later.
       local wbr; wbr=$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-      git worktree remove --force "$path" 2>/dev/null \
+      af_force_remove_worktree "$path" \
         && say "purged worktree $path — its commits remain on branch ${wbr:-<detached ${head:0:8}>}" \
-        || say "WARNING: could not purge $path"
+        || say "WARNING: could not purge $path (branch ${wbr:-<detached ${head:0:8}>}) — remove it by hand; the terminal straggler invariant will keep failing until it is gone"
     fi
   done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
   git worktree prune 2>/dev/null || true
@@ -1163,7 +1360,21 @@ sweep_worktrees(){
     done
     rmdir "$root" 2>/dev/null || true
   done < <(af_scratch_roots)
+  # Same treatment for the sibling `<WT>-wt-<TICKET>` layout, which has no root directory to walk.
+  local g
+  while read -r g; do
+    for d in $g; do
+      [ -d "$d" ] || continue
+      printf '%s\n' "$registered" | grep -qxF "$d" && continue
+      if readlink /proc/*/cwd 2>/dev/null | grep -qF "$d"; then
+        say "orphan dir $d is IN USE by a live process — skipping"
+        continue
+      fi
+      rm -rf "$d" && say "removed orphaned worktree dir $d"
+    done
+  done < <(af_scratch_globs)
 
+  unset AF_WT_BRANCH_CACHE
   [ "$kept" -gt 0 ] && say "$kept worktree(s) purged before integration — their branches survive and merge once their tickets finish"
   return 0
 }
@@ -1203,22 +1414,109 @@ sweep_worktrees(){
 # Equivalence is tested with `git cherry`, not ancestry. Plain ancestry misses a rebuilt or
 # cherry-picked equivalent, which is exactly what made three of those four branches look unmerged.
 
-# Which refs this driver is allowed to touch. Deliberately narrow: everything else -- main, the
-# integration branch, fix/*, wip/*, anything a human named -- is out of bounds no matter how merged it
-# looks. `worktree-agent-*` and `worktree-wf_*` are minted by the Agent/Workflow `isolation: worktree`
-# machinery and carry no human meaning. `build/<X>` is the older per-ticket layout and is ambiguous by
-# name alone, so it counts as ours ONLY when X is an id Praxis says this project owns -- a human's
-# `build/login-redesign` is never matched, and neither is a sibling project's ticket.
-af_is_worker_branch(){   # $1 = branch name
-  case "$1" in
-    worktree-agent-*|worktree-wf_*) return 0 ;;
-    build/*) case "${AF_KNOWN_IDS:-}" in *" ${1#build/} "*) return 0 ;; esac ;;
-  esac
+# ------------------------------------------------------------------ WHO OWNS A BRANCH --
+#
+# TWO questions, deliberately answered by two different rules, because they carry opposite risks:
+#
+#   "is this branch OWED A MERGE?"   -> af_is_owed_merge. DEFAULT-INCLUSIVE. Getting it wrong means a
+#                                       ticket reads finished with its work nowhere. Being over-broad
+#                                       costs a log line; being under-broad costs the whole guarantee.
+#   "may this driver DELETE it?"     -> af_is_factory_named. DELIBERATELY NARROW. Getting it wrong
+#                                       destroys someone's work. Nothing here ever deletes a branch
+#                                       carrying commits that are not already upstream.
+#
+# This split exists because the single old test was an ALLOWLIST OF NAMES -- worktree-agent-*,
+# worktree-wf_*, build/<known-id> -- used for BOTH questions. On 2026-08-03 a sotos run finished all
+# 260 tickets, logged `claimable=0` and `drained -- nothing claimable`, and left behind two branches
+# named `af-build/HIP-23` and `af-build/HIP-27` holding commits that were on no integration branch,
+# plus two LOCKED `.claude/worktrees/agent-<hex>` trees. Nothing in this script mints `af-build/*`; a
+# worker/skill chose that name. The allowlist did not match it, so queue_orphan_branches skipped it,
+# reap_branches skipped it, and the round reported success. Two tickets read `finished` with their
+# work nowhere -- precisely the lie every function in this section exists to make impossible.
+#
+# A guarantee that depends on guessing every name a worker might invent is not a guarantee, and its
+# failure mode is SILENCE. So ownership is now derived from FACTS:
+#
+#   FACT 1  a branch checked out in a worktree of this repo is factory work by definition. Name
+#           irrelevant: `git worktree list --porcelain` is authoritative.
+#   FACT 2  every other local branch is owed a merge UNLESS a human explicitly owns it. The exemption
+#           list is short, explicit, and extendable only on purpose (AF_HUMAN_BRANCHES).
+#
+# A NEW name cannot be missed, because no name is required to match anything.
+
+# The ONLY way out of "owed a merge". Kept narrow on purpose: the integration branch itself, the
+# handful of universally-human trunk/release refs, and whatever a human deliberately registers in
+# AF_HUMAN_BRANCHES (space-separated glob patterns, ADDED to the defaults rather than replacing them,
+# so nobody can accidentally exempt everything by setting it).
+af_is_human_branch(){   # $1 = branch name
+  local b="$1" p head_br
+  local defaults='main master develop trunk release/* releases/* hotfix/*'
+  head_br=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
+  [ -n "$head_br" ] && [ "$b" = "$head_br" ] && return 0
+  [ -n "${INTEGRATION_REF:-}" ] && [ "$b" = "$INTEGRATION_REF" ] && return 0
+  for p in $defaults ${AF_HUMAN_BRANCHES:-}; do
+    case "$b" in $p) return 0 ;; esac
+  done
   return 1
+}
+
+# FACT 1. Checked out in some worktree OTHER than the integration checkout => factory work, whatever
+# it is called. This is the name-independent half of the rule and it is why an invented prefix cannot
+# hide: the worker had to check the branch out somewhere to commit on it.
+af_is_worktree_branch(){   # $1 = branch name
+  local b
+  # Cached per pass: this is consulted once per local branch by three callers, and a repo with a few
+  # hundred branches would otherwise fork `git worktree list` a thousand times a round. Every mutator
+  # of the worktree set (sweep_worktrees) clears it, and a STALE cache errs toward "owned", which is
+  # the safe direction for a default-inclusive rule.
+  if [ -z "${AF_WT_BRANCH_CACHE+x}" ]; then
+    AF_WT_BRANCH_CACHE=$(git worktree list --porcelain 2>/dev/null \
+      | awk -v self="${WT:-}" '/^worktree /{p=$2} /^branch /{sub("refs/heads/","",$2); if (p != self) print $2}')
+  fi
+  while read -r b; do
+    [ -n "$b" ] || continue
+    [ "$b" = "$1" ] && return 0
+  done <<< "$AF_WT_BRANCH_CACHE"
+  return 1
+}
+
+# Default-inclusive. Used by queue_orphan_branches, reap_branches and the terminal invariant.
+af_is_owed_merge(){   # $1 = branch name
+  af_is_worktree_branch "$1" && return 0
+  af_is_human_branch "$1" && return 1
+  return 0
+}
+
+# Narrow, and the ONLY gate on deletion. `worktree-agent-*`/`worktree-wf_*` are minted by the
+# Agent/Workflow `isolation: worktree` machinery and carry no human meaning. Beyond those, a branch is
+# ours when its LAST path segment is a requirement id Praxis says THIS PROJECT owns -- which is a
+# fact, not a name guess, and covers `build/HIP-23`, `af-build/HIP-23` and any future prefix alike,
+# while never matching a human's `build/login-redesign` or a sibling project's ticket. An empty
+# AF_KNOWN_IDS therefore makes this answer NO (nothing is deleted), never yes -- and, crucially, it no
+# longer makes af_is_owed_merge answer no, which is the second silent-miss path the old code had.
+af_is_factory_named(){   # $1 = branch name
+  case "$1" in worktree-agent-*|worktree-wf_*) return 0 ;; esac
+  case "${AF_KNOWN_IDS:-}" in *" ${1##*/} "*) return 0 ;; esac
+  return 1
+}
+
+# Ticket ids named by a branch's commits. Filtered to ids we own when Praxis has told us what we own;
+# unfiltered when it has not, because "we could not ask" must never read as "no ids, skip it". The
+# hardcoded `(REM|SSW|HIP|...)` prefix alternation this replaces was a third allowlist, and a project
+# whose ids used a new prefix would have gone unqueued in exactly the same silent way.
+af_branch_ids(){   # $1 = git range
+  case "${AF_KNOWN_IDS:-}" in
+    ''|' ')
+      git log --format=%s "$1" 2>/dev/null \
+        | sed -n 's/.*(\([A-Za-z][A-Za-z0-9_-]*[0-9][0-9]*\))[[:space:]]*$/\1/p' | sort -u | tr '\n' ' '
+      ;;
+    *) af_owned_ids "$1" "$AF_KNOWN_IDS" ;;
+  esac
 }
 
 reap_branches(){
   cd "$WT" || return 0
+  unset AF_WT_BRANCH_CACHE
   local br live uniq ids i sup reaped=0 failed=0 survivors="" reason status head_br
   # Compare against HEAD, never against the INTEGRATION_REF captured at startup. On a detached
   # checkout -- which is what both build worktrees on this box are -- INTEGRATION_REF is a fixed sha
@@ -1232,11 +1530,16 @@ reap_branches(){
   while read -r br; do
     [ -n "$br" ] || continue
     [ -n "$head_br" ] && [ "$br" = "$head_br" ] && continue
-    af_is_worker_branch "$br" || continue
+    af_is_owed_merge "$br" || continue
     printf '%s\n' "$live" | grep -qxF "$br" && continue
     # `+` = a commit with no equivalent upstream; `-` = already there under a different sha.
     uniq=$(git cherry HEAD "$br" 2>/dev/null | sed -n 's/^+ //p')
     if [ -z "$uniq" ]; then
+      # Fully upstream, so nothing can be lost either way -- but DELETION is still gated on the narrow
+      # test. The iteration above is default-inclusive so that no straggler can hide behind a novel
+      # name; that breadth must not turn into a licence to delete a human's already-merged `fix/*`.
+      # Not ours to delete and nothing is owed: leave it, silently, as before.
+      af_is_factory_named "$br" || continue
       # Let git enforce the safe case rather than the caller's belief about it. `-d` refuses anything
       # it does not consider merged, so it is tried FIRST and its refusal is meaningful. It refuses a
       # patch-equivalent branch too (ancestry is all it knows), and that is the one case where `git
@@ -1288,7 +1591,10 @@ reap_branches(){
     done
     case "$status" in
       superseded)
-        if [ "${AF_KEEP_BRANCHES:-0}" = "1" ]; then
+        # Same asymmetry as above: this is the one reap that drops commits which are upstream in NO
+        # form, so it happens only for a branch the narrow test proves is factory-minted. Anything
+        # else is kept and reported, however superseded it looks.
+        if [ "${AF_KEEP_BRANCHES:-0}" = "1" ] || ! af_is_factory_named "$br"; then
           survivors="${survivors:+$survivors }$br"
         else
           # Named before deletion, with the tip sha, because this is the one reap that drops commits
@@ -1308,6 +1614,93 @@ reap_branches(){
   say "$reaped branches reaped, $# unmerged branches remain:${survivors:+ $survivors}"
   [ "$failed" -gt 0 ] && { say "$failed ticket(s) were marked finished with their work unmerged — see above. This round FAILED its branch-integrity check."; return 1; }
   return 0
+}
+
+# -------------------------------------------------------------- the terminal straggler invariant --
+#
+# Everything above is best-effort machinery. THIS is the thing that makes "no stragglers" a property
+# of the run rather than a hope, because it is checked against git immediately before the loop is
+# allowed to say the word "drained".
+#
+# The gap it closes: on 2026-08-03 a sotos run logged `claimable=0` and `drained -- nothing claimable`
+# while two branches held unmerged commits for tickets Praxis called finished, and two LOCKED
+# worktrees sat at the pre-build commit. Every individual stage had "succeeded". There was a
+# HOLDS/VIOLATED assertion, but it lived inside the conflict resolver and only ever looked at the
+# branches that resolver had been handed -- so a branch nothing queued was invisible to it too. An
+# invariant that is only consulted by the code path that already knew about the problem is not an
+# invariant.
+#
+# Two facts are asserted, both read from git, neither from any stage's report:
+#   1. ZERO branches that are owed a merge and hold commits upstream carries in no form.
+#   2. ZERO leftover worktrees -- any scratch tree at all, plus any other worktree of this repo
+#      sitting on a branch that is owed a merge.
+# Note (2) reports trees OUTSIDE the sweepable roots as well. Sweeping stays narrow (only delete what
+# is provably scratch) while reporting stays broad, so an unfamiliar layout produces a loud failure
+# instead of a silent miss -- the sotos `<WT>-wt-<ID>` trees were exactly that shape.
+af_stragglers(){   # prints one line per straggler; EMPTY output means clean
+  cd "$WT" 2>/dev/null || return 0
+  local br p wt_br
+  unset AF_WT_BRANCH_CACHE   # read the world fresh: this is the assertion, not a fast path
+  while read -r br; do
+    [ -n "$br" ] || continue
+    af_is_owed_merge "$br" || continue
+    git merge-base --is-ancestor "$br" HEAD 2>/dev/null && continue
+    # `git cherry`, same authority reap_branches uses: a rebuilt or cherry-picked equivalent has
+    # landed and is not a straggler, however its sha reads.
+    [ -n "$(git cherry HEAD "$br" 2>/dev/null | sed -n 's/^+ //p')" ] || continue
+    printf 'unmerged branch %s (%s commit(s) not on %s)\n' "$br" \
+      "$(git rev-list --count "HEAD..$br" 2>/dev/null || echo '?')" \
+      "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)"
+  done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
+  while read -r p; do
+    [ -n "$p" ] || continue
+    [ "$p" = "$WT" ] && continue
+    wt_br=$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+    if af_is_scratch "$p"; then
+      printf 'leftover worktree %s (branch %s)\n' "$p" "${wt_br:-<detached>}"
+      continue
+    fi
+    [ -n "$wt_br" ] && [ "$wt_br" != HEAD ] && af_is_owed_merge "$wt_br" \
+      && printf 'leftover worktree %s (branch %s)\n' "$p" "$wt_br"
+  done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
+  return 0
+}
+
+# Exit code 7 -- a NEW code, deliberately not reused. The existing semantics are 0 = clean drain or
+# dependency stall, 1 = preflight, 3 = billing, 4/5/6 = unrecoverable-but-understood halts, and every
+# one of those is a state an operator or supervisor already knows how to read. Folding a straggler
+# into any of them would either make it look like a clean drain (the exact lie being fixed) or
+# misattribute it to a cause that is not what happened. 7 means one thing: THE RUN LEFT WORK BEHIND.
+AF_EXIT_STRAGGLERS=7
+
+# $1 = where we are, $2 = 1 to make it fatal (terminal paths), 0 to log-and-continue (round tails,
+# where an unmerged branch for a ticket still in flight is legitimate and the next round lands it).
+# In BOTH modes a straggler forces a real resolution attempt first -- reporting is not the remedy.
+af_assert_no_stragglers(){
+  local where="$1" fatal="${2:-1}" s l
+  s=$(af_stragglers)
+  if [ -n "$s" ]; then
+    say "STRAGGLERS PRESENT at $where — forcing a resolution pass before anything reports success:"
+    printf '%s\n' "$s" | while read -r l; do say "  $l"; done
+    : > "$CONFLICTS"
+    queue_orphan_branches || true
+    resolve_conflicts "straggler-sweep@$where" || true
+    sweep_worktrees || true
+    AF_QUERY_BACKOFF_S=0 reap_branches || true
+    s=$(af_stragglers)
+  fi
+  if [ -z "$s" ]; then
+    say "straggler invariant HOLDS at $where — zero unmerged worker branches, zero leftover worktrees"
+    return 0
+  fi
+  say "STRAGGLER INVARIANT VIOLATED at $where — resolution ran and did NOT clear these:"
+  printf '%s\n' "$s" | while read -r l; do say "  $l"; done
+  if [ "$fatal" != "1" ]; then
+    say "not terminal yet — the next round retries. If they are still here at drain the run FAILS."
+    return 1
+  fi
+  say "This run is NOT clean and will not be reported as drained. Nothing was deleted: every branch above still holds its commits. Land them by hand, or rerun: af-ticket-loop.sh --resolve-orphans $PROJECT $WT"
+  exit "${AF_EXIT_STRAGGLERS:-7}"
 }
 
 # Cleanup is an INVARIANT, not a happy-path step.
@@ -1448,6 +1841,21 @@ verify_round(){   # $1 = round number, $2.. = the round's ticket ids
   fi
   # Read the sentinel with a parser, not grep: a bare grep for the word fail matches the notes prose
   # and would report a passing round as failed.
+  #
+  # COHERENCE GATE. The three fields can disagree, and until this existed the loop printed the
+  # disagreement and carried on as though the round had passed. Observed live: a round logged
+  # `verdict=pass gates_green=False regressed=0`, which asserts simultaneously that the merged tree's
+  # repo-wide gates were RED and that every ticket survived integration and nothing needs rebuilding.
+  # The verify prompt already forbids exactly that state -- "if you genuinely cannot attribute it,
+  # regress the whole batch rather than passing a red tree" -- but a prompt is not an enforcement
+  # point, and self-reported verdicts are precisely where self-judgement leaks back in.
+  #
+  # Deliberately NOT auto-regressing the batch on incoherence. `gates_green=false` is also what a
+  # verifier reports when a repo simply has no lint/typecheck tooling configured, so regressing on it
+  # would trade a false pass for a false failure and rebuild healthy tickets forever. Instead an
+  # incoherent verdict is downgraded to UNVERIFIED -- the same treatment as a MISSING verdict a few
+  # lines above, which this file already refuses to call a pass. Tickets keep whatever state they
+  # earned; the round's green claim does not get to stand.
   local summary
   summary=$(python3 - "$VERDICT" <<'PYEOF' 2>/dev/null || echo "verdict=UNREADABLE"
 import json, sys
@@ -1456,13 +1864,35 @@ try:
 except Exception as e:
     print(f"verdict=UNPARSEABLE ({e})"); raise SystemExit
 reg = d.get("regressed") or []
-print("verdict=%s gates_green=%s regressed=%d%s :: %s" % (
-    d.get("verdict"), d.get("gates_green"), len(reg),
+verdict = str(d.get("verdict") or "").strip().lower()
+gates = d.get("gates_green")
+
+incoherent = []
+if verdict not in ("pass", "fail"):
+    incoherent.append("verdict=%r is neither pass nor fail" % (d.get("verdict"),))
+if gates is None:
+    incoherent.append("gates_green is missing")
+elif gates is False and verdict == "pass":
+    incoherent.append("gates_green=false asserts the merged tree's repo-wide gates are RED, "
+                      "while verdict=pass asserts the round is good")
+if verdict == "fail" and not reg:
+    incoherent.append("verdict=fail names no ticket to regress, so the failure would rebuild nothing")
+
+prefix = ""
+if incoherent:
+    prefix = "INCOHERENT (treated as UNVERIFIED, not a pass) -- " + "; ".join(incoherent) + " :: "
+print("%sverdict=%s gates_green=%s regressed=%d%s :: %s" % (
+    prefix, d.get("verdict"), d.get("gates_green"), len(reg),
     (" [" + ",".join(str(r) for r in reg) + "]") if reg else "",
     str(d.get("notes", ""))[:200]))
 PYEOF
 )
   say "round #$rnd verification: $summary"
+  case "$summary" in
+    INCOHERENT*|verdict=UNREADABLE*|verdict=UNPARSEABLE*)
+      say "WARNING: round #$rnd's verdict does not hold together, so the merged tree is UNVERIFIED. Its green claim is unproven; any ticket it named is still regressed below, but its silence about the others proves nothing."
+      ;;
+  esac
 
   # THE LOOP performs the regression, not the verifier agent.
   #
@@ -1537,7 +1967,7 @@ for rid, detail in entries:
                  "originally written against — the failure is an integration failure, so the "
                  "original worktree's green result does not carry over.")
     summary = " ".join(parts)
-    _praxis.regress_requirements(p, [f["id"]], {f["id"]: {
+    _praxis.regress_requirements(proj, [f["id"]], {f["id"]: {
         "claim_owner": None, "claim_at": None,
         "claim_heartbeat_at": None, "claim_lease_ttl": None,
         "audit_disposition": summary,
@@ -1554,6 +1984,15 @@ PYEOF
     say "round #$rnd: $regressed_n ticket(s) regressed with a failure report attached — the next round rebuilds them"
   fi
 
+  # A ticket may not answer an OPEN verification finding by changing nothing. Runs AFTER the
+  # regress pass above so a ticket this round already regressed is not counted twice.
+  local fg
+  fg=$(finding_guard "$rnd" "$@" 2>/dev/null || echo 0)
+  case "$fg" in ''|*[!0-9]*) fg=0 ;; esac
+  if [ "$fg" -gt 0 ]; then
+    say "round #$rnd: $fg ticket(s) closed an OPEN verification finding with ZERO commits — regressed. A finding is not answered by changing nothing."
+  fi
+
   rm -f "$VERDICT"
   return 0
 }
@@ -1565,8 +2004,15 @@ if [ "$AF_MODE" = "resolve-orphans" ]; then
   cd "$WT" || { say "FATAL: no worktree at $WT"; exit 1; }
   : > "$CONFLICTS"
   queue_orphan_branches
-  if [ ! -s "$CONFLICTS" ]; then say "no orphan worker branches — nothing to land"; exit 0; fi
+  if [ ! -s "$CONFLICTS" ]; then
+    # "Nothing queued" is a claim, not a fact. Assert against git before believing it — the queue is
+    # exactly what missed af-build/HIP-23.
+    af_assert_no_stragglers "--resolve-orphans"
+    say "no orphan worker branches — nothing to land"; exit 0
+  fi
   resolve_conflicts "orphans"
+  sweep_worktrees || true
+  af_assert_no_stragglers "--resolve-orphans"
   say "--resolve-orphans: done"
   exit 0
 fi
@@ -1586,6 +2032,11 @@ while :; do
     # 340 times in 8 hours; a grep pattern that matched its own command line) were all re-derivations
     # of state this loop already knows precisely. So the wait belongs HERE, where the distinction is
     # free: a DELIBERATE halt is an `exit`, and only a genuine drain reaches this branch.
+    # THE DRAIN GATE. Nothing claimable means nothing is in flight, so ANY branch still owed a merge
+    # and ANY leftover worktree is a straggler by definition — there is no future round to land it.
+    # This is the assertion whose absence let a sotos run print `drained — nothing claimable` on top
+    # of two unmerged af-build/* branches. It is fatal: a run that left work behind must not exit 0.
+    if [ "${watch_said_drain:-0}" != "1" ]; then af_assert_no_stragglers "drain"; fi
     if [ "${AF_WATCH:-0}" = "1" ]; then
       [ "${watch_said_drain:-0}" = "1" ] || { say "drained — nothing claimable; WATCHING for new tickets every ${AF_WATCH_POLL_S:-300}s (AF_WATCH=1). Stop with: touch $WATCH_STOP"; watch_said_drain=1; }
       [ -f "$WATCH_STOP" ] && { say "watch stop file present ($WATCH_STOP) — exiting"; break; }
@@ -1629,7 +2080,14 @@ while :; do
   if [ -z "$batch" ]; then
     # Claimable work exists but nothing is dependency-ready: a cycle, or a chain rooted on a blocked
     # ticket. Restarting sessions cannot fix that, so halt loudly instead of spinning.
-    say "DEPENDENCY STALL — $left claimable but nothing ready; every remaining ticket waits on an unfinished or blocked prerequisite. Fix the depends_on chain or unblock the root."
+    say "DEPENDENCY STALL — $left claimable but nothing ready; every remaining ticket waits on an unfinished or blocked prerequisite."
+    # Name the root(s). Best-effort: a failed query must not turn a stall into an outage.
+    if roots=$(stall_roots 2>/dev/null) && [ -n "$roots" ]; then
+      say "STALL ROOT(S) — act on these; everything else is downstream:"
+      printf '%s\n' "$roots" | while IFS= read -r line; do [ -n "$line" ] && say "    $line"; done
+    else
+      say "  (could not resolve the stall root — walk depends_on by hand)"
+    fi
     if [ "${AF_WATCH:-0}" = "1" ]; then
       # Watching a stall is safe HERE and was not safe from outside. An external supervisor could only
       # see exit 0 — identical to a clean drain — so it relaunched the whole loop: fresh session, fresh
@@ -1670,13 +2128,24 @@ while :; do
   # trusting it to agree with $AF_MODEL_BACKEND.
   tmux send-keys -t "$SESSION" "cd $WT && $CLAUDE_LAUNCH" Enter
 
+  # Cold starts on a loaded box exceed the old 80s cap (measured: round #1 of taolu-coach), so
+  # poll 3x longer — and if the pane NEVER signals ready there is NO AGENT in it, so sending is
+  # strictly worse than failing loudly (same contract as the conflict-resolver path). The tickets
+  # are unclaimed, so the next pass simply retries them.
   ready=0
-  for _ in $(seq 1 "$READY_POLL_MAX"); do
+  for _ in $(seq 1 $((READY_POLL_MAX * 3))); do
     sleep 2
     pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
     if echo "$pane" | grep -qE "bypass permissions on"; then ready=1; break; fi
   done
-  [ "$ready" = "0" ] && say "WARNING: claude REPL not confirmed ready after $((READY_POLL_MAX*2))s, sending anyway"
+  if [ "$ready" != "1" ]; then
+    say "FATAL: round #$round pane never signalled ready after $((READY_POLL_MAX*6))s — no agent in the session, NOT sending the prompt; killing the session so the next pass retries these tickets"
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    continue
+  fi
+  # Dismiss any startup panel (what's-new / trust dialog) before typing, exactly as the
+  # conflict-resolver path does — a 4KB prompt typed into a panel is swallowed silently.
+  sleep 2; tmux send-keys -t "$SESSION" Enter; sleep 2
 
   # The batch ids ARE the run scope, which is what makes one round per session self-limiting: af-build
   # stamps its run marker on exactly these tickets, so its completeness gate releases the session when
@@ -1684,8 +2153,31 @@ while :; do
   # next session is meant to own. Parentheses are avoided in this string on purpose — if the REPL is not
   # actually ready, the text lands on a bash prompt, and a stray paren there is a syntax error that
   # leaves the session dead at a shell prompt.
-  tmux send-keys -t "$SESSION" "/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is derived from CPU count and on THIS machine resolves to $WORKFLOW_CAP concurrent agent(s), which would throttle a $size-wide round for no reason. Instead spawn ONE Agent subagent per ticket, ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. CRITICAL — REBASE FIRST, before reading a single file or writing a line of code. A worktree is created from the repo default branch, NOT from the branch this run integrates into, so every worker starts on the wrong base. The FIRST command each worker runs in its own worktree is: git merge --ff-only $INTEGRATION_REF — and if that is refused because the worktree has diverged, git rebase $INTEGRATION_REF instead. A worker that skips this authors its change against files the integration branch does not have, and its work will not apply back onto it even cherry-picked alone; that failure is silent, because the ticket still goes green in its own tree and only the round's merge discovers the work cannot land. If BOTH commands fail, do NOT build: record the blocker on the ticket and stop, because anything built on that base is unmergeable by construction. ONE deliberate amendment to that contract, and state it to every worker, precisely — this narrows WHICH tests run, it does not remove the ticket's gate. Each worker STILL runs, and still has to pass, every test related to the code it is changing: its red-to-green acceptance eval, every one of its pinned validations, the existing test files covering the modules it edited, the tests of any caller or dependent of what it changed, and typecheck plus lint SCOPED to the touched paths. A worker whose own related tests are red is NOT finished and must not release the ticket — that gate is unchanged and non-negotiable. What a worker skips is ONLY the repo-wide sweep: the full test suite across the whole repository, and repo-wide build, typecheck, or lint over paths it never touched. The repo-wide gates are run ONCE, on the MERGED tree, by this round's post-merge verification. The reason is measured: $size workers each running the full suite at end-of-ticket puts $size concurrent suites on a box with a handful of cores, and a suite that takes two minutes alone took twenty, with a worker burning 26 minutes and 259k tokens without producing a commit. Deferring the SWEEP is not removing a gate: each ticket is still gated on its own related tests, and the repo-wide sweep still runs before the round is done — once, on the tree that actually matters. All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. CRITICAL — do NOT end your turn while any ticket in that list is still unfinished. Waiting on agent-completion notifications is NOT enough: a turn that ends with workers in flight gets those workers STOPPED, and the round scores zero even though real work was happening. So HOLD the turn open by polling instead: run a shell sleep of 60 seconds, then re-query the build_state of every batch ticket from Praxis, and repeat that sleep-and-query cycle for as long as any of them is still incomplete or in_progress. Only after every batch ticket reads finished or blocked may you merge, reap, and report. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push. Every worker edits ONLY the files inside its OWN assigned worktree — the factory checkout that holds this driver and the af-build hooks is TOOLING, not the project, and editing it is out of bounds even when a ticket is about that code. Two reasons it matters: those hook files are imported at runtime by every project's loop on this machine, so a half-finished edit there can break builds that have nothing to do with this ticket; and edits made outside a worktree sit on no branch, so the round's merge step cannot see them and they are silently dropped when the round ends. For ANY factory or Praxis python invocation, run $PY rather than a bare python3 — this run preflighted that interpreter and a bare python3 may resolve to an older one whose missing tomllib makes the universal quality checks load as an empty list. Pass that same path down to every subagent you spawn.$SERVICES."
-  sleep 3; tmux send-keys -t "$SESSION" Enter
+  round_prompt="/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is derived from CPU count and on THIS machine resolves to $WORKFLOW_CAP concurrent agent(s), which would throttle a $size-wide round for no reason. Instead spawn ONE Agent subagent per ticket, ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. CRITICAL — REBASE FIRST, before reading a single file or writing a line of code. A worktree is created from the repo default branch, NOT from the branch this run integrates into, so every worker starts on the wrong base. The FIRST command each worker runs in its own worktree is: git merge --ff-only $INTEGRATION_REF — and if that is refused because the worktree has diverged, git rebase $INTEGRATION_REF instead. A worker that skips this authors its change against files the integration branch does not have, and its work will not apply back onto it even cherry-picked alone; that failure is silent, because the ticket still goes green in its own tree and only the round's merge discovers the work cannot land. If BOTH commands fail, do NOT build: record the blocker on the ticket and stop, because anything built on that base is unmergeable by construction. ONE deliberate amendment to that contract, and state it to every worker, precisely — this narrows WHICH tests run, it does not remove the ticket's gate. Each worker STILL runs, and still has to pass, every test related to the code it is changing: its red-to-green acceptance eval, every one of its pinned validations, the existing test files covering the modules it edited, the tests of any caller or dependent of what it changed, and typecheck plus lint SCOPED to the touched paths. A worker whose own related tests are red is NOT finished and must not release the ticket — that gate is unchanged and non-negotiable. What a worker skips is ONLY the repo-wide sweep: the full test suite across the whole repository, and repo-wide build, typecheck, or lint over paths it never touched. The repo-wide gates are run ONCE, on the MERGED tree, by this round's post-merge verification. The reason is measured: $size workers each running the full suite at end-of-ticket puts $size concurrent suites on a box with a handful of cores, and a suite that takes two minutes alone took twenty, with a worker burning 26 minutes and 259k tokens without producing a commit. Deferring the SWEEP is not removing a gate: each ticket is still gated on its own related tests, and the repo-wide sweep still runs before the round is done — once, on the tree that actually matters. All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. CRITICAL — do NOT end your turn while any ticket in that list is still unfinished. Waiting on agent-completion notifications is NOT enough: a turn that ends with workers in flight gets those workers STOPPED, and the round scores zero even though real work was happening. So HOLD the turn open by polling instead: run a shell sleep of 60 seconds, then re-query the build_state of every batch ticket from Praxis, and repeat that sleep-and-query cycle for as long as any of them is still incomplete or in_progress. Only after every batch ticket reads finished or blocked may you merge, reap, and report. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push. Every worker edits ONLY the files inside its OWN assigned worktree — the factory checkout that holds this driver and the af-build hooks is TOOLING, not the project, and editing it is out of bounds even when a ticket is about that code. Two reasons it matters: those hook files are imported at runtime by every project's loop on this machine, so a half-finished edit there can break builds that have nothing to do with this ticket; and edits made outside a worktree sit on no branch, so the round's merge step cannot see them and they are silently dropped when the round ends. For ANY factory or Praxis python invocation, run $PY rather than a bare python3 — this run preflighted that interpreter and a bare python3 may resolve to an older one whose missing tomllib makes the universal quality checks load as an empty list. Pass that same path down to every subagent you spawn.$SERVICES."
+  # Submit, then CONFIRM the prompt landed. The wedge this catches is measured, not hypothetical:
+  # a prompt sent into a not-quite-ready TUI is swallowed whole, the pane sits at an idle input box
+  # showing the 'Try "..."' placeholder, and the round waits 30+ minutes for the stall net. An idle
+  # pane still showing that placeholder (and no "esc to interrupt" activity hint) means the send
+  # did NOT take — resend into the now-ready input instead of waiting for the stall detector.
+  submitted=0
+  for _attempt in 1 2 3; do
+    tmux send-keys -t "$SESSION" "$round_prompt"
+    sleep 3; tmux send-keys -t "$SESSION" Enter
+    landed=0
+    for _ in $(seq 1 8); do
+      sleep 5
+      pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
+      if echo "$pane" | grep -q "esc to interrupt"; then landed=1; break; fi
+      if ! echo "$pane" | grep -q 'Try "'; then landed=1; break; fi
+    done
+    if [ "$landed" = "1" ]; then submitted=1; break; fi
+    say "WARNING: round #$round prompt did not land (attempt $_attempt) — input still idle, resending"
+  done
+  if [ "$submitted" != "1" ]; then
+    say "FATAL: round #$round prompt never landed after 3 attempts — killing session; tickets remain unclaimed for the next pass"
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    continue
+  fi
   say "submitted round #$round with $size ticket(s), waiting for the batch to finish or stall"
 
   # Wait for: every batch ticket to leave the open set (success), context exhaustion, auth error,
@@ -1696,7 +2188,13 @@ while :; do
   # round the moment its fastest worker landed, orphaning fourteen live workers and their worktrees.
   # So each finish instead resets the stall counter and buys more wall clock, and the round ends only
   # when the batch's open count hits zero. The deadline scales with batch size for the same reason.
-  deadline=$((3600 + (size - 1) * 1200))
+  # AF_ROUND_DEADLINE_S overrides the per-round wall clock. The 3600s default is
+  # fine for a code ticket and far too short for one whose acceptance runs a real
+  # workload: COV-1B drives PaddleOCR over a corpus, and rounds 1 and 2 of
+  # 2026-08-05 were both killed at exactly 60min with the ticket still open and
+  # its worker still writing. Killing a round does not just lose time -- the
+  # worktree purge discards everything the worker had not committed.
+  deadline=$(( ${AF_ROUND_DEADLINE_S:-3600} + (size - 1) * 1200 ))
   # Pane stillness is a WEAKER hang signal on a parallel round than it was on a solo ticket: the
   # driving session spends the round awaiting its Workflow rather than emitting tool output, and a
   # quiet stretch between two workers landing is normal. Widen the window when more than one ticket
@@ -1845,6 +2343,10 @@ while :; do
   # `|| true` because a branch-integrity failure regresses its ticket and must NOT abort the run under
   # `set -e`: the next round is precisely what rebuilds it. The failure is loud in the log either way.
   reap_branches || true
+  # Non-fatal at a round boundary: a branch for a ticket still in flight is legitimate here, and the
+  # next round lands it. It still forces a resolution pass and still logs loudly, so a straggler is
+  # visible from the round it appears in rather than only at the end of the run.
+  af_assert_no_stragglers "round #$round" 0 || true
 
   # Circuit breaker. A round that finishes NOTHING will, on the next pass, release the same leases
   # and dispatch the same frontier — so a persistent failure that isn't one of the specific panes
@@ -1888,4 +2390,8 @@ while :; do
   fi
   say "session closed; restarting fresh for the next batch"
 done
+# EVERY `break` above lands here — drain, max_tickets, dependency stall, watch-stop. None of them is
+# allowed to announce a finished run over work that never landed, so the invariant is asserted once
+# more on the way out, where it covers the paths the drain gate does not.
+af_assert_no_stragglers "exit"
 say "af-ticket-loop finished for $PROJECT"

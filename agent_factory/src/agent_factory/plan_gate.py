@@ -50,6 +50,67 @@ R_NO_DEP_CYCLE = "R-NO-DEP-CYCLE"        # the depends_on graph is acyclic (buil
 R_NO_IMPL_DEPENDS_ON_DECISION = "R-NO-IMPL-DEPENDS-ON-DECISION"  # no ticket may depends_on a decision
 R_DECISION_NOT_END_STATE = "R-DECISION-NOT-END-STATE"           # a decision is human-accepted, not built
 R_CONTRACT_SIGNED = "R-CONTRACT-SIGNED"  # a blessed plan carries a signed contract w/ evaluator actions
+R_EXTERNAL_STATE_LIVE = "R-EXTERNAL-STATE-NEEDS-LIVE-CHECK"  # a ticket claiming external state needs a
+#                                                              check that queries that system for real
+
+# A ticket that claims state OUTSIDE the repo — an object in a bucket, a provisioned instance, a
+# serving endpoint — cannot be proven by anything that runs entirely inside the repo. Mocked clients,
+# fixtures and constants all demonstrate the code's SHAPE while the external world stays untouched.
+#
+# Why this rule exists. On a real plan, five tickets reached build_state="finished" this way and not
+# one of them had done its job: three acquisition tickets went green against a moto-mocked S3 with no
+# bucket in the account; a UI ticket claiming a service that "binds to localhost" passed with no server
+# in the tree; a reconstruction ticket returned its "measured" reprojection error from a module
+# constant. Every acceptance condition was honest prose. Every check verified inputs the ticket itself
+# invented. The gap was structural, so the fix is too: if a ticket's own words claim external state,
+# SOMETHING it resolves must go and look.
+# Two tiers, because a single flat vocabulary produced false positives immediately. Run across four
+# unrelated plans, the flat version flagged af-clean — a TEXT-ANALYSIS project with no cloud surface —
+# on the sentence "one rule yields an auto-appliable lexical instance and a report-only semantic
+# instance". "instance", "queue", "topic", "endpoint" and "lambda" are ordinary technical English
+# before they are infrastructure.
+#
+# STRONG terms name a specific external system and stand alone.
+_EXTERNAL_STRONG_RE = re.compile(
+    r"\b("
+    r"s3|ec2|rds|dynamodb|cloudfront|api gateway|object storage|"
+    r"bucket|uploads? to|uploaded to|transferred to|binds? to|listens? on|"
+    r"dns record|https?://"
+    r")\b",
+    re.IGNORECASE,
+)
+# WEAK terms are infrastructure ONLY in an infrastructure context, so they need corroboration —
+# either a STRONG term elsewhere in the same ticket, or an infra-ish identity tag.
+_EXTERNAL_WEAK_RE = re.compile(
+    r"\b("
+    r"instance|provision(?:ed|s|ing)?|terminat(?:e|ed|es|ion)|"
+    r"deploy(?:ed|s|ment)?|endpoint|serves?|serving|queue|topic|lambda|dns"
+    r")\b",
+    re.IGNORECASE,
+)
+# Tags that make a WEAK term count. Identity the plan already carries — no new authoring burden.
+_INFRA_TAGS = frozenset({
+    "infrastructure", "deployment", "deploy", "aws", "cloud", "ec2", "s3", "iam",
+    "terraform", "cdk", "networking", "compute", "provisioning", "acquisition", "hosting",
+})
+# Commands that actually leave the process and touch something. A check whose run is only pytest/ruff/
+# mypy/grep proves the tree, never the world.
+_LIVE_COMMAND_RE = re.compile(
+    r"\b(aws|boto3|rclone|curl|wget|gcloud|az|kubectl|terraform|psql|nc|dig|http)\b",
+    re.IGNORECASE,
+)
+# ...but a "live" command running against a mocked or local-stub endpoint proves nothing either.
+#
+# Matched as USAGE, not as vocabulary. A first cut scanned for the bare word "moto" anywhere in the
+# command and disqualified a genuine `aws s3 ls` check whose own FAILURE MESSAGE read "a moto mock
+# does not satisfy this check" — the check was right, its prose mentioned the thing it rules out, and
+# the rule punished it for saying so. Anchor on how a mock is actually invoked instead.
+_MOCKED_RE = re.compile(
+    r"(--with\s+moto|\bimport\s+moto\b|\bfrom\s+moto\b|\bmock_aws\b|\bmoto\.server\b"
+    r"|\blocalstack\b|\bhttpretty\b|responses\.activate"
+    r"|endpoint[-_]url[= ]\s*[\"']?https?://(localhost|127\.0\.0\.1))",
+    re.IGNORECASE,
+)
 
 # A PURE ARCHITECTURE DECISION admitted as a requirement ticket MUST carry ONLY this neutral tag (so it
 # resolves ZERO implementation checks) and be ``verify="manual"`` (a human accepts/overrides it at the
@@ -182,6 +243,7 @@ def evaluate_plan(
     out_of_scope: list[str] | None = None,
     project: str | None = None,
     contract: dict | None = None,
+    checks: list[dict] | None = None,
 ) -> Verdict:
     """Run the done-gate over a PRD's requirements; return admit/reject + reasons.
 
@@ -287,6 +349,45 @@ def evaluate_plan(
                         f"(define it in a requirement or declare it out of scope)",
                     )
                 )
+
+    # --- R-EXTERNAL-STATE-NEEDS-LIVE-CHECK. Stands down entirely when the caller threads no
+    # checks (keeps evaluate_plan pure and every existing caller/test unchanged); fires only on an
+    # automated ticket whose own text claims external state.
+    if checks is not None:
+        live_tags: set[str] = set()
+        live_any = False
+        for c in checks:
+            meta = c if "run" in c else (c.get("meta") or {})
+            run = str(meta.get("run") or "")
+            if not run or not _LIVE_COMMAND_RE.search(run) or _MOCKED_RE.search(run):
+                continue
+            applies = [_norm(a) for a in (meta.get("applies_to") or [])]
+            if "*" in applies:
+                live_any = True
+            live_tags.update(a for a in applies if a and a != "*")
+        for r in requirements:
+            if r.id in decision_ids or _norm(r.verify) == "manual":
+                continue
+            blob = f"{r.text} {r.acceptance}"
+            claim = _EXTERNAL_STRONG_RE.search(blob)
+            if claim is None:
+                # A weak term counts only in an infrastructure context: an infra identity tag on the
+                # ticket. Without that corroboration it is ordinary technical English and is ignored.
+                if {_norm(x) for x in r.tags} & _INFRA_TAGS:
+                    claim = _EXTERNAL_WEAK_RE.search(blob)
+            if not claim:
+                continue
+            if live_any or ({_norm(t) for t in r.tags} & live_tags):
+                continue
+            reasons.append(
+                Reason(
+                    R_EXTERNAL_STATE_LIVE,
+                    f"{r.id}: claims external state ('{claim.group(0)}') but resolves no check whose "
+                    f"command queries that system. A mocked client, a fixture or a constant proves the "
+                    f"code's shape while the external world stays untouched — author a check whose run "
+                    f"actually looks (aws/rclone/curl/...), or mark the ticket verify=\"manual\".",
+                )
+            )
 
     # --- Dependency-DAG closure (the build-order graph af-build's next_ready_ticket walks). A
     # depends_on edge naming a requirement not in this plan is unrealizable (the prerequisite can
@@ -412,6 +513,10 @@ class PlanGate:
             # R-CONTRACT-SIGNED rule REJECTS (it fails closed), so a case that means to exercise
             # another rule's pass-path must supply a valid contract explicitly.
             contract=input.get("contract"),
+            # Declared build-validation checks, threaded the same way as the contract so
+            # evaluate_plan stays pure. Absent -> None -> R-EXTERNAL-STATE-NEEDS-LIVE-CHECK
+            # stands down, which keeps every pre-existing case's verdict unchanged.
+            checks=input.get("checks"),
         )
 
 

@@ -121,8 +121,13 @@ def test_facts_read_from_prd_snapshot_and_malformed_plan_rejects(monkeypatch):
     fake = _install(monkeypatch, facts=_malformed())
     verdict, requirements = pgc.check_plan("sotos")
     # the fake ASSERTED (category, space, snapshot); confirm BOTH lanes were actually queried.
+    # Three reads, all over this project's own space: the categorical requirement enumeration the
+    # pure rules run on, the broader any-state one the live-data rules need, and the declared
+    # build-validation checks threaded in for R-EXTERNAL-STATE-NEEDS-LIVE-CHECK (the pure gate still
+    # reads nothing itself — the caller fetches, exactly as it does for the signed contract).
     assert fake.calls == [("requirement", "sotos", "prd-sotos", "active"),
-                          (None, "sotos", "prd-sotos", "any")]
+                          (None, "sotos", "prd-sotos", "any"),
+                          ("check", "sotos", "building-validation", "active")]
     assert len(requirements) == 2
     assert verdict.admitted is False
     rule_ids = {r.rule_id for r in verdict.reasons}

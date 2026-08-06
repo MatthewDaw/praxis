@@ -1,0 +1,30 @@
+# Negative control for R-EXTERNAL-STATE-NEEDS-LIVE-CHECK. A ticket whose own words claim objects in
+# a bucket, resolving only a pytest suite. This is the exact shape that let three acquisition tickets
+# reach build_state="finished" with no bucket in the AWS account.
+id: plan_gate_external_state_without_live_check_rejected
+component: plan_gate
+input:
+  project: farm
+  # supplied so this case isolates the rule under test; the
+  # contract rule fails closed and would otherwise co-fire.
+  contract:
+    signed: true
+    actions_recorded: true
+  checks:
+    - check_id: tests-acquisition
+      applies_to: ["acquisition"]
+      run: "uv run --with pytest pytest tests/acquisition -q"
+  requirements:
+    - id: R1
+      text: "The corpus is transferred to S3 under raw/ by streaming rclone copy with no local staging."
+      acceptance: "S3 object count under raw/ equals 3087 and total bytes match the source."
+      defines: ["acquisition manifest"]
+      references: []
+      source: "prd-farm"
+      tags: ["acquisition"]
+      verify: "automated"
+  out_of_scope: []
+rule_ids: ["R-EXTERNAL-STATE-NEEDS-LIVE-CHECK"]
+deterministic_checks:
+  - name: gate_rejects
+    ref: "evals.checks:gate_rejects"

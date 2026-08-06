@@ -14,9 +14,10 @@ if _HOOKS not in sys.path:
     sys.path.insert(0, _HOOKS)
 
 import _ticket_state as ts  # noqa: E402
+from _fake_praxis import SanctionedWrites  # noqa: E402
 
 
-class FakePraxis:
+class FakePraxis(SanctionedWrites):
     """Records every state call's (space, snapshot) so the test can assert binding."""
 
     def __init__(self, meta=None):
@@ -47,18 +48,22 @@ def _install(monkeypatch, meta=None):
 def test_claim_binds_state_to_plan_snapshot(monkeypatch):
     fake = _install(monkeypatch)
     assert ts.claim("R1", "owner-a", ref=("team-app", "prd-team-app")) is True
-    # both the lease read and the write carry the plan (space, snapshot).
-    assert fake.reads == [("R1", "team-app", "prd-team-app")]
-    cid, patch, space, snap = fake.writes[-1]
-    assert (cid, space, snap) == ("R1", "team-app", "prd-team-app")
-    assert patch["build_state"] == "in_progress"
+    # EVERY read and EVERY write carries the plan (space, snapshot) — a claim is now more than
+    # one round-trip (the lease-state read, the server-side grant, the R33 graded-loop reset),
+    # and a single one of them that mis-defaulted to working memory would split the ticket's
+    # state across two graphs.
+    assert fake.reads, "expected at least the lease-state read"
+    assert all(r == ("R1", "team-app", "prd-team-app") for r in fake.reads)
+    assert all((c, s, n) == ("R1", "team-app", "prd-team-app")
+               for c, _, s, n in fake.writes)
+    assert fake.writes[0][1]["build_state"] == "in_progress"
 
 
 def test_no_ref_defaults_to_working_memory(monkeypatch):
     fake = _install(monkeypatch)
     assert ts.claim("R1", "owner-a") is True
-    assert fake.reads == [("R1", None, None)]           # working memory (no space header)
-    assert fake.writes[-1][2:] == (None, None)
+    assert fake.reads and all(r == ("R1", None, None) for r in fake.reads)  # no space header
+    assert all(w[2:] == (None, None) for w in fake.writes)
 
 
 def test_pin_and_record_pass_thread_the_ref(monkeypatch):

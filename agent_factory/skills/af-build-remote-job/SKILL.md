@@ -33,6 +33,7 @@ So this drives the SSH + tmux path that is how runs actually get started today.
 | host | `ec2-user@52.22.249.49` |
 | key | `~/.ssh/praxis-devbox.pem` |
 | factory repo | `/workspace/praxis` (the loop script lives here regardless of target project) |
+| ⚠ second checkout | `/workspace/af-praxis` is a SECOND checkout of the same repo, usually on a different branch. **Patching it does nothing at runtime** — see below. |
 | driver | `/workspace/praxis/agent_factory/scripts/af-ticket-loop.sh <project> <worktree> <pg> <redis|none> [max]` (ships with the plugin; all projects run this one file) |
 | tmux session | derived by the loop as `af-$(basename <worktree>)` |
 | loop log | `/workspace/af-ticket-loop.log` (plus the per-run log this command redirects to) |
@@ -170,6 +171,26 @@ ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
 A dirty or diverged checkout is a REPORT, not something to force past: another loop may be executing
 that file right now. If a stray per-project copy or launcher still exists, point it at the canonical
 script with a symlink rather than re-copying it.
+
+**Two checkouts exist, and only one is on the runtime path.** `/workspace/praxis` and
+`/workspace/af-praxis` are separate clones of this repo, typically on different branches. The
+plugin marketplace in `~/.claude/settings.json` resolves `agent-factory-local` to ONE of them —
+check it, never assume:
+
+```bash
+ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
+  "python3 -c \"import json,pathlib;print(json.loads((pathlib.Path.home()/'.claude/settings.json').read_text()).get('extraKnownMarketplaces'))\""
+```
+
+Whatever that path says is where SKILL.md, hooks and `evals/` are loaded from for every worker
+session. A fix applied to the other clone compiles, tests green, commits cleanly — and changes
+nothing about the running system. Observed 2026-08-06: a judge fix was verified in `af-praxis`
+while the marketplace pointed at `praxis`, so the very next run reproduced the bug it supposedly
+fixed. Patch the checkout on the marketplace path, or patch both and say so.
+
+Note the loop SCRIPT is resolved separately, from the path you invoke in step 6 — so the driver and
+the plugin can come from different clones at the same time. That is the trap: refreshing one in
+step 5b tells you nothing about the other.
 
 **6. Launch detached** so the loop survives the SSH connection closing. Pass `none` for redis when
 the project has none; pass `[max]` only if the user bounded the run. The driver locates its own hooks,

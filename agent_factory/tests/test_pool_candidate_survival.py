@@ -17,9 +17,10 @@ if _HOOKS not in sys.path:
     sys.path.insert(0, _HOOKS)
 
 import _ticket_state as ts  # noqa: E402
+from _fake_praxis import SanctionedWrites  # noqa: E402
 
 
-class _DBSpy:
+class _DBSpy(SanctionedWrites):
     def __init__(self, checks):
         self._checks = checks
         self.patches = []

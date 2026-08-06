@@ -43,14 +43,61 @@ def _extract(*names: str) -> str:
     src = SCRIPT.read_text().splitlines()
     out = []
     for name in names:
-        start = next(i for i, l in enumerate(src) if l.startswith(f"{name}(){{"))
+        start = next(i for i, line in enumerate(src) if line.startswith(f"{name}(){{"))
         end = next(i for i in range(start + 1, len(src)) if src[i] == "}")
         out.append("\n".join(src[start : end + 1]))
     assert len(out) == len(names)
     return "\n".join(out)
 
 
-FUNCS = _extract("af_owned_ids", "af_is_worker_branch", "reap_branches")
+OWNERSHIP = (
+    "af_owned_ids",
+    "af_branch_ids",
+    "af_is_human_branch",
+    "af_is_worktree_branch",
+    "af_is_owed_merge",
+    "af_is_factory_named",
+)
+FUNCS = _extract(*OWNERSHIP, "reap_branches")
+
+# Everything the terminal invariant needs. `resolve_conflicts` is the one thing that cannot run here
+# — it dispatches a tmux agent — so it is stubbed to a no-op AFTER extraction (a later definition
+# wins), which is also the pessimistic case the red-path test wants: resolution that fixes nothing.
+INVARIANT_FUNCS = _extract(
+    *OWNERSHIP,
+    "af_scratch_roots",
+    "af_scratch_globs",
+    "af_is_scratch",
+    "af_force_remove_worktree",
+    "sweep_worktrees",
+    "queue_orphan_branches",
+    "reap_branches",
+    "af_stragglers",
+    "af_assert_no_stragglers",
+)
+
+INVARIANT_HARNESS = (
+    HARNESS
+    + """
+CONFLICTS="$PWD/conflicts.tsv"
+: > "$CONFLICTS"
+resolve_conflicts(){ printf 'RESOLVER %s\\n' "$1"; return 0; }
+"""
+)
+
+
+def _stragglers(repo: Path, known: str = "", finished: str = "", assert_where: str = "") -> tuple[int, str]:
+    tail = f'af_assert_no_stragglers "{assert_where}"' if assert_where else "af_stragglers"
+    script = f"""{INVARIANT_HARNESS}
+AF_KNOWN_IDS=" {known} "
+AF_FINISHED_IDS=" {finished} "
+{INVARIANT_FUNCS}
+{tail}
+"""
+    r = subprocess.run(
+        ["bash", "-c", script], cwd=repo, capture_output=True, text=True, timeout=180
+    )
+    return r.returncode, r.stdout + r.stderr
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -120,7 +167,14 @@ def test_patch_equivalent_branch_is_reaped_despite_not_being_an_ancestor(repo: P
     """`git cherry`, not ancestry. Three of the four appeal_engine survivors looked unmerged for
     exactly this reason: the work was upstream under a different sha."""
     _worker_branch(repo, "worktree-agent-dup", "a.py", "a = 1\n", "feat: a (R8)")
-    _git(repo, "cherry-pick", _git(repo, "rev-parse", "worktree-agent-dup"))
+    # The integrator is a DIFFERENT identity from the worker (as in a real landing), and
+    # naming it matters twice over: a bare CI runner has no git identity at all, so an
+    # undecorated cherry-pick dies with "Committer identity unknown"; and reusing the
+    # worker's identity would make the replayed commit byte-identical to the original
+    # (same tree, parent, message, author) and collapse it to the SAME sha — destroying
+    # the patch-equivalent-but-different-sha condition this test exists to exercise.
+    _git(repo, "-c", "user.name=integrator", "-c", "user.email=i@i",
+         "cherry-pick", _git(repo, "rev-parse", "worktree-agent-dup"))
     _commit(repo, "later.py", "later = 1\n", "chore: unrelated later commit")
     assert _git(repo, "rev-list", "--count", "main..worktree-agent-dup") == "1"
 
@@ -296,3 +350,266 @@ def test_the_round_reaps_after_it_purges():
     src = SCRIPT.read_text()
     body = src[src.index("  integrate_round\n") :]
     assert body.index("sweep_worktrees") < body.index("reap_branches")
+
+
+# --------------------------------------------------------------------------------------------
+# The 2026-08-03 sotos regression: ownership was an ALLOWLIST OF NAMES, so a name nobody had
+# anticipated (`af-build/HIP-23`) was skipped by queue_orphan_branches AND by reap_branches, and the
+# run logged `drained — nothing claimable` over two tickets whose work was on no integration branch.
+# These are the cases that would have gone red on that run.
+# --------------------------------------------------------------------------------------------
+
+
+def test_a_branch_with_a_never_before_seen_name_is_still_owed_a_merge(repo: Path):
+    """THE regression test for the whole class. `af-build/*` matched no pattern this script knew, and
+    nothing in this script mints it — a worker chose it. Ownership must not depend on having guessed
+    the name, so the branch is detected by the SAME hard-failure path a `worktree-agent-*` branch
+    would have taken: ticket finished, work nowhere, round fails, ticket regressed, branch KEPT."""
+    _worker_branch(repo, "af-build/HIP-23", "h23.py", "h = 23\n", "feat: h23 (HIP-23)")
+
+    rc, out = _reap(repo, known="HIP-23", finished="HIP-23")
+
+    assert rc == 1, "a novel-named branch holding a finished ticket's only copy must FAIL the round"
+    assert "af-build/HIP-23" in _branches(repo), "never delete unmerged work to make a check pass"
+    assert "ROUND FAILED" in out and "HIP-23" in out
+    assert (repo / "regress.log").read_text().strip() == "REGRESS HIP-23 af-build/HIP-23"
+
+
+def test_an_unrecognised_branch_with_an_unrecognised_ticket_id_is_reported_not_skipped(repo: Path):
+    """Second silent-miss path: the old `build/*` case consulted AF_KNOWN_IDS and, when it was empty,
+    fell through to `return 1` — skip. An empty id set is 'we could not ask', never 'not ours'."""
+    _worker_branch(repo, "totally-invented-name", "z.py", "z = 1\n", "feat: z (ZZZ-9)")
+
+    rc, out = _reap(repo, known="", finished="")
+
+    assert rc == 0, out
+    assert "totally-invented-name" in _branches(repo)
+    assert "0 branches reaped, 1 unmerged branches remain: totally-invented-name" in out, (
+        "an unknown branch must be NAMED as unmerged, not silently passed over"
+    )
+
+
+def test_a_branch_checked_out_in_a_worktree_is_owned_whatever_it_is_called(repo: Path, tmp_path: Path):
+    """FACT 1: `git worktree list --porcelain` is authoritative and name-independent. Even a name the
+    human-exemption list would otherwise cover is factory work while a worktree holds it."""
+    _git(repo, "branch", "hotfix/looks-human")
+    _git(repo, "worktree", "add", str(tmp_path / "wt"), "hotfix/looks-human")
+
+    script = f"""{HARNESS}
+AF_KNOWN_IDS=" "
+{_extract(*OWNERSHIP)}
+af_is_owed_merge hotfix/looks-human && echo OWED || echo NOT_OWED
+af_is_owed_merge hotfix/never-checked-out && echo OWED2 || echo NOT_OWED2
+"""
+    r = subprocess.run(
+        ["bash", "-c", script], cwd=repo, capture_output=True, text=True, timeout=60
+    )
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "OWED\n" in r.stdout, "a branch in a worktree is factory work by definition"
+    assert "NOT_OWED2" in r.stdout, "the explicit human exemption still applies off-worktree"
+
+
+def test_the_integration_branch_and_registered_human_branches_stay_exempt(repo: Path):
+    """The exemption is the ONLY way out, so it has to keep working — and AF_HUMAN_BRANCHES must ADD
+    to the defaults rather than replace them, or setting it once would un-exempt main."""
+    script = f"""{HARNESS}
+AF_KNOWN_IDS=" "
+AF_HUMAN_BRANCHES="spike/*"
+{_extract(*OWNERSHIP)}
+for b in main release/1.2 spike/idea af-build/HIP-23; do
+  af_is_owed_merge "$b" && echo "OWED $b" || echo "EXEMPT $b"
+done
+"""
+    r = subprocess.run(
+        ["bash", "-c", script], cwd=repo, capture_output=True, text=True, timeout=60
+    )
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "EXEMPT main" in r.stdout
+    assert "EXEMPT release/1.2" in r.stdout
+    assert "EXEMPT spike/idea" in r.stdout
+    assert "OWED af-build/HIP-23" in r.stdout
+
+
+def test_deletion_stays_narrow_even_though_detection_is_broad(repo: Path):
+    """The two questions must not collapse back into one. Detection is default-inclusive; deletion is
+    gated on the narrow, id-derived test, so a human's already-merged branch is left alone."""
+    script = f"""{HARNESS}
+AF_KNOWN_IDS=" HIP-23 "
+{_extract(*OWNERSHIP)}
+for b in af-build/HIP-23 build/HIP-23 worktree-agent-x fix/mypy build/login-redesign; do
+  af_is_factory_named "$b" && echo "DELETABLE $b" || echo "KEEP $b"
+done
+"""
+    r = subprocess.run(
+        ["bash", "-c", script], cwd=repo, capture_output=True, text=True, timeout=60
+    )
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "DELETABLE af-build/HIP-23" in r.stdout, "any prefix, when the id is one Praxis owns"
+    assert "DELETABLE build/HIP-23" in r.stdout
+    assert "DELETABLE worktree-agent-x" in r.stdout
+    assert "KEEP fix/mypy" in r.stdout
+    assert "KEEP build/login-redesign" in r.stdout
+
+
+# ------------------------------------------------------------------- locked worktrees --
+
+
+def _add_worktree(repo: Path, path: Path, branch: str) -> None:
+    _git(repo, "worktree", "add", "-b", branch, str(path))
+
+
+def test_a_locked_worktree_is_unlocked_and_swept(repo: Path):
+    """`git worktree remove` and `git worktree prune` both REFUSE a locked tree, so a sweep that does
+    not unlock first silently no-ops — the same failure shape as the branch miss. Two of the four
+    sotos leftovers were locked and survived every sweep."""
+    wt = repo / ".claude" / "worktrees" / "agent-deadbeef"
+    wt.parent.mkdir(parents=True)
+    _add_worktree(repo, wt, "worktree-agent-deadbeef")
+    _git(repo, "worktree", "lock", str(wt))
+    assert wt.exists()
+
+    script = f"""{INVARIANT_HARNESS}
+AF_KNOWN_IDS=" "
+AF_FINISHED_IDS=" "
+{INVARIANT_FUNCS}
+sweep_worktrees
+"""
+    r = subprocess.run(
+        ["bash", "-c", script], cwd=repo, capture_output=True, text=True, timeout=180
+    )
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not wt.exists(), f"a locked worktree must be unlocked and removed, not skipped:\n{r.stdout}"
+    assert "worktree-agent-deadbeef" in _branches(repo), "removing a tree keeps its branch"
+
+
+def test_the_sibling_wt_layout_is_swept_too(repo: Path, tmp_path: Path):
+    """The sotos leftovers were `/workspace/sotos-wt-HIP23` — a SIBLING of the checkout, under
+    neither known scratch root, so every sweep walked past them."""
+    wt = repo.parent / f"{repo.name}-wt-HIP23"
+    _add_worktree(repo, wt, "af-build/HIP-23")
+    assert wt.exists()
+
+    script = f"""{INVARIANT_HARNESS}
+AF_KNOWN_IDS=" HIP-23 "
+AF_FINISHED_IDS=" "
+{INVARIANT_FUNCS}
+sweep_worktrees
+"""
+    r = subprocess.run(
+        ["bash", "-c", script], cwd=repo, capture_output=True, text=True, timeout=180
+    )
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not wt.exists(), r.stdout
+
+
+# ------------------------------------------------------- the terminal invariant, both directions --
+
+
+def test_terminal_invariant_holds_on_a_genuinely_clean_run(repo: Path):
+    rc, out = _stragglers(repo, known="R8", finished="R8", assert_where="drain")
+
+    assert rc == 0, out
+    assert "straggler invariant HOLDS at drain" in out
+
+
+def test_terminal_invariant_FAILS_when_an_unmerged_worker_branch_exists(repo: Path):
+    """THE RED PATH. Two wrong conclusions were reached on 2026-08-03 by only ever watching the
+    passing case. A guard nobody has seen go red is worth nothing, so this asserts the failure: a
+    novel-named unmerged branch must make the run exit 7 instead of announcing a drain — and must
+    still be sitting there afterwards, because nothing is ever deleted to turn the check green."""
+    _worker_branch(repo, "af-build/HIP-27", "h27.py", "h = 27\n", "feat: h27 (HIP-27)")
+
+    rc, out = _stragglers(repo, known="HIP-27", finished="", assert_where="drain")
+
+    assert rc == 7, f"a straggler must exit 7, not report a clean drain:\n{out}"
+    assert "STRAGGLER INVARIANT VIOLATED at drain" in out
+    assert "unmerged branch af-build/HIP-27" in out
+    assert "af-build/HIP-27" in _branches(repo), "the invariant must never delete its way to green"
+
+
+def test_terminal_invariant_FAILS_on_a_leftover_worktree(repo: Path):
+    """The other half: two locked `.claude/worktrees/agent-<hex>` trees outlived the sotos run."""
+    wt = repo / ".claude" / "worktrees" / "agent-cafe"
+    wt.parent.mkdir(parents=True)
+    _add_worktree(repo, wt, "worktree-agent-cafe")
+    _git(repo, "worktree", "lock", str(wt))
+    # A tree git cannot remove at all is the pessimistic case: make removal impossible by
+    # stubbing it out, and the invariant must still refuse to call the run clean.
+    script = f"""{INVARIANT_HARNESS}
+AF_KNOWN_IDS=" "
+AF_FINISHED_IDS=" "
+{INVARIANT_FUNCS}
+af_force_remove_worktree(){{ return 1; }}
+af_assert_no_stragglers "drain"
+"""
+    r = subprocess.run(
+        ["bash", "-c", script], cwd=repo, capture_output=True, text=True, timeout=180
+    )
+
+    assert r.returncode == 7, f"an unsweepable worktree must fail loudly:\n{r.stdout}{r.stderr}"
+    assert "leftover worktree" in r.stdout
+    assert "could not purge" in r.stdout, "the sweep's own failure must be loud, not swallowed"
+
+
+def test_terminal_invariant_is_not_fatal_at_a_round_boundary(repo: Path):
+    """Work still in flight is legitimate mid-run: log loudly, force a resolution pass, keep going."""
+    _worker_branch(repo, "af-build/HIP-30", "h30.py", "h = 30\n", "feat: h30 (HIP-30)")
+
+    script = f"""{INVARIANT_HARNESS}
+AF_KNOWN_IDS=" HIP-30 "
+AF_FINISHED_IDS=" "
+{INVARIANT_FUNCS}
+af_assert_no_stragglers "round #1" 0 || echo NONFATAL_RC=$?
+echo REACHED_THE_END
+"""
+    r = subprocess.run(
+        ["bash", "-c", script], cwd=repo, capture_output=True, text=True, timeout=180
+    )
+
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "NONFATAL_RC=1" in r.stdout
+    assert "REACHED_THE_END" in r.stdout
+    assert "STRAGGLER INVARIANT VIOLATED at round #1" in r.stdout
+
+
+def test_a_straggler_forces_a_resolution_pass_before_it_is_reported(repo: Path):
+    """Reporting is not the remedy. The invariant queues every straggler and runs the resolver before
+    it will even consider failing — the sotos run's branches were never queued by anything."""
+    _worker_branch(repo, "af-build/HIP-27", "h27.py", "h = 27\n", "feat: h27 (HIP-27)")
+
+    rc, out = _stragglers(repo, known="HIP-27", finished="", assert_where="drain")
+
+    assert rc == 7
+    assert "STRAGGLERS PRESENT at drain" in out
+    assert "orphan branch from an earlier round queued for landing: af-build/HIP-27" in out
+    assert "RESOLVER straggler-sweep@drain" in out, "the resolver must actually be invoked"
+
+
+# ------------------------------------------------------------------------------- wiring --
+
+
+def test_the_invariant_is_wired_to_every_terminal_path():
+    src = SCRIPT.read_text()
+    assert 'af_assert_no_stragglers "drain"' in src, "the drain gate is the whole point"
+    assert 'af_assert_no_stragglers "exit"' in src, "every break must pass through it"
+    assert 'af_assert_no_stragglers "--resolve-orphans"' in src
+    assert 'af_assert_no_stragglers "round #$round" 0' in src
+    # It must sit BEFORE the loop announces it is finished, not after.
+    assert src.index('af_assert_no_stragglers "exit"') < src.index('say "af-ticket-loop finished')
+    assert "AF_EXIT_STRAGGLERS=7" in src, "a straggler needs its own exit code, not a reused one"
+
+
+def test_ownership_is_no_longer_an_allowlist_of_names():
+    """The shape of the fix, asserted structurally: the default answer to 'is this owed a merge' is
+    YES. If someone re-inverts it to an allowlist, this goes red."""
+    body = _extract("af_is_owed_merge")
+    assert "af_is_worktree_branch" in body, "worktree membership must be consulted first"
+    assert body.rstrip().endswith("return 0\n}"), (
+        "the last word of the ownership test must be 'yes, it is ours' — a default of `return 1` is "
+        "the allowlist bug this whole change exists to remove"
+    )

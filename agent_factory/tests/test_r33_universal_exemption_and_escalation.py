@@ -24,6 +24,7 @@ if _HOOKS not in sys.path:
 
 import _graded_verify as gv  # noqa: E402
 import _ticket_state as ts  # noqa: E402
+from _fake_praxis import SanctionedWrites  # noqa: E402
 from agent_factory.rubric import rubric_from_dict  # noqa: E402
 from agent_factory.seeded_checks import SeededCheck  # noqa: E402
 
@@ -45,7 +46,7 @@ def _universal_check(report_only: bool) -> SeededCheck:
                        rubric=rubric, report_only=report_only)
 
 
-class FakePraxis:
+class FakePraxis(SanctionedWrites):
     """Persists ONE ticket's meta across calls; ``patch_meta`` MERGES like the real server."""
 
     def __init__(self, meta):

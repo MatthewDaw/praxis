@@ -92,6 +92,45 @@ judgment):**
   agent's N/A judgment. Do **not** author a UI check as `["*"]`+`applies_when` and lean on the agent to
   skip it.
 
+## Step 1b — A check must assert REALITY, not shape (read before writing the `run`)
+
+The dominant failure of authored checks is not that they are missing — it is that they **verify inputs
+the ticket itself invented**. A mocked client, a fixture, a hand-built list and a module constant all
+demonstrate that the code has the right *shape* while the world it claims to change stays untouched.
+Every rule below was paid for by a ticket that reached `build_state="finished"` having done nothing.
+
+**1. A ticket claiming EXTERNAL state needs a command that goes and looks.** Objects in a bucket, a
+provisioned instance, a serving endpoint, a row in a database — none can be proven from inside the
+repo. `moto`, `localstack`, `responses` and friends belong in unit tests, never in the check that
+proves the claim. *Three acquisition tickets went green against a moto-mocked S3 with no bucket in the
+account.* The mechanical gate now enforces this (`R-EXTERNAL-STATE-NEEDS-LIVE-CHECK`), so a plan whose
+external-state tickets resolve only in-repo commands is REJECTED at intake — but author the check
+properly rather than waiting to be told.
+
+**2. Assert SUBSTANCE, not existence.** "the route returns HTML" was satisfied by
+`<h1>Map view</h1>` and nothing else. Existence assertions teach the builder to emit the literal
+string you grepped for and stop. Give the assertion teeth the product cannot fake cheaply:
+
+- **size floors** — a rendered page under 1200 bytes is a stub, not a screen;
+- **required vocabulary** — every enumerated value, every named layer or state the spec lists;
+- **cross-references** — the page names the artifact it renders, not just its own title.
+
+**3. Make the output depend on the input.** The single cheapest way to kill a hardcoded constant: run
+the thing twice on two different inputs and require the results to DIFFER. *A reconstruction ticket
+returned its "measured" reprojection error from a module constant and passed every test written
+about it.* Two inputs, two outputs, one comparison — and the constant is dead.
+
+**4. Prefer an assertion the code cannot satisfy by construction.** Best of all is a claim only real
+work can make true: that the produced map lands on the same ground the telemetry says was flown over,
+that the artifact's checksum matches the source, that the instance actually left the account. When you
+can choose between "the function was called" and "the world changed", always take the second.
+
+**5. NEVER put `when_changed` on a check that asserts global or external state.** The predicate exists
+to skip an expensive *module* suite when a ticket did not touch that module. On a check asserting "the
+corpus is in S3", it is a skip button: *a bucket-creation ticket dodged both corpus checks because its
+work landed in `infrastructure/` and the predicate named `acquisition/`.* Scope by `applies_to`, and
+reserve `when_changed` for module-local test suites only.
+
 ## Step 2 — Write the check into `building-validation`
 
 ```
@@ -262,6 +301,13 @@ immediacy regression was requested. If any Praxis call failed, report the failur
   lenses. To add a requirement use af-intake-plan; a planning lens, af-intake-plan-validation.
 - **Never** author a check that names specific tickets or hand-lists checks onto a ticket — a check owns a
   predicate; WHICH tickets it governs is the build's fresh RESOLVE query.
+- **Never** author a check that proves a ticket's EXTERNAL claim with an in-repo command — a mocked
+  client, a fixture or a constant shows the code's shape while the world stays untouched. The gate
+  rejects this (`R-EXTERNAL-STATE-NEEDS-LIVE-CHECK`); see Step 1b.
+- **Never** settle for an existence assertion where a substance assertion is available — size floors,
+  required vocabulary, and two-inputs-must-differ are what stop a stub passing (Step 1b).
+- **Never** put `when_changed` on a check asserting global or external state — it is a skip button on
+  exactly the gates that matter (Step 1b).
 - **Never** leave a check whose `--by-check` fan-out pins it onto unrelated tickets (a `"secrets"` purge
   check on a CDK ticket, a `"migration"` schema check on a runbook or federation ticket) — that is a
   too-broad `applies_to`; tighten the tag or surface-bind it before finishing.

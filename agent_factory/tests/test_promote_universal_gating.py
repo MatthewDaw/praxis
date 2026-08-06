@@ -19,6 +19,7 @@ if _HOOKS not in sys.path:
     sys.path.insert(0, _HOOKS)
 
 import _ticket_state as ts  # noqa: E402
+from _fake_praxis import SanctionedWrites  # noqa: E402
 from agent_factory.rubric import rubric_from_dict  # noqa: E402
 from agent_factory.seeded_checks import SeededCheck, load_seeded_checks, universal_seeded_checks  # noqa: E402
 
@@ -167,7 +168,7 @@ def test_report_only_false_gates():
 
 # ------------------------------------------------------------------- pin_requirements records ids
 
-class _Spy:
+class _Spy(SanctionedWrites):
     def __init__(self):
         self.patches = []
 

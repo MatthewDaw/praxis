@@ -12,6 +12,7 @@ if _HOOKS not in sys.path:
 
 import _graded_verify as gv  # noqa: E402
 import _ticket_state as ts  # noqa: E402
+from _fake_praxis import SanctionedWrites  # noqa: E402
 
 PLAN = ("team-app", "prd-team-app")
 
@@ -19,7 +20,7 @@ RUBRIC = {"confidence_floor": 5, "criterion": "c",
           "axes": [{"name": "a", "threshold": 0.7}]}
 
 
-class FakePraxis:
+class FakePraxis(SanctionedWrites):
     def __init__(self, meta):
         self._meta = dict(meta)
 

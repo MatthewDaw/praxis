@@ -23,13 +23,14 @@ if _HOOKS not in sys.path:
 
 import _graded_verify as gv  # noqa: E402
 import _ticket_state as ts  # noqa: E402
+from _fake_praxis import SanctionedWrites  # noqa: E402
 from agent_factory.rubric import rubric_from_dict  # noqa: E402
 from agent_factory.seeded_checks import SeededCheck  # noqa: E402
 
 PLAN = ("team-app", "prd-team-app")
 
 
-class FakePraxis:
+class FakePraxis(SanctionedWrites):
     """Persists one ticket's meta across get_fact/patch_meta (MERGE), like the live server's PATCH."""
 
     def __init__(self, meta):
