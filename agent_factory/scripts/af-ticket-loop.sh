@@ -1797,6 +1797,21 @@ verify_round(){   # $1 = round number, $2.. = the round's ticket ids
   fi
   # Read the sentinel with a parser, not grep: a bare grep for the word fail matches the notes prose
   # and would report a passing round as failed.
+  #
+  # COHERENCE GATE. The three fields can disagree, and until this existed the loop printed the
+  # disagreement and carried on as though the round had passed. Observed live: a round logged
+  # `verdict=pass gates_green=False regressed=0`, which asserts simultaneously that the merged tree's
+  # repo-wide gates were RED and that every ticket survived integration and nothing needs rebuilding.
+  # The verify prompt already forbids exactly that state -- "if you genuinely cannot attribute it,
+  # regress the whole batch rather than passing a red tree" -- but a prompt is not an enforcement
+  # point, and self-reported verdicts are precisely where self-judgement leaks back in.
+  #
+  # Deliberately NOT auto-regressing the batch on incoherence. `gates_green=false` is also what a
+  # verifier reports when a repo simply has no lint/typecheck tooling configured, so regressing on it
+  # would trade a false pass for a false failure and rebuild healthy tickets forever. Instead an
+  # incoherent verdict is downgraded to UNVERIFIED -- the same treatment as a MISSING verdict a few
+  # lines above, which this file already refuses to call a pass. Tickets keep whatever state they
+  # earned; the round's green claim does not get to stand.
   local summary
   summary=$(python3 - "$VERDICT" <<'PYEOF' 2>/dev/null || echo "verdict=UNREADABLE"
 import json, sys
@@ -1805,13 +1820,35 @@ try:
 except Exception as e:
     print(f"verdict=UNPARSEABLE ({e})"); raise SystemExit
 reg = d.get("regressed") or []
-print("verdict=%s gates_green=%s regressed=%d%s :: %s" % (
-    d.get("verdict"), d.get("gates_green"), len(reg),
+verdict = str(d.get("verdict") or "").strip().lower()
+gates = d.get("gates_green")
+
+incoherent = []
+if verdict not in ("pass", "fail"):
+    incoherent.append("verdict=%r is neither pass nor fail" % (d.get("verdict"),))
+if gates is None:
+    incoherent.append("gates_green is missing")
+elif gates is False and verdict == "pass":
+    incoherent.append("gates_green=false asserts the merged tree's repo-wide gates are RED, "
+                      "while verdict=pass asserts the round is good")
+if verdict == "fail" and not reg:
+    incoherent.append("verdict=fail names no ticket to regress, so the failure would rebuild nothing")
+
+prefix = ""
+if incoherent:
+    prefix = "INCOHERENT (treated as UNVERIFIED, not a pass) -- " + "; ".join(incoherent) + " :: "
+print("%sverdict=%s gates_green=%s regressed=%d%s :: %s" % (
+    prefix, d.get("verdict"), d.get("gates_green"), len(reg),
     (" [" + ",".join(str(r) for r in reg) + "]") if reg else "",
     str(d.get("notes", ""))[:200]))
 PYEOF
 )
   say "round #$rnd verification: $summary"
+  case "$summary" in
+    INCOHERENT*|verdict=UNREADABLE*|verdict=UNPARSEABLE*)
+      say "WARNING: round #$rnd's verdict does not hold together, so the merged tree is UNVERIFIED. Its green claim is unproven; any ticket it named is still regressed below, but its silence about the others proves nothing."
+      ;;
+  esac
 
   # THE LOOP performs the regression, not the verifier agent.
   #
