@@ -47,6 +47,19 @@ Complete = Callable[[str], str]
 
 GRADED_SOURCE = "graded-judge"
 PATH_EXEMPTION_SOURCE = "path-exemption"  # R33: auto-pass, never a human/attested source
+# An EMPTY diff is "nothing to grade", not "graded and clean". Asking a judge to
+# score a code-quality rubric against zero lines gets a confident pass -- observed
+# on appeal_engine DATA-1: "the rubric is trivially satisfied on an empty diff: no
+# dead code, no duplication, no fragmentation, because nothing was added." That
+# reads in the ticket exactly like a real verdict on real code, and it is what let
+# a ticket record two green graded checks having evaluated nothing.
+#
+# It still PASSES, deliberately: a ticket whose remaining work is operational
+# (run a harvest, sync a bucket) legitimately has no diff, and failing it would
+# block honest work. The fix is that it never masquerades as a judge verdict --
+# its own source makes "not evaluated" greppable and auditable, exactly as
+# path-exemption does for its case.
+EMPTY_DIFF_SOURCE = "no-diff"
 DEFAULT_GRADED_ITER_CAP = 3
 M_GRADED_LOOP = ts.M_GRADED_LOOP  # {validation_id: {iters, last_defects, last_hash}} — shared with
                                   # _ticket_state.claim(), which resets it on a fresh ticket pick.
@@ -124,6 +137,20 @@ def _pass_by_exemption(cid: str, validation_id: str, entry: dict, h: str, now: f
     return GradedResult(v, cached=False, iterations=0, should_block=False)
 
 
+def _pass_no_diff(cid: str, validation_id: str, h: str, now: float,
+                  ref: Optional[tuple[str, str]]) -> GradedResult:
+    """Discharge a graded requirement that has no code to grade — no judge call.
+
+    Recorded under its own source so the ticket says "not evaluated" instead of
+    wearing a judge verdict it never earned. See EMPTY_DIFF_SOURCE.
+    """
+    v = Verdict(passed=True, reason="no code diff to grade — rubric not evaluated "
+               "(this is NOT a judge verdict on the code)")
+    ts.record_validation_pass(cid, validation_id, True, ran_at=now,
+                              source=EMPTY_DIFF_SOURCE, verdict=_verdict_payload(v, h), ref=ref)
+    return GradedResult(v, cached=False, iterations=0, should_block=False)
+
+
 def verify_graded_check(cid: str, validation_id: str, code_diff: str, complete: Complete, *,
                         rubric: Optional[Rubric] = None,
                         cap: int = DEFAULT_GRADED_ITER_CAP,
@@ -143,6 +170,13 @@ def verify_graded_check(cid: str, validation_id: str, code_diff: str, complete: 
         raise ValueError(f"graded validation {validation_id!r} has no frozen rubric to grade against")
 
     h = code_state_hash(code_diff)
+
+    # NOTHING TO GRADE. Checked before the exemption and the cache: with no diff
+    # there are no paths for the predicate to judge and no code-state worth
+    # caching a judge verdict against. See EMPTY_DIFF_SOURCE for why this passes
+    # rather than fails, and why it must not go to the judge.
+    if not (code_diff or "").strip():
+        return _pass_no_diff(cid, validation_id, h, now, ref)
 
     # PATH-PREDICATE EXEMPTION (R33), grade-time phase — only for the UNIVERSAL lane, and only
     # AHEAD of the cache check: the grade-time result WINS whenever it disagrees with whatever the

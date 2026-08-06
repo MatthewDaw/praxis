@@ -274,8 +274,29 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     # the credential is live before committing hours to it. Only an explicit auth rejection
     # is fatal; a network blip or timeout is a warning, so a flaky moment can't block a
     # run whose credential is actually fine.
-    local probe
-    probe="$(cd /tmp && bash -c "unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY; [ -r \$HOME/.claude/oauth-token.sh ] && . \$HOME/.claude/oauth-token.sh; timeout 120 claude --model sonnet -p 'Reply with exactly: PONG'" 2>&1 || true)"
+    # The probe must test THE SAME credential the sessions will use and reach the
+    # model the same way, or it is theatre. Two corrections:
+    #
+    #  1. It used to source oauth-token.sh, which exports CLAUDE_CODE_OAUTH_TOKEN
+    #     and OVERRIDES ~/.claude/.credentials.json. The launch line no longer does
+    #     that (it unsets the variable so the subscription credential wins), so a
+    #     probe that still sourced it was validating a different identity than the
+    #     one about to run — on this box, an API/org token instead of Claude Max.
+    #
+    #  2. Installed plugins mute headless `claude -p`: it exits 0 having printed
+    #     NOTHING. That is why this probe warned "no PONG" on every single run
+    #     while the credential was perfectly healthy, and a warning that fires
+    #     always is a warning nobody reads. Point the probe at a config dir holding
+    #     only the credential, exactly as the graded judge does (see
+    #     evals/plan_repro/claude_cli.py). The credential is symlinked, never
+    #     copied, so no secret is duplicated and a re-login is picked up.
+    local probe probe_cfg
+    probe_cfg="${TMPDIR:-/tmp}/af-probe-claude-config"
+    mkdir -p "$probe_cfg" 2>/dev/null || true
+    if [ -r "$CREDENTIALS_FILE" ]; then
+      ln -sf "$CREDENTIALS_FILE" "$probe_cfg/.credentials.json" 2>/dev/null || true
+    fi
+    probe="$(cd /tmp && bash -c "unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN; export CLAUDE_CONFIG_DIR='$probe_cfg'; timeout 120 claude --model sonnet -p 'Reply with exactly: PONG'" 2>&1 || true)"
     if printf '%s' "$probe" | grep -qiE 'please run /login|invalid api key|authentication_error|oauth.*invalid|401'; then
       echo "[backend] FATAL: sonnet credential present but REJECTED by Anthropic:" >&2
       printf '%s\n' "$probe" | head -3 | sed 's/^/[backend]   /' >&2
@@ -922,8 +943,19 @@ commit_wip(){
 # $1 = a git log range/rev, $2 = the known-id set, space-padded on both sides.
 af_owned_ids(){
   local raw i out=""
+  # The id must merely CONTAIN a digit, not END in one. The previous pattern
+  # required a trailing [0-9][0-9]*, so any ticket whose id ends in a letter was
+  # unmatchable no matter how correctly the commit was written: (DATA-1) and
+  # (OBS-27) matched, (COV-1B) never did. That silently stranded 42 files and
+  # ~1800 insertions of finished work on 2026-08-06, and it would have stranded
+  # them again on a re-run, because the commit subject was not the problem.
+  #
+  # Still deliberately narrow: anchored to a TRAILING (...) so a conventional-commit
+  # scope cannot be mistaken for an id, and every candidate is intersected with
+  # this project's known id set below, so another tracker's (JIRA-42) is ignored.
   raw=$(git log --format=%s "$1" 2>/dev/null \
-        | sed -n 's/.*(\([A-Za-z][A-Za-z0-9_-]*[0-9][0-9]*\))[[:space:]]*$/\1/p' | sort -u)
+        | sed -n 's/.*(\([A-Za-z][A-Za-z0-9_-]*\))[[:space:]]*$/\1/p' \
+        | grep '[0-9]' | sort -u)
   for i in $raw; do
     case "$2" in *" $i "*) out="${out:+$out }$i" ;; esac
   done
@@ -978,7 +1010,19 @@ integrate_round(){
     # Keep only ids this project actually owns; everything else is another tracker's history.
     ids=$(af_owned_ids "HEAD..$br" "$known")
     if [ -z "$ids" ]; then
-      skipped=$((skipped+1)); say "skipping $br — none of its commits name a $PROJECT ticket, so its provenance cannot be established"; continue
+      # LOUD on purpose. This is finished work being left behind, not a routine
+      # skip: the branch holds commits nobody will merge, and because workers
+      # branch from origin/main the next round rebuilds all of it from scratch.
+      # Observed 2026-08-06: 42 files / ~1800 insertions stranded because the
+      # subjects read `feat(cov1b):` instead of ending in `(COV-1B)`. Naming the
+      # actual subjects turns a five-second fix into a five-second fix, instead
+      # of an hour of silent rework.
+      skipped=$((skipped+1))
+      say "WARNING: STRANDING $br ($ahead commit(s)) — no commit subject ends in a $PROJECT ticket id, so provenance cannot be established and this work will NOT be merged"
+      say "  subjects seen:"
+      git log --format='    %h %s' "HEAD..$br" 2>/dev/null | head -5 | tee -a "$LOG"
+      say "  fix: the id must be TRAILING and exact, e.g. 'feat(scope): what it did (${known%% *})' — a conventional-commit scope does not count"
+      continue
     fi
     ok=1
     for i in $ids; do

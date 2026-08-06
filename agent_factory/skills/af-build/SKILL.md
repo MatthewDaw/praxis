@@ -1063,13 +1063,36 @@ splits that write into working memory and the ticket never reads back as done �
    change big enough to be its own ticket), attempt it under the same bounded retry budget as any other
    failure, then block(TICKET, OWNER, reason, ref=PLAN) naming the failing test(s) and the captured signal —
    never silently pass over it, never loop on it forever.
-7. COMMIT  — BEFORE releasing, commit your work on YOUR OWN worktree branch: `git add -A` then
+7. COMMIT  — commit AS YOU GO on YOUR OWN worktree branch, not once at the end: `git add -A` then
    `git commit -m "<type>(<scope>): <what the ticket delivered> (<TICKET requirement_id>)"`. Then assert the
    tree is CLEAN — `git status --porcelain` must print NOTHING. You build in an ISOLATED worktree, and the
    orchestrator integrates finished tickets by MERGING your branch: work you leave uncommitted is invisible to
    that merge, so an uncommitted "finished" ticket either loses its work or gets swept into an unreviewed WIP
    commit that never passed your evals. If you have nothing to commit because the ticket needed no code change,
    say so explicitly in your final report — do not leave an ambiguous dirty tree.
+
+   **The trailing `(TICKET-ID)` is load-bearing, not decoration.** Integration extracts the id with a
+   regex anchored to the END of the commit subject. A conventional-commit SCOPE does not count, and the
+   match is case- and punctuation-exact against the ticket's own `requirement_id`:
+
+   | subject | id extracted |
+   |---|---|
+   | `feat(ocr): stand up the sidecar (COV-1B)` | `COV-1B` ✅ |
+   | `feat(cov1b): stand up the sidecar` | none ❌ — scope position, wrong case, missing hyphen |
+   | `feat: stand up the sidecar (cov-1b)` | none ❌ — case-exact |
+
+   A branch whose commits yield no id is NOT merged: the orchestrator cannot establish provenance and
+   leaves it stranded. Observed 2026-08-06 on appeal_engine COV-1B — 42 files and ~1800 insertions of
+   finished, passing work sat unmerged behind `feat(cov1b):` subjects, and a relaunch would have rebuilt
+   all of it from scratch because workers branch from `origin/main`.
+
+   **Commit after every coherent step, not once at the end.** The orchestrator purges each round's
+   worktree unconditionally — the tree is scratch, the branch is the artifact — so anything uncommitted
+   when a round is killed, times out, or halts on a billing failure is DESTROYED, not paused. A run that
+   held ~2.5h of work in one uncommitted tree lost all of it; the next run over the same ticket survived
+   an identical halt with three commits banked. WIP commits are expected and cheap; a later step can amend
+   or rebase them. Prefer many small commits over one clean one — a tidy history is worth nothing if the
+   round dies before it exists.
 8. FINISH  — when all_validations_passed(TICKET, ref=PLAN) is True AND step 7 left the tree clean:
    release(TICKET, OWNER, state="finished", ref=PLAN).
    The release is REFUSED while any eval is unrun or red — that refusal is the contract, not an error to route
