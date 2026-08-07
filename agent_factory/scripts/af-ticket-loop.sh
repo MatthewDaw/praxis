@@ -1255,8 +1255,33 @@ PYEOF
 # (the older per-ticket layout). The sweep used to match only the first, so six trees under
 # /workspace/appeal_engine_worktrees survived every sweep this driver ever ran and had to be removed
 # by hand. Anything outside these roots — the main checkout, a sibling project — is never touched.
+# The repo's MAIN worktree, or empty. `git worktree list` always reports it first.
+#
+# It matters because the build checkout is not always the main one: on this box $WT is
+# /workspace/af-praxis, a LINKED worktree whose `.git` is a file pointing into
+# /workspace/praxis/.git/worktrees/af-praxis. Two consequences broke both halves of the straggler
+# machinery on 2026-08-07, and both are fixed by knowing this path:
+#   1. `isolation: worktree` mints every agent tree under the MAIN worktree
+#      (/workspace/praxis/.claude/worktrees/agent-*), never under $WT. A scratch-root list anchored to
+#      $WT alone therefore matched NONE of them, so every round they were REPORTED by the broad
+#      reporting path and skipped by the narrow sweep -- a violation no sweep could ever clear.
+#   2. The main checkout shows up in `git worktree list` on its own branch, so FACT 1 below called
+#      `main` owed-a-merge and reported /workspace/praxis ITSELF as a leftover worktree. That is the
+#      checkout this driver executes from; it can never be swept, so the terminal invariant was
+#      guaranteed to fail the run at drain however well the build went.
+af_main_worktree(){
+  git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}'
+}
+
 af_scratch_roots(){
+  local main; main=$(af_main_worktree)
   printf '%s\n' "$WT/.claude/worktrees" "${WT}_worktrees"
+  # Agent trees live under whichever worktree the harness considered the project root. When $WT is a
+  # linked worktree that is the MAIN one, not $WT -- so name it too, or the sweep walks past every
+  # tree the round actually created. Still anchored to a real worktree of THIS repo: nothing outside
+  # the repo becomes sweepable by this.
+  [ -n "$main" ] && [ "$main" != "$WT" ] && printf '%s\n' "$main/.claude/worktrees"
+  return 0
 }
 
 # A third layout, SIBLING to the checkout rather than under a root: `<WT>-wt-<TICKET>`. The sotos run
@@ -1469,9 +1494,15 @@ af_is_worktree_branch(){   # $1 = branch name
   # hundred branches would otherwise fork `git worktree list` a thousand times a round. Every mutator
   # of the worktree set (sweep_worktrees) clears it, and a STALE cache errs toward "owned", which is
   # the safe direction for a default-inclusive rule.
+  # The MAIN worktree is excluded alongside $WT. FACT 1 reads "checked out in some OTHER worktree =>
+  # factory work", which holds for scratch trees but not for the repo's own canonical checkout: when
+  # $WT is a linked worktree, the main checkout is a sibling entry sitting on `main`, and counting it
+  # made `main` owed-a-merge -- so the base branch itself, and the checkout holding it, were reported
+  # as stragglers nothing could clear (see af_main_worktree).
   if [ -z "${AF_WT_BRANCH_CACHE+x}" ]; then
     AF_WT_BRANCH_CACHE=$(git worktree list --porcelain 2>/dev/null \
-      | awk -v self="${WT:-}" '/^worktree /{p=$2} /^branch /{sub("refs/heads/","",$2); if (p != self) print $2}')
+      | awk -v self="${WT:-}" -v main="$(af_main_worktree)" \
+          '/^worktree /{p=$2} /^branch /{sub("refs/heads/","",$2); if (p != self && p != main) print $2}')
   fi
   while read -r b; do
     [ -n "$b" ] || continue
@@ -1652,9 +1683,14 @@ af_stragglers(){   # prints one line per straggler; EMPTY output means clean
       "$(git rev-list --count "HEAD..$br" 2>/dev/null || echo '?')" \
       "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)"
   done < <(git for-each-ref --format='%(refname:short)' refs/heads/)
+  local main_wt; main_wt=$(af_main_worktree)
   while read -r p; do
     [ -n "$p" ] || continue
     [ "$p" = "$WT" ] && continue
+    # The repo's own canonical checkout is not a leftover, it is where this driver lives. Skipping it
+    # loses no coverage: the branch loop above already reports any branch holding unmerged commits,
+    # whichever tree has it checked out.
+    [ -n "$main_wt" ] && [ "$p" = "$main_wt" ] && continue
     wt_br=$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
     if af_is_scratch "$p"; then
       printf 'leftover worktree %s (branch %s)\n' "$p" "${wt_br:-<detached>}"
