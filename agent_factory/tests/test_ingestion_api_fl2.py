@@ -256,6 +256,48 @@ def test_valid_ingestion_writes_lesson_and_check_with_provenance_and_returns_ids
     assert regress_calls and regress_calls[0]["body"]["ids"] == ["t1", "t2"]
 
 
+# --------------------------------------------------------------------------- FL6/R12: zero-match binding
+
+def test_zero_match_ingestion_binds_surface_only_and_records_a_flag_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No live ticket id to bind narrowly (R12) -> the check falls back to surface-only, and that
+    fallback is a recorded EVENT (an episode), not a silent meta field nobody ever looks at."""
+    _authed(monkeypatch)
+    calls = _recording_request(monkeypatch)
+
+    ingestion_api.ingest(
+        "observed on the login screen with no reproducing ticket", "proj",
+        drafted_run="pytest tests/test_login.py -q", channel="machine",
+        ticket_ids=[], surfaces=["s-login"],
+    )
+
+    check_calls = _calls_for(calls, "check")
+    assert check_calls
+    check_meta = check_calls[0]["body"]["meta"]
+    assert check_meta["applies_to"] == []
+    assert check_meta["surfaces"] == ["s-login"]
+    assert check_meta["surface_only"] is True
+
+    episode_calls = [c for c in calls if c["body"] and c["body"].get("category") == "episodic"]
+    assert episode_calls, "a zero-match ingestion must record a flag event"
+    assert "s-login" in episode_calls[0]["body"]["insight"]
+
+
+def test_narrow_ticket_scoped_ingestion_never_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The counterpart: a normal ticket-scoped binding is not surface-only and records no flag."""
+    _authed(monkeypatch)
+    calls = _recording_request(monkeypatch)
+
+    ingestion_api.ingest("always run the migration before the smoke test", "proj",
+                         drafted_run="pytest tests/test_migration.py -q", channel="machine",
+                         ticket_ids=["t1"])
+
+    check_calls = _calls_for(calls, "check")
+    assert check_calls and check_calls[0]["body"]["meta"]["surface_only"] is False
+    assert not any(c["body"] and c["body"].get("category") == "episodic" for c in calls)
+
+
 def test_ingestion_with_no_drafted_check_writes_only_a_lesson(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
