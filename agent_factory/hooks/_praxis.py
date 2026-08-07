@@ -649,6 +649,11 @@ def ping() -> bool:
 # ``agent_factory.ingestion_api``, the sole writer — agrees on where "the shared learnings space" is.
 FACTORY_LEARNINGS_SPACE = "factory-learnings"
 FACTORY_LEARNINGS_SNAPSHOT = "lessons"
+# Proof-artifact bundles (FL4 / R7) live in the SAME shared space under their own snapshot — never
+# mounted read-only alongside lessons (only an explicit ``mount_snapshot(space, "artifacts")`` call
+# would expose them), which keeps the cross-project-readability question D3 leaves open from being
+# decided by accident.
+FACTORY_ARTIFACTS_SNAPSHOT = "artifacts"
 
 
 def mount_snapshot(space: str, snapshot: str, *, not_found_ok: bool = False) -> dict[str, Any]:
