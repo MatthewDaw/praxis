@@ -2135,6 +2135,23 @@ def _universal_checks() -> list:
         return recovered
 
 
+def _promoted_universal_checks() -> list[dict]:
+    """FL14/D8 — the cloud-promoted universal lane (:func:`agent_factory.ingestion_api.
+    read_promoted_universals`): a SECOND, org-wide source of universal checks, distinct from the
+    git-shipped ``seeded_checks.toml`` library by construction (every promoted id carries a
+    ``promoted-`` prefix; see :func:`agent_factory.ingestion_api.promote_universal`). This lane is
+    BEST-EFFORT and additive — unlike :func:`_universal_checks`, a failure here (offline, no Praxis
+    reachable) degrades to an empty list rather than raising: the toml lane stays the load-bearing
+    universal guarantee, and a cloud-promotion outage must never take the mandatory graded lane down
+    with it.
+    """
+    try:
+        from agent_factory.ingestion_api import read_promoted_universals
+        return read_promoted_universals()
+    except Exception:  # noqa: BLE001 - deliberately swallowed; see docstring
+        return []
+
+
 def _path_dir_exempt(path: Any) -> bool:
     """True iff any path SEGMENT of ``path`` is one of the immutable/generated directory names."""
     norm = str(path or "").replace(os.sep, "/").strip("/")
@@ -2209,6 +2226,35 @@ def universal_requirements(cid: str, ticket_meta: Optional[dict],
                 "source_check_id": chk.check_id,
             },
         })
+
+    # FL14/D8 — the cloud-promoted lane, merged in the SAME resolve pass so a check promoted after
+    # recurrence in >=2 distinct projects reaches an UNINVOLVED third project exactly like a toml
+    # universal does, with no per-project authoring step. Binary (run-command), not graded — these
+    # arrive from a live proof, not a hand-authored rubric.
+    already = {o["id"] for o in out}
+    for promoted in _promoted_universal_checks():
+        pmeta = promoted.get("meta") or {}
+        if not pmeta.get("promoted"):
+            continue
+        check_id = str(pmeta.get("check_id") or "")
+        if not check_id or check_id in already:
+            continue
+        offer = {normalize_tag(t) for t in (pmeta.get("applies_to") or ("*",))}
+        if "*" not in offer and not (offer & ticket_tags):
+            continue
+        out.append({
+            "id": check_id,
+            "text": str(promoted.get("text") or promoted.get("insight") or ""),
+            "meta": {
+                "check_id": check_id,
+                "kind": "binary",
+                "run": pmeta.get("run"),
+                "universal": True,
+                "promoted": True,
+                "source_check_id": check_id,
+            },
+        })
+        already.add(check_id)
     return out
 
 
