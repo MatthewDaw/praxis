@@ -133,6 +133,11 @@ def test_ref_is_interpolated_not_literal():
     )
     assert "git rebase my-branch" in r.stdout
 
-    # And the real prompt line must use a double-quoted send-keys, not a single-quoted one.
-    send = next(line for line in SRC.splitlines() if "/af-build $PROJECT $ids_csv" in line)
-    assert re.search(r'tmux send-keys -t "\$SESSION" "', send), "prompt is not double-quoted"
+    # The prompt is built into `round_prompt` in a double-quoted assignment (so $INTEGRATION_REF
+    # inside it interpolates), then dispatched via a double-quoted send-keys of that variable (so
+    # a stray single-quote anywhere in either spot can't turn it into a literal).
+    assign = next(line for line in SRC.splitlines() if "/af-build $PROJECT $ids_csv" in line)
+    assert re.search(r'round_prompt="', assign), "prompt assignment is not double-quoted"
+    send = next(line for line in SRC.splitlines() if 'send-keys -t "$SESSION" "$round_prompt"' in line)
+    assert re.search(r'tmux send-keys -t "\$SESSION" "\$round_prompt"', send), \
+        "prompt dispatch is not a double-quoted send-keys"

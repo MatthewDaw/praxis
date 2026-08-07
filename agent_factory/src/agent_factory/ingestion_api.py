@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from hooks import _praxis
+from hooks import _ticket_state as _ts
 
 from agent_factory.rubric import rubric_from_dict, rubric_to_dict
 
@@ -386,12 +387,18 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
         check_id = written_check.get("id")
 
         if ticket_ids:
-            _praxis.regress_requirements(
-                project, ticket_ids,
-                detail={tid: {"regression_detail": {"source": "ingestion-api",
-                                                     "lesson_id": lesson_id, "check_id": check_id}}
-                        for tid in ticket_ids},
-            )
+            # R16/E3: accumulate onto each ticket's existing regression_detail rather than
+            # replacing it — a concurrent finding (post-merge verification, conflict resolution)
+            # on the same ticket must never be clobbered by this ingestion's own finding.
+            plan_kw = {"space": project, "snapshot": f"prd-{project}"}
+            detail = {}
+            for tid in ticket_ids:
+                existing = _praxis.get_fact(tid, **plan_kw) or {}
+                new_entry = {"source": "ingestion-api", "reason": lesson_text,
+                            "lesson_id": lesson_id, "check_id": check_id}
+                detail[tid] = {"regression_detail": _ts.accumulate_regression_detail(
+                    (existing.get("meta") or {}).get("regression_detail"), new_entry)}
+            _praxis.regress_requirements(project, ticket_ids, detail=detail)
 
     return {"lesson_id": lesson_id, "check_id": check_id, "wave_id": wave_id,
             "proof_status": proof_status, "class": classification["class"]}
