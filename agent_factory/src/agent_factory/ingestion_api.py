@@ -24,6 +24,14 @@ FL4 (R7) extends this same sole-writer module with the bad-artifact pin: at regr
 failing commit is bundled into a SELF-CONTAINED git reproduction bundle plus secret-scanned
 diff/evidence text, written into the ``artifacts`` snapshot of the same shared space
 (:func:`pin_artifact`), so proof and future re-proof (KD7) always have something to run against.
+
+FL6 (R11/R12/R13, KD4) adds the ticket-identity RESOLVE lane's ingestion-side half: :func:`ingest`
+already binds a drafted check to the regressed ticket id(s) via ``meta.applies_to`` (the narrowest
+scope, R12) plus the observed surface via ``meta.surfaces``; a zero-match ingestion (no live ticket
+id to bind narrowly) now flags that fallback with a recorded episode instead of landing silently. The
+mandatory, unskippable RESOLVE-time matching on that identity binding (R11) and its afterlife
+conversion to the surface binding (R13) live in ``hooks/_ticket_state.py`` (:func:`_matching_checks`),
+not here — this module only ever writes the bindings, never resolves against them.
 """
 
 from __future__ import annotations
@@ -438,11 +446,23 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
         written_check = write_check(lesson_text, project, meta=check_meta, source=source)
         check_id = written_check.get("id")
 
+<<<<<<< HEAD
         if proof_result is not None and proof_result.get("flag"):
             _praxis.record_episode(
                 f"proof flagged for check {check_id} (lesson {lesson_id}, project={project}): "
                 f"{proof_result.get('reason')} — {proof_result.get('detail', '')}".strip(" —"),
                 outcome="pending",
+=======
+        if surface_only:
+            # R12/R13: a zero-match ingestion (no live ticket id to bind narrowly) never lands a
+            # dangling ticket-id-only gate — it falls back to the observed-surface binding alone —
+            # but that fallback is FLAGGED (a recorded event, not just a silent meta field) so it
+            # stays visible rather than looking identical to an ordinary narrow binding.
+            _praxis.record_episode(
+                f"zero-match ingestion flagged: check {check_id} for lesson {lesson_id} bound "
+                f"surface-only to {list(surfaces or [])} — no ticket id to bind narrowly",
+                outcome="flagged",
+>>>>>>> worktree-agent-a25fdff9724519499
             )
 
         if ticket_ids:

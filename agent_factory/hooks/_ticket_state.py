@@ -380,6 +380,15 @@ def _is_wildcard(check: Any) -> bool:
     return any(normalize_tag(t) == "*" for t in _as_list((check.get("meta") or {}).get("applies_to")))
 
 
+def _is_identity_bound(check: Any) -> bool:
+    """True iff the check was matched via the R11 ticket-identity lane (stamped by
+    :func:`_matching_checks`) — mandatory and unskippable: exempt from diff-scoping
+    (:func:`scope_checks_to_changes`) and never dropped by run-collapsing (:func:`collapse_duplicate_runs`)."""
+    if not isinstance(check, dict):
+        return False
+    return bool((check.get("meta") or {}).get("identity_lane"))
+
+
 def _declared_scope_globs(check: Any) -> list[str]:
     """Explicit path predicate authored on the check (``meta.when_changed``), if any."""
     if not isinstance(check, dict):
@@ -443,7 +452,7 @@ def scope_checks_to_changes(checks: list, changed_paths: Any, *, infer: bool = T
     frontend-only ticket run the entire backend suite to prove nothing about its own change. Scoping
     that to ``backend/**`` is the single biggest wall-clock win available to a build loop.
 
-    Three deliberate fail-SAFE rules, because a silently skipped gate is worse than a slow one:
+    Four deliberate fail-SAFE rules, because a silently skipped gate is worse than a slow one:
 
     1. An UNSCOPED check (no ``when_changed``, no inferable module root — e.g. ``npx knip``, a
        repo-wide grep) always runs. Absence of a predicate never means "applies to nothing".
@@ -452,6 +461,10 @@ def scope_checks_to_changes(checks: list, changed_paths: Any, *, infer: bool = T
     3. A change OUTSIDE every module root the check set knows about — a root ``package.json``, CI
        config, a shared/ directory — runs everything. Cross-cutting edits are exactly the ones whose
        blast radius is not confined to the module they were typed in.
+    4. (R11) A TICKET-IDENTITY-bound check (``meta.identity_lane`` — see :func:`_matching_checks`)
+       always runs, regardless of path. It is bound to THIS ticket specifically; diff-scoping exists
+       to skip suites the ticket's own diff can't have broken, which is never true of a check the
+       ticket itself was forcibly re-armed against.
 
     Returns ``(to_run, skipped)``; each skipped check is annotated with ``meta.skipped_reason`` so the
     completion record shows a SKIP, never a silent pass.
@@ -468,8 +481,8 @@ def scope_checks_to_changes(checks: list, changed_paths: Any, *, infer: bool = T
 
     to_run, skipped = [], []
     for chk, globs in scoped:
-        if not globs or any(_path_matches(p, g) for p in paths for g in globs):
-            to_run.append(chk)  # rule 1 covers the `not globs` half
+        if not globs or _is_identity_bound(chk) or any(_path_matches(p, g) for p in paths for g in globs):
+            to_run.append(chk)  # rule 1 covers the `not globs` half; rule 4 covers identity-bound
             continue
         chk = dict(chk)
         chk["meta"] = dict(chk.get("meta") or {})
@@ -491,10 +504,13 @@ def collapse_duplicate_runs(checks: list) -> list:
     Applied per PARTITION by the callers (gating set and candidate pool separately), never across the
     boundary: collapsing a gating check into a non-gating one would silently drop a gate.
 
-    The survivor is deterministic — the broadest applicability wins (a ``["*"]`` universal subsumes a
-    lane-scoped duplicate), ties broken by check id. It carries ``meta.collapsed_duplicates`` listing
-    the ids it stands in for, so the coverage contract records what was folded in rather than losing
-    it silently. Checks with no ``run`` are never collapsed: a graded entry's identity is its text.
+    The survivor is deterministic — a ticket-IDENTITY-bound check (R11) wins first (it must keep its
+    unskippable marker), then the broadest applicability (a ``["*"]`` universal subsumes a lane-scoped
+    duplicate), ties broken by check id. It carries ``meta.collapsed_duplicates`` listing the ids it
+    stands in for, so the coverage contract records what was folded in rather than losing it silently.
+    An identity-bound LOSER still marks the survivor ``meta.identity_lane`` so collapsing a duplicate
+    into a non-identity winner can never quietly drop R11's unskippable guarantee. Checks with no
+    ``run`` are never collapsed: a graded entry's identity is its text.
     """
     by_run: dict[str, list] = {}
     out: list = []
@@ -509,11 +525,15 @@ def collapse_duplicate_runs(checks: list) -> list:
         if len(group) == 1:
             out.append(group[0])
             continue
-        winner, *losers = sorted(group, key=lambda c: (not _is_wildcard(c), _check_id(c)))
+        winner, *losers = sorted(
+            group, key=lambda c: (not _is_identity_bound(c), not _is_wildcard(c), _check_id(c))
+        )
         # Shallow-copy so the annotation never mutates the caller's/cache's fact dict.
         winner = dict(winner)
         winner["meta"] = dict(winner.get("meta") or {})
         winner["meta"]["collapsed_duplicates"] = [cid for c in losers if (cid := _check_id(c))]
+        if any(_is_identity_bound(c) for c in group):
+            winner["meta"]["identity_lane"] = True  # R11: never lose the unskippable marker to collapsing
         out.append(winner)
     return out
 
@@ -548,19 +568,29 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
     ``"*"`` and surface lanes below. Both sides are normalized (:func:`normalize_tag`, matching the
     author-time write path) so ``"Auth"`` vs ``"auth"`` can never silently drop a check.
 
-    Tag union surface (the per-ticket lanes):
+    Ticket-identity union tag union surface (the per-ticket lanes):
+      * (R11/KD4) TICKET-IDENTITY match — checks whose PREDICATE ``meta.applies_to`` contains the
+        TICKET'S OWN id literally (ingestion's narrowest-scope default, R12) always pin, MANDATORY and
+        UNSKIPPABLE: exempt from diff-scoping (:func:`scope_checks_to_changes`) and from every
+        exemption mechanism. Stamped ``meta.identity_lane`` (:func:`_is_identity_bound`) so downstream
+        stays able to tell it apart from the ordinary tag/surface matches below.
       * TAG match — for each IDENTITY tag on the ticket (meta.tags, or meta.applies_to as fallback),
         enumerate active ``check`` facts whose PREDICATE ``meta.applies_to`` contains that tag
         (server-side array-membership on the normalized value).
       * ``"*"`` WILDCARD — a SEPARATE lane (below): universal checks authored ``applies_to:["*"]``
         apply to EVERY ticket, incl. a tag-less one. It is separate because a per-tag query can never
         surface a ``["*"]`` check — the ticket's concrete tags never include the literal ``"*"``.
-      * SURFACE match — for each surface the ticket renders, enumerate checks bound via ``renders``.
+      * SURFACE match — for each surface the ticket renders, enumerate checks bound via ``renders``,
+        UNION checks whose ``meta.surfaces`` contains that surface directly (R13: this is what keeps a
+        check discoverable once the ticket it was identity-bound to finishes or is deleted — the
+        identity binding "converts" to this surface binding simply by no longer being the only lane
+        left standing).
 
-    This function is the MANDATORY (precise) contract only: tag ∪ ``"*"`` wildcard ∪ surface. The
-    SEMANTIC lane is deliberately separate (:func:`retrieve_advisory_checks`) and ADVISORY — it feeds
-    the worker candidate checks as inspiration but never gates completion, so a fuzzy retrieval that is
-    irrelevant is simply not authored, while a precise tag/surface/wildcard match is always covered.
+    This function is the MANDATORY (precise) contract only: ticket-identity ∪ tag ∪ ``"*"`` wildcard ∪
+    surface. The SEMANTIC lane is deliberately separate (:func:`retrieve_advisory_checks`) and ADVISORY
+    — it feeds the worker candidate checks as inspiration but never gates completion, so a fuzzy
+    retrieval that is irrelevant is simply not authored, while a precise identity/tag/surface/wildcard
+    match is always covered.
     """
     # Which (space, snapshot) the CHECK reads target (default per scope; overridable by the skills).
     space, snapshot = _checks_target(project, scope, override)
@@ -592,12 +622,28 @@ def _is_candidate(chk: Any) -> bool:
 
 def _matching_checks(ticket: Any, project: str, scope: str,
                      space: Optional[str], snapshot: Optional[str]) -> dict[str, dict]:
-    """The tag ∪ ``"*"`` ∪ surface resolution, scope-filtered — the shared body behind both the
-    gating resolve and the candidate pool. Returns ``{check_id: check}`` BEFORE the candidate split,
-    so callers can partition it however they need. No candidate/gating decision is made here.
+    """The ticket-identity ∪ tag ∪ ``"*"`` ∪ surface resolution, scope-filtered — the shared body
+    behind both the gating resolve and the candidate pool. Returns ``{check_id: check}`` BEFORE the
+    candidate split, so callers can partition it however they need. No candidate/gating decision is
+    made here.
     """
     meta = _meta(ticket, project_ref(project).plan if project else None)
     seen: dict[str, dict] = {}
+
+    # R11/KD4 — TICKET-IDENTITY lane: a check bound directly to THIS ticket's own id (ingestion's
+    # narrowest-scope default, R12: ``applies_to`` carries the regressed ticket id(s) literally) is
+    # MANDATORY and UNSKIPPABLE — exempt from diff-scoping (:func:`scope_checks_to_changes`) and
+    # from every exemption mechanism (universal-lane opt-outs never apply to it, since it never
+    # travels through :func:`universal_requirements`). Runs FIRST so its ``identity_lane`` marker
+    # wins over a later tag/surface hit on the SAME check id (``setdefault`` below is then a no-op).
+    for chk in _praxis.facts_by(category=CHECK_CATEGORY, meta={"applies_to": _ticket_id(ticket)},
+                                space=space, snapshot=snapshot):
+        cid = _check_id(chk)
+        if cid:
+            chk = dict(chk)
+            chk["meta"] = dict(chk.get("meta") or {})
+            chk["meta"]["identity_lane"] = True
+            seen.setdefault(cid, chk)
 
     # IDENTITY lives on the TICKET (``meta.tags``, with ``meta.applies_to`` as a lenient fallback);
     # the PREDICATE lives on the CHECK (``meta.applies_to``). Both sides are normalized
@@ -634,6 +680,16 @@ def _matching_checks(ticket: Any, project: str, scope: str,
                 raise
             except Exception:  # noqa: BLE001 - a malformed surface entry must not drop tag matches
                 continue
+            # R13 — ticket afterlife: a check ingested against a since-finished/deleted ticket id
+            # never dangles, because it was ALSO bound to the observed surface at ingestion time
+            # (R12), directly on ``meta.surfaces`` rather than the ``renders`` edge above. Once the
+            # identity lane stops firing for a dead ticket id, THIS lane is what keeps the check
+            # discoverable for any other ticket rendering the same surface.
+            for chk in _praxis.facts_by(category=CHECK_CATEGORY, meta={"surfaces": screen},
+                                        space=space, snapshot=snapshot):
+                cid = _check_id(chk)
+                if cid:
+                    seen.setdefault(cid, chk)
 
     if scope:  # e.g. scope="validation" — restrict the per-ticket match to that check scope
         seen = {k: v for k, v in seen.items() if _scope_of(v) == scope}
