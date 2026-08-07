@@ -89,6 +89,7 @@ DEFAULT_REPEAT_COUNT = 1        # FL5/D4: proof repeat count for flaky/LLM-judge
 DEFAULT_REDRAFT_BUDGET = 3      # FL5/D1: machine-drafting attempts before lesson-only
 PROOF_CHECK_UNDRAFTABLE = "check-undraftable"  # FL5/R6: redraft budget exhausted, no gating check inserted
 DEFAULT_MERGE_PROOF_BUDGET_S = 90  # FL7/R15: wall-clock ceiling on inline proof before it backgrounds
+DEFAULT_AUTO_SUSPEND_THRESHOLD = 3  # FL13/R19: consecutive no-relevant-change regressions before auto-suspend
 
 # R24: the pending-attention events a flag may name — a suspension/parking/undraftable/
 # check-defeat is never silent; each is a push, not something an operator has to go looking for.
@@ -445,7 +446,8 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
           healthy_repo_path: str | Path | None = None, healthy_ref: str = "HEAD",
           repeat_count: int = DEFAULT_REPEAT_COUNT, redraft_budget: int = DEFAULT_REDRAFT_BUDGET,
           run_candidates: list[str] | None = None,
-          proof_executor: Callable[[str, Path], bool] | None = None) -> dict[str, Any]:
+          proof_executor: Callable[[str, Path], bool] | None = None,
+          commit_sha: str | None = None) -> dict[str, Any]:
     """R1 — the full ingestion sequence, as one call: classify/dedup → write lesson →
     draft check (allowlist-validated when machine-drafted, hash-pinned at insertion) → attempt
     a fail-then-pass proof → bind at the narrowest scope → activate → regress the
@@ -456,7 +458,13 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
     proof runs for real via :func:`attempt_fail_then_pass_proof` — a disposable-isolated-worktree,
     both-sides-executed, bounded-redraft proof — instead of the FL2 single-shot ``proof_runner``
     placeholder. A ``check-undraftable`` verdict (redraft budget exhausted, still vacuous) inserts
-    NO check at all: the lesson lands alone, flagged (R6)."""
+    NO check at all: the lesson lands alone, flagged (R6).
+
+    FL13/R19: ``commit_sha`` — the commit this regression is against, when the caller has one —
+    rides along on each regressed ticket's ``regression_detail`` entry as the BASELINE a later
+    re-regression of the same ticket by this same check compares against; see
+    :func:`regress_by_check`, the entry point for "an already-existing check failed this ticket
+    again", which is where the auto-suspend streak (:func:`attempt_auto_suspend`) actually acts."""
     authenticated_as = _require_authenticated(identity)
 
     use_real_proof_engine = (
@@ -568,12 +576,19 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
             # R16/E3: accumulate onto each ticket's existing regression_detail rather than
             # replacing it — a concurrent finding (post-merge verification, conflict resolution)
             # on the same ticket must never be clobbered by this ingestion's own finding.
+            #
+            # FL13/R19: this entry's ``commit_sha`` is the BASELINE a later re-regression of the
+            # same ticket by this same (newly-minted) check compares against — see
+            # :func:`regress_by_check`, the entry point for "an already-existing check failed this
+            # ticket again", which is where the auto-suspend streak actually accumulates (a check
+            # freshly drafted here has, by construction, never yet regressed anything twice).
             plan_kw = {"space": project, "snapshot": f"prd-{project}"}
             detail = {}
             for tid in ticket_ids:
                 existing = _praxis.get_fact(tid, **plan_kw) or {}
                 new_entry = {"source": "ingestion-api", "reason": lesson_text,
-                            "lesson_id": lesson_id, "check_id": check_id}
+                            "lesson_id": lesson_id, "check_id": check_id,
+                            "commit_sha": commit_sha}
                 detail[tid] = {"regression_detail": _ts.accumulate_regression_detail(
                     (existing.get("meta") or {}).get("regression_detail"), new_entry)}
             _praxis.regress_requirements(project, ticket_ids, detail=detail)
@@ -596,6 +611,7 @@ def regress_with_ingestion(project: str, ticket_ids: list[str], lesson_text: str
                            run_candidates: list[str] | None = None,
                            proof_executor: Callable[[str, Path], bool] | None = None,
                            merge_budget_s: float | None = DEFAULT_MERGE_PROOF_BUDGET_S,
+                           commit_sha: str | None = None,
                            ) -> dict[str, Any]:
     """R5 — the merger's SINGLE call for a merger-driven regression: "regression without
     ingestion is not a legal state" (R5), enforced here by construction — there is no bare-regress
@@ -636,7 +652,7 @@ def regress_with_ingestion(project: str, ticket_ids: list[str], lesson_text: str
             identity=identity, bad_artifact_meta=bad_artifact_meta,
             healthy_repo_path=healthy_repo_path, healthy_ref=healthy_ref,
             repeat_count=repeat_count, redraft_budget=redraft_budget,
-            run_candidates=run_candidates, proof_executor=executor,
+            run_candidates=run_candidates, proof_executor=executor, commit_sha=commit_sha,
         )
 
     # `ingest` only regresses ticket_ids itself INSIDE its "a check was drafted" branch (it needs
@@ -840,6 +856,64 @@ def kill_switch(check_id: str, project: str, reason: str, *, identity: str | Non
     return result
 
 
+def regression_streak(regression_entries: list[dict[str, Any]], check_id: str) -> int:
+    """R19 — the trailing run-length of regressions against ``check_id`` on ONE ticket's
+    accumulated ``regression_detail`` (oldest first) that carry NO RELEVANT CHANGE between them.
+
+    Walking from the newest entry backward, the run continues while each entry names this SAME
+    ``check_id`` and, when it carries a ``commit_sha``, that sha agrees with the one the run has
+    already settled on (a differing sha is evidence something changed; an entry with no sha at all
+    carries no such evidence and never breaks an otherwise-matching run). The run ends the moment
+    an entry names a different check (or no check) — that regression is not this false-positive's
+    doing.
+    """
+    streak = 0
+    marker: Any = None
+    marker_seen = False
+    for entry in reversed([e for e in (regression_entries or []) if isinstance(e, dict)]):
+        if str(entry.get("check_id") or "") != str(check_id):
+            break
+        sha = entry.get("commit_sha")
+        if sha is not None:
+            if marker_seen and sha != marker:
+                break
+            marker, marker_seen = sha, True
+        streak += 1
+    return streak
+
+
+def attempt_auto_suspend(check_id: str, project: str, ticket_id: str,
+                         regression_entries: list[dict[str, Any]], *,
+                         threshold: int = DEFAULT_AUTO_SUSPEND_THRESHOLD,
+                         identity: str | None = None) -> dict[str, Any]:
+    """R19 — the automatic false-positive signal: N consecutive regressions of the SAME ticket by
+    the SAME check with no relevant change auto-suspends the check (:func:`suspend`, which already
+    stops it gating and raises the push-not-pull suspension flag per FL18) and records the
+    suspension itself as a lesson annotation so the false-positive pattern is never lost.
+
+    Below ``threshold`` this only OBSERVES (``status="observed"``) — no write. A check already
+    ``suspended``/``archived`` is left alone (``status="already-suspended"``): a streak that kept
+    growing after a suspension is not a second false positive to act on, and re-invoking
+    :func:`suspend` on a non-gating state has no defined transition (R20a). The manual
+    :func:`kill_switch` remains the always-available immediate brake for anything short of this
+    streak.
+    """
+    streak = regression_streak(regression_entries, check_id)
+    if streak < threshold:
+        return {"status": "observed", "streak": streak, "threshold": threshold}
+    current_state = (_fetch_check(check_id, project).get("meta") or {}).get(M_ENFORCEMENT_STATE)
+    if current_state in (STATE_SUSPENDED, STATE_ARCHIVED):
+        return {"status": "already-suspended", "streak": streak, "threshold": threshold}
+    reason = (f"auto-suspended: {streak} consecutive no-relevant-change regressions of ticket "
+             f"{ticket_id} by check {check_id}")
+    suspended = suspend(check_id, project, reason, identity=identity)
+    lesson = write_lesson(reason, source="auto-suspend",
+                          meta={"check_id": check_id, "ticket_id": ticket_id, "streak": streak,
+                                "auto_suspended": True})
+    return {"status": "suspended", "streak": streak, "threshold": threshold,
+            "check": suspended, "lesson_id": lesson.get("id")}
+
+
 def upgrade_on_first_pass(check_id: str, project: str, passed: bool, *,
                           identity: str | None = None) -> dict[str, Any]:
     """R6/R20a — the fail-only upgrade: a REPORT_ONLY check inserted from a machine, not-yet-proven
@@ -864,6 +938,30 @@ def regress(project: str, ticket_ids: list[str], *, detail: dict[str, Any] | Non
     """Regress the matched ticket set through the ingestion API's own auth gate (R1/R5)."""
     _require_authenticated(identity)
     return _praxis.regress_requirements(project, ticket_ids, detail=detail)
+
+
+def regress_by_check(project: str, ticket_id: str, check_id: str, reason: str, *,
+                     commit_sha: str | None = None, identity: str | None = None) -> dict[str, Any]:
+    """R19 — regress ONE ticket against an ALREADY-EXISTING gating check that just failed it
+    AGAIN: the real-world shape "N consecutive regressions of the same ticket by the same check"
+    counts (a freshly-drafted check, see :func:`ingest`, has by construction never regressed
+    anything twice yet). Accumulates the ``regression_detail`` entry — carrying ``check_id`` and
+    ``commit_sha`` so :func:`regression_streak` can tell a genuinely NEW regression (a different
+    commit landed) from the SAME one resubmitted with no relevant change — and, in the SAME
+    motion, checks whether this regression just crossed the auto-suspend threshold
+    (:func:`attempt_auto_suspend`) — never a caller's separate responsibility to remember."""
+    authenticated_as = _require_authenticated(identity)
+    plan_kw = {"space": project, "snapshot": f"prd-{project}"}
+    existing = _praxis.get_fact(ticket_id, **plan_kw) or {}
+    entries = _ts.accumulate_regression_detail(
+        (existing.get("meta") or {}).get("regression_detail"),
+        {"source": "ingestion-api", "reason": reason, "check_id": check_id, "commit_sha": commit_sha},
+    )
+    _praxis.regress_requirements(project, [ticket_id],
+                                 detail={ticket_id: {"regression_detail": entries}})
+    auto_suspend = attempt_auto_suspend(check_id, project, ticket_id, entries,
+                                        identity=authenticated_as)
+    return {"regression_detail": entries, "auto_suspend": auto_suspend}
 
 
 # --------------------------------------------------------------------------- FL18: push-not-pull flags (R23/R24)
