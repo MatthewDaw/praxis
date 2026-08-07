@@ -2,7 +2,7 @@
 
 Two levers keep the pool from growing without limit or bleeding across unrelated tickets:
 
-  * **Tight scoping at authoring** (a skill-guidance concern — af-build/af-intake-build-validation
+  * **Tight scoping at authoring** (a skill-guidance concern — af-build/ingestion_api.plan_time_author_check
     author build-discovered candidates scoped to the originating ticket's tags/surface, never a broad
     ``["*"]``). Over-broad predicates are already visible via ``resolve_preview --by-check`` (the
     "TOO BROAD" flag applies to candidate checks too).

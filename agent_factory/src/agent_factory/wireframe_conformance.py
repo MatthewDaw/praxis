@@ -23,8 +23,8 @@ This static pass is the CHEAP, FAST gate: it parses markup and proves structure.
 is its sibling :mod:`agent_factory.wireframe_browser_check`, which renders both pages in a real
 browser and compares computed style + layout geometry; :func:`emit_check_definition` chains the two
 into one ``run`` command. Stdlib only (``html.parser``); no Praxis calls — the check DEFINITION this
-emits is authored into ``building-validation`` by af-intake-build-validation (the sole writer of
-that snapshot), never written by this module.
+emits is authored into ``building-validation`` by :func:`agent_factory.ingestion_api.plan_time_author_check`
+(the sole writer of that snapshot), never written by this module.
 
 CLI::
 
@@ -344,9 +344,10 @@ def emit_check_definition(project: str, screen_id: str, wireframe_file: str,
                           url_template: str, states: list[str] | None = None,
                           artifact_dir: str | None = None) -> dict:
     """The ``building-validation`` check DEFINITION for one surface binding — shaped exactly as
-    af-intake-build-validation Step 2 writes it (that skill is the single writer of the snapshot;
-    this function only generates). Surface-bound via ``meta.surfaces`` so RESOLVE's surface lane
-    pins it precisely onto tickets that render this screen — never ``applies_to:["*"]``.
+    :func:`agent_factory.ingestion_api.plan_time_author_check` writes it (that function is the
+    single writer of the snapshot; this function only generates). Surface-bound via ``meta.surfaces``
+    so RESOLVE's surface lane pins it precisely onto tickets that render this screen — never
+    ``applies_to:["*"]``.
 
     The ``run`` chains the static parse gate (cheap, fast) with the browser-rendered gate
     (:mod:`agent_factory.wireframe_browser_check` — the decisive one, with screenshot evidence).

@@ -240,7 +240,7 @@ def _lens_coverage_complete(project: str) -> tuple[bool, str]:
             "planning-validation lens coverage is INCOMPLETE — ZERO lenses resolved from the "
             "planning-validation snapshot (an empty snapshot is a zero-resolved signal, not a "
             "satisfied coverage contract). Author at least one planning-validation lens "
-            "(af-intake-plan-validation) before the plan can bless.")
+            "(ingestion_api.plan_time_author_lens) before the plan can bless.")
     gaps = []
     for lens in (lenses or []):
         meta = lens.get("meta") or {}
