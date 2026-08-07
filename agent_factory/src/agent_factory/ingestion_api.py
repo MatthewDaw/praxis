@@ -60,6 +60,16 @@ specific finding a passed check names, detecting check-defeat, pinning the rebui
 classifying into the taxonomy (FL3), and routing the machine-strict redraft (FL5) — lives in
 :mod:`agent_factory.resolution`, exactly as :mod:`agent_factory.widening` orchestrates FL14 on top
 of this module's primitives.
+
+FL8 (R8, D2/E1, D5/E2) adds :func:`regress_for_check` — the cycle-cap-aware, lease-aware regress
+path :func:`ingest` now uses whenever it drafts a check bound to ticket ids. Each ticket's own
+regress-cycle count for that ONE (ticket, check) pair (``hooks._ticket_state.M_REGRESS_CYCLES``)
+gates whether it regresses again or PARKS blocked (D2/E1: a bounded cap, full history retained, a
+``"parking"`` flag emitted — never an unbounded silent loop). A ticket regressed out from under a
+LIVE worker lease gets that lease revoked with a marker (``hooks._ticket_state.
+lease_revocation_patch``) so the holder's in-flight FINISH is refused (``hooks._ticket_state.
+release``) until it re-claims and sees the regression (D5/E2, R16) — ``hooks._ticket_state.claim``
+clears the marker on every fresh pick.
 """
 
 from __future__ import annotations
@@ -98,6 +108,8 @@ DEFAULT_REDRAFT_BUDGET = 3      # FL5/D1: machine-drafting attempts before lesso
 PROOF_CHECK_UNDRAFTABLE = "check-undraftable"  # FL5/R6: redraft budget exhausted, no gating check inserted
 DEFAULT_MERGE_PROOF_BUDGET_S = 90  # FL7/R15: wall-clock ceiling on inline proof before it backgrounds
 DEFAULT_AUTO_SUSPEND_THRESHOLD = 3  # FL13/R19: consecutive no-relevant-change regressions before auto-suspend
+DEFAULT_REGRESS_CYCLE_CAP = 3   # FL8/D2: regress-rerun-fail cycles allowed for the SAME (ticket,
+                                 # check) pair before the ticket parks BLOCKED instead of looping (E1)
 
 # R24: the pending-attention events a flag may name — a suspension/parking/undraftable/
 # check-defeat is never silent; each is a push, not something an operator has to go looking for.
@@ -600,25 +612,20 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
                 )
 
         if ticket_ids:
-            # R16/E3: accumulate onto each ticket's existing regression_detail rather than
-            # replacing it — a concurrent finding (post-merge verification, conflict resolution)
-            # on the same ticket must never be clobbered by this ingestion's own finding.
+            # FL8: regress against THIS check via the cycle-cap-aware, lease-aware path (R16/E3
+            # history accumulation, D2 cap+park, D5 lease revocation) rather than a bare regress.
             #
             # FL13/R19: this entry's ``commit_sha`` is the BASELINE a later re-regression of the
             # same ticket by this same (newly-minted) check compares against — see
             # :func:`regress_by_check`, the entry point for "an already-existing check failed this
             # ticket again", which is where the auto-suspend streak actually accumulates (a check
             # freshly drafted here has, by construction, never yet regressed anything twice).
-            plan_kw = {"space": project, "snapshot": f"prd-{project}"}
-            detail = {}
-            for tid in ticket_ids:
-                existing = _praxis.get_fact(tid, **plan_kw) or {}
-                new_entry = {"source": "ingestion-api", "reason": lesson_text,
-                            "lesson_id": lesson_id, "check_id": check_id,
-                            "commit_sha": commit_sha}
-                detail[tid] = {"regression_detail": _ts.accumulate_regression_detail(
-                    (existing.get("meta") or {}).get("regression_detail"), new_entry)}
-            _praxis.regress_requirements(project, ticket_ids, detail=detail)
+            regress_for_check(
+                project, ticket_ids, check_id,
+                {"source": "ingestion-api", "reason": lesson_text,
+                 "lesson_id": lesson_id, "check_id": check_id, "commit_sha": commit_sha},
+                identity=authenticated_as,
+            )
 
     return {"lesson_id": lesson_id, "check_id": check_id, "wave_id": wave_id,
             "proof_status": proof_status, "class": classification["class"], "resurrected": resurrected}
@@ -1022,6 +1029,58 @@ def regress_by_check(project: str, ticket_id: str, check_id: str, reason: str, *
     auto_suspend = attempt_auto_suspend(check_id, project, ticket_id, entries,
                                         identity=authenticated_as)
     return {"regression_detail": entries, "auto_suspend": auto_suspend}
+
+
+def regress_for_check(project: str, ticket_ids: list[str], check_id: str, entry: dict[str, Any], *,
+                      identity: str | None = None,
+                      cap: int = DEFAULT_REGRESS_CYCLE_CAP) -> dict[str, list[str]]:
+    """FL8 (R8/D2/D5, E1/E2) — regress ``ticket_ids`` against ONE already-identified ``check_id``,
+    tracking each ticket's own regress-cycle count for THIS (ticket, check) pair
+    (:data:`hooks._ticket_state.M_REGRESS_CYCLES`).
+
+    A ticket still within ``cap`` regresses normally: full history is retained
+    (:func:`hooks._ticket_state.accumulate_regression_detail`, R16/E3 — never clobbers a concurrent
+    finding), and — D5/E2 — a LIVE lease on it is revoked with a marker
+    (:func:`hooks._ticket_state.lease_revocation_patch`) so the holder's in-flight FINISH is refused
+    until it re-claims and sees why (R16). A ticket whose count would EXCEED ``cap`` PARKS blocked
+    instead of regressing again (E1): full history stays, a ``"parking"`` flag is emitted (R24,
+    never silent), and it sits out of the churn set for operator action — never an unbounded silent
+    regress loop.
+
+    Returns ``{"regressed": [...], "parked": [...]}`` (ticket ids in each outcome)."""
+    authenticated_as = _require_authenticated(identity)
+    plan_kw = {"space": project, "snapshot": f"prd-{project}"}
+    detail: dict[str, Any] = {}
+    outcome: dict[str, list[str]] = {"regressed": [], "parked": []}
+    for tid in ticket_ids:
+        existing = _praxis.get_fact(tid, **plan_kw) or {}
+        existing_meta = existing.get("meta") or {}
+        count = _ts.next_regress_cycle(existing_meta, check_id)
+        regression_detail = _ts.accumulate_regression_detail(
+            existing_meta.get("regression_detail"), dict(entry))
+        cycles = _ts.bumped_regress_cycles(existing_meta, check_id, count)
+        if count > cap:
+            reason = (f"regress-cycle cap ({cap}) tripped for check {check_id!r} on ticket "
+                      f"{tid!r}: {count - 1} prior rerun(s) still failed it — parked for "
+                      f"operator review")
+            patch: dict[str, Any] = {"regression_detail": regression_detail,
+                                     _ts.M_REGRESS_CYCLES: cycles,
+                                     _ts.M_BUILD_STATE: "blocked", _ts.M_BLOCK_REASON: reason}
+            patch.update(_ts.clear_lease_and_run_meta())
+            _praxis.write_build_state(tid, patch, **plan_kw)
+            emit_flag(FLAG_KIND_PARKING, project,
+                     {"ticket_id": tid, "check_id": check_id, "cycles": count, "cap": cap,
+                      "reason": "regress-cycle-cap"}, identity=authenticated_as)
+            outcome["parked"].append(tid)
+            continue
+        tpatch: dict[str, Any] = {"regression_detail": regression_detail,
+                                  _ts.M_REGRESS_CYCLES: cycles}
+        tpatch.update(_ts.lease_revocation_patch(existing_meta))
+        detail[tid] = tpatch
+        outcome["regressed"].append(tid)
+    if detail:
+        _praxis.regress_requirements(project, list(detail.keys()), detail=detail)
+    return outcome
 
 
 # --------------------------------------------------------------------------- FL18: push-not-pull flags (R23/R24)
