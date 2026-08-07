@@ -35,6 +35,20 @@ from agent_factory.seeded_checks import universal_seeded_checks  # noqa: E402
 _PROMOTED = [c.check_id for c in universal_seeded_checks() if c.rubric is not None]
 
 
+def _promoted_for(tags):
+    """The promoted ids a ticket with ``tags`` should carry: ["*"] universals always, a tag-scoped
+    universal (applies_to narrower than ["*"]) only on intersecting tags."""
+    norm = {ts.normalize_tag(t) for t in tags}
+    out = []
+    for c in universal_seeded_checks():
+        if c.rubric is None:
+            continue
+        offer = {ts.normalize_tag(t) for t in c.applies_to}
+        if "*" in offer or (offer & norm):
+            out.append(c.check_id)
+    return out
+
+
 def _entries(reqs):
     return {r["id"]: r for r in reqs if isinstance(r, dict) and (r.get("meta") or {}).get("universal")}
 
@@ -53,17 +67,34 @@ def test_library_promotes_at_least_one_graded_universal():
 
 def test_non_exempt_ticket_contract_contains_the_universal_graded_entry():
     # The exact shape of a real ticket: plain feature tags, no declared paths, no exemption.
+    tags = ["chatbot", "backend", "auth"]
     reqs = ts.contract_with_floor("CHAT1", "given X the system does Y", resolved=[],
-                                  ticket_meta={"tags": ["chatbot", "backend", "auth"]},
-                                  paths=[])
+                                  ticket_meta={"tags": tags}, paths=[])
     universal = _entries(reqs)
-    assert set(universal) == set(_PROMOTED)
+    expected = _promoted_for(tags)
+    assert set(universal) == set(expected)
     for cid, entry in universal.items():
         assert entry["meta"]["kind"] == "graded"
         assert entry["meta"]["rubric"]["axes"]  # serialized, not a live Rubric object
         assert entry["meta"]["source_check_id"] == cid
     # …and it is part of the pinned coverage contract, not a decoration.
-    assert set(_PROMOTED) <= {ts._check_id(r) for r in reqs}
+    assert set(expected) <= {ts._check_id(r) for r in reqs}
+
+
+def test_ui_ticket_carries_the_tag_scoped_surface_universal_and_backend_does_not():
+    """The farming_analysis regression, end-to-end against the REAL library: a ui-tagged ticket's
+    MANDATORY contract contains rendered-surface-has-substance as a gating graded entry, with no
+    authoring agent opting in; a backend ticket's does not."""
+    assert "rendered-surface-has-substance" in _PROMOTED  # the library actually promotes it
+
+    ui = _entries(ts.contract_with_floor("R25", "map view renders", resolved=[],
+                                         ticket_meta={"tags": ["ui", "map"]}, paths=[]))
+    assert "rendered-surface-has-substance" in ui
+    assert ui["rendered-surface-has-substance"]["meta"]["report_only"] is False  # it GATES
+
+    backend = _entries(ts.contract_with_floor("B1", "api returns rows", resolved=[],
+                                              ticket_meta={"tags": ["backend"]}, paths=[]))
+    assert "rendered-surface-has-substance" not in backend
 
 
 @pytest.mark.parametrize("meta", [
@@ -96,7 +127,7 @@ def test_import_failure_recovers_out_of_process_rather_than_emptying_the_lane(mo
     # entries identical in shape to the in-process path.
     reqs = ts.contract_with_floor("T1", "acc", resolved=[], ticket_meta={"tags": ["backend"]})
     universal = _entries(reqs)
-    assert set(universal) == set(_PROMOTED)
+    assert set(universal) == set(_promoted_for(["backend"]))
     assert all(e["meta"]["kind"] == "graded" and e["meta"]["rubric"]["axes"] for e in universal.values())
 
 

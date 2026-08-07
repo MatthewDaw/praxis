@@ -86,6 +86,36 @@ def test_injects_on_every_non_exempt_ticket_including_tagless(monkeypatch):
         assert u["meta"]["report_only"] is True
 
 
+def test_tag_scoped_universal_injects_only_on_intersecting_tags(monkeypatch):
+    """A promote_universal check whose applies_to is NARROWER than ["*"] is a tag-scoped universal:
+    mandatory on matching-tagged tickets, absent from every other ticket's contract."""
+    scoped = SeededCheck(check_id="rendered-surface-has-substance", kind="graded",
+                         applies_to=("ui", "frontend", "surface"), criterion="substance",
+                         promote_universal=True, rubric=_universal_check().rubric,
+                         report_only=False)
+    _use(monkeypatch, scoped)
+    for tags in (["ui"], ["Frontend", "backend"], ["surface"]):
+        ids = [ts._check_id(r) for r in
+               ts.contract_with_floor("R1", "acc", resolved=[], ticket_meta={"tags": tags})]
+        assert "rendered-surface-has-substance" in ids, tags
+    for tags in ([], ["backend"], ["auth", "api"]):
+        ids = [ts._check_id(r) for r in
+               ts.contract_with_floor("R1", "acc", resolved=[], ticket_meta={"tags": tags})]
+        assert "rendered-surface-has-substance" not in ids, tags
+
+
+def test_tag_scoped_universal_matches_ticket_applies_to_fallback(monkeypatch):
+    """Ticket identity is meta.tags ∪ meta.applies_to (the lenient fallback the RESOLVE lanes use) —
+    the scoped universal must honor both."""
+    scoped = SeededCheck(check_id="scoped-ui", kind="graded", applies_to=("ui",),
+                         criterion="c", promote_universal=True,
+                         rubric=_universal_check().rubric, report_only=False)
+    _use(monkeypatch, scoped)
+    reqs = ts.contract_with_floor("R1", "acc", resolved=[],
+                                  ticket_meta={"applies_to": ["UI"]})
+    assert "scoped-ui" in [ts._check_id(r) for r in reqs]
+
+
 def test_exempt_ticket_gets_no_universal_check(monkeypatch):
     _use(monkeypatch, _universal_check())
     for meta in ({"tags": ["generated"]}, {"tags": ["Vendored"]}, {"tags": ["config"]},

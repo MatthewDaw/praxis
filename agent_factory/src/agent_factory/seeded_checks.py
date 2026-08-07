@@ -100,10 +100,13 @@ def seeded_candidates(ticket_tags, checks: list[SeededCheck] | None = None) -> l
 def universal_seeded_checks(checks: list[SeededCheck] | None = None) -> list[SeededCheck]:
     """The ``promote_universal`` seeded checks — the always-enforced UNIVERSAL lane.
 
-    Unlike :func:`seeded_candidates` (opt-in, tag-scoped inspiration), these are injected into the
-    MANDATORY coverage contract of every non-exempt ticket by ``_ticket_state.contract_with_floor``,
-    tag-independent. Order-preserving and deterministic. A universal check ships ``report_only=true``
-    first (grades + records, does not gate); flipping that one flag makes it gate.
+    Unlike :func:`seeded_candidates` (opt-in inspiration), these are injected into the MANDATORY
+    coverage contract of every non-exempt ticket by ``_ticket_state.contract_with_floor``. A check
+    authored ``applies_to = ["*"]`` injects tag-independent; one with a narrower ``applies_to`` is a
+    TAG-SCOPED universal — the injector mandates it only onto tickets whose tags intersect it (so
+    ``rendered-surface-has-substance`` gates every ui/frontend/surface ticket and no backend one).
+    Order-preserving and deterministic. A universal check ships ``report_only=true`` first (grades +
+    records, does not gate); flipping that one flag makes it gate.
     """
     checks = checks if checks is not None else load_seeded_checks()
     return [c for c in checks if c.promote_universal]

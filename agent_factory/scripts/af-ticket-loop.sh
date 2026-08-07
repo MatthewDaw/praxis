@@ -1984,6 +1984,46 @@ PYEOF
     say "round #$rnd: $regressed_n ticket(s) regressed with a failure report attached — the next round rebuilds them"
   fi
 
+  # THE OTHER HALF OF THE FINDING CONTRACT. open_finding()'s docstring has always said a finding
+  # is answered "when a later verification round confirms the ticket survived (which stamps
+  # resolved)" — but nothing ever stamped it: resolve_finding() had a unit test and NO production
+  # caller. The measured cost of that dead wire: a ticket whose finding was fixed by a SIBLING's
+  # merge finishes its rebuild with zero commits (correctly — there is nothing left to change),
+  # finding_guard regresses it for exactly that, and the pair ping-pongs forever. T8+T1 rode that
+  # loop for 17 consecutive rounds; T10/T20, sports R2 and farming R26 for 6-8 each. So: any round
+  # ticket that STILL reads finished after the regress pass above — i.e. this verification round
+  # examined the merged tree and did not fault it — gets its open finding stamped resolved.
+  local cleared_n
+  cleared_n=$($PY - "$PROJECT" "$rnd" "$@" <<'PYEOF' 2>/dev/null || echo 0
+import sys
+import _praxis, _ticket_state as ts
+proj, rnd = sys.argv[1], sys.argv[2]
+want = set(sys.argv[3:])
+kw = dict(space=proj, snapshot=f"prd-{proj}")
+n = 0
+for f in _praxis.facts_by(category="requirement", **kw) or []:
+    m = f.get("meta") or {}
+    rid = str(m.get("requirement_id") or f.get("id"))
+    if rid not in want or m.get("build_state") != "finished":
+        continue
+    if ts.open_finding(m) is None:
+        continue
+    d = ts.resolve_finding(m)
+    d["resolved_by"] = f"post-merge verification of round #{rnd}: the ticket survived the merged tree, so the finding is answered"
+    try:
+        _praxis.write_build_state(f.get("cid") or f["id"], {"regression_detail": d}, **kw)
+        n += 1
+        sys.stderr.write(f"finding resolved for {rid} by round #{rnd} verification\n")
+    except Exception as e:
+        sys.stderr.write(f"finding-resolve write failed for {rid}: {e}\n")
+print(n)
+PYEOF
+)
+  case "$cleared_n" in ''|*[!0-9]*) cleared_n=0 ;; esac
+  if [ "$cleared_n" -gt 0 ]; then
+    say "round #$rnd: $cleared_n surviving ticket(s) had their open verification finding stamped resolved"
+  fi
+
   # A ticket may not answer an OPEN verification finding by changing nothing. Runs AFTER the
   # regress pass above so a ticket this round already regressed is not counted twice.
   local fg

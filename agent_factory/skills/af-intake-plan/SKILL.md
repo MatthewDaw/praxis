@@ -474,6 +474,17 @@ governing that screen — a per-screen hermetic context (behavior from Praxis, l
 HTML in git). Rejecting/deleting a requirement drops it from these queries automatically (active-only
 filtering + `ON DELETE CASCADE`); no `meta.surfaces` bookkeeping to sync.
 
+**Every bound surface also earns a MECHANICAL wireframe-conformance gate — generated, not hand-authored.**
+The wireframe is an executable spec, not a doc reference: `python -m agent_factory.wireframe_conformance
+emit --project <project> --url-template <served-url-with-{screen}> --bindings-json <dump>` derives one
+check DEFINITION per binding from the wireframe itself (stylesheet floor from its own `<style>` size,
+structural class + control inventory, declared `states`, no remote assets, plus the browser-rendered
+layout gate with screenshot evidence — see `agent_factory/src/agent_factory/wireframe_conformance.py`).
+Authoring those definitions into `building-validation` is NOT yours to do — DELEGATE each to
+**af-intake-build-validation** (its sole writer), exactly like the every-site sweep guard (B2). This is
+how a shipped-unstyled `<h1>`-only page stops clearing a byte floor: the check is derived from the
+binding, so every project that binds a surface gets conformance enforcement for free.
+
 ## Step 5 — Map the build-order dependency DAG (`depends_on`)
 
 `af-build` works **one ticket at a time** and only ever pops a ticket whose prerequisites are already

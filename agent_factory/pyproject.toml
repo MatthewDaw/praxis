@@ -8,6 +8,16 @@ dependencies = [
     "pyyaml>=6.0.3",
 ]
 
+# The wireframe-conformance BROWSER gate (wireframe_browser_check.py) needs Playwright — the Python
+# package here plus a one-time `python -m playwright install chromium` (~150 MB) that the module
+# bootstraps idempotently on first use. It is an EXTRA, not a base dependency, so a factory install
+# that never gates a UI surface pays nothing; but where the check IS pinned it fails LOUD (exit 2,
+# remediation printed) when this extra is absent — it never skips or degrades to the parser.
+[project.optional-dependencies]
+browser = [
+    "playwright>=1.45",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
