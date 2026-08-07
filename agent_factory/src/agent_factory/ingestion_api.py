@@ -1094,7 +1094,6 @@ def reprove_quiet_checks(project: str, *, now: float | None = None,
         )
         run = meta.get("run")
         if not artifact_meta or not run:
-            new_state = transition_enforcement_state(STATE_GATING, EVENT_PROOF_DEMOTED)
             reason = "artifact-unavailable"
         else:
             verdict = run_fail_then_pass_proof(
@@ -1106,9 +1105,11 @@ def reprove_quiet_checks(project: str, *, now: float | None = None,
                                    snapshot=BUILDING_VALIDATION_SNAPSHOT)
                 outcomes.append({"check_id": check_id, "result": "kept-gating", "reason": "still-failing"})
                 continue
-            new_state = transition_enforcement_state(STATE_GATING, EVENT_PROOF_DEMOTED)
             reason = "artifact-unavailable" if verdict.get("reason") in (
                 "pin-irreproducible", "healthy-reference-irreproducible") else verdict.get("reason")
+        # Both demotion branches above (no usable artifact/run, or a non-proven re-prove verdict)
+        # reach here needing the SAME transition — computed once rather than duplicated per branch.
+        new_state = transition_enforcement_state(STATE_GATING, EVENT_PROOF_DEMOTED)
         _praxis.patch_meta(check_id, {M_ENFORCEMENT_STATE: new_state, "reprove_at": now,
                                       "reprove_reason": reason, "patched_by": authenticated_as},
                            space=project, snapshot=BUILDING_VALIDATION_SNAPSHOT)
