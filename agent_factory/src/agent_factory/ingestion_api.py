@@ -39,6 +39,8 @@ LESSON_CATEGORY = "lesson"
 CHECK_CATEGORY = "check"
 BUILDING_VALIDATION_SNAPSHOT = "building-validation"
 PLANNING_VALIDATION_SNAPSHOT = "planning-validation"
+CLASS_CATEGORY = "failure-class"          # FL3 — the failure-class taxonomy (R3)
+CALIBRATION_CATEGORY = "taxonomy-calibration"  # FL3 — the R20b staged-rollout singleton state
 
 # R20a's check enforcement-state machine (a plan-only spec until FL2; this is its first code home).
 M_ENFORCEMENT_STATE = "enforcement_state"
@@ -70,9 +72,9 @@ class Unauthenticated(PermissionError):
     """An ingestion-API verb was called with no org-authenticated Praxis identity (R1b)."""
 
 
-def write_lesson(text: str, *, source: str | None = None,
-                 meta: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Write ``text`` as a lesson into the shared ``factory-learnings`` space (POST /insights).
+def _write_insight(text: str, category: str, *, source: str | None = None,
+                   meta: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Shared write path: POST /insights, scoped to the shared ``factory-learnings`` space.
 
     THE sole write path into that space (R1/KD3): nothing else in this codebase is allowed to
     target ``(hooks._praxis.FACTORY_LEARNINGS_SPACE, hooks._praxis.FACTORY_LEARNINGS_SNAPSHOT)``
@@ -86,7 +88,7 @@ def write_lesson(text: str, *, source: str | None = None,
     _praxis.ensure_space(_praxis.FACTORY_LEARNINGS_SPACE, name="factory-learnings")
     payload: dict[str, Any] = {
         "insight": body,
-        "category": LESSON_CATEGORY,
+        "category": category,
         "source": source,
         "meta": meta or {},
     }
@@ -94,6 +96,12 @@ def write_lesson(text: str, *, source: str | None = None,
         "POST", "/insights", body=payload,
         space=_praxis.FACTORY_LEARNINGS_SPACE, snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT,
     )
+
+
+def write_lesson(text: str, *, source: str | None = None,
+                 meta: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Write ``text`` as a lesson into the shared ``factory-learnings`` space (POST /insights)."""
+    return _write_insight(text, LESSON_CATEGORY, source=source, meta=meta)
 
 
 def read_lessons(query: str = "", *, top_k: int = 10) -> list[dict[str, Any]]:
@@ -504,6 +512,47 @@ def plan_time_author_lens(lens_text: str, project: str, *, applies_to: list[str]
         outcome="pending",
     )
     return written
+
+
+# --------------------------------------------------------------------------- FL3 taxonomy + calibration
+# The dedup MATCHING logic and calibration MATH live in ``agent_factory.failure_taxonomy`` — this
+# module stays the sole writer/reader of the shared space; that module never touches ``_praxis``.
+
+def write_class(label: str, *, source: str | None = None,
+                meta: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Mint a new failure-class fact (R3: a genuinely novel failure)."""
+    return _write_insight(label, CLASS_CATEGORY, source=source, meta=meta)
+
+
+def read_classes() -> list[dict[str, Any]]:
+    """Read-only enumeration of every failure class (GET-only, no write side-effect)."""
+    return _praxis.facts_by(category=CLASS_CATEGORY, space=_praxis.FACTORY_LEARNINGS_SPACE,
+                            snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT)
+
+
+def update_class_meta(class_id: str, meta: dict[str, Any]) -> dict[str, Any]:
+    """Merge ``meta`` onto an existing class fact (recurrence count + evidence log) — a recurrence
+    NEVER writes a duplicate lesson, it only updates the class it matched."""
+    return _praxis.patch_meta(class_id, meta, space=_praxis.FACTORY_LEARNINGS_SPACE,
+                              snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT)
+
+
+def read_calibration_state() -> dict[str, Any] | None:
+    """The singleton R20b calibration-state fact, or ``None`` before the first assignment ever
+    recorded. Read-only."""
+    hits = _praxis.facts_by(category=CALIBRATION_CATEGORY, space=_praxis.FACTORY_LEARNINGS_SPACE,
+                            snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT)
+    return hits[0] if hits else None
+
+
+def write_calibration_state(meta: dict[str, Any]) -> dict[str, Any]:
+    """Create-or-update the singleton calibration-state fact. First call mints it; every later call
+    merges the new counters onto the same fact, so there is always exactly one."""
+    existing = read_calibration_state()
+    if existing is not None:
+        return _praxis.patch_meta(existing["id"], meta, space=_praxis.FACTORY_LEARNINGS_SPACE,
+                                  snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT)
+    return _write_insight("failure-class taxonomy calibration state", CALIBRATION_CATEGORY, meta=meta)
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
