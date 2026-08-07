@@ -172,3 +172,105 @@ def guard_automation(action: str) -> bool:
     MUST consult before acting. ``True`` iff armed; while unarmed it always returns ``False`` — the
     caller stays observe-only, recording the would-be ``action`` instead of performing it (R20b)."""
     return is_armed()
+
+
+# --------------------------------------------------------------------------- R20/FL15: resurrection
+
+def attempt_resurrect(class_id: str, project: str, *, evidence: str | None = None,
+                      identity: str | None = None) -> dict[str, Any]:
+    """R20/FL15 — the automatic resurrection decision for a recurrence of failure class
+    ``class_id``: consult ``project``'s archived/suspended checks for that class BEFORE any caller
+    drafts anew, and resurrect the match (carrying its prior proof history forward) rather than
+    minting a duplicate. Calibration-gated (R20b) exactly like :func:`agent_factory.widening.attempt_widen`
+    — observe-only (never mutates) until armed.
+
+    Returns ``{"resurrected": bool, "check": {...}|None, "class_id": class_id, "reason": str}``:
+    ``reason`` is one of ``"no-resurrectable-check"`` (nothing archived/suspended for this class),
+    ``"calibration-not-armed"`` (a candidate exists but automation stays observe-only), or
+    ``"resurrected"``.
+    """
+    candidate = ingestion_api.find_resurrectable_check(class_id, project)
+    if candidate is None:
+        return {"resurrected": False, "check": None, "class_id": class_id,
+                "reason": "no-resurrectable-check"}
+    if not guard_automation("resurrect"):
+        return {"resurrected": False, "check": candidate, "class_id": class_id,
+                "reason": "calibration-not-armed"}
+    candidate_check_id = (candidate.get("meta") or {}).get("check_id") or candidate["id"]
+    resurrected_check = ingestion_api.resurrect_check(candidate_check_id, project, evidence=evidence,
+                                                       identity=identity)
+    return {"resurrected": True, "check": resurrected_check, "class_id": class_id,
+            "reason": "resurrected"}
+
+
+# --------------------------------------------------------------------------- R20/FL15: near-duplicate sweep
+
+DEFAULT_NEAR_DUP_THRESHOLD = 0.75  # stricter than DEFAULT_MATCH_THRESHOLD — a merge is irreversible
+
+
+def find_near_duplicate_pairs(classes: list[dict[str, Any]] | None = None, *,
+                              threshold: float = DEFAULT_NEAR_DUP_THRESHOLD
+                              ) -> list[tuple[dict[str, Any], dict[str, Any], float]]:
+    """Every pair of failure classes whose label token-overlap is at/above ``threshold`` — the
+    candidate set :func:`sweep_near_duplicate_classes` merges. Already-merged classes
+    (``meta.merged_into`` set) are excluded, and each class appears as a loser in at most one pair
+    per call so a chain of near-dups merges one hop at a time rather than double-counting."""
+    pool = [c for c in (ingestion_api.read_classes() if classes is None else classes)
+            if not (c.get("meta") or {}).get("merged_into")]
+    pairs: list[tuple[dict[str, Any], dict[str, Any], float]] = []
+    claimed: set[str] = set()
+    for i, a in enumerate(pool):
+        if str(a.get("id")) in claimed:
+            continue
+        for b in pool[i + 1:]:
+            bid = str(b.get("id"))
+            if bid in claimed:
+                continue
+            score = _similarity(_class_label(a), _class_label(b))
+            if score >= threshold:
+                pairs.append((a, b, score))
+                claimed.add(bid)
+    return pairs
+
+
+def _merge_survivor_and_loser(a: dict[str, Any], b: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Deterministic (survivor, loser) ordering for one near-dup pair: the higher recurrence count
+    survives (it has earned more trust); a tie breaks on the lower id, so the choice is stable
+    across repeated sweeps rather than depending on iteration order."""
+    ac = int((a.get("meta") or {}).get("recurrence_count") or 1)
+    bc = int((b.get("meta") or {}).get("recurrence_count") or 1)
+    if bc > ac:
+        return b, a
+    if ac > bc:
+        return a, b
+    return (a, b) if str(a.get("id")) <= str(b.get("id")) else (b, a)
+
+
+def sweep_near_duplicate_classes(*, classes: list[dict[str, Any]] | None = None,
+                                 threshold: float = DEFAULT_NEAR_DUP_THRESHOLD
+                                 ) -> list[dict[str, Any]]:
+    """R20/FL15 — the off-critical-path near-duplicate sweep: an af-build loop-end hook calls this
+    to propose (and, in the same motion, apply) class merges over the failure-class corpus. Each
+    merged pair RETROACTIVELY CREDITS the survivor's recurrence count with the loser's, combines
+    their evidence logs, and marks the loser ``merged_into`` the survivor (never deleted — the
+    audit trail stays intact). Never gated by calibration (:func:`guard_automation`): this
+    housekeeping is what the calibration streak itself watches, so gating it on calibration would
+    be circular.
+
+    Returns one merge record per pair — the set :mod:`agent_factory.af_retro` surfaces for operator
+    spot-audit."""
+    merges: list[dict[str, Any]] = []
+    for a, b, score in find_near_duplicate_pairs(classes, threshold=threshold):
+        survivor, loser = _merge_survivor_and_loser(a, b)
+        survivor_meta = dict(survivor.get("meta") or {})
+        loser_meta = dict(loser.get("meta") or {})
+        credited = int(survivor_meta.get("recurrence_count") or 1) + int(loser_meta.get("recurrence_count") or 1)
+        survivor_meta["recurrence_count"] = credited
+        survivor_meta["evidence"] = list(survivor_meta.get("evidence") or []) + list(loser_meta.get("evidence") or [])
+        ingestion_api.update_class_meta(survivor["id"], survivor_meta)
+        ingestion_api.update_class_meta(loser["id"], {
+            "merged_into": survivor["id"], "merged_at": time.time(), "merge_score": score,
+        })
+        merges.append({"survivor_id": survivor["id"], "loser_id": loser["id"], "score": score,
+                       "credited_recurrence": credited})
+    return merges

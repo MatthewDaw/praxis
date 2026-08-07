@@ -176,6 +176,74 @@ def test_calibration_exit_count_env_override_defaults_when_unset_or_invalid(monk
     assert ft.calibration_exit_count() == 7
 
 
+# --------------------------------------------------------------------------- R20/FL15: near-duplicate sweep
+
+def _seed_class(store: _FakeStore, label: str, *, recurrence: int = 1,
+                evidence: list | None = None) -> str:
+    """Seed a failure-class fact directly (bypassing :func:`assign_class`'s own ingestion-time
+    dedup threshold) so a near-dup sweep test controls its corpus deterministically."""
+    cid = store.new_id("class")
+    store.classes[cid] = {"id": cid, "text": label,
+                          "meta": {"recurrence_count": recurrence, "evidence": evidence or []}}
+    return cid
+
+
+def test_sweep_finds_and_merges_a_planted_near_duplicate_pair_crediting_recurrence(store):
+    """The acceptance scenario: a planted near-duplicate lesson pair merges and recurrence is
+    retroactively credited onto the survivor."""
+    a_id = _seed_class(store, "connection pool exhausted under load", recurrence=2,
+                       evidence=[{"text": "trace A"}])
+    b_id = _seed_class(store, "connection pool exhausted under load spike",
+                       recurrence=1, evidence=[{"text": "trace B"}])
+
+    merges = ft.sweep_near_duplicate_classes()
+
+    assert len(merges) == 1
+    merge = merges[0]
+    assert {merge["survivor_id"], merge["loser_id"]} == {a_id, b_id}
+    assert merge["survivor_id"] == a_id  # higher recurrence survives
+    assert merge["credited_recurrence"] == 3
+    survivor = store.classes[a_id]
+    loser = store.classes[b_id]
+    assert survivor["meta"]["recurrence_count"] == 3
+    assert loser["meta"]["merged_into"] == a_id
+    # Evidence from both sides survives the merge (retroactive credit is not just a number).
+    assert len(survivor["meta"]["evidence"]) == 2
+
+
+def test_sweep_never_gates_on_calibration(store, monkeypatch):
+    """The near-dup sweep is housekeeping over the corpus the calibration streak itself watches —
+    gating it on calibration would be circular, so it always runs regardless of armed state."""
+    monkeypatch.setattr(ft, "guard_automation", lambda action: (_ for _ in ()).throw(
+        AssertionError("sweep must never consult guard_automation")))
+    _seed_class(store, "disk quota exceeded during snapshot")
+    _seed_class(store, "disk quota exceeded during backup snapshot")
+    merges = ft.sweep_near_duplicate_classes()
+    assert len(merges) == 1
+
+
+def test_sweep_is_a_no_op_below_threshold_and_on_already_merged_classes(store):
+    _seed_class(store, "frontend build fails on a missing type export")
+    _seed_class(store, "database connection refused on startup")
+    assert ft.sweep_near_duplicate_classes() == []
+
+    # Re-running after nothing merged stays empty (idempotent, no spurious self-merge).
+    assert ft.sweep_near_duplicate_classes() == []
+
+
+def test_find_near_duplicate_pairs_excludes_already_merged_losers(store):
+    _seed_class(store, "timeout waiting for upstream response")
+    _seed_class(store, "timeout waiting for upstream response again")
+    ft.sweep_near_duplicate_classes()
+    merged_ids = {cid for cid, c in store.classes.items() if c["meta"].get("merged_into")}
+    assert len(merged_ids) == 1
+
+    # A re-run over the now-merged corpus never re-surfaces the merged loser in a pair.
+    pairs = ft.find_near_duplicate_pairs()
+    ids_in_pairs = {c["id"] for pair in pairs for c in pair[:2]}
+    assert not (ids_in_pairs & merged_ids)
+
+
 # --------------------------------------------------------------------------- surfaced in af-retro
 
 def test_af_retro_surfaces_calibration_state(
@@ -189,11 +257,20 @@ def test_af_retro_surfaces_calibration_state(
         "streak": 1, "total_assignments": 4, "corrections": 0, "armed": False,
         "armed_at": None, "required": 20,
     })
+    monkeypatch.setattr(af_retro, "read_classes", lambda: [
+        {"id": "cls-1", "text": "connection pool exhausted", "meta": {"recurrence_count": 3}},
+        {"id": "cls-2", "text": "frontend build fails", "meta": {"recurrence_count": 1,
+                                                                  "merged_into": "cls-1"}},
+    ])
     rc = af_retro.main(["some-project", "--calibration"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "armed=False" in out
     assert "streak=1/20" in out
+    # R20/FL15 — class assignments (recurrence + merge status) are spot-auditable from af-retro.
+    assert "recurrence=3" in out
+    assert "[active] cls-1" in out
+    assert "merged->cls-1" in out
 
 
 # --------------------------------------------------------------------------- sole-writer discipline

@@ -19,7 +19,7 @@ from collections import Counter
 from typing import Any
 
 from agent_factory import failure_taxonomy
-from agent_factory.ingestion_api import ack_flag, read_checks, read_flags, read_lessons
+from agent_factory.ingestion_api import ack_flag, read_checks, read_classes, read_flags, read_lessons
 
 
 def enforcement_counts(checks: list[dict[str, Any]]) -> Counter[str]:
@@ -110,13 +110,31 @@ def _cmd_ack(args: argparse.Namespace) -> int:
 
 def _print_calibration() -> None:
     """Surface the R20b staged-rollout state (FL3): assignments are recorded even while
-    taxonomy-dependent automation stays observe-only, so an operator can watch it approach arming."""
+    taxonomy-dependent automation stays observe-only, so an operator can watch it approach arming.
+    Also prints every failure-class ASSIGNMENT (R20/FL15) — recurrence count and merge status — so
+    the resurrection path and the near-duplicate sweep both stay spot-auditable, not just the
+    aggregate streak counters."""
     state = failure_taxonomy.calibration_state()
     print(
         f"af-retro: taxonomy calibration — armed={state['armed']} "
         f"streak={state['streak']}/{state['required']} "
         f"total_assignments={state['total_assignments']} corrections={state['corrections']}"
     )
+    classes = read_classes()
+    if not classes:
+        print("af-retro: no failure-class assignments recorded yet.")
+        return
+    print("af-retro: failure-class assignments (recurrence + merge status):")
+    for cls in classes:
+        print(_class_assignment_line(cls))
+
+
+def _class_assignment_line(cls: dict[str, Any]) -> str:
+    meta = cls.get("meta") or {}
+    merged_into = meta.get("merged_into")
+    status = f"merged->{merged_into}" if merged_into else "active"
+    recurrence = meta.get("recurrence_count", 1)
+    return f"  [{status}] {cls.get('id', '')}\trecurrence={recurrence}\t{cls.get('text', '')}"
 
 
 def main(argv: list[str] | None = None) -> int:

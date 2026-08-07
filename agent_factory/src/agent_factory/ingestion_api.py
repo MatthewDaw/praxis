@@ -489,6 +489,7 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
     check_id: str | None = None
     proof_status: str | None = None
     proof_result: dict[str, Any] | None = None
+    resurrected = False
     if use_real_proof_engine:
         proof_result = attempt_fail_then_pass_proof(
             validated_candidates, bad_artifact_meta=bad_artifact_meta,
@@ -513,56 +514,74 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
         validated_run = proof_result["run"]
 
     if drafted_run is not None or drafted_rubric is not None:
-        applies_to = list(ticket_ids or [])
-        surface_only = not applies_to and bool(surfaces)  # R12: zero-match ingestion binds surface-only
-        check_meta: dict[str, Any] = {
-            "check_id": f"fl-{wave_id[:12]}", "scope": "validation", "wave_id": wave_id,
-            "channel": channel, "applies_to": applies_to, "surfaces": list(surfaces or []),
-            "surface_only": surface_only, "lesson_id": lesson_id, "source_evidence": source,
-            "authored_by": authenticated_as,
-        }
-        _pin_content(check_meta, validated_run=validated_run, rubric=drafted_rubric)
-        if proof_status is None:
-            if drafted_rubric is not None:
-                proof_status = "unproven"  # graded checks are judge-scored, not fail-then-pass proof-run
-            else:
-                proof_status = attempt_proof(validated_run, proof_runner=proof_runner)
-
-        check_meta["proof_status"] = proof_status
-        if proof_result is not None:
-            check_meta["proof_reason"] = proof_result.get("reason")
-            check_meta["proof_attempts"] = proof_result.get("attempts")
-        if drafting_transcript is not None:
-            check_meta["drafting_transcript"] = redact_secrets(drafting_transcript)
-        # activate: a proven machine check (or any human-authored one) gates; unproven -> report_only
-        # (DF4/R6) — via the transition table (FL12), so this insertion can never land a state the
-        # table does not define.
-        insert_event = (
-            EVENT_INSERT_GATING if (proof_status == "proven" or channel == "human")
-            else EVENT_INSERT_REPORT_ONLY
+        # R20/FL15 — before drafting anew, consult any archived/suspended check of the same
+        # failure class: a match RESURRECTS it (carrying its prior proof history forward) instead
+        # of minting a duplicate. Calibration-gated (observe-only until armed, R20b); local import
+        # to keep the ingestion_api<->failure_taxonomy import cycle resolvable either direction.
+        from agent_factory import failure_taxonomy
+        class_match = failure_taxonomy.find_matching_class(lesson_text)
+        class_id = class_match["id"] if class_match else None
+        resurrection = (
+            failure_taxonomy.attempt_resurrect(class_id, project, evidence=lesson_text,
+                                               identity=authenticated_as)
+            if class_id is not None else None
         )
-        check_meta[M_ENFORCEMENT_STATE] = transition_enforcement_state(None, insert_event)
+        resurrected = resurrection is not None and resurrection["resurrected"]
+        if resurrected:
+            resurrected_check = resurrection["check"]
+            check_id = resurrected_check.get("id")
+            proof_status = (resurrected_check.get("meta") or {}).get("proof_status")
+        else:
+            applies_to = list(ticket_ids or [])
+            surface_only = not applies_to and bool(surfaces)  # R12: zero-match ingestion binds surface-only
+            check_meta: dict[str, Any] = {
+                "check_id": f"fl-{wave_id[:12]}", "scope": "validation", "wave_id": wave_id,
+                "channel": channel, "applies_to": applies_to, "surfaces": list(surfaces or []),
+                "surface_only": surface_only, "lesson_id": lesson_id, "source_evidence": source,
+                "authored_by": authenticated_as, "failure_class_id": class_id,
+            }
+            _pin_content(check_meta, validated_run=validated_run, rubric=drafted_rubric)
+            if proof_status is None:
+                if drafted_rubric is not None:
+                    proof_status = "unproven"  # graded checks are judge-scored, not fail-then-pass proof-run
+                else:
+                    proof_status = attempt_proof(validated_run, proof_runner=proof_runner)
 
-        written_check = write_check(lesson_text, project, meta=check_meta, source=source)
-        check_id = written_check.get("id")
-
-        if proof_result is not None and proof_result.get("flag"):
-            _praxis.record_episode(
-                f"proof flagged for check {check_id} (lesson {lesson_id}, project={project}): "
-                f"{proof_result.get('reason')} — {proof_result.get('detail', '')}".strip(" —"),
-                outcome="pending",
+            check_meta["proof_status"] = proof_status
+            if proof_result is not None:
+                check_meta["proof_reason"] = proof_result.get("reason")
+                check_meta["proof_attempts"] = proof_result.get("attempts")
+            if drafting_transcript is not None:
+                check_meta["drafting_transcript"] = redact_secrets(drafting_transcript)
+            # activate: a proven machine check (or any human-authored one) gates; unproven ->
+            # report_only (DF4/R6) — via the transition table (FL12), so this insertion can never
+            # land a state the table does not define.
+            insert_event = (
+                EVENT_INSERT_GATING if (proof_status == "proven" or channel == "human")
+                else EVENT_INSERT_REPORT_ONLY
             )
+            check_meta[M_ENFORCEMENT_STATE] = transition_enforcement_state(None, insert_event)
 
-        if surface_only:
-            # R12/R13: a zero-match ingestion (no live ticket id to bind narrowly) never lands a
-            # dangling ticket-id-only gate — it falls back to the observed-surface binding alone —
-            # but that fallback is FLAGGED (a recorded event, not just a silent meta field) so it
-            # stays visible rather than looking identical to an ordinary narrow binding.
-            _praxis.record_episode(
-                f"zero-match ingestion flagged: check {check_id} for lesson {lesson_id} bound "
-                f"surface-only to {list(surfaces or [])} — no ticket id to bind narrowly",
-                outcome="flagged",
-            )
+            written_check = write_check(lesson_text, project, meta=check_meta, source=source)
+            check_id = written_check.get("id")
+
+            if proof_result is not None and proof_result.get("flag"):
+                _praxis.record_episode(
+                    f"proof flagged for check {check_id} (lesson {lesson_id}, project={project}): "
+                    f"{proof_result.get('reason')} — {proof_result.get('detail', '')}".strip(" —"),
+                    outcome="pending",
+                )
+
+            if surface_only:
+                # R12/R13: a zero-match ingestion (no live ticket id to bind narrowly) never lands a
+                # dangling ticket-id-only gate — it falls back to the observed-surface binding alone —
+                # but that fallback is FLAGGED (a recorded event, not just a silent meta field) so it
+                # stays visible rather than looking identical to an ordinary narrow binding.
+                _praxis.record_episode(
+                    f"zero-match ingestion flagged: check {check_id} for lesson {lesson_id} bound "
+                    f"surface-only to {list(surfaces or [])} — no ticket id to bind narrowly",
+                    outcome="flagged",
+                )
 
         if ticket_ids:
             # R16/E3: accumulate onto each ticket's existing regression_detail rather than
@@ -579,7 +598,7 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
             _praxis.regress_requirements(project, ticket_ids, detail=detail)
 
     return {"lesson_id": lesson_id, "check_id": check_id, "wave_id": wave_id,
-            "proof_status": proof_status, "class": classification["class"]}
+            "proof_status": proof_status, "class": classification["class"], "resurrected": resurrected}
 
 
 # --------------------------------------------------------------------------- FL7: the merger's entry point (R5/R6/R15/E11)
@@ -1049,6 +1068,46 @@ def write_calibration_state(meta: dict[str, Any]) -> dict[str, Any]:
         return _praxis.patch_meta(existing["id"], meta, space=_praxis.FACTORY_LEARNINGS_SPACE,
                                   snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT)
     return _write_insight("failure-class taxonomy calibration state", CALIBRATION_CATEGORY, meta=meta)
+
+
+# --------------------------------------------------------------------------- FL15: resurrection (R20)
+# "Ingestion always consults archived and suspended checks of the same class before drafting anew" —
+# a check carries its own failure-class binding (``meta.failure_class_id``, set at draft time below),
+# so a later recurrence of that class can be matched back to it without a fresh drafting pass. The
+# CALIBRATION-gated automation decision (:func:`agent_factory.failure_taxonomy.attempt_resurrect`)
+# owns whether to act; this module supplies the read (find) and write (resurrect) primitives.
+
+def find_resurrectable_check(class_id: str, project: str) -> dict[str, Any] | None:
+    """The most-recently-deactivated SUSPENDED or ARCHIVED check bound to failure class
+    ``class_id`` in ``project``, or ``None`` when none exists — read-only, consulted BEFORE
+    drafting a new check for a recurrence of that class (R20/FL15)."""
+    candidates = [
+        chk for chk in read_checks(project)
+        if (chk.get("meta") or {}).get("failure_class_id") == class_id
+        and (chk.get("meta") or {}).get(M_ENFORCEMENT_STATE) in (STATE_SUSPENDED, STATE_ARCHIVED)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: (c.get("meta") or {}).get("suspended_at")
+                    or (c.get("meta") or {}).get("rolled_back_at") or 0, reverse=True)
+    return candidates[0]
+
+
+def resurrect_check(check_id: str, project: str, *, evidence: str | None = None,
+                    identity: str | None = None) -> dict[str, Any]:
+    """R20/FL15 — resurrect a suspended/archived check via the ``EVENT_RESURRECT`` transition,
+    carrying its PRIOR PROOF HISTORY forward (``run``/``rubric``/``proof_status`` untouched) instead
+    of drafting a fresh one. Appends the triggering recurrence onto ``resurrection_history`` so the
+    resurrection itself stays auditable rather than looking like an ordinary insertion."""
+    authenticated_as = _require_authenticated(identity)
+    def _patch(check: dict[str, Any]) -> dict[str, Any]:
+        current = (check.get("meta") or {}).get(M_ENFORCEMENT_STATE)
+        new_state = transition_enforcement_state(current, EVENT_RESURRECT)
+        history = list((check.get("meta") or {}).get("resurrection_history") or [])
+        history.append({"at": time.time(), "evidence": evidence})
+        return {M_ENFORCEMENT_STATE: new_state, "resurrected_at": time.time(),
+                "resurrection_history": history}
+    return _patch_check(check_id, project, _patch, identity=authenticated_as)
 
 
 # --------------------------------------------------------------------------- FL4: bad-artifact pin (R7)
