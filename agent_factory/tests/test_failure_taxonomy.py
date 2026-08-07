@@ -178,9 +178,13 @@ def test_calibration_exit_count_env_override_defaults_when_unset_or_invalid(monk
 
 # --------------------------------------------------------------------------- surfaced in af-retro
 
-def test_af_retro_surfaces_calibration_state(store, monkeypatch, capsys):
+def test_af_retro_surfaces_calibration_state(
+    store: "_FakeStore", monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
     af_retro = importlib.import_module("agent_factory.af_retro")
     monkeypatch.setattr(af_retro, "read_lessons", lambda *a, **kw: [])
+    monkeypatch.setattr(af_retro, "read_checks", lambda *a, **kw: [])
+    monkeypatch.setattr(af_retro, "read_flags", lambda *a, **kw: [])
     monkeypatch.setattr(ft, "calibration_state", lambda: {
         "streak": 1, "total_assignments": 4, "corrections": 0, "armed": False,
         "armed_at": None, "required": 20,

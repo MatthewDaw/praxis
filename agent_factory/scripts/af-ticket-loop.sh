@@ -2442,4 +2442,9 @@ done
 # allowed to announce a finished run over work that never landed, so the invariant is asserted once
 # more on the way out, where it covers the paths the drain gate does not.
 af_assert_no_stragglers "exit"
+# R24 — flags are push, not pull: a suspension/parking/undraftable/check-defeat event must not
+# wait for someone to go looking for it. `|| true` — a flags read failing must never turn a
+# real, completed run into an exit-4 failure; the persistent pending list (af-retro --flags) and
+# the af-build session-start surfacing are the backstop if this line itself never runs.
+"$PY" -m agent_factory.af_retro --flags "$PROJECT" || true
 say "af-ticket-loop finished for $PROJECT"

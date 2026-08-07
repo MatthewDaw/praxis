@@ -41,6 +41,13 @@ Workflow tool is unavailable.
 
 To drive the (optionally scoped) build set to done you run **exactly this loop**:
 
+**AT SESSION START**, before step 0: run `af-retro --flags <project>` (or `af-retro --flags` alone for
+every project this session touches). This is R24's push-not-pull surfacing — a suspension, parking,
+undraftable, or check-defeat event from an earlier run stays on the PENDING list until someone runs
+`af-retro ack <flag_id>`, and this is where that list becomes visible again rather than only at the
+loop-end notification that first raised it. A non-empty list is not a build blocker — note it in your
+report so a human can ack it — but it must never be silently skipped.
+
 0. **OPEN THE RUN** — resolve the scope to its in-scope incomplete ticket ids (an **id-only** pass — do
    not read ticket bodies) and **STAMP the whole-set run marker** on every one
    (`_ticket_state.stamp_run(cids, owner, scope_label)`). This persisted, scope-bearing marker is what arms

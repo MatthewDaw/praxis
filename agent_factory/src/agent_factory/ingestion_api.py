@@ -32,6 +32,14 @@ id to bind narrowly) now flags that fallback with a recorded episode instead of 
 mandatory, unskippable RESOLVE-time matching on that identity binding (R11) and its afterlife
 conversion to the surface binding (R13) live in ``hooks/_ticket_state.py`` (:func:`_matching_checks`),
 not here — this module only ever writes the bindings, never resolves against them.
+
+FL18 (R23/R24) extends this module with the org-wide, push-not-pull FLAG (:func:`emit_flag` /
+:func:`read_flags` / :func:`ack_flag`): a suspension/parking/undraftable/check-defeat event writes
+ONE unacknowledged flag fact into the shared space's ``flags`` snapshot; it stays pending until a
+human explicitly acks it. :func:`read_checks` is the read-only per-project enumeration
+``agent_factory.af_retro`` reports off. Both existing enforcement-state verbs
+(:func:`suspend`/:func:`kill_switch`) now also emit a ``"suspension"`` flag, so a false-positive
+auto-suspension (R19) is never silent.
 """
 
 from __future__ import annotations
@@ -62,10 +70,20 @@ PLANNING_VALIDATION_SNAPSHOT = "planning-validation"
 CLASS_CATEGORY = "failure-class"          # FL3 — the failure-class taxonomy (R3)
 CALIBRATION_CATEGORY = "taxonomy-calibration"  # FL3 — the R20b staged-rollout singleton state
 ARTIFACT_CATEGORY = "artifact"            # FL4 — the pinned bad-artifact bundle (R7)
+FLAG_CATEGORY = "flag"                    # FL18 — the push-not-pull pending-attention flag (R24)
 DEFAULT_RETENTION_DAYS = 90
 DEFAULT_REPEAT_COUNT = 1        # FL5/D4: proof repeat count for flaky/LLM-judged checks; 1 == no repeat
 DEFAULT_REDRAFT_BUDGET = 3      # FL5/D1: machine-drafting attempts before lesson-only
 PROOF_CHECK_UNDRAFTABLE = "check-undraftable"  # FL5/R6: redraft budget exhausted, no gating check inserted
+
+# R24: the pending-attention events a flag may name — a suspension/parking/undraftable/
+# check-defeat is never silent; each is a push, not something an operator has to go looking for.
+FLAG_KIND_SUSPENSION = "suspension"
+FLAG_KIND_PARKING = "parking"
+FLAG_KIND_UNDRAFTABLE = "undraftable"
+FLAG_KIND_CHECK_DEFEAT = "check-defeat"
+FLAG_KINDS = frozenset({FLAG_KIND_SUSPENSION, FLAG_KIND_PARKING, FLAG_KIND_UNDRAFTABLE,
+                        FLAG_KIND_CHECK_DEFEAT})
 
 # R20a's check enforcement-state machine (a plan-only spec until FL2; this is its first code home).
 M_ENFORCEMENT_STATE = "enforcement_state"
@@ -98,14 +116,16 @@ class Unauthenticated(PermissionError):
 
 
 def _write_insight(text: str, category: str, *, source: str | None = None,
-                   meta: dict[str, Any] | None = None) -> dict[str, Any]:
+                   meta: dict[str, Any] | None = None,
+                   snapshot: str | None = None) -> dict[str, Any]:
     """Shared write path: POST /insights, scoped to the shared ``factory-learnings`` space.
 
     THE sole write path into that space (R1/KD3): nothing else in this codebase is allowed to
-    target ``(hooks._praxis.FACTORY_LEARNINGS_SPACE, hooks._praxis.FACTORY_LEARNINGS_SNAPSHOT)``
-    with a write. Idempotently bootstraps the space on first use (a space that has never been
-    created 404s on its first snapshot-bound write). Returns the server's insight-write ack
-    (``{"summary","action","id",...}``).
+    target ``(hooks._praxis.FACTORY_LEARNINGS_SPACE, <a snapshot of it>)`` with a write.
+    Idempotently bootstraps the space on first use (a space that has never been created 404s on
+    its first snapshot-bound write). ``snapshot`` defaults to the lessons snapshot; FL18's flags
+    (:func:`emit_flag`) target ``FACTORY_FLAGS_SNAPSHOT`` instead. Returns the server's
+    insight-write ack (``{"summary","action","id",...}``).
     """
     body = str(text or "").strip()
     if not body:
@@ -119,7 +139,8 @@ def _write_insight(text: str, category: str, *, source: str | None = None,
     }
     return _praxis._request(
         "POST", "/insights", body=payload,
-        space=_praxis.FACTORY_LEARNINGS_SPACE, snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT,
+        space=_praxis.FACTORY_LEARNINGS_SPACE,
+        snapshot=snapshot or _praxis.FACTORY_LEARNINGS_SNAPSHOT,
     )
 
 
@@ -447,13 +468,13 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
         written_check = write_check(lesson_text, project, meta=check_meta, source=source)
         check_id = written_check.get("id")
 
-<<<<<<< HEAD
         if proof_result is not None and proof_result.get("flag"):
             _praxis.record_episode(
                 f"proof flagged for check {check_id} (lesson {lesson_id}, project={project}): "
                 f"{proof_result.get('reason')} — {proof_result.get('detail', '')}".strip(" —"),
                 outcome="pending",
-=======
+            )
+
         if surface_only:
             # R12/R13: a zero-match ingestion (no live ticket id to bind narrowly) never lands a
             # dangling ticket-id-only gate — it falls back to the observed-surface binding alone —
@@ -463,7 +484,6 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
                 f"zero-match ingestion flagged: check {check_id} for lesson {lesson_id} bound "
                 f"surface-only to {list(surfaces or [])} — no ticket id to bind narrowly",
                 outcome="flagged",
->>>>>>> worktree-agent-a25fdff9724519499
             )
 
         if ticket_ids:
@@ -508,18 +528,29 @@ def widen(check_id: str, project: str, new_applies_to: list[str], *,
 
 
 def suspend(check_id: str, project: str, reason: str, *, identity: str | None = None) -> dict[str, Any]:
-    """R19 — the automatic false-positive signal: stops gating, resurrectable."""
+    """R19 — the automatic false-positive signal: stops gating, resurrectable. Flags push, not
+    pull (R24): the suspension also raises a pending-attention flag (:func:`emit_flag`) so it is
+    never something an operator has to go looking for."""
+    authenticated_as = _require_authenticated(identity)
     patch = {M_ENFORCEMENT_STATE: STATE_SUSPENDED, "suspend_reason": str(reason or ""),
              "suspended_at": time.time()}
-    return _patch_check(check_id, project, patch, identity=identity)
+    result = _patch_check(check_id, project, patch, identity=authenticated_as)
+    emit_flag(FLAG_KIND_SUSPENSION, project, {"check_id": check_id, "reason": reason},
+              identity=authenticated_as)
+    return result
 
 
 def kill_switch(check_id: str, project: str, reason: str, *, identity: str | None = None) -> dict[str, Any]:
     """R19 — the manual, immediate disable (distinct entry point from the automatic
-    false-positive suspension; same resulting state, always recorded with a reason)."""
+    false-positive suspension; same resulting state, always recorded with a reason). Also raises
+    a ``"suspension"`` flag (R24) — same push-not-pull guarantee as the automatic path."""
+    authenticated_as = _require_authenticated(identity)
     patch = {M_ENFORCEMENT_STATE: STATE_SUSPENDED, "kill_switch": True,
              "kill_switch_reason": str(reason or ""), "kill_switch_at": time.time()}
-    return _patch_check(check_id, project, patch, identity=identity)
+    result = _patch_check(check_id, project, patch, identity=authenticated_as)
+    emit_flag(FLAG_KIND_SUSPENSION, project, {"check_id": check_id, "reason": reason,
+              "kill_switch": True}, identity=authenticated_as)
+    return result
 
 
 def regress(project: str, ticket_ids: list[str], *, detail: dict[str, Any] | None = None,
@@ -527,6 +558,61 @@ def regress(project: str, ticket_ids: list[str], *, detail: dict[str, Any] | Non
     """Regress the matched ticket set through the ingestion API's own auth gate (R1/R5)."""
     _require_authenticated(identity)
     return _praxis.regress_requirements(project, ticket_ids, detail=detail)
+
+
+# --------------------------------------------------------------------------- FL18: push-not-pull flags (R23/R24)
+
+def read_checks(project: str, *, snapshot: str = BUILDING_VALIDATION_SNAPSHOT) -> list[dict[str, Any]]:
+    """Read-only enumeration (any lifecycle state) of every check fact for ``project`` — the
+    per-run record ``agent_factory.af_retro`` reports off: activated/suspended/widened checks,
+    proof outcomes, the check-undraftable rate, the gating-vs-demoted ratio."""
+    return _praxis.facts_by(category=CHECK_CATEGORY, state="any", space=project, snapshot=snapshot)
+
+
+def emit_flag(kind: str, project: str, detail: dict[str, Any] | None = None, *,
+             source: str | None = None, identity: str | None = None) -> dict[str, Any]:
+    """R24 — flags are PUSH, not pull: a suspension/parking/undraftable/check-defeat event writes
+    ONE unacknowledged flag fact into the shared, org-wide ``flags`` snapshot, so it stays
+    surfaceable (the loop-end notification, the af-build session-start banner, ``af-retro
+    --flags``) until a human explicitly acks it (:func:`ack_flag`) — never something read once and
+    silently dropped."""
+    authenticated_as = _require_authenticated(identity)
+    kind_n = str(kind or "").strip().casefold()
+    if kind_n not in FLAG_KINDS:
+        raise ValueError(f"unknown flag kind {kind!r}; expected one of {sorted(FLAG_KINDS)}")
+    detail = dict(detail or {})
+    meta: dict[str, Any] = {
+        "kind": kind_n, "project": str(project or ""), "at": time.time(),
+        "acknowledged": False, "acknowledged_by": None, "acknowledged_at": None,
+        "raised_by": authenticated_as,
+    }
+    meta.update(detail)
+    reason = str(detail.get("reason") or detail.get("summary") or kind_n)
+    return _write_insight(f"[{kind_n}] {project}: {reason}", FLAG_CATEGORY, source=source,
+                          meta=meta, snapshot=_praxis.FACTORY_FLAGS_SNAPSHOT)
+
+
+def read_flags(project: str | None = None, *, pending_only: bool = True) -> list[dict[str, Any]]:
+    """Read-only, newest-first flags — the pending-attention list ``af-retro --flags`` aggregates
+    across every project (``project=None``), or one project's own record. ``pending_only=False``
+    also returns acked flags (the project report shows the full history)."""
+    meta_filter = {"project": str(project)} if project else None
+    hits = _praxis.facts_by(category=FLAG_CATEGORY, meta=meta_filter,
+                            space=_praxis.FACTORY_LEARNINGS_SPACE,
+                            snapshot=_praxis.FACTORY_FLAGS_SNAPSHOT)
+    if pending_only:
+        hits = [h for h in hits if not (h.get("meta") or {}).get("acknowledged")]
+    return sorted(hits, key=lambda h: (h.get("meta") or {}).get("at") or 0, reverse=True)
+
+
+def ack_flag(flag_id: str, *, identity: str | None = None) -> dict[str, Any]:
+    """Acknowledge one pending flag: removes it from the pending list (:func:`read_flags`'s
+    default view) and records who/when (R24) — never worker-self-certified silence, an explicit
+    attested action."""
+    authenticated_as = _require_authenticated(identity)
+    patch = {"acknowledged": True, "acknowledged_by": authenticated_as, "acknowledged_at": time.time()}
+    return _praxis.patch_meta(flag_id, patch, space=_praxis.FACTORY_LEARNINGS_SPACE,
+                              snapshot=_praxis.FACTORY_FLAGS_SNAPSHOT)
 
 
 def reclassify(lesson_id: str, new_class: str, *, reason: str | None = None,

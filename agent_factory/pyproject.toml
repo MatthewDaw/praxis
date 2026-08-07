@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "agent-factory"
 version = "0.1.0"
@@ -26,6 +30,9 @@ dev = [
     # section format that 2.x emits (3.x changed the output shape).
     "mutmut>=2.4,<3",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_factory"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
