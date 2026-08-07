@@ -126,6 +126,11 @@ M_CLAIM_LEASE_TTL = "claim_lease_ttl"
 M_REQUIRED_VALIDATIONS = "required_validations"
 M_MANUAL_REQUIREMENTS = "manual_requirements"   # subset of required ids whose verify=="manual"
 M_REPORT_ONLY_REQUIREMENTS = "report_only_requirements"  # subset graded + recorded but NOT gating
+M_BUDGET_DEMOTIONS = "budget_demotions"      # {requirement_id: reason} -- FL16/R15: the subset of
+                                              # report_only_requirements demoted specifically for
+                                              # exceeding the per-ticket pinned-check budget (as
+                                              # opposed to an authored report-only universal), with
+                                              # its reason recorded for observability.
 M_PINNED_CHECKS = "pinned_checks"           # entries are synthesized VALIDATIONS (see module doc)
 M_UNIVERSAL_CONTRACT = "universal_contract"  # the universal-lane requirement entries pinned at
                                               # coverage-contract time (R33) -- pin_validations() reads
@@ -552,11 +557,123 @@ def collapse_duplicate_runs(checks: list) -> list:
     return out
 
 
+# --------------------------------------------------------------------------- FL16/R15: cost tiers +
+# per-ticket pinned-check budget
+
+# Ordinal cost tiers, cheapest first — mirrors the plan's own wording ("static/cheap to
+# browser/LLM/expensive"). A DECLARED tier always wins (``meta.cost_tier``, an explicit author-time
+# override); everything else is INFERRED from the check's own command, the same "read it off the
+# command" spirit as :func:`infer_module_roots` uses for scoping.
+COST_TIER_STATIC = 0      # a grep/one-line assertion — no runner, effectively free
+COST_TIER_TESTRUNNER = 1  # a test-suite invocation (pytest/jest/vitest/go test/...)
+COST_TIER_BROWSER = 2     # browser-automation driven end-to-end (playwright/selenium/cypress/...)
+COST_TIER_LLM = 3         # LLM-judged / graded rubric check — the single most expensive tier
+
+_COST_TIER_NAMES = {COST_TIER_STATIC: "static", COST_TIER_TESTRUNNER: "testrunner",
+                    COST_TIER_BROWSER: "browser", COST_TIER_LLM: "llm"}
+
+# Reuses (does not import — this module is stdlib-only) the same "does this command drive a test
+# runner" heuristic as ``tools/resolve_preview.py::_is_expensive_run``; kept as its own local tuple
+# so a name collision with ``rubric_assembly``'s unrelated candidate-promotion ``budget`` param never
+# leaks a cross-module import into a bare hook subprocess.
+_TEST_RUNNER_MARKERS = ("pytest", "vitest", "jest", "go test", "cargo test", "rspec",
+                        "phpunit", "npm test", "yarn test", "pnpm test", "unittest")
+_BROWSER_MARKERS = ("playwright", "selenium", "puppeteer", "cypress", "webdriver")
+
+DEFAULT_PINNED_CHECK_BUDGET = 8   # per-ticket cap on GATING (non-identity-lane) resolved checks
+
+
+def cost_tier(check: Any) -> int:
+    """The cost tier of one resolved check — ``COST_TIER_STATIC`` (cheapest) through
+    ``COST_TIER_LLM`` (most expensive). An authored ``meta.cost_tier`` override wins; otherwise the
+    tier is inferred from the command itself: a graded/rubric check (LLM-judged) ranks highest, then
+    a browser-automation run, then any other test-runner invocation, else static/cheap."""
+    if not isinstance(check, dict):
+        return COST_TIER_STATIC
+    meta = check.get("meta") or {}
+    declared = meta.get("cost_tier")
+    if isinstance(declared, int) and declared in _COST_TIER_NAMES:
+        return declared
+    if str(meta.get("kind") or "").strip().casefold() == "graded" or isinstance(meta.get("rubric"), dict):
+        return COST_TIER_LLM
+    run = _run_key(check).casefold()
+    if any(m in run for m in _BROWSER_MARKERS):
+        return COST_TIER_BROWSER
+    if any(m in run for m in _TEST_RUNNER_MARKERS):
+        return COST_TIER_TESTRUNNER
+    return COST_TIER_STATIC
+
+
+def _budget_env(default: int = DEFAULT_PINNED_CHECK_BUDGET) -> int:
+    """The per-ticket pinned-check budget, overridable via ``AF_PINNED_CHECK_BUDGET`` (same
+    ``_ttl_env``-style escape hatch as the lease/run TTLs — a corpus-dependent knob, not a constant
+    every project can share)."""
+    raw = os.environ.get("AF_PINNED_CHECK_BUDGET")
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            pass
+    return default
+
+
+def apply_check_budget(requirements: list, budget: Optional[int] = None) -> list[dict]:
+    """R15/S2/DF2 — order the resolved checks cheapest-first and cap GATING coverage at ``budget``.
+
+    Ticket-identity-lane checks (:func:`_is_identity_bound`, R11/FL6), the acceptance-condition
+    floor (``<cid>::acceptance``), and universal-lane entries (``meta.universal``) are UNCONDITIONALLY
+    exempt from demotion — they never count against the budget and are never demoted by it (S1
+    outranks the latency budget, which outranks widening ambition, DF2). Every OTHER resolved check
+    is ranked (:func:`cost_tier`, cheapest first); the first ``budget`` of them stay gating and every
+    check beyond the budget is stamped ``meta.report_only = True`` + ``meta.demoted_reason =
+    "budget-overflow"`` — the SAME report-only lane :func:`pin_requirements` /
+    :func:`all_validations_passed` already honor for the report-only universal lane, so a demoted
+    check stays PINNED and still counts as covering its requirement: demotion can never open a
+    coverage gap or make FINISH unreachable.
+
+    A ticket with no relevant failure history never accumulates more than its own tag/surface/
+    universal matches — an unrelated ticket's resolved (non-identity) set does not grow as the
+    checks corpus grows elsewhere, so this never changes its pinned-gating count (S2).
+    """
+    if budget is None:
+        budget = _budget_env()
+    scored: list[tuple[tuple[int, int], bool, dict]] = []
+    for r in requirements:
+        if not isinstance(r, dict):
+            scored.append(((0, COST_TIER_STATIC), True, r))
+            continue
+        rid = _check_id(r)
+        exempt = (_is_identity_bound(r) or bool((r.get("meta") or {}).get("universal"))
+                 or rid.endswith("::acceptance"))
+        tier = cost_tier(r)
+        rank = (0, tier) if _is_identity_bound(r) else (1, tier)
+        scored.append((rank, exempt, r))
+    scored.sort(key=lambda t: (t[0], _check_id(t[2])))
+
+    out: list[dict] = []
+    gated_count = 0
+    for _rank, exempt, r in scored:
+        if not isinstance(r, dict):
+            out.append(r)
+            continue
+        r = dict(r)
+        r["meta"] = dict(r.get("meta") or {})
+        r["meta"]["cost_tier"] = cost_tier(r)
+        if not exempt:
+            if gated_count >= budget:
+                r["meta"]["report_only"] = True
+                r["meta"]["demoted_reason"] = "budget-overflow"
+            gated_count += 1
+        out.append(r)
+    return out
+
+
 # --------------------------------------------------------------------------- requirement resolution
 
 def resolve_validation_requirements(ticket: Any, project: str = "",
                                     scope: str = "validation",
-                                    override: Optional[tuple[str, str]] = None) -> list[dict]:
+                                    override: Optional[tuple[str, str]] = None,
+                                    budget: Optional[int] = None) -> list[dict]:
     """Resolve WHICH abstract validation REQUIREMENTS apply — a fresh QUERY, never a pre-bound list.
     These are the "what must be proven" facts the worker must then COVER with synthesized validations.
 
@@ -624,7 +741,8 @@ def resolve_validation_requirements(ticket: Any, project: str = "",
     # (U1): GATING checks (candidate:false / absent) form the coverage contract; candidate:true
     # entries are the NON-GATING shared pool, returned separately by :func:`pool_candidates`.
     seen = _matching_checks(ticket, project, scope, space, snapshot)
-    return collapse_duplicate_runs([v for v in seen.values() if not _is_candidate(v)])
+    resolved = collapse_duplicate_runs([v for v in seen.values() if not _is_candidate(v)])
+    return apply_check_budget(resolved, budget=budget)
 
 
 def _is_candidate(chk: Any) -> bool:
@@ -780,6 +898,13 @@ def pin_requirements(cid: str, requirements: list,
     # excluded from the completion gate — recorded separately so all_validations_passed can skip it.
     report_only_ids = [rid for r in requirements
                        if (rid := _check_id(r)) and _req_report_only(r)]
+    # FL16/R15 — the subset of the above demoted specifically for exceeding the per-ticket pinned-
+    # check budget (:func:`apply_check_budget`), with its reason recorded for observability; a
+    # requirement can be report-only for other reasons (an authored report-only universal) without
+    # appearing here.
+    budget_demotions = {rid: str((r.get("meta") or {}).get("demoted_reason"))
+                        for r in requirements
+                        if (rid := _check_id(r)) and (r.get("meta") or {}).get("demoted_reason")}
     # The UNIVERSAL-lane entries (see :func:`universal_requirements`) carry their own frozen rubric
     # and need no worker authorship -- stash them so :func:`pin_validations` can auto-append their
     # covering entries every time it (re)pins, instead of requiring the worker to hand-author one.
@@ -796,6 +921,7 @@ def pin_requirements(cid: str, requirements: list,
         M_REQUIRED_VALIDATIONS: req_ids,
         M_MANUAL_REQUIREMENTS: manual_ids,
         M_REPORT_ONLY_REQUIREMENTS: report_only_ids,
+        M_BUDGET_DEMOTIONS: budget_demotions,
         M_PINNED_CHECKS: [],
         M_UNIVERSAL_CONTRACT: universal_entries,
     }, **_ref_kw(ref))
