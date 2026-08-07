@@ -614,17 +614,19 @@ def kill_switch(check_id: str, project: str, reason: str, *, identity: str | Non
     return result
 
 
-def upgrade_on_first_pass(check_id: str, project: str, *, identity: str | None = None) -> dict[str, Any]:
+def upgrade_on_first_pass(check_id: str, project: str, passed: bool, *,
+                          identity: str | None = None) -> dict[str, Any]:
     """R6/R20a — the fail-only upgrade: a REPORT_ONLY check inserted from a machine, not-yet-proven
     draft (fails-both / unproven at insertion) upgrades to GATING the first time it is executed for
     real and PASSES — the report_only state was provisional pending exactly this catch, never a
-    verdict of its own. Called with the outcome of a real (non-drafting) execution; a FAILING
-    execution, a check not currently report_only, or a check that already proved (``proof_status ==
-    "proven"``) is a no-op — there is nothing to upgrade."""
+    verdict of its own. ``passed`` is the outcome of that real (non-drafting) execution: a FAILING
+    outcome is a no-op by construction (the ``if not passed`` guard below), same as a check not
+    currently report_only or one that already proved (``proof_status == "proven"``) — there is
+    nothing to upgrade in any of those cases."""
     authenticated_as = _require_authenticated(identity)
     check = _fetch_check(check_id, project)
     meta = check.get("meta") or {}
-    if meta.get(M_ENFORCEMENT_STATE) != STATE_REPORT_ONLY or meta.get("proof_status") == "proven":
+    if not passed or meta.get(M_ENFORCEMENT_STATE) != STATE_REPORT_ONLY or meta.get("proof_status") == "proven":
         return check
     new_state = transition_enforcement_state(STATE_REPORT_ONLY, EVENT_FIRST_REAL_PASS)
     patch = {M_ENFORCEMENT_STATE: new_state, "proof_status": "proven", "upgraded_at": time.time()}
