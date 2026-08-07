@@ -30,6 +30,7 @@ of it.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from typing import Any
 
 from hooks import _ticket_state as _ts
@@ -82,7 +83,7 @@ def learn(complaint_text: str, project: str | None = None, *, source: str | None
          drafted_run: str | None = None, drafted_rubric: dict[str, Any] | None = None,
          class_hint: str | None = None, ticket_ids: list[str] | None = None,
          surfaces: list[str] | None = None, drafting_transcript: str | None = None,
-         proof_runner=None, identity: str | None = None,
+         proof_runner: Callable[[str], bool] | None = None, identity: str | None = None,
          env: dict[str, str] | None = None) -> dict[str, Any]:
     """R9 — the single-complaint entry point.
 
