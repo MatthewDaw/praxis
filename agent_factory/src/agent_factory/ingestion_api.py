@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
 import hashlib
 import json
 import re
@@ -75,6 +76,7 @@ DEFAULT_RETENTION_DAYS = 90
 DEFAULT_REPEAT_COUNT = 1        # FL5/D4: proof repeat count for flaky/LLM-judged checks; 1 == no repeat
 DEFAULT_REDRAFT_BUDGET = 3      # FL5/D1: machine-drafting attempts before lesson-only
 PROOF_CHECK_UNDRAFTABLE = "check-undraftable"  # FL5/R6: redraft budget exhausted, no gating check inserted
+DEFAULT_MERGE_PROOF_BUDGET_S = 90  # FL7/R15: wall-clock ceiling on inline proof before it backgrounds
 
 # R24: the pending-attention events a flag may name — a suspension/parking/undraftable/
 # check-defeat is never silent; each is a push, not something an operator has to go looking for.
@@ -502,6 +504,148 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
 
     return {"lesson_id": lesson_id, "check_id": check_id, "wave_id": wave_id,
             "proof_status": proof_status, "class": classification["class"]}
+
+
+# --------------------------------------------------------------------------- FL7: the merger's entry point (R5/R6/R15/E11)
+
+def regress_with_ingestion(project: str, ticket_ids: list[str], lesson_text: str, *,
+                           source: str | None = None, drafted_run: str | None = None,
+                           drafted_rubric: dict[str, Any] | None = None, channel: str = "machine",
+                           class_hint: str | None = None, surfaces: list[str] | None = None,
+                           drafting_transcript: str | None = None, identity: str | None = None,
+                           bad_artifact_meta: dict[str, Any] | None = None,
+                           healthy_repo_path: str | Path | None = None, healthy_ref: str = "HEAD",
+                           repeat_count: int = DEFAULT_REPEAT_COUNT,
+                           redraft_budget: int = DEFAULT_REDRAFT_BUDGET,
+                           run_candidates: list[str] | None = None,
+                           proof_executor: Callable[[str, Path], bool] | None = None,
+                           merge_budget_s: float | None = DEFAULT_MERGE_PROOF_BUDGET_S,
+                           ) -> dict[str, Any]:
+    """R5 — the merger's SINGLE call for a merger-driven regression: "regression without
+    ingestion is not a legal state" (R5), enforced here by construction — there is no bare-regress
+    path for the machine channel, only this one, which always ingests (:func:`ingest`) in the same
+    motion. Refuses (``ValueError``) with no ``ticket_ids``: a regression with nothing to regress
+    is a caller bug, not a legal zero-ticket ingestion.
+
+    R6/R15 — when a REAL proof (``bad_artifact_meta`` + ``healthy_repo_path`` + a non-rubric
+    ``drafted_run``) would run past ``merge_budget_s`` wall-clock seconds, the merge must not wait
+    on it: the ticket(s) are regressed IMMEDIATELY (so the merge and every OTHER ticket proceeds),
+    stamped ``meta.proof_pending`` (:data:`hooks._ticket_state.M_PROOF_PENDING`) so ONLY this
+    ticket's rerun is held — :func:`hooks._ticket_state.claim` refuses a proof-pending ticket — and
+    the proof keeps running in a background thread. Its eventual verdict finalizes the same way
+    :func:`ingest` always would (lesson already landed; the check + a second regress entry with the
+    real evidence land when the background call returns), and clears ``proof_pending`` so the
+    ticket becomes claimable again. Returns immediately with ``proof_status="pending"`` and a
+    ``future`` a caller MAY wait on (tests do; the merger itself does not).
+
+    Every other shape (no real proof at all, or a real proof that lands within budget) is simply
+    :func:`ingest` called synchronously — same-motion, no budget concern.
+
+    E11 — nothing here catches :class:`hooks._praxis.PraxisUnreachable` (or anything else): an
+    outage propagates loudly and immediately, with no file fallback, exactly like :func:`ingest`
+    already does. The over-budget path's own "regress now, proof-pending" write goes through the
+    same unguarded Praxis calls, so an outage there halts identically.
+    """
+    if not ticket_ids:
+        raise ValueError(
+            "regress_with_ingestion requires at least one ticket id (R5: regression without "
+            "ingestion is not a legal state)"
+        )
+
+    def _do_ingest(*, executor: Callable[[str, Path], bool] | None) -> dict[str, Any]:
+        return ingest(
+            lesson_text, project, source=source, drafted_run=drafted_run,
+            drafted_rubric=drafted_rubric, channel=channel, class_hint=class_hint,
+            ticket_ids=ticket_ids, surfaces=surfaces, drafting_transcript=drafting_transcript,
+            identity=identity, bad_artifact_meta=bad_artifact_meta,
+            healthy_repo_path=healthy_repo_path, healthy_ref=healthy_ref,
+            repeat_count=repeat_count, redraft_budget=redraft_budget,
+            run_candidates=run_candidates, proof_executor=executor,
+        )
+
+    # `ingest` only regresses ticket_ids itself INSIDE its "a check was drafted" branch (it needs
+    # a check_id, real or not, to link as evidence). A lesson-only ingestion (no drafted_run/
+    # drafted_rubric at all) never reaches that branch, so R5's "regression without ingestion is
+    # not a legal state" would otherwise silently not hold for the lesson-only shape. We close that
+    # gap here, uniformly, rather than widening `ingest`'s own contract for every OTHER caller.
+    no_check_drafted = drafted_run is None and drafted_rubric is None
+
+    use_real_proof_engine = (
+        drafted_rubric is None and drafted_run is not None
+        and bad_artifact_meta is not None and healthy_repo_path is not None
+    )
+    if not use_real_proof_engine or merge_budget_s is None:
+        result = _do_ingest(executor=proof_executor)
+        if no_check_drafted:
+            _regress_with_evidence(project, ticket_ids, {
+                "source": "ingestion-api", "reason": lesson_text, "lesson_id": result["lesson_id"],
+            })
+        return result
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(_do_ingest, executor=proof_executor)
+    try:
+        result = future.result(timeout=merge_budget_s)
+        pool.shutdown(wait=False)
+        return result
+    except concurrent.futures.TimeoutError:
+        pass  # falls through to the background-continuation path below
+
+    # BUDGET EXCEEDED (R15): regress now (unblocking the merge and every sibling ticket) and mark
+    # THIS ticket proof_pending so ONLY its own rerun is held. Written directly (not through
+    # `ingest`, whose own regress call is still pending inside the running future) so the "merge
+    # proceeds" guarantee does not itself wait on the proof.
+    _regress_with_evidence(project, ticket_ids, {
+        "source": "ingestion-api", "reason": lesson_text, "proof_pending": True,
+    }, extra_meta={_ts.M_PROOF_PENDING: True})
+
+    plan_kw = {"space": project, "snapshot": f"prd-{project}"}
+
+    def _finalize() -> dict[str, Any]:
+        # `ingest` (running inside `future`) already regresses `ticket_ids` again once it lands,
+        # this time with the real lesson_id/check_id evidence (it took the "a check was drafted"
+        # branch — real proof engine requires a drafted_run) — so only the pending marker is ours
+        # to clear here, not a second regress.
+        try:
+            return future.result()
+        finally:
+            # NOT wait=True: this runs INSIDE the pool's own worker thread (via
+            # `future.add_done_callback`, fired by the thread that just finished `future`) —
+            # joining the pool from within it would be a self-join deadlock. The future is
+            # already done by construction here, so there is nothing left to wait for anyway.
+            pool.shutdown(wait=False)
+            for tid in ticket_ids:
+                _praxis.write_build_state(tid, {_ts.M_PROOF_PENDING: None}, **plan_kw)
+
+    finalize_future: concurrent.futures.Future[dict[str, Any]] = concurrent.futures.Future()
+
+    def _run_finalize() -> None:
+        try:
+            finalize_future.set_result(_finalize())
+        except Exception as exc:  # forward to whoever awaits finalize_future; never swallowed
+            finalize_future.set_exception(exc)
+
+    future.add_done_callback(lambda _f: _run_finalize())
+
+    return {"lesson_id": None, "check_id": None, "wave_id": None, "proof_status": "pending",
+            "background": True, "ticket_ids": list(ticket_ids), "future": finalize_future}
+
+
+def _regress_with_evidence(project: str, ticket_ids: list[str], entry: dict[str, Any], *,
+                           extra_meta: dict[str, Any] | None = None) -> None:
+    """Regress ``ticket_ids``, accumulating ONE new ``regression_detail`` ``entry`` onto each
+    (R16/E3: never clobber a concurrent finding on the same ticket), optionally patching
+    additional meta (e.g. the R15 ``proof_pending`` marker) in the same call."""
+    plan_kw = {"space": project, "snapshot": f"prd-{project}"}
+    detail: dict[str, Any] = {}
+    for tid in ticket_ids:
+        existing = _praxis.get_fact(tid, **plan_kw) or {}
+        patch: dict[str, Any] = {"regression_detail": _ts.accumulate_regression_detail(
+            (existing.get("meta") or {}).get("regression_detail"), dict(entry))}
+        if extra_meta:
+            patch.update(extra_meta)
+        detail[tid] = patch
+    _praxis.regress_requirements(project, ticket_ids, detail=detail)
 
 
 def _patch_check(check_id: str, project: str,

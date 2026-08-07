@@ -152,6 +152,10 @@ M_BLESSED_AT = "blessed_at"                 # epoch seconds, stamped at bless; s
 M_PLAN_ATTEMPTS = "plan_attempts"           # int, failed bless attempts on current plan hash (S8 escalation)
 M_PLAN_HASH = "plan_hash"                   # str, snapshot hash last attempt was recorded against (S8)
 M_PLAN_BLOCKED_AT = "plan_blocked_at"       # float, epoch seconds; non-None means plan is terminally escalated (S8)
+M_PROOF_PENDING = "proof_pending"           # bool (FL7/R15): a background merge-time proof is still
+                                             # running for this ticket's regression; claim() refuses
+                                             # while set, but never blocks the merge or sibling tickets
+                                             # (see agent_factory.ingestion_api.regress_with_ingestion)
 
 _LEASE_KEYS = (M_CLAIM_OWNER, M_CLAIM_AT, M_CLAIM_HEARTBEAT_AT, M_CLAIM_LEASE_TTL)
 _RUN_KEYS = (M_RUN_OWNER, M_RUN_AT, M_RUN_SCOPE)
@@ -1318,6 +1322,8 @@ def claim(cid: str, owner: str, ttl: int = DEFAULT_LEASE_TTL_S,
     meta = _meta(cid, ref)
     if meta.get(M_BUILD_STATE) == "blocked":
         return False  # blocked needs owner action (af-intake-plan amend / accept), not a build claim
+    if meta.get(M_PROOF_PENDING):
+        return False  # FL7/R15: a background merge-time proof is still running for this ticket
     fresh_pick = not (_lease_live(meta) and meta.get(M_CLAIM_OWNER) == owner)
     if _praxis.claim_requirement(cid, owner, int(ttl), **_ref_kw(ref)) is None:
         return False  # a different owner holds a live lease (409)
