@@ -97,6 +97,9 @@ from typing import Any, NamedTuple, Optional
 
 import _praxis
 from _praxis import PraxisUnreachable  # re-exported so gates import one place  # noqa: F401
+# Bound at import time (not read off `_praxis.` at call time) so start_ticket's mount call still
+# resolves the real space/snapshot names when a test monkeypatches `ts._praxis` to a state double.
+from _praxis import FACTORY_LEARNINGS_SNAPSHOT, FACTORY_LEARNINGS_SPACE  # noqa: F401
 
 # The pure structural resumability probe (plan 003) lives in the src package. A bare hook subprocess
 # only has ``hooks/`` on its path, so add the sibling ``src/`` before importing. The module is pure
@@ -2177,6 +2180,14 @@ def start_ticket(cid: str, owner: str, project: str = "",
 
     if not claim(cid, owner, ttl=ttl, ref=plan):
         return None
+    # FL1 (KD1): the shared org-level factory-learnings space is mounted READ-ONLY into every
+    # project's working memory at claim/resolve time, so this worker's context/checks reads see
+    # any lesson already ingested — without this session ever holding a write path into that space
+    # (writing there is `agent_factory.ingestion_api`'s job alone). `not_found_ok=True` because an
+    # empty/not-yet-seeded shared space (no lesson ingested yet) is the legitimate starting state,
+    # not an outage — every other Praxis failure here still fails closed like the rest of this
+    # function.
+    _praxis.mount_snapshot(FACTORY_LEARNINGS_SPACE, FACTORY_LEARNINGS_SNAPSHOT, not_found_ok=True)
     # The probe passed — if a prior pass had routed this ticket under_specified, that gap is now
     # resolved, so clear the marker (a None value REMOVES the key). Only written when set,
     # so a ticket that was never routed claims byte-identically to before.

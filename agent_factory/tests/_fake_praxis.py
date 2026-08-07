@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 _HOOKS = str(Path(__file__).resolve().parent.parent / "hooks")
 if _HOOKS not in sys.path:  # pragma: no cover - import plumbing
@@ -87,3 +88,12 @@ class SanctionedWrites:
                 patch[k] = None
         self.patch_meta(cid, patch, space=space, snapshot=snapshot)
         return dict(patch)
+
+    def mount_snapshot(self, space: str, snapshot: str, *, not_found_ok: bool = False) -> dict[str, Any]:
+        """``POST /mounts`` — FL1's claim-time read-only overlay mount. A full-double test cares
+        about ticket state, not the shared factory-learnings space, so this is a harmless no-op
+        recorder: it exists purely so ``start_ticket``'s unconditional mount call does not raise
+        ``AttributeError`` against a double that implements only the build-state routes."""
+        self.mounted = getattr(self, "mounted", [])
+        self.mounted.append((space, snapshot))
+        return {"space": space, "snapshot": snapshot, "mounted": True}
