@@ -654,6 +654,10 @@ FACTORY_LEARNINGS_SNAPSHOT = "lessons"
 # would expose them), which keeps the cross-project-readability question D3 leaves open from being
 # decided by accident.
 FACTORY_ARTIFACTS_SNAPSHOT = "artifacts"
+# Push-not-pull pending-attention flags (FL18 / R24) — suspension/parking/undraftable/check-defeat
+# events — live in the SAME shared space under their own snapshot, org-wide so `af-retro --flags`
+# aggregates across every project from one place.
+FACTORY_FLAGS_SNAPSHOT = "flags"
 
 
 def mount_snapshot(space: str, snapshot: str, *, not_found_ok: bool = False) -> dict[str, Any]:
