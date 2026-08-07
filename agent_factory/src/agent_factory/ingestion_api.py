@@ -52,6 +52,14 @@ distinct-id-space resolution: the git file remains for hand-shipped code checks,
 is the sole writer for anything promoted at runtime, so the two lanes never collide by id
 construction). A behavioral near-duplicate — the SAME canonical-content hash minted under a
 DIFFERENT id — is refused loudly (:class:`UniversalPromotionCollision`), never silently duplicated.
+
+FL10 (R17) adds :func:`demote_for_check_defeat`: the enforcement-state demotion + flag half of the
+CHECK-DEFEAT failure class (a check that passes on the rebuilt state while its finding's recorded
+symptom is re-evaluated and found still present). The decision orchestration — resolving only the
+specific finding a passed check names, detecting check-defeat, pinning the rebuilt artifact (FL4),
+classifying into the taxonomy (FL3), and routing the machine-strict redraft (FL5) — lives in
+:mod:`agent_factory.resolution`, exactly as :mod:`agent_factory.widening` orchestrates FL14 on top
+of this module's primitives.
 """
 
 from __future__ import annotations
@@ -963,6 +971,26 @@ def upgrade_on_first_pass(check_id: str, project: str, passed: bool, *,
         patch = {"proof_status": "proven", "upgraded_at": time.time()}
         return _patch_check(check_id, project, patch, identity=authenticated_as)
     return check
+
+
+def demote_for_check_defeat(check_id: str, project: str, *, reason: str,
+                            identity: str | None = None) -> dict[str, Any]:
+    """R17/FL10 — demote a check that DEFEATED verification (it passed on the rebuilt state while
+    its finding's recorded symptom was RE-EVALUATED and found still present) from GATING to
+    REPORT_ONLY, via the same named EVENT_PROOF_DEMOTED transition :func:`reprove_quiet_checks`
+    uses for its own quiet-failure demotion (R18) — a check-defeat is the OTHER path onto that
+    transition (R17's namesake). Also raises a ``"check-defeat"`` flag (R24, push not pull) so the
+    demotion is never something an operator has to go looking for."""
+    authenticated_as = _require_authenticated(identity)
+    def _patch(check: dict[str, Any]) -> dict[str, Any]:
+        current = (check.get("meta") or {}).get(M_ENFORCEMENT_STATE)
+        new_state = transition_enforcement_state(current, EVENT_PROOF_DEMOTED)
+        return {M_ENFORCEMENT_STATE: new_state, "check_defeat_reason": str(reason or ""),
+                "check_defeat_at": time.time()}
+    result = _patch_check(check_id, project, _patch, identity=authenticated_as)
+    emit_flag(FLAG_KIND_CHECK_DEFEAT, project, {"check_id": check_id, "reason": reason},
+              identity=authenticated_as)
+    return result
 
 
 def regress(project: str, ticket_ids: list[str], *, detail: dict[str, Any] | None = None,
