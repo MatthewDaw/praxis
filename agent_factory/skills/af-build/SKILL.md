@@ -147,7 +147,7 @@ passes, outcomes, run-markers — is read and written on the **`prd-<project>`**
 points ONLY the check reads at `building-validation`; check resolution never touches the state snapshot.
 That check snapshot must hold the `category="check"`, `scope="validation"` rules; if it is empty a ticket
 resolves **only** its always-present acceptance-condition floor (below) — fewer checks, never a crash.
-(Seed it from the plan or save a snapshot into it out-of-band; af-intake-build-validation is how new
+(Seed it from the plan or save a snapshot into it out-of-band; ingestion_api.plan_time_author_check is how new
 `building-validation` rules get authored there.)
 
 ### How a check pins onto a ticket — the matching model
@@ -206,7 +206,7 @@ verify coverage** — run it before a build whenever you want to see the resolut
 > **Renamed from `coding-validation`.** The build-check snapshot is now `building-validation`, and it is
 > a per-project snapshot in the project space — NOT a single global `coding-validation` space. Legacy
 > global checks are not retro-fitted into per-project spaces (old data carried no reliable project
-> association); teams re-seed each project's `building-validation` snapshot via af-intake-build-validation.
+> association); teams re-seed each project's `building-validation` snapshot via ingestion_api.plan_time_author_check.
 
 **Override — slash argument ONLY** (no env seam): `/af-build [scope] --checks-space=<space[:snapshot]>`
 points resolution at a different `(space, snapshot)` for this run. Thread it as an `override`
@@ -500,7 +500,7 @@ The mandatory-vs-advisory decision is made HERE, by a function, not by either wr
 
 1. **ADD your discoveries to the pool (U4).** If your rules/memory search surfaces a ticket-specific
    quality concern worth grading, PERSIST it as a `candidate:true` graded check via
-   **`af-intake-build-validation`** (never a direct write — preserves the single-writer lock), scoped
+   **`ingestion_api.plan_time_author_check`** (never a direct write — preserves the single-writer lock), scoped
    TIGHTLY to this ticket's tags/surface (never `["*"]`), `authored_by:"build"`, with a `severity` hint.
    Idempotent on `check_id`, so re-discovery updates in place.
 2. **READ the pool for this ticket.** `pool_candidates(cid, project, scope="validation")` (hooks/) — the
@@ -890,7 +890,7 @@ the subagents directly. **Dedupe** (merge multiple angles into one finding per d
 strongest severity) BEFORE emitting. **Emit each finding as an `incomplete` Praxis ticket/check** bound to
 the touched area: a defect demanding a fix → a **ticket** (the build loop re-opens via FIND and the
 completeness gate stays blocked until it is `finished`); a recurring "this must be proven" rule → a
-**check** (af-intake-build-validation, which also regresses the matching finished tickets). That is the
+**check** (ingestion_api.plan_time_author_check, which also regresses the matching finished tickets). That is the
 entire enforcement mechanism — no second gate, no advisory-only suggestions. **Closing a finding** = its
 ticket/check reaching `build_state="finished"`: **resolved** (built + checks pass) or **accepted** (a
 conscious owned trade-off, recorded as a Praxis episode before the ticket is released `finished` — never

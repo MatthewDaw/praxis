@@ -161,7 +161,7 @@ verified against external signals, and reviewed.
 | One-line "also fix X", mid-flight, no thought required | **af-rapid-queue** |
 | A missing requirement that belongs in the plan's coverage story | af-intake-plan C0 amend |
 | A wave of changes, or edits to existing requirements | af-intake-plan FULL INTAKE (re-baseline) |
-| A rule that must hold for every ticket ("all auth tickets pass the login e2e") | af-intake-build-validation |
+| A rule that must hold for every ticket ("all auth tickets pass the login e2e") | ingestion_api.plan_time_author_check |
 
 Same destination, different ceremony: C0 asks you to prove the addition isn't an edit and doesn't move
 the coverage story. That deliberation is right for planning and wrong for a drive-by — so this lane

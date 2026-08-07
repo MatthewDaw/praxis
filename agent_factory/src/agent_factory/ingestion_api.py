@@ -513,7 +513,8 @@ def plan_time_author_lens(lens_text: str, project: str, *, applies_to: list[str]
                           source: str | None = None, identity: str | None = None) -> dict[str, Any]:
     """R1a's planning-lens sibling: writes a ``planning-validation`` lens and re-arms the
     blessing audit by recording a fresh, non-stale decision-log episode — the same re-arm
-    signal ``af-intake-plan-validation`` uses — so the audit panel must reconvene to close it."""
+    signal the now-retired planning-lens skill used to send — so the audit panel must
+    reconvene to close it."""
     authenticated_as = _require_authenticated(identity)
     written = write_check(lens_text, project, source=source,
                           meta={"check_id": f"lens-{uuid.uuid4().hex[:12]}", "scope": "planning",

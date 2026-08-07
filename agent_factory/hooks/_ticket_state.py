@@ -2210,7 +2210,8 @@ def start_ticket(cid: str, owner: str, project: str = "",
         sys.stderr.write(
             f"[af-build] WARNING: ticket {cid} is verify=automated but resolved NO declared checks — "
             f"only its acceptance floor. It is buildable, but no declared validation gate covers it. "
-            f"Author a building-validation check for its tags (see af-intake-build-validation) or "
+            f"Author a building-validation check for its tags (see agent_factory.ingestion_api."
+            f"plan_time_author_check) or "
             f"confirm it should be verify=manual.\n"
         )
     # BRIEFING: hand the worker everything the ticket already knows, at claim time.

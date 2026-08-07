@@ -3,8 +3,8 @@ name: af-intake-plan
 description: >
   The write-path and owner of the Praxis PLAN — the `prd-<project>` snapshot — and its blessing audit.
   One of THREE section-locked intake commands, each the sole writer of one canonical snapshot in the
-  project space: this one writes ONLY the plan; af-intake-build-validation writes the `building-validation`
-  checks; af-intake-plan-validation writes the `planning-validation` lenses. FULL INTAKE takes af-plan's
+  project space: this one writes ONLY the plan; ingestion_api.plan_time_author_check writes the `building-validation`
+  checks; ingestion_api.plan_time_author_lens writes the `planning-validation` lenses. FULL INTAKE takes af-plan's
   messy exhaustive brainstorm doc (+ optional clickable wireframe), extracts candidate requirements and
   surface↔requirement bindings DIRECTLY INTO PRAXIS, hardens them (self-consistency, contradictions,
   dedup), then runs a DELIBERATELY SMALL validation: ONE cold-eyes challenge pass over the whole set
@@ -13,13 +13,13 @@ description: >
   ce-* plan-review panel is OPT-IN (default OFF; it fires only on a large or high-stakes plan, since the
   challenge pass already ran cold eyes). Tickets are sized as coherent red-to-green units, target 15-25
   per feature, merged by default rather than atomized per acceptance bullet. Where the plan contains an
-  every-site sweep it authors ONE completeness guard by DELEGATING to af-intake-build-validation (it
+  every-site sweep it authors ONE completeness guard by DELEGATING to ingestion_api.plan_time_author_check (it
   never writes the check section itself, so the single-writer lock holds).
   AMEND (C0) adds ONE genuinely-new requirement TICKET the plan is simply
   missing; because tickets resolve by query and completion is gated on them, it enters the incomplete set
   automatically. Use when starting (or re-baselining) a project from a brainstorm/PRD + wireframe, or to
   graft a lone missing ticket onto an already-hardened plan. To add a CHECK — a build gate or a planning
-  lens — use af-intake-build-validation / af-intake-plan-validation instead. (Amend adds; it does NOT edit
+  lens — use ingestion_api.plan_time_author_check / ingestion_api.plan_time_author_lens instead. (Amend adds; it does NOT edit
   an existing requirement's content — that is a re-baseline FULL INTAKE.)
 ---
 
@@ -61,15 +61,15 @@ from Praxis).
 FINDs and the surface↔requirement `renders` bindings the RESOLVE step and the wireframe→code build query
 read. It also runs the **planning audit** — the cold-eyes challenge and the plan-review panel that gate a
 plan before it is blessed — READING the `planning-validation` lenses (it does not author them; that is
-af-intake-plan-validation). af-intake-plan writes only the plan to Praxis; it records build/claim/pass
+ingestion_api.plan_time_author_lens). af-intake-plan writes only the plan to Praxis; it records build/claim/pass
 state on nothing and writes ZERO side files. Its sibling **af-plan is now ONLY brainstorming/research** —
 it produces a messy, exhaustive doc; af-intake-plan turns that doc into the hardened, blessed
 `prd-<project>` snapshot.
 
 **af-intake-plan writes ONLY the plan.** It is one of three section-locked intake commands, each the sole
 writer of one canonical snapshot in the project space: **af-intake-plan → `prd-<project>`**;
-**af-intake-build-validation → `building-validation`** (the checks af-build reads);
-**af-intake-plan-validation → `planning-validation`** (the lenses this skill's audit reads). The server's
+**ingestion_api.plan_time_author_check → `building-validation`** (the checks af-build reads);
+**ingestion_api.plan_time_author_lens → `planning-validation`** (the lenses this skill's audit reads). The server's
 write-time section invariant enforces the split (a `category="check"` fact is refused in the plan), so
 checks can never co-mingle with the plan even by mistake.
 
@@ -79,7 +79,7 @@ checks can never co-mingle with the plan even by mistake.
 - **AMEND (C0)** (an already-hardened plan) — add ONE lone new requirement TICKET the plan is simply
   missing; it enters the incomplete set by query. Section "Amend" (Part C) below. Amend is **additive
   only** — to change an existing requirement's content, re-baseline via FULL INTAKE. To add a CHECK (a
-  build gate or a planning lens), use af-intake-build-validation / af-intake-plan-validation instead.
+  build gate or a planning lens), use ingestion_api.plan_time_author_check / ingestion_api.plan_time_author_lens instead.
 
 All Praxis access follows **`docs/af-memory-policy.md`** (tenancy, `insight` vs `ingest`, the tabular audit, mount/save
 rules). This is a single decision-making agent that may dispatch the **read-only retrieval sub-agent**
@@ -481,7 +481,7 @@ check DEFINITION per binding from the wireframe itself (stylesheet floor from it
 structural class + control inventory, declared `states`, no remote assets, plus the browser-rendered
 layout gate with screenshot evidence — see `agent_factory/src/agent_factory/wireframe_conformance.py`).
 Authoring those definitions into `building-validation` is NOT yours to do — DELEGATE each to
-**af-intake-build-validation** (its sole writer), exactly like the every-site sweep guard (B2). This is
+**ingestion_api.plan_time_author_check** (its sole writer), exactly like the every-site sweep guard (B2). This is
 how a shipped-unstyled `<h1>`-only page stops clearing a byte floor: the check is derived from the
 binding, so every project that binds a surface gets conformance enforcement for free.
 
@@ -568,7 +568,7 @@ cross-requirement gaps surface. It reports, for the plan as a whole:
 - **Near-duplicate / subsumed requirement pairs**, with which one is canonical.
 - **Any requirement carrying no binary acceptance condition.**
 - If the project's `planning-validation` snapshot holds lenses (authored by
-  **af-intake-plan-validation**), apply them as extra items in the same sweep — READ them, do not
+  **ingestion_api.plan_time_author_lens**), apply them as extra items in the same sweep — READ them, do not
   pin them or build a coverage contract around them.
 
 ### VALIDATION FIXES THE PLAN — IT DOES NOT GROW IT
@@ -645,7 +645,7 @@ condition is a hope, not a strategy. No until-dry critic loop.
 guard that EXECUTES the thing being built: the project's build/compile step, plus a smoke
 invocation of its real entrypoint (a CLI runs `--help`; a service binds and answers a route; a
 library imports its public surface; a pipeline processes one fixture end to end). Derive them
-here; author them via **af-intake-build-validation**. Lint, typecheck, and the unit suite do
+here; author them via **ingestion_api.plan_time_author_check**. Lint, typecheck, and the unit suite do
 **not** satisfy this — all three go green on a tree whose entrypoint does not exist, because each
 only inspects the code that IS there. Name the entrypoint and its invocation inside the check's
 `run` so the target is a contract the build READS, not one it infers.
@@ -661,7 +661,7 @@ eleven hours against a stall it could not clear.
 **Every-site sweeps get ONE guard.** If the plan contains a change that must land at EVERY call
 site (a provider swap, a rename, a config-key migration, a banned-import purge), author a single
 completeness check — typically `! grep -rq '<old pattern>' <scope>` — by running
-**af-intake-build-validation** (the sole writer of `building-validation`). A half-done rename
+**ingestion_api.plan_time_author_check** (the sole writer of `building-validation`). A half-done rename
 often still compiles green, which is why the acceptance floor alone does not catch it. One guard
 per sweep, not a guard per edge case.
 
@@ -811,9 +811,9 @@ This command's amend path is **C0 only: add a genuinely-new requirement TICKET t
 missing** — writing the `prd-<project>` snapshot, the section this command owns.
 
 **To add a CHECK, use the section-locked sibling command — NOT this one:**
-- a **build-time validation check** ("must pass before a ticket is done") → **`af-intake-build-validation`**
+- a **build-time validation check** ("must pass before a ticket is done") → **`ingestion_api.plan_time_author_check`**
   (writes the `building-validation` snapshot);
-- a **planning lens** ("how to plan" the audit must close) → **`af-intake-plan-validation`** (writes the
+- a **planning lens** ("how to plan" the audit must close) → **`ingestion_api.plan_time_author_lens`** (writes the
   `planning-validation` snapshot).
 
 Splitting checks out is deliberate: each of the three snapshots (`prd-<project>` / `building-validation` /
@@ -1063,14 +1063,14 @@ apply is the build's fresh RESOLVE query (tag ∪ "*" ∪ surface), same as ever
   no automated test strategy, a platform-required test layer missing, or a CI gate lacking a binary
   condition.
 - **Never bless a plan whose checks never RUN the artifact (B2)** — it needs the build/compile step
-  AND a smoke invocation of the real entrypoint, authored via af-intake-build-validation. Lint,
+  AND a smoke invocation of the real entrypoint, authored via ingestion_api.plan_time_author_check. Lint,
   typecheck and the unit suite all pass on a tree whose entrypoint was never written, so a plan
   carrying only those has no gate that would notice the product missing.
 - **Never leave a known every-site refactor (B2) without a build-validation
   guard check** — the every-site scan (`! grep -rq '<old>' <scope>`) and the tricky-case test are exactly
-  what af-build silently drops; author each via af-intake-build-validation or record an explicit exception.
+  what af-build silently drops; author each via ingestion_api.plan_time_author_check or record an explicit exception.
   And **never write the `building-validation` section directly from this skill** — DERIVE the guards here,
-  DELEGATE the write to af-intake-build-validation (its sole writer), preserving the single-writer lock.
+  DELEGATE the write to ingestion_api.plan_time_author_check (its sole writer), preserving the single-writer lock.
 - **Never pass on a missing ce panel** — if the compound-engineering reviewers aren't available, record NO
   validation episode and surface the remediation; absence is a blocked review, never a silent skip.
 - **Never skip the audit or panel silently** — every skip records a reason as a Praxis episode; the
@@ -1079,7 +1079,7 @@ apply is the build's fresh RESOLVE query (tag ∪ "*" ∪ surface), same as ever
   becomes `prd-prd-<project>`, returns EMPTY, and fakes completeness. Pass the BARE name.
 - **In Amend mode: never touch `pinned_checks` or the claim lease, and never build, fix, or run the
   check** — this command's amend only admits a new requirement ticket as identity + state
-  (C0); checks are declared via `af-intake-build-validation` / `af-intake-plan-validation`. The build owns RESOLVE, CLAIM, PIN, and per-check pass
+  (C0); checks are declared via `ingestion_api.plan_time_author_check` / `ingestion_api.plan_time_author_lens`. The build owns RESOLVE, CLAIM, PIN, and per-check pass
   records.
 - **In Amend mode: never edit an existing requirement's content** — C0 is strictly additive (a ticket
   that did not exist). A rewrite of an existing statement/acceptance is a re-baseline FULL INTAKE, not an
