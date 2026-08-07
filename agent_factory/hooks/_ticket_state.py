@@ -1059,6 +1059,48 @@ def accumulate_regression_detail(existing: Any, new_entry: dict) -> list[dict]:
     return details
 
 
+M_REGRESS_CYCLES = "regress_cycles"    # {check_id: count} -- FL8/D2: per-(ticket, check) regress-
+                                        # cycle counter; a check that keeps re-failing the SAME
+                                        # ticket's rerun bumps only its own count, never a sibling
+                                        # check's. See agent_factory.ingestion_api.regress_for_check.
+M_REGRESSED_OWNER = "regressed_owner"  # str -- FL8/D5/E2: the owner whose LIVE lease this ticket's
+                                        # most recent regression invalidated. release() refuses that
+                                        # owner's FINISH until a fresh claim (which sees the
+                                        # regression_detail, R16) clears the marker in claim().
+
+
+def next_regress_cycle(meta: dict, check_id: str) -> int:
+    """FL8/D2 — the next regress-cycle count for this (ticket, check) pair: one past whatever is
+    already recorded for ``check_id`` in ``meta[M_REGRESS_CYCLES]``. Pure and read-only; the caller
+    decides what to do with it (regress again, or park once it would exceed the cap)."""
+    cycles = meta.get(M_REGRESS_CYCLES) or {}
+    return int(cycles.get(check_id, 0)) + 1
+
+
+def bumped_regress_cycles(meta: dict, check_id: str, count: int) -> dict:
+    """The full ``regress_cycles`` dict with ``check_id`` set to ``count``; every sibling check's
+    own count is carried through untouched."""
+    cycles = dict(meta.get(M_REGRESS_CYCLES) or {})
+    cycles[check_id] = count
+    return cycles
+
+
+def lease_revocation_patch(meta: dict) -> dict:
+    """FL8/D5 — when a ticket is regressed while a worker holds a LIVE lease on it, stamp who: the
+    holder's in-flight FINISH is refused (:func:`release`) until it re-claims and sees WHY (R16),
+    which clears the marker (:func:`claim`'s fresh-pick reset). No live lease means nothing is
+    in-flight to invalidate, so this returns ``{}``."""
+    if _lease_live(meta):
+        return {M_REGRESSED_OWNER: meta.get(M_CLAIM_OWNER)}
+    return {}
+
+
+def clear_lease_and_run_meta() -> dict:
+    """The lease + whole-set run-marker keys, nulled — the patch shape both :func:`block` and a
+    forced system park (FL8/E1) need to fully release a ticket from the active run."""
+    return {k: None for k in (*_LEASE_KEYS, *_RUN_KEYS)}
+
+
 def open_findings(meta: dict) -> list[dict]:
     """Every finding this ticket still owes an answer to, oldest first — plural because concurrent
     findings (R16/E3) accumulate rather than clobber, so more than one can be open at once.
@@ -1454,7 +1496,11 @@ def claim(cid: str, owner: str, ttl: int = DEFAULT_LEASE_TTL_S,
     if _praxis.claim_requirement(cid, owner, int(ttl), **_ref_kw(ref)) is None:
         return False  # a different owner holds a live lease (409)
     if fresh_pick:
-        _praxis.write_build_state(cid, {M_GRADED_LOOP: {}}, owner=owner, **_ref_kw(ref))
+        # FL8/D5: a fresh pick (never a same-owner renew) is exactly when a worker has just seen
+        # the injected regression_detail (R16), so any earlier regression's FINISH-refusal marker
+        # no longer applies to whatever attempt is about to start.
+        _praxis.write_build_state(cid, {M_GRADED_LOOP: {}, M_REGRESSED_OWNER: None},
+                                  owner=owner, **_ref_kw(ref))
     return True
 
 
@@ -1544,6 +1590,17 @@ def release(cid: str, owner: str, state: str,
             )
             return False
     meta = _meta(cid, ref)
+    if state == "finished" and meta.get(M_REGRESSED_OWNER) == owner:
+        # FL8/D5/E2: this ticket was regressed while `owner` held the lease it is now trying to
+        # finish under — honoring that FINISH would certify work a regression has since
+        # invalidated. Refused until `owner` re-claims (sees the regression_detail, R16) and
+        # rebuilds; claim()'s fresh-pick reset is what clears this marker.
+        rid = meta.get("requirement_id") or cid
+        sys.stderr.write(
+            f"[af-build] FINISH REFUSED: {rid} was regressed while {owner!r} held its lease "
+            f"(D5/E2) — re-claim to see the regression detail and rebuild before finishing.\n"
+        )
+        return False
     held_by = meta.get(M_CLAIM_OWNER)
     if held_by not in (owner, None):
         rid = meta.get("requirement_id") or cid
@@ -1590,10 +1647,7 @@ def block(cid: str, owner: str, reason: str,
     if meta.get(M_CLAIM_OWNER) not in (owner, None):
         return False
     patch: dict[str, Any] = {M_BUILD_STATE: "blocked", M_BLOCK_REASON: str(reason)}
-    for k in _LEASE_KEYS:
-        patch[k] = None
-    for k in _RUN_KEYS:
-        patch[k] = None
+    patch.update(clear_lease_and_run_meta())
     # "blocked" is the ONE build_state transition the build-state route makes (claim / release /
     # regress own the others, so their guards cannot be bypassed) — a block is pure build state:
     # it records what the loop learned, and changes nothing the plan says.
