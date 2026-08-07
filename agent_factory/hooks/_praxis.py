@@ -658,6 +658,11 @@ FACTORY_ARTIFACTS_SNAPSHOT = "artifacts"
 # events — live in the SAME shared space under their own snapshot, org-wide so `af-retro --flags`
 # aggregates across every project from one place.
 FACTORY_FLAGS_SNAPSHOT = "flags"
+# Cloud-promoted universal checks (FL14 / R14, D8) — the dual-source seam's cloud half: a check
+# promoted after recurrence in >=2 distinct projects lives here, org-wide, so it resolves for every
+# project (including one that never saw the originating failure) alongside seeded_checks.toml's
+# git-shipped universals, in the same read pass.
+FACTORY_PROMOTED_UNIVERSALS_SNAPSHOT = "promoted-universals"
 
 
 def mount_snapshot(space: str, snapshot: str, *, not_found_ok: bool = False) -> dict[str, Any]:

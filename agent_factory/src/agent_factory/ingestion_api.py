@@ -40,6 +40,18 @@ human explicitly acks it. :func:`read_checks` is the read-only per-project enume
 ``agent_factory.af_retro`` reports off. Both existing enforcement-state verbs
 (:func:`suspend`/:func:`kill_switch`) now also emit a ``"suspension"`` flag, so a false-positive
 auto-suspension (R19) is never silent.
+
+FL14 (R14, D6, D8) extends the existing :func:`widen` verb with the AUTOMATIC, evidence-gated
+widening decision (``agent_factory.widening.attempt_widen`` owns the decision; this module supplies
+the primitives it calls: :func:`widen` itself plus the parking flag path already established by
+FL18). It also adds UNIVERSAL PROMOTION (:func:`promote_universal` / :func:`read_promoted_universals`):
+recurrence of the same class in >=2 DISTINCT projects promotes a check into the org-wide
+``promoted-universals`` snapshot with a ``promoted-`` prefixed id — a second, cloud-authoritative
+source of universal checks living alongside ``seeded_checks.toml``'s git-shipped ones (D8's
+distinct-id-space resolution: the git file remains for hand-shipped code checks, the cloud snapshot
+is the sole writer for anything promoted at runtime, so the two lanes never collide by id
+construction). A behavioral near-duplicate — the SAME canonical-content hash minted under a
+DIFFERENT id — is refused loudly (:class:`UniversalPromotionCollision`), never silently duplicated.
 """
 
 from __future__ import annotations
@@ -86,6 +98,19 @@ FLAG_KIND_UNDRAFTABLE = "undraftable"
 FLAG_KIND_CHECK_DEFEAT = "check-defeat"
 FLAG_KINDS = frozenset({FLAG_KIND_SUSPENSION, FLAG_KIND_PARKING, FLAG_KIND_UNDRAFTABLE,
                         FLAG_KIND_CHECK_DEFEAT})
+
+# FL14 (R14/D8): the cloud-promoted universal lane — a second source of universal checks distinct
+# from seeded_checks.toml's git-shipped library, so the dual-source seam never collides by id
+# construction (the toml library's ids are bare slugs; every promoted id carries this prefix).
+PROMOTED_UNIVERSAL_CATEGORY = "promoted-universal"
+PROMOTED_UNIVERSAL_PREFIX = "promoted-"
+MIN_DISTINCT_PROJECTS_FOR_PROMOTION = 2  # R14: universal promotion refuses below this
+
+
+class UniversalPromotionCollision(ValueError):
+    """R14 — a behavioral near-dup: the canonical-content hash about to be promoted already exists
+    under a DIFFERENT promoted check id. Raised loudly rather than silently minting a duplicate
+    universal that would double-gate the same behavior under two ids."""
 
 # R20a's check enforcement-state machine (a plan-only spec until FL2; this is its first code home).
 M_ENFORCEMENT_STATE = "enforcement_state"
@@ -729,6 +754,63 @@ def _suspend_patch(check: dict[str, Any]) -> dict[str, Any]:
     current = (check.get("meta") or {}).get(M_ENFORCEMENT_STATE)
     new_state = transition_enforcement_state(current, EVENT_SUSPEND)
     return {M_ENFORCEMENT_STATE: new_state}
+
+
+def _canonical_content_hash(criterion: str, run: str) -> str:
+    """The behavioral-identity hash a near-dup is detected by (R14): normalized text so whitespace
+    noise never masks (or manufactures) a collision."""
+    normalized = f"{' '.join(str(criterion or '').split())}\n{' '.join(str(run or '').split())}"
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def read_promoted_universals() -> list[dict[str, Any]]:
+    """Read-only enumeration of every cloud-promoted universal check (any project may call this;
+    the snapshot is org-wide) — what :func:`hooks._ticket_state.universal_requirements` merges
+    alongside ``seeded_checks.toml``'s git-shipped universals in one resolve pass."""
+    return _praxis.facts_by(category=PROMOTED_UNIVERSAL_CATEGORY,
+                            space=_praxis.FACTORY_LEARNINGS_SPACE,
+                            snapshot=_praxis.FACTORY_PROMOTED_UNIVERSALS_SNAPSHOT)
+
+
+def promote_universal(criterion: str, run: str, *, recurring_projects: list[str],
+                      source: str | None = None, identity: str | None = None) -> dict[str, Any]:
+    """R14 — universal promotion: a check recurring in >= :data:`MIN_DISTINCT_PROJECTS_FOR_PROMOTION`
+    DISTINCT projects is promoted into the org-wide ``promoted-universals`` snapshot with a
+    ``promoted-`` prefixed id (D8's distinct-id-space seam — never collides with a bare
+    ``seeded_checks.toml`` slug). Refuses below that recurrence floor rather than promoting on a
+    single project's say-so. A behavioral near-dup — the same :func:`_canonical_content_hash` already
+    promoted under a different id — raises :class:`UniversalPromotionCollision` LOUDLY: this is the
+    "loud collision report", never a silent duplicate write.
+
+    Returns ``{"status": "refused", "reason": "insufficient-recurrence", "distinct_projects": [...]}``
+    on refusal, or ``{"status": "promoted", "check_id": "promoted-...", ...}`` on success.
+    """
+    authenticated_as = _require_authenticated(identity)
+    distinct = sorted({str(p) for p in (recurring_projects or []) if p})
+    if len(distinct) < MIN_DISTINCT_PROJECTS_FOR_PROMOTION:
+        return {"status": "refused", "reason": "insufficient-recurrence", "distinct_projects": distinct}
+
+    canonical_hash = _canonical_content_hash(criterion, run)
+    for existing in read_promoted_universals():
+        existing_meta = existing.get("meta") or {}
+        if existing_meta.get("canonical_content_hash") == canonical_hash:
+            raise UniversalPromotionCollision(
+                f"canonical-content hash {canonical_hash[:12]} already promoted as "
+                f"{existing_meta.get('check_id')!r} (id {existing.get('id')!r}); refusing to mint a "
+                f"behavioral near-dup under a new id"
+            )
+
+    check_id = f"{PROMOTED_UNIVERSAL_PREFIX}{uuid.uuid4().hex[:12]}"
+    meta: dict[str, Any] = {
+        "check_id": check_id, "applies_to": ["*"], "scope": "validation",
+        M_ENFORCEMENT_STATE: STATE_GATING, "promoted": True, "run": run,
+        "canonical_content_hash": canonical_hash, "recurring_projects": distinct,
+        "promoted_at": time.time(), "promoted_by": authenticated_as,
+    }
+    _praxis.ensure_space(_praxis.FACTORY_LEARNINGS_SPACE, name="factory-learnings")
+    written = _write_insight(criterion, PROMOTED_UNIVERSAL_CATEGORY, source=source, meta=meta,
+                             snapshot=_praxis.FACTORY_PROMOTED_UNIVERSALS_SNAPSHOT)
+    return {"status": "promoted", "check_id": check_id, "id": written.get("id")}
 
 
 def suspend(check_id: str, project: str, reason: str, *, identity: str | None = None) -> dict[str, Any]:
