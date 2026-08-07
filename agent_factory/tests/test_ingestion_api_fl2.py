@@ -23,48 +23,15 @@ import pytest
 from hooks import _praxis
 
 from agent_factory import ingestion_api
+from conftest import WhoAmIStub as _WhoAmIStub
+from conftest import authed as _authed
+from conftest import calls_for as _calls_for
+from conftest import recording_request as _recording_request
+from conftest import unauthed as _unauthed
 
-
-class _WhoAmIStub:
-    def __init__(self, ok: bool, principal: str = "user-1", detail: str = "") -> None:
-        self.ok = ok
-        self.principal = principal
-        self.detail = detail
-
-
-def _authed(monkeypatch: pytest.MonkeyPatch, principal: str = "user-1") -> None:
-    monkeypatch.setattr(_praxis, "whoami", lambda: _WhoAmIStub(True, principal))
-
-
-def _unauthed(monkeypatch: pytest.MonkeyPatch, detail: str = "not logged in") -> None:
-    monkeypatch.setattr(_praxis, "whoami", lambda: _WhoAmIStub(False, "?", detail))
-
-
-def _recording_request(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    """A ``_praxis._request`` double that records every call and hands back a stable fake id."""
-    calls: list[dict[str, Any]] = []
-    counter = {"n": 0}
-
-    def fake_request(method: str, path: str, *, body: dict[str, Any] | None = None,
-                     params: dict[str, Any] | None = None, space: str | None = None,
-                     snapshot: str | None = None, **kw: Any) -> dict[str, Any]:
-        calls.append({"method": method, "path": path, "body": body,
-                      "space": space, "snapshot": snapshot})
-        if method == "POST" and path == "/insights":
-            counter["n"] += 1
-            return {"id": f"fake-{counter['n']}", "action": "added"}
-        if method == "POST" and path == "/requirements/regress":
-            return {"count": len((body or {}).get("ids", []))}
-        return {}
-
-    monkeypatch.setattr(_praxis, "_request", fake_request)
-    monkeypatch.setattr(_praxis, "ensure_space", lambda *a, **kw: a[0])
-    return calls
-
-
-def _calls_for(calls: list[dict[str, Any]], category: str) -> list[dict[str, Any]]:
-    """The subset of recorded ``/insights`` calls whose body is the given fact ``category``."""
-    return [c for c in calls if c["body"] and c["body"].get("category") == category]
+# _WhoAmIStub/_authed/_unauthed/_recording_request/_calls_for are the shared ingestion-API test
+# doubles in tests/conftest.py (consolidated there — this file, test_ingestion_api_fl12.py, and
+# test_af_learn.py each carried a byte-identical copy).
 
 
 # --------------------------------------------------------------------------- R1b: auth gate (all six verbs)

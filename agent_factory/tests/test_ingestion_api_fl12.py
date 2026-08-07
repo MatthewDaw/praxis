@@ -17,86 +17,21 @@ from __future__ import annotations
 
 import itertools
 from pathlib import Path
-from typing import Any
 
 import pytest
-from hooks import _praxis
 
 from agent_factory import ingestion_api
+from conftest import FakeCheckStore as _FakeStore
 
-
-class _WhoAmIStub:
-    def __init__(self, ok: bool, principal: str = "user-1") -> None:
-        self.ok = ok
-        self.principal = principal
-        self.detail = ""
-
-
-def _authed(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(_praxis, "whoami", lambda: _WhoAmIStub(True))
-
-
-class _FakeStore:
-    """A minimal in-memory double for a project's ``building-validation`` snapshot: enough of
-    ``_praxis``'s surface (``facts_by``, ``patch_meta``, ``_request``) for the enforcement-state
-    verbs under test to round-trip, plus a call log so a test can assert NO delete-shaped call
-    was ever made."""
-
-    def __init__(self) -> None:
-        self.facts: dict[str, dict[str, Any]] = {}
-        self.calls: list[tuple[str, str]] = []
-        self._n = 0
-
-    def seed_check(self, check_id: str, meta: dict[str, Any]) -> None:
-        self.facts[check_id] = {"id": check_id, "category": "check", "meta": dict(meta)}
-
-    def seed_lesson(self, lesson_id: str, meta: dict[str, Any] | None = None) -> None:
-        self.facts[lesson_id] = {"id": lesson_id, "category": "lesson", "meta": dict(meta or {})}
-
-    def request(self, method: str, path: str, *, body: dict[str, Any] | None = None,
-               space: str | None = None, snapshot: str | None = None, **kw: Any) -> dict[str, Any]:
-        self.calls.append((method, path))
-        if method == "POST" and path == "/insights":
-            self._n += 1
-            fid = f"fake-{self._n}"
-            self.facts[fid] = {"id": fid, "category": (body or {}).get("category"),
-                              "meta": dict((body or {}).get("meta") or {})}
-            return {"id": fid, "action": "added"}
-        return {}
-
-    def facts_by(self, category: str | None = None, meta: dict[str, Any] | None = None,
-                state: str = "active", space: str | None = None,
-                snapshot: str | None = None) -> list[dict[str, Any]]:
-        out = []
-        for fact in self.facts.values():
-            if category is not None and fact["category"] != category:
-                continue
-            if meta:
-                ok = True
-                for k, v in meta.items():
-                    fv = fact["meta"].get(k)
-                    ok = ok and (v in fv if isinstance(fv, list) else fv == v)
-                if not ok:
-                    continue
-            out.append(fact)
-        return out
-
-    def patch_meta(self, cid: str, meta_dict: dict[str, Any], *, space: str | None = None,
-                   snapshot: str | None = None) -> dict[str, Any]:
-        self.calls.append(("PATCH", cid))
-        self.facts[cid]["meta"].update(meta_dict)
-        return self.facts[cid]
+# _FakeStore is the shared ingestion-API test double in tests/conftest.py (consolidated there —
+# this file, test_ingestion_api_fl2.py, and test_af_learn.py each carried a byte-identical/
+# near-identical copy). ``store`` keeps this file's original fixture name, backed by the shared
+# ``check_store`` fixture conftest.py already registers.
 
 
 @pytest.fixture
-def store(monkeypatch: pytest.MonkeyPatch) -> _FakeStore:
-    st = _FakeStore()
-    _authed(monkeypatch)
-    monkeypatch.setattr(_praxis, "ensure_space", lambda *a, **kw: a[0])
-    monkeypatch.setattr(_praxis, "_request", st.request)
-    monkeypatch.setattr(_praxis, "facts_by", st.facts_by)
-    monkeypatch.setattr(_praxis, "patch_meta", st.patch_meta)
-    return st
+def store(check_store: _FakeStore) -> _FakeStore:
+    return check_store
 
 
 # --------------------------------------------------------------------------- property test: the transition table
