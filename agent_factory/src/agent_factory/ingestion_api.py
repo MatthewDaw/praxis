@@ -16,19 +16,30 @@ insertion-time hash pin (KD8 anchor 1). :func:`rollback_wave` is the named rollb
 :func:`plan_time_author_check` / :func:`plan_time_author_lens` are R1a's lenient plan-time entry
 point — exempt from the lesson/proof requirements, for completeness guards and doc-sync checks
 that have no failure to prove against.
+
+FL3 adds the failure-class taxonomy (R3) and the R20b staged-calibration singleton state, sharing
+this module's write path via :func:`_write_insight`.
+
+FL4 (R7) extends this same sole-writer module with the bad-artifact pin: at regression time the
+failing commit is bundled into a SELF-CONTAINED git reproduction bundle plus secret-scanned
+diff/evidence text, written into the ``artifacts`` snapshot of the same shared space
+(:func:`pin_artifact`), so proof and future re-proof (KD7) always have something to run against.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from hooks import _praxis
@@ -41,6 +52,8 @@ BUILDING_VALIDATION_SNAPSHOT = "building-validation"
 PLANNING_VALIDATION_SNAPSHOT = "planning-validation"
 CLASS_CATEGORY = "failure-class"          # FL3 — the failure-class taxonomy (R3)
 CALIBRATION_CATEGORY = "taxonomy-calibration"  # FL3 — the R20b staged-rollout singleton state
+ARTIFACT_CATEGORY = "artifact"            # FL4 — the pinned bad-artifact bundle (R7)
+DEFAULT_RETENTION_DAYS = 90
 
 # R20a's check enforcement-state machine (a plan-only spec until FL2; this is its first code home).
 M_ENFORCEMENT_STATE = "enforcement_state"
@@ -221,7 +234,7 @@ _SECRET_KV_RE = re.compile(
 )
 _SECRET_LITERAL_RES = (
     re.compile(r"sk-[A-Za-z0-9]{16,}"),
-    re.compile(r"ghp_[A-Za-z0-9]{20,}"),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),  # FL4: all GitHub token kinds, not just ghp_
     re.compile(r"AKIA[0-9A-Z]{16}"),
 )
 _SECRET_BEARER_RE = re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9\-_.]{10,}")
@@ -229,8 +242,9 @@ _SECRET_BEARER_RE = re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9\-_.]{10,}")
 
 def redact_secrets(text: str) -> str:
     """Targeted secret redaction (R7): replace a credential-shaped substring with ``[REDACTED]``
-    wherever a cloud-written artifact (provenance, drafting transcript) is stored — never a
-    blanket wipe, so the surrounding prose (and non-secret evidence) survives."""
+    wherever a cloud-written artifact (provenance, drafting transcript, pinned-artifact diff/
+    evidence text — FL4) is stored — never a blanket wipe, so the surrounding prose (and
+    non-secret evidence) survives."""
     out = str(text or "")
     out = _SECRET_KV_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", out)
     for pat in _SECRET_LITERAL_RES:
@@ -553,6 +567,119 @@ def write_calibration_state(meta: dict[str, Any]) -> dict[str, Any]:
         return _praxis.patch_meta(existing["id"], meta, space=_praxis.FACTORY_LEARNINGS_SPACE,
                                   snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT)
     return _write_insight("failure-class taxonomy calibration state", CALIBRATION_CATEGORY, meta=meta)
+
+
+# --------------------------------------------------------------------------- FL4: bad-artifact pin (R7)
+# redact_secrets (above) already covers this section's diff/evidence-text scrubbing needs; its
+# pattern set was widened for FL4 rather than duplicated (see the R7/KD8 section).
+
+def build_repro_bundle(repo_path: str | Path, commit_sha: str) -> bytes:
+    """A SELF-CONTAINED git bundle reproducing ``commit_sha`` and its full ancestry (R7): bundled
+    under a throwaway ref so it re-materializes the failing tree via ``git clone`` on a machine
+    that never held ``repo_path``'s loose objects (worktree branches are reaped and their commits
+    GC-eligible once the ticket ships). The throwaway ref is created and deleted around the bundle
+    call so ``repo_path`` — which may be the live project checkout — is left exactly as found.
+    """
+    repo_path = str(repo_path)
+    ref = f"refs/heads/repro-pin-{uuid.uuid4().hex}"
+    subprocess.run(["git", "-C", repo_path, "update-ref", ref, commit_sha],
+                   check=True, capture_output=True, text=True)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle_path = Path(tmp) / "repro.bundle"
+            subprocess.run(["git", "-C", repo_path, "bundle", "create", str(bundle_path), ref],
+                           check=True, capture_output=True, text=True)
+            return bundle_path.read_bytes()
+    finally:
+        subprocess.run(["git", "-C", repo_path, "update-ref", "-d", ref],
+                       check=True, capture_output=True, text=True)
+
+
+def materialize_bundle(bundle_bytes: bytes, dest_dir: str | Path) -> Path:
+    """Re-materialize a pinned bundle's failing tree by cloning it into ``dest_dir`` — the step
+    proof/re-proof execution runs against (R7), pointed at a disposable directory that never
+    touched the origin repo's objects. Returns the checked-out clone's path."""
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    bundle_path = dest_dir / "_repro.bundle"
+    bundle_path.write_bytes(bundle_bytes)
+    clone_dir = dest_dir / "repro"
+    ref = _bundle_ref_name(bundle_path)
+    subprocess.run(["git", "clone", "--quiet", "--branch", ref, str(bundle_path), str(clone_dir)],
+                   check=True, capture_output=True, text=True)
+    return clone_dir
+
+
+def _bundle_ref_name(bundle_path: Path) -> str:
+    """The short branch name a :func:`build_repro_bundle` bundle carries, read back via ``git
+    bundle list-heads`` so :func:`materialize_bundle` never has to guess/hardcode the throwaway
+    ref (``git clone --branch`` wants the short name, not the full ``refs/heads/...`` path)."""
+    out = subprocess.run(["git", "bundle", "list-heads", str(bundle_path)],
+                         check=True, capture_output=True, text=True).stdout
+    first_line = out.strip().splitlines()[0]  # "<sha> refs/heads/repro-pin-<uuid>"
+    full_ref = first_line.split(" ", 1)[1].strip()
+    return full_ref.removeprefix("refs/heads/")
+
+
+def pin_artifact(*, project: str, ticket_id: str, commit_sha: str, repo_path: str | Path,
+                 diff_text: str = "", evidence_text: str = "", while_gating: bool = True,
+                 retention_days: int = DEFAULT_RETENTION_DAYS,
+                 source: str | None = None) -> dict[str, Any]:
+    """Pin the bad artifact at regression time (R7): a self-contained reproduction bundle over
+    ``commit_sha`` plus secret-scanned diff/evidence text, written into cloud storage (the shared
+    space's ``artifacts`` snapshot) retained per the default policy — kept while its check is
+    gating, else expiring ``retention_days`` (default 90) after pinning, with expiry observable
+    via the stored ``retention_expires_at`` (see :func:`artifact_expired`). The bundle itself is
+    left UNTOUCHED by redaction (breaking reproduction is worse than a leaked secret in evidence
+    prose); only ``diff_text``/``evidence_text`` are scanned. Returns the write ack including the
+    new artifact's id."""
+    if not commit_sha:
+        raise ValueError("commit_sha is required")
+    bundle_bytes = build_repro_bundle(repo_path, commit_sha)
+    pinned_at = time.time()
+    meta: dict[str, Any] = {
+        "project": project,
+        "ticket_id": ticket_id,
+        "commit_sha": commit_sha,
+        "bundle_b64": base64.b64encode(bundle_bytes).decode("ascii"),
+        "diff": redact_secrets(diff_text),
+        "evidence": redact_secrets(evidence_text),
+        "pinned_at": pinned_at,
+        "while_gating": bool(while_gating),
+        "retention_days": int(retention_days),
+        "retention_expires_at": pinned_at + int(retention_days) * 86400,
+    }
+    _praxis.ensure_space(_praxis.FACTORY_LEARNINGS_SPACE, name="factory-learnings")
+    return _praxis._request(
+        "POST", "/insights",
+        body={"insight": f"pinned artifact for {project}/{ticket_id} @ {commit_sha}",
+              "category": ARTIFACT_CATEGORY, "source": source, "meta": meta},
+        space=_praxis.FACTORY_LEARNINGS_SPACE, snapshot=_praxis.FACTORY_ARTIFACTS_SNAPSHOT,
+    )
+
+
+def read_artifact(artifact_id: str) -> dict[str, Any]:
+    """Read one pinned artifact back (GET) — the path proof/re-proof execution reads the bundle
+    and evidence from (R7); read-only, same sole-writer guarantee as :func:`read_lessons`."""
+    return _praxis.get_fact(artifact_id, space=_praxis.FACTORY_LEARNINGS_SPACE,
+                            snapshot=_praxis.FACTORY_ARTIFACTS_SNAPSHOT)
+
+
+def artifact_expired(meta: dict[str, Any], *, now: float | None = None) -> bool:
+    """The default retention policy (R7/KD7), as a pure function of a pinned artifact's stored
+    meta: never expired while its check is gating; otherwise expired once ``now`` passes the
+    stored ``retention_expires_at`` — observable without any lifecycle sweep running first."""
+    if bool(meta.get("while_gating")):
+        return False
+    expires_at = meta.get("retention_expires_at")
+    if expires_at is None:
+        return False
+    return (now if now is not None else time.time()) > float(expires_at)
+
+
+def decode_bundle(meta: dict[str, Any]) -> bytes:
+    """Decode a pinned artifact's stored bundle back to raw bytes for :func:`materialize_bundle`."""
+    return base64.b64decode(str(meta.get("bundle_b64") or ""))
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
