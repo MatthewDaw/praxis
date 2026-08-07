@@ -54,6 +54,9 @@ CLASS_CATEGORY = "failure-class"          # FL3 — the failure-class taxonomy (
 CALIBRATION_CATEGORY = "taxonomy-calibration"  # FL3 — the R20b staged-rollout singleton state
 ARTIFACT_CATEGORY = "artifact"            # FL4 — the pinned bad-artifact bundle (R7)
 DEFAULT_RETENTION_DAYS = 90
+DEFAULT_REPEAT_COUNT = 1        # FL5/D4: proof repeat count for flaky/LLM-judged checks; 1 == no repeat
+DEFAULT_REDRAFT_BUDGET = 3      # FL5/D1: machine-drafting attempts before lesson-only
+PROOF_CHECK_UNDRAFTABLE = "check-undraftable"  # FL5/R6: redraft budget exhausted, no gating check inserted
 
 # R20a's check enforcement-state machine (a plan-only spec until FL2; this is its first code home).
 M_ENFORCEMENT_STATE = "enforcement_state"
@@ -333,19 +336,41 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
           ticket_ids: list[str] | None = None, surfaces: list[str] | None = None,
           drafting_transcript: str | None = None,
           proof_runner: Callable[[str], bool] | None = None,
-          identity: str | None = None) -> dict[str, Any]:
+          identity: str | None = None,
+          bad_artifact_meta: dict[str, Any] | None = None,
+          healthy_repo_path: str | Path | None = None, healthy_ref: str = "HEAD",
+          repeat_count: int = DEFAULT_REPEAT_COUNT, redraft_budget: int = DEFAULT_REDRAFT_BUDGET,
+          run_candidates: list[str] | None = None,
+          proof_executor: Callable[[str, Path], bool] | None = None) -> dict[str, Any]:
     """R1 — the full ingestion sequence, as one call: classify/dedup → write lesson →
     draft check (allowlist-validated when machine-drafted, hash-pinned at insertion) → attempt
     a fail-then-pass proof → bind at the narrowest scope → activate → regress the
     matching tickets → record provenance (drafting transcript secret-scanned, R7). Refuses
-    (``Unauthenticated``) before any write when the caller is not org-authenticated (R1b)."""
+    (``Unauthenticated``) before any write when the caller is not org-authenticated (R1b).
+
+    FL5/R6/R7: when both ``bad_artifact_meta`` (the FL4 pin) and ``healthy_repo_path`` are given,
+    proof runs for real via :func:`attempt_fail_then_pass_proof` — a disposable-isolated-worktree,
+    both-sides-executed, bounded-redraft proof — instead of the FL2 single-shot ``proof_runner``
+    placeholder. A ``check-undraftable`` verdict (redraft budget exhausted, still vacuous) inserts
+    NO check at all: the lesson lands alone, flagged (R6)."""
     authenticated_as = _require_authenticated(identity)
+
+    use_real_proof_engine = (
+        drafted_rubric is None and drafted_run is not None
+        and bad_artifact_meta is not None and healthy_repo_path is not None
+    )
 
     # Validate the drafted run body ONCE, BEFORE any write — "rejected at insertion (never
     # written)" must hold for the LESSON too, not just the check: a rejected draft leaves
     # nothing behind. The validated (stripped) body is reused below so it is never re-validated.
     validated_run: str | None = None
-    if drafted_run is not None and drafted_rubric is None:
+    validated_candidates: list[str] = []
+    if use_real_proof_engine:
+        raw_candidates = list(run_candidates or [])
+        if drafted_run not in raw_candidates:
+            raw_candidates.insert(0, drafted_run)
+        validated_candidates = [_validate_run_body(c, channel=channel) for c in raw_candidates]
+    elif drafted_run is not None and drafted_rubric is None:
         validated_run = _validate_run_body(drafted_run, channel=channel)
 
     classification = classify_and_dedup(lesson_text, class_hint=class_hint)
@@ -359,6 +384,30 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
 
     check_id: str | None = None
     proof_status: str | None = None
+    proof_result: dict[str, Any] | None = None
+    if use_real_proof_engine:
+        proof_result = attempt_fail_then_pass_proof(
+            validated_candidates, bad_artifact_meta=bad_artifact_meta,
+            healthy_repo_path=healthy_repo_path, healthy_ref=healthy_ref,
+            repeat_count=repeat_count, redraft_budget=redraft_budget, executor=proof_executor,
+        )
+        proof_status = proof_result["status"]
+        if proof_status == PROOF_CHECK_UNDRAFTABLE:
+            _praxis.patch_meta(
+                lesson_id,
+                {"check_undraftable": True, "check_undraftable_reason": proof_result["reason"]},
+                space=_praxis.FACTORY_LEARNINGS_SPACE, snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT,
+            )
+            _praxis.record_episode(
+                f"check-undraftable for lesson {lesson_id} (project={project}): exhausted the "
+                f"redraft budget ({proof_result['attempts']} attempt(s)) with no valid "
+                f"fail-then-pass proof — no gating check inserted.",
+                outcome="failure",
+            )
+            return {"lesson_id": lesson_id, "check_id": None, "wave_id": wave_id,
+                    "proof_status": proof_status, "class": classification["class"]}
+        validated_run = proof_result["run"]
+
     if drafted_run is not None or drafted_rubric is not None:
         applies_to = list(ticket_ids or [])
         surface_only = not applies_to and bool(surfaces)  # R12: zero-match ingestion binds surface-only
@@ -369,12 +418,16 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
             "authored_by": authenticated_as,
         }
         _pin_content(check_meta, validated_run=validated_run, rubric=drafted_rubric)
-        if drafted_rubric is not None:
-            proof_status = "unproven"  # graded checks are judge-scored, not fail-then-pass proof-run
-        else:
-            proof_status = attempt_proof(validated_run, proof_runner=proof_runner)
+        if proof_status is None:
+            if drafted_rubric is not None:
+                proof_status = "unproven"  # graded checks are judge-scored, not fail-then-pass proof-run
+            else:
+                proof_status = attempt_proof(validated_run, proof_runner=proof_runner)
 
         check_meta["proof_status"] = proof_status
+        if proof_result is not None:
+            check_meta["proof_reason"] = proof_result.get("reason")
+            check_meta["proof_attempts"] = proof_result.get("attempts")
         if drafting_transcript is not None:
             check_meta["drafting_transcript"] = redact_secrets(drafting_transcript)
         # activate: a proven machine check (or any human-authored one) gates; unproven -> report_only.
@@ -384,6 +437,13 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
 
         written_check = write_check(lesson_text, project, meta=check_meta, source=source)
         check_id = written_check.get("id")
+
+        if proof_result is not None and proof_result.get("flag"):
+            _praxis.record_episode(
+                f"proof flagged for check {check_id} (lesson {lesson_id}, project={project}): "
+                f"{proof_result.get('reason')} — {proof_result.get('detail', '')}".strip(" —"),
+                outcome="pending",
+            )
 
         if ticket_ids:
             _praxis.regress_requirements(
@@ -680,6 +740,111 @@ def artifact_expired(meta: dict[str, Any], *, now: float | None = None) -> bool:
 def decode_bundle(meta: dict[str, Any]) -> bytes:
     """Decode a pinned artifact's stored bundle back to raw bytes for :func:`materialize_bundle`."""
     return base64.b64decode(str(meta.get("bundle_b64") or ""))
+
+
+# --------------------------------------------------------------------------- FL5: the fail-then-pass proof engine (R6/R7/E4/E5/E6/D1/D4)
+# attempt_proof (above) is the FL2 placeholder single-shot shape kept for back-compat; this is the
+# real machine-strict proof R6 describes, always run in a DISPOSABLE ISOLATED WORKTREE — never the
+# live project checkout, whose HEAD must not move (concurrent sessions share it).
+
+def _default_worktree_runner(run: str, cwd: Path) -> bool:  # pragma: no cover - real subprocess
+    return subprocess.run(run, shell=True, cwd=str(cwd), check=False).returncode == 0
+
+
+def run_fail_then_pass_proof(run: str, *, bad_artifact_meta: dict[str, Any],
+                             healthy_repo_path: str | Path, healthy_ref: str = "HEAD",
+                             repeat_count: int = DEFAULT_REPEAT_COUNT,
+                             executor: Callable[[str, Path], bool] | None = None) -> dict[str, Any]:
+    """R6/R7 — the fail-then-pass proof engine for ONE candidate ``run`` body. Materializes the
+    pinned bad artifact (:func:`decode_bundle` + :func:`materialize_bundle`) and the designated
+    healthy reference (:func:`build_repro_bundle` + :func:`materialize_bundle`) EACH into their own
+    disposable directory — never the live project checkout, whose HEAD/refs are never touched
+    (``build_repro_bundle``'s throwaway-ref dance and a plain ``git clone`` off a bundle file are
+    both read-only w.r.t. the source repo). ``run`` executes ``repeat_count`` times per side (D4) so
+    a nondeterministic result yields no proof rather than a coin-flip verdict (E6).
+
+    Returns ``{"status", "reason", "flag", ...}``; NEVER raises — an irreproducible pin (E5) is a
+    ``report_only`` verdict with ``flag=True``, not an exception:
+
+    - ``status="proven"`` — FAILED every repeat on the bad artifact AND PASSED every repeat on the
+      healthy reference (R6): the only verdict eligible to gate.
+    - ``status="report_only", reason="vacuous-pass-on-bad-artifact"`` — the check does not even
+      reproduce the failure it was drafted from (E4); the caller should redraft.
+    - ``status="report_only", reason="fails-both"`` — a non-discriminative fail-only check; still
+      inserts (report_only, per R6) rather than being discarded.
+    - ``status="report_only", reason="pin-irreproducible"|"healthy-reference-irreproducible", flag=True``
+      — the pinned bundle (or the healthy ref) could not be re-materialized (E5): no proof, flagged.
+    - ``status="unproven", reason="flaky-bad-artifact"|"flaky-healthy-reference"`` — a repeat
+      disagreed with a prior repeat on the SAME side (E6): flaky proof = no proof.
+    """
+    do_run = executor or _default_worktree_runner
+    reps = max(1, int(repeat_count))
+
+    try:
+        with tempfile.TemporaryDirectory() as bad_root:
+            bad_clone = materialize_bundle(decode_bundle(bad_artifact_meta), bad_root)
+            bad_results = [do_run(run, bad_clone) for _ in range(reps)]
+    except (subprocess.CalledProcessError, OSError, ValueError) as exc:
+        return {"status": STATE_REPORT_ONLY, "reason": "pin-irreproducible", "flag": True,
+                "detail": str(exc)}
+
+    if len(set(bad_results)) != 1:
+        return {"status": "unproven", "reason": "flaky-bad-artifact", "flag": False}
+    bad_failed = not bad_results[0]
+
+    try:
+        healthy_bundle = build_repro_bundle(healthy_repo_path, healthy_ref)
+        with tempfile.TemporaryDirectory() as good_root:
+            good_clone = materialize_bundle(healthy_bundle, good_root)
+            good_results = [do_run(run, good_clone) for _ in range(reps)]
+    except (subprocess.CalledProcessError, OSError, ValueError) as exc:
+        return {"status": STATE_REPORT_ONLY, "reason": "healthy-reference-irreproducible",
+                "flag": True, "detail": str(exc)}
+
+    if len(set(good_results)) != 1:
+        return {"status": "unproven", "reason": "flaky-healthy-reference", "flag": False}
+    good_passed = good_results[0]
+
+    if bad_failed and good_passed:
+        return {"status": "proven", "reason": None, "flag": False}
+    if not bad_failed:
+        return {"status": STATE_REPORT_ONLY, "reason": "vacuous-pass-on-bad-artifact", "flag": False}
+    return {"status": STATE_REPORT_ONLY, "reason": "fails-both", "flag": False}
+
+
+def attempt_fail_then_pass_proof(run_candidates: list[str], *, bad_artifact_meta: dict[str, Any],
+                                 healthy_repo_path: str | Path, healthy_ref: str = "HEAD",
+                                 repeat_count: int = DEFAULT_REPEAT_COUNT,
+                                 redraft_budget: int = DEFAULT_REDRAFT_BUDGET,
+                                 executor: Callable[[str, Path], bool] | None = None) -> dict[str, Any]:
+    """R6/D1 — the bounded-redraft wrapper around :func:`run_fail_then_pass_proof`. Tries each of
+    ``run_candidates`` (the drafted run, then successive redrafts) up to ``redraft_budget``
+    attempts, stopping at the FIRST verdict that is not a vacuous pass-on-bad-artifact — only E4's
+    vacuous case calls for a redraft; every other verdict (proven, fails-both, flaky, irreproducible
+    pin) is final and inserts (or is flagged) immediately. Exhausting the budget on nothing but
+    vacuous passes yields ``status="check-undraftable"`` (flagged): no gating check is inserted and
+    the lesson lands alone (R6)."""
+    candidates = [c for c in (run_candidates or []) if c]
+    if not candidates:
+        raise ValueError("run_candidates is required")
+    budget = max(1, int(redraft_budget))
+    attempts = 0
+    last_run = candidates[0]
+    for run in candidates[:budget]:
+        attempts += 1
+        last_run = run
+        result = run_fail_then_pass_proof(
+            run, bad_artifact_meta=bad_artifact_meta, healthy_repo_path=healthy_repo_path,
+            healthy_ref=healthy_ref, repeat_count=repeat_count, executor=executor,
+        )
+        if result["status"] == "proven":
+            return {"status": "proven", "run": run, "flag": False, "reason": None, "attempts": attempts}
+        if result["reason"] == "vacuous-pass-on-bad-artifact":
+            continue  # E4: redraft and try again
+        return {"status": result["status"], "run": run, "flag": bool(result.get("flag", False)),
+                "reason": result["reason"], "attempts": attempts}
+    return {"status": PROOF_CHECK_UNDRAFTABLE, "run": last_run, "flag": True,
+            "reason": "vacuous-after-redraft-budget", "attempts": attempts}
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
