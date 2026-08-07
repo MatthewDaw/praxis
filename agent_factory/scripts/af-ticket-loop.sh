@@ -1153,7 +1153,7 @@ resolve_conflicts(){   # $1 = round number
   # a finished ticket whose work is not on the branch is a lie, and the honest repair is to re-queue it.
   $PY - "$PROJECT" "$rnd" "$RESOLVED" "$WT" "$CONFLICTS" <<'PYEOF' 2>&1 | while IFS= read -r l; do say "$l"; done
 import json, subprocess, sys
-import _praxis
+import _praxis, _ticket_state as ts
 proj, rnd, path, wt, conflicts = sys.argv[1:6]
 kw = dict(space=proj, snapshot=f"prd-{proj}")
 
@@ -1220,18 +1220,22 @@ for br, u in dropped.items():
         f = by_rid.get(str(rid))
         if not f:
             continue
+        new_finding = {"round": rnd, "source": "conflict-resolution", "branch": br,
+                      "merged_but_intent_dropped": True, "abandoned_sha": sha,
+                      "reason": "branch merged, but this ticket's change was not preserved",
+                      "evidence": reason,
+                      "required_fix": "re-establish the behaviour against the current integrated tree; "
+                                      "do NOT re-merge the branch, it is already an ancestor of HEAD"}
+        # R16/E3: accumulate onto this ticket's existing regression_detail — a concurrent finding
+        # (post-merge verification, ingestion) must never be clobbered by this one.
+        accumulated = ts.accumulate_regression_detail((f.get("meta") or {}).get("regression_detail"), new_finding)
         _praxis.regress_requirements(proj, [f["id"]], {f["id"]: {
             "claim_owner": None, "claim_at": None,
             "claim_heartbeat_at": None, "claim_lease_ttl": None,
             "audit_disposition": (f"REGRESSED by conflict resolution of round #{rnd}: branch {br} was merged, but this "
                                   f"ticket's intent did not survive. WHAT WAS LOST: {reason} THE REBUILD MUST: re-establish "
                                   f"that behaviour against the CURRENT integrated tree."),
-            "regression_detail": {"round": rnd, "source": "conflict-resolution", "branch": br,
-                                  "merged_but_intent_dropped": True, "abandoned_sha": sha,
-                                  "reason": "branch merged, but this ticket's change was not preserved",
-                                  "evidence": reason,
-                                  "required_fix": "re-establish the behaviour against the current integrated tree; "
-                                                  "do NOT re-merge the branch, it is already an ancestor of HEAD"}}},
+            "regression_detail": accumulated}},
             **kw)
         print(f"conflict resolver: regressed {rid} — merged, but its intent was dropped")
 
@@ -1919,7 +1923,7 @@ PYEOF
   local regressed_n
   regressed_n=$($PY - "$PROJECT" "$rnd" "$VERDICT" <<'PYEOF' 2>/dev/null || echo 0
 import json, sys
-import _praxis
+import _praxis, _ticket_state as ts
 
 proj, rnd, path = sys.argv[1], sys.argv[2], sys.argv[3]
 kw = dict(space=proj, snapshot=f"prd-{proj}")
@@ -1967,12 +1971,16 @@ for rid, detail in entries:
                  "originally written against — the failure is an integration failure, so the "
                  "original worktree's green result does not carry over.")
     summary = " ".join(parts)
+    new_finding = {"round": rnd, "source": "post-merge-verification",
+                  "reason": reason, "evidence": evidence, "required_fix": fix}
+    # R16/E3: accumulate onto this ticket's existing regression_detail — a concurrent finding
+    # (conflict resolution, ingestion) must never be clobbered by this one.
+    accumulated = ts.accumulate_regression_detail((f.get("meta") or {}).get("regression_detail"), new_finding)
     _praxis.regress_requirements(proj, [f["id"]], {f["id"]: {
         "claim_owner": None, "claim_at": None,
         "claim_heartbeat_at": None, "claim_lease_ttl": None,
         "audit_disposition": summary,
-        "regression_detail": {"round": rnd, "source": "post-merge-verification",
-                              "reason": reason, "evidence": evidence, "required_fix": fix},
+        "regression_detail": accumulated,
     }}, **kw)
     n += 1
     sys.stderr.write(f"regressed {rid} :: {(reason or 'no reason given')[:160]}\n")
@@ -2006,12 +2014,12 @@ for f in _praxis.facts_by(category="requirement", **kw) or []:
     rid = str(m.get("requirement_id") or f.get("id"))
     if rid not in want or m.get("build_state") != "finished":
         continue
-    if ts.open_finding(m) is None:
+    if not ts.open_findings(m):
         continue
-    d = ts.resolve_finding(m)
-    d["resolved_by"] = f"post-merge verification of round #{rnd}: the ticket survived the merged tree, so the finding is answered"
+    resolved_by = f"post-merge verification of round #{rnd}: the ticket survived the merged tree, so the finding is answered"
+    accumulated = ts.resolve_finding(m, resolved_by=resolved_by)
     try:
-        _praxis.write_build_state(f.get("cid") or f["id"], {"regression_detail": d}, **kw)
+        _praxis.write_build_state(f.get("cid") or f["id"], {"regression_detail": accumulated}, **kw)
         n += 1
         sys.stderr.write(f"finding resolved for {rid} by round #{rnd} verification\n")
     except Exception as e:
