@@ -92,6 +92,53 @@ STATE_REPORT_ONLY = "report_only"
 STATE_SUSPENDED = "suspended"
 STATE_ARCHIVED = "archived"
 
+# FL12/R20a — the enforcement-state transition table, as NAMED EVENTS rather than ad hoc string
+# writes. ``None`` as a from-state means "no prior check exists yet" (insertion). Every place in
+# this module that changes ``M_ENFORCEMENT_STATE`` funnels through :func:`transition_enforcement_state`
+# so "state transitions occur only via defined conditions" holds by construction: an event not
+# listed for a state raises rather than silently landing an undefined state.
+EVENT_INSERT_GATING = "insert_gating"              # DF4: proven machine or any human insert
+EVENT_INSERT_REPORT_ONLY = "insert_report_only"    # R6: unproven/fail-only machine insert
+EVENT_FIRST_REAL_PASS = "first_real_pass"          # R6: fail-only report_only's first live catch
+EVENT_PROOF_DEMOTED = "proof_demoted"              # R18/R17: quiet re-prove failure / check-defeat
+EVENT_SUSPEND = "suspend"                          # R19: auto false-positive signal / kill switch
+EVENT_RESURRECT = "resurrect"                      # R20: a recurring class resurrects its check
+EVENT_ARCHIVE = "archive"                          # explicit manual rollback only — never on silence
+
+ENFORCEMENT_TRANSITIONS: dict[tuple[str | None, str], str] = {
+    (None, EVENT_INSERT_GATING): STATE_GATING,
+    (None, EVENT_INSERT_REPORT_ONLY): STATE_REPORT_ONLY,
+    (STATE_REPORT_ONLY, EVENT_FIRST_REAL_PASS): STATE_GATING,
+    (STATE_GATING, EVENT_PROOF_DEMOTED): STATE_REPORT_ONLY,
+    (STATE_GATING, EVENT_SUSPEND): STATE_SUSPENDED,
+    (STATE_REPORT_ONLY, EVENT_SUSPEND): STATE_SUSPENDED,
+    (STATE_SUSPENDED, EVENT_RESURRECT): STATE_GATING,
+    (STATE_ARCHIVED, EVENT_RESURRECT): STATE_GATING,
+    (STATE_GATING, EVENT_ARCHIVE): STATE_ARCHIVED,
+    (STATE_REPORT_ONLY, EVENT_ARCHIVE): STATE_ARCHIVED,
+    (STATE_SUSPENDED, EVENT_ARCHIVE): STATE_ARCHIVED,
+    (STATE_ARCHIVED, EVENT_ARCHIVE): STATE_ARCHIVED,  # idempotent re-rollback of an already-archived check
+    (None, EVENT_ARCHIVE): STATE_ARCHIVED,  # a check fact predating this state machine still archives
+}
+
+
+class InvalidEnforcementTransition(ValueError):
+    """Raised when an enforcement-state event is not defined for a check's current state (R20a)."""
+
+
+def transition_enforcement_state(current_state: str | None, event: str) -> str:
+    """The single authority for what state an enforcement-state EVENT produces from a given
+    current state. Every writer of :data:`M_ENFORCEMENT_STATE` in this module calls this instead
+    of hand-picking a target state, so a code path can never land a state/event pair the table
+    does not define — it raises :class:`InvalidEnforcementTransition` instead."""
+    key = (current_state, event)
+    if key not in ENFORCEMENT_TRANSITIONS:
+        raise InvalidEnforcementTransition(
+            f"no defined enforcement-state transition for state={current_state!r} event={event!r}"
+        )
+    return ENFORCEMENT_TRANSITIONS[key]
+
+
 # KD8 anchor 4: a machine-drafted run body must validate against a declared command
 # template/allowlist at schema-validation time — evidence-steered drafting cannot smuggle an
 # arbitrary command that hash-pinning would then legitimize. A human-authored (plan-time or
@@ -460,10 +507,14 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
             check_meta["proof_attempts"] = proof_result.get("attempts")
         if drafting_transcript is not None:
             check_meta["drafting_transcript"] = redact_secrets(drafting_transcript)
-        # activate: a proven machine check (or any human-authored one) gates; unproven -> report_only.
-        check_meta[M_ENFORCEMENT_STATE] = (
-            STATE_GATING if (proof_status == "proven" or channel == "human") else STATE_REPORT_ONLY
+        # activate: a proven machine check (or any human-authored one) gates; unproven -> report_only
+        # (DF4/R6) — via the transition table (FL12), so this insertion can never land a state the
+        # table does not define.
+        insert_event = (
+            EVENT_INSERT_GATING if (proof_status == "proven" or channel == "human")
+            else EVENT_INSERT_REPORT_ONLY
         )
+        check_meta[M_ENFORCEMENT_STATE] = transition_enforcement_state(None, insert_event)
 
         written_check = write_check(lesson_text, project, meta=check_meta, source=source)
         check_id = written_check.get("id")
@@ -527,14 +578,23 @@ def widen(check_id: str, project: str, new_applies_to: list[str], *,
     return _patch_check(check_id, project, _widen_patch, identity=identity)
 
 
+def _suspend_patch(check: dict[str, Any]) -> dict[str, Any]:
+    """The transition-validated patch shared by :func:`suspend` and :func:`kill_switch` (R19/R20a):
+    reads the check's OWN current state so the SUSPEND event is checked against the transition
+    table rather than writing ``suspended`` unconditionally."""
+    current = (check.get("meta") or {}).get(M_ENFORCEMENT_STATE)
+    new_state = transition_enforcement_state(current, EVENT_SUSPEND)
+    return {M_ENFORCEMENT_STATE: new_state}
+
+
 def suspend(check_id: str, project: str, reason: str, *, identity: str | None = None) -> dict[str, Any]:
     """R19 — the automatic false-positive signal: stops gating, resurrectable. Flags push, not
     pull (R24): the suspension also raises a pending-attention flag (:func:`emit_flag`) so it is
     never something an operator has to go looking for."""
     authenticated_as = _require_authenticated(identity)
-    patch = {M_ENFORCEMENT_STATE: STATE_SUSPENDED, "suspend_reason": str(reason or ""),
-             "suspended_at": time.time()}
-    result = _patch_check(check_id, project, patch, identity=authenticated_as)
+    def _patch(check: dict[str, Any]) -> dict[str, Any]:
+        return {**_suspend_patch(check), "suspend_reason": str(reason or ""), "suspended_at": time.time()}
+    result = _patch_check(check_id, project, _patch, identity=authenticated_as)
     emit_flag(FLAG_KIND_SUSPENSION, project, {"check_id": check_id, "reason": reason},
               identity=authenticated_as)
     return result
@@ -545,12 +605,30 @@ def kill_switch(check_id: str, project: str, reason: str, *, identity: str | Non
     false-positive suspension; same resulting state, always recorded with a reason). Also raises
     a ``"suspension"`` flag (R24) — same push-not-pull guarantee as the automatic path."""
     authenticated_as = _require_authenticated(identity)
-    patch = {M_ENFORCEMENT_STATE: STATE_SUSPENDED, "kill_switch": True,
-             "kill_switch_reason": str(reason or ""), "kill_switch_at": time.time()}
-    result = _patch_check(check_id, project, patch, identity=authenticated_as)
+    def _patch(check: dict[str, Any]) -> dict[str, Any]:
+        return {**_suspend_patch(check), "kill_switch": True,
+                "kill_switch_reason": str(reason or ""), "kill_switch_at": time.time()}
+    result = _patch_check(check_id, project, _patch, identity=authenticated_as)
     emit_flag(FLAG_KIND_SUSPENSION, project, {"check_id": check_id, "reason": reason,
               "kill_switch": True}, identity=authenticated_as)
     return result
+
+
+def upgrade_on_first_pass(check_id: str, project: str, *, identity: str | None = None) -> dict[str, Any]:
+    """R6/R20a — the fail-only upgrade: a REPORT_ONLY check inserted from a machine, not-yet-proven
+    draft (fails-both / unproven at insertion) upgrades to GATING the first time it is executed for
+    real and PASSES — the report_only state was provisional pending exactly this catch, never a
+    verdict of its own. Called with the outcome of a real (non-drafting) execution; a FAILING
+    execution, a check not currently report_only, or a check that already proved (``proof_status ==
+    "proven"``) is a no-op — there is nothing to upgrade."""
+    authenticated_as = _require_authenticated(identity)
+    check = _fetch_check(check_id, project)
+    meta = check.get("meta") or {}
+    if meta.get(M_ENFORCEMENT_STATE) != STATE_REPORT_ONLY or meta.get("proof_status") == "proven":
+        return check
+    new_state = transition_enforcement_state(STATE_REPORT_ONLY, EVENT_FIRST_REAL_PASS)
+    patch = {M_ENFORCEMENT_STATE: new_state, "proof_status": "proven", "upgraded_at": time.time()}
+    return _patch_check(check_id, project, patch, identity=authenticated_as)
 
 
 def regress(project: str, ticket_ids: list[str], *, detail: dict[str, Any] | None = None,
@@ -646,7 +724,9 @@ def rollback_wave(wave_id: str, project: str, *, identity: str | None = None) ->
     now = time.time()
     deactivated = []
     for check in checks:
-        _praxis.patch_meta(check["id"], {M_ENFORCEMENT_STATE: STATE_ARCHIVED, "rolled_back_at": now,
+        current = (check.get("meta") or {}).get(M_ENFORCEMENT_STATE)
+        new_state = transition_enforcement_state(current, EVENT_ARCHIVE)
+        _praxis.patch_meta(check["id"], {M_ENFORCEMENT_STATE: new_state, "rolled_back_at": now,
                                          "rolled_back_by": authenticated_as},
                            space=project, snapshot=BUILDING_VALIDATION_SNAPSHOT)
         deactivated.append(check["id"])
@@ -959,6 +1039,79 @@ def attempt_fail_then_pass_proof(run_candidates: list[str], *, bad_artifact_meta
                 "reason": result["reason"], "attempts": attempts}
     return {"status": PROOF_CHECK_UNDRAFTABLE, "run": last_run, "flag": True,
             "reason": "vacuous-after-redraft-budget", "attempts": attempts}
+
+
+# --------------------------------------------------------------------------- FL12/KD7: re-prove cadence
+# Re-prove, don't retire: a quiet GATING check periodically re-runs against its own retained bad
+# artifact rather than being trusted forever on silence. Still-failing keeps it gating; the pinned
+# artifact having gone unavailable demotes it to report_only with a recorded reason — never a
+# silent deletion, and never ``archived`` (that state is entered only by explicit manual action,
+# R20a/KD7).
+DEFAULT_REPROVE_CADENCE_S = 7 * 86400  # weekly — overridable per call, not a hardcoded ceiling
+
+
+def due_for_reprove(meta: dict[str, Any], *, now: float | None = None,
+                    cadence_seconds: int = DEFAULT_REPROVE_CADENCE_S) -> bool:
+    """Whether a gating check has been quiet long enough to owe a re-prove pass (KD7): its last
+    proof/re-prove timestamp (falling back to its insertion time, then 0) is older than the
+    cadence window."""
+    now = now if now is not None else time.time()
+    last = meta.get("reprove_at") or meta.get("proof_attempts_at") or meta.get("createdAt") or 0
+    try:
+        last = float(last)
+    except (TypeError, ValueError):
+        last = 0.0
+    return (now - last) >= cadence_seconds
+
+
+def reprove_quiet_checks(project: str, *, now: float | None = None,
+                         cadence_seconds: int = DEFAULT_REPROVE_CADENCE_S,
+                         artifact_reader: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+                         healthy_repo_path: str | Path | None = None,
+                         executor: Callable[[str, Path], bool] | None = None,
+                         identity: str | None = None) -> list[dict[str, Any]]:
+    """KD7 — the af-build loop-end-hook-triggered re-prove sweep: every GATING check quiet past
+    ``cadence_seconds`` re-runs against its retained bad artifact (:func:`run_fail_then_pass_proof`).
+    Still-failing keeps it gating (the re-prove timestamp is bumped, R18); the pinned artifact being
+    unavailable — or the check declaring none — demotes it to REPORT_ONLY with a recorded reason
+    (never silent deletion, never ``archived``: only :func:`rollback_wave`'s explicit manual action
+    reaches that state). Returns one outcome dict per check considered."""
+    authenticated_as = _require_authenticated(identity)
+    now = now if now is not None else time.time()
+    outcomes: list[dict[str, Any]] = []
+    for check in read_checks(project):
+        meta = check.get("meta") or {}
+        if meta.get(M_ENFORCEMENT_STATE) != STATE_GATING or not due_for_reprove(
+            meta, now=now, cadence_seconds=cadence_seconds
+        ):
+            continue
+        check_id = check.get("id")
+        artifact_id = meta.get("artifact_id")
+        artifact_meta = artifact_reader(meta) if artifact_reader is not None else (
+            (read_artifact(artifact_id).get("meta") if artifact_id else None)
+        )
+        run = meta.get("run")
+        if not artifact_meta or not run:
+            new_state = transition_enforcement_state(STATE_GATING, EVENT_PROOF_DEMOTED)
+            reason = "artifact-unavailable"
+        else:
+            verdict = run_fail_then_pass_proof(
+                run, bad_artifact_meta=artifact_meta,
+                healthy_repo_path=healthy_repo_path or ".", executor=executor,
+            )
+            if verdict["status"] == "proven":
+                _praxis.patch_meta(check_id, {"reprove_at": now}, space=project,
+                                   snapshot=BUILDING_VALIDATION_SNAPSHOT)
+                outcomes.append({"check_id": check_id, "result": "kept-gating", "reason": "still-failing"})
+                continue
+            new_state = transition_enforcement_state(STATE_GATING, EVENT_PROOF_DEMOTED)
+            reason = "artifact-unavailable" if verdict.get("reason") in (
+                "pin-irreproducible", "healthy-reference-irreproducible") else verdict.get("reason")
+        _praxis.patch_meta(check_id, {M_ENFORCEMENT_STATE: new_state, "reprove_at": now,
+                                      "reprove_reason": reason, "patched_by": authenticated_as},
+                           space=project, snapshot=BUILDING_VALIDATION_SNAPSHOT)
+        outcomes.append({"check_id": check_id, "result": "demoted", "reason": reason})
+    return outcomes
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
