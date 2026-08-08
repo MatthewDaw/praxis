@@ -46,7 +46,9 @@ def repo(tmp_path_factory) -> dict:
     """A main worktree, a LINKED build worktree, and a worker tree under the MAIN one."""
     root = tmp_path_factory.mktemp("straggler").resolve()
     main, build = root / "main", root / "build"
-    run = lambda *a, **kw: subprocess.run(a, check=True, capture_output=True, cwd=kw.get("cwd", main))
+    def run(*args, **kw):
+        return subprocess.run(args, check=True, capture_output=True, cwd=kw.get("cwd", main))
+
     subprocess.run(("git", "init", "-q", str(main)), check=True, capture_output=True)
     run("git", "config", "user.email", "t@t")
     run("git", "config", "user.name", "t")
