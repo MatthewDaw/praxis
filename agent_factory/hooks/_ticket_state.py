@@ -95,7 +95,17 @@ import sys
 import time
 from typing import Any, NamedTuple, Optional
 
-import _praxis
+# ``_praxis`` is a BARE sibling import: it resolves when this file runs as a hook SCRIPT (its own
+# directory becomes sys.path[0]) but NOT when it is imported as a LIBRARY -- which
+# ``agent_factory.ingestion_api`` now does. That asymmetry shipped a subsystem whose pytest suite was
+# green while ``python -m agent_factory.ingestion_api --help`` died on ModuleNotFoundError, because
+# pytest puts ``hooks/`` on the path and a plain interpreter does not. Mirror the sibling ``src/``
+# plumbing below: try the import, and only on failure put our own directory on the path.
+try:  # pragma: no cover - import plumbing
+    import _praxis
+except ModuleNotFoundError:  # pragma: no cover - import plumbing
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _praxis
 from _praxis import PraxisUnreachable  # re-exported so gates import one place  # noqa: F401
 # Bound at import time (not read off `_praxis.` at call time) so start_ticket's mount call still
 # resolves the real space/snapshot names when a test monkeypatches `ts._praxis` to a state double.
