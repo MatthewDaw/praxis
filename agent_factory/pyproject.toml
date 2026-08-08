@@ -35,7 +35,7 @@ dev = [
 packages = ["src/agent_factory"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "."]
+pythonpath = ["src", ".", "hooks"]
 testpaths = ["tests"]
 
 # Mutation testing config (U5, KTD7). Run OUT-OF-BAND, never as part of `pytest`:
