@@ -35,7 +35,19 @@ if _REPO_ROOT not in sys.path:
 
 import _ticket_state as ts  # noqa: E402
 from _ticket_state import normalize_tag  # noqa: E402
-from knowledge.mcp.server import _normalize_applicability, _normalize_tag  # noqa: E402
+# The MCP package pulls the knowledge stack's runtime deps (httpx, dotenv, ...), which the
+# agent_factory venv deliberately does not carry. Import it through importorskip so a missing dep
+# SKIPS the two mirror lanes instead of raising at COLLECTION -- a collection error aborts the whole
+# run, which is why a plain `pytest` reported "1 error, 0 tests" while every --ignore'd invocation
+# looked green, and why the real suite ran for weeks behind a flag that hid this module entirely.
+import pytest  # noqa: E402
+
+_server = pytest.importorskip(
+    "knowledge.mcp.server",
+    reason="knowledge stack deps (httpx/dotenv) absent from the agent_factory venv",
+)
+_normalize_applicability = _server._normalize_applicability
+_normalize_tag = _server._normalize_tag
 
 
 class _DBSpy:

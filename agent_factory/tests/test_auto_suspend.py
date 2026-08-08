@@ -49,13 +49,49 @@ def test_streak_breaks_on_a_different_check():
     assert ingestion_api.regression_streak(entries, "chk-2") == 1
 
 
-def test_missing_sha_never_breaks_an_otherwise_matching_run():
+def test_missing_sha_ends_the_run_because_there_is_no_evidence_nothing_changed():
+    """D3 — a MISSING commit_sha is not evidence of sameness. Both regress entry points default
+    ``commit_sha=None`` and the shell writers supply none, so treating "no sha" as "nothing
+    changed" degenerated "N regressions with no relevant change" into plain "N regressions" and
+    auto-suspended a CORRECT gating check that had caught three genuinely different defects."""
     entries = [
         {"check_id": "chk-1"},
         {"check_id": "chk-1"},
         {"check_id": "chk-1"},
     ]
-    assert ingestion_api.regression_streak(entries, "chk-1") == 3
+    assert ingestion_api.regression_streak(entries, "chk-1") == 0
+
+
+def test_a_sha_less_entry_in_the_middle_truncates_the_run():
+    entries = [
+        {"check_id": "chk-1", "commit_sha": "sha-a"},
+        {"check_id": "chk-1"},
+        {"check_id": "chk-1", "commit_sha": "sha-a"},
+        {"check_id": "chk-1", "commit_sha": "sha-a"},
+    ]
+    assert ingestion_api.regression_streak(entries, "chk-1") == 2
+
+
+def test_an_already_resolved_entry_ends_the_run():
+    """A finding that was stamped resolved is a CLOSED one -- it is not part of a live
+    false-positive run, and counting it inflates the streak toward a wrongful suspension."""
+    entries = [
+        {"check_id": "chk-1", "commit_sha": "sha-a", "resolved": True},
+        {"check_id": "chk-1", "commit_sha": "sha-a", "resolved": False},
+        {"check_id": "chk-1", "commit_sha": "sha-a", "resolved": False},
+    ]
+    assert ingestion_api.regression_streak(entries, "chk-1") == 2
+
+
+def test_a_correct_check_catching_three_different_defects_is_never_auto_suspended(_stub_transport):
+    """The D3 acceptance case, end to end through the decision function: three regressions with no
+    recorded sha (exactly what the shell writers produce today) must NOT suspend."""
+    entries = [{"check_id": "chk-1", "reason": f"defect {i}"} for i in range(3)]
+    result = ingestion_api.attempt_auto_suspend("chk-1", "proj", "ticket-1", entries)
+    assert result["status"] == "observed"
+    assert result["streak"] == 0
+    assert not _stub_transport["patches"], "a healthy check must never be suspended on no evidence"
+    assert not _stub_transport["written"], "no false-positive lesson may be written either"
 
 
 def test_empty_history_streaks_zero():
@@ -214,6 +250,15 @@ def _fake_praxis(monkeypatch):
         return {"count": len(ids)}
 
     monkeypatch.setattr(_praxis, "regress_requirements", fake_regress_requirements)
+
+    def fake_write_build_state(cid, patch, **kw):
+        # D2: the single reconciled regress path parks a ticket at the regress-cycle cap, which
+        # writes build state directly -- this double must cover that write too, or the cap trip
+        # would escape to a real backend.
+        tickets.setdefault(cid, {"meta": {}})["meta"].update(patch)
+        return {}
+
+    monkeypatch.setattr(_praxis, "write_build_state", fake_write_build_state)
 
     def fake_facts_by(category=None, meta=None, **kw):
         if category == ingestion_api.CHECK_CATEGORY and meta and meta.get("check_id"):

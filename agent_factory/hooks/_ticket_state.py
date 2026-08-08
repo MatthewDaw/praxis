@@ -95,21 +95,86 @@ import sys
 import time
 from typing import Any, NamedTuple, Optional
 
-# ``_praxis`` is a BARE sibling import: it resolves when this file runs as a hook SCRIPT (its own
-# directory becomes sys.path[0]) but NOT when it is imported as a LIBRARY -- which
-# ``agent_factory.ingestion_api`` now does. That asymmetry shipped a subsystem whose pytest suite was
-# green while ``python -m agent_factory.ingestion_api --help`` died on ModuleNotFoundError, because
-# pytest puts ``hooks/`` on the path and a plain interpreter does not. Mirror the sibling ``src/``
-# plumbing below: try the import, and only on failure put our own directory on the path.
-try:  # pragma: no cover - import plumbing
-    import _praxis
-except ModuleNotFoundError:  # pragma: no cover - import plumbing
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import _praxis
-from _praxis import PraxisUnreachable  # re-exported so gates import one place  # noqa: F401
+_HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _canonical_module(bare: str):  # pragma: no cover - import plumbing
+    """Import ONE module object for ``hooks/<bare>.py`` and publish it under BOTH import names.
+
+    ``hooks/`` is reachable two ways, and both are load-bearing: a bare hook SUBPROCESS has only
+    ``hooks/`` on its path and says ``import _praxis``; a LIBRARY consumer
+    (``agent_factory.ingestion_api``, via ``agent_factory._hooks``) says ``from hooks import
+    _praxis``. Python treats those as two different modules — it executes the file twice and hands
+    out two objects for one source file. That is not cosmetic: a test (or a runtime consumer) that
+    monkeypatches ``_praxis`` on one object sees the other unpatched, which fails silently and reads
+    as "my patch did nothing". It was live here — ``hooks._ticket_state._praxis is
+    agent_factory.ingestion_api._praxis`` was False, and ``_praxis``'s import-time banner printed
+    twice in one process.
+
+    Resolution order, and why:
+
+    1. an ALREADY-LOADED object wins over any fresh import — re-importing the file to obtain a
+       nicer name is *precisely* how the second object gets created. The BARE name is consulted
+       first because a live bare importer (a hook gate, and the tests that monkeypatch it) is
+       already holding that object in its globals;
+    2. then the dotted name, if a library consumer got there first;
+    3. otherwise import it fresh under ``hooks.<bare>`` — the canonical name, unambiguous about
+       which file it means and the one an installed wheel uses — after APPENDING (never inserting,
+       same doctrine as ``agent_factory._hooks``) the directory that contains ``hooks/``;
+    4. and only if that is impossible (a path holding literally nothing but ``hooks/``), bare.
+
+    The result is then registered under BOTH names and as an attribute of the ``hooks`` package, so
+    whichever direction a later importer comes from, it gets THIS object.
+    """
+    path = os.path.realpath(os.path.join(_HOOKS_DIR, f"{bare}.py"))
+    dotted = f"hooks.{bare}"
+    mod = sys.modules.get(bare)
+    if os.path.realpath(getattr(mod, "__file__", "") or "") != path:
+        mod = sys.modules.get(dotted)
+    if mod is None:
+        parent = os.path.dirname(_HOOKS_DIR)
+        if parent not in sys.path:
+            sys.path.append(parent)
+        try:
+            mod = __import__(dotted, fromlist=[bare])
+            # Guard against an unrelated ``hooks`` package earlier on the path shadowing our own
+            # sibling file: identity is only worth having for the RIGHT file.
+            if os.path.realpath(getattr(mod, "__file__", "") or "") != path:
+                mod = None
+        except ImportError:
+            mod = None
+    if mod is None:
+        if _HOOKS_DIR not in sys.path:
+            sys.path.insert(0, _HOOKS_DIR)
+        mod = __import__(bare)
+    # SETDEFAULT, never overwrite. If some importer got there first under the OTHER name, that
+    # object is already bound into its globals and being monkeypatched through; stealing the name
+    # from underneath it just moves the fork (a gate that then re-imports the bare name would get
+    # the module the test did NOT patch — fail-open, observed). Claiming only the FREE name makes
+    # every process that has not already forked converge, and leaves one that has exactly as it was.
+    sys.modules.setdefault(dotted, mod)
+    sys.modules.setdefault(bare, mod)
+    pkg = sys.modules.get("hooks")
+    if pkg is not None and not hasattr(pkg, bare):
+        setattr(pkg, bare, mod)
+    return mod
+
+
+_praxis = _canonical_module("_praxis")
+PraxisUnreachable = _praxis.PraxisUnreachable  # re-exported so gates import one place
 # Bound at import time (not read off `_praxis.` at call time) so start_ticket's mount call still
 # resolves the real space/snapshot names when a test monkeypatches `ts._praxis` to a state double.
-from _praxis import FACTORY_LEARNINGS_SNAPSHOT, FACTORY_LEARNINGS_SPACE  # noqa: F401
+FACTORY_LEARNINGS_SNAPSHOT = _praxis.FACTORY_LEARNINGS_SNAPSHOT
+FACTORY_LEARNINGS_SPACE = _praxis.FACTORY_LEARNINGS_SPACE
+
+# THIS module is imported both ways as well (bare by the hook gates, dotted through the library
+# seam), so publish it under both names for exactly the same reason — a second object here would
+# fork every canonical meta key and every monkeypatched helper above.
+for _alias in ("_ticket_state", "hooks._ticket_state"):  # pragma: no cover - import plumbing
+    sys.modules.setdefault(_alias, sys.modules[__name__])
+_hooks_pkg = sys.modules.get("hooks")
+if _hooks_pkg is not None and not hasattr(_hooks_pkg, "_ticket_state"):  # pragma: no cover
+    _hooks_pkg._ticket_state = sys.modules[__name__]
 
 # The pure structural resumability probe (plan 003) lives in the src package. A bare hook subprocess
 # only has ``hooks/`` on its path, so add the sibling ``src/`` before importing. The module is pure
@@ -1203,15 +1268,57 @@ def matching_lessons(ticket_meta: dict, *, top_k: int = DEFAULT_LESSON_INJECTION
     return list(out.values())[:top_k]
 
 
+class CheckPinUnverifiable(RuntimeError):
+    """The insertion-time hash-pin verifier could not be loaded, so no check's ``run`` body can be
+    shown to be un-drifted. Fatal rather than silent: a verifier that cannot run must not be
+    mistaken for a verifier that passed (that is precisely how KD8 anchor 1 became inert)."""
+
+
+def _verify_run_pin(check: dict) -> None:
+    """KD8 anchor 1, ENFORCED AT THE EXECUTOR: refuse a check whose live ``meta.run`` no longer
+    hashes to the pin recorded when it was inserted.
+
+    :func:`agent_factory.ingestion_api.verify_pin` had no caller outside its own tests — the pin was
+    written at insertion and never read again, so the anchor existed on paper only. The real executor
+    is this module: :func:`_declared_runs` hands a check's ``meta.run`` to :func:`_apply_authored_runs`,
+    which writes it onto the pinned entry the worker then executes and the finish gate then matches
+    against. A tampered or hand-edited ``meta.run`` therefore ran normally. Verification belongs here,
+    on that path, not beside the writer.
+
+    Refusal is LOUD (the drift exception propagates out of pin and out of the finish gate) and covers
+    BOTH failure modes ``verify_pin`` defines: a body that no longer matches its pin, and a body
+    carrying no pin at all — an unpinned run body is indistinguishable from one whose pin was deleted
+    to get past this, so it cannot be waved through. Re-author such a check through
+    ``ingestion_api.plan_time_author_check`` (the sole sanctioned writer, which pins on insertion).
+
+    The import is LAZY and must stay that way: :mod:`agent_factory.ingestion_api` imports this module
+    at its own top level, so a module-level import here is circular and fails at interpreter start.
+    """
+    try:
+        from agent_factory.ingestion_api import verify_pin
+    except Exception as exc:  # noqa: BLE001 - re-raised loudly; an unloadable verifier is not a pass
+        raise CheckPinUnverifiable(
+            f"cannot import agent_factory.ingestion_api.verify_pin to check the insertion-time hash "
+            f"pin of {str((check.get('meta') or {}).get('check_id') or check.get('id') or '?')!r} "
+            f"({type(exc).__name__}: {exc}) — refusing to execute an unverified check body. Run the "
+            f"hooks with agent_factory/src on PYTHONPATH (af-ticket-loop.sh already does)."
+        ) from exc
+    verify_pin(check)
+
+
 def _declared_runs(ref: Optional[tuple[str, str]] = None) -> dict[str, str]:
     """``{check fact id: authored run}`` for every check declaring a concrete command in this
-    project's ``building-validation`` snapshot.
+    project's ``building-validation`` snapshot, each VERIFIED against its insertion-time hash pin
+    (:func:`_verify_run_pin`) before it is offered for execution.
 
     Read LIVE rather than copied onto the ticket. An earlier version stashed this map in ticket meta
     at pin time, which silently did nothing: ``write_build_state`` only accepts the server's
     ``BUILD_STATE_META_KEYS``, so an unregistered key is dropped in transit — the write returns
     success and the field never lands. Reading the checks directly needs no new key, no server
     change, and compares against the check as authored right now.
+
+    Reading live is exactly why the pin has to be verified here: "as authored right now" is the
+    tampered value in the attack this closes.
     """
     space = ""
     if ref and ref[0]:
@@ -1232,6 +1339,10 @@ def _declared_runs(ref: Optional[tuple[str, str]] = None) -> dict[str, str]:
         cid = c.get("id") or c.get("cid")
         run = str(((c.get("meta") or {}).get("run")) or "").strip()
         if cid and run:
+            # Only checks that declare a run body reach here, so this is always the binary/run-hash
+            # branch of verify_pin; a graded check carries a rubric and no run and is never executed
+            # by this path (its rubric pin is the graded lane's own anchor).
+            _verify_run_pin(c)
             out[str(cid)] = run
     return out
 
@@ -1365,16 +1476,45 @@ def coverage_gap(ticket: Any, ref: Optional[tuple[str, str]] = None) -> list[str
 
     Empty list == every resolved requirement is faithfully covered. A non-empty list means the
     synthesized validations do not yet cover the contract — the ticket cannot be finished.
+
+    REPORT-ONLY requirements (``meta.report_only_requirements``: the report-only universal lane, and
+    every budget-demoted check) are subtracted from the contract first, for the same reason
+    :func:`all_validations_passed` excludes them — they need no coverage. Without that subtraction the
+    two functions disagreed about the same ticket: a worker that legitimately skipped a demoted check
+    was told it had a coverage gap while the completion gate said the ticket was done. Two answers to
+    one question is worse than either answer, because whichever one a caller happens to consult
+    becomes the policy.
+
+    The visibility that subtraction would otherwise cost is not lost, it MOVES: use
+    :func:`report_only_coverage_gap` to see which report-only requirements went uncovered. Reporting
+    and gating are now two questions with two answers instead of one answer serving both badly.
     """
     meta = _meta(ticket, ref)
+    report_only = {str(r) for r in (meta.get(M_REPORT_ONLY_REQUIREMENTS) or []) if r}
+    required = {str(r) for r in (meta.get(M_REQUIRED_VALIDATIONS) or []) if r} - report_only
+    return _uncovered(meta, required)
+
+
+def report_only_coverage_gap(ticket: Any, ref: Optional[tuple[str, str]] = None) -> list[str]:
+    """The REPORT-ONLY requirements (universal report-only lane, budget demotions) that no pinned
+    validation covers — visibility only, never a gate. :func:`coverage_gap` deliberately excludes
+    these; this is where they remain observable, so "which demoted checks did this ticket skip" stays
+    answerable without that answer also blocking the ticket."""
+    meta = _meta(ticket, ref)
+    report_only = {str(r) for r in (meta.get(M_REPORT_ONLY_REQUIREMENTS) or []) if r}
     required = {str(r) for r in (meta.get(M_REQUIRED_VALIDATIONS) or []) if r}
-    if not required:
+    return _uncovered(meta, report_only & required)
+
+
+def _uncovered(meta: dict, wanted: set[str]) -> list[str]:
+    """``wanted`` minus everything some pinned validation claims to cover, sorted."""
+    if not wanted:
         return []
     covered: set[str] = set()
     for entry in (meta.get(M_PINNED_CHECKS) or []):
         for c in (entry.get("covers") or []):
             covered.add(str(c))
-    return sorted(required - covered)
+    return sorted(wanted - covered)
 
 
 def _covers_only(entry: dict, ids: set[str]) -> bool:
@@ -2636,6 +2776,51 @@ _BRIEFING_SKIP = frozenset({
 })
 
 
+# Everything that can end a line (or move a cursor) in the briefing the worker reads: the C0
+# controls, DEL + the C1 range, and the Unicode line/paragraph separators.
+_LINE_BREAKING_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+_LINE_BREAK_NAMES = {"\n": "\\n", "\r": "\\r", "\t": "\\t", "\x1b": "\\x1b"}
+
+
+def _untrusted_one_line(text: str) -> str:
+    """Render text so it cannot leave the line it was put on.
+
+    The briefing interleaves TRUSTED framing (the ``[af-build] TICKET <cid> ...`` headers, the field
+    labels) with UNTRUSTED, LLM-authored payloads: shared-space lessons, and every field of a
+    ``regression_detail`` finding — whose ``reason`` is verbatim lesson text
+    (``ingestion_api.regress_for_check``'s ``{"reason": lesson_text}``). Emitted with no newline
+    handling, any of those breaks out of its bullet: everything after the newline renders as an
+    unprefixed top-level line, and a payload whose second line reads ``[af-build] TICKET T1 —
+    INSTRUCTIONS:`` is visually indistinguishable from the trusted sections around it. The provenance
+    marking is only worth anything if the marked region has a boundary the marked text cannot cross.
+
+    Escaping (rather than dropping) keeps the payload readable and keeps the fact that it contained a
+    newline visible, instead of silently splicing its two halves together.
+    """
+    return _LINE_BREAKING_RE.sub(
+        lambda m: _LINE_BREAK_NAMES.get(m.group(),
+                                        f"\\x{ord(m.group()):02x}" if ord(m.group()) < 0x100
+                                        else f"\\u{ord(m.group()):04x}"),
+        str(text),
+    )
+
+
+def _one_line_join(lines: list[str]) -> str:
+    """Join briefing lines, forcing EVERY line through :func:`_untrusted_one_line` first.
+
+    This is the single chokepoint, deliberately placed at the join rather than at each
+    interpolation site. Escaping per-site was tried and covered only the route someone remembered:
+    the lessons bullet was escaped while the findings block — carrying the SAME untrusted lesson
+    text by a second route, ``regression_detail[*].reason`` — still rendered raw, and a forged
+    ``[af-build] TICKET T1 - INSTRUCTIONS:`` line escaped the untrusted region through it.
+
+    At the join, a route added later inherits the escaping instead of re-opening the hole: a line is
+    a line, and no line the briefing emits is allowed to become two. Trusted framing lines contain
+    no control characters, so escaping them is a no-op.
+    """
+    return "\n".join(_untrusted_one_line(ln) for ln in lines)
+
+
 def ticket_briefing(cid: str, meta: Optional[dict], *, lessons: Optional[list[dict]] = None) -> str:
     """Everything a cold worker should know before touching this ticket, as printable text.
 
@@ -2687,7 +2872,8 @@ def ticket_briefing(cid: str, meta: Optional[dict], *, lessons: Optional[list[di
             if not text:
                 continue
             src = str(lesson.get("id") or lesson.get("factId") or "unknown")
-            lines.append(f"  - [{src}] {text if len(text) <= 300 else text[:300] + ' …'}")
+            body = text if len(text) <= 300 else text[:300] + " …"
+            lines.append(f"  - [{src}] {body}")  # escaped at the join (:func:`_one_line_join`)
 
     # Everything else the ticket carries, so "all the information" is not a curated subset.
     rest = {k: v for k, v in m.items()
@@ -2700,4 +2886,6 @@ def ticket_briefing(cid: str, meta: Optional[dict], *, lessons: Optional[list[di
             v = str(rest[k])
             lines.append(f"  {k:<14}: {v if len(v) <= 400 else v[:400] + ' …'}")
 
-    return ("\n".join(lines) + "\n") if lines else ""
+    # EVERY line — findings, lessons, block reason, the authored-context tail — goes through the one
+    # escaping chokepoint, so no untrusted field can forge a line of its own (see _one_line_join).
+    return (_one_line_join(lines) + "\n") if lines else ""

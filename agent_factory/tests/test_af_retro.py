@@ -10,6 +10,7 @@ list and records who/when.
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -180,6 +181,92 @@ def test_gating_vs_demoted_and_undraftable_rate() -> None:
     assert af_retro.check_undraftable_rate(checks) == pytest.approx(0.5)
 
 
+def test_a_check_with_no_recorded_enforcement_state_is_not_counted_as_demoted() -> None:
+    """D3 — `unknown` means the fact predates FL12's state machine, NOT that something demoted it.
+    Counting it as demoted inflated the enforcement-decay ratio in the alarming direction."""
+    checks = [
+        {"meta": {"enforcement_state": "gating"}},
+        {"meta": {}},                                   # no enforcement_state recorded at all
+        {"meta": {"enforcement_state": "archived"}},
+    ]
+    counts = af_retro.enforcement_counts(checks)
+    assert counts[af_retro.UNKNOWN_STATE] == 1
+    assert af_retro.gating_vs_demoted(counts) == (1, 1)
+    assert af_retro.unclassified_count(counts) == 1
+
+
+def test_every_stateless_check_reports_a_zero_demoted_ratio_not_a_total_wipeout() -> None:
+    """The worst case the old classification produced: a project whose checks all predate the
+    state machine reported 0:N — "enforcement has entirely decayed" — when nothing was demoted."""
+    counts = af_retro.enforcement_counts([{"meta": {}} for _ in range(5)])
+    assert af_retro.gating_vs_demoted(counts) == (0, 0)
+    assert af_retro.unclassified_count(counts) == 5
+
+
+# --------------------------------------------------------------------------- R23 run record (D4)
+
+
+def test_parse_since_accepts_durations_epochs_and_iso() -> None:
+    now = time.time()
+    assert af_retro.parse_since("24h") == pytest.approx(now - 86400, abs=5)
+    assert af_retro.parse_since("7d") == pytest.approx(now - 7 * 86400, abs=5)
+    assert af_retro.parse_since("90m") == pytest.approx(now - 5400, abs=5)
+    assert af_retro.parse_since("1700000000") == 1700000000.0
+    assert af_retro.parse_since("2024-01-02T03:04:05") == datetime(2024, 1, 2, 3, 4, 5).timestamp()
+    with pytest.raises(ValueError):
+        af_retro.parse_since("last tuesday")
+
+
+def test_run_record_counts_only_events_inside_the_window() -> None:
+    """The per-run record scopes by the timestamp the transition itself wrote — an older event of
+    the same kind is outside the window and must not be counted into this run."""
+    now = time.time()
+    old, new = now - 10 * 86400, now - 60
+    checks = [
+        {"meta": {"enforcement_state": "gating", "promoted_at": new, "proof_status": "proven",
+                  "createdAt": new}},
+        {"meta": {"enforcement_state": "gating", "promoted_at": old, "proof_status": "proven",
+                  "createdAt": old}},
+        {"meta": {"enforcement_state": "suspended", "suspended_at": new, "createdAt": new,
+                  "proof_status": "unproven"}},
+        {"meta": {"enforcement_state": "report_only", "check_defeat_at": new, "createdAt": old,
+                  "proof_status": "unproven"}},
+        {"meta": {"enforcement_state": "gating", "widened_at": new, "createdAt": old}},
+    ]
+    flags = [{"meta": {"at": new}}, {"meta": {"at": old}}]
+    lessons = [{"meta": {"createdAt": new}}, {"meta": {"createdAt": old}}]
+
+    record = af_retro.run_record(checks, flags, lessons, since=now - 86400)
+    assert record["events"] == {"activated": 1, "suspended": 1, "widened": 1, "demoted": 1,
+                                "archived": 0}
+    assert record["flags_raised"] == 1
+    assert record["lessons_ingested"] == 1
+    assert dict(record["proof_outcomes"]) == {"proven": 1, "unproven": 1}
+
+    # the same corpus over all history counts the older events too
+    everything = af_retro.run_record(checks, flags, lessons, since=None)
+    assert everything["events"]["activated"] == 2
+    assert everything["flags_raised"] == 2
+    assert everything["lessons_ingested"] == 2
+
+
+def test_run_record_reports_undated_events_instead_of_assuming_a_window() -> None:
+    """A check that IS suspended but records no `suspended_at` cannot be placed in or out of the
+    window; it is reported as undated rather than counted either way."""
+    now = time.time()
+    checks = [{"meta": {"enforcement_state": "suspended"}},
+              {"meta": {"enforcement_state": "gating"}}]
+    record = af_retro.run_record(checks, [], [{"meta": {}}], since=now - 86400)
+    assert record["events"]["suspended"] == 0
+    assert record["undated"]["suspended"] == 1
+    assert record["undated"]["activated"] == 1
+    assert record["lessons_undated"] == 1
+    assert record["proof_outcomes_undated"] == 2
+    # the dimensions this corpus genuinely cannot answer are named, never faked as zero
+    assert any("regressions" in gap for gap in record["gaps"])
+    assert any("run identity" in gap for gap in record["gaps"])
+
+
 def test_check_undraftable_rate_is_zero_with_no_machine_checks() -> None:
     assert af_retro.check_undraftable_rate([{"meta": {"channel": "human"}}]) == 0.0
 
@@ -249,6 +336,40 @@ def test_acceptance_suspension_flag_lifecycle_end_to_end(
     final_out = capsys.readouterr().out
     assert "proj-b" in final_out and "check-defeat" in final_out
     assert "proj-a" not in final_out
+
+
+def test_cli_report_prints_the_run_record_scoped_by_since(
+    store: _FakeStore, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Through `af_retro.main` — the entry point `python -m agent_factory.af_retro` runs — a
+    project report carries the R23 run record, and `--since` scopes it."""
+    monkeypatch.setattr(_praxis, "context", lambda *a, **kw: [])
+    now = time.time()
+    store.facts["c1"] = {"id": "c1", "category": "check", "meta": {
+        "check_id": "c1", "enforcement_state": "suspended", "suspended_at": now - 30,
+        "createdAt": now - 30, "proof_status": "proven"}}
+    store.facts["c2"] = {"id": "c2", "category": "check", "meta": {
+        "check_id": "c2", "enforcement_state": "suspended", "suspended_at": now - 30 * 86400,
+        "createdAt": now - 30 * 86400, "proof_status": "proven"}}
+
+    def record_line(out: str) -> str:
+        return next(ln for ln in out.splitlines() if ln.startswith("af-retro: run record ("))
+
+    assert af_retro.main(["proj-a", "--since", "24h"]) == 0
+    scoped = capsys.readouterr().out
+    assert "suspended=1" in record_line(scoped)   # only the recent suspension is in the window
+    assert "since " in record_line(scoped)
+    assert "run record GAP" in scoped             # unanswerable dimensions stated, never faked
+
+    assert af_retro.main(["proj-a"]) == 0
+    whole = capsys.readouterr().out
+    assert "suspended=2" in record_line(whole)    # whole history
+    assert "all history" in record_line(whole)
+
+
+def test_cli_rejects_an_unparseable_since() -> None:
+    with pytest.raises(SystemExit):
+        af_retro.main(["proj-a", "--since", "whenever"])
 
 
 def test_cli_report_requires_project_without_flags() -> None:

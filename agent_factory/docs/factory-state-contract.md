@@ -222,7 +222,12 @@ validation must pass (external signal) before `finished`.**
   binary floor gates, human-authored gates).
 - **`candidate:true` → a NON-GATING POOL entry.** Excluded from `required_validations`; returned only by
   the deterministic `pool_candidates(ticket, project, scope)` query. Two writers feed this pool, each via
-  `af-intake-build-validation` (single-writer lock): `af-intake-plan` (whole-plan B1 findings) and
+  `af-ingest author-check` (single-writer lock — the `af-intake-build-validation` skill that
+  used to hold it was deleted; a skill could not enforce the authenticated identity or the content
+  hash-pin, so the lock now lives in the one function every caller goes through, reached from a shell
+  as `af-ingest author-check …` / `python -m agent_factory.ingestion_api author-check …`):
+  `af-intake-plan`
+  (whole-plan B1 findings) and
   `af-build`'s ticket-local search — both author `candidate:true` + a `severity` hint and make NO gating
   decision. At build-time synthesis a separate function, `rubric_assembly.assemble(pool_candidates(...),
   budget, covers)`, DETERMINES what gates: it promotes the highest-severity candidates (up to `budget`)

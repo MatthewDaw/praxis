@@ -67,10 +67,16 @@ Nothing in the spine cares about existing vs. empty code. A refactor is just a p
 1. **Planning eval** (this thread) — coverage of a plan reproduced from `docs/inspiration/` vs. the golden. See `03-eval-agent.md`. Lives in `evals/plan_repro/`.
 2. **Validation harness / checks on `../team-app`** — BUILT + wired live
    (`src/agent_factory/validation_target.py` + `af-build` wiring + the
-   `af-intake-build-validation` command; see
+   `af-ingest author-check` entry point; see
    [`06-validation-harness.md`](06-validation-harness.md)). **Checks live entirely in Praxis**
-   (`category="check"`, `scope="validation"`, `meta.applies_to`/`meta.run`); `af-intake-build-validation` is the write
-   path. `af-build` pulls checks from Praxis + regresses bound tickets, runs each
+   (`category="check"`, `scope="validation"`, `meta.applies_to`/`meta.run`);
+   `af-ingest author-check` is the write path (the `af-intake-build-validation` skill
+   that used to hold it was deleted — one authenticated, hash-pinning function now serves every
+   caller, so there is no second channel to keep in sync). Run it as
+   `af-ingest author-check "<criterion>" --project <project> --run "<cmd>"`, or
+   `python -m agent_factory.ingestion_api author-check …` where the console script is not installed —
+   the deletion left the replacement reachable only by its Python function name for a full round,
+   which is not an invocation an operator or an agent at a shell has. `af-build` pulls checks from Praxis + regresses bound tickets, runs each
    `meta.run` as a blocking gate at verify time, `build_completeness_gate`
    forces the re-pick. Insert a check → ticket regresses → coding agent must make it pass. No file.
 3. **The shared coverage engine** (`evals/plan_repro/coverage.py`) — built once, instantiated by both planning-coverage and validation-coverage. Design: [`05-coverage-engine.md`](05-coverage-engine.md) (per-part sweep + thorough per-part query + targeted adversarial; scales to thousands of insights).

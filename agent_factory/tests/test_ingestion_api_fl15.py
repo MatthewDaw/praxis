@@ -42,9 +42,19 @@ class _FakeStore:
         return f"fake-{self._n}"
 
     def seed_check(self, check_id: str, meta: dict[str, Any]) -> dict[str, Any]:
-        fact = {"id": check_id, "category": "check", "meta": dict(meta)}
-        self.facts[check_id] = fact
+        """Storage id deliberately DISTINCT from the authored ``meta.check_id`` — Praxis mints its
+        own fact id, and seeding them equal is what let the D1 check_id contract bug hide."""
+        fid = f"fact-{check_id}"
+        fact = {"id": fid, "category": "check", "meta": {"check_id": check_id, **dict(meta)}}
+        self.facts[fid] = fact
         return fact
+
+    def check(self, check_id: str) -> dict[str, Any]:
+        """Look a check up the way production does: by AUTHORED ``meta.check_id``."""
+        for fact in self.facts.values():
+            if fact["category"] == "check" and fact["meta"].get("check_id") == check_id:
+                return fact
+        raise KeyError(f"no check with meta.check_id={check_id!r}")
 
     def seed_class(self, class_id: str, label: str, meta: dict[str, Any] | None = None) -> dict[str, Any]:
         fact = {"id": class_id, "category": ingestion_api.CLASS_CATEGORY, "text": label,
@@ -122,7 +132,7 @@ def test_find_resurrectable_check_finds_archived_and_suspended(store: _FakeStore
     store.seed_check("c-archived", {"failure_class_id": "cls-1",
                                     ingestion_api.M_ENFORCEMENT_STATE: ingestion_api.STATE_ARCHIVED})
     found = ingestion_api.find_resurrectable_check("cls-1", "proj")
-    assert found is not None and found["id"] == "c-archived"
+    assert found is not None and found["meta"]["check_id"] == "c-archived"
 
 
 def test_resurrect_check_carries_prior_proof_history_forward(store: _FakeStore) -> None:
@@ -144,9 +154,9 @@ def test_attempt_resurrect_stays_observe_only_before_calibration_is_armed(store:
     store.seed_check("c1", {"failure_class_id": "cls-1",
                             ingestion_api.M_ENFORCEMENT_STATE: ingestion_api.STATE_ARCHIVED})
     result = ft.attempt_resurrect("cls-1", "proj")
-    assert result == {"resurrected": False, "check": store.facts["c1"], "class_id": "cls-1",
+    assert result == {"resurrected": False, "check": store.check("c1"), "class_id": "cls-1",
                       "reason": "calibration-not-armed"}
-    assert store.facts["c1"]["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_ARCHIVED
+    assert store.check("c1")["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_ARCHIVED
 
 
 def test_attempt_resurrect_with_no_candidate_reports_no_resurrectable_check(
@@ -194,8 +204,8 @@ def test_ingest_resurrects_the_archived_check_of_a_matching_class_instead_of_dra
     assert result["resurrected"] is True
     assert result["check_id"] == "c1"
     assert after == before  # no NEW check was drafted
-    assert store.facts["c1"]["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_GATING
-    assert store.facts["c1"]["meta"]["run"] == "pytest tests/test_pool.py"  # history preserved verbatim
+    assert store.check("c1")["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_GATING
+    assert store.check("c1")["meta"]["run"] == "pytest tests/test_pool.py"  # history preserved verbatim
 
 
 def test_ingest_drafts_normally_when_no_class_matches(store: _FakeStore) -> None:
@@ -205,4 +215,4 @@ def test_ingest_drafts_normally_when_no_class_matches(store: _FakeStore) -> None
     )
     assert result.get("resurrected") is False
     assert result["check_id"] is not None
-    assert store.facts[result["check_id"]]["meta"]["failure_class_id"] is None
+    assert store.check(result["check_id"])["meta"]["failure_class_id"] is None

@@ -33,7 +33,7 @@ import os
 from collections.abc import Callable
 from typing import Any
 
-from hooks import _ticket_state as _ts
+from agent_factory._hooks import _ticket_state as _ts
 
 from agent_factory import ingestion_api
 
@@ -126,5 +126,17 @@ def learn_bulk(complaints: list[dict[str, Any]], project: str | None = None, *,
     for entry in complaints:
         entry = dict(entry)
         text = entry.pop("complaint_text")
+        # The verb-allowlist waiver is NOT caller-supplied data. `learn` deliberately exposes no
+        # parameter that reaches `human_verbatim`, precisely because THIS module drafts run bodies
+        # from free-text prose -- so a waiver granted here is self-granted, not human-reviewed.
+        # Bulk mode splats its entries, which would have made one extra dict key the back door
+        # around the whole verb allowlist. Refuse loudly rather than dropping it silently: a caller
+        # who passed it believes the waiver is in effect, and a quiet strip would leave them wrong.
+        if "human_verbatim" in entry:
+            raise ValueError(
+                "human_verbatim cannot be set from a bulk entry — the verb-allowlist waiver is an "
+                "explicit operator decision, and af-learn drafts its run bodies from prose, so a "
+                "waiver requested here would be granted by the drafter to itself"
+            )
         results.append(ingestion_api.ingest(text, target, channel="human", identity=identity, **entry))
     return results

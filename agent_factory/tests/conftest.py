@@ -119,8 +119,29 @@ class FakeCheckStore:
         self.calls: list[tuple[str, str]] = []
         self._n = 0
 
-    def seed_check(self, check_id: str, meta: dict[str, Any]) -> None:
-        self.facts[check_id] = {"id": check_id, "category": "check", "meta": dict(meta)}
+    def seed_check(self, check_id: str, meta: dict[str, Any]) -> str:
+        """Seed one check whose STORAGE id is deliberately DIFFERENT from its AUTHORED
+        ``meta.check_id``.
+
+        Praxis mints its own fact id on write, so those two identifiers never coincide in
+        production — and the whole ``check_id`` contract (every lifecycle verb resolves its
+        argument through ``_fetch_check``, which queries ``meta={"check_id": ...}``) is only
+        testable when they differ. Seeding ``id == check_id``, as this double used to, made a verb
+        handed the WRONG identifier look like it worked. Use :meth:`check` to read one back the way
+        production looks it up. Returns the storage id."""
+        fid = f"fact-{check_id}"
+        self.facts[fid] = {"id": fid, "category": "check",
+                          "meta": {"check_id": check_id, **dict(meta)}}
+        return fid
+
+    def check(self, check_id: str) -> dict[str, Any]:
+        """Look a check up by AUTHORED ``meta.check_id`` — the only identifier production resolves
+        by. Raises ``KeyError`` when nothing carries it, so a test cannot accidentally assert
+        against a storage id."""
+        for fact in self.facts.values():
+            if fact["category"] == "check" and fact["meta"].get("check_id") == check_id:
+                return fact
+        raise KeyError(f"no check with meta.check_id={check_id!r}")
 
     def seed_lesson(self, lesson_id: str, meta: dict[str, Any] | None = None) -> None:
         self.facts[lesson_id] = {"id": lesson_id, "category": "lesson", "meta": dict(meta or {})}

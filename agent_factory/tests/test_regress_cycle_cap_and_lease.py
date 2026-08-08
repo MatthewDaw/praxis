@@ -124,7 +124,7 @@ def test_regress_for_check_within_cap_regresses_normally_and_stamps_cycle_count(
         "proj", ["t1"], "check-x", {"reason": "still fails"}, cap=3,
     )
 
-    assert out == {"regressed": ["t1"], "parked": []}
+    assert out["regressed"] == ["t1"] and out["parked"] == []
     meta = backend.tickets["t1"]["meta"]
     assert meta["build_state"] == "incomplete"
     assert meta["regress_cycles"] == {"check-x": 1}
@@ -151,7 +151,7 @@ def test_regress_for_check_trips_cap_parks_blocked_with_full_history_and_emits_f
         "proj", ["t1"], "check-x", {"reason": "attempt 4 still fails"}, cap=3,
     )
 
-    assert out == {"regressed": [], "parked": ["t1"]}
+    assert out["regressed"] == [] and out["parked"] == ["t1"]
     meta = backend.tickets["t1"]["meta"]
     assert meta["build_state"] == "blocked"
     assert "block_reason" in meta and "cap" in meta["block_reason"]
@@ -183,7 +183,7 @@ def test_a_different_check_on_the_same_ticket_has_its_own_independent_cycle_coun
 
     out = ingestion_api.regress_for_check("proj", ["t1"], "check-y", {"reason": "new check"}, cap=3)
 
-    assert out == {"regressed": ["t1"], "parked": []}
+    assert out["regressed"] == ["t1"] and out["parked"] == []
     assert backend.tickets["t1"]["meta"]["regress_cycles"] == {"check-x": 3, "check-y": 1}
 
 

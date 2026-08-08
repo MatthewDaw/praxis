@@ -166,10 +166,10 @@ def test_unproven_gating_human_check_upgrades_to_proven_on_first_live_catch(
     state (it already gates). Distinct from FL12's existing REPORT_ONLY -> GATING machine-channel
     upgrade, which this must not regress (see test_ingestion_api_fl12.py)."""
     result = af_learn.learn("humans always review before shipping", project="proj-x",
-                            drafted_run="curl -s http://internal/healthz")
+                            drafted_run="pytest tests/test_healthz.py -q")
     assert result["proof_status"] == "unproven"  # no proof_runner wired -> unproven per attempt_proof
 
-    check_fact = check_store.facts[result["check_id"]]
+    check_fact = check_store.check(result["check_id"])
     assert check_fact["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_GATING
 
     upgraded = ingestion_api.upgrade_on_first_pass(check_fact["meta"]["check_id"], "proj-x", True)
@@ -182,8 +182,8 @@ def test_unproven_gating_human_check_is_a_no_op_on_a_failing_execution(
     check_store: FakeCheckStore,
 ) -> None:
     result = af_learn.learn("humans always review before shipping", project="proj-x",
-                            drafted_run="curl -s http://internal/healthz")
-    check_fact = check_store.facts[result["check_id"]]
+                            drafted_run="pytest tests/test_healthz.py -q")
+    check_fact = check_store.check(result["check_id"])
 
     upgraded = ingestion_api.upgrade_on_first_pass(check_fact["meta"]["check_id"], "proj-x", False)
 

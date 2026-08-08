@@ -80,9 +80,27 @@ live artifact was inconclusive, so it's flagged unproven until it catches someth
 **Drafting guidance** (this is the one place a human judgment call is needed — the API does not
 draft for you):
 - `drafted_run` must be a genuinely narrow, executable command that would have caught the
-  complained-about failure — not a broad "run the whole suite" gate. `ingestion_api._validate_run_body`
-  is exempt from the machine-channel allowlist for human-authored bodies, but a vague or unfalsifiable
-  command still helps no one.
+  complained-about failure — not a broad "run the whole suite" gate.
+- **Nobody reviews this command. You wrote it.** The human supplies free-text prose about what went
+  wrong and **the agent drafts the command from it** — "human channel" describes who filed the
+  complaint, never who read the shell string. `channel` is therefore NOT an authorization level:
+  every body, on every channel, goes through the same `ingestion_api._validate_run_body` — parsed to
+  argv with **no shell anywhere**, rejected for control characters, shell metacharacters
+  (`; & | \` $ > < ( ) { }`), absolute-path escapes, and any verb outside the allowlist. The human
+  channel used to be exempt from the verb allowlist on the "a human already reviewed it" theory; it
+  was exempting exactly the bodies nobody had read, and letting arbitrary verbs land as GATING
+  checks. That exemption is gone (D6). The one remaining waiver, `human_verbatim`, drops the VERB
+  allowlist only — never the parse, the metacharacter rejection, or path containment — and this
+  drafting path has no parameter that reaches it, so you cannot set it.
+  **What the validator cannot judge is intent.** An allowlisted verb with a ruinous blast radius
+  (`make deploy-prod`, a `pytest` that mutates a live database) passes every rule above. Treat
+  yourself as the last check: no side effects beyond observing, and never a command whose blast
+  radius you have not reasoned about. Then quote the exact `drafted_run` verbatim in your reply,
+  before it starts gating tickets, so the human at least sees what was inserted in their name.
+  A rejected body raises `RunBodyRejected` and nothing is written — do not "fix" it by reaching for
+  a shell wrapper; redraft it as a single allowlisted command.
+- A vague or unfalsifiable command still helps no one — an unproven check gates anyway (DF4), so a
+  bad body blocks real work with no failure to point at.
 - Prefer `drafted_rubric` (a graded check) only when the complaint is genuinely subjective/judgment-based
   and no binary command could observe it.
 - If you cannot draft anything provable, call `learn` with no `drafted_run`/`drafted_rubric` at all —
@@ -127,6 +145,26 @@ shouldn't have): use the safety nets, never a review queue —
 `ingestion_api.kill_switch(check_id, project, reason)` for an immediate manual disable. Both are
 recorded with a reason and raise a pending-attention flag (R24) so the disablement itself is never
 silent.
+
+## Undoing a whole ingestion — the wave (D9/E14)
+
+Every `learn` / `learn_bulk` result carries a **`wave_id`**: the named rollback unit covering every
+check and lesson that one ingestion wrote. Suspend and kill-switch act on ONE check; when the whole
+batch was wrong, roll the wave back instead of walking checks one at a time:
+
+```sh
+af-ingest rollback-wave <wave_id> --project <bare project name>
+# no factory install on PATH? same code, no install:
+python -m agent_factory.ingestion_api rollback-wave <wave_id> --project <project>
+```
+
+It archives every check the wave wrote and annotates every lesson it wrote (the lessons are
+knowledge and are never deleted — R2 holds through a rollback).
+
+**Surface the `wave_id` in your reply to the human, every time.** For a while nothing outside its own
+argparse help mentioned this command anywhere in the repo, so the rollback unit existed and no
+operator could have found it — and a `wave_id` reported nowhere is a rollback nobody can invoke even
+once they know the command.
 
 ## What you must NOT do here
 

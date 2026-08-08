@@ -244,6 +244,59 @@ def test_find_near_duplicate_pairs_excludes_already_merged_losers(store):
     assert not (ids_in_pairs & merged_ids)
 
 
+# --------------------------------------------------------------------------- the loop-end seam (D5)
+
+
+def test_sweep_cli_merges_and_reports(store, capsys):
+    """`python -m agent_factory.failure_taxonomy sweep` — the entry point a loop-end hook calls.
+    It must actually merge (not just report) and name what it did."""
+    a_id = _seed_class(store, "flaky playwright selector timing out on the login form",
+                       recurrence=2)
+    b_id = _seed_class(store, "flaky playwright selector timing out on the login page",
+                       recurrence=1)
+
+    assert ft.main(["sweep"]) == 0
+
+    out = capsys.readouterr().out
+    assert "swept 1 near-duplicate merge(s)" in out
+    assert a_id in out and b_id in out
+    assert store.classes[b_id]["meta"]["merged_into"] == a_id
+
+
+def test_sweep_cli_dry_run_writes_nothing(store, capsys):
+    a_id = _seed_class(store, "npm install fails behind the corporate proxy", recurrence=2)
+    b_id = _seed_class(store, "npm install fails behind the corporate http proxy", recurrence=1)
+
+    assert ft.main(["sweep", "--dry-run"]) == 0
+
+    assert "would merge" in capsys.readouterr().out
+    assert "merged_into" not in store.classes[b_id]["meta"]
+    assert store.classes[a_id]["meta"]["recurrence_count"] == 2
+
+
+def test_sweep_cli_threshold_is_honoured(store, capsys):
+    _seed_class(store, "worker crashed while writing the artifact bundle")
+    _seed_class(store, "worker crashed while reading the artifact bundle")
+    assert ft.main(["sweep", "--threshold", "0.99"]) == 0
+    assert "swept 0 near-duplicate merge(s)" in capsys.readouterr().out
+
+
+def test_sweep_cli_is_loud_and_non_zero_when_the_backend_is_unreachable(monkeypatch, capsys):
+    """A loop-end hook typically runs with `|| true`; a silent 0 here would be indistinguishable
+    from "no near-duplicates found", which is exactly how a sweep goes inert unnoticed."""
+    def boom():
+        raise RuntimeError("praxis unreachable")
+
+    monkeypatch.setattr(ingestion_api, "read_classes", boom)
+    assert ft.main(["sweep"]) == 2
+    assert "sweep FAILED" in capsys.readouterr().err
+
+
+def test_sweep_cli_requires_a_subcommand():
+    with pytest.raises(SystemExit):
+        ft.main([])
+
+
 # --------------------------------------------------------------------------- surfaced in af-retro
 
 def test_af_retro_surfaces_calibration_state(

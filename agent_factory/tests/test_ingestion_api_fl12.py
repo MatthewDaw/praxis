@@ -66,10 +66,13 @@ def test_every_declared_transition_lands_one_of_the_four_named_states() -> None:
 
 def test_lenient_human_insert_lands_gating(store: _FakeStore) -> None:
     result = ingestion_api.ingest("humans always review before shipping", "proj",
-                                  drafted_run="curl -s http://internal/healthz", channel="human")
+                                  drafted_run="pytest tests/test_review.py -q", channel="human")
     check = next(f for f in store.facts.values() if f["category"] == "check")
     assert check["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_GATING
-    assert result["check_id"] == check["id"]
+    # D1: the returned check_id is the AUTHORED id every lifecycle verb resolves by, NOT the
+    # Praxis fact id -- and the two are genuinely different values here.
+    assert result["check_id"] == check["meta"]["check_id"]
+    assert result["check_id"] != check["id"]
 
 
 # --------------------------------------------------------------------------- R6: fail-only upgrade
@@ -77,13 +80,16 @@ def test_lenient_human_insert_lands_gating(store: _FakeStore) -> None:
 def test_machine_fail_only_check_lands_report_only_then_upgrades_on_first_real_pass(
     store: _FakeStore,
 ) -> None:
-    ingestion_api.ingest("a fail-only draft with no proof engine wired", "proj",
-                         drafted_run="pytest tests/test_x.py -q", channel="machine")
+    ingested = ingestion_api.ingest("a fail-only draft with no proof engine wired", "proj",
+                                    drafted_run="pytest tests/test_x.py -q", channel="machine")
     check = next(f for f in store.facts.values() if f["category"] == "check")
     assert check["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_REPORT_ONLY
     assert check["meta"]["proof_status"] == "unproven"
 
-    result = ingestion_api.upgrade_on_first_pass(check["meta"]["check_id"], "proj", True)
+    # D1: feed the verb EXACTLY what ingest handed back -- no reaching past the return value into
+    # the stored fact's meta to work around a wrong contract. If ingest returns the fact id again,
+    # _fetch_check raises ValueError here and the check strands in report_only forever.
+    result = ingestion_api.upgrade_on_first_pass(ingested["check_id"], "proj", True)
 
     assert result["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_GATING
     assert result["meta"]["proof_status"] == "proven"
@@ -94,7 +100,7 @@ def test_upgrade_on_first_pass_is_a_no_op_for_an_already_gating_check(store: _Fa
                            "proof_status": "proven"})
     result = ingestion_api.upgrade_on_first_pass("c1", "proj", True)
     assert result["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_GATING
-    assert ("PATCH", "c1") not in store.calls
+    assert ("PATCH", "fact-c1") not in store.calls
 
 
 def test_upgrade_on_first_pass_is_a_no_op_on_a_failing_execution(store: _FakeStore) -> None:
@@ -103,7 +109,7 @@ def test_upgrade_on_first_pass_is_a_no_op_on_a_failing_execution(store: _FakeSto
                            "proof_status": "unproven"})
     result = ingestion_api.upgrade_on_first_pass("c1", "proj", False)
     assert result["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_REPORT_ONLY
-    assert ("PATCH", "c1") not in store.calls
+    assert ("PATCH", "fact-c1") not in store.calls
 
 
 # --------------------------------------------------------------------------- KD7: re-prove cadence
@@ -119,7 +125,7 @@ def test_quiet_gating_check_with_unavailable_artifact_demotes_to_report_only_wit
     )
 
     assert outcomes == [{"check_id": "c1", "result": "demoted", "reason": "artifact-unavailable"}]
-    check = store.facts["c1"]
+    check = store.check("c1")
     assert check["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_REPORT_ONLY
     assert check["meta"]["reprove_reason"] == "artifact-unavailable"
     assert check["meta"]["reprove_at"] == 1_000_000.0
@@ -139,7 +145,7 @@ def test_quiet_gating_check_that_still_fails_stays_gating(store: _FakeStore) -> 
     # An empty stub bundle can't actually be re-materialized, so this pins the concrete verdict
     # run_fail_then_pass_proof produces on that irreproducible pin (report_only, flagged) rather
     # than a disjunction over every outcome the sweep can produce.
-    check = store.facts["c1"]
+    check = store.check("c1")
     assert check["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_REPORT_ONLY
     assert check["meta"]["reprove_reason"] == "artifact-unavailable"
     assert outcomes == [{"check_id": "c1", "result": "demoted", "reason": "artifact-unavailable"}]
@@ -152,7 +158,7 @@ def test_not_yet_due_gating_check_is_left_untouched(store: _FakeStore) -> None:
     outcomes = ingestion_api.reprove_quiet_checks("proj", now=1_000_000.0, artifact_reader=lambda meta: None)
 
     assert outcomes == []
-    assert store.facts["c1"]["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_GATING
+    assert store.check("c1")["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_GATING
 
 
 def test_reprove_never_archives_regardless_of_scenario(store: _FakeStore) -> None:
@@ -193,4 +199,4 @@ def test_rollback_wave_still_archives_via_the_transition_table(store: _FakeStore
     store.seed_check("c1", {"check_id": "c1", ingestion_api.M_ENFORCEMENT_STATE: ingestion_api.STATE_GATING,
                            "wave_id": "wave-z"})
     ingestion_api.rollback_wave("wave-z", "proj")
-    assert store.facts["c1"]["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_ARCHIVED
+    assert store.check("c1")["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_ARCHIVED

@@ -12,6 +12,7 @@ ambition. A ticket with no relevant failure history (no more than the budget's w
 checks) pins the same count regardless of how large the corpus of OTHER checks grows (S2).
 """
 
+import hashlib
 import sys
 from pathlib import Path
 
@@ -51,7 +52,12 @@ class _DBSpy:
 
 
 def _check(cid, applies_to, run="grep -q TODO file.py", scope="validation", **extra_meta):
-    meta = {"applies_to": applies_to, "scope": scope, "run": run, **extra_meta}
+    # Carry the insertion-time hash pin the sanctioned writer (ingestion_api.plan_time_author_check)
+    # stamps on every real check: _ticket_state._declared_runs verifies it before handing the run
+    # body to a worker, so an unpinned fixture is not a realistic check.
+    meta = {"applies_to": applies_to, "scope": scope, "run": run,
+            "check_id": cid, "run_hash": hashlib.sha256(run.encode("utf-8")).hexdigest(),
+            **extra_meta}
     return {"id": cid, "category": "check", "scope": scope, "meta": meta}
 
 
@@ -198,17 +204,26 @@ def test_demoted_check_is_recorded_and_finish_is_still_reachable(monkeypatch):
     assert pinned["budget_demotions"] == {"c-expensive": "budget-overflow"}
     assert set(pinned["required_validations"]) == {"c-cheap", "c-expensive"}
 
-    # the worker authors ONE covering validation per requirement, including the demoted one —
-    # a demoted check stays pinned and counts as covering its requirement.
+    # The worker SKIPS the demoted check — which is the entire point of demoting it; authoring a
+    # covering validation for it anyway would run the expensive check the budget just excluded.
+    # This asserts the real property: skipping it opens NO coverage gap and does NOT block FINISH.
+    # (This test used to author a covering validation for the demoted check too, which hid the
+    # defect: coverage_gap did not subtract report_only_requirements, so the legitimate skip
+    # reported a gap while all_validations_passed said the ticket was done.)
     ts.pin_validations("T1", [
         {"validation_id": "v-cheap", "covers": ["c-cheap"], "run": "grep -q A file.py"},
-        {"validation_id": "v-expensive", "covers": ["c-expensive"],
-         "run": "npx playwright test e2e/full.spec.ts"},
     ], ref=PLAN)
     ts.record_validation_pass("T1", "v-cheap", True, ref=PLAN)
-    # The demoted check's OWN validation FAILS — because it is report-only this must never block
-    # FINISH: it is recorded (calibration) but non-gating.
-    ts.record_validation_pass("T1", "v-expensive", False, ref=PLAN)
 
     assert ts.coverage_gap("T1", ref=PLAN) == []
     assert ts.all_validations_passed("T1", ref=PLAN) is True
+    # The skip stays VISIBLE — it just does not gate.
+    assert ts.report_only_coverage_gap("T1", ref=PLAN) == ["c-expensive"]
+
+    # And the demotion is the ONLY reason it is dropped: the still-gating cheap check, left
+    # uncovered, is still reported as a gap and still blocks FINISH.
+    ts.pin_validations("T1", [
+        {"validation_id": "v-other", "covers": ["something-else"], "run": "true"},
+    ], ref=PLAN)
+    assert ts.coverage_gap("T1", ref=PLAN) == ["c-cheap"]
+    assert ts.all_validations_passed("T1", ref=PLAN) is False

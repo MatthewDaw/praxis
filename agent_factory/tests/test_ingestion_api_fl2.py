@@ -116,15 +116,23 @@ def test_machine_drafted_run_body_inside_allowlist_is_accepted(
     assert check_calls and check_calls[0]["body"]["meta"]["run"] == "pytest tests/test_x.py -q"
 
 
-def test_human_channel_run_body_is_exempt_from_the_allowlist(
+def test_human_channel_run_body_is_NOT_exempt_from_the_allowlist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """R1a-adjacent: a human-authored (plan-time/lenient) run body skips the machine allowlist."""
+    """D6 round 2 — the human CHANNEL buys no exemption (``af_learn`` hardcodes it for a body the
+    agent drafted); only the explicit ``human_verbatim`` waiver does, and it is recorded."""
     _authed(monkeypatch)
-    _recording_request(monkeypatch)
+    calls = _recording_request(monkeypatch)
+    with pytest.raises(ingestion_api.RunBodyRejected):
+        ingestion_api.ingest("a lesson", "proj",
+                             drafted_run="curl -s http://internal/healthz", channel="human")
+    assert not _calls_for(calls, "check") and not _calls_for(calls, "lesson")
+
     result = ingestion_api.ingest("a lesson", "proj",
-                                  drafted_run="curl -s http://internal/healthz", channel="human")
+                                  drafted_run="curl -s http://internal/healthz", channel="human",
+                                  human_verbatim=True)
     assert result["check_id"] is not None
+    assert _calls_for(calls, "check")[0]["body"]["meta"]["verb_allowlist_waived"] is True
 
 
 # --------------------------------------------------------------------------- KD8 anchor 1: hash-pin drift

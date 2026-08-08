@@ -178,8 +178,20 @@ def test_report_only_uncovered_still_passes():
     f = _fact(required_validations=["R1::acceptance", "minimalism-dry"],
               report_only_requirements=["minimalism-dry"],
               pinned_checks=[{"validation_id": "v-acc", "covers": ["R1::acceptance"], "passed": True}])
-    assert ts.coverage_gap(f) == ["minimalism-dry"]  # coverage_gap still SEES it (visibility)
-    assert ts.all_validations_passed(f) is True       # ...but it does not gate
+    # coverage_gap is the GATE, and it agrees with all_validations_passed: a report-only requirement
+    # needs no coverage, so an uncovered one is not a gap. (It used to be listed here "for
+    # visibility", which made the two functions contradict each other on the same ticket — af-build
+    # treats a non-empty coverage_gap as a finish-blocker.)
+    assert ts.coverage_gap(f) == []
+    assert ts.all_validations_passed(f) is True
+    # The visibility moved rather than vanished.
+    assert ts.report_only_coverage_gap(f) == ["minimalism-dry"]
+    # ...and a report-only requirement that IS covered is not reported as skipped.
+    covered = _fact(required_validations=["R1::acceptance", "minimalism-dry"],
+                    report_only_requirements=["minimalism-dry"],
+                    pinned_checks=[{"validation_id": "v-acc", "covers": ["R1::acceptance"], "passed": True},
+                                   {"validation_id": "v-min", "covers": ["minimalism-dry"], "passed": False}])
+    assert ts.report_only_coverage_gap(covered) == []
 
 
 def test_report_only_false_gates():
@@ -189,6 +201,10 @@ def test_report_only_false_gates():
                       pinned_checks=[{"validation_id": "v-acc", "covers": ["R1::acceptance"],
                                       "passed": True}])
     assert ts.all_validations_passed(uncovered) is False
+    # ...and coverage_gap says the same thing: it only ever drops requirements the ticket has
+    # explicitly demoted, never a gating one.
+    assert ts.coverage_gap(uncovered) == ["minimalism-dry"]
+    assert ts.report_only_coverage_gap(uncovered) == []
     # Cover it and pass it -> done.
     done = _fact(required_validations=gating, report_only_requirements=[],
                  pinned_checks=[{"validation_id": "v-acc", "covers": ["R1::acceptance"], "passed": True},

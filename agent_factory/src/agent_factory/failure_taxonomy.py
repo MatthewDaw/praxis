@@ -19,8 +19,10 @@ sole writer (FL1). This module contains only matching/calibration LOGIC and neve
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
+import sys
 import time
 from typing import Any
 
@@ -274,3 +276,53 @@ def sweep_near_duplicate_classes(*, classes: list[dict[str, Any]] | None = None,
         merges.append({"survivor_id": survivor["id"], "loser_id": loser["id"], "score": score,
                        "credited_recurrence": credited})
     return merges
+
+
+# --------------------------------------------------------------------------- the loop-end seam (D5)
+
+def main(argv: list[str] | None = None) -> int:
+    """``python -m agent_factory.failure_taxonomy sweep`` — the RUNTIME entry point for the
+    loop-end near-duplicate sweep (R20/FL15), shaped like the one call
+    ``scripts/af-ticket-loop.sh`` already makes into this package
+    (``python -m agent_factory.af_retro --flags <project>``) so wiring it is one line.
+
+    ``--dry-run`` reports the pairs the sweep WOULD merge and writes nothing. Exit codes: ``0``
+    swept (merges are printed, one per line, and ``swept 0`` is a legitimate result), ``2`` the
+    sweep could not run (unreachable/unauthenticated backend) — printed to stderr and non-zero so a
+    caller that swallows it with ``|| true`` still leaves the failure in the log, never a silent
+    no-op that looks like "no near-duplicates"."""
+    ap = argparse.ArgumentParser(
+        prog="failure-taxonomy",
+        description="Failure-class taxonomy maintenance. `sweep` merges near-duplicate failure "
+                    "classes (R20/FL15): the survivor is retroactively credited with the loser's "
+                    "recurrence count and evidence, the loser is marked merged_into (never "
+                    "deleted). Intended to run once at loop end, off the critical path.")
+    sub = ap.add_subparsers(dest="command", required=True)
+    sweep = sub.add_parser("sweep", help="merge near-duplicate failure classes")
+    sweep.add_argument("--threshold", type=float, default=DEFAULT_NEAR_DUP_THRESHOLD,
+                       help=f"token-overlap merge threshold (default {DEFAULT_NEAR_DUP_THRESHOLD})")
+    sweep.add_argument("--dry-run", action="store_true",
+                       help="report the pairs that would merge; write nothing")
+    args = ap.parse_args(list(sys.argv[1:] if argv is None else argv))
+
+    try:
+        if args.dry_run:
+            pairs = find_near_duplicate_pairs(threshold=args.threshold)
+            for a, b, score in pairs:
+                print(f"failure-taxonomy: would merge {a.get('id')} <- {b.get('id')} "
+                      f"(score={score:.2f})")
+            print(f"failure-taxonomy: dry-run — {len(pairs)} near-duplicate pair(s)")
+            return 0
+        merges = sweep_near_duplicate_classes(threshold=args.threshold)
+    except Exception as exc:  # noqa: BLE001 - an unreachable backend must be LOUD, not a silent 0
+        print(f"failure-taxonomy: sweep FAILED — {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 2
+    for merge in merges:
+        print(f"failure-taxonomy: merged {merge['loser_id']} -> {merge['survivor_id']} "
+              f"(score={merge['score']:.2f}, recurrence={merge['credited_recurrence']})")
+    print(f"failure-taxonomy: swept {len(merges)} near-duplicate merge(s)")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised via main()
+    sys.exit(main())

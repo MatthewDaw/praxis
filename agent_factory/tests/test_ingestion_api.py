@@ -7,6 +7,7 @@ into that space, and no reader anywhere treats a local file as the canonical les
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -110,7 +111,19 @@ def test_cli_help_exits_zero(capsys):
 
 # --------------------------------------------------------------------------- live round trip
 
-def _praxis_reachable() -> bool:
+def _live_praxis_opted_in() -> bool:
+    """Whether this run may talk to the REAL Praxis backend.
+
+    Reachability alone used to decide, which made the default unit suite non-reproducible by
+    construction: the identical command ran a live network test that wrote into (and deleted from)
+    the shared cloud ``factory-learnings`` space whenever the service happened to be up, and
+    reported an extra skip whenever it happened to be down — same command, different results, and
+    a moving skipped count with it. Opting in explicitly makes the default suite deterministic
+    without deleting the coverage: ``AF_LIVE_PRAXIS_TESTS=1 uv run pytest tests/test_ingestion_api.py``
+    still runs the round trip (and still skips, loudly, if the backend is genuinely down).
+    """
+    if os.environ.get("AF_LIVE_PRAXIS_TESTS") != "1":
+        return False
     try:
         _praxis.ping()
         return True
@@ -118,7 +131,8 @@ def _praxis_reachable() -> bool:
         return False
 
 
-@pytest.mark.skipif(not _praxis_reachable(), reason="Praxis backend unreachable")
+@pytest.mark.skipif(not _live_praxis_opted_in(),
+                    reason="live Praxis round trip is opt-in: set AF_LIVE_PRAXIS_TESTS=1")
 def test_live_write_then_read_then_mount_round_trip():
     """The end-to-end acceptance behavior: a lesson written via the ingestion API is readable
     (read-only) from a working-memory session that mounts the shared space, with no local file
