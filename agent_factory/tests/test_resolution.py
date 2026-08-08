@@ -19,10 +19,10 @@ _HOOKS = str(Path(__file__).resolve().parent.parent / "hooks")
 if _HOOKS not in sys.path:  # same seam test_widening.py pins: bare `_praxis` must resolve to THIS
     sys.path.insert(0, _HOOKS)  # worktree's hooks/, never a stale copy shadowed via PYTHONPATH.
 
-import pytest
-from hooks import _praxis
+import pytest  # noqa: E402
+from hooks import _praxis  # noqa: E402
 
-from agent_factory import ingestion_api, resolution
+from agent_factory import ingestion_api, resolution  # noqa: E402
 
 FINDING_A = {"reason": "check-a symptom: derive_flight_ids raises AttributeError",
             "evidence": "AttributeError at geometry.py:42", "check_id": "check-a"}
