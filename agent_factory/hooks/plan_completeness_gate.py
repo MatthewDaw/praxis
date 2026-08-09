@@ -57,7 +57,7 @@ for _p in (_HERE, _TOOLS):
 from _gate_common import active_project as _active_project  # noqa: E402
 from _gate_common import allow as _allow  # noqa: E402
 from _gate_common import block as _block  # noqa: E402
-from _gate_common import classify_unreachable, session_touched  # noqa: E402
+from _gate_common import classify_unreachable, factory_configured, not_a_factory_project, session_touched  # noqa: E402
 
 # The marker meta key (on the planning marker fact) that records contradiction detection RAN for the
 # snapshot — positive evidence, honestly stamped false by the raw-bulk path (KTD4 / Assumptions).
@@ -310,6 +310,18 @@ def main() -> None:
         _allow("plan-completeness gate STOOD DOWN: " + " | ".join(parts)
                + ". Unset the named variable(s) to restore enforcement.")
 
+    # --- NOT A FACTORY DIRECTORY: stand down before importing or reading anything. ----------------
+    # These gates install at USER scope, so they run in EVERY session in EVERY directory. Without
+    # this, a plain `claude` in an unrelated repo resolved a project from the CWD BASENAME, asked
+    # Praxis about a space nobody created, and reported the 404/403 as a BLOCKING "PRAXIS
+    # UNREACHABLE" outage. Local and network-free, so an unrelated directory costs nothing.
+    #
+    # Placed AFTER the scoped escape hatch on purpose: an operator who sets the disable var has
+    # asked for that fact to be RECORDED on the marker, and a run executed with a disabled gate
+    # must never be presentable as fully gated. Stand-down order matters more than it looks.
+    if not factory_configured(cwd):
+        _allow()
+
     # Load the factory .env before resolving the project (a bare Stop-hook subprocess does not inherit
     # a shell-sourced .env). Best-effort + fail-closed-preserving, exactly like the build gate.
     try:
@@ -341,6 +353,13 @@ def main() -> None:
                 reason = why
                 break
     except Exception as exc:  # noqa: BLE001
+        # "That space/org does not exist" is a CONFIGURATION answer, not an outage: there is no plan
+        # here to gate, so stand down silently instead of reporting the service as down. Without
+        # this, running `claude` in any directory whose basename is not a Praxis space produced a
+        # blocking PRAXIS UNREACHABLE — the gate diagnosing its own bad input as an infrastructure
+        # failure, twice in one session even inside this repo.
+        if not_a_factory_project(exc):
+            _allow()
         _, detail = classify_unreachable(exc)
         diag = ""
         try:

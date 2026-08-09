@@ -60,7 +60,7 @@ if _HERE not in sys.path:
 from _gate_common import active_project as _active_project  # noqa: E402
 from _gate_common import allow as _allow  # noqa: E402
 from _gate_common import block as _block  # noqa: E402
-from _gate_common import classify_unreachable, session_touched  # noqa: E402
+from _gate_common import classify_unreachable, factory_configured, not_a_factory_project, session_touched  # noqa: E402
 
 
 # --------------------------------------------------------------------------- project / identity
@@ -278,6 +278,18 @@ def main() -> None:
         _allow("build-completeness gate STOOD DOWN: " + " | ".join(parts)
                + ". Unset the named variable(s) to restore enforcement.")
 
+    # --- NOT A FACTORY DIRECTORY: stand down before importing or reading anything. ----------------
+    # These gates install at USER scope, so they run in EVERY session in EVERY directory. Without
+    # this, a plain `claude` in an unrelated repo resolved a project from the CWD BASENAME, asked
+    # Praxis about a space nobody created, and reported the 404/403 as a BLOCKING "PRAXIS
+    # UNREACHABLE" outage. Local and network-free, so an unrelated directory costs nothing.
+    #
+    # Placed AFTER the scoped escape hatch on purpose: an operator who sets the disable var has
+    # asked for that fact to be RECORDED on the marker, and a run executed with a disabled gate
+    # must never be presentable as fully gated. Stand-down order matters more than it looks.
+    if not factory_configured(cwd):
+        _allow()
+
     # Load the factory ``.env`` BEFORE resolving the project. ``_active_project`` reads
     # ``FACTORY_PROJECT`` from ``os.environ``, but that override lives in ``<repo>/.env`` (the same
     # place every other factory credential — PRAXIS_API_KEY / PRAXIS_ORG / PRAXIS_API_BASE_URL — is
@@ -327,6 +339,10 @@ def main() -> None:
         import _praxis
         incomplete = _praxis.incomplete_requirements(project)
     except Exception as exc:  # noqa: BLE001
+        # ...unless the answer was "that space/org is not a thing", which is a CONFIGURATION fact,
+        # not an availability one: there is no build here to gate, so stand down silently.
+        if not_a_factory_project(exc):
+            _allow()
         # FAIL-CLOSED: a gate that cannot reach Praxis can prove nothing, so it BLOCKS. It NEVER
         # fails open. (PraxisUnreachable is the contract signal; any import/transport failure is
         # treated identically — the truth is unavailable.)
