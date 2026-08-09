@@ -158,14 +158,20 @@ def test_factory_project_from_dotenv_wins_over_cwd_basename(monkeypatch, tmp_pat
 
     A repo checked out as ``bestie-api`` building the ``google-shopping-scraper`` Praxis project."""
     monkeypatch.delenv("FACTORY_PROJECT", raising=False)  # absent from the REAL environment
-    (tmp_path / ".env").write_text("FACTORY_PROJECT=google-shopping-scraper\n", encoding="utf-8")
+    # The .env lives IN the repo the session is sitting in -- which is the only arrangement that
+    # occurs in practice, and the one the gate's "is this a factory directory?" guard reads. An
+    # earlier version of this test put the .env in a tmp dir while claiming cwd was a fictional
+    # /repos/bestie-api; the gate then correctly saw an unconfigured directory and stood down.
+    repo = tmp_path / "bestie-api"
+    repo.mkdir()
+    (repo / ".env").write_text("FACTORY_PROJECT=google-shopping-scraper\n", encoding="utf-8")
     # _load_dotenv takes the FIRST .env it finds, searching <repo>/.env (from its own __file__)
     # BEFORE cwd/.env. On a developer checkout that repo .env exists and wins, so patching cwd alone
-    # leaves the test asserting against the developer's file. Point BOTH candidates at the tmp .env.
-    monkeypatch.setattr(_praxis, "__file__", str(tmp_path / "hooks" / "_praxis.py"))
-    monkeypatch.setattr(_praxis.Path, "cwd", lambda: tmp_path)
+    # leaves the test asserting against the developer's file. Point BOTH candidates at the repo .env.
+    monkeypatch.setattr(_praxis, "__file__", str(repo / "hooks" / "_praxis.py"))
+    monkeypatch.setattr(_praxis.Path, "cwd", lambda: repo)
 
-    project = _resolved_project(monkeypatch, cwd="/repos/bestie-api")
+    project = _resolved_project(monkeypatch, cwd=str(repo))
     assert project == "prd-google-shopping-scraper"  # NOT prd-bestie-api
 
 

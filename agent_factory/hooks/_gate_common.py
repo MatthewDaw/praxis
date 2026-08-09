@@ -89,19 +89,12 @@ def factory_configured(cwd: str) -> bool:
     # environment here would stand a genuinely-configured project down (caught by
     # test_factory_project_from_dotenv_wins_over_cwd_basename, not by inspection).
     markers = ("FACTORY_PROJECT", "PRAXIS_API_KEY", "PRAXIS_ORG", "PRAXIS_API_BASE_URL")
-    # BOTH the session's directory and the process's own: the hook payload's ``cwd`` is where the
-    # user is, while the dotenv the gate loads a few lines later is found relative to the process.
-    # Either one carrying factory config means "gate this". In the case that actually matters -- a
-    # plain session in an unrelated repo -- the two are the same directory and neither is configured,
-    # so this stays silent there while a genuinely-configured project is never stood down.
-    roots = [os.path.abspath(cwd or os.getcwd())]
-    try:
-        proc_cwd = os.path.abspath(os.getcwd())
-        if proc_cwd not in roots:
-            roots.append(proc_cwd)
-    except Exception:  # noqa: BLE001 — a deleted cwd is not a reason to fail the check
-        pass
-    return any(_configured_at_or_above(root, markers) for root in roots)
+    # ONLY the session's directory. An earlier version also consulted the process cwd, which looked
+    # harmless and was not: on a developer checkout the process sits in the repo (which has a
+    # gitignored .env), so every call answered "configured" no matter what directory was asked
+    # about. That made the local suite pass while CI -- which has no .env -- failed, i.e. the check
+    # was answering a question nobody asked. The session's directory is the question.
+    return _configured_at_or_above(os.path.abspath(cwd or os.getcwd()), markers)
 
 
 def _configured_at_or_above(start: str, markers: tuple[str, ...]) -> bool:
