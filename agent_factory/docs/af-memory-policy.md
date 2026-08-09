@@ -96,6 +96,21 @@ proceeding: either proceed in the pinned org, or unset / re-pin `PRAXIS_ORG` to 
 > sessions can't collide); (2) re-`whoami` after every reconnect and confirm the active org still
 matches the project's org (per the hard rule above) before writing.
 
+**The ONE exception to "never write into another org": the shared learnings space.** Every project
+runs in its own org, and Praxis sharing (`GET /org/sources`) is **intra-org only** — "any member may
+browse any space's snapshots" means any member *of that org*. So `factory-learnings` resolved under
+the ambient org is a **different space in every project**: N projects, N isolated stores, and the
+cross-project learning the factory exists to do silently never happens. (Observed live: a devbox loop
+under org `sotos` reported `unknown space 'factory-learnings'`.)
+
+`FACTORY_LEARNINGS_ORG` + `FACTORY_LEARNINGS_API_KEY` (per-project pins in
+`.claude/settings.local.json`) point **only** lesson/flag/artifact traffic at one shared org, while
+tickets, checks and the plan stay in the project's own org. The override is applied at a single choke
+point in `_praxis._request`, keyed on the space, so no call site can forget it. A Praxis key only
+works in its own org, hence the second variable; setting the org without the key fails **loud**
+rather than 403-ing into something `not_a_factory_project` would read as a benign "no project here".
+Unset both and behaviour is exactly as before.
+
 - **Durable knowledge = org-shared snapshots; working memory = per-user scratch.** The tenancy model
   is `org → space → snapshot` plus a private **working memory** (the live scratch graph, keyed to
   your authenticated principal — no space, no snapshot ever appears on it). A **space** is an

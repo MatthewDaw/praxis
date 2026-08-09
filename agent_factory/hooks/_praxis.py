@@ -230,8 +230,38 @@ def _mint_cognito_token() -> str:
 _TOKEN_CACHE: dict[str, Any] = {"token": None, "exp": 0.0}
 
 
-def _auth_headers() -> dict[str, str]:
-    """Build the auth + tenancy headers, failing closed if no credential is available."""
+def _learnings_credential() -> tuple[str, str] | None:
+    """The org + key the SHARED learnings space is read/written under, or ``None`` for "same as
+    everything else" (the pre-existing behaviour, and the default).
+
+    Why this exists. Every factory project runs in its OWN Praxis org (``sports-analysis``,
+    ``appeal-engine``, ...), each with its own API key, and the server enforces
+    ``keyOrg == requestedOrg``. Praxis's sharing primitive (``GET /org/sources``) is explicitly
+    INTRA-org — "any member may browse any space's snapshots" means any member *of that org*. So a
+    space named ``factory-learnings`` resolved under the ambient org is a DIFFERENT space in every
+    project: seven projects, seven isolated stores, and the cross-project learning the factory
+    exists to do silently never happens. Verified in the wild — a devbox loop resolved org
+    ``sotos`` and reported ``unknown space 'factory-learnings'``.
+
+    Setting ``FACTORY_LEARNINGS_ORG`` (plus ``FACTORY_LEARNINGS_API_KEY``, since the ambient key is
+    scoped to the ambient org) points every project's lesson traffic at ONE org, while its tickets,
+    checks and plan stay in its own. Unset, nothing changes.
+    """
+    org = os.environ.get("FACTORY_LEARNINGS_ORG", "").strip()
+    if not org:
+        return None
+    return org, os.environ.get("FACTORY_LEARNINGS_API_KEY", "").strip()
+
+
+def _auth_headers(*, org_override: str | None = None,
+                  key_override: str | None = None) -> dict[str, str]:
+    """Build the auth + tenancy headers, failing closed if no credential is available.
+
+    ``org_override`` / ``key_override`` retarget THIS request at a different tenant — used only for
+    the shared learnings space (see :func:`_learnings_credential`). They are passed explicitly
+    rather than read from the environment here so the override is visible at the one call site that
+    applies it, instead of silently rewriting every request's tenancy.
+    """
     headers: dict[str, str] = {}
 
     # Org precedence (highest first):
@@ -245,13 +275,14 @@ def _auth_headers() -> dict[str, str]:
     #   3. DEFAULT_ORG — the last-resort fallback.
     # Resolved through the shared precedence rule (mirror of identity.resolve_org) so this header and
     # what praxis_whoami/select_org report can never diverge.
-    org = _resolve_org(os.environ.get("PRAXIS_ORG", ""), _org_from_cache(), DEFAULT_ORG)
+    org = org_override or _resolve_org(
+        os.environ.get("PRAXIS_ORG", ""), _org_from_cache(), DEFAULT_ORG)
     headers["x-praxis-org"] = org
 
     if _auth_disabled():
         return headers
 
-    api_key = os.environ.get("PRAXIS_API_KEY", "").strip()
+    api_key = (key_override or os.environ.get("PRAXIS_API_KEY", "")).strip()
     if api_key:
         headers["x-praxis-key"] = api_key
         return headers
@@ -297,7 +328,26 @@ def _request(method: str, path: str, *, params: dict | None = None,
             url += "?" + urllib.parse.urlencode(clean)
 
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    headers = _auth_headers()
+
+    # THE choke point for shared-learnings tenancy. Applied here, on `space`, rather than at the
+    # dozens of call sites in `agent_factory.ingestion_api`: a call site that forgot the override
+    # would write a lesson into the project's own org, where it is invisible to every other
+    # project — the exact silent failure this fixes. There is one door, so nothing can miss it.
+    org_override = key_override = None
+    if space == FACTORY_LEARNINGS_SPACE and (cred := _learnings_credential()) is not None:
+        org_override, key_override = cred
+        ambient = _resolve_org(os.environ.get("PRAXIS_ORG", ""), _org_from_cache(), DEFAULT_ORG)
+        if not key_override and org_override != ambient:
+            # Fail LOUD and precise. Without this the request goes out with the ambient key against
+            # a foreign org and comes back 403 "not scoped to org", which `not_a_factory_project`
+            # classifies as "no project here" -- i.e. a missing credential would masquerade as a
+            # correctly-configured absence, and lessons would silently stop being shared.
+            raise PraxisUnreachable(
+                f"FACTORY_LEARNINGS_ORG={org_override!r} but no FACTORY_LEARNINGS_API_KEY, and the "
+                f"ambient key is scoped to {ambient!r}. A Praxis key only works in its own org, so "
+                "the shared learnings space needs its own key. Set FACTORY_LEARNINGS_API_KEY."
+            )
+    headers = _auth_headers(org_override=org_override, key_override=key_override)
     if space is not None:  # snapshot-bound op — emit BOTH tenancy headers (partial already refused)
         headers["x-praxis-space"] = space
         headers["x-praxis-snapshot"] = snapshot  # type: ignore[assignment]  # non-None by the guard
