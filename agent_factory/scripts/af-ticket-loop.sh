@@ -2845,6 +2845,14 @@ while :; do
   # too. Without this the resolver only ever fixes the round that created the conflict, and anything
   # older stays orphaned forever — which is precisely how 11 accumulated.
   queue_orphan_branches
+  # Every ticket id the resolver is about to land this round — conflicted batch branches plus swept
+  # orphans. Captured BEFORE resolve_conflicts drains the queue, because the verification gate below
+  # must treat these as integrated work even on a round that finishes zero tickets: an orphan branch's
+  # ticket is usually ALREADY finished (by the run that built it), so landing it never moves
+  # finished_count, and gating verification on finished_count alone let a round merge eight orphan
+  # branches, leave the full suite red on the integrated tree, and regress nothing (2026-08-09) —
+  # the dispatcher then had no claimable work and the circuit breaker halted a fixable run.
+  landed_ids=$( { cut -f2- "$CONFLICTS" 2>/dev/null | tr '\t ' '\n' | sort -u | tr '\n' ' '; } || true)
   # Land anything that conflicted BEFORE the worktrees are swept and before verification runs: a
   # conflicted branch is unfinished integration, not a finished round, and verifying a tree that is
   # missing a ticket's work verifies the wrong thing.
@@ -2893,11 +2901,20 @@ while :; do
     # lint run NOWHERE for that ticket. The cross-ticket lenses are trivially satisfied when there is
     # only one ticket -- the gates are not, and they are now this stage's job alone.
     if [ "${AF_VERIFY_ROUND:-1}" = "1" ]; then
-      verify_round "$round" "$@"
+      # shellcheck disable=SC2046  # deliberate word-split: ids are single tokens
+      verify_round "$round" $(printf '%s\n' "$@" $landed_ids | sort -u | tr '\n' ' ')
     fi
   else
     fruitless=$((${fruitless:-0} + 1))
     say "round #$round finished ZERO tickets ($fruitless in a row)"
+    # A zero-finish round can still have LANDED work — the orphan sweep merges branches for tickets
+    # finished by an earlier run, which never moves finished_count. That merge is exactly as
+    # unverified as any other, and skipping this stage on it is how a red integrated tree ends up
+    # with no ticket regressed to fix it. Verify whenever the resolver landed anything.
+    if [ -n "${landed_ids// /}" ] && [ "${AF_VERIFY_ROUND:-1}" = "1" ]; then
+      # shellcheck disable=SC2046
+      verify_round "$round" $landed_ids
+    fi
     if [ "$fruitless" -ge 3 ]; then
       say "HALTING — 3 consecutive rounds finished nothing. Something is failing that a restart cannot fix; attach to the pane or read the log before relaunching."
       exit 4
