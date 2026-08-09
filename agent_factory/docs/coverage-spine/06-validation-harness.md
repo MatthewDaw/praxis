@@ -33,15 +33,34 @@ meta     = { check_id:   "<stable-slug>",
 
 `incomplete_requirements` filters `category="requirement"`, so checks never pollute it.
 
-## How you add one (one line, no file)
-Both forms are the **`af-intake-build-validation`** (the section-locked command that owns the `building-validation` snapshot; the planning sibling is `af-intake-plan-validation`) — its two forms:
-- **`af-intake-build-validation` (insert only)** — inserts the check fact into Praxis, nothing else.
+## How you add one (one command, no file)
+The write path is the **`af-ingest author-check`** command — the R1a plan-time entry point that owns
+the `building-validation` snapshot (its planning sibling is `af-ingest author-lens`, which writes
+`planning-validation` and re-arms the blessing audit). The `af-intake-build-validation` /
+`af-intake-plan-validation` skills that used to hold these were deleted: a skill is prose a caller may
+or may not follow, so it could not enforce the authenticated identity or the content hash-pin that
+every check now carries. Deleting them left the replacement **named nowhere an operator could run** —
+for a while the only surviving reference was a Python function name, which an agent at a shell cannot
+invoke. The runnable forms, in order of preference:
+
+```sh
+af-ingest author-check "<criterion>" --project <project> --applies-to auth --run "<command>"
+# no factory install on PATH? same code, no install:
+python -m agent_factory.ingestion_api author-check "<criterion>" --project <project> --run "<command>"
+```
+
+`--applies-to` is a comma-separated tag list; omit it for the `*` wildcard. `--rubric` (JSON) makes it
+a graded check instead of a binary one; `--surfaces` binds it to surface ids. The command prints the
+written fact's `{"id", "action"}` as JSON and exits non-zero on refusal.
+
+Two forms of the write itself:
+- **insert only** — `af-ingest author-check …` writes the check fact into Praxis, nothing else.
   The regress happens on the next `af-build`.
-- **`af-intake-build-validation` (insert + regress)** — inserts the check **and** regresses the
-  matching tickets now (so they show incomplete immediately).
+- **insert + regress** — follow it with `ingestion_api.regress_for_check(project, ticket_ids, check_id, entry)`
+  (Python API; no CLI shell) so the matching tickets show incomplete immediately.
 
 Example (illustrative — added only when *you* run the amend, never by the planning side):
-> `af-intake-build-validation`: "auth tickets need a live Playwright login test against the deployed service"
+> `af-ingest author-check "auth tickets need a live Playwright login test against the deployed service" --project <project> --applies-to auth --run "npx playwright test …login…"`
 
 → a `check` fact (`applies_to: auth`, `run: "npx playwright test …login…"`) is written to Praxis,
 the `auth` requirements are tagged + regressed, and they re-enter the build set.
@@ -56,9 +75,11 @@ the `auth` requirements are tagged + regressed, and they re-enter the build set.
   runs each `meta.run` as a **blocking external signal**; the ticket records `"succeeded"` only when
   generic gates **and** every bound check are green.
 - **`build_completeness_gate`** (unchanged) forces the re-pick.
-- The **`af-intake-build-validation`** command is the *write* path into Praxis.
+- **`af-ingest author-check`** is the *write* path into Praxis.
 
 ## Binding by class tag (caveat)
 Binding by **requirement id** always works. Binding by **class tag** (`applies_to: auth`) only
 matches requirements that carry that tag — `resolve_bindings` reads each requirement's `meta.tags`.
-`af-intake-build-validation`'s insert-and-regress tags the matching requirements when it runs; otherwise bind by requirement id.
+Nothing on the current write path adds a tag — `af-ingest author-check` writes only the check, and
+`regress_for_check` only attaches the regression evidence — so a class tag binds only requirements that
+already carry it. Bind by requirement id (or surface) unless the tag is already on the plan.

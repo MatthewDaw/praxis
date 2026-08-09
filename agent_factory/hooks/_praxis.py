@@ -641,6 +641,71 @@ def ping() -> bool:
     return True
 
 
+# --------------------------------------------------------------------------- mounts (read-only overlays)
+
+# The org-level shared learnings space (FL1 / KD1): lessons and the failure-class taxonomy live here,
+# cloud-canonical, and get mounted read-only into every project's working memory. This is the ONE place
+# the (space, snapshot) pair is named so every caller — the mount-at-claim-time call below and
+# ``agent_factory.ingestion_api``, the sole writer — agrees on where "the shared learnings space" is.
+FACTORY_LEARNINGS_SPACE = "factory-learnings"
+FACTORY_LEARNINGS_SNAPSHOT = "lessons"
+# Proof-artifact bundles (FL4 / R7) live in the SAME shared space under their own snapshot — never
+# mounted read-only alongside lessons (only an explicit ``mount_snapshot(space, "artifacts")`` call
+# would expose them), which keeps the cross-project-readability question D3 leaves open from being
+# decided by accident.
+FACTORY_ARTIFACTS_SNAPSHOT = "artifacts"
+# Push-not-pull pending-attention flags (FL18 / R24) — suspension/parking/undraftable/check-defeat
+# events — live in the SAME shared space under their own snapshot, org-wide so `af-retro --flags`
+# aggregates across every project from one place.
+FACTORY_FLAGS_SNAPSHOT = "flags"
+# Cloud-promoted universal checks (FL14 / R14, D8) — the dual-source seam's cloud half: a check
+# promoted after recurrence in >=2 distinct projects lives here, org-wide, so it resolves for every
+# project (including one that never saw the originating failure) alongside seeded_checks.toml's
+# git-shipped universals, in the same read pass.
+FACTORY_PROMOTED_UNIVERSALS_SNAPSHOT = "promoted-universals"
+
+
+def mount_snapshot(space: str, snapshot: str, *, not_found_ok: bool = False) -> dict[str, Any]:
+    """Mount ``(space, snapshot)`` as a READ-ONLY overlay on the caller's own working memory
+    (POST /mounts). A mounted overlay is retrieval-only: it widens what ``context``/``facts_by`` see
+    for the authenticated caller, but there is no write endpoint that targets an overlay — writing
+    into the mounted space/snapshot itself requires an explicit ``space=``/``snapshot=`` write call
+    against it, which nothing but the owning writer (e.g. ``ingestion_api`` for the learnings space)
+    is meant to issue. Idempotent: mounting an already-mounted pair is a no-op.
+
+    The server refuses to mount a snapshot with zero rows (HTTP 404) — an empty shared space is the
+    legitimate starting state (e.g. before the first lesson is ever ingested), not an outage. Pass
+    ``not_found_ok=True`` to treat that specific case as a benign no-op (``{}``) instead of raising;
+    every other failure still raises :class:`PraxisUnreachable`."""
+    return _request("POST", "/mounts",
+                    body={"space": _require_str(space, "space"),
+                          "snapshot": _require_str(snapshot, "snapshot")},
+                    not_found_ok=not_found_ok)
+
+
+def _require_str(value: str, name: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        raise ValueError(f"{name} is required")
+    return text
+
+
+def ensure_space(space_id: str, name: str | None = None) -> str:
+    """Idempotently ensure org-shared ``space_id`` exists (POST /spaces); return it.
+
+    A snapshot-bound write into a space that has never been created 404s (``_require_space`` on
+    the server), so this is the one-time bootstrap a fresh space's first writer needs. A 409
+    ("already exists") is exactly the steady-state case after the first call and is swallowed,
+    not raised — every other failure still raises :class:`PraxisUnreachable`."""
+    sid = _require_str(space_id, "space_id")
+    try:
+        _request("POST", "/spaces", body={"spaceId": sid, "name": name})
+    except PraxisUnreachable as exc:
+        if "HTTP 409" not in str(exc):
+            raise
+    return sid
+
+
 # --------------------------------------------------------------------------- preflight
 
 # The ONE reason a factory Stop hook is hard to stand up: two things must be right at once —

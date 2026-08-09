@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "agent-factory"
 version = "0.1.0"
@@ -7,6 +11,28 @@ requires-python = ">=3.14"
 dependencies = [
     "pyyaml>=6.0.3",
 ]
+
+# Operator-facing commands. There was no [project.scripts] table at all, so `af-retro --flags
+# <project>` -- the command af-build/SKILL.md tells every agent to run at session start, and the
+# whole of R24's push-not-pull flag guarantee -- named a binary that existed nowhere in .venv/bin.
+# Both entry points wrap a `main(argv)` that already parses its own args and returns an exit status:
+#   af-retro   -> the flag/lesson/check report (agent_factory.af_retro)
+#   af-ingest  -> the lesson + plan-time authoring CLI: ingest / read / rollback-wave /
+#                 author-check / author-lens (agent_factory.ingestion_api)
+#   af-taxonomy -> the near-duplicate failure-class sweep (agent_factory.failure_taxonomy).
+#                 The loop-end hook calls sweep_near_duplicate_classes() directly, in-process;
+#                 this name exists so the sweep is ALSO runnable by an operator on demand
+#                 (--dry-run reports what it would merge). A module-level main() that nothing
+#                 can invoke is the exact zero-caller defect this build shipped once already.
+# `python -m agent_factory.<module>` stays the invocation of record for anything running under the
+# loop's own PYTHONPATH (af-ticket-loop.sh calls af_retro that way, off the EXIT trap); these names
+# are for a human or an agent at a shell, where an installed console script is the only thing that
+# works without knowing where the factory checkout lives. Keep both working: a module that grows a
+# console script must keep its `if __name__ == "__main__"` block.
+[project.scripts]
+af-retro = "agent_factory.af_retro:main"
+af-ingest = "agent_factory.ingestion_api:main"
+af-taxonomy = "agent_factory.failure_taxonomy:main"
 
 # The wireframe-conformance BROWSER gate (wireframe_browser_check.py) needs Playwright — the Python
 # package here plus a one-time `python -m playwright install chromium` (~150 MB) that the module
@@ -27,8 +53,20 @@ dev = [
     "mutmut>=2.4,<3",
 ]
 
+# ``hooks/`` ships as a SECOND top-level package, not as a subpackage of ``agent_factory``.
+# It has to: ``hooks/_ticket_state.py`` binds its siblings by their bare names (``import _praxis``),
+# the hook entry points in ``hooks/hooks.json`` are launched as loose scripts out of that directory,
+# and every test imports them as ``hooks.<mod>``. Renaming them into ``agent_factory.hooks`` would
+# have to rewrite all three at once. Shipping the directory as-is keeps ONE import name across the
+# source checkout, the loop's ``PYTHONPATH=<root>/hooks:<root>/src``, and an installed wheel --
+# which is the whole point, since ``agent_factory.ingestion_api`` imports through it and was
+# therefore unimportable from any wheel install before this. The cost is a generic top-level
+# ``hooks`` name in site-packages; acceptable for a distribution that is never published to PyPI.
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_factory", "hooks"]
+
 [tool.pytest.ini_options]
-pythonpath = ["src", "."]
+pythonpath = ["src", ".", "hooks"]
 testpaths = ["tests"]
 
 # Mutation testing config (U5, KTD7). Run OUT-OF-BAND, never as part of `pytest`:

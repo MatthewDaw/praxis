@@ -27,7 +27,8 @@ def _extract(tmp_path: Path, subjects: list[str], known_ids: str) -> str:
     """Build a throwaway repo with these commit subjects, run af_owned_ids over it."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    run = lambda *a: subprocess.run(a, cwd=repo, capture_output=True, text=True, check=True)
+    def run(*a):
+        return subprocess.run(a, cwd=repo, capture_output=True, text=True, check=True)
     run("git", "init", "-q")
     run("git", "config", "user.email", "t@t.t")
     run("git", "config", "user.name", "t")

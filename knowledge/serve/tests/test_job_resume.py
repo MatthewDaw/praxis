@@ -218,6 +218,30 @@ def test_idempotent_claim_reclaims_the_stale_lease_once_the_owner_matches(monkey
             self._meta.update(meta_dict)
             return {"id": cid, "meta": dict(self._meta)}
 
+        # `claim` stopped taking tickets through patch_meta and now calls the ATOMIC server endpoint
+        # (`_praxis.claim_requirement`), so this double went stale and the test failed with
+        # AttributeError rather than on anything it was written to assert. Mirror the endpoint's real
+        # contract instead of stubbing it: grant when the ticket is free, its lease is stale, or the
+        # SAME owner renews; return None (the 409) when a DIFFERENT owner holds a live lease -- which
+        # is precisely the distinction this test exercises.
+        def claim_requirement(self, cid, owner, ttl, *, space=None, snapshot=None):
+            held = self._meta.get(ts.M_CLAIM_OWNER)
+            if held and held != owner and ts._lease_live(self._meta):
+                return None
+            now = time.time()
+            self._meta.update({
+                ts.M_BUILD_STATE: "in_progress",
+                ts.M_CLAIM_OWNER: owner,
+                ts.M_CLAIM_AT: now,
+                ts.M_CLAIM_HEARTBEAT_AT: now,
+                ts.M_CLAIM_LEASE_TTL: int(ttl),
+            })
+            return {"id": cid, "meta": dict(self._meta)}
+
+        def write_build_state(self, cid, meta_dict, *, owner=None, space=None, snapshot=None):
+            self._meta.update(meta_dict)
+            return {"id": cid, "meta": dict(self._meta)}
+
     stale_heartbeat = time.time() - (ts.DEFAULT_LEASE_TTL_S * 5)
     fake = FakePraxis(_ticket_meta_from_prior_run(JOB_OWNER, run_at=stale_heartbeat))
     monkeypatch.setattr(ts, "_praxis", fake)

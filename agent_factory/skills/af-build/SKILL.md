@@ -41,6 +41,22 @@ Workflow tool is unavailable.
 
 To drive the (optionally scoped) build set to done you run **exactly this loop**:
 
+**AT SESSION START**, before step 0: run `af-retro --flags <project>` (or `af-retro --flags` alone for
+every project this session touches). This is R24's push-not-pull surfacing — a suspension, parking,
+undraftable, or check-defeat event from an earlier run stays on the PENDING list until someone runs
+`af-retro ack <flag_id>`, and this is where that list becomes visible again rather than only at the
+loop-end notification that first raised it. A non-empty list is not a build blocker — note it in your
+report so a human can ack it — but it must never be silently skipped.
+
+> `af-retro` is a real console script (`[project.scripts]` in `agent_factory/pyproject.toml`), but it
+> is only on `PATH` where the factory is installed. It named a binary that existed in NO venv until
+> that table was added, which is how this instruction sat unexecutable through entire builds. If
+> `af-retro` is not found, run the module instead — same code, no install needed:
+> `python -m agent_factory.af_retro --flags <project>` under the loop's `PYTHONPATH` (already
+> exported for you; see *Do NOT go hunting for the factory's own code*), or
+> `uv run --project <factory>/agent_factory af-retro --flags <project>` from anywhere else. Never
+> report the step as skipped because the first form was not found.
+
 0. **OPEN THE RUN** — resolve the scope to its in-scope incomplete ticket ids (an **id-only** pass — do
    not read ticket bodies) and **STAMP the whole-set run marker** on every one
    (`_ticket_state.stamp_run(cids, owner, scope_label)`). This persisted, scope-bearing marker is what arms
@@ -68,17 +84,36 @@ To drive the (optionally scoped) build set to done you run **exactly this loop**
    requirement id(s) it `covers` and a `run` command whose exit code is the signal), then
    `pin_validations(cid, [...])`. A coverage-back-check (`coverage_gap(cid)` must be empty) is part of
    doneness: a requirement with no covering validation means the ticket is **not** verifiable-done.
-4b. **READ WHY IT CAME BACK** — before writing a line of code, check the ticket's
+4b. **READ WHY IT CAME BACK — ALL of it** — before writing a line of code, check the ticket's
    `meta.regression_detail` and `meta.audit_disposition`. A ticket in the incomplete set is either
-   never-built or **regressed**, and a regressed one carries a report from whatever sent it back:
-   `reason` (what failed), `evidence` (the failing test/gate and its error text), `required_fix`
-   (what the rebuild must address). When `regression_detail.source` is `post-merge-verification`,
-   this ticket's own worktree build was GREEN and it failed only once merged — so repeating the
-   original approach reproduces the same failure, and the fix is almost always integration-level (a
-   registry/manifest/seed row the merged tree needs, or a collision with work that landed after)
-   rather than anything wrong inside the ticket's own diff. Treat that report as part of the
-   acceptance condition and rebuild against the CURRENT integrated tree. Skipping it is not a
-   shortcut — it re-derives at full cost a diagnosis another agent already paid for and wrote down.
+   never-built or **regressed**, and a regressed one carries the reports from whatever sent it back.
+   `regression_detail` is an **accumulating LIST of finding dicts, oldest first** — not a single
+   dict. Concurrent writers (post-merge verification, conflict resolution, the ingestion API) each
+   append their own entry rather than clobber a sibling's (R16/E3), and answered findings stay in
+   the list stamped `resolved: true`. So `regression_detail.reason` reads as nothing, and
+   `regression_detail[0]` is the OLDEST finding, usually already resolved — either way the worker
+   rebuilds blind, which is the precise failure this list was built to stop (one ticket was
+   regressed with a report naming the defect, the evidence and the fix, and closed again TWICE
+   without its file being touched).
+   **Read it through the helpers, not by indexing.** With the loop's `PYTHONPATH`
+   (`<repo>/agent_factory/hooks:<repo>/agent_factory/src`):
+   `import _ticket_state as ts` → `ts.open_findings(meta)` returns EVERY finding still owed an
+   answer (unresolved, non-empty `reason`), oldest first; `ts.ticket_briefing(cid, meta)` renders
+   all of them as ready-to-read text. Both lift a legacy single dict into a one-entry list, so an
+   older ticket still reads correctly. Every open finding is binding — **answer all of them**, not
+   just the first.
+   Each finding carries `source`, `reason` (what failed), `evidence` (the failing test/gate and its
+   error text), `required_fix` (what the rebuild must address), plus source-specific fields
+   (`round`, `check_id`, `commit_sha`, `branch`). When a finding's `source` is
+   `post-merge-verification`, this ticket's own worktree build was GREEN and it failed only once
+   merged — so repeating the original approach reproduces the same failure, and the fix is almost
+   always integration-level (a registry/manifest/seed row the merged tree needs, or a collision with
+   work that landed after) rather than anything wrong inside the ticket's own diff. Treat those
+   reports as part of the acceptance condition and rebuild against the CURRENT integrated tree.
+   Skipping it is not a shortcut — it re-derives at full cost a diagnosis another agent already paid
+   for and wrote down.
+   You do **not** close a finding by asserting you fixed it: `resolved` is stamped only when a later
+   verification round confirms the ticket survived integration, or a human dismisses it.
 5. **BUILD** — do the work to satisfy the ticket's binary acceptance condition.
 6. **VERIFY** — run **EVERY** pinned validation; record each pass **ON THE TICKET NODE** (never on the
    requirement fact — requirements are read-only during builds). **External signals only** (exit codes /
@@ -147,7 +182,7 @@ passes, outcomes, run-markers — is read and written on the **`prd-<project>`**
 points ONLY the check reads at `building-validation`; check resolution never touches the state snapshot.
 That check snapshot must hold the `category="check"`, `scope="validation"` rules; if it is empty a ticket
 resolves **only** its always-present acceptance-condition floor (below) — fewer checks, never a crash.
-(Seed it from the plan or save a snapshot into it out-of-band; af-intake-build-validation is how new
+(Seed it from the plan or save a snapshot into it out-of-band; af-ingest author-check is how new
 `building-validation` rules get authored there.)
 
 ### How a check pins onto a ticket — the matching model
@@ -199,14 +234,14 @@ ticket therefore has at least one thing to prove: its own red→green acceptance
 
 ### Verify coverage BEFORE a build — the dry-run inspector
 
-`python -m agent_factory.tools.resolve_preview <project>` prints, **read-only**, exactly which checks pin
+`python -m tools.resolve_preview <project>` prints, **read-only**, exactly which checks pin
 onto which tickets and by which lane, without claiming or building anything. It is the **formal way to
 verify coverage** — run it before a build whenever you want to see the resolution the loop will compute.
 
 > **Renamed from `coding-validation`.** The build-check snapshot is now `building-validation`, and it is
 > a per-project snapshot in the project space — NOT a single global `coding-validation` space. Legacy
 > global checks are not retro-fitted into per-project spaces (old data carried no reliable project
-> association); teams re-seed each project's `building-validation` snapshot via af-intake-build-validation.
+> association); teams re-seed each project's `building-validation` snapshot via af-ingest author-check.
 
 **Override — slash argument ONLY** (no env seam): `/af-build [scope] --checks-space=<space[:snapshot]>`
 points resolution at a different `(space, snapshot)` for this run. Thread it as an `override`
@@ -491,7 +526,7 @@ each a binary command or a graded rubric) offered to EVERY ticket via `seeded_ca
 the semantic lane these are surfaced deterministically (not embedding-dependent), but they are equally
 **opt-in and non-gating**: fold in the ones genuinely relevant to this ticket as authored validations, ignore
 the rest. A graded seeded candidate becomes a `kind:"graded"` validation carrying its rubric (see §5 VERIFY).
-`python -m agent_factory.tools.resolve_preview <project>` lists the seeded candidates offered per ticket.
+`python -m tools.resolve_preview <project>` lists the seeded candidates offered per ticket.
 
 **Then GATHER + ASSEMBLE the graded candidate pool (the shared pool; the gating function).** Beyond the
 semantic lane above, the `building-validation` pool holds `candidate:true` graded checks contributed by
@@ -500,9 +535,12 @@ The mandatory-vs-advisory decision is made HERE, by a function, not by either wr
 
 1. **ADD your discoveries to the pool (U4).** If your rules/memory search surfaces a ticket-specific
    quality concern worth grading, PERSIST it as a `candidate:true` graded check via
-   **`af-intake-build-validation`** (never a direct write — preserves the single-writer lock), scoped
+   **`af-ingest author-check`** (never a direct write — preserves the single-writer lock), scoped
    TIGHTLY to this ticket's tags/surface (never `["*"]`), `authored_by:"build"`, with a `severity` hint.
-   Idempotent on `check_id`, so re-discovery updates in place.
+   Idempotent on `check_id`, so re-discovery updates in place. The literal command:
+   `af-ingest author-check "<criterion>" --project <project> --applies-to <this ticket's tags> --rubric '<json>'`
+   — or `python -m agent_factory.ingestion_api author-check …` where the console script is not on
+   `PATH` (it is a `[project.scripts]` entry, so it exists only where the factory is installed).
 2. **READ the pool for this ticket.** `pool_candidates(cid, project, scope="validation")` (hooks/) — the
    DETERMINISTIC set of every `candidate:true` check resolving onto this ticket (NON-gating; the full
    set, unlike the semantic `retrieve_advisory_checks` sample).
@@ -890,7 +928,7 @@ the subagents directly. **Dedupe** (merge multiple angles into one finding per d
 strongest severity) BEFORE emitting. **Emit each finding as an `incomplete` Praxis ticket/check** bound to
 the touched area: a defect demanding a fix → a **ticket** (the build loop re-opens via FIND and the
 completeness gate stays blocked until it is `finished`); a recurring "this must be proven" rule → a
-**check** (af-intake-build-validation, which also regresses the matching finished tickets). That is the
+**check** (af-ingest author-check, which also regresses the matching finished tickets). That is the
 entire enforcement mechanism — no second gate, no advisory-only suggestions. **Closing a finding** = its
 ticket/check reaching `build_state="finished"`: **resolved** (built + checks pass) or **accepted** (a
 conscious owned trade-off, recorded as a Praxis episode before the ticket is released `finished` — never
@@ -914,13 +952,31 @@ of a skip episode; never fabricate a panel-ran assertion and never edit config t
 
 Before reading a file or writing a line, read your ticket's `meta.regression_detail` and
 `meta.audit_disposition`. An incomplete ticket is either never-built or **regressed**, and a regressed
-one carries the report from whatever sent it back — `reason`, `evidence` (the failing test/gate and its
-error text), `required_fix`. If `regression_detail.source` is `post-merge-verification`, the previous
-attempt's worktree build was **green** and it failed only after merging: repeating that approach
-reproduces the failure exactly, because the defect is integration-level (a registry/manifest/seed the
-merged tree needs, or a collision with work that landed afterwards), not inside the ticket's own diff.
-Treat the report as part of your acceptance condition and build against the CURRENT integrated tree.
-Absent that field, this is a first build and there is nothing to read.
+one carries the reports from whatever sent it back — `reason`, `evidence` (the failing test/gate and its
+error text), `required_fix`.
+
+`regression_detail` is an **accumulating LIST of finding dicts, oldest first**, not one dict.
+Post-merge verification, conflict resolution and the ingestion API each append their own entry instead
+of overwriting a sibling's (R16/E3), and answered findings remain in the list stamped `resolved: true`.
+`regression_detail.reason` therefore reads as nothing and `regression_detail[0]` is the oldest entry —
+usually one already answered. Either way you rebuild blind, which is exactly the failure this list
+exists to prevent: a ticket was regressed with a precise report and closed again twice without its file
+being touched. Read it with the helpers instead — under the loop's `PYTHONPATH`
+(`<repo>/agent_factory/hooks:<repo>/agent_factory/src`), `import _ticket_state as ts` gives
+`ts.open_findings(meta)` (every finding still owed an answer, oldest first) and
+`ts.ticket_briefing(cid, meta)` (all of them rendered as text). Both lift a legacy single dict into a
+one-entry list, so an older ticket still reads correctly.
+
+**Every open finding is binding — answer all of them**, not just the first. And you do not close one
+by saying you did: `resolved` is stamped only when a later verification round confirms the ticket
+survived integration, or a human dismisses it. That is the self-certification this guard exists to stop.
+
+If any open finding's `source` is `post-merge-verification`, that attempt's worktree build was **green**
+and it failed only after merging: repeating that approach reproduces the failure exactly, because the
+defect is integration-level (a registry/manifest/seed the merged tree needs, or a collision with work
+that landed afterwards), not inside the ticket's own diff. Treat the reports as part of your acceptance
+condition and build against the CURRENT integrated tree. An empty list (or no such field) means this is
+a first build and there is nothing to read.
 
 ### You are one of N — share the box (state this to every worker)
 

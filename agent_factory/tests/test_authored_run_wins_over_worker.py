@@ -152,8 +152,10 @@ def test_actual_mock_usage_is_still_caught():
 
 def _req(**kw):
     from agent_factory.plan_gate import Requirement
-    kw.setdefault("id", "R1"); kw.setdefault("source", "prd-p")
-    kw.setdefault("acceptance", "it holds"); kw.setdefault("verify", "automated")
+    kw.setdefault("id", "R1")
+    kw.setdefault("source", "prd-p")
+    kw.setdefault("acceptance", "it holds")
+    kw.setdefault("verify", "automated")
     return Requirement(**kw)
 
 

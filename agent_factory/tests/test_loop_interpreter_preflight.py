@@ -154,9 +154,15 @@ def test_dispatch_prompt_addition_stays_short():
 
 def test_dispatch_prompt_is_still_one_double_quoted_send_keys():
     """The interpreter path is only useful if it interpolates -- and the existing $INTEGRATION_REF
-    contract depends on the same quoting."""
-    send = next(line for line in SRC.splitlines() if "/af-build $PROJECT $ids_csv" in line)
-    assert re.search(r'tmux send-keys -t "\$SESSION" "', send), "prompt is not double-quoted"
+    contract depends on the same quoting.
+
+    The prompt is built into `round_prompt` via a double-quoted assignment, then dispatched via a
+    double-quoted `tmux send-keys` of that variable -- both legs must stay double-quoted."""
+    assign = next(line for line in SRC.splitlines() if "/af-build $PROJECT $ids_csv" in line)
+    assert re.search(r'round_prompt="', assign), "prompt assignment is not double-quoted"
+    send = next(line for line in SRC.splitlines() if 'send-keys -t "$SESSION" "$round_prompt"' in line)
+    assert re.search(r'tmux send-keys -t "\$SESSION" "\$round_prompt"', send), \
+        "prompt dispatch is not a double-quoted send-keys"
     r = subprocess.run(
         ["bash", "-c", 'PY=/v/bin/python; echo "use: $PY not python3"'],
         capture_output=True, text=True,

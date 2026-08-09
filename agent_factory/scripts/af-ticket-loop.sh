@@ -415,7 +415,17 @@ if [ -n "${AF_PYTHON:-}" ]; then PY="$AF_PYTHON"
 elif [ -x "$AF_REPO/.venv/bin/python" ]; then PY="$AF_REPO/.venv/bin/python"
 else PY="$(command -v python3)"; fi
 # Exported, so every embedded heredoc below imports the hooks without hardcoding a path of its own.
-export PYTHONPATH="$AF_PLUGIN_DIR/hooks:$AF_PLUGIN_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+#
+# $AF_PLUGIN_DIR itself leads, and it is not decoration. `hooks/` is a plain DIRECTORY, not an
+# installed package, so `from hooks import _praxis` only resolves when the directory CONTAINING
+# hooks/ is on the path — and the two entries that follow put the hook MODULES on the path while
+# leaving their parent off it. The 2026-08-07 build shipped a whole subsystem behind exactly that
+# asymmetry: 1207 unit tests green (pytest sets `pythonpath = ["src", ".", "hooks"]`, which does
+# include the parent) while this script's only call into it died on
+# `ModuleNotFoundError: No module named 'hooks'` and was swallowed by a `|| true`.
+# `agent_factory._hooks` now repairs the path from its own file location so the import no longer
+# DEPENDS on this line — this is the belt to that module's braces, not a substitute for it.
+export PYTHONPATH="$AF_PLUGIN_DIR:$AF_PLUGIN_DIR/hooks:$AF_PLUGIN_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 # Exported for the same reason PYTHONPATH is, one level out: the per-ticket WORKERS are claude
 # sessions that type `python3` in their own Bash calls, and that resolves against THEIR PATH, not
 # against the interpreter this driver so carefully chose. On the box where the sotos run lost its
@@ -427,6 +437,54 @@ export PYTHONPATH="$AF_PLUGIN_DIR/hooks:$AF_PLUGIN_DIR/src${PYTHONPATH:+:$PYTHON
 # name, AF_PYTHON is this driver's own override knob and must agree with what it resolved.
 export PRAXIS_HOOK_PYTHON="$PY"
 export AF_PYTHON="$PY"
+
+# THE BOX WORKTREE REGISTRY (D6), populated HERE because this is the only process that knows the
+# answer. `agent_factory.widening.resolve_sibling_worktree` needs, for a project, the checkout whose
+# HEAD is that project's current INTEGRATION state — the healthy reference half of a widening proof.
+# It reads that from $BOX_WORKTREE_REGISTRY and treats "absent" as "sibling unavailable", so with
+# nothing populating the variable `attempt_widen` PARKS unconditionally: it can never widen, only
+# emit parking flags forever. Nothing in the repo defined it, and nothing in the repo COULD — the
+# mapping is a property of this box's on-disk layout, not of the source tree, which is exactly why
+# the module sources it from the environment rather than hardcoding a path.
+#
+# The authoritative entry is our own: $PROJECT's integration state is $WT, by construction — this
+# driver merges every finished ticket into it. That is also the entry that actually gets used, since
+# `attempt_widen` defaults `sibling_project` to the project being widened. Sibling projects are
+# added best-effort by scanning the state dir for other checkouts (both layouts this box has ever
+# used: a bare `<project>` directory and the `<project>-build` convention), and a wrong guess there
+# costs a park, not a bad widen — the proof still has to FAIL on the bad artifact and PASS on that
+# reference before anything widens.
+#
+# AF_BOX_WORKTREE_REGISTRY overrides the scan wholesale for a box whose layout this cannot infer.
+if [ -n "${AF_BOX_WORKTREE_REGISTRY:-}" ]; then
+  export BOX_WORKTREE_REGISTRY="$AF_BOX_WORKTREE_REGISTRY"
+else
+  BOX_WORKTREE_REGISTRY="$(
+    "$PY" - "$PROJECT" "$WT" "$AF_STATE_DIR" <<'PYEOF' 2>/dev/null || echo ''
+import json, os, sys
+project, wt, state_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+reg = {}
+try:
+    for name in sorted(os.listdir(state_dir)):
+        path = os.path.join(state_dir, name)
+        if not os.path.exists(os.path.join(path, ".git")):
+            continue
+        # `<project>-build` / `<project>_build` are this box's build-checkout conventions; a bare
+        # directory name is taken as the project name itself.
+        for suffix in ("-build", "_build"):
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+                break
+        reg.setdefault(name, path)
+except OSError:
+    pass
+# Ours LAST and unconditional: a scan guess must never shadow the one entry we actually know.
+reg[project] = wt
+print(json.dumps(reg, sort_keys=True))
+PYEOF
+  )"
+  export BOX_WORKTREE_REGISTRY
+fi
 
 # How many consecutive 30s polls the pane may go completely unchanged before we
 # treat the session as frozen rather than quietly working (10 * 30s = 5 minutes).
@@ -1153,7 +1211,8 @@ resolve_conflicts(){   # $1 = round number
   # a finished ticket whose work is not on the branch is a lie, and the honest repair is to re-queue it.
   $PY - "$PROJECT" "$rnd" "$RESOLVED" "$WT" "$CONFLICTS" <<'PYEOF' 2>&1 | while IFS= read -r l; do say "$l"; done
 import json, subprocess, sys
-import _praxis
+import _praxis, _ticket_state as ts
+from agent_factory import ingestion_api
 proj, rnd, path, wt, conflicts = sys.argv[1:6]
 kw = dict(space=proj, snapshot=f"prd-{proj}")
 
@@ -1220,20 +1279,44 @@ for br, u in dropped.items():
         f = by_rid.get(str(rid))
         if not f:
             continue
+        new_finding = {"round": rnd, "source": "conflict-resolution", "branch": br,
+                      "merged_but_intent_dropped": True, "abandoned_sha": sha,
+                      "reason": "branch merged, but this ticket's change was not preserved",
+                      "evidence": reason,
+                      "required_fix": "re-establish the behaviour against the current integrated tree; "
+                                      "do NOT re-merge the branch, it is already an ancestor of HEAD"}
+        # R5 — "regression without ingestion is not a legal state". A merger-driven regression is
+        # NEVER a bare `regress_requirements` any more: it goes through the ingestion API, which
+        # classifies the failure, lands the lesson, and regresses in the SAME motion. This site used
+        # to call `_praxis.regress_requirements` directly, so every conflict-resolution regression
+        # threw away the one thing the loop actually learned from it.
+        #
+        # Deliberately NOT wrapped in try/except: `regress_with_ingestion` documents that it catches
+        # nothing, so a Praxis outage propagates and halts this pass loudly — the same way the bare
+        # regress it replaces always did. Anything quieter would let a run keep going while its
+        # regressions silently evaporated.
+        lesson = (f"conflict resolution of round #{rnd} merged branch {br} but ticket {rid}'s change "
+                  f"did not survive it. {reason}")
+        ingestion_api.regress_with_ingestion(
+            proj, [f["id"]], lesson,
+            source=f"af-ticket-loop/conflict-resolution/{proj}",
+            channel="machine", commit_sha=sha,
+        )
+        # R16/E3: accumulate onto this ticket's existing regression_detail — a concurrent finding
+        # must never be clobbered by this one. Re-READ first: the ingestion call above just wrote its
+        # OWN entry onto this ticket, and accumulating onto the pre-ingestion copy captured in `f`
+        # would drop it.
+        current = _praxis.get_fact(f["id"], **kw) or f
+        accumulated = ts.accumulate_regression_detail((current.get("meta") or {}).get("regression_detail"), new_finding)
         _praxis.regress_requirements(proj, [f["id"]], {f["id"]: {
             "claim_owner": None, "claim_at": None,
             "claim_heartbeat_at": None, "claim_lease_ttl": None,
             "audit_disposition": (f"REGRESSED by conflict resolution of round #{rnd}: branch {br} was merged, but this "
                                   f"ticket's intent did not survive. WHAT WAS LOST: {reason} THE REBUILD MUST: re-establish "
                                   f"that behaviour against the CURRENT integrated tree."),
-            "regression_detail": {"round": rnd, "source": "conflict-resolution", "branch": br,
-                                  "merged_but_intent_dropped": True, "abandoned_sha": sha,
-                                  "reason": "branch merged, but this ticket's change was not preserved",
-                                  "evidence": reason,
-                                  "required_fix": "re-establish the behaviour against the current integrated tree; "
-                                                  "do NOT re-merge the branch, it is already an ancestor of HEAD"}}},
+            "regression_detail": accumulated}},
             **kw)
-        print(f"conflict resolver: regressed {rid} — merged, but its intent was dropped")
+        print(f"conflict resolver: regressed {rid} WITH INGESTION — merged, but its intent was dropped")
 
 # Final invariant, checked against git and not against anyone's report.
 left = [b for b in expected if git("rev-parse", "--verify", b).returncode == 0
@@ -1764,9 +1847,114 @@ af_cleanup_on_exit(){
     # the write anyway. Still retries, just without sleeping through a shutdown.
     AF_QUERY_BACKOFF_S=0 reap_branches || true
   fi
+  af_surface_flags
   return "$rc"
 }
+
+# R24 — flags are PUSH, not pull: a suspension, a parking, an undraftable check, a check-defeat must
+# not wait for an operator to go looking for it. Three things were wrong with how this ran:
+#
+#   1. It died on import. `python -m agent_factory.af_retro` under this script's own PYTHONPATH hit
+#      `ModuleNotFoundError: No module named 'hooks'`, because PYTHONPATH carried the hook MODULES
+#      and not the directory containing them. `agent_factory._hooks` fixes that from the module side
+#      and the PYTHONPATH export above now carries $AF_PLUGIN_DIR as well.
+#   2. `|| true` swallowed the failure whole. That is why #1 could survive a full build: the one
+#      call into the subsystem failed every time and printed nothing. A read failure still must not
+#      fail a completed run, so the exit status is still discarded — but the OUTPUT is captured and
+#      a failure is now said out loud, which is the difference between "cannot" and "silent".
+#   3. It ran on ONE line at the very end of the script, AFTER `af_assert_no_stragglers "exit"` —
+#      which exits 7 from inside itself when the invariant is violated. So the guarantee that flags
+#      always surface held only on the happy path, and was absent on precisely the failed, halted
+#      and killed exits where an operator most needs to see them. Moving it onto the EXIT trap makes
+#      it unconditional: drain, circuit breaker, Praxis outage, straggler exit 7, `tmux kill-session`
+#      all route through af_cleanup_on_exit.
+#
+# `timeout`-bounded because this runs inside a signal handler and reads Praxis, which may be exactly
+# the thing that is down; and once-only, because INT/TERM fire the handler and then EXIT fires it
+# again.
+AF_FLAGS_SURFACED=0
+af_surface_flags(){
+  # `if`, not `[ ... ] && return 0`: this script runs under `set -e`, where a bare test that
+  # evaluates FALSE is a failing simple command and takes the whole script with it.
+  if [ "$AF_FLAGS_SURFACED" = "1" ]; then return 0; fi
+  AF_FLAGS_SURFACED=1
+  local runner="" out rc
+  if command -v timeout >/dev/null 2>&1; then runner="timeout ${AF_FLAGS_TIMEOUT_S:-120}"; fi
+  out=$($runner "$PY" -m agent_factory.af_retro --flags "$PROJECT" 2>&1); rc=$?
+  if [ "$rc" != "0" ]; then
+    say "WARNING: pending-flag surfacing FAILED with status $rc — any suspension, parking, undraftable check or check-defeat from this run is UNREPORTED. Run: PYTHONPATH=$PYTHONPATH $PY -m agent_factory.af_retro --flags $PROJECT"
+    printf '%s\n' "$out" | while IFS= read -r l; do [ -n "$l" ] && say "  flags: $l"; done
+    return 0
+  fi
+  printf '%s\n' "$out" | while IFS= read -r l; do [ -n "$l" ] && say "$l"; done
+  return 0
+}
 trap af_cleanup_on_exit EXIT INT TERM
+
+# ------------------------------------------------------------------------------- loop-end hooks --
+#
+# Two maintenance sweeps that were specified to run off the af-build loop-end hook and had NO caller
+# at all, so neither had ever executed in production:
+#
+#   ingestion_api.reprove_quiet_checks    KD7 — a GATING check that has gone quiet past the re-prove
+#                                         cadence re-runs against its retained bad artifact. Still
+#                                         failing keeps it gating; an artifact that no longer
+#                                         reproduces demotes it to REPORT_ONLY with a reason. Without
+#                                         this, a check proven once gates forever on the strength of
+#                                         a proof nobody ever revisited.
+#   failure_taxonomy.sweep_near_duplicate_classes
+#                                         R20/FL15 — merges near-duplicate failure classes, crediting
+#                                         the survivor with the loser's recurrence count. Recurrence
+#                                         count is what drives widening and universal promotion, so a
+#                                         corpus that keeps splitting one failure across near-dup
+#                                         classes never reaches either threshold.
+#
+# OFF THE CRITICAL PATH, and that is a hard requirement, not a preference: reprove_quiet_checks runs
+# real proof commands in disposable worktrees and can take minutes. So this backgrounds the whole
+# thing, bounds it with `timeout` where the box has one, sends everything to the log, and is never
+# waited on and never gates anything. The worst case for a sweep that hangs or dies is a log line.
+#
+# Called at every ROUND boundary rather than once at the very end. Both sweeps carry their own
+# throttling — reprove_quiet_checks skips anything inside its cadence window, and the near-dup sweep
+# is idempotent once classes are merged — so per-round costs nothing and means the sweeps still run
+# on a run that is killed, halted by the circuit breaker, or exits before it ever drains.
+AF_LOOPEND_TIMEOUT_S="${AF_LOOPEND_TIMEOUT_S:-600}"
+af_loop_end_hooks(){
+  local why="$1" runner=""
+  # `if`, not `&&`/`[ ]`: under `set -e` a test that evaluates false is a failing command, and this
+  # is called from the middle of the round loop where that would abort the whole run.
+  if [ "${AF_LOOP_END_HOOKS:-1}" != "1" ]; then return 0; fi
+  if command -v timeout >/dev/null 2>&1; then runner="timeout ${AF_LOOPEND_TIMEOUT_S}"; fi
+  {
+    $runner "$PY" - "$PROJECT" "$WT" "$why" <<'PYEOF'
+import sys
+from agent_factory import failure_taxonomy, ingestion_api
+proj, wt, why = sys.argv[1], sys.argv[2], sys.argv[3]
+# Each sweep is independently guarded: neither is allowed to hide the other's result, and neither is
+# allowed to matter enough to be worth propagating out of a detached background job.
+try:
+    outcomes = ingestion_api.reprove_quiet_checks(proj, healthy_repo_path=wt)
+    kept = sum(1 for o in outcomes if o.get("result") == "kept-gating")
+    demoted = [o for o in outcomes if o.get("result") == "demoted"]
+    print(f"[loop-end {why}] re-prove: {len(outcomes)} quiet check(s) examined, "
+          f"{kept} kept gating, {len(demoted)} demoted to report-only")
+    for o in demoted:
+        print(f"[loop-end {why}] re-prove DEMOTED {o.get('check_id')}: {o.get('reason')}")
+except Exception as exc:  # noqa: BLE001 - a maintenance sweep never fails a build
+    print(f"[loop-end {why}] re-prove sweep failed: {exc!r}")
+try:
+    merges = failure_taxonomy.sweep_near_duplicate_classes()
+    print(f"[loop-end {why}] near-dup sweep: {len(merges)} class merge(s)")
+    for m in merges:
+        print(f"[loop-end {why}] merged class {m['loser_id']} into {m['survivor_id']} "
+              f"at similarity {m['score']:.2f}; survivor recurrence now {m['credited_recurrence']}")
+except Exception as exc:  # noqa: BLE001 - same
+    print(f"[loop-end {why}] near-dup sweep failed: {exc!r}")
+PYEOF
+  } >>"$LOG" 2>&1 &
+  say "loop-end hooks dispatched off-critical-path at $why — re-prove cadence + near-dup class sweep; results land in $LOG"
+  return 0
+}
 
 # ------------------------------------------------------------------ post-merge round verification --
 #
@@ -1793,6 +1981,12 @@ VERDICT="$AF_STATE_DIR/af-round-verdict-$PROJECT.json"
 # resolve_conflicts drains it. Per-project, so concurrent loops never read each other's.
 CONFLICTS="$AF_STATE_DIR/af-round-conflicts-$PROJECT.tsv"
 RESOLVED="$AF_STATE_DIR/af-round-resolved-$PROJECT.json"
+# R17 handoff: the OPEN findings this round's tickets still owe an answer to, written by
+# verify_round for the verifier to re-check. A FILE and not a prompt substitution on purpose — a
+# finding's recorded symptom is arbitrary agent prose and the prompt is sent inside a double-quoted
+# shell string, where a stray backtick or $ in that prose would be expanded by bash before tmux ever
+# saw it.
+FINDINGS="$AF_STATE_DIR/af-round-findings-$PROJECT.json"
 
 # Told to the workers so they hit the right services. A project with neither -- an iOS app, say --
 # gets no clause at all rather than the literal "Postgres localhost:none", which reads as a real
@@ -1807,6 +2001,29 @@ verify_round(){   # $1 = round number, $2.. = the round's ticket ids
   local vsession="$SESSION-verify"
   rm -f "$VERDICT"
 
+  # R17 — hand the verifier the findings it must RE-EVALUATE, not just the ticket ids. Without this
+  # the resolution pass below has nothing but the check's exit code to go on, and "the check passed"
+  # is exactly the evidence R17 refuses to accept as proof the symptom is gone.
+  $PY - "$PROJECT" "$@" > "$FINDINGS" 2>>"$LOG" <<'PYEOF' || printf '[]' > "$FINDINGS"
+import json, sys
+import _praxis, _ticket_state as ts
+proj = sys.argv[1]
+want = set(sys.argv[2:])
+kw = dict(space=proj, snapshot=f"prd-{proj}")
+out = []
+for f in _praxis.facts_by(category="requirement", **kw) or []:
+    m = f.get("meta") or {}
+    rid = str(m.get("requirement_id") or f.get("id"))
+    if rid not in want:
+        continue
+    for d in ts.open_findings(m):
+        out.append({"id": rid, "check_id": str(d.get("check_id") or ""),
+                    "symptom": str(d.get("reason") or "")[:600],
+                    "evidence": str(d.get("evidence") or "")[:600]})
+print(json.dumps(out, indent=2))
+PYEOF
+  [ -s "$FINDINGS" ] || printf '[]' > "$FINDINGS"
+
   tmux kill-session -t "$vsession" 2>/dev/null || true
   tmux new-session -d -s "$vsession" -c "$WT"
   tmux send-keys -t "$vsession" "cd $WT && $CLAUDE_LAUNCH" Enter
@@ -1820,7 +2037,7 @@ verify_round(){   # $1 = round number, $2.. = the round's ticket ids
 
   # No parentheses in this prompt, deliberately — if the REPL is not actually up the text lands on a
   # bash prompt, where a stray paren is a syntax error that kills the pane.
-  tmux send-keys -t "$vsession" "Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv. Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. THIS IS THE ONLY PLACE THOSE GATES RUN: the workers were told to skip them so that N of them would not run N concurrent suites, so you are the authoritative repo-wide gate for this round and nothing else has proven the merged tree compiles or passes. If any gate is red, identify which ticket's change caused it and regress that ticket per step 3; if you genuinely cannot attribute it, regress the whole batch rather than passing a red tree. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. If this round merged only ONE ticket, the cross-ticket lens is trivially satisfied and you may skip lens A, but step 1's gates and lenses B and C still run in full — they are the only repo-wide check this ticket gets. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: NAME every ticket whose work does NOT survive integration. Do NOT write that regression to Praxis yourself and do not try to fix the ticket — the loop that dispatched you performs the regression from your verdict, using a write path it already owns. Your job is the judgement, not the write. This split is deliberate: when verifiers were asked to do their own Praxis write, nine consecutive rounds reported zero regressions while their own notes named the failing tickets, so every one of those tickets stayed marked finished on work that had failed integration. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, notes which is one short string, and regressed which is an array of OBJECTS — one per ticket that must be regressed, each with four string fields: id the ticket id, reason what actually failed stated concretely, evidence the exact failing test name, gate, file and error text or the precise merge symptom, and fix what the rebuild must do differently. An empty array asserts every ticket survived integration. Write these for the NEXT WORKER, not for a log: it will claim the ticket cold with no memory of this round, so a bare id or a vague "tests failed" wastes an entire rebuild while it re-derives what you already know. Name the failing test, quote the error, and say what the fix has to address. Good: {"id":"REM-10","reason":"its new default-prefix-attribution controller is unregistered in RESTRICTED_RECORD_MANIFEST and the permission_pages seed","evidence":"chat14-restricted-record-manifest.test.ts and chat16-chart-access-record.test.ts both fail on the merged tree with 'scope not registered'","fix":"register the new controller/scope in RESTRICTED_RECORD_MANIFEST and add its permission_pages seed row, then re-run both suites against the merged tree"}. Bad: {"id":"REM-10","reason":"failed","evidence":"","fix":"fix it"}. Write that file LAST, after everything else is done, and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. If you cannot verify at all, that is itself a verdict: write the JSON with verdict fail and notes saying why, rather than asking what to do."
+  tmux send-keys -t "$vsession" "Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv. Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. THIS IS THE ONLY PLACE THOSE GATES RUN: the workers were told to skip them so that N of them would not run N concurrent suites, so you are the authoritative repo-wide gate for this round and nothing else has proven the merged tree compiles or passes. If any gate is red, identify which ticket's change caused it and regress that ticket per step 3; if you genuinely cannot attribute it, regress the whole batch rather than passing a red tree. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. If this round merged only ONE ticket, the cross-ticket lens is trivially satisfied and you may skip lens A, but step 1's gates and lenses B and C still run in full — they are the only repo-wide check this ticket gets. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: NAME every ticket whose work does NOT survive integration. Do NOT write that regression to Praxis yourself and do not try to fix the ticket — the loop that dispatched you performs the regression from your verdict, using a write path it already owns. Your job is the judgement, not the write. This split is deliberate: when verifiers were asked to do their own Praxis write, nine consecutive rounds reported zero regressions while their own notes named the failing tickets, so every one of those tickets stayed marked finished on work that had failed integration. Step 3b: read the file $FINDINGS. It is a JSON array of the OPEN findings these tickets still owe an answer to, each with id, check_id, symptom and evidence. If the array is empty, skip this step entirely. Otherwise, for EACH entry do TWO INDEPENDENT things and never let either one decide the other. First, run the check named by check_id against the merged tree and record whether it passes; if check_id is empty there is no check to run and check_passed is false. Second, and SEPARATELY, re-evaluate the recorded symptom itself against the merged tree — read the code, run the specific reproduction the evidence describes — and record whether that symptom is STILL PRESENT. A check that exits zero is NOT evidence the symptom is gone: a check can be defeated by a change that satisfies the command while leaving the defect exactly where it was, and the case where your two answers DISAGREE is the single most valuable thing you can report here, so report both honestly rather than making them agree. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, notes which is one short string, regressed which is an array of OBJECTS — one per ticket that must be regressed, each with four string fields: id the ticket id, reason what actually failed stated concretely, evidence the exact failing test name, gate, file and error text or the precise merge symptom, and fix what the rebuild must do differently — plus an OPTIONAL fifth string field check, a single command that FAILS on this broken merged tree and would PASS once the fix lands. Supply check only when you actually ran that command and watched it fail; a guess is worse than omitting it. It must be one plain command with no shell operators, no pipes, no redirection and no absolute paths, starting with one of pytest, python, python3, npm, npx, make, ruff, mypy, eslint, playwright or grep — anything else is rejected and the check is dropped, though your regression still lands. And findings_recheck which is an array of objects carrying step 3b's answers, each with id the ticket id, check_id copied from $FINDINGS, check_passed true or false, and symptom_present true or false; write an empty array if step 3b was skipped. An empty array asserts every ticket survived integration. Write these for the NEXT WORKER, not for a log: it will claim the ticket cold with no memory of this round, so a bare id or a vague "tests failed" wastes an entire rebuild while it re-derives what you already know. Name the failing test, quote the error, and say what the fix has to address. Good: {"id":"REM-10","reason":"its new default-prefix-attribution controller is unregistered in RESTRICTED_RECORD_MANIFEST and the permission_pages seed","evidence":"chat14-restricted-record-manifest.test.ts and chat16-chart-access-record.test.ts both fail on the merged tree with 'scope not registered'","fix":"register the new controller/scope in RESTRICTED_RECORD_MANIFEST and add its permission_pages seed row, then re-run both suites against the merged tree"}. Bad: {"id":"REM-10","reason":"failed","evidence":"","fix":"fix it"}. Write that file LAST, after everything else is done, and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. If you cannot verify at all, that is itself a verdict: write the JSON with verdict fail and notes saying why, rather than asking what to do."
   sleep 3; tmux send-keys -t "$vsession" Enter
   say "round #$rnd: post-merge verification dispatched over $ids_csv"
 
@@ -1952,12 +2169,21 @@ PYEOF
   #   meta.audit_disposition  a human-readable summary, which is what surfaces in listings
   # Both are read straight off the ticket by whoever claims it next, so the rebuild starts from the
   # actual failure instead of re-deriving it.
+  #
+  # STDERR GOES TO THE LOG, not /dev/null. Only stdout is the count, so the per-ticket "regressed
+  # <id> :: <reason>" lines and any ingestion failure below were being written to a stream this
+  # command threw away — which is how "the merger does not ingest" could have run for a full build
+  # without leaving a trace. Redirecting to $LOG keeps stdout clean AND keeps the narration.
   local regressed_n
-  regressed_n=$($PY - "$PROJECT" "$rnd" "$VERDICT" <<'PYEOF' 2>/dev/null || echo 0
-import json, sys
-import _praxis
+  regressed_n=$($PY - "$PROJECT" "$rnd" "$VERDICT" "$WT" <<'PYEOF' 2>>"$LOG" || echo 0
+import json, subprocess, sys
+import _praxis, _ticket_state as ts
+from agent_factory import failure_taxonomy, ingestion_api, widening
 
 proj, rnd, path = sys.argv[1], sys.argv[2], sys.argv[3]
+wt = sys.argv[4] if len(sys.argv) > 4 else "."
+head_sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                          cwd=wt).stdout.strip() or None
 kw = dict(space=proj, snapshot=f"prd-{proj}")
 try:
     d = json.load(open(path))
@@ -1987,6 +2213,7 @@ for f in _praxis.facts_by(category="requirement", **kw) or []:
     by_rid[str(m.get("requirement_id") or f.get("id"))] = f
 
 n = 0
+ingested = []   # one entry per ticket actually ingested+regressed; feeds the widening pass below
 for rid, detail in entries:
     f = by_rid.get(rid)
     if not f:
@@ -2003,15 +2230,130 @@ for rid, detail in entries:
                  "originally written against — the failure is an integration failure, so the "
                  "original worktree's green result does not carry over.")
     summary = " ".join(parts)
+    new_finding = {"round": rnd, "source": "post-merge-verification",
+                  "reason": reason, "evidence": evidence, "required_fix": fix}
+
+    # R5 — "regression without ingestion is not a legal state". THE HEADLINE DEFECT this replaces:
+    # the merger regressed straight through `_praxis.regress_requirements`, so a ticket that failed
+    # integration was re-queued and the failure was learned NOWHERE. `regress_with_ingestion` is the
+    # merger's single legal entry point: it classifies the failure, lands the lesson, drafts and
+    # (given a run) proves a check, binds it NARROWLY to exactly these ticket ids, and regresses —
+    # one motion, no way to do half of it.
+    #
+    # NOT wrapped in a bare try/except: the function documents that it catches nothing, so a Praxis
+    # outage propagates, the heredoc dies, and the `|| echo 0` above reports zero regressions — the
+    # identical failure shape the bare regress had. Only RunBodyRejected is caught, and only to fall
+    # back to a lesson-only ingestion: a verifier that suggested a malformed check command must cost
+    # us the CHECK, never the regression.
+    lesson = " ".join(p for p in (
+        f"post-merge verification of round #{rnd} found ticket {rid}'s work did not survive "
+        f"integration into the merged tree.",
+        f"WHAT FAILED: {reason}" if reason else "",
+        f"EVIDENCE: {evidence}" if evidence else "",
+    ) if p)
+    drafted_run = str(detail.get("check") or detail.get("run") or "").strip() or None
+    ingest_kw = dict(source=f"af-ticket-loop/post-merge-verification/{proj}",
+                     channel="machine", commit_sha=head_sha)
+    try:
+        result = ingestion_api.regress_with_ingestion(proj, [f["id"]], lesson,
+                                                      drafted_run=drafted_run, **ingest_kw)
+    except ingestion_api.RunBodyRejected as exc:
+        sys.stderr.write(f"ingestion: verifier's check body for {rid} rejected ({exc}) — "
+                         f"ingesting the lesson alone; the regression still lands\n")
+        result = ingestion_api.regress_with_ingestion(proj, [f["id"]], lesson, **ingest_kw)
+    ingested.append({"rid": rid, "ticket_cid": f["id"], "lesson": lesson,
+                     "evidence": evidence, "check_id": result.get("check_id")})
+
+    # R16/E3: accumulate onto this ticket's existing regression_detail — a concurrent finding
+    # (conflict resolution, ingestion) must never be clobbered by this one. Re-READ first: the
+    # ingestion above just wrote its own entry, and `f` is the pre-ingestion copy.
+    current = _praxis.get_fact(f["id"], **kw) or f
+    accumulated = ts.accumulate_regression_detail((current.get("meta") or {}).get("regression_detail"), new_finding)
     _praxis.regress_requirements(proj, [f["id"]], {f["id"]: {
         "claim_owner": None, "claim_at": None,
         "claim_heartbeat_at": None, "claim_lease_ttl": None,
         "audit_disposition": summary,
-        "regression_detail": {"round": rnd, "source": "post-merge-verification",
-                              "reason": reason, "evidence": evidence, "required_fix": fix},
+        "regression_detail": accumulated,
     }}, **kw)
     n += 1
-    sys.stderr.write(f"regressed {rid} :: {(reason or 'no reason given')[:160]}\n")
+    sys.stderr.write(f"regressed {rid} WITH INGESTION (lesson={result.get('lesson_id')} "
+                     f"check={result.get('check_id')}) :: {(reason or 'no reason given')[:160]}\n")
+
+# ---------------------------------------------------------------- FL14/R14: recurrence -> widening
+#
+# Runs AFTER every regression above has landed, and inside its own try/except, ON PURPOSE: widening
+# is an optimisation and a regression is the invariant. Nothing in this block may be allowed to lose
+# a regression that already succeeded — which is also why `n` is printed from the finally clause.
+#
+# THIS is where a recurrence is detected. `failure_taxonomy.assign_class` is the R3 dedup entry
+# point: a lesson matching an existing class attaches its evidence and INCREMENTS that class's
+# recurrence count instead of minting a duplicate. A count above 1 means this exact failure class has
+# now been seen in a scope it was not bound to, which is R14's widening trigger — and the widen only
+# actually happens if a FRESH class-specific proof FAILS on the new scope's pinned bad artifact and
+# PASSES on the healthy sibling resolved through $BOX_WORKTREE_REGISTRY (exported by this script).
+# Generic breakage fails or passes BOTH sides and never widens.
+try:
+    for item in ingested:
+        assignment = failure_taxonomy.assign_class(
+            item["lesson"], evidence=item["evidence"] or item["lesson"],
+            source=f"af-ticket-loop/{proj}",
+            meta={"project": proj, "ticket_id": item["rid"], "check_id": item["check_id"]},
+        )
+        recurrences = int(assignment.get("recurrence_count") or 1)
+        sys.stderr.write(f"taxonomy: {item['rid']} -> class {assignment['class_id']} "
+                         f"({assignment['action']}, recurrence #{recurrences})\n")
+        if recurrences < 2:
+            continue
+        class_id = assignment["class_id"]
+        # The check to widen is the one already bound to this failure class. A class recurring with
+        # no check behind it has nothing to widen — the ingestion above will have drafted one only
+        # when a run was supplied.
+        for check in ingestion_api.read_checks(proj):
+            cmeta = check.get("meta") or {}
+            if str(cmeta.get("failure_class_id") or "") != str(class_id):
+                continue
+            run, artifact_id = cmeta.get("run"), cmeta.get("artifact_id")
+            if not run or not artifact_id:
+                sys.stderr.write(f"widen: check {check.get('id')} has no run/pinned artifact — "
+                                 f"nothing to prove a widen with\n")
+                continue
+            verdict = widening.attempt_widen(
+                check["id"], proj, item["rid"], class_id=class_id,
+                bad_artifact_meta=(ingestion_api.read_artifact(artifact_id).get("meta") or {}),
+                run=run,
+            )
+            sys.stderr.write(f"widen: check {check['id']} scope {item['rid']} -> "
+                             f"{verdict.get('status')} ({verdict.get('reason') or ''})\n")
+            if verdict.get("status") != "widened":
+                continue
+            # R14/D8 — the same class proven across >= MIN_DISTINCT_PROJECTS_FOR_PROMOTION distinct
+            # projects is promoted org-wide. The distinct set is read off the class's own evidence
+            # log, whose `source` every driver stamps as "af-ticket-loop/<project>" (above), so this
+            # counts projects that really recurred rather than a single project's say-so.
+            projects = set()
+            for cls in ingestion_api.read_classes():
+                if str(cls.get("id")) != str(class_id):
+                    continue
+                for ev in (cls.get("meta") or {}).get("evidence") or []:
+                    src = str(ev.get("source") or "")
+                    if src.startswith("af-ticket-loop/"):
+                        projects.add(src.split("/", 1)[1])
+            try:
+                promotion = ingestion_api.promote_universal(
+                    check.get("text") or item["lesson"], run,
+                    recurring_projects=sorted(projects),
+                    source=f"af-ticket-loop/{proj}",
+                )
+                sys.stderr.write(f"promote-universal: {promotion.get('status')} "
+                                 f"{promotion.get('check_id') or promotion.get('reason')} "
+                                 f"across {sorted(projects)}\n")
+            except ingestion_api.UniversalPromotionCollision as exc:
+                # Documented as a LOUD collision report, never a silent duplicate write. Loud here
+                # means the log — it is not a reason to fail a round whose work already landed.
+                sys.stderr.write(f"promote-universal COLLISION: {exc}\n")
+except Exception as exc:  # noqa: BLE001 - see the block comment: never lose a landed regression
+    sys.stderr.write(f"widening/promotion pass failed after {n} regression(s) landed: {exc!r}\n")
+
 print(n)
 PYEOF
 )
@@ -2029,27 +2371,121 @@ PYEOF
   # loop for 17 consecutive rounds; T10/T20, sports R2 and farming R26 for 6-8 each. So: any round
   # ticket that STILL reads finished after the regress pass above — i.e. this verification round
   # examined the merged tree and did not fault it — gets its open finding stamped resolved.
+  #
+  # BUT NOT BY `ts.resolve_finding(m)`, which is what this used to call. That stamps EVERY open
+  # finding on the ticket with no scoping and no re-evaluation, so a rerun that passed check A
+  # silently answered check B's finding too, and "the check exited zero" was accepted as proof the
+  # SYMPTOM was gone. R17 forbids both, and `agent_factory.resolution.resolve_or_defeat` is the
+  # replacement: it is called once per (finding, check) pair, stamps only the findings naming THAT
+  # check, and takes the symptom re-evaluation as a SEPARATE input from the check's exit code. When
+  # the two disagree — check green, symptom still there — that is a CHECK-DEFEAT: the rebuilt
+  # state's artifact is pinned, the defeat is classified into the failure taxonomy, and the defeated
+  # check is demoted GATING -> REPORT_ONLY and flagged, instead of being trusted forever.
+  #
+  # Where the two inputs come from: the verifier's own `findings_recheck` array (step 3b of its
+  # prompt), which reports check_passed and symptom_present INDEPENDENTLY per finding. A ticket the
+  # verifier did not report on falls back to the pre-existing behaviour — it still reads finished
+  # after the regress pass, so this round examined the merged tree and did not fault it — because
+  # the alternative, refusing to resolve without an explicit recheck, resurrects the 17-round
+  # finding ping-pong that stamping was added to break.
   local cleared_n
-  cleared_n=$($PY - "$PROJECT" "$rnd" "$@" <<'PYEOF' 2>/dev/null || echo 0
-import sys
+  cleared_n=$($PY - "$PROJECT" "$rnd" "$VERDICT" "$WT" "$@" <<'PYEOF' 2>>"$LOG" || echo 0
+import json, subprocess, sys
 import _praxis, _ticket_state as ts
-proj, rnd = sys.argv[1], sys.argv[2]
-want = set(sys.argv[3:])
+from agent_factory import ingestion_api, resolution
+proj, rnd, vpath, wt = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+want = set(sys.argv[5:])
 kw = dict(space=proj, snapshot=f"prd-{proj}")
+head_sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                          cwd=wt).stdout.strip() or "HEAD"
+
+# {ticket_id: {check_id: (check_passed, symptom_present)}} from the verifier's step-3b report.
+recheck = {}
+try:
+    for item in (json.load(open(vpath)).get("findings_recheck") or []):
+        if isinstance(item, dict) and item.get("id"):
+            recheck.setdefault(str(item["id"]), {})[str(item.get("check_id") or "")] = (
+                bool(item.get("check_passed")), bool(item.get("symptom_present")))
+except Exception as e:
+    sys.stderr.write(f"findings_recheck unreadable ({e}) — falling back to survival-implies-resolved\n")
+
 n = 0
 for f in _praxis.facts_by(category="requirement", **kw) or []:
     m = f.get("meta") or {}
     rid = str(m.get("requirement_id") or f.get("id"))
-    if rid not in want or m.get("build_state") != "finished":
+    if rid not in want or m.get(ts.M_BUILD_STATE) != "finished":
         continue
-    if ts.open_finding(m) is None:
+    open_now = ts.open_findings(m)
+    if not open_now:
         continue
-    d = ts.resolve_finding(m)
-    d["resolved_by"] = f"post-merge verification of round #{rnd}: the ticket survived the merged tree, so the finding is answered"
+    # R17's scoping unit is the CHECK, so the ticket's open findings are handled one check at a
+    # time. Findings this loop authored itself (conflict resolution, post-merge verification) carry
+    # no check_id and group under "".
+    resolved_any = False
+    for check_id in sorted({str(d.get("check_id") or "") for d in open_now}):
+        reported = recheck.get(rid, {}).get(check_id)
+        if reported is None:
+            check_passed, symptom_present = True, False
+            basis = "the ticket survived the merged tree and this round did not fault it"
+        else:
+            check_passed, symptom_present = reported
+            basis = (f"the verifier re-ran check {check_id or '<none>'} (passed={check_passed}) and "
+                     f"separately re-evaluated the recorded symptom (present={symptom_present})")
+        if symptom_present and not check_id:
+            # A persisting symptom with no check behind it cannot be a check-defeat — there is no
+            # check to demote. Report it as still-failing so the finding simply stays OPEN.
+            check_passed = False
+        outcome = resolution.resolve_or_defeat(
+            m, check_id, check_passed=check_passed, symptom_present=symptom_present,
+            project=proj, ticket_id=rid, commit_sha=head_sha, repo_path=wt,
+            resolved_by=f"post-merge verification of round #{rnd}: {basis}",
+        )
+        # Feed the returned list back so the NEXT check's pass sees this one's stamps (R17/E3 —
+        # resolving one check's findings must never erase a sibling's).
+        m[ts.M_REGRESSION_DETAIL] = outcome["regression_detail"]
+        resolved_any = resolved_any or outcome["status"] == "resolved"
+        sys.stderr.write(f"finding {rid} check={check_id or '<none>'} -> {outcome['status']} "
+                         f"({outcome.get('reason') or basis})\n")
+
+        # R6/R10/R20a — THE FIRST-REAL-CATCH UPGRADE, wired at the one place in the running system
+        # where a first real catch is actually observable.
+        #
+        # Every /af-learn (DF4) human insert arrives GATING with proof_status="unproven", and every
+        # machine draft arrives REPORT_ONLY; both are provisional pending exactly one event: a REAL,
+        # non-drafting execution of the check that PASSES after it has caught something. Until then
+        # an af-learn check gates the build while flagged unproven, forever. `upgrade_on_first_pass`
+        # is what clears that, and it had ZERO production callers — so the flag never cleared and
+        # R20a was dead code with a green unit test.
+        #
+        # This is the only point in the loop where a NAMED, ALREADY-EXISTING check is re-run for
+        # real against a tree and its outcome reported back: step 3b of the verify prompt hands back
+        # `check_passed` per finding, and the finding only exists because that check failed a build
+        # earlier — i.e. it already caught. Passing here closes the catch→fix→pass cycle.
+        #
+        # Three guards, each load-bearing:
+        #   `reported is not None`  — the fallback branch above ASSUMES check_passed=True from mere
+        #                             survival. That is not an execution and must never prove
+        #                             anything; only a verifier that actually ran the command counts.
+        #   `check_id`              — a finding this loop authored itself carries no check.
+        #   status == "resolved"    — on a check-defeat (command green, symptom still present)
+        #                             resolve_or_defeat DEMOTES the check. Promoting the same check
+        #                             to "proven" in the same breath would be a straight
+        #                             contradiction, so the defeat wins.
+        # Wrapped, and only after the stamping: an upgrade is bookkeeping, the resolution is the
+        # invariant, and a Praxis hiccup here may not cost a finding that was already answered.
+        if check_id and reported is not None and outcome["status"] == "resolved":
+            try:
+                upgraded = ingestion_api.upgrade_on_first_pass(check_id, proj, True)
+                umeta = (upgraded or {}).get("meta") or {}
+                sys.stderr.write(f"first-real-pass: check {check_id} -> "
+                                 f"proof_status={umeta.get('proof_status')} "
+                                 f"state={umeta.get('enforcement_state')} (ticket {rid})\n")
+            except Exception as exc:  # noqa: BLE001 - never cost a landed resolution
+                sys.stderr.write(f"first-real-pass upgrade of check {check_id} failed: {exc!r}\n")
     try:
-        _praxis.write_build_state(f.get("cid") or f["id"], {"regression_detail": d}, **kw)
-        n += 1
-        sys.stderr.write(f"finding resolved for {rid} by round #{rnd} verification\n")
+        _praxis.write_build_state(f.get("cid") or f["id"],
+                                  {ts.M_REGRESSION_DETAIL: ts.regression_details(m)}, **kw)
+        n += 1 if resolved_any else 0
     except Exception as e:
         sys.stderr.write(f"finding-resolve write failed for {rid}: {e}\n")
 print(n)
@@ -2069,7 +2505,7 @@ PYEOF
     say "round #$rnd: $fg ticket(s) closed an OPEN verification finding with ZERO commits — regressed. A finding is not answered by changing nothing."
   fi
 
-  rm -f "$VERDICT"
+  rm -f "$VERDICT" "$FINDINGS"
   return 0
 }
 
@@ -2424,6 +2860,9 @@ while :; do
   # visible from the round it appears in rather than only at the end of the run.
   af_assert_no_stragglers "round #$round" 0 || true
 
+  # Loop-end hooks. Backgrounded, bounded, never waited on — see af_loop_end_hooks.
+  af_loop_end_hooks "round #$round"
+
   # Circuit breaker. A round that finishes NOTHING will, on the next pass, release the same leases
   # and dispatch the same frontier — so a persistent failure that isn't one of the specific panes
   # matched above (a broken repo, a project whose env never comes up, a model that rejects every
@@ -2469,5 +2908,9 @@ done
 # EVERY `break` above lands here — drain, max_tickets, dependency stall, watch-stop. None of them is
 # allowed to announce a finished run over work that never landed, so the invariant is asserted once
 # more on the way out, where it covers the paths the drain gate does not.
+#
+# The R24 flag surfacing used to live on the NEXT line, after this assertion. It is now in
+# af_cleanup_on_exit, on the EXIT trap — see af_surface_flags for why that placement was the whole
+# bug: a straggler here exits 7 from inside the assertion and the next line never ran.
 af_assert_no_stragglers "exit"
 say "af-ticket-loop finished for $PROJECT"
