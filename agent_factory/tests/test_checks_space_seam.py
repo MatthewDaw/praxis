@@ -138,7 +138,9 @@ def test_request_emits_both_tenancy_headers(monkeypatch):
         captured["snapshot"] = req.headers.get("X-praxis-snapshot")
         return _Resp()
 
-    monkeypatch.setattr(_praxis, "_auth_headers", lambda: {})
+    # `**_` so the stub tracks the real signature: `_auth_headers` now takes org/key overrides for
+    # the shared-learnings tenancy. This test is about the SPACE headers, not the auth ones.
+    monkeypatch.setattr(_praxis, "_auth_headers", lambda **_: {})
     monkeypatch.setattr(_praxis.urllib.request, "urlopen", fake_urlopen)
     # a snapshot-bound read emits BOTH x-praxis-space and x-praxis-snapshot (never one without the other)
     _praxis.facts_by(category="check", space="team-app", snapshot="building-validation")
