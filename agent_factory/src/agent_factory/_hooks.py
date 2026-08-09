@@ -50,11 +50,19 @@ for _root in (_HERE.parents[2], _HERE.parents[1]):
     if (_root / "hooks").is_dir() and str(_root) not in sys.path:
         sys.path.append(str(_root))
 
-from hooks import _ticket_state  # noqa: E402
+from hooks import _gate_common, _ticket_state  # noqa: E402
 
 # NOT `from hooks import _praxis`: that is the second import route whose independence forked the
 # module. _ticket_state has already resolved the one canonical object and registered it under both
 # names; take it from there so the two can never diverge again.
 _praxis = _ticket_state._praxis
 
-__all__ = ["_praxis", "_ticket_state"]
+# `_gate_common` is re-exported so the operator CLIs classify a Praxis failure with the SAME
+# predicate the Stop-hook gates use. The distinction it draws -- "that space/org does not exist"
+# (configuration) vs "Praxis is down" (availability) -- is one both surfaces need and neither
+# should re-derive: the gates already shipped a bug from conflating them, and the CLIs shipped the
+# same one independently (a raw HTTPError traceback for a project that simply lives in another org).
+# One predicate, one place to correct it.
+not_a_factory_project = _gate_common.not_a_factory_project
+
+__all__ = ["_praxis", "_ticket_state", "_gate_common", "not_a_factory_project"]

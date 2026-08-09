@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Any
 
 from agent_factory import failure_taxonomy
+from agent_factory._cli import praxis_boundary
 from agent_factory.ingestion_api import (
     STATE_ARCHIVED,
     STATE_GATING,
@@ -351,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
                                                  "every later pending list and records who/when.")
         ap.add_argument("flag_id")
         args = ap.parse_args(argv[1:])
-        return _cmd_ack(args)
+        return praxis_boundary("af-retro", lambda: _cmd_ack(args))
 
     ap = argparse.ArgumentParser(
         prog="af-retro",
@@ -380,10 +381,10 @@ def main(argv: list[str] | None = None) -> int:
             ap.error(str(exc))
 
     if args.flags:
-        return _cmd_flags(args)
+        return praxis_boundary("af-retro", lambda: _cmd_flags(args))
     if not args.project:
         ap.error("project is required unless --flags is given")
-    return _cmd_report(args)
+    return praxis_boundary("af-retro", lambda: _cmd_report(args))
 
 
 if __name__ == "__main__":

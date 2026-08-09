@@ -1989,7 +1989,11 @@ def main(argv: list[str] | None = None) -> int:
     lens.set_defaults(func=_cmd_author_lens)
 
     args = ap.parse_args(argv)
-    return int(args.func(args))
+    # Imported HERE, not at module scope: `_cli` imports this module's package sibling `_hooks`,
+    # and this module is imported by the loop on its hot path. Keeping the CLI-only dependency
+    # inside the CLI-only function means nothing on the build path pays for it.
+    from agent_factory._cli import praxis_boundary
+    return praxis_boundary("af-ingest", lambda: int(args.func(args)))
 
 
 if __name__ == "__main__":
