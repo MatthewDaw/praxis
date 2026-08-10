@@ -23,6 +23,7 @@ from typing import Any
 
 from agent_factory import failure_taxonomy
 from agent_factory._cli import praxis_boundary
+from agent_factory._hooks import _praxis
 from agent_factory.ingestion_api import (
     STATE_ARCHIVED,
     STATE_GATING,
@@ -294,8 +295,42 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _uninitialised_learnings_space(exc: Exception) -> bool:
+    """True when ``exc`` says the SHARED learnings space simply does not exist yet.
+
+    Not an outage and not a scoping mistake — an empty state. ``factory-learnings`` is created
+    lazily by the first ``af-ingest`` write, so every project reads it before anything has ever
+    written it, and the read comes back ``404 unknown space 'factory-learnings'``.
+
+    Matched narrowly on BOTH the 404 phrase and the space's own name: a 404 naming some OTHER
+    space is a real scoping answer and must keep its exit-2 diagnosis. (Read_flags only ever
+    touches this one space, but the predicate is the thing a future caller will reuse.)
+    """
+    text = str(exc).lower()
+    return "unknown space" in text and _praxis.FACTORY_LEARNINGS_SPACE in text
+
+
 def _cmd_flags(args: argparse.Namespace) -> int:
-    flags = read_flags(args.project, pending_only=True)
+    """Pending flags — never a failure when the learnings space is merely uninitialised.
+
+    ``af-ticket-loop.sh`` runs this off its EXIT trap at the end of EVERY round, so a project whose
+    learnings space has not been written yet ended every single round with
+    ``af-retro: nothing to read in org 'farming-analysis' — unknown space 'factory-learnings'``
+    and exit 2. The flags themselves — parked and suspended checks, the things a human is supposed
+    to be told about — went unreported behind that noise for a whole run (observed 2026-08-09).
+    "No flags yet" is the correct answer to "what is pending", and it exits 0.
+
+    The read is scoped through ``_praxis``' shared-learnings choke point (``FACTORY_LEARNINGS_ORG``
+    / ``FACTORY_LEARNINGS_API_KEY``, commit 968ed93), so this reports the SHARED space from any
+    project's org rather than a per-org space of the same name.
+    """
+    try:
+        flags = read_flags(args.project, pending_only=True)
+    except _praxis.PraxisUnreachable as exc:
+        if not _uninitialised_learnings_space(exc):
+            raise  # a genuine outage / scoping error still reaches praxis_boundary
+        print("af-retro: no pending flags (learnings space not initialised)")
+        return 0
     scope = f" for {args.project!r}" if args.project else " across every project"
     if not flags:
         print(f"af-retro: no pending flags{scope}.")
