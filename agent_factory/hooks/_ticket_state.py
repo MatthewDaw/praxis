@@ -996,7 +996,6 @@ def pin_requirements(cid: str, requirements: list,
         M_REQUIRED_VALIDATIONS: req_ids,
         M_MANUAL_REQUIREMENTS: manual_ids,
         M_REPORT_ONLY_REQUIREMENTS: report_only_ids,
-        M_BUDGET_DEMOTIONS: budget_demotions,
         M_PINNED_CHECKS: [],
         M_UNIVERSAL_CONTRACT: universal_entries,
     }, **_ref_kw(ref))
@@ -1685,7 +1684,7 @@ def claim(cid: str, owner: str, ttl: int = DEFAULT_LEASE_TTL_S,
         # FL8/D5: a fresh pick (never a same-owner renew) is exactly when a worker has just seen
         # the injected regression_detail (R16), so any earlier regression's FINISH-refusal marker
         # no longer applies to whatever attempt is about to start.
-        _praxis.write_build_state(cid, {M_GRADED_LOOP: {}, M_REGRESSED_OWNER: None},
+        _praxis.write_build_state(cid, {M_GRADED_LOOP: {}},
                                   owner=owner, **_ref_kw(ref))
     return True
 
