@@ -344,7 +344,6 @@ BUILD_STATE_META_KEYS = frozenset(
         "required_validations",
         "manual_requirements",
         "report_only_requirements",
-        "budget_demotions",
         "universal_contract",
         "graded_loop",
         # terminal-block bookkeeping (the transition itself is gated below)
