@@ -276,13 +276,18 @@ def test_build_state_finished_overrides_failure_to_complete(unique_org):
 def test_build_state_incomplete_reopens_a_succeeded_requirement(unique_org):
     """A deliberately re-opened ticket (``build_state='incomplete'``) is incomplete
     with reason ``reopened`` even after a recorded success / succeeded latest
-    outcome that would otherwise be complete."""
+    outcome that would otherwise be complete.
+
+    ORDER MATTERS, and it is the real order: the ticket is built and passes, and is
+    re-opened AFTERWARDS. Recording the success while the ticket already reads
+    ``incomplete`` is a different event entirely — ``record_outcome`` now reconciles
+    ``build_state`` for exactly that case, so it would finish the ticket rather than
+    leave it re-opened (see ``test_record_outcome_reconciles_build_state``)."""
     conn = db.connect()
     graph = _graph(conn, unique_org, USER)
-    req = _requirement(
-        graph, "Reopened after a success.", meta={"build_state": "incomplete"}
-    )
+    req = _requirement(graph, "Reopened after a success.")
     graph.record_outcome(req, success=True)  # would be complete without the override
+    graph.set_meta(req, {"build_state": "incomplete"})  # ...then deliberately re-opened
 
     entry = next(
         i for i in graph.incomplete_requirements(PROJECT) if i["fact"].id == req
@@ -297,10 +302,9 @@ def test_build_state_in_progress_stays_incomplete(unique_org):
     with reason ``in_progress`` even after a prior success."""
     conn = db.connect()
     graph = _graph(conn, unique_org, USER)
-    req = _requirement(
-        graph, "Being built right now.", meta={"build_state": "in_progress"}
-    )
-    graph.record_outcome(req, success=True)
+    req = _requirement(graph, "Being built right now.")
+    graph.record_outcome(req, success=True)     # a prior pass...
+    graph.set_meta(req, {"build_state": "in_progress"})  # ...and it is being rebuilt now
 
     entry = next(
         i for i in graph.incomplete_requirements(PROJECT) if i["fact"].id == req
@@ -332,9 +336,10 @@ def test_completeness_summary_counts_reopened_and_in_progress(unique_org):
     graph = _graph(conn, unique_org, USER)
     # never-built (count-derived).
     _requirement(graph, "Unbuilt.")
-    # reopened (override) — recorded success ignored.
-    reopened = _requirement(graph, "Reopened.", meta={"build_state": "incomplete"})
+    # reopened (override) — passed once, then deliberately re-opened; the success is ignored.
+    reopened = _requirement(graph, "Reopened.")
     graph.record_outcome(reopened, success=True)
+    graph.set_meta(reopened, {"build_state": "incomplete"})
     # in_progress (override).
     _requirement(graph, "In progress.", meta={"build_state": "in_progress"})
     # finished (override) -> complete, not counted in the breakdown.
