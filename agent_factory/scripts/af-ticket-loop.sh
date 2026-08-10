@@ -407,6 +407,16 @@ INTEGRATION_REF="$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null ||
 # managed to read — an empty set only narrows what the reap is willing to touch, never widens it.
 AF_KNOWN_IDS=" "
 AF_FINISHED_IDS=" "
+# WHEN THIS RUN STARTED. The dividing line between work THIS run is accountable for and residue an
+# EARLIER run left behind, used by reap_branches to tell a ticket this run broke from a ticket a
+# different run finished days ago. Captured once, before anything can move, and never reset.
+#
+# The gap it closes (farming_analysis, 2026-08-09): a forgotten loop left worker branches lying
+# around; a freshly relaunched loop's orphan sweep found them, saw that the tickets they named read
+# `finished` with commits not on the integration ref, and REGRESSED a ticket a different run had
+# genuinely completed days earlier — then halted the round over it. The branch was never this run's
+# to judge: its tip commit predates the run's own start.
+AF_START_EPOCH="${AF_START_EPOCH:-$(date +%s)}"
 # State lives beside the worktrees, not inside them: a log or a verdict sentinel written into a repo
 # gets swept into a wip commit and read back as ticket output.
 AF_STATE_DIR="${AF_STATE_DIR:-$(dirname "$WT")}"
@@ -759,6 +769,52 @@ print(sum(1 for x in f if ((x.get('meta') or {}).get('build_state')) in ('incomp
 PYEOF
 }
 
+plan_bless_state(){  # -> blessed | armed | never-blessed
+  $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
+import sys
+import _praxis
+p = sys.argv[1]
+# force=True: this driver's whole job is to notice when the plan's state CHANGES (an intake session
+# arming it mid-run, or a bless finally landing), so it must never read _praxis' short-lived cache.
+print(_praxis.plan_bless_state(p, f'prd-{p}', force=True))
+PYEOF
+}
+
+# THE BLESS GATE. A plan that is ARMED (an intake session holds the planning marker) or has NEVER
+# BEEN BLESSED is not a build target: its tickets are still being written, merged, split and
+# deleted underneath anyone reading them.
+#
+# The incident (farming_analysis, 2026-08-09): a forgotten af-ticket-loop was still running while a
+# human was mid-intake on the very plan it was pointed at. It claimed tickets out of an unblessed
+# plan, built them, and left branches that then poisoned the NEXT run's orphan sweep. Two halves fix
+# it: `_praxis.claim_requirement` refuses the claim outright so no caller can be launched around it,
+# and this — the loud, early half that stops the run before it burns a round finding out.
+#
+# Returns 0 when dispatch may proceed. Non-watch mode never returns non-zero: an unblessed plan is
+# not a condition that resolves by trying again, so it EXITS. Watch mode is exactly the case where
+# it does resolve by trying again (the human is finishing intake right now), so it waits.
+require_blessed_plan(){   # -> 0 = blessed, dispatch may proceed; 1 = caller must not dispatch yet
+  local st why
+  if ! st=$(praxis_q plan_bless_state); then outage "plan_bless_state"; return 1; fi
+  [ "$st" = blessed ] && return 0
+  case "$st" in
+    armed) why="an intake session holds the planning marker — the plan is ARMED for editing" ;;
+    *)     why="intake never finished — this plan has never been blessed" ;;
+  esac
+  say "preflight: FAILED — plan not blessed: prd-$PROJECT is '$st'; $why. Nothing may be claimed from it."
+  if [ "${AF_WATCH:-0}" = "1" ]; then
+    if [ "${watch_bless_at:-}" != "$st" ]; then
+      say "WAITING for the bless (AF_WATCH=1) — re-checking every ${AF_WATCH_POLL_S:-300}s; no ticket is claimed or dispatched until prd-$PROJECT is blessed. Stop with: touch $WATCH_STOP"
+      watch_bless_at="$st"
+    fi
+    [ -f "$WATCH_STOP" ] && { say "watch stop file present ($WATCH_STOP) — exiting"; exit 0; }
+    sleep "${AF_WATCH_POLL_S:-300}"
+    return 1
+  fi
+  say "Finish intake (af-intake-plan) so prd-$PROJECT is blessed, then relaunch — or run with AF_WATCH=1 so this loop waits for the bless instead of exiting."
+  exit 1
+}
+
 ready_batch(){  # -> space-separated ids of the dependency-ready frontier, capped at $2
   $PY - "$PROJECT" "${1:-15}" <<'PYEOF' 2>/dev/null
 import sys
@@ -921,11 +977,18 @@ regress_ticket(){  # args: requirement_id branch -> send a lying "finished" tick
   # seen and never will. The ticket is wrong, not the branch: it was marked done and its work did not
   # land. Returning it to incomplete is what makes the next round rebuild it -- the same mechanism the
   # post-merge verifier uses when integration rejects a ticket.
-  $PY - "$PROJECT" "$1" "$2" <<'PYEOF' 2>/dev/null
+  #
+  # Its stdout is TEE'd into the run log because the caller discards it: the "nothing matched" line
+  # below is the whole point of that branch, and a message only the caller never reads is no message.
+  $PY - "$PROJECT" "$1" "$2" <<'PYEOF' 2>/dev/null | tee -a "$LOG"
 import sys
 import _praxis
 p, rid, br = sys.argv[1], sys.argv[2], sys.argv[3]
 kw = dict(space=p, snapshot=f'prd-{p}')
+# NOT FINDING THE TICKET IS SUCCESS, and says so. A branch can name a requirement id that no active
+# fact carries any more -- a ticket deleted at intake, renamed, or belonging to another project
+# whose ids overlap. There is nothing to regress, so the regress SUCCEEDED at everything it could do;
+# reporting failure instead turned "that ticket is gone" into a failed round with no explanation.
 for f in _praxis.facts_by(category='requirement', **kw):
     m = f.get('meta') or {}
     if str(m.get('requirement_id') or f.get('id')) != rid:
@@ -939,6 +1002,8 @@ for f in _praxis.facts_by(category='requirement', **kw):
                              f'integrated tree.'}}, **kw)
     print('regressed', rid)
     break
+else:
+    print(f'no active fact for {rid} — skipping regress')
 PYEOF
 }
 
@@ -1614,6 +1679,29 @@ af_is_factory_named(){   # $1 = branch name
   return 1
 }
 
+# FOREIGN ERA: was this branch's newest commit written BEFORE this run started?
+#
+# A branch whose tip predates AF_START_EPOCH cannot be output of this run — no worker this run
+# spawned could have authored it. It is residue from a previous (possibly forgotten) loop, and the
+# ticket it names was finished by that other run, on its own terms, quite possibly days ago. This
+# run has no standing to call that ticket a liar.
+#
+# Committer date, not author date: a rebase rewrites the committer date, and what is being asked is
+# "did this ref get written during my run", not "when was the change originally conceived".
+# A branch with no readable tip (deleted mid-sweep, corrupt ref) answers NO — the conservative
+# answer, since it leaves the existing regress path in charge rather than silently archiving.
+af_branch_is_foreign_era(){   # $1 = branch name
+  local ct
+  ct=$(git log -1 --format=%ct "$1" 2>/dev/null) || return 1
+  [ -n "$ct" ] || return 1
+  [ "$ct" -lt "${AF_START_EPOCH:-0}" ]
+}
+
+# A branch name flattened into something `git tag` accepts and a human can still read.
+af_sanitize_branch(){   # $1 = branch name
+  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-'
+}
+
 # Ticket ids named by a branch's commits. Filtered to ids we own when Praxis has told us what we own;
 # unfiltered when it has not, because "we could not ask" must never read as "no ids, skip it". The
 # hardcoded `(REM|SSW|HIP|...)` prefix alternation this replaces was a third allowlist, and a project
@@ -1631,7 +1719,7 @@ af_branch_ids(){   # $1 = git range
 reap_branches(){
   cd "$WT" || return 0
   unset AF_WT_BRANCH_CACHE
-  local br live uniq ids i sup reaped=0 failed=0 survivors="" reason status head_br
+  local br live uniq ids i sup reaped=0 failed=0 survivors="" reason status head_br tag
   # Compare against HEAD, never against the INTEGRATION_REF captured at startup. On a detached
   # checkout -- which is what both build worktrees on this box are -- INTEGRATION_REF is a fixed sha
   # that does NOT move as integrate_round merges into HEAD, so every branch this round just landed
@@ -1688,6 +1776,16 @@ reap_branches(){
       fi
       case "${AF_FINISHED_IDS:- }" in
         *" $i "*)
+          # FOREIGN-ERA FIRST. Everything below this point accuses the ticket of lying, and that
+          # accusation is only this run's to make about work this run did. A branch whose tip
+          # predates AF_START_EPOCH belongs to an earlier run; regressing its ticket destroys a
+          # completion somebody else earned and — because the case below also fails the round —
+          # halts a healthy run over ancient residue.
+          if [ "$status" != foreign ] && af_branch_is_foreign_era "$br"; then status=foreign; fi
+          if [ "$status" = foreign ]; then
+            reason="${reason:+$reason; }$i finished before this run started"
+            continue
+          fi
           status=failure
           say "ROUND FAILED — ticket $i reads finished in Praxis, but its work is NOT on ${head_br:-HEAD} and no replacement for it landed. The commits exist only on branch $br:"
           git log --format='  %h %s' "HEAD..$br" 2>/dev/null | while read -r l; do say "$l"; done
@@ -1698,7 +1796,7 @@ reap_branches(){
           fi
           ;;
         *)
-          [ "$status" = failure ] || status=survivor
+          case "$status" in failure|foreign) ;; *) status=survivor ;; esac
           reason="${reason:+$reason; }$i is not finished — work still in flight"
           ;;
       esac
@@ -1715,6 +1813,20 @@ reap_branches(){
           # that are not upstream in any form. The sha keeps them recoverable until gc.
           say "reaped $br (tip $(git rev-parse --short "$br" 2>/dev/null)) — a superseded attempt: $reason"
           git branch -D "$br" >/dev/null 2>&1 && reaped=$((reaped+1)) || say "WARNING: could not delete $br"
+        fi
+        ;;
+      foreign)
+        # Not this run's residue and not this run's verdict. The commits are preserved as a TAG
+        # before the branch goes, so nothing is lost and nothing is regressed; the branch itself is
+        # removed so the next sweep does not rediscover it and ask the same question forever.
+        # Deliberately does NOT increment `failed`: an earlier run's leftovers must not fail a round.
+        tag="archive/foreign-$(af_sanitize_branch "$br")"
+        if git tag -f "$tag" "$br" >/dev/null 2>&1 && git branch -D "$br" >/dev/null 2>&1; then
+          reaped=$((reaped+1))
+          say "foreign-era branch $br ($reason; tip predates this run's start) archived as tag $tag, not regressed"
+        else
+          survivors="${survivors:+$survivors }$br"
+          say "WARNING: could not archive foreign-era branch $br — leaving it alone; it is NOT this run's to regress"
         fi
         ;;
       failure)  failed=$((failed+1)); survivors="${survivors:+$survivors }$br" ;;
@@ -2529,9 +2641,18 @@ if [ "$AF_MODE" = "resolve-orphans" ]; then
   exit 0
 fi
 
+# BLESS PREFLIGHT — before a single ticket is looked at, let alone claimed. Non-watch mode exits
+# here; watch mode loops inside require_blessed_plan until the plan is blessed (or the stop file
+# appears), so a loop launched a minute too early simply waits for intake to finish.
+until require_blessed_plan; do :; done
+
 n=0
 round=0
 while :; do
+  # RE-CHECKED EVERY ROUND, not just at startup: a plan can be re-armed mid-run (an amendment, a
+  # correction), and from that moment its tickets are moving again. A preflight-only check would
+  # have passed at 03:00 and gone on dispatching against a plan opened for editing at 04:00.
+  require_blessed_plan || continue
   if ! left=$(praxis_q claimable); then outage "claimable"; continue; fi
   left=${left:-999}
   say "$PROJECT claimable=$left"
