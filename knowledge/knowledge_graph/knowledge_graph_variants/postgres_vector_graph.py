@@ -1253,6 +1253,16 @@ class PostgresVectorGraph(SearchableGraph):
         regressed from one still passing; the latest-outcome signal can, and the
         derived-completeness queries (``incomplete_requirements``) read it to mark a
         succeeded-then-failed requirement as regressed.
+
+        RECONCILES ``meta.build_state`` for a REQUIREMENT (see
+        :meth:`_reconcile_build_state_from_outcome`). ``meta.build_state`` is the single
+        source of truth the build loop's FIND reads; the outcome columns live elsewhere,
+        so recording a success against a dispatched ticket used to leave it dispatched
+        forever. Observed 2026-08-09 in farming_analysis: an operator repaired a wrongly
+        regressed ticket with ``record_outcome(success=True)``, the outcome landed, and
+        the loop went on re-dispatching the ticket because its ``build_state`` had not
+        moved. Doing it HERE rather than in the route means every caller — the HTTP
+        route, the MCP tool, any internal one — gets the same reconciliation.
         """
         # Outcome-trust columns exist on both working memory and snapshots (migration
         # 0012), so an outcome persists whether the ticket lives in working memory or on
@@ -1264,6 +1274,54 @@ class PostgresVectorGraph(SearchableGraph):
             f"UPDATE {self._facts_table} SET {column} = {column} + 1, last_outcome = %s "
             f"WHERE {key_pred} AND id = %s",
             (outcome, *key_params, fact_id),
+        )
+        self._reconcile_build_state_from_outcome(fact_id, success=success)
+
+    # A ticket's build_state only follows an outcome from these states. ``finished`` is
+    # absent on the success side because it is already there, and absent on the failure
+    # side too — a failure against a finished ticket is a REGRESSION, and regressing is
+    # `regress_requirements`' job (it carries the audit detail and the cycle cap that a
+    # bare outcome has no way to supply).
+    _OUTCOME_RECONCILABLE_STATES = ("incomplete", "in_progress", "blocked")
+
+    def _reconcile_build_state_from_outcome(self, fact_id: str, *, success: bool) -> None:
+        """Move a requirement's ``meta.build_state`` to match the outcome just recorded.
+
+        Applies ONLY to ``category='requirement'`` facts that already carry a
+        ``build_state`` — a plain knowledge fact has no build lifecycle, and a requirement
+        that has never been dispatched has no dispatch to undo. The lease
+        (``_LEASE_META_KEYS``) is cleared either way: the ticket is no longer being worked
+        on by whoever held it, and a dangling lease is precisely what stops the next FIND
+        from picking it up.
+
+        Everything written here is inside ``BUILD_STATE_META_KEYS`` — the closed set of
+        build-lifecycle keys — so this never touches plan content and needs no planning
+        marker, exactly like the other sanctioned build-state paths.
+        """
+        target = "finished" if success else "incomplete"
+        strip_keys = list(_LEASE_META_KEYS)
+        if success:
+            # A finished ticket has left the run, so the whole-set run marker goes with the
+            # lease — the same keys `release_requirement(state='finished')` strips.
+            strip_keys += list(_RUN_MARKER_META_KEYS)
+            set_expr = (
+                "jsonb_build_object('build_state', %s::text, "
+                f"                   '{finished_at.FINISHED_AT}', {finished_at.SQL_NOW_ISO_UTC})"
+            )
+        else:
+            # Not finished any more (if it ever read that way): drop the completion stamp
+            # rather than leave a date on work that is going back into the queue.
+            strip_keys.append(finished_at.FINISHED_AT)
+            set_expr = "jsonb_build_object('build_state', %s::text)"
+        strip = " ".join(f"- '{k}'" for k in strip_keys)
+        key_pred, key_params = self._key_pred()
+        placeholders = ", ".join(["%s"] * len(self._OUTCOME_RECONCILABLE_STATES))
+        self._conn.execute(
+            f"UPDATE {self._facts_table} "
+            f"SET meta = (COALESCE(meta, '{{}}'::jsonb) {strip}) || {set_expr} "
+            f"WHERE {key_pred} AND id = %s AND category = 'requirement' "
+            f"AND meta->>'build_state' IN ({placeholders})",
+            (target, *key_params, fact_id, *self._OUTCOME_RECONCILABLE_STATES),
         )
 
     def regress_requirements(

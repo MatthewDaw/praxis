@@ -1433,6 +1433,13 @@ def create_app(conn: Any | None = None) -> FastAPI:
         retrieval's utility weighting demotes a repeatedly-failed fact and keeps a
         proven one — the outcome/trust feedback that makes the memory compound on
         what demonstrably worked rather than grow by volume alone.
+
+        For a REQUIREMENT that carries ``meta.build_state``, the graph also reconciles
+        that state (success on a dispatched ticket -> ``finished`` + lease cleared;
+        failure -> ``incomplete`` + lease cleared). ``meta.build_state`` is what the build
+        loop's FIND reads, so an outcome that did not move it left an operator's repair
+        invisible and the ticket re-dispatched forever. The reconciliation lives in
+        ``PostgresVectorGraph.record_outcome``, not here, so internal callers get it too.
         """
         success = body.get("success")
         if not isinstance(success, bool):

@@ -90,6 +90,62 @@ def test_af_retro_report_is_wired_to_the_boundary(capsys, monkeypatch):
     assert "PRAXIS_ORG" in err
 
 
+# --------------------------------------------------------- an UNINITIALISED learnings space --
+#
+# `af-retro --flags` is run off af-ticket-loop.sh's EXIT trap at the end of every round. The shared
+# `factory-learnings` space is created lazily by the first af-ingest write, so on a project that has
+# never ingested a lesson the read 404s -- and every round of the farming_analysis run (2026-08-09)
+# ended with `af-retro: nothing to read in org 'farming-analysis' -- unknown space
+# 'factory-learnings'` and exit 2. The flags that report parked and suspended checks -- the entire
+# push-not-pull guarantee -- were never printed, because the command never got that far.
+#
+# "No flags yet" is a correct, complete answer to "what is pending". It is not an error.
+
+MISSING_LEARNINGS = ("Praxis GET /facts/by -> HTTP 404: "
+                     "{\"detail\":\"unknown space 'factory-learnings'\"}")
+
+
+def test_flags_on_an_uninitialised_learnings_space_is_success_not_status_2(capsys, monkeypatch):
+    from agent_factory import af_retro
+
+    monkeypatch.setattr(af_retro, "read_flags",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            _praxis.PraxisUnreachable(MISSING_LEARNINGS)))
+    status = af_retro.main(["--flags"])
+    out, err = capsys.readouterr()
+
+    assert status == 0, "an empty learnings space is an empty answer, not a failed command"
+    assert "no pending flags (learnings space not initialised)" in out
+    assert err == "", "nothing to diagnose: there is no fault here"
+
+
+def test_a_missing_project_space_still_gets_the_scoping_diagnosis(capsys, monkeypatch):
+    """The negative case. Only the SHARED learnings space is allowed to be absent; a 404 naming any
+    other space is the real 'you are in the wrong directory' answer and keeps its exit 2."""
+    from agent_factory import af_retro
+
+    monkeypatch.setattr(af_retro, "read_flags",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            _praxis.PraxisUnreachable(MISSING_SPACE)))
+    status = af_retro.main(["--flags"])
+    err = capsys.readouterr().err
+
+    assert status == EXIT_CANNOT_RUN
+    assert "PRAXIS_ORG" in err
+
+
+def test_flags_still_reports_a_real_outage(capsys, monkeypatch):
+    from agent_factory import af_retro
+
+    monkeypatch.setattr(af_retro, "read_flags",
+                        lambda *a, **k: (_ for _ in ()).throw(_praxis.PraxisUnreachable(OUTAGE)))
+    status = af_retro.main(["--flags"])
+    err = capsys.readouterr().err
+
+    assert status == EXIT_CANNOT_RUN
+    assert "unreachable" in err
+
+
 def test_af_ingest_is_wired_to_the_boundary(capsys, monkeypatch):
     from agent_factory import ingestion_api
 
