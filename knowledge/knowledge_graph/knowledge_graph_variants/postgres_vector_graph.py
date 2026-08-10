@@ -358,6 +358,12 @@ BUILD_STATE_META_KEYS = frozenset(
         "regression_detail",
         # an intake-time structural probe result, re-derived per pass
         "under_specified",
+        # per-ticket build-lifecycle bookkeeping the hooks write via this route:
+        # budget_demotions (checks demoted for the per-ticket budget, observability) and
+        # regressed_owner (the live-lease holder a regression invalidated, FL8/D5). Absent
+        # here they 400d the whole build-state write and blocked claim+pin project-wide.
+        "budget_demotions",
+        "regressed_owner",
     }
 )
 

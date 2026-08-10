@@ -1336,11 +1336,27 @@ def _declared_runs(ref: Optional[tuple[str, str]] = None) -> dict[str, str]:
     for c in (reader(category="check", space=space,
                      snapshot="building-validation") or []):
         cid = c.get("id") or c.get("cid")
-        run = str(((c.get("meta") or {}).get("run")) or "").strip()
+        meta = c.get("meta") or {}
+        run = str((meta.get("run")) or "").strip()
         if cid and run:
             # Only checks that declare a run body reach here, so this is always the binary/run-hash
             # branch of verify_pin; a graded check carries a rubric and no run and is never executed
             # by this path (its rubric pin is the graded lane's own anchor).
+            #
+            # SELF-HEAL a check authored WITHOUT its insertion-time run_hash pin. A missing pin is
+            # not drift (no prior pin to have drifted from), yet verify_pin() raises on it -- and
+            # because this sweep covers EVERY project check, one unpinned check crashed
+            # all_validations_passed() for EVERY ticket, not just the one that owns it. Backfill the
+            # pin from the current authored run and persist it; a PRESENT-but-mismatched pin (real
+            # drift) still raises in _verify_run_pin below, unchanged.
+            if not meta.get("run_hash"):
+                from agent_factory.ingestion_api import _hash_text
+                meta["run_hash"] = _hash_text(run)
+                try:
+                    _praxis.patch_meta(str(cid), {"run_hash": meta["run_hash"]},
+                                       space=space, snapshot="building-validation")
+                except Exception:  # noqa: BLE001 -- best-effort persist; local backfill still gates
+                    pass
             _verify_run_pin(c)
             out[str(cid)] = run
     return out
