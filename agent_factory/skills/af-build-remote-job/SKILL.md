@@ -84,6 +84,84 @@ skip it, since they merge exactly the tree their worker already validated. `AF_V
 it; `AF_VERIFY_TIMEOUT_S` bounds it, default 2700. A round that produces no verdict is logged as
 UNVERIFIED, never as a pass.
 
+## Box auth — set up or repair the Claude identity (do this BEFORE launching)
+
+The loop drives workers non-interactively under `--dangerously-skip-permissions`. If the box's
+Claude identity is missing, half-configured, or freshly re-logged-in, every round dies the same
+way: `FATAL: round #N pane never signalled ready after 240s — no agent in the session`, forever,
+while the loop process itself looks healthy. One farming_analysis run burned five rounds on this
+before anyone looked inside the pane. There are TWO identity models; pick ONE per project.
+
+### Model A — shared default identity (`~/.claude`), interactive login
+
+Use when the project can share the box's main account.
+
+1. Interactive login (ONLY the human can complete the browser step):
+   `ssh -i ~/.ssh/praxis-devbox.pem -t ec2-user@52.22.249.49 claude /login`
+   Open the printed URL, pick the intended account, paste the code back. This rewrites
+   `~/.claude/.credentials.json`.
+2. **A fresh login RESETS per-session acknowledgement UI.** Clear it so headless workers don't
+   stall on a dialog: in `~/.claude.json` set `hasCompletedOnboarding = true` and
+   `theme = "dark"` (login NULLS the theme, re-triggering the wizard), and
+   `bypassPermissionsModeAccepted = true`. The bypass acceptance is necessary but partially
+   TTY-gated — the step-3 smoke test is what actually proves it clear.
+3. Confirm which account is active (email only, no secrets):
+   `python3 -c "import json;print(json.load(open('/home/ec2-user/.claude.json'))['oauthAccount']['emailAddress'])"`
+4. Launch (step 6 below) WITHOUT any `CLAUDE_CONFIG_DIR` override.
+
+### Model B — isolated per-project identity (separate account, quota-isolated)
+
+Use when the project needs its OWN account so its usage never competes with the main account's
+quota (farming_analysis runs this way: `/home/ec2-user/.claude-farming`). Requires a genuinely
+DIFFERENT account — a scoped `CLAUDE_CONFIG_DIR` isolates the LOGIN, not the QUOTA; two tokens
+minted from one account still drain one pool.
+
+1. `mkdir -p /home/ec2-user/.claude-<project>` on the box.
+2. Mint a long-lived token UNDER that dir (interactive; the human signs in with the SEPARATE
+   account): `ssh -t ... 'CLAUDE_CONFIG_DIR=/home/ec2-user/.claude-<project> claude setup-token'`.
+   **The token prints exactly ONCE to stdout and is NOT stored automatically** — run it inside a
+   tmux session with `remain-on-exit on`, or tee stdout, or the token is lost and the OAuth code
+   (single-use) is burned with it.
+3. Store it in `/home/ec2-user/.claude-<project>/env`, chmod 600:
+   `export CLAUDE_CONFIG_DIR=/home/ec2-user/.claude-<project>` +
+   `export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat0...`
+4. **Interactive sessions ALSO need `.credentials.json` in that config dir** — `setup-token`
+   does not write it, and without it every worker session stops at a "Select login method"
+   dialog that `-p` probes never show. Construct it from the env token (shape:
+   `{"claudeAiOauth": {"accessToken": "<token>", "refreshToken": "", "expiresAt": <ms>,
+   "scopes": ["user:inference"], "subscriptionType": "max"}}`, chmod 600).
+5. Clear the dialogs in `/home/ec2-user/.claude-<project>/.claude.json`: the Model-A step-2
+   flags PLUS a trust entry per project root —
+   `projects["/workspace/<worktree>"] = {"hasTrustDialogAccepted": true}` (trust is per
+   project root; worktrees under it inherit). Also set
+   `permissions.defaultMode = "bypassPermissions"` in `<config-dir>/settings.json` so every
+   session on this identity runs bypass even if a launcher forgets the flag.
+6. Launch (step 6 below) with `source /home/ec2-user/.claude-<project>/env &&` prefixed.
+
+### The ONLY valid validation
+
+```bash
+ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
+  'source /home/ec2-user/.claude-<project>/env 2>/dev/null; \
+   timeout 25 claude -p "reply with the single word READY" --dangerously-skip-permissions'
+```
+
+Expect exactly `READY`. **A `-p` probe WITHOUT `--dangerously-skip-permissions` proves
+nothing** — print mode skips every onboarding dialog (theme, login method, folder trust,
+bypass acceptance), so it returns clean while interactive worker sessions still stall. The
+farming run's five dead rounds all happened after a plain `-p` probe had "verified" auth.
+
+### Gotchas learned the hard way
+
+- Copying a laptop's keychain credentials to the box works but binds the box to whatever account
+  the laptop uses AND shares one rolling quota window — near the cap, the loop dies with
+  `BILLING FAILURE` within ~90s of every launch. `/login` (A) or a dedicated token (B) instead.
+- After ANY re-login, re-run the READY smoke before launching — a reset dialog swallows the
+  loop's first `tmux send-keys` prompt and the session sits idle at an empty REPL.
+- The `FATAL: pane never signalled ready` signature = look INSIDE the pane
+  (`tmux capture-pane -t af-<worktree> -p`) — it is almost always one of the four dialogs above,
+  each fixable from config without another browser round-trip.
+
 ## Steps
 
 **1. Resolve the project** from `$ARGUMENTS`. If absent, ask — a wrong name silently builds nothing.
@@ -232,6 +310,8 @@ sleep 20 && ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
 ```
 
 A `preflight: FAILED` line is a real stop — report it verbatim rather than assuming the run started.
+Repeated `FATAL: round #N pane never signalled ready after 240s` lines are the AUTH/onboarding
+signature — go back to "Box auth" above and run the READY smoke; do not let the loop spin.
 
 **8. Report** the tmux session, the log path, and these operator commands:
 
