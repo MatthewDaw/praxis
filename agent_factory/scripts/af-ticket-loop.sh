@@ -824,12 +824,24 @@ p, cap = sys.argv[1], int(sys.argv[2])
 # "still unfinished" id set from what it is given, so a blocked or in_progress prerequisite that was
 # filtered out first would read as satisfied and a dependent ticket would be dispatched too early.
 facts = _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}')
+ref = (p, f'prd-{p}')
 out = []
 for t in ts.ready_tickets(facts):
     m = t.get('meta') or {}
     rid = m.get('requirement_id') or t.get('id')
-    if rid:
-        out.append(str(rid))
+    if not rid:
+        continue
+    # A ticket parked on a manual sign-off is not dispatchable work: its automated obligations are
+    # already met, so a worker can only rebuild what exists and fail the same human gate again —
+    # one wasted full build per round, forever, until the sign-off lands (observed: R62, rounds
+    # #6-#7 of 2026-08-10). The moment a human records the manual pass the strict gate goes green,
+    # parked_on_manual flips false, and the very next frontier poll dispatches it to finish.
+    try:
+        if ts.parked_on_manual(t, ref):
+            continue
+    except Exception:
+        pass   # unanswerable "parked?" -> dispatch as before; a wasted rebuild beats a stuck run
+    out.append(str(rid))
     if len(out) >= cap:
         break
 print(' '.join(out))
@@ -886,10 +898,10 @@ stall_roots(){  # -> one line per blocking root: "<id> <state> blocks N: <depend
   # went to zero ready with nothing naming the one ticket holding it.
   $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
 import sys
-import _praxis
+import _praxis, _ticket_state as ts
 p = sys.argv[1]
 facts = _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}') or []
-state, deps = {}, {}
+state, deps, parked = {}, {}, set()
 for f in facts:
     m = f.get('meta') or {}
     rid = str(m.get('requirement_id') or f.get('id') or '')
@@ -897,6 +909,11 @@ for f in facts:
         continue
     state[rid] = m.get('build_state')
     deps[rid] = [str(d) for d in (m.get('depends_on') or [])]
+    try:
+        if ts.parked_on_manual(f, (p, f'prd-{p}')):
+            parked.add(rid)
+    except Exception:
+        pass
 # A root is anything not finished that nothing unfinished precedes -- i.e. it is itself waiting on
 # nobody. Those are the only tickets a human can act on; everything else is downstream of them.
 unfinished = {r for r, s in state.items() if s != 'finished'}
@@ -911,22 +928,38 @@ def blocked_behind(root):
     return sorted(seen)
 for r in sorted(roots):
     behind = blocked_behind(r)
-    print(f"{r} [{state.get(r)}] blocks {len(behind)}: {', '.join(behind[:8])}{' ...' if len(behind) > 8 else ''}")
+    tag = " PARKED awaiting manual sign-off" if r in parked else ""
+    print(f"{r} [{state.get(r)}]{tag} blocks {len(behind)}: {', '.join(behind[:8])}{' ...' if len(behind) > 8 else ''}")
 PYEOF
 }
 
 batch_open(){  # args: ids... -> how many are still incomplete|in_progress (blocked counts as done)
+  # PARKED-ON-MANUAL also counts as done. A ticket whose every automated obligation is met and
+  # which now waits only on a human sign-off cannot be closed by any amount of wall clock — the
+  # worker may never self-certify a manual requirement — so counting it open makes the round
+  # unfinishable by construction and the scaled deadline becomes the only exit. Observed
+  # 2026-08-10: R62 (manual-verify gate) held round #6 open to the full 100min timeout with its
+  # work done and merged. Parked tickets are reported once so the sign-off need is never silent.
   $PY - "$PROJECT" "$@" <<'PYEOF' 2>/dev/null
 import sys
-import _praxis
+import _praxis, _ticket_state as ts
 p, want = sys.argv[1], set(sys.argv[2:])
-n = 0
+ref = (p, f'prd-{p}')
+n, parked = 0, []
 for f in _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}'):
     m = f.get('meta') or {}
     ids = {str(f.get('id') or ''), str(m.get('requirement_id') or '')} - {''}
     if (ids & want) and m.get('build_state') in ('incomplete', 'in_progress'):
+        try:
+            if ts.parked_on_manual(f, ref):
+                parked.append(str(m.get('requirement_id') or f.get('id')))
+                continue
+        except Exception:
+            pass   # an unanswerable "parked?" stays open — never silently closes a round
         n += 1
 print(n)
+if parked:
+    sys.stderr.write("parked awaiting manual sign-off: " + " ".join(sorted(parked)) + "\n")
 PYEOF
 }
 
@@ -2828,6 +2861,16 @@ while :; do
   # its worker still writing. Killing a round does not just lose time -- the
   # worktree purge discards everything the worker had not committed.
   deadline=$(( ${AF_ROUND_DEADLINE_S:-3600} + (size - 1) * 1200 ))
+  # GRACE: the deadline is the backstop that ends a wedged round, but fired blind it also
+  # guillotines a healthy endgame — R38 (2026-08-10) was 4 graded passes in with 2 stylistic
+  # defects left and a worker actively writing when the 100min cap killed round #6; the rebuild
+  # cost a full fresh-context round. So at expiry, ask the OS the same question the stall guard
+  # asks (verify_children_busy): if real work is provably happening, extend in AF_ROUND_GRACE_S
+  # steps up to AF_ROUND_GRACE_MAX_S total. A wedged round shows no busy children and dies on
+  # schedule; only demonstrable work buys time, and the budget keeps "busy" from meaning forever.
+  grace_step=${AF_ROUND_GRACE_S:-900}
+  grace_max=${AF_ROUND_GRACE_MAX_S:-2700}
+  grace_spent=0
   # Pane stillness is a WEAKER hang signal on a parallel round than it was on a solo ticket: the
   # driving session spends the round awaiting its Workflow rather than emitting tool output, and a
   # quiet stretch between two workers landing is normal. Widen the window when more than one ticket
@@ -2856,7 +2899,7 @@ while :; do
     # Same reasoning: an unanswerable "are they done yet?" means keep waiting, never end the round.
     open=$(praxis_q batch_open "$@") || open=1
     open=${open:-1}
-    if [ "$open" = "0" ]; then say "round #$round complete — all $size ticket(s) finished or blocked"; break; fi
+    if [ "$open" = "0" ]; then say "round #$round complete — all $size ticket(s) finished, blocked, or parked on manual sign-off"; break; fi
     pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
     # Retain the last live frame. Three rounds died as a bare "session gone" with the pane already
     # destroyed, so the reason was unrecoverable each time and the same round was retried blind.
@@ -2925,8 +2968,12 @@ while :; do
       same_count=0
       last_hash="$pane_hash"
     fi
+    if [ "$waited" -ge "$deadline" ] && [ "$grace_spent" -lt "$grace_max" ] && verify_children_busy "$SESSION"; then
+      deadline=$((deadline + grace_step)); grace_spent=$((grace_spent + grace_step))
+      say "round #$round deadline reached but a child process is live — extending by $((grace_step/60))min (grace used $((grace_spent/60))/$((grace_max/60))min)"
+    fi
   done
-  [ "$waited" -ge "$deadline" ] && say "round #$round timed out after $((deadline/60))min with $(batch_open "$@") ticket(s) still open"
+  [ "$waited" -ge "$deadline" ] && say "round #$round timed out after $((waited/60))min with $(batch_open "$@") ticket(s) still open"
 
   commit_wip
   # Kill ONLY this session's own claude, never every claude on the box. The old blanket

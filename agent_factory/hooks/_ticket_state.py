@@ -1525,6 +1525,37 @@ def _covers_only(entry: dict, ids: set[str]) -> bool:
 
 
 def all_validations_passed(ticket: Any, ref: Optional[tuple[str, str]] = None) -> bool:
+    """True IFF the ticket is genuinely done — see :func:`_validations_gate` for the full contract.
+    This is the strict form: a ``verify="manual"`` requirement counts only with a human/external
+    pass source."""
+    return _validations_gate(ticket, ref, require_human_manual=True)
+
+
+def parked_on_manual(ticket: Any, ref: Optional[tuple[str, str]] = None) -> bool:
+    """True IFF the ONLY thing between this ticket and finished is a human sign-off: every
+    coverage/pass/authorship condition of :func:`all_validations_passed` holds, except that one or
+    more ``verify="manual"`` requirements lack a human/external-sourced pass.
+
+    Such a ticket is PARKED, not buildable: no amount of worker effort can move it (the worker may
+    never self-certify a manual requirement), so a round that keeps waiting on it can only end by
+    timeout, and a frontier that keeps re-dispatching it only rebuilds finished work. Observed
+    2026-08-10: R62 (manual-verify gate) held round #6 open for the full scaled deadline with all
+    of its automated work done and merged, and was then re-dispatched in round #7 anyway.
+
+    The parked state clears itself through either human action: recording the manual pass
+    (``record_validation_pass`` with a human source) makes the strict gate pass, or a human-recorded
+    success outcome finishes the ticket outright — so callers that skip parked tickets pick them
+    back up on the very next poll after the sign-off, with no relaunch."""
+    meta = _meta(ticket, ref)
+    if not {str(r) for r in (meta.get(M_MANUAL_REQUIREMENTS) or []) if r}:
+        return False
+    if _validations_gate(ticket, ref, require_human_manual=True):
+        return False   # genuinely done — finishable, not parked
+    return _validations_gate(ticket, ref, require_human_manual=False)
+
+
+def _validations_gate(ticket: Any, ref: Optional[tuple[str, str]] = None, *,
+                      require_human_manual: bool = True) -> bool:
     """True IFF the ticket is genuinely done: it has a coverage contract (>=1 required requirement),
     every required requirement is covered by some pinned validation (no coverage gap), there is at
     least one pinned validation, and EVERY pinned validation passed.
@@ -1578,12 +1609,17 @@ def all_validations_passed(ticket: Any, ref: Optional[tuple[str, str]] = None) -
             for e in pinned
         ):
             return False
-    # Manual requirements need an EXTERNAL/human-sourced pass — the worker may not self-certify them.
+    # Manual requirements need an EXTERNAL/human-sourced pass — the worker may not self-certify
+    # them. ``require_human_manual=False`` relaxes ONLY this clause (any passed covering validation
+    # counts, whatever its source); it exists solely so :func:`parked_on_manual` can distinguish
+    # "everything but the sign-off is green" from "real work remains" — no completion path may
+    # ever call the relaxed form to finish a ticket.
     manual = {str(r) for r in (meta.get(M_MANUAL_REQUIREMENTS) or []) if r}
     for req in manual:
         if not any(
             bool(e.get("passed"))
-            and str(e.get("source") or WORKER_PASS_SOURCE) in HUMAN_PASS_SOURCES
+            and (not require_human_manual
+                 or str(e.get("source") or WORKER_PASS_SOURCE) in HUMAN_PASS_SOURCES)
             and req in {str(c) for c in (e.get("covers") or [])}
             for e in pinned
         ):
