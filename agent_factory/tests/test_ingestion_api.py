@@ -91,6 +91,39 @@ def test_read_lessons_empty_query_enumerates_by_category(monkeypatch):
     }
 
 
+# --------------------------------------------------------------------------- dedup (exact, not semantic top-k)
+
+def test_classify_and_dedup_catches_exact_twin_crowded_out_of_semantic_topk(monkeypatch):
+    """Regression: the exact-text duplicate must be found by an EXACT content-hash lookup against
+    the whole corpus, NOT by the semantic top-k recall that could push an exact twin out of the
+    ranking whenever enough nearer neighbours exist (the bug that let bulk ingests duplicate rows)."""
+    text = "always run the migration before the smoke test"
+    content_hash = ingestion_api._hash_text(text.strip().lower())
+    existing = {"id": "lesson-existing", "category": "lesson",
+                "meta": {"content_hash": content_hash}, "text": text}
+
+    def fake_facts_by(category=None, meta=None, state="active", space=None, snapshot=None):
+        if meta and meta.get("content_hash") == content_hash:
+            return [existing]
+        return [existing]  # exhaustive enumeration also carries it
+
+    # A semantic lane that DELIBERATELY does not surface the exact twin — the old top-k path.
+    monkeypatch.setattr(_praxis, "context", lambda *a, **kw: [{"id": "n", "text": "something else"}])
+    monkeypatch.setattr(_praxis, "facts_by", fake_facts_by)
+
+    result = ingestion_api.classify_and_dedup(text)
+    assert result["duplicate_of"] == "lesson-existing"
+    assert result["content_hash"] == content_hash
+
+
+def test_classify_and_dedup_reports_no_duplicate_for_a_novel_lesson(monkeypatch):
+    monkeypatch.setattr(_praxis, "context", lambda *a, **kw: [])
+    monkeypatch.setattr(_praxis, "facts_by", lambda *a, **kw: [])
+    result = ingestion_api.classify_and_dedup("a brand new never-before-seen complaint")
+    assert result["duplicate_of"] is None
+    assert result["content_hash"]
+
+
 # --------------------------------------------------------------------------- CLI
 
 def test_cli_ingest_calls_write_lesson(monkeypatch):

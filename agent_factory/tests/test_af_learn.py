@@ -141,6 +141,29 @@ def test_learn_bulk_inserts_every_requested_check_without_per_check_oversight(
     assert all(c["space"] == "bulk-proj" for c in check_calls)
 
 
+def test_learn_bulk_is_idempotent_within_and_across_batches(check_store: FakeCheckStore) -> None:
+    """Regression (the '24 rows from 12 identical entries' repro): identical lesson-only entries
+    must yield ONE row each — deduped WITHIN a single batch (in-memory, robust to read-after-write
+    lag) and ACROSS repeated batches (exact content-hash against the corpus). R2 is preserved: every
+    result still carries a lesson id (the existing one when collapsed), never a dropped complaint."""
+    distinct = [{"complaint_text": f"identical complaint number {i}"} for i in range(3)]
+    batch = distinct + [dict(e) for e in distinct]  # 6 entries, 3 distinct + 3 in-batch repeats
+
+    def lesson_rows() -> list[dict[str, Any]]:
+        return [f for f in check_store.facts.values() if f["category"] == "lesson"]
+
+    first = af_learn.learn_bulk([dict(e) for e in batch], project="dedup-proj")
+    assert len(lesson_rows()) == 3, "within-batch dedup must collapse the 3 in-batch repeats"
+    assert sum(1 for r in first if r.get("batch_deduped")) == 3
+
+    second = af_learn.learn_bulk([dict(e) for e in batch], project="dedup-proj")
+    assert len(lesson_rows()) == 3, "a repeated batch must not write any new lesson rows"
+
+    assert all(r["lesson_id"] is not None for r in first + second), "R2: a lesson id is always returned"
+    # The second batch is entirely duplicates — every entry points back at an existing lesson.
+    assert all(r.get("lesson_duplicate_of") for r in second)
+
+
 def test_learn_bulk_refuses_and_writes_nothing_when_project_unresolvable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

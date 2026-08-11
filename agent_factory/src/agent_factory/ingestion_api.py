@@ -576,18 +576,49 @@ def _fetch_check(check_id: str, project: str) -> dict[str, Any]:
 
 # --------------------------------------------------------------------------- classify/dedup
 
+def _normalize_lesson_text(text: str | None) -> str:
+    """The canonical dedup key for a lesson body: whitespace-trimmed, case-folded. Both the
+    corpus-exact dedup (:func:`classify_and_dedup`) and the within-batch dedup
+    (:func:`af_learn.learn_bulk`) key on THIS so an exact twin is recognised identically on both
+    paths."""
+    return str(text or "").strip().lower()
+
+
+def _find_duplicate_lesson(text_n: str, content_hash: str) -> str | None:
+    """Return the id of an existing active lesson whose normalized text equals ``text_n``, or
+    ``None``. Deliberately NOT semantic-top-k: it keys first on the exact ``content_hash`` stamped
+    on lesson meta at write time (a precise meta-filtered lookup, unaffected by how many similar
+    lessons crowd a similarity ranking), then falls back to an exhaustive normalized-text scan of
+    the active corpus for legacy lessons written before the hash existed. The old top-k recall
+    missed an exact twin whenever more than ``top_k`` nearer neighbours pushed it out of the
+    ranking — the bug that let identical bulk entries write duplicate rows."""
+    for hit in _praxis.facts_by(category=LESSON_CATEGORY, meta={"content_hash": content_hash},
+                                space=_praxis.FACTORY_LEARNINGS_SPACE,
+                                snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT):
+        # ``content_hash`` is a sha256 of the normalized body, so a meta hit is authoritative —
+        # no need to re-read the (optional) text field the store may not carry back.
+        return hit.get("id")
+    for hit in read_lessons(""):  # exhaustive active enumeration — covers pre-hash legacy lessons
+        if _normalize_lesson_text(hit.get("text")) == text_n:
+            return hit.get("id")
+    return None
+
+
 def classify_and_dedup(lesson_text: str, *, class_hint: str | None = None,
                        top_k: int = 5) -> dict[str, Any]:
     """R1's first step: classify a new lesson against the existing corpus and flag an exact-text
-    duplicate. Filed under ``class_hint`` (or ``"uncategorized"``) when no hint is given."""
-    text_n = str(lesson_text or "").strip().lower()
-    duplicate_of = None
-    if text_n:
-        for hit in read_lessons(lesson_text, top_k=top_k):
-            if str(hit.get("text") or "").strip().lower() == text_n:
-                duplicate_of = hit.get("id")
-                break
-    return {"class": (class_hint or "uncategorized"), "duplicate_of": duplicate_of}
+    duplicate. Filed under ``class_hint`` (or ``"uncategorized"``) when no hint is given.
+
+    Dedup is EXACT-normalized-text against the whole active corpus (see :func:`_find_duplicate_lesson`),
+    NOT semantic top-k recall — so a duplicate is caught however many similar lessons already exist.
+    Returns the exact-text ``content_hash`` too so :func:`ingest` can stamp it on the row it writes
+    (the key the next dedup lookup uses). ``top_k`` is retained for signature compatibility and is
+    no longer used to bound the duplicate search."""
+    text_n = _normalize_lesson_text(lesson_text)
+    content_hash = _hash_text(text_n) if text_n else None
+    duplicate_of = _find_duplicate_lesson(text_n, content_hash) if text_n else None
+    return {"class": (class_hint or "uncategorized"), "duplicate_of": duplicate_of,
+            "content_hash": content_hash}
 
 
 def _pin_content(meta: dict[str, Any], *, validated_run: str | None,
@@ -725,11 +756,20 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
     classification = classify_and_dedup(lesson_text, class_hint=class_hint)
     wave_id = uuid.uuid4().hex
 
-    lesson = write_lesson(lesson_text, source=source, meta={
-        "class": classification["class"], "duplicate_of": classification["duplicate_of"],
-        "wave_id": wave_id, "channel": channel, "authored_by": authenticated_as,
-    })
-    lesson_id = lesson.get("id")
+    lesson_duplicate_of = classification["duplicate_of"]
+    if lesson_duplicate_of is not None:
+        # The exact-text lesson already exists (R2 — the knowledge is not lost; writing a second
+        # identical row would only create the duplicate this dedup exists to prevent). Reuse the
+        # existing id and DO NOT write a new row. The check/proof/regress path below still runs, so
+        # a duplicate complaint that carries a new check is not weakened — it just reuses the lesson.
+        lesson_id = lesson_duplicate_of
+    else:
+        lesson = write_lesson(lesson_text, source=source, meta={
+            "class": classification["class"], "duplicate_of": None,
+            "content_hash": classification["content_hash"],
+            "wave_id": wave_id, "channel": channel, "authored_by": authenticated_as,
+        })
+        lesson_id = lesson.get("id")
 
     check_id: str | None = None
     proof_status: str | None = None
@@ -755,7 +795,8 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
                 outcome="failure",
             )
             return {"lesson_id": lesson_id, "check_id": None, "wave_id": wave_id,
-                    "proof_status": proof_status, "class": classification["class"]}
+                    "proof_status": proof_status, "class": classification["class"],
+                    "lesson_duplicate_of": lesson_duplicate_of}
         validated_run = proof_result["run"]
 
     if drafted_run is not None or drafted_rubric is not None:
@@ -873,7 +914,8 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
             )
 
     return {"lesson_id": lesson_id, "check_id": check_id, "wave_id": wave_id,
-            "proof_status": proof_status, "class": classification["class"], "resurrected": resurrected}
+            "proof_status": proof_status, "class": classification["class"], "resurrected": resurrected,
+            "lesson_duplicate_of": lesson_duplicate_of}
 
 
 # --------------------------------------------------------------------------- FL7: the merger's entry point (R5/R6/R15/E11)
