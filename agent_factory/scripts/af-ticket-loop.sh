@@ -2245,7 +2245,7 @@ PYEOF
     echo "$pane" | grep -qE "." && vlastpane="$pane"
     # Same rule as the build wait: a blank frame is a redraw, not a death.
     if ! tmux has-session -t "$vsession" 2>/dev/null; then say "verify session gone before writing a verdict"; break; fi
-    if echo "$pane" | grep -qiE "insufficient balance|402|quota exceeded|payment required|credit balance is too low"; then
+    if echo "$pane" | grep -qiE "insufficient balance|quota exceeded|payment required|credit balance is too low|insufficient_quota|billing_(error|hard_limit)|billing (error|failure)|(http[ /]?|status[ :]?)402|402 payment required"; then
       say "BILLING FAILURE during verification — halting"; tmux kill-session -t "$vsession" 2>/dev/null || true; exit 3
     fi
     # Quota/session-limit on a subscription backend: caught BEFORE the stall accounting below so we
@@ -3004,7 +3004,7 @@ while :; do
     # ran out at 11:08 and the loop churned 46 stall/restart cycles over ~6 HOURS
     # without completing anything, because the auth check above does not match a 402
     # and a 402'd pane is otherwise indistinguishable from a frozen one. Halt loudly.
-    if echo "$pane" | grep -qiE "insufficient balance|402|quota exceeded|billing|payment required|credit balance is too low"; then
+    if echo "$pane" | grep -qiE "insufficient balance|quota exceeded|payment required|credit balance is too low|insufficient_quota|billing_(error|hard_limit)|billing (error|failure)|(http[ /]?|status[ :]?)402|402 payment required"; then
       say "BILLING FAILURE (out of credits/quota) — halting the whole loop; top up and relaunch"
       commit_wip
       tmux kill-session -t "$SESSION" 2>/dev/null || true
