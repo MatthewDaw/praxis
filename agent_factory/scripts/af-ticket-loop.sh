@@ -191,11 +191,14 @@
 # Exit codes:
 #   0  clean drain, or a dependency stall the operator must unblock
 #   1  preflight failure (bad args, no worktree, model backend, universal lane)
-#   3  billing/credit failure
+#   3  billing/credit failure (API credits exhausted -- a 402; top up and relaunch)
 #   4  three consecutive fruitless rounds   5  disk floor   6  Praxis unreachable
 #   7  STRAGGLERS: the run left unmerged worker branches and/or leftover worktrees behind. Nothing is
 #      ever deleted to reach a green invariant, so the work named in the log is intact -- land it
 #      (`--resolve-orphans`) and relaunch.
+#   8  QUOTA BLOCKED: a headless session hit the Claude subscription's session/usage limit and was
+#      stranded on the interactive /rate-limit-options menu. Distinct from 3 (that is API credits):
+#      the remedy is to wait for the subscription window to reset, or switch the plan/backend.
 #   AF_MODEL_BACKEND       sonnet | deepseek (see v3)
 #   AF_PLUGIN_DIR / AF_REPO / AF_PYTHON / AF_STATE_DIR / AF_LOG   for an unusual layout
 set -euo pipefail
@@ -612,11 +615,53 @@ verify_children_busy(){  # $1 = tmux session name
   return 1
 }
 
+# CONSTITUTIONAL INVARIANT: a headless verify/build session must NEVER silently block on an
+# interactive prompt. When the Claude Max subscription hits its session/usage limit the CLI does not
+# error out -- it strands on the interactive `/rate-limit-options` menu ("1. Stop and wait for limit
+# to reset / 2. Switch to usage credits / 3. Switch to Team plan"), which nothing headless can
+# answer. Undetected, the pane just sits until the full STALL_POLLS window burns and the round is
+# logged UNVERIFIED, and every following round walks its workers into the identical wall (observed
+# 2026-08-10: round #3 UNVERIFIED at the 15-min verify stall, rounds #4/#5 then finished ZERO,
+# detected only by the generic pane-unchanged watchdog). These strings are the menu's OWN text and
+# do not occur in ordinary tool output, so -- unlike a bare "rate limit" -- matching them is a
+# reliable, low-false-positive signal of quota exhaustion, DISTINCT from a generic quiet-pane stall
+# and from an API-credit 402 (which the billing grep owns). Reads the captured pane on stdin.
+rate_limited(){ grep -qiE "hit your (session|usage) limit|/rate-limit-options|stop and wait for limit to reset|switch to usage credits"; }
+
+# Exit code 8 -- quota/session-limit blocked. Deliberately NOT folded into 3 (API-credit/billing
+# 402): the operator action is different (wait for the subscription window to reset, or switch the
+# plan/backend -- not "top up credits"), and the straggler-exit reasoning applies verbatim: a
+# distinct terminal state gets a distinct code so a human or monitor can read it.
+AF_EXIT_QUOTA_BLOCKED=8
+
+# React the INSTANT the menu is seen -- never burn the stall window on it -- and HALT the whole run
+# rather than dispatch further rounds into the same wall. $1 = where we are, $2 = session to tear
+# down. Never returns.
+halt_quota_blocked(){
+  local where="$1" sess="${2:-}"
+  say "QUOTA BLOCKED at $where — the model backend hit its Claude subscription session/usage limit and the"
+  say "  headless session is stranded on the interactive /rate-limit-options menu, which nothing here can answer."
+  say "  backend was: ${BACKEND:-?} (${BACKEND_NOTE:-?})"
+  say "  This is NOT a generic stall and NOT an API-credit 402 — the subscription's session quota is exhausted."
+  say "  HALTING the whole run (exit $AF_EXIT_QUOTA_BLOCKED) instead of launching more rounds that will hit the"
+  say "  same wall. Remedy: wait for the quota to reset (the menu named the reset time), or switch the plan/backend, then relaunch."
+  [ -n "$sess" ] && tmux kill-session -t "$sess" 2>/dev/null || true
+  exit "$AF_EXIT_QUOTA_BLOCKED"
+}
+
 # Resolve the backend BEFORE any ticket work, and refuse to start a multi-hour run on a
 # half-configured one. Failing here costs seconds; failing three tickets in costs an hour
 # and a lease that has to be released by hand.
 resolve_backend || { say "FATAL: model backend preflight failed for '${BACKEND:-?}' — refusing to start"; exit 1; }
 say "backend=$BACKEND ($BACKEND_NOTE)"
+# PREFLIGHT NOTE for a subscription backend: a Claude Max/Pro subscription meters a session/usage
+# QUOTA, not API credits, so a long unattended run can exhaust it mid-flight and strand a headless
+# session on the interactive /rate-limit-options menu. The loop now DETECTS that and halts loudly
+# (exit $AF_EXIT_QUOTA_BLOCKED) rather than burning stall windows round after round -- but the run
+# still stops, so for a long unattended build prefer an API-credit backend or watch for the halt.
+case "$BACKEND_NOTE" in
+  *subscription*) say "NOTE: backend is a Claude subscription (session quota, not API credits) — a long unattended run can hit the session limit; the loop will halt with exit $AF_EXIT_QUOTA_BLOCKED if it does, but consider API credits for very long runs." ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Package caches MUST sit on the worktree's own filesystem.
@@ -1290,6 +1335,9 @@ resolve_conflicts(){   # $1 = round number
     [ -f "$RESOLVED" ] && break
     if ! tmux has-session -t "$rsession" 2>/dev/null; then say "conflict resolver: session gone before writing a result"; break; fi
     pane=$(tmux capture-pane -p -t "$rsession" 2>/dev/null || true)
+    # The conflict resolver is a headless session too: halt on the subscription rate-limit menu
+    # rather than let it sit out the stall window (same invariant as the verify/build waits).
+    if echo "$pane" | rate_limited; then halt_quota_blocked "conflict resolver round #$rnd" "$rsession"; fi
     rhash=$(printf '%s' "$pane" | hash_text)
     if [ "$rhash" = "$rlast" ]; then
       rstall=$((rstall+1))
@@ -2200,6 +2248,10 @@ PYEOF
     if echo "$pane" | grep -qiE "insufficient balance|402|quota exceeded|payment required|credit balance is too low"; then
       say "BILLING FAILURE during verification — halting"; tmux kill-session -t "$vsession" 2>/dev/null || true; exit 3
     fi
+    # Quota/session-limit on a subscription backend: caught BEFORE the stall accounting below so we
+    # react the instant the interactive menu appears instead of wasting the full 15-min verify stall
+    # window on a prompt no headless session can answer (see rate_limited/halt_quota_blocked).
+    if echo "$pane" | rate_limited; then halt_quota_blocked "verify round #$rnd" "$vsession"; fi
     vhash=$(printf '%s' "$pane" | hash_text)
     if [ "$vhash" = "$vlast" ]; then
       vstall=$((vstall+1))
@@ -2256,7 +2308,7 @@ PYEOF
   # earned; the round's green claim does not get to stand.
   local summary
   summary=$(python3 - "$VERDICT" <<'PYEOF' 2>/dev/null || echo "verdict=UNREADABLE"
-import json, sys
+import json, re, sys
 try:
     d = json.load(open(sys.argv[1]))
 except Exception as e:
@@ -2275,6 +2327,24 @@ elif gates is False and verdict == "pass":
                       "while verdict=pass asserts the round is good")
 if verdict == "fail" and not reg:
     incoherent.append("verdict=fail names no ticket to regress, so the failure would rebuild nothing")
+
+# THE UNDER-REPORT CASE: the verdict's authoritative `regressed` field is EMPTY (so the loop will
+# regress nothing and the round reads green) while the verifier's OWN notes assert a ticket should be
+# regressed. Observed live: a verdict with regressed=[] whose notes read
+# "Should-regress REM-29,REM-28,REM-27" -- the judgement named the failures and the field that
+# carries them to the write path silently dropped them, so a round passed on work that had failed
+# integration. This is the same failure class the verifier/loop split was built to stop (nine rounds
+# reported zero regressions while their notes named the failing tickets), one level up: a finding is
+# not answered by a NOTE about it any more than by a zero-commit close. Fires ONLY when `regressed`
+# is empty -- a non-empty field already carries its tickets to the loop's regression pass -- so the
+# consequence is exactly the rest of this gate's: the round is downgraded to UNVERIFIED (never a
+# pass), tickets keep whatever state they earned, and nothing is auto-regressed on prose alone.
+_UNDERREPORT_RE = re.compile(
+    r"should[\s-]*(?:be\s+)?regress|must\s+be\s+regress|need(?:s|ed)?\s+(?:to\s+be\s+)?regress"
+    r"|regress(?:ed|es|ing)?\s+[A-Za-z][A-Za-z0-9]*-\d+", re.I)
+if not reg and _UNDERREPORT_RE.search(str(d.get("notes") or "")):
+    incoherent.append("regressed is empty but the notes assert a ticket should be regressed "
+                      "(%r) -- a finding is not answered by a note about it" % (str(d.get("notes"))[:160],))
 
 prefix = ""
 if incoherent:
@@ -2939,6 +3009,14 @@ while :; do
       commit_wip
       tmux kill-session -t "$SESSION" 2>/dev/null || true
       exit 3
+    fi
+    # Subscription session/usage limit: the CLI strands on the interactive /rate-limit-options menu,
+    # which no headless worker can answer. Caught BEFORE the stall accounting below so it does not
+    # burn a fresh STALL_POLLS window per ticket forever (the exact cascade that finished ZERO
+    # tickets in rounds #4/#5 on 2026-08-10). Commit WIP first, then halt the whole run.
+    if echo "$pane" | rate_limited; then
+      commit_wip
+      halt_quota_blocked "build round #$round" "$SESSION"
     fi
     pane_hash=$(printf '%s' "$pane" | hash_text)
     if [ "$pane_hash" = "$last_hash" ]; then
