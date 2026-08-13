@@ -483,6 +483,35 @@ def _is_identity_bound(check: Any) -> bool:
     return bool((check.get("meta") or {}).get("identity_lane"))
 
 
+# The check enforcement-state values, mirrored from :mod:`agent_factory.ingestion_api` (its
+# authoritative R20a state machine). They are duplicated as bare string literals rather than imported
+# because ``ingestion_api`` imports THIS module — importing it back would be circular. The values must
+# stay in lockstep with ingestion_api's ``M_ENFORCEMENT_STATE`` / ``STATE_SUSPENDED`` / ``STATE_ARCHIVED``.
+M_ENFORCEMENT_STATE = "enforcement_state"
+STATE_SUSPENDED = "suspended"
+STATE_ARCHIVED = "archived"
+
+
+def _is_retired(check: Any) -> bool:
+    """True iff an operator (``kill_switch``/``retire_check``) or the automatic false-positive path
+    (``suspend``) has RETIRED this check: an explicit ``meta.kill_switch``, or an ``enforcement_state``
+    of ``suspended``/``archived``.
+
+    A retired check must not pin or gate onto ANY ticket — INCLUDING the R11 ticket-identity lane. The
+    "mandatory and unskippable" clause the identity lane carries protects the check from the
+    diff-scoping (:func:`scope_checks_to_changes`) and worker-discretion exemptions — it deliberately
+    does NOT protect a check an operator has explicitly killed. Those are different things: an operator
+    kill (or an auto-suspend) is a decision that the check itself is stale/wrong, which outranks the
+    identity binding. Without this, ``kill_switch`` on an identity-bound check returned success but the
+    resolver kept pinning it, so the killed check re-blocked its ticket every round forever."""
+    if not isinstance(check, dict):
+        return False
+    meta = check.get("meta") or {}
+    if meta.get("kill_switch"):
+        return True
+    return meta.get(M_ENFORCEMENT_STATE) in (STATE_SUSPENDED, STATE_ARCHIVED)
+
+
 def _declared_scope_globs(check: Any) -> list[str]:
     """Explicit path predicate authored on the check (``meta.when_changed``), if any."""
     if not isinstance(check, dict):
@@ -900,6 +929,11 @@ def _matching_checks(ticket: Any, project: str, scope: str,
 
     if scope:  # e.g. scope="validation" — restrict the per-ticket match to that check scope
         seen = {k: v for k, v in seen.items() if _scope_of(v) == scope}
+    # RETIRED checks (kill_switched / suspended / archived) are dropped from EVERY lane, including the
+    # R11 identity lane above (:func:`_is_retired`). An explicit operator kill is not one of the
+    # "unskippable"-clause exemptions the identity lane protects against — a killed check must stop
+    # gating anything, or ``kill_switch`` silently no-ops on an identity-bound check.
+    seen = {k: v for k, v in seen.items() if not _is_retired(v)}
     return seen
 
 
@@ -1203,7 +1237,45 @@ def open_finding(meta: dict) -> Optional[dict]:
     return opens[0] if opens else None
 
 
-def finding_unanswered_without_change(meta: dict, commits: int) -> Optional[str]:
+def _finding_check_id(finding: dict) -> str:
+    """The check id a finding is attributed to, or ``""`` when it names none. Mirrors
+    :func:`agent_factory.resolution.finding_check_id` (flat key, or nested under ``meta``) so the
+    hook-side guard reads a finding's attribution the same way the resolver does."""
+    if not isinstance(finding, dict):
+        return ""
+    for source in (finding, finding.get("meta") or {}):
+        if not isinstance(source, dict):
+            continue
+        for key in ("check_id", "checkId"):
+            value = str(source.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _named_check_passing(meta: dict, finding: dict) -> bool:
+    """True iff the finding NAMES a check and that check currently PASSES on the ticket's recorded
+    pinned validations — i.e. the finding's symptom is demonstrably gone on the current tree.
+
+    This is the "answered without a fresh commit" signal (E-class incident): a finding whose fix
+    was already committed in an EARLIER round is genuinely resolved even though THIS round produced
+    no new commit — the check the finding named now passes. Reading the pass off the ticket's own
+    pinned validations keeps this a pure meta function (no re-execution here); the loop/resolver own
+    running checks. Findings that name no check (the unattributed ones the loop writes) never match —
+    those are answered by the verification ROUND (:func:`resolve_finding` / resolution.py), not here."""
+    cid = _finding_check_id(finding)
+    if not cid:
+        return False
+    for entry in (meta.get(M_PINNED_CHECKS) or []):
+        if not isinstance(entry, dict) or not entry.get("passed"):
+            continue
+        if cid in {str(c) for c in (entry.get("covers") or [])}:
+            return True
+    return False
+
+
+def finding_unanswered_without_change(meta: dict, commits: int, *,
+                                      symptom_gone: Optional[bool] = None) -> Optional[str]:
     """Why a ``finished`` ticket carrying an open finding must NOT count, or ``None`` if it may.
 
     Deliberately NOT "an open finding blocks completion": verification runs only AFTER a ticket
@@ -1213,9 +1285,25 @@ def finding_unanswered_without_change(meta: dict, commits: int) -> Optional[str]
 
     The rule instead targets what actually happened: a ticket told exactly what was wrong produced
     NO CHANGE and closed anyway. Any real attempt satisfies this; only doing nothing does not.
+
+    A finding is ALSO answered — with no new commit this round — in either of two ways:
+
+    * its symptom is demonstrably gone because the check it NAMED now PASSES on the ticket's recorded
+      pinned validations (:func:`_named_check_passing`); or
+    * the caller passes ``symptom_gone=True`` — the verification round, the only legitimate answerer
+      of an UNATTRIBUTED (``check_id=None``) finding, positively re-verified the rebuilt tree and
+      found the symptom gone. This is the closeable path for a ``check_id=None`` finding, which no
+      per-check pass can ever answer (there is no check to consult) and which auto-suspend can never
+      act on (its streak is keyed by ``check_id``) — without it such a finding, once its fix landed in
+      an EARLIER round, is regressed forever. ``symptom_gone`` defaults to ``None`` (undetermined), so
+      every existing caller that passes only ``(meta, commits)`` keeps byte-identical behavior.
     """
+    if symptom_gone is True:
+        return None
     f = open_finding(meta)
     if f is None or commits > 0:
+        return None
+    if _named_check_passing(meta, f):
         return None
     reason = str(f.get("reason") or "").strip()
     return ("finished with an OPEN verification finding and contributed no commits — the rebuild "

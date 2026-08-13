@@ -1266,6 +1266,38 @@ def kill_switch(check_id: str, project: str, reason: str, *, identity: str | Non
     return result
 
 
+def retire_check(check_id: str, project: str, reason: str, *, identity: str | None = None) -> dict[str, Any]:
+    """The first-class "this check is STALE — stop it gating anything" verb (the build workers asked
+    for a "dismiss/retire requirement <id>" twice; the only working path before was hand-patching
+    ``meta.applies_to``). Retirement is the ATOMIC composition of everything that stops a check dead:
+
+      1. EMPTY ``meta.applies_to`` — drop every ticket-cid / tag binding, so no tag or identity lane
+         resolves it (``surface_only`` follows: no bindings + no surfaces => not surface-only either);
+      2. set ``meta.kill_switch`` (and transition the enforcement state via :func:`_suspend_patch`),
+         so :func:`hooks._ticket_state._is_retired` drops it from EVERY remaining lane too (the
+         surface lane included) — belt-and-suspenders with (1);
+      3. record ``reason`` for the audit trail (``retire_reason`` + ``kill_switch_reason``);
+      4. emit the push-not-pull suspension flag (:func:`emit_flag`, R24), so a retirement is never
+         something an operator has to go looking for.
+
+    Reuses the SAME ``_patch_check`` / ``emit_flag`` plumbing :func:`kill_switch` uses — it is a
+    strict superset of ``kill_switch`` that ALSO unbinds ``applies_to`` in the one transactional patch,
+    so a stale check cannot survive as an identity-bound gate the way ``kill_switch`` alone let it."""
+    authenticated_as = _require_authenticated(identity)
+    reason_s = str(reason or "")
+
+    def _patch(check: dict[str, Any]) -> dict[str, Any]:
+        return {**_suspend_patch(check),
+                "applies_to": [], "surface_only": False,
+                "kill_switch": True, "kill_switch_reason": reason_s, "kill_switch_at": time.time(),
+                "retired": True, "retire_reason": reason_s, "retired_at": time.time()}
+
+    result = _patch_check(check_id, project, _patch, identity=authenticated_as)
+    emit_flag(FLAG_KIND_SUSPENSION, project, {"check_id": check_id, "reason": reason_s,
+              "kill_switch": True, "retired": True}, identity=authenticated_as)
+    return result
+
+
 def regression_streak(regression_entries: list[dict[str, Any]], check_id: str) -> int:
     """R19 — the trailing run-length of regressions against ``check_id`` on ONE ticket's
     accumulated ``regression_detail`` (oldest first) that carry NO RELEVANT CHANGE between them.
@@ -1494,6 +1526,70 @@ def read_checks(project: str, *, snapshot: str = BUILDING_VALIDATION_SNAPSHOT) -
     per-run record ``agent_factory.af_retro`` reports off: activated/suspended/widened checks,
     proof outcomes, the check-undraftable rate, the gating-vs-demoted ratio."""
     return _praxis.facts_by(category=CHECK_CATEGORY, state="any", space=project, snapshot=snapshot)
+
+
+#: Suffixes that make a bare (slash-less) run-body token look like a source-file PATH rather than a
+#: subcommand/module name — so ``mypy tests/x.py`` and ``pytest test_x.py`` both surface their file arg.
+_SOURCE_FILE_SUFFIXES = frozenset({
+    ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".rb",
+    ".php", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".kt", ".scala", ".sh", ".sql",
+    ".json", ".yaml", ".yml", ".toml", ".md", ".html", ".css", ".scss", ".vue", ".proto",
+})
+
+
+def _run_path_arguments(run: str) -> list[str]:
+    """The PATH-shaped argument tokens in a check's run body: a non-flag token that either contains a
+    path separator or ends in a recognized source-file suffix (:data:`_SOURCE_FILE_SUFFIXES`). Parsed
+    with the ONE run-body parser (:func:`parse_run_body`) so tokenization matches how the body is
+    validated and executed; a body that will not parse yields no paths (it is stale for a louder
+    reason the parser already reports)."""
+    try:
+        argv = parse_run_body(run)
+    except RunBodyRejected:
+        return []
+    out: list[str] = []
+    for token in argv[1:]:  # argv[0] is the verb, never a path
+        if not token or token.startswith("-") or "=" in token:
+            continue  # flags and key=val options are never file paths
+        path_part = token.split("::", 1)[0]  # drop a pytest nodeid suffix (tests/x.py::Case)
+        if not path_part or path_part.startswith("-"):
+            continue
+        looks_path = ("/" in path_part) or (posixpath.splitext(path_part)[1].lower()
+                                            in _SOURCE_FILE_SUFFIXES)
+        if looks_path:
+            out.append(path_part)
+    return out
+
+
+def stale_checks_by_missing_path(project: str, repo_root: str | Path) -> list[dict[str, Any]]:
+    """PURE DETECTOR (never mutates) — the building-validation checks whose ``run`` command names a
+    file path that does NOT exist under ``repo_root``. A check that runs a command against a file the
+    tree does not contain is provably stale.
+
+    Real incident: a building-validation check's ``run`` was ``mypy … tests/test_taolu_rig_validation_
+    staff_plane.py`` — a file from a DISCARDED worktree attempt that never merged. It outlived the
+    attempt and kept gating forever against a phantom file. Nothing detected it because the resolver
+    only asks "does this check apply?", never "does the file this check names still exist?".
+
+    Returns one finding per stale check: ``{"check_id", "id", "run", "missing_paths"}`` — the caller
+    decides what to do (surface it, :func:`retire_check` it). Already-retired checks (kill_switched /
+    suspended / archived) are skipped: they no longer gate, so a phantom path on one is not a live
+    problem. This never deletes or patches anything."""
+    root = Path(repo_root)
+    findings: list[dict[str, Any]] = []
+    for chk in _praxis.facts_by(category=CHECK_CATEGORY, space=project,
+                                snapshot=BUILDING_VALIDATION_SNAPSHOT):
+        meta = chk.get("meta") or {}
+        if meta.get("kill_switch") or meta.get(M_ENFORCEMENT_STATE) in (STATE_SUSPENDED, STATE_ARCHIVED):
+            continue  # retired already — not a live staleness finding
+        run = str(meta.get("run") or "")
+        if not run.strip():
+            continue
+        missing = [p for p in _run_path_arguments(run) if not (root / p).exists()]
+        if missing:
+            findings.append({"check_id": meta.get("check_id") or chk.get("id"),
+                             "id": chk.get("id"), "run": run, "missing_paths": missing})
+    return findings
 
 
 def emit_flag(kind: str, project: str, detail: dict[str, Any] | None = None, *,
