@@ -218,6 +218,14 @@ Split only when both halves are **independently shippable and independently veri
 cannot decide, merge — a ticket that is slightly too big costs one longer sitting, while two that
 should have been one costs a wedged dependency edge and two rounds of overhead.
 
+**But a ticket must still fit ONE build round.** The loop runs `af-build` in batched ~80-minute
+rounds — one fresh session per batch — so a ticket that cannot go red-to-green inside a single
+round does not just run long: it TIMES OUT mid-round and strands partial work on a branch,
+recoverable only by orphan-branch landing (a real incident). This is the hard upper bound on the
+"merge by default" bias above: keep merging until a ticket would no longer finish in one round,
+then stop. When a coherent unit is genuinely too large for a single round, **split it — along its
+own independently-verifiable seams — rather than mint an oversized ticket that will strand.**
+
 **Pass A — behavioral, from the doc.** Atomize the rules into binary conditions, then **group them
 back up** into the ticket-sized units above. A good brainstorm doc is already near-structured (epics
 + acceptance + data model + API), so this is *atomize → mint binary conditions → group → dedupe
