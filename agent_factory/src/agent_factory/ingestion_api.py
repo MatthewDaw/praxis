@@ -604,6 +604,52 @@ def _find_duplicate_lesson(text_n: str, content_hash: str) -> str | None:
     return None
 
 
+def _shape_guard_lesson_provenance(raw: Any) -> list[dict[str, Any]]:
+    """R42 — the read-side shape guard for a lesson's accumulated ``meta.provenance`` list, mirroring
+    :func:`hooks._ticket_state._shape_guard_regression_details`: a list is copied (never the
+    caller's own dict objects, so a later append can never mutate a value someone else is still
+    holding); anything else (``None``, a lesson written before this shipped) degrades to "no
+    provenance yet" rather than raising."""
+    if isinstance(raw, list):
+        return [dict(d) for d in raw if isinstance(d, dict)]
+    return []
+
+
+def accumulate_lesson_provenance(existing_lesson: dict[str, Any],
+                                 entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """R42/R2 — append ONE new provenance entry onto a lesson's accumulated
+    ``meta.provenance`` list (source + channel + timestamp), following the
+    :func:`hooks._ticket_state.accumulate_regression_detail` precedent: read-modify-write through
+    this ONE function rather than a bare ``patch_meta`` wholesale-replace, so a duplicate-match
+    occurrence's provenance is APPENDED, never lost to a concurrent append clobbering the same key.
+
+    A lesson written before this shipped carries no ``meta.provenance`` list yet — this
+    initializes it from the lesson's existing single top-level ``source`` field (plus whatever
+    ``meta.channel`` it was written with) so that first-write history is never silently dropped on
+    its first append, rather than starting the accumulated list empty."""
+    existing_meta = existing_lesson.get("meta") or {}
+    provenance = _shape_guard_lesson_provenance(existing_meta.get("provenance"))
+    if not provenance:
+        legacy_source = existing_lesson.get("source")
+        if legacy_source is not None:
+            provenance = [{"source": legacy_source, "channel": existing_meta.get("channel"),
+                          "at": None}]
+    provenance.append(dict(entry))
+    return provenance
+
+
+def _append_lesson_provenance(lesson_id: str, *, source: str | None, channel: str) -> list[dict[str, Any]]:
+    """R42 — the clobber-guarded read-modify-write itself: re-fetch the lesson fresh (never reuse a
+    stale in-memory copy from earlier in this call) immediately before computing the merged list, so
+    the write races the smallest possible window rather than one held since ``classify_and_dedup``."""
+    plan_kw = {"space": _praxis.FACTORY_LEARNINGS_SPACE, "snapshot": _praxis.FACTORY_LEARNINGS_SNAPSHOT}
+    existing = _praxis.get_fact(lesson_id, **plan_kw) or {}
+    provenance = accumulate_lesson_provenance(
+        existing, {"source": source, "channel": channel, "at": time.time()})
+    _praxis.patch_meta(lesson_id, {"provenance": provenance}, **plan_kw)
+    return provenance
+
+
 def classify_and_dedup(lesson_text: str, *, class_hint: str | None = None,
                        top_k: int = 5) -> dict[str, Any]:
     """R1's first step: classify a new lesson against the existing corpus and flag an exact-text
@@ -762,7 +808,12 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
         # identical row would only create the duplicate this dedup exists to prevent). Reuse the
         # existing id and DO NOT write a new row. The check/proof/regress path below still runs, so
         # a duplicate complaint that carries a new check is not weakened — it just reuses the lesson.
+        # R42: this occurrence's source (plus channel and a timestamp) is APPENDED to the existing
+        # lesson's accumulated provenance via a clobber-guarded read-modify-write
+        # (:func:`_append_lesson_provenance`) instead of being discarded — so a second ingest of the
+        # same complaint text under a different source is not silently lost.
         lesson_id = lesson_duplicate_of
+        _append_lesson_provenance(lesson_id, source=source, channel=channel)
     else:
         lesson = write_lesson(lesson_text, source=source, meta={
             "class": classification["class"], "duplicate_of": None,
