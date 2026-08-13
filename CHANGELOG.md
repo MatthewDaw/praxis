@@ -9,6 +9,15 @@ and versioning aligns with [pyproject.toml](pyproject.toml) (`0.1.0`).
 
 ### Added
 
+- **`af-ml-model` / `af-ml-model-remote` skills (agent-factory 0.1.12)** — thin triggers for
+  [karpathy/autoresearch](https://github.com/karpathy/autoresearch)'s autonomous ML research loop,
+  locally and detached on the EC2 devbox. The skills defer to upstream `program.md` as the protocol
+  of record rather than restating it. Paired with
+  `agent_factory/scripts/checks/af_ml_research_target.py`, which reads the run's `results.tsv` and
+  exits 0/1 so an af-build research ticket has a binary acceptance condition decided by an external
+  signal. The loop runs against a separate autoresearch clone, never a praxis worktree — its
+  discard path is `git reset --hard`.
+
 - **`frontend-react/`** — Vite + React + TypeScript Knowledge Graph dashboard targeting [candidate-api-v1](docs/integration/candidate-api-v1.md); mock mode with 17 candidates exported from `frontend/mock_data.py`; promote/reject/contradiction resolve + eval metrics embed; `npm run build` verified.
 - **Candidate API CRUD + tenancy** — FastAPI candidate create/read/update/delete paths now support the React review workflow, with JSON-store and Postgres-store implementations, Cognito JWT verification, password-gated orgs, per-request `X-Praxis-Org` tenancy, and `PRAXIS_AUTH_DISABLED=1` for offline development.
 - **Postgres/pgvector knowledge backend** — added `PostgresVectorGraph`, shared write-policy support, database wiring, schema support, and tests for Postgres-backed candidate and graph storage.
