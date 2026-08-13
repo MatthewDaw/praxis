@@ -905,13 +905,40 @@ finding_guard(){  # args: round-no ids... -> regresses any ticket that answered 
   # Deliberately NOT "an open finding blocks completion": verification runs only AFTER a ticket
   # finishes and merges, so blocking the finish would mean it could never reach the verification
   # that clears it. Any genuine attempt satisfies this guard; only doing nothing does not.
-  $PY - "$PROJECT" "$1" "${AF_ROUND_BASE:-HEAD}" "${@:2}" <<'PYEOF' 2>/dev/null
-import subprocess, sys
+  #
+  # BUG E — but "regress on no change" cannot loop unbounded. Live incident: a finding's defect had
+  # already been fixed by an EARLIER round's commit, so the rebuild correctly produced zero commits,
+  # this guard regressed it for exactly that, and the pair ping-ponged every ~9 minutes forever. The
+  # finding carried check_id=None, so the check_id-keyed auto-suspend could never fire and nothing
+  # else could break the loop. So we bound it: a per-(ticket, finding) streak counter, and after
+  # AF_FINDING_REGRESS_MAX zero-commit regressions of the SAME still-open finding we STOP regressing
+  # and write a LOUD escalation line to $FINDING_ESCALATION for the caller to say — a human must look,
+  # because the finding is stale or was already resolved by a prior commit. An answering commit (or the
+  # finding closing) resets the streak, so a ticket that is genuinely churning is unaffected.
+  : > "$FINDING_ESCALATION" 2>/dev/null || true
+  $PY - "$PROJECT" "$1" "${AF_ROUND_BASE:-HEAD}" "$FINDING_STREAK" "$FINDING_ESCALATION" "$AF_FINDING_REGRESS_MAX" "${@:2}" <<'PYEOF' 2>/dev/null
+import hashlib, json, subprocess, sys
 import _praxis, _ticket_state as ts
 proj, rnd, base = sys.argv[1], sys.argv[2], sys.argv[3]
-want = set(sys.argv[4:])
+streak_path, esc_path, kmax = sys.argv[4], sys.argv[5], int(sys.argv[6] or 2)
+want = set(sys.argv[7:])
 kw = dict(space=proj, snapshot=f"prd-{proj}")
-n = 0
+
+# Per-(ticket, finding-reason) count of consecutive zero-commit regressions, persisted across rounds
+# AND across process restarts (the regress loop outlives any one loop process). A malformed/absent
+# file is an empty streak, never a crash — losing the count only costs one extra regress cycle.
+try:
+    streak = json.load(open(streak_path))
+    if not isinstance(streak, dict):
+        streak = {}
+except Exception:
+    streak = {}
+
+def _forget(rid):  # an answered/closed finding resets this ticket's streak(s)
+    for k in [k for k in streak if k.startswith(rid + "\x00")]:
+        streak.pop(k, None)
+
+escalations, n = [], 0
 for f in _praxis.facts_by(category="requirement", **kw) or []:
     m = f.get("meta") or {}
     rid = str(m.get("requirement_id") or f.get("id"))
@@ -923,15 +950,45 @@ for f in _praxis.facts_by(category="requirement", **kw) or []:
     except Exception:
         out = "unknown"          # cannot prove absence -> do not accuse
     if out:
+        _forget(rid)             # answered by a commit -> not a no-change close
         continue
     why = ts.finding_unanswered_without_change(m, 0)
-    if not why:
+    of = ts.open_finding(m)
+    if not why or of is None:
+        _forget(rid)             # no open finding stands -> nothing to regress, clear any stale streak
+        continue
+    # Identity of THIS finding is its recorded symptom text; a new/different finding starts a new
+    # streak. check_id is captured only to name it in the escalation (it is frequently None here, which
+    # is precisely the case the check_id-keyed suspend cannot catch).
+    reason = str(of.get("reason") or "").strip()
+    cid = of.get("check_id")
+    key = rid + "\x00" + hashlib.sha1(reason.encode("utf-8", "replace")).hexdigest()[:16]
+    prior = int(streak.get(key, 0))
+    if prior >= kmax:
+        # Already regressed kmax times for this exact finding with zero answering commits, and it is
+        # STILL open. Regressing again just re-dispatches the same ticket forever. Escalate, do not
+        # regress. Keep climbing the counter so the escalation re-fires each poll rather than going
+        # silent (a stuck finding a human has not yet cleared must stay visible).
+        streak[key] = prior + 1
+        escalations.append((rid, prior, cid, reason))
         continue
     _praxis.regress_requirements(proj, [f["id"]], {f["id"]: {
         "audit_disposition": f"ROUND #{rnd}: {why}",
     }}, **kw)
-    sys.stderr.write(f"finding-guard regressed {rid}\n")
+    streak[key] = prior + 1
+    sys.stderr.write(f"finding-guard regressed {rid} (streak {streak[key]}/{kmax})\n")
     n += 1
+
+try:
+    json.dump(streak, open(streak_path, "w"))
+except Exception as e:
+    sys.stderr.write(f"finding-guard: could not persist streak ({e})\n")
+try:
+    with open(esc_path, "w") as fh:
+        for rid, cnt, cid, reason in escalations:
+            fh.write(f"{rid}\t{cnt}\t{cid or ''}\t{reason[:300]}\n")
+except Exception as e:
+    sys.stderr.write(f"finding-guard: could not write escalations ({e})\n")
 print(n)
 PYEOF
 }
@@ -1114,12 +1171,30 @@ PYEOF
 
 commit_wip(){
   cd "$WT"
+  scrub_test_results
   if [ -n "$(git status --porcelain)" ]; then
     git add -A
     git -c user.name="af-build" -c user.email="af-build@praxis.local" commit -q -m \
       "wip: preserve in-flight output before per-batch session restart (af-ticket-loop)"
     say "committed WIP: $(git log --oneline -1)"
   fi
+}
+
+# BUG B-3 — the loop must NEVER commit Playwright test-results/ artifacts (trace.zip,
+# error-context.md). commit_wip's `git add -A` sweeps EVERYTHING loose in $WT, and a worker that ran
+# Playwright leaves a test-results/ tree behind; those artifacts have been committed into project
+# repos. Belt and braces, run against the current worktree ($PWD, set by commit_wip's `cd "$WT"`):
+# exclude the path LOCALLY so `git add -A` never stages it, and drop any copy an earlier run already
+# tracked. .git/info/exclude, not .gitignore, keeps this out of the project's committed history — it
+# is the loop's own hygiene, not a policy edit the project's tree should carry.
+scrub_test_results(){
+  local xf=".git/info/exclude"
+  if [ -d .git ] && [ -d .git/info ]; then
+    grep -qxF 'test-results/' "$xf" 2>/dev/null || echo 'test-results/' >> "$xf" 2>/dev/null || true
+  fi
+  # Un-track any test-results already committed by an earlier run (leaves the files on disk; the
+  # exclude above then keeps them unstaged). --ignore-unmatch so "none tracked" is not an error.
+  git rm -r --cached --ignore-unmatch --quiet -- 'test-results' >/dev/null 2>&1 || true
 }
 
 # Merge the round's work into the integration branch. THE DRIVER OWNS THIS, not the session.
@@ -1984,6 +2059,13 @@ af_stragglers(){   # prints one line per straggler; EMPTY output means clean
 # into any of them would either make it look like a clean drain (the exact lie being fixed) or
 # misattribute it to a cause that is not what happened. 7 means one thing: THE RUN LEFT WORK BEHIND.
 AF_EXIT_STRAGGLERS=7
+# BUG D — a dependency stall whose ROOT is a `blocked` ticket or one parked on manual sign-off cannot
+# be cleared by any amount of watching: it needs a human. After AF_HUMAN_STALL_MAX_POLLS such polls
+# under AF_WATCH the loop STOPS watching and exits with this distinct code, so an operator (or an
+# outer supervisor) can tell "stuck, needs me" from a clean drain (exit 0). A transient stall — root
+# still in_progress/incomplete, i.e. normal progress — keeps watching quietly as before.
+AF_EXIT_HUMAN_STALL=9
+AF_HUMAN_STALL_MAX_POLLS="${AF_HUMAN_STALL_MAX_POLLS:-3}"
 
 # $1 = where we are, $2 = 1 to make it fatal (terminal paths), 0 to log-and-continue (round tails,
 # where an unmerged branch for a ticket still in flight is legitimate and the next round lands it).
@@ -2041,7 +2123,39 @@ af_cleanup_on_exit(){
     AF_QUERY_BACKOFF_S=0 reap_branches || true
   fi
   af_surface_flags
+  af_end_of_run_summary
   return "$rc"
+}
+
+# BUG B-5 — the loop NEVER pushes, so a clean drain and a halt look identical to an operator unless
+# they are told the run left work unshipped. On EVERY exit (drain, halt, outage, kill) emit one line
+# stating how many commits the integration branch is AHEAD of origin (unpushed) and how many rounds
+# this run went UNVERIFIED, so the operator knows they must verify the merged tree and push. Rides the
+# EXIT trap for the same reason af_surface_flags does: it must fire on the halted and killed exits too,
+# not just the happy path. Once-only (INT/TERM then EXIT both fire the handler).
+AF_ROUNDS_UNVERIFIED=0
+AF_SUMMARY_SAID=0
+af_end_of_run_summary(){
+  [ "$AF_SUMMARY_SAID" = "1" ] && return 0
+  AF_SUMMARY_SAID=1
+  local ahead="?" up=""
+  if [ -n "${WT:-}" ] && [ -e "${WT}/.git" ]; then
+    # Prefer the integration branch's own upstream; fall back to origin/<branch>, then origin/main.
+    up=$(git -C "$WT" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || echo "")
+    if [ -z "$up" ]; then
+      local br; br=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
+      if [ -n "$br" ] && git -C "$WT" rev-parse --verify -q "origin/$br" >/dev/null 2>&1; then up="origin/$br"
+      elif git -C "$WT" rev-parse --verify -q origin/main >/dev/null 2>&1; then up="origin/main"
+      fi
+    fi
+    if [ -n "$up" ]; then
+      ahead=$(git -C "$WT" rev-list --count "$up..HEAD" 2>/dev/null || echo "?")
+    else
+      # No origin/upstream to compare against: report the whole reachable history as unpushed.
+      ahead=$(git -C "$WT" rev-list --count HEAD 2>/dev/null || echo "?")
+    fi
+  fi
+  say "END-OF-RUN — this loop NEVER pushes. $WT is $ahead commit(s) AHEAD of origin (unpushed)${up:+ vs $up}, and ${AF_ROUNDS_UNVERIFIED} round(s) this run went UNVERIFIED. You must verify the merged tree and push before this work is real."
 }
 
 # R24 — flags are PUSH, not pull: a suspension, a parking, an undraftable check, a check-defeat must
@@ -2180,6 +2294,17 @@ RESOLVED="$AF_STATE_DIR/af-round-resolved-$PROJECT.json"
 # shell string, where a stray backtick or $ in that prose would be expanded by bash before tmux ever
 # saw it.
 FINDINGS="$AF_STATE_DIR/af-round-findings-$PROJECT.json"
+# BUG E — bound the zero-commit finding-regress streak. finding_guard persists a per-(ticket,finding)
+# regress count in FINDING_STREAK; once a ticket has been regressed AF_FINDING_REGRESS_MAX times for
+# the SAME still-open finding without a single answering commit, it STOPS regressing and appends a
+# LOUD escalation to FINDING_ESCALATION instead. This breaks the infinite regress observed live: a
+# finding whose defect an earlier round's commit already fixed (so there is no new commit to "answer"
+# it) and whose check_id is None (so the check_id-keyed auto-suspend can never fire) was re-dispatched
+# every ~9 minutes forever. Persistent across process restarts on purpose — the regress loop outlives
+# any single loop process; keys are per (ticket, finding-reason) so a genuinely new finding starts fresh.
+FINDING_STREAK="$AF_STATE_DIR/af-finding-regress-streak-$PROJECT.json"
+FINDING_ESCALATION="$AF_STATE_DIR/af-finding-regress-escalation-$PROJECT.tsv"
+AF_FINDING_REGRESS_MAX="${AF_FINDING_REGRESS_MAX:-2}"
 
 # Told to the workers so they hit the right services. A project with neither -- an iOS app, say --
 # gets no clause at all rather than the literal "Postgres localhost:none", which reads as a real
@@ -2281,6 +2406,7 @@ PYEOF
     # Absence of a verdict is NOT a pass. The round's tickets stay finished — this stage regresses
     # nothing on its own — but say so loudly, because an unverified merge is exactly the state the
     # stage exists to eliminate.
+    AF_ROUNDS_UNVERIFIED=$((AF_ROUNDS_UNVERIFIED + 1))   # BUG B-5 — feeds the end-of-run summary
     say "WARNING: round #$rnd produced NO verification verdict — the merged tree is UNVERIFIED. Treat its green claim as unproven."
     if [ -n "$vlastpane" ]; then
       say "--- last verify pane before it died (why the verdict is missing) ---"
@@ -2358,6 +2484,7 @@ PYEOF
   say "round #$rnd verification: $summary"
   case "$summary" in
     INCOHERENT*|verdict=UNREADABLE*|verdict=UNPARSEABLE*)
+      AF_ROUNDS_UNVERIFIED=$((AF_ROUNDS_UNVERIFIED + 1))   # BUG B-5 — feeds the end-of-run summary
       say "WARNING: round #$rnd's verdict does not hold together, so the merged tree is UNVERIFIED. Its green claim is unproven; any ticket it named is still regressed below, but its silence about the others proves nothing."
       ;;
   esac
@@ -2719,6 +2846,15 @@ PYEOF
   if [ "$fg" -gt 0 ]; then
     say "round #$rnd: $fg ticket(s) closed an OPEN verification finding with ZERO commits — regressed. A finding is not answered by changing nothing."
   fi
+  # BUG E — any ticket that hit the regress cap is NOT re-dispatched; it is escalated ONCE per poll,
+  # loudly, because the loop can no longer make progress on it and a human must intervene.
+  if [ -s "$FINDING_ESCALATION" ]; then
+    say "!! ESCALATION — the loop has STOPPED regressing ticket(s) it has already regressed ${AF_FINDING_REGRESS_MAX}x for the SAME open verification finding with ZERO answering commits, and the finding is STILL open. This is NOT a build failure to retry: the finding is stale, or was already resolved by an earlier commit that named a sibling ticket (its check_id is often None, so nothing else can break the loop). A HUMAN must inspect and dismiss the finding or fix it by hand:"
+    while IFS=$'\t' read -r erid ecnt ecid ereason; do
+      [ -n "$erid" ] || continue
+      say "     $erid regressed ${ecnt}x, check_id=${ecid:-<none>} :: ${ereason}"
+    done < "$FINDING_ESCALATION"
+  fi
 
   rm -f "$VERDICT" "$FINDINGS"
   return 0
@@ -2818,13 +2954,37 @@ while :; do
     # ticket. Restarting sessions cannot fix that, so halt loudly instead of spinning.
     say "DEPENDENCY STALL — $left claimable but nothing ready; every remaining ticket waits on an unfinished or blocked prerequisite."
     # Name the root(s). Best-effort: a failed query must not turn a stall into an outage.
+    roots=""; needs_human=0
     if roots=$(stall_roots 2>/dev/null) && [ -n "$roots" ]; then
       say "STALL ROOT(S) — act on these; everything else is downstream:"
       printf '%s\n' "$roots" | while IFS= read -r line; do [ -n "$line" ] && say "    $line"; done
+      # BUG D — distinguish a TRANSIENT stall (root still in_progress/incomplete → normal progress,
+      # keep watching quietly) from one whose ROOT is `blocked` or parked on manual sign-off, which no
+      # amount of polling can clear: only a human can. stall_roots tags the latter with `[blocked]` or
+      # `PARKED awaiting manual sign-off`. Live incident: a `T23 [blocked] blocks 4` stall re-logged
+      # the identical line every 5 min for ~10 HOURS under AF_WATCH with no escalation.
+      case "$roots" in
+        *"[blocked]"*|*"PARKED awaiting manual sign-off"*) needs_human=1 ;;
+      esac
     else
       say "  (could not resolve the stall root — walk depends_on by hand)"
     fi
+    if [ "$needs_human" = "1" ]; then
+      say "!! ESCALATION — the stall ROOT is a BLOCKED or manual-sign-off ticket; watching cannot clear it, a HUMAN must unblock or sign off the root above. This is NOT waiting on normal progress."
+    fi
     if [ "${AF_WATCH:-0}" = "1" ]; then
+      # BUG D — a human-needed stall is not watched forever. Count consecutive human-needed polls and,
+      # once they reach AF_HUMAN_STALL_MAX_POLLS, exit LOUDLY with a distinct code instead of logging
+      # the same line for hours. A transient root resets the counter — real progress is still coming.
+      if [ "$needs_human" = "1" ]; then
+        human_stall_polls=$((${human_stall_polls:-0} + 1))
+        if [ "$human_stall_polls" -ge "$AF_HUMAN_STALL_MAX_POLLS" ]; then
+          say "HALTING (exit $AF_EXIT_HUMAN_STALL) — the dependency stall has needed a human for $human_stall_polls consecutive poll(s) and nothing here can clear it. Unblock/sign off the root ticket above, then relaunch."
+          exit "$AF_EXIT_HUMAN_STALL"
+        fi
+      else
+        human_stall_polls=0
+      fi
       # Watching a stall is safe HERE and was not safe from outside. An external supervisor could only
       # see exit 0 — identical to a clean drain — so it relaunched the whole loop: fresh session, fresh
       # preflight, fresh model-backend probe, 340 times over 8 hours. In-process the cost is a sleep
@@ -2843,6 +3003,7 @@ while :; do
     break
   fi
   watch_stall_at=""
+  human_stall_polls=0   # BUG D — the stall cleared; a later blocked-root stall starts its count fresh
   outages=0   # a computed frontier proves Praxis is back; the streak only counts CONSECUTIVE failures
   set -- $batch
   size=$#
@@ -3127,6 +3288,7 @@ while :; do
   # on a blip walks a healthy run toward the 3-strike halt, and scoring it productive hides a real
   # failure. Say so instead, and leave the streak exactly where it was.
   if ! after=$(praxis_q finished_count); then
+    AF_ROUNDS_UNVERIFIED=$((AF_ROUNDS_UNVERIFIED + 1))   # BUG B-5 — feeds the end-of-run summary
     say "WARNING: Praxis unreachable after round #$round — cannot tell what landed, so this round counts as neither productive nor fruitless and its merged tree goes UNVERIFIED. Treat any green claim from it as unproven."
     after=""
   fi
