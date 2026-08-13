@@ -106,14 +106,13 @@ def test_the_streak_caps_at_kmax_then_escalates_instead_of_regressing(
     # Round 3: the cap is hit. The ticket is NOT regressed again — it is escalated for a human.
     assert _run(_argv(streak, esc)) == "0", "past the cap the guard must regress nothing"
     assert regressed == [["cid-1"], ["cid-1"]], "no further regress once capped (this is the infinite loop)"
-    lines = [l for l in esc.read_text().splitlines() if l.strip()]
+    lines = [ln for ln in esc.read_text().splitlines() if ln.strip()]
     assert len(lines) == 1 and lines[0].startswith("T1\t"), "the capped ticket must be escalated"
     assert "the tip overlay reads a stale sidecar" in lines[0], "the escalation must name the finding"
 
 
 def test_an_answering_commit_resets_the_streak(
         finished_ticket_with_checkless_finding, monkeypatch, tmp_path):
-    regressed = finished_ticket_with_checkless_finding
     streak, esc = tmp_path / "streak.json", tmp_path / "esc.tsv"
 
     assert _run(_argv(streak, esc)) == "1"  # streak -> 1
