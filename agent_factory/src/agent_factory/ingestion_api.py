@@ -240,6 +240,29 @@ class Unauthenticated(PermissionError):
     """An ingestion-API verb was called with no org-authenticated Praxis identity (R1b)."""
 
 
+class LessonSourceCollision(ValueError):
+    """R43: a lesson's ``source`` exactly matched the ``prd-<project>`` grouping-tag shape
+    ``Fact.source`` carries for requirement facts (``source = f"prd-{project}"`` — see
+    ``hooks._praxis.incomplete_requirements``). See :func:`reject_prd_shaped_lesson_source` for
+    the exact matching rule."""
+
+
+# The WHOLE source string must match, not a substring, so "notes about prd conventions" or "see
+# docs/prd-notes.md" (prd-shaped text embedded in a longer string) is never falsely flagged.
+_PRD_GROUPING_TAG_SOURCE_RE = re.compile(r"^prd-\S+$")
+
+
+def reject_prd_shaped_lesson_source(source: str | None) -> None:
+    """Raise :class:`LessonSourceCollision` when ``source``, taken as a whole, is exactly
+    ``prd-<rest>`` — the ``prd-<project>`` grouping-tag shape (R43)."""
+    if source is not None and _PRD_GROUPING_TAG_SOURCE_RE.match(source):
+        raise LessonSourceCollision(
+            f"lesson source {source!r} is shaped exactly like the prd-<project> grouping-tag "
+            "convention Fact.source carries for requirement facts; rejected so a lesson's "
+            "free-text source can never collide with that convention"
+        )
+
+
 def _write_insight(text: str, category: str, *, source: str | None = None,
                    meta: dict[str, Any] | None = None,
                    snapshot: str | None = None) -> dict[str, Any]:
@@ -271,7 +294,10 @@ def _write_insight(text: str, category: str, *, source: str | None = None,
 
 def write_lesson(text: str, *, source: str | None = None,
                  meta: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Write ``text`` as a lesson into the shared ``factory-learnings`` space (POST /insights)."""
+    """Write ``text`` as a lesson into the shared ``factory-learnings`` space (POST /insights).
+    Refuses (``LessonSourceCollision``) before any write — :func:`reject_prd_shaped_lesson_source`.
+    """
+    reject_prd_shaped_lesson_source(source)
     return _write_insight(text, LESSON_CATEGORY, source=source, meta=meta)
 
 
