@@ -26,17 +26,35 @@ has no production caller, there is no `POST /jobs` route, and nothing calls `lau
 Only the read-side MCP tools (`praxis_list_jobs`, `praxis_get_job`, `praxis_job_activity`) exist.
 So this drives the SSH + tmux path that is how runs actually get started today.
 
-## Box facts (verified 2026-07-29)
+## Box facts (verified 2026-08-13)
 
 | | |
 |---|---|
 | host | `ec2-user@52.22.249.49` |
 | key | `~/.ssh/praxis-devbox.pem` |
 | factory repo | `/workspace/praxis` (the loop script lives here regardless of target project) |
+| **plugin source** | `/workspace/praxis-plugin/agent_factory` — a SEPARATE shallow clone that the marketplace resolves to. **This is where SKILL.md and hooks load from.** |
 | ⚠ second checkout | `/workspace/af-praxis` is a SECOND checkout of the same repo, usually on a different branch. **Patching it does nothing at runtime** — see below. |
 | driver | `/workspace/praxis/agent_factory/scripts/af-ticket-loop.sh <project> <worktree> <pg> <redis|none> [max]` (ships with the plugin; all projects run this one file) |
 | tmux session | derived by the loop as `af-$(basename <worktree>)` |
 | loop log | `/workspace/af-ticket-loop.log` (plus the per-run log this command redirects to) |
+
+**The driver and the plugin now come from DIFFERENT clones, deliberately.** Before 2026-08-13 both
+resolved to `/workspace/praxis`, which meant refreshing the plugin required `git pull` on the very
+checkout whose `af-ticket-loop.sh` a live loop was mid-execution of — bash reads scripts
+incrementally, so that is a real hazard, and it made every plugin update wait for a build to drain.
+Splitting them means:
+
+- **`/workspace/praxis-plugin` is safe to pull at any time.** Nothing executes from it; it only gets
+  read at plugin-install time. This is the checkout to update when skills or hooks change.
+- **`/workspace/praxis` still owns the driver** and should only be pulled when no loop is running.
+- The cost is that they can drift, and refreshing one tells you nothing about the other. Step 5b
+  refreshes the driver; the plugin is refreshed separately (pull `praxis-plugin`, bump
+  `plugin.json`'s version, reinstall). **Check both when a change does not seem to take effect.**
+
+`/workspace/praxis-plugin/agent_factory/.env` holds the Praxis credentials and is gitignored, so a
+fresh clone will NOT have it. Copy it in, or every hook in every worker session loses its backend
+and the gates go inert rather than loud.
 
 Worktrees are per-project and each carries its own `.claude/settings.local.json`. Observed layout —
 resolve it, never assume it:
@@ -250,10 +268,10 @@ A dirty or diverged checkout is a REPORT, not something to force past: another l
 that file right now. If a stray per-project copy or launcher still exists, point it at the canonical
 script with a symlink rather than re-copying it.
 
-**Two checkouts exist, and only one is on the runtime path.** `/workspace/praxis` and
-`/workspace/af-praxis` are separate clones of this repo, typically on different branches. The
-plugin marketplace in `~/.claude/settings.json` resolves `agent-factory-local` to ONE of them —
-check it, never assume:
+**THREE checkouts exist, and the plugin comes from only one of them.** `/workspace/praxis`,
+`/workspace/praxis-plugin` and `/workspace/af-praxis` are separate clones of this repo. Since
+2026-08-13 the marketplace resolves to `praxis-plugin` (see *Box facts*), but that is a setting, not
+a law — check it, never assume:
 
 ```bash
 ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
@@ -266,9 +284,20 @@ nothing about the running system. Observed 2026-08-06: a judge fix was verified 
 while the marketplace pointed at `praxis`, so the very next run reproduced the bug it supposedly
 fixed. Patch the checkout on the marketplace path, or patch both and say so.
 
-Note the loop SCRIPT is resolved separately, from the path you invoke in step 6 — so the driver and
-the plugin can come from different clones at the same time. That is the trap: refreshing one in
-step 5b tells you nothing about the other.
+The loop SCRIPT is resolved separately, from the path you invoke in step 6, so the driver and the
+plugin come from different clones **by design now** — that is what lets the plugin be refreshed
+while a build runs. It is still the thing that bites: refreshing the driver in step 5b tells you
+nothing about the plugin, and vice versa. When a change "did not take effect", check which of the
+two you actually updated.
+
+A plugin refresh is its own sequence, and the version bump is not optional — the install cache is
+keyed by version (`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>`), so same-version
+content changes are simply never picked up:
+
+```bash
+git -C /workspace/praxis-plugin pull --ff-only          # safe any time; nothing executes from here
+# bump agent_factory/.claude-plugin/plugin.json version, then reinstall / reload plugins
+```
 
 **6. Launch detached** so the loop survives the SSH connection closing. Pass `none` for redis when
 the project has none; pass `[max]` only if the user bounded the run. The driver locates its own hooks,
