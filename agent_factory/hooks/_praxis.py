@@ -1105,3 +1105,56 @@ def whoami() -> WhoAmI:
         else:
             detail = str(data.get("detail") or f"{auth_mode} principal not a member of org {org!r}")
     return WhoAmI(backend, org, org_source, principal, auth_mode, key_org, ok, detail)
+
+
+# --------------------------------------------------------------------------- org guard
+
+class OrgMismatch(PraxisUnreachable):
+    """A write was about to target a different org than the caller expects — the B-6 footgun.
+
+    A SUBCLASS of :class:`PraxisUnreachable` so every gate that already fails closed on an
+    unreachable Praxis ALSO fails closed on org drift, rather than proceeding to write into the
+    wrong org. It is not an outage, but the safe response is identical: refuse the write."""
+
+
+def assert_org_matches(expected_org: str, *, who: WhoAmI | None = None) -> WhoAmI:
+    """Fail LOUD before a write when the org we are authenticated against is NOT the org the
+    caller expects its data to live in — naming BOTH orgs so the drift is impossible to miss.
+
+    B-6 (real incident): the Praxis MCP was pinned to an *empty* ``taolu-coach`` org while the
+    project's data lived in ``sports-analysis``, and the factory's default org resolution falls
+    back to ``agent-factory`` (:data:`DEFAULT_ORG`). Nothing errored — a write simply landed in
+    the wrong (or empty) org, and the org that was supposed to receive it silently never did.
+
+    This is the INTENT check that :func:`whoami` cannot do. ``whoami().ok`` only asserts the key's
+    org matches the *resolved* org (auth self-consistency, via the same :func:`_resolve_org`
+    precedence PRAXIS_ORG pin > cache > DEFAULT_ORG); it has no idea which org the *caller* meant,
+    so a self-consistent-but-wrong org (a valid key for ``agent-factory`` when the data lives in
+    ``sports-analysis``) sails through it. A caller that KNOWS where its data must live passes
+    ``expected_org`` here, and we compare it against the org this invocation would actually write
+    to — consistent with the fail-loud ``_resolve_org`` guard the rest of this file relies on.
+
+    ``who`` is injectable for testing (pass a canned :class:`WhoAmI`); by default we ask the
+    server via :func:`whoami`. Returns the resolved :class:`WhoAmI` on success (handy to log the
+    identity a write actually used); raises :class:`OrgMismatch` on drift.
+    """
+    expected = (expected_org or "").strip()
+    if not expected:
+        raise ValueError("assert_org_matches: expected_org is required and must be non-empty")
+
+    who = who or whoami()
+
+    # The org this invocation would ACTUALLY write to. A key only ever works in its own org, so
+    # when one is in play its ``key_org`` is ground truth; absent a key (bearer/dev) the resolved
+    # org is what the request carries in ``x-praxis-org``.
+    authed = (who.key_org or who.org or "").strip()
+    if authed != expected:
+        raise OrgMismatch(
+            f"org drift: caller expects data in org {expected!r} but this invocation is "
+            f"authenticated against org {authed!r} "
+            f"(resolved_org={who.org!r} via {who.org_source}, key_org={who.key_org!r}, "
+            f"auth_mode={who.auth_mode}). Refusing to write into the wrong org. Pin "
+            f"PRAXIS_ORG={expected!r} (or re-run praxis_select_org) so the write targets the org "
+            f"whose data you mean."
+        )
+    return who
