@@ -93,7 +93,7 @@ import re
 import subprocess
 import sys
 import time
-from typing import Any, NamedTuple, Optional
+from typing import Any, Iterable, NamedTuple, Optional
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -1394,7 +1394,8 @@ def _verify_run_pin(check: dict) -> None:
     verify_pin(check)
 
 
-def _declared_runs(ref: Optional[tuple[str, str]] = None) -> dict[str, str]:
+def _declared_runs(ref: Optional[tuple[str, str]] = None,
+                    only_ids: Optional[Iterable[str]] = None) -> dict[str, str]:
     """``{check fact id: authored run}`` for every check declaring a concrete command in this
     project's ``building-validation`` snapshot, each VERIFIED against its insertion-time hash pin
     (:func:`_verify_run_pin`) before it is offered for execution.
@@ -1407,6 +1408,17 @@ def _declared_runs(ref: Optional[tuple[str, str]] = None) -> dict[str, str]:
 
     Reading live is exactly why the pin has to be verified here: "as authored right now" is the
     tampered value in the attack this closes.
+
+    ``only_ids``, when given, SCOPES both the read and the pin verification to just those check ids
+    (the current ticket's ``covers``/``required_validations``). A prior version verified every check
+    in the project on every call: one legacy check missing its insertion-time pin then raised for
+    every OTHER ticket too, not just the one that owned it. Self-healing that raise by silently
+    recomputing the pin from the check's own current ``meta.run`` was worse — it made "delete the
+    pin" a strictly easier bypass than "forge the pin" (:func:`verify_pin` would then always agree
+    with whatever ``meta.run`` says right now), defeating the exact guard this closes. Scoping to only
+    the checks THIS call actually needs restores that guard — a check this ticket does not reference
+    is skipped entirely rather than healed — while still keeping an unrelated legacy check's missing
+    pin from blocking every other ticket in the project.
     """
     space = ""
     if ref and ref[0]:
@@ -1421,6 +1433,7 @@ def _declared_runs(ref: Optional[tuple[str, str]] = None) -> dict[str, str]:
     reader = getattr(_praxis, "facts_by", None)
     if reader is None:
         return {}
+    scope = {str(x) for x in only_ids} if only_ids is not None else None
     out: dict[str, str] = {}
     for c in (reader(category="check", space=space,
                      snapshot="building-validation") or []):
@@ -1428,24 +1441,13 @@ def _declared_runs(ref: Optional[tuple[str, str]] = None) -> dict[str, str]:
         meta = c.get("meta") or {}
         run = str((meta.get("run")) or "").strip()
         if cid and run:
+            if scope is not None and str(cid) not in scope:
+                # Not referenced by this call — leave it unverified rather than heal or raise, so
+                # its pin state (present, missing, or drifted) can never affect an unrelated ticket.
+                continue
             # Only checks that declare a run body reach here, so this is always the binary/run-hash
             # branch of verify_pin; a graded check carries a rubric and no run and is never executed
             # by this path (its rubric pin is the graded lane's own anchor).
-            #
-            # SELF-HEAL a check authored WITHOUT its insertion-time run_hash pin. A missing pin is
-            # not drift (no prior pin to have drifted from), yet verify_pin() raises on it -- and
-            # because this sweep covers EVERY project check, one unpinned check crashed
-            # all_validations_passed() for EVERY ticket, not just the one that owns it. Backfill the
-            # pin from the current authored run and persist it; a PRESENT-but-mismatched pin (real
-            # drift) still raises in _verify_run_pin below, unchanged.
-            if not meta.get("run_hash"):
-                from agent_factory.ingestion_api import _hash_text
-                meta["run_hash"] = _hash_text(run)
-                try:
-                    _praxis.patch_meta(str(cid), {"run_hash": meta["run_hash"]},
-                                       space=space, snapshot="building-validation")
-                except Exception:  # noqa: BLE001 -- best-effort persist; local backfill still gates
-                    pass
             _verify_run_pin(c)
             out[str(cid)] = run
     return out
@@ -1516,8 +1518,8 @@ def pin_validations(cid: str, validations: list,
         meta = _meta(cid, ref)
     except Exception:  # noqa: BLE001 - best-effort; see docstring
         meta = {}
-    _apply_authored_runs(pinned, _declared_runs(ref))
-    covered = {c for p in pinned for c in (p.get("covers") or [])}
+    covered = {str(c) for p in pinned for c in (p.get("covers") or [])}
+    _apply_authored_runs(pinned, _declared_runs(ref, only_ids=covered))
     pinned.extend(_universal_covering_entries(meta, covered))
     return _praxis.write_build_state(cid, {M_PINNED_CHECKS: pinned}, **_ref_kw(ref))
 
@@ -1701,7 +1703,7 @@ def _validations_gate(ticket: Any, ref: Optional[tuple[str, str]] = None, *,
     # actually ran, so a worker could cover a 3800-char check with `curl /runs`, or with the EMPTY
     # command `record_validation_pass` appends for an unpinned id, and finish green. Observed live:
     # a bucket-creation ticket finished having created no bucket, with six entries carrying run="".
-    declared = _declared_runs(ref)
+    declared = _declared_runs(ref, only_ids=required)
     for rid in required:
         want = str(declared.get(rid) or "").strip()
         if not want:
