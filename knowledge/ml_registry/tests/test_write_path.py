@@ -132,12 +132,12 @@ def test_registry_space_round_trips_through_json():
     assert facts[trial_id].derived_from == (idea_id,)
 
 
-def test_resolve_idea_citation_records_a_resolved_reference_on_the_idea():
+def test_resolve_idea_citation_records_a_resolved_reference_on_the_idea() -> None:
     space = RegistrySpace()
     model_id = register_model(space, dict(MODEL_META))
     idea_id = register_idea(space, _idea_meta(model_id))
 
-    def resolver(reference):
+    def resolver(reference: str) -> ResolvedCitation | None:
         return ResolvedCitation(title="Attention Is All You Need", authors=("Vaswani",))
 
     meta = resolve_idea_citation(space, idea_id, "2301.12345", resolver)
@@ -146,19 +146,23 @@ def test_resolve_idea_citation_records_a_resolved_reference_on_the_idea():
     assert space.get(idea_id).meta["basis"] == "external"
 
 
-def test_resolve_idea_citation_refuses_an_unregistered_idea_naming_it():
+def _no_such_reference(reference: str) -> ResolvedCitation | None:
+    return None
+
+
+def test_resolve_idea_citation_refuses_an_unregistered_idea_naming_it() -> None:
     space = RegistrySpace()
     with pytest.raises(RegistryValidationError) as excinfo:
-        resolve_idea_citation(space, "idea-nope", "2301.12345", lambda ref: None)
+        resolve_idea_citation(space, "idea-nope", "2301.12345", _no_such_reference)
     assert excinfo.value.field == "idea_id"
 
 
-def test_resolve_idea_citation_carries_the_unreachable_streak_across_calls():
+def test_resolve_idea_citation_carries_the_unreachable_streak_across_calls() -> None:
     space = RegistrySpace()
     model_id = register_model(space, dict(MODEL_META))
     idea_id = register_idea(space, _idea_meta(model_id))
 
-    def unreachable(reference):
+    def unreachable(reference: str) -> ResolvedCitation | None:
         raise ResolverUnreachable(reference)
 
     for _ in range(2):

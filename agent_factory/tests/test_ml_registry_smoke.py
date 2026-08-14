@@ -190,7 +190,7 @@ def test_cli_refuses_a_trial_whose_commit_is_missing_from_the_ledger(tmp_path):
     assert "commit" in result.stdout + result.stderr
 
 
-def test_cli_resolve_citation_records_basis_and_title_on_the_idea(tmp_path):
+def test_cli_resolve_citation_records_basis_and_title_on_the_idea(tmp_path: Path) -> None:
     """R7 acceptance, CLI-driven: a resolving arXiv reference lands basis=external with
     the resolved title recorded on the idea, read back through a separate subprocess."""
     space_file = tmp_path / "space.json"
@@ -222,7 +222,7 @@ def test_cli_resolve_citation_records_basis_and_title_on_the_idea(tmp_path):
     assert idea["meta"]["title"] == "Attention Is All You Need"
 
 
-def test_cli_resolve_citation_downgrades_to_reasoned_on_the_3rd_consecutive_unreachable_attempt(tmp_path):
+def test_cli_resolve_citation_downgrades_to_reasoned_on_the_3rd_consecutive_unreachable_attempt(tmp_path: Path) -> None:
     space_file = tmp_path / "space.json"
     model_id = _register("register-model", space_file, MODEL_META)
     idea_id = _register(
@@ -250,7 +250,7 @@ def test_cli_resolve_citation_downgrades_to_reasoned_on_the_3rd_consecutive_unre
     assert idea["meta"]["unreachable_streak"] == 0
 
 
-def test_cli_resolve_citation_refuses_an_unregistered_idea_naming_it(tmp_path):
+def test_cli_resolve_citation_refuses_an_unregistered_idea_naming_it(tmp_path: Path) -> None:
     space_file = tmp_path / "space.json"
     result = _run_cli(
         "resolve-citation",

@@ -35,21 +35,21 @@ def _never_list_lines(text: str) -> list[str]:
     return [line for line in body.splitlines() if line.strip().startswith("-")]
 
 
-def test_skill_names_a_harness_instance_section():
+def test_skill_names_a_harness_instance_section() -> None:
     text = SKILL_PATH.read_text()
     assert any("harness instance" in h.casefold() for h in _headings(text)), (
         "af-ml-model/SKILL.md must name a 'harness instance' section"
     )
 
 
-def test_skill_states_its_stop_conditions():
+def test_skill_states_its_stop_conditions() -> None:
     text = SKILL_PATH.read_text()
     assert any("stop condition" in h.casefold() for h in _headings(text)), (
         "af-ml-model/SKILL.md must name a 'stop conditions' section"
     )
 
 
-def test_never_list_has_no_line_forbidding_a_supervisor_driver():
+def test_never_list_has_no_line_forbidding_a_supervisor_driver() -> None:
     text = SKILL_PATH.read_text()
     for line in _never_list_lines(text):
         assert not _SUPERVISOR_FORBID_RE.search(line), (
@@ -57,7 +57,7 @@ def test_never_list_has_no_line_forbidding_a_supervisor_driver():
         )
 
 
-def test_skill_has_a_named_entry_quoting_the_never_stop_rule():
+def test_skill_has_a_named_entry_quoting_the_never_stop_rule() -> None:
     text = SKILL_PATH.read_text()
     assert re.search(r"\*\*NEVER STOP\*\*.*program\.md|program\.md.*\*\*NEVER STOP\*\*", text), (
         "af-ml-model/SKILL.md must carry a named entry quoting program.md's NEVER STOP rule"

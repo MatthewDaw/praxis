@@ -20,6 +20,7 @@ from __future__ import annotations
 import pytest
 
 from knowledge.ml_registry.citation import (
+    BASIS_DIRECT,
     BASIS_EXTERNAL,
     BASIS_REASONED,
     RESOLUTION_NON_EXISTENT,
@@ -35,11 +36,11 @@ from knowledge.ml_registry.citation import (
 class _CountingResolver:
     """A fake resolver that records every reference it was actually called with."""
 
-    def __init__(self, outcome):
+    def __init__(self, outcome: str) -> None:
         self.outcome = outcome
         self.calls: list[str] = []
 
-    def __call__(self, reference: str):
+    def __call__(self, reference: str) -> ResolvedCitation | None:
         self.calls.append(reference)
         if self.outcome == "unreachable":
             raise ResolverUnreachable(reference)
@@ -62,11 +63,11 @@ class _CountingResolver:
         ("a hunch, no citation", "other"),
     ],
 )
-def test_reference_kind_classifies_the_closed_allowlist(reference, expected):
+def test_reference_kind_classifies_the_closed_allowlist(reference: str, expected: str) -> None:
     assert reference_kind(reference) == expected
 
 
-def test_a_resolving_reference_lands_external_with_title_and_authors_recorded():
+def test_a_resolving_reference_lands_external_with_title_and_authors_recorded() -> None:
     resolver = _CountingResolver("resolved")
     patch = resolve_citation("2301.12345", {}, resolver)
     assert patch["basis"] == BASIS_EXTERNAL
@@ -76,7 +77,7 @@ def test_a_resolving_reference_lands_external_with_title_and_authors_recorded():
     assert resolver.calls == ["2301.12345"]
 
 
-def test_a_non_existent_reference_downgrades_to_reasoned_with_a_downgrade_note():
+def test_a_non_existent_reference_downgrades_to_reasoned_with_a_downgrade_note() -> None:
     resolver = _CountingResolver("non-existent")
     patch = resolve_citation("10.1000/xyz123", {}, resolver)
     assert patch["basis"] == BASIS_REASONED
@@ -84,7 +85,7 @@ def test_a_non_existent_reference_downgrades_to_reasoned_with_a_downgrade_note()
     assert "downgrade_note" in patch and patch["downgrade_note"]
 
 
-def test_an_unreachable_reference_is_neither_downgraded_nor_treated_as_verified():
+def test_an_unreachable_reference_is_neither_downgraded_nor_treated_as_verified() -> None:
     resolver = _CountingResolver("unreachable")
     patch = resolve_citation("2301.12345", {}, resolver)
     assert patch["resolution"] == RESOLUTION_UNREACHABLE
@@ -92,7 +93,7 @@ def test_an_unreachable_reference_is_neither_downgraded_nor_treated_as_verified(
     assert patch["unreachable_streak"] == 1
 
 
-def test_unreachable_is_retried_and_downgrades_only_on_the_3rd_consecutive_failure():
+def test_unreachable_is_retried_and_downgrades_only_on_the_3rd_consecutive_failure() -> None:
     resolver = _CountingResolver("unreachable")
     meta: dict[str, object] = {}
 
@@ -114,7 +115,7 @@ def test_unreachable_is_retried_and_downgrades_only_on_the_3rd_consecutive_failu
     assert resolver.calls == ["2301.12345"] * 3
 
 
-def test_reaching_the_reference_after_prior_unreachable_attempts_resets_the_streak():
+def test_reaching_the_reference_after_prior_unreachable_attempts_resets_the_streak() -> None:
     unreachable_resolver = _CountingResolver("unreachable")
     meta: dict[str, object] = {}
     meta.update(resolve_citation("2301.12345", meta, unreachable_resolver))
@@ -126,9 +127,17 @@ def test_reaching_the_reference_after_prior_unreachable_attempts_resets_the_stre
     assert meta["unreachable_streak"] == 0
 
 
-def test_a_reference_in_any_other_url_form_lands_reasoned_and_never_calls_the_resolver():
+def test_a_reference_in_any_other_url_form_lands_reasoned_and_never_calls_the_resolver() -> None:
     resolver = _CountingResolver("resolved")
     patch = resolve_citation("https://blog.example.com/post", {}, resolver)
     assert patch["basis"] == BASIS_REASONED
     assert patch["resolution"] is None
     assert resolver.calls == []  # no outbound fetch attempted
+
+
+def test_a_blank_reference_lands_direct_and_never_calls_the_resolver() -> None:
+    resolver = _CountingResolver("resolved")
+    patch = resolve_citation("", {}, resolver)
+    assert patch["basis"] == BASIS_DIRECT
+    assert patch["resolution"] is None
+    assert resolver.calls == []

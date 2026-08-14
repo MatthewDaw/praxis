@@ -18,7 +18,7 @@ import json
 import sys
 from pathlib import Path
 
-from knowledge.ml_registry.citation import ResolvedCitation, ResolverUnreachable
+from knowledge.ml_registry.citation import Resolver, ResolvedCitation, ResolverUnreachable
 from knowledge.ml_registry.guards import guard_baseline_move, guard_model_mutation
 from knowledge.ml_registry.schema import RegistryValidationError, validate_fact
 from knowledge.ml_registry.write_path import (
@@ -38,7 +38,7 @@ def _json_arg(raw: str) -> dict[str, object]:
     return parsed
 
 
-def _fixed_outcome_resolver(outcome: str, title: str, authors: tuple[str, ...]):
+def _fixed_outcome_resolver(outcome: str, title: str, authors: tuple[str, ...]) -> Resolver:
     """A resolver that always reports the CLI-supplied outcome for this one attempt.
 
     The CLI has no live network access; a real arXiv/DOI lookup belongs to whatever

@@ -31,7 +31,6 @@ from typing import Callable, Optional
 BASIS_EXTERNAL = "external"
 BASIS_DIRECT = "direct"
 BASIS_REASONED = "reasoned"
-IDEA_BASES: tuple[str, ...] = (BASIS_EXTERNAL, BASIS_DIRECT, BASIS_REASONED)
 
 RESOLUTION_RESOLVED = "resolved"
 RESOLUTION_NON_EXISTENT = "non-existent"
@@ -80,7 +79,19 @@ def resolve_citation(reference: str, meta: dict[str, object], resolver: Resolver
     ``meta`` supplies this reference's prior ``unreachable_streak`` (0 if absent, e.g. on
     the reference's first ideation pass). See the module docstring for the three-valued
     resolution contract.
+
+    A blank ``reference`` (the idea author made a direct claim, citing nothing) lands
+    ``basis=direct`` -- distinct from ``reasoned`` (a reference was given but could not be
+    used) and never calls ``resolver``.
     """
+    if not reference.strip():
+        return {
+            "basis": BASIS_DIRECT,
+            "resolution": None,
+            "reference_kind": None,
+            "unreachable_streak": 0,
+        }
+
     kind = reference_kind(reference)
     if kind == OTHER:
         return {
@@ -90,7 +101,8 @@ def resolve_citation(reference: str, meta: dict[str, object], resolver: Resolver
             "unreachable_streak": 0,
         }
 
-    streak = int(meta.get("unreachable_streak", 0) or 0)
+    raw_streak = meta.get("unreachable_streak", 0)
+    streak = raw_streak if isinstance(raw_streak, int) else 0
     try:
         resolved = resolver(reference)
     except ResolverUnreachable:
