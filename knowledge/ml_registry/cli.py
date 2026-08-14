@@ -549,15 +549,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             confirm_iter = iter(confirm_script)
 
-            def generator(axis, model_meta):  # noqa: ANN001 -- matches ideate.GeneratorFn
+            def generator(axis: str, model_meta: dict[str, object]) -> list[dict[str, object]]:
                 return [dict(c) for c in generator_script.get(axis, [])]
 
-            def retriever(axis, model_meta):  # noqa: ANN001 -- matches ideate.RetrieverFn
+            def retriever(axis: str, model_meta: dict[str, object]) -> RetrievalResult:
                 entry = retriever_script.get(axis, {})
                 rows = tuple(dict(r) for r in entry.get("rows", []))
                 return RetrievalResult(query=str(entry.get("query", "")), rows=rows)
 
-            def interactive_confirm(axis, candidate):  # noqa: ANN001 -- matches ideate.ConfirmFn
+            def interactive_confirm(axis: str, candidate: dict[str, object]) -> bool:
                 try:
                     return bool(next(confirm_iter))
                 except StopIteration as exc:
