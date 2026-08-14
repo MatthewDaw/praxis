@@ -1,4 +1,4 @@
-"""Smoke test for the af-ml-research registry entrypoint (R1/R2, check plan-2f4be5275cf7).
+"""Smoke test for the af-ml-research registry entrypoint (R1/R2/R5, check plan-2f4be5275cf7).
 
 Runs ``python -m knowledge.ml_registry.cli`` as a real subprocess -- not an import -- so a
 registry ticket cannot go green on code that has no runnable entrypoint. Exercises the R1
@@ -9,7 +9,10 @@ than adjudication is refused. Also exercises R2's write API: registering a model
 and a trial through the CLI (each call a separate subprocess, persisted via
 ``--space-file``), a readback returning all three, the trial's ``derived_from`` edge, the
 idea origin enum, the per-model discovered-idea budget, and the two trial refusals
-(unregistered idea, commit missing from the external ledger).
+(unregistered idea, commit missing from the external ledger). Also exercises R5's
+cross-project model linkage: two tickets in different project spaces carrying the
+same ``meta.experiment_id`` resolve to each other's project/model through the
+``register-ticket``/``model-to-projects``/``project-to-models`` subcommands.
 """
 
 from __future__ import annotations
@@ -165,6 +168,44 @@ def test_cli_refuses_a_trial_for_an_unregistered_idea(tmp_path):
     )
     assert result.returncode == 1
     assert "idea_id" in result.stdout + result.stderr
+
+
+def test_cli_resolves_cross_project_model_linkage_from_either_side(tmp_path):
+    """R5 acceptance: two tickets in different project spaces carrying the same
+    meta.experiment_id -- model-to-projects returns both project names, and
+    project-to-models returns that model from either side."""
+    space_file = tmp_path / "space.json"
+    index_file = tmp_path / "tickets.json"
+    _register("register-model", space_file, {**MODEL_META, "experiment_id": "exp-42"})
+
+    for project, ticket_id in (("project-alpha", "ticket-1"), ("project-beta", "ticket-7")):
+        result = _run_cli(
+            "register-ticket",
+            "--index-file",
+            str(index_file),
+            "--project",
+            project,
+            "--ticket-id",
+            ticket_id,
+            "--meta-json",
+            json.dumps({"experiment_id": "exp-42"}),
+        )
+        assert result.returncode == 0, result.stderr
+
+    m2p = _run_cli(
+        "model-to-projects", "--index-file", str(index_file), "--space-file", str(space_file),
+        "--experiment-id", "exp-42",
+    )
+    assert m2p.returncode == 0, m2p.stderr
+    assert json.loads(m2p.stdout) == ["project-alpha", "project-beta"]
+
+    for project in ("project-alpha", "project-beta"):
+        p2m = _run_cli(
+            "project-to-models", "--index-file", str(index_file), "--space-file", str(space_file),
+            "--project", project,
+        )
+        assert p2m.returncode == 0, p2m.stderr
+        assert json.loads(p2m.stdout) == ["exp-42"]
 
 
 def test_cli_refuses_a_trial_whose_commit_is_missing_from_the_ledger(tmp_path):
