@@ -19,12 +19,10 @@ import json
 import sys
 from pathlib import Path
 
-<<<<<<< HEAD
-from knowledge.ml_registry.cross_project import TicketIndex, model_to_projects, project_to_models
-=======
 from typing import Callable, TypeVar
 
->>>>>>> worktree-agent-a9691a43a00eb4396
+from knowledge.ml_registry.citation import Resolver, ResolvedCitation, ResolverUnreachable
+from knowledge.ml_registry.cross_project import TicketIndex, model_to_projects, project_to_models
 from knowledge.ml_registry.guards import guard_baseline_move, guard_model_mutation
 from knowledge.ml_registry.lifecycle import (
     adopt_idea,
@@ -45,6 +43,7 @@ from knowledge.ml_registry.write_path import (
     register_idea,
     register_model,
     register_trial,
+    resolve_idea_citation,
 )
 
 _T = TypeVar("_T")
@@ -65,6 +64,25 @@ def _load_mutate_save(space_file: str, fn: Callable[[RegistrySpace], _T]) -> _T:
     result = fn(space)
     space.save(space_path)
     return result
+
+
+def _fixed_outcome_resolver(outcome: str, title: str, authors: tuple[str, ...]) -> Resolver:
+    """A resolver that always reports the CLI-supplied outcome for this one attempt.
+
+    The CLI has no live network access; a real arXiv/DOI lookup belongs to whatever
+    service calls this entrypoint during an ideation pass and can supply its own
+    resolver in-process. This keeps the CLI itself deterministic and offline-testable
+    while still exercising the real :func:`resolve_idea_citation` write path.
+    """
+
+    def resolver(reference: str) -> ResolvedCitation | None:
+        if outcome == "unreachable":
+            raise ResolverUnreachable(reference)
+        if outcome == "non-existent":
+            return None
+        return ResolvedCitation(title=title, authors=authors)
+
+    return resolver
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -102,11 +120,27 @@ def main(argv: list[str] | None = None) -> int:
         "--ledger", required=True, help="path to the autoresearch loop's results.tsv"
     )
 
+    resolve_p = sub.add_parser(
+        "resolve-citation", help="resolve a registered idea's reference (R7)"
+    )
+    resolve_p.add_argument("--space-file", required=True)
+    resolve_p.add_argument("--idea-id", required=True)
+    resolve_p.add_argument("--reference", required=True)
+    resolve_p.add_argument(
+        "--outcome",
+        required=True,
+        choices=["resolved", "non-existent", "unreachable"],
+        help="what the (test-controlled) resolver reports for this attempt",
+    )
+    resolve_p.add_argument("--title", default="", help="resolved title, required when --outcome=resolved")
+    resolve_p.add_argument(
+        "--author", action="append", default=[], help="resolved author, repeatable, used when --outcome=resolved"
+    )
+
     readback_p = sub.add_parser("readback", help="read back every fact in the space")
     readback_p.add_argument("--space-file", required=True)
     readback_p.add_argument("--category", choices=["model", "idea", "trial"], default=None)
 
-<<<<<<< HEAD
     register_ticket_p = sub.add_parser(
         "register-ticket", help="index a project ticket by its meta (R5 cross-project linkage)"
     )
@@ -128,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
     p2m_p.add_argument("--index-file", required=True)
     p2m_p.add_argument("--space-file", required=True)
     p2m_p.add_argument("--project", required=True)
-=======
+
     claim_p = sub.add_parser("claim-idea", help="claim (or reclaim, if stale) an idea's lease")
     claim_p.add_argument("--space-file", required=True)
     claim_p.add_argument("--idea-id", required=True)
@@ -179,7 +213,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     retriable_p.add_argument("--space-file", required=True)
     retriable_p.add_argument("--fired-trigger", action="append", default=[])
->>>>>>> worktree-agent-a9691a43a00eb4396
 
     args = parser.parse_args(argv)
 
@@ -219,12 +252,19 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"OK: registered trial {fact_id}")
             return 0
+        if args.command == "resolve-citation":
+            space_path = Path(args.space_file)
+            space = RegistrySpace.load(space_path)
+            resolver = _fixed_outcome_resolver(args.outcome, args.title, tuple(args.author))
+            meta = resolve_idea_citation(space, args.idea_id, args.reference, resolver)
+            space.save(space_path)
+            print(json.dumps(meta))
+            return 0
         if args.command == "readback":
             space = RegistrySpace.load(Path(args.space_file))
             facts = space.list_facts(args.category)
             print(json.dumps([f.to_json() for f in facts]))
             return 0
-<<<<<<< HEAD
         if args.command == "register-ticket":
             index_path = Path(args.index_file)
             index = TicketIndex.load(index_path)
@@ -243,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
             index = TicketIndex.load(Path(args.index_file))
             models = project_to_models(space, index, args.project)
             print(json.dumps(models))
-=======
+            return 0
         if args.command == "claim-idea":
             kwargs = {k: v for k, v in (("ttl", args.ttl), ("now", args.now)) if v is not None}
             claimed = _load_mutate_save(
@@ -299,7 +339,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "flagged-trials":
             space = RegistrySpace.load(Path(args.space_file))
             print(json.dumps([f.to_json() for f in flagged_trials(space)]))
->>>>>>> worktree-agent-a9691a43a00eb4396
             return 0
     except RegistryValidationError as exc:
         print(f"REFUSED [{exc.field}]: {exc}", file=sys.stderr)

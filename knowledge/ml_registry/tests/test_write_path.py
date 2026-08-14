@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import pytest
 
+from knowledge.ml_registry.citation import ResolvedCitation, ResolverUnreachable
 from knowledge.ml_registry.schema import IDEA, MODEL, TRIAL, RegistryValidationError
 from knowledge.ml_registry.write_path import (
     RegistrySpace,
     register_idea,
     register_model,
     register_trial,
+    resolve_idea_citation,
 )
 
 MODEL_META = {
@@ -128,3 +130,46 @@ def test_registry_space_round_trips_through_json():
     facts = {f.id: f for f in reloaded.list_facts()}
     assert set(facts) == {model_id, idea_id, trial_id}
     assert facts[trial_id].derived_from == (idea_id,)
+
+
+def test_resolve_idea_citation_records_a_resolved_reference_on_the_idea() -> None:
+    space = RegistrySpace()
+    model_id = register_model(space, dict(MODEL_META))
+    idea_id = register_idea(space, _idea_meta(model_id))
+
+    def resolver(reference: str) -> ResolvedCitation | None:
+        return ResolvedCitation(title="Attention Is All You Need", authors=("Vaswani",))
+
+    meta = resolve_idea_citation(space, idea_id, "2301.12345", resolver)
+    assert meta["basis"] == "external"
+    assert meta["title"] == "Attention Is All You Need"
+    assert space.get(idea_id).meta["basis"] == "external"
+
+
+def _no_such_reference(reference: str) -> ResolvedCitation | None:
+    return None
+
+
+def test_resolve_idea_citation_refuses_an_unregistered_idea_naming_it() -> None:
+    space = RegistrySpace()
+    with pytest.raises(RegistryValidationError) as excinfo:
+        resolve_idea_citation(space, "idea-nope", "2301.12345", _no_such_reference)
+    assert excinfo.value.field == "idea_id"
+
+
+def test_resolve_idea_citation_carries_the_unreachable_streak_across_calls() -> None:
+    space = RegistrySpace()
+    model_id = register_model(space, dict(MODEL_META))
+    idea_id = register_idea(space, _idea_meta(model_id))
+
+    def unreachable(reference: str) -> ResolvedCitation | None:
+        raise ResolverUnreachable(reference)
+
+    for _ in range(2):
+        meta = resolve_idea_citation(space, idea_id, "2301.12345", unreachable)
+        assert "basis" not in meta
+    assert space.get(idea_id).meta["unreachable_streak"] == 2
+
+    meta = resolve_idea_citation(space, idea_id, "2301.12345", unreachable)
+    assert meta["basis"] == "reasoned"
+    assert meta["unreachable_streak"] == 0
