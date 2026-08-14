@@ -593,3 +593,124 @@ def test_cli_resolve_citation_refuses_an_unregistered_idea_naming_it(tmp_path: P
     )
     assert result.returncode == 1
     assert "idea_id" in result.stdout + result.stderr
+
+
+def test_cli_supervise_campaign_drives_a_seeded_backlog_to_a_win(tmp_path: Path) -> None:
+    """R8 acceptance, CLI-driven: supervise-campaign dispatches trials one worker session
+    at a time (each a separate --dispatch-script entry), draws seed-first, and closes on
+    the win condition -- recording the campaign as 'won' and the ratchet_count as 1."""
+    space_file = tmp_path / "space.json"
+    ledger = tmp_path / "results.tsv"
+    ledger.write_text(
+        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
+        "lose1\t5000.0\t2.0\tok\tfirst attempt, fails\n"
+        "win1\t100.0\t2.0\tok\tsecond attempt, wins\n"
+    )
+    model_id = _register("register-model", space_file, {**MODEL_META, "max_trials": 5})
+    idea1 = _register(
+        "register-idea", space_file,
+        {"model_id": model_id, "origin": "seeded", "axis": "architecture", "description": "seed-1"},
+    )
+    idea2 = _register(
+        "register-idea", space_file,
+        {"model_id": model_id, "origin": "seeded", "axis": "architecture", "description": "seed-2"},
+    )
+    dispatch_script = tmp_path / "dispatch.json"
+    dispatch_script.write_text(json.dumps([{"commit": "lose1"}, {"commit": "win1"}]))
+
+    result = _run_cli(
+        "supervise-campaign",
+        "--space-file", str(space_file),
+        "--model-id", model_id,
+        "--ledger", str(ledger),
+        "--dispatch-script", str(dispatch_script),
+    )
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads(result.stdout)
+    assert outcome["close"] == "won"
+    assert len(outcome["history"]) == 2
+    assert {h["candidate"] for h in outcome["history"]} == {idea1, idea2}  # two DISTINCT worker sessions
+
+    readback = json.loads(_run_cli("readback", "--space-file", str(space_file), "--category", "model").stdout)
+    model = next(f for f in readback if f["id"] == model_id)
+    assert model["meta"]["campaign_status"] == "won"
+    assert model["meta"]["ratchet_count"] == 1
+
+
+def test_cli_supervise_campaign_closes_on_backlog_exhausted_after_registering_a_discovered_idea(
+    tmp_path: Path,
+) -> None:
+    """R8 acceptance, CLI-driven: with no seeded backlog, an --idea-script proposal is
+    registered origin=discovered before its trial, then a second dispatch with nothing
+    left to draw and no further idea-script entry closes the campaign backlog_exhausted,
+    recorded as a completed outcome."""
+    space_file = tmp_path / "space.json"
+    ledger = tmp_path / "results.tsv"
+    ledger.write_text(
+        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
+        "lose1\t5000.0\t2.0\tok\tonly attempt, fails\n"
+    )
+    model_id = _register("register-model", space_file, {**MODEL_META, "max_discovered_ideas": 1})
+    dispatch_script = tmp_path / "dispatch.json"
+    dispatch_script.write_text(json.dumps([{"commit": "lose1"}]))
+    idea_script = tmp_path / "ideas.json"
+    idea_script.write_text(json.dumps([{"axis": "optimizer", "description": "discovered mid-run", "basis": "reasoned"}]))
+
+    result = _run_cli(
+        "supervise-campaign",
+        "--space-file", str(space_file),
+        "--model-id", model_id,
+        "--ledger", str(ledger),
+        "--dispatch-script", str(dispatch_script),
+        "--idea-script", str(idea_script),
+    )
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads(result.stdout)
+    assert outcome["close"] == "backlog_exhausted"
+    assert outcome["history"][0]["origin"] == "discovered"
+
+    readback = json.loads(_run_cli("readback", "--space-file", str(space_file), "--category", "idea").stdout)
+    discovered = next(f for f in readback if f["meta"].get("basis") == "reasoned")
+    assert discovered["meta"]["origin"] == "discovered"
+    assert discovered["meta"]["axis"] == "optimizer"
+
+    model_readback = json.loads(_run_cli("readback", "--space-file", str(space_file), "--category", "model").stdout)
+    model = next(f for f in model_readback if f["id"] == model_id)
+    assert model["meta"]["campaign_status"] == "completed"
+
+
+def test_cli_supervise_campaign_forced_axis_intervention_and_unsatisfiable_exclusion(tmp_path: Path) -> None:
+    """R8 acceptance, CLI-driven: a forced_axis intervention overrides seed-first draw
+    order, and an exclude_axis intervention that would leave nothing untried elsewhere is
+    reported unsatisfiable rather than silently applied."""
+    space_file = tmp_path / "space.json"
+    ledger = tmp_path / "results.tsv"
+    ledger.write_text(
+        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\ndeadbeef\t5000.0\t2.0\tok\tforced pick\n"
+    )
+    model_id = _register("register-model", space_file, MODEL_META)
+    architecture_idea = _register(
+        "register-idea", space_file,
+        {"model_id": model_id, "origin": "seeded", "axis": "architecture", "description": "on architecture"},
+    )
+    _register(
+        "register-idea", space_file,
+        {"model_id": model_id, "origin": "seeded", "axis": "data", "description": "on data"},
+    )
+    dispatch_script = tmp_path / "dispatch.json"
+    dispatch_script.write_text(json.dumps([{"commit": "deadbeef"}]))
+
+    result = _run_cli(
+        "supervise-campaign",
+        "--space-file", str(space_file),
+        "--model-id", model_id,
+        "--ledger", str(ledger),
+        "--dispatch-script", str(dispatch_script),
+        "--intervention", "forced_axis:architecture",
+        "--intervention", "exclude_axis:architecture",
+        "--max-dispatches", "1",
+    )
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads(result.stdout)
+    assert outcome["history"][0]["candidate"] == architecture_idea  # forced_axis wins the draw
+    assert outcome["history"][0]["unsatisfiable_interventions"] == []  # "data" idea keeps exclude_axis satisfiable
