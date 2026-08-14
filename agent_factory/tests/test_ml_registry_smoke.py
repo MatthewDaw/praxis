@@ -12,7 +12,11 @@ idea origin enum, the per-model discovered-idea budget, and the two trial refusa
 (unregistered idea, commit missing from the external ledger). Also exercises R5's
 cross-project model linkage: two tickets in different project spaces carrying the
 same ``meta.experiment_id`` resolve to each other's project/model through the
-``register-ticket``/``model-to-projects``/``project-to-models`` subcommands.
+``register-ticket``/``model-to-projects``/``project-to-models`` subcommands. Also exercises
+R6's ideation axis sweep: ``seed-campaign`` writes at least one ``origin=seeded`` idea per
+generative axis, records an execution receipt per retrieval axis (even one that legitimately
+retrieves nothing), and interactive mode writes only confirmed candidates, of identical shape
+to a batch run.
 """
 
 from __future__ import annotations
@@ -737,6 +741,92 @@ def test_cli_supervise_campaign_closes_on_backlog_exhausted_after_registering_a_
     model_readback = json.loads(_run_cli("readback", "--space-file", str(space_file), "--category", "model").stdout)
     model = next(f for f in model_readback if f["id"] == model_id)
     assert model["meta"]["campaign_status"] == "completed"
+
+
+def test_cli_seed_campaign_writes_seeded_ideas_across_the_nine_axis_closed_set_and_receipts(
+    tmp_path: Path,
+) -> None:
+    """R6 acceptance, CLI-driven: seed-campaign sweeps the nine-axis closed set (six
+    generative, three retrieval) against a fixture model, writing at least one origin=seeded
+    idea per generative axis and recording an execution receipt (query/count/ids) for each
+    retrieval axis, even one that legitimately retrieves nothing."""
+    space_file = tmp_path / "space.json"
+    model_id = _register("register-model", space_file, MODEL_META)
+
+    generative_axes = [
+        "theoretical_math", "ablation", "supplements",
+        "ml_architectures", "non_ml_methods", "ce_ideate_breadth",
+    ]
+    generator_script = tmp_path / "generator.json"
+    generator_script.write_text(json.dumps(
+        {axis: [{"description": f"{axis} candidate"}] for axis in generative_axes}
+    ))
+    retriever_script = tmp_path / "retriever.json"
+    retriever_script.write_text(json.dumps({
+        "current_code": {
+            "query": "grep TODO in train.py",
+            "rows": [{"id": "train.py:42", "description": "revisit warmup"}],
+        },
+        "prior_trials": {
+            "query": "registry: sibling model trials",
+            "rows": [{"id": "trial-abc", "description": "retry sibling winner"}],
+        },
+        "af_learn_lessons": {"query": "af-learn: lessons tagged ml-research", "rows": []},
+    }))
+
+    result = _run_cli(
+        "seed-campaign", "--space-file", str(space_file), "--model-id", model_id,
+        "--generator-script", str(generator_script), "--retriever-script", str(retriever_script),
+    )
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads(result.stdout)
+
+    for axis in generative_axes:
+        assert outcome["written"][axis], f"axis {axis!r} must yield at least one written idea"
+
+    receipts_by_axis = {r["axis"]: r for r in outcome["receipts"]}
+    assert receipts_by_axis["current_code"]["count"] == 1
+    assert receipts_by_axis["current_code"]["ids"] == ["train.py:42"]
+    assert receipts_by_axis["af_learn_lessons"]["count"] == 0
+    assert receipts_by_axis["af_learn_lessons"]["ids"] == []
+
+    readback = json.loads(_run_cli("readback", "--space-file", str(space_file), "--category", "idea").stdout)
+    assert readback
+    for idea in readback:
+        assert idea["meta"]["origin"] == "seeded"
+        assert idea["meta"]["axis"] in generative_axes + ["current_code", "prior_trials", "af_learn_lessons"]
+
+
+def test_cli_seed_campaign_interactive_mode_writes_only_confirmed_ideas_same_shape_as_batch(
+    tmp_path: Path,
+) -> None:
+    """R6 acceptance, CLI-driven: interactive mode consumes --confirm-script in order, writing
+    only confirmed candidates, of identical shape to a batch run that confirms everything."""
+    space_file = tmp_path / "space.json"
+    model_id = _register("register-model", space_file, MODEL_META)
+
+    generator_script = tmp_path / "generator.json"
+    generator_script.write_text(json.dumps({"ablation": [{"description": "candidate-1"}, {"description": "candidate-2"}]}))
+    retriever_script = tmp_path / "retriever.json"
+    retriever_script.write_text(json.dumps({}))
+    confirm_script = tmp_path / "confirm.json"
+    confirm_script.write_text(json.dumps([True, False]))
+
+    result = _run_cli(
+        "seed-campaign", "--space-file", str(space_file), "--model-id", model_id,
+        "--mode", "interactive",
+        "--generator-script", str(generator_script), "--retriever-script", str(retriever_script),
+        "--confirm-script", str(confirm_script),
+    )
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads(result.stdout)
+    assert len(outcome["written"]["ablation"]) == 1
+
+    readback = json.loads(_run_cli("readback", "--space-file", str(space_file), "--category", "idea").stdout)
+    assert len(readback) == 1
+    assert readback[0]["meta"]["description"] == "candidate-1"
+    assert readback[0]["meta"]["origin"] == "seeded"
+    assert readback[0]["meta"]["axis"] == "ablation"
 
 
 def test_cli_supervise_campaign_forced_axis_intervention_and_unsatisfiable_exclusion(tmp_path: Path) -> None:
