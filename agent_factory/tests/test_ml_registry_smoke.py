@@ -578,6 +578,62 @@ def test_cli_registers_a_model_with_a_ledger_recomputed_floor_and_adjudicates_a_
     assert winner["meta"]["status"] != "adopted"  # the adoption was reverted by the harness mutation
 
 
+def test_cli_resolve_verdict_adopts_a_trial_beyond_one_noise_floor(tmp_path: Path) -> None:
+    """R10 acceptance, CLI-driven: resolve-verdict joins a trial's commit (and the model's
+    current baseline commit) against a JSON ledger of value/throughput/diff_lines, adopts
+    the trial when its delta clears one noise_floor in the improving direction, advances
+    the model's baseline to the trial's commit, and records the previous baseline."""
+    space_file = tmp_path / "space.json"
+    ledger_tsv = tmp_path / "results.tsv"
+    ledger_tsv.write_text(
+        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
+        "r1\t1.0\t2.0\tok\tbaseline run 1\nr2\t1.02\t2.0\tok\tbaseline run 2\n"
+        "r3\t0.98\t2.0\tok\tbaseline run 3\nr4\t1.04\t2.0\tok\tbaseline run 4\n"
+        "adopt1\t0.9\t2.0\tok\tcandidate\n"
+    )
+    meta = {
+        "metric": "val_bpb",
+        "direction": "minimize",
+        "win_condition": "beats baseline by noise_floor",
+        "baseline": "r1",
+        "diff_size_limit": 800,
+        "baseline_runs": ["r1", "r2", "r3", "r4"],
+    }
+    model_id = _register(
+        "register-model-with-baseline", space_file, meta, ledger=ledger_tsv
+    )
+    idea_id = _register(
+        "register-idea", space_file,
+        {"model_id": model_id, "origin": "seeded", "axis": "architecture", "description": "try RoPE"},
+    )
+    trial_id = _register(
+        "register-trial", space_file,
+        {
+            "model_id": model_id, "idea_id": idea_id, "commit": "adopt1", "status": "running",
+            "throughput": 1.01, "diff_lines": 100,
+        },
+        ledger=ledger_tsv,
+    )
+
+    ledger_json = tmp_path / "verdict_ledger.json"
+    ledger_json.write_text(json.dumps({
+        "r1": {"value": 1.0, "throughput": 1.01, "diff_lines": 0},
+        "adopt1": {"value": 0.9, "throughput": 1.01, "diff_lines": 100},
+    }))
+
+    result = _run_cli(
+        "resolve-verdict", "--space-file", str(space_file), "--trial-id", trial_id,
+        "--ledger-json", str(ledger_json),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "adopted" in result.stdout
+
+    readback = json.loads(_run_cli("readback", "--space-file", str(space_file), "--category", "model").stdout)
+    model = next(f for f in readback if f["id"] == model_id)
+    assert model["meta"]["baseline"] == "adopt1"
+    assert model["meta"]["previous_baseline"] == "r1"
+
+
 def test_cli_resolve_citation_refuses_an_unregistered_idea_naming_it(tmp_path: Path) -> None:
     space_file = tmp_path / "space.json"
     result = _run_cli(

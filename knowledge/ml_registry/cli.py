@@ -1,5 +1,5 @@
 """Runnable entrypoint for the af-ml-research registry (R1 schema/guards, R2 write path,
-R3 idea lifecycle, R4 query surface, R5 cross-project model linkage).
+R3 idea lifecycle, R4 query surface, R5 cross-project model linkage, R10 trial verdict).
 
 ``python -m knowledge.ml_registry.cli <subcommand> ...`` -- exit 0 on acceptance, 1 on a
 named registry refusal, 2 on malformed input. This is the real entrypoint later tickets
@@ -39,6 +39,7 @@ from knowledge.ml_registry.lifecycle import (
     untried_backlog,
 )
 from knowledge.ml_registry.schema import IDEA, RegistryValidationError, validate_fact
+from knowledge.ml_registry.verdict import LedgerRow, adjudicate_verdict
 from knowledge.ml_registry.write_path import (
     RegistrySpace,
     load_ledger_commits,
@@ -142,6 +143,19 @@ def main(argv: list[str] | None = None) -> int:
     adjudicate_p.add_argument("--space-file", required=True)
     adjudicate_p.add_argument("--trial-id", required=True)
     adjudicate_p.add_argument("--observed-value", type=float, required=True)
+
+    verdict_p = sub.add_parser(
+        "resolve-verdict",
+        help="decide and apply a trial's full table-driven verdict against the model's current "
+        "baseline -- adopt/park/reject/void, with the 3-consecutive-rejection ratchet (R10)",
+    )
+    verdict_p.add_argument("--space-file", required=True)
+    verdict_p.add_argument("--trial-id", required=True)
+    verdict_p.add_argument(
+        "--ledger-json", required=True,
+        help="path to a JSON object {commit: {value, throughput, diff_lines}} -- the R10 ledger join",
+    )
+    verdict_p.add_argument("--reactivation-trigger", default=None)
 
     retire_harness_p = sub.add_parser(
         "retire-harness",
@@ -306,6 +320,22 @@ def main(argv: list[str] | None = None) -> int:
                 args.space_file, lambda space: adjudicate_trial(space, args.trial_id, args.observed_value)
             )
             print(f"OK: trial {args.trial_id} adjudicated {status}")
+            return 0
+        if args.command == "resolve-verdict":
+            raw = json.loads(Path(args.ledger_json).read_text())
+            ledger_rows = {
+                commit: LedgerRow(
+                    value=float(row["value"]), throughput=float(row["throughput"]),
+                    diff_lines=float(row["diff_lines"]),
+                )
+                for commit, row in raw.items()
+            }
+            kwargs = {"reactivation_trigger": args.reactivation_trigger} if args.reactivation_trigger else {}
+            verdict = _load_mutate_save(
+                args.space_file,
+                lambda space: adjudicate_verdict(space, args.trial_id, ledger_rows, **kwargs),
+            )
+            print(f"OK: trial {args.trial_id} verdict {verdict}")
             return 0
         if args.command == "retire-harness":
             fact = _load_mutate_save(

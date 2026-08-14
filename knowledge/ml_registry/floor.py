@@ -36,6 +36,10 @@ BASELINE_RUNS_FIELD = "baseline_runs"
 NOISE_FLOOR_FIELD = "noise_floor"
 BASELINE_THROUGHPUT_FIELD = "baseline_throughput"
 RATCHET_COUNT_FIELD = "ratchet_count"
+# R10: the distinct idea ids behind the model's current consecutive-rejection streak --
+# reset alongside RATCHET_COUNT_FIELD wherever the ratchet itself resets (here, on a
+# harness mutation; in knowledge.ml_registry.verdict, on an adoption or an invalidation).
+REJECTION_STREAK_FIELD = "rejection_streak_ideas"
 CAMPAIGN_STATUS_FIELD = "campaign_status"
 
 ACTIVE = "active"
@@ -194,6 +198,7 @@ def retire_harness(space: RegistrySpace, model_id: str, patch: dict[str, object]
         model.meta.pop(BASELINE_THROUGHPUT_FIELD, None)
         model.meta.pop(BASELINE_RUNS_FIELD, None)
         model.meta[RATCHET_COUNT_FIELD] = 0
+        model.meta[REJECTION_STREAK_FIELD] = []
         model.meta[CAMPAIGN_STATUS_FIELD] = STALLED
         adopted = active_adoption(space, model_id)
         if adopted is not None:
