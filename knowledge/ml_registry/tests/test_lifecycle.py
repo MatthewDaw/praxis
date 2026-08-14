@@ -14,6 +14,7 @@ from knowledge.ml_registry.lifecycle import (
     invalidate_adoption,
     is_retriable,
     park_idea,
+    per_axis_yield,
     reject_idea,
     rejection_memory,
     untried_backlog,
@@ -177,6 +178,51 @@ def test_invalidating_an_adoption_that_is_not_currently_adopted_is_refused():
     with pytest.raises(RegistryValidationError) as excinfo:
         invalidate_adoption(space, idea_id, "some reason")
     assert excinfo.value.field == "idea_id"
+
+
+def test_per_axis_yield_counts_attempts_and_adoptions_per_axis_and_per_origin():
+    space = RegistrySpace()
+    model_id = register_model(space, dict(MODEL_META))
+
+    # architecture/seeded: one attempted (trial registered) and adopted.
+    arch_winner = register_idea(space, _idea_meta(model_id, description="arch winner"))
+    trial_id = register_trial(space, _trial_meta(model_id, arch_winner, commit="deadbeef"), LEDGER)
+    adopt_idea(space, arch_winner, trial_id)
+
+    # architecture/seeded: a second idea, attempted but not adopted.
+    arch_tried = register_idea(space, _idea_meta(model_id, description="arch tried"))
+    register_trial(space, _trial_meta(model_id, arch_tried, commit="feedface", status="running"), LEDGER)
+
+    # architecture/discovered: never attempted (still untried).
+    arch_untried = dict(_idea_meta(model_id, description="arch untried"))
+    arch_untried["origin"] = "discovered"
+    register_idea(space, arch_untried)
+
+    # data/seeded: never attempted.
+    data_untried = dict(_idea_meta(model_id, description="data untried"))
+    data_untried["axis"] = "data"
+    register_idea(space, data_untried)
+
+    report = per_axis_yield(space)
+
+    assert report["architecture"]["seeded"] == {"attempts": 2, "adoptions": 1}
+    assert report["architecture"]["discovered"] == {"attempts": 0, "adoptions": 0}
+    assert report["data"]["seeded"] == {"attempts": 0, "adoptions": 0}
+    assert "data" not in report or "discovered" not in report["data"]
+
+
+def test_per_axis_yield_scopes_to_a_single_model_id():
+    space = RegistrySpace()
+    model_a = register_model(space, dict(MODEL_META))
+    model_b = register_model(space, dict(MODEL_META))
+    register_idea(space, _idea_meta(model_a, description="a's untried idea"))
+    b_idea = register_idea(space, _idea_meta(model_b, description="b's attempted idea"))
+    register_trial(space, _trial_meta(model_b, b_idea, commit="deadbeef", status="running"), LEDGER)
+
+    report = per_axis_yield(space, model_id=model_a)
+
+    # model_b's attempt must not leak into model_a's scoped report.
+    assert report["architecture"]["seeded"] == {"attempts": 0, "adoptions": 0}
 
 
 def test_invalidating_an_adoption_with_an_empty_reason_is_refused():

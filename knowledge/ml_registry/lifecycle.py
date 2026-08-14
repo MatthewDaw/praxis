@@ -1,5 +1,6 @@
 """Idea lifecycle for the af-ml-research registry (R3): adopt / park / reject, the idea
-claim lease, and adoption reversal.
+claim lease, and adoption reversal. Also the registry's query surface (R4): the untried
+backlog, rejection memory, and per-axis/per-origin yield.
 
 Builds on R2's write path (:mod:`knowledge.ml_registry.write_path`) -- these functions
 mutate an already-registered :class:`~knowledge.ml_registry.write_path.Fact`'s ``meta``
@@ -145,6 +146,31 @@ def rejection_memory(space: RegistrySpace, *, model_id: str | None = None) -> li
         for idea in space.list_facts(IDEA)
         if _status(idea) == STATUS_REJECTED and (model_id is None or idea.meta.get("model_id") == model_id)
     ]
+
+
+def per_axis_yield(space: RegistrySpace, *, model_id: str | None = None) -> dict[str, dict[str, dict[str, int]]]:
+    """Attempt and adoption counts per idea ``axis`` and per idea ``origin``.
+
+    An idea has been "attempted" once at least one trial is registered against it
+    (:data:`~knowledge.ml_registry.schema.TRIAL`'s ``idea_id``); it counts as an
+    "adoption" while its status is :data:`STATUS_ADOPTED`. Returns
+    ``{axis: {origin: {"attempts": n, "adoptions": n}}}`` covering every (axis, origin)
+    pair that appears among matching ideas -- so a report reader can slice by either
+    dimension without a second query.
+    """
+    attempted_idea_ids = {t.meta.get("idea_id") for t in space.list_facts(TRIAL)}
+    report: dict[str, dict[str, dict[str, int]]] = {}
+    for idea in space.list_facts(IDEA):
+        if model_id is not None and idea.meta.get("model_id") != model_id:
+            continue
+        axis = str(idea.meta.get("axis"))
+        origin = str(idea.meta.get("origin"))
+        bucket = report.setdefault(axis, {}).setdefault(origin, {"attempts": 0, "adoptions": 0})
+        if idea.id in attempted_idea_ids:
+            bucket["attempts"] += 1
+        if _status(idea) == STATUS_ADOPTED:
+            bucket["adoptions"] += 1
+    return report
 
 
 def flagged_trials(space: RegistrySpace) -> list[Fact]:

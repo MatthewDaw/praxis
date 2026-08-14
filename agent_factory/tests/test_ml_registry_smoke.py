@@ -417,6 +417,82 @@ def test_cli_resolve_citation_downgrades_to_reasoned_on_the_3rd_consecutive_unre
     assert idea["meta"]["unreachable_streak"] == 0
 
 
+def test_cli_registry_queries_over_a_seeded_multi_axis_multi_model_fixture(tmp_path):
+    """R4 acceptance: against a seeded fixture of ideas spanning three axes, two models
+    and both origins, the three query subcommands (backlog, rejection-memory,
+    per-axis-yield) each return exactly the documented rows, and per-axis-yield reports a
+    distinct attempt count and adoption count per axis and per origin."""
+    space_file = tmp_path / "space.json"
+    ledger = tmp_path / "results.tsv"
+    ledger.write_text(
+        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
+        "deadbeef\t1.0\t2.0\tok\tm1-arch-winner\nfeedface\t1.0\t2.0\tok\tm1-arch-tried\n"
+        "c0ffee\t1.0\t2.0\tok\tm2-data-tried\n"
+    )
+
+    model_1 = _register("register-model", space_file, MODEL_META)
+    model_2 = _register("register-model", space_file, MODEL_META)
+
+    def idea(model_id, axis, origin, description):
+        return _register(
+            "register-idea", space_file,
+            {"model_id": model_id, "origin": origin, "axis": axis, "description": description},
+        )
+
+    # model_1 / architecture / seeded: attempted + adopted.
+    m1_arch_winner = idea(model_1, "architecture", "seeded", "m1 arch winner")
+    winner_trial = _register(
+        "register-trial", space_file,
+        {"model_id": model_1, "idea_id": m1_arch_winner, "commit": "deadbeef", "status": "succeeded"},
+        ledger=ledger,
+    )
+    adopt = _run_cli("adopt-idea", "--space-file", str(space_file), "--idea-id", m1_arch_winner, "--trial-id", winner_trial)
+    assert adopt.returncode == 0, adopt.stderr
+
+    # model_1 / architecture / seeded: attempted but rejected (not adopted).
+    m1_arch_rejected = idea(model_1, "architecture", "seeded", "m1 arch rejected")
+    _register(
+        "register-trial", space_file,
+        {"model_id": model_1, "idea_id": m1_arch_rejected, "commit": "feedface", "status": "running"},
+        ledger=ledger,
+    )
+    reject = _run_cli(
+        "reject-idea", "--space-file", str(space_file), "--idea-id", m1_arch_rejected, "--reason", "did not beat baseline",
+    )
+    assert reject.returncode == 0, reject.stderr
+
+    # model_1 / optimizer / discovered: never attempted -- sits in the backlog.
+    m1_opt_untried = idea(model_1, "optimizer", "discovered", "m1 optimizer untried")
+
+    # model_2 / data / seeded: attempted, still running (not adopted, not rejected).
+    m2_data_tried = idea(model_2, "data", "seeded", "m2 data tried")
+    _register(
+        "register-trial", space_file,
+        {"model_id": model_2, "idea_id": m2_data_tried, "commit": "c0ffee", "status": "running"},
+        ledger=ledger,
+    )
+
+    # model_2 / data / discovered: never attempted -- sits in the backlog.
+    m2_data_untried = idea(model_2, "data", "discovered", "m2 data untried")
+
+    backlog = json.loads(_run_cli("backlog", "--space-file", str(space_file)).stdout)
+    assert {f["id"] for f in backlog} == {m1_opt_untried, m2_data_untried, m2_data_tried}
+
+    memory = json.loads(_run_cli("rejection-memory", "--space-file", str(space_file)).stdout)
+    memory_by_id = {row["idea"]["id"]: row["reason"] for row in memory}
+    assert memory_by_id == {m1_arch_rejected: "did not beat baseline"}
+
+    yield_report = json.loads(_run_cli("per-axis-yield", "--space-file", str(space_file)).stdout)
+    assert yield_report == {
+        "architecture": {"seeded": {"attempts": 2, "adoptions": 1}},
+        "optimizer": {"discovered": {"attempts": 0, "adoptions": 0}},
+        "data": {
+            "seeded": {"attempts": 1, "adoptions": 0},
+            "discovered": {"attempts": 0, "adoptions": 0},
+        },
+    }
+
+
 def test_cli_resolve_citation_refuses_an_unregistered_idea_naming_it(tmp_path: Path) -> None:
     space_file = tmp_path / "space.json"
     result = _run_cli(

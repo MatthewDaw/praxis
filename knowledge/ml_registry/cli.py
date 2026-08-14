@@ -1,5 +1,5 @@
 """Runnable entrypoint for the af-ml-research registry (R1 schema/guards, R2 write path,
-R5 cross-project model linkage).
+R3 idea lifecycle, R4 query surface, R5 cross-project model linkage).
 
 ``python -m knowledge.ml_registry.cli <subcommand> ...`` -- exit 0 on acceptance, 1 on a
 named registry refusal, 2 on malformed input. This is the real entrypoint later tickets
@@ -32,6 +32,7 @@ from knowledge.ml_registry.lifecycle import (
     invalidate_adoption,
     is_retriable,
     park_idea,
+    per_axis_yield,
     reject_idea,
     rejection_memory,
     untried_backlog,
@@ -213,6 +214,12 @@ def main(argv: list[str] | None = None) -> int:
     flagged_trials_p = sub.add_parser("flagged-trials", help="trials derived from a since-rejected idea")
     flagged_trials_p.add_argument("--space-file", required=True)
 
+    per_axis_yield_p = sub.add_parser(
+        "per-axis-yield", help="attempt and adoption counts per idea axis and per idea origin"
+    )
+    per_axis_yield_p.add_argument("--space-file", required=True)
+    per_axis_yield_p.add_argument("--model-id", default=None)
+
     retriable_p = sub.add_parser(
         "retriable-ideas", help="parked ideas whose reactivation_trigger is among the fired triggers"
     )
@@ -345,6 +352,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "flagged-trials":
             space = RegistrySpace.load(Path(args.space_file))
             print(json.dumps([f.to_json() for f in flagged_trials(space)]))
+            return 0
+        if args.command == "per-axis-yield":
+            space = RegistrySpace.load(Path(args.space_file))
+            kwargs = {"model_id": args.model_id} if args.model_id is not None else {}
+            print(json.dumps(per_axis_yield(space, **kwargs)))
             return 0
     except RegistryValidationError as exc:
         print(f"REFUSED [{exc.field}]: {exc}", file=sys.stderr)
