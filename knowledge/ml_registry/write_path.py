@@ -28,6 +28,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from knowledge.ml_registry.citation import Resolver, resolve_citation
 from knowledge.ml_registry.schema import IDEA, MODEL, TRIAL, RegistryValidationError, validate_fact
 
 SEEDED = "seeded"
@@ -178,3 +179,26 @@ def register_trial(space: RegistrySpace, meta: dict[str, object], ledger_commits
             f"trial commit {commit!r} has no matching row in the external ledger", field="commit"
         )
     return space.insert(TRIAL, meta, derived_from=(idea_id,))
+
+
+def resolve_idea_citation(
+    space: RegistrySpace, idea_id: str, reference: str, resolver: Resolver
+) -> dict[str, object]:
+    """Resolve a registered idea's ``reference`` (R7) and record the outcome on it.
+
+    Applies :func:`knowledge.ml_registry.citation.resolve_citation` against the idea's own
+    prior ``unreachable_streak`` state (so a re-attempt on a later ideation pass continues
+    the same consecutive-failure count), then merges the resulting patch onto the idea's
+    meta in place -- ``basis``/``resolution``/``reference``/``reference_kind`` and, per
+    outcome, ``title``/``authors``/``downgrade_note``/``unreachable_streak``. Returns the
+    idea's updated meta.
+    """
+    idea = space.get(idea_id)
+    if idea is None or idea.category != IDEA:
+        raise RegistryValidationError(
+            f"citation resolution references idea {idea_id!r} that was never registered", field="idea_id"
+        )
+    patch = resolve_citation(reference, idea.meta, resolver)
+    idea.meta["reference"] = reference
+    idea.meta.update(patch)
+    return dict(idea.meta)

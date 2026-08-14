@@ -188,3 +188,80 @@ def test_cli_refuses_a_trial_whose_commit_is_missing_from_the_ledger(tmp_path):
     )
     assert result.returncode == 1
     assert "commit" in result.stdout + result.stderr
+
+
+def test_cli_resolve_citation_records_basis_and_title_on_the_idea(tmp_path):
+    """R7 acceptance, CLI-driven: a resolving arXiv reference lands basis=external with
+    the resolved title recorded on the idea, read back through a separate subprocess."""
+    space_file = tmp_path / "space.json"
+    model_id = _register("register-model", space_file, MODEL_META)
+    idea_id = _register(
+        "register-idea",
+        space_file,
+        {"model_id": model_id, "origin": "seeded", "axis": "architecture", "description": "try RoPE"},
+    )
+    result = _run_cli(
+        "resolve-citation",
+        "--space-file",
+        str(space_file),
+        "--idea-id",
+        idea_id,
+        "--reference",
+        "2301.12345",
+        "--outcome",
+        "resolved",
+        "--title",
+        "Attention Is All You Need",
+        "--author",
+        "Vaswani",
+    )
+    assert result.returncode == 0, result.stderr
+    readback = json.loads(_run_cli("readback", "--space-file", str(space_file), "--category", "idea").stdout)
+    idea = next(f for f in readback if f["id"] == idea_id)
+    assert idea["meta"]["basis"] == "external"
+    assert idea["meta"]["title"] == "Attention Is All You Need"
+
+
+def test_cli_resolve_citation_downgrades_to_reasoned_on_the_3rd_consecutive_unreachable_attempt(tmp_path):
+    space_file = tmp_path / "space.json"
+    model_id = _register("register-model", space_file, MODEL_META)
+    idea_id = _register(
+        "register-idea",
+        space_file,
+        {"model_id": model_id, "origin": "seeded", "axis": "architecture", "description": "try RoPE"},
+    )
+    args = [
+        "resolve-citation",
+        "--space-file",
+        str(space_file),
+        "--idea-id",
+        idea_id,
+        "--reference",
+        "2301.12345",
+        "--outcome",
+        "unreachable",
+    ]
+    for _ in range(3):
+        result = _run_cli(*args)
+        assert result.returncode == 0, result.stderr
+    readback = json.loads(_run_cli("readback", "--space-file", str(space_file), "--category", "idea").stdout)
+    idea = next(f for f in readback if f["id"] == idea_id)
+    assert idea["meta"]["basis"] == "reasoned"
+    assert idea["meta"]["unreachable_streak"] == 0
+
+
+def test_cli_resolve_citation_refuses_an_unregistered_idea_naming_it(tmp_path):
+    space_file = tmp_path / "space.json"
+    result = _run_cli(
+        "resolve-citation",
+        "--space-file",
+        str(space_file),
+        "--idea-id",
+        "idea-nope",
+        "--reference",
+        "2301.12345",
+        "--outcome",
+        "resolved",
+    )
+    assert result.returncode == 1
+    assert "idea_id" in result.stdout + result.stderr
