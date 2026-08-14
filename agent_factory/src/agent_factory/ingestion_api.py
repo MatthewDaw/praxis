@@ -317,6 +317,39 @@ def read_lessons(query: str = "", *, top_k: int = 10) -> list[dict[str, Any]]:
                             snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT)
 
 
+def get_lesson(lesson_id: str) -> dict[str, Any]:
+    """R41 — the dedicated BY-ID read counterpart to :func:`write_lesson`: fetch one lesson's full
+    text plus accumulated metadata (``provenance``, ``content_hash``, ... — whatever
+    :func:`learn`/:func:`learn_bulk` and :func:`_append_lesson_provenance` stamped on it) by the id
+    those two calls returned, without the caller constructing its own ``get_fact``/``facts_by``/
+    ``context`` call.
+
+    Delegates straight to :func:`hooks._praxis.get_fact`, scoped to the same shared
+    ``(FACTORY_LEARNINGS_SPACE, FACTORY_LEARNINGS_SNAPSHOT)`` every other lesson read/write in this
+    module targets — the "same org/project scoping as the existing ``get_fact`` primitive" the
+    ticket asks for is inherited by construction, not re-derived here.
+
+    Never raises for an ordinary miss: an unknown id or an id naming a fact that is not a lesson
+    (e.g. a check or a ticket id passed in by mistake) both come back as a clear
+    ``{"found": False, "reason": ...}`` result rather than a ``PraxisUnreachable``-shaped surprise
+    or a lesson-shaped dict with a wrong-typed body.
+    """
+    fact = _praxis.get_fact(lesson_id, space=_praxis.FACTORY_LEARNINGS_SPACE,
+                            snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT, not_found_ok=True)
+    if not fact or not fact.get("id"):
+        return {"found": False, "lesson_id": lesson_id, "reason": "not_found"}
+    if fact.get("category") != LESSON_CATEGORY:
+        return {"found": False, "lesson_id": lesson_id, "reason": "wrong_category",
+                "category": fact.get("category")}
+    return {
+        "found": True,
+        "lesson_id": lesson_id,
+        "text": fact.get("content") or fact.get("text") or fact.get("insight"),
+        "source": fact.get("source"),
+        "meta": dict(fact.get("meta") or {}),
+    }
+
+
 # --------------------------------------------------------------------------- R1b: auth gate
 
 def _require_authenticated(identity: str | None = None) -> str:

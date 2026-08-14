@@ -143,8 +143,10 @@ class FakeCheckStore:
                 return fact
         raise KeyError(f"no check with meta.check_id={check_id!r}")
 
-    def seed_lesson(self, lesson_id: str, meta: dict[str, Any] | None = None) -> None:
-        self.facts[lesson_id] = {"id": lesson_id, "category": "lesson", "meta": dict(meta or {})}
+    def seed_lesson(self, lesson_id: str, meta: dict[str, Any] | None = None,
+                    content: str | None = None) -> None:
+        self.facts[lesson_id] = {"id": lesson_id, "category": "lesson", "meta": dict(meta or {}),
+                                 "content": content}
 
     def request(self, method: str, path: str, *, body: dict[str, Any] | None = None,
                space: str | None = None, snapshot: str | None = None, **kw: Any) -> dict[str, Any]:
@@ -154,6 +156,7 @@ class FakeCheckStore:
             fid = f"fake-{self._n}"
             self.facts[fid] = {"id": fid, "category": (body or {}).get("category"),
                               "source": (body or {}).get("source"),
+                              "content": (body or {}).get("insight"),
                               "meta": dict((body or {}).get("meta") or {})}
             return {"id": fid, "action": "added"}
         if method == "POST" and path == "/requirements/regress":
