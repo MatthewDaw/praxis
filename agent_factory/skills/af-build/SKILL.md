@@ -308,8 +308,12 @@ many rounds with no ill effect: admission is a per-round dispatch read, not a ti
 never reads as a dependency stall (that detector runs purely off `depends_on`).
 
 After §0 stamps the run marker, compute the dependency-ready frontier (id-only, no bodies):
-`_praxis.incomplete_requirements(project, space=PLAN[0], snapshot=PLAN[1])` → filter to the marked ids →
-`_ticket_state.ready_tickets(...)` → `_ticket_state.admit_frontier(ready, live=_ticket_state.live_claims(...), project=project)` to get this round's admitted set. Then, unconditionally:
+`incomplete = _praxis.incomplete_requirements(project, space=PLAN[0], snapshot=PLAN[1])` → filter to the
+marked ids → `_ticket_state.ready_tickets(...)` → `_ticket_state.admit_frontier(ready, live=incomplete,
+project=project)` to get this round's admitted set — pass the RAW incomplete list as `live`, not a
+pre-filtered `live_claims(...)` call: `admit_frontier` filters it to live claims itself (see its
+docstring), and it needs the raw set because a ticket still occupying its lane from an earlier round may
+already be claimed and absent from `ready`. Then, unconditionally:
 - **≥2 admitted → LAUNCH THE WORKFLOW (the script below). ALWAYS — this is the whole point of the
   command.** The lease + the `depends_on` DAG make parallel isolated workers safe, and it is dramatically
   faster than serial. If you choose NOT to fan out, you MUST name which of the two narrow exceptions below

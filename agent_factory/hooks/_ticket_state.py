@@ -93,7 +93,7 @@ import re
 import subprocess
 import sys
 import time
-from typing import Any, Iterable, NamedTuple, Optional
+from typing import Any, Iterable, NamedTuple, Optional, TypedDict
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -277,6 +277,26 @@ def _derive_effective_source(source: Optional[str]) -> str:
     return str(source)
 
 
+def _positive_int_env(name: str) -> Optional[int]:
+    """Read ``name`` from the environment as a positive int, or ``None`` if it's unset, non-numeric, or
+    not positive (warning to stderr in the latter two cases). Shared int-override parsing for every
+    "env var overrides a built-in default" site in this file — :func:`_ttl_env` (lease/run/planning TTLs)
+    and :func:`lane_cap` (concurrency admission, R15) both reduce to this one tolerance rule.
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return None
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        sys.stderr.write(f"[af] WARNING: {name}={raw!r} is not an integer — ignoring\n")
+        return None
+    if val <= 0:
+        sys.stderr.write(f"[af] WARNING: {name}={val} must be positive — ignoring\n")
+        return None
+    return val
+
+
 def _ttl_env(name: str, default: int) -> int:
     """Read a TTL override from the environment, falling back to ``default``.
 
@@ -284,18 +304,8 @@ def _ttl_env(name: str, default: int) -> int:
     far wider window than one of small code edits. Without an override the only way to widen a lease
     is to edit this file, which is exactly the "edit the factory to make one project work" trap.
     """
-    raw = os.environ.get(name)
-    if not raw:
-        return default
-    try:
-        val = int(raw)
-    except (TypeError, ValueError):
-        sys.stderr.write(f"[af] WARNING: {name}={raw!r} is not an integer — using default {default}s\n")
-        return default
-    if val <= 0:
-        sys.stderr.write(f"[af] WARNING: {name}={val} must be positive — using default {default}s\n")
-        return default
-    return val
+    val = _positive_int_env(name)
+    return default if val is None else val
 
 
 # 15 min — per-ticket claim lease. Override with AF_LEASE_TTL_S for plans whose tickets legitimately
@@ -2488,26 +2498,18 @@ def lane_cap(lane: str, project: str = "") -> int:
     if lane_n not in _LANE_DEFAULTS:
         raise ValueError(f"unknown concurrency lane {lane!r} — must be one of {sorted(_LANE_DEFAULTS)}")
     for name in _lane_env_names(lane_n, project):
-        raw = os.environ.get(name)
-        if not raw:
-            continue
-        try:
-            val = int(raw)
-        except (TypeError, ValueError):
-            sys.stderr.write(f"[af] WARNING: {name}={raw!r} is not an integer — ignoring\n")
-            continue
-        if val <= 0:
-            sys.stderr.write(f"[af] WARNING: {name}={val} must be positive — ignoring\n")
-            continue
-        return val
+        val = _positive_int_env(name)
+        if val is not None:
+            return val
     return _LANE_DEFAULTS[lane_n]
 
 
 def ticket_device(item: dict[str, Any]) -> str:
     """The concurrency lane a ticket counts against: its (normalized) ``meta.device``, defaulting to
     ``"cpu"`` for an absent/unrecognized value — mirrors plan_gate.DEFAULT_DEVICE (R16) so a ticket
-    that cleared the plan gate always resolves to a real lane here."""
-    meta = item.get("meta") or {} if isinstance(item, dict) else {}
+    that cleared the plan gate always resolves to a real lane here. Callers pass dicts (a precondition,
+    not re-checked here)."""
+    meta = item.get("meta") or {}
     dev = str(meta.get("device") or "").strip().lower()
     return dev if dev in _LANE_DEFAULTS else "cpu"
 
@@ -2520,8 +2522,20 @@ def live_claims(items: list[dict[str, Any]], now: Optional[float] = None) -> lis
     return [it for it in items if isinstance(it, dict) and _lease_live(it.get("meta") or {}, now=now)]
 
 
+class _LaneUsage(TypedDict):
+    cap: int
+    used: int
+
+
+class AdmissionResult(TypedDict):
+    admit: list[dict[str, Any]]
+    defer: list[dict[str, Any]]
+    deferred_ids: list[str]
+    lanes: dict[str, _LaneUsage]
+
+
 def admit_frontier(ready: list[dict[str, Any]], live: Optional[list[dict[str, Any]]] = None,
-                    project: str = "") -> dict[str, Any]:
+                    project: str = "") -> AdmissionResult:
     """Partition a dependency-ready frontier into what this round may DISPATCH vs. must DEFER, under
     one fixed cap per lane (R15).
 
