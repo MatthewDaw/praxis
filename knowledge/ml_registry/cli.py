@@ -39,6 +39,7 @@ from knowledge.ml_registry.lifecycle import (
     untried_backlog,
 )
 from knowledge.ml_registry.schema import IDEA, RegistryValidationError, validate_fact
+from knowledge.ml_registry.supervisor import Intervention, supervise_campaign
 from knowledge.ml_registry.verdict import LedgerRow, adjudicate_verdict
 from knowledge.ml_registry.write_path import (
     RegistrySpace,
@@ -57,6 +58,13 @@ def _json_arg(raw: str) -> dict[str, object]:
     if not isinstance(parsed, dict):
         raise ValueError(f"expected a JSON object, got {type(parsed).__name__}")
     return parsed
+
+
+def _parse_intervention(raw: str) -> Intervention:
+    kind, _, axis = raw.partition(":")
+    if not axis:
+        raise ValueError(f"--intervention must be 'kind:axis', got {raw!r}")
+    return Intervention(kind=kind, axis=axis)
 
 
 def _load_mutate_save(space_file: str, fn: Callable[[RegistrySpace], _T]) -> _T:
@@ -266,6 +274,27 @@ def main(argv: list[str] | None = None) -> int:
     retriable_p.add_argument("--space-file", required=True)
     retriable_p.add_argument("--fired-trigger", action="append", default=[])
 
+    supervise_p = sub.add_parser(
+        "supervise-campaign",
+        help="drive one model's campaign to close, dispatching one worker per trial serially (R8)",
+    )
+    supervise_p.add_argument("--space-file", required=True)
+    supervise_p.add_argument("--model-id", required=True)
+    supervise_p.add_argument("--ledger", required=True, help="path to the autoresearch loop's results.tsv")
+    supervise_p.add_argument(
+        "--dispatch-script", required=True,
+        help="JSON file: a list of trial-meta objects, one per worker session, consumed in dispatch order",
+    )
+    supervise_p.add_argument(
+        "--idea-script", default=None,
+        help="JSON file: a list of idea-meta objects consumed, in order, whenever the backlog is empty",
+    )
+    supervise_p.add_argument(
+        "--intervention", action="append", default=[],
+        help="kind:axis, repeatable -- e.g. forced_axis:data or exclude_axis:architecture",
+    )
+    supervise_p.add_argument("--max-dispatches", type=int, default=None)
+
     args = parser.parse_args(argv)
 
     try:
@@ -435,6 +464,38 @@ def main(argv: list[str] | None = None) -> int:
             space = RegistrySpace.load(Path(args.space_file))
             kwargs = {"model_id": args.model_id} if args.model_id is not None else {}
             print(json.dumps(per_axis_yield(space, **kwargs)))
+            return 0
+        if args.command == "supervise-campaign":
+            ledger_values = load_ledger_values(Path(args.ledger))
+            dispatch_script = list(json.loads(Path(args.dispatch_script).read_text()))
+            idea_script = (
+                list(json.loads(Path(args.idea_script).read_text())) if args.idea_script else []
+            )
+            interventions = tuple(_parse_intervention(raw) for raw in args.intervention)
+
+            dispatch_iter = iter(dispatch_script)
+            idea_iter = iter(idea_script)
+
+            def dispatcher(space, model, idea):  # noqa: ANN001 -- matches supervisor.Dispatcher
+                try:
+                    return next(dispatch_iter)
+                except StopIteration as exc:
+                    raise RegistryValidationError(
+                        "dispatch-script exhausted before the campaign closed", field="dispatch_script"
+                    ) from exc
+
+            def idea_generator(space, model_id, forced_axis, permitted_axes):  # noqa: ANN001
+                return next(idea_iter, None)
+
+            outcome = _load_mutate_save(
+                args.space_file,
+                lambda space: supervise_campaign(
+                    space, args.model_id, ledger_values, dispatcher,
+                    interventions=interventions, idea_generator=idea_generator,
+                    max_dispatches=args.max_dispatches,
+                ),
+            )
+            print(json.dumps(outcome, default=lambda o: {"kind": o.kind, "axis": o.axis}))
             return 0
     except RegistryValidationError as exc:
         print(f"REFUSED [{exc.field}]: {exc}", file=sys.stderr)
