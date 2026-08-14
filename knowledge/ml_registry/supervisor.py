@@ -33,6 +33,12 @@ is RECOMPUTED from ``space`` (the registry) and ``ledger_rows`` (the external re
 ledger) each time. A campaign interrupted between build rounds resumes by calling
 :func:`supervise_campaign` again against the same space/ledger; nothing distinguishes that
 resume from a fresh start, so a round boundary is never itself a timeout or a failure.
+
+(R17) An optional ``lesson_filer`` threaded through :func:`dispatch_trial`/
+:func:`supervise_campaign` offers each terminal-status idea (and, at close, a final sweep of
+them) to :mod:`knowledge.ml_registry.insight`'s cross-model confirmation gate -- an af-learn
+lesson is filed only for an insight the registry itself shows recurring across >= 2 distinct
+models, never at trial granularity, and never more than once per confirmed insight.
 """
 
 from __future__ import annotations
@@ -41,8 +47,9 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from knowledge.ml_registry.floor import CAMPAIGN_STATUS_FIELD
+from knowledge.ml_registry.insight import LessonFiler, maybe_file_cross_model_lesson, sweep_cross_model_lessons
 from knowledge.ml_registry.lifecycle import untried_backlog
-from knowledge.ml_registry.schema import MODEL, TRIAL, RegistryValidationError
+from knowledge.ml_registry.schema import MODEL, TRIAL, TRIAL_STATUS_VOIDED, RegistryValidationError
 from knowledge.ml_registry.verdict import LedgerRow, VERDICT_ADOPTED, adjudicate_verdict
 from knowledge.ml_registry.write_path import (
     DISCOVERED,
@@ -57,8 +64,6 @@ from knowledge.ml_registry.write_path import (
 FORCED_AXIS = "forced_axis"
 EXCLUDE_AXIS = "exclude_axis"
 INTERVENTION_KINDS: tuple[str, ...] = (FORCED_AXIS, EXCLUDE_AXIS)
-
-TRIAL_STATUS_VOIDED = "voided"
 
 CLOSE_WON = "won"
 CLOSE_MAX_TRIALS = "max_trials_reached"
@@ -164,6 +169,7 @@ def dispatch_trial(
     *,
     interventions: tuple[Intervention, ...] = (),
     idea_generator: Optional[IdeaGenerator] = None,
+    lesson_filer: Optional[LessonFiler] = None,
 ) -> dict[str, object]:
     """Run ONE worker session: pick a candidate idea, dispatch it, register the trial, and
     hand it to :func:`~knowledge.ml_registry.verdict.adjudicate_verdict` for the full
@@ -174,6 +180,14 @@ def dispatch_trial(
     Returns a dict describing what happened; ``result["candidate"] is None`` means the
     backlog (seeded, discovered, and generator-proposable) is exhausted for this dispatch
     -- :func:`supervise_campaign` treats that as a close condition, not an error.
+
+    (R17) When the dispatched trial's adjudication lands the idea in a TERMINAL status
+    (adopted/rejected/parked), this checks -- via
+    :func:`~knowledge.ml_registry.insight.maybe_file_cross_model_lesson` -- whether the
+    idea's insight is now a CONFIRMED cross-model pattern (>= 2 distinct models), and, only
+    if so and only if ``lesson_filer`` is supplied, files exactly one af-learn lesson for it.
+    A voided trial never reaches this: its idea stays untried, so nothing here ever fires at
+    trial granularity alone.
     """
     model = _model(space, model_id)
     forced_axis, permitted_axes, unsatisfiable = resolve_interventions(space, model_id, interventions)
@@ -219,12 +233,26 @@ def dispatch_trial(
         return result
 
     result["status"] = adjudicate_verdict(space, trial_id, ledger_rows)
+
+    # R17: the idea's status is now whatever adjudicate_verdict's side effects landed
+    # (adopted/rejected/parked, a TERMINAL status) -- re-fetch it fresh rather than trusting
+    # the pre-adjudication `idea` object, and offer it to the cross-model insight gate.
+    refetched_idea = space.get(idea.id)
+    if refetched_idea is not None:
+        maybe_file_cross_model_lesson(space, model_id, refetched_idea, lesson_filer=lesson_filer)
+
     return result
 
 
-def _record_close(space: RegistrySpace, model_id: str, close: str) -> None:
+def _record_close(
+    space: RegistrySpace, model_id: str, close: str, *, lesson_filer: Optional[LessonFiler] = None
+) -> None:
     model = _model(space, model_id)
     model.meta[CAMPAIGN_STATUS_FIELD] = CLOSE_WON if close == CLOSE_WON else CAMPAIGN_COMPLETED
+    # R17: model close is the final sweep -- catch any confirmed cross-model insight that
+    # wasn't already filed per-trial (e.g. the second model's confirming idea reached its
+    # terminal status on a dispatch this campaign never itself made).
+    sweep_cross_model_lessons(space, model_id, lesson_filer=lesson_filer)
 
 
 def supervise_campaign(
@@ -236,6 +264,7 @@ def supervise_campaign(
     interventions: tuple[Intervention, ...] = (),
     idea_generator: Optional[IdeaGenerator] = None,
     max_dispatches: Optional[int] = None,
+    lesson_filer: Optional[LessonFiler] = None,
 ) -> dict[str, object]:
     """Drive ``model_id``'s campaign to close, dispatching one worker per trial serially.
 
@@ -263,14 +292,14 @@ def supervise_campaign(
     while max_dispatches is None or dispatches < max_dispatches:
         result = dispatch_trial(
             space, model_id, ledger_rows, dispatcher,
-            interventions=interventions, idea_generator=idea_generator,
+            interventions=interventions, idea_generator=idea_generator, lesson_filer=lesson_filer,
         )
         dispatches += 1
         history.append(result)
 
         if result["candidate"] is None:
             close = CLOSE_BACKLOG_EXHAUSTED
-            _record_close(space, model_id, close)
+            _record_close(space, model_id, close, lesson_filer=lesson_filer)
             return {"history": history, "close": close}
 
         if result["status"] == TRIAL_STATUS_VOIDED:
@@ -278,12 +307,12 @@ def supervise_campaign(
 
         if result["status"] == VERDICT_ADOPTED:
             close = CLOSE_WON
-            _record_close(space, model_id, close)
+            _record_close(space, model_id, close, lesson_filer=lesson_filer)
             return {"history": history, "close": close}
 
         if non_voided_trial_count(space, model_id) >= max_trials:
             close = CLOSE_MAX_TRIALS
-            _record_close(space, model_id, close)
+            _record_close(space, model_id, close, lesson_filer=lesson_filer)
             return {"history": history, "close": close}
 
     return {"history": history, "close": None}
