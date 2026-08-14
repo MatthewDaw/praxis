@@ -29,7 +29,7 @@ from __future__ import annotations
 import pytest
 
 from knowledge.ml_registry.floor import CAMPAIGN_STATUS_FIELD, RATCHET_COUNT_FIELD
-from knowledge.ml_registry.lifecycle import STATUS_ADOPTED, STATUS_UNTRIED
+from knowledge.ml_registry.lifecycle import STATUS_ADOPTED, STATUS_UNTRIED, reject_idea, untried_backlog
 from knowledge.ml_registry.schema import RegistryValidationError
 from knowledge.ml_registry.supervisor import (
     CLOSE_BACKLOG_EXHAUSTED,
@@ -258,6 +258,46 @@ def test_close_evaluated_only_after_adjudication_side_effects_have_landed():
     assert space.get(winner).meta["status"] == STATUS_ADOPTED
     model = space.get(model_id)
     assert model.meta[BASELINE_FIELD] == "c1"
+
+
+def test_close_evaluated_only_after_adjudication_side_effects_including_requeue_have_landed():
+    """A win that supersedes a prior adoption re-queues whatever was rejected under that
+    prior adoption's tenure BEFORE the campaign's close condition is evaluated -- the
+    re-queued idea is visible in the backlog at the moment supervise_campaign returns.
+    Also asserts, through dispatch_trial (R8's production entry point routed through
+    R10's verdict.adjudicate_verdict), that at most one idea per model is ever adopted."""
+    space, model_id = _space_with_model(max_trials=10)
+    first_winner = _idea(space, model_id, "architecture", SEEDED, "first winner")
+    casualty = _idea(space, model_id, "architecture", SEEDED, "rejected under first winner's tenure")
+    second_winner = _idea(space, model_id, "architecture", SEEDED, "second winner, supersedes the first")
+
+    # Verdicts compare against the model's CURRENT (advancing) baseline, so the second win
+    # needs a commit strictly better than the first win's value (0.5), not merely better
+    # than the original baseline (1.0).
+    two_wins_ledger = dict(LEDGER)
+    two_wins_ledger["c2-better"] = LedgerRow(value=0.2, throughput=1200, diff_lines=100)
+
+    # Trial 1: first_winner succeeds and is adopted.
+    r1 = dispatch_trial(space, model_id, two_wins_ledger, _scripted_dispatcher(["c1"]))
+    assert r1["candidate"] == first_winner
+    assert r1["status"] == "adopted"
+    assert space.get(first_winner).meta["status"] == STATUS_ADOPTED
+
+    # casualty gets rejected while first_winner's adoption is active.
+    reject_idea(space, casualty, "did not beat baseline")
+    assert casualty not in {f.id for f in untried_backlog(space, model_id=model_id)}
+
+    # Trial 2: second_winner also succeeds -- this must invalidate first_winner's adoption
+    # and re-queue casualty, and the campaign's close (won) must reflect that landed state.
+    outcome = supervise_campaign(
+        space, model_id, two_wins_ledger, _scripted_dispatcher(["c2-better"]), max_dispatches=1
+    )
+    assert outcome["close"] == CLOSE_WON
+    assert space.get(first_winner).meta["status"] != STATUS_ADOPTED
+    assert space.get(second_winner).meta["status"] == STATUS_ADOPTED
+    # re-queued: absence of a status means untried, same as reject_idea's own accounting
+    assert space.get(casualty).meta.get("status") in (None, STATUS_UNTRIED)
+    assert casualty in {f.id for f in untried_backlog(space, model_id=model_id)}
 
 
 def test_three_consecutive_dispatch_trial_rejections_on_distinct_ideas_fire_the_ratchet_and_invalidate_the_adoption():

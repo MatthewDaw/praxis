@@ -50,6 +50,7 @@ from knowledge.ml_registry.lifecycle import (
     TRIAL_STATUS_SUCCEEDED,
     active_adoption,
     adopt_idea,
+    invalidate_adoption,
     park_idea,
     reject_idea,
 )
@@ -200,6 +201,9 @@ def adjudicate_verdict(
         trial.meta["status"] = TRIAL_STATUS_SUCCEEDED
         model.meta[PREVIOUS_BASELINE_FIELD] = baseline_commit
         model.meta[BASELINE_FIELD] = commit
+        prior = active_adoption(space, model_id)
+        if prior is not None and prior.id != idea_id:
+            invalidate_adoption(space, prior.id, f"superseded by trial {trial_id}")
         adopt_idea(space, idea_id, trial_id)
         _reset_ratchet(model)
         return VERDICT_ADOPTED
