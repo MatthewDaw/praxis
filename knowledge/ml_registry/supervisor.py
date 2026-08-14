@@ -34,6 +34,26 @@ ledger) each time. A campaign interrupted between build rounds resumes by callin
 :func:`supervise_campaign` again against the same space/ledger; nothing distinguishes that
 resume from a fresh start, so a round boundary is never itself a timeout or a failure.
 
+(R9) AXIS WATCHDOG -- two more interventions, computed fresh each dispatch from the trial
+history alone (never cached), and merged onto whatever the caller supplies before
+:func:`resolve_interventions` runs (a caller-supplied intervention always takes
+precedence, matching R8's forced-axis-over-seed-first rule):
+
+* the "rabbit-hole" intervention -- :data:`NON_IMPROVING_STREAK_TRIGGER` (2) trailing
+  non-improving (not adopted) trials in a row on the SAME axis auto-fires an
+  ``exclude_axis`` intervention against it, UNLESS a durable :func:`record_keep_pushing_marker`
+  is on file for that axis. That marker is the ONLY suppression: nothing a dispatcher
+  returns in a trial's own payload can suppress it, only an explicitly-authored, separately
+  recorded marker can. A trial flagged ``out_of_diff_change`` (a code change landed outside
+  any trial's own diff, e.g. a manual harness edit) resets the trailing non-improving count
+  to zero -- but only the FIRST such flag within the current same-axis run; a second one on
+  the same run does not reset it again.
+* the "axis-coverage" intervention -- :data:`SAME_AXIS_STREAK_TRIGGER` (5) trailing trials
+  in a row on the same axis, REGARDLESS of verdict or any keep-pushing marker, force the
+  next draw onto a retrieval axis (:data:`~knowledge.ml_registry.ideate.RETRIEVAL_AXES`)
+  with untried backlog -- an escape valve a keep-pushing marker cannot block, so a marker
+  can extend a stuck axis's run but never trap the campaign on it forever.
+
 (R17) An optional ``lesson_filer`` threaded through :func:`dispatch_trial`/
 :func:`supervise_campaign` offers each terminal-status idea (and, at close, a final sweep of
 them) to :mod:`knowledge.ml_registry.insight`'s cross-model confirmation gate -- an af-learn
@@ -47,8 +67,9 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from knowledge.ml_registry.floor import CAMPAIGN_STATUS_FIELD
+from knowledge.ml_registry.ideate import RETRIEVAL_AXES
 from knowledge.ml_registry.insight import LessonFiler, maybe_file_cross_model_lesson, sweep_cross_model_lessons
-from knowledge.ml_registry.lifecycle import untried_backlog
+from knowledge.ml_registry.lifecycle import TRIAL_STATUS_SUCCEEDED, untried_backlog
 from knowledge.ml_registry.schema import MODEL, TRIAL, TRIAL_STATUS_VOIDED, RegistryValidationError
 from knowledge.ml_registry.verdict import LedgerRow, VERDICT_ADOPTED, adjudicate_verdict
 from knowledge.ml_registry.write_path import (
@@ -64,6 +85,14 @@ from knowledge.ml_registry.write_path import (
 FORCED_AXIS = "forced_axis"
 EXCLUDE_AXIS = "exclude_axis"
 INTERVENTION_KINDS: tuple[str, ...] = (FORCED_AXIS, EXCLUDE_AXIS)
+
+# (R9) axis-watchdog thresholds -- see the module docstring's AXIS WATCHDOG section.
+NON_IMPROVING_STREAK_TRIGGER = 2
+SAME_AXIS_STREAK_TRIGGER = 5
+
+# The durable keep-pushing marker lives on the model fact, keyed by axis: {axis: {"author": str}}.
+# Recorded ONLY via record_keep_pushing_marker -- never derivable from a dispatcher's trial payload.
+KEEP_PUSHING_MARKER_FIELD = "keep_pushing_markers"
 
 CLOSE_WON = "won"
 CLOSE_MAX_TRIALS = "max_trials_reached"
@@ -161,6 +190,100 @@ def _select_candidate(
     return None
 
 
+def record_keep_pushing_marker(space: RegistrySpace, model_id: str, axis: str, author: str) -> None:
+    """Durably record a keep-pushing marker for ``axis`` on ``model_id``, carrying ``author``.
+
+    This is the ONLY way to suppress the rabbit-hole (axis-switch) intervention for that
+    axis. A dispatcher's trial payload is never consulted for suppression -- only an
+    explicit call here, with a non-empty author, has any effect.
+    """
+    if not str(author or "").strip():
+        raise RegistryValidationError("a keep-pushing marker must carry a non-empty author", field="author")
+    model = _model(space, model_id)
+    markers = dict(model.meta.get(KEEP_PUSHING_MARKER_FIELD) or {})
+    markers[axis] = {"author": str(author)}
+    model.meta[KEEP_PUSHING_MARKER_FIELD] = markers
+
+
+def _trial_axis(space: RegistrySpace, trial: Fact) -> Optional[str]:
+    idea = space.get(trial.derived_from[0]) if trial.derived_from else None
+    return str(idea.meta.get("axis")) if idea is not None else None
+
+
+def axis_streak(space: RegistrySpace, model_id: str) -> dict[str, object]:
+    """Recomputed fresh from ``model_id``'s trial history (registration order), never
+    carried across calls.
+
+    Returns ``{"axis": ..., "same_axis_streak": ..., "non_improving_streak": ...}`` for the
+    TRAILING run of non-voided trials sharing the most recent trial's axis: how many trials
+    long that run is, and how many of its trailing trials were non-improving (not adopted),
+    honoring the single out-of-diff-change reset described in the module docstring. ``axis``
+    is ``None`` when the model has no non-voided trials yet.
+    """
+    trials = [
+        t for t in space.list_facts(TRIAL)
+        if t.meta.get("model_id") == model_id and t.meta.get("status") != TRIAL_STATUS_VOIDED
+    ]
+    if not trials:
+        return {"axis": None, "same_axis_streak": 0, "non_improving_streak": 0}
+
+    last_axis = _trial_axis(space, trials[-1])
+    same_axis_run: list[Fact] = []
+    for t in reversed(trials):
+        if _trial_axis(space, t) != last_axis:
+            break
+        same_axis_run.append(t)
+    same_axis_run.reverse()  # chronological order within the trailing run
+
+    non_improving_streak = 0
+    reset_used = False
+    for t in same_axis_run:
+        if t.meta.get("out_of_diff_change") and not reset_used:
+            non_improving_streak = 0
+            reset_used = True
+        if t.meta.get("status") == TRIAL_STATUS_SUCCEEDED:
+            non_improving_streak = 0
+        else:
+            non_improving_streak += 1
+
+    return {"axis": last_axis, "same_axis_streak": len(same_axis_run), "non_improving_streak": non_improving_streak}
+
+
+def _next_retrieval_axis(space: RegistrySpace, model_id: str) -> Optional[str]:
+    axes_present = {str(idea.meta.get("axis")) for idea in untried_backlog(space, model_id=model_id)}
+    for axis in RETRIEVAL_AXES:
+        if axis in axes_present:
+            return axis
+    return None
+
+
+def _auto_interventions(space: RegistrySpace, model_id: str) -> tuple[Intervention, ...]:
+    """The axis-watchdog's own auto-fired interventions for this dispatch -- see the module
+    docstring's AXIS WATCHDOG section. Always safe to prepend/append to caller-supplied
+    interventions: :func:`resolve_interventions` already recomputes fresh and lets a
+    caller-supplied forced axis win."""
+    streak = axis_streak(space, model_id)
+    axis = streak["axis"]
+    if axis is None:
+        return ()
+
+    if streak["same_axis_streak"] >= SAME_AXIS_STREAK_TRIGGER:
+        retrieval_axis = _next_retrieval_axis(space, model_id)
+        if retrieval_axis is not None:
+            return (Intervention(kind=FORCED_AXIS, axis=retrieval_axis),)
+        return ()
+
+    if streak["non_improving_streak"] >= NON_IMPROVING_STREAK_TRIGGER:
+        model = _model(space, model_id)
+        markers = model.meta.get(KEEP_PUSHING_MARKER_FIELD) or {}
+        marker = markers.get(axis) if isinstance(markers, dict) else None
+        suppressed = isinstance(marker, dict) and bool(str(marker.get("author") or "").strip())
+        if not suppressed:
+            return (Intervention(kind=EXCLUDE_AXIS, axis=axis),)
+
+    return ()
+
+
 def dispatch_trial(
     space: RegistrySpace,
     model_id: str,
@@ -190,7 +313,8 @@ def dispatch_trial(
     trial granularity alone.
     """
     model = _model(space, model_id)
-    forced_axis, permitted_axes, unsatisfiable = resolve_interventions(space, model_id, interventions)
+    all_interventions = interventions + _auto_interventions(space, model_id)
+    forced_axis, permitted_axes, unsatisfiable = resolve_interventions(space, model_id, all_interventions)
     result: dict[str, object] = {"unsatisfiable_interventions": list(unsatisfiable), "forced_axis": forced_axis}
 
     idea = _select_candidate(space, model_id, forced_axis, permitted_axes)

@@ -36,7 +36,9 @@ from knowledge.ml_registry.supervisor import (
     CLOSE_MAX_TRIALS,
     CLOSE_WON,
     Intervention,
+    axis_streak,
     dispatch_trial,
+    record_keep_pushing_marker,
     resolve_interventions,
     supervise_campaign,
 )
@@ -340,3 +342,148 @@ def test_three_consecutive_dispatch_trial_rejections_on_distinct_ideas_fire_the_
 def test_intervention_rejects_an_unknown_kind():
     with pytest.raises(RegistryValidationError):
         Intervention(kind="bogus", axis="architecture")
+
+
+# --- R9: axis-watchdog (rabbit-hole + axis-coverage interventions) ---
+
+
+def test_two_consecutive_non_improving_trials_on_one_axis_auto_excludes_that_axis():
+    space, model_id = _space_with_model(max_trials=100)
+    _idea(space, model_id, "architecture", SEEDED, "arch-1")
+    _idea(space, model_id, "architecture", SEEDED, "arch-2")
+    third_arch = _idea(space, model_id, "architecture", SEEDED, "arch-3")
+    data_idea = _idea(space, model_id, "data", SEEDED, "data-1")
+
+    r1 = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose1"]))
+    assert r1["status"] == "rejected"
+    r2 = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose2"]))
+    assert r2["status"] == "rejected"
+
+    streak = axis_streak(space, model_id)
+    assert streak == {"axis": "architecture", "same_axis_streak": 2, "non_improving_streak": 2}
+
+    # 2 consecutive non-improving trials on "architecture" auto-fire the rabbit-hole
+    # intervention -- the next draw skips the untried arch-3 idea and lands on "data".
+    r3 = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose3"]))
+    assert r3["candidate"] == data_idea
+    assert r3["candidate"] != third_arch
+
+
+def test_keep_pushing_marker_suppresses_the_rabbit_hole_intervention():
+    space, model_id = _space_with_model(max_trials=100)
+    _idea(space, model_id, "architecture", SEEDED, "arch-1")
+    _idea(space, model_id, "architecture", SEEDED, "arch-2")
+    third_arch = _idea(space, model_id, "architecture", SEEDED, "arch-3")
+    _idea(space, model_id, "data", SEEDED, "data-1")
+
+    dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose1"]))
+    dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose2"]))
+
+    record_keep_pushing_marker(space, model_id, "architecture", author="alice")
+
+    r3 = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose3"]))
+    assert r3["candidate"] == third_arch  # the marker suppressed the auto-exclude
+
+
+def test_keep_pushing_marker_must_carry_a_non_empty_author():
+    space, model_id = _space_with_model()
+    _idea(space, model_id, "architecture", SEEDED, "arch-1")
+    with pytest.raises(RegistryValidationError):
+        record_keep_pushing_marker(space, model_id, "architecture", author="")
+
+
+def test_a_value_in_the_dispatcher_payload_never_suppresses_the_rabbit_hole_intervention():
+    """A dispatcher trying to suppress the intervention by returning a payload key (rather
+    than going through the durable, authored record_keep_pushing_marker call) has no
+    effect -- only the durable marker suppresses it."""
+    space, model_id = _space_with_model(max_trials=100)
+    _idea(space, model_id, "architecture", SEEDED, "arch-1")
+    third_arch = _idea(space, model_id, "architecture", SEEDED, "arch-3")
+    data_idea = _idea(space, model_id, "data", SEEDED, "data-1")
+
+    def dispatcher_with_suppression_attempt(space, model, idea):
+        return {"commit": "lose1", "keep_pushing": True, "keep_pushing_markers": {"architecture": {"author": "eve"}}}
+
+    dispatch_trial(space, model_id, LEDGER, dispatcher_with_suppression_attempt)
+    dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose2"]))
+
+    r3 = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose3"]))
+    assert r3["candidate"] == data_idea
+    assert r3["candidate"] != third_arch
+
+
+def test_out_of_diff_code_change_resets_the_non_improving_count_exactly_once():
+    space, model_id = _space_with_model(max_trials=100)
+    _idea(space, model_id, "architecture", SEEDED, "arch-1")
+    _idea(space, model_id, "architecture", SEEDED, "arch-2")
+    third_arch = _idea(space, model_id, "architecture", SEEDED, "arch-3")
+    _idea(space, model_id, "data", SEEDED, "data-1")
+
+    def flagged_dispatcher(commit):
+        def dispatcher(space, model, idea):
+            return {"commit": commit, "out_of_diff_change": True}
+        return dispatcher
+
+    r1 = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose1"]))
+    assert r1["status"] == "rejected"
+    # trial 2 is flagged as following an out-of-diff code change -- resets the streak to
+    # zero before counting its own (non-improving) result, so it lands at 1, not 2.
+    r2 = dispatch_trial(space, model_id, LEDGER, flagged_dispatcher("lose2"))
+    assert r2["status"] == "rejected"
+    assert axis_streak(space, model_id)["non_improving_streak"] == 1
+
+    # so trial 3 still draws from "architecture" -- the reset bought it one more trial.
+    r3 = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose3"]))
+    assert r3["candidate"] == third_arch
+
+
+def test_a_second_out_of_diff_reset_on_the_same_axis_run_does_not_reset_again():
+    space, model_id = _space_with_model(max_trials=100)
+    for i in range(4):
+        _idea(space, model_id, "architecture", SEEDED, f"arch-{i}")
+    data_idea = _idea(space, model_id, "data", SEEDED, "data-1")
+
+    def flagged_dispatcher(commit):
+        def dispatcher(space, model, idea):
+            return {"commit": commit, "out_of_diff_change": True}
+        return dispatcher
+
+    dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose1"]))          # streak=1
+    dispatch_trial(space, model_id, LEDGER, flagged_dispatcher("lose2"))              # reset used -> streak=1
+    dispatch_trial(space, model_id, LEDGER, flagged_dispatcher("lose3"))              # 2nd flag ignored -> streak=2
+
+    # the 2nd flag bought no further reset, so the rabbit-hole intervention fires now.
+    r4 = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose4"]))
+    assert r4["candidate"] == data_idea
+
+
+def test_five_consecutive_same_axis_trials_force_a_retrieval_axis_pass_even_under_a_marker():
+    space, model_id = _space_with_model(max_trials=100)
+    for i in range(6):
+        _idea(space, model_id, "architecture", SEEDED, f"arch-{i}")
+    retrieval_idea = _idea(space, model_id, "current_code", SEEDED, "check current code")
+
+    # a durable marker suppresses the rabbit-hole intervention entirely for "architecture" ...
+    record_keep_pushing_marker(space, model_id, "architecture", author="alice")
+
+    commits = [f"lose{i}" for i in range(1, 6)]
+    for commit in commits:
+        result = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher([commit]))
+        assert result["candidate"] != retrieval_idea  # still stuck on "architecture", marker holding
+
+    streak = axis_streak(space, model_id)
+    assert streak == {"axis": "architecture", "same_axis_streak": 5, "non_improving_streak": 5}
+
+    # ... but 5 consecutive same-axis trials force a retrieval-axis pass regardless of it.
+    r6 = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose6"]))
+    assert r6["candidate"] == retrieval_idea
+    assert r6["forced_axis"] == "current_code"
+
+
+def test_axis_streak_is_empty_with_no_trials_and_recomputed_fresh_not_cached():
+    space, model_id = _space_with_model()
+    assert axis_streak(space, model_id) == {"axis": None, "same_axis_streak": 0, "non_improving_streak": 0}
+    _idea(space, model_id, "architecture", SEEDED, "arch-1")
+    dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["c1"]))
+    # an adopted (improving) trial resets the non-improving streak to zero.
+    assert axis_streak(space, model_id) == {"axis": "architecture", "same_axis_streak": 1, "non_improving_streak": 0}
