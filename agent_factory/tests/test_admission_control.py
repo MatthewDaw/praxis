@@ -23,7 +23,7 @@ _HOOKS = str(Path(__file__).resolve().parent.parent / "hooks")
 if _HOOKS not in sys.path:
     sys.path.insert(0, _HOOKS)
 
-import _ticket_state as ts  # noqa: E402
+import _ticket_state as ts  # noqa: E402 — sys.path bootstrap above must precede this import
 
 SKILL_MD = (
     Path(__file__).resolve().parents[1] / "skills" / "af-build" / "SKILL.md"
@@ -53,8 +53,10 @@ def _ticket(rid: str, device: str = "", build_state: str = "incomplete",
 def test_default_caps_are_8_cpu_1_gpu(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("AF_MAX_CPU_PARALLEL", raising=False)
     monkeypatch.delenv("AF_MAX_GPU_PARALLEL", raising=False)
-    assert ts.lane_cap("cpu") == 8
-    assert ts.lane_cap("gpu") == 1
+    assert ts.DEFAULT_MAX_CPU_PARALLEL == 8
+    assert ts.DEFAULT_MAX_GPU_PARALLEL == 1
+    assert ts.lane_cap("cpu") == ts.DEFAULT_MAX_CPU_PARALLEL
+    assert ts.lane_cap("gpu") == ts.DEFAULT_MAX_GPU_PARALLEL
 
 
 def test_caps_overridable_per_project(monkeypatch: MonkeyPatch) -> None:
