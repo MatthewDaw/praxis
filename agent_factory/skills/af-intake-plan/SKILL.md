@@ -263,6 +263,7 @@ staging store as well as the source of truth. The conceptual shape:
     "references": ["daily rep", "ratings", "habit checklist"],
     "depends_on": [],                 // prerequisite requirement_ids ("R8") — NEVER fact ids/cids — FINISHED first (build-order DAG; see Step 5)
     "scope": "mvp",                   // mvp | post-mvp — the TIER tag, not the project
+    "device": "cpu",                  // cpu | gpu — the concurrency lane; defaults to cpu
     "citations": ["Brainstorm §3", "Epic D", "wireframe-player.html#s-today"],
     "tags": ["completion", "today-screen"]   // identity tags; check applicability queries these later
   }
@@ -292,6 +293,11 @@ Field rules:
   real **build** dependency only — **NEVER a pure architecture-decision ticket** (B2's HARD RULE); the
   plan gate rejects any edge whose target is tagged `architecture-decision` (`R-NO-IMPL-DEPENDS-ON-DECISION`).
 - **`meta.scope`** — `"mvp"` or `"post-mvp"` (the tier tag only; NOT the project identity).
+- **`meta.device`** — the concurrency lane this ticket counts against in af-build's admission caps:
+  `"cpu"` or `"gpu"` (the closed set). Default to `"cpu"` when in doubt; an absent value is treated
+  as `"cpu"` too, so an already-blessed plan authored before this field existed keeps passing. The
+  plan gate rejects only a value **outside** the closed set, naming the offending ticket
+  (`R-DEVICE-CLOSED-SET`).
 - **`meta.tags`** — identity tags (concepts / surfaces / semantics). A ticket carries identity, **NEVER
   an authored list of its checks**; *which checks apply* is a fresh query (tag ∪ surface ∪ semantic)
   resolved at build time. Tag honestly so that query resolves correctly. A **pure architecture-decision
