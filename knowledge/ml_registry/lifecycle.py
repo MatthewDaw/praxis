@@ -87,6 +87,12 @@ def _active_adoption(space: RegistrySpace, model_id: str) -> Fact | None:
     )
 
 
+def active_adoption(space: RegistrySpace, model_id: str) -> Fact | None:
+    """Public entrypoint for a caller outside this module (e.g. R12's harness
+    retirement) that needs to find whichever idea is currently adopted for a model."""
+    return _active_adoption(space, model_id)
+
+
 def adopt_idea(space: RegistrySpace, idea_id: str, trial_id: str) -> None:
     """Adopt an idea from one of its own succeeded trials, recording that outcome."""
     idea = _idea(space, idea_id)

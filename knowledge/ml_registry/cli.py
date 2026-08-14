@@ -23,6 +23,7 @@ from typing import Callable, TypeVar
 
 from knowledge.ml_registry.citation import Resolver, ResolvedCitation, ResolverUnreachable
 from knowledge.ml_registry.cross_project import TicketIndex, model_to_projects, project_to_models
+from knowledge.ml_registry.floor import adjudicate_trial, load_ledger_values, register_model_with_baseline, retire_harness
 from knowledge.ml_registry.guards import guard_baseline_move, guard_model_mutation
 from knowledge.ml_registry.lifecycle import (
     adopt_idea,
@@ -124,6 +125,31 @@ def main(argv: list[str] | None = None) -> int:
     register_trial_p.add_argument(
         "--ledger", required=True, help="path to the autoresearch loop's results.tsv"
     )
+
+    register_baseline_p = sub.add_parser(
+        "register-model-with-baseline",
+        help="register a model, recomputing noise_floor/baseline_throughput from 4 ledger-named baseline_runs (R12)",
+    )
+    register_baseline_p.add_argument("--space-file", required=True)
+    register_baseline_p.add_argument("--meta-json", required=True)
+    register_baseline_p.add_argument("--ledger", required=True, help="path to the autoresearch loop's results.tsv")
+    register_baseline_p.add_argument("--model-id", default=None)
+
+    adjudicate_p = sub.add_parser(
+        "adjudicate-trial", help="decide a trial's status on a single observed value (R12)"
+    )
+    adjudicate_p.add_argument("--space-file", required=True)
+    adjudicate_p.add_argument("--trial-id", required=True)
+    adjudicate_p.add_argument("--observed-value", type=float, required=True)
+
+    retire_harness_p = sub.add_parser(
+        "retire-harness",
+        help="apply a patch to a model's harness fields, retiring the noise floor and reverting its "
+        "active adoption if the patch mutates a recorded harness field (R12)",
+    )
+    retire_harness_p.add_argument("--space-file", required=True)
+    retire_harness_p.add_argument("--model-id", required=True)
+    retire_harness_p.add_argument("--patch-json", required=True)
 
     resolve_p = sub.add_parser(
         "resolve-citation", help="resolve a registered idea's reference (R7)"
@@ -257,6 +283,28 @@ def main(argv: list[str] | None = None) -> int:
                 lambda space: register_trial(space, _json_arg(args.meta_json), ledger_commits),
             )
             print(f"OK: registered trial {fact_id}")
+            return 0
+        if args.command == "register-model-with-baseline":
+            ledger_values = load_ledger_values(Path(args.ledger))
+            fact_id = _load_mutate_save(
+                args.space_file,
+                lambda space: register_model_with_baseline(
+                    space, _json_arg(args.meta_json), ledger_values, model_id=args.model_id
+                ),
+            )
+            print(f"OK: registered model {fact_id}")
+            return 0
+        if args.command == "adjudicate-trial":
+            status = _load_mutate_save(
+                args.space_file, lambda space: adjudicate_trial(space, args.trial_id, args.observed_value)
+            )
+            print(f"OK: trial {args.trial_id} adjudicated {status}")
+            return 0
+        if args.command == "retire-harness":
+            fact = _load_mutate_save(
+                args.space_file, lambda space: retire_harness(space, args.model_id, _json_arg(args.patch_json))
+            )
+            print(json.dumps(fact.to_json()))
             return 0
         if args.command == "resolve-citation":
             space_path = Path(args.space_file)

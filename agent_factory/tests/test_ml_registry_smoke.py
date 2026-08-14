@@ -22,6 +22,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -415,6 +417,89 @@ def test_cli_resolve_citation_downgrades_to_reasoned_on_the_3rd_consecutive_unre
     idea = next(f for f in readback if f["id"] == idea_id)
     assert idea["meta"]["basis"] == "reasoned"
     assert idea["meta"]["unreachable_streak"] == 0
+
+
+def test_cli_registers_a_model_with_a_ledger_recomputed_floor_and_adjudicates_a_single_trial(tmp_path: Path) -> None:
+    """R12 acceptance, CLI-driven: registration recomputes noise_floor/baseline_throughput
+    from 4 named ledger rows, refuses a disagreeing stored value, adjudicates a candidate
+    on a single trial, and a harness-field mutation retires the floor, reverts the active
+    adoption (with its re-queue side effect), and clears the ratchet counter."""
+    space_file = tmp_path / "space.json"
+    ledger = tmp_path / "results.tsv"
+    ledger.write_text(
+        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
+        "r1\t1.0\t2.0\tok\tbaseline run 1\n"
+        "r2\t1.02\t2.0\tok\tbaseline run 2\n"
+        "r3\t0.98\t2.0\tok\tbaseline run 3\n"
+        "r4\t1.04\t2.0\tok\tbaseline run 4\n"
+    )
+    meta = {
+        "metric": "val_bpb",
+        "direction": "minimize",
+        "win_condition": "beats baseline by noise_floor",
+        "baseline": "commit-abc123",
+        "diff_size_limit": 800,
+        "baseline_runs": ["r1", "r2", "r3", "r4"],
+    }
+    result = _run_cli(
+        "register-model-with-baseline", "--space-file", str(space_file),
+        "--meta-json", json.dumps(meta), "--ledger", str(ledger),
+    )
+    assert result.returncode == 0, result.stderr
+    model_id = result.stdout.strip().rsplit(" ", 1)[-1]
+
+    readback = json.loads(_run_cli("readback", "--space-file", str(space_file), "--category", "model").stdout)
+    registered = next(f for f in readback if f["id"] == model_id)
+    assert registered["meta"]["noise_floor"] == pytest.approx(0.02581988897471611)
+    assert registered["meta"]["baseline_throughput"] == pytest.approx(1.01)
+    assert registered["meta"]["ratchet_count"] == 0
+
+    # a stored floor that disagrees with the recomputation is refused naming it
+    bad_meta = {**meta, "noise_floor": 999.0}
+    bad = _run_cli(
+        "register-model-with-baseline", "--space-file", str(space_file),
+        "--meta-json", json.dumps(bad_meta), "--ledger", str(ledger),
+    )
+    assert bad.returncode == 1
+    assert "noise_floor" in bad.stdout + bad.stderr
+
+    idea_id = _register(
+        "register-idea", space_file,
+        {"model_id": model_id, "origin": "seeded", "axis": "architecture", "description": "try RoPE"},
+    )
+    trial_id = _register(
+        "register-trial", space_file,
+        {"model_id": model_id, "idea_id": idea_id, "commit": "r1", "status": "running"},
+        ledger=ledger,
+    )
+    adjudicate = _run_cli(
+        "adjudicate-trial", "--space-file", str(space_file), "--trial-id", trial_id, "--observed-value", "0.5"
+    )
+    assert adjudicate.returncode == 0, adjudicate.stderr
+    assert "succeeded" in adjudicate.stdout
+
+    adopt = _run_cli("adopt-idea", "--space-file", str(space_file), "--idea-id", idea_id, "--trial-id", trial_id)
+    assert adopt.returncode == 0, adopt.stderr
+
+    retire = _run_cli(
+        "retire-harness", "--space-file", str(space_file), "--model-id", model_id,
+        "--patch-json", json.dumps({"hardware": "a100"}),
+    )
+    assert retire.returncode == 0, retire.stderr  # first-time set -- not yet a mutation
+
+    mutate = _run_cli(
+        "retire-harness", "--space-file", str(space_file), "--model-id", model_id,
+        "--patch-json", json.dumps({"hardware": "h100"}),
+    )
+    assert mutate.returncode == 0, mutate.stderr
+    retired = json.loads(mutate.stdout)
+    assert "noise_floor" not in retired["meta"]
+    assert retired["meta"]["ratchet_count"] == 0
+    assert retired["meta"]["campaign_status"] == "stalled_pending_baseline"
+
+    idea_readback = json.loads(_run_cli("readback", "--space-file", str(space_file), "--category", "idea").stdout)
+    winner = next(f for f in idea_readback if f["id"] == idea_id)
+    assert winner["meta"]["status"] != "adopted"  # the adoption was reverted by the harness mutation
 
 
 def test_cli_resolve_citation_refuses_an_unregistered_idea_naming_it(tmp_path: Path) -> None:
