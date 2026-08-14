@@ -2305,6 +2305,11 @@ FINDINGS="$AF_STATE_DIR/af-round-findings-$PROJECT.json"
 FINDING_STREAK="$AF_STATE_DIR/af-finding-regress-streak-$PROJECT.json"
 FINDING_ESCALATION="$AF_STATE_DIR/af-finding-regress-escalation-$PROJECT.tsv"
 AF_FINDING_REGRESS_MAX="${AF_FINDING_REGRESS_MAX:-2}"
+# The regression pass writes one line here for every ticket whose "it produced no commit" regression
+# was SUPPRESSED because the ticket is parked on a human sign-off (see the MANUAL SIGN-OFF block in
+# the regress heredoc). A file, not stderr, because this is the one thing in that pass a human must
+# actually see: `say`ing it puts the pending sign-off on the console, not just in the log tail.
+PARKED_REPORT="$AF_STATE_DIR/af-round-parked-$PROJECT.txt"
 
 # Told to the workers so they hit the right services. A project with neither -- an iOS app, say --
 # gets no clause at all rather than the literal "Postgres localhost:none", which reads as a real
@@ -2317,7 +2322,7 @@ verify_round(){   # $1 = round number, $2.. = the round's ticket ids
   local rnd="$1"; shift
   local ids_csv; ids_csv=$(printf '%s,' "$@"); ids_csv=${ids_csv%,}
   local vsession="$SESSION-verify"
-  rm -f "$VERDICT"
+  rm -f "$VERDICT" "$PARKED_REPORT"
 
   # R17 — hand the verifier the findings it must RE-EVALUATE, not just the ticket ids. Without this
   # the resolution pass below has nothing but the check's exit code to go on, and "the check passed"
@@ -2355,7 +2360,7 @@ PYEOF
 
   # No parentheses in this prompt, deliberately — if the REPL is not actually up the text lands on a
   # bash prompt, where a stray paren is a syntax error that kills the pane.
-  tmux send-keys -t "$vsession" "Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv. Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. THIS IS THE ONLY PLACE THOSE GATES RUN: the workers were told to skip them so that N of them would not run N concurrent suites, so you are the authoritative repo-wide gate for this round and nothing else has proven the merged tree compiles or passes. If any gate is red, identify which ticket's change caused it and regress that ticket per step 3; if you genuinely cannot attribute it, regress the whole batch rather than passing a red tree. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. If this round merged only ONE ticket, the cross-ticket lens is trivially satisfied and you may skip lens A, but step 1's gates and lenses B and C still run in full — they are the only repo-wide check this ticket gets. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: NAME every ticket whose work does NOT survive integration. Do NOT write that regression to Praxis yourself and do not try to fix the ticket — the loop that dispatched you performs the regression from your verdict, using a write path it already owns. Your job is the judgement, not the write. This split is deliberate: when verifiers were asked to do their own Praxis write, nine consecutive rounds reported zero regressions while their own notes named the failing tickets, so every one of those tickets stayed marked finished on work that had failed integration. Step 3b: read the file $FINDINGS. It is a JSON array of the OPEN findings these tickets still owe an answer to, each with id, check_id, symptom and evidence. If the array is empty, skip this step entirely. Otherwise, for EACH entry do TWO INDEPENDENT things and never let either one decide the other. First, run the check named by check_id against the merged tree and record whether it passes; if check_id is empty there is no check to run and check_passed is false. Second, and SEPARATELY, re-evaluate the recorded symptom itself against the merged tree — read the code, run the specific reproduction the evidence describes — and record whether that symptom is STILL PRESENT. A check that exits zero is NOT evidence the symptom is gone: a check can be defeated by a change that satisfies the command while leaving the defect exactly where it was, and the case where your two answers DISAGREE is the single most valuable thing you can report here, so report both honestly rather than making them agree. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, notes which is one short string, regressed which is an array of OBJECTS — one per ticket that must be regressed, each with four string fields: id the ticket id, reason what actually failed stated concretely, evidence the exact failing test name, gate, file and error text or the precise merge symptom, and fix what the rebuild must do differently — plus an OPTIONAL fifth string field check, a single command that FAILS on this broken merged tree and would PASS once the fix lands. Supply check only when you actually ran that command and watched it fail; a guess is worse than omitting it. It must be one plain command with no shell operators, no pipes, no redirection and no absolute paths, starting with one of pytest, python, python3, npm, npx, make, ruff, mypy, eslint, playwright or grep — anything else is rejected and the check is dropped, though your regression still lands. And findings_recheck which is an array of objects carrying step 3b's answers, each with id the ticket id, check_id copied from $FINDINGS, check_passed true or false, and symptom_present true or false; write an empty array if step 3b was skipped. An empty array asserts every ticket survived integration. Write these for the NEXT WORKER, not for a log: it will claim the ticket cold with no memory of this round, so a bare id or a vague "tests failed" wastes an entire rebuild while it re-derives what you already know. Name the failing test, quote the error, and say what the fix has to address. Good: {"id":"REM-10","reason":"its new default-prefix-attribution controller is unregistered in RESTRICTED_RECORD_MANIFEST and the permission_pages seed","evidence":"chat14-restricted-record-manifest.test.ts and chat16-chart-access-record.test.ts both fail on the merged tree with 'scope not registered'","fix":"register the new controller/scope in RESTRICTED_RECORD_MANIFEST and add its permission_pages seed row, then re-run both suites against the merged tree"}. Bad: {"id":"REM-10","reason":"failed","evidence":"","fix":"fix it"}. Write that file LAST, after everything else is done, and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. If you cannot verify at all, that is itself a verdict: write the JSON with verdict fail and notes saying why, rather than asking what to do."
+  tmux send-keys -t "$vsession" "Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv. Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. THIS IS THE ONLY PLACE THOSE GATES RUN: the workers were told to skip them so that N of them would not run N concurrent suites, so you are the authoritative repo-wide gate for this round and nothing else has proven the merged tree compiles or passes. If any gate is red, identify which ticket's change caused it and regress that ticket per step 3; if you genuinely cannot attribute it, regress the whole batch rather than passing a red tree. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. If this round merged only ONE ticket, the cross-ticket lens is trivially satisfied and you may skip lens A, but step 1's gates and lenses B and C still run in full — they are the only repo-wide check this ticket gets. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: NAME every ticket whose work does NOT survive integration. A ticket whose meta.verify reads manual is the one class where absence of a commit is NOT evidence of anything: its acceptance is a human sign-off over something rendered or observed, so it produces no commit BY DESIGN and its work being missing from src, tests and docs is the expected shape, not a defect. Judge such a ticket only on code it actually landed, and never name it for having produced no merged commit — that regression is suppressed by the loop and reported as parked awaiting sign-off, so naming it wastes the round. Do NOT write that regression to Praxis yourself and do not try to fix the ticket — the loop that dispatched you performs the regression from your verdict, using a write path it already owns. Your job is the judgement, not the write. This split is deliberate: when verifiers were asked to do their own Praxis write, nine consecutive rounds reported zero regressions while their own notes named the failing tickets, so every one of those tickets stayed marked finished on work that had failed integration. Step 3b: read the file $FINDINGS. It is a JSON array of the OPEN findings these tickets still owe an answer to, each with id, check_id, symptom and evidence. If the array is empty, skip this step entirely. Otherwise, for EACH entry do TWO INDEPENDENT things and never let either one decide the other. First, run the check named by check_id against the merged tree and record whether it passes; if check_id is empty there is no check to run and check_passed is false. Second, and SEPARATELY, re-evaluate the recorded symptom itself against the merged tree — read the code, run the specific reproduction the evidence describes — and record whether that symptom is STILL PRESENT. A check that exits zero is NOT evidence the symptom is gone: a check can be defeated by a change that satisfies the command while leaving the defect exactly where it was, and the case where your two answers DISAGREE is the single most valuable thing you can report here, so report both honestly rather than making them agree. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, notes which is one short string, regressed which is an array of OBJECTS — one per ticket that must be regressed, each with four string fields: id the ticket id, reason what actually failed stated concretely, evidence the exact failing test name, gate, file and error text or the precise merge symptom, and fix what the rebuild must do differently — plus an OPTIONAL fifth string field check, a single command that FAILS on this broken merged tree and would PASS once the fix lands. Supply check only when you actually ran that command and watched it fail; a guess is worse than omitting it. It must be one plain command with no shell operators, no pipes, no redirection and no absolute paths, starting with one of pytest, python, python3, npm, npx, make, ruff, mypy, eslint, playwright or grep — anything else is rejected and the check is dropped, though your regression still lands. And findings_recheck which is an array of objects carrying step 3b's answers, each with id the ticket id, check_id copied from $FINDINGS, check_passed true or false, and symptom_present true or false; write an empty array if step 3b was skipped. An empty array asserts every ticket survived integration. Write these for the NEXT WORKER, not for a log: it will claim the ticket cold with no memory of this round, so a bare id or a vague "tests failed" wastes an entire rebuild while it re-derives what you already know. Name the failing test, quote the error, and say what the fix has to address. Good: {"id":"REM-10","reason":"its new default-prefix-attribution controller is unregistered in RESTRICTED_RECORD_MANIFEST and the permission_pages seed","evidence":"chat14-restricted-record-manifest.test.ts and chat16-chart-access-record.test.ts both fail on the merged tree with 'scope not registered'","fix":"register the new controller/scope in RESTRICTED_RECORD_MANIFEST and add its permission_pages seed row, then re-run both suites against the merged tree"}. Bad: {"id":"REM-10","reason":"failed","evidence":"","fix":"fix it"}. Write that file LAST, after everything else is done, and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. If you cannot verify at all, that is itself a verdict: write the JSON with verdict fail and notes saying why, rather than asking what to do."
   sleep 3; tmux send-keys -t "$vsession" Enter
   say "round #$rnd: post-merge verification dispatched over $ids_csv"
 
@@ -2517,13 +2522,14 @@ PYEOF
   # command threw away — which is how "the merger does not ingest" could have run for a full build
   # without leaving a trace. Redirecting to $LOG keeps stdout clean AND keeps the narration.
   local regressed_n
-  regressed_n=$($PY - "$PROJECT" "$rnd" "$VERDICT" "$WT" <<'PYEOF' 2>>"$LOG" || echo 0
+  regressed_n=$($PY - "$PROJECT" "$rnd" "$VERDICT" "$WT" "$PARKED_REPORT" <<'PYEOF' 2>>"$LOG" || echo 0
 import json, subprocess, sys
 import _praxis, _ticket_state as ts
 from agent_factory import failure_taxonomy, ingestion_api, widening
 
 proj, rnd, path = sys.argv[1], sys.argv[2], sys.argv[3]
 wt = sys.argv[4] if len(sys.argv) > 4 else "."
+parked_path = sys.argv[5] if len(sys.argv) > 5 else ""
 head_sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
                           cwd=wt).stdout.strip() or None
 kw = dict(space=proj, snapshot=f"prd-{proj}")
@@ -2554,12 +2560,69 @@ for f in _praxis.facts_by(category="requirement", **kw) or []:
     m = f.get("meta") or {}
     by_rid[str(m.get("requirement_id") or f.get("id"))] = f
 
+def _named_by_a_commit(rid):
+    """True iff SOME commit in the merged history names this ticket by the trailing-(ID) convention
+    integration merges on (see af_owned_ids). Whole history, not this round's base, on purpose: the
+    question here is "does any code attributable to this ticket exist at all", and answering it over
+    the whole history is the conservative direction — more matches means the regression proceeds.
+
+    An UNPROVABLE answer (no git, not a repo, timeout) returns True for the same reason: absence of
+    work may only ever be inferred from positive evidence, never from a failed probe."""
+    try:
+        r = subprocess.run(["git", "log", "--format=%s", "--fixed-strings", f"--grep=({rid})"],
+                           capture_output=True, text=True, timeout=30, cwd=wt)
+    except Exception:
+        return True
+    return r.returncode != 0 or bool((r.stdout or "").strip())
+
 n = 0
+parked = []     # tickets whose "no commit" regression was suppressed — reported, never silent
 ingested = []   # one entry per ticket actually ingested+regressed; feeds the widening pass below
 for rid, detail in entries:
     f = by_rid.get(rid)
     if not f:
         sys.stderr.write(f"regress: no ticket {rid} in prd-{proj}\n"); continue
+
+    # ------------------------------------------------ MANUAL SIGN-OFF IS NOT A MISSING COMMIT ----
+    # A verify="manual" ticket produces no commit BY DESIGN — its completion is a human sign-off,
+    # not code — so "it never produced a merged commit" is a property of the ticket class, not a
+    # defect. Regressing it for that re-dispatches a ticket no worker can ever advance: dispatched ->
+    # cannot produce commits -> regressed -> re-dispatched, forever. Observed on mvpvu-foundation
+    # round #1: `verdict=fail gates_green=True regressed=1` naming R21 — meta.verify="manual", its
+    # acceptance a human re-labelling pass over rendered images — with "R21's worktree branch never
+    # produced a merged commit in this round ... whatever R21 was supposed to build is not present
+    # anywhere in src/, tests/, docs/". All three lenses "confirmed" it independently, because all
+    # three were applying a commits-must-exist invariant that does not hold for this ticket class.
+    #
+    # NARROW ON PURPOSE — this is not "manual tickets are exempt from verification". BOTH must hold:
+    #   * the ticket is PARKED on a manual sign-off (ts.parked_on_manual: every automated obligation
+    #     is covered and green and only the human/external-sourced pass is missing), and
+    #   * NO commit anywhere names it, so there is no diff of its to fault and any integration
+    #     failure attributed to it is a misattribution by construction.
+    # A manual ticket that DID land code is regressed on its merits like any other; a ticket with
+    # unmet AUTOMATED obligations is not parked, so its zero-commit regression still lands.
+    #
+    # Suppressing the regression is NOT passing the ticket, which is the opposite error: completion
+    # still runs through all_validations_passed, whose manual clause no worker-sourced pass can ever
+    # satisfy. The ticket stays exactly where it was — parked — and says so through $PARKED_REPORT.
+    # It clears the moment a human records the sign-off (the same exit the frontier already uses).
+    if not _named_by_a_commit(rid):
+        try:
+            is_parked = ts.parked_on_manual(f, (proj, f"prd-{proj}"))
+        except Exception as exc:   # unanswerable "parked?" -> regress as reported, never swallow it
+            is_parked = False
+            sys.stderr.write(f"parked-on-manual check failed for {rid} ({exc!r}) — "
+                             f"regressing as the verifier reported\n")
+        if is_parked:
+            note = (f"{rid}: PARKED awaiting manual sign-off — NOT regressed. Round #{rnd}'s "
+                    f"verification faulted it for producing no merged commit, but a verify=manual "
+                    f"ticket produces none by design: every automated obligation of {rid} is "
+                    f"covered and green and only the human sign-off is outstanding. It cannot "
+                    f"self-certify and is not finished — record the manual pass to release it.")
+            parked.append(note)
+            sys.stderr.write(note + "\n")
+            continue
+
     reason   = str(detail.get("reason") or detail.get("why") or d.get("notes") or "").strip()
     evidence = str(detail.get("evidence") or detail.get("failing") or "").strip()
     fix      = str(detail.get("fix") or detail.get("required") or "").strip()
@@ -2696,12 +2759,29 @@ try:
 except Exception as exc:  # noqa: BLE001 - see the block comment: never lose a landed regression
     sys.stderr.write(f"widening/promotion pass failed after {n} regression(s) landed: {exc!r}\n")
 
+# Hand the suppressed-regression report to the driver so it can `say` it. Failing to write it is
+# narrated and never fatal: a lost report costs visibility, dying here would cost the regressions.
+if parked and parked_path:
+    try:
+        with open(parked_path, "w") as fh:
+            fh.write("\n".join(parked) + "\n")
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"could not write the parked report ({exc!r}); it is in this log above\n")
+
 print(n)
 PYEOF
 )
   case "$regressed_n" in ''|*[!0-9]*) regressed_n=0 ;; esac
   if [ "$regressed_n" -gt 0 ]; then
     say "round #$rnd: $regressed_n ticket(s) regressed with a failure report attached — the next round rebuilds them"
+  fi
+  # A suppressed manual-sign-off regression is REPORTED, not silent: the ticket is not finished and
+  # not rebuildable, and the only thing that can move it is the human this line is addressed to.
+  if [ -s "$PARKED_REPORT" ]; then
+    while IFS= read -r pline; do
+      [ -n "$pline" ] || continue
+      say "round #$rnd: $pline"
+    done < "$PARKED_REPORT"
   fi
 
   # THE OTHER HALF OF THE FINDING CONTRACT. open_finding()'s docstring has always said a finding
