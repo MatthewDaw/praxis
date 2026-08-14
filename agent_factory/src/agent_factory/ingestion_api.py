@@ -240,6 +240,29 @@ class Unauthenticated(PermissionError):
     """An ingestion-API verb was called with no org-authenticated Praxis identity (R1b)."""
 
 
+class LessonSourceCollision(ValueError):
+    """R43: a lesson's ``source`` exactly matched the ``prd-<project>`` grouping-tag shape
+    ``Fact.source`` carries for requirement facts (``source = f"prd-{project}"`` — see
+    ``hooks._praxis.incomplete_requirements``). See :func:`reject_prd_shaped_lesson_source` for
+    the exact matching rule."""
+
+
+# The WHOLE source string must match, not a substring, so "notes about prd conventions" or "see
+# docs/prd-notes.md" (prd-shaped text embedded in a longer string) is never falsely flagged.
+_PRD_GROUPING_TAG_SOURCE_RE = re.compile(r"^prd-\S+$")
+
+
+def reject_prd_shaped_lesson_source(source: str | None) -> None:
+    """Raise :class:`LessonSourceCollision` when ``source``, taken as a whole, is exactly
+    ``prd-<rest>`` — the ``prd-<project>`` grouping-tag shape (R43)."""
+    if source is not None and _PRD_GROUPING_TAG_SOURCE_RE.match(source):
+        raise LessonSourceCollision(
+            f"lesson source {source!r} is shaped exactly like the prd-<project> grouping-tag "
+            "convention Fact.source carries for requirement facts; rejected so a lesson's "
+            "free-text source can never collide with that convention"
+        )
+
+
 def _write_insight(text: str, category: str, *, source: str | None = None,
                    meta: dict[str, Any] | None = None,
                    snapshot: str | None = None) -> dict[str, Any]:
@@ -271,7 +294,10 @@ def _write_insight(text: str, category: str, *, source: str | None = None,
 
 def write_lesson(text: str, *, source: str | None = None,
                  meta: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Write ``text`` as a lesson into the shared ``factory-learnings`` space (POST /insights)."""
+    """Write ``text`` as a lesson into the shared ``factory-learnings`` space (POST /insights).
+    Refuses (``LessonSourceCollision``) before any write — :func:`reject_prd_shaped_lesson_source`.
+    """
+    reject_prd_shaped_lesson_source(source)
     return _write_insight(text, LESSON_CATEGORY, source=source, meta=meta)
 
 
@@ -289,6 +315,39 @@ def read_lessons(query: str = "", *, top_k: int = 10) -> list[dict[str, Any]]:
                                snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT)
     return _praxis.facts_by(category=LESSON_CATEGORY, space=_praxis.FACTORY_LEARNINGS_SPACE,
                             snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT)
+
+
+def get_lesson(lesson_id: str) -> dict[str, Any]:
+    """R41 — the dedicated BY-ID read counterpart to :func:`write_lesson`: fetch one lesson's full
+    text plus accumulated metadata (``provenance``, ``content_hash``, ... — whatever
+    :func:`learn`/:func:`learn_bulk` and :func:`_append_lesson_provenance` stamped on it) by the id
+    those two calls returned, without the caller constructing its own ``get_fact``/``facts_by``/
+    ``context`` call.
+
+    Delegates straight to :func:`hooks._praxis.get_fact`, scoped to the same shared
+    ``(FACTORY_LEARNINGS_SPACE, FACTORY_LEARNINGS_SNAPSHOT)`` every other lesson read/write in this
+    module targets — the "same org/project scoping as the existing ``get_fact`` primitive" the
+    ticket asks for is inherited by construction, not re-derived here.
+
+    Never raises for an ordinary miss: an unknown id or an id naming a fact that is not a lesson
+    (e.g. a check or a ticket id passed in by mistake) both come back as a clear
+    ``{"found": False, "reason": ...}`` result rather than a ``PraxisUnreachable``-shaped surprise
+    or a lesson-shaped dict with a wrong-typed body.
+    """
+    fact = _praxis.get_fact(lesson_id, space=_praxis.FACTORY_LEARNINGS_SPACE,
+                            snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT, not_found_ok=True)
+    if not fact or not fact.get("id"):
+        return {"found": False, "lesson_id": lesson_id, "reason": "not_found"}
+    if fact.get("category") != LESSON_CATEGORY:
+        return {"found": False, "lesson_id": lesson_id, "reason": "wrong_category",
+                "category": fact.get("category")}
+    return {
+        "found": True,
+        "lesson_id": lesson_id,
+        "text": fact.get("content") or fact.get("text") or fact.get("insight"),
+        "source": fact.get("source"),
+        "meta": dict(fact.get("meta") or {}),
+    }
 
 
 # --------------------------------------------------------------------------- R1b: auth gate
@@ -604,6 +663,52 @@ def _find_duplicate_lesson(text_n: str, content_hash: str) -> str | None:
     return None
 
 
+def _shape_guard_lesson_provenance(raw: Any) -> list[dict[str, Any]]:
+    """R42 — the read-side shape guard for a lesson's accumulated ``meta.provenance`` list, mirroring
+    :func:`hooks._ticket_state._shape_guard_regression_details`: a list is copied (never the
+    caller's own dict objects, so a later append can never mutate a value someone else is still
+    holding); anything else (``None``, a lesson written before this shipped) degrades to "no
+    provenance yet" rather than raising."""
+    if isinstance(raw, list):
+        return [dict(d) for d in raw if isinstance(d, dict)]
+    return []
+
+
+def accumulate_lesson_provenance(existing_lesson: dict[str, Any],
+                                 entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """R42/R2 — append ONE new provenance entry onto a lesson's accumulated
+    ``meta.provenance`` list (source + channel + timestamp), following the
+    :func:`hooks._ticket_state.accumulate_regression_detail` precedent: read-modify-write through
+    this ONE function rather than a bare ``patch_meta`` wholesale-replace, so a duplicate-match
+    occurrence's provenance is APPENDED, never lost to a concurrent append clobbering the same key.
+
+    A lesson written before this shipped carries no ``meta.provenance`` list yet — this
+    initializes it from the lesson's existing single top-level ``source`` field (plus whatever
+    ``meta.channel`` it was written with) so that first-write history is never silently dropped on
+    its first append, rather than starting the accumulated list empty."""
+    existing_meta = existing_lesson.get("meta") or {}
+    provenance = _shape_guard_lesson_provenance(existing_meta.get("provenance"))
+    if not provenance:
+        legacy_source = existing_lesson.get("source")
+        if legacy_source is not None:
+            provenance = [{"source": legacy_source, "channel": existing_meta.get("channel"),
+                          "at": None}]
+    provenance.append(dict(entry))
+    return provenance
+
+
+def _append_lesson_provenance(lesson_id: str, *, source: str | None, channel: str) -> list[dict[str, Any]]:
+    """R42 — the clobber-guarded read-modify-write itself: re-fetch the lesson fresh (never reuse a
+    stale in-memory copy from earlier in this call) immediately before computing the merged list, so
+    the write races the smallest possible window rather than one held since ``classify_and_dedup``."""
+    plan_kw = {"space": _praxis.FACTORY_LEARNINGS_SPACE, "snapshot": _praxis.FACTORY_LEARNINGS_SNAPSHOT}
+    existing = _praxis.get_fact(lesson_id, **plan_kw) or {}
+    provenance = accumulate_lesson_provenance(
+        existing, {"source": source, "channel": channel, "at": time.time()})
+    _praxis.patch_meta(lesson_id, {"provenance": provenance}, **plan_kw)
+    return provenance
+
+
 def classify_and_dedup(lesson_text: str, *, class_hint: str | None = None,
                        top_k: int = 5) -> dict[str, Any]:
     """R1's first step: classify a new lesson against the existing corpus and flag an exact-text
@@ -762,7 +867,12 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
         # identical row would only create the duplicate this dedup exists to prevent). Reuse the
         # existing id and DO NOT write a new row. The check/proof/regress path below still runs, so
         # a duplicate complaint that carries a new check is not weakened — it just reuses the lesson.
+        # R42: this occurrence's source (plus channel and a timestamp) is APPENDED to the existing
+        # lesson's accumulated provenance via a clobber-guarded read-modify-write
+        # (:func:`_append_lesson_provenance`) instead of being discarded — so a second ingest of the
+        # same complaint text under a different source is not silently lost.
         lesson_id = lesson_duplicate_of
+        _append_lesson_provenance(lesson_id, source=source, channel=channel)
     else:
         lesson = write_lesson(lesson_text, source=source, meta={
             "class": classification["class"], "duplicate_of": None,

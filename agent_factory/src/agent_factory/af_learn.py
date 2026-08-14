@@ -105,6 +105,18 @@ def learn(complaint_text: str, project: str | None = None, *, source: str | None
     )
 
 
+def get_lesson(lesson_id: str) -> dict[str, Any]:
+    """R41 — the dedicated read counterpart to :func:`learn`/:func:`learn_bulk`: fetch a lesson's
+    full text plus its accumulated metadata by the id either of those two calls returned, without
+    the caller needing to construct its own ``get_fact``/``facts_by``/``context`` call.
+
+    A thin delegation to :func:`agent_factory.ingestion_api.get_lesson` — the same shape ``learn``/
+    ``learn_bulk`` use for the write side — so the shared ``FACTORY_LEARNINGS_SPACE`` scoping lives
+    exactly once. Read-only, so unlike :func:`learn` it needs no target-project resolution: a lesson
+    id already names its fact directly, in the one org-level space every lesson lives in."""
+    return ingestion_api.get_lesson(lesson_id)
+
+
 def learn_bulk(complaints: list[dict[str, Any]], project: str | None = None, *,
               identity: str | None = None, env: dict[str, str] | None = None,
               ) -> list[dict[str, Any]]:
