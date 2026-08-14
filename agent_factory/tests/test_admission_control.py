@@ -15,9 +15,13 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
+from typing import Any
+
+from pytest import MonkeyPatch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 
+# hooks/ is added to sys.path above; the import must follow that insert, hence E402.
 import _ticket_state as ts  # noqa: E402
 
 SKILL_MD = (
@@ -26,8 +30,8 @@ SKILL_MD = (
 
 
 def _ticket(rid: str, device: str = "", build_state: str = "incomplete",
-            claim_owner: str | None = None, lease_live: bool = False) -> dict:
-    meta: dict = {"requirement_id": rid, "build_state": build_state}
+            claim_owner: str | None = None, lease_live: bool = False) -> dict[str, Any]:
+    meta: dict[str, Any] = {"requirement_id": rid, "build_state": build_state}
     if device:
         meta["device"] = device
     if claim_owner:
@@ -45,14 +49,14 @@ def _ticket(rid: str, device: str = "", build_state: str = "incomplete",
 
 # --------------------------------------------------------------------------- defaults + overrides
 
-def test_default_caps_are_8_cpu_1_gpu(monkeypatch) -> None:
+def test_default_caps_are_8_cpu_1_gpu(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("AF_MAX_CPU_PARALLEL", raising=False)
     monkeypatch.delenv("AF_MAX_GPU_PARALLEL", raising=False)
     assert ts.lane_cap("cpu") == 8
     assert ts.lane_cap("gpu") == 1
 
 
-def test_caps_overridable_per_project(monkeypatch) -> None:
+def test_caps_overridable_per_project(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("AF_MAX_CPU_PARALLEL", raising=False)
     monkeypatch.setenv("AF_MAX_CPU_PARALLEL__AF_ML_RESEARCH", "3")
     assert ts.lane_cap("cpu", project="af-ml-research") == 3
@@ -60,7 +64,7 @@ def test_caps_overridable_per_project(monkeypatch) -> None:
     assert ts.lane_cap("cpu", project="other-project") == 8
 
 
-def test_global_override_applies_when_no_project_override(monkeypatch) -> None:
+def test_global_override_applies_when_no_project_override(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("AF_MAX_GPU_PARALLEL", "4")
     monkeypatch.delenv("AF_MAX_GPU_PARALLEL__AF_ML_RESEARCH", raising=False)
     assert ts.lane_cap("gpu", project="af-ml-research") == 4
@@ -78,7 +82,7 @@ def test_ticket_counts_against_lane_named_by_meta_device() -> None:
 
 # --------------------------------------------------------------------------- live campaign accounting
 
-def test_live_claim_from_earlier_round_counts_against_its_lane(monkeypatch) -> None:
+def test_live_claim_from_earlier_round_counts_against_its_lane(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("AF_MAX_GPU_PARALLEL", raising=False)
     monkeypatch.delenv("AF_MAX_GPU_PARALLEL__AF_ML_RESEARCH", raising=False)
     live = [_ticket("R-live", device="gpu", claim_owner="worker-1", lease_live=True)]
@@ -106,7 +110,7 @@ def test_stale_lease_does_not_count_as_live() -> None:
 
 # --------------------------------------------------------------------------- cap enforcement + logging
 
-def test_frontier_exceeding_cap_admits_exactly_that_many_and_defers_the_rest(monkeypatch) -> None:
+def test_frontier_exceeding_cap_admits_exactly_that_many_and_defers_the_rest(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("AF_MAX_CPU_PARALLEL", "2")
     monkeypatch.delenv("AF_MAX_CPU_PARALLEL__AF_ML_RESEARCH", raising=False)
     ready = [_ticket(f"R{i}", device="cpu") for i in range(5)]
@@ -117,7 +121,7 @@ def test_frontier_exceeding_cap_admits_exactly_that_many_and_defers_the_rest(mon
     assert result["lanes"]["cpu"]["used"] == 2
 
 
-def test_lanes_are_independent(monkeypatch) -> None:
+def test_lanes_are_independent(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("AF_MAX_CPU_PARALLEL", "1")
     monkeypatch.setenv("AF_MAX_GPU_PARALLEL", "1")
     ready = [_ticket("Rc", device="cpu"), _ticket("Rg", device="gpu")]
@@ -128,7 +132,7 @@ def test_lanes_are_independent(monkeypatch) -> None:
 
 # --------------------------------------------------------------------------- deferral never reads as a stall
 
-def test_deferred_ticket_reported_across_many_rounds_is_never_marked_blocked(monkeypatch) -> None:
+def test_deferred_ticket_reported_across_many_rounds_is_never_marked_blocked(monkeypatch: MonkeyPatch) -> None:
     """Admission-control deferral is a per-round dispatch decision, not a ticket-state transition —
     `admit_frontier` must never write build_state, so a ticket parked here stays plain
     ``incomplete`` (still claimable, still `ready_tickets`-eligible) no matter how many rounds it

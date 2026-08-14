@@ -2503,7 +2503,7 @@ def lane_cap(lane: str, project: str = "") -> int:
     return _LANE_DEFAULTS[lane_n]
 
 
-def ticket_device(item: dict) -> str:
+def ticket_device(item: dict[str, Any]) -> str:
     """The concurrency lane a ticket counts against: its (normalized) ``meta.device``, defaulting to
     ``"cpu"`` for an absent/unrecognized value — mirrors plan_gate.DEFAULT_DEVICE (R16) so a ticket
     that cleared the plan gate always resolves to a real lane here."""
@@ -2512,7 +2512,7 @@ def ticket_device(item: dict) -> str:
     return dev if dev in _LANE_DEFAULTS else "cpu"
 
 
-def live_claims(items: list[dict], now: Optional[float] = None) -> list[dict]:
+def live_claims(items: list[dict[str, Any]], now: Optional[float] = None) -> list[dict[str, Any]]:
     """Every ticket in ``items`` held under a LIVE claim lease right now — a build campaign still
     running from an earlier round. Reuses :func:`_lease_live` (the same boundary ``claim``/``heartbeat``
     already define) rather than re-deriving it: staying ``incomplete`` never frees a lane on its own,
@@ -2520,7 +2520,7 @@ def live_claims(items: list[dict], now: Optional[float] = None) -> list[dict]:
     return [it for it in items if isinstance(it, dict) and _lease_live(it.get("meta") or {}, now=now)]
 
 
-def admit_frontier(ready: list[dict], live: Optional[list[dict]] = None,
+def admit_frontier(ready: list[dict[str, Any]], live: Optional[list[dict[str, Any]]] = None,
                     project: str = "") -> dict[str, Any]:
     """Partition a dependency-ready frontier into what this round may DISPATCH vs. must DEFER, under
     one fixed cap per lane (R15).
@@ -2537,10 +2537,10 @@ def admit_frontier(ready: list[dict], live: Optional[list[dict]] = None,
     used = {lane: 0 for lane in _LANE_DEFAULTS}
     for it in live_claims(live or []):
         lane = ticket_device(it)
-        used[lane] = used.get(lane, 0) + 1
+        used[lane] += 1
 
-    admit: list[dict] = []
-    defer: list[dict] = []
+    admit: list[dict[str, Any]] = []
+    defer: list[dict[str, Any]] = []
     for it in ready:
         if not isinstance(it, dict):
             continue
