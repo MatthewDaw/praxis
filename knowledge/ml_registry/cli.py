@@ -1,5 +1,6 @@
 """Runnable entrypoint for the af-ml-research registry (R1 schema/guards, R2 write path,
-R3 idea lifecycle, R4 query surface, R5 cross-project model linkage, R10 trial verdict).
+R3 idea lifecycle, R4 query surface, R5 cross-project model linkage, R6 ideation axis sweep,
+R10 trial verdict).
 
 ``python -m knowledge.ml_registry.cli <subcommand> ...`` -- exit 0 on acceptance, 1 on a
 named registry refusal, 2 on malformed input. This is the real entrypoint later tickets
@@ -25,6 +26,13 @@ from knowledge.ml_registry.citation import Resolver, ResolvedCitation, ResolverU
 from knowledge.ml_registry.cross_project import TicketIndex, model_to_projects, project_to_models
 from knowledge.ml_registry.floor import adjudicate_trial, load_ledger_values, register_model_with_baseline, retire_harness
 from knowledge.ml_registry.guards import guard_baseline_move, guard_model_mutation
+from knowledge.ml_registry.ideate import (
+    GENERATIVE_AXES,
+    RETRIEVAL_AXES,
+    RetrievalResult,
+    always_confirm,
+    seed_campaign,
+)
 from knowledge.ml_registry.lifecycle import (
     adopt_idea,
     claim_idea,
@@ -295,6 +303,31 @@ def main(argv: list[str] | None = None) -> int:
     )
     supervise_p.add_argument("--max-dispatches", type=int, default=None)
 
+    seed_p = sub.add_parser(
+        "seed-campaign",
+        help="seed a model's starting idea set by sweeping the nine-axis closed set (R6)",
+    )
+    seed_p.add_argument("--space-file", required=True)
+    seed_p.add_argument("--model-id", required=True)
+    seed_p.add_argument(
+        "--mode", choices=["batch", "interactive"], default="batch",
+        help="batch auto-confirms every candidate; interactive consumes --confirm-script in order",
+    )
+    seed_p.add_argument(
+        "--generator-script", required=True,
+        help="JSON file: {axis: [candidate_meta, ...]} for each of the six generative axes",
+    )
+    seed_p.add_argument(
+        "--retriever-script", required=True,
+        help="JSON file: {axis: {query: str, rows: [{id, description, ...}, ...]}} for each of "
+        "the three retrieval axes",
+    )
+    seed_p.add_argument(
+        "--confirm-script", default=None,
+        help="JSON file: a list of booleans, consumed in order across every candidate offered -- "
+        "required in --mode=interactive, ignored in --mode=batch",
+    )
+
     args = parser.parse_args(argv)
 
     try:
@@ -507,6 +540,47 @@ def main(argv: list[str] | None = None) -> int:
 
             outcome = _load_mutate_save(args.space_file, _supervise)
             print(json.dumps(outcome, default=lambda o: {"kind": o.kind, "axis": o.axis}))
+            return 0
+        if args.command == "seed-campaign":
+            generator_script = json.loads(Path(args.generator_script).read_text())
+            retriever_script = json.loads(Path(args.retriever_script).read_text())
+            confirm_script = (
+                list(json.loads(Path(args.confirm_script).read_text())) if args.confirm_script else []
+            )
+            confirm_iter = iter(confirm_script)
+
+            def generator(axis, model_meta):  # noqa: ANN001 -- matches ideate.GeneratorFn
+                return [dict(c) for c in generator_script.get(axis, [])]
+
+            def retriever(axis, model_meta):  # noqa: ANN001 -- matches ideate.RetrieverFn
+                entry = retriever_script.get(axis, {})
+                rows = tuple(dict(r) for r in entry.get("rows", []))
+                return RetrievalResult(query=str(entry.get("query", "")), rows=rows)
+
+            def interactive_confirm(axis, candidate):  # noqa: ANN001 -- matches ideate.ConfirmFn
+                try:
+                    return bool(next(confirm_iter))
+                except StopIteration as exc:
+                    raise RegistryValidationError(
+                        "confirm-script exhausted before every candidate was confirmed",
+                        field="confirm_script",
+                    ) from exc
+
+            confirm = always_confirm if args.mode == "batch" else interactive_confirm
+
+            def _seed(space: RegistrySpace) -> dict[str, object]:
+                run = seed_campaign(
+                    space, args.model_id, generator=generator, retriever=retriever, confirm=confirm
+                )
+                return {
+                    "written": run.written,
+                    "receipts": [r.to_meta() for r in run.receipts],
+                    "generative_axes": list(GENERATIVE_AXES),
+                    "retrieval_axes": list(RETRIEVAL_AXES),
+                }
+
+            outcome = _load_mutate_save(args.space_file, _seed)
+            print(json.dumps(outcome))
             return 0
     except RegistryValidationError as exc:
         print(f"REFUSED [{exc.field}]: {exc}", file=sys.stderr)
