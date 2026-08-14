@@ -59,6 +59,11 @@ def main(argv: list[str] | None = None) -> int:
     register_model_p = sub.add_parser("register-model", help="register a model fact")
     register_model_p.add_argument("--space-file", required=True)
     register_model_p.add_argument("--meta-json", required=True)
+    register_model_p.add_argument(
+        "--model-id",
+        default=None,
+        help="re-register (update) an already-registered model instead of creating a new one",
+    )
 
     register_idea_p = sub.add_parser("register-idea", help="register an idea fact")
     register_idea_p.add_argument("--space-file", required=True)
@@ -96,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "register-model":
             space_path = Path(args.space_file)
             space = RegistrySpace.load(space_path)
-            fact_id = register_model(space, _json_arg(args.meta_json))
+            fact_id = register_model(space, _json_arg(args.meta_json), model_id=args.model_id)
             space.save(space_path)
             print(f"OK: registered model {fact_id}")
             return 0

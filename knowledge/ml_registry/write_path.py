@@ -1,4 +1,5 @@
-"""The registry write API: model / idea / trial registration (R2).
+"""The registry write API: model / idea / trial registration (R2), plus R11's campaign
+budgets and metric freeze on top of it.
 
 Builds on R1's schema validation (:mod:`knowledge.ml_registry.schema`) to implement the
 actual write path -- registering the three fact categories into a :class:`RegistrySpace`,
@@ -12,6 +13,12 @@ rules that schema validation alone cannot express:
 * a trial whose ``commit`` has no matching row in the external results ledger
   (``results.tsv``, written by the autoresearch loop -- see
   ``agent_factory/scripts/checks/af_ml_research_target.py``) is refused.
+* (R11) a model registration omitting a campaign-budget field (``per_trial_seconds``,
+  ``max_trials``, ``max_discovered_ideas``) adopts a fixed default rather than being
+  refused -- see :data:`MODEL_DEFAULTS`; the seven judging fields R1 fixed as required
+  are unaffected.
+* (R11) a model's ``metric`` is frozen for its life -- re-registering against an existing
+  ``model_id`` that tries to change it is refused naming it (:func:`register_model`).
 
 :class:`RegistrySpace` is a JSON-persisted stand-in for the Praxis-backed "ml-research"
 space: it gives the write path a real readback across process boundaries (the CLI below
@@ -36,6 +43,17 @@ IDEA_ORIGINS: tuple[str, ...] = (SEEDED, DISCOVERED)
 
 MAX_DISCOVERED_IDEAS_FIELD = "max_discovered_ideas"
 DEFAULT_MAX_DISCOVERED_IDEAS = -1  # no budget configured on the model -> unlimited
+
+# Campaign-budget fields a registration MAY omit (R11): each adopts this fixed default
+# rather than being refused. Unlike the seven REQUIRED_META_KEYS[MODEL] fields, these
+# never block registration by their absence.
+MODEL_DEFAULTS: dict[str, object] = {
+    "per_trial_seconds": 420,
+    "max_trials": 200,
+    MAX_DISCOVERED_IDEAS_FIELD: 8,
+}
+
+METRIC_FIELD = "metric"
 
 
 @dataclass
@@ -75,6 +93,13 @@ class RegistrySpace:
 
     def get(self, fact_id: str) -> Fact | None:
         return self.facts.get(fact_id)
+
+    def replace(self, fact_id: str, meta: dict[str, object]) -> None:
+        """Overwrite an EXISTING fact's meta in place, keeping its id/category/edges."""
+        existing = self.facts[fact_id]
+        self.facts[fact_id] = Fact(
+            id=fact_id, category=existing.category, meta=dict(meta), derived_from=existing.derived_from
+        )
 
     def list_facts(self, category: str | None = None) -> list[Fact]:
         facts = list(self.facts.values())
@@ -117,10 +142,41 @@ def load_ledger_commits(path: Path) -> frozenset[str]:
         return frozenset(row[0].strip() for row in reader if row and row[0].strip())
 
 
-def register_model(space: RegistrySpace, meta: dict[str, object]) -> str:
-    """Register a model fact. Returns the new fact id."""
-    validate_fact(MODEL, meta)
-    return space.insert(MODEL, meta)
+def register_model(space: RegistrySpace, meta: dict[str, object], *, model_id: str | None = None) -> str:
+    """Register a model fact, or -- when ``model_id`` names an already-registered model --
+    re-register (update) it in place. Returns the fact id (new for a fresh registration,
+    ``model_id`` echoed back for an update).
+
+    Every campaign-budget field in :data:`MODEL_DEFAULTS` (``per_trial_seconds``,
+    ``max_trials``, ``max_discovered_ideas``) that the caller omits adopts its default
+    before validation -- the seven ``REQUIRED_META_KEYS[MODEL]`` fields are unaffected and
+    still refuse a registration missing any of them. The merged meta always runs through
+    :func:`validate_fact`, defaulted or not.
+
+    A model's ``metric`` is frozen for its life: re-registering against an existing
+    ``model_id`` with a different ``metric`` is refused naming it, regardless of caller.
+    """
+    merged = dict(meta)
+    for field_name, default in MODEL_DEFAULTS.items():
+        merged.setdefault(field_name, default)
+    validate_fact(MODEL, merged)
+
+    if model_id is None:
+        return space.insert(MODEL, merged)
+
+    existing = space.get(model_id)
+    if existing is None or existing.category != MODEL:
+        raise RegistryValidationError(
+            f"model {model_id!r} was never registered", field="model_id"
+        )
+    if merged.get(METRIC_FIELD) != existing.meta.get(METRIC_FIELD):
+        raise RegistryValidationError(
+            f"model {model_id!r} metric is frozen for the life of the model; "
+            f"cannot change it from {existing.meta.get(METRIC_FIELD)!r} to {merged.get(METRIC_FIELD)!r}",
+            field=METRIC_FIELD,
+        )
+    space.replace(model_id, merged)
+    return model_id
 
 
 def register_idea(space: RegistrySpace, meta: dict[str, object]) -> str:
