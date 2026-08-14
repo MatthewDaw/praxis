@@ -138,6 +138,15 @@ python3 agent_factory/scripts/checks/af_ml_research_target.py \
 
 Exit 0 = accepted, 1 = not met (regress, keep running), 2 = malformed ledger.
 
+When the model has a registered fact (metric/direction, per `knowledge/ml_registry`), pass
+`--model-record <path-to-fact.json>` (the `praxis_get_fact` shape: `{"meta": {...},
+"auditTrail": [...]}`) instead of assuming `val_bpb`/minimize. The unversioned ledger format
+is read as version 0 unchanged; a ledger naming its metric column `metric_value` is version 1
+and requires `--model-record` to know the metric/direction, including a `maximize` one. The
+check also fails closed (exit 2) if the model record's audit trail shows an `"edited"` entry
+after registration — evidence the judging contract was mutated by a direct fact edit rather
+than through the registry's write path.
+
 Pick the goal deliberately — the two forms encode different research bets:
 
 - `--min-improvement D` — "beat the baseline by D". The honest framing for most research tickets,
