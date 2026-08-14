@@ -476,6 +476,34 @@ depends on **no unfinished or in-progress job**. Claim that one; ignore the rest
 - **`next_ready_ticket` returns None and nothing is waiting** (only `finished` + `blocked` remain) → the
   scoped set is done; go to the WORK-review panel (§7).
 
+**ML research ticket routing (R21) — checked BEFORE claim, right after FIND pops the ticket.** A ticket
+whose `meta.experiment_id` names a registered `knowledge.ml_registry` MODEL (R5's cross-project link, the
+same field name a model was registered with) is a RESEARCH ticket: it is dispatched to the af-ml-supervise
+loop (`knowledge.ml_registry.supervisor.supervise_campaign`) and **never** to a generic build worker; a
+ticket carrying no `experiment_id` is never routed to the supervisor. `hooks/_ticket_state.py`'s
+`resolve_research_route(ticket, models)` is the source of truth — call it with the ticket just popped and
+the candidate model facts (a live registry readback):
+
+- **`route == "generic"`** (no `experiment_id`) — proceed to §2 exactly as below; nothing here applies.
+- **`route == "supervisor"`** — dispatch a worker that runs `supervise_campaign` against `model_id`, never a
+  generic per-ticket worker. `live_campaign` tells the dispatcher whether it is **ATTACHING** to a campaign
+  already under way (resume — never register a second model for the same `experiment_id`, never start a
+  second supervisor session) or starting a fresh one. Before claiming, also call
+  `research_claim_guard(ticket, models, other_claims)` (`other_claims` = the raw candidate ticket set, same
+  convention `admit_frontier`'s `live` uses) — a non-`None` return **refuses this claim**: a DIFFERENT
+  ticket already holds a LIVE lease naming the SAME `experiment_id`, because `supervise_campaign` dispatches
+  trials SERIALLY by construction and two concurrent supervisor sessions against one model are never safe.
+  A refused ticket is left `incomplete` (not `blocked` — it is a timing collision, not a defect) and skipped
+  this round; `next_ready_ticket` will offer it again once the live campaign's lease frees.
+- **`route == "refused"`** — `experiment_id` names NO registered model: `block(cid, owner, route["reason"],
+  ref=PLAN)` naming the missing model, rather than silently building it as an ordinary ticket.
+
+The research-target check (`agent_factory/scripts/checks/af_ml_research_target.py`, R19) resolves onto
+every `experiment_id`-carrying ticket **by query**, not by a Praxis-authored check fact: `contract_with_floor`
+(§2 below) appends `research_target_requirement(cid, experiment_id)` — a synthetic `<cid>::research-target`
+requirement, the same pattern as the `<cid>::acceptance` floor — whenever the ticket's own meta carries
+`experiment_id`, so it always appears in that ticket's pinned check set with no authoring step required.
+
 ## 2. CLAIM + RESOLVE REQUIREMENTS — one transaction per ticket
 
 For the next claimable ticket call `_ticket_state.start_ticket(cid, owner, project)` (BARE project name;
