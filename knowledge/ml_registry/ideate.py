@@ -130,6 +130,22 @@ def _seed_idea(space: RegistrySpace, model_id: str, axis: str, candidate: dict[s
     return register_idea(space, meta)
 
 
+def _confirm_and_seed(
+    space: RegistrySpace,
+    model_id: str,
+    axis: str,
+    candidates: Iterable[dict[str, object]],
+    confirm: ConfirmFn,
+) -> list[str]:
+    """Run ``confirm`` over each candidate and seed the ones it lets through -- the one loop
+    shared by both the generative and retrieval sweeps below."""
+    return [
+        _seed_idea(space, model_id, axis, candidate)
+        for candidate in candidates
+        if confirm(axis, candidate)
+    ]
+
+
 def sweep_generative_axes(
     space: RegistrySpace,
     model_id: str,
@@ -146,11 +162,7 @@ def sweep_generative_axes(
     """
     written: dict[str, list[str]] = {}
     for axis in axes:
-        ids: list[str] = []
-        for candidate in generator(axis, model_meta):
-            if confirm(axis, candidate):
-                ids.append(_seed_idea(space, model_id, axis, candidate))
-        written[axis] = ids
+        written[axis] = _confirm_and_seed(space, model_id, axis, generator(axis, model_meta), confirm)
     return written
 
 
@@ -172,12 +184,8 @@ def sweep_retrieval_axes(
     for axis in axes:
         result = retriever(axis, model_meta)
         receipts.append(ExecutionReceipt(axis=axis, query=result.query, count=result.count, ids=result.ids))
-        ids: list[str] = []
-        for row in result.rows:
-            candidate = {k: v for k, v in row.items() if k != "id"}
-            if confirm(axis, candidate):
-                ids.append(_seed_idea(space, model_id, axis, candidate))
-        written[axis] = ids
+        candidates = ({k: v for k, v in row.items() if k != "id"} for row in result.rows)
+        written[axis] = _confirm_and_seed(space, model_id, axis, candidates, confirm)
     return written, receipts
 
 

@@ -49,15 +49,15 @@ def _space_with_model() -> tuple[RegistrySpace, str]:
     return space, model_id
 
 
-def _one_candidate_per_axis(axis: str, model_meta: dict) -> list[dict]:
+def _one_candidate_per_axis(axis: str, model_meta: dict[str, object]) -> list[dict[str, object]]:
     return [{"description": f"{axis} candidate for {model_meta['metric']}"}]
 
 
-def _empty_generator(axis: str, model_meta: dict) -> list[dict]:
+def _empty_generator(axis: str, model_meta: dict[str, object]) -> list[dict[str, object]]:
     return []
 
 
-def _fixture_retriever(axis: str, model_meta: dict) -> RetrievalResult:
+def _fixture_retriever(axis: str, model_meta: dict[str, object]) -> RetrievalResult:
     if axis == "current_code":
         return RetrievalResult(
             query="grep TODO in train.py",
@@ -99,7 +99,7 @@ def test_batch_and_interactive_modes_write_ideas_of_identical_shape():
         confirm=always_confirm,
     )
 
-    def confirm_everything(axis: str, candidate: dict) -> bool:
+    def confirm_everything(axis: str, candidate: dict[str, object]) -> bool:
         return True  # stands in for a human who confirms every offered candidate
 
     interactive_space, interactive_model = _space_with_model()
@@ -118,7 +118,7 @@ def test_batch_and_interactive_modes_write_ideas_of_identical_shape():
     assert batch_ideas == interactive_ideas
     assert batch_run.written.keys() == interactive_run.written.keys()
 
-    def declines_everything(axis: str, candidate: dict) -> bool:
+    def declines_everything(axis: str, candidate: dict[str, object]) -> bool:
         return False
 
     declined_space, declined_model = _space_with_model()
@@ -157,7 +157,9 @@ def test_run_is_not_required_to_enumerate_every_idea_the_loop_will_eventually_tr
     """An axis whose generator/retriever proposes nothing this pass still completes the sweep
     -- ideation seeds a starting set, not an exhaustive plan."""
     space, model_id = _space_with_model()
-    empty_retriever = lambda axis, model_meta: RetrievalResult(query=f"query for {axis}", rows=())  # noqa: E731
+
+    def empty_retriever(axis: str, model_meta: dict[str, object]) -> RetrievalResult:
+        return RetrievalResult(query=f"query for {axis}", rows=())
 
     run = seed_campaign(space, model_id, generator=_empty_generator, retriever=empty_retriever)
 
