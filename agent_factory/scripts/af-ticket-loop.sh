@@ -3096,6 +3096,22 @@ while :; do
   before=${before:-0}
 
   round=$((round+1)); n=$((n+size))
+
+  # The commit this round starts FROM. finding_guard asks "did this ticket answer its finding with
+  # any commit?" via `git log $AF_ROUND_BASE..HEAD --grep=<id>`, and that variable was READ (line
+  # ~919, `${AF_ROUND_BASE:-HEAD}`) but never ASSIGNED anywhere in this script — so the range was
+  # always HEAD..HEAD, which is empty by construction. Every finished ticket carrying an open
+  # finding therefore looked like it had produced nothing and was regressed for it, round after
+  # round, until the AF_FINDING_REGRESS_MAX streak cap escalated. That is a second zero-commit
+  # false-positive engine on top of BUG E's, and it fires even when the ticket's commits are sitting
+  # right there in the round's own merge.
+  #
+  # Captured BEFORE dispatch so the range covers exactly this round's work. Falls back to HEAD (the
+  # previous, always-empty behaviour) only if rev-parse fails, so a broken git can never make the
+  # guard MORE aggressive than it was.
+  AF_ROUND_BASE="$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo HEAD)"
+  export AF_ROUND_BASE
+
   say "round #$round: dispatching $size ticket(s) in parallel — $ids_csv"
 
   tmux kill-session -t "$SESSION" 2>/dev/null || true
