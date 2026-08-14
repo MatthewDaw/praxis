@@ -167,6 +167,132 @@ def test_cli_refuses_a_trial_for_an_unregistered_idea(tmp_path):
     assert "idea_id" in result.stdout + result.stderr
 
 
+def test_cli_idea_lifecycle_adopt_park_reject_claim_and_reversal(tmp_path):
+    """R3 acceptance, exercised end-to-end through the CLI (each call a separate
+    subprocess): adopt records a succeeded outcome, park requires a non-empty trigger,
+    reject removes an idea from the backlog while surfacing it (with its reason) in
+    rejection-memory and flags its derived trials, an idea claim lease is reclaimable
+    once stale, and invalidating an adoption reverts it and returns every idea rejected
+    during its tenure to the untried backlog."""
+    space_file = tmp_path / "space.json"
+    ledger = tmp_path / "results.tsv"
+    ledger.write_text(
+        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
+        "deadbeef\t1.0\t2.0\tok\twinner\nfeedface\t1.0\t2.0\tok\tloser\n"
+    )
+
+    model_id = _register("register-model", space_file, MODEL_META)
+    winner_id = _register(
+        "register-idea", space_file,
+        {"model_id": model_id, "origin": "seeded", "axis": "architecture", "description": "winner"},
+    )
+    loser_id = _register(
+        "register-idea", space_file,
+        {"model_id": model_id, "origin": "seeded", "axis": "architecture", "description": "loser"},
+    )
+    claim_test_id = _register(
+        "register-idea", space_file,
+        {"model_id": model_id, "origin": "seeded", "axis": "architecture", "description": "claim lease probe"},
+    )
+
+    trial_id = _register(
+        "register-trial", space_file,
+        {"model_id": model_id, "idea_id": winner_id, "commit": "deadbeef", "status": "succeeded"},
+        ledger=ledger,
+    )
+    result = _run_cli("adopt-idea", "--space-file", str(space_file), "--idea-id", winner_id, "--trial-id", trial_id)
+    assert result.returncode == 0, result.stderr
+
+    readback = json.loads(_run_cli("readback", "--space-file", str(space_file), "--category", "idea").stdout)
+    winner = next(f for f in readback if f["id"] == winner_id)
+    assert winner["meta"]["status"] == "adopted"
+    assert winner["meta"]["outcome"] == "succeeded"
+
+    park_fail = _run_cli(
+        "park-idea", "--space-file", str(space_file), "--idea-id", loser_id, "--trigger", ""
+    )
+    assert park_fail.returncode == 1
+    assert "reactivation_trigger" in park_fail.stdout + park_fail.stderr
+
+    loser_trial_id = _register(
+        "register-trial", space_file,
+        {"model_id": model_id, "idea_id": loser_id, "commit": "feedface", "status": "running"},
+        ledger=ledger,
+    )
+    reject = _run_cli(
+        "reject-idea", "--space-file", str(space_file), "--idea-id", loser_id, "--reason", "superseded by winner"
+    )
+    assert reject.returncode == 0, reject.stderr
+
+    backlog = json.loads(_run_cli("backlog", "--space-file", str(space_file)).stdout)
+    assert loser_id not in {f["id"] for f in backlog}
+
+    memory = json.loads(_run_cli("rejection-memory", "--space-file", str(space_file)).stdout)
+    memory_by_id = {row["idea"]["id"]: row["reason"] for row in memory}
+    assert memory_by_id[loser_id] == "superseded by winner"
+
+    flagged = json.loads(_run_cli("flagged-trials", "--space-file", str(space_file)).stdout)
+    flagged_ids = {f["id"]: f["meta"]["idea_rejected"] for f in flagged}
+    assert flagged_ids[loser_trial_id] is True
+
+    claim1 = json.loads(
+        _run_cli(
+            "claim-idea", "--space-file", str(space_file), "--idea-id", claim_test_id,
+            "--owner", "worker-a", "--ttl", "10", "--now", "1000",
+        ).stdout
+    )
+    assert claim1["claimed"] is True
+    claim2 = _run_cli(
+        "claim-idea", "--space-file", str(space_file), "--idea-id", claim_test_id,
+        "--owner", "worker-b", "--ttl", "10", "--now", "1005",
+    )
+    assert claim2.returncode == 1  # still live for a different owner
+    claim3 = json.loads(
+        _run_cli(
+            "claim-idea", "--space-file", str(space_file), "--idea-id", claim_test_id,
+            "--owner", "worker-b", "--ttl", "10", "--now", "1050",
+        ).stdout
+    )
+    assert claim3["claimed"] is True  # stale -- reclaimable by a different owner
+
+    invalidate = _run_cli(
+        "invalidate-adoption", "--space-file", str(space_file), "--idea-id", winner_id,
+        "--reason", "regression found in production",
+    )
+    assert invalidate.returncode == 0, invalidate.stderr
+
+    backlog_after = json.loads(_run_cli("backlog", "--space-file", str(space_file)).stdout)
+    assert loser_id in {f["id"] for f in backlog_after}
+
+
+def test_cli_retriable_ideas_only_lists_parked_ideas_whose_own_trigger_fired(tmp_path):
+    space_file = tmp_path / "space.json"
+    model_id = _register("register-model", space_file, MODEL_META)
+    parked_id = _register(
+        "register-idea", space_file,
+        {"model_id": model_id, "origin": "seeded", "axis": "architecture", "description": "parked"},
+    )
+    other_parked_id = _register(
+        "register-idea", space_file,
+        {"model_id": model_id, "origin": "seeded", "axis": "architecture", "description": "parked-other"},
+    )
+    park1 = _run_cli(
+        "park-idea", "--space-file", str(space_file), "--idea-id", parked_id, "--trigger", "new-dataset-released"
+    )
+    assert park1.returncode == 0, park1.stderr
+    park2 = _run_cli(
+        "park-idea", "--space-file", str(space_file), "--idea-id", other_parked_id, "--trigger", "gpu-budget-doubled"
+    )
+    assert park2.returncode == 0, park2.stderr
+
+    result = _run_cli(
+        "retriable-ideas", "--space-file", str(space_file), "--fired-trigger", "new-dataset-released"
+    )
+    assert result.returncode == 0, result.stderr
+    retriable_ids = {f["id"] for f in json.loads(result.stdout)}
+    assert retriable_ids == {parked_id}
+
+
 def test_cli_refuses_a_trial_whose_commit_is_missing_from_the_ledger(tmp_path):
     space_file = tmp_path / "space.json"
     ledger = tmp_path / "results.tsv"
