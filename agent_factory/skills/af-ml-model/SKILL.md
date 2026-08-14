@@ -86,6 +86,22 @@ Do program.md's own setup section, in its order. The only environment-specific p
 Then confirm and start. After confirmation program.md's **NEVER STOP** rule applies: do not ask
 whether to continue.
 
+## Harness instance
+
+program.md's loop runs as ONE long-lived harness instance — a single agent session that stays open
+and drives every experiment in the campaign in sequence, not a fresh process per experiment. That
+instance's own stop conditions:
+
+### Stop conditions
+
+- **Never self-stops on an experiment result.** A crashed or regressed experiment is logged and the
+  loop continues — the ratchet, not the harness, decides what to keep.
+- **Only a human stops it.** program.md's own **NEVER STOP** rule: once the run is confirmed, the
+  harness instance never asks whether to continue and never halts itself — see "Setup" above.
+- **A fresh harness instance may REPLACE the running one** (`af-ticket-loop.sh`'s one-session-per-batch
+  boundary, below) without that being the loop "stopping" — `results.tsv` is what makes the replacement
+  resumable rather than a restart.
+
 ## The one failure mode this environment adds
 
 program.md keeps a **single agent session running across hundreds of experiments**. In this repo
