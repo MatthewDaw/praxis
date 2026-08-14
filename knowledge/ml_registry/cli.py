@@ -1,4 +1,5 @@
-"""Runnable entrypoint for the af-ml-research registry (R1 schema/guards, R2 write path).
+"""Runnable entrypoint for the af-ml-research registry (R1 schema/guards, R2 write path,
+R5 cross-project model linkage).
 
 ``python -m knowledge.ml_registry.cli <subcommand> ...`` -- exit 0 on acceptance, 1 on a
 named registry refusal, 2 on malformed input. This is the real entrypoint later tickets
@@ -18,6 +19,7 @@ import json
 import sys
 from pathlib import Path
 
+from knowledge.ml_registry.cross_project import TicketIndex, model_to_projects, project_to_models
 from knowledge.ml_registry.guards import guard_baseline_move, guard_model_mutation
 from knowledge.ml_registry.schema import RegistryValidationError, validate_fact
 from knowledge.ml_registry.write_path import (
@@ -75,6 +77,28 @@ def main(argv: list[str] | None = None) -> int:
     readback_p.add_argument("--space-file", required=True)
     readback_p.add_argument("--category", choices=["model", "idea", "trial"], default=None)
 
+    register_ticket_p = sub.add_parser(
+        "register-ticket", help="index a project ticket by its meta (R5 cross-project linkage)"
+    )
+    register_ticket_p.add_argument("--index-file", required=True)
+    register_ticket_p.add_argument("--project", required=True)
+    register_ticket_p.add_argument("--ticket-id", required=True)
+    register_ticket_p.add_argument("--meta-json", required=True)
+
+    m2p_p = sub.add_parser(
+        "model-to-projects", help="every project whose ticket references this experiment_id"
+    )
+    m2p_p.add_argument("--index-file", required=True)
+    m2p_p.add_argument("--space-file", required=True)
+    m2p_p.add_argument("--experiment-id", required=True)
+
+    p2m_p = sub.add_parser(
+        "project-to-models", help="every registered model a project's tickets reference"
+    )
+    p2m_p.add_argument("--index-file", required=True)
+    p2m_p.add_argument("--space-file", required=True)
+    p2m_p.add_argument("--project", required=True)
+
     args = parser.parse_args(argv)
 
     try:
@@ -119,6 +143,25 @@ def main(argv: list[str] | None = None) -> int:
             space = RegistrySpace.load(Path(args.space_file))
             facts = space.list_facts(args.category)
             print(json.dumps([f.to_json() for f in facts]))
+            return 0
+        if args.command == "register-ticket":
+            index_path = Path(args.index_file)
+            index = TicketIndex.load(index_path)
+            index.add(args.project, args.ticket_id, _json_arg(args.meta_json))
+            index.save(index_path)
+            print(f"OK: indexed ticket {args.ticket_id} for project {args.project}")
+            return 0
+        if args.command == "model-to-projects":
+            space = RegistrySpace.load(Path(args.space_file))
+            index = TicketIndex.load(Path(args.index_file))
+            projects = model_to_projects(space, index, args.experiment_id)
+            print(json.dumps(projects))
+            return 0
+        if args.command == "project-to-models":
+            space = RegistrySpace.load(Path(args.space_file))
+            index = TicketIndex.load(Path(args.index_file))
+            models = project_to_models(space, index, args.project)
+            print(json.dumps(models))
             return 0
     except RegistryValidationError as exc:
         print(f"REFUSED [{exc.field}]: {exc}", file=sys.stderr)
