@@ -652,13 +652,16 @@ def test_cli_resolve_citation_refuses_an_unregistered_idea_naming_it(tmp_path: P
 
 
 def test_cli_supervise_campaign_drives_a_seeded_backlog_to_a_win(tmp_path: Path) -> None:
-    """R8 acceptance, CLI-driven: supervise-campaign dispatches trials one worker session
-    at a time (each a separate --dispatch-script entry), draws seed-first, and closes on
-    the win condition -- recording the campaign as 'won' and the ratchet_count as 1."""
+    """R8+R10 acceptance, CLI-driven: supervise-campaign dispatches trials one worker
+    session at a time (each a separate --dispatch-script entry) through
+    verdict.adjudicate_verdict, draws seed-first, and closes on the win condition --
+    recording the campaign as 'won' and the ratchet_count as 0 (an ADOPTED verdict
+    resets the streak -- a fresh baseline earns a fresh ratchet)."""
     space_file = tmp_path / "space.json"
     ledger = tmp_path / "results.tsv"
     ledger.write_text(
         "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
+        "commit-abc123\t3000.0\t2.0\tok\tbaseline\n"
         "lose1\t5000.0\t2.0\tok\tfirst attempt, fails\n"
         "win1\t100.0\t2.0\tok\tsecond attempt, wins\n"
     )
@@ -690,7 +693,7 @@ def test_cli_supervise_campaign_drives_a_seeded_backlog_to_a_win(tmp_path: Path)
     readback = json.loads(_run_cli("readback", "--space-file", str(space_file), "--category", "model").stdout)
     model = next(f for f in readback if f["id"] == model_id)
     assert model["meta"]["campaign_status"] == "won"
-    assert model["meta"]["ratchet_count"] == 1
+    assert model["meta"]["ratchet_count"] == 0
 
 
 def test_cli_supervise_campaign_closes_on_backlog_exhausted_after_registering_a_discovered_idea(
@@ -704,6 +707,7 @@ def test_cli_supervise_campaign_closes_on_backlog_exhausted_after_registering_a_
     ledger = tmp_path / "results.tsv"
     ledger.write_text(
         "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
+        "commit-abc123\t1.0\t2.0\tok\tbaseline\n"
         "lose1\t5000.0\t2.0\tok\tonly attempt, fails\n"
     )
     model_id = _register("register-model", space_file, {**MODEL_META, "max_discovered_ideas": 1})
@@ -742,7 +746,9 @@ def test_cli_supervise_campaign_forced_axis_intervention_and_unsatisfiable_exclu
     space_file = tmp_path / "space.json"
     ledger = tmp_path / "results.tsv"
     ledger.write_text(
-        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\ndeadbeef\t5000.0\t2.0\tok\tforced pick\n"
+        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
+        "commit-abc123\t1.0\t2.0\tok\tbaseline\n"
+        "deadbeef\t5000.0\t2.0\tok\tforced pick\n"
     )
     model_id = _register("register-model", space_file, MODEL_META)
     architecture_idea = _register(

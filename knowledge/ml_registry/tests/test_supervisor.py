@@ -16,8 +16,12 @@ Covers, directly against :mod:`knowledge.ml_registry.supervisor`:
   carried in caller-held state.
 * a voided trial not counting against max_trials.
 * the three close conditions (win, backlog exhausted, max_trials), each evaluated only
-  after that trial's adjudication side effects (including any re-queue) have landed, and
-  each non-win close recorded as a completed outcome.
+  after that trial's :func:`~knowledge.ml_registry.verdict.adjudicate_verdict` side
+  effects have landed, and each non-win close recorded as a completed outcome.
+* dispatch_trial routes every trial through verdict.adjudicate_verdict (R10) rather than
+  floor.adjudicate_trial, so 3 consecutive worsening-direction rejections on distinct
+  ideas fire R10's ratchet and invalidate the active adoption through this module's own
+  production entry point, not just when verdict.py is called directly.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ from __future__ import annotations
 import pytest
 
 from knowledge.ml_registry.floor import CAMPAIGN_STATUS_FIELD, RATCHET_COUNT_FIELD
-from knowledge.ml_registry.lifecycle import STATUS_ADOPTED, STATUS_UNTRIED, untried_backlog
+from knowledge.ml_registry.lifecycle import STATUS_ADOPTED, STATUS_UNTRIED
 from knowledge.ml_registry.schema import RegistryValidationError
 from knowledge.ml_registry.supervisor import (
     CLOSE_BACKLOG_EXHAUSTED,
@@ -36,13 +40,16 @@ from knowledge.ml_registry.supervisor import (
     resolve_interventions,
     supervise_campaign,
 )
+from knowledge.ml_registry.verdict import BASELINE_FIELD, LedgerRow
 from knowledge.ml_registry.write_path import DISCOVERED, SEEDED, RegistrySpace, register_idea, register_model
+
+BASELINE_COMMIT = "commit-abc123"
 
 MODEL_META = {
     "metric": "val_bpb",
     "direction": "minimize",
     "win_condition": "beats baseline by noise_floor",
-    "baseline": "commit-abc123",
+    "baseline": BASELINE_COMMIT,
     "noise_floor": 0.01,
     "baseline_throughput": 1200,
     "diff_size_limit": 800,
@@ -50,9 +57,13 @@ MODEL_META = {
     "max_discovered_ideas": 2,
 }
 
-# baseline_throughput=1200, noise_floor=0.01, direction=minimize -> a win needs <= 1199.99.
-LEDGER = {f"c{i}": 100.0 for i in range(1, 20)}  # every "c*" commit wins
-LEDGER.update({f"lose{i}": 5000.0 for i in range(1, 10)})  # every "lose*" commit fails
+# baseline_throughput=1200, noise_floor=0.01, direction=minimize -> a win needs <= 1199.99,
+# every row holds baseline_throughput/diff_lines so a win/reject turns solely on `value`.
+# "c*" commits win beyond the noise floor against ANY baseline value used below; "lose*"
+# commits worsen far enough (5000.0) to reject against any baseline value used below too.
+LEDGER: dict[str, LedgerRow] = {BASELINE_COMMIT: LedgerRow(value=1.0, throughput=1200, diff_lines=0)}
+LEDGER.update({f"c{i}": LedgerRow(value=0.5, throughput=1200, diff_lines=100) for i in range(1, 20)})
+LEDGER.update({f"lose{i}": LedgerRow(value=5000.0, throughput=1200, diff_lines=100) for i in range(1, 10)})
 
 
 def _space_with_model(**overrides) -> tuple[RegistrySpace, str]:
@@ -172,20 +183,22 @@ def test_discovered_idea_is_registered_with_axis_basis_and_origin_before_its_tri
 def test_ratchet_counter_and_close_condition_are_recomputed_not_carried_in_state():
     """Two campaign() calls against the SAME registry state (simulating a resumed
     process) recompute the identical ratchet_count and close outcome -- nothing is
-    accumulated across the calls beyond what the registry itself now records."""
+    accumulated across the calls beyond what the registry itself now records. The
+    ratchet_count field is owned exclusively by verdict.adjudicate_verdict: an ADOPTED
+    verdict resets it to 0 (a fresh baseline earns a fresh streak)."""
     space, model_id = _space_with_model(max_trials=1)
     _idea(space, model_id, "architecture", SEEDED, "winner")
 
     outcome = supervise_campaign(space, model_id, LEDGER, _scripted_dispatcher(["c1"]))
     assert outcome["close"] == CLOSE_WON
     model = space.get(model_id)
-    assert model.meta[RATCHET_COUNT_FIELD] == 1
+    assert model.meta[RATCHET_COUNT_FIELD] == 0
     assert model.meta[CAMPAIGN_STATUS_FIELD] == CLOSE_WON
 
     # A second "resume" call against the exhausted backlog recomputes independently.
     outcome2 = supervise_campaign(space, model_id, LEDGER, _scripted_dispatcher([]))
     assert outcome2["close"] == CLOSE_BACKLOG_EXHAUSTED
-    assert model.meta[RATCHET_COUNT_FIELD] == 1  # unchanged -- recomputed fresh, still 1 succeeded trial
+    assert model.meta[RATCHET_COUNT_FIELD] == 0  # unchanged -- recomputed fresh, still no rejection streak
 
 
 def test_voided_trial_does_not_count_against_max_trials():
@@ -232,35 +245,56 @@ def test_close_on_backlog_exhausted_is_recorded_as_a_completed_outcome():
     assert model.meta[CAMPAIGN_STATUS_FIELD] == "completed"
 
 
-def test_close_evaluated_only_after_adjudication_side_effects_including_requeue_have_landed():
-    """A win that supersedes a prior adoption re-queues whatever was rejected under that
-    prior adoption's tenure BEFORE the campaign's close condition is evaluated -- the
-    re-queued idea is visible in the backlog at the moment supervise_campaign returns."""
+def test_close_evaluated_only_after_adjudication_side_effects_have_landed():
+    """A won trial's adjudicate_verdict side effects -- the idea's adoption and the
+    model's baseline advancing to the winning commit -- are visible on ``space`` at the
+    moment supervise_campaign returns; the close condition is evaluated only AFTER they
+    have landed, not before."""
     space, model_id = _space_with_model(max_trials=10)
-    first_winner = _idea(space, model_id, "architecture", SEEDED, "first winner")
-    casualty = _idea(space, model_id, "architecture", SEEDED, "rejected under first winner's tenure")
-    second_winner = _idea(space, model_id, "architecture", SEEDED, "second winner, supersedes the first")
+    winner = _idea(space, model_id, "architecture", SEEDED, "winner")
 
-    from knowledge.ml_registry.lifecycle import reject_idea
-
-    # Trial 1: first_winner succeeds and is adopted.
-    r1 = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["c1"]))
-    assert r1["candidate"] == first_winner
-    assert r1["status"] == "succeeded"
-
-    # casualty gets rejected while first_winner's adoption is active.
-    reject_idea(space, casualty, "did not beat baseline")
-    assert casualty not in {f.id for f in untried_backlog(space, model_id=model_id)}
-
-    # Trial 2: second_winner also succeeds -- this must invalidate first_winner's adoption
-    # and re-queue casualty, and the campaign's close (won) must reflect that landed state.
-    outcome = supervise_campaign(space, model_id, LEDGER, _scripted_dispatcher(["c2"]), max_dispatches=1)
+    outcome = supervise_campaign(space, model_id, LEDGER, _scripted_dispatcher(["c1"]), max_dispatches=1)
     assert outcome["close"] == CLOSE_WON
-    assert space.get(first_winner).meta["status"] != STATUS_ADOPTED
-    assert space.get(second_winner).meta["status"] == STATUS_ADOPTED
-    # re-queued: absence of a status means untried, same as reject_idea's own accounting
-    assert space.get(casualty).meta.get("status") in (None, STATUS_UNTRIED)
-    assert casualty in {f.id for f in untried_backlog(space, model_id=model_id)}
+    assert space.get(winner).meta["status"] == STATUS_ADOPTED
+    model = space.get(model_id)
+    assert model.meta[BASELINE_FIELD] == "c1"
+
+
+def test_three_consecutive_dispatch_trial_rejections_on_distinct_ideas_fire_the_ratchet_and_invalidate_the_adoption():
+    """Cross-module integration (R8+R10): dispatch_trial routes every trial through
+    verdict.adjudicate_verdict, not floor.adjudicate_trial -- so the ratchet feature R10
+    built is actually reachable through the campaign supervisor, the production entry
+    point (this repros the exact scenario the round #5 post-merge finding used: 3
+    consecutive worsening-direction rejections on distinct ideas, beyond noise_floor,
+    must set ratchet_count == 3 and, on the 3rd, invalidate the active adoption and
+    revert the baseline -- unlike R8's own now-deleted succeeded-trial counter, which for
+    this identical sequence would leave ratchet_count stuck at 0 the whole way through)."""
+    space, model_id = _space_with_model(max_trials=100)
+    winner = _idea(space, model_id, "architecture", SEEDED, "winner")
+
+    win_result = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["c1"]))
+    assert win_result["status"] == "adopted"
+    model = space.get(model_id)
+    assert model.meta[BASELINE_FIELD] == "c1"
+
+    losers = [_idea(space, model_id, "architecture", SEEDED, f"loser-{i}") for i in range(3)]
+    ratchet_counts_seen = []
+    for expected_loser, commit in zip(losers, ["lose1", "lose2", "lose3"]):
+        result = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher([commit]))
+        assert result["candidate"] == expected_loser
+        assert result["status"] == "rejected"
+        ratchet_counts_seen.append(space.get(model_id).meta[RATCHET_COUNT_FIELD])
+
+    # the streak climbed 1, 2, 3 across the first two rejections and the 3rd's own
+    # increment, all within adjudicate_verdict's single call for that 3rd trial, and THAT
+    # 3rd trial's ratchet_count==3 is what triggers the same call's own invalidation --
+    # which then resets the field, so the value PERSISTED after the run is 0 again.
+    assert ratchet_counts_seen == [1, 2, 0]
+    model = space.get(model_id)
+    assert model.meta[RATCHET_COUNT_FIELD] == 0
+    assert model.meta[BASELINE_FIELD] == BASELINE_COMMIT  # reverted to the previous baseline
+    assert space.get(winner).meta["status"] == STATUS_UNTRIED  # adoption invalidated
+    assert "ratchet" in space.get(winner).meta["reversal_reason"]
 
 
 def test_intervention_rejects_an_unknown_kind():

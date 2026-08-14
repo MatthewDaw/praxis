@@ -29,7 +29,7 @@ Candidate selection order, per dispatch:
 
 Nothing here is held in loop-local state across dispatches: every counter this module
 reports (the ratchet count, which interventions are unsatisfiable, the close condition)
-is RECOMPUTED from ``space`` (the registry) and ``ledger_values`` (the external results
+is RECOMPUTED from ``space`` (the registry) and ``ledger_rows`` (the external results
 ledger) each time. A campaign interrupted between build rounds resumes by calling
 :func:`supervise_campaign` again against the same space/ledger; nothing distinguishes that
 resume from a fresh start, so a round boundary is never itself a timeout or a failure.
@@ -40,19 +40,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from knowledge.ml_registry.floor import (
-    CAMPAIGN_STATUS_FIELD,
-    RATCHET_COUNT_FIELD,
-    adjudicate_trial,
-)
-from knowledge.ml_registry.lifecycle import (
-    adopt_idea,
-    active_adoption,
-    reject_idea,
-    invalidate_adoption,
-    untried_backlog,
-)
+from knowledge.ml_registry.floor import CAMPAIGN_STATUS_FIELD
+from knowledge.ml_registry.lifecycle import untried_backlog
 from knowledge.ml_registry.schema import MODEL, TRIAL, RegistryValidationError
+from knowledge.ml_registry.verdict import LedgerRow, VERDICT_ADOPTED, adjudicate_verdict
 from knowledge.ml_registry.write_path import (
     DISCOVERED,
     MODEL_DEFAULTS,
@@ -68,7 +59,6 @@ EXCLUDE_AXIS = "exclude_axis"
 INTERVENTION_KINDS: tuple[str, ...] = (FORCED_AXIS, EXCLUDE_AXIS)
 
 TRIAL_STATUS_VOIDED = "voided"
-TRIAL_STATUS_SUCCEEDED = "succeeded"
 
 CLOSE_WON = "won"
 CLOSE_MAX_TRIALS = "max_trials_reached"
@@ -107,16 +97,6 @@ def _model(space: RegistrySpace, model_id: str) -> Fact:
     if model is None or model.category != MODEL:
         raise RegistryValidationError(f"model {model_id!r} was never registered", field="model_id")
     return model
-
-
-def compute_ratchet_count(space: RegistrySpace, model_id: str) -> int:
-    """Number of succeeded trials registered against ``model_id`` -- recomputed fresh
-    from the registry every call, never carried as an incrementing counter."""
-    return sum(
-        1
-        for t in space.list_facts(TRIAL)
-        if t.meta.get("model_id") == model_id and t.meta.get("status") == TRIAL_STATUS_SUCCEEDED
-    )
 
 
 def non_voided_trial_count(space: RegistrySpace, model_id: str) -> int:
@@ -179,15 +159,17 @@ def _select_candidate(
 def dispatch_trial(
     space: RegistrySpace,
     model_id: str,
-    ledger_values: dict[str, float],
+    ledger_rows: dict[str, LedgerRow],
     dispatcher: Dispatcher,
     *,
     interventions: tuple[Intervention, ...] = (),
     idea_generator: Optional[IdeaGenerator] = None,
 ) -> dict[str, object]:
-    """Run ONE worker session: pick a candidate idea, dispatch it, register + adjudicate
-    its trial, and apply the adjudication's side effects (adopt/reject, plus re-queuing
-    whatever the superseded adoption's rejections held) -- all before returning.
+    """Run ONE worker session: pick a candidate idea, dispatch it, register the trial, and
+    hand it to :func:`~knowledge.ml_registry.verdict.adjudicate_verdict` for the full
+    adopt/park/reject/void adjudication -- adjudicate_verdict itself applies every side
+    effect (idea adoption/park/reject, the ratchet counter, and any streak-triggered
+    baseline invalidation) before this returns.
 
     Returns a dict describing what happened; ``result["candidate"] is None`` means the
     backlog (seeded, discovered, and generator-proposable) is exhausted for this dispatch
@@ -218,8 +200,14 @@ def dispatch_trial(
     trial_meta = dict(dispatcher(space, model, idea))
     trial_meta.setdefault("model_id", model_id)
     trial_meta.setdefault("idea_id", idea.id)
-    trial_meta.setdefault("status", "running")  # adjudicate_trial below sets the real status
-    ledger_commits = frozenset(ledger_values.keys())
+    trial_meta.setdefault("status", "running")  # adjudicate_verdict below sets the real status
+    row = ledger_rows.get(str(trial_meta.get("commit")))
+    if row is not None:
+        # self-reported throughput/diff_lines agree with the ledger by construction
+        # unless the dispatcher explicitly overrides them (e.g. to exercise a refusal).
+        trial_meta.setdefault("throughput", row.throughput)
+        trial_meta.setdefault("diff_lines", row.diff_lines)
+    ledger_commits = frozenset(ledger_rows.keys())
     trial_id = register_trial(space, trial_meta, ledger_commits)
     trial = space.get(trial_id)
     assert trial is not None
@@ -230,19 +218,7 @@ def dispatch_trial(
         result["status"] = TRIAL_STATUS_VOIDED
         return result
 
-    observed_value = ledger_values[str(trial.meta["commit"])]
-    status = adjudicate_trial(space, trial_id, observed_value)
-    result["status"] = status
-
-    if status == TRIAL_STATUS_SUCCEEDED:
-        prior = active_adoption(space, model_id)
-        if prior is not None and prior.id != idea.id:
-            invalidate_adoption(space, prior.id, f"superseded by trial {trial_id}")
-        adopt_idea(space, idea.id, trial_id)
-    else:
-        reject_idea(space, idea.id, f"trial {trial_id} failed adjudication")
-
-    model.meta[RATCHET_COUNT_FIELD] = compute_ratchet_count(space, model_id)
+    result["status"] = adjudicate_verdict(space, trial_id, ledger_rows)
     return result
 
 
@@ -254,7 +230,7 @@ def _record_close(space: RegistrySpace, model_id: str, close: str) -> None:
 def supervise_campaign(
     space: RegistrySpace,
     model_id: str,
-    ledger_values: dict[str, float],
+    ledger_rows: dict[str, LedgerRow],
     dispatcher: Dispatcher,
     *,
     interventions: tuple[Intervention, ...] = (),
@@ -265,16 +241,16 @@ def supervise_campaign(
 
     Each iteration calls :func:`dispatch_trial` exactly once -- a fresh, independent
     worker session that ends with its trial -- and evaluates the close condition only
-    AFTER that trial's adjudication side effects (adopt/reject, any re-queue via
-    :func:`~knowledge.ml_registry.lifecycle.invalidate_adoption`) have landed on
-    ``space``. There is no wall-clock or round-boundary timeout here: the loop runs for as
-    many dispatches as the campaign needs (or until ``max_dispatches``, a TEST-ONLY cap --
-    a real caller omits it and simply calls this again on resume). A voided trial never
-    counts against ``max_trials`` and never itself closes the campaign.
+    AFTER that trial's :func:`~knowledge.ml_registry.verdict.adjudicate_verdict` side
+    effects have landed on ``space``. There is no wall-clock or round-boundary timeout
+    here: the loop runs for as many dispatches as the campaign needs (or until
+    ``max_dispatches``, a TEST-ONLY cap -- a real caller omits it and simply calls this
+    again on resume). A voided trial never counts against ``max_trials`` and never itself
+    closes the campaign.
 
     Close conditions, checked in this order once a dispatch's side effects have landed:
       1. the dispatch found no candidate -> :data:`CLOSE_BACKLOG_EXHAUSTED`.
-      2. the dispatched trial succeeded (the win condition) -> :data:`CLOSE_WON`.
+      2. the dispatched trial was adopted (the win condition) -> :data:`CLOSE_WON`.
       3. the non-voided trial count has reached ``max_trials`` -> :data:`CLOSE_MAX_TRIALS`.
     Every non-win close is recorded on the model as a completed outcome
     (:data:`CAMPAIGN_COMPLETED`); a win is recorded as :data:`CLOSE_WON`.
@@ -286,7 +262,7 @@ def supervise_campaign(
     dispatches = 0
     while max_dispatches is None or dispatches < max_dispatches:
         result = dispatch_trial(
-            space, model_id, ledger_values, dispatcher,
+            space, model_id, ledger_rows, dispatcher,
             interventions=interventions, idea_generator=idea_generator,
         )
         dispatches += 1
@@ -300,7 +276,7 @@ def supervise_campaign(
         if result["status"] == TRIAL_STATUS_VOIDED:
             continue  # does not count against max_trials; loop continues
 
-        if result["status"] == TRIAL_STATUS_SUCCEEDED:
+        if result["status"] == VERDICT_ADOPTED:
             close = CLOSE_WON
             _record_close(space, model_id, close)
             return {"history": history, "close": close}

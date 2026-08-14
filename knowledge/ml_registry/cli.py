@@ -487,14 +487,25 @@ def main(argv: list[str] | None = None) -> int:
             def idea_generator(space, model_id, forced_axis, permitted_axes):  # noqa: ANN001
                 return next(idea_iter, None)
 
-            outcome = _load_mutate_save(
-                args.space_file,
-                lambda space: supervise_campaign(
-                    space, args.model_id, ledger_values, dispatcher,
+            def _supervise(space: RegistrySpace) -> dict[str, object]:
+                # supervise-campaign's --ledger (results.tsv) carries only a per-commit
+                # metric value, no throughput/diff_lines column -- assume each run held
+                # the model's registered baseline throughput and produced no net diff, so
+                # the void/diff-bound checks never fire from data this file doesn't carry;
+                # a dispatch-script trial_meta may still self-report either explicitly.
+                model = space.get(args.model_id)
+                baseline_throughput = float(model.meta["baseline_throughput"]) if model is not None else 0.0
+                ledger_rows = {
+                    commit: LedgerRow(value=value, throughput=baseline_throughput, diff_lines=0)
+                    for commit, value in ledger_values.items()
+                }
+                return supervise_campaign(
+                    space, args.model_id, ledger_rows, dispatcher,
                     interventions=interventions, idea_generator=idea_generator,
                     max_dispatches=args.max_dispatches,
-                ),
-            )
+                )
+
+            outcome = _load_mutate_save(args.space_file, _supervise)
             print(json.dumps(outcome, default=lambda o: {"kind": o.kind, "axis": o.axis}))
             return 0
     except RegistryValidationError as exc:
