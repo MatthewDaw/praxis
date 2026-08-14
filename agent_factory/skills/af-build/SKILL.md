@@ -281,39 +281,55 @@ enforce the *whole* run rather than just a held claim. `refresh_run(cids, owner,
 boundary keeps the marker non-stale (it auto-expires after `DEFAULT_RUN_TTL_S` so a dead run never strands
 the set), and `clear_run(cids, owner, ref=PLAN)` at the very end (§7) ends the run.
 
-## Execution model — /af-build LAUNCHES the ultracode Workflow (NOT optional, NOT your discretion)
+## Execution model — /af-build FANS OUT the ready frontier (mechanism not prescribed; admission is the one sanctioned narrowing)
 
-**Invoking `/af-build` IS your explicit authorization AND instruction to call the `Workflow` tool.** The
-Workflow tool's "only run when the user opted into multi-agent orchestration" rule is ALREADY SATISFIED the
-moment this skill runs — *"the user invoked a skill or slash command whose instructions tell you to call
-Workflow"* is exactly one of the sanctioned opt-ins, and this is that skill. So do NOT hesitate, do NOT ask
-for permission, and do NOT quietly grind tickets one-by-one just because the user didn't type "ultracode":
-**launching the fan-out Workflow is the default, mandatory behavior of this command.** Grinding the set
-inline when the ready frontier is 2+ wide is a BUG, not a safe choice.
+**The no-narrowing rule: every round dispatches the WHOLE dependency-ready frontier.** Grinding the set
+inline one ticket at a time when 2+ are ready, or silently dispatching fewer ids than a round was handed,
+is a BUG, not a safe choice — *unless* the ticket being held back is deferred by resource admission (R15,
+below), the one sanctioned exception to this rule. Nothing else narrows a round.
+
+**This fan-out contract does not prescribe WHICH mechanism performs the dispatch** — the `Workflow` tool,
+`Agent` subagents, or an external driver are all sanctioned, chosen by the guidance below; what is fixed is
+that each dispatches the admission-capped frontier in full, one decision-making agent per ticket, never a
+crew on one ticket.
+
+**Resource admission (R15) — the one sanctioned narrowing.** A ticket counts against the fixed concurrency
+lane its `meta.device` names (`cpu` or `gpu`, the closed set af-intake-plan stamps at planning time; an
+absent value defaults to `cpu`) — never a formula derived from the host's CPU core count. Each lane has a
+FIXED cap, `max_cpu_parallel` (default **8**) and `max_gpu_parallel` (default **1**), each overridable per
+project; `hooks/_ticket_state.py`'s `lane_cap`/`admit_frontier` are the source of truth (see
+`tools/check_no_core_derived_cap.py`, which fails the build on any core-count-derived expression anywhere
+under `agent_factory/`). A ticket still claimed under a LIVE lease from an earlier round — a campaign still
+running — counts against its lane in THIS round's admission too; staying `incomplete` never frees the lane
+on its own, only the lease going stale or the ticket finishing does (`live_claims`). Call `admit_frontier`
+on the ready frontier before dispatching: it admits up to each lane's remaining headroom and DEFERS the
+rest, logged by ticket id — never dropped, never marked blocked. A deferred ticket may sit deferred across
+many rounds with no ill effect: admission is a per-round dispatch read, not a ticket-state write, so it
+never reads as a dependency stall (that detector runs purely off `depends_on`).
 
 After §0 stamps the run marker, compute the dependency-ready frontier (id-only, no bodies):
 `_praxis.incomplete_requirements(project, space=PLAN[0], snapshot=PLAN[1])` → filter to the marked ids →
-`_ticket_state.ready_tickets(...)`. Then, unconditionally:
-- **≥2 tickets ready → LAUNCH THE WORKFLOW (the script below). ALWAYS — this is the whole point of the
+`_ticket_state.ready_tickets(...)` → `_ticket_state.admit_frontier(ready, live=_ticket_state.live_claims(...), project=project)` to get this round's admitted set. Then, unconditionally:
+- **≥2 admitted → LAUNCH THE WORKFLOW (the script below). ALWAYS — this is the whole point of the
   command.** The lease + the `depends_on` DAG make parallel isolated workers safe, and it is dramatically
   faster than serial. If you choose NOT to fan out, you MUST name which of the two narrow exceptions below
   applies, in your reply — silence is not an option.
-- **≤1 ready** (a strictly-linear DAG, or a single remaining ticket), **OR the `Workflow` tool is genuinely
-  absent from this session's tools** → and ONLY then → run the inline per-ticket loop (§1→§7) yourself. A
-  fleet buys nothing on a one-wide frontier. These two are the ONLY sanctioned inline paths.
+- **≤1 admitted** (a strictly-linear DAG, a single remaining ticket, or every other ready ticket deferred by
+  admission), **OR the `Workflow` tool is genuinely absent from this session's tools** → and ONLY then → run
+  the inline per-ticket loop (§1→§7) yourself. A fleet buys nothing on a one-wide frontier. These two are the
+  ONLY sanctioned inline paths.
 - **An EXPLICIT id list from an external driver** (`af-ticket-loop.sh` submits a round as
   `/af-build <project> ID,ID,...`) → fan out with **`Agent` subagents, ALL spawned in ONE message**, NOT the
   Workflow tool. This is a THIRD sanctioned path, and on a small box it is the only one that delivers the
-  fan-out this section demands: `Workflow` derives its concurrency from the machine's CPU count, so on a
-  small box routing an N-ticket round through it silently serializes that round into sequential clumps
-  while reporting success. Compute that number for the box you are actually on rather than quoting one —
-  a figure hardcoded for a 4-core host is wrong everywhere else, and reads as a universal ceiling when it
-  is only one machine's arithmetic. The driver has already computed the frontier and proven the ids are
-  mutually independent, so the Workflow tool's scheduling buys nothing here — its only effect is its cap.
-  `Agent` subagents carry no core-derived cap, which is why a batch of N genuinely runs N-wide.
-  Everything else is unchanged: one decision-making agent per ticket, each with `isolation: "worktree"`,
-  each handed the §8 worker contract verbatim. Fanning out narrower than the id list you were given is a
-  BUG, exactly as it is above.
+  fan-out this section demands: `Workflow` derives its OWN internal concurrency from the machine's CPU
+  count, so on a small box routing an N-ticket round through it silently serializes that round into
+  sequential clumps while reporting success — the exact core-derived narrowing this contract forbids, and
+  distinct from R15's fixed, project-overridable lane caps above. The driver has already computed the
+  frontier and proven the ids are mutually independent, so the Workflow tool's scheduling buys nothing
+  here — its only effect is its cap. `Agent` subagents carry no core-derived cap, which is why a batch of N
+  genuinely runs N-wide (admission-capped, as above). Everything else is unchanged: one decision-making
+  agent per ticket, each with `isolation: "worktree"`, each handed the §8 worker contract verbatim. Fanning
+  out narrower than the admitted id list is a BUG, exactly as it is above.
 
 **§1–§7 below ARE the per-ticket worker contract** — the exact loop each parallel Workflow worker runs (the
 §8 block hands it to them verbatim, one worker per ready ticket). Read them as *what the workers do*, not as

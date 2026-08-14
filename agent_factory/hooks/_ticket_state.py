@@ -2451,6 +2451,115 @@ def next_ready_ticket(items: list[dict]) -> Optional[dict]:
     return ready[0] if ready else None
 
 
+# --------------------------------------------------------------------------- concurrency admission (R15)
+#
+# A fan-out round's ONLY sanctioned narrowing of the dependency-ready frontier: two FIXED lanes —
+# ``cpu`` and ``gpu`` — named by each ticket's ``meta.device`` (the closed set plan_gate.R_DEVICE_CLOSED_SET
+# enforces at intake, R16). Deliberately never derived from the host's core count (see
+# tools/check_no_core_derived_cap.py's scanner, which fails the build on any such expression anywhere
+# under agent_factory/): a fixed cap is the same number on every box the loop happens to run on, while a
+# core-derived one silently reshapes the round to whatever machine claimed it.
+
+DEFAULT_MAX_CPU_PARALLEL = 8
+DEFAULT_MAX_GPU_PARALLEL = 1
+_LANE_DEFAULTS = {"cpu": DEFAULT_MAX_CPU_PARALLEL, "gpu": DEFAULT_MAX_GPU_PARALLEL}
+
+
+def _lane_env_names(lane: str, project: str = "") -> list[str]:
+    """Env vars consulted for ``lane``'s cap, most-specific first: a per-project override, then the
+    global one. ``AF_MAX_<LANE>_PARALLEL__<PROJECT>`` names the project the same way the rest of this
+    file does elsewhere — uppercased, non-alnum runs collapsed to a single underscore."""
+    names = [f"AF_MAX_{lane.upper()}_PARALLEL"]
+    if project:
+        proj = re.sub(r"[^A-Z0-9]+", "_", project.strip().upper()).strip("_")
+        if proj:
+            names.insert(0, f"AF_MAX_{lane.upper()}_PARALLEL__{proj}")
+    return names
+
+
+def lane_cap(lane: str, project: str = "") -> int:
+    """The admission cap for one concurrency lane (R15): 8 for ``cpu``, 1 for ``gpu`` by default.
+
+    Overridable per project via ``AF_MAX_<LANE>_PARALLEL__<PROJECT>`` (checked first), or globally via
+    ``AF_MAX_<LANE>_PARALLEL``. An invalid or non-positive override is ignored (warned, not raised) —
+    same tolerance :func:`_ttl_env` uses for lease TTLs.
+    """
+    lane_n = str(lane or "").strip().lower()
+    if lane_n not in _LANE_DEFAULTS:
+        raise ValueError(f"unknown concurrency lane {lane!r} — must be one of {sorted(_LANE_DEFAULTS)}")
+    for name in _lane_env_names(lane_n, project):
+        raw = os.environ.get(name)
+        if not raw:
+            continue
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            sys.stderr.write(f"[af] WARNING: {name}={raw!r} is not an integer — ignoring\n")
+            continue
+        if val <= 0:
+            sys.stderr.write(f"[af] WARNING: {name}={val} must be positive — ignoring\n")
+            continue
+        return val
+    return _LANE_DEFAULTS[lane_n]
+
+
+def ticket_device(item: dict) -> str:
+    """The concurrency lane a ticket counts against: its (normalized) ``meta.device``, defaulting to
+    ``"cpu"`` for an absent/unrecognized value — mirrors plan_gate.DEFAULT_DEVICE (R16) so a ticket
+    that cleared the plan gate always resolves to a real lane here."""
+    meta = item.get("meta") or {} if isinstance(item, dict) else {}
+    dev = str(meta.get("device") or "").strip().lower()
+    return dev if dev in _LANE_DEFAULTS else "cpu"
+
+
+def live_claims(items: list[dict], now: Optional[float] = None) -> list[dict]:
+    """Every ticket in ``items`` held under a LIVE claim lease right now — a build campaign still
+    running from an earlier round. Reuses :func:`_lease_live` (the same boundary ``claim``/``heartbeat``
+    already define) rather than re-deriving it: staying ``incomplete`` never frees a lane on its own,
+    only the lease going stale or the ticket finishing does."""
+    return [it for it in items if isinstance(it, dict) and _lease_live(it.get("meta") or {}, now=now)]
+
+
+def admit_frontier(ready: list[dict], live: Optional[list[dict]] = None,
+                    project: str = "") -> dict[str, Any]:
+    """Partition a dependency-ready frontier into what this round may DISPATCH vs. must DEFER, under
+    one fixed cap per lane (R15).
+
+    ``live`` is every ticket already counted as a running campaign (:func:`live_claims`) — occupied
+    lane slots that a fresh round must respect before admitting anything new. Within ``ready``, tickets
+    are admitted in order up to each lane's remaining headroom; the rest DEFER, preserved (never
+    dropped) so the caller can log the remainder by ticket id. Deferral is a pure per-round dispatch
+    read — this function writes no ticket state, so a ticket parked here stays exactly as ready/claimable
+    next round as it was this one; it may legitimately defer across many rounds without ever reading as
+    a dependency stall (that detector runs purely off depends_on, never off admission).
+    """
+    caps = {lane: lane_cap(lane, project) for lane in _LANE_DEFAULTS}
+    used = {lane: 0 for lane in _LANE_DEFAULTS}
+    for it in live_claims(live or []):
+        lane = ticket_device(it)
+        used[lane] = used.get(lane, 0) + 1
+
+    admit: list[dict] = []
+    defer: list[dict] = []
+    for it in ready:
+        if not isinstance(it, dict):
+            continue
+        lane = ticket_device(it)
+        if used[lane] < caps[lane]:
+            used[lane] += 1
+            admit.append(it)
+        else:
+            defer.append(it)
+
+    return {
+        "admit": admit,
+        "defer": defer,
+        "deferred_ids": [str((it.get("meta") or {}).get("requirement_id") or it.get("id") or "")
+                         for it in defer],
+        "lanes": {lane: {"cap": caps[lane], "used": used[lane]} for lane in _LANE_DEFAULTS},
+    }
+
+
 # --------------------------------------------------------------------------- acceptance floor
 
 def acceptance_requirement(cid: str, acceptance_text: str,
