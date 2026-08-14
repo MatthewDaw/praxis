@@ -14,6 +14,11 @@ TRIAL = "trial"
 
 REGISTRY_CATEGORIES: tuple[str, ...] = (MODEL, IDEA, TRIAL)
 
+# The trial status meaning "this run is unreliable on its face, re-run it" -- the single source
+# of truth every module that needs to exclude a voided trial (supervisor's max_trials budget,
+# insight's cross-model trial counts, ...) imports rather than re-literals.
+TRIAL_STATUS_VOIDED = "voided"
+
 # The "judging fields" a registered model is compared against, plus its baseline --
 # R1's acceptance condition and R11's registration contract agree on this set.
 REQUIRED_META_KEYS: dict[str, tuple[str, ...]] = {
