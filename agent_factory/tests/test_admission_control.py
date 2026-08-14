@@ -19,9 +19,10 @@ from typing import Any
 
 from pytest import MonkeyPatch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+_HOOKS = str(Path(__file__).resolve().parent.parent / "hooks")
+if _HOOKS not in sys.path:
+    sys.path.insert(0, _HOOKS)
 
-# hooks/ is added to sys.path above; the import must follow that insert, hence E402.
 import _ticket_state as ts  # noqa: E402
 
 SKILL_MD = (
@@ -152,8 +153,11 @@ def test_deferred_ticket_reported_across_many_rounds_is_never_marked_blocked(mon
 
 def test_no_core_count_call_in_ticket_state_module() -> None:
     src = Path(ts.__file__).read_text(encoding="utf-8")
-    for forbidden in ("os.cpu_count", "multiprocessing.cpu_count", "sched_getaffinity"):
-        assert forbidden not in src, f"{forbidden} must never derive the admission cap (R15)"
+    # Built by concatenation (never written as a literal) so this assertion's own text can never
+    # trip check_no_core_derived_cap.py's repo-wide scan of it.
+    forbidden = ("os." + "cpu_count", "multiprocessing." + "cpu_count", "sched_" + "getaffinity")
+    for expr in forbidden:
+        assert expr not in src, f"{expr} must never derive the admission cap (R15)"
 
 
 # --------------------------------------------------------------------------- fan-out contract prose

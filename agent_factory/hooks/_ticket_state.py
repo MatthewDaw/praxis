@@ -2525,8 +2525,10 @@ def admit_frontier(ready: list[dict[str, Any]], live: Optional[list[dict[str, An
     """Partition a dependency-ready frontier into what this round may DISPATCH vs. must DEFER, under
     one fixed cap per lane (R15).
 
-    ``live`` is every ticket already counted as a running campaign (:func:`live_claims`) — occupied
-    lane slots that a fresh round must respect before admitting anything new. Within ``ready``, tickets
+    ``live`` is the RAW candidate ticket list a fresh round must respect before admitting anything
+    new — this function filters it to :func:`live_claims` (a running campaign's occupied lane slots)
+    itself, so callers pass whatever incomplete set they already have without pre-filtering. Within
+    ``ready``, tickets
     are admitted in order up to each lane's remaining headroom; the rest DEFER, preserved (never
     dropped) so the caller can log the remainder by ticket id. Deferral is a pure per-round dispatch
     read — this function writes no ticket state, so a ticket parked here stays exactly as ready/claimable

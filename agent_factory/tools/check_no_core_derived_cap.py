@@ -22,12 +22,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCAN_DIRS = ("agent_factory",)
 INCLUDE_SUFFIXES = (".py",)
-# This scanner's own literals (in this docstring/pattern) would otherwise self-match — likewise the
-# admission-control acceptance suite, which asserts these same literals are ABSENT from the dispatch
-# module (see test_admission_control.py::test_no_core_count_call_in_ticket_state_module).
-EXCLUDE_NAMES = {
-    "check_no_core_derived_cap.py", "test_no_core_derived_cap.py", "test_admission_control.py",
-}
+# This scanner's own literals (in this docstring/pattern) would otherwise self-match.
+EXCLUDE_NAMES = {"check_no_core_derived_cap.py", "test_no_core_derived_cap.py"}
 CORE_COUNT_RE = re.compile(
     r"(os\.cpu_count|multiprocessing\.cpu_count|len\(os\.sched_getaffinity|"
     r"\bnproc\b|psutil\.cpu_count)"
