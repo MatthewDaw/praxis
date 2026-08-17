@@ -93,7 +93,7 @@ import re
 import subprocess
 import sys
 import time
-from typing import Any, Iterable, NamedTuple, Optional
+from typing import Any, Iterable, Literal, NamedTuple, Optional, TypedDict
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -277,6 +277,26 @@ def _derive_effective_source(source: Optional[str]) -> str:
     return str(source)
 
 
+def _positive_int_env(name: str) -> Optional[int]:
+    """Read ``name`` from the environment as a positive int, or ``None`` if it's unset, non-numeric, or
+    not positive (warning to stderr in the latter two cases). Shared int-override parsing for every
+    "env var overrides a built-in default" site in this file — :func:`_ttl_env` (lease/run/planning TTLs)
+    and :func:`lane_cap` (concurrency admission, R15) both reduce to this one tolerance rule.
+    """
+    raw = os.environ.get(name)
+    if not raw:
+        return None
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        sys.stderr.write(f"[af] WARNING: {name}={raw!r} is not an integer — ignoring\n")
+        return None
+    if val <= 0:
+        sys.stderr.write(f"[af] WARNING: {name}={val} must be positive — ignoring\n")
+        return None
+    return val
+
+
 def _ttl_env(name: str, default: int) -> int:
     """Read a TTL override from the environment, falling back to ``default``.
 
@@ -284,18 +304,8 @@ def _ttl_env(name: str, default: int) -> int:
     far wider window than one of small code edits. Without an override the only way to widen a lease
     is to edit this file, which is exactly the "edit the factory to make one project work" trap.
     """
-    raw = os.environ.get(name)
-    if not raw:
-        return default
-    try:
-        val = int(raw)
-    except (TypeError, ValueError):
-        sys.stderr.write(f"[af] WARNING: {name}={raw!r} is not an integer — using default {default}s\n")
-        return default
-    if val <= 0:
-        sys.stderr.write(f"[af] WARNING: {name}={val} must be positive — using default {default}s\n")
-        return default
-    return val
+    val = _positive_int_env(name)
+    return default if val is None else val
 
 
 # 15 min — per-ticket claim lease. Override with AF_LEASE_TTL_S for plans whose tickets legitimately
@@ -2451,6 +2461,290 @@ def next_ready_ticket(items: list[dict]) -> Optional[dict]:
     return ready[0] if ready else None
 
 
+# --------------------------------------------------------------------------- concurrency admission (R15)
+#
+# A fan-out round's ONLY sanctioned narrowing of the dependency-ready frontier: two FIXED lanes —
+# ``cpu`` and ``gpu`` — named by each ticket's ``meta.device`` (the closed set plan_gate.R_DEVICE_CLOSED_SET
+# enforces at intake, R16). Deliberately never derived from the host's core count (see
+# tools/check_no_core_derived_cap.py's scanner, which fails the build on any such expression anywhere
+# under agent_factory/): a fixed cap is the same number on every box the loop happens to run on, while a
+# core-derived one silently reshapes the round to whatever machine claimed it.
+
+DEFAULT_MAX_CPU_PARALLEL = 8
+DEFAULT_MAX_GPU_PARALLEL = 1
+_LANE_DEFAULTS = {"cpu": DEFAULT_MAX_CPU_PARALLEL, "gpu": DEFAULT_MAX_GPU_PARALLEL}
+
+
+def _lane_env_names(lane: str, project: str = "") -> list[str]:
+    """Env vars consulted for ``lane``'s cap, most-specific first: a per-project override, then the
+    global one. ``AF_MAX_<LANE>_PARALLEL__<PROJECT>`` names the project the same way the rest of this
+    file does elsewhere — uppercased, non-alnum runs collapsed to a single underscore."""
+    names = [f"AF_MAX_{lane.upper()}_PARALLEL"]
+    if project:
+        proj = re.sub(r"[^A-Z0-9]+", "_", project.strip().upper()).strip("_")
+        if proj:
+            names.insert(0, f"AF_MAX_{lane.upper()}_PARALLEL__{proj}")
+    return names
+
+
+def lane_cap(lane: str, project: str = "") -> int:
+    """The admission cap for one concurrency lane (R15): 8 for ``cpu``, 1 for ``gpu`` by default.
+
+    Overridable per project via ``AF_MAX_<LANE>_PARALLEL__<PROJECT>`` (checked first), or globally via
+    ``AF_MAX_<LANE>_PARALLEL``. An invalid or non-positive override is ignored (warned, not raised) —
+    same tolerance :func:`_ttl_env` uses for lease TTLs.
+    """
+    lane_n = str(lane or "").strip().lower()
+    if lane_n not in _LANE_DEFAULTS:
+        raise ValueError(f"unknown concurrency lane {lane!r} — must be one of {sorted(_LANE_DEFAULTS)}")
+    for name in _lane_env_names(lane_n, project):
+        val = _positive_int_env(name)
+        if val is not None:
+            return val
+    return _LANE_DEFAULTS[lane_n]
+
+
+def ticket_device(item: dict[str, Any]) -> str:
+    """The concurrency lane a ticket counts against: its (normalized) ``meta.device``, defaulting to
+    ``"cpu"`` for an absent/unrecognized value — mirrors plan_gate.DEFAULT_DEVICE (R16) so a ticket
+    that cleared the plan gate always resolves to a real lane here. Callers pass dicts (a precondition,
+    not re-checked here)."""
+    meta = item.get("meta") or {}
+    dev = str(meta.get("device") or "").strip().lower()
+    return dev if dev in _LANE_DEFAULTS else "cpu"
+
+
+def live_claims(items: list[dict[str, Any]], now: Optional[float] = None) -> list[dict[str, Any]]:
+    """Every ticket in ``items`` held under a LIVE claim lease right now — a build campaign still
+    running from an earlier round. Reuses :func:`_lease_live` (the same boundary ``claim``/``heartbeat``
+    already define) rather than re-deriving it: staying ``incomplete`` never frees a lane on its own,
+    only the lease going stale or the ticket finishing does."""
+    return [it for it in items if isinstance(it, dict) and _lease_live(it.get("meta") or {}, now=now)]
+
+
+class _LaneUsage(TypedDict):
+    cap: int
+    used: int
+
+
+class AdmissionResult(TypedDict):
+    admit: list[dict[str, Any]]
+    defer: list[dict[str, Any]]
+    deferred_ids: list[str]
+    lanes: dict[str, _LaneUsage]
+
+
+def admit_frontier(ready: list[dict[str, Any]], live: Optional[list[dict[str, Any]]] = None,
+                    project: str = "") -> AdmissionResult:
+    """Partition a dependency-ready frontier into what this round may DISPATCH vs. must DEFER, under
+    one fixed cap per lane (R15).
+
+    ``live`` is the RAW candidate ticket list a fresh round must respect before admitting anything
+    new — this function filters it to :func:`live_claims` (a running campaign's occupied lane slots)
+    itself, so callers pass whatever incomplete set they already have without pre-filtering. Within
+    ``ready``, tickets
+    are admitted in order up to each lane's remaining headroom; the rest DEFER, preserved (never
+    dropped) so the caller can log the remainder by ticket id. Deferral is a pure per-round dispatch
+    read — this function writes no ticket state, so a ticket parked here stays exactly as ready/claimable
+    next round as it was this one; it may legitimately defer across many rounds without ever reading as
+    a dependency stall (that detector runs purely off depends_on, never off admission).
+    """
+    caps = {lane: lane_cap(lane, project) for lane in _LANE_DEFAULTS}
+    used = {lane: 0 for lane in _LANE_DEFAULTS}
+    for it in live_claims(live or []):
+        lane = ticket_device(it)
+        used[lane] += 1
+
+    admit: list[dict[str, Any]] = []
+    defer: list[dict[str, Any]] = []
+    for it in ready:
+        if not isinstance(it, dict):
+            continue
+        lane = ticket_device(it)
+        if used[lane] < caps[lane]:
+            used[lane] += 1
+            admit.append(it)
+        else:
+            defer.append(it)
+
+    return {
+        "admit": admit,
+        "defer": defer,
+        "deferred_ids": [str((it.get("meta") or {}).get("requirement_id") or it.get("id") or "")
+                         for it in defer],
+        "lanes": {lane: {"cap": caps[lane], "used": used[lane]} for lane in _LANE_DEFAULTS},
+    }
+
+
+# --------------------------------------------------------------------------- ML research ticket routing (R21)
+#
+# A ticket whose ``meta.experiment_id`` names a registered knowledge.ml_registry MODEL (R5's
+# cross-project link, same field name) is a RESEARCH ticket: af-build must dispatch it to the
+# af-ml-supervise loop (``knowledge.ml_registry.supervisor.supervise_campaign``) rather than to a
+# generic build worker, ATTACH to that model's already-live campaign rather than starting a second
+# supervisor against it, and refuse a second concurrent claim while that campaign is already being
+# driven. A ticket naming no registered model is refused at claim, naming the missing model, rather
+# than silently built as an ordinary ticket. These are pure functions over already-fetched dicts
+# (the ticket, the candidate model facts, the candidate sibling-ticket claims) — same convention as
+# :func:`admit_frontier` above — so the routing decision is provable without live Praxis/registry
+# infrastructure; the orchestrator (documented in af-build/SKILL.md) supplies the live reads.
+
+EXPERIMENT_ID_META_KEY = "experiment_id"
+
+# knowledge.ml_registry.floor.CAMPAIGN_STATUS_FIELD / .supervisor's close-condition values,
+# duplicated here as bare string literals (never imported) so this stdlib-only hook module never
+# depends on knowledge/'s import surface for a bare-subprocess call. Must stay in lockstep with
+# knowledge/ml_registry/floor.py (CAMPAIGN_STATUS_FIELD) and knowledge/ml_registry/supervisor.py
+# (CLOSE_WON, CAMPAIGN_COMPLETED) — enforced by
+# test_ml_research_routing.py::test_campaign_status_vocabulary_matches_knowledge_ml_registry, so a
+# drift between the two fails a test rather than silently mis-routing a closed campaign as live.
+_CAMPAIGN_STATUS_FIELD = "campaign_status"
+_CAMPAIGN_CLOSED_STATUSES = frozenset({"won", "completed"})
+
+ROUTE_GENERIC = "generic"
+ROUTE_SUPERVISOR = "supervisor"
+ROUTE_REFUSED = "refused"
+
+
+def ticket_experiment_id(item: dict[str, Any]) -> Optional[str]:
+    """The research-routing key: ``item``'s ``meta.experiment_id``, or ``None`` for an ordinary
+    (non-research) ticket — a ticket carrying it is routed to the af-ml-supervise loop, one without
+    it never is (R21). A blank/whitespace-only value is treated as absent, same tolerance
+    :func:`ticket_device` gives an unset field."""
+    meta = (item or {}).get("meta") or {}
+    val = meta.get(EXPERIMENT_ID_META_KEY)
+    val = str(val).strip() if val is not None else ""
+    return val or None
+
+
+def find_registered_model(experiment_id: str, models: Iterable[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """The registered ml_registry MODEL fact naming ``experiment_id`` (its own ``meta.experiment_id``),
+    or ``None`` if no fact in ``models`` carries it. ``models`` is whatever the caller already read
+    (a live registry snapshot, or a JSON-persisted ``RegistrySpace`` readback) — this function makes
+    no read of its own."""
+    for m in models or ():
+        if not isinstance(m, dict):
+            continue
+        meta = m.get("meta") or {}
+        val = meta.get(EXPERIMENT_ID_META_KEY)
+        if val is not None and str(val) == str(experiment_id):
+            return m
+    return None
+
+
+def campaign_is_live(model: dict[str, Any]) -> bool:
+    """A registered model's campaign is LIVE unless it has already CLOSED
+    (``meta.campaign_status`` in ``{"won", "completed"}`` — knowledge.ml_registry.supervisor's own
+    close conditions, CLOSE_WON / CAMPAIGN_COMPLETED). A freshly-registered model (no
+    ``campaign_status`` stamped yet, or ``"active"``/``"stalled_pending_baseline"``) is live."""
+    meta = (model or {}).get("meta") or {}
+    status = meta.get(_CAMPAIGN_STATUS_FIELD)
+    return status not in _CAMPAIGN_CLOSED_STATUSES
+
+
+class _ResearchRouteBase(TypedDict):
+    route: Literal["generic", "supervisor", "refused"]  # ROUTE_GENERIC | ROUTE_SUPERVISOR | ROUTE_REFUSED
+
+
+class ResearchRoute(_ResearchRouteBase, total=False):
+    experiment_id: Optional[str]
+    model_id: Optional[str]
+    live_campaign: bool
+    reason: str
+
+
+def resolve_research_route(item: dict[str, Any], models: Iterable[dict[str, Any]]) -> ResearchRoute:
+    """Route ``item`` for af-build dispatch (R21). Never raises — callers act on ``route``:
+
+      * ``ROUTE_GENERIC`` — no ``meta.experiment_id``: an ordinary ticket, dispatched to a generic
+        build worker exactly as before. Never routed to the supervisor loop.
+      * ``ROUTE_SUPERVISOR`` — ``experiment_id`` names a registered model: dispatch to the
+        af-ml-supervise loop against ``model_id``, the SAME model every other ticket naming this
+        ``experiment_id`` resolves to (never a second registration) — ``live_campaign`` tells the
+        dispatcher whether it is ATTACHING to a campaign already under way or starting a fresh one.
+      * ``ROUTE_REFUSED`` — ``experiment_id`` names NO registered model: this is the claim-time
+        refusal signal (R21's acceptance: refused at claim, naming the missing model, rather than
+        silently built). ``reason`` names the missing ``experiment_id``.
+    """
+    experiment_id = ticket_experiment_id(item)
+    if experiment_id is None:
+        return {"route": ROUTE_GENERIC}
+    model = find_registered_model(experiment_id, models)
+    if model is None:
+        return {
+            "route": ROUTE_REFUSED,
+            "experiment_id": experiment_id,
+            "reason": f"ticket {item.get('id')!r} names experiment_id {experiment_id!r}, which no "
+                      f"registered model carries — refusing claim rather than silently building",
+        }
+    return {
+        "route": ROUTE_SUPERVISOR,
+        "experiment_id": experiment_id,
+        "model_id": model.get("id"),
+        "live_campaign": campaign_is_live(model),
+    }
+
+
+def research_claim_guard(item: dict[str, Any], models: Iterable[dict[str, Any]],
+                         other_claims: Iterable[dict[str, Any]]) -> Optional[str]:
+    """The CLAIM-time gate for a research ticket (R21): returns a refusal reason (never ``None``)
+    when ``item`` must NOT be claimed, else ``None`` (an ordinary ticket, or a research ticket free
+    to claim/attach).
+
+    Refuses when either:
+      * ``item``'s ``experiment_id`` names no registered model (:func:`resolve_research_route`
+        returns ``ROUTE_REFUSED``).
+      * a DIFFERENT ticket already holds a LIVE claim lease naming the SAME ``experiment_id`` — that
+        campaign is already being actively driven, and ``supervise_campaign`` dispatches trials
+        SERIALLY by construction (never two concurrent supervisor sessions against one model would be
+        safe). ``other_claims`` is the raw candidate ticket set; this function filters it to a live
+        lease itself (:func:`live_claims`), same convention :func:`admit_frontier` uses for ``live``.
+    """
+    route = resolve_research_route(item, models)
+    if route["route"] == ROUTE_REFUSED:
+        return route["reason"]
+    if route["route"] != ROUTE_SUPERVISOR:
+        return None
+
+    experiment_id = route["experiment_id"]
+    this_id = item.get("id")
+    for other in live_claims(list(other_claims or [])):
+        if other.get("id") == this_id:
+            continue
+        if ticket_experiment_id(other) == experiment_id:
+            return (
+                f"experiment_id {experiment_id!r} already has a live campaign claim on ticket "
+                f"{other.get('id')!r} — refusing a second concurrent claim on the same campaign"
+            )
+    return None
+
+
+# The synthetic requirement id suffix for the research-target check floor, mirroring
+# :func:`acceptance_requirement`'s ``<cid>::acceptance`` — a QUERY-derived requirement, not a
+# Praxis-authored check fact, so it "resolves onto every experiment_id-carrying ticket by query"
+# exactly as R21's acceptance names it: the query condition is ticket_meta carrying
+# ``experiment_id``, evaluated fresh every time :func:`contract_with_floor` runs (never pre-bound).
+RESEARCH_TARGET_REQUIREMENT_SUFFIX = "research-target"
+RESEARCH_TARGET_CHECK_SCRIPT = "agent_factory/scripts/checks/af_ml_research_target.py"
+
+
+def research_target_requirement(cid: str, experiment_id: str) -> dict[str, Any]:
+    """The research-target check's coverage requirement for a ticket naming ``experiment_id``
+    (R21/R19): the ticket must prove ``results.tsv``'s metric progress via
+    :data:`RESEARCH_TARGET_CHECK_SCRIPT`, read from the external ledger rather than the agent's own
+    report. Synthetic (never a Praxis ``category="check"`` fact) — same pattern as
+    :func:`acceptance_requirement`, so it resolves by a QUERY on the ticket's own
+    ``meta.experiment_id`` rather than a tag/surface match."""
+    return {
+        "id": f"{cid}::{RESEARCH_TARGET_REQUIREMENT_SUFFIX}",
+        "text": f"{RESEARCH_TARGET_CHECK_SCRIPT} accepts this ticket's results ledger for "
+                f"experiment_id {experiment_id!r} (metric progress read from the external ledger, "
+                f"never the agent's own report)",
+        "meta": {"synthetic": "research-target-floor", "experiment_id": experiment_id,
+                 "script": RESEARCH_TARGET_CHECK_SCRIPT},
+    }
+
+
 # --------------------------------------------------------------------------- acceptance floor
 
 def acceptance_requirement(cid: str, acceptance_text: str,
@@ -2770,10 +3064,10 @@ def migrate_universal_pinned_entries(tickets: list[dict], check_id: str, new_rub
     return migrated
 
 
-def contract_with_floor(cid: str, acceptance_text: str, resolved: list,
+def contract_with_floor(cid: str, acceptance_text: str, resolved: list[dict[str, Any]],
                         verify: str = "automated",
-                        ticket_meta: Optional[dict] = None,
-                        paths: Optional[list] = None) -> list:
+                        ticket_meta: Optional[dict[str, Any]] = None,
+                        paths: Optional[list[str]] = None) -> list[dict[str, Any]]:
     """Compose the coverage contract: the resolved Praxis requirements PLUS the acceptance floor
     PLUS (when ``ticket_meta`` is given and the ticket is not exempt) the always-on universal lane.
 
@@ -2793,6 +3087,12 @@ def contract_with_floor(cid: str, acceptance_text: str, resolved: list,
     their exact contract) or the contract is otherwise empty (the block path must survive, never be
     masked into buildable by a report-only universal).
 
+    ``ticket_meta`` ALSO drives the research-target floor (R21): a ticket carrying
+    ``meta.experiment_id`` gets :func:`research_target_requirement` appended (deduped), so the check
+    "resolves onto every experiment_id-carrying ticket by query and appears in that ticket's pinned
+    check set" without needing a Praxis-authored check fact — the query is simply this ticket's own
+    meta, evaluated fresh on every call. A ticket with no ``experiment_id`` never gets it.
+
     ``paths`` (R33) is the PIN-TIME phase of the path-predicate exemption: the ticket's DECLARED
     touched paths, if any — usually empty (:func:`start_ticket` has no diff to derive them from yet),
     so this is a best-effort, conservative-by-default input. The authoritative re-check against the
@@ -2804,6 +3104,12 @@ def contract_with_floor(cid: str, acceptance_text: str, resolved: list,
         floor = acceptance_requirement(cid, text, verify=verify)
         if floor["id"] not in {_check_id(r) for r in reqs}:
             reqs = [floor] + reqs
+    if ticket_meta is not None:
+        experiment_id = ticket_experiment_id({"meta": ticket_meta})
+        if experiment_id is not None:
+            rt = research_target_requirement(cid, experiment_id)
+            if rt["id"] not in {_check_id(r) for r in reqs}:
+                reqs.append(rt)
     if ticket_meta is not None and reqs:
         existing = {_check_id(r) for r in reqs}
         for u in universal_requirements(cid, ticket_meta, paths=paths):

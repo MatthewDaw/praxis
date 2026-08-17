@@ -4,7 +4,8 @@
 
 This is the ENFORCED form of af-intake-plan's B6/B9 gate: the bless step runs this and cannot be
 cleared while it exits non-zero, so plan_gate stops being skippable prose. It reads the exact same
-fields the gate keys off — including ``meta.tags`` / ``meta.verify`` / ``meta.decision`` — so the
+fields the gate keys off — including ``meta.tags`` / ``meta.verify`` / ``meta.decision`` /
+``meta.device`` — so the
 architecture-decision rules (recognized by tag OR the decision marker) fire on the live plan.
 
     python -m agent_factory.tools.plan_gate_check <project> [--out-of-scope c1,c2,...]
@@ -119,6 +120,7 @@ def requirement_from_fact(fact: dict) -> Requirement:
         tags=list(meta.get("tags") or []),
         verify=str(meta.get("verify") or ""),
         decision=str(meta.get("decision") or ""),
+        device=str(meta.get("device") or ""),
     )
 
 
@@ -142,7 +144,7 @@ def read_contract(project: str) -> dict:
     # authoritative; working memory is the in-flight fallback for the intake session itself.
     # (space, snapshot) derived inline rather than via _ticket_state.project_ref, to keep this
     # tool's imports to the stdlib-plus-_praxis set it already declares.
-    bare = project[4:] if project.startswith("prd-") else project
+    bare = project.removeprefix("prd-")
     episodes: list = []
     try:
         episodes += _praxis.get_episodes(space=bare, snapshot=f"prd-{bare}")

@@ -86,6 +86,54 @@ Do program.md's own setup section, in its order. The only environment-specific p
 Then confirm and start. After confirmation program.md's **NEVER STOP** rule applies: do not ask
 whether to continue.
 
+## Harness instance
+
+program.md's loop runs as ONE long-lived harness instance — a single agent session that stays open
+and drives every experiment in the campaign in sequence, not a fresh process per experiment. The
+SAME harness instance runs whether it was triggered standalone (a human runs `/af-ml-model`) or
+from an af-build research ticket (see "Authoring an af-build ticket" below) — both write through
+the identical registry API and are judged by the identical verdict rules, see "Standalone parity".
+That instance's own stop conditions:
+
+### Stop conditions
+
+- **Never self-stops on an experiment result.** A crashed or regressed experiment is logged and the
+  loop continues — the ratchet, not the harness, decides what to keep.
+- **Only a human stops it.** program.md's own **NEVER STOP** rule: once the run is confirmed, the
+  harness instance never asks whether to continue and never halts itself — see "Setup" above.
+- **A fresh harness instance may REPLACE the running one** (`af-ticket-loop.sh`'s one-session-per-batch
+  boundary, below) without that being the loop "stopping" — `results.tsv` is what makes the replacement
+  resumable rather than a restart.
+
+### Standalone parity
+
+A standalone run is not a separate code path from a ticketed one — both register through the SAME
+write path (`knowledge/ml_registry/write_path.py`, reachable via
+`python -m knowledge.ml_registry.cli register-model` / `register-idea` / `register-trial`) and are
+adjudicated by the SAME verdict rules (`knowledge/ml_registry/verdict.py:adjudicate_verdict`). A
+ticketed run reaches these calls through the campaign supervisor
+(`knowledge/ml_registry/supervisor.py:dispatch_trial` / `supervise_campaign`, one fresh worker
+session per trial); a standalone run calls the identical `register_model` / `register_idea` /
+`register_trial` / `adjudicate_verdict` functions itself, one experiment at a time — one harness
+instance, two entry points, never two implementations.
+
+1. **Register the model once**, before the first experiment (`register-model`, or
+   `register-model-with-baseline` once a baseline ledger exists) — metric, direction, win
+   condition, and the campaign budgets (`max_trials`, `max_discovered_ideas`,
+   `per_trial_seconds`; each defaults if omitted, see `write_path.MODEL_DEFAULTS`).
+2. **Seed the starting ideas interactively with the human**, before the loop goes unattended — each
+   one registered via `register-idea` with `origin=seeded`. This is the one human-in-the-loop
+   moment; everything after it runs under NEVER STOP (see "Stop conditions" above).
+3. **Once the loop is running, self-generated ideas register as `origin=discovered`** — the write
+   path itself refuses a discovered idea past the model's `max_discovered_ideas` budget no matter
+   who is asking (`write_path.register_idea`), so the budget is enforced at the data layer, not by
+   the harness remembering to stop proposing.
+4. **Every trial registers against its idea's fact id and its commit** (`register-trial`), then
+   goes to `adjudicate_verdict` for the adopt/park/reject/void call — the exact call
+   `supervisor.dispatch_trial` makes for a ticketed run. A trial whose idea was never registered, or
+   whose commit has no row in `results.tsv`, is refused — so no row in `results.tsv` can ever exist
+   without a registered idea behind it.
+
 ## The one failure mode this environment adds
 
 program.md keeps a **single agent session running across hundreds of experiments**. In this repo
@@ -122,6 +170,15 @@ python3 agent_factory/scripts/checks/af_ml_research_target.py \
 
 Exit 0 = accepted, 1 = not met (regress, keep running), 2 = malformed ledger.
 
+When the model has a registered fact (metric/direction, per `knowledge/ml_registry`), pass
+`--model-record <path-to-fact.json>` (the `praxis_get_fact` shape: `{"meta": {...},
+"auditTrail": [...]}`) instead of assuming `val_bpb`/minimize. The unversioned ledger format
+is read as version 0 unchanged; a ledger naming its metric column `metric_value` is version 1
+and requires `--model-record` to know the metric/direction, including a `maximize` one. The
+check also fails closed (exit 2) if the model record's audit trail shows an `"edited"` entry
+after registration — evidence the judging contract was mutated by a direct fact edit rather
+than through the registry's write path.
+
 Pick the goal deliberately — the two forms encode different research bets:
 
 - `--min-improvement D` — "beat the baseline by D". The honest framing for most research tickets,
@@ -153,3 +210,4 @@ Two constraints on the ticket body:
 - Never change `EVAL_TOKENS`, `TIME_BUDGET`, `MAX_SEQ_LEN`, or `evaluate_bpb` mid-run.
 - Never report a local `val_bpb` as comparable to a GPU or published number.
 - Never push, and never open a PR — the run's artifact is a local branch plus `results.tsv`.
+- The per-trial dispatch driver (see "Standalone parity" above) and a research ticket's bounded stop (`af_ml_research_target.py`, `--budget-exhausted-ok`) are acknowledged, deliberate forks from program.md's own **NEVER STOP** rule — documented departures, not accidental contradictions of it.

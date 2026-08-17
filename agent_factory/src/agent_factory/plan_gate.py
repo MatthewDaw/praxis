@@ -25,6 +25,10 @@ Rules enforced (each failure is a rejection reason, never a silent pass):
   (human-accepted), not a machine-built impl end-state.
   This rejects the D1–D5 dependency-inversion that wedged prd-sotos, where decision
   tickets sat first in build order but could only go green after the impl they gated.
+- **Device closed set** — af-intake-plan stamps ``meta.device`` on every ticket to name the
+  concurrency lane (``cpu``/``gpu``) it counts against af-build's admission caps. An absent
+  value is treated as ``cpu`` (so an already-blessed plan authored before this rule keeps
+  passing); a value outside the closed set rejects, naming the offending ticket.
 
 Contradiction detection (zero unresolved contradictions) is delegated to Praxis
 (`praxis_get_contradictions`) and is not re-implemented here.
@@ -52,6 +56,14 @@ R_DECISION_NOT_END_STATE = "R-DECISION-NOT-END-STATE"           # a decision is 
 R_CONTRACT_SIGNED = "R-CONTRACT-SIGNED"  # a blessed plan carries a signed contract w/ evaluator actions
 R_EXTERNAL_STATE_LIVE = "R-EXTERNAL-STATE-NEEDS-LIVE-CHECK"  # a ticket claiming external state needs a
 #                                                              check that queries that system for real
+R_DEVICE_CLOSED_SET = "R-DEVICE-CLOSED-SET"  # meta.device (default "cpu") must be in the closed set
+
+# The closed set of concurrency lanes a ticket's ``meta.device`` may name. af-build admits its
+# dependency-ready frontier under one cap per lane (``max_cpu_parallel`` / ``max_gpu_parallel``) —
+# see R15; a value outside this set cannot be routed to any cap, so it is rejected rather than
+# silently defaulted.
+DEVICE_CLOSED_SET = frozenset({"cpu", "gpu"})
+DEFAULT_DEVICE = "cpu"
 
 # A ticket that claims state OUTSIDE the repo — an object in a bucket, a provisioned instance, a
 # serving endpoint — cannot be proven by anything that runs entirely inside the repo. Mocked clients,
@@ -168,6 +180,7 @@ class Requirement:
     tags: list[str] = field(default_factory=list)     # identity tags (checks/ decision rules key off these)
     verify: str = ""                                  # "automated" | "manual" — a decision must be manual
     decision: str = ""                                # af-intake-plan's meta.decision marker (see DECISION_TAG)
+    device: str = ""                                  # af-intake-plan's meta.device; "" == DEFAULT_DEVICE ("cpu")
 
 
 # The gate's decision type is the shared contract :class:`Verdict` (reasons carry a
@@ -350,6 +363,17 @@ def evaluate_plan(
                     )
                 )
 
+        device = _norm(r.device) or DEFAULT_DEVICE
+        if device not in DEVICE_CLOSED_SET:
+            reasons.append(
+                Reason(
+                    R_DEVICE_CLOSED_SET,
+                    f"{r.id}: meta.device '{r.device}' is outside the closed set "
+                    f"({sorted(DEVICE_CLOSED_SET)}) — name the concurrency lane this ticket counts "
+                    f"against, or drop the field to default to '{DEFAULT_DEVICE}'",
+                )
+            )
+
     # --- R-EXTERNAL-STATE-NEEDS-LIVE-CHECK. Stands down entirely when the caller threads no
     # checks (keeps evaluate_plan pure and every existing caller/test unchanged); fires only on an
     # automated ticket whose own text claims external state.
@@ -370,11 +394,10 @@ def evaluate_plan(
                 continue
             blob = f"{r.text} {r.acceptance}"
             claim = _EXTERNAL_STRONG_RE.search(blob)
-            if claim is None:
-                # A weak term counts only in an infrastructure context: an infra identity tag on the
-                # ticket. Without that corroboration it is ordinary technical English and is ignored.
-                if {_norm(x) for x in r.tags} & _INFRA_TAGS:
-                    claim = _EXTERNAL_WEAK_RE.search(blob)
+            # A weak term counts only in an infrastructure context: an infra identity tag on the
+            # ticket. Without that corroboration it is ordinary technical English and is ignored.
+            if claim is None and {_norm(x) for x in r.tags} & _INFRA_TAGS:
+                claim = _EXTERNAL_WEAK_RE.search(blob)
             if not claim:
                 continue
             if live_any or ({_norm(t) for t in r.tags} & live_tags):
@@ -486,7 +509,7 @@ class PlanGate:
     harness reaches it only via the registry.
     """
 
-    def evaluate(self, input: dict) -> Verdict:  # noqa: A002 - contract name
+    def evaluate(self, input: dict) -> Verdict:
         requirements = [
             Requirement(
                 id=r["id"],
@@ -502,6 +525,7 @@ class PlanGate:
                 # accept either so neither the case author nor the live fact→Requirement mapper can
                 # drop it on the way in (dropping it would defeat the item-1 fix).
                 decision=r.get("decision") or (r.get("meta") or {}).get("decision", ""),
+                device=r.get("device") or (r.get("meta") or {}).get("device", ""),
             )
             for r in input.get("requirements", [])
         ]
