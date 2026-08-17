@@ -13,6 +13,10 @@ fetch). Resolution against an allow-listed reference is three-valued:
   downgraded nor treated as verified); retried on the next ideation pass; only the 3rd
   CONSECUTIVE unreachable attempt downgrades basis to ``reasoned`` (with a downgrade
   note), after which the streak resets.
+
+The streak is counted PER REFERENCE: correcting an idea's citation starts the new
+reference's count at 0, so a downgrade always reflects three failures against the
+reference the note names.
 """
 
 from __future__ import annotations
@@ -125,6 +129,52 @@ def test_reaching_the_reference_after_prior_unreachable_attempts_resets_the_stre
     meta.update(resolve_citation("2301.12345", meta, resolved_resolver))
     assert meta["basis"] == BASIS_EXTERNAL
     assert meta["unreachable_streak"] == 0
+
+
+def _apply(meta: dict[str, object], reference: str, resolver: _CountingResolver) -> dict[str, object]:
+    """One ideation pass as :func:`~knowledge.ml_registry.write_path.resolve_idea_citation`
+    performs it: resolve against the idea's prior meta, then merge the patch AND the attempted
+    reference onto that meta."""
+    patch = resolve_citation(reference, meta, resolver)
+    meta["reference"] = reference
+    meta.update(patch)
+    return patch
+
+
+def test_correcting_the_reference_starts_that_reference_s_streak_fresh() -> None:
+    """The streak belongs to the REFERENCE, not the idea. An idea whose citation was
+    unreachable twice and is then CORRECTED must not have the new reference's very first
+    unreachable attempt counted as the 3rd consecutive failure of "the idea"."""
+    unreachable = _CountingResolver("unreachable")
+    meta: dict[str, object] = {}
+
+    _apply(meta, "2401.11111", unreachable)
+    _apply(meta, "2401.11111", unreachable)
+    assert meta["unreachable_streak"] == 2
+
+    # The author corrects the citation; this new reference has been attempted exactly once.
+    patch = _apply(meta, "2402.22222", unreachable)
+    assert patch["unreachable_streak"] == 1
+    assert "basis" not in patch, "a new reference's FIRST failure must never downgrade"
+    assert "downgrade_note" not in patch
+
+
+def test_each_reference_keeps_its_own_consecutive_count() -> None:
+    """Interleaving references never merges their counts: the original reference's 3rd
+    consecutive failure downgrades, and the attempt against the other reference in between
+    neither reset it nor contributed to it."""
+    unreachable = _CountingResolver("unreachable")
+    meta: dict[str, object] = {}
+
+    _apply(meta, "2401.11111", unreachable)
+    _apply(meta, "2401.11111", unreachable)
+    other = _apply(meta, "2402.22222", unreachable)
+    assert other["unreachable_streak"] == 1
+
+    third = _apply(meta, "2401.11111", unreachable)
+    assert third["basis"] == BASIS_REASONED
+    assert "3 consecutive" in str(third["downgrade_note"])
+    assert "2401.11111" in str(third["downgrade_note"])
 
 
 def test_a_reference_in_any_other_url_form_lands_reasoned_and_never_calls_the_resolver() -> None:

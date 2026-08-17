@@ -8,8 +8,11 @@ Covers, directly against :mod:`knowledge.ml_registry.insight` and its wiring thr
 :mod:`knowledge.ml_registry.supervisor`:
 
 * a fixture whose insight appears on only one model files no lesson.
-* a fixture whose insight holds across two models files EXACTLY one lesson, carrying the
+* a fixture whose insight recurs across two models files EXACTLY one lesson, carrying the
   cross-model trial counts read from the registry query.
+* a model that reached a terminal verdict by a pure registry write (no trial ever ran) is
+  NOT a confirming model, and the filed lesson reports the verdict mix rather than calling
+  a twice-rejected insight one that "held".
 * no fixture files a lesson at trial granularity -- a voided trial, and a model's own
   repeated trials on the SAME idea, never file anything by themselves.
 * a lesson filed from a run funded by another project lands in the ml-research space/project
@@ -185,6 +188,60 @@ def test_no_fixture_files_a_lesson_at_trial_granularity() -> None:
     reject_idea(space, idea_id, "still did not beat baseline")
     assert maybe_file_cross_model_lesson(space, model_id, _get(space, idea_id), lesson_filer=filer) is None
     assert filer.calls == []
+
+
+def test_a_registry_only_verdict_with_no_trial_is_not_a_confirming_model() -> None:
+    """``cli reject-idea`` is a pure registry write. An idea rejected that way never ran a
+    trial, so it is bookkeeping and not evidence: it must not enter ``distinct_models`` (it
+    would arrive with a trial count of 0) and must not push the insight to confirmed."""
+    space = RegistrySpace()
+    model_a = _model(space)
+    model_b = _model(space)
+
+    idea_a = _idea(space, model_a, "architecture", "use a wider residual stream")
+    for commit in ("c1", "c2", "c3"):
+        _trial(space, model_a, idea_a, commit)
+    reject_idea(space, idea_a, "did not beat baseline")
+
+    # Same normalized insight on model_b, rejected WITHOUT ever dispatching a trial.
+    idea_b = _idea(space, model_b, "architecture", "use a wider residual stream")
+    reject_idea(space, idea_b, "rejected by hand, never tried")
+
+    insight = cross_model_insight(space, insight_key(_get(space, idea_b)))
+    assert insight is not None
+    assert insight.distinct_models == frozenset({model_a})
+    assert model_b not in insight.model_trial_counts
+    assert not insight.confirmed
+
+    filer = _RecordingFiler()
+    assert maybe_file_cross_model_lesson(space, model_b, _get(space, idea_b), lesson_filer=filer) is None
+    assert filer.calls == []
+
+
+def test_lesson_text_reports_the_verdict_mix_and_never_calls_two_rejections_a_hold() -> None:
+    """Recurrence across two models is not agreement that the insight WORKED. An insight
+    rejected on both models must read as rejected on both -- the filed lesson may never
+    claim it "held"."""
+    space = RegistrySpace()
+    model_a = _model(space)
+    model_b = _model(space)
+    idea_a = _idea(space, model_a, "optimizer", "try a cosine schedule")
+    _trial(space, model_a, idea_a, "c1")
+    reject_idea(space, idea_a, "no gain")
+    idea_b = _idea(space, model_b, "optimizer", "try a cosine schedule")
+    _trial(space, model_b, idea_b, "c2")
+    reject_idea(space, idea_b, "no gain")
+
+    insight = cross_model_insight(space, insight_key(_get(space, idea_b)))
+    assert insight is not None and insight.confirmed
+    assert insight.verdict_mix == {"rejected": 2}
+
+    payload = build_lesson_payload(insight, model_b)
+    lesson_text = payload["lesson_text"]
+    assert isinstance(lesson_text, str)
+    assert "held" not in lesson_text
+    assert "rejected on 2 model(s)" in lesson_text
+    assert _meta_of(payload)["verdict_mix"] == {"rejected": 2}
 
 
 def test_lesson_filed_from_a_run_funded_by_another_project_lands_in_ml_research_not_the_funding_project() -> None:

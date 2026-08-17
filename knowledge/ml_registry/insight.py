@@ -5,8 +5,14 @@ idea lifecycle + query surface (:mod:`knowledge.ml_registry.lifecycle`). An "ins
 recurring (axis, description) pair behind an idea -- the SAME idea shape tried, independently,
 against more than one registered model. A single model's own repeated trials on one idea never
 constitute a filed lesson by themselves, no matter how many times it is retried: only recurrence
-across >= 2 DISTINCT models, each with at least one TERMINAL-verdict idea sharing that insight,
-confirms the pattern worth teaching the factory.
+across >= 2 DISTINCT models, each with at least one TERMINAL-verdict idea sharing that insight
+that was ACTUALLY TRIED (>= 1 non-voided trial in the registry), confirms the pattern worth
+teaching the factory. A registry-only verdict -- ``cli reject-idea`` on an idea that never ran a
+trial -- is a bookkeeping write, not evidence, and never contributes a model.
+
+Recurrence is not agreement: an insight can recur because two models ADOPTED it, because two
+models REJECTED it, or as a mix. The filed lesson therefore reports the verdict mix explicitly
+(see :func:`build_lesson_payload`) and never claims a twice-rejected insight "held".
 
 :func:`maybe_file_cross_model_lesson` is the ONE gate every filing path funnels through, called:
 
@@ -86,10 +92,16 @@ def insight_key(idea: Fact) -> str:
 @dataclass(frozen=True)
 class CrossModelInsight:
     """One insight's CURRENT cross-model recurrence, recomputed fresh each call -- never
-    cached across dispatches or close events."""
+    cached across dispatches or close events.
+
+    Every model present in ``model_trial_counts`` has a count >= 1 by construction: a model
+    whose ideas carrying this insight were never actually tried contributes no evidence and
+    is not a contributing model at all.
+    """
 
     key: str
     model_trial_counts: dict[str, int]  # model_id -> non-voided trial count behind this insight
+    model_verdicts: dict[str, tuple[str, ...]]  # model_id -> the terminal statuses it reached
 
     @property
     def distinct_models(self) -> frozenset[str]:
@@ -98,6 +110,16 @@ class CrossModelInsight:
     @property
     def confirmed(self) -> bool:
         return len(self.distinct_models) >= MIN_DISTINCT_MODELS
+
+    @property
+    def verdict_mix(self) -> dict[str, int]:
+        """``{terminal status: how many contributing models reached it}`` -- what the insight
+        actually did on each model, so a lesson can never report a rejection as a hold."""
+        mix: dict[str, int] = {}
+        for statuses in self.model_verdicts.values():
+            for status in set(statuses):
+                mix[status] = mix.get(status, 0) + 1
+        return mix
 
 
 def _non_voided_trial_count(space: RegistrySpace, idea_id: str) -> int:
@@ -111,24 +133,36 @@ def _non_voided_trial_count(space: RegistrySpace, idea_id: str) -> int:
 def cross_model_insight(space: RegistrySpace, key: str) -> Optional[CrossModelInsight]:
     """The CURRENT cross-model recurrence for one insight ``key``, read fresh from ``space``.
 
-    Only ideas that have reached a :data:`TERMINAL_IDEA_STATUSES` verdict count -- an idea
-    still untried/claimed carries no confirmed insight yet, matching a trial's own
-    per-idea/per-model terminal status rather than merely having been attempted.
-    Returns ``None`` when no terminal-status idea anywhere carries this key.
+    An idea contributes only when BOTH hold: it reached a :data:`TERMINAL_IDEA_STATUSES`
+    verdict, AND it has at least one non-voided trial in the registry. The second condition
+    is what keeps a pure registry write (``cli reject-idea`` on an idea that never ran)
+    out of ``distinct_models`` -- such an idea would otherwise enter with a count of 0 and
+    push an insight to ``confirmed`` on evidence that does not exist.
+    Returns ``None`` when no such idea anywhere carries this key.
     """
     if not key.strip(":"):
         return None
     trial_counts: dict[str, int] = {}
+    verdicts: dict[str, set[str]] = {}
     for idea in space.list_facts(IDEA):
         if insight_key(idea) != key:
             continue
-        if str(idea.meta.get("status")) not in TERMINAL_IDEA_STATUSES:
+        status = str(idea.meta.get("status"))
+        if status not in TERMINAL_IDEA_STATUSES:
+            continue
+        trials = _non_voided_trial_count(space, idea.id)
+        if trials < 1:
             continue
         model_id = str(idea.meta.get("model_id"))
-        trial_counts[model_id] = trial_counts.get(model_id, 0) + _non_voided_trial_count(space, idea.id)
+        trial_counts[model_id] = trial_counts.get(model_id, 0) + trials
+        verdicts.setdefault(model_id, set()).add(status)
     if not trial_counts:
         return None
-    return CrossModelInsight(key=key, model_trial_counts=trial_counts)
+    return CrossModelInsight(
+        key=key,
+        model_trial_counts=trial_counts,
+        model_verdicts={mid: tuple(sorted(s)) for mid, s in verdicts.items()},
+    )
 
 
 def _already_filed(space: RegistrySpace, key: str) -> bool:
@@ -151,13 +185,18 @@ def build_lesson_payload(insight: CrossModelInsight, model_id: str) -> dict[str,
     drafted check's ``applies_to`` to ONLY the originating model id -- narrow enough that it
     can never gate an unrelated project's ticket, which resolves checks by its own tags/
     surfaces/wildcard, never by another project's model id.
+
+    The lesson text states RECURRENCE plus the verdict mix that produced it -- an insight
+    rejected on both models reads as rejected on both, never as one that "held".
     """
     counts_text = ", ".join(
         f"{mid}: {n} trial(s)" for mid, n in sorted(insight.model_trial_counts.items())
     )
+    mix = insight.verdict_mix
+    verdict_text = ", ".join(f"{status} on {n} model(s)" for status, n in sorted(mix.items()))
     lesson_text = (
-        f"Insight {insight.key!r} held across {len(insight.distinct_models)} distinct models "
-        f"({counts_text}) -- originating model {model_id!r}."
+        f"Insight {insight.key!r} recurred across {len(insight.distinct_models)} distinct models "
+        f"({counts_text}); verdicts: {verdict_text} -- originating model {model_id!r}."
     )
     return {
         "lesson_text": lesson_text,
@@ -166,6 +205,8 @@ def build_lesson_payload(insight: CrossModelInsight, model_id: str) -> dict[str,
         "meta": {
             "insight_key": insight.key,
             "model_trial_counts": dict(insight.model_trial_counts),
+            "model_verdicts": {mid: list(v) for mid, v in insight.model_verdicts.items()},
+            "verdict_mix": mix,
             "originating_model_id": model_id,
             "applies_to": [model_id],
         },

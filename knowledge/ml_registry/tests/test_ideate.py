@@ -13,6 +13,8 @@ Covers, directly against :mod:`knowledge.ml_registry.ideate`:
   count returned, and the ids retrieved -- even an axis that legitimately retrieves nothing.
 * the run is not required to enumerate every idea the loop will eventually try (an axis whose
   generator/retriever proposes nothing still completes the sweep).
+* the nine-value set is CLOSED in behaviour, not just in prose: a caller-supplied off-set axis
+  is refused before its generator/retriever runs and seeds nothing.
 """
 
 from __future__ import annotations
@@ -186,6 +188,31 @@ def test_sweep_generative_axes_can_be_scoped_to_a_subset_of_axes():
     ideas = space.list_facts("idea")
     assert len(ideas) == 1
     assert ideas[0].meta["axis"] == "ablation"
+
+
+def test_an_off_set_axis_is_refused_rather_than_seeded():
+    """The nine-value axis set is CLOSED, and closed is enforced. A caller-supplied ``axes``
+    may narrow the sweep, never extend it: an off-set axis raises before its generator is
+    consulted, and writes nothing -- an off-set idea would be invisible to the supervisor's
+    axis-coverage escape valve (which matches only RETRIEVAL_AXES) and fragment per-axis
+    yield."""
+    space, model_id = _space_with_model()
+
+    def exploding_generator(axis: str, model_meta: dict[str, object]) -> list[dict[str, object]]:
+        raise AssertionError(f"generator must never be consulted for off-set axis {axis!r}")
+
+    with pytest.raises(RegistryValidationError) as exc_info:
+        sweep_generative_axes(space, model_id, MODEL_META, exploding_generator, axes=("whatever",))
+    assert exc_info.value.field == "axis"
+    assert space.list_facts("idea") == []
+
+    def exploding_retriever(axis: str, model_meta: dict[str, object]) -> RetrievalResult:
+        raise AssertionError(f"retriever must never be consulted for off-set axis {axis!r}")
+
+    with pytest.raises(RegistryValidationError) as retrieval_exc:
+        sweep_retrieval_axes(space, model_id, MODEL_META, exploding_retriever, axes=("discovered",))
+    assert retrieval_exc.value.field == "axis"
+    assert space.list_facts("idea") == []
 
 
 def test_sweep_retrieval_axes_returns_receipts_even_when_scoped_to_one_axis():
