@@ -56,6 +56,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from knowledge.ml_registry.guards import ADJUDICATION_SOURCE
 from knowledge.ml_registry.floor import RATCHET_COUNT_FIELD, REJECTION_STREAK_FIELD
 from knowledge.ml_registry.lifecycle import (
     TRIAL_STATUS_SUCCEEDED,
@@ -67,7 +68,7 @@ from knowledge.ml_registry.lifecycle import (
     supersede_adoption,
 )
 from knowledge.ml_registry.schema import MODEL, TRIAL, RegistryValidationError
-from knowledge.ml_registry.write_path import Fact, RegistrySpace
+from knowledge.ml_registry.write_path import Fact, RegistrySpace, mutate_model
 
 VERDICT_ADOPTED = "adopted"
 VERDICT_PARKED = "parked"
@@ -147,7 +148,7 @@ def _invalidate_ratchet(space: RegistrySpace, model: Fact, model_id: str, reason
         invalidate_adoption(space, adopted.id, reason)
         previous = model.meta.pop(PREVIOUS_BASELINE_FIELD, None)
         if previous is not None:
-            model.meta[BASELINE_FIELD] = previous
+            mutate_model(space, model_id, {BASELINE_FIELD: previous}, source=ADJUDICATION_SOURCE)
     _reset_ratchet(model)
 
 
@@ -214,8 +215,12 @@ def adjudicate_verdict(
 
     if delta > noise_floor:
         trial.meta["status"] = TRIAL_STATUS_SUCCEEDED
-        model.meta[PREVIOUS_BASELINE_FIELD] = baseline_commit
-        model.meta[BASELINE_FIELD] = commit
+        mutate_model(
+            space,
+            model_id,
+            {PREVIOUS_BASELINE_FIELD: baseline_commit, BASELINE_FIELD: commit},
+            source=ADJUDICATION_SOURCE,
+        )
         prior = active_adoption(space, model_id)
         if prior is not None and prior.id != idea_id:
             # Superseded, NOT invalidated: the prior adoption was a real bar while it stood,
