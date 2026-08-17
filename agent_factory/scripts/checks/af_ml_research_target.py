@@ -87,9 +87,24 @@ GENERIC_METRIC_COLUMN = "metric_value"
 
 # version -> expected header. Version 0 is the existing, unversioned ledger format --
 # kept byte-identical so an in-flight loop's results.tsv keeps parsing unchanged.
+#
+# Version 2 appends the two columns `knowledge.ml_registry.cli.load_ledger_rows` REFUSES a
+# ledger for lacking. Before it existed the two readers of this one file demanded mutually
+# exclusive shapes: this check required exact equality with a 5-column header, so a ledger
+# carrying throughput/diff_lines failed it with exit 2 -- while the CLI refused to adjudicate
+# any ledger WITHOUT them, on the grounds that synthesizing the pair turns two of
+# adjudicate_verdict's four verdicts into dead code. A campaign could therefore satisfy the
+# acceptance check or be adjudicable, never both. Nothing caught it because the registry has
+# never been run end to end.
+#
+# The columns are APPENDED, never inserted: this parser reads fields positionally
+# (raw[0], raw[1], raw[3], raw[4]), while the CLI reads its own by name, so extending on the
+# right is the only shape both readers accept without either changing.
 HEADER_VERSIONS: dict[int, list[str]] = {
     0: ["commit", LEGACY_METRIC, "memory_gb", "status", "description"],
     1: ["commit", GENERIC_METRIC_COLUMN, "memory_gb", "status", "description"],
+    2: ["commit", GENERIC_METRIC_COLUMN, "memory_gb", "status", "description",
+        "throughput", "diff_lines"],
 }
 
 
@@ -128,8 +143,11 @@ def load_rows(path: str) -> tuple[int, list[Row]]:
         for lineno, raw in enumerate(reader, start=2):
             if not raw or all(not c.strip() for c in raw):
                 continue
-            if len(raw) < 5:
-                raise ValueError(f"{path}:{lineno} has {len(raw)} columns, expected 5")
+            expected_width = len(HEADER_VERSIONS[version])
+            if len(raw) < expected_width:
+                raise ValueError(
+                    f"{path}:{lineno} has {len(raw)} columns, expected {expected_width} "
+                    f"for ledger version {version}")
             try:
                 value = float(raw[1])
             except ValueError:
