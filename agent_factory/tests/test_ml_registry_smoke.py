@@ -375,6 +375,7 @@ def test_cli_resolve_citation_records_basis_and_title_on_the_idea(tmp_path: Path
     )
     result = _run_cli(
         "resolve-citation",
+        "--test-resolver",
         "--space-file",
         str(space_file),
         "--idea-id",
@@ -405,6 +406,7 @@ def test_cli_resolve_citation_downgrades_to_reasoned_on_the_3rd_consecutive_unre
     )
     args = [
         "resolve-citation",
+        "--test-resolver",
         "--space-file",
         str(space_file),
         "--idea-id",
@@ -512,6 +514,7 @@ def test_cli_registers_a_model_with_a_ledger_recomputed_floor_and_adjudicates_a_
         "r2\t1.02\t2.0\tok\tbaseline run 2\n"
         "r3\t0.98\t2.0\tok\tbaseline run 3\n"
         "r4\t1.04\t2.0\tok\tbaseline run 4\n"
+        "cand1\t0.9\t2.0\tok\tcandidate run\n"
     )
     meta = {
         "metric": "val_bpb",
@@ -549,14 +552,26 @@ def test_cli_registers_a_model_with_a_ledger_recomputed_floor_and_adjudicates_a_
     )
     trial_id = _register(
         "register-trial", space_file,
-        {"model_id": model_id, "idea_id": idea_id, "commit": "r1", "status": "running"},
+        {"model_id": model_id, "idea_id": idea_id, "commit": "cand1", "status": "running"},
         ledger=ledger,
     )
+    # RETARGETED: this call used to pass --observed-value 0.5 for a trial on a commit the
+    # ledger scores at 1.0 and assert "succeeded" -- i.e. it certified that the judged
+    # agent's own number decided its own trial. The verdict now comes from the ledger row
+    # for the trial's commit, and a disagreeing self-report is refused naming it.
     adjudicate = _run_cli(
-        "adjudicate-trial", "--space-file", str(space_file), "--trial-id", trial_id, "--observed-value", "0.5"
+        "adjudicate-trial", "--space-file", str(space_file), "--trial-id", trial_id,
+        "--ledger", str(ledger),
     )
     assert adjudicate.returncode == 0, adjudicate.stderr
     assert "succeeded" in adjudicate.stdout
+
+    self_reported = _run_cli(
+        "adjudicate-trial", "--space-file", str(space_file), "--trial-id", trial_id,
+        "--ledger", str(ledger), "--observed-value", "0.5",
+    )
+    assert self_reported.returncode == 1
+    assert "observed_value" in self_reported.stdout + self_reported.stderr
 
     adopt = _run_cli("adopt-idea", "--space-file", str(space_file), "--idea-id", idea_id, "--trial-id", trial_id)
     assert adopt.returncode == 0, adopt.stderr
@@ -584,16 +599,21 @@ def test_cli_registers_a_model_with_a_ledger_recomputed_floor_and_adjudicates_a_
 
 def test_cli_resolve_verdict_adopts_a_trial_beyond_one_noise_floor(tmp_path: Path) -> None:
     """R10 acceptance, CLI-driven: resolve-verdict joins a trial's commit (and the model's
-    current baseline commit) against a JSON ledger of value/throughput/diff_lines, adopts
-    the trial when its delta clears one noise_floor in the improving direction, advances
-    the model's baseline to the trial's commit, and records the previous baseline."""
+    current baseline commit) against the REAL external ledger (results.tsv, including its
+    throughput/diff_lines columns), adopts the trial when its delta clears one noise_floor in
+    the improving direction, advances the model's baseline to the trial's commit, and records
+    the previous baseline.
+
+    RETARGETED: this test used to hand resolve-verdict a hand-written JSON blob of
+    value/throughput/diff_lines -- a "ledger" the judged agent could write itself, against
+    which every check adjudicate_verdict performs is vacuous."""
     space_file = tmp_path / "space.json"
     ledger_tsv = tmp_path / "results.tsv"
     ledger_tsv.write_text(
-        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
-        "r1\t1.0\t2.0\tok\tbaseline run 1\nr2\t1.02\t2.0\tok\tbaseline run 2\n"
-        "r3\t0.98\t2.0\tok\tbaseline run 3\nr4\t1.04\t2.0\tok\tbaseline run 4\n"
-        "adopt1\t0.9\t2.0\tok\tcandidate\n"
+        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\tthroughput\tdiff_lines\n"
+        "r1\t1.0\t2.0\tok\tbaseline run 1\t1.01\t0\nr2\t1.02\t2.0\tok\tbaseline run 2\t1.01\t0\n"
+        "r3\t0.98\t2.0\tok\tbaseline run 3\t1.01\t0\nr4\t1.04\t2.0\tok\tbaseline run 4\t1.01\t0\n"
+        "adopt1\t0.9\t2.0\tok\tcandidate\t1.01\t100\n"
     )
     meta = {
         "metric": "val_bpb",
@@ -619,15 +639,9 @@ def test_cli_resolve_verdict_adopts_a_trial_beyond_one_noise_floor(tmp_path: Pat
         ledger=ledger_tsv,
     )
 
-    ledger_json = tmp_path / "verdict_ledger.json"
-    ledger_json.write_text(json.dumps({
-        "r1": {"value": 1.0, "throughput": 1.01, "diff_lines": 0},
-        "adopt1": {"value": 0.9, "throughput": 1.01, "diff_lines": 100},
-    }))
-
     result = _run_cli(
         "resolve-verdict", "--space-file", str(space_file), "--trial-id", trial_id,
-        "--ledger-json", str(ledger_json),
+        "--ledger", str(ledger_tsv),
     )
     assert result.returncode == 0, result.stderr
     assert "adopted" in result.stdout
@@ -642,6 +656,7 @@ def test_cli_resolve_citation_refuses_an_unregistered_idea_naming_it(tmp_path: P
     space_file = tmp_path / "space.json"
     result = _run_cli(
         "resolve-citation",
+        "--test-resolver",
         "--space-file",
         str(space_file),
         "--idea-id",
@@ -650,6 +665,10 @@ def test_cli_resolve_citation_refuses_an_unregistered_idea_naming_it(tmp_path: P
         "2301.12345",
         "--outcome",
         "resolved",
+        "--title",
+        "Attention Is All You Need",
+        "--author",
+        "Vaswani",
     )
     assert result.returncode == 1
     assert "idea_id" in result.stdout + result.stderr
@@ -664,10 +683,10 @@ def test_cli_supervise_campaign_drives_a_seeded_backlog_to_a_win(tmp_path: Path)
     space_file = tmp_path / "space.json"
     ledger = tmp_path / "results.tsv"
     ledger.write_text(
-        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
-        "commit-abc123\t3000.0\t2.0\tok\tbaseline\n"
-        "lose1\t5000.0\t2.0\tok\tfirst attempt, fails\n"
-        "win1\t100.0\t2.0\tok\tsecond attempt, wins\n"
+        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\tthroughput\tdiff_lines\n"
+        "commit-abc123\t3000.0\t2.0\tok\tbaseline\t1200\t0\n"
+        "lose1\t5000.0\t2.0\tok\tfirst attempt, fails\t1200\t10\n"
+        "win1\t100.0\t2.0\tok\tsecond attempt, wins\t1200\t20\n"
     )
     model_id = _register("register-model", space_file, {**MODEL_META, "max_trials": 5})
     idea1 = _register(
@@ -710,9 +729,9 @@ def test_cli_supervise_campaign_closes_on_backlog_exhausted_after_registering_a_
     space_file = tmp_path / "space.json"
     ledger = tmp_path / "results.tsv"
     ledger.write_text(
-        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
-        "commit-abc123\t1.0\t2.0\tok\tbaseline\n"
-        "lose1\t5000.0\t2.0\tok\tonly attempt, fails\n"
+        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\tthroughput\tdiff_lines\n"
+        "commit-abc123\t1.0\t2.0\tok\tbaseline\t1200\t0\n"
+        "lose1\t5000.0\t2.0\tok\tonly attempt, fails\t1200\t10\n"
     )
     model_id = _register("register-model", space_file, {**MODEL_META, "max_discovered_ideas": 1})
     dispatch_script = tmp_path / "dispatch.json"
@@ -836,9 +855,9 @@ def test_cli_supervise_campaign_forced_axis_intervention_and_unsatisfiable_exclu
     space_file = tmp_path / "space.json"
     ledger = tmp_path / "results.tsv"
     ledger.write_text(
-        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
-        "commit-abc123\t1.0\t2.0\tok\tbaseline\n"
-        "deadbeef\t5000.0\t2.0\tok\tforced pick\n"
+        "commit\tval_bpb\tmemory_gb\tstatus\tdescription\tthroughput\tdiff_lines\n"
+        "commit-abc123\t1.0\t2.0\tok\tbaseline\t1200\t0\n"
+        "deadbeef\t5000.0\t2.0\tok\tforced pick\t1200\t10\n"
     )
     model_id = _register("register-model", space_file, MODEL_META)
     architecture_idea = _register(
