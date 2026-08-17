@@ -7,6 +7,8 @@ import pytest
 
 from knowledge.ml_registry.lifecycle import (
     STATUS_ADOPTED,
+    STATUS_REJECTED,
+    STATUS_SUPERSEDED,
     adopt_idea,
     claim_idea,
     flagged_trials,
@@ -17,6 +19,7 @@ from knowledge.ml_registry.lifecycle import (
     per_axis_yield,
     reject_idea,
     rejection_memory,
+    supersede_adoption,
     untried_backlog,
 )
 from knowledge.ml_registry.schema import RegistryValidationError
@@ -170,6 +173,55 @@ def test_invalidating_an_adoption_reverts_it_and_returns_ideas_rejected_during_i
     assert loser_id in backlog_ids  # returned to the backlog
     assert bystander_id not in backlog_ids  # untouched -- it predates the tenure
     assert {i.id for i, _ in rejection_memory(space)} == {bystander_id}
+
+
+def test_superseding_an_adoption_demotes_it_without_touching_its_tenures_rejections():
+    """The mirror image of invalidation: a better idea replaced this one, but it was a real
+    bar while it stood, so the ideas rejected under it stay rejected."""
+    space = RegistrySpace()
+    model_id = register_model(space, dict(MODEL_META))
+    winner_id = register_idea(space, _idea_meta(model_id, description="the first winner"))
+    loser_id = register_idea(space, _idea_meta(model_id, description="rejected mid-tenure"))
+
+    trial_id = register_trial(space, _trial_meta(model_id, winner_id), LEDGER)
+    adopt_idea(space, winner_id, trial_id)
+    reject_idea(space, loser_id, "lost to the winner")
+
+    supersede_adoption(space, winner_id, "superseded by a better idea")
+
+    winner = space.get(winner_id)
+    assert winner.meta["status"] == STATUS_SUPERSEDED
+    assert winner.meta["reversal_reason"] == "superseded by a better idea"
+    assert "outcome" not in winner.meta and "adopted_trial_id" not in winner.meta
+
+    loser = space.get(loser_id)
+    assert loser.meta["status"] == STATUS_REJECTED
+    assert loser.meta["rejection_reason"] == "lost to the winner"
+    assert loser.meta["rejected_under_adoption"] == winner_id
+    assert {i.id for i, _ in rejection_memory(space)} == {loser_id}
+
+
+def test_a_superseded_idea_never_re_enters_the_untried_backlog():
+    space = RegistrySpace()
+    model_id, idea_id = _model_and_idea(space)
+    trial_id = register_trial(space, _trial_meta(model_id, idea_id), LEDGER)
+    adopt_idea(space, idea_id, trial_id)
+
+    supersede_adoption(space, idea_id, "a better idea won")
+
+    assert idea_id not in {i.id for i in untried_backlog(space)}
+
+
+@pytest.mark.parametrize("reason,field", [("", "reason"), ("a real reason", "idea_id")])
+def test_superseding_refuses_an_empty_reason_or_a_non_adopted_idea(reason, field):
+    space = RegistrySpace()
+    model_id, idea_id = _model_and_idea(space)
+    if field == "reason":
+        trial_id = register_trial(space, _trial_meta(model_id, idea_id), LEDGER)
+        adopt_idea(space, idea_id, trial_id)
+    with pytest.raises(RegistryValidationError) as excinfo:
+        supersede_adoption(space, idea_id, reason)
+    assert excinfo.value.field == field
 
 
 def test_invalidating_an_adoption_that_is_not_currently_adopted_is_refused():

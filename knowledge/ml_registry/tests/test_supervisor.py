@@ -29,7 +29,14 @@ from __future__ import annotations
 import pytest
 
 from knowledge.ml_registry.floor import CAMPAIGN_STATUS_FIELD, RATCHET_COUNT_FIELD
-from knowledge.ml_registry.lifecycle import STATUS_ADOPTED, STATUS_UNTRIED, reject_idea, untried_backlog
+from knowledge.ml_registry.lifecycle import (
+    STATUS_ADOPTED,
+    STATUS_REJECTED,
+    STATUS_SUPERSEDED,
+    STATUS_UNTRIED,
+    reject_idea,
+    untried_backlog,
+)
 from knowledge.ml_registry.schema import RegistryValidationError
 from knowledge.ml_registry.supervisor import (
     CLOSE_BACKLOG_EXHAUSTED,
@@ -262,12 +269,13 @@ def test_close_evaluated_only_after_adjudication_side_effects_have_landed():
     assert model.meta[BASELINE_FIELD] == "c1"
 
 
-def test_close_evaluated_only_after_adjudication_side_effects_including_requeue_have_landed():
-    """A win that supersedes a prior adoption re-queues whatever was rejected under that
-    prior adoption's tenure BEFORE the campaign's close condition is evaluated -- the
-    re-queued idea is visible in the backlog at the moment supervise_campaign returns.
-    Also asserts, through dispatch_trial (R8's production entry point routed through
-    R10's verdict.adjudicate_verdict), that at most one idea per model is ever adopted."""
+def test_close_evaluated_only_after_a_supersession_has_landed():
+    """A win that supersedes a prior adoption demotes that prior adoption BEFORE the
+    campaign's close condition is evaluated -- the demotion is visible at the moment
+    supervise_campaign returns. Also asserts, through dispatch_trial (R8's production entry
+    point routed through R10's verdict.adjudicate_verdict), that at most one idea per model
+    is ever adopted, and that supersession does NOT re-queue the prior tenure's rejections:
+    the prior adoption was a real bar while it stood, so those rejections remain valid."""
     space, model_id = _space_with_model(max_trials=10)
     first_winner = _idea(space, model_id, "architecture", SEEDED, "first winner")
     casualty = _idea(space, model_id, "architecture", SEEDED, "rejected under first winner's tenure")
@@ -289,17 +297,20 @@ def test_close_evaluated_only_after_adjudication_side_effects_including_requeue_
     reject_idea(space, casualty, "did not beat baseline")
     assert casualty not in {f.id for f in untried_backlog(space, model_id=model_id)}
 
-    # Trial 2: second_winner also succeeds -- this must invalidate first_winner's adoption
-    # and re-queue casualty, and the campaign's close (won) must reflect that landed state.
+    # Trial 2: second_winner also succeeds -- this must supersede first_winner's adoption,
+    # and the campaign's close (won) must reflect that landed state.
     outcome = supervise_campaign(
         space, model_id, two_wins_ledger, _scripted_dispatcher(["c2-better"]), max_dispatches=1
     )
     assert outcome["close"] == CLOSE_WON
-    assert space.get(first_winner).meta["status"] != STATUS_ADOPTED
+    assert space.get(first_winner).meta["status"] == STATUS_SUPERSEDED
     assert space.get(second_winner).meta["status"] == STATUS_ADOPTED
-    # re-queued: absence of a status means untried, same as reject_idea's own accounting
-    assert space.get(casualty).meta.get("status") in (None, STATUS_UNTRIED)
-    assert casualty in {f.id for f in untried_backlog(space, model_id=model_id)}
+    # Superseded, not invalidated: casualty was rejected against a bar that really stood,
+    # so it stays rejected and off the backlog.
+    assert space.get(casualty).meta["status"] == STATUS_REJECTED
+    assert space.get(casualty).meta["rejection_reason"] == "did not beat baseline"
+    assert casualty not in {f.id for f in untried_backlog(space, model_id=model_id)}
+    assert first_winner not in {f.id for f in untried_backlog(space, model_id=model_id)}
 
 
 def test_three_consecutive_dispatch_trial_rejections_on_distinct_ideas_fire_the_ratchet_and_invalidate_the_adoption():

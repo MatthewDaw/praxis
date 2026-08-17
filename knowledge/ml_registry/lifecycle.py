@@ -1,6 +1,6 @@
 """Idea lifecycle for the af-ml-research registry (R3): adopt / park / reject, the idea
-claim lease, and adoption reversal. Also the registry's query surface (R4): the untried
-backlog, rejection memory, and per-axis/per-origin yield.
+claim lease, and the two ways an adoption ends. Also the registry's query surface (R4):
+the untried backlog, rejection memory, and per-axis/per-origin yield.
 
 Builds on R2's write path (:mod:`knowledge.ml_registry.write_path`) -- these functions
 mutate an already-registered :class:`~knowledge.ml_registry.write_path.Fact`'s ``meta``
@@ -9,8 +9,21 @@ JSON-persisted stand-in R2 uses for a Praxis-backed space. An idea's lifecycle s
 lives in ``meta["status"]``; absence means untried (never claimed/adopted/parked/rejected).
 
 Adoption tenure: rejecting an idea stamps it with the id of whichever idea is currently
-``adopted`` for the same model (if any), so :func:`invalidate_adoption` can find and
-revert every idea rejected during that adoption's tenure without a separate ledger.
+``adopted`` for the same model (if any) -- ``rejected_under_adoption`` -- so an adoption
+that ends can find every idea rejected during its tenure without a separate ledger.
+
+An adoption ends in exactly ONE of two ways, and the difference is the whole point of the
+stamp:
+
+* :func:`supersede_adoption` -- a BETTER idea was adopted in its place. The prior adoption
+  was correct when it was made, so the ideas rejected during its tenure were judged against
+  a bar that really existed and STAY rejected. The prior idea becomes
+  :data:`STATUS_SUPERSEDED`: no longer the active adoption, but NOT untried -- it has been
+  tried, it won, and it must never re-enter the untried backlog.
+* :func:`invalidate_adoption` -- the adoption itself is repudiated (R12's harness
+  retirement, or R10's rejection ratchet proving the baseline it set was false). The bar it
+  set never existed, so every idea rejected under its tenure is RE-QUEUED to the untried
+  backlog, and the idea itself returns to untried for a fresh attempt.
 """
 
 from __future__ import annotations
@@ -26,6 +39,7 @@ STATUS_CLAIMED = "claimed"
 STATUS_ADOPTED = "adopted"
 STATUS_PARKED = "parked"
 STATUS_REJECTED = "rejected"
+STATUS_SUPERSEDED = "superseded"
 
 OUTCOME_SUCCEEDED = "succeeded"
 TRIAL_STATUS_SUCCEEDED = "succeeded"
@@ -188,19 +202,43 @@ def flagged_trials(space: RegistrySpace) -> list[Fact]:
     return flagged
 
 
-def invalidate_adoption(space: RegistrySpace, idea_id: str, reason: str) -> None:
-    """Revert an adoption, recording ``reason``, and return every idea rejected during its
-    tenure (:func:`reject_idea`'s ``rejected_under_adoption`` stamp) to the untried backlog.
-    """
+def _end_adoption(space: RegistrySpace, idea_id: str, reason: str, *, status: str) -> Fact:
+    """Shared preamble for both adoption endings: validate, demote to ``status``, and drop
+    the adoption bookkeeping. Neither ending touches the tenure's rejections here."""
     if not reason:
         raise RegistryValidationError("adoption reversal requires a non-empty reason", field="reason")
     idea = _idea(space, idea_id)
     if _status(idea) != STATUS_ADOPTED:
         raise RegistryValidationError(f"idea {idea_id!r} is not currently adopted", field="idea_id")
-    idea.meta["status"] = STATUS_UNTRIED
+    idea.meta["status"] = status
     idea.meta["reversal_reason"] = reason
     idea.meta.pop("outcome", None)
     idea.meta.pop("adopted_trial_id", None)
+    return idea
+
+
+def supersede_adoption(space: RegistrySpace, idea_id: str, reason: str) -> None:
+    """Demote an adoption that a BETTER idea has replaced, recording ``reason``.
+
+    The idea becomes :data:`STATUS_SUPERSEDED` -- it is no longer the active adoption, but
+    it is NOT untried and never re-enters the untried backlog. Crucially, and unlike
+    :func:`invalidate_adoption`, every idea rejected during its tenure is left EXACTLY as
+    it was: the superseded adoption was a real bar when those rejections were made, so they
+    remain legitimate and stay in rejection memory.
+    """
+    _end_adoption(space, idea_id, reason, status=STATUS_SUPERSEDED)
+
+
+def invalidate_adoption(space: RegistrySpace, idea_id: str, reason: str) -> None:
+    """Repudiate an adoption, recording ``reason``, and return every idea rejected during its
+    tenure (:func:`reject_idea`'s ``rejected_under_adoption`` stamp) to the untried backlog.
+
+    For when the adoption itself is proven wrong -- a retired harness, or R10's rejection
+    ratchet -- so the bar it set is treated as never having existed. To merely replace an
+    adoption with a better one, use :func:`supersede_adoption`, which keeps the tenure's
+    rejections intact.
+    """
+    _end_adoption(space, idea_id, reason, status=STATUS_UNTRIED)
     for other in space.list_facts(IDEA):
         if other.meta.get("rejected_under_adoption") == idea_id:
             for key in ("status", "rejection_reason", "rejected_under_adoption"):

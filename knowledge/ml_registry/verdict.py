@@ -7,16 +7,25 @@ adjudication a trial goes through once its idea is claimed and run: it joins the
 per-commit rows -- metric value, throughput, and net diff lines -- and decides ONE of
 four verdicts:
 
+The stagnant band is CLOSED on both sides: ``-noise_floor <= delta <= noise_floor`` is
+stagnant. The floor is one standard deviation of the baseline runs, so a delta of exactly
+one floor is not evidence of anything in EITHER direction -- adoption needs
+``delta > noise_floor`` and rejection needs ``delta < -noise_floor``, both strict.
+
 * ``"adopted"``  -- the trial's ledger value beats the current baseline by MORE than one
   ``noise_floor`` in the model's improving direction. The model's ``baseline`` advances to
   the trial's commit, the commit it replaces is retained as ``previous_baseline``, and the
-  idea is adopted (:func:`~knowledge.ml_registry.lifecycle.adopt_idea`).
-* ``"parked"``   -- the delta is within one ``noise_floor`` of the baseline (stagnant) and
-  the trial's recomputed ``diff_lines`` is within the model's ``diff_size_limit`` (its
-  net-line bound). The idea is parked (:func:`~knowledge.ml_registry.lifecycle.park_idea`).
-* ``"rejected"`` -- either the trial's ledger value falls AT LEAST one ``noise_floor`` below
-  baseline in the worsening direction, or it is stagnant but breaches the net-line bound.
-  The idea is rejected (:func:`~knowledge.ml_registry.lifecycle.reject_idea`).
+  idea is adopted (:func:`~knowledge.ml_registry.lifecycle.adopt_idea`). Any PRIOR adoption
+  for the model is superseded
+  (:func:`~knowledge.ml_registry.lifecycle.supersede_adoption`), not invalidated: it was a
+  real bar while it stood, so the ideas rejected during its tenure stay rejected.
+* ``"parked"``   -- the delta is within one ``noise_floor`` of the baseline, inclusive
+  (stagnant), and the trial's recomputed ``diff_lines`` is within the model's
+  ``diff_size_limit`` (its net-line bound). The idea is parked
+  (:func:`~knowledge.ml_registry.lifecycle.park_idea`).
+* ``"rejected"`` -- either the trial's ledger value falls MORE than one ``noise_floor``
+  below baseline in the worsening direction, or it is stagnant but breaches the net-line
+  bound. The idea is rejected (:func:`~knowledge.ml_registry.lifecycle.reject_idea`).
 * ``"voided"``   -- the trial's recomputed throughput falls more than
   :data:`THROUGHPUT_FLOOR_FRACTION` (5%) below the model's registered
   ``baseline_throughput``. The run is unreliable on its face: no adjudication happens at
@@ -32,12 +41,15 @@ RATCHET: only a REJECTED verdict caused by the worsening-direction noise-floor b
 a stagnant/diff-bound rejection) advances the model's consecutive-rejection ratchet
 (``ratchet_count`` plus the distinct idea ids behind it, ``rejection_streak_ideas``). The
 moment the last 3 entries of that streak name 3 DISTINCT ideas, the model's last adoption
-is invalidated and its baseline restored to ``previous_baseline`` -- WITHOUT reverting the
-streak's own rejections (unlike R3's :func:`~knowledge.ml_registry.lifecycle.invalidate_adoption`,
-built for the unrelated harness-retirement case, which re-queues them). Nothing else resets
-the ratchet: an adoption resets it (a fresh baseline earns a fresh streak), an invalidation
-resets it (fired or not -- when there is no active adoption to invalidate, the rule is a
-no-op that still consumes/resets the streak), and any other verdict leaves it untouched.
+is INVALIDATED through R3's :func:`~knowledge.ml_registry.lifecycle.invalidate_adoption`
+and its baseline restored to ``previous_baseline``. 3 consecutive rejections on distinct
+ideas are the evidence that the adoption was noise and the baseline it set was FALSE --
+so every idea rejected while that false bar stood, the streak's own rejections included,
+was judged against a bar that never existed and is RE-QUEUED to the untried backlog. The
+ratchet counter and streak reset either way. Nothing else resets the ratchet: an adoption
+resets it (a fresh baseline earns a fresh streak), an invalidation resets it (fired or not
+-- when there is no active adoption to invalidate, the rule is a no-op that still
+consumes/resets the streak), and any other verdict leaves it untouched.
 """
 
 from __future__ import annotations
@@ -46,13 +58,13 @@ from dataclasses import dataclass
 
 from knowledge.ml_registry.floor import RATCHET_COUNT_FIELD, REJECTION_STREAK_FIELD
 from knowledge.ml_registry.lifecycle import (
-    STATUS_UNTRIED,
     TRIAL_STATUS_SUCCEEDED,
     active_adoption,
     adopt_idea,
     invalidate_adoption,
     park_idea,
     reject_idea,
+    supersede_adoption,
 )
 from knowledge.ml_registry.schema import MODEL, TRIAL, RegistryValidationError
 from knowledge.ml_registry.write_path import Fact, RegistrySpace
@@ -122,14 +134,17 @@ def _reset_ratchet(model: Fact) -> None:
 
 
 def _invalidate_ratchet(space: RegistrySpace, model: Fact, model_id: str, reason: str) -> None:
-    """Invalidate the model's last adoption and restore its previous baseline, keeping every
-    rejection recorded. A no-op (beyond resetting the streak) when nothing is adopted."""
+    """Invalidate the model's last adoption and restore its previous baseline.
+
+    The streak proves the adoption was noise, so its baseline was false -- every idea
+    rejected during its tenure was measured against a bar that never existed and is
+    re-queued to the untried backlog by
+    :func:`~knowledge.ml_registry.lifecycle.invalidate_adoption`. A no-op (beyond resetting
+    the streak) when nothing is adopted.
+    """
     adopted = active_adoption(space, model_id)
     if adopted is not None:
-        adopted.meta["status"] = STATUS_UNTRIED
-        adopted.meta["reversal_reason"] = reason
-        adopted.meta.pop("outcome", None)
-        adopted.meta.pop("adopted_trial_id", None)
+        invalidate_adoption(space, adopted.id, reason)
         previous = model.meta.pop(PREVIOUS_BASELINE_FIELD, None)
         if previous is not None:
             model.meta[BASELINE_FIELD] = previous
@@ -203,14 +218,18 @@ def adjudicate_verdict(
         model.meta[BASELINE_FIELD] = commit
         prior = active_adoption(space, model_id)
         if prior is not None and prior.id != idea_id:
-            invalidate_adoption(space, prior.id, f"superseded by trial {trial_id}")
+            # Superseded, NOT invalidated: the prior adoption was a real bar while it stood,
+            # so the ideas rejected under its tenure stay rejected.
+            supersede_adoption(space, prior.id, f"superseded by trial {trial_id}")
         adopt_idea(space, idea_id, trial_id)
         _reset_ratchet(model)
         return VERDICT_ADOPTED
 
-    if delta <= -noise_floor:
+    # Symmetric with the strict `delta > noise_floor` adoption test above: a delta of exactly
+    # one floor is one standard deviation, i.e. no evidence, in EITHER direction.
+    if delta < -noise_floor:
         trial.meta["status"] = "failed"
-        reject_idea(space, idea_id, "trial fell at least one noise-floor standard deviation below the current baseline")
+        reject_idea(space, idea_id, "trial fell more than one noise-floor standard deviation below the current baseline")
         streak = list(model.meta.get(REJECTION_STREAK_FIELD) or [])
         streak.append(idea_id)
         model.meta[REJECTION_STREAK_FIELD] = streak
@@ -222,7 +241,7 @@ def adjudicate_verdict(
             )
         return VERDICT_REJECTED
 
-    # stagnant band: -noise_floor < delta <= noise_floor
+    # stagnant band, closed on both sides: -noise_floor <= delta <= noise_floor
     if row.diff_lines <= diff_size_limit:
         trial.meta["status"] = "stagnant"
         park_idea(space, idea_id, reactivation_trigger)
