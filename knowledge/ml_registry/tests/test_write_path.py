@@ -7,7 +7,10 @@ import pytest
 from knowledge.ml_registry.citation import ResolvedCitation, ResolverUnreachable
 from knowledge.ml_registry.schema import IDEA, MODEL, TRIAL, RegistryValidationError
 from knowledge.ml_registry.write_path import (
+    DEFAULT_MAX_DISCOVERED_IDEAS,
+    UNLIMITED_DISCOVERED_IDEAS,
     RegistrySpace,
+    mutate_model,
     register_idea,
     register_model,
     register_trial,
@@ -94,13 +97,96 @@ def test_discovered_idea_budget_refusal_applies_regardless_of_caller():
         assert excinfo.value.field == "max_discovered_ideas"
 
 
-def test_unbudgeted_model_allows_unlimited_discovered_ideas():
-    space = RegistrySpace()
+def _model_fact_without_budget(space: RegistrySpace) -> str:
+    """A model fact built WITHOUT register_model, so it carries no max_discovered_ideas
+    at all -- the only way the absent-budget path is reachable."""
     meta = dict(MODEL_META)
     del meta["max_discovered_ideas"]
+    model_id = space.insert(MODEL, meta)
+    assert "max_discovered_ideas" not in space.get(model_id).meta
+    return model_id
+
+
+def test_model_fact_missing_its_budget_field_does_not_get_unlimited_discovered_ideas():
+    """A cost control must not fail open: an ABSENT max_discovered_ideas falls back to the
+    documented default (8), not to unlimited."""
+    space = RegistrySpace()
+    model_id = _model_fact_without_budget(space)
+
+    for _ in range(DEFAULT_MAX_DISCOVERED_IDEAS):
+        register_idea(space, _idea_meta(model_id, origin="discovered"))
+
+    with pytest.raises(RegistryValidationError) as excinfo:
+        register_idea(space, _idea_meta(model_id, origin="discovered"))
+    assert excinfo.value.field == "max_discovered_ideas"
+
+
+def test_the_documented_default_budget_is_finite():
+    assert DEFAULT_MAX_DISCOVERED_IDEAS == 8
+    assert DEFAULT_MAX_DISCOVERED_IDEAS != UNLIMITED_DISCOVERED_IDEAS
+
+
+def test_unlimited_discovered_ideas_stays_reachable_via_the_explicit_sentinel():
+    space = RegistrySpace()
+    meta = dict(MODEL_META)
+    meta["max_discovered_ideas"] = UNLIMITED_DISCOVERED_IDEAS
     model_id = register_model(space, meta)
-    for _ in range(5):
+    for _ in range(DEFAULT_MAX_DISCOVERED_IDEAS + 3):
         register_idea(space, _idea_meta(model_id, origin="discovered"))  # must not raise
+
+
+def test_a_negative_budget_that_is_not_the_sentinel_is_refused_naming_the_field():
+    space = RegistrySpace()
+    meta = dict(MODEL_META)
+    meta["max_discovered_ideas"] = -7
+    model_id = register_model(space, meta)
+    with pytest.raises(RegistryValidationError) as excinfo:
+        register_idea(space, _idea_meta(model_id, origin="discovered"))
+    assert excinfo.value.field == "max_discovered_ideas"
+
+
+def test_worker_sourced_write_path_mutation_of_a_protected_field_is_refused():
+    """The guards must sit on the DATA PATH, not only behind the CLI: a direct
+    mutate_model call is refused just the same."""
+    space = RegistrySpace()
+    model_id = register_model(space, dict(MODEL_META))
+
+    with pytest.raises(RegistryValidationError) as excinfo:
+        mutate_model(space, model_id, {"noise_floor": 99.0}, source="worker")
+    assert excinfo.value.field == "noise_floor"
+    assert space.get(model_id).meta["noise_floor"] == MODEL_META["noise_floor"]
+
+
+def test_write_path_baseline_move_from_a_non_adjudication_source_is_refused():
+    space = RegistrySpace()
+    model_id = register_model(space, dict(MODEL_META))
+
+    for source in ("worker", "supervisor", "human"):
+        with pytest.raises(RegistryValidationError) as excinfo:
+            mutate_model(space, model_id, {"baseline": "commit-def456"}, source=source)
+        assert excinfo.value.field == "baseline"
+        assert space.get(model_id).meta["baseline"] == MODEL_META["baseline"]
+
+
+def test_write_path_baseline_move_from_adjudication_is_applied():
+    space = RegistrySpace()
+    model_id = register_model(space, dict(MODEL_META))
+    mutate_model(space, model_id, {"baseline": "commit-def456"}, source="adjudication")
+    assert space.get(model_id).meta["baseline"] == "commit-def456"
+
+
+def test_write_path_worker_mutation_of_an_unprotected_field_is_applied():
+    space = RegistrySpace()
+    model_id = register_model(space, dict(MODEL_META))
+    mutate_model(space, model_id, {"description": "renamed"}, source="worker")
+    assert space.get(model_id).meta["description"] == "renamed"
+
+
+def test_mutate_model_refuses_an_unregistered_model_naming_it():
+    space = RegistrySpace()
+    with pytest.raises(RegistryValidationError) as excinfo:
+        mutate_model(space, "model-nope", {"description": "x"}, source="adjudication")
+    assert excinfo.value.field == "model_id"
 
 
 def test_trial_referencing_an_unregistered_idea_is_refused_naming_it():
