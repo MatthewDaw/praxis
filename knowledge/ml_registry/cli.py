@@ -52,6 +52,7 @@ from knowledge.ml_registry.verdict import LedgerRow, adjudicate_verdict
 from knowledge.ml_registry.write_path import (
     RegistrySpace,
     load_ledger_commits,
+    mutate_model,
     register_idea,
     register_model,
     register_trial,
@@ -132,6 +133,16 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="re-register (update) an already-registered model instead of creating a new one",
     )
+
+    mutate_model_p = sub.add_parser(
+        "mutate-model",
+        help="apply a patch to an ALREADY REGISTERED model through the guarded write path "
+        "(both R1 guards applied on the data path)",
+    )
+    mutate_model_p.add_argument("--space-file", required=True)
+    mutate_model_p.add_argument("--model-id", required=True)
+    mutate_model_p.add_argument("--patch-json", required=True)
+    mutate_model_p.add_argument("--source", required=True)
 
     register_idea_p = sub.add_parser("register-idea", help="register an idea fact")
     register_idea_p.add_argument("--space-file", required=True)
@@ -352,6 +363,15 @@ def main(argv: list[str] | None = None) -> int:
                 lambda space: register_model(space, _json_arg(args.meta_json), model_id=args.model_id),
             )
             print(f"OK: registered model {fact_id}")
+            return 0
+        if args.command == "mutate-model":
+            fact = _load_mutate_save(
+                args.space_file,
+                lambda space: mutate_model(
+                    space, args.model_id, _json_arg(args.patch_json), source=args.source
+                ),
+            )
+            print(json.dumps(fact.to_json()))
             return 0
         if args.command == "register-idea":
             fact_id = _load_mutate_save(

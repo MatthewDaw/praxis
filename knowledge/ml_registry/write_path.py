@@ -19,6 +19,12 @@ rules that schema validation alone cannot express:
   are unaffected.
 * (R11) a model's ``metric`` is frozen for its life -- re-registering against an existing
   ``model_id`` that tries to change it is refused naming it (:func:`register_model`).
+* (R1) every patch against an ALREADY REGISTERED model goes through :func:`mutate_model`,
+  which applies both of R1's mutation guards
+  (:mod:`knowledge.ml_registry.guards`) on the data path itself rather than leaving the
+  invariant to whichever caller remembers to check: a worker-sourced patch may not touch a
+  protected judging field, and ``baseline`` moves only from ``source="adjudication"``.
+  Registration (creating the model fact) is not a mutation and is unaffected.
 
 :class:`RegistrySpace` is a JSON-persisted stand-in for the Praxis-backed "ml-research"
 space: it gives the write path a real readback across process boundaries (the CLI below
@@ -36,6 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from knowledge.ml_registry.citation import Resolver, resolve_citation
+from knowledge.ml_registry.guards import guard_baseline_move, guard_model_mutation
 from knowledge.ml_registry.schema import IDEA, MODEL, TRIAL, RegistryValidationError, validate_fact
 
 SEEDED = "seeded"
@@ -43,7 +50,11 @@ DISCOVERED = "discovered"
 IDEA_ORIGINS: tuple[str, ...] = (SEEDED, DISCOVERED)
 
 MAX_DISCOVERED_IDEAS_FIELD = "max_discovered_ideas"
-DEFAULT_MAX_DISCOVERED_IDEAS = -1  # no budget configured on the model -> unlimited
+
+# The only value that means "unlimited discovered ideas". A caller who genuinely wants
+# an unbounded discovery budget must SET this sentinel deliberately; it can never be
+# arrived at by omitting the field (see DEFAULT_MAX_DISCOVERED_IDEAS below).
+UNLIMITED_DISCOVERED_IDEAS = -1
 
 # Campaign-budget fields a registration MAY omit (R11): each adopts this fixed default
 # rather than being refused. Unlike the seven REQUIRED_META_KEYS[MODEL] fields, these
@@ -53,6 +64,12 @@ MODEL_DEFAULTS: dict[str, object] = {
     "max_trials": 200,
     MAX_DISCOVERED_IDEAS_FIELD: 8,
 }
+
+# A model fact carrying NO max_discovered_ideas at all (one built by some path other than
+# register_model, which always populates it) falls back to the documented default rather
+# than to "unlimited": a cost control must not be disabled by omission. Unlimited stays
+# reachable, but only via the explicit UNLIMITED_DISCOVERED_IDEAS sentinel above.
+DEFAULT_MAX_DISCOVERED_IDEAS = int(MODEL_DEFAULTS[MAX_DISCOVERED_IDEAS_FIELD])  # type: ignore[arg-type]
 
 METRIC_FIELD = "metric"
 
@@ -180,6 +197,64 @@ def register_model(space: RegistrySpace, meta: dict[str, object], *, model_id: s
     return model_id
 
 
+def mutate_model(
+    space: RegistrySpace, model_id: str, patch: dict[str, object], *, source: str
+) -> Fact:
+    """THE guarded mutation entry point for an ALREADY REGISTERED model fact.
+
+    Every write that changes a registered model's meta belongs here rather than reaching
+    into ``model.meta`` directly, so R1's two guards sit on the data path instead of on
+    whichever caller happens to remember them:
+
+    * :func:`~knowledge.ml_registry.guards.guard_model_mutation` -- refuses a
+      ``source="worker"`` patch touching a protected judging field (``metric``,
+      ``direction``, ``win_condition``, ``noise_floor``, ``baseline_throughput``,
+      ``diff_size_limit``). Other sources are not guarded here, matching R1's acceptance.
+    * :func:`~knowledge.ml_registry.guards.guard_baseline_move` -- refuses ANY patch moving
+      ``baseline`` whose ``source`` is not ``"adjudication"``.
+
+    Adjudication (R10's ``verdict.adjudicate_verdict``, R12's ``floor``) is expected to
+    route its baseline advance through here with ``source="adjudication"`` rather than
+    assigning ``model.meta["baseline"]`` itself.
+
+    Both guards run BEFORE anything is written, so a refused patch leaves the model
+    untouched. Returns the updated model fact. Registration itself
+    (:func:`register_model`) is not a mutation and does not pass through these guards.
+    """
+    model = space.get(model_id)
+    if model is None or model.category != MODEL:
+        raise RegistryValidationError(
+            f"model {model_id!r} was never registered", field="model_id"
+        )
+    guard_model_mutation(patch, source=source)
+    guard_baseline_move(patch, source=source)
+    model.meta.update(patch)
+    return model
+
+
+def discovered_idea_budget(model_meta: dict[str, object]) -> int:
+    """The discovered-idea budget a model fact's meta implies.
+
+    An ABSENT (or null) ``max_discovered_ideas`` falls back to
+    :data:`DEFAULT_MAX_DISCOVERED_IDEAS` -- the documented registration default -- never to
+    unlimited: a budget that silently disappears when its field is missing is a fail-open
+    cost control. Unlimited remains reachable, but only when the caller deliberately sets
+    the :data:`UNLIMITED_DISCOVERED_IDEAS` sentinel. Any OTHER negative value is refused
+    rather than quietly read as "unlimited".
+    """
+    raw = model_meta.get(MAX_DISCOVERED_IDEAS_FIELD)
+    if raw is None:
+        return DEFAULT_MAX_DISCOVERED_IDEAS
+    budget = int(raw)  # type: ignore[arg-type]
+    if budget < 0 and budget != UNLIMITED_DISCOVERED_IDEAS:
+        raise RegistryValidationError(
+            f"{MAX_DISCOVERED_IDEAS_FIELD}={budget} is not a budget; use "
+            f"{UNLIMITED_DISCOVERED_IDEAS} to ask for unlimited discovered ideas explicitly",
+            field=MAX_DISCOVERED_IDEAS_FIELD,
+        )
+    return budget
+
+
 def register_idea(space: RegistrySpace, meta: dict[str, object]) -> str:
     """Register an idea fact.
 
@@ -200,9 +275,8 @@ def register_idea(space: RegistrySpace, meta: dict[str, object]) -> str:
             raise RegistryValidationError(
                 f"idea references model {model_id!r} that was never registered", field="model_id"
             )
-        budget = model.meta.get(MAX_DISCOVERED_IDEAS_FIELD, DEFAULT_MAX_DISCOVERED_IDEAS)
-        budget = int(budget) if budget is not None else DEFAULT_MAX_DISCOVERED_IDEAS
-        if budget >= 0:
+        budget = discovered_idea_budget(model.meta)
+        if budget != UNLIMITED_DISCOVERED_IDEAS:
             already = sum(
                 1
                 for f in space.list_facts(IDEA)
