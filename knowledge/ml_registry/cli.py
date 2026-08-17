@@ -11,11 +11,28 @@ The R2 ``register-*``/``readback`` subcommands persist a :class:`RegistrySpace` 
 at ``--space-file`` across separate process invocations, so a CLI-driven test can
 register a model, then an idea against it, then a trial against that idea, then read
 all three back -- the same sequence the write API supports in-process.
+
+THE LEDGER IS THE ONLY ACCEPTANCE SIGNAL. Every subcommand that decides something about a
+trial (``adjudicate-trial``, ``resolve-verdict``, ``supervise-campaign``) reads the
+autoresearch loop's real ``results.tsv`` via ``--ledger`` and joins the trial's own commit
+against it (:func:`load_ledger_rows`). No subcommand accepts a caller-supplied JSON blob
+standing in for that file, and none SYNTHESIZES a ledger column it cannot read: a ledger
+carrying no ``throughput``/``diff_lines`` column is REFUSED naming the missing column,
+because inventing agreeing values for them silently disables the throughput void and the
+net-line rejection. The same rule governs citations: ``resolve-citation`` will not take the
+resolution outcome from its caller outside an explicit ``--test-resolver``.
+
+DURABILITY. A mutating subcommand saves the space it mutated even when the run ends in a
+refusal (:func:`_load_mutate_save` saves in a ``finally``), and ``supervise-campaign``
+additionally checkpoints between dispatches, so a campaign that refuses on its 41st
+dispatch keeps the 40 trials it really ran. Every counter the registry reports is
+recomputed from that durable substrate, which only works if the substrate survives.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from pathlib import Path
@@ -46,12 +63,22 @@ from knowledge.ml_registry.lifecycle import (
     rejection_memory,
     untried_backlog,
 )
-from knowledge.ml_registry.schema import IDEA, RegistryValidationError, validate_fact
-from knowledge.ml_registry.supervisor import Intervention, supervise_campaign
+from knowledge.ml_registry.schema import IDEA, MODEL, RegistryValidationError, validate_fact
+from knowledge.ml_registry.supervisor import (
+    Intervention,
+    record_keep_pushing_marker,
+    record_out_of_diff_change,
+    supervise_campaign,
+)
 from knowledge.ml_registry.verdict import LedgerRow, adjudicate_verdict
 from knowledge.ml_registry.write_path import (
+    MAX_DISCOVERED_IDEAS_FIELD,
+    METRIC_FIELD,
+    MODEL_DEFAULTS,
+    UNLIMITED_DISCOVERED_IDEAS,
     RegistrySpace,
     load_ledger_commits,
+    mutate_model,
     register_idea,
     register_model,
     register_trial,
@@ -59,6 +86,194 @@ from knowledge.ml_registry.write_path import (
 )
 
 _T = TypeVar("_T")
+
+# --- the external ledger (results.tsv) ---------------------------------------------------
+# The autoresearch loop's ledger is read BY COLUMN NAME, so a ledger may carry the columns
+# an adjudication needs without the CLI guessing at positions. ``commit`` plus a metric
+# column (either the legacy ``val_bpb`` or the generic ``metric_value`` --
+# agent_factory/scripts/checks/af_ml_research_target.py's two header versions) are what a
+# value-only read needs; a VERDICT additionally needs the run's measured throughput and its
+# net diff lines, which the loop must record per row.
+LEDGER_COMMIT_COLUMN = "commit"
+LEDGER_METRIC_COLUMNS: tuple[str, ...] = ("metric_value", "val_bpb")
+LEDGER_THROUGHPUT_COLUMN = "throughput"
+LEDGER_DIFF_LINES_COLUMN = "diff_lines"
+
+
+# Sources a CLI caller may CLAIM. "adjudication" is deliberately absent: it is an
+# in-process source that authorises a baseline move (guard_baseline_move), so letting a
+# caller assert it at the command line would defeat that guard entirely.
+CLI_CLAIMABLE_SOURCES = ("worker", "operator")
+
+def load_ledger_rows(path: Path) -> dict[str, LedgerRow]:
+    """``{commit: LedgerRow}`` read from the autoresearch loop's real ``results.tsv``.
+
+    This is the ONLY source of a verdict's inputs. A ledger with no
+    :data:`LEDGER_THROUGHPUT_COLUMN` or :data:`LEDGER_DIFF_LINES_COLUMN` is REFUSED naming
+    the missing column rather than being papered over with synthesized values: a fabricated
+    throughput equal to the model's baseline can never fall below the void floor, and a
+    fabricated ``diff_lines`` of 0 can never breach ``diff_size_limit``, so synthesizing them
+    turns two of :func:`~knowledge.ml_registry.verdict.adjudicate_verdict`'s four verdicts
+    into dead code. The fix for a ledger that lacks them is to record them in the loop that
+    writes it, not here.
+
+    A row whose metric/throughput/diff_lines cell is empty, short, or non-numeric is an
+    UNSCORED run (a crash or an abort) and is skipped individually -- the same tolerance
+    :func:`~knowledge.ml_registry.floor.load_ledger_values` has for the same file. The commit
+    is then simply absent, and whichever caller actually needed it refuses naming it.
+    """
+    with path.open(newline="") as fh:
+        reader = csv.reader(fh, delimiter="\t")
+        try:
+            header = [column.strip() for column in next(reader)]
+        except StopIteration:
+            raise RegistryValidationError(
+                f"external ledger {str(path)!r} is empty; it must carry a header row",
+                field="ledger",
+            ) from None
+
+        def _column(name: str) -> int:
+            if name not in header:
+                raise RegistryValidationError(
+                    f"external ledger {str(path)!r} carries no {name!r} column (header {header!r}); "
+                    "a trial verdict is decided on the ledger's own measurements, so a ledger that "
+                    "does not record this one cannot adjudicate -- add the column to the loop that "
+                    "writes results.tsv",
+                    field=name,
+                )
+            return header.index(name)
+
+        commit_at = _column(LEDGER_COMMIT_COLUMN)
+        metric_at = next((header.index(c) for c in LEDGER_METRIC_COLUMNS if c in header), None)
+        if metric_at is None:
+            raise RegistryValidationError(
+                f"external ledger {str(path)!r} carries no metric column "
+                f"(expected one of {LEDGER_METRIC_COLUMNS}, header {header!r})",
+                field="metric",
+            )
+        throughput_at = _column(LEDGER_THROUGHPUT_COLUMN)
+        diff_lines_at = _column(LEDGER_DIFF_LINES_COLUMN)
+        widest = max(commit_at, metric_at, throughput_at, diff_lines_at)
+
+        rows: dict[str, LedgerRow] = {}
+        for row in reader:
+            if len(row) <= widest or not row[commit_at].strip():
+                continue
+            try:
+                rows[row[commit_at].strip()] = LedgerRow(
+                    value=float(row[metric_at]),
+                    throughput=float(row[throughput_at]),
+                    diff_lines=float(row[diff_lines_at]),
+                )
+            except ValueError:
+                continue  # unscored run (crashed/aborted): nothing to adjudicate against
+        return rows
+
+
+def _checked_model_budgets(meta: dict[str, object], *, fill_missing: bool) -> dict[str, object]:
+    """``meta`` with its campaign budgets (:data:`MODEL_DEFAULTS`) checked, and -- on a fresh
+    registration -- defaulted.
+
+    ``setdefault`` alone is not enough: it fills only a MISSING key, so an explicit
+    ``{"max_discovered_ideas": null}`` survives into the model fact, and a budget that is
+    null, blank, unparseable or negative must never be read as "unlimited" or crash a
+    campaign mid-run with a bare ``TypeError``. A null/blank budget is a budget the caller
+    did not state, so it takes the documented default; anything unparseable or non-positive
+    is a NAMED refusal. Unlimited discovered ideas stay reachable only through the explicit
+    :data:`UNLIMITED_DISCOVERED_IDEAS` sentinel.
+
+    ``fill_missing=False`` is the update path: an omitted budget means "leave this model's
+    budget alone", never "reset it to the default".
+    """
+    checked = dict(meta)
+    for field_name, default in MODEL_DEFAULTS.items():
+        if field_name not in checked:
+            if fill_missing:
+                checked[field_name] = default
+            continue
+        raw = checked[field_name]
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            checked[field_name] = default
+            continue
+        try:
+            value: object = float(raw) if field_name == "per_trial_seconds" else int(raw)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            raise RegistryValidationError(
+                f"campaign budget {field_name}={raw!r} is not a number; omit it to take the "
+                f"default {default!r}",
+                field=field_name,
+            ) from None
+        if field_name == MAX_DISCOVERED_IDEAS_FIELD:
+            if int(value) < 0 and int(value) != UNLIMITED_DISCOVERED_IDEAS:  # type: ignore[arg-type]
+                raise RegistryValidationError(
+                    f"campaign budget {field_name}={value} is not a budget; use "
+                    f"{UNLIMITED_DISCOVERED_IDEAS} to ask for unlimited discovered ideas explicitly",
+                    field=field_name,
+                )
+        elif float(value) <= 0:  # type: ignore[arg-type]
+            raise RegistryValidationError(
+                f"campaign budget {field_name}={value} is not a budget; it must be positive",
+                field=field_name,
+            )
+        checked[field_name] = value
+    return checked
+
+
+def _update_registered_model(
+    space: RegistrySpace, model_id: str, patch: dict[str, object], *, source: str | None
+) -> str:
+    """Re-register (update) an ALREADY REGISTERED model through the GUARDED write path.
+
+    ``register_model(..., model_id=...)`` replaces the fact wholesale: it froze only
+    ``metric``, ran neither R1 guard, and dropped every derived campaign field the model had
+    accumulated (``campaign_status``, ``ratchet_count``, ``rejection_streak_ideas``, the
+    keep-pushing markers) -- the very state the registry recomputes its counters from. This
+    path instead MERGES the caller's keys onto the existing meta through
+    :func:`~knowledge.ml_registry.write_path.mutate_model`, so both guards sit on the data
+    path (a worker-sourced patch cannot touch a judging field; ``baseline`` moves only from
+    adjudication) and derived state survives. ``metric`` stays frozen for the model's life.
+    """
+    if not (source or "").strip():
+        raise RegistryValidationError(
+            "updating an already-registered model is a guarded mutation: name its --source "
+            "(e.g. 'worker' or 'adjudication')",
+            field="source",
+        )
+    model = space.get(model_id)
+    if model is None or model.category != MODEL:
+        raise RegistryValidationError(f"model {model_id!r} was never registered", field="model_id")
+    if METRIC_FIELD in patch and patch[METRIC_FIELD] != model.meta.get(METRIC_FIELD):
+        raise RegistryValidationError(
+            f"model {model_id!r} metric is frozen for the life of the model; cannot change it from "
+            f"{model.meta.get(METRIC_FIELD)!r} to {patch[METRIC_FIELD]!r}",
+            field=METRIC_FIELD,
+        )
+    validate_fact(MODEL, {**model.meta, **patch})
+    mutate_model(space, model_id, patch, source=str(source))
+    return model_id
+
+
+def _refuse_a_campaign_with_no_floor(space: RegistrySpace, model_id: str) -> None:
+    """Refuse to spend a dispatch on a model that cannot be adjudicated.
+
+    A model whose harness was retired (:func:`~knowledge.ml_registry.floor.retire_harness`)
+    has no ``baseline_throughput``/``noise_floor`` until it is re-registered with a fresh
+    4-run baseline, and ``verdict.adjudicate_verdict`` reads both by bare subscript -- so
+    without this the campaign dispatches a real worker session and then dies on a ``KeyError``
+    that neither of ``main``'s handlers catches. Refused BEFORE any compute is spent, naming
+    the missing field.
+    """
+    model = space.get(model_id)
+    if model is None or model.category != MODEL:
+        raise RegistryValidationError(f"model {model_id!r} was never registered", field="model_id")
+    for missing in ("baseline_throughput", "noise_floor"):
+        if model.meta.get(missing) is None:
+            raise RegistryValidationError(
+                f"model {model_id!r} has no registered {missing} to adjudicate against "
+                f"(campaign_status={model.meta.get('campaign_status')!r}); re-register it with "
+                "register-model-with-baseline before running a campaign",
+                field=missing,
+            )
 
 
 def _json_arg(raw: str) -> dict[str, object]:
@@ -76,22 +291,33 @@ def _parse_intervention(raw: str) -> Intervention:
 
 
 def _load_mutate_save(space_file: str, fn: Callable[[RegistrySpace], _T]) -> _T:
-    """Load the space at ``space_file``, apply a single mutation, save, and return its result --
-    the load/mutate/save sequence every mutating subcommand needs, factored once."""
+    """Load the space at ``space_file``, apply a single mutation, save, and return its result.
+
+    The save happens in a ``finally``: a refusal raised part-way through a MULTI-write run
+    (``supervise-campaign`` is forty dispatches, not one) must not discard everything the run
+    already durably decided. The registry recomputes its counters and streaks from the space
+    on resume, which is only safe if the space is really there -- a run that dispatched 40
+    trials and then refused must leave 40 trials on disk, not zero. The refusal still exits
+    non-zero; it just no longer erases the evidence.
+    """
     space_path = Path(space_file)
     space = RegistrySpace.load(space_path)
-    result = fn(space)
-    space.save(space_path)
-    return result
+    try:
+        return fn(space)
+    finally:
+        space.save(space_path)
 
 
 def _fixed_outcome_resolver(outcome: str, title: str, authors: tuple[str, ...]) -> Resolver:
-    """A resolver that always reports the CLI-supplied outcome for this one attempt.
+    """A TEST resolver that reports one caller-declared outcome for this one attempt.
 
-    The CLI has no live network access; a real arXiv/DOI lookup belongs to whatever
-    service calls this entrypoint during an ideation pass and can supply its own
-    resolver in-process. This keeps the CLI itself deterministic and offline-testable
-    while still exercising the real :func:`resolve_idea_citation` write path.
+    Reachable only behind ``--test-resolver``. The resolution outcome (does this reference
+    exist? who wrote it?) is a finding about the outside world, so taking it from the caller
+    is exactly the self-report the registry refuses everywhere else: ``--outcome resolved``
+    with a made-up title would otherwise record ``basis="external"`` for a reference nobody
+    ever fetched. The CLI has no network, so a real arXiv/DOI lookup belongs to the service
+    that calls :func:`~knowledge.ml_registry.write_path.resolve_idea_citation` in-process
+    with its own resolver; this stub exists to exercise that write path offline.
     """
 
     def resolver(reference: str) -> ResolvedCitation | None:
@@ -102,6 +328,40 @@ def _fixed_outcome_resolver(outcome: str, title: str, authors: tuple[str, ...]) 
         return ResolvedCitation(title=title, authors=authors)
 
     return resolver
+
+
+def _test_resolver_or_refuse(args: argparse.Namespace) -> Resolver:
+    """The resolver ``resolve-citation`` may use, or a named refusal.
+
+    ``--outcome`` is unavailable outside ``--test-resolver``, and a ``resolved`` outcome must
+    carry a non-empty ``--title`` and at least one ``--author`` -- a "resolved" citation with
+    no title is a fabricated external basis, and the help text promising the title was
+    required never enforced it.
+    """
+    if not args.test_resolver:
+        raise RegistryValidationError(
+            "resolve-citation has no live resolver: this entrypoint cannot fetch a reference, and "
+            "the resolution outcome is never taken from the caller. Call "
+            "write_path.resolve_idea_citation in-process with a real resolver, or pass "
+            "--test-resolver to drive the fixed stub deliberately",
+            field="resolver",
+        )
+    if args.outcome is None:
+        raise RegistryValidationError(
+            "--test-resolver needs the outcome it should report: pass --outcome", field="outcome"
+        )
+    if args.outcome == "resolved":
+        if not args.title.strip():
+            raise RegistryValidationError(
+                "--outcome=resolved records an external basis, so it requires a non-empty --title",
+                field="title",
+            )
+        if not [a for a in args.author if a.strip()]:
+            raise RegistryValidationError(
+                "--outcome=resolved records an external basis, so it requires at least one --author",
+                field="authors",
+            )
+    return _fixed_outcome_resolver(args.outcome, args.title, tuple(args.author))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -130,8 +390,27 @@ def main(argv: list[str] | None = None) -> int:
     register_model_p.add_argument(
         "--model-id",
         default=None,
-        help="re-register (update) an already-registered model instead of creating a new one",
+        help="update an already-registered model instead of creating a new one -- a GUARDED, "
+        "MERGING mutation (both R1 guards apply; derived campaign state survives), so it needs --source",
     )
+    register_model_p.add_argument(
+        "--source",
+        default=None,
+        choices=CLI_CLAIMABLE_SOURCES,
+        help="who is making the change -- required with --model-id, ignored on a fresh registration. "
+        "'adjudication' is NOT claimable here: it is an in-process source that authorises a baseline "
+        "move, and a CLI caller asserting it would defeat guard_baseline_move",
+    )
+
+    mutate_model_p = sub.add_parser(
+        "mutate-model",
+        help="apply a patch to an ALREADY REGISTERED model through the guarded write path "
+        "(both R1 guards applied on the data path)",
+    )
+    mutate_model_p.add_argument("--space-file", required=True)
+    mutate_model_p.add_argument("--model-id", required=True)
+    mutate_model_p.add_argument("--patch-json", required=True)
+    mutate_model_p.add_argument("--source", required=True, choices=CLI_CLAIMABLE_SOURCES)
 
     register_idea_p = sub.add_parser("register-idea", help="register an idea fact")
     register_idea_p.add_argument("--space-file", required=True)
@@ -154,11 +433,21 @@ def main(argv: list[str] | None = None) -> int:
     register_baseline_p.add_argument("--model-id", default=None)
 
     adjudicate_p = sub.add_parser(
-        "adjudicate-trial", help="decide a trial's status on a single observed value (R12)"
+        "adjudicate-trial",
+        help="decide a trial's status on a single LEDGER-sourced observed value (R12)",
     )
     adjudicate_p.add_argument("--space-file", required=True)
     adjudicate_p.add_argument("--trial-id", required=True)
-    adjudicate_p.add_argument("--observed-value", type=float, required=True)
+    adjudicate_p.add_argument(
+        "--ledger", required=True,
+        help="path to the autoresearch loop's results.tsv -- the value adjudicated is the one "
+        "recorded there for the trial's own commit",
+    )
+    adjudicate_p.add_argument(
+        "--observed-value", type=float, default=None,
+        help="OPTIONAL self-reported value; it is CHECKED against the ledger row and refused on "
+        "disagreement, never used as the decision input",
+    )
 
     verdict_p = sub.add_parser(
         "resolve-verdict",
@@ -168,8 +457,9 @@ def main(argv: list[str] | None = None) -> int:
     verdict_p.add_argument("--space-file", required=True)
     verdict_p.add_argument("--trial-id", required=True)
     verdict_p.add_argument(
-        "--ledger-json", required=True,
-        help="path to a JSON object {commit: {value, throughput, diff_lines}} -- the R10 ledger join",
+        "--ledger", required=True,
+        help="path to the autoresearch loop's results.tsv -- it must carry the "
+        f"{LEDGER_THROUGHPUT_COLUMN!r} and {LEDGER_DIFF_LINES_COLUMN!r} columns a verdict is decided on",
     )
     verdict_p.add_argument("--reactivation-trigger", default=None)
 
@@ -189,14 +479,22 @@ def main(argv: list[str] | None = None) -> int:
     resolve_p.add_argument("--idea-id", required=True)
     resolve_p.add_argument("--reference", required=True)
     resolve_p.add_argument(
+        "--test-resolver",
+        action="store_true",
+        help="drive the FIXED stub resolver from --outcome instead of a real lookup. For tests: "
+        "the resolution outcome is a finding about the outside world and is otherwise never "
+        "taken from the caller",
+    )
+    resolve_p.add_argument(
         "--outcome",
-        required=True,
+        default=None,
         choices=["resolved", "non-existent", "unreachable"],
-        help="what the (test-controlled) resolver reports for this attempt",
+        help="what the stub resolver reports for this attempt -- requires --test-resolver",
     )
     resolve_p.add_argument("--title", default="", help="resolved title, required when --outcome=resolved")
     resolve_p.add_argument(
-        "--author", action="append", default=[], help="resolved author, repeatable, used when --outcome=resolved"
+        "--author", action="append", default=[],
+        help="resolved author, repeatable, at least one required when --outcome=resolved",
     )
 
     readback_p = sub.add_parser("readback", help="read back every fact in the space")
@@ -302,6 +600,31 @@ def main(argv: list[str] | None = None) -> int:
         help="kind:axis, repeatable -- e.g. forced_axis:data or exclude_axis:architecture",
     )
     supervise_p.add_argument("--max-dispatches", type=int, default=None)
+    supervise_p.add_argument(
+        "--lesson-file", default=None,
+        help="append each CONFIRMED cross-model lesson payload to this file, one JSON object per "
+        "line (R17). The cross-model gate runs either way; without this the payloads are only "
+        "reported in the outcome",
+    )
+
+    keep_pushing_p = sub.add_parser(
+        "record-keep-pushing-marker",
+        help="durably record the ONLY suppression of R9's rabbit-hole axis-switch intervention "
+        "for one axis of one model",
+    )
+    keep_pushing_p.add_argument("--space-file", required=True)
+    keep_pushing_p.add_argument("--model-id", required=True)
+    keep_pushing_p.add_argument("--axis", required=True)
+    keep_pushing_p.add_argument("--author", required=True, help="who is choosing to keep pushing this axis")
+
+    out_of_diff_p = sub.add_parser(
+        "record-out-of-diff-change",
+        help="durably record a code change landed OUTSIDE any trial's own diff, resetting R9's "
+        "trailing non-improving count once",
+    )
+    out_of_diff_p.add_argument("--space-file", required=True)
+    out_of_diff_p.add_argument("--model-id", required=True)
+    out_of_diff_p.add_argument("--author", required=True, help="who landed the out-of-diff change")
 
     seed_p = sub.add_parser(
         "seed-campaign",
@@ -347,11 +670,26 @@ def main(argv: list[str] | None = None) -> int:
             print("OK: baseline move allowed")
             return 0
         if args.command == "register-model":
+            if args.model_id is None:
+                meta = _checked_model_budgets(_json_arg(args.meta_json), fill_missing=True)
+                fact_id = _load_mutate_save(args.space_file, lambda space: register_model(space, meta))
+                print(f"OK: registered model {fact_id}")
+                return 0
+            patch = _checked_model_budgets(_json_arg(args.meta_json), fill_missing=False)
             fact_id = _load_mutate_save(
                 args.space_file,
-                lambda space: register_model(space, _json_arg(args.meta_json), model_id=args.model_id),
+                lambda space: _update_registered_model(space, args.model_id, patch, source=args.source),
             )
             print(f"OK: registered model {fact_id}")
+            return 0
+        if args.command == "mutate-model":
+            fact = _load_mutate_save(
+                args.space_file,
+                lambda space: mutate_model(
+                    space, args.model_id, _json_arg(args.patch_json), source=args.source
+                ),
+            )
+            print(json.dumps(fact.to_json()))
             return 0
         if args.command == "register-idea":
             fact_id = _load_mutate_save(
@@ -369,29 +707,29 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "register-model-with-baseline":
             ledger_values = load_ledger_values(Path(args.ledger))
+            meta = _checked_model_budgets(_json_arg(args.meta_json), fill_missing=True)
             fact_id = _load_mutate_save(
                 args.space_file,
                 lambda space: register_model_with_baseline(
-                    space, _json_arg(args.meta_json), ledger_values, model_id=args.model_id
+                    space, meta, ledger_values, model_id=args.model_id
                 ),
             )
             print(f"OK: registered model {fact_id}")
             return 0
         if args.command == "adjudicate-trial":
+            # The value adjudicated comes from the ledger row for the trial's own commit;
+            # --observed-value, when given, is only a claim checked against it.
+            ledger_values = load_ledger_values(Path(args.ledger))
             status = _load_mutate_save(
-                args.space_file, lambda space: adjudicate_trial(space, args.trial_id, args.observed_value)
+                args.space_file,
+                lambda space: adjudicate_trial(
+                    space, args.trial_id, ledger_values, self_reported_value=args.observed_value
+                ),
             )
             print(f"OK: trial {args.trial_id} adjudicated {status}")
             return 0
         if args.command == "resolve-verdict":
-            raw = json.loads(Path(args.ledger_json).read_text())
-            ledger_rows = {
-                commit: LedgerRow(
-                    value=float(row["value"]), throughput=float(row["throughput"]),
-                    diff_lines=float(row["diff_lines"]),
-                )
-                for commit, row in raw.items()
-            }
+            ledger_rows = load_ledger_rows(Path(args.ledger))
             kwargs = {"reactivation_trigger": args.reactivation_trigger} if args.reactivation_trigger else {}
             verdict = _load_mutate_save(
                 args.space_file,
@@ -406,11 +744,11 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(fact.to_json()))
             return 0
         if args.command == "resolve-citation":
-            space_path = Path(args.space_file)
-            space = RegistrySpace.load(space_path)
-            resolver = _fixed_outcome_resolver(args.outcome, args.title, tuple(args.author))
-            meta = resolve_idea_citation(space, args.idea_id, args.reference, resolver)
-            space.save(space_path)
+            resolver = _test_resolver_or_refuse(args)
+            meta = _load_mutate_save(
+                args.space_file,
+                lambda space: resolve_idea_citation(space, args.idea_id, args.reference, resolver),
+            )
             print(json.dumps(meta))
             return 0
         if args.command == "readback":
@@ -499,7 +837,10 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(per_axis_yield(space, **kwargs)))
             return 0
         if args.command == "supervise-campaign":
-            ledger_values = load_ledger_values(Path(args.ledger))
+            # The REAL ledger, with the throughput/diff_lines a verdict is decided on. A
+            # ledger that does not carry them is refused (load_ledger_rows) rather than
+            # having them invented here.
+            ledger_rows = load_ledger_rows(Path(args.ledger))
             dispatch_script = list(json.loads(Path(args.dispatch_script).read_text()))
             idea_script = (
                 list(json.loads(Path(args.idea_script).read_text())) if args.idea_script else []
@@ -508,8 +849,15 @@ def main(argv: list[str] | None = None) -> int:
 
             dispatch_iter = iter(dispatch_script)
             idea_iter = iter(idea_script)
+            space_path = Path(args.space_file)
+            lesson_path = Path(args.lesson_file) if args.lesson_file else None
+            filed_lessons: list[dict[str, object]] = []
 
             def dispatcher(space, model, idea):  # noqa: ANN001 -- matches supervisor.Dispatcher
+                # Checkpoint BEFORE this worker session runs: everything the previous
+                # dispatch adjudicated is already durable, so an abort mid-campaign costs at
+                # most the one trial in flight (see _load_mutate_save's finally-save).
+                space.save(space_path)
                 try:
                     return next(dispatch_iter)
                 except StopIteration as exc:
@@ -520,26 +868,44 @@ def main(argv: list[str] | None = None) -> int:
             def idea_generator(space, model_id, forced_axis, permitted_axes):  # noqa: ANN001
                 return next(idea_iter, None)
 
+            def lesson_filer(payload: dict[str, object]) -> dict[str, object]:
+                """R17's filing seam, wired from the shipped entrypoint.
+
+                Without this the cross-model gate ran but nothing it confirmed ever left the
+                process, so guarantee 8's filing path was unreachable from the CLI.
+                """
+                if lesson_path is not None:
+                    with lesson_path.open("a") as fh:
+                        fh.write(json.dumps(payload) + "\n")
+                filed = {"filed": len(filed_lessons), "payload": payload}
+                filed_lessons.append(filed)
+                return filed
+
             def _supervise(space: RegistrySpace) -> dict[str, object]:
-                # supervise-campaign's --ledger (results.tsv) carries only a per-commit
-                # metric value, no throughput/diff_lines column -- assume each run held
-                # the model's registered baseline throughput and produced no net diff, so
-                # the void/diff-bound checks never fire from data this file doesn't carry;
-                # a dispatch-script trial_meta may still self-report either explicitly.
-                model = space.get(args.model_id)
-                baseline_throughput = float(model.meta["baseline_throughput"]) if model is not None else 0.0
-                ledger_rows = {
-                    commit: LedgerRow(value=value, throughput=baseline_throughput, diff_lines=0)
-                    for commit, value in ledger_values.items()
-                }
+                _refuse_a_campaign_with_no_floor(space, args.model_id)
                 return supervise_campaign(
                     space, args.model_id, ledger_rows, dispatcher,
                     interventions=interventions, idea_generator=idea_generator,
-                    max_dispatches=args.max_dispatches,
+                    max_dispatches=args.max_dispatches, lesson_filer=lesson_filer,
                 )
 
             outcome = _load_mutate_save(args.space_file, _supervise)
+            outcome["lessons_filed"] = filed_lessons
             print(json.dumps(outcome, default=lambda o: {"kind": o.kind, "axis": o.axis}))
+            return 0
+        if args.command == "record-keep-pushing-marker":
+            _load_mutate_save(
+                args.space_file,
+                lambda space: record_keep_pushing_marker(space, args.model_id, args.axis, args.author),
+            )
+            print(f"OK: keep-pushing marker recorded for {args.model_id} on axis {args.axis}")
+            return 0
+        if args.command == "record-out-of-diff-change":
+            _load_mutate_save(
+                args.space_file,
+                lambda space: record_out_of_diff_change(space, args.model_id, args.author),
+            )
+            print(f"OK: out-of-diff change recorded for {args.model_id}")
             return 0
         if args.command == "seed-campaign":
             generator_script = json.loads(Path(args.generator_script).read_text())

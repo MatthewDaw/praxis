@@ -1,7 +1,9 @@
 """R10 acceptance: table-driven trial verdict (adopt/park/reject/void) against the
-model's current baseline, the one-noise-floor and 5%-throughput/net-line boundaries, and
-the 3-consecutive-distinct-idea rejection ratchet that invalidates an adoption and
-restores the previous baseline without discarding the rejections that triggered it."""
+model's current baseline, the symmetric one-noise-floor and 5%-throughput/net-line
+boundaries, the supersession of a prior adoption by a better one (which preserves that
+adoption's rejections), and the 3-consecutive-distinct-idea rejection ratchet that
+invalidates an adoption, restores the previous baseline, and re-queues every idea rejected
+under the false baseline it set."""
 
 from __future__ import annotations
 
@@ -10,7 +12,16 @@ import statistics
 import pytest
 
 from knowledge.ml_registry.floor import RATCHET_COUNT_FIELD, REJECTION_STREAK_FIELD, register_model_with_baseline
-from knowledge.ml_registry.lifecycle import STATUS_PARKED, STATUS_REJECTED, STATUS_UNTRIED
+from knowledge.ml_registry.lifecycle import (
+    STATUS_ADOPTED,
+    STATUS_PARKED,
+    STATUS_REJECTED,
+    STATUS_SUPERSEDED,
+    STATUS_UNTRIED,
+    reject_idea,
+    rejection_memory,
+    untried_backlog,
+)
 from knowledge.ml_registry.schema import RegistryValidationError
 from knowledge.ml_registry.verdict import (
     BASELINE_FIELD,
@@ -47,8 +58,33 @@ ALL_COMMITS = frozenset(
         "adopt1", "park1", "sdr1", "wr1", "boundary-park", "boundary-reject", "void1",
         "b1", "b2", "b3", "b4", "b5", "same1", "same2", "same3", "noop1", "noop2", "noop3",
         "bad-throughput", "bad-diff", "no-self-report",
+        "win1", "win2", "exact-improving", "exact-worsening",
     }
 )
+
+# A second model whose noise floor is EXACTLY representable in binary floating point, so a
+# delta of exactly +/- one floor can be constructed bit-for-bit rather than a hair off it.
+# Three equal runs plus one differing by d give stdev == d/2: d = 0.25 -> floor == 0.125.
+EXACT_LEDGER = {"e1": 1.0, "e2": 1.0, "e3": 1.0, "e4": 1.25}
+EXACT_FLOOR = 0.125
+EXACT_THROUGHPUT = 1.0625
+
+
+def _space_with_exact_floor_model():
+    space = RegistrySpace()
+    meta = dict(MODEL_META, baseline="e1", baseline_runs=["e1", "e2", "e3", "e4"])
+    model_id = register_model_with_baseline(space, meta, EXACT_LEDGER)
+    assert space.get(model_id).meta["noise_floor"] == EXACT_FLOOR  # exact, not merely close
+    return space, model_id
+
+
+def _exact_rows(commit: str, value: float) -> dict[str, LedgerRow]:
+    rows = {
+        c: LedgerRow(value=v, throughput=EXACT_THROUGHPUT, diff_lines=0)
+        for c, v in EXACT_LEDGER.items()
+    }
+    rows[commit] = LedgerRow(value=value, throughput=EXACT_THROUGHPUT, diff_lines=100)
+    return rows
 
 
 def _idea_meta(model_id, description="try RoPE scaling"):
@@ -166,17 +202,45 @@ def test_delta_exactly_one_noise_floor_improving_is_stagnant_not_adopted():
     assert verdict == VERDICT_PARKED  # "within" one std dev is stagnant, "beyond" (strict) adopts
 
 
-def test_delta_at_least_one_noise_floor_worsening_rejects():
+def test_delta_beyond_one_noise_floor_worsening_rejects():
     space, model_id = _space_with_model()
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "boundary-reject", throughput=BASELINE_THROUGHPUT, diff_lines=100)
-    # a hair past -noise_floor (float subtraction of the exact boundary is not bit-stable) --
-    # still exercises the "at least" (<=) inclusive edge, not just a comfortable margin.
-    ledger = _rows(**{"boundary-reject": (1.0 + NOISE_FLOOR + 1e-9, BASELINE_THROUGHPUT, 100)})
+    ledger = _rows(**{"boundary-reject": (1.0 + NOISE_FLOOR + 0.01, BASELINE_THROUGHPUT, 100)})
 
     verdict = adjudicate_verdict(space, trial_id, ledger)
 
-    assert verdict == VERDICT_REJECTED  # "at least" one std dev below baseline rejects
+    assert verdict == VERDICT_REJECTED  # MORE than one std dev below baseline rejects
+
+
+# The stagnant band must be closed on BOTH sides: a delta of exactly one noise floor is one
+# standard deviation, i.e. no evidence, whichever direction it points. These two use the
+# exact-floor model so the delta really is +/- the floor bit-for-bit, not a hair off it.
+
+
+def test_delta_exactly_one_noise_floor_improving_is_stagnant():
+    space, model_id = _space_with_exact_floor_model()
+    idea_id = register_idea(space, _idea_meta(model_id))
+    trial_id = _trial(space, model_id, idea_id, "exact-improving", throughput=EXACT_THROUGHPUT, diff_lines=100)
+
+    verdict = adjudicate_verdict(space, trial_id, _exact_rows("exact-improving", 1.0 - EXACT_FLOOR))
+
+    assert verdict == VERDICT_PARKED
+    assert space.get(idea_id).meta["status"] == STATUS_PARKED
+
+
+def test_delta_exactly_one_noise_floor_worsening_is_stagnant_too_not_rejected():
+    """Bug 3 regression: the boundary used to be asymmetric -- exactly +1sd was stagnant
+    while exactly -1sd rejected, so the same amount of evidence was read two ways."""
+    space, model_id = _space_with_exact_floor_model()
+    idea_id = register_idea(space, _idea_meta(model_id))
+    trial_id = _trial(space, model_id, idea_id, "exact-worsening", throughput=EXACT_THROUGHPUT, diff_lines=100)
+
+    verdict = adjudicate_verdict(space, trial_id, _exact_rows("exact-worsening", 1.0 + EXACT_FLOOR))
+
+    assert verdict == VERDICT_PARKED
+    assert space.get(idea_id).meta["status"] == STATUS_PARKED
+    assert space.get(model_id).meta[RATCHET_COUNT_FIELD] == 0  # and no ratchet advance
 
 
 def test_throughput_more_than_5_percent_below_baseline_is_voided_not_adjudicated():
@@ -240,9 +304,12 @@ def test_ratchet_fires_on_the_third_consecutive_worsening_reject_on_a_distinct_i
     assert PREVIOUS_BASELINE_FIELD not in model.meta
     assert model.meta[RATCHET_COUNT_FIELD] == 0
     assert model.meta[REJECTION_STREAK_FIELD] == []
-    # the 3 rejections themselves are NOT discarded/re-queued
+    # The streak proved the invalidated adoption's baseline was false, so the rejections it
+    # produced -- the streak's own included -- were measured against a bar that never
+    # existed and go back on the backlog.
+    backlog_ids = {i.id for i in untried_backlog(space, model_id=model_id)}
     for loser_id in loser_ids:
-        assert space.get(loser_id).meta["status"] == STATUS_REJECTED
+        assert loser_id in backlog_ids
 
 
 def test_ratchet_does_not_fire_on_the_same_idea_rejected_repeatedly():
@@ -277,6 +344,87 @@ def test_ratchet_with_no_prior_adoption_is_a_no_op_that_only_resets_the_counter(
     assert model.meta[REJECTION_STREAK_FIELD] == []
     for loser_id in loser_ids:
         assert space.get(loser_id).meta["status"] == STATUS_REJECTED
+
+
+def test_ratchet_invalidation_requeues_ideas_rejected_under_the_false_baseline():
+    """Bug 2 regression: the ratchet fires BECAUSE the adoption is proven to be noise, so
+    the baseline it set was false. Every idea rejected during its tenure was judged against
+    a bar that never existed and must return to the untried backlog -- otherwise one lucky
+    adoption permanently converts good ideas into rejections."""
+    space, model_id = _space_with_model()
+
+    winner_id = register_idea(space, _idea_meta(model_id, "the noise adoption"))
+    winner_trial = _trial(space, model_id, winner_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
+    adopt_rows = _rows(adopt1=(1.0 - NOISE_FLOOR - 0.01, BASELINE_THROUGHPUT, 100))
+    assert adjudicate_verdict(space, winner_trial, adopt_rows) == VERDICT_ADOPTED
+
+    # Rejected while the (about to be discredited) adoption stood.
+    casualty_id = register_idea(space, _idea_meta(model_id, "casualty of the false baseline"))
+    reject_idea(space, casualty_id, "did not beat the inflated baseline")
+    assert casualty_id not in {i.id for i in untried_backlog(space, model_id=model_id)}
+
+    # 3 consecutive worsening rejections on distinct ideas fire the ratchet.
+    loser_ids = [register_idea(space, _idea_meta(model_id, f"loser-{i}")) for i in range(3)]
+    worse_value = 1.0 + 10 * NOISE_FLOOR
+    for loser_id, commit in zip(loser_ids, ["b1", "b2", "b3"]):
+        ledger = _rows(**{commit: (worse_value, BASELINE_THROUGHPUT, 100),
+                          "adopt1": (1.0 - NOISE_FLOOR - 0.01, BASELINE_THROUGHPUT, 100)})
+        trial_id = _trial(space, model_id, loser_id, commit, throughput=BASELINE_THROUGHPUT, diff_lines=100)
+        assert adjudicate_verdict(space, trial_id, ledger) == VERDICT_REJECTED
+
+    assert space.get(winner_id).meta["status"] == STATUS_UNTRIED
+    casualty = space.get(casualty_id)
+    assert casualty.meta.get("status", STATUS_UNTRIED) == STATUS_UNTRIED
+    assert "rejection_reason" not in casualty.meta
+    assert casualty_id in {i.id for i in untried_backlog(space, model_id=model_id)}
+    assert casualty_id not in {i.id for i, _ in rejection_memory(space, model_id=model_id)}
+
+
+# ---------------------------------------------------------------------------
+# Supersession: a better adoption replaces a prior one WITHOUT re-queueing
+# ---------------------------------------------------------------------------
+
+
+def test_a_better_adoption_supersedes_the_prior_one_and_keeps_its_rejections_rejected():
+    """Bug 1 regression: supersession used to run the full invalidate_adoption, wiping the
+    registry's rejection memory on EVERY successful adoption. The prior adoption was a real
+    bar while it stood, so ideas rejected under it were legitimately rejected and stay so."""
+    space, model_id = _space_with_model()
+
+    first_id = register_idea(space, _idea_meta(model_id, "first winner"))
+    first_value = 1.0 - NOISE_FLOOR - 0.01
+    first_trial = _trial(space, model_id, first_id, "win1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
+    assert adjudicate_verdict(space, first_trial, _rows(win1=(first_value, BASELINE_THROUGHPUT, 100))) == VERDICT_ADOPTED
+
+    # Rejected while first_id is the active adoption -- stamped with its tenure.
+    casualty_id = register_idea(space, _idea_meta(model_id, "legitimately rejected under the first winner"))
+    reject_idea(space, casualty_id, "did not beat the first winner")
+    assert space.get(casualty_id).meta["rejected_under_adoption"] == first_id
+
+    # A strictly better second winner: it must beat the ADVANCED baseline by > one floor.
+    second_id = register_idea(space, _idea_meta(model_id, "second, better winner"))
+    second_value = first_value - NOISE_FLOOR - 0.01
+    second_trial = _trial(space, model_id, second_id, "win2", throughput=BASELINE_THROUGHPUT, diff_lines=100)
+    ledger = _rows(win1=(first_value, BASELINE_THROUGHPUT, 100), win2=(second_value, BASELINE_THROUGHPUT, 100))
+
+    assert adjudicate_verdict(space, second_trial, ledger) == VERDICT_ADOPTED
+
+    # The prior adoption is demoted -- superseded, and emphatically not back on the backlog.
+    first = space.get(first_id)
+    assert first.meta["status"] == STATUS_SUPERSEDED
+    assert "superseded by trial" in first.meta["reversal_reason"]
+    assert space.get(second_id).meta["status"] == STATUS_ADOPTED
+    assert first_id not in {i.id for i in untried_backlog(space, model_id=model_id)}
+
+    # ...and the rejection memory built under its tenure survives intact.
+    casualty = space.get(casualty_id)
+    assert casualty.meta["status"] == STATUS_REJECTED
+    assert casualty.meta["rejection_reason"] == "did not beat the first winner"
+    assert casualty.meta["rejected_under_adoption"] == first_id
+    assert casualty_id not in {i.id for i in untried_backlog(space, model_id=model_id)}
+    assert dict(
+        (i.id, reason) for i, reason in rejection_memory(space, model_id=model_id)
+    )[casualty_id] == "did not beat the first winner"
 
 
 # ---------------------------------------------------------------------------

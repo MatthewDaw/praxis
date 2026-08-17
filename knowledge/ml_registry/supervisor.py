@@ -37,32 +37,47 @@ resume from a fresh start, so a round boundary is never itself a timeout or a fa
 (R9) AXIS WATCHDOG -- two more interventions, computed fresh each dispatch from the trial
 history alone (never cached), and merged onto whatever the caller supplies before
 :func:`resolve_interventions` runs (a caller-supplied intervention always takes
-precedence, matching R8's forced-axis-over-seed-first rule):
+precedence, matching R8's forced-axis-over-seed-first rule -- an auto-fired forced axis is
+never drawn from an axis the CALLER excluded):
 
 * the "rabbit-hole" intervention -- :data:`NON_IMPROVING_STREAK_TRIGGER` (2) trailing
   non-improving (not adopted) trials in a row on the SAME axis auto-fires an
   ``exclude_axis`` intervention against it, UNLESS a durable :func:`record_keep_pushing_marker`
   is on file for that axis. That marker is the ONLY suppression: nothing a dispatcher
   returns in a trial's own payload can suppress it, only an explicitly-authored, separately
-  recorded marker can. A trial flagged ``out_of_diff_change`` (a code change landed outside
-  any trial's own diff, e.g. a manual harness edit) resets the trailing non-improving count
-  to zero -- but only the FIRST such flag within the current same-axis run; a second one on
-  the same run does not reset it again.
+  recorded marker can. An out-of-diff code change (a change landed outside any trial's own
+  diff, e.g. a manual harness edit) resets the trailing non-improving count to zero -- but
+  it too is authored OUT OF BAND, via :func:`record_out_of_diff_change`, exactly like the
+  keep-pushing marker: ``dispatch_trial`` STRIPS any ``out_of_diff_change`` key a dispatcher
+  puts in its own trial payload, so the judged worker can never renew its own reset budget.
+  Only the FIRST recorded change within the current same-axis run resets the count; a second
+  one on the same run does not reset it again.
 * the "axis-coverage" intervention -- :data:`SAME_AXIS_STREAK_TRIGGER` (5) trailing trials
   in a row on the same axis, REGARDLESS of verdict or any keep-pushing marker, force the
   next draw onto a retrieval axis (:data:`~knowledge.ml_registry.ideate.RETRIEVAL_AXES`)
   with untried backlog -- an escape valve a keep-pushing marker cannot block, so a marker
-  can extend a stuck axis's run but never trap the campaign on it forever.
+  can extend a stuck axis's run but never trap the campaign on it forever. When no such
+  retrieval axis is available the watchdog FALLS THROUGH to the rabbit-hole check rather
+  than returning empty-handed: being more stuck must never disable the weaker guard.
 
 (R17) An optional ``lesson_filer`` threaded through :func:`dispatch_trial`/
 :func:`supervise_campaign` offers each terminal-status idea (and, at close, a final sweep of
 them) to :mod:`knowledge.ml_registry.insight`'s cross-model confirmation gate -- an af-learn
 lesson is filed only for an insight the registry itself shows recurring across >= 2 distinct
 models, never at trial granularity, and never more than once per confirmed insight.
+
+TERMINATION. Every campaign this module drives is bounded without relying on
+``max_dispatches``: ``max_trials`` bounds adjudicated trials, :data:`DEFAULT_MAX_CONSECUTIVE_VOIDS`
+bounds ledger-voided ones (a void is decided ONLY by
+:func:`~knowledge.ml_registry.verdict.adjudicate_verdict`'s ledger-throughput check -- never
+by a ``status`` a dispatcher reports about itself, which :func:`dispatch_trial` overwrites),
+an exhausted discovered-idea budget CLOSES the campaign rather than raising out of it, and a
+dispatcher exceeding the model's ``per_trial_seconds`` closes it too.
 """
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -70,14 +85,17 @@ from knowledge.ml_registry.floor import CAMPAIGN_STATUS_FIELD
 from knowledge.ml_registry.ideate import RETRIEVAL_AXES
 from knowledge.ml_registry.insight import LessonFiler, maybe_file_cross_model_lesson, sweep_cross_model_lessons
 from knowledge.ml_registry.lifecycle import TRIAL_STATUS_SUCCEEDED, untried_backlog
-from knowledge.ml_registry.schema import MODEL, TRIAL, TRIAL_STATUS_VOIDED, RegistryValidationError
+from knowledge.ml_registry.schema import IDEA, MODEL, TRIAL, TRIAL_STATUS_VOIDED, RegistryValidationError
 from knowledge.ml_registry.verdict import LedgerRow, VERDICT_ADOPTED, adjudicate_verdict
 from knowledge.ml_registry.write_path import (
     DISCOVERED,
+    MAX_DISCOVERED_IDEAS_FIELD,
     MODEL_DEFAULTS,
     SEEDED,
+    UNLIMITED_DISCOVERED_IDEAS,
     Fact,
     RegistrySpace,
+    discovered_idea_budget,
     register_idea,
     register_trial,
 )
@@ -94,10 +112,40 @@ SAME_AXIS_STREAK_TRIGGER = 5
 # Recorded ONLY via record_keep_pushing_marker -- never derivable from a dispatcher's trial payload.
 KEEP_PUSHING_MARKER_FIELD = "keep_pushing_markers"
 
+# Durable out-of-diff-change marks, likewise on the model fact and likewise authored out of
+# band (record_out_of_diff_change). Each entry is {"before_trial_index": int, "author": str}:
+# the index, into the model's non-voided trial sequence, of the first trial that FOLLOWS the
+# out-of-band change. A dispatcher's own payload is never consulted -- see dispatch_trial.
+OUT_OF_DIFF_CHANGE_FIELD = "out_of_diff_changes"
+
+# Keys a dispatcher (the JUDGED party) may never set on its own trial: its status is decided
+# by adjudicate_verdict against the ledger, and an out-of-diff change is authored out of band.
+DISPATCHER_FORBIDDEN_TRIAL_KEYS: tuple[str, ...] = ("status", "out_of_diff_change")
+
+TRIAL_STATUS_RUNNING = "running"
+TRIAL_STATUS_TIMED_OUT = "timed_out"
+
+# A campaign whose dispatches keep coming back ledger-voided is burning compute on an
+# unreliable harness; this many CONSECUTIVE voids close it. Recomputed from the registry's
+# trial history every time (never held in loop state); overridable per model via the
+# model fact's "max_consecutive_voids".
+DEFAULT_MAX_CONSECUTIVE_VOIDS = 3
+MAX_CONSECUTIVE_VOIDS_FIELD = "max_consecutive_voids"
+
 CLOSE_WON = "won"
 CLOSE_MAX_TRIALS = "max_trials_reached"
 CLOSE_BACKLOG_EXHAUSTED = "backlog_exhausted"
+CLOSE_VOID_LIMIT = "void_limit_reached"
+CLOSE_TRIAL_TIMEOUT = "per_trial_seconds_exceeded"
 CAMPAIGN_COMPLETED = "completed"
+
+# --- win conditions (structured) ---------------------------------------------------------
+# A model's declared win_condition must be EVALUABLE, or its campaign is refused rather than
+# silently closing "won" on the first adoption. Three accepted forms, see parse_win_condition.
+WIN_METRIC_AT_MOST = "metric_at_most"
+WIN_METRIC_AT_LEAST = "metric_at_least"
+WIN_THRESHOLD_KINDS: tuple[str, ...] = (WIN_METRIC_AT_MOST, WIN_METRIC_AT_LEAST)
+WIN_ON_ADOPTION = "beats baseline by noise_floor"
 
 # A dispatcher runs one worker session for one idea and reports its trial's meta; an idea
 # generator proposes one more idea (its meta, sans ``origin``/``model_id`` which this
@@ -140,6 +188,90 @@ def non_voided_trial_count(space: RegistrySpace, model_id: str) -> int:
         for t in space.list_facts(TRIAL)
         if t.meta.get("model_id") == model_id and t.meta.get("status") != TRIAL_STATUS_VOIDED
     )
+
+
+def consecutive_void_count(space: RegistrySpace, model_id: str) -> int:
+    """How many of ``model_id``'s MOST RECENT trials in a row were ledger-voided.
+
+    Recomputed from the registry's own trial facts on every call -- a resumed campaign sees
+    the same count a continuous one would, because nothing about it lives in loop state.
+    """
+    trials = [t for t in space.list_facts(TRIAL) if t.meta.get("model_id") == model_id]
+    voids = 0
+    for trial in reversed(trials):
+        if trial.meta.get("status") != TRIAL_STATUS_VOIDED:
+            break
+        voids += 1
+    return voids
+
+
+def parse_win_condition(win_condition: object) -> dict[str, object]:
+    """Parse a model's declared ``win_condition`` into an evaluable predicate, or refuse it.
+
+    Accepted forms:
+
+    * ``{"metric_at_most": x}`` / ``{"metric_at_least": x}`` -- the campaign is won once an
+      ADOPTED trial's LEDGER value reaches the threshold ``x``.
+    * the string ``"metric_at_most: 0.80"`` (or ``"metric_at_least 0.80"``) -- the same, in
+      the string form a registration or CLI flag can carry.
+    * the string :data:`WIN_ON_ADOPTION` (``"beats baseline by noise_floor"``) -- the model
+      declares that beating the baseline by more than one noise floor IS the win, i.e. the
+      adjudicated adoption itself. This is a DECLARED condition, not a fallback.
+
+    Anything else is refused naming ``win_condition``: an unevaluable win condition must
+    never be silently downgraded to "the first adoption wins".
+    """
+    if isinstance(win_condition, dict):
+        keys = [k for k in WIN_THRESHOLD_KINDS if k in win_condition]
+        if len(keys) == 1 and len(win_condition) == 1:
+            try:
+                return {"kind": keys[0], "threshold": float(win_condition[keys[0]])}  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                pass
+    elif isinstance(win_condition, str):
+        text = win_condition.strip()
+        if text.lower() == WIN_ON_ADOPTION:
+            return {"kind": WIN_ON_ADOPTION}
+        for kind in WIN_THRESHOLD_KINDS:
+            if text.lower().startswith(kind):
+                remainder = text[len(kind):].lstrip(": ").strip()
+                try:
+                    return {"kind": kind, "threshold": float(remainder)}
+                except ValueError:
+                    break
+    raise RegistryValidationError(
+        f"win_condition {win_condition!r} is not evaluable; declare {WIN_THRESHOLD_KINDS} "
+        f"(e.g. {{'metric_at_most': 0.80}}) or {WIN_ON_ADOPTION!r}",
+        field="win_condition",
+    )
+
+
+def win_condition_met(
+    space: RegistrySpace, model_id: str, trial_id: str, ledger_rows: dict[str, LedgerRow]
+) -> bool:
+    """Whether ``model_id``'s DECLARED win condition is satisfied by ``trial_id``'s LEDGER row.
+
+    Called only for a trial adjudicate_verdict already ADOPTED. A threshold condition is
+    checked against the external ledger's value for the trial's commit -- never against
+    anything the dispatcher reported -- so the first 0.001 improvement no longer closes a
+    campaign whose declared target is, say, ``val_bpb <= 0.80``.
+    """
+    model = _model(space, model_id)
+    condition = parse_win_condition(model.meta.get("win_condition"))
+    if condition["kind"] == WIN_ON_ADOPTION:
+        return True
+
+    trial = space.get(trial_id)
+    if trial is None:
+        raise RegistryValidationError(f"trial {trial_id!r} was never registered", field="trial_id")
+    commit = str(trial.meta.get("commit"))
+    row = ledger_rows.get(commit)
+    if row is None:
+        raise RegistryValidationError(
+            f"commit {commit!r} has no matching row in the external ledger", field="commit"
+        )
+    threshold = float(condition["threshold"])  # type: ignore[arg-type]
+    return row.value <= threshold if condition["kind"] == WIN_METRIC_AT_MOST else row.value >= threshold
 
 
 def resolve_interventions(
@@ -190,6 +322,25 @@ def _select_candidate(
     return None
 
 
+def _discovered_budget_remains(space: RegistrySpace, model_id: str) -> bool:
+    """Whether ``model_id`` may still register another ``origin="discovered"`` idea.
+
+    Recomputed from the registry each dispatch. A model at its ``max_discovered_ideas``
+    budget simply has no generator-proposable candidate left -- the campaign CLOSES on
+    backlog exhaustion rather than the budget refusal escaping as an exception.
+    """
+    model = _model(space, model_id)
+    budget = discovered_idea_budget(model.meta)
+    if budget == UNLIMITED_DISCOVERED_IDEAS:
+        return True
+    already = sum(
+        1
+        for f in space.list_facts(IDEA)
+        if f.meta.get("model_id") == model_id and f.meta.get("origin") == DISCOVERED
+    )
+    return already < budget
+
+
 def record_keep_pushing_marker(space: RegistrySpace, model_id: str, axis: str, author: str) -> None:
     """Durably record a keep-pushing marker for ``axis`` on ``model_id``, carrying ``author``.
 
@@ -205,6 +356,47 @@ def record_keep_pushing_marker(space: RegistrySpace, model_id: str, axis: str, a
     model.meta[KEEP_PUSHING_MARKER_FIELD] = markers
 
 
+def _model_trials(space: RegistrySpace, model_id: str) -> list[Fact]:
+    """``model_id``'s NON-VOIDED trials in registration order -- the sequence the axis
+    watchdog and the out-of-diff marks both index into."""
+    return [
+        t for t in space.list_facts(TRIAL)
+        if t.meta.get("model_id") == model_id and t.meta.get("status") != TRIAL_STATUS_VOIDED
+    ]
+
+
+def record_out_of_diff_change(space: RegistrySpace, model_id: str, author: str) -> None:
+    """Durably record that a code change landed OUTSIDE any trial's own diff (a manual
+    harness edit, say), carrying ``author``.
+
+    This is the ONLY way an out-of-diff change resets the rabbit-hole watchdog's trailing
+    non-improving count. Like :func:`record_keep_pushing_marker` it is authored out of band:
+    a dispatcher cannot claim one in its trial payload (``dispatch_trial`` strips the key),
+    so the judged worker can never renew its own reset budget by alternating axes.
+
+    The mark is anchored to the model's CURRENT non-voided trial count, i.e. it applies to
+    the next trial registered after this call.
+    """
+    if not str(author or "").strip():
+        raise RegistryValidationError("an out-of-diff-change mark must carry a non-empty author", field="author")
+    model = _model(space, model_id)
+    marks = list(model.meta.get(OUT_OF_DIFF_CHANGE_FIELD) or [])
+    marks.append({"before_trial_index": len(_model_trials(space, model_id)), "author": str(author)})
+    model.meta[OUT_OF_DIFF_CHANGE_FIELD] = marks
+
+
+def _out_of_diff_indices(space: RegistrySpace, model_id: str) -> frozenset[int]:
+    model = _model(space, model_id)
+    marks = model.meta.get(OUT_OF_DIFF_CHANGE_FIELD) or []
+    if not isinstance(marks, list):
+        return frozenset()
+    return frozenset(
+        int(m["before_trial_index"])
+        for m in marks
+        if isinstance(m, dict) and m.get("before_trial_index") is not None
+    )
+
+
 def _trial_axis(space: RegistrySpace, trial: Fact) -> Optional[str]:
     idea = space.get(trial.derived_from[0]) if trial.derived_from else None
     return str(idea.meta.get("axis")) if idea is not None else None
@@ -217,13 +409,12 @@ def axis_streak(space: RegistrySpace, model_id: str) -> dict[str, object]:
     Returns ``{"axis": ..., "same_axis_streak": ..., "non_improving_streak": ...}`` for the
     TRAILING run of non-voided trials sharing the most recent trial's axis: how many trials
     long that run is, and how many of its trailing trials were non-improving (not adopted),
-    honoring the single out-of-diff-change reset described in the module docstring. ``axis``
-    is ``None`` when the model has no non-voided trials yet.
+    honoring the single out-of-diff-change reset described in the module docstring. That
+    reset is read from the model's DURABLE, out-of-band :func:`record_out_of_diff_change`
+    marks -- never from a trial payload the judged dispatcher authored. ``axis`` is ``None``
+    when the model has no non-voided trials yet.
     """
-    trials = [
-        t for t in space.list_facts(TRIAL)
-        if t.meta.get("model_id") == model_id and t.meta.get("status") != TRIAL_STATUS_VOIDED
-    ]
+    trials = _model_trials(space, model_id)
     if not trials:
         return {"axis": None, "same_axis_streak": 0, "non_improving_streak": 0}
 
@@ -235,10 +426,12 @@ def axis_streak(space: RegistrySpace, model_id: str) -> dict[str, object]:
         same_axis_run.append(t)
     same_axis_run.reverse()  # chronological order within the trailing run
 
+    out_of_diff_at = _out_of_diff_indices(space, model_id)
+    run_offset = len(trials) - len(same_axis_run)
     non_improving_streak = 0
     reset_used = False
-    for t in same_axis_run:
-        if t.meta.get("out_of_diff_change") and not reset_used:
+    for offset, t in enumerate(same_axis_run):
+        if (run_offset + offset) in out_of_diff_at and not reset_used:
             non_improving_streak = 0
             reset_used = True
         if t.meta.get("status") == TRIAL_STATUS_SUCCEEDED:
@@ -249,29 +442,41 @@ def axis_streak(space: RegistrySpace, model_id: str) -> dict[str, object]:
     return {"axis": last_axis, "same_axis_streak": len(same_axis_run), "non_improving_streak": non_improving_streak}
 
 
-def _next_retrieval_axis(space: RegistrySpace, model_id: str) -> Optional[str]:
+def _next_retrieval_axis(
+    space: RegistrySpace, model_id: str, blocked: frozenset = frozenset()
+) -> Optional[str]:
     axes_present = {str(idea.meta.get("axis")) for idea in untried_backlog(space, model_id=model_id)}
     for axis in RETRIEVAL_AXES:
-        if axis in axes_present:
+        if axis in axes_present and axis not in blocked:
             return axis
     return None
 
 
-def _auto_interventions(space: RegistrySpace, model_id: str) -> tuple[Intervention, ...]:
+def _auto_interventions(
+    space: RegistrySpace, model_id: str, caller_interventions: tuple[Intervention, ...] = ()
+) -> tuple[Intervention, ...]:
     """The axis-watchdog's own auto-fired interventions for this dispatch -- see the module
-    docstring's AXIS WATCHDOG section. Always safe to prepend/append to caller-supplied
-    interventions: :func:`resolve_interventions` already recomputes fresh and lets a
-    caller-supplied forced axis win."""
+    docstring's AXIS WATCHDOG section.
+
+    A CALLER-supplied intervention always takes precedence: a caller-supplied forced axis
+    wins in :func:`resolve_interventions` (it is merged ahead of these), and an axis the
+    caller EXCLUDED is never handed back as an auto-fired forced axis here -- the
+    axis-coverage escape valve reaches for the next retrieval axis the caller left open, or,
+    finding none, falls through to the rabbit-hole check below.
+    """
     streak = axis_streak(space, model_id)
     axis = streak["axis"]
     if axis is None:
         return ()
 
+    caller_excluded = frozenset(iv.axis for iv in caller_interventions if iv.kind == EXCLUDE_AXIS)
+
     if streak["same_axis_streak"] >= SAME_AXIS_STREAK_TRIGGER:
-        retrieval_axis = _next_retrieval_axis(space, model_id)
+        retrieval_axis = _next_retrieval_axis(space, model_id, blocked=caller_excluded)
         if retrieval_axis is not None:
             return (Intervention(kind=FORCED_AXIS, axis=retrieval_axis),)
-        return ()
+        # No retrieval axis available -- FALL THROUGH to the rabbit-hole check rather than
+        # returning empty: being MORE stuck must never disable the weaker guard.
 
     if streak["non_improving_streak"] >= NON_IMPROVING_STREAK_TRIGGER:
         model = _model(space, model_id)
@@ -293,6 +498,7 @@ def dispatch_trial(
     interventions: tuple[Intervention, ...] = (),
     idea_generator: Optional[IdeaGenerator] = None,
     lesson_filer: Optional[LessonFiler] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, object]:
     """Run ONE worker session: pick a candidate idea, dispatch it, register the trial, and
     hand it to :func:`~knowledge.ml_registry.verdict.adjudicate_verdict` for the full
@@ -302,7 +508,23 @@ def dispatch_trial(
 
     Returns a dict describing what happened; ``result["candidate"] is None`` means the
     backlog (seeded, discovered, and generator-proposable) is exhausted for this dispatch
-    -- :func:`supervise_campaign` treats that as a close condition, not an error.
+    -- :func:`supervise_campaign` treats that as a close condition, not an error. An
+    ``idea_generator`` whose proposal would exceed the model's ``max_discovered_ideas``
+    budget is one such exhaustion: the budget refusal CLOSES the campaign instead of
+    raising out of it.
+
+    STATUS IS NOT SELF-REPORTED. Whatever the dispatcher returns is its evidence, not its
+    verdict: every key in :data:`DISPATCHER_FORBIDDEN_TRIAL_KEYS` is STRIPPED from its
+    payload before the trial is registered. In particular a dispatcher cannot report itself
+    ``"voided"`` -- a void is decided solely by
+    :func:`~knowledge.ml_registry.verdict.adjudicate_verdict`'s ledger-throughput check,
+    which also marks the trial, so the void counts toward the campaign's void bound and the
+    idea's redraw can never loop forever.
+
+    The dispatcher call is TIMED against the model's ``per_trial_seconds`` budget (injected
+    ``clock`` for tests). A dispatcher that overruns it yields
+    ``status == "timed_out"`` and NO registered trial;
+    :func:`supervise_campaign` closes the campaign on it.
 
     (R17) When the dispatched trial's adjudication lands the idea in a TERMINAL status
     (adopted/rejected/parked), this checks -- via
@@ -313,32 +535,54 @@ def dispatch_trial(
     trial granularity alone.
     """
     model = _model(space, model_id)
-    all_interventions = interventions + _auto_interventions(space, model_id)
+    all_interventions = interventions + _auto_interventions(space, model_id, interventions)
     forced_axis, permitted_axes, unsatisfiable = resolve_interventions(space, model_id, all_interventions)
     result: dict[str, object] = {"unsatisfiable_interventions": list(unsatisfiable), "forced_axis": forced_axis}
 
     idea = _select_candidate(space, model_id, forced_axis, permitted_axes)
     origin_used = idea.meta.get("origin") if idea is not None else None
 
-    if idea is None and idea_generator is not None:
+    if idea is None and idea_generator is not None and _discovered_budget_remains(space, model_id):
         proposed = idea_generator(space, model_id, forced_axis, permitted_axes)
         if proposed is not None:
             meta = dict(proposed)
             meta["model_id"] = model_id
             meta["origin"] = DISCOVERED
             meta.setdefault("axis", forced_axis or "discovered")
-            idea_id = register_idea(space, meta)  # registered -- with axis, basis, origin -- before its trial
-            idea = space.get(idea_id)
-            origin_used = DISCOVERED
+            try:
+                # registered -- with axis, basis, origin -- before its trial
+                idea_id = register_idea(space, meta)
+            except RegistryValidationError as exc:
+                # An exhausted discovered-idea budget CLOSES the campaign (no candidate); it
+                # is a cost control firing, not a crash. Any other refusal still propagates.
+                if exc.field != MAX_DISCOVERED_IDEAS_FIELD:
+                    raise
+                result["discovered_budget_exhausted"] = True
+            else:
+                idea = space.get(idea_id)
+                origin_used = DISCOVERED
 
     if idea is None:
         result["candidate"] = None
         return result
 
-    trial_meta = dict(dispatcher(space, model, idea))
+    per_trial_seconds = float(model.meta.get("per_trial_seconds", MODEL_DEFAULTS["per_trial_seconds"]))
+    started_at = clock()
+    payload = dispatcher(space, model, idea)
+    elapsed = clock() - started_at
+    result.update(candidate=idea.id, origin=origin_used, elapsed_seconds=elapsed)
+    if elapsed > per_trial_seconds:
+        # The per-trial cost budget is a real bound, not documentation: the overrun run is
+        # not registered as a trial and supervise_campaign closes the campaign on it.
+        result.update(trial_id=None, status=TRIAL_STATUS_TIMED_OUT, per_trial_seconds=per_trial_seconds)
+        return result
+
+    trial_meta = {k: v for k, v in payload.items() if k not in DISPATCHER_FORBIDDEN_TRIAL_KEYS}
     trial_meta.setdefault("model_id", model_id)
     trial_meta.setdefault("idea_id", idea.id)
-    trial_meta.setdefault("status", "running")  # adjudicate_verdict below sets the real status
+    # OVERWRITTEN, never setdefault: the judged dispatcher does not get to declare its own
+    # trial's status (and so cannot self-report a void). adjudicate_verdict sets the real one.
+    trial_meta["status"] = TRIAL_STATUS_RUNNING
     row = ledger_rows.get(str(trial_meta.get("commit")))
     if row is not None:
         # self-reported throughput/diff_lines agree with the ledger by construction
@@ -350,13 +594,13 @@ def dispatch_trial(
     trial = space.get(trial_id)
     assert trial is not None
 
-    result.update(candidate=idea.id, origin=origin_used, trial_id=trial_id)
-
-    if trial.meta.get("status") == TRIAL_STATUS_VOIDED:
-        result["status"] = TRIAL_STATUS_VOIDED
-        return result
-
+    result.update(trial_id=trial_id)
     result["status"] = adjudicate_verdict(space, trial_id, ledger_rows)
+
+    if result["status"] == TRIAL_STATUS_VOIDED:
+        # A voided trial's idea stays untried -- it reached no terminal status, so the
+        # cross-model lesson gate below must not see it.
+        return result
 
     # R17: the idea's status is now whatever adjudicate_verdict's side effects landed
     # (adopted/rejected/parked, a TERMINAL status) -- re-fetch it fresh rather than trusting
@@ -389,27 +633,43 @@ def supervise_campaign(
     idea_generator: Optional[IdeaGenerator] = None,
     max_dispatches: Optional[int] = None,
     lesson_filer: Optional[LessonFiler] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, object]:
     """Drive ``model_id``'s campaign to close, dispatching one worker per trial serially.
 
     Each iteration calls :func:`dispatch_trial` exactly once -- a fresh, independent
     worker session that ends with its trial -- and evaluates the close condition only
     AFTER that trial's :func:`~knowledge.ml_registry.verdict.adjudicate_verdict` side
-    effects have landed on ``space``. There is no wall-clock or round-boundary timeout
-    here: the loop runs for as many dispatches as the campaign needs (or until
-    ``max_dispatches``, a TEST-ONLY cap -- a real caller omits it and simply calls this
-    again on resume). A voided trial never counts against ``max_trials`` and never itself
-    closes the campaign.
+    effects have landed on ``space``. ``max_dispatches`` is a convenience cap for
+    step-by-step callers and tests; it is NOT what makes the loop terminate (see the
+    module docstring's TERMINATION note). A voided trial never counts against
+    ``max_trials``, but consecutive voids are themselves bounded.
+
+    The model's ``win_condition`` is parsed ONCE, up front: a campaign whose win condition
+    is not evaluable (:func:`parse_win_condition`) is REFUSED here rather than run to a
+    silent first-adoption "win".
 
     Close conditions, checked in this order once a dispatch's side effects have landed:
-      1. the dispatch found no candidate -> :data:`CLOSE_BACKLOG_EXHAUSTED`.
-      2. the dispatched trial was adopted (the win condition) -> :data:`CLOSE_WON`.
-      3. the non-voided trial count has reached ``max_trials`` -> :data:`CLOSE_MAX_TRIALS`.
+      1. the dispatch found no candidate (backlog and discovered-idea budget both
+         exhausted) -> :data:`CLOSE_BACKLOG_EXHAUSTED`.
+      2. the dispatcher overran ``per_trial_seconds`` -> :data:`CLOSE_TRIAL_TIMEOUT`.
+      3. the trial was ledger-voided and that makes ``max_consecutive_voids`` voids in a
+         row -> :data:`CLOSE_VOID_LIMIT`; otherwise the loop continues.
+      4. the trial was adopted AND the declared ``win_condition`` is met by the LEDGER's
+         value for its commit -> :data:`CLOSE_WON`. An adoption that does not yet reach the
+         declared target advances the baseline and the campaign keeps running.
+      5. the non-voided trial count has reached ``max_trials`` -> :data:`CLOSE_MAX_TRIALS`.
     Every non-win close is recorded on the model as a completed outcome
     (:data:`CAMPAIGN_COMPLETED`); a win is recorded as :data:`CLOSE_WON`.
     """
     model = _model(space, model_id)
     max_trials = int(model.meta.get("max_trials", MODEL_DEFAULTS["max_trials"]))
+    max_voids = int(model.meta.get(MAX_CONSECUTIVE_VOIDS_FIELD, DEFAULT_MAX_CONSECUTIVE_VOIDS))
+    parse_win_condition(model.meta.get("win_condition"))  # refuse an unevaluable campaign up front
+
+    def close_with(close: str) -> dict[str, object]:
+        _record_close(space, model_id, close, lesson_filer=lesson_filer)
+        return {"history": history, "close": close}
 
     history: list[dict[str, object]] = []
     dispatches = 0
@@ -417,26 +677,30 @@ def supervise_campaign(
         result = dispatch_trial(
             space, model_id, ledger_rows, dispatcher,
             interventions=interventions, idea_generator=idea_generator, lesson_filer=lesson_filer,
+            clock=clock,
         )
         dispatches += 1
         history.append(result)
 
         if result["candidate"] is None:
-            close = CLOSE_BACKLOG_EXHAUSTED
-            _record_close(space, model_id, close, lesson_filer=lesson_filer)
-            return {"history": history, "close": close}
+            return close_with(CLOSE_BACKLOG_EXHAUSTED)
+
+        if result["status"] == TRIAL_STATUS_TIMED_OUT:
+            return close_with(CLOSE_TRIAL_TIMEOUT)
 
         if result["status"] == TRIAL_STATUS_VOIDED:
-            continue  # does not count against max_trials; loop continues
+            # Does not count against max_trials -- but a harness that keeps voiding is a
+            # cost sink, and the void run is recomputed from the registry, never counted here.
+            if consecutive_void_count(space, model_id) >= max_voids:
+                return close_with(CLOSE_VOID_LIMIT)
+            continue
 
-        if result["status"] == VERDICT_ADOPTED:
-            close = CLOSE_WON
-            _record_close(space, model_id, close, lesson_filer=lesson_filer)
-            return {"history": history, "close": close}
+        if result["status"] == VERDICT_ADOPTED and win_condition_met(
+            space, model_id, str(result["trial_id"]), ledger_rows
+        ):
+            return close_with(CLOSE_WON)
 
         if non_voided_trial_count(space, model_id) >= max_trials:
-            close = CLOSE_MAX_TRIALS
-            _record_close(space, model_id, close, lesson_filer=lesson_filer)
-            return {"history": history, "close": close}
+            return close_with(CLOSE_MAX_TRIALS)
 
     return {"history": history, "close": None}

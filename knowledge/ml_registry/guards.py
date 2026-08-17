@@ -33,19 +33,33 @@ BASELINE_FIELD = "baseline"
 
 
 def guard_model_mutation(patch: dict[str, object], *, source: str) -> None:
-    """Refuse a worker-sourced patch that touches a protected judging field.
+    """Refuse ANY patch that touches a protected judging field on a registered model.
 
     ``patch`` is the set of meta keys a write intends to change on an ALREADY
-    REGISTERED model fact. Raises naming the first protected field the patch
-    touches. Non-worker sources are not guarded here -- R1's acceptance only
-    requires refusing the worker path.
+    REGISTERED model fact. Raises naming the first protected field the patch touches.
+
+    This is a DENY-ALL, not a denylist of one source. It used to refuse only
+    ``source == "worker"``, which made it a no-op for every other string -- and
+    ``--source`` is free text at the CLI, so ``--source adjudication`` (or any invented
+    value) disabled it outright. That was exploitable end to end: setting
+    ``noise_floor=-99`` and ``baseline_throughput=99`` drove a trial whose LEDGER value
+    was a clear loss to ``succeeded`` and advanced the model's baseline onto the losing
+    commit. Hardening the metric value while leaving the threshold caller-writable
+    hardens nothing -- both operands of the comparison have to come from the ledger.
+
+    No legitimate caller needs this: the judging fields are computed from the ledger by
+    :func:`~knowledge.ml_registry.floor.register_model_with_baseline` at registration and
+    retired by :func:`~knowledge.ml_registry.floor.retire_harness`, which re-registers
+    rather than patching. Every :func:`~knowledge.ml_registry.write_path.mutate_model`
+    call site in the package patches ``baseline`` only, which is governed separately by
+    :func:`guard_baseline_move`.
     """
-    if source != WORKER_SOURCE:
-        return
     for field in PROTECTED_MODEL_FIELDS:
         if field in patch:
             raise RegistryValidationError(
-                f"worker-sourced write may not mutate registered model field {field!r}",
+                f"registered model field {field!r} is part of the model's judging contract and "
+                f"may not be patched mid-campaign (source {source!r}); re-register the model "
+                "instead, so every trial is scored against one declared bar",
                 field=field,
             )
 
