@@ -1,7 +1,10 @@
 """af-ml-ideate: seed a model's starting idea set (R6).
 
 Seeds a model's STARTING idea set -- not an exhaustive plan -- by sweeping a fixed,
-nine-value CLOSED axis set:
+nine-value CLOSED axis set. Closed is ENFORCED, not merely documented: every sweep and every
+write runs :func:`require_closed_axis`, so a caller-supplied ``axes`` iterable can only ever
+narrow the sweep to a subset, never introduce an off-set axis (which the supervisor's
+axis-coverage escape valve could never match, and which fragments per-axis yield). The set:
 
 * six GENERATIVE axes -- theoretical math, ablation, supplements, ML architectures,
   non-ML learning methods, and a ce-ideate breadth pass (:data:`GENERATIVE_AXES`).
@@ -117,12 +120,31 @@ class ExecutionReceipt:
         return {"axis": self.axis, "query": self.query, "count": self.count, "ids": list(self.ids)}
 
 
+def require_closed_axis(axis: str) -> None:
+    """Refuse any axis outside :data:`IDEATION_AXES` -- the closed set is enforced, not just
+    documented. Raised before the generator/retriever for that axis is even consulted, so an
+    off-set axis can neither be swept nor written."""
+    if axis not in IDEATION_AXES:
+        raise RegistryValidationError(
+            f"axis {axis!r} is not one of the nine closed ideation axes {list(IDEATION_AXES)}",
+            field="axis",
+        )
+
+
 def always_confirm(axis: str, candidate: dict[str, object]) -> bool:
     """The batch-mode confirmer: every proposed candidate is written, unconditionally."""
     return True
 
 
 def _seed_idea(space: RegistrySpace, model_id: str, axis: str, candidate: dict[str, object]) -> str:
+    """Write ONE seeded idea on ``axis``, refusing any axis outside the closed nine-value set.
+
+    The closed set is enforced HERE, at the only write this module performs, so a caller
+    passing its own ``axes`` iterable cannot smuggle an off-set axis into the registry: an
+    off-set idea is invisible to the supervisor's axis-coverage escape valve (which only
+    matches :data:`RETRIEVAL_AXES`) and fragments per-axis yield.
+    """
+    require_closed_axis(axis)
     meta = dict(candidate)
     meta["model_id"] = model_id
     meta["origin"] = SEEDED
@@ -159,9 +181,14 @@ def sweep_generative_axes(
     through. Returns ``{axis: [idea_id, ...]}`` -- an axis whose generator proposed nothing, or
     whose candidates were all declined, lands with an empty list rather than being omitted, so
     the caller can see every mandated axis ran even when it yielded nothing.
+
+    ``axes`` may scope the sweep to a SUBSET of :data:`GENERATIVE_AXES`, never extend it: an
+    axis outside the closed nine-value set raises :class:`RegistryValidationError` before its
+    generator is consulted.
     """
     written: dict[str, list[str]] = {}
     for axis in axes:
+        require_closed_axis(axis)
         written[axis] = _confirm_and_seed(space, model_id, axis, generator(axis, model_meta), confirm)
     return written
 
@@ -178,10 +205,15 @@ def sweep_retrieval_axes(
     """Sweep every retrieval axis: issue its query, record an :class:`ExecutionReceipt`
     regardless of yield (a receipt proves the axis ran, independent of whether it produced a
     seedable idea), then seed a confirmed idea per retrieved row.
+
+    ``axes`` may scope the sweep to a SUBSET of :data:`RETRIEVAL_AXES`, never extend it: an
+    axis outside the closed nine-value set raises :class:`RegistryValidationError` before its
+    retriever is consulted.
     """
     written: dict[str, list[str]] = {}
     receipts: list[ExecutionReceipt] = []
     for axis in axes:
+        require_closed_axis(axis)
         result = retriever(axis, model_meta)
         receipts.append(ExecutionReceipt(axis=axis, query=result.query, count=result.count, ids=result.ids))
         candidates = ({k: v for k, v in row.items() if k != "id"} for row in result.rows)
