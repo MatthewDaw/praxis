@@ -100,6 +100,11 @@ LEDGER_THROUGHPUT_COLUMN = "throughput"
 LEDGER_DIFF_LINES_COLUMN = "diff_lines"
 
 
+# Sources a CLI caller may CLAIM. "adjudication" is deliberately absent: it is an
+# in-process source that authorises a baseline move (guard_baseline_move), so letting a
+# caller assert it at the command line would defeat that guard entirely.
+CLI_CLAIMABLE_SOURCES = ("worker", "operator")
+
 def load_ledger_rows(path: Path) -> dict[str, LedgerRow]:
     """``{commit: LedgerRow}`` read from the autoresearch loop's real ``results.tsv``.
 
@@ -391,7 +396,10 @@ def main(argv: list[str] | None = None) -> int:
     register_model_p.add_argument(
         "--source",
         default=None,
-        help="who is making the change -- required with --model-id, ignored on a fresh registration",
+        choices=CLI_CLAIMABLE_SOURCES,
+        help="who is making the change -- required with --model-id, ignored on a fresh registration. "
+        "'adjudication' is NOT claimable here: it is an in-process source that authorises a baseline "
+        "move, and a CLI caller asserting it would defeat guard_baseline_move",
     )
 
     mutate_model_p = sub.add_parser(
@@ -402,7 +410,7 @@ def main(argv: list[str] | None = None) -> int:
     mutate_model_p.add_argument("--space-file", required=True)
     mutate_model_p.add_argument("--model-id", required=True)
     mutate_model_p.add_argument("--patch-json", required=True)
-    mutate_model_p.add_argument("--source", required=True)
+    mutate_model_p.add_argument("--source", required=True, choices=CLI_CLAIMABLE_SOURCES)
 
     register_idea_p = sub.add_parser("register-idea", help="register an idea fact")
     register_idea_p.add_argument("--space-file", required=True)

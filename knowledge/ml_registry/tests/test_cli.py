@@ -343,7 +343,7 @@ def test_updating_a_registered_model_keeps_the_derived_campaign_state(
     capsys.readouterr()
 
     assert _cli("register-model", "--space-file", space_file, "--model-id", model_id,
-                "--source", "adjudication",
+                "--source", "operator",
                 "--meta-json", json.dumps({"max_trials": 12})) == 0
     model = next(f for f in _facts(space_file, "model") if f["id"] == model_id)
     assert model["meta"]["max_trials"] == 12
@@ -366,7 +366,7 @@ def test_a_registered_models_metric_stays_frozen_on_the_update_path(
 ) -> None:
     model_id = _register_model(space_file, capsys)
     assert _cli("register-model", "--space-file", space_file, "--model-id", model_id,
-                "--source", "adjudication",
+                "--source", "operator",
                 "--meta-json", json.dumps({"metric": "perplexity"})) == 1
     assert "metric" in _out(capsys)
 
@@ -417,9 +417,32 @@ def test_updating_a_model_never_resets_a_budget_it_did_not_mention(
 ) -> None:
     model_id = _register_model(space_file, capsys, max_trials=7)
     assert _cli("register-model", "--space-file", space_file, "--model-id", model_id,
-                "--source", "adjudication", "--meta-json", json.dumps({"diff_size_limit": 900})) == 0
+                "--source", "operator",
+                "--meta-json", json.dumps({"max_discovered_ideas": 5})) == 0
     model = next(f for f in _facts(space_file, "model") if f["id"] == model_id)
     assert model["meta"]["max_trials"] == 7
+    assert model["meta"]["max_discovered_ideas"] == 5
+
+
+def test_a_judging_field_cannot_be_patched_on_the_update_path_from_any_claimable_source(
+    space_file: Path, capsys
+) -> None:
+    """The threshold half of a verdict is no more patchable than the metric half.
+
+    Hardening the ledger value while leaving ``noise_floor`` writable hardened nothing:
+    setting it negative drove a trial whose ledger value was a clear LOSS to succeeded and
+    advanced the baseline onto the losing commit. ``adjudication`` is also not claimable
+    here -- it is the in-process source that authorises a baseline move.
+    """
+    model_id = _register_model(space_file, capsys)
+    for field, value in (("noise_floor", -99.0), ("diff_size_limit", 900), ("win_condition", "anything")):
+        assert _cli("register-model", "--space-file", space_file, "--model-id", model_id,
+                    "--source", "operator", "--meta-json", json.dumps({field: value})) == 1
+        assert field in capsys.readouterr().err
+    with pytest.raises(SystemExit) as excinfo:
+        _cli("register-model", "--space-file", space_file, "--model-id", model_id,
+             "--source", "adjudication", "--meta-json", json.dumps({"noise_floor": -99.0}))
+    assert excinfo.value.code == 2
 
 
 # --- FINDING 18: the R9 marker and the R17 filing path are reachable from the CLI ---------
