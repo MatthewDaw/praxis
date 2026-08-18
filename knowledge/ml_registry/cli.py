@@ -368,6 +368,30 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="knowledge.ml_registry.cli")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    bootstrap_p = sub.add_parser(
+        "bootstrap-campaign",
+        help="check a project's ledger, measure its noise floor, and emit a schema-valid model "
+             "meta plus seeded ideas -- the systematic half of standing a campaign up")
+    bootstrap_p.add_argument("--ledger", required=True)
+    bootstrap_p.add_argument("--backlog", required=True,
+                             help="JSONL; each record needs id + axis and a description or "
+                                  "hypothesis(+basis)")
+    bootstrap_p.add_argument("--model-id", required=True)
+    bootstrap_p.add_argument("--metric", required=True)
+    bootstrap_p.add_argument("--direction", required=True, choices=["maximize", "minimize"])
+    bootstrap_p.add_argument("--diff-size-limit", type=int, required=True)
+    bootstrap_p.add_argument("--baseline-prefix", default="baseline",
+                             help="ledger rows whose description starts with this are baselines")
+    bootstrap_p.add_argument("--sigmas", type=float, default=2.0)
+    bootstrap_p.add_argument("--noise-floor", type=float, default=None,
+                             help="override the floor measured from the ledger; use when it was "
+                                  "measured over MORE runs than the ledger holds")
+    bootstrap_p.add_argument("--skip-ids", default="",
+                             help="comma-separated backlog ids to omit (settled losers)")
+    bootstrap_p.add_argument("--notes", default=None)
+    bootstrap_p.add_argument("--out-dir", default=None,
+                             help="write model_meta.json and ideas.jsonl here")
+
     validate_p = sub.add_parser("validate-fact", help="validate a fact against its category schema")
     validate_p.add_argument("--category", required=True)
     validate_p.add_argument("--meta-json", required=True)
@@ -654,6 +678,27 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "bootstrap-campaign":
+            from pathlib import Path as _P
+
+            from knowledge.ml_registry.bootstrap import bootstrap as _bootstrap
+
+            backlog = [json.loads(l) for l in _P(args.backlog).read_text().splitlines() if l.strip()]
+            report = _bootstrap(
+                ledger=_P(args.ledger), backlog=backlog, model_id=args.model_id,
+                metric=args.metric, direction=args.direction,
+                diff_size_limit=args.diff_size_limit, baseline_prefix=args.baseline_prefix,
+                sigmas=args.sigmas, noise_floor_override=args.noise_floor,
+                skip_ids={i for i in args.skip_ids.split(",") if i}, notes=args.notes)
+            if args.out_dir and report.ready:
+                out = _P(args.out_dir); out.mkdir(parents=True, exist_ok=True)
+                (out / "model_meta.json").write_text(json.dumps(report.model_meta, indent=2))
+                (out / "ideas.jsonl").write_text(
+                    "\n".join(json.dumps(i) for i in report.ideas) + "\n")
+            print(json.dumps(report.to_dict(), indent=2))
+            # A campaign that cannot be adjudicated must not look like a success.
+            return 0 if report.ready else 1
+
         if args.command == "validate-fact":
             meta = _json_arg(args.meta_json)
             validate_fact(args.category, meta)

@@ -20,6 +20,9 @@ CHECK = REPO_ROOT / "agent_factory" / "scripts" / "checks" / "af_ml_research_tar
 
 LEGACY_HEADER = "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
 V1_HEADER = "commit\tmetric_value\tmemory_gb\tstatus\tdescription\n"
+V2_HEADER = (
+    "commit\tmetric_value\tmemory_gb\tstatus\tdescription\tthroughput\tdiff_lines\n"
+)
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -147,3 +150,35 @@ def test_version_0_ledger_with_a_model_record_naming_a_different_metric_is_refus
         "--model-record", str(model),
     )
     assert result.returncode == 2
+
+
+def test_version_2_ledger_carrying_throughput_and_diff_lines_is_accepted(tmp_path: Path) -> None:
+    """The adjudicable ledger shape must also pass this check.
+
+    Before version 2 the two readers of one results.tsv demanded mutually exclusive shapes:
+    this check required exact equality with a 5-column header, while
+    knowledge.ml_registry.cli.load_ledger_rows REFUSES any ledger lacking throughput and
+    diff_lines (synthesizing them would turn two of adjudicate_verdict's four verdicts into
+    dead code). A campaign could satisfy the acceptance check or be adjudicable, never both,
+    and nothing caught it because the registry had never been run end to end.
+    """
+    ledger = _write_ledger(
+        tmp_path,
+        V2_HEADER,
+        [f"c{i}\t{2.0 - i * 0.01:.4f}\t4.0\tok\trun {i}\t1200\t{i * 3}" for i in range(12)],
+    )
+    result = _run("--results", str(ledger), "--min-experiments", "10", "--min-improvement", "0.05")
+    assert result.returncode == 0, result.stderr
+    assert "version 2" in result.stdout
+
+
+def test_version_2_row_missing_the_appended_columns_is_rejected(tmp_path: Path) -> None:
+    """A v2 header with v1-width rows must fail loudly, not read diff_lines as absent."""
+    ledger = _write_ledger(
+        tmp_path,
+        V2_HEADER,
+        ["c0\t1.9\t4.0\tok\trun 0"],
+    )
+    result = _run("--results", str(ledger), "--min-experiments", "1", "--min-improvement", "0.05")
+    assert result.returncode == 2
+    assert "expected 7" in result.stderr
