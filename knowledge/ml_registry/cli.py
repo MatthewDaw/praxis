@@ -472,6 +472,7 @@ def main(argv: list[str] | None = None) -> int:
         help="OPTIONAL self-reported value; it is CHECKED against the ledger row and refused on "
         "disagreement, never used as the decision input",
     )
+    adjudicate_p.add_argument("--json", action="store_true", help="emit the result as JSON instead of prose. Prefer this from any program: the prose line is for humans and its wording is not a contract, so a caller that scrapes it (rsplit on the last token, say) breaks the day it is reworded")
 
     verdict_p = sub.add_parser(
         "resolve-verdict",
@@ -486,6 +487,7 @@ def main(argv: list[str] | None = None) -> int:
         f"{LEDGER_THROUGHPUT_COLUMN!r} and {LEDGER_DIFF_LINES_COLUMN!r} columns a verdict is decided on",
     )
     verdict_p.add_argument("--reactivation-trigger", default=None)
+    verdict_p.add_argument("--json", action="store_true", help="emit the result as JSON instead of prose. Prefer this from any program: the prose line is for humans and its wording is not a contract, so a caller that scrapes it (rsplit on the last token, say) breaks the day it is reworded")
 
     retire_harness_p = sub.add_parser(
         "retire-harness",
@@ -771,7 +773,10 @@ def main(argv: list[str] | None = None) -> int:
                     space, args.trial_id, ledger_values, self_reported_value=args.observed_value
                 ),
             )
-            print(f"OK: trial {args.trial_id} adjudicated {status}")
+            if getattr(args, "json", False):
+                print(json.dumps({"trial_id": args.trial_id, "status": status}))
+            else:
+                print(f"OK: trial {args.trial_id} adjudicated {status}")
             return 0
         if args.command == "resolve-verdict":
             ledger_rows = load_ledger_rows(Path(args.ledger))
@@ -780,7 +785,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.space_file,
                 lambda space: adjudicate_verdict(space, args.trial_id, ledger_rows, **kwargs),
             )
-            print(f"OK: trial {args.trial_id} verdict {verdict}")
+            if getattr(args, "json", False):
+                print(json.dumps({"trial_id": args.trial_id, "verdict": verdict}))
+            else:
+                print(f"OK: trial {args.trial_id} verdict {verdict}")
             return 0
         if args.command == "retire-harness":
             fact = _load_mutate_save(
