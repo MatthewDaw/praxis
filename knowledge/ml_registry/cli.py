@@ -819,6 +819,7 @@ def main(argv: list[str] | None = None) -> int:
                 lambda space: supersede_trial(space, args.trial_id, args.reason),
             )
             print(f"OK: superseded trial {trial_id}")
+            return 0
         if args.command == "reset-ratchet":
             cleared = _load_mutate_save(
                 args.space_file,
