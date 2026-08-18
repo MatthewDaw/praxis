@@ -18,6 +18,7 @@ prove nothing about them.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -57,6 +58,8 @@ OWNERSHIP = (
     "af_is_worktree_branch",
     "af_is_owed_merge",
     "af_is_factory_named",
+    "af_branch_is_foreign_era",
+    "af_sanitize_branch",
 )
 FUNCS = _extract(*OWNERSHIP, "reap_branches")
 
@@ -124,10 +127,15 @@ def repo(tmp_path: Path) -> Path:
     return r
 
 
-def _reap(repo: Path, known: str = "R8 R9 LADDER-1", finished: str = "") -> tuple[int, str]:
+def _reap(repo: Path, known: str = "R8 R9 LADDER-1", finished: str = "",
+          start_epoch: int = 0) -> tuple[int, str]:
+    # start_epoch=0 is the "no run boundary known" default the driver itself falls back to, under
+    # which NO branch can be foreign-era — so every pre-existing case below is unaffected by the
+    # foreign-era guard and still exercises the regress path it was written for.
     script = f"""{HARNESS}
 AF_KNOWN_IDS=" {known} "
 AF_FINISHED_IDS=" {finished} "
+AF_START_EPOCH={start_epoch}
 {FUNCS}
 reap_branches
 """
@@ -212,6 +220,64 @@ def test_finished_ticket_whose_work_never_landed_fails_the_round(repo: Path):
     assert "feat: ladder (LADDER-1)" in out, "the missing commits must be named"
     assert "1 branches reaped, 1 unmerged branches remain: worktree-agent-ladder" not in out
     assert "0 branches reaped, 1 unmerged branches remain: worktree-agent-ladder" in out
+
+
+# ------------------------------------------------------- foreign-era branches (2026-08-09) --
+#
+# THE INCIDENT. A forgotten af-ticket-loop left worker branches behind. Days later a different loop
+# started, its orphan sweep found those branches, saw that the tickets they named read `finished`
+# with commits not on the integration ref, and regressed R27 — a ticket a DIFFERENT run had genuinely
+# completed — then failed the round over it. The sweep was reasoning about work that was never its
+# to judge, and the only evidence needed to tell the difference was already on the branch: its tip
+# commit was written before this run existed.
+
+
+def _aged_worker_branch(repo: Path, name: str, fname: str, subject: str, when: int) -> None:
+    """A worker branch whose tip was committed at epoch ``when`` — i.e. by some earlier run."""
+    _git(repo, "checkout", "-q", "-b", name)
+    (repo / fname).write_text("x = 1\n")
+    _git(repo, "add", "-A")
+    stamp = f"{when} +0000"
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", subject],
+        cwd=repo, check=True, timeout=60,
+        env={**os.environ, "GIT_COMMITTER_DATE": stamp, "GIT_AUTHOR_DATE": stamp},
+    )
+    _git(repo, "checkout", "-q", "main")
+
+
+def test_foreign_era_branch_is_archived_as_a_tag_and_its_ticket_is_not_regressed(repo: Path):
+    """The headline fix: an earlier run's leftovers neither regress a ticket nor fail the round."""
+    _aged_worker_branch(repo, "af-build/R27", "r27.py", "feat: r27 (R27)", when=1_000_000_000)
+
+    rc, out = _reap(repo, known="R27", finished="R27", start_epoch=2_000_000_000)
+
+    assert rc == 0, f"an earlier run's residue must not fail this run's round:\n{out}"
+    assert not (repo / "regress.log").exists(), (
+        "R27 was finished by another run days ago — regressing it destroys a real completion"
+    )
+    assert "ROUND FAILED" not in out
+    assert "foreign-era branch af-build/R27" in out and "not regressed" in out
+    # Deleted, so the next sweep does not rediscover it and ask the same question forever...
+    assert _branches(repo) == ["main"]
+    # ...but nothing is lost: the commits are reachable from the archive tag.
+    tags = _git(repo, "tag", "--list").splitlines()
+    assert tags == ["archive/foreign-af-build-R27"]
+    assert "feat: r27 (R27)" in _git(repo, "log", "-1", "--format=%s", "archive/foreign-af-build-R27")
+
+
+def test_a_branch_written_during_this_run_is_still_regressed(repo: Path):
+    """The negative case, and the one that matters most: the foreign-era guard must not become a
+    blanket amnesty. A branch whose tip lands AFTER the run started is this run's own output, and a
+    ticket that reads finished while that work sits unmerged is still lying."""
+    _aged_worker_branch(repo, "af-build/R28", "r28.py", "feat: r28 (R28)", when=2_000_000_500)
+
+    rc, out = _reap(repo, known="R28", finished="R28", start_epoch=2_000_000_000)
+
+    assert rc == 1
+    assert "ROUND FAILED" in out
+    assert (repo / "regress.log").read_text().strip() == "REGRESS R28 af-build/R28"
+    assert "af-build/R28" in _branches(repo), "unique work is never deleted on the failure path"
 
 
 def test_unfinished_ticket_with_unique_work_survives_and_is_named(repo: Path):

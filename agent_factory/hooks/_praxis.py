@@ -511,6 +511,97 @@ def write_build_state(cid: str, meta_dict: dict, *, owner: str | None = None,
     return out or {}
 
 
+# --------------------------------------------------------------------------- the bless gate on CLAIM
+#
+# A plan is only claimable when it is BLESSED. The two non-blessed states, read off the
+# planning-marker fact in (space=<project>, snapshot="prd-<project>"):
+#
+#   ARMED         planning_owner set and `planning_at` fresh (within the TTL). An intake session is
+#                 editing the plan RIGHT NOW; its tickets are still moving under the reader.
+#   NEVER BLESSED no `blessed_at` has ever been stamped. Intake never finished, so nothing here has
+#                 been through the audit that makes a ticket safe to build.
+#
+# Why the guard is HERE, on the claim call, and not only in the loop driver: on 2026-08-09 a
+# forgotten `af-ticket-loop` in farming_analysis claimed tickets out of a plan that was mid-intake
+# and had never been blessed. The loop's preflight is the loud, early half of the answer; this is the
+# half no caller can be launched around, because taking a ticket is the one thing every builder does.
+PLANNING_MARKER_CATEGORY = "planning-marker"
+# Mirror of `_ticket_state.DEFAULT_PLANNING_TTL_S` / the server's `_S12_DEFAULT_PLANNING_TTL_S`. This
+# module is stdlib-only and cannot import either, so the value is duplicated rather than shared.
+_PLANNING_TTL_S = 3600
+# A claim happens once per ticket, but a round claims many, and the marker changes only at intake
+# boundaries — so one read is amortised across a round instead of adding a request per ticket.
+_BLESS_CACHE_TTL_S = 60
+_BLESS_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+
+
+class PlanNotBlessed(RuntimeError):
+    """Claiming was refused because the plan is armed for editing, or was never blessed.
+
+    A typed error, not a generic RuntimeError, so a driver can distinguish "this plan is not ready"
+    (finish intake) from "Praxis is down" (:class:`PraxisUnreachable`) without matching on text."""
+
+
+def planning_marker_meta(space: str, snapshot: str, *, force: bool = False) -> dict:
+    """The planning marker's meta for ``(space, snapshot)`` — ``{}`` when no marker exists.
+
+    Cached for :data:`_BLESS_CACHE_TTL_S` seconds. A transport failure is NOT cached and still
+    raises, so the gate below fails closed rather than reading a stale "blessed"."""
+    key = (space, snapshot)
+    now = time.time()
+    if not force:
+        hit = _BLESS_CACHE.get(key)
+        if hit is not None and (now - hit[0]) < _BLESS_CACHE_TTL_S:
+            return hit[1]
+    bare = snapshot[len("prd-"):] if snapshot.startswith("prd-") else space
+    meta: dict = {}
+    for fact in (facts_by(category=PLANNING_MARKER_CATEGORY, state="any",
+                          space=space, snapshot=snapshot) or []):
+        fmeta = dict(fact.get("meta") or {})
+        if (fact.get("scope") or fmeta.get("project")) == bare:
+            meta = fmeta
+            break
+    _BLESS_CACHE[key] = (now, meta)
+    return meta
+
+
+def plan_bless_state(space: str, snapshot: str, *, force: bool = False) -> str:
+    """``"blessed"`` | ``"armed"`` | ``"never-blessed"`` for the plan in ``(space, snapshot)``.
+
+    A STALE armed marker (owner set, ``planning_at`` older than the TTL) is a dead intake session,
+    not a live one — it does not arm. Whether it is claimable then depends on ``blessed_at``, which
+    is exactly the never-blessed test."""
+    meta = planning_marker_meta(space, snapshot, force=force)
+    owner = meta.get("planning_owner")
+    at = meta.get("planning_at")
+    if owner and at is not None:
+        try:
+            if (time.time() - float(at)) <= _PLANNING_TTL_S:
+                return "armed"
+        except (TypeError, ValueError):
+            return "armed"  # unreadable heartbeat on an owned marker: treat as live, fail closed
+    return "blessed" if meta.get("blessed_at") else "never-blessed"
+
+
+def require_blessed_plan(space: str | None, snapshot: str | None) -> None:
+    """Raise :class:`PlanNotBlessed` unless ``(space, snapshot)`` names a BLESSED plan snapshot.
+
+    A no-op for anything that is not a ``prd-<project>`` plan reference (working memory, the checks
+    snapshots) — those have no planning marker and no bless semantics."""
+    if not space or not snapshot or not snapshot.startswith("prd-"):
+        return
+    state = plan_bless_state(space, snapshot)
+    if state == "blessed":
+        return
+    why = ("armed for editing — an intake session holds the planning marker"
+           if state == "armed" else
+           "never blessed — intake has not finished")
+    raise PlanNotBlessed(
+        f"plan {snapshot!r} is not blessed ({why}); claiming is refused. "
+        f"Finish intake (af-intake-plan) so the plan is blessed, or clear the planning marker."
+    )
+
+
 def claim_requirement(cid: str, owner: str, ttl: int, *, space: str | None = None,
                       snapshot: str | None = None) -> dict | None:
     """Lease ticket ``cid`` to ``owner`` (POST /requirements/{cid}/claim); ``None`` on conflict.
@@ -520,9 +611,14 @@ def claim_requirement(cid: str, owner: str, ttl: int, *, space: str | None = Non
     guard, the grant here is ATOMIC at the DB row level: two agents racing the same free ticket
     produce exactly one winner, where the read-modify-write it replaces produced two.
 
+    Refuses outright, with :class:`PlanNotBlessed`, when the plan is ARMED or was NEVER BLESSED —
+    see :func:`require_blessed_plan`. That is not a conflict and must not read as one: returning
+    ``None`` would send the caller to the next ticket in the same unblessed plan.
+
     Returns the claim view on grant, or ``None`` when a DIFFERENT owner holds a live lease
     (HTTP 409) — a normal outcome the caller answers by moving to the next ticket, not an
     outage. Every other failure still raises :class:`PraxisUnreachable`."""
+    require_blessed_plan(space, snapshot)
     try:
         out = _request("POST", f"/requirements/{cid}/claim",
                        body={"owner": owner, "lease_ttl_seconds": int(ttl)},
@@ -1009,3 +1105,56 @@ def whoami() -> WhoAmI:
         else:
             detail = str(data.get("detail") or f"{auth_mode} principal not a member of org {org!r}")
     return WhoAmI(backend, org, org_source, principal, auth_mode, key_org, ok, detail)
+
+
+# --------------------------------------------------------------------------- org guard
+
+class OrgMismatch(PraxisUnreachable):
+    """A write was about to target a different org than the caller expects — the B-6 footgun.
+
+    A SUBCLASS of :class:`PraxisUnreachable` so every gate that already fails closed on an
+    unreachable Praxis ALSO fails closed on org drift, rather than proceeding to write into the
+    wrong org. It is not an outage, but the safe response is identical: refuse the write."""
+
+
+def assert_org_matches(expected_org: str, *, who: WhoAmI | None = None) -> WhoAmI:
+    """Fail LOUD before a write when the org we are authenticated against is NOT the org the
+    caller expects its data to live in — naming BOTH orgs so the drift is impossible to miss.
+
+    B-6 (real incident): the Praxis MCP was pinned to an *empty* ``taolu-coach`` org while the
+    project's data lived in ``sports-analysis``, and the factory's default org resolution falls
+    back to ``agent-factory`` (:data:`DEFAULT_ORG`). Nothing errored — a write simply landed in
+    the wrong (or empty) org, and the org that was supposed to receive it silently never did.
+
+    This is the INTENT check that :func:`whoami` cannot do. ``whoami().ok`` only asserts the key's
+    org matches the *resolved* org (auth self-consistency, via the same :func:`_resolve_org`
+    precedence PRAXIS_ORG pin > cache > DEFAULT_ORG); it has no idea which org the *caller* meant,
+    so a self-consistent-but-wrong org (a valid key for ``agent-factory`` when the data lives in
+    ``sports-analysis``) sails through it. A caller that KNOWS where its data must live passes
+    ``expected_org`` here, and we compare it against the org this invocation would actually write
+    to — consistent with the fail-loud ``_resolve_org`` guard the rest of this file relies on.
+
+    ``who`` is injectable for testing (pass a canned :class:`WhoAmI`); by default we ask the
+    server via :func:`whoami`. Returns the resolved :class:`WhoAmI` on success (handy to log the
+    identity a write actually used); raises :class:`OrgMismatch` on drift.
+    """
+    expected = (expected_org or "").strip()
+    if not expected:
+        raise ValueError("assert_org_matches: expected_org is required and must be non-empty")
+
+    who = who or whoami()
+
+    # The org this invocation would ACTUALLY write to. A key only ever works in its own org, so
+    # when one is in play its ``key_org`` is ground truth; absent a key (bearer/dev) the resolved
+    # org is what the request carries in ``x-praxis-org``.
+    authed = (who.key_org or who.org or "").strip()
+    if authed != expected:
+        raise OrgMismatch(
+            f"org drift: caller expects data in org {expected!r} but this invocation is "
+            f"authenticated against org {authed!r} "
+            f"(resolved_org={who.org!r} via {who.org_source}, key_org={who.key_org!r}, "
+            f"auth_mode={who.auth_mode}). Refusing to write into the wrong org. Pin "
+            f"PRAXIS_ORG={expected!r} (or re-run praxis_select_org) so the write targets the org "
+            f"whose data you mean."
+        )
+    return who

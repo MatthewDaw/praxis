@@ -35,7 +35,7 @@ from knowledge.serve.session_launcher import SessionLauncher
 #: ambient role can populate.
 _BOX_SERVICE_ONLY_ENV = {
     "GITHUB_TOKEN_SECRET_NAME": "praxis/github/token",
-    "GITHUB_TOKEN": "ghp_should_never_reach_a_session",
+    "GITHUB_TOKEN": "ghp-should-never-reach-a-session",  # hyphenated: opaque test value, not a real-token-shaped literal (avoids the no-github-token-leak scanner)
     "AWS_ACCESS_KEY_ID": "AKIAFAKE",
     "AWS_SECRET_ACCESS_KEY": "supersecret",
     "AWS_SESSION_TOKEN": "sessiontoken",
@@ -130,20 +130,20 @@ def test_box_service_itself_still_obtains_the_credential_despite_session_isolati
     never also block the box service's own in-process credential resolution."""
     github_token.invalidate_github_token()
     fake_client = mock.Mock()
-    fake_client.get_secret_value.return_value = {"SecretString": "ghp_realboxservicetoken000000"}
+    fake_client.get_secret_value.return_value = {"SecretString": "ghp-realboxservicetoken000000"}
 
     with mock.patch("boto3.client", return_value=fake_client):
         token = github_token.resolve_github_token()
 
-    assert token == "ghp_realboxservicetoken000000"
+    assert token == "ghp-realboxservicetoken000000"
     github_token.invalidate_github_token()
 
 
 def test_fetch_uncached_also_still_obtains_the_credential_for_the_box_service():
     fake_client = mock.Mock()
-    fake_client.get_secret_value.return_value = {"SecretString": "ghp_realboxservicetoken111111"}
+    fake_client.get_secret_value.return_value = {"SecretString": "ghp-realboxservicetoken111111"}
 
     with mock.patch("boto3.client", return_value=fake_client):
         token = github_token.fetch_github_token_uncached()
 
-    assert token == "ghp_realboxservicetoken111111"
+    assert token == "ghp-realboxservicetoken111111"

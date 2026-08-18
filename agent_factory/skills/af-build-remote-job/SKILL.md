@@ -26,17 +26,35 @@ has no production caller, there is no `POST /jobs` route, and nothing calls `lau
 Only the read-side MCP tools (`praxis_list_jobs`, `praxis_get_job`, `praxis_job_activity`) exist.
 So this drives the SSH + tmux path that is how runs actually get started today.
 
-## Box facts (verified 2026-07-29)
+## Box facts (verified 2026-08-13)
 
 | | |
 |---|---|
 | host | `ec2-user@52.22.249.49` |
 | key | `~/.ssh/praxis-devbox.pem` |
 | factory repo | `/workspace/praxis` (the loop script lives here regardless of target project) |
+| **plugin source** | `/workspace/praxis-plugin/agent_factory` — a SEPARATE shallow clone that the marketplace resolves to. **This is where SKILL.md and hooks load from.** |
 | ⚠ second checkout | `/workspace/af-praxis` is a SECOND checkout of the same repo, usually on a different branch. **Patching it does nothing at runtime** — see below. |
 | driver | `/workspace/praxis/agent_factory/scripts/af-ticket-loop.sh <project> <worktree> <pg> <redis|none> [max]` (ships with the plugin; all projects run this one file) |
 | tmux session | derived by the loop as `af-$(basename <worktree>)` |
 | loop log | `/workspace/af-ticket-loop.log` (plus the per-run log this command redirects to) |
+
+**The driver and the plugin now come from DIFFERENT clones, deliberately.** Before 2026-08-13 both
+resolved to `/workspace/praxis`, which meant refreshing the plugin required `git pull` on the very
+checkout whose `af-ticket-loop.sh` a live loop was mid-execution of — bash reads scripts
+incrementally, so that is a real hazard, and it made every plugin update wait for a build to drain.
+Splitting them means:
+
+- **`/workspace/praxis-plugin` is safe to pull at any time.** Nothing executes from it; it only gets
+  read at plugin-install time. This is the checkout to update when skills or hooks change.
+- **`/workspace/praxis` still owns the driver** and should only be pulled when no loop is running.
+- The cost is that they can drift, and refreshing one tells you nothing about the other. Step 5b
+  refreshes the driver; the plugin is refreshed separately (pull `praxis-plugin`, bump
+  `plugin.json`'s version, reinstall). **Check both when a change does not seem to take effect.**
+
+`/workspace/praxis-plugin/agent_factory/.env` holds the Praxis credentials and is gitignored, so a
+fresh clone will NOT have it. Copy it in, or every hook in every worker session loses its backend
+and the gates go inert rather than loud.
 
 Worktrees are per-project and each carries its own `.claude/settings.local.json`. Observed layout —
 resolve it, never assume it:
@@ -83,6 +101,84 @@ integration, so the next round rebuilds it. It builds nothing and pushes nothing
 skip it, since they merge exactly the tree their worker already validated. `AF_VERIFY_ROUND=0` disables
 it; `AF_VERIFY_TIMEOUT_S` bounds it, default 2700. A round that produces no verdict is logged as
 UNVERIFIED, never as a pass.
+
+## Box auth — set up or repair the Claude identity (do this BEFORE launching)
+
+The loop drives workers non-interactively under `--dangerously-skip-permissions`. If the box's
+Claude identity is missing, half-configured, or freshly re-logged-in, every round dies the same
+way: `FATAL: round #N pane never signalled ready after 240s — no agent in the session`, forever,
+while the loop process itself looks healthy. One farming_analysis run burned five rounds on this
+before anyone looked inside the pane. There are TWO identity models; pick ONE per project.
+
+### Model A — shared default identity (`~/.claude`), interactive login
+
+Use when the project can share the box's main account.
+
+1. Interactive login (ONLY the human can complete the browser step):
+   `ssh -i ~/.ssh/praxis-devbox.pem -t ec2-user@52.22.249.49 claude /login`
+   Open the printed URL, pick the intended account, paste the code back. This rewrites
+   `~/.claude/.credentials.json`.
+2. **A fresh login RESETS per-session acknowledgement UI.** Clear it so headless workers don't
+   stall on a dialog: in `~/.claude.json` set `hasCompletedOnboarding = true` and
+   `theme = "dark"` (login NULLS the theme, re-triggering the wizard), and
+   `bypassPermissionsModeAccepted = true`. The bypass acceptance is necessary but partially
+   TTY-gated — the step-3 smoke test is what actually proves it clear.
+3. Confirm which account is active (email only, no secrets):
+   `python3 -c "import json;print(json.load(open('/home/ec2-user/.claude.json'))['oauthAccount']['emailAddress'])"`
+4. Launch (step 6 below) WITHOUT any `CLAUDE_CONFIG_DIR` override.
+
+### Model B — isolated per-project identity (separate account, quota-isolated)
+
+Use when the project needs its OWN account so its usage never competes with the main account's
+quota (farming_analysis runs this way: `/home/ec2-user/.claude-farming`). Requires a genuinely
+DIFFERENT account — a scoped `CLAUDE_CONFIG_DIR` isolates the LOGIN, not the QUOTA; two tokens
+minted from one account still drain one pool.
+
+1. `mkdir -p /home/ec2-user/.claude-<project>` on the box.
+2. Mint a long-lived token UNDER that dir (interactive; the human signs in with the SEPARATE
+   account): `ssh -t ... 'CLAUDE_CONFIG_DIR=/home/ec2-user/.claude-<project> claude setup-token'`.
+   **The token prints exactly ONCE to stdout and is NOT stored automatically** — run it inside a
+   tmux session with `remain-on-exit on`, or tee stdout, or the token is lost and the OAuth code
+   (single-use) is burned with it.
+3. Store it in `/home/ec2-user/.claude-<project>/env`, chmod 600:
+   `export CLAUDE_CONFIG_DIR=/home/ec2-user/.claude-<project>` +
+   `export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat0...`
+4. **Interactive sessions ALSO need `.credentials.json` in that config dir** — `setup-token`
+   does not write it, and without it every worker session stops at a "Select login method"
+   dialog that `-p` probes never show. Construct it from the env token (shape:
+   `{"claudeAiOauth": {"accessToken": "<token>", "refreshToken": "", "expiresAt": <ms>,
+   "scopes": ["user:inference"], "subscriptionType": "max"}}`, chmod 600).
+5. Clear the dialogs in `/home/ec2-user/.claude-<project>/.claude.json`: the Model-A step-2
+   flags PLUS a trust entry per project root —
+   `projects["/workspace/<worktree>"] = {"hasTrustDialogAccepted": true}` (trust is per
+   project root; worktrees under it inherit). Also set
+   `permissions.defaultMode = "bypassPermissions"` in `<config-dir>/settings.json` so every
+   session on this identity runs bypass even if a launcher forgets the flag.
+6. Launch (step 6 below) with `source /home/ec2-user/.claude-<project>/env &&` prefixed.
+
+### The ONLY valid validation
+
+```bash
+ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
+  'source /home/ec2-user/.claude-<project>/env 2>/dev/null; \
+   timeout 25 claude -p "reply with the single word READY" --dangerously-skip-permissions'
+```
+
+Expect exactly `READY`. **A `-p` probe WITHOUT `--dangerously-skip-permissions` proves
+nothing** — print mode skips every onboarding dialog (theme, login method, folder trust,
+bypass acceptance), so it returns clean while interactive worker sessions still stall. The
+farming run's five dead rounds all happened after a plain `-p` probe had "verified" auth.
+
+### Gotchas learned the hard way
+
+- Copying a laptop's keychain credentials to the box works but binds the box to whatever account
+  the laptop uses AND shares one rolling quota window — near the cap, the loop dies with
+  `BILLING FAILURE` within ~90s of every launch. `/login` (A) or a dedicated token (B) instead.
+- After ANY re-login, re-run the READY smoke before launching — a reset dialog swallows the
+  loop's first `tmux send-keys` prompt and the session sits idle at an empty REPL.
+- The `FATAL: pane never signalled ready` signature = look INSIDE the pane
+  (`tmux capture-pane -t af-<worktree> -p`) — it is almost always one of the four dialogs above,
+  each fixable from config without another browser round-trip.
 
 ## Steps
 
@@ -172,10 +268,10 @@ A dirty or diverged checkout is a REPORT, not something to force past: another l
 that file right now. If a stray per-project copy or launcher still exists, point it at the canonical
 script with a symlink rather than re-copying it.
 
-**Two checkouts exist, and only one is on the runtime path.** `/workspace/praxis` and
-`/workspace/af-praxis` are separate clones of this repo, typically on different branches. The
-plugin marketplace in `~/.claude/settings.json` resolves `agent-factory-local` to ONE of them —
-check it, never assume:
+**THREE checkouts exist, and the plugin comes from only one of them.** `/workspace/praxis`,
+`/workspace/praxis-plugin` and `/workspace/af-praxis` are separate clones of this repo. Since
+2026-08-13 the marketplace resolves to `praxis-plugin` (see *Box facts*), but that is a setting, not
+a law — check it, never assume:
 
 ```bash
 ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
@@ -188,9 +284,20 @@ nothing about the running system. Observed 2026-08-06: a judge fix was verified 
 while the marketplace pointed at `praxis`, so the very next run reproduced the bug it supposedly
 fixed. Patch the checkout on the marketplace path, or patch both and say so.
 
-Note the loop SCRIPT is resolved separately, from the path you invoke in step 6 — so the driver and
-the plugin can come from different clones at the same time. That is the trap: refreshing one in
-step 5b tells you nothing about the other.
+The loop SCRIPT is resolved separately, from the path you invoke in step 6, so the driver and the
+plugin come from different clones **by design now** — that is what lets the plugin be refreshed
+while a build runs. It is still the thing that bites: refreshing the driver in step 5b tells you
+nothing about the plugin, and vice versa. When a change "did not take effect", check which of the
+two you actually updated.
+
+A plugin refresh is its own sequence, and the version bump is not optional — the install cache is
+keyed by version (`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>`), so same-version
+content changes are simply never picked up:
+
+```bash
+git -C /workspace/praxis-plugin pull --ff-only          # safe any time; nothing executes from here
+# bump agent_factory/.claude-plugin/plugin.json version, then reinstall / reload plugins
+```
 
 **6. Launch detached** so the loop survives the SSH connection closing. Pass `none` for redis when
 the project has none; pass `[max]` only if the user bounded the run. The driver locates its own hooks,
@@ -232,6 +339,8 @@ sleep 20 && ssh -i ~/.ssh/praxis-devbox.pem ec2-user@52.22.249.49 \
 ```
 
 A `preflight: FAILED` line is a real stop — report it verbatim rather than assuming the run started.
+Repeated `FATAL: round #N pane never signalled ready after 240s` lines are the AUTH/onboarding
+signature — go back to "Box auth" above and run the READY smoke; do not let the loop spin.
 
 **8. Report** the tmux session, the log path, and these operator commands:
 

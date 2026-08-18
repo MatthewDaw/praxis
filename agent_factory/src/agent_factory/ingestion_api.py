@@ -240,6 +240,29 @@ class Unauthenticated(PermissionError):
     """An ingestion-API verb was called with no org-authenticated Praxis identity (R1b)."""
 
 
+class LessonSourceCollision(ValueError):
+    """R43: a lesson's ``source`` exactly matched the ``prd-<project>`` grouping-tag shape
+    ``Fact.source`` carries for requirement facts (``source = f"prd-{project}"`` — see
+    ``hooks._praxis.incomplete_requirements``). See :func:`reject_prd_shaped_lesson_source` for
+    the exact matching rule."""
+
+
+# The WHOLE source string must match, not a substring, so "notes about prd conventions" or "see
+# docs/prd-notes.md" (prd-shaped text embedded in a longer string) is never falsely flagged.
+_PRD_GROUPING_TAG_SOURCE_RE = re.compile(r"^prd-\S+$")
+
+
+def reject_prd_shaped_lesson_source(source: str | None) -> None:
+    """Raise :class:`LessonSourceCollision` when ``source``, taken as a whole, is exactly
+    ``prd-<rest>`` — the ``prd-<project>`` grouping-tag shape (R43)."""
+    if source is not None and _PRD_GROUPING_TAG_SOURCE_RE.match(source):
+        raise LessonSourceCollision(
+            f"lesson source {source!r} is shaped exactly like the prd-<project> grouping-tag "
+            "convention Fact.source carries for requirement facts; rejected so a lesson's "
+            "free-text source can never collide with that convention"
+        )
+
+
 def _write_insight(text: str, category: str, *, source: str | None = None,
                    meta: dict[str, Any] | None = None,
                    snapshot: str | None = None) -> dict[str, Any]:
@@ -271,7 +294,10 @@ def _write_insight(text: str, category: str, *, source: str | None = None,
 
 def write_lesson(text: str, *, source: str | None = None,
                  meta: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Write ``text`` as a lesson into the shared ``factory-learnings`` space (POST /insights)."""
+    """Write ``text`` as a lesson into the shared ``factory-learnings`` space (POST /insights).
+    Refuses (``LessonSourceCollision``) before any write — :func:`reject_prd_shaped_lesson_source`.
+    """
+    reject_prd_shaped_lesson_source(source)
     return _write_insight(text, LESSON_CATEGORY, source=source, meta=meta)
 
 
@@ -289,6 +315,39 @@ def read_lessons(query: str = "", *, top_k: int = 10) -> list[dict[str, Any]]:
                                snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT)
     return _praxis.facts_by(category=LESSON_CATEGORY, space=_praxis.FACTORY_LEARNINGS_SPACE,
                             snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT)
+
+
+def get_lesson(lesson_id: str) -> dict[str, Any]:
+    """R41 — the dedicated BY-ID read counterpart to :func:`write_lesson`: fetch one lesson's full
+    text plus accumulated metadata (``provenance``, ``content_hash``, ... — whatever
+    :func:`learn`/:func:`learn_bulk` and :func:`_append_lesson_provenance` stamped on it) by the id
+    those two calls returned, without the caller constructing its own ``get_fact``/``facts_by``/
+    ``context`` call.
+
+    Delegates straight to :func:`hooks._praxis.get_fact`, scoped to the same shared
+    ``(FACTORY_LEARNINGS_SPACE, FACTORY_LEARNINGS_SNAPSHOT)`` every other lesson read/write in this
+    module targets — the "same org/project scoping as the existing ``get_fact`` primitive" the
+    ticket asks for is inherited by construction, not re-derived here.
+
+    Never raises for an ordinary miss: an unknown id or an id naming a fact that is not a lesson
+    (e.g. a check or a ticket id passed in by mistake) both come back as a clear
+    ``{"found": False, "reason": ...}`` result rather than a ``PraxisUnreachable``-shaped surprise
+    or a lesson-shaped dict with a wrong-typed body.
+    """
+    fact = _praxis.get_fact(lesson_id, space=_praxis.FACTORY_LEARNINGS_SPACE,
+                            snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT, not_found_ok=True)
+    if not fact or not fact.get("id"):
+        return {"found": False, "lesson_id": lesson_id, "reason": "not_found"}
+    if fact.get("category") != LESSON_CATEGORY:
+        return {"found": False, "lesson_id": lesson_id, "reason": "wrong_category",
+                "category": fact.get("category")}
+    return {
+        "found": True,
+        "lesson_id": lesson_id,
+        "text": fact.get("content") or fact.get("text") or fact.get("insight"),
+        "source": fact.get("source"),
+        "meta": dict(fact.get("meta") or {}),
+    }
 
 
 # --------------------------------------------------------------------------- R1b: auth gate
@@ -576,18 +635,95 @@ def _fetch_check(check_id: str, project: str) -> dict[str, Any]:
 
 # --------------------------------------------------------------------------- classify/dedup
 
+def _normalize_lesson_text(text: str | None) -> str:
+    """The canonical dedup key for a lesson body: whitespace-trimmed, case-folded. Both the
+    corpus-exact dedup (:func:`classify_and_dedup`) and the within-batch dedup
+    (:func:`af_learn.learn_bulk`) key on THIS so an exact twin is recognised identically on both
+    paths."""
+    return str(text or "").strip().lower()
+
+
+def _find_duplicate_lesson(text_n: str, content_hash: str) -> str | None:
+    """Return the id of an existing active lesson whose normalized text equals ``text_n``, or
+    ``None``. Deliberately NOT semantic-top-k: it keys first on the exact ``content_hash`` stamped
+    on lesson meta at write time (a precise meta-filtered lookup, unaffected by how many similar
+    lessons crowd a similarity ranking), then falls back to an exhaustive normalized-text scan of
+    the active corpus for legacy lessons written before the hash existed. The old top-k recall
+    missed an exact twin whenever more than ``top_k`` nearer neighbours pushed it out of the
+    ranking — the bug that let identical bulk entries write duplicate rows."""
+    for hit in _praxis.facts_by(category=LESSON_CATEGORY, meta={"content_hash": content_hash},
+                                space=_praxis.FACTORY_LEARNINGS_SPACE,
+                                snapshot=_praxis.FACTORY_LEARNINGS_SNAPSHOT):
+        # ``content_hash`` is a sha256 of the normalized body, so a meta hit is authoritative —
+        # no need to re-read the (optional) text field the store may not carry back.
+        return hit.get("id")
+    for hit in read_lessons(""):  # exhaustive active enumeration — covers pre-hash legacy lessons
+        if _normalize_lesson_text(hit.get("text")) == text_n:
+            return hit.get("id")
+    return None
+
+
+def _shape_guard_lesson_provenance(raw: Any) -> list[dict[str, Any]]:
+    """R42 — the read-side shape guard for a lesson's accumulated ``meta.provenance`` list, mirroring
+    :func:`hooks._ticket_state._shape_guard_regression_details`: a list is copied (never the
+    caller's own dict objects, so a later append can never mutate a value someone else is still
+    holding); anything else (``None``, a lesson written before this shipped) degrades to "no
+    provenance yet" rather than raising."""
+    if isinstance(raw, list):
+        return [dict(d) for d in raw if isinstance(d, dict)]
+    return []
+
+
+def accumulate_lesson_provenance(existing_lesson: dict[str, Any],
+                                 entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """R42/R2 — append ONE new provenance entry onto a lesson's accumulated
+    ``meta.provenance`` list (source + channel + timestamp), following the
+    :func:`hooks._ticket_state.accumulate_regression_detail` precedent: read-modify-write through
+    this ONE function rather than a bare ``patch_meta`` wholesale-replace, so a duplicate-match
+    occurrence's provenance is APPENDED, never lost to a concurrent append clobbering the same key.
+
+    A lesson written before this shipped carries no ``meta.provenance`` list yet — this
+    initializes it from the lesson's existing single top-level ``source`` field (plus whatever
+    ``meta.channel`` it was written with) so that first-write history is never silently dropped on
+    its first append, rather than starting the accumulated list empty."""
+    existing_meta = existing_lesson.get("meta") or {}
+    provenance = _shape_guard_lesson_provenance(existing_meta.get("provenance"))
+    if not provenance:
+        legacy_source = existing_lesson.get("source")
+        if legacy_source is not None:
+            provenance = [{"source": legacy_source, "channel": existing_meta.get("channel"),
+                          "at": None}]
+    provenance.append(dict(entry))
+    return provenance
+
+
+def _append_lesson_provenance(lesson_id: str, *, source: str | None, channel: str) -> list[dict[str, Any]]:
+    """R42 — the clobber-guarded read-modify-write itself: re-fetch the lesson fresh (never reuse a
+    stale in-memory copy from earlier in this call) immediately before computing the merged list, so
+    the write races the smallest possible window rather than one held since ``classify_and_dedup``."""
+    plan_kw = {"space": _praxis.FACTORY_LEARNINGS_SPACE, "snapshot": _praxis.FACTORY_LEARNINGS_SNAPSHOT}
+    existing = _praxis.get_fact(lesson_id, **plan_kw) or {}
+    provenance = accumulate_lesson_provenance(
+        existing, {"source": source, "channel": channel, "at": time.time()})
+    _praxis.patch_meta(lesson_id, {"provenance": provenance}, **plan_kw)
+    return provenance
+
+
 def classify_and_dedup(lesson_text: str, *, class_hint: str | None = None,
                        top_k: int = 5) -> dict[str, Any]:
     """R1's first step: classify a new lesson against the existing corpus and flag an exact-text
-    duplicate. Filed under ``class_hint`` (or ``"uncategorized"``) when no hint is given."""
-    text_n = str(lesson_text or "").strip().lower()
-    duplicate_of = None
-    if text_n:
-        for hit in read_lessons(lesson_text, top_k=top_k):
-            if str(hit.get("text") or "").strip().lower() == text_n:
-                duplicate_of = hit.get("id")
-                break
-    return {"class": (class_hint or "uncategorized"), "duplicate_of": duplicate_of}
+    duplicate. Filed under ``class_hint`` (or ``"uncategorized"``) when no hint is given.
+
+    Dedup is EXACT-normalized-text against the whole active corpus (see :func:`_find_duplicate_lesson`),
+    NOT semantic top-k recall — so a duplicate is caught however many similar lessons already exist.
+    Returns the exact-text ``content_hash`` too so :func:`ingest` can stamp it on the row it writes
+    (the key the next dedup lookup uses). ``top_k`` is retained for signature compatibility and is
+    no longer used to bound the duplicate search."""
+    text_n = _normalize_lesson_text(lesson_text)
+    content_hash = _hash_text(text_n) if text_n else None
+    duplicate_of = _find_duplicate_lesson(text_n, content_hash) if text_n else None
+    return {"class": (class_hint or "uncategorized"), "duplicate_of": duplicate_of,
+            "content_hash": content_hash}
 
 
 def _pin_content(meta: dict[str, Any], *, validated_run: str | None,
@@ -725,11 +861,25 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
     classification = classify_and_dedup(lesson_text, class_hint=class_hint)
     wave_id = uuid.uuid4().hex
 
-    lesson = write_lesson(lesson_text, source=source, meta={
-        "class": classification["class"], "duplicate_of": classification["duplicate_of"],
-        "wave_id": wave_id, "channel": channel, "authored_by": authenticated_as,
-    })
-    lesson_id = lesson.get("id")
+    lesson_duplicate_of = classification["duplicate_of"]
+    if lesson_duplicate_of is not None:
+        # The exact-text lesson already exists (R2 — the knowledge is not lost; writing a second
+        # identical row would only create the duplicate this dedup exists to prevent). Reuse the
+        # existing id and DO NOT write a new row. The check/proof/regress path below still runs, so
+        # a duplicate complaint that carries a new check is not weakened — it just reuses the lesson.
+        # R42: this occurrence's source (plus channel and a timestamp) is APPENDED to the existing
+        # lesson's accumulated provenance via a clobber-guarded read-modify-write
+        # (:func:`_append_lesson_provenance`) instead of being discarded — so a second ingest of the
+        # same complaint text under a different source is not silently lost.
+        lesson_id = lesson_duplicate_of
+        _append_lesson_provenance(lesson_id, source=source, channel=channel)
+    else:
+        lesson = write_lesson(lesson_text, source=source, meta={
+            "class": classification["class"], "duplicate_of": None,
+            "content_hash": classification["content_hash"],
+            "wave_id": wave_id, "channel": channel, "authored_by": authenticated_as,
+        })
+        lesson_id = lesson.get("id")
 
     check_id: str | None = None
     proof_status: str | None = None
@@ -755,7 +905,8 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
                 outcome="failure",
             )
             return {"lesson_id": lesson_id, "check_id": None, "wave_id": wave_id,
-                    "proof_status": proof_status, "class": classification["class"]}
+                    "proof_status": proof_status, "class": classification["class"],
+                    "lesson_duplicate_of": lesson_duplicate_of}
         validated_run = proof_result["run"]
 
     if drafted_run is not None or drafted_rubric is not None:
@@ -873,7 +1024,8 @@ def ingest(lesson_text: str, project: str, *, source: str | None = None,
             )
 
     return {"lesson_id": lesson_id, "check_id": check_id, "wave_id": wave_id,
-            "proof_status": proof_status, "class": classification["class"], "resurrected": resurrected}
+            "proof_status": proof_status, "class": classification["class"], "resurrected": resurrected,
+            "lesson_duplicate_of": lesson_duplicate_of}
 
 
 # --------------------------------------------------------------------------- FL7: the merger's entry point (R5/R6/R15/E11)
@@ -1147,6 +1299,38 @@ def kill_switch(check_id: str, project: str, reason: str, *, identity: str | Non
     return result
 
 
+def retire_check(check_id: str, project: str, reason: str, *, identity: str | None = None) -> dict[str, Any]:
+    """The first-class "this check is STALE — stop it gating anything" verb (the build workers asked
+    for a "dismiss/retire requirement <id>" twice; the only working path before was hand-patching
+    ``meta.applies_to``). Retirement is the ATOMIC composition of everything that stops a check dead:
+
+      1. EMPTY ``meta.applies_to`` — drop every ticket-cid / tag binding, so no tag or identity lane
+         resolves it (``surface_only`` follows: no bindings + no surfaces => not surface-only either);
+      2. set ``meta.kill_switch`` (and transition the enforcement state via :func:`_suspend_patch`),
+         so :func:`hooks._ticket_state._is_retired` drops it from EVERY remaining lane too (the
+         surface lane included) — belt-and-suspenders with (1);
+      3. record ``reason`` for the audit trail (``retire_reason`` + ``kill_switch_reason``);
+      4. emit the push-not-pull suspension flag (:func:`emit_flag`, R24), so a retirement is never
+         something an operator has to go looking for.
+
+    Reuses the SAME ``_patch_check`` / ``emit_flag`` plumbing :func:`kill_switch` uses — it is a
+    strict superset of ``kill_switch`` that ALSO unbinds ``applies_to`` in the one transactional patch,
+    so a stale check cannot survive as an identity-bound gate the way ``kill_switch`` alone let it."""
+    authenticated_as = _require_authenticated(identity)
+    reason_s = str(reason or "")
+
+    def _patch(check: dict[str, Any]) -> dict[str, Any]:
+        return {**_suspend_patch(check),
+                "applies_to": [], "surface_only": False,
+                "kill_switch": True, "kill_switch_reason": reason_s, "kill_switch_at": time.time(),
+                "retired": True, "retire_reason": reason_s, "retired_at": time.time()}
+
+    result = _patch_check(check_id, project, _patch, identity=authenticated_as)
+    emit_flag(FLAG_KIND_SUSPENSION, project, {"check_id": check_id, "reason": reason_s,
+              "kill_switch": True, "retired": True}, identity=authenticated_as)
+    return result
+
+
 def regression_streak(regression_entries: list[dict[str, Any]], check_id: str) -> int:
     """R19 — the trailing run-length of regressions against ``check_id`` on ONE ticket's
     accumulated ``regression_detail`` (oldest first) that carry NO RELEVANT CHANGE between them.
@@ -1375,6 +1559,70 @@ def read_checks(project: str, *, snapshot: str = BUILDING_VALIDATION_SNAPSHOT) -
     per-run record ``agent_factory.af_retro`` reports off: activated/suspended/widened checks,
     proof outcomes, the check-undraftable rate, the gating-vs-demoted ratio."""
     return _praxis.facts_by(category=CHECK_CATEGORY, state="any", space=project, snapshot=snapshot)
+
+
+#: Suffixes that make a bare (slash-less) run-body token look like a source-file PATH rather than a
+#: subcommand/module name — so ``mypy tests/x.py`` and ``pytest test_x.py`` both surface their file arg.
+_SOURCE_FILE_SUFFIXES = frozenset({
+    ".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".rb",
+    ".php", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".kt", ".scala", ".sh", ".sql",
+    ".json", ".yaml", ".yml", ".toml", ".md", ".html", ".css", ".scss", ".vue", ".proto",
+})
+
+
+def _run_path_arguments(run: str) -> list[str]:
+    """The PATH-shaped argument tokens in a check's run body: a non-flag token that either contains a
+    path separator or ends in a recognized source-file suffix (:data:`_SOURCE_FILE_SUFFIXES`). Parsed
+    with the ONE run-body parser (:func:`parse_run_body`) so tokenization matches how the body is
+    validated and executed; a body that will not parse yields no paths (it is stale for a louder
+    reason the parser already reports)."""
+    try:
+        argv = parse_run_body(run)
+    except RunBodyRejected:
+        return []
+    out: list[str] = []
+    for token in argv[1:]:  # argv[0] is the verb, never a path
+        if not token or token.startswith("-") or "=" in token:
+            continue  # flags and key=val options are never file paths
+        path_part = token.split("::", 1)[0]  # drop a pytest nodeid suffix (tests/x.py::Case)
+        if not path_part or path_part.startswith("-"):
+            continue
+        looks_path = ("/" in path_part) or (posixpath.splitext(path_part)[1].lower()
+                                            in _SOURCE_FILE_SUFFIXES)
+        if looks_path:
+            out.append(path_part)
+    return out
+
+
+def stale_checks_by_missing_path(project: str, repo_root: str | Path) -> list[dict[str, Any]]:
+    """PURE DETECTOR (never mutates) — the building-validation checks whose ``run`` command names a
+    file path that does NOT exist under ``repo_root``. A check that runs a command against a file the
+    tree does not contain is provably stale.
+
+    Real incident: a building-validation check's ``run`` was ``mypy … tests/test_taolu_rig_validation_
+    staff_plane.py`` — a file from a DISCARDED worktree attempt that never merged. It outlived the
+    attempt and kept gating forever against a phantom file. Nothing detected it because the resolver
+    only asks "does this check apply?", never "does the file this check names still exist?".
+
+    Returns one finding per stale check: ``{"check_id", "id", "run", "missing_paths"}`` — the caller
+    decides what to do (surface it, :func:`retire_check` it). Already-retired checks (kill_switched /
+    suspended / archived) are skipped: they no longer gate, so a phantom path on one is not a live
+    problem. This never deletes or patches anything."""
+    root = Path(repo_root)
+    findings: list[dict[str, Any]] = []
+    for chk in _praxis.facts_by(category=CHECK_CATEGORY, space=project,
+                                snapshot=BUILDING_VALIDATION_SNAPSHOT):
+        meta = chk.get("meta") or {}
+        if meta.get("kill_switch") or meta.get(M_ENFORCEMENT_STATE) in (STATE_SUSPENDED, STATE_ARCHIVED):
+            continue  # retired already — not a live staleness finding
+        run = str(meta.get("run") or "")
+        if not run.strip():
+            continue
+        missing = [p for p in _run_path_arguments(run) if not (root / p).exists()]
+        if missing:
+            findings.append({"check_id": meta.get("check_id") or chk.get("id"),
+                             "id": chk.get("id"), "run": run, "missing_paths": missing})
+    return findings
 
 
 def emit_flag(kind: str, project: str, detail: dict[str, Any] | None = None, *,

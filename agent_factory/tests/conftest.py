@@ -143,8 +143,10 @@ class FakeCheckStore:
                 return fact
         raise KeyError(f"no check with meta.check_id={check_id!r}")
 
-    def seed_lesson(self, lesson_id: str, meta: dict[str, Any] | None = None) -> None:
-        self.facts[lesson_id] = {"id": lesson_id, "category": "lesson", "meta": dict(meta or {})}
+    def seed_lesson(self, lesson_id: str, meta: dict[str, Any] | None = None,
+                    content: str | None = None) -> None:
+        self.facts[lesson_id] = {"id": lesson_id, "category": "lesson", "meta": dict(meta or {}),
+                                 "content": content}
 
     def request(self, method: str, path: str, *, body: dict[str, Any] | None = None,
                space: str | None = None, snapshot: str | None = None, **kw: Any) -> dict[str, Any]:
@@ -153,11 +155,18 @@ class FakeCheckStore:
             self._n += 1
             fid = f"fake-{self._n}"
             self.facts[fid] = {"id": fid, "category": (body or {}).get("category"),
+                              "source": (body or {}).get("source"),
+                              "content": (body or {}).get("insight"),
                               "meta": dict((body or {}).get("meta") or {})}
             return {"id": fid, "action": "added"}
         if method == "POST" and path == "/requirements/regress":
             return {"count": len((body or {}).get("ids", []))}
         return {}
+
+    def get_fact(self, cid: str, *, space: str | None = None,
+                snapshot: str | None = None, not_found_ok: bool = False) -> dict[str, Any]:
+        self.calls.append(("GET", cid))
+        return self.facts.get(cid, {})
 
     def facts_by(self, category: str | None = None, meta: dict[str, Any] | None = None,
                 state: str = "active", space: str | None = None,
@@ -192,6 +201,7 @@ def check_store(monkeypatch: pytest.MonkeyPatch) -> FakeCheckStore:
     monkeypatch.setattr(_praxis, "_request", st.request)
     monkeypatch.setattr(_praxis, "facts_by", st.facts_by)
     monkeypatch.setattr(_praxis, "patch_meta", st.patch_meta)
+    monkeypatch.setattr(_praxis, "get_fact", st.get_fact)
     return st
 
 

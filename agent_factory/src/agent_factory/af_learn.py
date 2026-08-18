@@ -105,6 +105,18 @@ def learn(complaint_text: str, project: str | None = None, *, source: str | None
     )
 
 
+def get_lesson(lesson_id: str) -> dict[str, Any]:
+    """R41 — the dedicated read counterpart to :func:`learn`/:func:`learn_bulk`: fetch a lesson's
+    full text plus its accumulated metadata by the id either of those two calls returned, without
+    the caller needing to construct its own ``get_fact``/``facts_by``/``context`` call.
+
+    A thin delegation to :func:`agent_factory.ingestion_api.get_lesson` — the same shape ``learn``/
+    ``learn_bulk`` use for the write side — so the shared ``FACTORY_LEARNINGS_SPACE`` scoping lives
+    exactly once. Read-only, so unlike :func:`learn` it needs no target-project resolution: a lesson
+    id already names its fact directly, in the one org-level space every lesson lives in."""
+    return ingestion_api.get_lesson(lesson_id)
+
+
 def learn_bulk(complaints: list[dict[str, Any]], project: str | None = None, *,
               identity: str | None = None, env: dict[str, str] | None = None,
               ) -> list[dict[str, Any]]:
@@ -123,6 +135,14 @@ def learn_bulk(complaints: list[dict[str, Any]], project: str | None = None, *,
     ``ticket_ids``, ``surfaces``). Returns one ingestion result dict per entry, in order."""
     target = resolve_target_project(project, env=env)
     results: list[dict[str, Any]] = []
+    # Within-batch dedup guard: two identical lesson-only entries in ONE batch must not each write a
+    # row. The corpus-exact dedup in ``ingest`` catches repeats across separate calls, but a fresh
+    # write may not be read-back-consistent yet within the same batch (the vector index lag that let
+    # the original repro produce 24 rows), so an in-memory key on the first entry's result is the
+    # robust guard. Only lesson-ONLY entries are collapsed here; an entry that also drafts a check
+    # runs through ``ingest`` in full so the check-authoring/proof/regress path (and its own
+    # canonical-content-hash dedup) is never short-circuited.
+    seen_lesson_only: dict[str, dict[str, Any]] = {}
     for entry in complaints:
         entry = dict(entry)
         text = entry.pop("complaint_text")
@@ -138,5 +158,17 @@ def learn_bulk(complaints: list[dict[str, Any]], project: str | None = None, *,
                 "explicit operator decision, and af-learn drafts its run bodies from prose, so a "
                 "waiver requested here would be granted by the drafter to itself"
             )
-        results.append(ingestion_api.ingest(text, target, channel="human", identity=identity, **entry))
+        drafts_check = entry.get("drafted_run") is not None or entry.get("drafted_rubric") is not None
+        dedup_key = None if drafts_check else ingestion_api._normalize_lesson_text(text)
+        if dedup_key and dedup_key in seen_lesson_only:
+            prior = seen_lesson_only[dedup_key]
+            # Same-batch twin: reuse the first entry's lesson id, write nothing, and mark it so the
+            # caller can tell a collapsed duplicate apart from a fresh landing.
+            results.append({**prior, "lesson_duplicate_of": prior.get("lesson_id"),
+                            "batch_deduped": True})
+            continue
+        result = ingestion_api.ingest(text, target, channel="human", identity=identity, **entry)
+        if dedup_key:
+            seen_lesson_only[dedup_key] = result
+        results.append(result)
     return results

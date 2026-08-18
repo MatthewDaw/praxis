@@ -191,11 +191,14 @@
 # Exit codes:
 #   0  clean drain, or a dependency stall the operator must unblock
 #   1  preflight failure (bad args, no worktree, model backend, universal lane)
-#   3  billing/credit failure
+#   3  billing/credit failure (API credits exhausted -- a 402; top up and relaunch)
 #   4  three consecutive fruitless rounds   5  disk floor   6  Praxis unreachable
 #   7  STRAGGLERS: the run left unmerged worker branches and/or leftover worktrees behind. Nothing is
 #      ever deleted to reach a green invariant, so the work named in the log is intact -- land it
 #      (`--resolve-orphans`) and relaunch.
+#   8  QUOTA BLOCKED: a headless session hit the Claude subscription's session/usage limit and was
+#      stranded on the interactive /rate-limit-options menu. Distinct from 3 (that is API credits):
+#      the remedy is to wait for the subscription window to reset, or switch the plan/backend.
 #   AF_MODEL_BACKEND       sonnet | deepseek (see v3)
 #   AF_PLUGIN_DIR / AF_REPO / AF_PYTHON / AF_STATE_DIR / AF_LOG   for an unusual layout
 set -euo pipefail
@@ -407,6 +410,16 @@ INTEGRATION_REF="$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null ||
 # managed to read — an empty set only narrows what the reap is willing to touch, never widens it.
 AF_KNOWN_IDS=" "
 AF_FINISHED_IDS=" "
+# WHEN THIS RUN STARTED. The dividing line between work THIS run is accountable for and residue an
+# EARLIER run left behind, used by reap_branches to tell a ticket this run broke from a ticket a
+# different run finished days ago. Captured once, before anything can move, and never reset.
+#
+# The gap it closes (farming_analysis, 2026-08-09): a forgotten loop left worker branches lying
+# around; a freshly relaunched loop's orphan sweep found them, saw that the tickets they named read
+# `finished` with commits not on the integration ref, and REGRESSED a ticket a different run had
+# genuinely completed days earlier — then halted the round over it. The branch was never this run's
+# to judge: its tip commit predates the run's own start.
+AF_START_EPOCH="${AF_START_EPOCH:-$(date +%s)}"
 # State lives beside the worktrees, not inside them: a log or a verdict sentinel written into a repo
 # gets swept into a wip commit and read back as ticket output.
 AF_STATE_DIR="${AF_STATE_DIR:-$(dirname "$WT")}"
@@ -602,11 +615,53 @@ verify_children_busy(){  # $1 = tmux session name
   return 1
 }
 
+# CONSTITUTIONAL INVARIANT: a headless verify/build session must NEVER silently block on an
+# interactive prompt. When the Claude Max subscription hits its session/usage limit the CLI does not
+# error out -- it strands on the interactive `/rate-limit-options` menu ("1. Stop and wait for limit
+# to reset / 2. Switch to usage credits / 3. Switch to Team plan"), which nothing headless can
+# answer. Undetected, the pane just sits until the full STALL_POLLS window burns and the round is
+# logged UNVERIFIED, and every following round walks its workers into the identical wall (observed
+# 2026-08-10: round #3 UNVERIFIED at the 15-min verify stall, rounds #4/#5 then finished ZERO,
+# detected only by the generic pane-unchanged watchdog). These strings are the menu's OWN text and
+# do not occur in ordinary tool output, so -- unlike a bare "rate limit" -- matching them is a
+# reliable, low-false-positive signal of quota exhaustion, DISTINCT from a generic quiet-pane stall
+# and from an API-credit 402 (which the billing grep owns). Reads the captured pane on stdin.
+rate_limited(){ grep -qiE "hit your (session|usage) limit|/rate-limit-options|stop and wait for limit to reset|switch to usage credits"; }
+
+# Exit code 8 -- quota/session-limit blocked. Deliberately NOT folded into 3 (API-credit/billing
+# 402): the operator action is different (wait for the subscription window to reset, or switch the
+# plan/backend -- not "top up credits"), and the straggler-exit reasoning applies verbatim: a
+# distinct terminal state gets a distinct code so a human or monitor can read it.
+AF_EXIT_QUOTA_BLOCKED=8
+
+# React the INSTANT the menu is seen -- never burn the stall window on it -- and HALT the whole run
+# rather than dispatch further rounds into the same wall. $1 = where we are, $2 = session to tear
+# down. Never returns.
+halt_quota_blocked(){
+  local where="$1" sess="${2:-}"
+  say "QUOTA BLOCKED at $where — the model backend hit its Claude subscription session/usage limit and the"
+  say "  headless session is stranded on the interactive /rate-limit-options menu, which nothing here can answer."
+  say "  backend was: ${BACKEND:-?} (${BACKEND_NOTE:-?})"
+  say "  This is NOT a generic stall and NOT an API-credit 402 — the subscription's session quota is exhausted."
+  say "  HALTING the whole run (exit $AF_EXIT_QUOTA_BLOCKED) instead of launching more rounds that will hit the"
+  say "  same wall. Remedy: wait for the quota to reset (the menu named the reset time), or switch the plan/backend, then relaunch."
+  [ -n "$sess" ] && tmux kill-session -t "$sess" 2>/dev/null || true
+  exit "$AF_EXIT_QUOTA_BLOCKED"
+}
+
 # Resolve the backend BEFORE any ticket work, and refuse to start a multi-hour run on a
 # half-configured one. Failing here costs seconds; failing three tickets in costs an hour
 # and a lease that has to be released by hand.
 resolve_backend || { say "FATAL: model backend preflight failed for '${BACKEND:-?}' — refusing to start"; exit 1; }
 say "backend=$BACKEND ($BACKEND_NOTE)"
+# PREFLIGHT NOTE for a subscription backend: a Claude Max/Pro subscription meters a session/usage
+# QUOTA, not API credits, so a long unattended run can exhaust it mid-flight and strand a headless
+# session on the interactive /rate-limit-options menu. The loop now DETECTS that and halts loudly
+# (exit $AF_EXIT_QUOTA_BLOCKED) rather than burning stall windows round after round -- but the run
+# still stops, so for a long unattended build prefer an API-credit backend or watch for the halt.
+case "$BACKEND_NOTE" in
+  *subscription*) say "NOTE: backend is a Claude subscription (session quota, not API credits) — a long unattended run can hit the session limit; the loop will halt with exit $AF_EXIT_QUOTA_BLOCKED if it does, but consider API credits for very long runs." ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Package caches MUST sit on the worktree's own filesystem.
@@ -759,6 +814,52 @@ print(sum(1 for x in f if ((x.get('meta') or {}).get('build_state')) in ('incomp
 PYEOF
 }
 
+plan_bless_state(){  # -> blessed | armed | never-blessed
+  $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
+import sys
+import _praxis
+p = sys.argv[1]
+# force=True: this driver's whole job is to notice when the plan's state CHANGES (an intake session
+# arming it mid-run, or a bless finally landing), so it must never read _praxis' short-lived cache.
+print(_praxis.plan_bless_state(p, f'prd-{p}', force=True))
+PYEOF
+}
+
+# THE BLESS GATE. A plan that is ARMED (an intake session holds the planning marker) or has NEVER
+# BEEN BLESSED is not a build target: its tickets are still being written, merged, split and
+# deleted underneath anyone reading them.
+#
+# The incident (farming_analysis, 2026-08-09): a forgotten af-ticket-loop was still running while a
+# human was mid-intake on the very plan it was pointed at. It claimed tickets out of an unblessed
+# plan, built them, and left branches that then poisoned the NEXT run's orphan sweep. Two halves fix
+# it: `_praxis.claim_requirement` refuses the claim outright so no caller can be launched around it,
+# and this — the loud, early half that stops the run before it burns a round finding out.
+#
+# Returns 0 when dispatch may proceed. Non-watch mode never returns non-zero: an unblessed plan is
+# not a condition that resolves by trying again, so it EXITS. Watch mode is exactly the case where
+# it does resolve by trying again (the human is finishing intake right now), so it waits.
+require_blessed_plan(){   # -> 0 = blessed, dispatch may proceed; 1 = caller must not dispatch yet
+  local st why
+  if ! st=$(praxis_q plan_bless_state); then outage "plan_bless_state"; return 1; fi
+  [ "$st" = blessed ] && return 0
+  case "$st" in
+    armed) why="an intake session holds the planning marker — the plan is ARMED for editing" ;;
+    *)     why="intake never finished — this plan has never been blessed" ;;
+  esac
+  say "preflight: FAILED — plan not blessed: prd-$PROJECT is '$st'; $why. Nothing may be claimed from it."
+  if [ "${AF_WATCH:-0}" = "1" ]; then
+    if [ "${watch_bless_at:-}" != "$st" ]; then
+      say "WAITING for the bless (AF_WATCH=1) — re-checking every ${AF_WATCH_POLL_S:-300}s; no ticket is claimed or dispatched until prd-$PROJECT is blessed. Stop with: touch $WATCH_STOP"
+      watch_bless_at="$st"
+    fi
+    [ -f "$WATCH_STOP" ] && { say "watch stop file present ($WATCH_STOP) — exiting"; exit 0; }
+    sleep "${AF_WATCH_POLL_S:-300}"
+    return 1
+  fi
+  say "Finish intake (af-intake-plan) so prd-$PROJECT is blessed, then relaunch — or run with AF_WATCH=1 so this loop waits for the bless instead of exiting."
+  exit 1
+}
+
 ready_batch(){  # -> space-separated ids of the dependency-ready frontier, capped at $2
   $PY - "$PROJECT" "${1:-15}" <<'PYEOF' 2>/dev/null
 import sys
@@ -768,12 +869,24 @@ p, cap = sys.argv[1], int(sys.argv[2])
 # "still unfinished" id set from what it is given, so a blocked or in_progress prerequisite that was
 # filtered out first would read as satisfied and a dependent ticket would be dispatched too early.
 facts = _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}')
+ref = (p, f'prd-{p}')
 out = []
 for t in ts.ready_tickets(facts):
     m = t.get('meta') or {}
     rid = m.get('requirement_id') or t.get('id')
-    if rid:
-        out.append(str(rid))
+    if not rid:
+        continue
+    # A ticket parked on a manual sign-off is not dispatchable work: its automated obligations are
+    # already met, so a worker can only rebuild what exists and fail the same human gate again —
+    # one wasted full build per round, forever, until the sign-off lands (observed: R62, rounds
+    # #6-#7 of 2026-08-10). The moment a human records the manual pass the strict gate goes green,
+    # parked_on_manual flips false, and the very next frontier poll dispatches it to finish.
+    try:
+        if ts.parked_on_manual(t, ref):
+            continue
+    except Exception:
+        pass   # unanswerable "parked?" -> dispatch as before; a wasted rebuild beats a stuck run
+    out.append(str(rid))
     if len(out) >= cap:
         break
 print(' '.join(out))
@@ -792,13 +905,40 @@ finding_guard(){  # args: round-no ids... -> regresses any ticket that answered 
   # Deliberately NOT "an open finding blocks completion": verification runs only AFTER a ticket
   # finishes and merges, so blocking the finish would mean it could never reach the verification
   # that clears it. Any genuine attempt satisfies this guard; only doing nothing does not.
-  $PY - "$PROJECT" "$1" "${AF_ROUND_BASE:-HEAD}" "${@:2}" <<'PYEOF' 2>/dev/null
-import subprocess, sys
+  #
+  # BUG E — but "regress on no change" cannot loop unbounded. Live incident: a finding's defect had
+  # already been fixed by an EARLIER round's commit, so the rebuild correctly produced zero commits,
+  # this guard regressed it for exactly that, and the pair ping-ponged every ~9 minutes forever. The
+  # finding carried check_id=None, so the check_id-keyed auto-suspend could never fire and nothing
+  # else could break the loop. So we bound it: a per-(ticket, finding) streak counter, and after
+  # AF_FINDING_REGRESS_MAX zero-commit regressions of the SAME still-open finding we STOP regressing
+  # and write a LOUD escalation line to $FINDING_ESCALATION for the caller to say — a human must look,
+  # because the finding is stale or was already resolved by a prior commit. An answering commit (or the
+  # finding closing) resets the streak, so a ticket that is genuinely churning is unaffected.
+  : > "$FINDING_ESCALATION" 2>/dev/null || true
+  $PY - "$PROJECT" "$1" "${AF_ROUND_BASE:-HEAD}" "$FINDING_STREAK" "$FINDING_ESCALATION" "$AF_FINDING_REGRESS_MAX" "${@:2}" <<'PYEOF' 2>/dev/null
+import hashlib, json, subprocess, sys
 import _praxis, _ticket_state as ts
 proj, rnd, base = sys.argv[1], sys.argv[2], sys.argv[3]
-want = set(sys.argv[4:])
+streak_path, esc_path, kmax = sys.argv[4], sys.argv[5], int(sys.argv[6] or 2)
+want = set(sys.argv[7:])
 kw = dict(space=proj, snapshot=f"prd-{proj}")
-n = 0
+
+# Per-(ticket, finding-reason) count of consecutive zero-commit regressions, persisted across rounds
+# AND across process restarts (the regress loop outlives any one loop process). A malformed/absent
+# file is an empty streak, never a crash — losing the count only costs one extra regress cycle.
+try:
+    streak = json.load(open(streak_path))
+    if not isinstance(streak, dict):
+        streak = {}
+except Exception:
+    streak = {}
+
+def _forget(rid):  # an answered/closed finding resets this ticket's streak(s)
+    for k in [k for k in streak if k.startswith(rid + "\x00")]:
+        streak.pop(k, None)
+
+escalations, n = [], 0
 for f in _praxis.facts_by(category="requirement", **kw) or []:
     m = f.get("meta") or {}
     rid = str(m.get("requirement_id") or f.get("id"))
@@ -810,15 +950,45 @@ for f in _praxis.facts_by(category="requirement", **kw) or []:
     except Exception:
         out = "unknown"          # cannot prove absence -> do not accuse
     if out:
+        _forget(rid)             # answered by a commit -> not a no-change close
         continue
     why = ts.finding_unanswered_without_change(m, 0)
-    if not why:
+    of = ts.open_finding(m)
+    if not why or of is None:
+        _forget(rid)             # no open finding stands -> nothing to regress, clear any stale streak
+        continue
+    # Identity of THIS finding is its recorded symptom text; a new/different finding starts a new
+    # streak. check_id is captured only to name it in the escalation (it is frequently None here, which
+    # is precisely the case the check_id-keyed suspend cannot catch).
+    reason = str(of.get("reason") or "").strip()
+    cid = of.get("check_id")
+    key = rid + "\x00" + hashlib.sha1(reason.encode("utf-8", "replace")).hexdigest()[:16]
+    prior = int(streak.get(key, 0))
+    if prior >= kmax:
+        # Already regressed kmax times for this exact finding with zero answering commits, and it is
+        # STILL open. Regressing again just re-dispatches the same ticket forever. Escalate, do not
+        # regress. Keep climbing the counter so the escalation re-fires each poll rather than going
+        # silent (a stuck finding a human has not yet cleared must stay visible).
+        streak[key] = prior + 1
+        escalations.append((rid, prior, cid, reason))
         continue
     _praxis.regress_requirements(proj, [f["id"]], {f["id"]: {
         "audit_disposition": f"ROUND #{rnd}: {why}",
     }}, **kw)
-    sys.stderr.write(f"finding-guard regressed {rid}\n")
+    streak[key] = prior + 1
+    sys.stderr.write(f"finding-guard regressed {rid} (streak {streak[key]}/{kmax})\n")
     n += 1
+
+try:
+    json.dump(streak, open(streak_path, "w"))
+except Exception as e:
+    sys.stderr.write(f"finding-guard: could not persist streak ({e})\n")
+try:
+    with open(esc_path, "w") as fh:
+        for rid, cnt, cid, reason in escalations:
+            fh.write(f"{rid}\t{cnt}\t{cid or ''}\t{reason[:300]}\n")
+except Exception as e:
+    sys.stderr.write(f"finding-guard: could not write escalations ({e})\n")
 print(n)
 PYEOF
 }
@@ -830,10 +1000,10 @@ stall_roots(){  # -> one line per blocking root: "<id> <state> blocks N: <depend
   # went to zero ready with nothing naming the one ticket holding it.
   $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
 import sys
-import _praxis
+import _praxis, _ticket_state as ts
 p = sys.argv[1]
 facts = _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}') or []
-state, deps = {}, {}
+state, deps, parked = {}, {}, set()
 for f in facts:
     m = f.get('meta') or {}
     rid = str(m.get('requirement_id') or f.get('id') or '')
@@ -841,6 +1011,11 @@ for f in facts:
         continue
     state[rid] = m.get('build_state')
     deps[rid] = [str(d) for d in (m.get('depends_on') or [])]
+    try:
+        if ts.parked_on_manual(f, (p, f'prd-{p}')):
+            parked.add(rid)
+    except Exception:
+        pass
 # A root is anything not finished that nothing unfinished precedes -- i.e. it is itself waiting on
 # nobody. Those are the only tickets a human can act on; everything else is downstream of them.
 unfinished = {r for r, s in state.items() if s != 'finished'}
@@ -855,22 +1030,38 @@ def blocked_behind(root):
     return sorted(seen)
 for r in sorted(roots):
     behind = blocked_behind(r)
-    print(f"{r} [{state.get(r)}] blocks {len(behind)}: {', '.join(behind[:8])}{' ...' if len(behind) > 8 else ''}")
+    tag = " PARKED awaiting manual sign-off" if r in parked else ""
+    print(f"{r} [{state.get(r)}]{tag} blocks {len(behind)}: {', '.join(behind[:8])}{' ...' if len(behind) > 8 else ''}")
 PYEOF
 }
 
 batch_open(){  # args: ids... -> how many are still incomplete|in_progress (blocked counts as done)
+  # PARKED-ON-MANUAL also counts as done. A ticket whose every automated obligation is met and
+  # which now waits only on a human sign-off cannot be closed by any amount of wall clock — the
+  # worker may never self-certify a manual requirement — so counting it open makes the round
+  # unfinishable by construction and the scaled deadline becomes the only exit. Observed
+  # 2026-08-10: R62 (manual-verify gate) held round #6 open to the full 100min timeout with its
+  # work done and merged. Parked tickets are reported once so the sign-off need is never silent.
   $PY - "$PROJECT" "$@" <<'PYEOF' 2>/dev/null
 import sys
-import _praxis
+import _praxis, _ticket_state as ts
 p, want = sys.argv[1], set(sys.argv[2:])
-n = 0
+ref = (p, f'prd-{p}')
+n, parked = 0, []
 for f in _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}'):
     m = f.get('meta') or {}
     ids = {str(f.get('id') or ''), str(m.get('requirement_id') or '')} - {''}
     if (ids & want) and m.get('build_state') in ('incomplete', 'in_progress'):
+        try:
+            if ts.parked_on_manual(f, ref):
+                parked.append(str(m.get('requirement_id') or f.get('id')))
+                continue
+        except Exception:
+            pass   # an unanswerable "parked?" stays open — never silently closes a round
         n += 1
 print(n)
+if parked:
+    sys.stderr.write("parked awaiting manual sign-off: " + " ".join(sorted(parked)) + "\n")
 PYEOF
 }
 
@@ -921,11 +1112,18 @@ regress_ticket(){  # args: requirement_id branch -> send a lying "finished" tick
   # seen and never will. The ticket is wrong, not the branch: it was marked done and its work did not
   # land. Returning it to incomplete is what makes the next round rebuild it -- the same mechanism the
   # post-merge verifier uses when integration rejects a ticket.
-  $PY - "$PROJECT" "$1" "$2" <<'PYEOF' 2>/dev/null
+  #
+  # Its stdout is TEE'd into the run log because the caller discards it: the "nothing matched" line
+  # below is the whole point of that branch, and a message only the caller never reads is no message.
+  $PY - "$PROJECT" "$1" "$2" <<'PYEOF' 2>/dev/null | tee -a "$LOG"
 import sys
 import _praxis
 p, rid, br = sys.argv[1], sys.argv[2], sys.argv[3]
 kw = dict(space=p, snapshot=f'prd-{p}')
+# NOT FINDING THE TICKET IS SUCCESS, and says so. A branch can name a requirement id that no active
+# fact carries any more -- a ticket deleted at intake, renamed, or belonging to another project
+# whose ids overlap. There is nothing to regress, so the regress SUCCEEDED at everything it could do;
+# reporting failure instead turned "that ticket is gone" into a failed round with no explanation.
 for f in _praxis.facts_by(category='requirement', **kw):
     m = f.get('meta') or {}
     if str(m.get('requirement_id') or f.get('id')) != rid:
@@ -939,6 +1137,8 @@ for f in _praxis.facts_by(category='requirement', **kw):
                              f'integrated tree.'}}, **kw)
     print('regressed', rid)
     break
+else:
+    print(f'no active fact for {rid} — skipping regress')
 PYEOF
 }
 
@@ -971,12 +1171,30 @@ PYEOF
 
 commit_wip(){
   cd "$WT"
+  scrub_test_results
   if [ -n "$(git status --porcelain)" ]; then
     git add -A
     git -c user.name="af-build" -c user.email="af-build@praxis.local" commit -q -m \
       "wip: preserve in-flight output before per-batch session restart (af-ticket-loop)"
     say "committed WIP: $(git log --oneline -1)"
   fi
+}
+
+# BUG B-3 — the loop must NEVER commit Playwright test-results/ artifacts (trace.zip,
+# error-context.md). commit_wip's `git add -A` sweeps EVERYTHING loose in $WT, and a worker that ran
+# Playwright leaves a test-results/ tree behind; those artifacts have been committed into project
+# repos. Belt and braces, run against the current worktree ($PWD, set by commit_wip's `cd "$WT"`):
+# exclude the path LOCALLY so `git add -A` never stages it, and drop any copy an earlier run already
+# tracked. .git/info/exclude, not .gitignore, keeps this out of the project's committed history — it
+# is the loop's own hygiene, not a policy edit the project's tree should carry.
+scrub_test_results(){
+  local xf=".git/info/exclude"
+  if [ -d .git ] && [ -d .git/info ]; then
+    grep -qxF 'test-results/' "$xf" 2>/dev/null || echo 'test-results/' >> "$xf" 2>/dev/null || true
+  fi
+  # Un-track any test-results already committed by an earlier run (leaves the files on disk; the
+  # exclude above then keeps them unstaged). --ignore-unmatch so "none tracked" is not an error.
+  git rm -r --cached --ignore-unmatch --quiet -- 'test-results' >/dev/null 2>&1 || true
 }
 
 # Merge the round's work into the integration branch. THE DRIVER OWNS THIS, not the session.
@@ -1192,6 +1410,9 @@ resolve_conflicts(){   # $1 = round number
     [ -f "$RESOLVED" ] && break
     if ! tmux has-session -t "$rsession" 2>/dev/null; then say "conflict resolver: session gone before writing a result"; break; fi
     pane=$(tmux capture-pane -p -t "$rsession" 2>/dev/null || true)
+    # The conflict resolver is a headless session too: halt on the subscription rate-limit menu
+    # rather than let it sit out the stall window (same invariant as the verify/build waits).
+    if echo "$pane" | rate_limited; then halt_quota_blocked "conflict resolver round #$rnd" "$rsession"; fi
     rhash=$(printf '%s' "$pane" | hash_text)
     if [ "$rhash" = "$rlast" ]; then
       rstall=$((rstall+1))
@@ -1614,6 +1835,29 @@ af_is_factory_named(){   # $1 = branch name
   return 1
 }
 
+# FOREIGN ERA: was this branch's newest commit written BEFORE this run started?
+#
+# A branch whose tip predates AF_START_EPOCH cannot be output of this run — no worker this run
+# spawned could have authored it. It is residue from a previous (possibly forgotten) loop, and the
+# ticket it names was finished by that other run, on its own terms, quite possibly days ago. This
+# run has no standing to call that ticket a liar.
+#
+# Committer date, not author date: a rebase rewrites the committer date, and what is being asked is
+# "did this ref get written during my run", not "when was the change originally conceived".
+# A branch with no readable tip (deleted mid-sweep, corrupt ref) answers NO — the conservative
+# answer, since it leaves the existing regress path in charge rather than silently archiving.
+af_branch_is_foreign_era(){   # $1 = branch name
+  local ct
+  ct=$(git log -1 --format=%ct "$1" 2>/dev/null) || return 1
+  [ -n "$ct" ] || return 1
+  [ "$ct" -lt "${AF_START_EPOCH:-0}" ]
+}
+
+# A branch name flattened into something `git tag` accepts and a human can still read.
+af_sanitize_branch(){   # $1 = branch name
+  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-'
+}
+
 # Ticket ids named by a branch's commits. Filtered to ids we own when Praxis has told us what we own;
 # unfiltered when it has not, because "we could not ask" must never read as "no ids, skip it". The
 # hardcoded `(REM|SSW|HIP|...)` prefix alternation this replaces was a third allowlist, and a project
@@ -1631,7 +1875,7 @@ af_branch_ids(){   # $1 = git range
 reap_branches(){
   cd "$WT" || return 0
   unset AF_WT_BRANCH_CACHE
-  local br live uniq ids i sup reaped=0 failed=0 survivors="" reason status head_br
+  local br live uniq ids i sup reaped=0 failed=0 survivors="" reason status head_br tag
   # Compare against HEAD, never against the INTEGRATION_REF captured at startup. On a detached
   # checkout -- which is what both build worktrees on this box are -- INTEGRATION_REF is a fixed sha
   # that does NOT move as integrate_round merges into HEAD, so every branch this round just landed
@@ -1688,6 +1932,16 @@ reap_branches(){
       fi
       case "${AF_FINISHED_IDS:- }" in
         *" $i "*)
+          # FOREIGN-ERA FIRST. Everything below this point accuses the ticket of lying, and that
+          # accusation is only this run's to make about work this run did. A branch whose tip
+          # predates AF_START_EPOCH belongs to an earlier run; regressing its ticket destroys a
+          # completion somebody else earned and — because the case below also fails the round —
+          # halts a healthy run over ancient residue.
+          if [ "$status" != foreign ] && af_branch_is_foreign_era "$br"; then status=foreign; fi
+          if [ "$status" = foreign ]; then
+            reason="${reason:+$reason; }$i finished before this run started"
+            continue
+          fi
           status=failure
           say "ROUND FAILED — ticket $i reads finished in Praxis, but its work is NOT on ${head_br:-HEAD} and no replacement for it landed. The commits exist only on branch $br:"
           git log --format='  %h %s' "HEAD..$br" 2>/dev/null | while read -r l; do say "$l"; done
@@ -1698,7 +1952,7 @@ reap_branches(){
           fi
           ;;
         *)
-          [ "$status" = failure ] || status=survivor
+          case "$status" in failure|foreign) ;; *) status=survivor ;; esac
           reason="${reason:+$reason; }$i is not finished — work still in flight"
           ;;
       esac
@@ -1715,6 +1969,20 @@ reap_branches(){
           # that are not upstream in any form. The sha keeps them recoverable until gc.
           say "reaped $br (tip $(git rev-parse --short "$br" 2>/dev/null)) — a superseded attempt: $reason"
           git branch -D "$br" >/dev/null 2>&1 && reaped=$((reaped+1)) || say "WARNING: could not delete $br"
+        fi
+        ;;
+      foreign)
+        # Not this run's residue and not this run's verdict. The commits are preserved as a TAG
+        # before the branch goes, so nothing is lost and nothing is regressed; the branch itself is
+        # removed so the next sweep does not rediscover it and ask the same question forever.
+        # Deliberately does NOT increment `failed`: an earlier run's leftovers must not fail a round.
+        tag="archive/foreign-$(af_sanitize_branch "$br")"
+        if git tag -f "$tag" "$br" >/dev/null 2>&1 && git branch -D "$br" >/dev/null 2>&1; then
+          reaped=$((reaped+1))
+          say "foreign-era branch $br ($reason; tip predates this run's start) archived as tag $tag, not regressed"
+        else
+          survivors="${survivors:+$survivors }$br"
+          say "WARNING: could not archive foreign-era branch $br — leaving it alone; it is NOT this run's to regress"
         fi
         ;;
       failure)  failed=$((failed+1)); survivors="${survivors:+$survivors }$br" ;;
@@ -1791,6 +2059,13 @@ af_stragglers(){   # prints one line per straggler; EMPTY output means clean
 # into any of them would either make it look like a clean drain (the exact lie being fixed) or
 # misattribute it to a cause that is not what happened. 7 means one thing: THE RUN LEFT WORK BEHIND.
 AF_EXIT_STRAGGLERS=7
+# BUG D — a dependency stall whose ROOT is a `blocked` ticket or one parked on manual sign-off cannot
+# be cleared by any amount of watching: it needs a human. After AF_HUMAN_STALL_MAX_POLLS such polls
+# under AF_WATCH the loop STOPS watching and exits with this distinct code, so an operator (or an
+# outer supervisor) can tell "stuck, needs me" from a clean drain (exit 0). A transient stall — root
+# still in_progress/incomplete, i.e. normal progress — keeps watching quietly as before.
+AF_EXIT_HUMAN_STALL=9
+AF_HUMAN_STALL_MAX_POLLS="${AF_HUMAN_STALL_MAX_POLLS:-3}"
 
 # $1 = where we are, $2 = 1 to make it fatal (terminal paths), 0 to log-and-continue (round tails,
 # where an unmerged branch for a ticket still in flight is legitimate and the next round lands it).
@@ -1848,7 +2123,39 @@ af_cleanup_on_exit(){
     AF_QUERY_BACKOFF_S=0 reap_branches || true
   fi
   af_surface_flags
+  af_end_of_run_summary
   return "$rc"
+}
+
+# BUG B-5 — the loop NEVER pushes, so a clean drain and a halt look identical to an operator unless
+# they are told the run left work unshipped. On EVERY exit (drain, halt, outage, kill) emit one line
+# stating how many commits the integration branch is AHEAD of origin (unpushed) and how many rounds
+# this run went UNVERIFIED, so the operator knows they must verify the merged tree and push. Rides the
+# EXIT trap for the same reason af_surface_flags does: it must fire on the halted and killed exits too,
+# not just the happy path. Once-only (INT/TERM then EXIT both fire the handler).
+AF_ROUNDS_UNVERIFIED=0
+AF_SUMMARY_SAID=0
+af_end_of_run_summary(){
+  [ "$AF_SUMMARY_SAID" = "1" ] && return 0
+  AF_SUMMARY_SAID=1
+  local ahead="?" up=""
+  if [ -n "${WT:-}" ] && [ -e "${WT}/.git" ]; then
+    # Prefer the integration branch's own upstream; fall back to origin/<branch>, then origin/main.
+    up=$(git -C "$WT" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || echo "")
+    if [ -z "$up" ]; then
+      local br; br=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
+      if [ -n "$br" ] && git -C "$WT" rev-parse --verify -q "origin/$br" >/dev/null 2>&1; then up="origin/$br"
+      elif git -C "$WT" rev-parse --verify -q origin/main >/dev/null 2>&1; then up="origin/main"
+      fi
+    fi
+    if [ -n "$up" ]; then
+      ahead=$(git -C "$WT" rev-list --count "$up..HEAD" 2>/dev/null || echo "?")
+    else
+      # No origin/upstream to compare against: report the whole reachable history as unpushed.
+      ahead=$(git -C "$WT" rev-list --count HEAD 2>/dev/null || echo "?")
+    fi
+  fi
+  say "END-OF-RUN — this loop NEVER pushes. $WT is $ahead commit(s) AHEAD of origin (unpushed)${up:+ vs $up}, and ${AF_ROUNDS_UNVERIFIED} round(s) this run went UNVERIFIED. You must verify the merged tree and push before this work is real."
 }
 
 # R24 — flags are PUSH, not pull: a suspension, a parking, an undraftable check, a check-defeat must
@@ -1987,6 +2294,22 @@ RESOLVED="$AF_STATE_DIR/af-round-resolved-$PROJECT.json"
 # shell string, where a stray backtick or $ in that prose would be expanded by bash before tmux ever
 # saw it.
 FINDINGS="$AF_STATE_DIR/af-round-findings-$PROJECT.json"
+# BUG E — bound the zero-commit finding-regress streak. finding_guard persists a per-(ticket,finding)
+# regress count in FINDING_STREAK; once a ticket has been regressed AF_FINDING_REGRESS_MAX times for
+# the SAME still-open finding without a single answering commit, it STOPS regressing and appends a
+# LOUD escalation to FINDING_ESCALATION instead. This breaks the infinite regress observed live: a
+# finding whose defect an earlier round's commit already fixed (so there is no new commit to "answer"
+# it) and whose check_id is None (so the check_id-keyed auto-suspend can never fire) was re-dispatched
+# every ~9 minutes forever. Persistent across process restarts on purpose — the regress loop outlives
+# any single loop process; keys are per (ticket, finding-reason) so a genuinely new finding starts fresh.
+FINDING_STREAK="$AF_STATE_DIR/af-finding-regress-streak-$PROJECT.json"
+FINDING_ESCALATION="$AF_STATE_DIR/af-finding-regress-escalation-$PROJECT.tsv"
+AF_FINDING_REGRESS_MAX="${AF_FINDING_REGRESS_MAX:-2}"
+# The regression pass writes one line here for every ticket whose "it produced no commit" regression
+# was SUPPRESSED because the ticket is parked on a human sign-off (see the MANUAL SIGN-OFF block in
+# the regress heredoc). A file, not stderr, because this is the one thing in that pass a human must
+# actually see: `say`ing it puts the pending sign-off on the console, not just in the log tail.
+PARKED_REPORT="$AF_STATE_DIR/af-round-parked-$PROJECT.txt"
 
 # Told to the workers so they hit the right services. A project with neither -- an iOS app, say --
 # gets no clause at all rather than the literal "Postgres localhost:none", which reads as a real
@@ -1999,7 +2322,7 @@ verify_round(){   # $1 = round number, $2.. = the round's ticket ids
   local rnd="$1"; shift
   local ids_csv; ids_csv=$(printf '%s,' "$@"); ids_csv=${ids_csv%,}
   local vsession="$SESSION-verify"
-  rm -f "$VERDICT"
+  rm -f "$VERDICT" "$PARKED_REPORT"
 
   # R17 — hand the verifier the findings it must RE-EVALUATE, not just the ticket ids. Without this
   # the resolution pass below has nothing but the check's exit code to go on, and "the check passed"
@@ -2037,7 +2360,7 @@ PYEOF
 
   # No parentheses in this prompt, deliberately — if the REPL is not actually up the text lands on a
   # bash prompt, where a stray paren is a syntax error that kills the pane.
-  tmux send-keys -t "$vsession" "Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv. Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. THIS IS THE ONLY PLACE THOSE GATES RUN: the workers were told to skip them so that N of them would not run N concurrent suites, so you are the authoritative repo-wide gate for this round and nothing else has proven the merged tree compiles or passes. If any gate is red, identify which ticket's change caused it and regress that ticket per step 3; if you genuinely cannot attribute it, regress the whole batch rather than passing a red tree. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. If this round merged only ONE ticket, the cross-ticket lens is trivially satisfied and you may skip lens A, but step 1's gates and lenses B and C still run in full — they are the only repo-wide check this ticket gets. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: NAME every ticket whose work does NOT survive integration. Do NOT write that regression to Praxis yourself and do not try to fix the ticket — the loop that dispatched you performs the regression from your verdict, using a write path it already owns. Your job is the judgement, not the write. This split is deliberate: when verifiers were asked to do their own Praxis write, nine consecutive rounds reported zero regressions while their own notes named the failing tickets, so every one of those tickets stayed marked finished on work that had failed integration. Step 3b: read the file $FINDINGS. It is a JSON array of the OPEN findings these tickets still owe an answer to, each with id, check_id, symptom and evidence. If the array is empty, skip this step entirely. Otherwise, for EACH entry do TWO INDEPENDENT things and never let either one decide the other. First, run the check named by check_id against the merged tree and record whether it passes; if check_id is empty there is no check to run and check_passed is false. Second, and SEPARATELY, re-evaluate the recorded symptom itself against the merged tree — read the code, run the specific reproduction the evidence describes — and record whether that symptom is STILL PRESENT. A check that exits zero is NOT evidence the symptom is gone: a check can be defeated by a change that satisfies the command while leaving the defect exactly where it was, and the case where your two answers DISAGREE is the single most valuable thing you can report here, so report both honestly rather than making them agree. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, notes which is one short string, regressed which is an array of OBJECTS — one per ticket that must be regressed, each with four string fields: id the ticket id, reason what actually failed stated concretely, evidence the exact failing test name, gate, file and error text or the precise merge symptom, and fix what the rebuild must do differently — plus an OPTIONAL fifth string field check, a single command that FAILS on this broken merged tree and would PASS once the fix lands. Supply check only when you actually ran that command and watched it fail; a guess is worse than omitting it. It must be one plain command with no shell operators, no pipes, no redirection and no absolute paths, starting with one of pytest, python, python3, npm, npx, make, ruff, mypy, eslint, playwright or grep — anything else is rejected and the check is dropped, though your regression still lands. And findings_recheck which is an array of objects carrying step 3b's answers, each with id the ticket id, check_id copied from $FINDINGS, check_passed true or false, and symptom_present true or false; write an empty array if step 3b was skipped. An empty array asserts every ticket survived integration. Write these for the NEXT WORKER, not for a log: it will claim the ticket cold with no memory of this round, so a bare id or a vague "tests failed" wastes an entire rebuild while it re-derives what you already know. Name the failing test, quote the error, and say what the fix has to address. Good: {"id":"REM-10","reason":"its new default-prefix-attribution controller is unregistered in RESTRICTED_RECORD_MANIFEST and the permission_pages seed","evidence":"chat14-restricted-record-manifest.test.ts and chat16-chart-access-record.test.ts both fail on the merged tree with 'scope not registered'","fix":"register the new controller/scope in RESTRICTED_RECORD_MANIFEST and add its permission_pages seed row, then re-run both suites against the merged tree"}. Bad: {"id":"REM-10","reason":"failed","evidence":"","fix":"fix it"}. Write that file LAST, after everything else is done, and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. If you cannot verify at all, that is itself a verdict: write the JSON with verdict fail and notes saying why, rather than asking what to do."
+  tmux send-keys -t "$vsession" "Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv. Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. THIS IS THE ONLY PLACE THOSE GATES RUN: the workers were told to skip them so that N of them would not run N concurrent suites, so you are the authoritative repo-wide gate for this round and nothing else has proven the merged tree compiles or passes. If any gate is red, identify which ticket's change caused it and regress that ticket per step 3; if you genuinely cannot attribute it, regress the whole batch rather than passing a red tree. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. If this round merged only ONE ticket, the cross-ticket lens is trivially satisfied and you may skip lens A, but step 1's gates and lenses B and C still run in full — they are the only repo-wide check this ticket gets. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: NAME every ticket whose work does NOT survive integration. A ticket whose meta.verify reads manual is the one class where absence of a commit is NOT evidence of anything: its acceptance is a human sign-off over something rendered or observed, so it produces no commit BY DESIGN and its work being missing from src, tests and docs is the expected shape, not a defect. Judge such a ticket only on code it actually landed, and never name it for having produced no merged commit — that regression is suppressed by the loop and reported as parked awaiting sign-off, so naming it wastes the round. Do NOT write that regression to Praxis yourself and do not try to fix the ticket — the loop that dispatched you performs the regression from your verdict, using a write path it already owns. Your job is the judgement, not the write. This split is deliberate: when verifiers were asked to do their own Praxis write, nine consecutive rounds reported zero regressions while their own notes named the failing tickets, so every one of those tickets stayed marked finished on work that had failed integration. Step 3b: read the file $FINDINGS. It is a JSON array of the OPEN findings these tickets still owe an answer to, each with id, check_id, symptom and evidence. If the array is empty, skip this step entirely. Otherwise, for EACH entry do TWO INDEPENDENT things and never let either one decide the other. First, run the check named by check_id against the merged tree and record whether it passes; if check_id is empty there is no check to run and check_passed is false. Second, and SEPARATELY, re-evaluate the recorded symptom itself against the merged tree — read the code, run the specific reproduction the evidence describes — and record whether that symptom is STILL PRESENT. A check that exits zero is NOT evidence the symptom is gone: a check can be defeated by a change that satisfies the command while leaving the defect exactly where it was, and the case where your two answers DISAGREE is the single most valuable thing you can report here, so report both honestly rather than making them agree. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, notes which is one short string, regressed which is an array of OBJECTS — one per ticket that must be regressed, each with four string fields: id the ticket id, reason what actually failed stated concretely, evidence the exact failing test name, gate, file and error text or the precise merge symptom, and fix what the rebuild must do differently — plus an OPTIONAL fifth string field check, a single command that FAILS on this broken merged tree and would PASS once the fix lands. Supply check only when you actually ran that command and watched it fail; a guess is worse than omitting it. It must be one plain command with no shell operators, no pipes, no redirection and no absolute paths, starting with one of pytest, python, python3, npm, npx, make, ruff, mypy, eslint, playwright or grep — anything else is rejected and the check is dropped, though your regression still lands. And findings_recheck which is an array of objects carrying step 3b's answers, each with id the ticket id, check_id copied from $FINDINGS, check_passed true or false, and symptom_present true or false; write an empty array if step 3b was skipped. An empty array asserts every ticket survived integration. Write these for the NEXT WORKER, not for a log: it will claim the ticket cold with no memory of this round, so a bare id or a vague "tests failed" wastes an entire rebuild while it re-derives what you already know. Name the failing test, quote the error, and say what the fix has to address. Good: {"id":"REM-10","reason":"its new default-prefix-attribution controller is unregistered in RESTRICTED_RECORD_MANIFEST and the permission_pages seed","evidence":"chat14-restricted-record-manifest.test.ts and chat16-chart-access-record.test.ts both fail on the merged tree with 'scope not registered'","fix":"register the new controller/scope in RESTRICTED_RECORD_MANIFEST and add its permission_pages seed row, then re-run both suites against the merged tree"}. Bad: {"id":"REM-10","reason":"failed","evidence":"","fix":"fix it"}. Write that file LAST, after everything else is done, and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. If you cannot verify at all, that is itself a verdict: write the JSON with verdict fail and notes saying why, rather than asking what to do."
   sleep 3; tmux send-keys -t "$vsession" Enter
   say "round #$rnd: post-merge verification dispatched over $ids_csv"
 
@@ -2052,9 +2375,13 @@ PYEOF
     echo "$pane" | grep -qE "." && vlastpane="$pane"
     # Same rule as the build wait: a blank frame is a redraw, not a death.
     if ! tmux has-session -t "$vsession" 2>/dev/null; then say "verify session gone before writing a verdict"; break; fi
-    if echo "$pane" | grep -qiE "insufficient balance|402|quota exceeded|payment required|credit balance is too low"; then
+    if echo "$pane" | grep -qiE "insufficient balance|quota exceeded|payment required|credit balance is too low|insufficient_quota|billing_(error|hard_limit)|billing (error|failure)|(http[ /]?|status[ :]?)402|402 payment required"; then
       say "BILLING FAILURE during verification — halting"; tmux kill-session -t "$vsession" 2>/dev/null || true; exit 3
     fi
+    # Quota/session-limit on a subscription backend: caught BEFORE the stall accounting below so we
+    # react the instant the interactive menu appears instead of wasting the full 15-min verify stall
+    # window on a prompt no headless session can answer (see rate_limited/halt_quota_blocked).
+    if echo "$pane" | rate_limited; then halt_quota_blocked "verify round #$rnd" "$vsession"; fi
     vhash=$(printf '%s' "$pane" | hash_text)
     if [ "$vhash" = "$vlast" ]; then
       vstall=$((vstall+1))
@@ -2084,6 +2411,7 @@ PYEOF
     # Absence of a verdict is NOT a pass. The round's tickets stay finished — this stage regresses
     # nothing on its own — but say so loudly, because an unverified merge is exactly the state the
     # stage exists to eliminate.
+    AF_ROUNDS_UNVERIFIED=$((AF_ROUNDS_UNVERIFIED + 1))   # BUG B-5 — feeds the end-of-run summary
     say "WARNING: round #$rnd produced NO verification verdict — the merged tree is UNVERIFIED. Treat its green claim as unproven."
     if [ -n "$vlastpane" ]; then
       say "--- last verify pane before it died (why the verdict is missing) ---"
@@ -2111,7 +2439,7 @@ PYEOF
   # earned; the round's green claim does not get to stand.
   local summary
   summary=$(python3 - "$VERDICT" <<'PYEOF' 2>/dev/null || echo "verdict=UNREADABLE"
-import json, sys
+import json, re, sys
 try:
     d = json.load(open(sys.argv[1]))
 except Exception as e:
@@ -2131,6 +2459,24 @@ elif gates is False and verdict == "pass":
 if verdict == "fail" and not reg:
     incoherent.append("verdict=fail names no ticket to regress, so the failure would rebuild nothing")
 
+# THE UNDER-REPORT CASE: the verdict's authoritative `regressed` field is EMPTY (so the loop will
+# regress nothing and the round reads green) while the verifier's OWN notes assert a ticket should be
+# regressed. Observed live: a verdict with regressed=[] whose notes read
+# "Should-regress REM-29,REM-28,REM-27" -- the judgement named the failures and the field that
+# carries them to the write path silently dropped them, so a round passed on work that had failed
+# integration. This is the same failure class the verifier/loop split was built to stop (nine rounds
+# reported zero regressions while their notes named the failing tickets), one level up: a finding is
+# not answered by a NOTE about it any more than by a zero-commit close. Fires ONLY when `regressed`
+# is empty -- a non-empty field already carries its tickets to the loop's regression pass -- so the
+# consequence is exactly the rest of this gate's: the round is downgraded to UNVERIFIED (never a
+# pass), tickets keep whatever state they earned, and nothing is auto-regressed on prose alone.
+_UNDERREPORT_RE = re.compile(
+    r"should[\s-]*(?:be\s+)?regress|must\s+be\s+regress|need(?:s|ed)?\s+(?:to\s+be\s+)?regress"
+    r"|regress(?:ed|es|ing)?\s+[A-Za-z][A-Za-z0-9]*-\d+", re.I)
+if not reg and _UNDERREPORT_RE.search(str(d.get("notes") or "")):
+    incoherent.append("regressed is empty but the notes assert a ticket should be regressed "
+                      "(%r) -- a finding is not answered by a note about it" % (str(d.get("notes"))[:160],))
+
 prefix = ""
 if incoherent:
     prefix = "INCOHERENT (treated as UNVERIFIED, not a pass) -- " + "; ".join(incoherent) + " :: "
@@ -2143,6 +2489,7 @@ PYEOF
   say "round #$rnd verification: $summary"
   case "$summary" in
     INCOHERENT*|verdict=UNREADABLE*|verdict=UNPARSEABLE*)
+      AF_ROUNDS_UNVERIFIED=$((AF_ROUNDS_UNVERIFIED + 1))   # BUG B-5 — feeds the end-of-run summary
       say "WARNING: round #$rnd's verdict does not hold together, so the merged tree is UNVERIFIED. Its green claim is unproven; any ticket it named is still regressed below, but its silence about the others proves nothing."
       ;;
   esac
@@ -2175,13 +2522,14 @@ PYEOF
   # command threw away — which is how "the merger does not ingest" could have run for a full build
   # without leaving a trace. Redirecting to $LOG keeps stdout clean AND keeps the narration.
   local regressed_n
-  regressed_n=$($PY - "$PROJECT" "$rnd" "$VERDICT" "$WT" <<'PYEOF' 2>>"$LOG" || echo 0
+  regressed_n=$($PY - "$PROJECT" "$rnd" "$VERDICT" "$WT" "$PARKED_REPORT" <<'PYEOF' 2>>"$LOG" || echo 0
 import json, subprocess, sys
 import _praxis, _ticket_state as ts
 from agent_factory import failure_taxonomy, ingestion_api, widening
 
 proj, rnd, path = sys.argv[1], sys.argv[2], sys.argv[3]
 wt = sys.argv[4] if len(sys.argv) > 4 else "."
+parked_path = sys.argv[5] if len(sys.argv) > 5 else ""
 head_sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
                           cwd=wt).stdout.strip() or None
 kw = dict(space=proj, snapshot=f"prd-{proj}")
@@ -2212,12 +2560,69 @@ for f in _praxis.facts_by(category="requirement", **kw) or []:
     m = f.get("meta") or {}
     by_rid[str(m.get("requirement_id") or f.get("id"))] = f
 
+def _named_by_a_commit(rid):
+    """True iff SOME commit in the merged history names this ticket by the trailing-(ID) convention
+    integration merges on (see af_owned_ids). Whole history, not this round's base, on purpose: the
+    question here is "does any code attributable to this ticket exist at all", and answering it over
+    the whole history is the conservative direction — more matches means the regression proceeds.
+
+    An UNPROVABLE answer (no git, not a repo, timeout) returns True for the same reason: absence of
+    work may only ever be inferred from positive evidence, never from a failed probe."""
+    try:
+        r = subprocess.run(["git", "log", "--format=%s", "--fixed-strings", f"--grep=({rid})"],
+                           capture_output=True, text=True, timeout=30, cwd=wt)
+    except Exception:
+        return True
+    return r.returncode != 0 or bool((r.stdout or "").strip())
+
 n = 0
+parked = []     # tickets whose "no commit" regression was suppressed — reported, never silent
 ingested = []   # one entry per ticket actually ingested+regressed; feeds the widening pass below
 for rid, detail in entries:
     f = by_rid.get(rid)
     if not f:
         sys.stderr.write(f"regress: no ticket {rid} in prd-{proj}\n"); continue
+
+    # ------------------------------------------------ MANUAL SIGN-OFF IS NOT A MISSING COMMIT ----
+    # A verify="manual" ticket produces no commit BY DESIGN — its completion is a human sign-off,
+    # not code — so "it never produced a merged commit" is a property of the ticket class, not a
+    # defect. Regressing it for that re-dispatches a ticket no worker can ever advance: dispatched ->
+    # cannot produce commits -> regressed -> re-dispatched, forever. Observed on mvpvu-foundation
+    # round #1: `verdict=fail gates_green=True regressed=1` naming R21 — meta.verify="manual", its
+    # acceptance a human re-labelling pass over rendered images — with "R21's worktree branch never
+    # produced a merged commit in this round ... whatever R21 was supposed to build is not present
+    # anywhere in src/, tests/, docs/". All three lenses "confirmed" it independently, because all
+    # three were applying a commits-must-exist invariant that does not hold for this ticket class.
+    #
+    # NARROW ON PURPOSE — this is not "manual tickets are exempt from verification". BOTH must hold:
+    #   * the ticket is PARKED on a manual sign-off (ts.parked_on_manual: every automated obligation
+    #     is covered and green and only the human/external-sourced pass is missing), and
+    #   * NO commit anywhere names it, so there is no diff of its to fault and any integration
+    #     failure attributed to it is a misattribution by construction.
+    # A manual ticket that DID land code is regressed on its merits like any other; a ticket with
+    # unmet AUTOMATED obligations is not parked, so its zero-commit regression still lands.
+    #
+    # Suppressing the regression is NOT passing the ticket, which is the opposite error: completion
+    # still runs through all_validations_passed, whose manual clause no worker-sourced pass can ever
+    # satisfy. The ticket stays exactly where it was — parked — and says so through $PARKED_REPORT.
+    # It clears the moment a human records the sign-off (the same exit the frontier already uses).
+    if not _named_by_a_commit(rid):
+        try:
+            is_parked = ts.parked_on_manual(f, (proj, f"prd-{proj}"))
+        except Exception as exc:   # unanswerable "parked?" -> regress as reported, never swallow it
+            is_parked = False
+            sys.stderr.write(f"parked-on-manual check failed for {rid} ({exc!r}) — "
+                             f"regressing as the verifier reported\n")
+        if is_parked:
+            note = (f"{rid}: PARKED awaiting manual sign-off — NOT regressed. Round #{rnd}'s "
+                    f"verification faulted it for producing no merged commit, but a verify=manual "
+                    f"ticket produces none by design: every automated obligation of {rid} is "
+                    f"covered and green and only the human sign-off is outstanding. It cannot "
+                    f"self-certify and is not finished — record the manual pass to release it.")
+            parked.append(note)
+            sys.stderr.write(note + "\n")
+            continue
+
     reason   = str(detail.get("reason") or detail.get("why") or d.get("notes") or "").strip()
     evidence = str(detail.get("evidence") or detail.get("failing") or "").strip()
     fix      = str(detail.get("fix") or detail.get("required") or "").strip()
@@ -2354,12 +2759,29 @@ try:
 except Exception as exc:  # noqa: BLE001 - see the block comment: never lose a landed regression
     sys.stderr.write(f"widening/promotion pass failed after {n} regression(s) landed: {exc!r}\n")
 
+# Hand the suppressed-regression report to the driver so it can `say` it. Failing to write it is
+# narrated and never fatal: a lost report costs visibility, dying here would cost the regressions.
+if parked and parked_path:
+    try:
+        with open(parked_path, "w") as fh:
+            fh.write("\n".join(parked) + "\n")
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"could not write the parked report ({exc!r}); it is in this log above\n")
+
 print(n)
 PYEOF
 )
   case "$regressed_n" in ''|*[!0-9]*) regressed_n=0 ;; esac
   if [ "$regressed_n" -gt 0 ]; then
     say "round #$rnd: $regressed_n ticket(s) regressed with a failure report attached — the next round rebuilds them"
+  fi
+  # A suppressed manual-sign-off regression is REPORTED, not silent: the ticket is not finished and
+  # not rebuildable, and the only thing that can move it is the human this line is addressed to.
+  if [ -s "$PARKED_REPORT" ]; then
+    while IFS= read -r pline; do
+      [ -n "$pline" ] || continue
+      say "round #$rnd: $pline"
+    done < "$PARKED_REPORT"
   fi
 
   # THE OTHER HALF OF THE FINDING CONTRACT. open_finding()'s docstring has always said a finding
@@ -2504,6 +2926,15 @@ PYEOF
   if [ "$fg" -gt 0 ]; then
     say "round #$rnd: $fg ticket(s) closed an OPEN verification finding with ZERO commits — regressed. A finding is not answered by changing nothing."
   fi
+  # BUG E — any ticket that hit the regress cap is NOT re-dispatched; it is escalated ONCE per poll,
+  # loudly, because the loop can no longer make progress on it and a human must intervene.
+  if [ -s "$FINDING_ESCALATION" ]; then
+    say "!! ESCALATION — the loop has STOPPED regressing ticket(s) it has already regressed ${AF_FINDING_REGRESS_MAX}x for the SAME open verification finding with ZERO answering commits, and the finding is STILL open. This is NOT a build failure to retry: the finding is stale, or was already resolved by an earlier commit that named a sibling ticket (its check_id is often None, so nothing else can break the loop). A HUMAN must inspect and dismiss the finding or fix it by hand:"
+    while IFS=$'\t' read -r erid ecnt ecid ereason; do
+      [ -n "$erid" ] || continue
+      say "     $erid regressed ${ecnt}x, check_id=${ecid:-<none>} :: ${ereason}"
+    done < "$FINDING_ESCALATION"
+  fi
 
   rm -f "$VERDICT" "$FINDINGS"
   return 0
@@ -2529,9 +2960,18 @@ if [ "$AF_MODE" = "resolve-orphans" ]; then
   exit 0
 fi
 
+# BLESS PREFLIGHT — before a single ticket is looked at, let alone claimed. Non-watch mode exits
+# here; watch mode loops inside require_blessed_plan until the plan is blessed (or the stop file
+# appears), so a loop launched a minute too early simply waits for intake to finish.
+until require_blessed_plan; do :; done
+
 n=0
 round=0
 while :; do
+  # RE-CHECKED EVERY ROUND, not just at startup: a plan can be re-armed mid-run (an amendment, a
+  # correction), and from that moment its tickets are moving again. A preflight-only check would
+  # have passed at 03:00 and gone on dispatching against a plan opened for editing at 04:00.
+  require_blessed_plan || continue
   if ! left=$(praxis_q claimable); then outage "claimable"; continue; fi
   left=${left:-999}
   say "$PROJECT claimable=$left"
@@ -2594,13 +3034,37 @@ while :; do
     # ticket. Restarting sessions cannot fix that, so halt loudly instead of spinning.
     say "DEPENDENCY STALL — $left claimable but nothing ready; every remaining ticket waits on an unfinished or blocked prerequisite."
     # Name the root(s). Best-effort: a failed query must not turn a stall into an outage.
+    roots=""; needs_human=0
     if roots=$(stall_roots 2>/dev/null) && [ -n "$roots" ]; then
       say "STALL ROOT(S) — act on these; everything else is downstream:"
       printf '%s\n' "$roots" | while IFS= read -r line; do [ -n "$line" ] && say "    $line"; done
+      # BUG D — distinguish a TRANSIENT stall (root still in_progress/incomplete → normal progress,
+      # keep watching quietly) from one whose ROOT is `blocked` or parked on manual sign-off, which no
+      # amount of polling can clear: only a human can. stall_roots tags the latter with `[blocked]` or
+      # `PARKED awaiting manual sign-off`. Live incident: a `T23 [blocked] blocks 4` stall re-logged
+      # the identical line every 5 min for ~10 HOURS under AF_WATCH with no escalation.
+      case "$roots" in
+        *"[blocked]"*|*"PARKED awaiting manual sign-off"*) needs_human=1 ;;
+      esac
     else
       say "  (could not resolve the stall root — walk depends_on by hand)"
     fi
+    if [ "$needs_human" = "1" ]; then
+      say "!! ESCALATION — the stall ROOT is a BLOCKED or manual-sign-off ticket; watching cannot clear it, a HUMAN must unblock or sign off the root above. This is NOT waiting on normal progress."
+    fi
     if [ "${AF_WATCH:-0}" = "1" ]; then
+      # BUG D — a human-needed stall is not watched forever. Count consecutive human-needed polls and,
+      # once they reach AF_HUMAN_STALL_MAX_POLLS, exit LOUDLY with a distinct code instead of logging
+      # the same line for hours. A transient root resets the counter — real progress is still coming.
+      if [ "$needs_human" = "1" ]; then
+        human_stall_polls=$((${human_stall_polls:-0} + 1))
+        if [ "$human_stall_polls" -ge "$AF_HUMAN_STALL_MAX_POLLS" ]; then
+          say "HALTING (exit $AF_EXIT_HUMAN_STALL) — the dependency stall has needed a human for $human_stall_polls consecutive poll(s) and nothing here can clear it. Unblock/sign off the root ticket above, then relaunch."
+          exit "$AF_EXIT_HUMAN_STALL"
+        fi
+      else
+        human_stall_polls=0
+      fi
       # Watching a stall is safe HERE and was not safe from outside. An external supervisor could only
       # see exit 0 — identical to a clean drain — so it relaunched the whole loop: fresh session, fresh
       # preflight, fresh model-backend probe, 340 times over 8 hours. In-process the cost is a sleep
@@ -2619,6 +3083,7 @@ while :; do
     break
   fi
   watch_stall_at=""
+  human_stall_polls=0   # BUG D — the stall cleared; a later blocked-root stall starts its count fresh
   outages=0   # a computed frontier proves Praxis is back; the streak only counts CONSECUTIVE failures
   set -- $batch
   size=$#
@@ -2631,6 +3096,22 @@ while :; do
   before=${before:-0}
 
   round=$((round+1)); n=$((n+size))
+
+  # The commit this round starts FROM. finding_guard asks "did this ticket answer its finding with
+  # any commit?" via `git log $AF_ROUND_BASE..HEAD --grep=<id>`, and that variable was READ (line
+  # ~919, `${AF_ROUND_BASE:-HEAD}`) but never ASSIGNED anywhere in this script — so the range was
+  # always HEAD..HEAD, which is empty by construction. Every finished ticket carrying an open
+  # finding therefore looked like it had produced nothing and was regressed for it, round after
+  # round, until the AF_FINDING_REGRESS_MAX streak cap escalated. That is a second zero-commit
+  # false-positive engine on top of BUG E's, and it fires even when the ticket's commits are sitting
+  # right there in the round's own merge.
+  #
+  # Captured BEFORE dispatch so the range covers exactly this round's work. Falls back to HEAD (the
+  # previous, always-empty behaviour) only if rev-parse fails, so a broken git can never make the
+  # guard MORE aggressive than it was.
+  AF_ROUND_BASE="$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo HEAD)"
+  export AF_ROUND_BASE
+
   say "round #$round: dispatching $size ticket(s) in parallel — $ids_csv"
 
   tmux kill-session -t "$SESSION" 2>/dev/null || true
@@ -2707,6 +3188,16 @@ while :; do
   # its worker still writing. Killing a round does not just lose time -- the
   # worktree purge discards everything the worker had not committed.
   deadline=$(( ${AF_ROUND_DEADLINE_S:-3600} + (size - 1) * 1200 ))
+  # GRACE: the deadline is the backstop that ends a wedged round, but fired blind it also
+  # guillotines a healthy endgame — R38 (2026-08-10) was 4 graded passes in with 2 stylistic
+  # defects left and a worker actively writing when the 100min cap killed round #6; the rebuild
+  # cost a full fresh-context round. So at expiry, ask the OS the same question the stall guard
+  # asks (verify_children_busy): if real work is provably happening, extend in AF_ROUND_GRACE_S
+  # steps up to AF_ROUND_GRACE_MAX_S total. A wedged round shows no busy children and dies on
+  # schedule; only demonstrable work buys time, and the budget keeps "busy" from meaning forever.
+  grace_step=${AF_ROUND_GRACE_S:-900}
+  grace_max=${AF_ROUND_GRACE_MAX_S:-2700}
+  grace_spent=0
   # Pane stillness is a WEAKER hang signal on a parallel round than it was on a solo ticket: the
   # driving session spends the round awaiting its Workflow rather than emitting tool output, and a
   # quiet stretch between two workers landing is normal. Widen the window when more than one ticket
@@ -2735,7 +3226,7 @@ while :; do
     # Same reasoning: an unanswerable "are they done yet?" means keep waiting, never end the round.
     open=$(praxis_q batch_open "$@") || open=1
     open=${open:-1}
-    if [ "$open" = "0" ]; then say "round #$round complete — all $size ticket(s) finished or blocked"; break; fi
+    if [ "$open" = "0" ]; then say "round #$round complete — all $size ticket(s) finished, blocked, or parked on manual sign-off"; break; fi
     pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
     # Retain the last live frame. Three rounds died as a bare "session gone" with the pane already
     # destroyed, so the reason was unrecoverable each time and the same round was retried blind.
@@ -2770,11 +3261,19 @@ while :; do
     # ran out at 11:08 and the loop churned 46 stall/restart cycles over ~6 HOURS
     # without completing anything, because the auth check above does not match a 402
     # and a 402'd pane is otherwise indistinguishable from a frozen one. Halt loudly.
-    if echo "$pane" | grep -qiE "insufficient balance|402|quota exceeded|billing|payment required|credit balance is too low"; then
+    if echo "$pane" | grep -qiE "insufficient balance|quota exceeded|payment required|credit balance is too low|insufficient_quota|billing_(error|hard_limit)|billing (error|failure)|(http[ /]?|status[ :]?)402|402 payment required"; then
       say "BILLING FAILURE (out of credits/quota) — halting the whole loop; top up and relaunch"
       commit_wip
       tmux kill-session -t "$SESSION" 2>/dev/null || true
       exit 3
+    fi
+    # Subscription session/usage limit: the CLI strands on the interactive /rate-limit-options menu,
+    # which no headless worker can answer. Caught BEFORE the stall accounting below so it does not
+    # burn a fresh STALL_POLLS window per ticket forever (the exact cascade that finished ZERO
+    # tickets in rounds #4/#5 on 2026-08-10). Commit WIP first, then halt the whole run.
+    if echo "$pane" | rate_limited; then
+      commit_wip
+      halt_quota_blocked "build round #$round" "$SESSION"
     fi
     pane_hash=$(printf '%s' "$pane" | hash_text)
     if [ "$pane_hash" = "$last_hash" ]; then
@@ -2804,8 +3303,12 @@ while :; do
       same_count=0
       last_hash="$pane_hash"
     fi
+    if [ "$waited" -ge "$deadline" ] && [ "$grace_spent" -lt "$grace_max" ] && verify_children_busy "$SESSION"; then
+      deadline=$((deadline + grace_step)); grace_spent=$((grace_spent + grace_step))
+      say "round #$round deadline reached but a child process is live — extending by $((grace_step/60))min (grace used $((grace_spent/60))/$((grace_max/60))min)"
+    fi
   done
-  [ "$waited" -ge "$deadline" ] && say "round #$round timed out after $((deadline/60))min with $(batch_open "$@") ticket(s) still open"
+  [ "$waited" -ge "$deadline" ] && say "round #$round timed out after $((waited/60))min with $(batch_open "$@") ticket(s) still open"
 
   commit_wip
   # Kill ONLY this session's own claude, never every claude on the box. The old blanket
@@ -2881,6 +3384,7 @@ while :; do
   # on a blip walks a healthy run toward the 3-strike halt, and scoring it productive hides a real
   # failure. Say so instead, and leave the streak exactly where it was.
   if ! after=$(praxis_q finished_count); then
+    AF_ROUNDS_UNVERIFIED=$((AF_ROUNDS_UNVERIFIED + 1))   # BUG B-5 — feeds the end-of-run summary
     say "WARNING: Praxis unreachable after round #$round — cannot tell what landed, so this round counts as neither productive nor fruitless and its merged tree goes UNVERIFIED. Treat any green claim from it as unproven."
     after=""
   fi

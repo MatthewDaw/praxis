@@ -218,6 +218,14 @@ Split only when both halves are **independently shippable and independently veri
 cannot decide, merge — a ticket that is slightly too big costs one longer sitting, while two that
 should have been one costs a wedged dependency edge and two rounds of overhead.
 
+**But a ticket must still fit ONE build round.** The loop runs `af-build` in batched ~80-minute
+rounds — one fresh session per batch — so a ticket that cannot go red-to-green inside a single
+round does not just run long: it TIMES OUT mid-round and strands partial work on a branch,
+recoverable only by orphan-branch landing (a real incident). This is the hard upper bound on the
+"merge by default" bias above: keep merging until a ticket would no longer finish in one round,
+then stop. When a coherent unit is genuinely too large for a single round, **split it — along its
+own independently-verifiable seams — rather than mint an oversized ticket that will strand.**
+
 **Pass A — behavioral, from the doc.** Atomize the rules into binary conditions, then **group them
 back up** into the ticket-sized units above. A good brainstorm doc is already near-structured (epics
 + acceptance + data model + API), so this is *atomize → mint binary conditions → group → dedupe
@@ -255,6 +263,7 @@ staging store as well as the source of truth. The conceptual shape:
     "references": ["daily rep", "ratings", "habit checklist"],
     "depends_on": [],                 // prerequisite requirement_ids ("R8") — NEVER fact ids/cids — FINISHED first (build-order DAG; see Step 5)
     "scope": "mvp",                   // mvp | post-mvp — the TIER tag, not the project
+    "device": "cpu",                  // cpu | gpu — the concurrency lane; defaults to cpu
     "citations": ["Brainstorm §3", "Epic D", "wireframe-player.html#s-today"],
     "tags": ["completion", "today-screen"]   // identity tags; check applicability queries these later
   }
@@ -284,6 +293,11 @@ Field rules:
   real **build** dependency only — **NEVER a pure architecture-decision ticket** (B2's HARD RULE); the
   plan gate rejects any edge whose target is tagged `architecture-decision` (`R-NO-IMPL-DEPENDS-ON-DECISION`).
 - **`meta.scope`** — `"mvp"` or `"post-mvp"` (the tier tag only; NOT the project identity).
+- **`meta.device`** — the concurrency lane this ticket counts against in af-build's admission caps:
+  `"cpu"` or `"gpu"` (the closed set). Default to `"cpu"` when in doubt; an absent value is treated
+  as `"cpu"` too, so an already-blessed plan authored before this field existed keeps passing. The
+  plan gate rejects only a value **outside** the closed set, naming the offending ticket
+  (`R-DEVICE-CLOSED-SET`).
 - **`meta.tags`** — identity tags (concepts / surfaces / semantics). A ticket carries identity, **NEVER
   an authored list of its checks**; *which checks apply* is a fresh query (tag ∪ surface ∪ semantic)
   resolved at build time. Tag honestly so that query resolves correctly. A **pure architecture-decision

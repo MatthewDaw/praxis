@@ -141,6 +141,29 @@ def test_learn_bulk_inserts_every_requested_check_without_per_check_oversight(
     assert all(c["space"] == "bulk-proj" for c in check_calls)
 
 
+def test_learn_bulk_is_idempotent_within_and_across_batches(check_store: FakeCheckStore) -> None:
+    """Regression (the '24 rows from 12 identical entries' repro): identical lesson-only entries
+    must yield ONE row each — deduped WITHIN a single batch (in-memory, robust to read-after-write
+    lag) and ACROSS repeated batches (exact content-hash against the corpus). R2 is preserved: every
+    result still carries a lesson id (the existing one when collapsed), never a dropped complaint."""
+    distinct = [{"complaint_text": f"identical complaint number {i}"} for i in range(3)]
+    batch = distinct + [dict(e) for e in distinct]  # 6 entries, 3 distinct + 3 in-batch repeats
+
+    def lesson_rows() -> list[dict[str, Any]]:
+        return [f for f in check_store.facts.values() if f["category"] == "lesson"]
+
+    first = af_learn.learn_bulk([dict(e) for e in batch], project="dedup-proj")
+    assert len(lesson_rows()) == 3, "within-batch dedup must collapse the 3 in-batch repeats"
+    assert sum(1 for r in first if r.get("batch_deduped")) == 3
+
+    second = af_learn.learn_bulk([dict(e) for e in batch], project="dedup-proj")
+    assert len(lesson_rows()) == 3, "a repeated batch must not write any new lesson rows"
+
+    assert all(r["lesson_id"] is not None for r in first + second), "R2: a lesson id is always returned"
+    # The second batch is entirely duplicates — every entry points back at an existing lesson.
+    assert all(r.get("lesson_duplicate_of") for r in second)
+
+
 def test_learn_bulk_refuses_and_writes_nothing_when_project_unresolvable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -191,6 +214,80 @@ def test_unproven_gating_human_check_is_a_no_op_on_a_failing_execution(
 
 
 # --------------------------------------------------------------------------- E9: never writes cross-org
+
+# --------------------------------------------------------------------------- R41: get_lesson() read
+
+def test_get_lesson_returns_the_same_text_and_metadata_a_prior_learn_call_wrote(
+    check_store: FakeCheckStore,
+) -> None:
+    result = af_learn.learn("the deploy script silently swallows a failed migration",
+                            project="proj-x", source="matt via af-learn")
+    lesson_id = result["lesson_id"]
+
+    read_back = af_learn.get_lesson(lesson_id)
+
+    assert read_back["found"] is True
+    assert read_back["lesson_id"] == lesson_id
+    assert read_back["text"] == "the deploy script silently swallows a failed migration"
+    assert read_back["meta"]["channel"] == "human"
+    assert read_back["source"] == "matt via af-learn"
+
+
+def test_get_lesson_reads_accumulated_metadata_added_after_the_original_write(
+    check_store: FakeCheckStore,
+) -> None:
+    """R42's provenance accumulation is one example of metadata a lesson gains AFTER its original
+    ``learn()`` write; ``get_lesson`` must reflect the current state, not a stale write-time copy."""
+    result = af_learn.learn("a second complaint about the same deploy script", project="proj-x")
+    lesson_id = result["lesson_id"]
+    ingestion_api._append_lesson_provenance(lesson_id, source="a later report", channel="human")
+
+    read_back = af_learn.get_lesson(lesson_id)
+
+    assert read_back["meta"]["provenance"][-1]["source"] == "a later report"
+
+
+def test_get_lesson_returns_a_clear_not_found_result_for_an_unknown_id(
+    check_store: FakeCheckStore,
+) -> None:
+    result = af_learn.get_lesson("no-such-id")
+    assert result == {"found": False, "lesson_id": "no-such-id", "reason": "not_found"}
+
+
+def test_get_lesson_returns_a_clear_wrong_category_result_for_a_non_lesson_id(
+    check_store: FakeCheckStore,
+) -> None:
+    check_store.seed_check("plan-abc123", {"channel": "human"})
+    result = af_learn.get_lesson("fact-plan-abc123")
+    assert result["found"] is False
+    assert result["reason"] == "wrong_category"
+    assert result["category"] == "check"
+
+
+def test_get_lesson_is_scoped_to_the_shared_factory_learnings_space(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same org/project scoping as ``get_fact`` — reading a lesson by id never needs a caller-named
+    project because every lesson lives in the one shared ``FACTORY_LEARNINGS_SPACE``."""
+    authed(monkeypatch)
+    seen: dict[str, Any] = {}
+
+    def fake_get_fact(cid: str, *, space: str | None = None, snapshot: str | None = None,
+                      not_found_ok: bool = False) -> dict[str, Any]:
+        seen.update(cid=cid, space=space, snapshot=snapshot, not_found_ok=not_found_ok)
+        return {"id": cid, "category": "lesson", "content": "x", "source": None, "meta": {}}
+
+    monkeypatch.setattr(_praxis, "get_fact", fake_get_fact)
+
+    af_learn.get_lesson("some-lesson-id")
+
+    assert seen == {
+        "cid": "some-lesson-id",
+        "space": _praxis.FACTORY_LEARNINGS_SPACE,
+        "snapshot": _praxis.FACTORY_LEARNINGS_SNAPSHOT,
+        "not_found_ok": True,
+    }
+
 
 def test_learn_never_writes_to_the_shared_learnings_space_before_project_resolves(
     monkeypatch: pytest.MonkeyPatch,

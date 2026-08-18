@@ -91,6 +91,39 @@ def test_read_lessons_empty_query_enumerates_by_category(monkeypatch):
     }
 
 
+# --------------------------------------------------------------------------- dedup (exact, not semantic top-k)
+
+def test_classify_and_dedup_catches_exact_twin_crowded_out_of_semantic_topk(monkeypatch):
+    """Regression: the exact-text duplicate must be found by an EXACT content-hash lookup against
+    the whole corpus, NOT by the semantic top-k recall that could push an exact twin out of the
+    ranking whenever enough nearer neighbours exist (the bug that let bulk ingests duplicate rows)."""
+    text = "always run the migration before the smoke test"
+    content_hash = ingestion_api._hash_text(text.strip().lower())
+    existing = {"id": "lesson-existing", "category": "lesson",
+                "meta": {"content_hash": content_hash}, "text": text}
+
+    def fake_facts_by(category=None, meta=None, state="active", space=None, snapshot=None):
+        if meta and meta.get("content_hash") == content_hash:
+            return [existing]
+        return [existing]  # exhaustive enumeration also carries it
+
+    # A semantic lane that DELIBERATELY does not surface the exact twin — the old top-k path.
+    monkeypatch.setattr(_praxis, "context", lambda *a, **kw: [{"id": "n", "text": "something else"}])
+    monkeypatch.setattr(_praxis, "facts_by", fake_facts_by)
+
+    result = ingestion_api.classify_and_dedup(text)
+    assert result["duplicate_of"] == "lesson-existing"
+    assert result["content_hash"] == content_hash
+
+
+def test_classify_and_dedup_reports_no_duplicate_for_a_novel_lesson(monkeypatch):
+    monkeypatch.setattr(_praxis, "context", lambda *a, **kw: [])
+    monkeypatch.setattr(_praxis, "facts_by", lambda *a, **kw: [])
+    result = ingestion_api.classify_and_dedup("a brand new never-before-seen complaint")
+    assert result["duplicate_of"] is None
+    assert result["content_hash"]
+
+
 # --------------------------------------------------------------------------- CLI
 
 def test_cli_ingest_calls_write_lesson(monkeypatch):
@@ -211,3 +244,50 @@ def test_no_reader_loads_lessons_from_a_local_file_as_canonical():
         if _FILE_LESSON_READER_RE.search(text):
             offenders.append(str(path.relative_to(REPO_ROOT)))
     assert offenders == [], f"file-backed lesson reader found (lessons must be cloud-canonical): {offenders}"
+
+
+# --------------------------------------------------------------------------- R43: lesson source
+# collision guard (a lesson's free-text ``source`` must never be shaped exactly like the
+# ``prd-<project>`` grouping-tag convention ``Fact.source`` carries for requirement facts).
+
+def _mock_insight_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub out the real HTTP write so these tests exercise only the guard, never the network."""
+    monkeypatch.setattr(_praxis, "_request", lambda *a, **kw: {"id": "fake-id", "action": "added"})
+    monkeypatch.setattr(_praxis, "ensure_space", lambda *a, **kw: a[0])
+
+
+def test_write_lesson_rejects_a_prd_project_shaped_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``source="prd-someproject"`` — the exact grouping-tag shape ``Fact.source`` carries for
+    requirement facts (R43's acceptance) — is rejected on the first-write path."""
+    _mock_insight_write(monkeypatch)
+    with pytest.raises(ingestion_api.LessonSourceCollision):
+        ingestion_api.write_lesson("some lesson text", source="prd-someproject")
+
+
+def test_ingest_first_write_rejects_a_prd_project_shaped_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``ingest()``'s first-write branch (no dedup match) routes through :func:`write_lesson`, so
+    the guard fires there too, before any lesson is persisted."""
+    _mock_insight_write(monkeypatch)
+    monkeypatch.setattr(ingestion_api, "_require_authenticated", lambda identity=None: "tester")
+    monkeypatch.setattr(ingestion_api, "classify_and_dedup",
+                        lambda text, class_hint=None: {"duplicate_of": None, "class": "generic",
+                                                        "content_hash": "h"})
+    with pytest.raises(ingestion_api.LessonSourceCollision):
+        ingestion_api.ingest("a fresh complaint never seen before", "some-project",
+                             source="prd-some-project")
+
+
+@pytest.mark.parametrize("benign_source", [
+    None,
+    "unit-test",
+    "af-learn",
+    "notes about prd conventions",   # mentions "prd" but isn't the exact grouping-tag shape
+    "see docs/prd-notes.md for context",
+])
+def test_write_lesson_does_not_falsely_flag_a_merely_prd_mentioning_source(
+    monkeypatch: pytest.MonkeyPatch, benign_source: str | None,
+) -> None:
+    """A source that merely MENTIONS "prd" in free text, without matching the exact
+    ``prd-<project>`` shape, must not be flagged (R43's acceptance)."""
+    _mock_insight_write(monkeypatch)
+    ingestion_api.write_lesson("some lesson text", source=benign_source)  # must not raise
