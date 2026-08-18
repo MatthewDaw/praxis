@@ -82,6 +82,7 @@ from knowledge.ml_registry.write_path import (
     register_idea,
     register_model,
     register_trial,
+    supersede_trial,
     resolve_idea_citation,
 )
 
@@ -469,6 +470,20 @@ def main(argv: list[str] | None = None) -> int:
     register_trial_p.add_argument(
         "--ledger", required=True, help="path to the autoresearch loop's results.tsv"
     )
+    supersede_p = sub.add_parser(
+        "supersede-trial",
+        help="mark an IN-FLIGHT trial superseded so its idea can accept a new one -- the "
+             "deliberate escape hatch for the one-trial-in-flight rule, for a run that died "
+             "without resolving. Refuses to touch a trial that already has a verdict.",
+    )
+    supersede_p.add_argument("--space-file", required=True)
+    supersede_p.add_argument("--trial-id", required=True)
+    supersede_p.add_argument(
+        "--reason", required=True,
+        help="why this trial is being abandoned. REQUIRED: a trial dropped without a stated "
+             "reason is indistinguishable from one quietly discarded for losing, and the "
+             "dead-ideas register depends on telling those apart")
+
     register_trial_p.add_argument(
         "--json", action="store_true",
         help="emit {\"trial_id\": ...} instead of prose. The trial id is MINTED here and it is "
@@ -798,6 +813,12 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"OK: registered trial {fact_id}")
             return 0
+        if args.command == "supersede-trial":
+            trial_id = _load_mutate_save(
+                args.space_file,
+                lambda space: supersede_trial(space, args.trial_id, args.reason),
+            )
+            print(f"OK: superseded trial {trial_id}")
         if args.command == "reset-ratchet":
             cleared = _load_mutate_save(
                 args.space_file,
