@@ -69,7 +69,7 @@ The preconditions it enforces, and why each one is fatal rather than cosmetic:
    baseline measured under different settings — one seed among four-seed runs, say — makes that
    gate meaningless. `bootstrap-campaign` flags it; the fix is to drop the odd row, not to average
    it in.
-5. **A dispatch command** the project owns, which runs ONE arm and appends ONE row.
+6. **A dispatch command** the project owns, which runs ONE arm and appends ONE row.
 
 If the box is remote, `af-ml-model-remote` is the mechanism (ssh + tmux, detached). It adds no ML
 logic and its box is CPU-only.
