@@ -72,3 +72,56 @@ def test_progress_reports_closed_and_empty_stages() -> None:
     prog = {p["stage"]: p for p in stage_progress(_items(), {"R1", "R2"}, STAGES)}
     assert prog["representation"]["closed"] and prog["representation"]["answered"] == 2
     assert not prog["architecture"]["closed"]
+
+
+def test_a_dependent_of_a_non_adopted_idea_is_unreachable() -> None:
+    """depends_on gates on ADOPTION, so a parked dependency kills its dependents permanently."""
+    from knowledge.ml_registry.staging import unreachable
+
+    items = [{"id": "R01", "axis": "representation"},
+             {"id": "R03", "axis": "representation"},
+             {"id": "R07", "axis": "representation", "depends_on": ["R01", "R03"]}]
+    # R01 answered but NOT adopted -> R07 can never run
+    assert unreachable(items, {"R01", "R03"}, {"R03"}) == {"R07"}
+
+
+def test_an_adopted_dependency_leaves_the_dependent_alive() -> None:
+    from knowledge.ml_registry.staging import unreachable
+
+    items = [{"id": "R01", "axis": "representation"},
+             {"id": "R07", "axis": "representation", "depends_on": ["R01"]}]
+    assert unreachable(items, {"R01"}, {"R01"}) == set()
+
+
+def test_an_unanswered_dependency_is_not_yet_dead() -> None:
+    """Unreachable means IMPOSSIBLE, not merely 'not ready'."""
+    from knowledge.ml_registry.staging import unreachable
+
+    items = [{"id": "R01", "axis": "representation"},
+             {"id": "R07", "axis": "representation", "depends_on": ["R01"]}]
+    assert unreachable(items, set(), set()) == set()
+
+
+def test_chains_collapse_in_one_pass() -> None:
+    """A fixpoint, so a chain does not take one campaign invocation per link to die off."""
+    from knowledge.ml_registry.staging import unreachable
+
+    items = [{"id": "A", "axis": "x"},
+             {"id": "B", "axis": "x", "depends_on": ["A"]},
+             {"id": "C", "axis": "x", "depends_on": ["B"]},
+             {"id": "D", "axis": "x", "depends_on": ["C"]}]
+    assert unreachable(items, {"A"}, set()) == {"B", "C", "D"}
+
+
+def test_unreachable_items_let_their_stage_close() -> None:
+    """The whole point: without this the stage stays open with an empty queue forever, and the
+    campaign exits 0 looking finished."""
+    from knowledge.ml_registry.staging import open_stage, unreachable
+
+    items = [{"id": "R01", "axis": "representation"},
+             {"id": "R07", "axis": "representation", "depends_on": ["R01"]},
+             {"id": "M01", "axis": "architecture"}]
+    answered = {"R01"}
+    assert open_stage(items, answered, STAGES) == "representation"        # wedged
+    answered |= unreachable(items, answered, set())
+    assert open_stage(items, answered, STAGES) == "architecture"          # freed

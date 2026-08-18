@@ -134,6 +134,25 @@ arm that crashed is not an arm that lost.
 idea WINNING — a composition arm is only meaningful if the thing it composes with was adopted.
 `stage` gates on a whole question being ANSWERED, however it was answered.
 
+**A stage will not close if anything in it is merely FILTERED rather than answered**, and the
+failure is silent: `open_stage` keeps returning that stage, the eligibility filter yields an empty
+queue, and the loop exits reporting nothing to do — indistinguishable from a finished campaign.
+On the first campaign to use staging, a 27-item backlog would have stopped after four items and
+looked successful. Three separate things caused it there, and every campaign has the same three:
+
+```python
+answered |= excluded          # in the local backlog but never registered (--skip-ids)
+answered |= out_of_scope      # filtered by the loop (needs different data, too expensive, ...)
+answered |= unreachable(items, answered, adopted)   # dependency judged but not adopted
+```
+
+`unreachable()` is supplied because `depends_on` gates on ADOPTION: the moment a dependency is
+answered as anything else, every dependent is dead, and dead items hold a stage open forever. It
+runs to a fixpoint so a chain collapses in one pass rather than one link per invocation.
+
+**Report all three rather than filtering silently.** An item that never ran for a structural
+reason is a real omission, and a reader will otherwise mistake it for one that was tried and lost.
+
 **The cost is real and permanent:** a late stage never influences an early one. If an augmentation
 would only pay off under an architecture that lost, that interaction is invisible. Staging trades
 interaction coverage for not spending the budget on questions whose answer is about to be
