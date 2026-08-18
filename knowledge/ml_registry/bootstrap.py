@@ -216,7 +216,19 @@ def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, met
     meta = build_model_meta(
         metric=metric, direction=direction, baseline_commit=best["commit"],
         noise_floor=floor["noise_floor"],
-        baseline_throughput=round(st.median(float(b["throughput"]) for b in baselines), 4),
+        # The SLOWEST healthy baseline, not the median. The VOID gate means "this run was
+        # abnormally slow, so do not trust its number", which only works if the line sits BELOW
+        # the healthy range. A median puts half of all healthy runs beneath it with just
+        # THROUGHPUT_FLOOR_FRACTION (5%) of headroom left.
+        #
+        # Measured on the first campaign to run this path: baselines at 3.38/3.47/3.49/3.49 --
+        # a 3.2% spread against a 5% gate -- registered a median of 3.48, and the first real arm
+        # voided at 3.30, missing the line by 0.2%. The slowest baseline was itself only 2.2%
+        # above its own void line. Healthy arms were going to void indefinitely.
+        #
+        # Taking the min keeps the gate's purpose intact: it still fires on anything more than 5%
+        # below the slowest run the baseline configuration actually produced.
+        baseline_throughput=round(min(float(b["throughput"]) for b in baselines), 4),
         diff_size_limit=diff_size_limit, notes=notes)
     return BootstrapReport(ready=True, preconditions=checks, model_meta=meta,
                            ideas=build_ideas(backlog, model_id=model_id, skip_ids=skip_ids),

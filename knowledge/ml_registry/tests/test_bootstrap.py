@@ -175,3 +175,30 @@ def test_meta_json_accepts_a_path_so_bootstrap_output_can_be_registered(tmp_path
         assert "existing file" in str(exc)
     else:
         raise AssertionError("expected a ValueError naming the missing file")
+
+
+def test_baseline_throughput_is_the_slowest_baseline_not_the_median(tmp_path) -> None:
+    """The VOID gate must sit BELOW the healthy range, or healthy arms void indefinitely.
+
+    Regression for the first campaign to run this path: baselines at 3.38/3.47/3.49/3.49 are a
+    3.2% spread against a 5% gate. Registering the median (3.48) put the void line at 3.306, and
+    the first real arm voided at 3.30 -- missing by 0.2%. The slowest baseline was itself only
+    2.2% clear of its own void line.
+    """
+    from knowledge.ml_registry.bootstrap import bootstrap
+
+    ledger = tmp_path / "results.tsv"
+    rows = [("baseline_1", 0.6809, 3.49), ("baseline_2", 0.6700, 3.47),
+            ("baseline_3", 0.6811, 3.49), ("baseline_4", 0.6795, 3.38)]
+    ledger.write_text(
+        "commit\tmetric_value\tmemory_gb\tstatus\tdescription\tthroughput\tdiff_lines\n"
+        + "".join(f"sha:{t}\t{v}\t0.0\tok\t{t} | head=gru\t{tp}\t0\n" for t, v, tp in rows))
+
+    report = bootstrap(ledger=ledger, backlog=[{"id": "R01", "axis": "representation",
+                                                "description": "d"}],
+                       model_id="m", metric="f1", direction="maximize",
+                       diff_size_limit=8, baseline_prefix="baseline")
+    assert report.ready
+    assert report.model_meta["baseline_throughput"] == 3.38     # min, not median 3.48
+    # the arm that voided under the median must now clear the gate
+    assert 3.30 >= report.model_meta["baseline_throughput"] * 0.95
