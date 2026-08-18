@@ -255,3 +255,47 @@ def adjudicate_verdict(
     trial.meta["status"] = "failed"
     reject_idea(space, idea_id, "stagnant trial breached the model's net-line bound")
     return VERDICT_REJECTED
+
+def reset_ratchet(space: RegistrySpace, model_id: str, reason: str) -> dict[str, object]:
+    """Clear a model's rejection streak without touching its baseline or any verdict.
+
+    The ratchet reads three consecutive rejections as evidence that the last ADOPTION was noise --
+    the reasoning being that a false adoption raises the bar, so the rejections it causes look
+    ordinary. That inference holds only while the rejections are competing against the adoption on
+    the same axis. It does not hold across a STAGE boundary, where later arms vary something else
+    entirely.
+
+    Observed on the first staged campaign: a representation change was adopted at +0.0239, then two
+    architecture arms rejected -- an MLP at -0.0177 and a transformer at -0.0146. Neither rejection
+    was caused by an inflated bar. BOTH scored ABOVE the pre-adoption baseline and would merely have
+    parked against it; they lost because those architectures are worse on ~1,400 samples, which is
+    exactly what one of them was authored to demonstrate. One more rejection from an unrelated
+    augmentation arm would have rolled back a sound adoption and re-queued three settled ideas.
+
+    The registry cannot detect a stage boundary itself -- stages are the caller's taxonomy (see
+    `staging.py`) -- so this is the caller's call to make, and it is deliberately explicit rather
+    than automatic.
+
+    Baseline, previous_baseline and every recorded verdict are left untouched. This ONLY forgets
+    the streak, so a genuinely false adoption remains catchable by the next three rejections that
+    do compete with it.
+
+    ``reason`` is required and recorded. A ratchet cleared without a stated reason is
+    indistinguishable from one cleared to protect a result someone liked.
+    """
+    model = space.get(model_id)
+    if model is None or model.category != MODEL:
+        raise RegistryValidationError(
+            f"model {model_id!r} was never registered", field="model_id")
+    if not reason.strip():
+        raise RegistryValidationError("a reset reason is required", field="reason")
+    cleared = {
+        "ratchet_count": int(model.meta.get(RATCHET_COUNT_FIELD) or 0),
+        "rejection_streak_ideas": list(model.meta.get(REJECTION_STREAK_FIELD) or []),
+    }
+    model.meta[RATCHET_COUNT_FIELD] = 0
+    model.meta[REJECTION_STREAK_FIELD] = []
+    history = list(model.meta.get("ratchet_resets") or [])
+    history.append({"reason": reason, **cleared})
+    model.meta["ratchet_resets"] = history
+    return cleared
