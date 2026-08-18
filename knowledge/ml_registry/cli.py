@@ -277,7 +277,30 @@ def _refuse_a_campaign_with_no_floor(space: RegistrySpace, model_id: str) -> Non
 
 
 def _json_arg(raw: str) -> dict[str, object]:
-    parsed = json.loads(raw)
+    """A JSON object, given either literally or as a path to a file containing one.
+
+    Accepting the path is not sugar, it is the seam between the two halves of the documented
+    workflow. `bootstrap-campaign` WRITES `model_meta.json` and `ideas.jsonl`, and every
+    `--meta-json` example in af-ml-supervise/SKILL.md is spelled `<meta>.json` -- but this only
+    ever parsed a literal string, so following the documented sequence failed on the first
+    register-model-with-baseline with `MALFORMED INPUT: Expecting value: line 1 column 1`, which
+    names neither the argument nor the reason. A caller writing a tempfile and passing its path
+    (the composing-campaign pattern the same skill recommends) hit it too.
+
+    Disambiguation is by leading brace, not by trying json.loads first and falling back: a
+    fallback would report a FILE error for a malformed literal and a PARSE error for a missing
+    file, which is the wrong message in each case.
+    """
+    stripped = raw.strip()
+    if stripped.startswith("{"):
+        parsed = json.loads(stripped)
+    else:
+        path = Path(stripped)
+        if not path.is_file():
+            raise ValueError(
+                f"{stripped!r} is neither a JSON object (it does not start with '{{') nor an "
+                f"existing file")
+        parsed = json.loads(path.read_text())
     if not isinstance(parsed, dict):
         raise ValueError(f"expected a JSON object, got {type(parsed).__name__}")
     return parsed

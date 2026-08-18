@@ -149,3 +149,29 @@ def test_baseline_is_the_row_nearest_the_mean_not_the_best_one(tmp_path) -> None
     assert report.ready
     # mean is 0.677875; baseline_6 (0.6795) is nearest it, baseline_5 (0.6811) is the max
     assert report.model_meta["baseline"] == "sha:baseline_6"
+
+
+def test_meta_json_accepts_a_path_so_bootstrap_output_can_be_registered(tmp_path) -> None:
+    """The seam between the workflow's two halves: bootstrap WRITES files, register-* reads them.
+
+    `--meta-json` only ever parsed a literal JSON string, so the documented sequence
+    (bootstrap-campaign, then register-model-with-baseline --meta-json <meta>.json) failed with
+    "MALFORMED INPUT: Expecting value: line 1 column 1", naming neither the argument nor the cause.
+    """
+    from knowledge.ml_registry.cli import _json_arg
+
+    meta = tmp_path / "model_meta.json"
+    meta.write_text('{"metric": "f1", "direction": "maximize"}')
+
+    assert _json_arg(str(meta)) == {"metric": "f1", "direction": "maximize"}
+    assert _json_arg('{"metric": "f1"}') == {"metric": "f1"}          # literal still works
+    assert _json_arg('  {"metric": "f1"}  ') == {"metric": "f1"}      # and is whitespace tolerant
+
+    # A missing path reports a FILE problem, not a parse problem -- the distinction the
+    # leading-brace check exists to preserve.
+    try:
+        _json_arg(str(tmp_path / "absent.json"))
+    except ValueError as exc:
+        assert "existing file" in str(exc)
+    else:
+        raise AssertionError("expected a ValueError naming the missing file")
