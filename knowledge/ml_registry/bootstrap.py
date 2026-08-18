@@ -189,8 +189,30 @@ def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, met
         floor["noise_floor"] = noise_floor_override
         floor["override_reason"] = "caller supplied a floor measured over more runs than the ledger holds"
 
-    best = max(baselines, key=lambda b: float(b["metric_value"])) if direction == "maximize" \
-        else min(baselines, key=lambda b: float(b["metric_value"]))
+    # The baseline is the row CLOSEST TO THE MEAN, not the best one, and the distinction is the
+    # difference between two paradigms that share this file's vocabulary.
+    #
+    # In autoresearch every ledger row is a DIFFERENT code state, so "best so far" is exactly the
+    # right baseline -- it is the incumbent. Here the rows are REPEATS OF ONE CONFIGURATION; that
+    # is the entire reason this function demands at least four of them and measures an SD across
+    # them. Taking the max of repeats selects on noise: for four normal draws E[max] is about
+    # mu + 1.03*sigma, so the registered incumbent is systematically better than the system it
+    # claims to describe, and the whole campaign is measured against a bar the baseline config
+    # cannot itself reliably clear.
+    #
+    # Two costs, both real. Statistical: an arm with a true effect of exactly one noise floor now
+    # has to clear roughly 1.6 floors, so genuine winners get rejected. Reportorial: "our baseline
+    # is X" overstates, because X was chosen for being the luckiest of four.
+    #
+    # This was internally inconsistent besides -- baseline_throughput below already takes the
+    # MEDIAN over these same rows, on the same reasoning. Observed on the first campaign to run
+    # this path: 4 rows at 0.6700-0.6811 registered the 0.6811 one, 0.6 sigma above their mean.
+    #
+    # The mean itself cannot be the answer because meta.baseline names a COMMIT that must join to
+    # a real ledger row, so this picks the row that best represents the central tendency. Ties
+    # break on the first row, which is deterministic given a stable ledger order.
+    mean_value = st.fmean(float(b["metric_value"]) for b in baselines)
+    best = min(baselines, key=lambda b: abs(float(b["metric_value"]) - mean_value))
     meta = build_model_meta(
         metric=metric, direction=direction, baseline_commit=best["commit"],
         noise_floor=floor["noise_floor"],

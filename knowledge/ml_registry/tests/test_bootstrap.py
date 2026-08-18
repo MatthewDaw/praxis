@@ -121,5 +121,31 @@ def test_bootstrap_emits_schema_valid_meta_when_ready(tmp_path: Path) -> None:
     assert rep.ready, rep.to_dict()["blocking"]
     assert not set(REQUIRED_META_KEYS["model"]) - set(rep.model_meta)
     assert not set(REQUIRED_META_KEYS["idea"]) - set(rep.ideas[0])
-    # baseline must be the BEST row for a maximize campaign, not the first or last
-    assert rep.model_meta["baseline"] == "sha:baseline_3"
+    # Nearest the baselines' MEAN, not the max: they are repeats of one config, so taking
+    # the best of them selects on noise. Values here are 0.680/0.682/0.684/0.686, mean 0.683;
+    # baseline_1 and baseline_2 are equidistant and the tie breaks on ledger order.
+    assert rep.model_meta["baseline"] == "sha:baseline_1"
+
+
+def test_baseline_is_the_row_nearest_the_mean_not_the_best_one(tmp_path) -> None:
+    """Baseline rows are REPEATS of one config, so taking their max selects on noise.
+
+    Regression for the first real campaign: rows at 0.6700/0.6795/0.6809/0.6811 registered the
+    0.6811 one, 0.6 sigma above their own mean, making every arm clear a bar the baseline config
+    could not reliably clear itself. E[max of 4 normal draws] is about mu + 1.03*sigma.
+    """
+    from knowledge.ml_registry.bootstrap import bootstrap
+
+    ledger = tmp_path / "results.tsv"
+    rows = [("baseline_3", 0.6809), ("baseline_4", 0.6700),
+            ("baseline_5", 0.6811), ("baseline_6", 0.6795)]
+    ledger.write_text(
+        "commit\tmetric_value\tmemory_gb\tstatus\tdescription\tthroughput\tdiff_lines\n"
+        + "".join(f"sha:{tag}\t{v}\t0.0\tok\t{tag} | head=gru\t3.48\t0\n" for tag, v in rows))
+    backlog = [{"id": "R01", "axis": "representation", "description": "d"}]
+
+    report = bootstrap(ledger=ledger, backlog=backlog, model_id="m", metric="f1",
+                       direction="maximize", diff_size_limit=8, baseline_prefix="baseline")
+    assert report.ready
+    # mean is 0.677875; baseline_6 (0.6795) is nearest it, baseline_5 (0.6811) is the max
+    assert report.model_meta["baseline"] == "sha:baseline_6"
