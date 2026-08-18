@@ -90,3 +90,42 @@ def stage_progress(items: Iterable[dict[str, Any]], answered_ids: set[str],
                     "closed": bool(members) and len(done) == len(members),
                     "empty": not members})
     return out
+
+def unreachable(items: Iterable[dict[str, Any]], answered_ids: set[str], adopted_ids: set[str],
+                *, id_key: str = "id", depends_key: str = "depends_on") -> set[str]:
+    """Items that can NEVER become eligible, because a dependency will never be adopted.
+
+    ``depends_on`` gates on a dependency being ADOPTED, so the moment that dependency is answered
+    as anything else -- parked, rejected, voided -- every dependent is dead. Dead is not the same
+    as unanswered, and the difference is what keeps a campaign moving: an unanswered item holds its
+    stage open, so a dead one holds it open FOREVER.
+
+    The failure mode is quiet, which is what makes it worth a function. `open_stage` keeps
+    returning that stage, the eligibility filter yields an empty queue, and a supervising loop
+    exits reporting nothing to do -- indistinguishable from a finished campaign. Observed on the
+    first campaign to use staging: one composition arm gated on an idea that PARKED held the
+    representation stage open with an empty queue, and a 27-item backlog would have stopped after
+    four items and looked successful.
+
+    Computed to a fixpoint, so a chain of dependents collapses in a single pass rather than one
+    stage per invocation.
+
+    Pass the result into ``open_stage``'s ``answered_ids`` (union it with the genuinely answered).
+    Callers should REPORT what it returns rather than silently dropping it -- an item that never
+    ran for a structural reason is a real omission, and one that a reader will otherwise mistake
+    for an item that was tried and lost.
+    """
+    items = list(items)
+    dead = set(answered_ids) - set(adopted_ids)
+    blocked: set[str] = set()
+    while True:
+        grew = False
+        for item in items:
+            if item[id_key] in blocked:
+                continue
+            deps = item.get(depends_key) or []
+            if any(d in dead or d in blocked for d in deps):
+                blocked.add(item[id_key])
+                grew = True
+        if not grew:
+            return blocked
