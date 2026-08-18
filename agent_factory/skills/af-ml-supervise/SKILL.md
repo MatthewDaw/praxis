@@ -150,6 +150,30 @@ This exists because a false adoption is self-concealing: it raises the bar for e
 it, so the errors it causes look like ordinary rejections. A prior adoption that is beaten
 FAIRLY is `superseded` instead, and ideas rejected under it stay rejected.
 
+**The inference only holds while the rejections compete against the adoption on the same axis.**
+Across a stage boundary it breaks: later arms vary something the adoption never competed against,
+so their rejections are not evidence about it.
+
+Observed on the first staged campaign — a representation change adopted at +0.0239, then two
+architecture arms rejected (an MLP at −0.0177, a transformer at −0.0146). Neither was caused by an
+inflated bar: **both scored ABOVE the pre-adoption baseline** and would merely have parked against
+it. They lost because those architectures are worse on ~1,400 samples, which is precisely what one
+of them was authored to demonstrate. One further rejection from an unrelated augmentation arm would
+have rolled back a sound adoption and re-queued three settled ideas.
+
+```sh
+python -m knowledge.ml_registry.cli reset-ratchet \
+    --space-file <state>.json --model-id <id> \
+    --reason "architecture stage closed; its arms varied the head, not the adopted representation"
+```
+
+The registry cannot detect a stage boundary — stages are the caller's taxonomy — so this is
+explicit rather than automatic. It clears ONLY the streak: baseline, previous_baseline and every
+recorded verdict are untouched, so a genuinely false adoption stays catchable by the next three
+rejections that do compete with it. Every reset is recorded on the model with its reason, because a
+ratchet cleared without one is indistinguishable from a ratchet cleared to protect a favoured
+result.
+
 ## Running it
 
 ```sh
