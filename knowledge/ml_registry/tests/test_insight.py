@@ -72,7 +72,13 @@ def _idea(space: RegistrySpace, model_id: str, axis: str, description: str, orig
     )
 
 
-def _trial(space: RegistrySpace, model_id: str, idea_id: str, commit: str, status: str = "running") -> str:
+# Terminal by default. These tests give one idea SEVERAL trials, which is realistic only as
+# retries over time -- register_trial allows an idea just one trial IN FLIGHT, because two at once
+# means one question being answered twice concurrently. "running" was an incidental helper default,
+# not something any test here asserts on: insight counts an idea's trials excluding voided ones and
+# never distinguishes running from succeeded, so this changes no expectation.
+def _trial(space: RegistrySpace, model_id: str, idea_id: str, commit: str,
+           status: str = "succeeded") -> str:
     trial_id = register_trial(
         space,
         {"model_id": model_id, "idea_id": idea_id, "commit": commit, "status": status,

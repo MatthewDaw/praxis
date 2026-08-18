@@ -184,6 +184,47 @@ when the script is written. Two honest options, and the choice should be explici
 Never resolve this by having the loop compute its own verdict. A verdict decided by the code that
 wants to win is not a verdict, and the external ledger exists precisely to prevent it.
 
+## One trial in flight per idea, and how to kill a campaign
+
+`register-trial` refuses a second trial for an idea that already has one unresolved. Two at once
+means the same question is being answered twice concurrently, and the registry would adjudicate
+both — two verdicts for one idea, with whichever resolved last silently winning.
+
+This is not a hypothetical. On the first real campaign, killing a supervising loop left its
+training child **orphaned to PID 1**, still running the PREVIOUS (uncomposed) configuration. The
+relaunched campaign started the composed arm under the same idea, so two runs raced — each taking
+half an 8-core box, each about to write a ledger row under the same arm tag. Nothing objected. The
+duplicate was found by reading `ps`, which is not a control.
+
+**Killing a composing campaign means killing its process GROUP.** The supervisor spawns the
+trainer as a child; terminating only the parent orphans the child, which keeps burning CPU and
+finishes by writing a row for a configuration nobody is adjudicating any more.
+
+```sh
+kill -TERM -"$(ps -o pgid= -p "$PID" | tr -d ' ')"    # the leading '-' means the GROUP
+ps -eo pid,ppid,cmd | grep '[t]rain'                  # then VERIFY. PPID 1 is an orphan.
+```
+
+**Do not reach for `pkill -f <pattern>` over ssh.** The remote shell's own command line contains
+the pattern, so `pkill` matches and kills the shell before any later command in the same
+invocation runs. That is precisely how the orphan above survived a kill that appeared to succeed:
+`pkill -f "…campaign"; pkill -f "…train"` never reached the second statement.
+
+If a run genuinely died without resolving, its trial stays in flight and would wedge the idea
+forever. Free it deliberately:
+
+```sh
+python -m knowledge.ml_registry.cli supersede-trial \
+    --space-file <state>.json --trial-id <id> --reason "orphaned by a supervisor restart; PID confirmed dead"
+```
+
+`--reason` is required. A trial abandoned without one is indistinguishable from a trial quietly
+discarded for losing, and the dead-ideas register depends on telling those apart.
+
+Note `voided` does NOT block a re-run — that is what voided means — and neither does any trial
+that already has a verdict. Only `running`/`complete` block, and `complete` means *the run
+finished and is awaiting adjudication*, which is exactly the state a duplicate dispatch races.
+
 ## Closing
 
 Close reasons are an enum: `CLOSE_WON`, `CLOSE_MAX_TRIALS`, `CLOSE_BACKLOG_EXHAUSTED`,

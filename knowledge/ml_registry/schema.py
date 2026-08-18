@@ -8,6 +8,27 @@ external-ledger checks, ...) belong to later tickets that build on this schema.
 
 from __future__ import annotations
 
+#: A trial in one of these statuses is FINISHED: it has a verdict, or was deliberately abandoned.
+#: Anything else means the trial is still in flight, and an idea may have only one of those at a
+#: time -- see `write_path.register_trial`. Defined here, in the leaf module, because `lifecycle`
+#: imports `write_path` and so `write_path` cannot import `lifecycle` back.
+#:
+#: Note these are the TRIAL's status vocabulary, which is deliberately not the verdict vocabulary:
+#: `adjudicate_verdict` RETURNS "adopted"/"parked"/"rejected"/"voided" while writing
+#: "succeeded"/"failed"/"stagnant"/"voided" onto the trial. Listing the verdict names here instead
+#: would leave every adjudicated trial looking in flight forever.
+#:
+#: `voided` is terminal on purpose: a voided run is meant to be RE-RUN, so it must not keep
+#: blocking its idea.
+#:
+#: "complete" and "running" are NOT terminal, and that is the point. "complete" means the training
+#: run finished and is awaiting adjudication -- a trial in that state is exactly the one a
+#: duplicate dispatch would race.
+STATUS_SUPERSEDED = "superseded"
+TERMINAL_TRIAL_STATUSES: frozenset[str] = frozenset(
+    {"succeeded", "failed", "stagnant", "voided", STATUS_SUPERSEDED}
+)
+
 MODEL = "model"
 IDEA = "idea"
 TRIAL = "trial"

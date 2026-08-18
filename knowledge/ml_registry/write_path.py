@@ -43,7 +43,9 @@ from pathlib import Path
 
 from knowledge.ml_registry.citation import Resolver, resolve_citation
 from knowledge.ml_registry.guards import guard_baseline_move, guard_model_mutation
-from knowledge.ml_registry.schema import IDEA, MODEL, TRIAL, RegistryValidationError, validate_fact
+from knowledge.ml_registry.schema import (IDEA, MODEL, STATUS_SUPERSEDED,
+                                          TERMINAL_TRIAL_STATUSES, TRIAL,
+                                          RegistryValidationError, validate_fact)
 
 SEEDED = "seeded"
 DISCOVERED = "discovered"
@@ -308,7 +310,69 @@ def register_trial(space: RegistrySpace, meta: dict[str, object], ledger_commits
         raise RegistryValidationError(
             f"trial commit {commit!r} has no matching row in the external ledger", field="commit"
         )
+
+    # An idea may have only ONE trial in flight. A second one means the same question is being
+    # answered twice concurrently, and the registry would happily adjudicate both -- producing two
+    # verdicts for one idea, with whichever resolved last silently winning.
+    #
+    # Observed on the first real campaign: killing a supervising loop left its training child
+    # orphaned to PID 1, still running the PREVIOUS (uncomposed) configuration. The relaunched
+    # campaign started the composed arm under the same idea, so two runs raced -- each taking half
+    # an 8-core box, and each about to write a ledger row under the same arm tag. Nothing in either
+    # system objected. The duplicate was found by reading `ps`, which is not a control.
+    #
+    # This is not merely an operator error to be documented away: any long-running dispatcher that
+    # is restarted after a crash can re-dispatch an arm whose previous run is still alive, and the
+    # symptom (a verdict that does not match the configuration you think you measured) is close to
+    # undiagnosable after the fact.
+    #
+    # A trial is IN FLIGHT until it has a verdict. Terminal statuses do not block, so a voided
+    # trial can be re-run -- which is what voided MEANS -- and a resolved idea can be revisited by
+    # a later ideation pass.
+    in_flight = [
+        f for f in space.list_facts(TRIAL)
+        if str(f.meta.get("idea_id")) == idea_id and str(f.meta.get("status", "")) not in TERMINAL_TRIAL_STATUSES
+    ]
+    if in_flight:
+        prior = in_flight[0]
+        raise RegistryValidationError(
+            f"idea {idea_id!r} already has trial {prior.id!r} in flight on commit "
+            f"{prior.meta.get('commit')!r} (status {prior.meta.get('status')!r}); registering "
+            f"{commit!r} as well would produce two verdicts for one idea. Resolve or void the "
+            f"existing trial first -- or, if that run is genuinely dead, supersede it deliberately",
+            field="idea_id",
+        )
     return space.insert(TRIAL, meta, derived_from=(idea_id,))
+
+
+def supersede_trial(space: RegistrySpace, trial_id: str, reason: str) -> str:
+    """Mark an in-flight trial superseded so its idea can accept a new one.
+
+    The deliberate escape hatch for :func:`register_trial`'s one-trial-in-flight rule. A run that
+    died without resolving leaves its trial in flight forever, which would otherwise wedge the
+    idea permanently -- so the rule needs a way out that is explicit rather than automatic.
+
+    ``reason`` is required and recorded. A trial abandoned without a stated reason is
+    indistinguishable from one that was quietly discarded for losing, and the dead-ideas register
+    depends on that distinction.
+    """
+    trial = space.get(trial_id)
+    if trial is None or trial.category != TRIAL:
+        raise RegistryValidationError(
+            f"trial {trial_id!r} was never registered", field="trial_id"
+        )
+    status = str(trial.meta.get("status", ""))
+    if status in TERMINAL_TRIAL_STATUSES:
+        raise RegistryValidationError(
+            f"trial {trial_id!r} is already resolved ({status!r}); superseding it would rewrite "
+            f"a verdict of record",
+            field="trial_id",
+        )
+    if not reason.strip():
+        raise RegistryValidationError("a supersede reason is required", field="reason")
+    trial.meta["status"] = STATUS_SUPERSEDED
+    trial.meta["superseded_reason"] = reason
+    return trial_id
 
 
 def resolve_idea_citation(
