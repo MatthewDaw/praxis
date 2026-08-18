@@ -469,6 +469,11 @@ def main(argv: list[str] | None = None) -> int:
     register_trial_p.add_argument(
         "--ledger", required=True, help="path to the autoresearch loop's results.tsv"
     )
+    register_trial_p.add_argument(
+        "--json", action="store_true",
+        help="emit {\"trial_id\": ...} instead of prose. The trial id is MINTED here and it is "
+             "what resolve-verdict --trial-id needs -- it is NOT the idea id, and scraping the "
+             "prose line was the only other way to learn it")
 
     register_baseline_p = sub.add_parser(
         "register-model-with-baseline",
@@ -773,7 +778,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.space_file,
                 lambda space: register_trial(space, _json_arg(args.meta_json), ledger_commits),
             )
-            print(f"OK: registered trial {fact_id}")
+            if getattr(args, "json", False):
+                print(json.dumps({"trial_id": fact_id}))
+            else:
+                print(f"OK: registered trial {fact_id}")
             return 0
         if args.command == "register-model-with-baseline":
             ledger_values = load_ledger_values(Path(args.ledger))
