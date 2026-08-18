@@ -107,6 +107,39 @@ the bar for every verdict that follows. Two things are worth doing beyond the mi
 The registry cannot know which of these applies; it takes the floor you give it. Give it a
 measured one.
 
+## Sequencing the backlog
+
+A backlog with dependencies and a cost filter still has no ORDERING, and without one a campaign
+will tune a hyperparameter for a model it is about to replace. `knowledge/ml_registry/staging.py`
+supplies ordered stages; the project supplies the stage LIST, because a vision campaign's stages
+are not an LLM finetune's.
+
+```python
+from knowledge.ml_registry.staging import open_stage, eligible
+
+STAGES = ("representation", "architecture", "augmentation", "training", "tuning", "capacity")
+stage = open_stage(backlog, answered_ids, STAGES)
+queue = [i for i in backlog if eligible(i, answered_ids=answered, adopted_ids=adopted, stage=stage)]
+```
+
+Two rules in it are worth knowing before you rely on them:
+
+**A stage closes on ANY verdict, not on an adoption.** A stage that answered "none of these help"
+is settled — the first campaign this was built for had seven representation arms and zero
+adoptions, which is a real answer about the corpus, not a failure. Gating on adoption would wedge
+a campaign behind any inert axis forever. `errored` deliberately does NOT count as answered: an
+arm that crashed is not an arm that lost.
+
+**`depends_on` and `stage` mean different things and are both needed.** `depends_on` gates on one
+idea WINNING — a composition arm is only meaningful if the thing it composes with was adopted.
+`stage` gates on a whole question being ANSWERED, however it was answered.
+
+**The cost is real and permanent:** a late stage never influences an early one. If an augmentation
+would only pay off under an architecture that lost, that interaction is invisible. Staging trades
+interaction coverage for not spending the budget on questions whose answer is about to be
+invalidated — right when arms are expensive, wrong when they are nearly free. Do not stage a
+campaign whose arms cost seconds.
+
 ## The ratchet
 
 Three consecutive rejections on **distinct** ideas is read as evidence the last adoption was
