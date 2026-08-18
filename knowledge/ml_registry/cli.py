@@ -70,7 +70,7 @@ from knowledge.ml_registry.supervisor import (
     record_out_of_diff_change,
     supervise_campaign,
 )
-from knowledge.ml_registry.verdict import LedgerRow, adjudicate_verdict
+from knowledge.ml_registry.verdict import LedgerRow, adjudicate_verdict, reset_ratchet
 from knowledge.ml_registry.write_path import (
     MAX_DISCOVERED_IDEAS_FIELD,
     METRIC_FIELD,
@@ -490,6 +490,21 @@ def main(argv: list[str] | None = None) -> int:
              "what resolve-verdict --trial-id needs -- it is NOT the idea id, and scraping the "
              "prose line was the only other way to learn it")
 
+    reset_ratchet_p = sub.add_parser(
+        "reset-ratchet",
+        help="clear a model's rejection streak WITHOUT touching its baseline or any verdict -- "
+             "for a stage boundary, where later arms vary something the adoption never competed "
+             "against. The registry cannot see stage boundaries; this is the caller's call.",
+    )
+    reset_ratchet_p.add_argument("--space-file", required=True)
+    reset_ratchet_p.add_argument("--model-id", required=True)
+    reset_ratchet_p.add_argument(
+        "--reason", required=True,
+        help="why the streak no longer bears on the last adoption. REQUIRED: a ratchet cleared "
+             "without a stated reason is indistinguishable from one cleared to protect a result "
+             "someone liked")
+    reset_ratchet_p.add_argument("--json", action="store_true")
+
     register_baseline_p = sub.add_parser(
         "register-model-with-baseline",
         help="register a model, recomputing noise_floor/baseline_throughput from 4 ledger-named baseline_runs (R12)",
@@ -804,6 +819,16 @@ def main(argv: list[str] | None = None) -> int:
                 lambda space: supersede_trial(space, args.trial_id, args.reason),
             )
             print(f"OK: superseded trial {trial_id}")
+        if args.command == "reset-ratchet":
+            cleared = _load_mutate_save(
+                args.space_file,
+                lambda space: reset_ratchet(space, args.model_id, args.reason),
+            )
+            if args.json:
+                print(json.dumps(cleared))
+            else:
+                print(f"OK: cleared ratchet_count {cleared['ratchet_count']} "
+                      f"({len(cleared['rejection_streak_ideas'])} idea(s)) for {args.model_id}")
             return 0
         if args.command == "register-model-with-baseline":
             ledger_values = load_ledger_values(Path(args.ledger))

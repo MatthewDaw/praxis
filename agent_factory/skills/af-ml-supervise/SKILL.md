@@ -134,6 +134,25 @@ arm that crashed is not an arm that lost.
 idea WINNING — a composition arm is only meaningful if the thing it composes with was adopted.
 `stage` gates on a whole question being ANSWERED, however it was answered.
 
+**A stage will not close if anything in it is merely FILTERED rather than answered**, and the
+failure is silent: `open_stage` keeps returning that stage, the eligibility filter yields an empty
+queue, and the loop exits reporting nothing to do — indistinguishable from a finished campaign.
+On the first campaign to use staging, a 27-item backlog would have stopped after four items and
+looked successful. Three separate things caused it there, and every campaign has the same three:
+
+```python
+answered |= excluded          # in the local backlog but never registered (--skip-ids)
+answered |= out_of_scope      # filtered by the loop (needs different data, too expensive, ...)
+answered |= unreachable(items, answered, adopted)   # dependency judged but not adopted
+```
+
+`unreachable()` is supplied because `depends_on` gates on ADOPTION: the moment a dependency is
+answered as anything else, every dependent is dead, and dead items hold a stage open forever. It
+runs to a fixpoint so a chain collapses in one pass rather than one link per invocation.
+
+**Report all three rather than filtering silently.** An item that never ran for a structural
+reason is a real omission, and a reader will otherwise mistake it for one that was tried and lost.
+
 **The cost is real and permanent:** a late stage never influences an early one. If an augmentation
 would only pay off under an architecture that lost, that interaction is invisible. Staging trades
 interaction coverage for not spending the budget on questions whose answer is about to be
@@ -149,6 +168,30 @@ idea rejected under that inflated bar is re-queued to the untried backlog.
 This exists because a false adoption is self-concealing: it raises the bar for everything after
 it, so the errors it causes look like ordinary rejections. A prior adoption that is beaten
 FAIRLY is `superseded` instead, and ideas rejected under it stay rejected.
+
+**The inference only holds while the rejections compete against the adoption on the same axis.**
+Across a stage boundary it breaks: later arms vary something the adoption never competed against,
+so their rejections are not evidence about it.
+
+Observed on the first staged campaign — a representation change adopted at +0.0239, then two
+architecture arms rejected (an MLP at −0.0177, a transformer at −0.0146). Neither was caused by an
+inflated bar: **both scored ABOVE the pre-adoption baseline** and would merely have parked against
+it. They lost because those architectures are worse on ~1,400 samples, which is precisely what one
+of them was authored to demonstrate. One further rejection from an unrelated augmentation arm would
+have rolled back a sound adoption and re-queued three settled ideas.
+
+```sh
+python -m knowledge.ml_registry.cli reset-ratchet \
+    --space-file <state>.json --model-id <id> \
+    --reason "architecture stage closed; its arms varied the head, not the adopted representation"
+```
+
+The registry cannot detect a stage boundary — stages are the caller's taxonomy — so this is
+explicit rather than automatic. It clears ONLY the streak: baseline, previous_baseline and every
+recorded verdict are untouched, so a genuinely false adoption stays catchable by the next three
+rejections that do compete with it. Every reset is recorded on the model with its reason, because a
+ratchet cleared without one is indistinguishable from a ratchet cleared to protect a favoured
+result.
 
 ## Running it
 
