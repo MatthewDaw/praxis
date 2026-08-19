@@ -231,6 +231,35 @@ List the families that exist for the task, name the one each arm belongs to, and
 report which families you did not try and why**. An untried family is a hole in the result, not an
 absence of evidence about it.
 
+## Diagnose a void, do not just re-run it
+
+A void is a decision to **re-run**. That is right once, and wrong the moment the reason is
+something re-running cannot change.
+
+```sh
+python -m knowledge.ml_registry.cli campaign-status --space-file <state>.json --model-id <id>
+```
+
+surfaces `diagnoses` alongside the verdicts. Two voids of the same KIND is not bad luck — it says
+the setting that produced them will keep producing them:
+
+- **`budget_too_small`** — arms voided as unfair runs (truncated). Re-running reproduces the
+  truncation. Raise the budget above the SLOWEST arm you intend to try, not the typical one.
+- **`void_gate_too_tight`** — arms voided on throughput. A structurally slower arm (a richer
+  representation, a heavier head) can never pass, so the gate is rejecting on cost rather than
+  merit. Set `void_throughput_fraction` to 0, or reference the SLOWEST baseline rather than the
+  median.
+- **`awaiting_rerun`** — ideas whose latest trial voided and are therefore still UNMEASURED.
+  Treating a void as answered records nothing at all, which is strictly worse than a rejection:
+  a rejection at least says a question was asked.
+
+**Why this matters more than it looks.** On the first campaign to run expensive arms, the two most
+costly architectures in the backlog both exceeded a wall clock tuned for heads that finish in a
+third of the time. Both voided. An autonomous loop would have re-run each, truncated each again,
+and closed on `CLOSE_VOID_LIMIT` having explained nothing — while the surviving evidence said
+"cheap models win". That is a selection effect produced by the harness, not a result: a budget
+tuned to cheap arms silently removes exactly the arms that might beat them.
+
 ## The ratchet
 
 Three consecutive rejections on **distinct** ideas is read as evidence the last adoption was
