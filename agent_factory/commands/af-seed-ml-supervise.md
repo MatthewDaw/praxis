@@ -1,8 +1,8 @@
 ---
-description: Seed ONE registered ml_registry model's starting idea set by sweeping the nine-axis closed set, then hand off to af-ml-supervise. Use when the human says "seed the campaign", "/af-seed-ml-supervise", or "run seed-campaign".
-argument-hint: [model-id] [optional --mode interactive|batch]
+description: Stand up ONE ml_registry campaign (data, harness, four baselines, bootstrap) and seed its starting idea set via the nine-axis closed set, then hand off to af-ml-supervise. Use when the human says "seed the campaign", "/af-seed-ml-supervise", "run seed-campaign", or "get this ready for af-ml-supervise".
+argument-hint: [project or model-id] [optional --mode interactive|batch]
 ---
 
-The user invoked `/af-seed-ml-supervise`. Read `agent_factory/skills/af-seed-ml-supervise/SKILL.md` and follow it.
+The user invoked `/af-seed-ml-supervise`. Read `agent_factory/skills/af-seed-ml-supervise/SKILL.md` and follow it. Setup is this skill's job — do not stop at "go bootstrap yourself".
 
 $ARGUMENTS
