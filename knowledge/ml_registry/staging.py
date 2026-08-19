@@ -129,3 +129,104 @@ def unreachable(items: Iterable[dict[str, Any]], answered_ids: set[str], adopted
                 grew = True
         if not grew:
             return blocked
+
+
+class StagingStuck(Exception):
+    """An open stage still has unanswered arms, but none of them can run.
+
+    That is not a finished campaign: leftover ids are holding the stage open
+    (so later stages stay closed) while ``eligible`` yields an empty queue.
+    The usual cause is skip-ids / out-of-scope / unreachable that the caller
+    forgot to union into ``answered_ids``.
+    """
+
+    def __init__(self, stage: str, leftover: list[str]) -> None:
+        self.stage = stage
+        self.leftover = leftover
+        super().__init__(
+            f"stage {stage!r} is stuck with leftover ids {leftover}; "
+            "union skip-ids / out-of-scope / unreachable into answered_ids"
+        )
+
+
+def next_queue(items: Iterable[dict[str, Any]], answered_ids: set[str],
+               adopted_ids: set[str], stages: Sequence[str], *,
+               stage_of: Callable[[dict], str] = default_stage_of,
+               id_key: str = "id",
+               depends_key: str = "depends_on") -> tuple[str | None, list, set[str]]:
+    """Open stage, its eligible arms, and the unreachable set used to free prior stages.
+
+    Unions ``unreachable`` into answered so a parked dependency cannot wedge the
+    campaign behind an empty queue. If the resulting open stage still has
+    unanswered members and none of them are eligible, raises ``StagingStuck``
+    rather than returning an empty queue that a composing loop would treat as
+    success.
+    """
+    items = list(items)
+    blocked = unreachable(items, answered_ids, adopted_ids,
+                          id_key=id_key, depends_key=depends_key)
+    unioned = set(answered_ids) | blocked
+    stage = open_stage(items, unioned, stages, stage_of=stage_of, id_key=id_key)
+    if stage is None:
+        return (None, [], blocked)
+    queue = [i for i in items
+             if eligible(i, answered_ids=unioned, adopted_ids=adopted_ids,
+                         stage=stage, stage_of=stage_of,
+                         id_key=id_key, depends_key=depends_key)]
+    leftover = [i[id_key] for i in items
+                if stage_of(i) == stage and i[id_key] not in unioned]
+    if leftover and not queue:
+        raise StagingStuck(stage, leftover)
+    return (stage, queue, blocked)
+
+#: A stage closing on fewer genuinely-measured arms than this has not answered its question; it
+#: has merely run out of registered ones. Three is a floor, not a target -- see `stage_coverage`.
+MIN_MEASURED_PER_STAGE = 3
+
+
+def stage_coverage(items: Iterable[dict[str, Any]], stages: Sequence[str], *,
+                   measured_ids: set[str], stage_of: Callable[[dict], str] = default_stage_of,
+                   id_key: str = "id", min_measured: int = MIN_MEASURED_PER_STAGE
+                   ) -> list[dict[str, Any]]:
+    """Per-stage report of what was actually MEASURED, versus answered by some other means.
+
+    A stage closes when every item in it is answered. Nothing checks whether it was answered by
+    RUNNING anything. An item can be answered by being excluded at registration, by becoming
+    unreachable, by being filtered as out of scope, or by being a no-op against the incumbent --
+    and a stage made entirely of those closes having tested nothing at all.
+
+    Observed on the first staged campaign, on the axis the stage order itself calls high-leverage:
+    the architecture stage held five authored ideas and produced TWO real comparisons. One was
+    excluded by a skip list, which silently killed a second through `depends_on`; a third
+    re-measured the incumbent configuration and could only park. The campaign then advanced to
+    augmentation, allocating it four arms -- more than the axis that decides what the model IS.
+
+    `measured_ids` should contain only items that ran and produced a verdict from their own
+    result. Do not include items answered by exclusion, unreachability, scope filtering, or a
+    no-op re-measurement of the incumbent; those are exactly what this exists to make visible.
+
+    Returns one row per stage with `measured`, `answered_without_running`, and `thin`. Thin is
+    advisory: this function reports, it does not block. A thin stage may be perfectly fine when
+    the axis genuinely has few options, but it must be REPORTED as thin rather than presented as
+    settled -- the distinction between "we tested this and it lost" and "we never tested this" is
+    the whole value of a dead-ideas register.
+    """
+    items = list(items)
+    out = []
+    for stage in stages:
+        members = [i for i in items if stage_of(i) == stage]
+        measured = [i for i in members if i[id_key] in measured_ids]
+        out.append({
+            "stage": stage,
+            "total": len(members),
+            "measured": len(measured),
+            "measured_ids": sorted(i[id_key] for i in measured),
+            "answered_without_running": len(members) - len(measured),
+            "thin": bool(members) and len(measured) < min_measured,
+        })
+    return out
+
+
+def thin_stages(coverage: Sequence[dict[str, Any]]) -> list[str]:
+    """The stages in a `stage_coverage` report that closed on too little evidence."""
+    return [c["stage"] for c in coverage if c["thin"]]

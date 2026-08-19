@@ -31,7 +31,8 @@ contract.
 python -m knowledge.ml_registry.cli bootstrap-campaign \
     --ledger <project>/results.tsv --backlog <project>/backlog.jsonl \
     --model-id <id> --metric <name> --direction maximize \
-    --diff-size-limit 8 --out-dir <project>/registry
+    --diff-size-limit 8 --skip-ids <settled> --out-dir <project>/registry \
+    [--void-throughput-fraction 0]    # CV campaigns: disable VOID; default 0.05
 ```
 
 `bootstrap-campaign` verifies every precondition below, MEASURES the noise floor from the ledger's
@@ -47,8 +48,10 @@ trainer, and the backlog.
 The preconditions it enforces, and why each one is fatal rather than cosmetic:
 
 1. **A registered model.** `meta` must carry `metric`, `direction`, `win_condition`, `baseline`,
-   `noise_floor`, `baseline_throughput`, `diff_size_limit`. The metric is FROZEN for the model's
-   life — changing it mid-campaign silently rebases every prior verdict.
+   `noise_floor`, `baseline_throughput`, `diff_size_limit`. Bootstrap now also emits
+   `baseline_runs` (the 4 commits) and `sigmas`, so `register-model-with-baseline` consumes
+   `model_meta.json` as-is. The metric is FROZEN for the model's life — changing it mid-campaign
+   silently rebases every prior verdict.
 2. **A version-2 ledger.** `results.tsv` with header
    `commit  metric_value  memory_gb  status  description  throughput  diff_lines`.
    Versions 0 and 1 lack `throughput`/`diff_lines` and cannot be adjudicated: a synthesized
@@ -65,10 +68,10 @@ The preconditions it enforces, and why each one is fatal rather than cosmetic:
    Observed on the first real campaign: 16 ledger rows sharing 2 keys, discovered at registration
    after every one of those training runs had already been paid for.
 
-5. **Homogeneous baseline throughput.** `baseline_throughput` gates the VOIDED verdict, so a
-   baseline measured under different settings — one seed among four-seed runs, say — makes that
-   gate meaningless. `bootstrap-campaign` flags it; the fix is to drop the odd row, not to average
-   it in.
+5. **Homogeneous baseline throughput.** `baseline_throughput` is the SLOWEST baseline run's
+   seq/s (not the metric mean ~0.68). It gates the VOIDED verdict, so a baseline measured under
+   different settings — one seed among four-seed runs, say — makes that gate meaningless.
+   `bootstrap-campaign` flags it; the fix is to drop the odd row, not to average it in.
 6. **A dispatch command** the project owns, which runs ONE arm and appends ONE row.
 
 If the box is remote, `af-ml-model-remote` is the mechanism (ssh + tmux, detached). It adds no ML
@@ -83,8 +86,12 @@ delta >  noise_floor   -> ADOPTED    baseline advances to this arm
 delta < -noise_floor   -> REJECTED
 otherwise              -> PARKED     (stagnant but cheap) or REJECTED (stagnant and costly,
                                       by diff_size_limit)
-throughput < baseline_throughput * 0.95  ->  VOIDED, before any of the above
+throughput < baseline_throughput * (1 - void_throughput_fraction)  ->  VOIDED, first
 ```
+
+`void_throughput_fraction` lives on model meta (bootstrap default `0.05`; `0` disables). CV
+campaigns whose metric is not training speed must set `--void-throughput-fraction 0` rather than
+hacking `baseline_throughput=0.01`.
 
 Both tests are **strict**: a delta of exactly one floor is evidence of nothing in either
 direction.
@@ -115,12 +122,20 @@ supplies ordered stages; the project supplies the stage LIST, because a vision c
 are not an LLM finetune's.
 
 ```python
-from knowledge.ml_registry.staging import open_stage, eligible
+from knowledge.ml_registry.staging import next_queue, StagingStuck
 
 STAGES = ("representation", "architecture", "augmentation", "training", "tuning", "capacity")
-stage = open_stage(backlog, answered_ids, STAGES)
-queue = [i for i in backlog if eligible(i, answered_ids=answered, adopted_ids=adopted, stage=stage)]
+try:
+    stage, queue, blocked = next_queue(
+        backlog, answered_ids=answered, adopted_ids=adopted, stages=STAGES)
+except StagingStuck:
+    # missing skip/out-of-scope union — NOT a finished campaign
+    raise
 ```
+
+Prefer `next_queue(...)`: it unions `unreachable` into answered, opens the stage, and raises
+`StagingStuck` if that stage still has leftover unanswered items and an empty eligible queue.
+Treat `StagingStuck` as a missing skip/out-of-scope union, not success.
 
 Two rules in it are worth knowing before you rely on them:
 
@@ -158,6 +173,58 @@ would only pay off under an architecture that lost, that interaction is invisibl
 interaction coverage for not spending the budget on questions whose answer is about to be
 invalidated — right when arms are expensive, wrong when they are nearly free. Do not stage a
 campaign whose arms cost seconds.
+
+## A stage must EARN the right to close
+
+A stage closes when every item in it is answered. Nothing checks whether it was answered by
+**running** anything. An item can be answered by being excluded at registration, by becoming
+unreachable through `depends_on`, by being filtered as out of scope, or by being a no-op against
+the incumbent — and a stage made of those closes having tested nothing.
+
+```python
+from knowledge.ml_registry.staging import stage_coverage, thin_stages
+
+cov = stage_coverage(backlog, STAGES, measured_ids=ran_and_produced_a_verdict)
+if thin_stages(cov):
+    log(f"THIN: {thin_stages(cov)} closed on fewer than 3 measured arms")
+```
+
+`measured_ids` must contain only items that ran and produced a verdict **from their own result**.
+
+Observed on the first staged campaign, on the axis the stage order itself calls high-leverage.
+The architecture stage held five authored ideas and produced **two** real comparisons:
+
+| idea | outcome |
+|---|---|
+| M01 mlp | ran → rejected |
+| M02 tcn | excluded by the skip list — never ran |
+| M03 gru | re-measured the INCUMBENT; could only park |
+| M04 transformer | ran → rejected |
+| M05 composition | dead: `depends_on: [M02, …]` |
+
+One skip cost two arms. The campaign then advanced and gave **augmentation four arms** — more
+than the axis that decides what the model IS.
+
+### Two rules that follow
+
+**A prior loss transfers only if its ARGUMENT transfers.** Skipping `velocity` was sound: it cost
+26 dimensions against ~1,400 samples, and that argument holds under any baseline. Skipping a TCN
+was not: it lost in a superseded campaign against a different metric AND a different
+representation, and nothing about "it lost before" survives adopting a new representation
+underneath it. Before adding an id to `--skip-ids`, write down the argument and check it still
+holds. **And check what depends on it** — a skip silently kills its dependents.
+
+**Enumerate the model FAMILIES before opening the architecture stage.** Arms that differ only in
+depth or width are one family, not four. On that campaign every head — linear, MLP, TCN, GRU,
+transformer — was a sequence model over *flattened* joints, while the skeleton-action-recognition
+literature had converged on **graph** models. The gap went unnoticed because the stage looked
+populated. The tell was in the results the whole time: the only arm that won was `bones`, which is
+literally 2s-AGCN's second stream — the campaign adopted a component of the SOTA architecture
+without ever trying the architecture.
+
+List the families that exist for the task, name the one each arm belongs to, and **state in the
+report which families you did not try and why**. An untried family is a hole in the result, not an
+absence of evidence about it.
 
 ## The ratchet
 
@@ -198,16 +265,23 @@ result.
 ```sh
 cd <praxis repo root>          # the package is not pip-installed; imports need this cwd
 
+# --meta-json is the PATH to bootstrap's model_meta.json (carries baseline_runs + sigmas)
 python -m knowledge.ml_registry.cli register-model-with-baseline \
-    --space-file <state>.json --meta-json <meta>.json --ledger <project>/results.tsv
+    --space-file <state>.json --meta-json <out-dir>/model_meta.json --ledger <project>/results.tsv
+# stdout: OK: registered model model-<hex>  -- rewrite each idea.model_id to this minted id
 
+# --meta-json only (no --model-id flag). model_id lives inside the json, from ideas.jsonl.
 python -m knowledge.ml_registry.cli register-idea \
-    --space-file <state>.json --model-id <id> --meta-json <idea>.json      # per hypothesis
+    --space-file <state>.json --meta-json <idea>.json
 
+# Non-composing campaign -- dispatch list written up front:
 python -m knowledge.ml_registry.cli supervise-campaign \
-    --space-file <state>.json --model-id <id> --ledger <project>/results.tsv \
+    --space-file <state>.json --model-id <minted-id> --ledger <project>/results.tsv \
     --dispatch-script <trials>.json [--max-dispatches N] [--lesson-file lessons.jsonl]
 ```
+
+Do **not** use the `backlog` CLI verb as the campaign roster — it lists only UNTRIED ideas, so
+judged arms vanish and look excluded.
 
 **Know what `--dispatch-script` is before you rely on it.** It is a list of trial-meta objects
 consumed in dispatch order — the supervisor pops one per dispatch. It adjudicates correctly and
@@ -222,7 +296,16 @@ when the script is written. Two honest options, and the choice should be explici
   itself independent. The dispatch script works as-is, and the run is fully reproducible.
 - **Composing campaign** — the project drives the loop itself, one arm at a time, and calls the
   registry only for the verdict. Adjudication stays external; only the ORDER becomes adaptive.
-  `sports_analysis`'s `src/stroke_lab/campaign.py` is the worked example.
+  `sports_analysis`'s `src/stroke_lab/campaign.py` is the worked example. Use `--json` on
+  `register-trial` to get `trial_id`; pass that to `resolve-verdict --trial-id`, never an idea id.
+
+  ```sh
+  python -m knowledge.ml_registry.cli register-trial \
+      --space-file <state>.json --meta-json <trial>.json --ledger <project>/results.tsv --json
+  # {"trial_id": "trial-<hex>"}  -- this is what resolve-verdict needs
+  python -m knowledge.ml_registry.cli resolve-verdict \
+      --space-file <state>.json --trial-id <trial-id> --ledger <project>/results.tsv --json
+  ```
 
 Never resolve this by having the loop compute its own verdict. A verdict decided by the code that
 wants to win is not a verdict, and the external ledger exists precisely to prevent it.
