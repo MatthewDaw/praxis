@@ -74,6 +74,14 @@ report so a human can ack it — but it must never be silently skipped.
    working; a stale lease (`now - claim_heartbeat_at > claim_lease_ttl`) auto-reclaims so a dead agent
    never strands a ticket. Parallel agents never double-work because a live claim is visible to all; a
    rare double-claim is harmless wasted work, not corruption.
+
+   **The heartbeat proves the agent is ALIVE, not that the ticket is ADVANCING.** They are different
+   claims and only the first one is made here. A lease refreshed on schedule by an agent that is
+   stuck in a loop, re-reading the same files, or running a step that will never finish looks
+   exactly like healthy work — the lease cannot distinguish them, and neither can anyone watching
+   it. Any step inside a ticket that can run longer than a few minutes must ALSO emit progress
+   lines (see below), or the only available answer to "how is this ticket going" is "the lease is
+   fresh", which is not an answer.
 3. **RESOLVE the validation REQUIREMENTS** — determine which abstract validation *requirements* this
    ticket must satisfy **BY QUERY** (its tag ∪ its surfaces ∪ semantic match against active
    `category="check"` facts). The ticket carries identity only and **NEVER an authored requirement
@@ -452,6 +460,50 @@ return { done: true }
 > **Reap the round's worktrees before looping.** After integrating a round, remove its worktrees
 > (`git worktree remove --force <path>`, which KEEPS the branch) and `git worktree prune`. Left alone they
 > accumulate across every round — one run stranded 29 of them, each holding a full dependency tree.
+
+## Progress logging — a heartbeat is not progress
+
+**A heartbeat proves the process is alive. It cannot tell you how far along it is, whether it will
+finish this hour, or whether what it is producing is getting worse.** Those are the questions
+actually asked while a build runs, and answering them by waiting for it to end is the same as not
+answering them.
+
+Measured on a real run: one step ran **28 minutes emitting nothing**. Its per-unit scores were
+0.6183 / 0.6273 / 0.4123 / 0.0491 — degrading from the third unit onward — and it was
+*simultaneously* being truncated by a wall-clock budget. Both facts existed inside the process the
+whole time and were only discoverable after it exited, by which point a meaningless result had
+been recorded as a verdict. Every check while it ran returned "394% CPU", which was true right up
+to the end and told nobody anything.
+
+Any step that can run longer than a few minutes MUST emit one line per unit of work:
+
+```python
+import sys; sys.path.insert(0, "<praxis>/agent_factory/scripts")
+from progress import Progress
+
+p = Progress("migrate call sites", total=len(sites))   # total is what makes an ETA possible
+for site in sites:
+    ...
+    p.step()                                            # p.step(score=x) adds a degradation warning
+p.done()
+```
+
+```
+[progress] migrate call sites 34/120 28% elapsed 4m10s eta 10m32s
+[progress][WARN] fit arm: last=0.0491 is 3.2 sigma below the mean of the previous 7 (0.5881)
+```
+
+Three properties are load-bearing:
+
+- **`total` gives an ETA**, which is what turns "it is still running" into a decision. The unit
+  count is almost always known up front — files to migrate, tickets in a set, folds × seeds.
+- **`score` gives a degradation warning** *while there is still time to act*. It fires at 3 sigma
+  over at least 4 prior samples, so it stays rare enough to be read.
+- **Lines are flushed and prefixed `[progress]`**, so a supervisor can `grep` them out of an
+  interleaved log. A buffered progress line is not a progress line.
+
+Non-Python steps follow the same convention by hand: one flushed line per unit, prefixed
+`[progress]`, carrying `n/total`, `elapsed`, and a metric where one exists.
 
 ## 1. FIND — pop the ONE next dependency-ready ticket
 
