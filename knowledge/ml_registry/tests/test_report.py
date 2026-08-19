@@ -171,3 +171,54 @@ def test_diagnoses_appear_in_the_rendered_status() -> None:
     for tag, c in (("M06", "c1"), ("M08", "c2")):
         _voided(space, mid, _idea(space, mid, tag), c, "ledger status 'budget_exhausted' is not a fair run")
     assert "BLOCKING: budget_too_small" in format_status(campaign_status(space, mid))
+
+
+def test_acknowledging_a_diagnosis_unblocks_the_loop() -> None:
+    """A diagnosis is computed from HISTORY, so it outlives its own cause. Two arms voided under a
+    wall-clock budget; the budget was changed to CPU time, which fixes the cause -- and the loop
+    still refused to dispatch because the voided trials were still in the history."""
+    from knowledge.ml_registry.report import acknowledge_diagnosis, diagnose
+
+    space, mid = _space()
+    for tag, c in (("M06", "c1"), ("M08", "c2")):
+        _voided(space, mid, _idea(space, mid, tag), c, "ledger status 'budget_exhausted' is not a fair run")
+    assert "budget_too_small" in {d["kind"] for d in diagnose(space, mid)}
+
+    acknowledge_diagnosis(space, mid, "budget_too_small", reason="budget now on CPU time")
+    assert "budget_too_small" not in {d["kind"] for d in diagnose(space, mid)}
+
+
+def test_it_is_not_a_mute_a_new_void_fires_it_again() -> None:
+    """Acknowledging a cause you did not fix buys exactly ONE more arm -- which makes a false
+    acknowledgement cheap to detect and impossible to sustain."""
+    from knowledge.ml_registry.report import acknowledge_diagnosis, diagnose
+
+    space, mid = _space()
+    for tag, c in (("M06", "c1"), ("M08", "c2")):
+        _voided(space, mid, _idea(space, mid, tag), c, "ledger status 'x' is not a fair run")
+    acknowledge_diagnosis(space, mid, "budget_too_small", reason="raised the budget")
+
+    _voided(space, mid, _idea(space, mid, "M11"), "c3", "ledger status 'x' is not a fair run")
+    assert "budget_too_small" in {d["kind"] for d in diagnose(space, mid)}
+
+
+def test_acknowledging_one_kind_leaves_others_blocking() -> None:
+    from knowledge.ml_registry.report import acknowledge_diagnosis, diagnose
+
+    space, mid = _space()
+    for tag, c in (("A", "c1"), ("B", "c2")):
+        _voided(space, mid, _idea(space, mid, tag), c, "ledger status 'x' is not a fair run")
+    for tag, c in (("C", "c3"), ("D", "c4")):
+        _voided(space, mid, _idea(space, mid, tag), c, "throughput 1.1 is more than 5% below ...")
+
+    acknowledge_diagnosis(space, mid, "budget_too_small", reason="fixed")
+    kinds = {d["kind"] for d in diagnose(space, mid)}
+    assert "budget_too_small" not in kinds and "void_gate_too_tight" in kinds
+
+
+def test_a_reason_is_required() -> None:
+    from knowledge.ml_registry.report import acknowledge_diagnosis
+
+    space, mid = _space()
+    with pytest.raises(ValueError):
+        acknowledge_diagnosis(space, mid, "budget_too_small", reason="  ")

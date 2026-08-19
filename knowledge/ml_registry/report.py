@@ -128,8 +128,17 @@ def diagnose(space: RegistrySpace, model_id: str) -> list[dict[str, str]]:
     unfair = [t for t in voided if "not a fair run" in str(t.meta.get("void_reason", ""))]
     slow = [t for t in voided if "throughput" in str(t.meta.get("void_reason", ""))]
 
+    model = space.get(model_id)
+    acks = {a["kind"]: a for a in (model.meta.get(ACKNOWLEDGED_FIELD) or [])} if model else {}
+    counts = {"budget_too_small": len(unfair), "void_gate_too_tight": len(slow)}
+
+    def _suppressed(kind: str) -> bool:
+        # Suppressed only while NO NEW void of this kind has appeared since the acknowledgement.
+        ack = acks.get(kind)
+        return ack is not None and counts.get(kind, 0) <= int(ack.get("void_count_at_ack", 0))
+
     out: list[dict[str, str]] = []
-    if len(unfair) >= REPEATED_VOID_THRESHOLD:
+    if len(unfair) >= REPEATED_VOID_THRESHOLD and not _suppressed("budget_too_small"):
         out.append({
             "kind": "budget_too_small",
             "severity": "blocking",
@@ -145,7 +154,7 @@ def diagnose(space: RegistrySpace, model_id: str) -> list[dict[str, str]]:
                       f"budget on CPU TIME (resource.getrusage) rather than wall clock, or the "
                       f"same arm passes and fails depending on who else is running.",
         })
-    if len(slow) >= REPEATED_VOID_THRESHOLD:
+    if len(slow) >= REPEATED_VOID_THRESHOLD and not _suppressed("void_gate_too_tight"):
         out.append({
             "kind": "void_gate_too_tight",
             "severity": "blocking",
@@ -172,3 +181,55 @@ def diagnose(space: RegistrySpace, model_id: str) -> list[dict[str, str]]:
                       f"unmeasured: {', '.join(needs_rerun)}",
         })
     return out
+
+#: Diagnoses the operator has acknowledged as REMEDIATED, with the void count at the time. A
+#: diagnosis is computed from history, so it survives the fix that resolved it -- and an
+#: autonomous loop that stops on a blocking diagnosis then stops FOREVER.
+ACKNOWLEDGED_FIELD = "acknowledged_diagnoses"
+
+
+def acknowledge_diagnosis(space: RegistrySpace, model_id: str, kind: str,
+                          reason: str) -> dict[str, object]:
+    """Record that a blocking diagnosis has been REMEDIATED, so the loop may proceed.
+
+    Diagnoses are computed from the trial history, which means they outlive their own cause. A
+    budget raised, a gate disabled, a machine moved -- none of that erases the voids that prompted
+    the diagnosis, so it keeps firing and a loop that halts on it halts permanently.
+
+    Observed immediately: two arms voided under a wall-clock budget on a shared box. The budget
+    was changed to CPU time, which fixes the cause -- and the loop still refused to dispatch,
+    because two voided trials were still sitting in the history.
+
+    This is NOT a mute. The void count of that kind is recorded at acknowledgement, and the
+    diagnosis fires again the moment a NEW void of the same kind appears. Acknowledging a cause
+    you did not actually fix therefore buys exactly one more arm before the loop stops again --
+    which is the right cost, because it makes a false acknowledgement cheap to detect and
+    impossible to sustain.
+
+    ``reason`` is required and recorded: an acknowledgement without one is indistinguishable from
+    silencing an inconvenient blocker.
+    """
+    model = space.get(model_id)
+    if model is None or model.category != MODEL:
+        raise KeyError(f"model {model_id!r} was never registered")
+    if not reason or not reason.strip():
+        raise ValueError("an acknowledgement reason is required")
+
+    counts = _void_counts(space, model_id)
+    acks = list(model.meta.get(ACKNOWLEDGED_FIELD) or [])
+    acks = [a for a in acks if a.get("kind") != kind]          # supersede any earlier ack
+    acks.append({"kind": kind, "reason": reason, "void_count_at_ack": counts.get(kind, 0)})
+    model.meta[ACKNOWLEDGED_FIELD] = acks
+    return {"kind": kind, "void_count_at_ack": counts.get(kind, 0)}
+
+
+def _void_counts(space: RegistrySpace, model_id: str) -> dict[str, int]:
+    """How many voids of each diagnosable kind exist right now."""
+    trials = [f for f in space.list_facts(TRIAL) if f.meta.get("model_id") == model_id]
+    voided = [t for t in trials if str(t.meta.get("status")) == "voided"]
+    return {
+        "budget_too_small": sum(1 for t in voided
+                                if "not a fair run" in str(t.meta.get("void_reason", ""))),
+        "void_gate_too_tight": sum(1 for t in voided
+                                   if "throughput" in str(t.meta.get("void_reason", ""))),
+    }

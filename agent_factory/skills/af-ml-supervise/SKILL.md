@@ -252,6 +252,24 @@ simply have been wrong.
 Otherwise the same arm passes or fails depending on who else is running, and the campaign records
 that as a property of the model.
 
+## Acknowledge a diagnosis you have actually fixed
+
+A diagnosis is computed from the trial HISTORY, so it **outlives its own cause**. Raise the
+budget, disable the gate, move to a quieter machine — none of that erases the voids that prompted
+it, so it keeps firing and a loop that halts on a blocking diagnosis halts *permanently*.
+
+```sh
+python -m knowledge.ml_registry.cli acknowledge-diagnosis \
+    --space-file <state>.json --model-id <id> --kind budget_too_small \
+    --reason "budget now measured in CPU time, not wall clock"
+```
+
+**This is not a mute.** The void count of that kind is recorded at acknowledgement, and the
+diagnosis fires again the moment a NEW void of the same kind appears. Acknowledging a cause you
+did not actually fix therefore buys exactly one more arm before the loop stops again — which is
+the right cost, because it makes a false acknowledgement cheap to detect and impossible to
+sustain.
+
 ## Diagnose a void, do not just re-run it
 
 A void is a decision to **re-run**. That is right once, and wrong the moment the reason is
