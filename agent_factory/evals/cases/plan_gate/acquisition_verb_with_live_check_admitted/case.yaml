@@ -1,0 +1,30 @@
+# Positive control: the same acquisition ticket, but a check whose command actually leaves the
+# process and queries the catalogue it claims to have pulled from. The rule stands down.
+id: plan_gate_acquisition_verb_with_live_check_admitted
+component: plan_gate
+input:
+  project: mvpvu-data-collection
+  contract:
+    signed: true
+    actions_recorded: true
+  checks:
+    - check_id: tests-acquisition
+      applies_to: ["acquisition"]
+      run: "uv run --with pytest pytest tests/acquisition -q"
+    - check_id: games-materialised
+      applies_to: ["acquisition"]
+      run: "curl -sSf https://catalogue.example/games?track=panorama_hd | jq -e 'length >= 30'"
+  requirements:
+    - id: R6
+      text: "The selected games are acquired at panorama_hd from the mvpvu catalogue, and each acquired file is verified against its recorded checksum."
+      acceptance: "At least 30 selected games are present at panorama_hd with a checksum matching the catalogue entry."
+      defines: ["acquisition manifest"]
+      references: []
+      source: "prd-mvpvu-data-collection"
+      tags: ["acquisition"]
+      verify: "automated"
+  out_of_scope: []
+rule_ids: ["R-EXTERNAL-STATE-NEEDS-LIVE-CHECK", "R-CONTRACT-SIGNED"]
+deterministic_checks:
+  - name: gate_admits
+    ref: "evals.checks:gate_admits"

@@ -83,11 +83,38 @@ DEFAULT_DEVICE = "cpu"
 # before they are infrastructure.
 #
 # STRONG terms name a specific external system and stand alone.
+#
+# The first vocabulary was entirely CLOUD NOUNS, and that left the biggest hole in the rule. A ticket
+# that PULLS bytes IN claims external state through VERBS: measured against prd-mvpvu-data-collection,
+# "the selected games are acquired at panorama_hd from the mvpvu catalogue" (~33 GB over the network),
+# "focus_hd companions are acquired only for games already selected" and "... before any focus_hd is
+# acquired in bulk" matched NOTHING — the three tickets that move the most bytes were the three the
+# rule did not guard. Its neighbours tripped only because they happened to spell the token "S3".
+#
+# So the acquisition half below, deliberately narrow (measured over all 176 requirements in all seven
+# live prd-* snapshots: 8 newly tripped, every one a genuine acquisition ticket, and ZERO in the three
+# plans with no external data at all):
+#   * ACTIVE forms only ("downloads", "fetching", "acquires", "download manager").
+#   * A past participle counts only behind a copular auxiliary ("games ARE acquired", "no bytes ARE
+#     downloaded"). Bare participles are adjectives describing something already on disk, and every
+#     one measured was a false positive: "downloaded model checkpoint matches the forbidden-licence
+#     list" (a licence gate, it acquires nothing), "the ALREADY-downloaded Roboflow datasets are
+#     characterised", "at least 10 ACQUIRED real games" (a labelling ticket).
+#   * "mirror"/"mirroring" is EXCLUDED: its only hits were pickleball prose about mirroring a gesture.
+#     "pull from" and "sync" are EXCLUDED too — git pull, fetch a row, sync state are ordinary
+#     technical English long before they are network I/O, which is the same trap that made the first
+#     flat vocabulary flag af-clean, a TEXT-ANALYSIS project.
+#   * "upstream/remote/external catalogue|source|host|registry|index|archive" names an outside system
+#     outright, so it stands alone like the cloud nouns do.
 _EXTERNAL_STRONG_RE = re.compile(
     r"\b("
     r"s3|ec2|rds|dynamodb|cloudfront|api gateway|object storage|"
     r"bucket|uploads? to|uploaded to|transferred to|binds? to|listens? on|"
-    r"dns record|https?://"
+    r"dns record|https?://|"
+    # acquisition: bytes pulled IN from outside the repo
+    r"downloads?|downloading|fetch(?:es|ing)?|acquir(?:e|es|ing)|re-?download(?:s|ing)?|"
+    r"(?:is|are|was|were|be|been|being)\s+(?:\w+\s+){0,2}?(?:downloaded|fetched|acquired|re-?downloaded)|"
+    r"(?:upstream|remote|external)\s+(?:catalogue|catalog|source|host|registry|index|archive)"
     r")\b",
     re.IGNORECASE,
 )

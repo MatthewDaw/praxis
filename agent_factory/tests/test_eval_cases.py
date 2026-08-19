@@ -215,6 +215,22 @@ EXPECTED_VERDICTS = {
         "rule_ids": [],
         "messages": [],
     },
+    # Acquisition wording alone — no bucket, no S3, no URL — still claims external state.
+    "plan_gate_acquisition_verb_without_live_check_rejected": {
+        "admitted": False,
+        "rule_ids": ["R-EXTERNAL-STATE-NEEDS-LIVE-CHECK"],
+        "messages": [
+            "R6: claims external state ('are acquired') but resolves no check whose command "
+            "queries that system. A mocked client, a fixture or a constant proves the code's "
+            "shape while the external world stays untouched — author a check whose run actually "
+            'looks (aws/rclone/curl/...), or mark the ticket verify="manual".',
+        ],
+    },
+    "plan_gate_acquisition_verb_with_live_check_admitted": {
+        "admitted": True,
+        "rule_ids": [],
+        "messages": [],
+    },
 }
 
 

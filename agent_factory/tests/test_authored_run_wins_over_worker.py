@@ -20,6 +20,8 @@ only accepts the server's registered ``BUILD_STATE_META_KEYS`` and drops anythin
 import sys
 from pathlib import Path
 
+import pytest
+
 HOOKS = Path(__file__).resolve().parents[1] / "hooks"
 SRC = Path(__file__).resolve().parents[1] / "src"
 for p in (str(SRC), str(HOOKS)):
@@ -184,3 +186,59 @@ def test_the_same_weak_term_counts_on_an_infrastructure_ticket():
 def test_a_strong_term_stands_alone_without_any_tag():
     r = _req(text="The corpus is transferred to S3 under raw/.", tags=[])
     assert _verdict(r, []).admitted is False
+
+
+# --- R-EXTERNAL-STATE-NEEDS-LIVE-CHECK: acquisition is a VERB claim, not a cloud noun -------------
+#
+# Measured 2026-08-19 against prd-mvpvu-data-collection: the three tickets that move the most bytes
+# (R6 alone fetches ~33 GB over the network) tripped NOTHING, because every strong term was a cloud
+# noun and a ticket that pulls bytes in says so with a verb. Their neighbours tripped only by
+# happening to spell "S3".
+
+R6_TEXT = ("the selected games are acquired at panorama_hd from the mvpvu catalogue, and each "
+           "acquired file is verified against its recorded checksum")
+R7_TEXT = "focus_hd companions are acquired only for games already selected"
+R2_TEXT = ("focus_hd magnification over panorama_hd is measured on a 2560x600 game before any "
+           "focus_hd is acquired in bulk")
+
+
+@pytest.mark.parametrize("text", [R6_TEXT, R7_TEXT, R2_TEXT], ids=["R6", "R7", "R2"])
+def test_acquisition_wording_alone_trips_the_rule(text):
+    """No bucket, no S3, no URL — just bytes pulled in from an outside catalogue. It still needs a
+    check that goes and looks."""
+    v = _verdict(_req(text=text, tags=["acquisition"]), [])
+    assert v.admitted is False
+    assert v.rule_ids == ["R-EXTERNAL-STATE-NEEDS-LIVE-CHECK"]
+
+
+def test_acquisition_wording_stands_down_behind_a_live_check():
+    v = _verdict(
+        _req(text=R6_TEXT, tags=["acquisition"]),
+        [{"check_id": "games-present", "applies_to": ["acquisition"],
+          "run": "curl -sSf https://catalogue.example/games | jq -e 'length >= 30'"}],
+    )
+    assert v.admitted is True
+
+
+def test_a_bare_past_participle_is_an_adjective_not_an_acquisition_claim():
+    """Every bare-participle hit measured across the seven live snapshots was a false positive: a
+    licence gate matching a 'downloaded model checkpoint', 'the already-downloaded Roboflow
+    datasets are characterised', 'at least 10 acquired real games' on a labelling ticket. None of
+    them fetches anything; the bytes are already on disk."""
+    for text in (
+        "A CI licence gate fails the build when any downloaded model checkpoint matches the list.",
+        "The already-downloaded Roboflow ball datasets are characterised for scale.",
+        "At least 2000 ball instances are labelled across at least 10 acquired real games.",
+    ):
+        assert _verdict(_req(text=text, tags=["labelling"]), []).admitted is True, text
+
+
+def test_ordinary_technical_english_is_not_acquisition():
+    """'mirror', 'pull from' and 'sync' were weighed and DELIBERATELY EXCLUDED — mirroring a gesture,
+    git pull, fetching a row and syncing state are ordinary technical English."""
+    for text in (
+        "The pose comparator scores mirroring of the reference gesture over the window.",
+        "Mirror augmentation is refuted for side-cue features and recorded as a negative result.",
+        "The scheduler syncs in-memory state to the local cache after each rule pass.",
+    ):
+        assert _verdict(_req(text=text, tags=["analysis"]), []).admitted is True, text
