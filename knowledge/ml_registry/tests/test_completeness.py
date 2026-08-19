@@ -172,3 +172,27 @@ def test_unreachable_arms_do_not_block_completion() -> None:
     out = campaign_completeness(space, mid, STAGES)
     blocking = {b["kind"] for b in out["blocking"]}
     assert "stage_open" not in blocking, out["blocking"]
+
+
+def test_completeness_uses_meta_stage_not_just_axis() -> None:
+    """Same shape as dropping depends_on: items were built without stage, so
+    default_stage_of fell through to axis and a staged arm whose seed-research
+    axis was not a campaign phase vanished from its stage.
+
+    Observed on the ball campaign: S06/S07 carried stage=gate and axis=supplements.
+    Completeness never saw them in gate, so it could report gate closed while
+    next_queue still had leftover gate arms.
+    """
+    space, mid = _space()
+    for s in STAGES:
+        _full(space, mid, s)
+    extra = register_idea(space, {"model_id": mid, "origin": "seeded",
+                                  "axis": "supplements", "description": "gate leftover",
+                                  "id": "S06"})
+    space.get(extra).meta["stage"] = "tuning"
+    space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
+
+    out = campaign_completeness(space, mid, STAGES)
+    assert any(b["kind"] == "stage_open" and b["stage"] == "tuning" for b in out["blocking"]), (
+        out["blocking"]
+    )

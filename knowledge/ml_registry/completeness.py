@@ -53,7 +53,12 @@ def campaign_completeness(space: RegistrySpace, model_id: str, stages: Sequence[
         raise KeyError(f"model {model_id!r} was never registered")
 
     ideas = [f for f in space.list_facts(IDEA) if f.meta.get("model_id") == model_id]
-    items = [{"id": str(f.meta.get("id") or f.id), "axis": str(f.meta.get("axis") or ""),
+    # `stage` and `depends_on` must both be copied. default_stage_of reads
+    # stage then axis; unreachable() reads depends_on. Dropping either makes a
+    # guard that is present, wired, and inert -- the same defect twice.
+    items = [{"id": str(f.meta.get("id") or f.id),
+              "axis": str(f.meta.get("axis") or ""),
+              "stage": str(f.meta.get("stage") or ""),
               "status": str(f.meta.get("status") or "untried"),
               "depends_on": list(f.meta.get("depends_on") or []),
               "_fact": f.id} for f in ideas]

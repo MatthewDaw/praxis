@@ -946,8 +946,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.json:
                 print(json.dumps(out, indent=2))
             elif out["done"]:
-                print("CAMPAIGN COMPLETE: every phase populated and closed, nothing awaiting "
-                      "re-run, winner trained to convergence")
+                if args.no_require_convergence:
+                    print("CAMPAIGN COMPLETE: every phase populated and closed, nothing awaiting "
+                          "re-run; convergence waived (--no-require-convergence)")
+                else:
+                    print("CAMPAIGN COMPLETE: every phase populated and closed, nothing awaiting "
+                          "re-run, winner trained to convergence")
             else:
                 for b in out["blocking"]:
                     where = f" [{b['stage']}]" if b["stage"] else ""
