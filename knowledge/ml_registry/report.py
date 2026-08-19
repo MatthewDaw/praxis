@@ -233,3 +233,33 @@ def _void_counts(space: RegistrySpace, model_id: str) -> dict[str, int]:
         "void_gate_too_tight": sum(1 for t in voided
                                    if "throughput" in str(t.meta.get("void_reason", ""))),
     }
+
+#: Trial statuses that mean the idea's question was ANSWERED by that run.
+#:
+#: `voided` is absent deliberately: a voided run was unfair, so the question is still open and the
+#: arm must be re-run. `complete`/`running` are absent because the trial is still IN FLIGHT --
+#: `complete` means the training finished and is awaiting adjudication, not that a verdict exists.
+ANSWERING_TRIAL_STATUSES = frozenset({"succeeded", "failed", "stagnant", "superseded"})
+
+
+def idea_verdicts(space: RegistrySpace, model_id: str) -> dict[str, str]:
+    """``{idea tag: trial status}`` for ideas whose LATEST trial answered them.
+
+    Derived from trials, not from `idea.meta.status`, and the distinction caused a live incident.
+    `resolve-verdict` writes the verdict onto the TRIAL; it does not stamp the idea. A campaign
+    that asked the idea instead saw `None` for every arm the registry had just adjudicated, decided
+    those arms were unanswered, deleted their local verdicts and re-queued them -- running the same
+    arms again, and again, indefinitely. It re-ran three arms before it was caught, and nothing in
+    the loop could notice: every iteration looked like honest new work.
+
+    Keyed by the project's own tag (`meta["id"]`) because that is what a backlog is written in.
+    """
+    ideas = {f.id: str(f.meta.get("id") or f.id) for f in space.list_facts(IDEA)
+             if f.meta.get("model_id") == model_id}
+    latest: dict[str, Any] = {}
+    for t in space.list_facts(TRIAL):
+        if t.meta.get("model_id") == model_id and str(t.meta.get("idea_id")) in ideas:
+            latest[str(t.meta.get("idea_id"))] = t          # later registrations win
+    return {ideas[i]: str(t.meta.get("status"))
+            for i, t in latest.items()
+            if str(t.meta.get("status")) in ANSWERING_TRIAL_STATUSES}
