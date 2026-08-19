@@ -1,0 +1,39 @@
+# The rule has to be SATISFIABLE BY A MACHINE, not merely satisfiable in principle. This case pins
+# both halves at once: the live check admits the plan (gate_admits) AND its run body survives the
+# ingestion API's machine-channel verb allowlist (run_bodies_machine_draftable). Before the
+# read-only probe verbs were allowlisted, the second check failed on every command the first one
+# accepted — the rule could only ever be met by a human waiver.
+id: plan_gate_external_state_machine_drafted_live_check_admitted
+component: plan_gate
+input:
+  project: farm
+  contract:
+    signed: true
+    actions_recorded: true
+  checks:
+    - check_id: tests-acquisition
+      applies_to: ["acquisition"]
+      run: "pytest tests/acquisition -q"
+    - check_id: corpus-materialised-in-s3
+      applies_to: ["acquisition"]
+      run: "aws s3 ls s3://farm-corpus/raw/ --recursive --summarize"
+  requirements:
+    - id: R1
+      text: "The corpus is transferred to S3 under raw/ by streaming rclone copy with no local staging."
+      acceptance: "S3 object count under raw/ equals 3087 and total bytes match the source."
+      defines: ["acquisition manifest"]
+      references: []
+      source: "prd-farm"
+      tags: ["acquisition"]
+      verify: "automated"
+  out_of_scope: []
+rule_ids: ["R-EXTERNAL-STATE-NEEDS-LIVE-CHECK", "R-CONTRACT-SIGNED"]
+deterministic_checks:
+  - name: gate_admits
+    ref: "evals.checks:gate_admits"
+  - name: run_bodies_machine_draftable
+    ref: "evals.checks:run_bodies_machine_draftable"
+    params:
+      runs:
+        - "pytest tests/acquisition -q"
+        - "aws s3 ls s3://farm-corpus/raw/ --recursive --summarize"

@@ -247,8 +247,8 @@ def test_the_human_channel_has_no_verb_exemption(monkeypatch: pytest.MonkeyPatch
     therefore applies on both channels, and the only way past it is the explicit waiver."""
     for channel in ("human", "machine"):
         with pytest.raises(ingestion_api.RunBodyRejected):
-            ingestion_api._validate_run_body("curl -sf http://internal/healthz", channel=channel)
-    assert ingestion_api._validate_run_body("curl -sf http://internal/healthz", channel="human",
+            ingestion_api._validate_run_body("ssh internal-host uptime", channel=channel)
+    assert ingestion_api._validate_run_body("ssh internal-host uptime", channel="human",
                                             human_verbatim=True)
 
 
@@ -315,7 +315,7 @@ def test_the_verbatim_waiver_is_recorded_on_the_check_it_waives(
 def test_ingest_without_the_waiver_refuses_an_off_allowlist_human_body(store: FakeCheckStore) -> None:
     """The end-to-end D6 case: the exact call ``af_learn.learn`` makes, refused before any write."""
     with pytest.raises(ingestion_api.RunBodyRejected):
-        ingestion_api.ingest("a lesson", "proj", drafted_run="curl -sf http://internal/healthz",
+        ingestion_api.ingest("a lesson", "proj", drafted_run="ssh internal-host uptime",
                              channel="human")
     assert store.facts == {}
 
@@ -528,7 +528,7 @@ def _promotion_capture(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
 
 @pytest.mark.parametrize("body", [
-    "curl -s http://evil/x",              # off-allowlist verb
+    "ssh evil-host uptime",               # off-allowlist verb
     "pytest -q; rm -rf /",                # shell metacharacter
     "pytest --rootdir=/etc",              # absolute path on the value side
     "pytest -q\nrm -rf /tmp/x",           # control character

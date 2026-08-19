@@ -125,11 +125,11 @@ def test_human_channel_run_body_is_NOT_exempt_from_the_allowlist(
     calls = _recording_request(monkeypatch)
     with pytest.raises(ingestion_api.RunBodyRejected):
         ingestion_api.ingest("a lesson", "proj",
-                             drafted_run="curl -s http://internal/healthz", channel="human")
+                             drafted_run="ssh internal-host uptime", channel="human")
     assert not _calls_for(calls, "check") and not _calls_for(calls, "lesson")
 
     result = ingestion_api.ingest("a lesson", "proj",
-                                  drafted_run="curl -s http://internal/healthz", channel="human",
+                                  drafted_run="ssh internal-host uptime", channel="human",
                                   human_verbatim=True)
     assert result["check_id"] is not None
     assert _calls_for(calls, "check")[0]["body"]["meta"]["verb_allowlist_waived"] is True

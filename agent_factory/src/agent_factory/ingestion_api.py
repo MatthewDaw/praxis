@@ -204,15 +204,53 @@ def transition_enforcement_state(current_state: str | None, event: str) -> str:
 # prose, so treating "human" as reviewed let arbitrary verbs land as GATING checks. The only way
 # past the allowlist is the explicit, recorded ``human_verbatim=True`` waiver on :func:`ingest`
 # (see :func:`_validate_run_body`), which the drafting path (``af_learn.learn``) cannot set.
+#
+# The set also carries a NARROW read-only external-probe wing (``aws``/``rclone``/``curl``). Without
+# it the factory contradicted itself: ``plan_gate.R-EXTERNAL-STATE-NEEDS-LIVE-CHECK`` REJECTS a
+# ticket claiming external state unless it resolves a check whose run leaves the process and touches
+# the world (``plan_gate._LIVE_COMMAND_RE``) — and the intersection of that regex with this
+# allowlist was EMPTY, so no machine could author a satisfying check. The rule was therefore not
+# enforcement but a standing waiver request, and waivers are how three acquisition tickets went
+# green against a moto-mocked S3 with no bucket in the account (mvpvu-data-collection, 2026-08-18).
+# Every probe verb is shape-constrained below so it can only READ: a gating check that can delete an
+# S3 object would be far worse than the contradiction it fixes.
 RUN_BODY_ALLOWED_VERBS = frozenset({
     "pytest", "python", "python3", "npm", "npx", "make", "grep", "ruff", "mypy",
     "eslint", "playwright",
+    "aws", "rclone", "curl",
 })
 # Sub-shape constraints for the verbs whose FIRST argument decides whether the command is a test
 # runner or an arbitrary-code evaluator.
 _PYTHON_ALLOWED_MODULES = frozenset({"pytest", "unittest"})
 _NPM_ALLOWED_SUBCOMMANDS = frozenset({"test", "run"})
 _NPX_ALLOWED_TOOLS = frozenset({"playwright"})
+# Read-only shapes for the external-probe verbs. Allowlists, never denylists: an unrecognised
+# operation is REFUSED, so a mutating subcommand invented upstream cannot arrive pre-approved.
+# ``aws`` is constrained as <service> <operation>, matched positionally at argv[1]/argv[2] — a
+# global flag before the service (``aws --region x s3 ls``) is refused too, because letting flags
+# float ahead of the operation is how the operation stops being the thing that was checked.
+_AWS_ALLOWED_OPERATIONS = {
+    "s3": frozenset({"ls"}),                       # cp/mv/rm/sync/mb/rb all write
+    "sts": frozenset({"get-caller-identity"}),
+}
+# s3api is prefix-shaped rather than enumerated: every read verb it has is list-*/head-*, and every
+# mutation is put-*/delete-*/create-*/copy-*/restore-*.
+_AWS_S3API_READ_PREFIXES = ("list-", "head-")
+_RCLONE_ALLOWED_OPERATIONS = frozenset({"lsjson", "ls", "lsl", "size", "about"})
+# curl is allowlisted TOKEN BY TOKEN: anything not named here is refused, so ``-d``/``--data-raw``/
+# ``-T``/``-F``/``-o``/``--upload-file`` need no denylist entry to be rejected, and neither does the
+# next upload flag curl grows.
+_CURL_ALLOWED_FLAGS = frozenset({
+    "-I", "--head", "-s", "--silent", "-S", "--show-error", "-f", "--fail",
+    "-L", "--location", "-i", "--include",
+})
+# curl bundles single-letter flags (``-sfL``); each letter is expanded and allowlisted on its own,
+# so a bundle can never smuggle a letter the unbundled form would refuse (``-so out`` is rejected
+# exactly like ``-s -o out``).
+_CURL_BUNDLABLE_LETTERS = frozenset({"I", "s", "S", "f", "L", "i"})
+_CURL_METHOD_FLAGS = frozenset({"-X", "--request"})
+_CURL_ALLOWED_METHODS = frozenset({"GET", "HEAD"})
+_CURL_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 # Any of these in the raw body means the author is reaching for a shell. There is no shell.
 _RUN_BODY_FORBIDDEN_CHARS = (";", "&", "|", "`", "$", ">", "<", "(", ")", "{", "}")
@@ -498,6 +536,96 @@ def _validate_allowlisted_argv(argv: list[str], body: str) -> None:
                 f"drafted run body {body!r} must be 'npx "
                 f"<{'|'.join(sorted(_NPX_ALLOWED_TOOLS))}> ...'"
             )
+    elif verb == "aws":
+        _validate_aws_argv(rest, body)
+    elif verb == "rclone":
+        if not rest or rest[0] not in _RCLONE_ALLOWED_OPERATIONS:
+            raise RunBodyRejected(
+                f"drafted run body {body!r} must be 'rclone "
+                f"<{'|'.join(sorted(_RCLONE_ALLOWED_OPERATIONS))}> ...' — a check PROBES external "
+                f"state, it never copies, moves, syncs or deletes it"
+            )
+    elif verb == "curl":
+        _validate_curl_argv(rest, body)
+
+
+def _validate_aws_argv(rest: list[str], body: str) -> None:
+    """``aws`` is admitted ONLY as a read-only probe: ``s3 ls``, ``s3api list-*``/``head-*`` and
+    ``sts get-caller-identity``. Every other service and every mutating operation is refused."""
+    if len(rest) < 2:
+        raise RunBodyRejected(
+            f"drafted run body {body!r} must be 'aws <service> <operation> ...' — a bare "
+            f"'aws' with no positional operation cannot be shape-checked"
+        )
+    service, operation = rest[0], rest[1]
+    if service == "s3api":
+        if not operation.startswith(_AWS_S3API_READ_PREFIXES):
+            raise RunBodyRejected(
+                f"drafted run body {body!r} invokes 's3api {operation}', which is not a "
+                f"read-only operation; only "
+                f"{'/'.join(prefix + '*' for prefix in _AWS_S3API_READ_PREFIXES)} may be drafted"
+            )
+        return
+    allowed = _AWS_ALLOWED_OPERATIONS.get(service)
+    if allowed is None:
+        raise RunBodyRejected(
+            f"drafted run body {body!r} invokes the AWS service {service!r}; only "
+            f"{sorted(set(_AWS_ALLOWED_OPERATIONS) | {'s3api'})} may be drafted, and only "
+            f"their read-only operations"
+        )
+    if operation not in allowed:
+        raise RunBodyRejected(
+            f"drafted run body {body!r} invokes 'aws {service} {operation}', which is not one "
+            f"of the read-only operations {sorted(allowed)} — a check PROBES external state, it "
+            f"never mutates it"
+        )
+
+
+def _validate_curl_argv(rest: list[str], body: str) -> None:
+    """``curl`` is admitted ONLY as a safe read: a URL, the harmless transfer flags, and at most an
+    explicit ``-X GET``/``-X HEAD``. Token-by-token allowlist — an unlisted flag is refused, so no
+    body-carrying, upload or output-writing flag can appear."""
+    if not rest:
+        raise RunBodyRejected(f"drafted run body {body!r} must be 'curl <flags> <url>'")
+    saw_url = False
+    index = 0
+    while index < len(rest):
+        token = rest[index]
+        if token in _CURL_METHOD_FLAGS:
+            method = rest[index + 1] if index + 1 < len(rest) else ""
+            if method.upper() not in _CURL_ALLOWED_METHODS:
+                raise RunBodyRejected(
+                    f"drafted run body {body!r} requests HTTP method {method!r}; a drafted check "
+                    f"may only issue {sorted(_CURL_ALLOWED_METHODS)}"
+                )
+            index += 2
+            continue
+        if token in _CURL_ALLOWED_FLAGS:
+            index += 1
+            continue
+        if (
+            len(token) > 2
+            and token.startswith("-")
+            and not token.startswith("--")
+            and set(token[1:]) <= _CURL_BUNDLABLE_LETTERS
+        ):
+            index += 1
+            continue
+        if token.startswith("-"):
+            raise RunBodyRejected(
+                f"drafted run body {body!r} passes the curl flag {token!r}, outside the "
+                f"read-only flag allowlist {sorted(_CURL_ALLOWED_FLAGS | _CURL_METHOD_FLAGS)} — "
+                f"a drafted check may not send a body, upload a file or write output"
+            )
+        if not _CURL_URL_RE.match(token):
+            raise RunBodyRejected(
+                f"drafted run body {body!r} passes the non-URL argument {token!r}; a drafted "
+                f"curl check takes http(s) URLs and read-only flags only"
+            )
+        saw_url = True
+        index += 1
+    if not saw_url:
+        raise RunBodyRejected(f"drafted run body {body!r} names no http(s) URL to probe")
 
 
 def _validate_run_body(run: str, *, channel: str, human_verbatim: bool = False) -> str:

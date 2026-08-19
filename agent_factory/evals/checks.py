@@ -84,3 +84,26 @@ def resolve_check(ref: str):
     module_name, func_name = ref.split(":")
     module = importlib.import_module(module_name)
     return getattr(module, func_name)
+
+
+def run_bodies_machine_draftable(verdict: GateVerdict, runs: list[str] | None = None) -> CheckResult:
+    """Pass iff every run body in ``runs`` survives the ingestion API's MACHINE-channel validation.
+
+    This is the half of ``R-EXTERNAL-STATE-NEEDS-LIVE-CHECK`` that a gate verdict alone cannot see:
+    a live check the gate would accept is worthless if no agent can author it, and for the whole
+    life of the rule the verb allowlist and ``_LIVE_COMMAND_RE`` had an empty intersection.
+    """
+    from agent_factory.ingestion_api import RunBodyRejected, _validate_run_body
+
+    for body in runs or []:
+        try:
+            _validate_run_body(body, channel="machine")
+        except RunBodyRejected as exc:
+            return CheckResult(
+                name="run_bodies_machine_draftable", passed=False,
+                evidence=f"{body!r} is not machine-draftable: {exc}",
+            )
+    return CheckResult(
+        name="run_bodies_machine_draftable", passed=True,
+        evidence=f"{len(runs or [])} run body/bodies accepted on the machine channel",
+    )
