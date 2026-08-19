@@ -58,10 +58,15 @@ for i in $(seq 1 "$MAX_ITER"); do
   # reproducing the same failure -- which is what an unguarded retry loop does.
   if registry campaign-status --space-file "$SPACE" --model-id "$MODEL" --json 2>/dev/null \
        | python3 -c '
-import json,sys
-d=json.load(sys.stdin)
-bad=[x for x in d.get("diagnoses",[]) if x.get("severity")=="blocking"]
-[print(f"  {x[\"kind\"]}: {x[\"detail\"]}") for x in bad]
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception as exc:                 # a parse failure is NOT a blocking diagnosis
+    print("  could not read campaign-status: %s" % exc, file=sys.stderr)
+    sys.exit(0)                          # let the loop proceed; campaign-complete still gates it
+bad = [x for x in d.get("diagnoses", []) if x.get("severity") == "blocking"]
+for x in bad:
+    print("  %s: %s" % (x.get("kind"), x.get("detail")))
 sys.exit(1 if bad else 0)'; then :; else
     echo "[progress] campaign-loop BLOCKED at iteration $i -- running more arms cannot fix this"
     exit 3
