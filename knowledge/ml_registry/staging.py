@@ -116,6 +116,14 @@ def unreachable(items: Iterable[dict[str, Any]], answered_ids: set[str], adopted
     for an item that was tried and lost.
     """
     items = list(items)
+    known = {item[id_key] for item in items} | set(adopted_ids)
+    # A dep that is not a registered idea (and was never adopted) can never
+    # satisfy `depends_on`. That is structurally dead, not "not yet answered":
+    # unanswered means the dep is still an item in this backlog. Observed on a
+    # CV campaign whose gate arms depended on prose preconditions
+    # ("player tracks", "s40 detcensus") -- those strings are not ideas, so
+    # they never entered answered/adopted, the arms stayed leftover, and
+    # next_queue raised StagingStuck forever.
     dead = set(answered_ids) - set(adopted_ids)
     blocked: set[str] = set()
     while True:
@@ -124,7 +132,7 @@ def unreachable(items: Iterable[dict[str, Any]], answered_ids: set[str], adopted
             if item[id_key] in blocked:
                 continue
             deps = item.get(depends_key) or []
-            if any(d in dead or d in blocked for d in deps):
+            if any(d in dead or d in blocked or d not in known for d in deps):
                 blocked.add(item[id_key])
                 grew = True
         if not grew:

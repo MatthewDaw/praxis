@@ -120,6 +120,21 @@ def test_a_thin_stage_blocks_even_though_it_closed() -> None:
                for b in out["blocking"])
 
 
+def test_an_arm_whose_dependency_is_not_an_idea_does_not_hold_its_stage_open() -> None:
+    """S06-style prose depends_on must not block campaign-complete after the rest of the stage ran."""
+    space, mid = _space()
+    _full(space, mid, "representation")
+    _full(space, mid, "architecture")
+    _full(space, mid, "tuning")
+    register_idea(space, {"model_id": mid, "origin": "seeded", "axis": "tuning",
+                          "description": "needs player tracks", "id": "S06",
+                          "depends_on": ["player tracks on the same frames"]})
+    space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
+
+    out = campaign_completeness(space, mid, STAGES)
+    assert out["done"], out["blocking"]
+
+
 def test_convergence_can_be_waived_explicitly() -> None:
     """A campaign that only ever meant to SELECT, never to ship, may say so -- deliberately."""
     space, mid = _space()

@@ -140,15 +140,36 @@ def test_next_queue_unions_unreachable_and_opens_the_next_stage() -> None:
     assert "R07" in blocked
 
 
+def test_a_dependency_that_is_not_a_registered_idea_is_unreachable() -> None:
+    """Prose preconditions and typos are not 'not yet answered' -- they can never be adopted."""
+    from knowledge.ml_registry.staging import unreachable
+
+    items = [{"id": "S06", "axis": "gate", "depends_on": ["player tracks on the same frames"]},
+             {"id": "A01", "axis": "gate"}]
+    assert unreachable(items, set(), set()) == {"S06"}
+
+
+def test_next_queue_frees_a_stage_held_by_a_missing_dependency() -> None:
+    """The live incident: S06/S07 depended on strings that were not ideas, so they
+    were leftover-and-ineligible and StagingStuck wedged the campaign."""
+    items = [{"id": "S06", "axis": "representation", "depends_on": ["s40 detcensus"]},
+             {"id": "M01", "axis": "architecture"}]
+    stage, queue, blocked = next_queue(items, set(), set(), STAGES)
+    assert "S06" in blocked
+    assert stage == "architecture"
+    assert [i["id"] for i in queue] == ["M01"]
+
+
 def test_next_queue_raises_when_a_stage_is_stuck() -> None:
-    """R04 depends on a missing id: not unreachable, not eligible, holds representation open."""
-    items = [{"id": "R04", "axis": "representation", "depends_on": ["MISSING"]},
+    """A cycle: each leftover depends on the other, neither is adopted, neither can run."""
+    items = [{"id": "R04", "axis": "representation", "depends_on": ["R05"]},
+             {"id": "R05", "axis": "representation", "depends_on": ["R04"]},
              {"id": "M01", "axis": "architecture"}]
     try:
         next_queue(items, set(), set(), STAGES)
     except StagingStuck as exc:
         assert exc.stage == "representation"
-        assert exc.leftover == ["R04"]
+        assert set(exc.leftover) == {"R04", "R05"}
         return
     raise AssertionError("expected StagingStuck")
 
@@ -161,7 +182,8 @@ def test_next_queue_exhausted_returns_none() -> None:
 
 
 def test_staging_stuck_names_the_stage_and_the_leftover_ids() -> None:
-    items = [{"id": "R04", "axis": "representation", "depends_on": ["MISSING"]},
+    items = [{"id": "R04", "axis": "representation", "depends_on": ["R05"]},
+             {"id": "R05", "axis": "representation", "depends_on": ["R04"]},
              {"id": "M01", "axis": "architecture"}]
     try:
         next_queue(items, set(), set(), STAGES)

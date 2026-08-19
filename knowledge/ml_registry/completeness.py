@@ -32,7 +32,7 @@ from typing import Any
 
 from knowledge.ml_registry.schema import IDEA, MODEL, TRIAL
 from knowledge.ml_registry.report import idea_verdicts
-from knowledge.ml_registry.staging import stage_coverage
+from knowledge.ml_registry.staging import stage_coverage, unreachable
 from knowledge.ml_registry.write_path import RegistrySpace
 
 #: Marks the trial that trained the chosen configuration to convergence. A campaign is not
@@ -54,14 +54,21 @@ def campaign_completeness(space: RegistrySpace, model_id: str, stages: Sequence[
 
     ideas = [f for f in space.list_facts(IDEA) if f.meta.get("model_id") == model_id]
     items = [{"id": str(f.meta.get("id") or f.id), "axis": str(f.meta.get("axis") or ""),
-              "status": str(f.meta.get("status") or "untried"), "_fact": f.id} for f in ideas]
+              "status": str(f.meta.get("status") or "untried"),
+              "depends_on": list(f.meta.get("depends_on") or []),
+              "_fact": f.id} for f in ideas]
 
     # Answered comes from the latest TRIAL, not from idea.meta.status. resolve-verdict writes the
     # verdict onto the trial and does not stamp the idea, so asking the idea reports every
     # freshly-adjudicated arm as unanswered -- which is how a campaign loop re-ran the same arms
     # indefinitely, each iteration looking like honest new work.
-    answered = set(idea_verdicts(space, model_id))
+    verdicts = idea_verdicts(space, model_id)
+    answered = set(verdicts)
     answered |= {i["id"] for i in items if i["status"] not in ("untried", "voided", "None")}
+    adopted = {tag for tag, st in verdicts.items() if st == "succeeded"}
+    # Same union next_queue applies: a dep that can never be adopted must not
+    # hold its stage open and block campaign-complete.
+    answered |= unreachable(items, answered, adopted)
 
     trials = [f for f in space.list_facts(TRIAL) if f.meta.get("model_id") == model_id]
     latest: dict[str, Any] = {}
