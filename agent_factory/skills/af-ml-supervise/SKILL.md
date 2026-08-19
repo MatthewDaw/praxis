@@ -22,9 +22,13 @@ contract.
   of stated hypotheses. Different paradigm; do not merge them.
 - **Not a trainer.** It never trains anything. It decides what to run and what the result means.
   The project supplies the training command.
-- **Not a proposer.** Seeding the backlog is `/af-seed-ml-supervise`'s job (the written
-  `af-ml-ideate`; the code remains `knowledge.ml_registry.ideate` via `seed-campaign`).
-  `register-idea` by hand is still a perfectly good way to work.
+- **Not a proposer, and not the setup half.** Standing the campaign up (data inventory,
+  metric, loaders, dispatch, four baseline rows, `bootstrap-campaign`) and seeding the
+  backlog are `/af-seed-ml-supervise`'s job (the written `af-ml-ideate`; idea writes
+  remain `knowledge.ml_registry.ideate` via `seed-campaign`). If those preconditions
+  are not met, go there — do not hand-roll them inside this skill.
+  `register-idea` by hand is still a perfectly good way to add one idea to a campaign
+  that is already registered.
 
 ## Preconditions — one command checks them all
 
@@ -45,6 +49,10 @@ training runs that filled the ledger have been paid for.
 Do not hand-roll these checks per project. What is systematic lives in
 `knowledge/ml_registry/bootstrap.py`; what is project-specific is the metric's meaning, the
 trainer, and the backlog.
+
+If this command would refuse, `/af-seed-ml-supervise` is the skill that builds
+the missing pieces against the project's collected data. Do not reconstruct them
+here and do not start supervising a campaign `bootstrap-campaign` has not admitted.
 
 The preconditions it enforces, and why each one is fatal rather than cosmetic:
 
