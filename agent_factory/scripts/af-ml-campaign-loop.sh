@@ -78,8 +78,17 @@ sys.exit(1 if bad else 0)'; then :; else
   after="$(trials)"
 
   if [ "$before" = "$after" ]; then
-    echo "[progress] campaign-loop STALLED at iteration $i: dispatch produced no new trial "
-    echo "           (trials still $after). Nothing will change by repeating it."
+    # "No new trial" has two very different causes and reporting them alike wastes an operator's
+    # time. Either the dispatch is broken, or there is simply NO ELIGIBLE WORK LEFT -- and
+    # campaign-complete already knows which, so ask it rather than guessing.
+    #
+    # Measured: a campaign exhausted its runnable backlog and the loop reported STALLED, which
+    # reads as a broken dispatch. The real answer -- two stages had no arms authored, and nothing
+    # had been trained to convergence -- was one command away and went unsaid for hours.
+    echo "[progress] campaign-loop produced no new trial at iteration $i. Why:"
+    registry campaign-complete --space-file "$SPACE" --model-id "$MODEL" --stages "$STAGES" \
+      2>&1 | sed "s/^/           /"
+    echo "[progress] campaign-loop STOPPING: nothing further can run without authoring work above."
     exit 4
   fi
 done
