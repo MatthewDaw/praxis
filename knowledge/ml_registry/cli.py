@@ -324,22 +324,42 @@ def _parse_intervention(raw: str) -> Intervention:
 
 
 def _load_mutate_save(space_file: str, fn: Callable[[RegistrySpace], _T]) -> _T:
-    """Load the space at ``space_file``, apply a single mutation, save, and return its result.
+    """Load, apply ONE mutation, save — holding an exclusive lock for the whole cycle.
 
-    The save happens in a ``finally``: a refusal raised part-way through a MULTI-write run
+    THE LOCK IS THE POINT. Without it this is a textbook lost update: two commands each load the
+    space, each mutate their own in-memory copy, and whichever saves last silently discards the
+    other's work. Nothing errors and nothing warns; the write simply is not there afterwards.
+
+    Measured on a live campaign. A supervising loop registered trials while an operator command
+    acknowledged a diagnosis against the same space file. Afterwards the acknowledgement was
+    absent, and four adjudicated trials -- including the campaign's only ADOPTION -- had no record
+    at all, despite the loop having printed their verdicts. The ledger rows existed; the trials did
+    not. That is the worst possible shape for a registry whose entire purpose is to be the record
+    of what was decided: it kept reporting verdicts it had already lost, and the loop then re-ran
+    those arms because from the registry's view they had never happened.
+
+    The lock is a separate `.lock` file rather than the space itself, because the save path
+    replaces the file and a lock held on a replaced inode protects nothing.
+
+    The save still happens in a ``finally``: a refusal raised part-way through a MULTI-write run
     (``supervise-campaign`` is forty dispatches, not one) must not discard everything the run
-    already durably decided. The registry recomputes its counters and streaks from the space
-    on resume, which is only safe if the space is really there -- a run that dispatched 40
-    trials and then refused must leave 40 trials on disk, not zero. The refusal still exits
-    non-zero; it just no longer erases the evidence.
+    already durably decided.
     """
-    space_path = Path(space_file)
-    space = RegistrySpace.load(space_path)
-    try:
-        return fn(space)
-    finally:
-        space.save(space_path)
+    import fcntl
 
+    space_path = Path(space_file)
+    lock_path = space_path.with_suffix(space_path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            space = RegistrySpace.load(space_path)
+            try:
+                return fn(space)
+            finally:
+                space.save(space_path)
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 def _fixed_outcome_resolver(outcome: str, title: str, authors: tuple[str, ...]) -> Resolver:
     """A TEST resolver that reports one caller-declared outcome for this one attempt.
