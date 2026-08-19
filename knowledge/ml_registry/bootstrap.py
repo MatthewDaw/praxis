@@ -133,7 +133,9 @@ def measure_noise_floor(baselines: list[dict], sigmas: float = DEFAULT_SIGMAS) -
 def build_model_meta(*, metric: str, direction: str, baseline_commit: str, noise_floor: float,
                      baseline_throughput: float, diff_size_limit: int,
                      win_condition: str = "beats baseline by noise_floor",
-                     notes: str | None = None) -> dict[str, Any]:
+                     notes: str | None = None, sigmas: float | None = None,
+                     baseline_runs: list | None = None,
+                     void_throughput_fraction: float | None = None) -> dict[str, Any]:
     meta = {
         "metric": metric, "direction": direction, "win_condition": win_condition,
         "baseline": baseline_commit, "noise_floor": noise_floor,
@@ -141,6 +143,12 @@ def build_model_meta(*, metric: str, direction: str, baseline_commit: str, noise
     }
     if notes:
         meta["notes"] = notes
+    if sigmas is not None:
+        meta["sigmas"] = sigmas
+    if baseline_runs is not None:
+        meta["baseline_runs"] = list(baseline_runs)
+    if void_throughput_fraction is not None:
+        meta["void_throughput_fraction"] = void_throughput_fraction
     return meta
 
 
@@ -178,7 +186,8 @@ def build_ideas(backlog: list[dict[str, Any]], *, model_id: str,
 def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, metric: str,
               direction: str, diff_size_limit: int, baseline_prefix: str = "baseline",
               sigmas: float = DEFAULT_SIGMAS, noise_floor_override: float | None = None,
-              skip_ids: set[str] | None = None, notes: str | None = None) -> BootstrapReport:
+              skip_ids: set[str] | None = None, notes: str | None = None,
+              void_throughput_fraction: float | None = None) -> BootstrapReport:
     checks, baselines = check_ledger(ledger, baseline_prefix)
     if not all(c.ok for c in checks):
         return BootstrapReport(ready=False, preconditions=checks)
@@ -229,7 +238,9 @@ def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, met
         # Taking the min keeps the gate's purpose intact: it still fires on anything more than 5%
         # below the slowest run the baseline configuration actually produced.
         baseline_throughput=round(min(float(b["throughput"]) for b in baselines), 4),
-        diff_size_limit=diff_size_limit, notes=notes)
+        diff_size_limit=diff_size_limit, notes=notes, sigmas=sigmas,
+        baseline_runs=[b["commit"] for b in baselines],
+        void_throughput_fraction=void_throughput_fraction)
     return BootstrapReport(ready=True, preconditions=checks, model_meta=meta,
                            ideas=build_ideas(backlog, model_id=model_id, skip_ids=skip_ids),
                            floor=floor)

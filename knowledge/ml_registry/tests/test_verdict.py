@@ -273,6 +273,32 @@ def test_throughput_exactly_5_percent_below_baseline_is_not_voided():
     assert verdict == VERDICT_PARKED
 
 
+def test_void_throughput_fraction_zero_skips_the_void_gate():
+    """CV campaigns disable VOID rather than hacking baseline_throughput=0.01."""
+    space, model_id = _space_with_model()
+    space.get(model_id).meta["void_throughput_fraction"] = 0
+    idea_id = register_idea(space, _idea_meta(model_id))
+    low_throughput = BASELINE_THROUGHPUT * 0.90
+    trial_id = _trial(space, model_id, idea_id, "void1", throughput=low_throughput, diff_lines=100)
+    ledger = _rows(void1=(1.0 - 10 * NOISE_FLOOR, low_throughput, 100))
+
+    verdict = adjudicate_verdict(space, trial_id, ledger)
+
+    assert verdict != VERDICT_VOIDED
+    assert verdict == VERDICT_ADOPTED
+
+
+def test_explicit_void_throughput_fraction_matches_the_default():
+    space, model_id = _space_with_model()
+    space.get(model_id).meta["void_throughput_fraction"] = 0.05
+    idea_id = register_idea(space, _idea_meta(model_id))
+    low_throughput = BASELINE_THROUGHPUT * 0.94
+    trial_id = _trial(space, model_id, idea_id, "void1", throughput=low_throughput, diff_lines=100)
+    ledger = _rows(void1=(1.0 - 10 * NOISE_FLOOR, low_throughput, 100))
+
+    assert adjudicate_verdict(space, trial_id, ledger) == VERDICT_VOIDED
+
+
 # ---------------------------------------------------------------------------
 # Ratchet: 3 consecutive rejecting trials on distinct ideas
 # ---------------------------------------------------------------------------

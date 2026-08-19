@@ -196,7 +196,12 @@ def adjudicate_verdict(
     baseline_row = _ledger_row(ledger_rows, baseline_commit, field=BASELINE_FIELD)
 
     baseline_throughput = float(model.meta["baseline_throughput"])
-    if row.throughput < baseline_throughput * (1 - THROUGHPUT_FLOOR_FRACTION):
+    raw_fraction = model.meta.get("void_throughput_fraction", THROUGHPUT_FLOOR_FRACTION)
+    try:
+        void_fraction = float(raw_fraction)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        void_fraction = THROUGHPUT_FLOOR_FRACTION
+    if void_fraction > 0 and row.throughput < baseline_throughput * (1 - void_fraction):
         trial.meta["status"] = VERDICT_VOIDED
         return VERDICT_VOIDED
 
