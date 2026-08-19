@@ -260,6 +260,30 @@ simply have been wrong.
 Otherwise the same arm passes or fails depending on who else is running, and the campaign records
 that as a property of the model.
 
+## "Answered" comes from the TRIAL, never from the idea
+
+`resolve-verdict` writes the verdict onto the **trial**. It does not stamp the idea. So a loop that
+asks `idea.meta.status` sees `None` for every arm the registry just adjudicated.
+
+That is not a cosmetic difference. A campaign that treats "no idea status" as *unanswered* will
+delete the arm's local verdict, re-queue it, run it again, and repeat — **indefinitely**. Measured:
+three arms re-ran before it was caught, and nothing in the loop could notice, because every
+iteration looked like honest new work with real progress lines and real ledger rows.
+
+```python
+from knowledge.ml_registry.report import idea_verdicts
+answered = set(idea_verdicts(space, model_id))    # {tag: trial status}, latest trial per idea
+```
+
+Two exclusions are load-bearing:
+
+- **`voided` does not answer.** The run was unfair, so the question is still open and the arm must
+  re-run.
+- **`complete` does not answer.** It means the training finished and is AWAITING adjudication —
+  the trial is in flight, not settled.
+
+The latest trial wins, so a successful re-run supersedes an earlier void.
+
 ## Acknowledge a diagnosis you have actually fixed
 
 A diagnosis is computed from the trial HISTORY, so it **outlives its own cause**. Raise the

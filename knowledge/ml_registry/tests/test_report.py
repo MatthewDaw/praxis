@@ -222,3 +222,53 @@ def test_a_reason_is_required() -> None:
     space, mid = _space()
     with pytest.raises(ValueError):
         acknowledge_diagnosis(space, mid, "budget_too_small", reason="  ")
+
+
+def test_idea_verdicts_come_from_the_TRIAL_not_the_idea() -> None:
+    """The live incident. resolve-verdict writes the verdict onto the TRIAL and does not stamp the
+    idea, so a campaign asking the idea saw None for every freshly-adjudicated arm, decided they
+    were unanswered, and re-queued them -- running the same arms again indefinitely."""
+    from knowledge.ml_registry.report import idea_verdicts
+
+    space, mid = _space()
+    iid = _idea(space, mid, "M09")
+    tid = register_trial(space, {"model_id": mid, "idea_id": iid, "commit": "c1",
+                                 "status": "complete", "throughput": 3.4, "diff_lines": 1},
+                         frozenset({"c1"}))
+    space.get(tid).meta["status"] = "failed"          # a verdict, on the TRIAL only
+    assert space.get(iid).meta.get("status") is None  # idea was never stamped
+
+    assert idea_verdicts(space, mid) == {"M09": "failed"}
+
+
+def test_a_voided_trial_does_not_answer_its_idea() -> None:
+    """Voided means the run was unfair, so the question is still open and the arm must re-run."""
+    from knowledge.ml_registry.report import idea_verdicts
+
+    space, mid = _space()
+    _voided(space, mid, _idea(space, mid, "M06"), "c1", "ledger status 'x' is not a fair run")
+    assert idea_verdicts(space, mid) == {}
+
+
+def test_an_in_flight_trial_does_not_answer_its_idea() -> None:
+    """'complete' means the run finished and awaits adjudication -- not that a verdict exists."""
+    from knowledge.ml_registry.report import idea_verdicts
+
+    space, mid = _space()
+    iid = _idea(space, mid, "M11")
+    register_trial(space, {"model_id": mid, "idea_id": iid, "commit": "c1", "status": "complete",
+                           "throughput": 3.4, "diff_lines": 1}, frozenset({"c1"}))
+    assert idea_verdicts(space, mid) == {}
+
+
+def test_the_latest_trial_wins_so_a_rerun_supersedes_a_void() -> None:
+    from knowledge.ml_registry.report import idea_verdicts
+
+    space, mid = _space()
+    iid = _idea(space, mid, "M08")
+    _voided(space, mid, iid, "c1", "ledger status 'x' is not a fair run")
+    tid = register_trial(space, {"model_id": mid, "idea_id": iid, "commit": "c2",
+                                 "status": "complete", "throughput": 3.4, "diff_lines": 1},
+                         frozenset({"c2"}))
+    space.get(tid).meta["status"] = "succeeded"
+    assert idea_verdicts(space, mid) == {"M08": "succeeded"}

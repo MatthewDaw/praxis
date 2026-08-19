@@ -31,6 +31,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from knowledge.ml_registry.schema import IDEA, MODEL, TRIAL
+from knowledge.ml_registry.report import idea_verdicts
 from knowledge.ml_registry.staging import stage_coverage
 from knowledge.ml_registry.write_path import RegistrySpace
 
@@ -55,7 +56,12 @@ def campaign_completeness(space: RegistrySpace, model_id: str, stages: Sequence[
     items = [{"id": str(f.meta.get("id") or f.id), "axis": str(f.meta.get("axis") or ""),
               "status": str(f.meta.get("status") or "untried"), "_fact": f.id} for f in ideas]
 
-    answered = {i["id"] for i in items if i["status"] not in ("untried", "voided")}
+    # Answered comes from the latest TRIAL, not from idea.meta.status. resolve-verdict writes the
+    # verdict onto the trial and does not stamp the idea, so asking the idea reports every
+    # freshly-adjudicated arm as unanswered -- which is how a campaign loop re-ran the same arms
+    # indefinitely, each iteration looking like honest new work.
+    answered = set(idea_verdicts(space, model_id))
+    answered |= {i["id"] for i in items if i["status"] not in ("untried", "voided", "None")}
 
     trials = [f for f in space.list_facts(TRIAL) if f.meta.get("model_id") == model_id]
     latest: dict[str, Any] = {}
