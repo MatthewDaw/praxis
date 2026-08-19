@@ -488,18 +488,102 @@ af_watch_stopped(){   # 0 when this run should stop; sets WATCH_STOP_HIT to the 
 # state Sl for 10+ minutes with no log line. This does NOT kill anything (the deadline, the grace
 # extension and the pane-stillness guard already own that decision); it only makes the silence
 # visible and greppable.
-AF_ROUND_QUIET_WARN_S="${AF_ROUND_QUIET_WARN_S:-600}"
+#
+# DEFECT 3b (measured live 2026-08-19, the fix for the fix): keying the warning on ticket state
+# ALONE cries wolf on every non-trivial round. Two loops that were provably working — af-hudl-cv-
+# download showed "1 command · 2 subagents still running" and af-sports_analysis showed "Subagents
+# 4 / Poll ticket states every 60s for 5 more… 14m24s" — both got "STALL WARNING round #1" at the
+# 10min and 20min marks. The worker's own /af-build prompt TELLS it to poll ticket states every
+# 60s, so a correct worker produces long stretches with no finished-count change BY DESIGN. A
+# detector that fires on healthy rounds trains the operator to ignore it, which is worse than no
+# detector.
+#
+# So the predicate now needs ALL the liveness signals quiet before it says STALL:
+#   (a) finished/open ticket counts unchanged   (the original signal — kept)
+#   (b) the session's process tree has accumulated no CPU time since the last poll
+#   (c) the tmux pane capture is byte-identical to the last poll, with the spinner/elapsed/token
+#       chrome stripped first (that line changes every poll by animation, not by output)
+# Any signal that MOVES downgrades the line to a PROGRESS line, which must never say STALL. A
+# signal that cannot be SAMPLED (no session, tmux gone, ps unreadable) is UNKNOWN and is reported
+# as UNKNOWN — never silently counted as quiet, because failing closed into false alarms is the
+# bug being fixed here.
+AF_ROUND_QUIET_WARN_S="${AF_ROUND_QUIET_WARN_S:-${AF_STALL_WARN_S:-600}}"
+
+# Cumulative CPU-seconds of a session's process tree, or "" when it cannot be sampled.
+# Reuses the driver's own session_cpu when it is defined (it is, further down this script);
+# the guard keeps the block independently executable.
+af_hb_cpu_sample(){   # $1 = tmux session
+  local s="${1:-}" v
+  [ -n "$s" ] || return 0
+  declare -F session_cpu >/dev/null 2>&1 || return 0
+  v="$(session_cpu "$s" 2>/dev/null || true)"
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$v"
+}
+
+# Hash of the session's pane with the animated chrome removed, or "" when it cannot be sampled.
+# Stripped: the spinner glyphs, the "(NmNNs" / "· NNs" elapsed counters and the token meter — all
+# of which change on every single poll whether or not the worker emitted a byte of real output.
+af_hb_pane_sample(){   # $1 = tmux session
+  local s="${1:-}" pane
+  [ -n "$s" ] || return 0
+  command -v tmux >/dev/null 2>&1 || return 0
+  tmux has-session -t "$s" >/dev/null 2>&1 || return 0
+  pane="$(tmux capture-pane -t "$s" -p 2>/dev/null || true)"
+  [ -n "$pane" ] || return 0
+  printf '%s' "$pane" \
+    | sed -E 's/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✢✳✶✻✽*·]+/ /g; s/[0-9]+m[0-9]+s/ /g; s/(^|[[:space:]])[⇣⇡↓↑]?[0-9][0-9.]*[kKmMs]([[:space:]]|$)/ /g; s/(^|[[:space:]])[⇣⇡↓↑]?[0-9][0-9.]*[kKmMs]([[:space:]]|$)/ /g; s/[0-9.]+[kKmM]? tokens/ /g; s/[[:space:]]+/ /g' \
+    | { if declare -F hash_text >/dev/null 2>&1; then hash_text; \
+        elif command -v md5sum >/dev/null 2>&1; then md5sum | cut -d' ' -f1; \
+        else md5 -q; fi; }
+}
 
 af_round_heartbeat(){   # <round> <progress-signature> <outstanding ids>
-  local rnd="${1:-?}" sig="${2:-}" ids="${3:-}" nowt
+  local rnd="${1:-?}" sig="${2:-}" ids="${3:-}" nowt sess cpu pane quiet_for
+  local cpu_state pane_state cpu_quiet=0 pane_quiet=0
   nowt="$(date +%s)"
+  sess="${AF_HB_SESSION:-${SESSION:-}}"
+  cpu="$(af_hb_cpu_sample "$sess")"
+  pane="$(af_hb_pane_sample "$sess")"
   if [ "$sig" != "${AF_HB_SIG:-__unset__}" ]; then
-    AF_HB_SIG="$sig"; AF_HB_SINCE="$nowt"; AF_HB_LAST="$nowt"; return 0
+    AF_HB_SIG="$sig"; AF_HB_SINCE="$nowt"; AF_HB_LAST="$nowt"
+    AF_HB_CPU="$cpu"; AF_HB_PANE="$pane"
+    return 0
   fi
   : "${AF_HB_SINCE:=$nowt}"; : "${AF_HB_LAST:=$nowt}"
-  if [ $(( nowt - AF_HB_LAST )) -ge "$AF_ROUND_QUIET_WARN_S" ]; then
-    AF_HB_LAST="$nowt"
-    af_watch_stop_say "STALL WARNING round #$rnd — no change in the finished count or in any claimed ticket's state for $(( (nowt - AF_HB_SINCE) / 60 ))min. Still outstanding: ${ids:-<unknown>}. Not killing the round; look at it."
+  if [ $(( nowt - AF_HB_LAST )) -lt "$AF_ROUND_QUIET_WARN_S" ]; then return 0; fi
+  quiet_for=$(( (nowt - AF_HB_SINCE) / 60 ))
+
+  # (b) CPU. Cumulative, so only a RISE is evidence of life.
+  if [ -z "$cpu" ]; then
+    cpu_state="worker cpu UNKNOWN (no session/pid to sample)"
+  elif [ -z "${AF_HB_CPU:-}" ]; then
+    cpu_state="worker cpu UNKNOWN (no prior sample to compare)"
+  elif [ "$cpu" -gt "${AF_HB_CPU:-0}" ] 2>/dev/null; then
+    cpu_state="cpu +$(( cpu - AF_HB_CPU ))s"
+  else
+    cpu_state="worker cpu flat (+0s)"; cpu_quiet=1
+  fi
+
+  # (c) Pane bytes, chrome stripped.
+  if [ -z "$pane" ]; then
+    pane_state="pane UNKNOWN (tmux session unreadable)"
+  elif [ -z "${AF_HB_PANE:-}" ]; then
+    pane_state="pane UNKNOWN (no prior capture to compare)"
+  elif [ "$pane" != "${AF_HB_PANE:-}" ]; then
+    pane_state="pane changed"
+  else
+    pane_state="pane byte-identical"; pane_quiet=1
+  fi
+
+  AF_HB_LAST="$nowt"; AF_HB_CPU="$cpu"; AF_HB_PANE="$pane"
+
+  if [ "$cpu_quiet" = 1 ] && [ "$pane_quiet" = 1 ]; then
+    af_watch_stop_say "STALL WARNING round #$rnd — every liveness signal quiet for ${quiet_for}min: ticket state unchanged, ${cpu_state}, ${pane_state}. Still outstanding: ${ids:-<unknown>}. Not killing the round; look at it."
+  else
+    local verdict="worker is active"
+    case "${cpu_state}${pane_state}" in *UNKNOWN*) verdict="worker liveness not fully sampled" ;; esac
+    af_watch_stop_say "round #$rnd still working — ${quiet_for}min quiet on ticket state, but ${verdict} (${cpu_state}, ${pane_state}). Still outstanding: ${ids:-<unknown>}."
   fi
 }
 # --- END round stall heartbeat ---

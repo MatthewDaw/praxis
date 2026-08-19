@@ -240,13 +240,21 @@ def test_the_legacy_basename_only_sentinel_still_stops_and_logs_a_deprecation(tm
 # ------------------------------------------------------------ defect 3: the round stall heartbeat --
 
 
-def heartbeat_runner(tmp_path: Path, tag: str, body: str) -> Path:
+def heartbeat_runner(tmp_path: Path, tag: str, body: str, stubs: str = "") -> Path:
+    """`stubs` shadows the two liveness probes the heartbeat samples through.
+
+    session_cpu/hash_text/tmux all live elsewhere in the driver (or on the box); the heartbeat
+    block calls them through `declare -F` / `command -v` guards, so a test supplies them as shell
+    functions and the REAL predicate bytes still do the deciding.
+    """
     path = tmp_path / f"hb-{tag}.sh"
     path.write_text(
         "set -euo pipefail\n"
         # the heartbeat logs through af_watch_stop_say, which lives in the sentinel block
-        f'PROJECT="p"\nWT="{tmp_path}/wt"\n'
+        f'PROJECT="p"\nWT="{tmp_path}/wt"\nSESSION="af-test"\n'
         + block("watch stop sentinel")
+        + "\n"
+        + stubs
         + "\n"
         + block("round stall heartbeat")
         + "\n"
@@ -256,15 +264,74 @@ def heartbeat_runner(tmp_path: Path, tag: str, body: str) -> Path:
     return path
 
 
-def test_stall_warning_fires_after_the_quiet_interval(tmp_path):
-    body = (
-        'af_round_heartbeat 7 "3/2" "TIC-1,TIC-2"\n'
-        "sleep 2\n"
-        'af_round_heartbeat 7 "3/2" "TIC-1,TIC-2"\n'
+# CPU reads out of a file the test body rewrites between polls; the pane likewise.
+CPU_STUB = """
+session_cpu(){ cat "$CPUF"; }
+hash_text(){ md5sum | cut -d' ' -f1; }
+tmux(){ case "$1" in has-session) return 0 ;; capture-pane) cat "$PANEF" ;; *) return 0 ;; esac; }
+"""
+NO_SESSION_STUB = """
+hash_text(){ md5sum | cut -d' ' -f1; }
+tmux(){ return 1; }
+"""
+
+QUIET = 'af_round_heartbeat 7 "3/2" "TIC-1,TIC-2"\n'
+
+
+def sampled(tmp_path: Path, tag: str, cpu: list[str], pane: list[str]) -> str:
+    """Body that polls twice, moving CPU/pane between the polls as the lists say."""
+    cpuf, panef = tmp_path / f"cpu-{tag}", tmp_path / f"pane-{tag}"
+    return (
+        f'export CPUF="{cpuf}" PANEF="{panef}"\n'
+        f'printf %s "{cpu[0]}" > "$CPUF"; printf %s "{pane[0]}" > "$PANEF"\n'
+        + QUIET
+        + "sleep 2\n"
+        f'printf %s "{cpu[1]}" > "$CPUF"; printf %s "{pane[1]}" > "$PANEF"\n'
+        + QUIET
     )
-    p = run(heartbeat_runner(tmp_path, "fires", body), {"AF_ROUND_QUIET_WARN_S": "1"})
+
+
+def test_tickets_quiet_but_cpu_advancing_is_progress_not_a_stall(tmp_path):
+    """The live 2026-08-19 false positive: workers burning CPU, tickets not yet moving."""
+    body = sampled(tmp_path, "cpu", cpu=["100", "137"], pane=["same pane", "same pane"])
+    p = run(heartbeat_runner(tmp_path, "cpu", body, CPU_STUB), {"AF_ROUND_QUIET_WARN_S": "1"})
+    assert p.returncode == 0, p.stderr
+    assert "STALL" not in p.stdout, p.stdout
+    assert "round #7 still working" in p.stdout
+    assert "cpu +37s" in p.stdout
+
+
+def test_tickets_quiet_but_pane_changed_is_progress_not_a_stall(tmp_path):
+    body = sampled(tmp_path, "pane", cpu=["100", "100"], pane=["Subagents 2", "Subagents 4"])
+    p = run(heartbeat_runner(tmp_path, "pane", body, CPU_STUB), {"AF_ROUND_QUIET_WARN_S": "1"})
+    assert p.returncode == 0, p.stderr
+    assert "STALL" not in p.stdout, p.stdout
+    assert "round #7 still working" in p.stdout
+    assert "pane changed" in p.stdout
+
+
+def test_spinner_animation_alone_does_not_count_as_a_changed_pane(tmp_path):
+    """Only REAL output change counts — the elapsed/spinner/token chrome moves every poll."""
+    body = sampled(
+        tmp_path,
+        "spin",
+        cpu=["100", "100"],
+        pane=["Poll ticket states 14m24s 157k", "Poll ticket states 24m01s 158k"],
+    )
+    p = run(heartbeat_runner(tmp_path, "spin", body, CPU_STUB), {"AF_ROUND_QUIET_WARN_S": "1"})
+    assert p.returncode == 0, p.stderr
+    assert "pane byte-identical" in p.stdout
+    assert "STALL WARNING round #7" in p.stdout
+
+
+def test_all_three_signals_quiet_warns_and_names_each_one(tmp_path):
+    body = sampled(tmp_path, "dead", cpu=["100", "100"], pane=["wedged", "wedged"])
+    p = run(heartbeat_runner(tmp_path, "dead", body, CPU_STUB), {"AF_ROUND_QUIET_WARN_S": "1"})
     assert p.returncode == 0, p.stderr
     assert "STALL WARNING round #7" in p.stdout
+    assert "ticket state unchanged" in p.stdout
+    assert "worker cpu flat (+0s)" in p.stdout
+    assert "pane byte-identical" in p.stdout
     assert "TIC-1,TIC-2" in p.stdout
 
 
@@ -276,9 +343,24 @@ def test_stall_warning_does_not_fire_when_progress_occurs(tmp_path):
         "sleep 2\n"
         'af_round_heartbeat 7 "5/0" ""\n'
     )
-    p = run(heartbeat_runner(tmp_path, "quiet", body), {"AF_ROUND_QUIET_WARN_S": "1"})
+    p = run(heartbeat_runner(tmp_path, "quiet", body, CPU_STUB), {"AF_ROUND_QUIET_WARN_S": "1"})
     assert p.returncode == 0, p.stderr
     assert "STALL WARNING" not in p.stdout
+    assert "still working" not in p.stdout
+
+
+def test_unsamplable_signals_report_UNKNOWN_and_never_warn(tmp_path):
+    """No pid, no tmux: fail OPEN into an UNKNOWN line, never closed into a false alarm."""
+    body = QUIET + "sleep 2\n" + QUIET
+    p = run(
+        heartbeat_runner(tmp_path, "unknown", body, NO_SESSION_STUB),
+        {"AF_ROUND_QUIET_WARN_S": "1"},
+    )
+    assert p.returncode == 0, p.stderr
+    assert "STALL" not in p.stdout, p.stdout
+    assert "round #7 still working" in p.stdout
+    assert "worker cpu UNKNOWN" in p.stdout
+    assert "pane UNKNOWN" in p.stdout
 
 
 def test_the_wait_loop_actually_calls_the_heartbeat(tmp_path):
