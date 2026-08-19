@@ -70,6 +70,7 @@ from knowledge.ml_registry.supervisor import (
     record_out_of_diff_change,
     supervise_campaign,
 )
+from knowledge.ml_registry.report import campaign_status, format_status
 from knowledge.ml_registry.verdict import LedgerRow, adjudicate_verdict, reset_ratchet
 from knowledge.ml_registry.write_path import (
     MAX_DISCOVERED_IDEAS_FIELD,
@@ -499,6 +500,15 @@ def main(argv: list[str] | None = None) -> int:
              "what resolve-verdict --trial-id needs -- it is NOT the idea id, and scraping the "
              "prose line was the only other way to learn it")
 
+    status_p = sub.add_parser(
+        "campaign-status",
+        help="read-only summary of a campaign: baseline, per-status idea counts, IN-FLIGHT "
+             "trials, and the ratchet. Safe against a live run -- it never mutates the space.",
+    )
+    status_p.add_argument("--space-file", required=True)
+    status_p.add_argument("--model-id", required=True)
+    status_p.add_argument("--json", action="store_true")
+
     reset_ratchet_p = sub.add_parser(
         "reset-ratchet",
         help="clear a model's rejection streak WITHOUT touching its baseline or any verdict -- "
@@ -841,6 +851,12 @@ def main(argv: list[str] | None = None) -> int:
                 lambda space: supersede_trial(space, args.trial_id, args.reason),
             )
             print(f"OK: superseded trial {trial_id}")
+            return 0
+        if args.command == "campaign-status":
+            # Load WITHOUT the mutate-and-save wrapper: this is read-only by design, so it is
+            # safe to run against a campaign that is mid-arm. Saving here would race the loop.
+            status = campaign_status(RegistrySpace.load(Path(args.space_file)), args.model_id)
+            print(json.dumps(status, indent=2) if args.json else format_status(status))
             return 0
         if args.command == "reset-ratchet":
             cleared = _load_mutate_save(
