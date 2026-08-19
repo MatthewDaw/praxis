@@ -53,9 +53,13 @@
 # it agrees. Each branch sets its own variables AND unsets the other branch's, so there is
 # no reachable half-configured state. Resolution order and the deliberately-cheap default:
 #
-#     AF_MODEL_BACKEND=deepseek|sonnet   (env var, per-run, wins)
+#     AF_MODEL_BACKEND=deepseek|sonnet|grok   (env var, per-run, wins)
 #       else contents of ~/.af-backend   (the existing `af-backend` command still works)
 #       else deepseek
+#
+#     grok is the native Grok CLI on an OAuth session token (~/.grok/auth.json).
+#     It UNSETS XAI_API_KEY so the run cannot silently spend API credits. A
+#     missing auth.json or a probe that reports apiKeySource=user is FATAL.
 #
 # Anything unrecognized — empty, typo'd, "Sonnet", "sonet" — logs a warning and falls back
 # to DEEPSEEK, never to the subscription. A typo must cost nothing; only an exact, spelled
@@ -203,7 +207,7 @@
 #   8  QUOTA BLOCKED: a headless session hit the Claude subscription's session/usage limit and was
 #      stranded on the interactive /rate-limit-options menu. Distinct from 3 (that is API credits):
 #      the remedy is to wait for the subscription window to reset, or switch the plan/backend.
-#   AF_MODEL_BACKEND       sonnet | deepseek (see v3)
+#   AF_MODEL_BACKEND       sonnet | deepseek | grok (see v3)
 #   AF_PLUGIN_DIR / AF_REPO / AF_PYTHON / AF_STATE_DIR / AF_LOG   for an unusual layout
 set -euo pipefail
 
@@ -235,7 +239,7 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
 
   BACKEND="$requested"
   case "$BACKEND" in
-    sonnet|deepseek) ;;
+    sonnet|deepseek|grok) ;;
     *) echo "[backend] WARNING: unrecognized backend '$BACKEND' — falling back to deepseek (never to a paid subscription)" >&2
        BACKEND="deepseek" ;;
   esac
@@ -319,6 +323,42 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
       return 1
     fi
     printf '%s' "$probe" | grep -q 'PONG' || echo "[backend] WARNING: sonnet auth probe returned no PONG and no auth error (network/transient?) — continuing" >&2
+  elif [ "$BACKEND" = "grok" ]; then
+    # Native Grok CLI on the xAI *subscription* (OAuth session token). XAI_API_KEY is
+    # unset, not merely out-ranked: if the env key is present Grok spends API credits
+    # while the session still looks healthy. Same exclusivity rule as the DeepSeek
+    # branch. grok login --device-auth writes ~/.grok/auth.json; that file is the
+    # subscription. A probe that reports apiKeySource=user is the API-key path and
+    # is FATAL — that is the wrong bill.
+    GROK_BIN="${GROK_BIN:-$HOME/.grok/bin/grok}"
+    GROK_AUTH="$HOME/.grok/auth.json"
+    AF_GROK_MODEL="${AF_GROK_MODEL:-grok-4.6}"
+    BACKEND_NOTE="xAI Grok subscription (OAuth), model=${AF_GROK_MODEL} — spends xAI subscription, NOT API credits"
+    if [ ! -x "$GROK_BIN" ]; then
+      echo "[backend] FATAL: grok requested but $GROK_BIN is missing or not executable." >&2
+      echo "[backend]   fix: curl -fsSL https://x.ai/cli/install.sh | bash" >&2
+      return 1
+    fi
+    if [ ! -s "$GROK_AUTH" ]; then
+      echo "[backend] FATAL: grok requested but $GROK_AUTH is missing or empty." >&2
+      echo "[backend]   fix, once, as ec2-user:  grok login --device-auth" >&2
+      return 1
+    fi
+    CLAUDE_LAUNCH="unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN; export PATH=\"\$HOME/.grok/bin:\$HOME/.local/bin:\$PATH\"; ${GROK_BIN} --model ${AF_GROK_MODEL} --always-approve"
+    local probe
+    probe="$(cd /tmp && unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN && timeout 120 "$GROK_BIN" --model "$AF_GROK_MODEL" --always-approve -p 'Reply with exactly: PONG' --output-format json 2>&1 || true)"
+    if printf '%s' "$probe" | grep -qiE '"apiKeySource"[[:space:]]*:[[:space:]]*"user"'; then
+      echo "[backend] FATAL: grok probe billed as apiKeySource=user (XAI_API_KEY / API credits)." >&2
+      echo "[backend]   unset XAI_API_KEY and GROK_CODE_XAI_API_KEY, confirm $GROK_AUTH is an OAuth login, rerun --check." >&2
+      return 1
+    fi
+    if printf '%s' "$probe" | grep -qiE 'authentication failed|please (run |sign in)|not authenticated|login required|invalid api key'; then
+      echo "[backend] FATAL: grok credential present but REJECTED:" >&2
+      printf '%s\n' "$probe" | head -5 | sed 's/^/[backend]   /' >&2
+      echo "[backend]   fix, once, as ec2-user:  grok login --device-auth" >&2
+      return 1
+    fi
+    printf '%s' "$probe" | grep -q 'PONG' || echo "[backend] WARNING: grok auth probe returned no PONG and no auth error (network/transient?) — continuing" >&2
   else
     # DeepSeek mode. The subscription token is unset rather than out-ranked: the CLI has
     # been observed preferring a cached credential over an env token, so exclusivity is
@@ -757,15 +797,52 @@ STALL_POLLS=30
 # receive text — present in every ready-state pane capture observed on this box.
 READY_POLL_MAX=40   # 40 * 2s = 80s cap
 
+# Launch the configured agent into a detached tmux session. For grok, the prompt is
+# the TUI's initial argv so we do not have to type a 4KB string into a not-quite-ready
+# input box (the failure mode the Claude send-keys path exists to detect). For sonnet
+# and deepseek the CLI still starts empty and the caller send-keys the prompt after
+# pane_is_ready.
+af_launch_agent(){   # $1=tmux session  $2=optional initial prompt (grok only)
+  local sess="$1" prompt="${2:-}" pf
+  tmux kill-session -t "$sess" 2>/dev/null || true
+  tmux new-session -d -s "$sess" -c "$WT"
+  if [ "$BACKEND" = grok ] && [ -n "$prompt" ]; then
+    pf="${AF_STATE_DIR}/af-${sess}.prompt"
+    printf '%s' "$prompt" > "$pf"
+    tmux send-keys -t "$sess" "cd $WT && set -a && . '${AF_STATE_DIR}/af-agent.env' && set +a && $CLAUDE_LAUNCH -- \"\$(cat '$pf')\"" Enter
+  else
+    tmux send-keys -t "$sess" "cd $WT && set -a && . '${AF_STATE_DIR}/af-agent.env' && set +a && $CLAUDE_LAUNCH" Enter
+  fi
+}
+
+af_wait_ready(){   # $1=tmux session  $2=optional poll cap (default READY_POLL_MAX)
+  local sess="$1" max="${2:-$READY_POLL_MAX}" i pane
+  for i in $(seq 1 "$max"); do
+    sleep 2
+    pane=$(tmux capture-pane -t "$sess" -p 2>/dev/null || echo "")
+    if echo "$pane" | grep -qE "bypass permissions on"; then return 0; fi
+    if [ "$BACKEND" = grok ] && echo "$pane" | grep -qiE "Grok Build|always-approve|Always approve|to interrupt"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Source the project's pinned Praxis identity so every _praxis call authenticates —
 # without this, auth fails closed, stderr is swallowed by claimable()'s redirect,
 # and `set -e` kills the whole driver on its very first call with NO log output at
 # all (exactly what happened the first time this ran).
 eval "$(python3 -c "
-import json
+import json, shlex
 d = json.load(open('$WT/.claude/settings.local.json'))['env']
-for k in ('PRAXIS_ORG', 'PRAXIS_API_KEY', 'PRAXIS_API_BASE_URL'):
-    print('export %s=\"%s\"' % (k, d[k]))
+# Claude injects this whole env map into the session. Grok does not, so the
+# loop exports every key — Praxis identity AND FACTORY_PROJECT — into this
+# shell and into the sourced file the tmux launch line reads.
+lines = []
+for k, v in d.items():
+    lines.append('export %s=%s' % (k, shlex.quote(str(v))))
+open('$AF_STATE_DIR/af-agent.env', 'w').write('\\n'.join(lines) + '\\n')
+print('\\n'.join(lines))
 ")"
 
 say(){ echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$LOG"; }
@@ -892,8 +969,9 @@ say "backend=$BACKEND ($BACKEND_NOTE)"
 # session on the interactive /rate-limit-options menu. The loop now DETECTS that and halts loudly
 # (exit $AF_EXIT_QUOTA_BLOCKED) rather than burning stall windows round after round -- but the run
 # still stops, so for a long unattended build prefer an API-credit backend or watch for the halt.
-case "$BACKEND_NOTE" in
-  *subscription*) say "NOTE: backend is a Claude subscription (session quota, not API credits) — a long unattended run can hit the session limit; the loop will halt with exit $AF_EXIT_QUOTA_BLOCKED if it does, but consider API credits for very long runs." ;;
+case "$BACKEND" in
+  sonnet) say "NOTE: backend is a Claude subscription (session quota, not API credits) — a long unattended run can hit the session limit; the loop will halt with exit $AF_EXIT_QUOTA_BLOCKED if it does, but consider API credits for very long runs." ;;
+  grok) say "NOTE: backend is an xAI Grok subscription (OAuth session token, not XAI_API_KEY) — API credits are unset on every launch." ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -1609,33 +1687,21 @@ resolve_conflicts(){   # $1 = round number
   say "conflict resolver: $n branch(es) to land for round #$rnd"
 
   local rsession="af-resolve-$(basename "$WT")"
-  tmux kill-session -t "$rsession" 2>/dev/null || true
-  tmux new-session -d -s "$rsession" -c "$WT"
-  # LAUNCH THE AGENT. Omitting this line leaves a bare login shell in the pane, and every later
-  # send-keys types the prompt at a bash prompt instead of into Claude: bash dies on the first
-  # parenthesis, the resolver reports itself dispatched, and NOT ONE branch is merged. That is
-  # exactly how a project reached 11 orphans while the log claimed the resolver ran each round.
-  tmux send-keys -t "$rsession" "cd $WT && $CLAUDE_LAUNCH" Enter
-  local rready=0 i
-  for i in $(seq 1 60); do
-    sleep 2
-    pane=$(tmux capture-pane -p -t "$rsession" 2>/dev/null || true)
-    if echo "$pane" | grep -qE "bypass permissions on"; then rready=1; break; fi
-  done
-  # A pane that never signals ready has NO AGENT in it. Sending the prompt anyway is strictly worse
-  # than not sending it: it silently does nothing while logging as though resolution was attempted,
-  # and the branches stay stranded with no signal that anyone must intervene. Fail loudly instead and
-  # leave $CONFLICTS intact so the next round — or a rerun — still sees every branch as owed.
-  if [ "$rready" != "1" ]; then
+  local rprompt="You are resolving MERGE CONFLICTS for build round $rnd of project $PROJECT, in the checkout at $WT which is already on the integration branch. Each line of $CONFLICTS is a TAB-separated branch name and the ticket id(s) whose work it carries. These branches were built and passed their own gates; they conflict only because sibling work landed first. Do NOT build features, do NOT claim tickets, do NOT push. THE ONE ABSOLUTE RULE: EVERY branch listed MUST end up merged. Leaving a branch unmerged is not an available outcome — a branch nobody merges strands a ticket that reads finished with its work nowhere, and that is the failure this stage exists to eliminate. You always finish with a merge commit for every branch. For EACH branch in order: run git merge --no-ff <branch>, and resolve every conflicted file by UNDERSTANDING BOTH SIDES rather than picking one. Conflicts here are almost always semantic: a file one side deleted and the other edited, a helper one side moved and the other extended, a registry both sides appended to. Keep the intent of BOTH changes wherever you honestly can. If one side DELETED a file the other modified, the deletion almost always wins and the other side change must be re-applied to whatever replaced it — read the deleting commit message to find what superseded it, and never resurrect a deliberately deleted file. When a specific hunk genuinely CANNOT preserve both intents — the two changes are contradictory, or choosing needs a product decision you cannot make — do NOT stall and do NOT abandon the branch. Resolve that hunk by taking the INTEGRATION side (the tree as it already is, which is proven), finish the merge, and record precisely what you dropped: which ticket owned it, which file and behaviour was lost, and what a rebuild has to re-establish. Dropping intent is acceptable ONLY when it is recorded — the ticket is then rebuilt from the current tree, which is the honest repair. Silently taking one side to make a merge succeed is the one thing you must never do. After each branch, PROVE the merged tree: run the repo build and typecheck, and the tests covering the files you touched. If a merge you just made breaks the tree and you cannot fix it, still keep the merge but record the whole branch as dropped-intent so its ticket is rebuilt. Commit each merge with a message naming the branch, the ticket id(s), what conflicted, what you kept from each side, and anything you dropped. When every branch is merged, write JSON to $RESOLVED with exactly these keys: merged which is an array of EVERY branch name you merged (this must list every branch in $CONFLICTS — there is no other outcome), and dropped_intent which is an array of objects each with branch, tickets, and reason stating concretely what was lost and what a rebuild must re-establish (empty array if you preserved everything). Write that file LAST and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question. Work ONLY inside $WT, on the already-checked-out branch, and do NOT push."
+  # LAUNCH THE AGENT. Omitting this leaves a bare login shell, and later send-keys type
+  # the prompt at bash: bash dies on the first parenthesis and NOT ONE branch is merged.
+  af_launch_agent "$rsession" "$rprompt"
+  if ! af_wait_ready "$rsession" 60; then
     say "FATAL: conflict resolver pane never signalled ready — no agent in the session, NOT sending the prompt"
     say "FATAL: $n branch(es) remain unmerged and still queued in $CONFLICTS; re-run --resolve-orphans once the model backend is healthy"
     tmux kill-session -t "$rsession" 2>/dev/null || true
     return 1
   fi
-  sleep 3; tmux send-keys -t "$rsession" Enter
-
-  tmux send-keys -t "$rsession" "You are resolving MERGE CONFLICTS for build round $rnd of project $PROJECT, in the checkout at $WT which is already on the integration branch. Each line of $CONFLICTS is a TAB-separated branch name and the ticket id(s) whose work it carries. These branches were built and passed their own gates; they conflict only because sibling work landed first. Do NOT build features, do NOT claim tickets, do NOT push. THE ONE ABSOLUTE RULE: EVERY branch listed MUST end up merged. Leaving a branch unmerged is not an available outcome — a branch nobody merges strands a ticket that reads finished with its work nowhere, and that is the failure this stage exists to eliminate. You always finish with a merge commit for every branch. For EACH branch in order: run git merge --no-ff <branch>, and resolve every conflicted file by UNDERSTANDING BOTH SIDES rather than picking one. Conflicts here are almost always semantic: a file one side deleted and the other edited, a helper one side moved and the other extended, a registry both sides appended to. Keep the intent of BOTH changes wherever you honestly can. If one side DELETED a file the other modified, the deletion almost always wins and the other side change must be re-applied to whatever replaced it — read the deleting commit message to find what superseded it, and never resurrect a deliberately deleted file. When a specific hunk genuinely CANNOT preserve both intents — the two changes are contradictory, or choosing needs a product decision you cannot make — do NOT stall and do NOT abandon the branch. Resolve that hunk by taking the INTEGRATION side (the tree as it already is, which is proven), finish the merge, and record precisely what you dropped: which ticket owned it, which file and behaviour was lost, and what a rebuild has to re-establish. Dropping intent is acceptable ONLY when it is recorded — the ticket is then rebuilt from the current tree, which is the honest repair. Silently taking one side to make a merge succeed is the one thing you must never do. After each branch, PROVE the merged tree: run the repo build and typecheck, and the tests covering the files you touched. If a merge you just made breaks the tree and you cannot fix it, still keep the merge but record the whole branch as dropped-intent so its ticket is rebuilt. Commit each merge with a message naming the branch, the ticket id(s), what conflicted, what you kept from each side, and anything you dropped. When every branch is merged, write JSON to $RESOLVED with exactly these keys: merged which is an array of EVERY branch name you merged (this must list every branch in $CONFLICTS — there is no other outcome), and dropped_intent which is an array of objects each with branch, tickets, and reason stating concretely what was lost and what a rebuild must re-establish (empty array if you preserved everything). Write that file LAST and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question. Work ONLY inside $WT, on the already-checked-out branch, and do NOT push."
-  sleep 3; tmux send-keys -t "$rsession" Enter
+  if [ "$BACKEND" != grok ]; then
+    sleep 3; tmux send-keys -t "$rsession" Enter
+    tmux send-keys -t "$rsession" "$rprompt"
+    sleep 3; tmux send-keys -t "$rsession" Enter
+  fi
 
   local waited=0 rstall=0 rlast="" pane rhash
   while [ "$waited" -lt "${AF_RESOLVE_TIMEOUT_S:-2400}" ]; do
@@ -1812,12 +1878,12 @@ af_main_worktree(){
 
 af_scratch_roots(){
   local main; main=$(af_main_worktree)
-  printf '%s\n' "$WT/.claude/worktrees" "${WT}_worktrees"
+  printf '%s\n' "$WT/.claude/worktrees" "$WT/.grok/worktrees" "${WT}_worktrees"
   # Agent trees live under whichever worktree the harness considered the project root. When $WT is a
   # linked worktree that is the MAIN one, not $WT -- so name it too, or the sweep walks past every
   # tree the round actually created. Still anchored to a real worktree of THIS repo: nothing outside
   # the repo becomes sweepable by this.
-  [ -n "$main" ] && [ "$main" != "$WT" ] && printf '%s\n' "$main/.claude/worktrees"
+  [ -n "$main" ] && [ "$main" != "$WT" ] && printf '%s\n' "$main/.claude/worktrees" "$main/.grok/worktrees"
   return 0
 }
 
@@ -2583,21 +2649,15 @@ print(json.dumps(out, indent=2))
 PYEOF
   [ -s "$FINDINGS" ] || printf '[]' > "$FINDINGS"
 
-  tmux kill-session -t "$vsession" 2>/dev/null || true
-  tmux new-session -d -s "$vsession" -c "$WT"
-  tmux send-keys -t "$vsession" "cd $WT && $CLAUDE_LAUNCH" Enter
-  local vready=0
-  for _ in $(seq 1 "$READY_POLL_MAX"); do
-    sleep 2
-    pane=$(tmux capture-pane -t "$vsession" -p 2>/dev/null || echo "")
-    if echo "$pane" | grep -qE "bypass permissions on"; then vready=1; break; fi
-  done
-  [ "$vready" = "0" ] && say "WARNING: verify REPL not confirmed ready, sending anyway"
-
-  # No parentheses in this prompt, deliberately — if the REPL is not actually up the text lands on a
-  # bash prompt, where a stray paren is a syntax error that kills the pane.
-  tmux send-keys -t "$vsession" "Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv. Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. THIS IS THE ONLY PLACE THOSE GATES RUN: the workers were told to skip them so that N of them would not run N concurrent suites, so you are the authoritative repo-wide gate for this round and nothing else has proven the merged tree compiles or passes. If any gate is red, identify which ticket's change caused it and regress that ticket per step 3; if you genuinely cannot attribute it, regress the whole batch rather than passing a red tree. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. If this round merged only ONE ticket, the cross-ticket lens is trivially satisfied and you may skip lens A, but step 1's gates and lenses B and C still run in full — they are the only repo-wide check this ticket gets. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: NAME every ticket whose work does NOT survive integration. A ticket whose meta.verify reads manual is the one class where absence of a commit is NOT evidence of anything: its acceptance is a human sign-off over something rendered or observed, so it produces no commit BY DESIGN and its work being missing from src, tests and docs is the expected shape, not a defect. Judge such a ticket only on code it actually landed, and never name it for having produced no merged commit — that regression is suppressed by the loop and reported as parked awaiting sign-off, so naming it wastes the round. Do NOT write that regression to Praxis yourself and do not try to fix the ticket — the loop that dispatched you performs the regression from your verdict, using a write path it already owns. Your job is the judgement, not the write. This split is deliberate: when verifiers were asked to do their own Praxis write, nine consecutive rounds reported zero regressions while their own notes named the failing tickets, so every one of those tickets stayed marked finished on work that had failed integration. Step 3b: read the file $FINDINGS. It is a JSON array of the OPEN findings these tickets still owe an answer to, each with id, check_id, symptom and evidence. If the array is empty, skip this step entirely. Otherwise, for EACH entry do TWO INDEPENDENT things and never let either one decide the other. First, run the check named by check_id against the merged tree and record whether it passes; if check_id is empty there is no check to run and check_passed is false. Second, and SEPARATELY, re-evaluate the recorded symptom itself against the merged tree — read the code, run the specific reproduction the evidence describes — and record whether that symptom is STILL PRESENT. A check that exits zero is NOT evidence the symptom is gone: a check can be defeated by a change that satisfies the command while leaving the defect exactly where it was, and the case where your two answers DISAGREE is the single most valuable thing you can report here, so report both honestly rather than making them agree. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, notes which is one short string, regressed which is an array of OBJECTS — one per ticket that must be regressed, each with four string fields: id the ticket id, reason what actually failed stated concretely, evidence the exact failing test name, gate, file and error text or the precise merge symptom, and fix what the rebuild must do differently — plus an OPTIONAL fifth string field check, a single command that FAILS on this broken merged tree and would PASS once the fix lands. Supply check only when you actually ran that command and watched it fail; a guess is worse than omitting it. It must be one plain command with no shell operators, no pipes, no redirection and no absolute paths, starting with one of pytest, python, python3, npm, npx, make, ruff, mypy, eslint, playwright or grep — anything else is rejected and the check is dropped, though your regression still lands. And findings_recheck which is an array of objects carrying step 3b's answers, each with id the ticket id, check_id copied from $FINDINGS, check_passed true or false, and symptom_present true or false; write an empty array if step 3b was skipped. An empty array asserts every ticket survived integration. Write these for the NEXT WORKER, not for a log: it will claim the ticket cold with no memory of this round, so a bare id or a vague "tests failed" wastes an entire rebuild while it re-derives what you already know. Name the failing test, quote the error, and say what the fix has to address. Good: {"id":"REM-10","reason":"its new default-prefix-attribution controller is unregistered in RESTRICTED_RECORD_MANIFEST and the permission_pages seed","evidence":"chat14-restricted-record-manifest.test.ts and chat16-chart-access-record.test.ts both fail on the merged tree with 'scope not registered'","fix":"register the new controller/scope in RESTRICTED_RECORD_MANIFEST and add its permission_pages seed row, then re-run both suites against the merged tree"}. Bad: {"id":"REM-10","reason":"failed","evidence":"","fix":"fix it"}. Write that file LAST, after everything else is done, and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. If you cannot verify at all, that is itself a verdict: write the JSON with verdict fail and notes saying why, rather than asking what to do."
-  sleep 3; tmux send-keys -t "$vsession" Enter
+  local vprompt="Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv. Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. THIS IS THE ONLY PLACE THOSE GATES RUN: the workers were told to skip them so that N of them would not run N concurrent suites, so you are the authoritative repo-wide gate for this round and nothing else has proven the merged tree compiles or passes. If any gate is red, identify which ticket's change caused it and regress that ticket per step 3; if you genuinely cannot attribute it, regress the whole batch rather than passing a red tree. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. If this round merged only ONE ticket, the cross-ticket lens is trivially satisfied and you may skip lens A, but step 1's gates and lenses B and C still run in full — they are the only repo-wide check this ticket gets. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: NAME every ticket whose work does NOT survive integration. A ticket whose meta.verify reads manual is the one class where absence of a commit is NOT evidence of anything: its acceptance is a human sign-off over something rendered or observed, so it produces no commit BY DESIGN and its work being missing from src, tests and docs is the expected shape, not a defect. Judge such a ticket only on code it actually landed, and never name it for having produced no merged commit — that regression is suppressed by the loop and reported as parked awaiting sign-off, so naming it wastes the round. Do NOT write that regression to Praxis yourself and do not try to fix the ticket — the loop that dispatched you performs the regression from your verdict, using a write path it already owns. Your job is the judgement, not the write. This split is deliberate: when verifiers were asked to do their own Praxis write, nine consecutive rounds reported zero regressions while their own notes named the failing tickets, so every one of those tickets stayed marked finished on work that had failed integration. Step 3b: read the file $FINDINGS. It is a JSON array of the OPEN findings these tickets still owe an answer to, each with id, check_id, symptom and evidence. If the array is empty, skip this step entirely. Otherwise, for EACH entry do TWO INDEPENDENT things and never let either one decide the other. First, run the check named by check_id against the merged tree and record whether it passes; if check_id is empty there is no check to run and check_passed is false. Second, and SEPARATELY, re-evaluate the recorded symptom itself against the merged tree — read the code, run the specific reproduction the evidence describes — and record whether that symptom is STILL PRESENT. A check that exits zero is NOT evidence the symptom is gone: a check can be defeated by a change that satisfies the command while leaving the defect exactly where it was, and the case where your two answers DISAGREE is the single most valuable thing you can report here, so report both honestly rather than making them agree. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, notes which is one short string, regressed which is an array of OBJECTS — one per ticket that must be regressed, each with four string fields: id the ticket id, reason what actually failed stated concretely, evidence the exact failing test name, gate, file and error text or the precise merge symptom, and fix what the rebuild must do differently — plus an OPTIONAL fifth string field check, a single command that FAILS on this broken merged tree and would PASS once the fix lands. Supply check only when you actually ran that command and watched it fail; a guess is worse than omitting it. It must be one plain command with no shell operators, no pipes, no redirection and no absolute paths, starting with one of pytest, python, python3, npm, npx, make, ruff, mypy, eslint, playwright or grep — anything else is rejected and the check is dropped, though your regression still lands. And findings_recheck which is an array of objects carrying step 3b's answers, each with id the ticket id, check_id copied from $FINDINGS, check_passed true or false, and symptom_present true or false; write an empty array if step 3b was skipped. An empty array asserts every ticket survived integration. Write these for the NEXT WORKER, not for a log: it will claim the ticket cold with no memory of this round, so a bare id or a vague \"tests failed\" wastes an entire rebuild while it re-derives what you already know. Name the failing test, quote the error, and say what the fix has to address. Good: {\"id\":\"REM-10\",\"reason\":\"its new default-prefix-attribution controller is unregistered in RESTRICTED_RECORD_MANIFEST and the permission_pages seed\",\"evidence\":\"chat14-restricted-record-manifest.test.ts and chat16-chart-access-record.test.ts both fail on the merged tree with 'scope not registered'\",\"fix\":\"register the new controller/scope in RESTRICTED_RECORD_MANIFEST and add its permission_pages seed row, then re-run both suites against the merged tree\"}. Bad: {\"id\":\"REM-10\",\"reason\":\"failed\",\"evidence\":\"\",\"fix\":\"fix it\"}. Write that file LAST, after everything else is done, and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. If you cannot verify at all, that is itself a verdict: write the JSON with verdict fail and notes saying why, rather than asking what to do."
+  af_launch_agent "$vsession" "$vprompt"
+  if ! af_wait_ready "$vsession"; then
+    say "WARNING: verify REPL not confirmed ready, sending anyway"
+  fi
+  if [ "$BACKEND" != grok ]; then
+    tmux send-keys -t "$vsession" "$vprompt"
+    sleep 3; tmux send-keys -t "$vsession" Enter
+  fi
   say "round #$rnd: post-merge verification dispatched over $ids_csv"
 
   local vwaited=0 vstall=0 vhash="" vlast="" vlastpane=""
@@ -3350,58 +3410,47 @@ while :; do
 
   say "round #$round: dispatching $size ticket(s) in parallel — $ids_csv"
 
-  tmux kill-session -t "$SESSION" 2>/dev/null || true
-  tmux new-session -d -s "$SESSION" -c "$WT"
-  # The env preamble runs in the tmux shell AFTER ~/.bashrc has already sourced the
-  # machine-wide backend file, so it deliberately overrides that file rather than
-  # trusting it to agree with $AF_MODEL_BACKEND.
-  tmux send-keys -t "$SESSION" "cd $WT && $CLAUDE_LAUNCH" Enter
-
-  # Cold starts on a loaded box exceed the old 80s cap (measured: round #1 of taolu-coach), so
-  # poll 3x longer — and if the pane NEVER signals ready there is NO AGENT in it, so sending is
-  # strictly worse than failing loudly (same contract as the conflict-resolver path). The tickets
-  # are unclaimed, so the next pass simply retries them.
-  ready=0
-  for _ in $(seq 1 $((READY_POLL_MAX * 3))); do
-    sleep 2
-    pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
-    if echo "$pane" | grep -qE "bypass permissions on"; then ready=1; break; fi
-  done
-  if [ "$ready" != "1" ]; then
-    say "FATAL: round #$round pane never signalled ready after $((READY_POLL_MAX*6))s — no agent in the session, NOT sending the prompt; killing the session so the next pass retries these tickets"
-    tmux kill-session -t "$SESSION" 2>/dev/null || true
-    continue
-  fi
-  # Dismiss any startup panel (what's-new / trust dialog) before typing, exactly as the
-  # conflict-resolver path does — a 4KB prompt typed into a panel is swallowed silently.
-  sleep 2; tmux send-keys -t "$SESSION" Enter; sleep 2
-
   # The batch ids ARE the run scope, which is what makes one round per session self-limiting: af-build
   # stamps its run marker on exactly these tickets, so its completeness gate releases the session when
   # they are done and its fan-out loop finds an empty in-scope frontier rather than starting a wave the
   # next session is meant to own. Parentheses are avoided in this string on purpose — if the REPL is not
   # actually ready, the text lands on a bash prompt, and a stray paren there is a syntax error that
   # leaves the session dead at a shell prompt.
-  round_prompt="/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is derived from CPU count and on THIS machine resolves to $WORKFLOW_CAP concurrent agent(s), which would throttle a $size-wide round for no reason. Instead spawn ONE Agent subagent per ticket, ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. CRITICAL — REBASE FIRST, before reading a single file or writing a line of code. A worktree is created from the repo default branch, NOT from the branch this run integrates into, so every worker starts on the wrong base. The FIRST command each worker runs in its own worktree is: git merge --ff-only $INTEGRATION_REF — and if that is refused because the worktree has diverged, git rebase $INTEGRATION_REF instead. A worker that skips this authors its change against files the integration branch does not have, and its work will not apply back onto it even cherry-picked alone; that failure is silent, because the ticket still goes green in its own tree and only the round's merge discovers the work cannot land. If BOTH commands fail, do NOT build: record the blocker on the ticket and stop, because anything built on that base is unmergeable by construction. ONE deliberate amendment to that contract, and state it to every worker, precisely — this narrows WHICH tests run, it does not remove the ticket's gate. Each worker STILL runs, and still has to pass, every test related to the code it is changing: its red-to-green acceptance eval, every one of its pinned validations, the existing test files covering the modules it edited, the tests of any caller or dependent of what it changed, and typecheck plus lint SCOPED to the touched paths. A worker whose own related tests are red is NOT finished and must not release the ticket — that gate is unchanged and non-negotiable. What a worker skips is ONLY the repo-wide sweep: the full test suite across the whole repository, and repo-wide build, typecheck, or lint over paths it never touched. The repo-wide gates are run ONCE, on the MERGED tree, by this round's post-merge verification. The reason is measured: $size workers each running the full suite at end-of-ticket puts $size concurrent suites on a box with a handful of cores, and a suite that takes two minutes alone took twenty, with a worker burning 26 minutes and 259k tokens without producing a commit. Deferring the SWEEP is not removing a gate: each ticket is still gated on its own related tests, and the repo-wide sweep still runs before the round is done — once, on the tree that actually matters. All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. CRITICAL — do NOT end your turn while any ticket in that list is still unfinished. Waiting on agent-completion notifications is NOT enough: a turn that ends with workers in flight gets those workers STOPPED, and the round scores zero even though real work was happening. So HOLD the turn open by polling instead: run a shell sleep of 60 seconds, then re-query the build_state of every batch ticket from Praxis, and repeat that sleep-and-query cycle for as long as any of them is still incomplete or in_progress. Only after every batch ticket reads finished or blocked may you merge, reap, and report. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push. Every worker edits ONLY the files inside its OWN assigned worktree — the factory checkout that holds this driver and the af-build hooks is TOOLING, not the project, and editing it is out of bounds even when a ticket is about that code. Two reasons it matters: those hook files are imported at runtime by every project's loop on this machine, so a half-finished edit there can break builds that have nothing to do with this ticket; and edits made outside a worktree sit on no branch, so the round's merge step cannot see them and they are silently dropped when the round ends. For ANY factory or Praxis python invocation, run $PY rather than a bare python3 — this run preflighted that interpreter and a bare python3 may resolve to an older one whose missing tomllib makes the universal quality checks load as an empty list. Pass that same path down to every subagent you spawn.$SERVICES."
-  # Submit, then CONFIRM the prompt landed. The wedge this catches is measured, not hypothetical:
-  # a prompt sent into a not-quite-ready TUI is swallowed whole, the pane sits at an idle input box
-  # showing the 'Try "..."' placeholder, and the round waits 30+ minutes for the stall net. An idle
-  # pane still showing that placeholder (and no "esc to interrupt" activity hint) means the send
-  # did NOT take — resend into the now-ready input instead of waiting for the stall detector.
+  round_prompt="/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is derived from CPU count and on THIS machine resolves to $WORKFLOW_CAP concurrent agent(s), which would throttle a $size-wide round for no reason. Instead spawn ONE worktree-isolated subagent per ticket (Claude Agent, or Grok spawn_subagent with isolation=worktree), ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. CRITICAL — REBASE FIRST, before reading a single file or writing a line of code. A worktree is created from the repo default branch, NOT from the branch this run integrates into, so every worker starts on the wrong base. The FIRST command each worker runs in its own worktree is: git merge --ff-only $INTEGRATION_REF — and if that is refused because the worktree has diverged, git rebase $INTEGRATION_REF instead. A worker that skips this authors its change against files the integration branch does not have, and its work will not apply back onto it even cherry-picked alone; that failure is silent, because the ticket still goes green in its own tree and only the round's merge discovers the work cannot land. If BOTH commands fail, do NOT build: record the blocker on the ticket and stop, because anything built on that base is unmergeable by construction. ONE deliberate amendment to that contract, and state it to every worker, precisely — this narrows WHICH tests run, it does not remove the ticket's gate. Each worker STILL runs, and still has to pass, every test related to the code it is changing: its red-to-green acceptance eval, every one of its pinned validations, the existing test files covering the modules it edited, the tests of any caller or dependent of what it changed, and typecheck plus lint SCOPED to the touched paths. A worker whose own related tests are red is NOT finished and must not release the ticket — that gate is unchanged and non-negotiable. What a worker skips is ONLY the repo-wide sweep: the full test suite across the whole repository, and repo-wide build, typecheck, or lint over paths it never touched. The repo-wide gates are run ONCE, on the MERGED tree, by this round's post-merge verification. The reason is measured: $size workers each running the full suite at end-of-ticket puts $size concurrent suites on a box with a handful of cores, and a suite that takes two minutes alone took twenty, with a worker burning 26 minutes and 259k tokens without producing a commit. Deferring the SWEEP is not removing a gate: each ticket is still gated on its own related tests, and the repo-wide sweep still runs before the round is done — once, on the tree that actually matters. All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. CRITICAL — do NOT end your turn while any ticket in that list is still unfinished. Waiting on agent-completion notifications is NOT enough: a turn that ends with workers in flight gets those workers STOPPED, and the round scores zero even though real work was happening. So HOLD the turn open by polling instead: run a shell sleep of 60 seconds, then re-query the build_state of every batch ticket from Praxis, and repeat that sleep-and-query cycle for as long as any of them is still incomplete or in_progress. Only after every batch ticket reads finished or blocked may you merge, reap, and report. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push. Every worker edits ONLY the files inside its OWN assigned worktree — the factory checkout that holds this driver and the af-build hooks is TOOLING, not the project, and editing it is out of bounds even when a ticket is about that code. Two reasons it matters: those hook files are imported at runtime by every project's loop on this machine, so a half-finished edit there can break builds that have nothing to do with this ticket; and edits made outside a worktree sit on no branch, so the round's merge step cannot see them and they are silently dropped when the round ends. For ANY factory or Praxis python invocation, run $PY rather than a bare python3 — this run preflighted that interpreter and a bare python3 may resolve to an older one whose missing tomllib makes the universal quality checks load as an empty list. Pass that same path down to every subagent you spawn.$SERVICES."
+  # The env preamble runs in the tmux shell AFTER ~/.bashrc has already sourced the
+  # machine-wide backend file, so it deliberately overrides that file rather than
+  # trusting it to agree with $AF_MODEL_BACKEND. Grok gets the prompt as argv.
+  af_launch_agent "$SESSION" "$round_prompt"
+  # Cold starts on a loaded box exceed the old 80s cap (measured: round #1 of taolu-coach), so
+  # poll 3x longer — and if the pane NEVER signals ready there is NO AGENT in it, so sending is
+  # strictly worse than failing loudly. The tickets are unclaimed, so the next pass retries them.
+  if ! af_wait_ready "$SESSION" $((READY_POLL_MAX * 3)); then
+    say "FATAL: round #$round pane never signalled ready after $((READY_POLL_MAX*6))s — no agent in the session, NOT sending the prompt; killing the session so the next pass retries these tickets"
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    continue
+  fi
   submitted=0
-  for _attempt in 1 2 3; do
-    tmux send-keys -t "$SESSION" "$round_prompt"
-    sleep 3; tmux send-keys -t "$SESSION" Enter
-    landed=0
-    for _ in $(seq 1 8); do
-      sleep 5
-      pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
-      if echo "$pane" | grep -q "esc to interrupt"; then landed=1; break; fi
-      if ! echo "$pane" | grep -q 'Try "'; then landed=1; break; fi
+  if [ "$BACKEND" = grok ]; then
+    submitted=1
+  else
+    # Submit, then CONFIRM the prompt landed. The wedge this catches is measured, not hypothetical:
+    # a prompt sent into a not-quite-ready TUI is swallowed whole, the pane sits at an idle input box
+    # showing the 'Try "..."' placeholder, and the round waits 30+ minutes for the stall net.
+    sleep 2; tmux send-keys -t "$SESSION" Enter; sleep 2
+    for _attempt in 1 2 3; do
+      tmux send-keys -t "$SESSION" "$round_prompt"
+      sleep 3; tmux send-keys -t "$SESSION" Enter
+      landed=0
+      for _ in $(seq 1 8); do
+        sleep 5
+        pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
+        if echo "$pane" | grep -q "esc to interrupt"; then landed=1; break; fi
+        if ! echo "$pane" | grep -q 'Try "'; then landed=1; break; fi
+      done
+      if [ "$landed" = "1" ]; then submitted=1; break; fi
+      say "WARNING: round #$round prompt did not land (attempt $_attempt) — input still idle, resending"
     done
-    if [ "$landed" = "1" ]; then submitted=1; break; fi
-    say "WARNING: round #$round prompt did not land (attempt $_attempt) — input still idle, resending"
-  done
+  fi
   if [ "$submitted" != "1" ]; then
     say "FATAL: round #$round prompt never landed after 3 attempts — killing session; tickets remain unclaimed for the next pass"
     tmux kill-session -t "$SESSION" 2>/dev/null || true
