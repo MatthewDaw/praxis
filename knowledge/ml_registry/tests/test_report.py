@@ -95,3 +95,79 @@ def test_it_surfaces_a_disabled_speed_void_gate() -> None:
     st = campaign_status(space, mid)
     assert st["void_throughput_fraction"] == 0
     assert "speed_void=0" in format_status(st)
+
+
+def _voided(space, mid, iid, commit, reason):
+    tid = register_trial(space, {"model_id": mid, "idea_id": iid, "commit": commit,
+                                 "status": "complete", "throughput": 3.4, "diff_lines": 1},
+                         frozenset({commit}))
+    space.get(tid).meta["status"] = "voided"
+    space.get(tid).meta["void_reason"] = reason
+    return tid
+
+
+def test_repeated_unfair_voids_diagnose_the_budget_not_the_arms() -> None:
+    """One truncation is bad luck. Two says the wall clock will truncate them again, so an
+    autonomous loop that merely re-runs will void forever and close having explained nothing."""
+    from knowledge.ml_registry.report import diagnose
+
+    space, mid = _space()
+    for tag, c in (("M06", "c1"), ("M08", "c2")):
+        _voided(space, mid, _idea(space, mid, tag), c, "ledger status 'budget_exhausted' is not a fair run")
+
+    kinds = {d["kind"] for d in diagnose(space, mid)}
+    assert "budget_too_small" in kinds
+    detail = next(d for d in diagnose(space, mid) if d["kind"] == "budget_too_small")["detail"]
+    assert "RE-RUNNING WILL NOT HELP" in detail
+
+
+def test_repeated_throughput_voids_diagnose_the_gate() -> None:
+    """A structurally slower arm can never pass a speed gate, so the gate is rejecting on cost."""
+    from knowledge.ml_registry.report import diagnose
+
+    space, mid = _space()
+    for tag, c in (("R03", "c1"), ("M06", "c2")):
+        _voided(space, mid, _idea(space, mid, tag), c, "throughput 3.17 is more than 5% below ...")
+
+    assert "void_gate_too_tight" in {d["kind"] for d in diagnose(space, mid)}
+
+
+def test_one_void_is_not_yet_a_diagnosis() -> None:
+    from knowledge.ml_registry.report import diagnose
+
+    space, mid = _space()
+    _voided(space, mid, _idea(space, mid, "M06"), "c1", "ledger status 'x' is not a fair run")
+    assert "budget_too_small" not in {d["kind"] for d in diagnose(space, mid)}
+
+
+def test_ideas_whose_latest_trial_voided_are_named_as_awaiting_rerun() -> None:
+    """A voided arm is UNMEASURED. Nothing else says so, and treating it as answered records
+    nothing at all -- strictly worse than a rejection."""
+    from knowledge.ml_registry.report import diagnose
+
+    space, mid = _space()
+    _voided(space, mid, _idea(space, mid, "M06"), "c1", "ledger status 'x' is not a fair run")
+    assert "awaiting_rerun" in {d["kind"] for d in diagnose(space, mid)}
+
+
+def test_a_later_resolved_trial_clears_awaiting_rerun() -> None:
+    """Re-run and resolved is no longer awaiting anything."""
+    from knowledge.ml_registry.report import diagnose
+
+    space, mid = _space()
+    iid = _idea(space, mid, "M06")
+    _voided(space, mid, iid, "c1", "ledger status 'x' is not a fair run")
+    tid = register_trial(space, {"model_id": mid, "idea_id": iid, "commit": "c2",
+                                 "status": "complete", "throughput": 3.4, "diff_lines": 1},
+                         frozenset({"c2"}))
+    space.get(tid).meta["status"] = "succeeded"
+    assert "awaiting_rerun" not in {d["kind"] for d in diagnose(space, mid)}
+
+
+def test_diagnoses_appear_in_the_rendered_status() -> None:
+    from knowledge.ml_registry.report import campaign_status, format_status
+
+    space, mid = _space()
+    for tag, c in (("M06", "c1"), ("M08", "c2")):
+        _voided(space, mid, _idea(space, mid, tag), c, "ledger status 'budget_exhausted' is not a fair run")
+    assert "BLOCKING: budget_too_small" in format_status(campaign_status(space, mid))
