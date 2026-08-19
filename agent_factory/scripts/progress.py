@@ -129,3 +129,37 @@ class Progress:
         tail = f" mean={fmean(self.scores):.4f}" if self.scores else ""
         self._emit(f"{PREFIX} {self.label} COMPLETE {self.n} unit(s) in {_hms(elapsed)}{tail}"
                    + (f" {note}" if note else ""))
+
+def stream_progress(proc, echo=None, prefix: str = PREFIX) -> str:
+    """Consume a subprocess's stdout LIVE, echoing progress lines, and return everything.
+
+    The producer half of this module is useless without a correct consumer, and the obvious
+    consumer is wrong in a way that looks right:
+
+        for line in proc.stdout:      # WRONG -- hidden read-ahead buffer
+            ...
+
+    Iterating a pipe in text mode fills an internal read-ahead buffer before yielding, so lines
+    are withheld until that buffer fills or the process exits. Measured: an arm emitted its first
+    progress line at 1m31s and then nothing for 30 minutes, while the child sat at 373% CPU
+    genuinely working. The producer was correct, `PYTHONUNBUFFERED` was set on the child, and the
+    lines still did not arrive -- the supervisor's own reader was holding them.
+
+    `iter(readline, "")` reads one line at a time with no read-ahead, which is the only form that
+    actually streams.
+
+    Also drains stdout continuously, which matters independently: a child that fills a pipe
+    buffer nobody is reading BLOCKS. Collecting output only after `wait()` deadlocks any process
+    chatty enough to fill 64KB.
+
+    Returns the complete stdout so a caller can still parse a trailing summary from it.
+    """
+    echo = echo or (lambda line: print(line, flush=True))
+    captured: list[str] = []
+    if proc.stdout is None:
+        return ""
+    for line in iter(proc.stdout.readline, ""):
+        captured.append(line)
+        if line.startswith(prefix):
+            echo(line.rstrip())
+    return "".join(captured)

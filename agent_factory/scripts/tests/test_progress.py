@@ -78,3 +78,28 @@ def test_min_interval_throttles_but_always_emits_the_last_step() -> None:
 def test_done_reports_total_time_and_mean() -> None:
     last = _run([0.6, 0.8])[-1]
     assert "COMPLETE" in last and "2 unit(s)" in last and "mean=0.7000" in last
+
+
+def test_stream_progress_yields_lines_as_they_arrive_not_in_a_batch() -> None:
+    """The consumer half. `for line in proc.stdout` fills a hidden read-ahead buffer and withholds
+    lines until it fills or the process exits -- measured as a first progress line at 1m31s
+    followed by 30 minutes of silence from a child that was working the whole time."""
+    import subprocess
+    import sys as _sys
+
+    from progress import stream_progress
+
+    child = subprocess.Popen(
+        [_sys.executable, "-u", "-c",
+         "import sys\n"
+         "for i in range(3):\n"
+         "    print(f'[progress] unit {i}', flush=True)\n"
+         "print('{\"done\": true}')\n"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+    seen = []
+    out = stream_progress(child, echo=seen.append)
+    child.wait()
+
+    assert len(seen) == 3                       # every progress line echoed
+    assert '{"done": true}' in out              # and the summary still captured
+    assert "[progress] unit 0" in out

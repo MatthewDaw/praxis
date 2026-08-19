@@ -502,6 +502,27 @@ Three properties are load-bearing:
 - **Lines are flushed and prefixed `[progress]`**, so a supervisor can `grep` them out of an
   interleaved log. A buffered progress line is not a progress line.
 
+**The consumer half is where this actually breaks.** A correct producer is useless behind a
+reader that buffers, and the obvious reader is wrong in a way that looks right:
+
+```python
+for line in proc.stdout:          # WRONG -- hidden read-ahead buffer withholds lines
+```
+
+Iterating a pipe in text mode fills an internal buffer before yielding anything. Measured: an arm
+emitted its first progress line at 1m31s and then nothing for 30 minutes, while the child sat at
+373% CPU working normally. The producer was correct and `PYTHONUNBUFFERED` was set — the
+supervisor's own reader was holding the lines. Use the helper:
+
+```python
+from progress import stream_progress
+out = stream_progress(proc)       # echoes [progress] live, returns full stdout
+```
+
+It also drains stdout continuously, which matters independently: a child that fills a pipe nobody
+is reading BLOCKS, so collecting output only after `wait()` deadlocks anything chatty enough to
+fill 64KB.
+
 Non-Python steps follow the same convention by hand: one flushed line per unit, prefixed
 `[progress]`, carrying `n/total`, `elapsed`, and a metric where one exists.
 
