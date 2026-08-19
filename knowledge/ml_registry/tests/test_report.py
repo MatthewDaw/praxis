@@ -85,3 +85,13 @@ def test_an_unregistered_model_is_refused() -> None:
     space, _ = _space()
     with pytest.raises(KeyError):
         campaign_status(space, "model-nope")
+
+
+def test_it_surfaces_a_disabled_speed_void_gate() -> None:
+    """void_throughput_fraction=0 is a load-bearing campaign setting after #30; status
+    that omits it makes a CV campaign look like it still has a 5% speed gate."""
+    space, mid = _space()
+    space.get(mid).meta["void_throughput_fraction"] = 0
+    st = campaign_status(space, mid)
+    assert st["void_throughput_fraction"] == 0
+    assert "speed_void=0" in format_status(st)

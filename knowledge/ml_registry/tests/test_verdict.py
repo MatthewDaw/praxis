@@ -288,6 +288,37 @@ def test_void_throughput_fraction_zero_skips_the_void_gate():
     assert verdict == VERDICT_ADOPTED
 
 
+def test_throughput_void_records_a_reason_so_it_is_not_confused_with_an_unfair_run():
+    space, model_id = _space_with_model()
+    idea_id = register_idea(space, _idea_meta(model_id))
+    low_throughput = BASELINE_THROUGHPUT * 0.94
+    trial_id = _trial(space, model_id, idea_id, "void1", throughput=low_throughput, diff_lines=100)
+    ledger = _rows(void1=(1.0 - 10 * NOISE_FLOOR, low_throughput, 100))
+
+    assert adjudicate_verdict(space, trial_id, ledger) == VERDICT_VOIDED
+    reason = space.get(trial_id).meta["void_reason"]
+    assert "throughput" in reason
+    assert "budget_exhausted" not in reason
+
+
+def test_void_throughput_fraction_zero_does_not_disable_unfair_run_voids():
+    """#32's unfair-run void is a different gate. Disabling speed VOID must not adjudicate
+    a budget_exhausted arm -- that would re-introduce the truncated-graph-model rejection."""
+    space, model_id = _space_with_model()
+    space.get(model_id).meta["void_throughput_fraction"] = 0
+    idea_id = register_idea(space, _idea_meta(model_id))
+    trial_id = _trial(space, model_id, idea_id, "void1",
+                      throughput=BASELINE_THROUGHPUT, diff_lines=100)
+    ledger = _rows(void1=(1.0 - 10 * NOISE_FLOOR, BASELINE_THROUGHPUT, 100))
+    ledger["void1"] = LedgerRow(
+        value=1.0 - 10 * NOISE_FLOOR, throughput=BASELINE_THROUGHPUT, diff_lines=100,
+        status="budget_exhausted",
+    )
+
+    assert adjudicate_verdict(space, trial_id, ledger) == VERDICT_VOIDED
+    assert "budget_exhausted" in space.get(trial_id).meta["void_reason"]
+
+
 def test_explicit_void_throughput_fraction_matches_the_default():
     space, model_id = _space_with_model()
     space.get(model_id).meta["void_throughput_fraction"] = 0.05

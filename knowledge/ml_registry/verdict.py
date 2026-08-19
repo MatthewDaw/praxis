@@ -228,6 +228,10 @@ def adjudicate_verdict(
         void_fraction = THROUGHPUT_FLOOR_FRACTION
     if void_fraction > 0 and row.throughput < baseline_throughput * (1 - void_fraction):
         trial.meta["status"] = VERDICT_VOIDED
+        trial.meta["void_reason"] = (
+            f"throughput {row.throughput} is more than {void_fraction:.0%} below "
+            f"baseline_throughput {baseline_throughput}"
+        )
         return VERDICT_VOIDED
 
     direction = model.meta.get("direction")

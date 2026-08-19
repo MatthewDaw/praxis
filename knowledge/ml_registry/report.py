@@ -49,6 +49,7 @@ def campaign_status(space: RegistrySpace, model_id: str) -> dict[str, Any]:
         "previous_baseline": model.meta.get("previous_baseline"),
         "noise_floor": model.meta.get("noise_floor"),
         "baseline_throughput": model.meta.get("baseline_throughput"),
+        "void_throughput_fraction": model.meta.get("void_throughput_fraction", 0.05),
         "ideas_total": len(ideas),
         "ideas_by_status": {k: sorted(v) for k, v in sorted(by_status.items())},
         "trials_total": len(trials),
@@ -69,7 +70,8 @@ def format_status(status: dict[str, Any]) -> str:
     lines = [
         f"model      {status['model_id']}  metric={status['metric']} ({status['direction']})",
         f"baseline   {status['baseline']}  floor={status['noise_floor']}"
-        f"  void_ref={status['baseline_throughput']}",
+        f"  void_ref={status['baseline_throughput']}"
+        f"  speed_void={status.get('void_throughput_fraction', 0.05)}",
         f"ideas      {status['ideas_total']} total, {status['trials_total']} trial(s) run",
     ]
     for st in list(IDEA_STATUSES) + ["untried"]:

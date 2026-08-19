@@ -32,7 +32,7 @@ python -m knowledge.ml_registry.cli bootstrap-campaign \
     --ledger <project>/results.tsv --backlog <project>/backlog.jsonl \
     --model-id <id> --metric <name> --direction maximize \
     --diff-size-limit 8 --skip-ids <settled> --out-dir <project>/registry \
-    [--void-throughput-fraction 0]    # CV campaigns: disable VOID; default 0.05
+    [--void-throughput-fraction 0]    # disable the SPEED void only; unfair runs still void
 ```
 
 `bootstrap-campaign` verifies every precondition below, MEASURES the noise floor from the ledger's
@@ -80,18 +80,23 @@ logic and its box is CPU-only.
 ## The decision rule, and the one number that governs it
 
 ```
-delta = value - baseline            (sign flipped when direction == "minimize")
-
+ledger status not in {ok, ""}                                      -> VOIDED (unfair run)
+throughput < baseline_throughput * (1 - void_throughput_fraction)  -> VOIDED (speed)
 delta >  noise_floor   -> ADOPTED    baseline advances to this arm
 delta < -noise_floor   -> REJECTED
 otherwise              -> PARKED     (stagnant but cheap) or REJECTED (stagnant and costly,
                                       by diff_size_limit)
-throughput < baseline_throughput * (1 - void_throughput_fraction)  ->  VOIDED, first
 ```
 
-`void_throughput_fraction` lives on model meta (bootstrap default `0.05`; `0` disables). CV
-campaigns whose metric is not training speed must set `--void-throughput-fraction 0` rather than
-hacking `baseline_throughput=0.01`.
+Two VOID gates, checked in that order, and they mean different things. An unfair run
+(`budget_exhausted`, …) was never measured; a slow run was measured and was expensive. `#32`
+voids the first *before* the speed gate, so a truncated arm that was also slow is recorded as
+truncated.
+
+`void_throughput_fraction` lives on model meta (bootstrap default `0.05`). **`0` disables the
+speed gate only.** Unfair runs still void. CV campaigns whose metric is not training speed must
+set `--void-throughput-fraction 0` rather than hacking `baseline_throughput=0.01` — and must
+not read that as "VOID is off".
 
 Both tests are **strict**: a delta of exactly one floor is evidence of nothing in either
 direction.
