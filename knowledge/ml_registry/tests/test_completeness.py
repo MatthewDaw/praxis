@@ -148,3 +148,27 @@ def test_an_unregistered_model_is_refused() -> None:
     space, _ = _space()
     with pytest.raises(KeyError):
         campaign_completeness(space, "model-nope", STAGES)
+
+
+def test_unreachable_arms_do_not_block_completion() -> None:
+    """A composition arm gated on an idea that PARKED can never become eligible, because
+    depends_on requires ADOPTION. Counting it as open makes `done` unreachable no matter what
+    else is authored.
+
+    This regressed silently: the union with unreachable() was present, but `items` was built
+    WITHOUT depends_on, so unreachable() saw no dependencies and always returned nothing.
+    Measured: a campaign exhausted its runnable backlog with four dead composition arms, one per
+    stage, and campaign-complete reported four blockers no further work could ever clear.
+    """
+    space, mid = _space()
+    for s in STAGES:
+        _full(space, mid, s)
+    # a composition arm whose dependency parked -- permanently ineligible
+    dep = _idea(space, mid, "R01", "representation", status="parked")
+    register_idea(space, {"model_id": mid, "origin": "seeded", "axis": "representation",
+                          "description": "compose", "id": "R07", "depends_on": ["R01"]})
+    space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
+
+    out = campaign_completeness(space, mid, STAGES)
+    blocking = {b["kind"] for b in out["blocking"]}
+    assert "stage_open" not in blocking, out["blocking"]
