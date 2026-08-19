@@ -269,7 +269,14 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     # while .credentials.json held subscriptionType=max the whole time. The loop was
     # therefore spending API credits while printing that it was not.
     # The credentials file is the subscription; let the CLI read it.
-    CLAUDE_LAUNCH="unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN; claude --model sonnet --dangerously-skip-permissions"
+    # The model is a PER-RUN choice, not a property of the loop. It was hardcoded to sonnet in
+    # three places (launch, probe, and the box's settings.json), so a project that needed a
+    # stronger model had no way to say so and no way to discover that it could not -- the loop
+    # simply ran, on whatever the hardcode said, and the run looked normal.
+    #
+    # Default stays sonnet so every existing caller is unchanged. Override per run:
+    #     AF_CLAUDE_MODEL=opus agent_factory/scripts/af-ticket-loop.sh ...
+    CLAUDE_LAUNCH="unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN; claude --model ${AF_CLAUDE_MODEL:-sonnet} --dangerously-skip-permissions"
 
     # The credential FILE existing proves nothing — a long-lived setup-token can be revoked
     # or expire while the file sits there looking healthy, and the failure surfaces as every
@@ -299,7 +306,7 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     if [ -r "$CREDENTIALS_FILE" ]; then
       ln -sf "$CREDENTIALS_FILE" "$probe_cfg/.credentials.json" 2>/dev/null || true
     fi
-    probe="$(cd /tmp && bash -c "unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN; export CLAUDE_CONFIG_DIR='$probe_cfg'; timeout 120 claude --model sonnet -p 'Reply with exactly: PONG'" 2>&1 || true)"
+    probe="$(cd /tmp && bash -c "unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN; export CLAUDE_CONFIG_DIR='$probe_cfg'; timeout 120 claude --model ${AF_CLAUDE_MODEL:-sonnet} -p 'Reply with exactly: PONG'" 2>&1 || true)"
     if printf '%s' "$probe" | grep -qiE 'please run /login|invalid api key|authentication_error|oauth.*invalid|401'; then
       echo "[backend] FATAL: sonnet credential present but REJECTED by Anthropic:" >&2
       printf '%s\n' "$probe" | head -3 | sed 's/^/[backend]   /' >&2

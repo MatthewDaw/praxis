@@ -423,6 +423,27 @@ channel that exists. `tmux capture-pane` shows you a REPL, and the claim heartbe
 lease — neither shows you whether the work is advancing. A remote job that emits no progress can
 only be judged by waiting for it, which defeats the point of detaching it.
 
+## Choosing the model
+
+The loop runs `sonnet` by default. Override per run:
+
+```sh
+AF_CLAUDE_MODEL=opus agent_factory/scripts/af-ticket-loop.sh ...
+```
+
+It was hardcoded in three places — the launch line, the auth probe, and the box's
+`~/.claude/settings.json` — so a project that needed a stronger model had no way to say so, and
+no way to discover that it could not. The loop simply ran on whatever the hardcode said and the
+run looked entirely normal.
+
+**The probe uses the same variable deliberately.** A probe that validates a different model than
+the loop launches proves nothing about the launch: auth, quota and availability can all differ
+per model, so a green probe on one model and a failing loop on another is exactly the confusing
+state this avoids.
+
+**`~/.claude/settings.json` on the box is a separate setting** and will silently win for anything
+that does not pass `--model`. Change both, or expect them to disagree.
+
 ## Never
 
 - Never wait for the build to finish; this triggers and returns.
