@@ -21,7 +21,7 @@ Every external decision (what a generative axis proposes, what a retrieval axis 
 -- interactive mode only -- whether the human confirms a candidate) is an INJECTED callable, the
 same seam :mod:`knowledge.ml_registry.supervisor` uses for its own ``Dispatcher``/
 ``IdeaGenerator``: this module stays provable without a live LLM, a live code index, or a live
-af-learn/Praxis connection. A real caller (the af-ml-ideate skill) wires ``generator`` to an
+af-learn/Praxis connection. A real caller (the af-seed-ml-supervise skill — the written af-ml-ideate) wires ``generator`` to an
 LLM-backed proposal per axis, ``retriever`` to the current-code/prior-trials/af-learn-lesson
 lookups, and (interactively) ``confirm`` to a human prompt.
 

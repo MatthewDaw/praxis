@@ -22,8 +22,9 @@ contract.
   of stated hypotheses. Different paradigm; do not merge them.
 - **Not a trainer.** It never trains anything. It decides what to run and what the result means.
   The project supplies the training command.
-- **Not a proposer.** Seeding the backlog is `af-ml-ideate`'s job (unwritten). Until it exists,
-  seed the backlog by hand with `register-idea`, which is a perfectly good way to work.
+- **Not a proposer.** Seeding the backlog is `/af-seed-ml-supervise`'s job (the written
+  `af-ml-ideate`; the code remains `knowledge.ml_registry.ideate` via `seed-campaign`).
+  `register-idea` by hand is still a perfectly good way to work.
 
 ## Preconditions — one command checks them all
 
