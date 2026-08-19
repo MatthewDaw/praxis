@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from knowledge.ml_registry.staging import eligible, open_stage, stage_progress
+from knowledge.ml_registry.staging import (
+    StagingStuck, eligible, next_queue, open_stage, stage_progress,
+)
 
 STAGES = ("representation", "architecture", "tuning")
 
@@ -125,3 +127,87 @@ def test_unreachable_items_let_their_stage_close() -> None:
     assert open_stage(items, answered, STAGES) == "representation"        # wedged
     answered |= unreachable(items, answered, set())
     assert open_stage(items, answered, STAGES) == "architecture"          # freed
+
+
+def test_next_queue_unions_unreachable_and_opens_the_next_stage() -> None:
+    """R01 parked (answered, not adopted) kills R07; architecture opens with M01."""
+    items = [{"id": "R01", "axis": "representation"},
+             {"id": "R07", "axis": "representation", "depends_on": ["R01"]},
+             {"id": "M01", "axis": "architecture"}]
+    stage, queue, blocked = next_queue(items, {"R01"}, set(), STAGES)
+    assert stage == "architecture"
+    assert [i["id"] for i in queue] == ["M01"]
+    assert "R07" in blocked
+
+
+def test_next_queue_raises_when_a_stage_is_stuck() -> None:
+    """R04 depends on a missing id: not unreachable, not eligible, holds representation open."""
+    items = [{"id": "R04", "axis": "representation", "depends_on": ["MISSING"]},
+             {"id": "M01", "axis": "architecture"}]
+    try:
+        next_queue(items, set(), set(), STAGES)
+    except StagingStuck as exc:
+        assert exc.stage == "representation"
+        assert exc.leftover == ["R04"]
+        return
+    raise AssertionError("expected StagingStuck")
+
+
+def test_next_queue_exhausted_returns_none() -> None:
+    stage, queue, blocked = next_queue(_items(), {"R1", "R2", "M1", "T1"}, set(), STAGES)
+    assert stage is None
+    assert queue == []
+    assert blocked == set()
+
+
+def test_staging_stuck_names_the_stage_and_the_leftover_ids() -> None:
+    items = [{"id": "R04", "axis": "representation", "depends_on": ["MISSING"]},
+             {"id": "M01", "axis": "architecture"}]
+    try:
+        next_queue(items, set(), set(), STAGES)
+    except StagingStuck as exc:
+        message = str(exc)
+        assert "representation" in message
+        assert "R04" in message
+        return
+    raise AssertionError("expected StagingStuck")
+
+
+def test_coverage_counts_only_arms_that_actually_RAN() -> None:
+    """A stage answered by exclusions and dead dependencies has tested nothing."""
+    from knowledge.ml_registry.staging import stage_coverage
+
+    items = [{"id": f"M0{i}", "axis": "architecture"} for i in range(1, 6)]
+    # M01/M04 ran; M02 skipped at registration, M05 unreachable, M03 a no-op vs the incumbent
+    cov = {c["stage"]: c for c in stage_coverage(items, STAGES, measured_ids={"M01", "M04"})}
+    arch = cov["architecture"]
+    assert arch["total"] == 5
+    assert arch["measured"] == 2
+    assert arch["answered_without_running"] == 3
+    assert arch["thin"] is True
+
+
+def test_a_stage_with_enough_real_arms_is_not_thin() -> None:
+    from knowledge.ml_registry.staging import stage_coverage
+
+    items = [{"id": f"M0{i}", "axis": "architecture"} for i in range(1, 5)]
+    cov = {c["stage"]: c for c in
+           stage_coverage(items, STAGES, measured_ids={"M01", "M02", "M03"})}
+    assert cov["architecture"]["thin"] is False
+
+
+def test_an_empty_stage_is_not_thin() -> None:
+    """Thin means 'closed on too little evidence', not 'has no items'."""
+    from knowledge.ml_registry.staging import stage_coverage
+
+    cov = {c["stage"]: c for c in stage_coverage([], STAGES, measured_ids=set())}
+    assert all(not c["thin"] for c in cov.values())
+
+
+def test_thin_stages_names_them_for_reporting() -> None:
+    from knowledge.ml_registry.staging import stage_coverage, thin_stages
+
+    items = ([{"id": f"R0{i}", "axis": "representation"} for i in range(1, 5)]
+             + [{"id": "M01", "axis": "architecture"}])
+    cov = stage_coverage(items, STAGES, measured_ids={"R01", "R02", "R03", "M01"})
+    assert thin_stages(cov) == ["architecture"]
