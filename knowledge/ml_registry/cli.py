@@ -72,7 +72,8 @@ from knowledge.ml_registry.supervisor import (
     supervise_campaign,
 )
 from knowledge.ml_registry.completeness import campaign_completeness
-from knowledge.ml_registry.report import campaign_status, format_status
+from knowledge.ml_registry.report import (acknowledge_diagnosis, campaign_status,
+                                          format_status)
 from knowledge.ml_registry.verdict import LedgerRow, adjudicate_verdict, reset_ratchet
 from knowledge.ml_registry.write_path import (
     MAX_DISCOVERED_IDEAS_FIELD,
@@ -511,6 +512,21 @@ def main(argv: list[str] | None = None) -> int:
     status_p.add_argument("--model-id", required=True)
     status_p.add_argument("--json", action="store_true")
 
+    ack_p = sub.add_parser(
+        "acknowledge-diagnosis",
+        help="record that a blocking diagnosis has been REMEDIATED so the loop may proceed. NOT a "
+             "mute: it fires again the moment a NEW void of that kind appears, so acknowledging "
+             "a cause you did not fix buys exactly one more arm.",
+    )
+    ack_p.add_argument("--space-file", required=True)
+    ack_p.add_argument("--model-id", required=True)
+    ack_p.add_argument("--kind", required=True,
+                       help="e.g. budget_too_small, void_gate_too_tight")
+    ack_p.add_argument("--reason", required=True,
+                       help="what was actually changed. REQUIRED: an acknowledgement without one "
+                            "is indistinguishable from silencing an inconvenient blocker")
+    ack_p.add_argument("--json", action="store_true")
+
     complete_p = sub.add_parser(
         "campaign-complete",
         help="is the campaign FINISHED? Exits 0 when every declared phase is populated and "
@@ -891,6 +907,15 @@ def main(argv: list[str] | None = None) -> int:
             # safe to run against a campaign that is mid-arm. Saving here would race the loop.
             status = campaign_status(RegistrySpace.load(Path(args.space_file)), args.model_id)
             print(json.dumps(status, indent=2) if args.json else format_status(status))
+            return 0
+        if args.command == "acknowledge-diagnosis":
+            out = _load_mutate_save(
+                args.space_file,
+                lambda space: acknowledge_diagnosis(space, args.model_id, args.kind, args.reason),
+            )
+            print(json.dumps(out) if args.json
+                  else f"OK: acknowledged {out['kind']} at {out['void_count_at_ack']} void(s); "
+                       f"it will fire again on the next NEW void of this kind")
             return 0
         if args.command == "campaign-complete":
             out = campaign_completeness(
