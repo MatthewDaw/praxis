@@ -75,6 +75,12 @@ VERDICT_PARKED = "parked"
 VERDICT_REJECTED = "rejected"
 VERDICT_VOIDED = "voided"
 
+#: A run in any other ledger status is UNFAIR, not losing, and is voided rather than adjudicated.
+#: The trainer writes this column precisely to say so -- `budget_exhausted` marks a run cut short
+#: by wall clock, and scoring an under-trained model as a rejection records a settled answer to a
+#: question that was never actually asked.
+FAIR_RUN_STATUSES: frozenset[str] = frozenset({"ok", ""})
+
 BASELINE_FIELD = "baseline"
 PREVIOUS_BASELINE_FIELD = "previous_baseline"
 
@@ -98,6 +104,11 @@ class LedgerRow:
     value: float
     throughput: float
     diff_lines: float
+    #: The loop's own verdict on whether this run was FAIR. Anything outside `FAIR_RUN_STATUSES`
+    #: means the number in `value` was not produced under the conditions the arm was meant to be
+    #: measured under, so it cannot be adjudicated. Defaults to "ok" so a ledger that does not
+    #: record status behaves exactly as before.
+    status: str = "ok"
 
 
 def _agree(a: float, b: float) -> bool:
@@ -194,6 +205,20 @@ def adjudicate_verdict(
 
     baseline_commit = str(model.meta.get(BASELINE_FIELD))
     baseline_row = _ledger_row(ledger_rows, baseline_commit, field=BASELINE_FIELD)
+
+    # An unfair run is voided before any comparison. The ledger's own status column exists to say
+    # the number was not produced under the intended conditions -- `budget_exhausted` means wall
+    # clock cut the run short. Adjudicating it anyway records a REJECTION for a question that was
+    # never asked, and a rejection is exactly what a future session reads as settled.
+    #
+    # Observed on the first campaign to run a genuinely expensive arm: a graph model was cut off by
+    # the time budget, its per-seed scores degrading 0.618 / 0.627 / 0.412 / 0.049 as it diverged,
+    # and the registry scored the truncated mean as a -0.2766 rejection of the entire model family.
+    # LedgerRow did not carry `status`, so this could not be seen at all.
+    if str(row.status).strip().lower() not in FAIR_RUN_STATUSES:
+        trial.meta["status"] = VERDICT_VOIDED
+        trial.meta["void_reason"] = f"ledger status {row.status!r} is not a fair run"
+        return VERDICT_VOIDED
 
     baseline_throughput = float(model.meta["baseline_throughput"])
     raw_fraction = model.meta.get("void_throughput_fraction", THROUGHPUT_FLOOR_FRACTION)
