@@ -243,3 +243,47 @@ def invalidate_adoption(space: RegistrySpace, idea_id: str, reason: str) -> None
         if other.meta.get("rejected_under_adoption") == idea_id:
             for key in ("status", "rejection_reason", "rejected_under_adoption"):
                 other.meta.pop(key, None)
+
+def reopen_idea(space: RegistrySpace, idea_id: str, reason: str) -> dict[str, object]:
+    """Return an idea to UNTRIED after a verdict that was never fairly earned.
+
+    Not a way to relitigate a verdict you dislike. This exists for the narrow case where the
+    verdict was produced by a run that should never have been adjudicated -- truncated by a wall
+    clock, killed, or otherwise unfair -- so the question the idea asks is still genuinely open.
+
+    Neither existing path covers it. `retriable-ideas` only reactivates PARKED ideas whose
+    `reactivation_trigger` has fired, and `invalidate-adoption` re-queues ideas rejected under an
+    adoption the ratchet has invalidated. An idea rejected on the strength of a truncated run is
+    neither, and without this it stays rejected forever -- which is the worst possible record,
+    because a rejection is exactly what a future session reads as a question already settled.
+
+    Observed on the first campaign to run an expensive arm: a graph model was starved by a
+    30-minute budget, its later folds scored untrained, and the mean over trained and untrained
+    folds was adjudicated as a -0.2766 REJECTION of the entire graph family -- the one family the
+    skeleton-action-recognition literature had converged on. The verdict has since been voided at
+    the trial level, but the IDEA remained rejected, so the arm could never be re-run.
+
+    The prior verdict is preserved under `reopened_from` rather than erased. A reader must be able
+    to see that this idea was judged once, on what, and why that judgement was discarded --
+    otherwise reopening is indistinguishable from quietly deleting an inconvenient result.
+    """
+    if not reason or not reason.strip():
+        raise RegistryValidationError("reopen requires a non-empty reason", field="reason")
+    idea = _idea(space, idea_id)
+    prior = str(idea.meta.get("status") or "untried")
+    if prior == "untried":
+        raise RegistryValidationError(
+            f"idea {idea_id!r} is already untried; there is no verdict to reopen", field="status")
+
+    history = list(idea.meta.get("reopened_from") or [])
+    history.append({
+        "status": prior,
+        "reason": reason,
+        "rejection_reason": idea.meta.get("rejection_reason"),
+        "rejected_under_adoption": idea.meta.get("rejected_under_adoption"),
+    })
+    idea.meta["status"] = "untried"
+    idea.meta["reopened_from"] = history
+    for stale in ("rejection_reason", "rejected_under_adoption"):
+        idea.meta.pop(stale, None)
+    return {"idea_id": idea_id, "previous_status": prior, "reopen_count": len(history)}
