@@ -174,7 +174,11 @@
 #                          separate restart bugs got written outside this repo.
 #   AF_WATCH_POLL_S=300    how often watch mode re-queries (default 300)
 #   AF_WATCH_STOP=<path>   stop sentinel; `touch` it to end a watching run cleanly
-#                          (default: <parent-of-worktree>/af-watch-stop-<worktree>)
+#   AF_WATCH_STOP_TTL_S    ignore a stop sentinel older than this (default 86400)
+#   AF_ALLOW_SHARED_DB=1   allow two live loops to declare the same Postgres port
+#   AF_ROUND_QUIET_WARN_S  log a STALL WARNING after this much round silence (600)
+#                          (default: <parent-of-worktree>/af-watch-stop-<project>@<worktree>;
+#                           the legacy basename-only path is still honoured, deprecated)
 #   AF_BATCH_MAX=32        round width (default 16). NOT narrowed by CPU underneath -- the round
 #                          fans out with Agent subagents, which carry no core-derived cap. DISK is
 #                          the real ceiling: each worker is a full checkout (+ deps if bootstrapped).
@@ -389,8 +393,76 @@ _cores="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 WORKFLOW_CAP=$(( _cores - 2 )); [ "$WORKFLOW_CAP" -gt 16 ] && WORKFLOW_CAP=16
 [ "$WORKFLOW_CAP" -lt 1 ] && WORKFLOW_CAP=1
 SESSION="af-$(basename "$WT")"   # per-worktree, so concurrent projects never collide on tmux session name
-# AF_WATCH stop sentinel — per-worktree, so stopping one project never stops another.
-WATCH_STOP="${AF_WATCH_STOP:-$(dirname "$WT")/af-watch-stop-$(basename "$WT")}"
+# --- BEGIN watch stop sentinel ---
+# AF_WATCH stop sentinel. DEFECT 2 (measured on the devbox 2026-08-19): it used to be keyed on the
+# WORKTREE BASENAME alone, which has two consequences. Two projects sharing one worktree could not
+# be stopped independently — stopping one stopped both. And a sentinel nobody deleted lived
+# forever: THREE stale ones were found on the box dating from Aug 4 and Aug 13 (sotos, football-cv,
+# taolu-coach), each a latent two-week-old booby trap that silently kills the NEXT watch run at its
+# first poll, with no error and no log.
+#
+# So the sentinel is keyed on PROJECT@WORKTREE, and any sentinel older than AF_WATCH_STOP_TTL_S
+# (default 24h) is treated as residue: ignored, and the ignore is LOGGED rather than inferred. The
+# old basename-only path is still honoured — a loop already in flight was told to use it — with a
+# deprecation line naming the replacement.
+AF_WATCH_STOP_TTL_S="${AF_WATCH_STOP_TTL_S:-86400}"
+WATCH_STOP="${AF_WATCH_STOP:-$(dirname "$WT")/af-watch-stop-$PROJECT@$(basename "$WT")}"
+WATCH_STOP_LEGACY="$(dirname "$WT")/af-watch-stop-$(basename "$WT")"
+# An explicit AF_WATCH_STOP is the operator naming ONE path; do not also honour the legacy one.
+[ -n "${AF_WATCH_STOP:-}" ] && WATCH_STOP_LEGACY=""
+WATCH_STOP_HIT=""
+
+# `say` is defined further down and logs to $LOG; these run both before and after it exists.
+af_watch_stop_say(){ if declare -F say >/dev/null 2>&1; then say "$*"; else echo "$*"; fi; }
+
+af_watch_stop_fresh(){   # <path> -> 0 if it exists AND is younger than the TTL
+  local path="${1:-}" mtime age
+  [ -n "$path" ] && [ -f "$path" ] || return 1
+  mtime="$(date -r "$path" +%s 2>/dev/null || stat -c %Y "$path" 2>/dev/null || echo 0)"
+  age=$(( $(date +%s) - mtime ))
+  if [ "${mtime:-0}" -gt 0 ] && [ "$age" -gt "$AF_WATCH_STOP_TTL_S" ]; then
+    if [ "${AF_WATCH_STOP_STALE_SAID:-}" != "$path" ]; then
+      AF_WATCH_STOP_STALE_SAID="$path"
+      af_watch_stop_say "IGNORING STALE watch stop file $path — it is $((age/3600))h old, past the ${AF_WATCH_STOP_TTL_S}s TTL, so it is residue from an earlier run and not a stop for this one. Delete it, or raise AF_WATCH_STOP_TTL_S, if you actually meant it."
+    fi
+    return 1
+  fi
+  return 0
+}
+
+af_watch_stopped(){   # 0 when this run should stop; sets WATCH_STOP_HIT to the path that stopped it
+  if af_watch_stop_fresh "$WATCH_STOP"; then WATCH_STOP_HIT="$WATCH_STOP"; return 0; fi
+  if af_watch_stop_fresh "${WATCH_STOP_LEGACY:-}"; then
+    WATCH_STOP_HIT="$WATCH_STOP_LEGACY"
+    af_watch_stop_say "DEPRECATED watch stop path ${WATCH_STOP_LEGACY} — it is keyed on the worktree basename alone, so it stops EVERY project sharing this worktree. Use $WATCH_STOP instead."
+    return 0
+  fi
+  return 1
+}
+# --- END watch stop sentinel ---
+
+# --- BEGIN round stall heartbeat ---
+# DEFECT 3 (measured on the devbox 2026-08-19): the round wait logs "round #N progress: K/M
+# finished" and then says nothing at all until something changes, so a round whose workers are
+# ASLEEP at 0.0% CPU is indistinguishable from one doing work — one sat with `make check-fast` in
+# state Sl for 10+ minutes with no log line. This does NOT kill anything (the deadline, the grace
+# extension and the pane-stillness guard already own that decision); it only makes the silence
+# visible and greppable.
+AF_ROUND_QUIET_WARN_S="${AF_ROUND_QUIET_WARN_S:-600}"
+
+af_round_heartbeat(){   # <round> <progress-signature> <outstanding ids>
+  local rnd="${1:-?}" sig="${2:-}" ids="${3:-}" nowt
+  nowt="$(date +%s)"
+  if [ "$sig" != "${AF_HB_SIG:-__unset__}" ]; then
+    AF_HB_SIG="$sig"; AF_HB_SINCE="$nowt"; AF_HB_LAST="$nowt"; return 0
+  fi
+  : "${AF_HB_SINCE:=$nowt}"; : "${AF_HB_LAST:=$nowt}"
+  if [ $(( nowt - AF_HB_LAST )) -ge "$AF_ROUND_QUIET_WARN_S" ]; then
+    AF_HB_LAST="$nowt"
+    af_watch_stop_say "STALL WARNING round #$rnd — no change in the finished count or in any claimed ticket's state for $(( (nowt - AF_HB_SINCE) / 60 ))min. Still outstanding: ${ids:-<unknown>}. Not killing the round; look at it."
+  fi
+}
+# --- END round stall heartbeat ---
 # What this run integrates INTO -- whatever the project worktree has checked out. Workers must be
 # told it explicitly, because they do not start on it: `isolation: worktree` creates each worker's
 # tree from the repo's default branch (`refs/remotes/origin/HEAD`, i.e. origin/main), NOT from the
@@ -516,6 +588,78 @@ trap af_release_worktree_lock EXIT
 trap 'af_release_worktree_lock; exit 143' INT TERM
 echo "worktree lock $AF_LOCK held by pid $$ for project $PROJECT" >&2
 # --- END worktree guard ---
+
+# --- BEGIN db port guard ---
+# DEFECT 1, and the most expensive of the three. Measured on the devbox 2026-08-19 with BOTH loops
+# LIVE: /workspace/hudl-cv-download (hudl-cv-download) and /workspace/sports_analysis
+# (mvpvu-data-collection) BOTH declared Postgres on port 5438; /workspace/beauty-api-buildout and
+# /workspace/bestie both on 5434. Each worktree names its own database in
+# <worktree>/.claude/settings.local.json under env, and the KEY VARIES by project (PRAXIS_DB_URL,
+# POSTGRES_URL, DATABASE_URL, SPORTS_ANALYSIS_DB_URL, SCRAPER_DATABASE_URL, ...) — which is exactly
+# why nobody noticed. Two concurrent loops writing one Postgres corrupt each other's state, and
+# nothing anywhere warned.
+#
+# So, now that this worktree's lock is held: look at every OTHER worktree holding a LIVE
+# .af-loop.lock and refuse to start if it declares the same port. Deliberately does NOT auto-pick a
+# free port — which database a project owns is a human decision, and silently moving one is the
+# same class of mistake as silently rewriting settings.local.json. AF_ALLOW_SHARED_DB=1 opts out,
+# loudly. Failure exits through af_guard_die, so the early trap above releases the lock.
+AF_LOCK_SCAN_ROOT="${AF_LOCK_SCAN_ROOT:-$(dirname "$WT")}"
+
+af_db_port_of(){   # <settings.local.json> -> the Postgres port it declares, or empty
+  [ -f "${1:-}" ] || return 0
+  "$PY" - "$1" <<'PYEOF' 2>/dev/null || true
+import json, sys
+from urllib.parse import urlparse
+
+try:
+    env = json.load(open(sys.argv[1])).get("env") or {}
+except Exception:
+    raise SystemExit(0)
+# The key varies per project, so match on the VALUE being a postgres URL rather than on a fixed
+# list of names — a list is how the next project's spelling gets missed.
+for key, value in sorted(env.items()):
+    if not isinstance(value, str) or not value.split("://", 1)[0].startswith("postgres"):
+        continue
+    try:
+        port = urlparse(value).port
+    except Exception:
+        continue
+    if port:
+        print(port)
+        break
+PYEOF
+}
+
+AF_DB_PORT="$(af_db_port_of "$AF_SETTINGS")"
+if [ -n "$AF_DB_PORT" ]; then
+  for _lock in "$AF_LOCK_SCAN_ROOT"/*/.af-loop.lock; do
+    [ -f "$_lock" ] || continue
+    _other_wt="$(dirname "$_lock")"
+    [ "$_other_wt" = "$WT" ] && continue
+    _other_pid="$(awk 'NR==1{print $1}' "$_lock" 2>/dev/null || true)"
+    _other_project="$(awk 'NR==1{print $2}' "$_lock" 2>/dev/null || true)"
+    # A lock whose pid is dead is residue, not a live loop — same reclaim rule as the mutex above.
+    { [ -n "$_other_pid" ] && kill -0 "$_other_pid" 2>/dev/null; } || continue
+    # Third field when the holder wrote one; otherwise read its worktree, which is what a loop
+    # already in flight (lock line "<pid> <project>") requires.
+    _other_port="$(awk 'NR==1{print $3}' "$_lock" 2>/dev/null || true)"
+    [ -n "$_other_port" ] || _other_port="$(af_db_port_of "$_other_wt/.claude/settings.local.json")"
+    [ "$_other_port" = "$AF_DB_PORT" ] || continue
+    if [ "${AF_ALLOW_SHARED_DB:-0}" = "1" ]; then
+      echo "WARNING: AF_ALLOW_SHARED_DB=1 OVERRIDE — starting anyway although $WT (project '$PROJECT') and $_other_wt (project '${_other_project:-unknown}', live pid $_other_pid) BOTH declare Postgres on port $AF_DB_PORT. Two loops writing one database corrupt each other's state; you have asserted that this sharing is intentional." >&2
+      continue
+    fi
+    af_guard_die "SHARED DATABASE PORT — $WT (project '$PROJECT') and $_other_wt (project '${_other_project:-unknown}', held by LIVE pid $_other_pid) both declare Postgres on port $AF_DB_PORT. Two concurrent loops writing one database corrupt each other's state, silently. Give this project its own port in $AF_SETTINGS and relaunch, or set AF_ALLOW_SHARED_DB=1 if the sharing is deliberate. This loop will not pick a port for you and will not rewrite that file."
+  done
+fi
+# Record the port on our own lock line so the next loop can see it without re-reading our settings.
+# Appended as a THIRD field only: a loop already in flight wrote "<pid> <project>", and the readers
+# above parse both shapes.
+if [ -n "$AF_DB_PORT" ] && [ "${AF_LOCK_HELD:-0}" = "1" ]; then
+  printf '%s %s %s\n' "$$" "$PROJECT" "$AF_DB_PORT" > "$AF_LOCK" 2>/dev/null || true
+fi
+# --- END db port guard ---
 # Exported, so every embedded heredoc below imports the hooks without hardcoding a path of its own.
 #
 # $AF_PLUGIN_DIR itself leads, and it is not decoration. `hooks/` is a plain DIRECTORY, not an
@@ -941,7 +1085,7 @@ require_blessed_plan(){   # -> 0 = blessed, dispatch may proceed; 1 = caller mus
       say "WAITING for the bless (AF_WATCH=1) — re-checking every ${AF_WATCH_POLL_S:-300}s; no ticket is claimed or dispatched until prd-$PROJECT is blessed. Stop with: touch $WATCH_STOP"
       watch_bless_at="$st"
     fi
-    [ -f "$WATCH_STOP" ] && { say "watch stop file present ($WATCH_STOP) — exiting"; exit 0; }
+    af_watch_stopped && { say "watch stop file present ($WATCH_STOP_HIT) — exiting"; exit 0; }
     sleep "${AF_WATCH_POLL_S:-300}"
     return 1
   fi
@@ -3083,7 +3227,7 @@ while :; do
     if [ "${watch_said_drain:-0}" != "1" ]; then af_assert_no_stragglers "drain"; fi
     if [ "${AF_WATCH:-0}" = "1" ]; then
       [ "${watch_said_drain:-0}" = "1" ] || { say "drained — nothing claimable; WATCHING for new tickets every ${AF_WATCH_POLL_S:-300}s (AF_WATCH=1). Stop with: touch $WATCH_STOP"; watch_said_drain=1; }
-      [ -f "$WATCH_STOP" ] && { say "watch stop file present ($WATCH_STOP) — exiting"; break; }
+      af_watch_stopped && { say "watch stop file present ($WATCH_STOP_HIT) — exiting"; break; }
       sleep "${AF_WATCH_POLL_S:-300}"
       continue
     fi
@@ -3167,7 +3311,7 @@ while :; do
         say "WATCHING through the stall (AF_WATCH=1) — re-checking every ${AF_WATCH_POLL_S:-300}s; unblocking a root ticket resumes the run with no relaunch. Stop with: touch $WATCH_STOP"
         watch_stall_at="$left"
       fi
-      [ -f "$WATCH_STOP" ] && { say "watch stop file present ($WATCH_STOP) — exiting"; break; }
+      af_watch_stopped && { say "watch stop file present ($WATCH_STOP_HIT) — exiting"; break; }
       sleep "${AF_WATCH_POLL_S:-300}"
       continue
     fi
@@ -3319,6 +3463,9 @@ while :; do
     open=$(praxis_q batch_open "$@") || open=1
     open=${open:-1}
     if [ "$open" = "0" ]; then say "round #$round complete — all $size ticket(s) finished, blocked, or parked on manual sign-off"; break; fi
+    # Neither the finished count NOR the batch's open count moved? Say so out loud, on an interval,
+    # so a round that is asleep reads differently from a round that is working.
+    af_round_heartbeat "$round" "$now/$open" "$ids_csv"
     pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
     # Retain the last live frame. Three rounds died as a bare "session gone" with the pane already
     # destroyed, so the reason was unrecoverable each time and the same round was retried blind.
