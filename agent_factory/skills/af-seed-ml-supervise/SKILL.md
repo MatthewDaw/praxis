@@ -6,7 +6,8 @@ description: >
   that data, write four incumbent baseline rows into a version-2 ledger, bootstrap and
   register the model, then seed the starting idea set via the nine-axis closed set.
   Use when the human says "seed the campaign", "/af-seed-ml-supervise", "run seed-campaign",
-  or "get this ready for af-ml-supervise".
+  "get this ready for af-ml-supervise", or "skip research" (reuse an existing nine-axis
+  sweep and only stand the campaign up).
 ---
 
 # af-seed-ml-supervise
@@ -15,8 +16,9 @@ Take a project from "we have some data and a question" to "af-ml-supervise can s
 without inventing anything." That is one job with two halves, in this order:
 
 1. **Stand the campaign up** so `bootstrap-campaign` exits 0.
-2. **Seed the starting idea set** so the nine-axis closed set is swept and
-   `origin="seeded"` ideas are written.
+2. **Seed the starting idea set** so `origin="seeded"` ideas are written.
+   Research (the nine-axis sweep) is optional on a rerun — see
+   **Skip research**.
 
 `af-ml-supervise` is the supervisor half. It consumes what this skill leaves behind.
 It does not seed, and it does not build a trainer. This skill does not supervise.
@@ -74,6 +76,44 @@ This skill is not done until every line below is true. A half-setup is not a han
 `bootstrap-campaign` is the external check for items 2–6. Do not hand-roll those
 preconditions. What is systematic lives in `knowledge.ml_registry.bootstrap`;
 what is project-specific is the metric's meaning, the trainer, and the backlog.
+
+## Resolve flags before Phase A
+
+Read `$ARGUMENTS` / the human's prompt once, before any research dispatch.
+
+| flag | how it is said | what it does |
+|---|---|---|
+| **skip research** | `skip research`, `--skip-research`, `use the existing ideas`, `don't re-research`, `research is done` | Do **not** dispatch the six generative agents or re-query the three retrieval axes. Load an existing `generator-script.json` + `retriever-script.json` and continue with setup + `seed-campaign`. Default `--mode batch` — the human already approved this idea set. |
+| **batch / interactive** | `--mode batch`, `--mode interactive` | Confirm seam for `seed-campaign`. Skip-research implies batch unless the human overrides. |
+
+Skip-research does **not** skip setup. Phases A–E still run. The only thing skipped
+is producing new ideas. That is the rerun the owner wants: research already
+exists, tell the skill to skip it, and when it finishes `/af-ml-supervise` can
+start.
+
+### Finding the existing scripts
+
+Resolve in this order; first hit wins:
+
+1. Paths the human named in this invocation.
+2. `<project>/registry/generator-script.json` and `retriever-script.json`.
+3. The newest `docs/plans/*-seed-campaign/generator-script.json` (and its sibling
+   `retriever-script.json`) under the project repo.
+4. Per-axis files in that same directory (`theoretical_math.json` …) that can be
+   assembled into the two scripts without inventing candidates.
+
+**If skip-research is set and no scripts resolve: STOP.** Name the paths you
+looked at. Do not silently start a nine-axis research fleet. Do not invent
+candidates to "be helpful". The human said the research is done; missing files
+are a missing input, not a licence to redo it.
+
+Validate whatever you load: both files must use the closed-set keys (missing
+axis → empty list, not a re-sweep). Do not add an off-set key.
+
+If this model already has `origin="seeded"` ideas in the space and the human
+said skip research, do not run `seed-campaign` again — report the existing ids
+and continue to the handoff pack. Re-seeding the same descriptions is not a
+second measurement.
 
 ## Phase A — inventory the data that actually exists
 
@@ -278,7 +318,15 @@ is stripped before the idea is written and recorded on the receipt.
 
 Only after Phase E. `seed_campaign` refuses an unregistered `model_id`.
 
+### 0. Skip-research short-circuit
+
+If skip-research resolved above, **do not run F.1 or F.2**. Use the loaded
+scripts, jump to F.3 (batch unless overridden), then F.5. Record in the
+handoff that research was reused and from which paths.
+
 ### 1. Dispatch the six generative axes in parallel
+
+Skip this subsection when skip-research is set.
 
 One research pass per generative axis, in parallel, each given:
 
@@ -292,6 +340,9 @@ is legal. A candidate for a different axis is not — drop it, do not refile it
 under the wrong key.
 
 ### 2. Run the three retrieval axes and keep the receipts
+
+Skip this subsection when skip-research is set. The loaded retriever script
+already carries each axis's receipt (`query` + `rows`).
 
 Issue a real query for each retrieval axis and record what came back, including
 nothing:
@@ -463,3 +514,5 @@ not ask to run.
   on a metric the collected labels cannot support.
 - Never leave a declared `campaign-complete` stage with zero authored arms.
 - Never skip an idea whose argument does not still transfer.
+- Never re-dispatch the nine-axis research fleet when the human said skip
+  research. Missing scripts are a hard stop, not a prompt to start researching.

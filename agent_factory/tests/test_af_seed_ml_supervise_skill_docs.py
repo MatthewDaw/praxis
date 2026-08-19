@@ -84,3 +84,20 @@ def test_skill_owns_setup_through_bootstrap_not_a_handoff_out() -> None:
     assert "tell the human to run `bootstrap-campaign` first" not in lowered, (
         "SKILL.md must not stop at 'go bootstrap yourself' — it runs setup"
     )
+
+
+def test_skill_has_a_skip_research_rerun_that_does_not_resweep() -> None:
+    """The owner's rerun is: skip research, stand the campaign up, hand off.
+    A rewrite that always dispatches the nine-axis fleet cannot satisfy that."""
+    text = SKILL_PATH.read_text()
+    lowered = text.casefold()
+    assert "skip research" in lowered or "--skip-research" in lowered, (
+        "SKILL.md must name a skip-research rerun"
+    )
+    assert "re-dispatch the nine-axis" in lowered or "skip-research short-circuit" in lowered, (
+        "SKILL.md must skip the generative/retrieval fleet when skip-research is set"
+    )
+    assert "missing scripts are a hard stop" in lowered or "hard stop" in lowered, (
+        "SKILL.md must refuse skip-research when the existing scripts are missing, "
+        "not silently start researching"
+    )
