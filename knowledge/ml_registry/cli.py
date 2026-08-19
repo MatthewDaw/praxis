@@ -154,7 +154,11 @@ def load_ledger_rows(path: Path) -> dict[str, LedgerRow]:
             )
         throughput_at = _column(LEDGER_THROUGHPUT_COLUMN)
         diff_lines_at = _column(LEDGER_DIFF_LINES_COLUMN)
-        widest = max(commit_at, metric_at, throughput_at, diff_lines_at)
+        # Optional, and NOT via _column: a ledger without it is older, not broken, and defaults to
+        # "ok" so nothing changes for it. Where it exists it is load-bearing -- see FAIR_RUN_STATUSES.
+        status_at = header.index("status") if "status" in header else None
+        widest = max(commit_at, metric_at, throughput_at, diff_lines_at,
+                     status_at if status_at is not None else 0)
 
         rows: dict[str, LedgerRow] = {}
         for row in reader:
@@ -165,6 +169,7 @@ def load_ledger_rows(path: Path) -> dict[str, LedgerRow]:
                     value=float(row[metric_at]),
                     throughput=float(row[throughput_at]),
                     diff_lines=float(row[diff_lines_at]),
+                    status=(row[status_at].strip() if status_at is not None else "ok"),
                 )
             except ValueError:
                 continue  # unscored run (crashed/aborted): nothing to adjudicate against
