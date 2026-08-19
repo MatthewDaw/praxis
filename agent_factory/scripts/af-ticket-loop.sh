@@ -427,6 +427,88 @@ LOG="${AF_LOG:-$AF_STATE_DIR/af-ticket-loop.log}"
 if [ -n "${AF_PYTHON:-}" ]; then PY="$AF_PYTHON"
 elif [ -x "$AF_REPO/.venv/bin/python" ]; then PY="$AF_REPO/.venv/bin/python"
 else PY="$(command -v python3)"; fi
+
+# ------------------------------------------------------ argv/settings agreement + worktree mutex --
+#
+# Two silent failures, one root cause: NOTHING tied this run's argv to the worktree it runs in.
+#
+#  1. The PROJECT this driver builds comes from argv, but the completeness-gate hook and every
+#     worker session read FACTORY_PROJECT out of <worktree>/.claude/settings.local.json. When those
+#     disagree the loop keeps building `$PROJECT` while its hooks resolve `prd-<other>` — and the
+#     gate does not shout, it goes INERT, which is the worst way for a gate to fail.
+#  2. Nothing stopped two loops sharing one worktree. Observed 2026-08-19: a second loop was started
+#     on /workspace/sports_analysis for `mvpvu-data-collection` and repointed the settings file;
+#     the pre-existing `mvpvu-foundation` loop was still running in that same tree and had its hooks
+#     silently redirected to the wrong project for the rest of its life.
+#
+# So: FAIL LOUDLY on disagreement (never auto-patch the file — a silent rewrite of a shared config
+# is exactly what poisoned the second loop), and take a per-worktree lock so the second loop cannot
+# start at all. Deliberately the FIRST thing that happens after argv is parsed, before any Praxis
+# call, any disk preflight, and any settings sourcing.
+#
+# --- BEGIN worktree guard ---
+AF_SETTINGS="$WT/.claude/settings.local.json"
+
+af_guard_die(){ echo "FATAL: $*" >&2; exit 2; }
+
+[ -f "$AF_SETTINGS" ] || af_guard_die "no settings file at $AF_SETTINGS — this loop cannot confirm that the worktree agrees the project is '$PROJECT'. Refusing to start."
+
+AF_SETTINGS_PROJECT="$("$PY" - "$AF_SETTINGS" <<'PYEOF' 2>/dev/null || true
+import json, sys
+try:
+    print(json.load(open(sys.argv[1]))["env"]["FACTORY_PROJECT"])
+except Exception:
+    pass
+PYEOF
+)"
+
+[ -n "$AF_SETTINGS_PROJECT" ] || af_guard_die "$AF_SETTINGS has no env.FACTORY_PROJECT — the completeness gate and every worker session read that key, so with it absent they resolve nothing and the gate goes inert rather than loud. Set it to '$PROJECT' yourself and relaunch; this loop will not write it for you."
+
+if [ "$AF_SETTINGS_PROJECT" != "$PROJECT" ]; then
+  af_guard_die "PROJECT MISMATCH — argv says the project is '$PROJECT', but $AF_SETTINGS declares env.FACTORY_PROJECT='$AF_SETTINGS_PROJECT'. Hooks and workers would resolve prd-$AF_SETTINGS_PROJECT while this loop builds $PROJECT, and the completeness gate would go inert rather than loud. Refusing to start, and refusing to rewrite that file — it may be shared with another live loop, which is how this bug happened in the first place."
+fi
+
+# Per-WORKTREE mutex, keyed on the path rather than the project: two loops in one tree collide over
+# git state and settings.local.json no matter which projects they name. O_EXCL via noclobber is the
+# atomic part; the pid line is what makes a crashed run's lock reclaimable without a human, since a
+# lock that needs manual cleanup is the same class of problem as the bug above.
+AF_LOCK="$WT/.af-loop.lock"
+AF_LOCK_HELD=0
+
+af_release_worktree_lock(){
+  if [ "${AF_LOCK_HELD:-0}" = "1" ] && [ -n "${AF_LOCK:-}" ]; then
+    AF_LOCK_HELD=0
+    rm -f "$AF_LOCK" 2>/dev/null || true
+  fi
+}
+
+af_take_worktree_lock(){
+  local holder_pid holder_project
+  if ( set -o noclobber; printf '%s %s\n' "$$" "$PROJECT" > "$AF_LOCK" ) 2>/dev/null; then
+    AF_LOCK_HELD=1; return 0
+  fi
+  holder_pid="$(awk 'NR==1{print $1}' "$AF_LOCK" 2>/dev/null || true)"
+  holder_project="$(awk 'NR==1{print $2}' "$AF_LOCK" 2>/dev/null || true)"
+  if [ -n "$holder_pid" ] && kill -0 "$holder_pid" 2>/dev/null; then
+    af_guard_die "ANOTHER LOOP IS ALREADY RUNNING IN THIS WORKTREE — $AF_LOCK is held by pid $holder_pid (project '${holder_project:-unknown}'). Two loops in one worktree fight over git state and .claude/settings.local.json, which is how a live run gets its FACTORY_PROJECT changed underneath it. Stop that run first, or use a separate worktree."
+  fi
+  # Stale: the recorded pid is dead (or the file is unreadable garbage). Reclaim it automatically.
+  echo "reclaiming stale lock $AF_LOCK (pid ${holder_pid:-?} is not alive)" >&2
+  rm -f "$AF_LOCK"
+  if ( set -o noclobber; printf '%s %s\n' "$$" "$PROJECT" > "$AF_LOCK" ) 2>/dev/null; then
+    AF_LOCK_HELD=1; return 0
+  fi
+  af_guard_die "could not take $AF_LOCK after reclaiming it — another loop won the race. Retry once it exits."
+}
+
+af_take_worktree_lock
+# Early trap so an exit BEFORE the full af_cleanup_on_exit trap is installed still frees the lock.
+# That trap replaces this one and calls af_release_worktree_lock itself, so every exit path — drain,
+# halt, SIGINT/SIGTERM, `tmux kill-session` — releases.
+trap af_release_worktree_lock EXIT
+trap 'af_release_worktree_lock; exit 143' INT TERM
+echo "worktree lock $AF_LOCK held by pid $$ for project $PROJECT" >&2
+# --- END worktree guard ---
 # Exported, so every embedded heredoc below imports the hooks without hardcoding a path of its own.
 #
 # $AF_PLUGIN_DIR itself leads, and it is not decoration. `hooks/` is a plain DIRECTORY, not an
@@ -2124,6 +2206,9 @@ af_cleanup_on_exit(){
   fi
   af_surface_flags
   af_end_of_run_summary
+  # LAST, and unconditional: this replaces the guard's early trap, so if it does not release the
+  # per-worktree lock nothing does, and a dead run bricks the tree for the next one.
+  af_release_worktree_lock
   return "$rc"
 }
 
