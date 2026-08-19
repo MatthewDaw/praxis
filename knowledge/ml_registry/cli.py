@@ -71,6 +71,7 @@ from knowledge.ml_registry.supervisor import (
     record_out_of_diff_change,
     supervise_campaign,
 )
+from knowledge.ml_registry.completeness import campaign_completeness
 from knowledge.ml_registry.report import campaign_status, format_status
 from knowledge.ml_registry.verdict import LedgerRow, adjudicate_verdict, reset_ratchet
 from knowledge.ml_registry.write_path import (
@@ -510,6 +511,24 @@ def main(argv: list[str] | None = None) -> int:
     status_p.add_argument("--model-id", required=True)
     status_p.add_argument("--json", action="store_true")
 
+    complete_p = sub.add_parser(
+        "campaign-complete",
+        help="is the campaign FINISHED? Exits 0 when every declared phase is populated and "
+             "closed, no arm awaits a re-run, and the winner has been trained to convergence. "
+             "Exits 1 listing every reason it is not. An empty queue is not a finished campaign.",
+    )
+    complete_p.add_argument("--space-file", required=True)
+    complete_p.add_argument("--model-id", required=True)
+    complete_p.add_argument(
+        "--stages", required=True,
+        help="comma-separated phase names IN ORDER, e.g. "
+             "representation,architecture,augmentation,training,tuning,capacity")
+    complete_p.add_argument("--min-measured", type=int, default=3)
+    complete_p.add_argument(
+        "--no-require-convergence", action="store_true",
+        help="a campaign that only ever meant to SELECT, never to ship. Deliberate, not a default")
+    complete_p.add_argument("--json", action="store_true")
+
     reopen_p = sub.add_parser(
         "reopen-idea",
         help="return an idea to UNTRIED after a verdict that was never fairly earned -- a run "
@@ -873,6 +892,22 @@ def main(argv: list[str] | None = None) -> int:
             status = campaign_status(RegistrySpace.load(Path(args.space_file)), args.model_id)
             print(json.dumps(status, indent=2) if args.json else format_status(status))
             return 0
+        if args.command == "campaign-complete":
+            out = campaign_completeness(
+                RegistrySpace.load(Path(args.space_file)), args.model_id,
+                tuple(x.strip() for x in args.stages.split(",") if x.strip()),
+                min_measured=args.min_measured,
+                require_convergence=not args.no_require_convergence)
+            if args.json:
+                print(json.dumps(out, indent=2))
+            elif out["done"]:
+                print("CAMPAIGN COMPLETE: every phase populated and closed, nothing awaiting "
+                      "re-run, winner trained to convergence")
+            else:
+                for b in out["blocking"]:
+                    where = f" [{b['stage']}]" if b["stage"] else ""
+                    print(f"NOT DONE ({b['kind']}){where}: {b['detail']}")
+            return 0 if out["done"] else 1
         if args.command == "reopen-idea":
             out = _load_mutate_save(
                 args.space_file,

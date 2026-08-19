@@ -406,6 +406,49 @@ Note `voided` does NOT block a re-run — that is what voided means — and neit
 that already has a verdict. Only `running`/`complete` block, and `complete` means *the run
 finished and is awaiting adjudication*, which is exactly the state a duplicate dispatch races.
 
+## Run it to COMPLETION, not to an empty queue
+
+**An empty queue is not a finished campaign.** A composing loop runs one batch of arms and exits;
+if nothing relaunches it, a human sits in every stage transition and the campaign quietly stops
+partway through its own plan.
+
+Measured on the first real campaign: it completed a partial architecture search and halted.
+Augmentation, training, tuning and capacity were never reached, and no train-to-convergence
+existed as a concept at all. **Nothing errored** — each invocation exited 0 having done exactly
+what it was asked, and what it was asked was one stage's worth of arms.
+
+```sh
+AF_DISPATCH="uv run python -m stroke_lab.campaign --max-arms 8 ..." \
+agent_factory/scripts/af-ml-campaign-loop.sh \
+    --space-file <state>.json --model-id <id> \
+    --stages representation,architecture,augmentation,training,tuning,capacity
+```
+
+The loop stops for exactly three reasons, and conflating them is how a campaign wastes a night:
+
+| exit | meaning |
+|---|---|
+| `0` COMPLETE | `campaign-complete` passed |
+| `3` BLOCKED | a diagnosis more arms cannot fix — a budget that truncates every retry, a stage nobody authored |
+| `4` STALLED | an iteration produced no new trial; repeating it changes nothing |
+
+### What `campaign-complete` demands
+
+```sh
+python -m knowledge.ml_registry.cli campaign-complete \
+    --space-file <state>.json --model-id <id> --stages <ordered,phases>
+```
+
+- **Every phase POPULATED.** A stage with zero registered arms is trivially "all answered", so it
+  closes instantly and the campaign sails past a question nobody asked. Both `tuning` and
+  `capacity` were empty on the first campaign and neither was mentioned anywhere.
+- **Every phase CLOSED, and not thin** — see `stage_coverage`.
+- **Nothing awaiting a re-run.** A voided arm is unmeasured, not answered.
+- **A train-to-convergence run**, recorded as `convergence_run` on the model. Every arm in a
+  campaign is a short cross-validation probe tuned to DISCRIMINATE between candidates — not a
+  trained model. Selecting a winner and never training it is half a job. Waive with
+  `--no-require-convergence` only for a campaign that never meant to ship.
+
 ## Closing
 
 Close reasons are an enum: `CLOSE_WON`, `CLOSE_MAX_TRIALS`, `CLOSE_BACKLOG_EXHAUSTED`,
