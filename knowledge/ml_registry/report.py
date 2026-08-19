@@ -267,6 +267,17 @@ def idea_verdicts(space: RegistrySpace, model_id: str, *,
     for t in space.list_facts(TRIAL):
         if t.meta.get("model_id") == model_id and str(t.meta.get("idea_id")) in ideas:
             latest[str(t.meta.get("idea_id"))] = t          # later registrations win
+    # An explicit REOPEN outranks a stale trial. reopen-idea returns an idea to untried because
+    # its verdict was never fairly earned, but the trial that produced that verdict still sits in
+    # the history saying `failed` or `stagnant` -- so a trial-derived answer silently re-answers
+    # the question the reopen just opened, and the arm is never re-run.
+    #
+    # Measured: seven arms were reopened after being measured on a superseded architecture, and
+    # every one of them still read as answered. The reopen printed OK and changed nothing.
+    reopened = {f.id for f in space.list_facts(IDEA)
+                if f.meta.get("model_id") == model_id and f.meta.get("reopened_from")
+                and str(f.meta.get("status") or "") == "untried"}
     return {ideas[i]: str(t.meta.get("status"))
             for i, t in latest.items()
-            if statuses is None or str(t.meta.get("status")) in statuses}
+            if i not in reopened
+            and (statuses is None or str(t.meta.get("status")) in statuses)}

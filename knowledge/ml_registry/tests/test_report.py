@@ -286,3 +286,24 @@ def test_statuses_none_returns_voided_and_in_flight_too() -> None:
 
     assert idea_verdicts(space, mid) == {}                      # default filter hides the void
     assert idea_verdicts(space, mid, statuses=None) == {"M06": "voided"}   # and M12 is still absent
+
+
+def test_an_explicit_reopen_outranks_a_stale_trial() -> None:
+    """reopen-idea returns an idea to untried because its verdict was never fairly earned -- but
+    the trial that produced that verdict is still in the history. Without this, a trial-derived
+    answer silently re-answers the question the reopen just opened and the arm is never re-run.
+    Measured: seven reopened arms all still read as answered; the reopen changed nothing."""
+    from knowledge.ml_registry.lifecycle import reopen_idea
+    from knowledge.ml_registry.report import idea_verdicts
+
+    space, mid = _space()
+    iid = _idea(space, mid, "T02")
+    tid = register_trial(space, {"model_id": mid, "idea_id": iid, "commit": "c1",
+                                 "status": "complete", "throughput": 3.4, "diff_lines": 1},
+                         frozenset({"c1"}))
+    space.get(tid).meta["status"] = "stagnant"
+    space.get(iid).meta["status"] = "parked"
+    assert idea_verdicts(space, mid) == {"T02": "stagnant"}
+
+    reopen_idea(space, iid, reason="measured on a superseded architecture")
+    assert idea_verdicts(space, mid) == {}          # the reopen wins
