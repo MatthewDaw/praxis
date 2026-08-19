@@ -232,6 +232,26 @@ List the families that exist for the task, name the one each arm belongs to, and
 report which families you did not try and why**. An untried family is a hole in the result, not an
 absence of evidence about it.
 
+## A wall clock is not a measurement instrument on a shared machine
+
+`throughput` gates the VOID verdict and a wall-clock budget decides whether a run was truncated.
+**Both are wall-clock derived, so both measure the neighbours as much as the arm.**
+
+Observed: a campaign ran on an 8-core box while other agents used ~800% CPU running test suites.
+Two arms -- the two most expensive architectures in the backlog -- were truncated by their budget
+and voided. Model cost and co-tenant contention are both consistent with that, and after the fact
+they cannot be separated. The budget was raised on the assumption it was model cost, which may
+simply have been wrong.
+
+- **Budget on CPU TIME** (`resource.getrusage(RUSAGE_SELF).ru_utime + ru_stime`), not wall clock.
+  CPU time is what the arm actually consumed; wall clock is what the machine had left over.
+- **Record load alongside throughput** if you keep a speed gate at all, so a void can be
+  attributed rather than guessed at.
+- **A git worktree does not isolate CPU.** Separating code is not separating the machine.
+
+Otherwise the same arm passes or fails depending on who else is running, and the campaign records
+that as a property of the model.
+
 ## Diagnose a void, do not just re-run it
 
 A void is a decision to **re-run**. That is right once, and wrong the moment the reason is

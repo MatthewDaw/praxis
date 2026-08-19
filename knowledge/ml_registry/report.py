@@ -134,10 +134,16 @@ def diagnose(space: RegistrySpace, model_id: str) -> list[dict[str, str]]:
             "kind": "budget_too_small",
             "severity": "blocking",
             "detail": f"{len(unfair)} arms voided as unfair runs (truncated). RE-RUNNING WILL NOT "
-                      f"HELP -- the same wall clock will truncate them again. Raise the run budget "
-                      f"above the SLOWEST arm you intend to try, not the typical one. A budget "
-                      f"tuned to cheap arms silently removes the expensive ones, and the campaign "
-                      f"then converges on 'cheap wins' as an artefact of its own harness.",
+                      f"HELP if the budget is the cause -- the same wall clock truncates them "
+                      f"again. Raise the run budget above the SLOWEST arm you intend to try, not "
+                      f"the typical one; a budget tuned to cheap arms silently removes the "
+                      f"expensive ones and the campaign converges on 'cheap wins' as an artefact "
+                      f"of its own harness. BUT FIRST CHECK THE MACHINE IS NOT SHARED: a "
+                      f"wall-clock budget measures the neighbours as much as the arm, and "
+                      f"throughput -- which also gates VOID -- is wall-clock derived, so a busy "
+                      f"co-tenant can void arms that are perfectly healthy. On a shared host, "
+                      f"budget on CPU TIME (resource.getrusage) rather than wall clock, or the "
+                      f"same arm passes and fails depending on who else is running.",
         })
     if len(slow) >= REPEATED_VOID_THRESHOLD:
         out.append({
