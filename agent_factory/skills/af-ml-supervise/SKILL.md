@@ -360,6 +360,50 @@ Close reasons are an enum: `CLOSE_WON`, `CLOSE_MAX_TRIALS`, `CLOSE_BACKLOG_EXHAU
 close, and it wedges the whole build set behind af-build's completeness gate. A campaign that
 honestly found nothing is a RESULT, not a failure, and it must be able to say so.
 
+## Progress logging — a heartbeat is not progress
+
+**A heartbeat proves the process is alive. It cannot tell you how far along it is, whether it will
+finish this hour, or whether what it is producing is getting worse.** Those are the questions
+actually asked while a job runs, and answering them by waiting for the job to end is the same as
+not answering them.
+
+Measured on the first campaign to run an expensive step: it ran **28 minutes emitting nothing**.
+Its per-unit scores were 0.6183 / 0.6273 / 0.4123 / 0.0491 — diverging from the third unit onward
+— and it was *simultaneously* being truncated by a wall-clock budget. Both facts existed inside
+the process the whole time. Both were only discoverable after it exited, by which point a
+meaningless number had been adjudicated and recorded as a verdict. Every check while it ran
+returned "394% CPU", which was true right up to the end and told nobody anything.
+
+Any step that can run longer than a few minutes MUST emit one line per unit of work:
+
+```python
+import sys; sys.path.insert(0, "<praxis>/agent_factory/scripts")
+from progress import Progress
+
+p = Progress("M06 stgcn", total=20)      # total is what makes an ETA possible
+for unit in units:
+    ...
+    p.step(score=metric)                  # score enables the degradation warning
+p.done()
+```
+
+```
+[progress] M06 stgcn 7/20 35% elapsed 9m48s eta 18m12s last=0.6183 mean=0.6221
+[progress][WARN] M06 stgcn: last=0.0491 is 3.2 sigma below the mean of the previous 7 (0.5881)
+```
+
+Three properties are load-bearing:
+
+- **`total` gives an ETA**, which is what turns "it is still running" into a decision. The unit
+  count is almost always known up front — folds × seeds, files to migrate, tickets in a set.
+- **`score` gives a degradation warning** *while there is still time to act*. It fires at 3 sigma
+  over at least 4 prior samples, so it stays rare enough to be read.
+- **Lines are flushed and prefixed `[progress]`**, so a supervisor can `grep` them out of an
+  interleaved log. A buffered progress line is not a progress line.
+
+Non-Python steps follow the same convention by hand: one flushed line per unit, prefixed
+`[progress]`, carrying `n/total`, `elapsed`, and a metric where one exists.
+
 ## Reporting
 
 Report every arm, including the losers. An experiment reported only when it wins is not a
