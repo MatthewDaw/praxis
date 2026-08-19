@@ -3,6 +3,8 @@ adjudication, and harness-field retirement with adoption reversal."""
 
 from __future__ import annotations
 
+import statistics
+
 import pytest
 
 from knowledge.ml_registry.floor import (
@@ -415,3 +417,30 @@ def test_a_baseline_run_that_crashed_is_refused_naming_the_offending_commit(tmp_
         register_model_with_baseline(space, dict(MODEL_META), load_ledger_values(path))
     assert excinfo.value.field == "baseline_runs"
     assert "r4" in str(excinfo.value)
+
+
+def test_registration_honors_sigmas_from_meta():
+    space = RegistrySpace()
+    meta = dict(MODEL_META, sigmas=2.0)
+    model_id = register_model_with_baseline(space, meta, LEDGER)
+    assert space.get(model_id).meta[NOISE_FLOOR_FIELD] == pytest.approx(2 * statistics.stdev(RUN_VALUES))
+
+
+def test_registration_uses_min_throughput_when_throughputs_supplied():
+    space = RegistrySpace()
+    throughputs = {"r1": 3.38, "r2": 3.47, "r3": 3.49, "r4": 3.49}
+    model_id = register_model_with_baseline(
+        space, dict(MODEL_META), LEDGER, ledger_throughputs=throughputs
+    )
+    assert space.get(model_id).meta[BASELINE_THROUGHPUT_FIELD] == pytest.approx(3.38)
+    assert space.get(model_id).meta[BASELINE_THROUGHPUT_FIELD] != pytest.approx(
+        statistics.mean(RUN_VALUES)
+    )
+
+
+def test_stored_two_sigma_floor_from_bootstrap_agrees():
+    space = RegistrySpace()
+    sd = statistics.stdev(RUN_VALUES)
+    meta = dict(MODEL_META, sigmas=2.0, noise_floor=round(2 * sd, 6))
+    model_id = register_model_with_baseline(space, meta, LEDGER)
+    assert space.get(model_id).meta[NOISE_FLOOR_FIELD] == pytest.approx(round(2 * sd, 6))

@@ -413,6 +413,10 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap_p.add_argument("--skip-ids", default="",
                              help="comma-separated backlog ids to omit (settled losers)")
     bootstrap_p.add_argument("--notes", default=None)
+    bootstrap_p.add_argument(
+        "--void-throughput-fraction", type=float, default=None,
+        help="override the VOID gate (default 0.05). 0 disables it -- for campaigns whose "
+             "throughput is not training speed and must not discard a slower winner")
     bootstrap_p.add_argument("--out-dir", default=None,
                              help="write model_meta.json and ideas.jsonl here")
 
@@ -749,7 +753,8 @@ def main(argv: list[str] | None = None) -> int:
                 metric=args.metric, direction=args.direction,
                 diff_size_limit=args.diff_size_limit, baseline_prefix=args.baseline_prefix,
                 sigmas=args.sigmas, noise_floor_override=args.noise_floor,
-                skip_ids={i for i in args.skip_ids.split(",") if i}, notes=args.notes)
+                skip_ids={i for i in args.skip_ids.split(",") if i}, notes=args.notes,
+                void_throughput_fraction=args.void_throughput_fraction)
             if args.out_dir and report.ready:
                 out = _P(args.out_dir); out.mkdir(parents=True, exist_ok=True)
                 (out / "model_meta.json").write_text(json.dumps(report.model_meta, indent=2))
@@ -803,10 +808,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"OK: registered idea {fact_id}")
             return 0
         if args.command == "register-trial":
-            ledger_commits = load_ledger_commits(Path(args.ledger))
+            meta = _json_arg(args.meta_json)
+            try:
+                rows = load_ledger_rows(Path(args.ledger))
+            except RegistryValidationError:
+                ledger_commits = load_ledger_commits(Path(args.ledger))
+            else:
+                ledger_commits = frozenset(rows)
+                row = rows.get(str(meta.get("commit")))
+                if row is not None:
+                    meta.setdefault("throughput", row.throughput)
+                    meta.setdefault("diff_lines", row.diff_lines)
             fact_id = _load_mutate_save(
                 args.space_file,
-                lambda space: register_trial(space, _json_arg(args.meta_json), ledger_commits),
+                lambda space: register_trial(space, meta, ledger_commits),
             )
             if getattr(args, "json", False):
                 print(json.dumps({"trial_id": fact_id}))
@@ -832,12 +847,20 @@ def main(argv: list[str] | None = None) -> int:
                       f"({len(cleared['rejection_streak_ideas'])} idea(s)) for {args.model_id}")
             return 0
         if args.command == "register-model-with-baseline":
-            ledger_values = load_ledger_values(Path(args.ledger))
             meta = _checked_model_budgets(_json_arg(args.meta_json), fill_missing=True)
+            try:
+                rows = load_ledger_rows(Path(args.ledger))
+            except RegistryValidationError:
+                ledger_values = load_ledger_values(Path(args.ledger))
+                ledger_throughputs = None
+            else:
+                ledger_values = {commit: row.value for commit, row in rows.items()}
+                ledger_throughputs = {commit: row.throughput for commit, row in rows.items()}
             fact_id = _load_mutate_save(
                 args.space_file,
                 lambda space: register_model_with_baseline(
-                    space, meta, ledger_values, model_id=args.model_id
+                    space, meta, ledger_values, model_id=args.model_id,
+                    ledger_throughputs=ledger_throughputs,
                 ),
             )
             print(f"OK: registered model {fact_id}")

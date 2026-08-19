@@ -115,12 +115,19 @@ def register_model_with_baseline(
     ledger_values: dict[str, float],
     *,
     model_id: str | None = None,
+    ledger_throughputs: dict[str, float] | None = None,
 ) -> str:
     """Register (or re-register) a model, recomputing ``noise_floor``/``baseline_throughput``
     from the 4 ledger rows named in ``meta["baseline_runs"]``. Refuses naming the field
     when a caller-supplied ``noise_floor`` or ``baseline_throughput`` disagrees with that
     recomputation. Delegates the rest of registration (campaign-budget defaults, the
     metric freeze) to :func:`~knowledge.ml_registry.write_path.register_model` unchanged.
+
+    ``meta["sigmas"]`` defaults to 1 so in-process R12 callers keep a one-sigma floor.
+    Bootstrap emits ``sigmas=2`` and ``baseline_runs``, which is what makes its
+    ``model_meta.json`` valid input to this function. ``ledger_throughputs``, when given,
+    makes ``baseline_throughput`` the slowest of those runs (rows/sec) rather than the
+    mean of the metric values -- the two meanings this field used to collapse.
     """
     runs = meta.get(BASELINE_RUNS_FIELD)
     if not isinstance(runs, list) or len(runs) != REQUIRED_BASELINE_RUN_COUNT:
@@ -137,22 +144,43 @@ def register_model_with_baseline(
                 field=BASELINE_RUNS_FIELD,
             )
         values.append(ledger_values[commit])
-    floor, throughput = compute_noise_floor(values)
+    sigmas = float(meta.get("sigmas", 1.0))
+    sd = statistics.stdev(values)
+    floor = sigmas * sd
+    if ledger_throughputs is not None:
+        tputs = []
+        for commit in runs:
+            if commit not in ledger_throughputs:
+                raise RegistryValidationError(
+                    f"baseline run commit {commit!r} has no throughput in the external ledger",
+                    field=BASELINE_RUNS_FIELD,
+                )
+            tputs.append(ledger_throughputs[commit])
+        throughput = min(tputs)
+    else:
+        throughput = statistics.mean(values)
 
     stored_floor = meta.get(NOISE_FLOOR_FIELD)
-    if stored_floor not in (None, "") and not _agree(float(stored_floor), floor):
-        raise RegistryValidationError(
-            f"stored noise_floor {stored_floor!r} disagrees with the recomputed value {floor!r} "
-            f"from baseline_runs {runs!r}",
-            field=NOISE_FLOOR_FIELD,
-        )
+    if stored_floor not in (None, ""):
+        stored_floor_f = float(stored_floor)
+        # bootstrap.measure_noise_floor rounds to 6 d.p.; accept that as the same value.
+        if not (_agree(stored_floor_f, floor) or _agree(stored_floor_f, round(floor, 6))):
+            raise RegistryValidationError(
+                f"stored noise_floor {stored_floor!r} disagrees with the recomputed value {floor!r} "
+                f"from baseline_runs {runs!r}",
+                field=NOISE_FLOOR_FIELD,
+            )
+        floor = stored_floor_f
     stored_throughput = meta.get(BASELINE_THROUGHPUT_FIELD)
-    if stored_throughput not in (None, "") and not _agree(float(stored_throughput), throughput):
-        raise RegistryValidationError(
-            f"stored baseline_throughput {stored_throughput!r} disagrees with the recomputed value "
-            f"{throughput!r} from baseline_runs {runs!r}",
-            field=BASELINE_THROUGHPUT_FIELD,
-        )
+    if stored_throughput not in (None, ""):
+        stored_tput_f = float(stored_throughput)
+        if not (_agree(stored_tput_f, throughput) or _agree(stored_tput_f, round(throughput, 4))):
+            raise RegistryValidationError(
+                f"stored baseline_throughput {stored_throughput!r} disagrees with the recomputed value "
+                f"{throughput!r} from baseline_runs {runs!r}",
+                field=BASELINE_THROUGHPUT_FIELD,
+            )
+        throughput = stored_tput_f
 
     merged = dict(meta)
     merged[NOISE_FLOOR_FIELD] = floor

@@ -497,3 +497,21 @@ def test_a_confirmed_cross_model_lesson_is_actually_filed_from_the_cli(
     assert len(filed) == 1
     assert filed[0]["meta"]["insight_key"] == "architecture::try rope"
     assert sorted(filed[0]["meta"]["model_trial_counts"]) == sorted([prior_model, model_id])
+
+
+def test_register_trial_copies_ledger_measurements_so_resolve_verdict_needs_no_self_report(
+    space_file: Path, ledger: Path, capsys
+) -> None:
+    """A composing loop must not have to parrot throughput/diff_lines out of the trainer."""
+    model_id = _register_model(space_file, capsys)
+    idea_id = _register_idea(space_file, capsys, model_id)
+    assert _cli(
+        "register-trial", "--space-file", space_file, "--ledger", ledger, "--json",
+        "--meta-json", json.dumps({
+            "model_id": model_id, "idea_id": idea_id, "commit": "win1", "status": "complete",
+        }),
+    ) == 0
+    trial_id = json.loads(_out(capsys))["trial_id"]
+    assert _cli("resolve-verdict", "--space-file", space_file, "--trial-id", trial_id,
+                "--ledger", ledger, "--json") == 0
+    assert json.loads(_out(capsys))["verdict"] == "adopted"

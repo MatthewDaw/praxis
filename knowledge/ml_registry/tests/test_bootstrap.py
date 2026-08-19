@@ -202,3 +202,14 @@ def test_baseline_throughput_is_the_slowest_baseline_not_the_median(tmp_path) ->
     assert report.model_meta["baseline_throughput"] == 3.38     # min, not median 3.48
     # the arm that voided under the median must now clear the gate
     assert 3.30 >= report.model_meta["baseline_throughput"] * 0.95
+
+
+def test_bootstrap_emits_baseline_runs_and_sigmas(tmp_path: Path) -> None:
+    """register-model-with-baseline consumes these; without them the documented path refuses."""
+    report = bootstrap(ledger=_ledger(tmp_path, _baselines(4)),
+                       backlog=[{"id": "R01", "axis": "representation", "hypothesis": "h"}],
+                       model_id="m", metric="f1", direction="maximize", diff_size_limit=8)
+    assert report.ready
+    assert report.model_meta["sigmas"] == 2.0
+    assert len(report.model_meta["baseline_runs"]) == 4
+    assert report.model_meta["baseline_runs"] == [row[0] for row in _baselines(4)]
