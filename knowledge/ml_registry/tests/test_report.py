@@ -272,3 +272,17 @@ def test_the_latest_trial_wins_so_a_rerun_supersedes_a_void() -> None:
                          frozenset({"c2"}))
     space.get(tid).meta["status"] = "succeeded"
     assert idea_verdicts(space, mid) == {"M08": "succeeded"}
+
+
+def test_statuses_none_returns_voided_and_in_flight_too() -> None:
+    """A caller must be able to tell 'voided, so re-run it' from 'never attempted'. Under the
+    default filter both are simply absent, and a loop reading absence as 're-run' re-runs arms it
+    has already settled -- the exact conflation that caused the infinite re-queue."""
+    from knowledge.ml_registry.report import idea_verdicts
+
+    space, mid = _space()
+    _voided(space, mid, _idea(space, mid, "M06"), "c1", "ledger status 'x' is not a fair run")
+    _idea(space, mid, "M12")                                    # never attempted: no trial at all
+
+    assert idea_verdicts(space, mid) == {}                      # default filter hides the void
+    assert idea_verdicts(space, mid, statuses=None) == {"M06": "voided"}   # and M12 is still absent

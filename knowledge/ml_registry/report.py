@@ -242,7 +242,8 @@ def _void_counts(space: RegistrySpace, model_id: str) -> dict[str, int]:
 ANSWERING_TRIAL_STATUSES = frozenset({"succeeded", "failed", "stagnant", "superseded"})
 
 
-def idea_verdicts(space: RegistrySpace, model_id: str) -> dict[str, str]:
+def idea_verdicts(space: RegistrySpace, model_id: str, *,
+                  statuses: frozenset[str] | None = ANSWERING_TRIAL_STATUSES) -> dict[str, str]:
     """``{idea tag: trial status}`` for ideas whose LATEST trial answered them.
 
     Derived from trials, not from `idea.meta.status`, and the distinction caused a live incident.
@@ -253,6 +254,12 @@ def idea_verdicts(space: RegistrySpace, model_id: str) -> dict[str, str]:
     the loop could notice: every iteration looked like honest new work.
 
     Keyed by the project's own tag (`meta["id"]`) because that is what a backlog is written in.
+
+    Pass ``statuses=None`` for EVERY latest-trial status, including `voided` and `complete`. A
+    caller that must distinguish "voided, so re-run it" from "never attempted" needs that: with
+    the default filter both appear simply as absent, and a loop that reads absence as "re-run"
+    will re-run arms it has already settled. That conflation is what produced the infinite
+    re-queue this function was written to fix, so leaving it possible would only move the bug.
     """
     ideas = {f.id: str(f.meta.get("id") or f.id) for f in space.list_facts(IDEA)
              if f.meta.get("model_id") == model_id}
@@ -262,4 +269,4 @@ def idea_verdicts(space: RegistrySpace, model_id: str) -> dict[str, str]:
             latest[str(t.meta.get("idea_id"))] = t          # later registrations win
     return {ideas[i]: str(t.meta.get("status"))
             for i, t in latest.items()
-            if str(t.meta.get("status")) in ANSWERING_TRIAL_STATUSES}
+            if statuses is None or str(t.meta.get("status")) in statuses}
