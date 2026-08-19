@@ -185,7 +185,8 @@ MIN_MEASURED_PER_STAGE = 3
 
 
 def stage_coverage(items: Iterable[dict[str, Any]], stages: Sequence[str], *,
-                   measured_ids: set[str], stage_of: Callable[[dict], str] = default_stage_of,
+                   measured_ids: set[str], answered_ids: set[str] | None = None,
+                   stage_of: Callable[[dict], str] = default_stage_of,
                    id_key: str = "id", min_measured: int = MIN_MEASURED_PER_STAGE
                    ) -> list[dict[str, Any]]:
     """Per-stage report of what was actually MEASURED, versus answered by some other means.
@@ -205,6 +206,13 @@ def stage_coverage(items: Iterable[dict[str, Any]], stages: Sequence[str], *,
     result. Do not include items answered by exclusion, unreachability, scope filtering, or a
     no-op re-measurement of the incumbent; those are exactly what this exists to make visible.
 
+    THE NO-OP IS THE ONE THAT WILL CATCH YOU. The obvious way to build `measured_ids` -- "every
+    idea that has a trial" -- silently includes an arm whose configuration was IDENTICAL to the
+    incumbent, which can only ever park. On the first campaign to use this, that one arm was the
+    difference between a stage reporting three measured arms and the honest count of two, which
+    is the difference between passing and failing the floor. Compare each arm's resolved
+    configuration against the baseline's before counting it.
+
     Returns one row per stage with `measured`, `answered_without_running`, and `thin`. Thin is
     advisory: this function reports, it does not block. A thin stage may be perfectly fine when
     the axis genuinely has few options, but it must be REPORTED as thin rather than presented as
@@ -212,17 +220,27 @@ def stage_coverage(items: Iterable[dict[str, Any]], stages: Sequence[str], *,
     the whole value of a dead-ideas register.
     """
     items = list(items)
+    answered = set(answered_ids) if answered_ids is not None else None
     out = []
     for stage in stages:
         members = [i for i in items if stage_of(i) == stage]
         measured = [i for i in members if i[id_key] in measured_ids]
+        # A stage is CLOSED once every member is answered. Without `answered_ids` we cannot tell,
+        # and fall back to treating any stage with members as closed -- the old behaviour.
+        closed = (bool(members) and all(i[id_key] in answered for i in members)
+                  if answered is not None else bool(members))
         out.append({
             "stage": stage,
             "total": len(members),
             "measured": len(measured),
             "measured_ids": sorted(i[id_key] for i in measured),
             "answered_without_running": len(members) - len(measured),
-            "thin": bool(members) and len(measured) < min_measured,
+            "closed": closed,
+            # Thin describes a stage that CLOSED on too little evidence. A stage that has not run
+            # yet is not thin, it is pending, and flagging it produces alarm fatigue that trains a
+            # reader to ignore the flag that matters. Measured on the first campaign to use this:
+            # three of five stages were flagged purely for not having started.
+            "thin": closed and len(measured) < min_measured,
         })
     return out
 

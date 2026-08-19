@@ -211,3 +211,36 @@ def test_thin_stages_names_them_for_reporting() -> None:
              + [{"id": "M01", "axis": "architecture"}])
     cov = stage_coverage(items, STAGES, measured_ids={"R01", "R02", "R03", "M01"})
     assert thin_stages(cov) == ["architecture"]
+
+
+def test_a_stage_that_has_not_started_is_pending_not_thin() -> None:
+    """Flagging unrun stages trains a reader to ignore the flag that matters. Measured on the
+    first campaign to use this: three of five stages were flagged purely for not having started."""
+    from knowledge.ml_registry.staging import stage_coverage
+
+    items = ([{"id": f"R0{i}", "axis": "representation"} for i in range(1, 5)]
+             + [{"id": f"M0{i}", "axis": "architecture"} for i in range(1, 4)])
+    cov = {c["stage"]: c for c in stage_coverage(
+        items, STAGES, measured_ids={"R01", "R02", "R03", "R04"},
+        answered_ids={"R01", "R02", "R03", "R04"})}          # architecture untouched
+    assert cov["representation"]["closed"] and not cov["representation"]["thin"]
+    assert not cov["architecture"]["closed"]
+    assert not cov["architecture"]["thin"]
+
+
+def test_a_closed_stage_on_too_little_evidence_is_still_thin() -> None:
+    from knowledge.ml_registry.staging import stage_coverage
+
+    items = [{"id": f"M0{i}", "axis": "architecture"} for i in range(1, 6)]
+    cov = {c["stage"]: c for c in stage_coverage(
+        items, STAGES, measured_ids={"M01", "M04"},
+        answered_ids={f"M0{i}" for i in range(1, 6)})}
+    assert cov["architecture"]["closed"] and cov["architecture"]["thin"]
+
+
+def test_without_answered_ids_it_falls_back_to_the_old_behaviour() -> None:
+    from knowledge.ml_registry.staging import stage_coverage
+
+    items = [{"id": "M01", "axis": "architecture"}]
+    cov = {c["stage"]: c for c in stage_coverage(items, STAGES, measured_ids=set())}
+    assert cov["architecture"]["thin"] is True
