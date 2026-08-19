@@ -747,7 +747,8 @@ def main(argv: list[str] | None = None) -> int:
 
             from knowledge.ml_registry.bootstrap import bootstrap as _bootstrap
 
-            backlog = [json.loads(l) for l in _P(args.backlog).read_text().splitlines() if l.strip()]
+            backlog = [json.loads(line) for line in _P(args.backlog).read_text().splitlines()
+                       if line.strip()]
             report = _bootstrap(
                 ledger=_P(args.ledger), backlog=backlog, model_id=args.model_id,
                 metric=args.metric, direction=args.direction,
@@ -756,7 +757,8 @@ def main(argv: list[str] | None = None) -> int:
                 skip_ids={i for i in args.skip_ids.split(",") if i}, notes=args.notes,
                 void_throughput_fraction=args.void_throughput_fraction)
             if args.out_dir and report.ready:
-                out = _P(args.out_dir); out.mkdir(parents=True, exist_ok=True)
+                out = _P(args.out_dir)
+                out.mkdir(parents=True, exist_ok=True)
                 (out / "model_meta.json").write_text(json.dumps(report.model_meta, indent=2))
                 (out / "ideas.jsonl").write_text(
                     "\n".join(json.dumps(i) for i in report.ideas) + "\n")

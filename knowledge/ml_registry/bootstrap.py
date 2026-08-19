@@ -28,7 +28,6 @@ the uncertainty alongside the value, and `sigmas` defaults to 2 rather than 1: a
 from __future__ import annotations
 
 import csv
-import json
 import statistics as st
 from dataclasses import dataclass, field
 from pathlib import Path
