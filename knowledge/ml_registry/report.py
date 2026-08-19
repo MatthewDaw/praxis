@@ -274,10 +274,10 @@ def idea_verdicts(space: RegistrySpace, model_id: str, *,
     #
     # Measured: seven arms were reopened after being measured on a superseded architecture, and
     # every one of them still read as answered. The reopen printed OK and changed nothing.
-    reopened = {f.id for f in space.list_facts(IDEA)
-                if f.meta.get("model_id") == model_id and f.meta.get("reopened_from")
-                and str(f.meta.get("status") or "") == "untried"}
+    # No idea-level exclusion. reopen_idea VOIDS the prior trials instead, which is precise and
+    # self-limiting: a trial registered after the reopen answers normally, so an idea that was
+    # reopened, re-run and adjudicated is answered again. Excluding the idea itself made that
+    # impossible -- it stayed unanswered forever and the arm re-ran on every iteration.
     return {ideas[i]: str(t.meta.get("status"))
             for i, t in latest.items()
-            if i not in reopened
-            and (statuses is None or str(t.meta.get("status")) in statuses)}
+            if statuses is None or str(t.meta.get("status")) in statuses}
