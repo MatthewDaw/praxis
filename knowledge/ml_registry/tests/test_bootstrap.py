@@ -9,7 +9,6 @@ the training runs that filled the ledger had been paid for.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
