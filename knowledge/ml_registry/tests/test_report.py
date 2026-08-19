@@ -307,3 +307,12 @@ def test_an_explicit_reopen_outranks_a_stale_trial() -> None:
 
     reopen_idea(space, iid, reason="measured on a superseded architecture")
     assert idea_verdicts(space, mid) == {}          # the reopen wins
+
+    # ...and it is SELF-LIMITING: a trial registered after the reopen answers normally. Excluding
+    # the idea itself instead left an arm that had been reopened, re-run and adjudicated still
+    # reading as unanswered, so it re-ran on every iteration forever.
+    tid2 = register_trial(space, {"model_id": mid, "idea_id": iid, "commit": "c2",
+                                  "status": "complete", "throughput": 3.4, "diff_lines": 1},
+                          frozenset({"c2"}))
+    space.get(tid2).meta["status"] = "failed"
+    assert idea_verdicts(space, mid) == {"T02": "failed"}

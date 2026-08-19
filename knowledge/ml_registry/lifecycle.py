@@ -284,6 +284,20 @@ def reopen_idea(space: RegistrySpace, idea_id: str, reason: str) -> dict[str, ob
     })
     idea.meta["status"] = "untried"
     idea.meta["reopened_from"] = history
+
+    # VOID the trials that produced the discarded verdict. Without this the verdict survives on
+    # the trial, and any answer derived from trials silently re-answers the question the reopen
+    # just opened -- so the arm is never re-run and the reopen is a no-op that prints OK.
+    #
+    # Voided is the honest status: it means the run was not fairly earned and the arm must be
+    # re-run, which is exactly what a reopen asserts. It also scopes the effect to the PRIOR runs
+    # -- a trial registered AFTER the reopen answers normally, so an idea does not become
+    # permanently unanswerable. Measured: excluding the idea itself instead left an arm that had
+    # been reopened, re-run and adjudicated still reading as unanswered, so it re-ran forever.
+    for trial in space.list_facts(TRIAL):
+        if str(trial.meta.get("idea_id")) == idea_id and str(trial.meta.get("status")) != "voided":
+            trial.meta["status"] = "voided"
+            trial.meta["void_reason"] = f"idea reopened: {reason}"
     for stale in ("rejection_reason", "rejected_under_adoption"):
         idea.meta.pop(stale, None)
     return {"idea_id": idea_id, "previous_status": prior, "reopen_count": len(history)}
