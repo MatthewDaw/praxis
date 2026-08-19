@@ -58,6 +58,7 @@ from knowledge.ml_registry.lifecycle import (
     invalidate_adoption,
     is_retriable,
     park_idea,
+    reopen_idea,
     per_axis_yield,
     reject_idea,
     rejection_memory,
@@ -509,6 +510,20 @@ def main(argv: list[str] | None = None) -> int:
     status_p.add_argument("--model-id", required=True)
     status_p.add_argument("--json", action="store_true")
 
+    reopen_p = sub.add_parser(
+        "reopen-idea",
+        help="return an idea to UNTRIED after a verdict that was never fairly earned -- a run "
+             "truncated by a wall clock, killed, or otherwise unfair. NOT for relitigating a "
+             "verdict you dislike; the prior verdict is preserved, not erased.",
+    )
+    reopen_p.add_argument("--space-file", required=True)
+    reopen_p.add_argument("--idea-id", required=True)
+    reopen_p.add_argument(
+        "--reason", required=True,
+        help="why the prior verdict was not fairly earned. REQUIRED: without it, reopening is "
+             "indistinguishable from quietly deleting an inconvenient result")
+    reopen_p.add_argument("--json", action="store_true")
+
     reset_ratchet_p = sub.add_parser(
         "reset-ratchet",
         help="clear a model's rejection streak WITHOUT touching its baseline or any verdict -- "
@@ -857,6 +872,14 @@ def main(argv: list[str] | None = None) -> int:
             # safe to run against a campaign that is mid-arm. Saving here would race the loop.
             status = campaign_status(RegistrySpace.load(Path(args.space_file)), args.model_id)
             print(json.dumps(status, indent=2) if args.json else format_status(status))
+            return 0
+        if args.command == "reopen-idea":
+            out = _load_mutate_save(
+                args.space_file,
+                lambda space: reopen_idea(space, args.idea_id, args.reason),
+            )
+            print(json.dumps(out) if args.json
+                  else f"OK: reopened {out['idea_id']} (was {out['previous_status']})")
             return 0
         if args.command == "reset-ratchet":
             cleared = _load_mutate_save(
