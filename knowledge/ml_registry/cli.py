@@ -43,7 +43,8 @@ from typing import Callable, TypeVar
 
 from knowledge.ml_registry.citation import Resolver, ResolvedCitation, ResolverUnreachable
 from knowledge.ml_registry.cross_project import TicketIndex, model_to_projects, project_to_models
-from knowledge.ml_registry.floor import adjudicate_trial, load_ledger_values, register_model_with_baseline, retire_harness
+from knowledge.ml_registry.floor import (DEFAULT_SIGMAS, adjudicate_trial, load_ledger_values,
+                                          register_model_with_baseline, retire_harness)
 from knowledge.ml_registry.guards import guard_baseline_move, guard_model_mutation
 from knowledge.ml_registry.ideate import (
     GENERATIVE_AXES,
@@ -574,7 +575,21 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap_p.add_argument("--diff-size-limit", type=int, required=True)
     bootstrap_p.add_argument("--baseline-prefix", default="baseline",
                              help="ledger rows whose description starts with this are baselines")
-    bootstrap_p.add_argument("--sigmas", type=float, default=2.0)
+    bootstrap_p.add_argument(
+        "--sigmas", type=float, default=DEFAULT_SIGMAS,
+        help="multiples of the measured dispersion the noise floor is (default: "
+             "%(default)s). One sigma is the standing default and a deliberate trade -- a null "
+             "arm clears it 15.9%% of the time one-sided vs 2.3%% at two sigma; see "
+             "knowledge.ml_registry.bootstrap for what that buys. Pass 2 for the tighter bar.")
+    bootstrap_p.add_argument(
+        "--sigmas-reason", default=None,
+        help="why this campaign chose that bar. Optional, never required -- but it is what "
+             "campaign-status shows an operator who finds the campaign running a loose one.")
+    bootstrap_p.add_argument(
+        "--noise-floor-sigma", type=float, default=None,
+        help="the ONE-SIGMA dispersion a --noise-floor was multiplied up from. Supplying it is "
+             "what lets the registry CHECK that the stored floor really is the sigmas it "
+             "declares; without it the declaration is stored and stamped unverified.")
     # REQUIRED, and deliberately so. The former default was the bare adoption string, which
     # `parse_win_condition` maps to WIN_ON_ADOPTION -- `win_condition_met` then returns True
     # unconditionally (supervisor.py:262) and the campaign closes as WON on its FIRST adopted
@@ -1005,7 +1020,9 @@ def main(argv: list[str] | None = None) -> int:
                 ledger=_P(args.ledger), backlog=backlog, model_id=args.model_id,
                 metric=args.metric, direction=args.direction,
                 diff_size_limit=args.diff_size_limit, baseline_prefix=args.baseline_prefix,
-                sigmas=args.sigmas, noise_floor_override=args.noise_floor,
+                sigmas=args.sigmas, sigmas_reason=args.sigmas_reason,
+                noise_floor_sigma=args.noise_floor_sigma,
+                noise_floor_override=args.noise_floor,
                 noise_floor_method=args.noise_floor_method,
                 noise_floor_varies=args.noise_floor_varies,
                 trial_comparison=args.trial_comparison,

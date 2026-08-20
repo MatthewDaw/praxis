@@ -206,9 +206,15 @@ def register_model(space: RegistrySpace, meta: dict[str, object], *, model_id: s
     # above does: this is the choke point every model write passes, including the plain
     # `praxis register-model` CLI path that checks nothing else at all, and registration
     # is the last moment before trials start burning against the wrong bar.
-    from knowledge.ml_registry.floor import guard_floor_provenance
+    from knowledge.ml_registry.floor import SIGMAS_BASIS_FIELD, check_declared_sigmas, guard_floor_provenance
 
     guard_floor_provenance(merged)
+    # `sigmas` used to be decoration: it appeared nowhere in this module or in verdict.py, so
+    # a record could declare 2 and carry a 1-sigma floor and nothing noticed (court-marking
+    # did exactly that). Checked here, on the same choke point and for the same reason as the
+    # provenance guard. The stamp records WHAT WAS CHECKED -- including "nothing could be",
+    # for an externally measured floor -- so silence never reads as verification.
+    merged[SIGMAS_BASIS_FIELD] = check_declared_sigmas(merged)
     validate_fact(MODEL, merged)
 
     if model_id is None:

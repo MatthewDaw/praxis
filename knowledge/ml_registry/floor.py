@@ -157,6 +157,148 @@ SUPPLIED_FLOOR_MAX_SPREAD_RATIO = 10.0
 # years later, which is the same thing NOISE_FLOOR_METHOD_FIELD is for.
 NOISE_FLOOR_OVERRIDE_REASON_FIELD = "noise_floor_override_reason"
 
+# HOW MANY SIGMAS of that dispersion the floor is, and whether the registry could CHECK it.
+#
+# `sigmas` was pure decoration. bootstrap.measure_noise_floor multiplied by it honestly at
+# BOOTSTRAP time, and from then on nothing read it: it appears nowhere in verdict.py or
+# write_path.py, so at registration and at adjudication it was provenance nobody verified.
+#
+# THE INCIDENT. The court-marking campaign registered noise_floor 0.012481 -- the RAW
+# bootstrap SD, ONE sigma -- while its record declared `sigmas: 2`. Both numbers sat in the
+# same dict and nothing compared them. Its adopt/park band was half the width its own record
+# claimed, roughly a 16% one-sided false-adoption rate per null arm instead of ~2.5%, and it
+# was found by a human audit rather than by the registry. The floor has since been corrected
+# to 0.024962 = 2 x 0.012481.
+#
+# WHAT CAN ACTUALLY BE CHECKED, and nothing beyond it. praxis reads a model record and a
+# ledger; it never measured the floor. So there are exactly two honest checks:
+#   1. floor == sigmas x stdev(baseline_runs), when the floor IS the repeat stdev --
+#      register_model_with_baseline already recomputes exactly this and refuses a
+#      disagreement, so a declared `sigmas` is load-bearing there and always has been.
+#   2. floor == sigmas x NOISE_FLOOR_SIGMA_FIELD, when the record declares the one-sigma
+#      dispersion the floor was multiplied up from. This is the case court-marking was, and
+#      the one this field exists to make checkable.
+# An EXTERNALLY measured floor (method=bootstrap, a paired-delta study run outside praxis)
+# that declares no one-sigma dispersion cannot be checked at all -- the registry has one
+# number and no way to divide it. That case is ADMITTED, because the sibling campaigns are
+# legitimately in it and a false refusal here blocks correct campaigns, which is worse than
+# the defect. It is admitted LOUDLY: the basis stamp below says the relationship was never
+# verified, rather than letting silence read as verification.
+SIGMAS_FIELD = "sigmas"
+#: The ONE-SIGMA dispersion the floor was multiplied up from -- the bootstrap SE of the
+#: paired delta, the SD of the replicates, whatever the measurement produced BEFORE sigmas
+#: was applied. Optional, and the only thing that makes an externally-measured floor's
+#: sigmas checkable. Declare it and the registry does the multiplication itself.
+NOISE_FLOOR_SIGMA_FIELD = "noise_floor_sigma"
+#: WHY a campaign chose the sigmas it did. Optional, never required -- but it is what a
+#: reader finds when campaign-status tells them this campaign is running a loose bar.
+SIGMAS_REASON_FIELD = "sigmas_reason"
+#: WHAT THE REGISTRY ACTUALLY CHECKED, stamped at registration so no later reader has to
+#: guess whether a declared sigmas was verified or merely stored.
+SIGMAS_BASIS_FIELD = "sigmas_basis"
+#: floor was recomputed as sigmas x stdev of the named baseline_runs and agreed.
+SIGMAS_BASIS_RECOMPUTED = "recomputed_from_baseline_runs"
+#: floor was checked against a DECLARED one-sigma dispersion and agreed.
+SIGMAS_BASIS_DECLARED_UNIT = "checked_against_declared_sigma"
+#: sigmas is declared, the floor came from outside praxis, and NOTHING here verified the
+#: relationship between them. Not a failure -- an honest label on an unverifiable claim.
+SIGMAS_BASIS_UNVERIFIED = "unverified_external_measurement"
+#: no sigmas declared, so there is no claim to check.
+SIGMAS_BASIS_NONE = "not_declared"
+
+# THE STANDING DEFAULT IS ONE SIGMA. See the module docstring of
+# knowledge.ml_registry.bootstrap for what that buys and what it costs; the number lives
+# here because floor.py is what multiplies by it, and a campaign that wants the old
+# 2-sigma bar sets `sigmas: 2` in one field.
+DEFAULT_SIGMAS = 1.0
+#: Above this, a campaign is running a bar tighter than the default and nobody needs warning.
+#: At or below it, report.diagnose says so once the backlog is big enough to matter.
+CONSERVATIVE_SIGMAS = 2.0
+#: Relative agreement for floor == sigmas x declared-sigma. Loose enough for numbers rounded
+#: to six decimals on both sides, nowhere near loose enough to admit a factor of two -- which
+#: is the size of the error actually observed.
+SIGMAS_AGREEMENT_RELATIVE_TOLERANCE = 1e-4
+
+
+def check_declared_sigmas(meta: dict[str, object]) -> str:
+    """Verify a declared ``sigmas`` against the floor where that is POSSIBLE, and label it
+    honestly where it is not. Returns the :data:`SIGMAS_BASIS_FIELD` stamp to store.
+
+    Sits on the registration choke point (:func:`knowledge.ml_registry.write_path.register_model`)
+    next to :func:`guard_floor_provenance`, for the same reason: it is the one path every
+    model write passes, including the plain ``praxis register-model`` CLI that checks
+    nothing else, and it is the last moment before trials start burning against the bar.
+
+    THE RULE: a floor that contradicts its own declared sigmas is refused, with both
+    numbers named. THE INCIDENT: court-marking declared 2 and carried 1, and the registry
+    could not tell -- nothing in the write path or the verdict path ever read the field.
+    """
+    declared = meta.get(SIGMAS_FIELD)
+    if declared in (None, ""):
+        return SIGMAS_BASIS_NONE
+    try:
+        sigmas = float(declared)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise RegistryValidationError(
+            f"{SIGMAS_FIELD} {declared!r} is not a number. It states how many multiples of the "
+            "measured dispersion the noise_floor is, and a value that cannot be multiplied "
+            "cannot be checked against the floor at all",
+            field=SIGMAS_FIELD,
+        ) from None
+    if not sigmas > 0.0:
+        raise RegistryValidationError(
+            f"{SIGMAS_FIELD} {sigmas!r} is not positive; a floor is a positive multiple of a "
+            "dispersion, and zero or negative sigmas describes no bar at all",
+            field=SIGMAS_FIELD,
+        )
+
+    stored_floor = meta.get(NOISE_FLOOR_FIELD)
+    unit = meta.get(NOISE_FLOOR_SIGMA_FIELD)
+    if unit not in (None, ""):
+        unit_f = float(unit)  # type: ignore[arg-type]
+        if not unit_f > 0.0:
+            raise RegistryValidationError(
+                f"{NOISE_FLOOR_SIGMA_FIELD} {unit!r} is not positive; it is the ONE-SIGMA "
+                "dispersion the floor was multiplied up from, so a non-positive value makes "
+                "every floor derived from it zero-width",
+                field=NOISE_FLOOR_SIGMA_FIELD,
+            )
+        if stored_floor not in (None, ""):
+            floor_f = float(stored_floor)  # type: ignore[arg-type]
+            expected = sigmas * unit_f
+            if abs(floor_f - expected) > SIGMAS_AGREEMENT_RELATIVE_TOLERANCE * max(
+                abs(expected), abs(floor_f)
+            ):
+                raise RegistryValidationError(
+                    f"{NOISE_FLOOR_FIELD} {floor_f!r} contradicts its own declared "
+                    f"{SIGMAS_FIELD}={sigmas!r}: {sigmas!r} x {NOISE_FLOOR_SIGMA_FIELD} "
+                    f"{unit_f!r} is {expected!r}, and the stored floor is "
+                    f"{floor_f / unit_f:.4g} sigma. One of the two numbers is wrong and the "
+                    "record cannot say which, so neither is stored. THIS IS THE COURT-MARKING "
+                    "DEFECT, caught: that campaign registered a floor of 0.012481 -- the raw "
+                    "one-sigma bootstrap SD -- while declaring sigmas 2, so its adopt/park band "
+                    "was half the width its own record claimed (~16% one-sided false adoption "
+                    "per null arm rather than ~2.5%), and the registry could not tell because "
+                    f"nothing read {SIGMAS_FIELD} at all. Store the floor you actually "
+                    f"adjudicate against, and the {SIGMAS_FIELD} it really is",
+                    field=NOISE_FLOOR_FIELD,
+                )
+            return SIGMAS_BASIS_DECLARED_UNIT
+        return SIGMAS_BASIS_UNVERIFIED
+
+    # No declared one-sigma dispersion. The floor may still have been recomputed from the
+    # baseline runs -- register_model_with_baseline stamps that itself, having actually done
+    # the arithmetic, and it is honoured only when the record also carries the evidence that
+    # path requires. Anything else is an external measurement this module cannot divide.
+    if (
+        meta.get(SIGMAS_BASIS_FIELD) == SIGMAS_BASIS_RECOMPUTED
+        and isinstance(meta.get(BASELINE_RUNS_FIELD), list)
+        and meta.get(NOISE_FLOOR_METHOD_FIELD) in (None, "", NOISE_FLOOR_METHOD_REPEAT_STDEV)
+    ):
+        return SIGMAS_BASIS_RECOMPUTED
+    return SIGMAS_BASIS_UNVERIFIED
+
+
 # WHAT VARIED when the floor was measured, and HOW a trial is compared to the baseline.
 # These two are one guard, not two fields: a floor is only a bar on the comparison whose
 # noise it measured, and the pair is the only way this module can tell whether it does.
@@ -428,9 +570,13 @@ def register_model_with_baseline(
     stored on the model so a bootstrap floor and a repeat-stdev floor stay tellable apart. Delegates the rest of registration (campaign-budget defaults, the
     metric freeze) to :func:`~knowledge.ml_registry.write_path.register_model` unchanged.
 
-    ``meta["sigmas"]`` defaults to 1 so in-process R12 callers keep a one-sigma floor.
-    Bootstrap emits ``sigmas=2`` and ``baseline_runs``, which is what makes its
-    ``model_meta.json`` valid input to this function. ``ledger_throughputs``, when given,
+    ``meta[SIGMAS_FIELD]`` defaults to :data:`DEFAULT_SIGMAS` (one sigma, the standing
+    default this registry now bootstraps at -- see :mod:`knowledge.ml_registry.bootstrap`
+    for what that buys and costs). A record that DECLARES sigmas is held to it here: the
+    floor is recomputed as ``sigmas x stdev(baseline_runs)`` and a disagreement is refused,
+    which is what makes the field load-bearing rather than provenance. That check is stamped
+    in :data:`SIGMAS_BASIS_FIELD` so a later reader can tell a verified sigmas from one
+    nobody could check; :func:`check_declared_sigmas` handles the cases this path cannot. ``ledger_throughputs``, when given,
     makes ``baseline_throughput`` the slowest of those runs (rows/sec) rather than the
     mean of the metric values -- the two meanings this field used to collapse.
     """
@@ -449,7 +595,7 @@ def register_model_with_baseline(
                 field=BASELINE_RUNS_FIELD,
             )
         values.append(ledger_values[commit])
-    sigmas = float(meta.get("sigmas", 1.0))
+    sigmas = float(meta.get(SIGMAS_FIELD, DEFAULT_SIGMAS))
     sd = statistics.stdev(values)
     floor = sigmas * sd
     if ledger_throughputs is not None:
@@ -552,6 +698,14 @@ def register_model_with_baseline(
     merged[BASELINE_THROUGHPUT_FIELD] = throughput
     merged[BASELINE_THROUGHPUT_UNITS_FIELD] = throughput_units
     merged[NOISE_FLOOR_METHOD_FIELD] = method
+    # Only this path can honestly claim the recomputation: it just did the arithmetic. On any
+    # other method the floor came from outside and the stamp is left for
+    # check_declared_sigmas to decide, with any inbound value dropped so a hand-written one
+    # cannot ride in as evidence.
+    if method == NOISE_FLOOR_METHOD_REPEAT_STDEV:
+        merged[SIGMAS_BASIS_FIELD] = SIGMAS_BASIS_RECOMPUTED
+    else:
+        merged.pop(SIGMAS_BASIS_FIELD, None)
     merged.setdefault(RATCHET_COUNT_FIELD, 0)
     merged[CAMPAIGN_STATUS_FIELD] = ACTIVE
     return register_model(space, merged, model_id=model_id)

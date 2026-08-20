@@ -79,9 +79,21 @@ def test_noise_floor_reports_its_own_uncertainty() -> None:
     assert few["n_baseline_runs"] == 4
 
 
-def test_floor_defaults_to_two_sigma() -> None:
-    """At one sigma a large backlog manufactures winners from optimiser noise."""
+def test_floor_defaults_to_one_sigma_and_says_what_that_costs() -> None:
+    """ONE sigma is the standing default, and a deliberate trade rather than an oversight: a
+    null arm clears it 15.9% of the time one-sided (2.3% at two sigma), ~10 expected false
+    adoptions over a 66-idea backlog rather than ~1.5. It is accepted because a two-sigma bar
+    over a noisy metric is one nothing can clear -- detection ran 34 trials and adopted
+    nothing. The note must carry that reasoning, because the number alone cannot."""
     f = measure_noise_floor([{"metric_value": v} for v in (0.68, 0.69, 0.67, 0.70)])
+    assert f["sigmas"] == 1.0
+    assert f["noise_floor"] == pytest.approx(f["sd"], rel=1e-6)
+    assert "15.9%" in f["note"] and "ratchet" in f["note"]
+
+
+def test_two_sigma_is_one_field_away() -> None:
+    """A campaign that wants the old bar back must not have to compute it by hand."""
+    f = measure_noise_floor([{"metric_value": v} for v in (0.68, 0.69, 0.67, 0.70)], sigmas=2.0)
     assert f["sigmas"] == 2.0
     assert f["noise_floor"] == pytest.approx(2 * f["sd"], rel=1e-6)
 
@@ -213,7 +225,7 @@ def test_bootstrap_emits_baseline_runs_and_sigmas(tmp_path: Path) -> None:
                        model_id="m", metric="f1", direction="maximize", diff_size_limit=8,
                        win_condition={"metric_at_least": 0.9})
     assert report.ready
-    assert report.model_meta["sigmas"] == 2.0
+    assert report.model_meta["sigmas"] == 1.0
     assert len(report.model_meta["baseline_runs"]) == 4
     assert report.model_meta["baseline_runs"] == [row[0] for row in _baselines(4)]
 

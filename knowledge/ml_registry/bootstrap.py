@@ -21,8 +21,36 @@ campaign and the cheapest thing to get wrong. The registry's minimum is 4 baseli
 estimated from 4 points carries roughly 40% relative uncertainty, and on the sports_analysis
 campaign 4 runs suggested SD 0.0164 while 12 gave 0.0115 -- the small sample was inflated by an
 artifact that only the larger one exposed. So `measure_noise_floor` reports the sample size and
-the uncertainty alongside the value, and `sigmas` defaults to 2 rather than 1: at one sigma a
-35-arm backlog is expected to manufacture roughly five winners from optimiser noise alone.
+the uncertainty alongside the value.
+
+`sigmas` DEFAULTS TO ONE, AND THAT IS A TRADE, NOT AN OVERSIGHT. It defaulted to 2 on the
+argument -- still correct as far as it goes -- that at one sigma a large backlog manufactures
+winners out of optimiser noise. What is bought and what is paid, measured on the detection
+campaign that forced the change:
+
+  PAID. A null arm -- one that changes nothing real -- clears a ONE-sigma bar 15.9% of the time
+  one-sided, against 2.3% at two sigma. Over a 66-idea backlog that is ~10 expected false
+  adoptions rather than ~1.5. And the two errors are NOT symmetric: a false REJECTION costs one
+  re-run, while a false ADOPTION permanently raises the baseline and composes into every later
+  arm, so it is paid by the whole remainder of the campaign.
+
+  BOUGHT. A bar nothing can clear buys no safety; it buys a campaign that cannot learn. Detection
+  ran 34 trials and adopted NOTHING. Its metric (a constrained argmax) re-selects its operating
+  threshold per arm and per draw, which made it 7.6x noisier than its sample size warranted, and
+  two sigmas of that noise was a 7-percentage-point bar no detector tweak could ever clear. Five
+  arms genuinely beat the incumbent and all five were filed stagnant, so the composition
+  mechanism never opened at all.
+
+WHAT NOW CARRIES THE RISK THE 2-SIGMA DEFAULT USED TO CARRY: the RATCHET, which is the only
+mechanism that unwinds a false adoption. Its limitation is known and stated here rather than
+discovered later -- praxis counts a rejection toward the ratchet only when the trial would have
+parked-or-won against the PREVIOUS baseline (counterfactual attribution). That is deliberately
+conservative, and it will NOT reliably unwind a stack of small false adoptions, each of which
+raises the bar just enough that the next honest arm looks like a loss on its own merits.
+
+A campaign that wants the old bar sets `sigmas: 2` in ONE field, and the registry then HOLDS it
+to that number: see knowledge.ml_registry.floor.check_declared_sigmas. Until recently it did
+not, which is how the court-marking campaign came to declare 2 while carrying a one-sigma floor.
 
 WHAT "WINNING" MEANS IS ASKED FOR, NEVER DEFAULTED. `win_condition` used to default to the
 string supervisor.py reads as WIN_ON_ADOPTION, which closes a campaign as WON on its FIRST
@@ -43,12 +71,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from knowledge.ml_registry.floor import DEFAULT_SIGMAS as FLOOR_DEFAULT_SIGMAS
 from knowledge.ml_registry.schema import RegistryValidationError
 
 LEDGER_V2_HEADER = ["commit", "metric_value", "memory_gb", "status", "description",
                     "throughput", "diff_lines"]
 REQUIRED_BASELINE_RUN_COUNT = 4
-DEFAULT_SIGMAS = 2.0
+# ONE sigma, defined in floor.py (what multiplies by it) and imported here so the bootstrap
+# default and the registration default cannot drift apart. The trade this default makes is
+# spelled out in the module docstring above.
+DEFAULT_SIGMAS = FLOOR_DEFAULT_SIGMAS
 
 # The win_condition string supervisor.parse_win_condition reads as WIN_ON_ADOPTION, which
 # makes win_condition_met return True unconditionally (supervisor.py:262) and closes the
@@ -155,8 +187,13 @@ def measure_noise_floor(baselines: list[dict], sigmas: float = DEFAULT_SIGMAS) -
         "sigmas": sigmas,
         "noise_floor": round(sigmas * sd, 6),
         "note": ("SD from few runs is itself uncertain; prefer >= 12 runs when a run is cheap. "
-                 "sigmas defaults to 2 because at one sigma a large backlog manufactures winners "
-                 "from optimiser noise."),
+                 "sigmas defaults to 1: a null arm clears a one-sigma bar 15.9% of the time "
+                 "one-sided (2.3% at two sigma), ~10 expected false adoptions over a 66-idea "
+                 "backlog rather than ~1.5, and a false adoption is the expensive direction "
+                 "because it raises the baseline for every later arm. That is accepted "
+                 "deliberately: a two-sigma bar over a noisy metric is one nothing can clear, "
+                 "and detection ran 34 trials adopting nothing. Pass sigmas=2 to buy the tighter "
+                 "bar back; the ratchet is what unwinds a false adoption, imperfectly."),
     }
 
 
@@ -164,6 +201,8 @@ def build_model_meta(*, metric: str, direction: str, baseline_commit: str, noise
                      baseline_throughput: float, diff_size_limit: int,
                      win_condition: Any,
                      notes: str | None = None, sigmas: float | None = None,
+                     sigmas_reason: str | None = None,
+                     noise_floor_sigma: float | None = None,
                      baseline_runs: list | None = None,
                      void_throughput_fraction: float | None = None) -> dict[str, Any]:
     """``win_condition`` is REQUIRED and may not be the bare adoption string.
@@ -188,6 +227,15 @@ def build_model_meta(*, metric: str, direction: str, baseline_commit: str, noise
         meta["notes"] = notes
     if sigmas is not None:
         meta["sigmas"] = sigmas
+    if sigmas_reason:
+        meta["sigmas_reason"] = sigmas_reason
+    # The ONE-SIGMA dispersion the floor was multiplied up from. Optional, and the only thing
+    # that makes an externally-measured floor's declared sigmas CHECKABLE: with it,
+    # floor.check_declared_sigmas does the multiplication itself and refuses a floor that
+    # contradicts its own sigmas. Without it the claim is stored and stamped unverified --
+    # which is what court-marking's `sigmas: 2` beside a one-sigma floor was.
+    if noise_floor_sigma is not None:
+        meta["noise_floor_sigma"] = noise_floor_sigma
     if baseline_runs is not None:
         meta["baseline_runs"] = list(baseline_runs)
     if void_throughput_fraction is not None:
@@ -229,7 +277,9 @@ def build_ideas(backlog: list[dict[str, Any]], *, model_id: str,
 def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, metric: str,
               direction: str, diff_size_limit: int, win_condition: Any = None,
               baseline_prefix: str = "baseline",
-              sigmas: float = DEFAULT_SIGMAS, noise_floor_override: float | None = None,
+              sigmas: float = DEFAULT_SIGMAS, sigmas_reason: str | None = None,
+              noise_floor_override: float | None = None,
+              noise_floor_sigma: float | None = None,
               noise_floor_method: str | None = None,
               noise_floor_varies: str | None = None,
               trial_comparison: str | None = None,
@@ -314,6 +364,7 @@ def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, met
         # below the slowest run the baseline configuration actually produced.
         baseline_throughput=round(min(float(b["throughput"]) for b in baselines), 4),
         diff_size_limit=diff_size_limit, notes=notes, sigmas=sigmas,
+        sigmas_reason=sigmas_reason, noise_floor_sigma=noise_floor_sigma,
         baseline_runs=[b["commit"] for b in baselines],
         void_throughput_fraction=void_throughput_fraction)
     if "noise_floor_method" in floor:

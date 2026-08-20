@@ -108,8 +108,10 @@ def _bootstrap(tmp_path: Path, *extra: object) -> tuple[subprocess.CompletedProc
     return result, ledger, out_dir, space
 
 
-def _two_sigma() -> float:
-    return 2.0 * statistics.stdev(BASELINE_VALUES)
+def _one_sigma() -> float:
+    """The STANDING default bar: sigmas defaults to 1, deliberately -- see the trade recorded
+    in knowledge.ml_registry.bootstrap's module docstring."""
+    return 1.0 * statistics.stdev(BASELINE_VALUES)
 
 
 def _register_model(space: Path, meta_json: Path, ledger: Path) -> subprocess.CompletedProcess:
@@ -161,13 +163,14 @@ def test_documented_bootstrap_then_register_then_verdict_path(tmp_path: Path) ->
 
     meta = json.loads((out_dir / "model_meta.json").read_text())
     # Nearest the mean, not the max 0.6811. Throughput is min seq/s, not mean F1 ~0.678.
-    two_sigma = _two_sigma()
+    one_sigma = _one_sigma()
     assert meta["baseline"] == "sha:baseline_4"
     assert meta["baseline_throughput"] == pytest.approx(3.38)
-    assert meta.get("sigmas") == 2.0
-    # Bootstrap rounds to 6 d.p.; still must be 2σ, not the 1σ R12 default.
-    assert meta["noise_floor"] == pytest.approx(two_sigma, abs=1e-5)
-    assert meta["noise_floor"] != pytest.approx(two_sigma / 2.0, abs=1e-4)
+    assert meta.get("sigmas") == 1.0
+    # Bootstrap rounds to 6 d.p. The floor is exactly the sigmas it declares -- the whole
+    # court-marking defect was a record whose floor and declared sigmas disagreed.
+    assert meta["noise_floor"] == pytest.approx(one_sigma, abs=1e-5)
+    assert meta["noise_floor"] != pytest.approx(2.0 * one_sigma, abs=1e-4)
     assert "baseline_runs" in meta
     assert len(meta["baseline_runs"]) == 4
     assert set(meta["baseline_runs"]) == set(BASELINE_COMMITS)
@@ -182,8 +185,10 @@ def test_documented_bootstrap_then_register_then_verdict_path(tmp_path: Path) ->
     stored = json.loads(readback.stdout)[0]["meta"]
     assert stored["baseline"] == "sha:baseline_4"
     assert stored["baseline_throughput"] == pytest.approx(3.38)
-    assert stored["noise_floor"] == pytest.approx(two_sigma, abs=1e-5)
-    assert stored["noise_floor"] != pytest.approx(two_sigma / 2.0, abs=1e-4)
+    assert stored["noise_floor"] == pytest.approx(one_sigma, abs=1e-5)
+    # And registration says what it CHECKED about that declaration, rather than storing the
+    # number and leaving a reader to assume it was verified.
+    assert stored["sigmas_basis"] == "recomputed_from_baseline_runs"
 
     idea_ids = _register_ideas(space, out_dir / "ideas.jsonl", model_id)
     assert "R03" in idea_ids
