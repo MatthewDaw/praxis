@@ -81,6 +81,7 @@ dispatcher exceeding the model's ``per_trial_seconds`` closes it too.
 from __future__ import annotations
 
 import time
+import warnings
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -158,6 +159,19 @@ WIN_METRIC_AT_MOST = "metric_at_most"
 WIN_METRIC_AT_LEAST = "metric_at_least"
 WIN_THRESHOLD_KINDS: tuple[str, ...] = (WIN_METRIC_AT_MOST, WIN_METRIC_AT_LEAST)
 WIN_ON_ADOPTION = "beats baseline by noise_floor"
+
+#: A model's explicit, per-campaign opt-in to first-adoption-wins. Only bootstrap ever
+#: validated a win condition -- build_model_meta refuses the bare string, the
+#: win_condition_declared precondition reports it, and `bootstrap-campaign --win-condition`
+#: is a required flag -- while register_model, register_model_with_baseline and their two CLI
+#: verbs accept it unexamined (schema.py only asks that the key be non-empty). So a campaign
+#: stood up WITHOUT bootstrap was one string away from closing WON on trial one, and it was
+#: reproduced end to end: register-model with that string succeeded and supervise-campaign
+#: closed the campaign after a SINGLE dispatch on a +1.2-floor adoption, leaving every other
+#: declared stage untried. The string stays supported -- test fixtures and
+#: sports_analysis's experiments/ball_campaign genuinely mean "the adoption IS the win" --
+#: but meaning it now has to be SAID, on the model, next to the string.
+WIN_ON_ADOPTION_OPT_IN_FIELD = "win_on_adoption_ok"
 
 # A dispatcher runs one worker session for one idea and reports its trial's meta; an idea
 # generator proposes one more idea (its meta, sans ``origin``/``model_id`` which this
@@ -254,6 +268,35 @@ def parse_win_condition(win_condition: object) -> dict[str, object]:
     raise RegistryValidationError(
         f"win_condition {win_condition!r} is not evaluable; declare {WIN_THRESHOLD_KINDS} "
         f"(e.g. {{'metric_at_most': 0.80}}) or {WIN_ON_ADOPTION!r}",
+        field="win_condition",
+    )
+
+
+def check_win_on_adoption_declared(model: Fact) -> None:
+    """Refuse a model whose win condition is the bare :data:`WIN_ON_ADOPTION` string unless it
+    carries :data:`WIN_ON_ADOPTION_OPT_IN_FIELD`.
+
+    The string itself is not the defect -- :func:`parse_win_condition` still accepts it, and
+    a campaign that really does mean "one adoption beyond the noise floor IS the win" is
+    entitled to say so. The defect was the COVERAGE GAP around it: bootstrap validated win
+    conditions and nothing else did, so the four surfaces that stand a campaign up outside
+    bootstrap (``register_model``, ``register_model_with_baseline`` and both of their CLI
+    verbs) took the string unexamined, and a campaign whose author simply never thought about
+    winning closed WON on its first adopted trial with every other stage untried.
+
+    Raises rather than returns a flag so a PREFLIGHT can gate on it before a campaign starts
+    -- which is where the answer still costs one line. ``af-ml-campaign-loop.sh`` calls it
+    that way and refuses to launch; :func:`supervise_campaign` only WARNS on it, see there.
+    """
+    condition = parse_win_condition(model.meta.get("win_condition"))
+    if condition["kind"] != WIN_ON_ADOPTION or model.meta.get(WIN_ON_ADOPTION_OPT_IN_FIELD) is True:
+        return
+    raise RegistryValidationError(
+        f"win_condition {WIN_ON_ADOPTION!r} makes the FIRST adopted trial close this campaign "
+        f"as WON, leaving every other declared stage untried. Declare a numeric target "
+        f"({WIN_THRESHOLD_KINDS}, e.g. {{'metric_at_least': 0.90}}), or, if first-adoption-wins "
+        f"is genuinely what this campaign means, say so on the model: "
+        f"{WIN_ON_ADOPTION_OPT_IN_FIELD}=true",
         field="win_condition",
     )
 
@@ -738,7 +781,9 @@ def supervise_campaign(
 
     The model's ``win_condition`` is parsed ONCE, up front: a campaign whose win condition
     is not evaluable (:func:`parse_win_condition`) is REFUSED here rather than run to a
-    silent first-adoption "win".
+    silent first-adoption "win"; one whose win condition IS first-adoption-wins without
+    having declared it (:func:`check_win_on_adoption_declared`) is warned about on stderr
+    and refused outright by the campaign loop's preflight.
 
     Close conditions, checked in this order once a dispatch's side effects have landed:
       1. the dispatch found no candidate (backlog and discovered-idea budget both
@@ -756,7 +801,24 @@ def supervise_campaign(
     model = _model(space, model_id)
     max_trials = int(model.meta.get("max_trials", MODEL_DEFAULTS["max_trials"]))
     max_voids = int(model.meta.get(MAX_CONSECUTIVE_VOIDS_FIELD, DEFAULT_MAX_CONSECUTIVE_VOIDS))
-    parse_win_condition(model.meta.get("win_condition"))  # refuse an unevaluable campaign up front
+    # Unevaluable first, and RAISING: check_win_on_adoption_declared parses too, but its refusal
+    # is caught below, so leaving this to it would downgrade "this campaign cannot be adjudicated
+    # at all" to a warning.
+    parse_win_condition(model.meta.get("win_condition"))
+    # Then, LOUDLY, the win condition that IS evaluable but is first-adoption-wins undeclared. Warn rather than raise HERE because this function is also how an in-flight
+    # campaign RESUMES (nothing distinguishes a resume from a fresh start), and a campaign
+    # already six trials deep must not be bricked by a declaration it can no longer make
+    # retroactively. The refusal belongs one step earlier, before trial one is dispatched:
+    # `check_win_on_adoption_declared` is that gate and af-ml-campaign-loop.sh calls it as a
+    # preflight, so the unattended path -- the one that closed a campaign after ONE dispatch
+    # on a +1.2-floor adoption -- does not start at all.
+    try:
+        check_win_on_adoption_declared(model)
+    except RegistryValidationError as undeclared:
+        # warnings.warn, not a print: this module's callers include the CLI, whose stdout is a
+        # JSON document a caller parses. A warning reaches the operator on stderr without
+        # corrupting that.
+        warnings.warn(f"model {model_id}: {undeclared}", stacklevel=2)
 
     def close_with(close: str) -> dict[str, object]:
         _record_close(space, model_id, close, lesson_filer=lesson_filer)

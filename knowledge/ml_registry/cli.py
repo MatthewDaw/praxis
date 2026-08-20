@@ -76,7 +76,7 @@ from knowledge.ml_registry.supervisor import (
 from knowledge.ml_registry.completeness import campaign_completeness
 from knowledge.ml_registry.report import (acknowledge_diagnosis, campaign_status,
                                           format_status)
-from knowledge.ml_registry.verdict import LedgerRow, adjudicate_verdict, reset_ratchet
+from knowledge.ml_registry.verdict import FAIR_RUN_STATUSES, LedgerRow, adjudicate_verdict, reset_ratchet
 from knowledge.ml_registry.write_path import (
     MAX_DISCOVERED_IDEAS_FIELD,
     METRIC_FIELD,
@@ -124,9 +124,11 @@ def load_ledger_rows(path: Path) -> dict[str, LedgerRow]:
     into dead code. The fix for a ledger that lacks them is to record them in the loop that
     writes it, not here.
 
-    A duplicated commit key is REFUSED naming it rather than last-write-winning -- see
-    :func:`~knowledge.ml_registry.floor.load_ledger_values`, which refuses the same shape
-    for the same file.
+    A duplicated commit key among FAIR rows is REFUSED naming it rather than
+    last-write-winning -- see :func:`~knowledge.ml_registry.floor.load_ledger_values`, which
+    refuses the same shape for the same file, and skips the same unfair one: a row outside
+    :data:`~knowledge.ml_registry.verdict.FAIR_RUN_STATUSES` is not a competing measurement
+    of a run, so its re-run under the same key is legitimate and the last FAIR row wins.
 
     A row whose metric/throughput/diff_lines cell is empty, short, or non-numeric is an
     UNSCORED run (a crash or an abort) and is skipped individually -- the same tolerance
@@ -171,6 +173,7 @@ def load_ledger_rows(path: Path) -> dict[str, LedgerRow]:
                      status_at if status_at is not None else 0)
 
         rows: dict[str, LedgerRow] = {}
+        fair_keys: set[str] = set()
         duplicates: list[str] = []
         for row in reader:
             if len(row) <= widest or not row[commit_at].strip():
@@ -185,8 +188,21 @@ def load_ledger_rows(path: Path) -> dict[str, LedgerRow]:
                 )
             except ValueError:
                 continue  # unscored run (crashed/aborted): nothing to adjudicate against
-            if key in rows:
+            if parsed.status.lower() not in FAIR_RUN_STATUSES:
+                # A scored-but-UNFAIR row does not collide -- see
+                # :func:`~knowledge.ml_registry.floor.load_ledger_values`, which applies the
+                # identical rule to the identical file. Such a row is one adjudicate_verdict
+                # has already decided not to judge on, so its legitimate re-run is not a
+                # second opinion about one run, it is the first real measurement; raising on
+                # the pair made the entire ledger unreadable for every model in it, and left
+                # inventing an arm tag as the only way past. Kept, but overwritten by any
+                # fair row for the same key.
+                if key not in fair_keys:
+                    rows[key] = parsed
+                continue
+            if key in fair_keys:
                 duplicates.append(key)
+            fair_keys.add(key)
             rows[key] = parsed
         if duplicates:
             raise RegistryValidationError(

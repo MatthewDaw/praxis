@@ -10,13 +10,17 @@ import pytest
 from knowledge.ml_registry.floor import (
     BASELINE_FIELD,
     BASELINE_THROUGHPUT_FIELD,
+    BASELINE_THROUGHPUT_UNITS_FIELD,
     NOISE_FLOOR_FIELD,
     NOISE_FLOOR_METHOD_FIELD,
     NOISE_FLOOR_METHOD_REPEAT_STDEV,
+    NOISE_FLOOR_OVERRIDE_REASON_FIELD,
     PREVIOUS_BASELINE_FIELD,
     RATCHET_COUNT_FIELD,
     REJECTION_STREAK_FIELD,
     STALLED,
+    THROUGHPUT_UNITS_METRIC_MEAN,
+    THROUGHPUT_UNITS_ROWS_PER_SEC,
     adjudicate_trial,
     compute_noise_floor,
     load_ledger_values,
@@ -597,3 +601,242 @@ def test_compute_noise_floor_accepts_more_than_the_minimum_and_refuses_fewer():
     )
     with pytest.raises(RegistryValidationError):
         compute_noise_floor([1.0, 1.02, 0.98])
+
+
+# --- P4: a scored-but-UNFAIR row and its rerun must not wedge the loader --------------
+
+
+def test_a_scored_but_unfair_row_and_its_rerun_load_with_the_fair_row_winning(tmp_path):
+    """A run cut short but still SCORED -- a numeric metric with status=budget_exhausted,
+    the row shape FAIR_RUN_STATUSES exists to describe -- plus the legitimate rerun under
+    the same {sha}:{arm_tag} raised the duplicate refusal and made the WHOLE ledger
+    unreadable, for every model in it. A voided trial may be re-run (that is what voided
+    MEANS), and inventing a new arm tag to get past this corrupts the join key."""
+    path = _write_ledger(
+        tmp_path,
+        "sha1:armA\t0.90\t8\tbudget_exhausted\tcut short at 40% of the eval set\n"
+        "sha1:armA\t0.72\t8\tok\tthe rerun that actually finished\n"
+        "sha2:armB\t1.0\t8\tok\t-\n",
+    )
+
+    assert load_ledger_values(path) == {"sha1:armA": 0.72, "sha2:armB": 1.0}
+
+
+def test_an_unfair_row_is_still_readable_where_no_fair_row_replaced_it(tmp_path):
+    """Skipping the collision is not deleting the measurement: with no rerun yet, the row
+    reads exactly as it did before -- whichever caller needs it decides what it is worth."""
+    path = _write_ledger(tmp_path, "sha1:armA\t0.90\t8\tbudget_exhausted\tcut short\n")
+
+    assert load_ledger_values(path) == {"sha1:armA": 0.90}
+
+
+def test_two_FAIR_rows_under_one_key_are_still_refused(tmp_path):
+    """The unfair-row exemption must not weaken the duplicate detection it sits next to:
+    two rows that each claim to be a completed run for one key are the silent
+    last-write-wins this refusal exists for."""
+    path = _write_ledger(tmp_path, "abc\t0.70\t8\tok\t-\nabc\t0.95\t8\tok\t-\n")
+
+    with pytest.raises(RegistryValidationError) as excinfo:
+        load_ledger_values(path)
+    assert excinfo.value.field == "commit"
+    assert "abc" in str(excinfo.value)
+
+
+def test_a_ledger_with_no_status_column_still_refuses_duplicates(tmp_path):
+    """A ledger written before the status column existed is older, not broken: every row
+    in it reads as fair, so the duplicate refusal is exactly as strict as it always was."""
+    path = tmp_path / "results.tsv"
+    path.write_text("commit\tval_bpb\nabc\t0.70\nabc\t0.95\n")
+
+    with pytest.raises(RegistryValidationError):
+        load_ledger_values(path)
+
+
+# --- P8: the units stamp is a CLOSED vocabulary, not one string plus silence -----------
+
+
+def test_registration_refuses_a_units_stamp_it_does_not_recognise():
+    """'samples_per_second' is rows/sec by another name, and the campaign that stamped it
+    turned the units guard off rather than tripping it: the check knew one literal, so
+    every other string read as no opinion at all."""
+    space = RegistrySpace()
+    meta = dict(MODEL_META, baseline_throughput_units="samples_per_second")
+    with pytest.raises(RegistryValidationError) as excinfo:
+        register_model_with_baseline(space, meta, LEDGER)
+    assert excinfo.value.field == BASELINE_THROUGHPUT_UNITS_FIELD
+    assert "samples_per_second" in str(excinfo.value)
+    assert space.list_facts("model") == []
+
+
+def test_registration_refuses_a_known_units_stamp_that_contradicts_what_it_computed():
+    """A recognised stamp is still a claim about THIS registration's number: called with no
+    ledger_throughputs, baseline_throughput is the metric mean, so a rows_per_sec stamp on
+    it would hand every later reader the wrong one of the two meanings."""
+    space = RegistrySpace()
+    meta = dict(MODEL_META, baseline_throughput_units=THROUGHPUT_UNITS_ROWS_PER_SEC)
+    with pytest.raises(RegistryValidationError) as excinfo:
+        register_model_with_baseline(space, meta, LEDGER)
+    assert excinfo.value.field == BASELINE_THROUGHPUT_UNITS_FIELD
+
+
+def test_registration_accepts_a_units_stamp_that_agrees_with_what_it_computed():
+    space = RegistrySpace()
+    meta = dict(MODEL_META, baseline_throughput_units=THROUGHPUT_UNITS_METRIC_MEAN)
+    model_id = register_model_with_baseline(space, meta, LEDGER)  # must not raise
+    assert space.get(model_id).meta[BASELINE_THROUGHPUT_UNITS_FIELD] == THROUGHPUT_UNITS_METRIC_MEAN
+
+
+def test_adjudication_refuses_a_baseline_throughput_stamped_in_units_it_cannot_read():
+    """An unrecognised stamp must never read as 'no opinion' at adjudication either: that
+    is the reading that let a rows/sec number under another name be compared with an F1."""
+    space = RegistrySpace()
+    model_id = register_model_with_baseline(
+        space, dict(_TPUT_META), _TPUT_VALUES, ledger_throughputs=_TPUT_THROUGHPUTS
+    )
+    model = space.get(model_id)
+    model.meta[BASELINE_THROUGHPUT_UNITS_FIELD] = "samples_per_second"
+    idea_id = register_idea(space, _idea_meta(model_id))
+    trial_id = _trial(space, model_id, idea_id, "c-better", ledger=set(_TPUT_VALUES))
+    without_baseline = {k: v for k, v in _TPUT_VALUES.items() if k != "b-metric"}
+
+    with pytest.raises(RegistryValidationError) as excinfo:
+        adjudicate_trial(space, trial_id, without_baseline)
+    assert excinfo.value.field == BASELINE_THROUGHPUT_UNITS_FIELD
+    assert space.get(trial_id).meta["status"] == "running"
+
+
+# --- P3: an UNSTAMPED baseline_throughput is not evidence that it is a metric mean -----
+
+
+def test_adjudication_refuses_an_unstamped_baseline_throughput_it_cannot_replace():
+    """ledger_throughputs (bae7abb) is OLDER than the stamp (5027002), so a pre-stamp model
+    registered through it carries rows/sec and nothing that says so. Reading the ABSENT
+    stamp as the legacy metric mean adjudicated an F1 of 0.99 against 3.5 rows/sec and
+    called it 'failed' -- the very category error the stamp was added to stop."""
+    space = RegistrySpace()
+    model_id = register_model_with_baseline(
+        space, dict(_TPUT_META), _TPUT_VALUES, ledger_throughputs=_TPUT_THROUGHPUTS
+    )
+    model = space.get(model_id)
+    del model.meta[BASELINE_THROUGHPUT_UNITS_FIELD]  # a model registered before the stamp existed
+    assert model.meta[BASELINE_THROUGHPUT_FIELD] == pytest.approx(3.5)
+    idea_id = register_idea(space, _idea_meta(model_id))
+    trial_id = _trial(space, model_id, idea_id, "c-better", ledger=set(_TPUT_VALUES))
+    without_baseline = {k: v for k, v in _TPUT_VALUES.items() if k != "b-metric"}
+
+    with pytest.raises(RegistryValidationError) as excinfo:
+        adjudicate_trial(space, trial_id, without_baseline)
+    assert excinfo.value.field == BASELINE_THROUGHPUT_UNITS_FIELD
+    assert space.get(trial_id).meta["status"] == "running"
+
+
+def test_an_unstamped_model_still_adjudicates_off_its_scored_baseline_commit():
+    """The refusal above is about a bar that cannot be identified, not about the stamp
+    being missing: where the baseline commit HAS a scored ledger row, that row is the bar
+    and the stamp is never consulted at all."""
+    space = RegistrySpace()
+    model_id = register_model_with_baseline(
+        space, dict(_TPUT_META), _TPUT_VALUES, ledger_throughputs=_TPUT_THROUGHPUTS
+    )
+    del space.get(model_id).meta[BASELINE_THROUGHPUT_UNITS_FIELD]
+    idea_id = register_idea(space, _idea_meta(model_id))
+    trial_id = _trial(space, model_id, idea_id, "c-better", ledger=set(_TPUT_VALUES))
+
+    assert adjudicate_trial(space, trial_id, _TPUT_VALUES) == "succeeded"
+
+
+# --- P6: a DECLARED floor is bounded in magnitude by the rows it was measured beside ---
+
+
+@pytest.mark.parametrize(
+    "floor",
+    [1e9, 1e-12],
+    ids=["parks every arm forever", "adjudicates float wobble as signal"],
+)
+def test_a_declared_floor_wildly_out_of_scale_with_its_baseline_rows_is_refused(floor):
+    """noise_floor_method admitted ANY string that was not repeat_stdev, and once admitted
+    the floor was checked for positivity and nothing else. So the two floors that break a
+    campaign in opposite directions both registered cleanly. The declaration is prose; the
+    rows are the evidence."""
+    space = RegistrySpace()
+    meta = dict(MODEL_META, noise_floor=floor, noise_floor_method="bootstrap")
+    with pytest.raises(RegistryValidationError) as excinfo:
+        register_model_with_baseline(space, meta, LEDGER)
+    assert excinfo.value.field == NOISE_FLOOR_FIELD
+    assert NOISE_FLOOR_OVERRIDE_REASON_FIELD in str(excinfo.value)
+    assert space.list_facts("model") == []
+
+
+def test_a_floor_outside_the_band_registers_when_the_caller_states_why():
+    """The band is a sanity bound, not a ceiling on judgement -- but the way past it is a
+    stated reason that stays on the model, so the number remains accountable to whoever
+    reads it next."""
+    space = RegistrySpace()
+    meta = dict(
+        MODEL_META,
+        noise_floor=1e-6,
+        noise_floor_method="bootstrap",
+        noise_floor_override_reason="eval set is 400k frames; the repeats' spread is dominated "
+        "by a scheduler artefact fixed in this commit",
+    )
+    model_id = register_model_with_baseline(space, meta, LEDGER)
+    assert space.get(model_id).meta[NOISE_FLOOR_FIELD] == 1e-6
+    assert space.get(model_id).meta[NOISE_FLOOR_OVERRIDE_REASON_FIELD]
+
+
+def test_identical_baseline_rows_exempt_a_declared_floor_from_the_band():
+    """The exemption is load-bearing, not a loophole: a deterministic incumbent's own stdev
+    is exactly 0, which refuses to register as a floor at all, so a bootstrap-resampled
+    floor is the ONE way such a model gets one -- the case this whole declared-floor path
+    exists for. A zero denominator has no opinion, so it does not get to enforce one."""
+    space = RegistrySpace()
+    deterministic = {"d1": 0.42, "d2": 0.42, "d3": 0.42, "d4": 0.42}
+    meta = dict(
+        MODEL_META,
+        baseline_runs=["d1", "d2", "d3", "d4"],
+        baseline="d1",
+        noise_floor=1e9,  # absurd on its face, and still not something the rows can dispute
+        noise_floor_method="bootstrap",
+    )
+    assert register_model_with_baseline(space, meta, deterministic)
+
+
+# The four registrations this bound must never refuse -- all four are real, all four are
+# live. If a future tightening of the band trips any of them, the band is wrong.
+_REAL_REGISTRATIONS = [
+    ("association", [0.851439] * 10, 0.0016),
+    ("detection", [0.6925, 0.6164, 0.6076, 0.6178, 0.5895, 0.5355, 0.5560, 0.6505], 0.099758),
+    ("court_marking", [0.155648] * 4, 0.012481),
+    ("court_marking_doubled", [0.155648] * 4, 0.024962),
+]
+
+
+@pytest.mark.parametrize("name,values,floor", _REAL_REGISTRATIONS, ids=[r[0] for r in _REAL_REGISTRATIONS])
+def test_the_real_campaign_registrations_still_pass_the_band(name, values, floor):
+    space = RegistrySpace()
+    ledger = {f"{name}-{i}": v for i, v in enumerate(values)}
+    runs = sorted(ledger)
+    meta = dict(
+        MODEL_META, baseline_runs=runs, baseline=runs[0], noise_floor=floor,
+        noise_floor_method="bootstrap",
+    )
+    model_id = register_model_with_baseline(space, meta, ledger)
+    assert space.get(model_id).meta[NOISE_FLOOR_FIELD] == floor
+
+
+def test_contact_points_floor_measured_over_MORE_rows_than_baseline_runs_names_passes():
+    """contact_point's floor is 2 sigma of all 12 baseline rows, but baseline_runs names
+    only 4 of them, whose own 2 sigma is 0.005553 -- so the stored floor is 1.28x the named
+    rows' two-sigma and 2.56x their stdev. A bound that only accepted the named rows'
+    exact recomputation would refuse a floor measured off BETTER evidence."""
+    space = RegistrySpace()
+    step = (0.005553 / 2) / statistics.stdev([-1.5, -0.5, 0.5, 1.5])
+    named = {f"cp{i}": 0.10 + k * step for i, k in enumerate((-1.5, -0.5, 0.5, 1.5))}
+    assert 2 * statistics.stdev(named.values()) == pytest.approx(0.005553)
+    ledger = dict(named, **{f"cp-other{i}": v for i, v in enumerate([0.09, 0.11, 0.12, 0.08])})
+    meta = dict(
+        MODEL_META, baseline_runs=sorted(named), baseline="cp0", noise_floor=0.007104,
+        noise_floor_method="bootstrap",
+    )
+    model_id = register_model_with_baseline(space, meta, ledger)
+    assert space.get(model_id).meta[NOISE_FLOOR_FIELD] == 0.007104

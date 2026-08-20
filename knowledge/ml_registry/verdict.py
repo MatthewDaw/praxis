@@ -28,8 +28,10 @@ one floor is not evidence of anything in EITHER direction -- adoption needs
   bound. The idea is rejected (:func:`~knowledge.ml_registry.lifecycle.reject_idea`).
 * ``"voided"``   -- the trial's recomputed throughput falls more than
   :data:`THROUGHPUT_FLOOR_FRACTION` (5%) below the model's registered
-  ``baseline_throughput``. The run is unreliable on its face: no adjudication happens at
-  all (no idea-state change), the trial is marked ``"voided"`` for a re-run.
+  ``baseline_throughput``, which is read as a SPEED only when
+  :data:`~knowledge.ml_registry.floor.BASELINE_THROUGHPUT_UNITS_FIELD` says it is one. The
+  run is unreliable on its face: no adjudication happens at all (no idea-state change), the
+  trial is marked ``"voided"`` for a re-run.
 
 Before any of that, a trial's SELF-REPORTED ``throughput``/``diff_lines`` (recorded on the
 trial at registration time) is checked against the authoritative ledger row for its own
@@ -48,16 +50,14 @@ so every idea rejected while that false bar stood, the streak's own rejections i
 was judged against a bar that never existed and is RE-QUEUED to the untried backlog. The
 ratchet counter and streak reset either way.
 
-The streak is ALSO reset when a MARGINAL rejection arrives on a different ``axis`` than the one
-the streak has been probing: three rejections spread over three axes are three unrelated
-experiments, and a stage-blind supervisor interleaves them as a matter of course, so counting
-them as accumulated evidence against one adoption is the inference :func:`reset_ratchet` calls
-invalid. A rejection more than :data:`MATERIAL_REJECTION_FLOORS` floors below baseline is exempt
--- real damage counts whatever axis found it, or the ratchet goes inert against exactly the bad
-adoption it exists to roll back. Nothing else resets the ratchet: an adoption
-resets it (a fresh baseline earns a fresh streak), an invalidation resets it (fired or not
--- when there is no active adoption to invalidate, the rule is a no-op that still
-consumes/resets the streak), and any other verdict leaves it untouched.
+A rejection joins that streak only when it is ATTRIBUTABLE to the adoption: the trial would
+have PARKED or WON against ``previous_baseline`` -- the bar the adoption replaced -- and so
+lost only because the adoption raised the bar. A trial that loses against the OLD bar too is
+simply a worse arm and says nothing about whether the adoption was real, so it is SKIPPED: it
+neither joins the streak nor disturbs the one already there. Nothing else resets the ratchet:
+an adoption resets it (a fresh baseline earns a fresh streak), an invalidation resets it
+(fired or not -- when there is no active adoption to invalidate, the rule is a no-op that
+still consumes/resets the streak), and any other verdict leaves it untouched.
 """
 
 from __future__ import annotations
@@ -65,7 +65,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from knowledge.ml_registry.guards import ADJUDICATION_SOURCE
-from knowledge.ml_registry.floor import RATCHET_COUNT_FIELD, REJECTION_STREAK_FIELD
+from knowledge.ml_registry.floor import (
+    BASELINE_THROUGHPUT_UNITS_FIELD,
+    RATCHET_COUNT_FIELD,
+    REJECTION_STREAK_FIELD,
+    THROUGHPUT_UNITS_METRIC_MEAN,
+)
 from knowledge.ml_registry.lifecycle import (
     TRIAL_STATUS_SUCCEEDED,
     active_adoption,
@@ -101,18 +106,10 @@ THROUGHPUT_FLOOR_FRACTION = 0.05
 # A trial rejected consecutively on 3 distinct ideas fires the ratchet.
 RATCHET_STREAK_LENGTH = 3
 
-#: How many noise floors below baseline a rejection must fall to count as MATERIAL rather than
-#: marginal. The floor is one standard deviation of the baseline runs, so this is the 2-sigma
-#: line: a delta past it is not a plausible sampling wobble, it is real damage, and real damage
-#: is evidence against the adoption no matter which axis found it. A rejection between one and
-#: two floors below baseline is a loss but not a verdict on the adoption, so it is the one that
-#: the axis reset is allowed to discard.
-MATERIAL_REJECTION_FLOORS = 2.0
-
-#: The axis the current rejection streak is probing. Stored ALONGSIDE (never inside)
-#: :data:`~knowledge.ml_registry.floor.REJECTION_STREAK_FIELD` so the streak itself keeps its
-#: stored shape -- a plain list of idea ids -- and a streak written before this field existed
-#: stays readable by every reader, this module included.
+#: The axis the rejection streak was probing, under the axis-reset rule that
+#: counterfactual attribution replaced (see the ratchet block in :func:`adjudicate_verdict`).
+#: No longer written; still CLEARED alongside the streak so a model carrying one from an
+#: in-flight campaign does not leave a field behind that reads as live state.
 REJECTION_STREAK_AXIS_FIELD = "rejection_streak_axis"
 
 _AGREEMENT_TOLERANCE = 1e-9
@@ -168,17 +165,34 @@ def _reset_ratchet(model: Fact) -> None:
     model.meta.pop(REJECTION_STREAK_AXIS_FIELD, None)
 
 
-def _idea_axis(space: RegistrySpace, idea_id: str) -> str:
-    """The axis of the idea behind a trial -- the line of attack the trial is probing.
+def _delta_against(direction: str, baseline_value: float, value: float) -> float:
+    """How far ``value`` beats ``baseline_value`` in the model's improving direction."""
+    return baseline_value - value if direction == "minimize" else value - baseline_value
 
-    An idea fact is REQUIRED to carry ``axis`` (see :data:`~knowledge.ml_registry.schema.
-    REQUIRED_META_KEYS`), so a missing one means the idea was never registered; that is not
-    this function's refusal to make, and an unknown axis simply reads as its own axis.
+
+def _attributable_to_the_adoption(
+    model: Fact,
+    ledger_rows: dict[str, LedgerRow],
+    value: float,
+    *,
+    direction: str,
+    noise_floor: float,
+) -> bool:
+    """Would this rejected trial have PARKED or WON against the bar the adoption replaced?
+
+    Only then is the loss explicable by the adoption having raised the bar, which is the
+    one inference the ratchet makes. When the question cannot be ASKED -- no
+    ``previous_baseline`` (no adoption this module made is standing, so an invalidation
+    would be a no-op anyway), or no ledger row for it -- the answer is yes: an unanswerable
+    question must leave the guard where it was, not quietly switch it off.
     """
-    idea = space.get(idea_id)
-    if idea is None:
-        return ""
-    return str(idea.meta.get("axis") or "")
+    previous_commit = model.meta.get(PREVIOUS_BASELINE_FIELD)
+    if previous_commit is None:
+        return True
+    previous_row = ledger_rows.get(str(previous_commit))
+    if previous_row is None:
+        return True
+    return _delta_against(direction, previous_row.value, value) >= -noise_floor
 
 
 def _invalidate_ratchet(space: RegistrySpace, model: Fact, model_id: str, reason: str) -> None:
@@ -262,23 +276,61 @@ def adjudicate_verdict(
         void_fraction = float(raw_fraction)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         void_fraction = THROUGHPUT_FLOOR_FRACTION
-    if void_fraction > 0 and row.throughput < baseline_throughput * (1 - void_fraction):
-        trial.meta["status"] = VERDICT_VOIDED
-        trial.meta["void_reason"] = (
-            f"throughput {row.throughput} is more than {void_fraction:.0%} below "
-            f"baseline_throughput {baseline_throughput}"
-        )
-        return VERDICT_VOIDED
+    if void_fraction > 0:
+        # The speed void may only fire against a bar that MEASURES SPEED. `baseline_throughput`
+        # holds one of two incompatible things and R12 stamps WHICH in
+        # `baseline_throughput_units`: the slowest rows/sec of the baseline runs when
+        # registration was given ledger throughputs, the MEAN OF THE BASELINE METRIC VALUES when
+        # it was not. `floor._metric_baseline` already refuses to read a rows_per_sec value as a
+        # metric bar; this module ran the SAME category error in the opposite direction, because
+        # it never consulted the stamp at all.
+        #
+        # Reproduced: a metric_mean-stamped model whose baseline metric mean is 0.90 and whose
+        # real ledger throughput is 0.5 rows/sec had every trial voided -- "throughput 0.5 is
+        # more than 5% below baseline_throughput 0.9" is a METRIC MEAN being used as a speed
+        # limit -- until the void limit closed the campaign without adjudicating a single arm.
+        #
+        # An explicit metric_mean stamp REFUSES rather than skipping. The registry knows the
+        # stored number cannot bound a speed, so a campaign that asked for a speed gate has
+        # asked for one it has no bar for, and adjudicating on regardless would leave it
+        # believing a guard is running that is not. Both remedies are named in the refusal, and
+        # a campaign that never wanted the gate reaches neither: void_throughput_fraction=0 is
+        # checked first.
+        #
+        # A model with NO stamp keeps the gate. The stamp is recent, and plain `register_model`
+        # -- the path the supervisor's own campaigns take -- never writes one while its callers
+        # pass a real rows/sec bar (1200 rows/sec against a val_bpb of 1.0, 3.38 against an F1
+        # of 0.70). Skipping the void for every unstamped model would retire a real guard on all
+        # of them to fix a case none of them are in. It does leave one hole open: a model
+        # registered through `register_model_with_baseline` BEFORE the stamp existed carries a
+        # metric mean with no stamp to say so, and this gate will still misfire on it. The fix
+        # for that model is to re-register it so the stamp exists, which is the same remedy
+        # `floor._metric_baseline` names for the mirror-image error.
+        if model.meta.get(BASELINE_THROUGHPUT_UNITS_FIELD) == THROUGHPUT_UNITS_METRIC_MEAN:
+            raise RegistryValidationError(
+                f"model {model_id!r} records baseline_throughput {baseline_throughput!r} as "
+                f"{THROUGHPUT_UNITS_METRIC_MEAN!r} -- the mean of the baseline runs' METRIC "
+                "values, which cannot bound a throughput -- so the speed void has no bar to "
+                "fire against: re-register the model through register-model-with-baseline "
+                "against a ledger that measures throughput (which stamps rows_per_sec), or set "
+                "void_throughput_fraction=0 to run this campaign without a speed void",
+                field=BASELINE_THROUGHPUT_UNITS_FIELD,
+            )
+        if row.throughput < baseline_throughput * (1 - void_fraction):
+            trial.meta["status"] = VERDICT_VOIDED
+            trial.meta["void_reason"] = (
+                f"throughput {row.throughput} is more than {void_fraction:.0%} below "
+                f"baseline_throughput {baseline_throughput}"
+            )
+            return VERDICT_VOIDED
 
     direction = model.meta.get("direction")
-    if direction == "minimize":
-        delta = baseline_row.value - row.value
-    elif direction == "maximize":
-        delta = row.value - baseline_row.value
-    else:
+    if direction not in ("minimize", "maximize"):
         raise RegistryValidationError(
             f"model direction must be 'minimize' or 'maximize', got {direction!r}", field="direction"
         )
+    direction = str(direction)
+    delta = _delta_against(direction, baseline_row.value, row.value)
 
     noise_floor = float(model.meta["noise_floor"])
     diff_size_limit = float(model.meta["diff_size_limit"])
@@ -305,54 +357,48 @@ def adjudicate_verdict(
     if delta < -noise_floor:
         trial.meta["status"] = "failed"
         reject_idea(space, idea_id, "trial fell more than one noise-floor standard deviation below the current baseline")
-        # AXIS RESET, gated on materiality. The streak is evidence ABOUT THE ADOPTION only while
-        # its rejections compete with the adoption on the same line of attack -- exactly the
-        # argument `reset_ratchet` below makes about stage boundaries. `supervisor.py` has no
-        # stage awareness whatsoever (`grep -c stage` returns 0), so it interleaves arms from
-        # unrelated stages and cross-stage streaks are the NORMAL case, not an edge case: three
-        # rejections from three different axes are three unrelated experiments that look, to a
-        # stage-blind counter, identical to three probes of one hypothesis. The axis is the
-        # closest thing to a stage this module can see without reaching into the supervisor, so
-        # a change of axis starts a fresh streak.
+        # COUNTERFACTUAL ATTRIBUTION. The streak is evidence ABOUT THE ADOPTION, so a
+        # rejection joins it only when the adoption is what caused the rejection: the trial
+        # would have PARKED or WON against `previous_baseline`, the bar the adoption replaced,
+        # and lost only because that bar was raised. A trial that loses against the OLD bar too
+        # is a worse arm and nothing more -- it carries no information about whether the
+        # adoption was real, and counting it is how the ratchet reverts genuine wins.
         #
-        # But a PURE axis reset makes the ratchet inert against the case it exists for. A
-        # genuinely bad adoption degrades every downstream arm, and under a stage-blind
-        # supervisor that evidence arrives round-robin -- data, architecture, optimization,
-        # data, ... -- so a pure reset truncates the streak to 1 forever. Measured: six
-        # consecutive rejections at 10x the floor, spread over three axes, never fired at all.
-        # So the reset is gated on MATERIALITY. A rejection more than
-        # MATERIAL_REJECTION_FLOORS (2 sigma) below baseline is real damage rather than a
-        # sampling wobble and counts toward the streak whatever its axis; only a MARGINAL
-        # rejection -- between one and two floors below -- is SKIPPED on an axis change
-        # (it does not append AND it does not wipe prior material items). That is the B3
-        # case: a real +0.06 win erased by three arms sitting a hair below it on three
-        # unrelated axes. 2.0 is conventional (the same 2-sigma the floor itself uses);
-        # it is not derived. A 1.0 threshold would make every rejection "material" and
-        # restore the original ratchet; a large one (say 10) would restore the inert
-        # pure-axis-reset against any realistic degradation.
+        # This REPLACES a pair of proxies for that question -- a depth threshold
+        # (MATERIAL_REJECTION_FLOORS, 2 sigma below baseline) and a skip on a change of `axis`
+        # -- both of which were reproduced failing at it:
+        #  * a real +10-floor adoption followed by three deep exploratory losers (-20 floors,
+        #    three distinct axes) that ALSO lost against the pre-adoption baseline cleared the
+        #    depth bar on every one and reverted the win, on evidence that said nothing about
+        #    the adoption at all;
+        #  * the axis skip pinned the streak at 1 forever in a wide campaign with <=2 arms per
+        #    axis, and the supervisor's own rabbit-hole watchdog (supervisor.py's
+        #    NON_IMPROVING_STREAK_TRIGGER) EXCLUDES an axis after 2 non-improving trials, so it
+        #    was actively removing the third same-axis rejection the ratchet was waiting for.
+        # The depth line was also wrong in KIND for the campaigns this registry now serves:
+        # association / detection / contact_point / court-marking all have DETERMINISTIC
+        # incumbents with bootstrap-resampled floors, where a -1.5-floor rejection is an exactly
+        # measured regression with no run wobble to excuse it away, while an arm 50 floors down
+        # is just a bad idea. The threshold read both of those exactly the wrong way round.
+        # Attribution needs no such constant: it asks the ratchet's own question directly.
         #
-        # Note the noise floor is the ONLY materiality test being applied here, and it is not
-        # duplicated: a degenerate (near-zero) floor is refused at REGISTRATION, and adding a
-        # second absolute threshold in this module would mask that refusal rather than help it.
-        # MATERIAL_REJECTION_FLOORS scales with the model's own floor for the same reason.
+        # NOTE what this costs, because it is not nothing. The staged incident recorded in
+        # `reset_ratchet`'s docstring -- an adopted representation change, then an MLP and a
+        # transformer that both scored ABOVE the pre-adoption baseline and would merely have
+        # parked against it -- DOES accumulate under this rule, since parking against the old
+        # bar and rejecting against the new one is precisely the shape attribution counts. That
+        # those arms varied a different stage is a fact only the caller holds, and
+        # `reset_ratchet` remains the explicit, recorded way for the caller to say so.
         #
-        # A streak carried over from before REJECTION_STREAK_AXIS_FIELD existed has no recorded
-        # axis; it is ADOPTED by the current rejection rather than discarded, so an in-flight
-        # campaign neither loses accumulated evidence nor has a phantom axis change invented
-        # for it. A stale axis left behind by another module's reset is inert: an empty streak
-        # always starts fresh.
-        axis = _idea_axis(space, idea_id)
-        material = delta < -MATERIAL_REJECTION_FLOORS * noise_floor
-        streak = list(model.meta.get(REJECTION_STREAK_FIELD) or [])
-        streak_axis = model.meta.get(REJECTION_STREAK_AXIS_FIELD)
-        if streak and not material and streak_axis is not None and str(streak_axis) != axis:
-            # A marginal rejection on a NEW axis is not evidence against the adoption.
-            # It also must not ERASE material evidence already on the streak: wiping here
-            # then appending the marginal turned "skip this one" into "forget the 10x-floor
-            # losses and start over at 1", which is how a bad adoption survives a mixed
-            # interleaving of real damage and wobble. Leave the streak and its axis alone.
+        # A SKIPPED rejection leaves the streak and its count exactly as it found them. Wiping
+        # instead of skipping is what turned "this one does not count" into "forget everything
+        # that did", which is how a false adoption used to survive a mixed run of attributable
+        # and unattributable losses.
+        if not _attributable_to_the_adoption(
+            model, ledger_rows, row.value, direction=direction, noise_floor=noise_floor
+        ):
             return VERDICT_REJECTED
-        model.meta[REJECTION_STREAK_AXIS_FIELD] = axis
+        streak = list(model.meta.get(REJECTION_STREAK_FIELD) or [])
         streak.append(idea_id)
         model.meta[REJECTION_STREAK_FIELD] = streak
         model.meta[RATCHET_COUNT_FIELD] = len(streak)
@@ -391,7 +437,11 @@ def reset_ratchet(space: RegistrySpace, model_id: str, reason: str) -> dict[str,
 
     The registry cannot detect a stage boundary itself -- stages are the caller's taxonomy (see
     `staging.py`) -- so this is the caller's call to make, and it is deliberately explicit rather
-    than automatic.
+    than automatic. `adjudicate_verdict`'s own attribution test does not cover this case and is
+    not meant to: both arms PARKED against the pre-adoption baseline and rejected against the new
+    one, which is precisely the shape it counts as evidence. Which stage an arm varies is a fact
+    only the caller holds, so saying so stays the caller's job, recorded here rather than inferred
+    there.
 
     Baseline, previous_baseline and every recorded verdict are left untouched. This ONLY forgets
     the streak, so a genuinely false adoption remains catchable by the next three rejections that

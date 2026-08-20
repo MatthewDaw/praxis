@@ -13,6 +13,9 @@ allowed to disagree and is stored as measured, stamped with its method. The meth
 is therefore a GATE (does this disagreement get in) as well as provenance (how was it
 measured). An UNDECLARED disagreement is still refused -- that refusal exists to catch an
 unexplained number, not to force one method. The method is not consulted at adjudication.
+Declaring a method does not buy an ARBITRARY floor, only a disagreeing one: a declared
+floor is still bounded in MAGNITUDE against the spread the baseline rows show, since a
+declaration is prose and nothing else in this module bounded the number it admitted.
 
 A registered floor must be POSITIVE. A deterministic incumbent (classical CV, no random
 seed) produces identical baseline rows, ``statistics.stdev`` returns exactly 0.0, and a
@@ -71,12 +74,24 @@ BASELINE_THROUGHPUT_FIELD = "baseline_throughput"
 # bootstrap's model_meta.json (throughput 3.5 rows/sec) adjudicated an F1 of 0.99 against
 # 3.5 and failed it. Registration now STAMPS the meaning, so a later reader can tell the
 # two apart instead of guessing. A model registered before this field existed carries no
-# stamp; it is read as the legacy metric mean, which is what it in fact was.
+# stamp -- and is NOT read as the legacy metric mean on that account: `ledger_throughputs`
+# is older than the stamp, so an unstamped model is exactly as likely to hold rows/sec.
+# adjudicate_trial refuses such a model rather than guessing (see _metric_baseline).
 BASELINE_THROUGHPUT_UNITS_FIELD = "baseline_throughput_units"
 #: rows/sec measured from the ledger's own throughput column -- NOT comparable to a metric.
 THROUGHPUT_UNITS_ROWS_PER_SEC = "rows_per_sec"
 #: the mean of the 4 baseline runs' metric values -- a legitimate metric bar.
 THROUGHPUT_UNITS_METRIC_MEAN = "metric_mean"
+# The stamp is a CLOSED vocabulary, checked as one. Reading it as "rows_per_sec or else no
+# opinion" made every other string -- including a perfectly reasonable-looking one -- turn
+# the units guard off rather than trip it: the court-marking campaign in sports_analysis
+# stamped 'samples_per_second', which is rows/sec by another name, and _metric_baseline
+# read straight past it into the metric-mean fallthrough it exists to prevent. An
+# unrecognised stamp is a stamp whose meaning this module cannot establish, and the one
+# thing it must never be taken to mean is the permissive case.
+KNOWN_THROUGHPUT_UNITS: frozenset[str] = frozenset(
+    {THROUGHPUT_UNITS_ROWS_PER_SEC, THROUGHPUT_UNITS_METRIC_MEAN}
+)
 RATCHET_COUNT_FIELD = "ratchet_count"
 # R10: the distinct idea ids behind the model's current consecutive-rejection streak --
 # reset alongside RATCHET_COUNT_FIELD wherever the ratchet itself resets (here, on a
@@ -112,6 +127,24 @@ NOISE_FLOOR_METHOD_FIELD = "noise_floor_method"
 #: sigmas * sample stdev of the baseline repeats -- what this module computes itself.
 NOISE_FLOOR_METHOD_REPEAT_STDEV = "repeat_stdev"
 
+# How far a DECLARED floor may sit from the spread the baseline rows actually show, as a
+# multiple of their sample stdev. Declaring a method bought a floor its way past the
+# recomputation, and past NOTHING else: the declaration is unverifiable prose, so
+# noise_floor=1e9 method='bootstrap' registered and parked every future arm forever, and
+# 1e-12 registered and adjudicated float wobble as signal. Neither is a typo -- the
+# existing refusal catches typos -- so bound the MAGNITUDE against the only evidence this
+# module has, the rows themselves. The band is wide on purpose: a bootstrap resampling of
+# the eval set answers a different question than the repeats do and is expected to
+# disagree, sometimes by a lot; what it cannot plausibly do is land three orders of
+# magnitude away. Every real registration this registry serves sits between 0.15x and
+# 2.6x.
+SUPPLIED_FLOOR_MIN_SPREAD_RATIO = 0.1
+SUPPLIED_FLOOR_MAX_SPREAD_RATIO = 10.0
+# The way OUT of that band, for the case the band is genuinely wrong about. It is a stated
+# reason rather than a boolean so the number stays accountable to a reader who finds it
+# years later, which is the same thing NOISE_FLOOR_METHOD_FIELD is for.
+NOISE_FLOOR_OVERRIDE_REASON_FIELD = "noise_floor_override_reason"
+
 # The judging fields R12 holds even more tightly than R1's PROTECTED_MODEL_FIELDS: a
 # change to any of them retires the noise floor and baseline throughput derived under
 # the old harness, because a result measured under a different eval size, precision or
@@ -131,6 +164,19 @@ def load_ledger_values(path: Path) -> dict[str, float]:
     count as duplicates -- a crashed run and its re-run share a key legitimately, and the
     crashed one contributes no value to collide.
 
+    Nor does an UNFAIR row collide. A run cut short but still scored -- a numeric metric
+    with ``status=budget_exhausted``, exactly the row shape
+    :data:`~knowledge.ml_registry.verdict.FAIR_RUN_STATUSES` exists to describe -- is a
+    measurement the registry has already decided not to adjudicate on, and its legitimate
+    re-run under the same ``{sha}:{arm_tag}`` key used to raise the duplicate error and
+    make the WHOLE ledger unreadable, for every model in it. That collides head-on with
+    ``register_trial``'s doctrine that a voided trial may be re-run -- which is what voided
+    MEANS -- and left the operator inventing a new arm tag as the only escape, corrupting
+    the join key's meaning to get around a guard aimed at something else. So the last FAIR
+    row for a key wins; an unfair row is read only where no fair row exists, and two FAIR
+    rows under one key still RAISE, which is the duplicate detection this whole refusal is
+    for.
+
     That ledger carries a ``status`` column, so a crashed or aborted run is a real row
     with an empty (or short, or non-numeric) metric cell. Such a row is UNSCORED, not
     malformed input to choke on: it is skipped individually, and the commit is simply
@@ -138,13 +184,23 @@ def load_ledger_values(path: Path) -> dict[str, float]:
     that commit (:func:`register_model_with_baseline`, :func:`adjudicate_trial`) instead
     of one unrelated crashed run making the whole ledger unreadable.
     """
+    # Imported HERE rather than at module scope: knowledge.ml_registry.verdict imports this
+    # module for the ratchet and units fields, so a top-level import back would be a cycle.
+    # The set stays defined next to the verdict rule it governs, and both loaders read that
+    # one definition instead of each keeping a copy to drift.
+    from knowledge.ml_registry.verdict import FAIR_RUN_STATUSES
+
     with path.open(newline="") as fh:
         reader = csv.reader(fh, delimiter="\t")
         try:
-            next(reader)  # header
+            header = [column.strip() for column in next(reader)]
         except StopIteration:
             return {}
+        # Optional, exactly as in cli.load_ledger_rows: a ledger without a status column is
+        # older, not broken, and every row in it reads as fair.
+        status_at = header.index("status") if "status" in header else None
         values: dict[str, float] = {}
+        fair_keys: set[str] = set()
         duplicates: list[str] = []
         for row in reader:
             if not row or not row[0].strip():
@@ -156,8 +212,16 @@ def load_ledger_values(path: Path) -> dict[str, float]:
                 value = float(row[1])
             except ValueError:
                 continue  # unscored run (crashed/aborted): no metric to join against
-            if key in values:
+            status = row[status_at].strip() if status_at is not None and len(row) > status_at else ""
+            if status.lower() not in FAIR_RUN_STATUSES:
+                # Readable, but never authoritative: it fills the key only while no fair row
+                # has, and a fair row arriving later overwrites it without complaint.
+                if key not in fair_keys:
+                    values[key] = value
+                continue
+            if key in fair_keys:
                 duplicates.append(key)
+            fair_keys.add(key)
             values[key] = value
         if duplicates:
             raise RegistryValidationError(
@@ -244,6 +308,28 @@ def register_model_with_baseline(
         throughput = statistics.mean(values)
         throughput_units = THROUGHPUT_UNITS_METRIC_MEAN
 
+    stored_units = meta.get(BASELINE_THROUGHPUT_UNITS_FIELD)
+    if stored_units not in (None, ""):
+        if str(stored_units) not in KNOWN_THROUGHPUT_UNITS:
+            raise RegistryValidationError(
+                f"{BASELINE_THROUGHPUT_UNITS_FIELD} {stored_units!r} is not one of "
+                f"{sorted(KNOWN_THROUGHPUT_UNITS)!r}; this stamp is what later readers use to tell a "
+                "rows/sec bar from a metric bar, and a string they do not recognise reads to them as "
+                "NO opinion -- which is the unguarded case the stamp exists to close (a campaign that "
+                "stamped 'samples_per_second' had the guard silently off). Say which of the two "
+                "meanings the number carries, or omit the field and let registration stamp it",
+                field=BASELINE_THROUGHPUT_UNITS_FIELD,
+            )
+        if str(stored_units) != throughput_units:
+            raise RegistryValidationError(
+                f"stored {BASELINE_THROUGHPUT_UNITS_FIELD} {stored_units!r} disagrees with what this "
+                f"registration actually computed ({throughput_units!r}): baseline_throughput is the "
+                f"{'slowest rows/sec of the baseline runs' if throughput_units == THROUGHPUT_UNITS_ROWS_PER_SEC else 'mean of the baseline runs metric values'} "
+                "because that is what the inputs given here support (ledger_throughputs "
+                f"{'was' if ledger_throughputs is not None else 'was not'} supplied)",
+                field=BASELINE_THROUGHPUT_UNITS_FIELD,
+            )
+
     declared_method = meta.get(NOISE_FLOOR_METHOD_FIELD)
     method = NOISE_FLOOR_METHOD_REPEAT_STDEV
     stored_floor = meta.get(NOISE_FLOOR_FIELD)
@@ -256,6 +342,7 @@ def register_model_with_baseline(
             # still refused -- the point of that refusal was never to force one method, it
             # was to catch a number nobody can account for.
             method = str(declared_method)
+            _check_floor_against_spread(stored_floor_f, sd, meta, runs=runs, values=values)
         elif not agrees:
             raise RegistryValidationError(
                 f"stored noise_floor {stored_floor!r} disagrees with the recomputed value {floor!r} "
@@ -315,6 +402,48 @@ def _agree(a: float, b: float) -> bool:
     return abs(a - b) <= FLOOR_AGREEMENT_TOLERANCE
 
 
+def _check_floor_against_spread(
+    floor: float, sd: float, meta: dict[str, object], *, runs: list[object], values: list[float]
+) -> None:
+    """Bound a DECLARED floor against the spread its own baseline rows show.
+
+    ``noise_floor_method`` was a gate that verified nothing: it admitted any string that was
+    not ``repeat_stdev``, and once admitted the floor was checked only for positivity. So
+    the two floors that break a campaign in opposite directions both registered cleanly --
+    a huge one parks every arm forever, a vanishing one adjudicates float wobble as signal
+    -- and every later verdict was decided against a number nobody could account for. This
+    is the accounting: within :data:`SUPPLIED_FLOOR_MIN_SPREAD_RATIO` and
+    :data:`SUPPLIED_FLOOR_MAX_SPREAD_RATIO` of the rows' sample stdev.
+
+    IDENTICAL rows (sd exactly 0) are EXEMPT, and that exemption is load-bearing rather
+    than a loophole: a deterministic incumbent -- classical CV, no random seed -- produces
+    the same number every repeat, its own stdev refuses to register as a floor at all, and
+    a bootstrap-resampled floor is the ONE legitimate way such a model gets one. That is
+    precisely the path this whole declared-floor branch exists for, and four live campaigns
+    (association, court-marking among them) come through it. A zero denominator has no
+    opinion to enforce, so it does not get to enforce one.
+    """
+    if sd == 0.0:
+        return
+    ratio = floor / sd
+    if SUPPLIED_FLOOR_MIN_SPREAD_RATIO <= ratio <= SUPPLIED_FLOOR_MAX_SPREAD_RATIO:
+        return
+    override = meta.get(NOISE_FLOOR_OVERRIDE_REASON_FIELD)
+    if override not in (None, "") and str(override).strip():
+        return
+    raise RegistryValidationError(
+        f"declared noise_floor {floor!r} is {ratio:.3g}x the spread its own baseline runs show "
+        f"(sample stdev {sd!r} over {runs!r} = {values!r}), outside "
+        f"[{SUPPLIED_FLOOR_MIN_SPREAD_RATIO}x, {SUPPLIED_FLOOR_MAX_SPREAD_RATIO}x]. Declaring "
+        f"{NOISE_FLOOR_METHOD_FIELD} lets a floor DISAGREE with the recomputation -- a bootstrap "
+        "of the eval set measures a different thing than the repeats do -- but it is not a way to "
+        "register an arbitrary number: a floor far above this band parks every arm forever, and one "
+        "far below adjudicates float wobble as a win. Re-measure it, or state why this one is right "
+        f"in {NOISE_FLOOR_OVERRIDE_REASON_FIELD} and it will be stored as measured",
+        field=NOISE_FLOOR_FIELD,
+    )
+
+
 def _metric_baseline(
     model: Fact, model_id: str, ledger_values: dict[str, float], stored_bar: object
 ) -> float:
@@ -323,18 +452,51 @@ def _metric_baseline(
     1. The ledger's value for the model's own ``baseline`` commit -- the same number
        :func:`~knowledge.ml_registry.verdict.adjudicate_verdict` uses (its
        ``baseline_row.value``), so the two adjudications cannot disagree about the bar.
-    2. Failing that, ``baseline_throughput`` -- but ONLY when it is stamped (or, on a model
-       registered before the stamp existed, implied) to be the mean of the baseline runs'
-       metric values, which is a real metric bar.
-    3. A ``baseline_throughput`` stamped :data:`THROUGHPUT_UNITS_ROWS_PER_SEC` is REFUSED,
-       not used. Comparing an F1 of 0.99 against 3.5 rows/sec is not a close call to be
-       resolved conservatively -- it is a category error, and the honest answer when the
-       metric bar cannot be recovered is that this trial cannot be adjudicated here.
+    2. Failing that, ``baseline_throughput`` -- but ONLY when it is stamped
+       :data:`THROUGHPUT_UNITS_METRIC_MEAN`, i.e. it demonstrably holds the mean of the
+       baseline runs' metric values, which is a real metric bar.
+    3. Anything else is REFUSED, not used. Comparing an F1 of 0.99 against 3.5 rows/sec is
+       not a close call to be resolved conservatively -- it is a category error, and the
+       honest answer when the metric bar cannot be recovered is that this trial cannot be
+       adjudicated here. That covers a :data:`THROUGHPUT_UNITS_ROWS_PER_SEC` stamp, a stamp
+       outside :data:`KNOWN_THROUGHPUT_UNITS`, and -- see below -- NO stamp at all.
     """
     baseline_commit = model.meta.get(BASELINE_FIELD)
     if baseline_commit is not None and str(baseline_commit) in ledger_values:
         return float(ledger_values[str(baseline_commit)])
-    if model.meta.get(BASELINE_THROUGHPUT_UNITS_FIELD) == THROUGHPUT_UNITS_ROWS_PER_SEC:
+    units = model.meta.get(BASELINE_THROUGHPUT_UNITS_FIELD)
+    if units in (None, ""):
+        # An ABSENT stamp used to fall straight through to the metric-mean reading, on the
+        # argument that a model registered before the stamp existed did in fact store a
+        # metric mean. That presumption is wrong for exactly the models it was written to
+        # excuse: `ledger_throughputs` (bae7abb) predates the stamp (5027002), so a model
+        # registered through that parameter carries rows/sec and NO stamp to say so.
+        # Reproduced: an unstamped model with baseline_throughput=3.5 rows/sec, whose
+        # baseline commit had no scored ledger row, adjudicated an F1 of 0.99 against 3.5
+        # and returned "failed" -- the same category error the stamp was introduced to
+        # stop, arrived at by reading its absence as consent. Silence is not evidence, and
+        # the remedy is cheap (re-register, or score the baseline commit), so refuse.
+        raise RegistryValidationError(
+            f"model {model_id!r} carries baseline_throughput {stored_bar!r} with no "
+            f"{BASELINE_THROUGHPUT_UNITS_FIELD} stamp to say whether that is a metric mean or "
+            f"rows/sec, and its baseline commit {baseline_commit!r} has no scored row in the "
+            "external ledger to read the metric baseline from -- so there is no bar here that is "
+            "known to be a metric. Adjudicate against the ledger row for the baseline commit "
+            "(resolve-verdict), or re-register the model through register-model-with-baseline so "
+            "the stamp exists",
+            field=BASELINE_THROUGHPUT_UNITS_FIELD,
+        )
+    if str(units) not in KNOWN_THROUGHPUT_UNITS:
+        raise RegistryValidationError(
+            f"model {model_id!r} stamps its baseline_throughput {stored_bar!r} "
+            f"{str(units)!r}, which is not one of {sorted(KNOWN_THROUGHPUT_UNITS)!r}; an "
+            "unrecognised unit is a unit this module cannot establish the meaning of, and the one "
+            "reading it must never get is the permissive one (a campaign stamped "
+            "'samples_per_second' -- rows/sec by another name -- and had this guard silently off). "
+            "Re-register the model so the stamp says which of the two meanings the number carries",
+            field=BASELINE_THROUGHPUT_UNITS_FIELD,
+        )
+    if str(units) == THROUGHPUT_UNITS_ROWS_PER_SEC:
         raise RegistryValidationError(
             f"model {model_id!r} records baseline_throughput {stored_bar!r} in rows/sec, which is "
             f"not a metric bar, and its baseline commit {baseline_commit!r} has no scored row in "

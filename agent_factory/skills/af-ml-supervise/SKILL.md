@@ -61,6 +61,14 @@ The preconditions it enforces, and why each one is fatal rather than cosmetic:
    `baseline_runs` (the 4 commits) and `sigmas`, so `register-model-with-baseline` consumes
    `model_meta.json` as-is. The metric is FROZEN for the model's life — changing it mid-campaign
    silently rebases every prior verdict.
+
+   **`win_condition` must name a numeric target** — `{"metric_at_least": 0.90}` or
+   `{"metric_at_most": 0.10}`. The bare string `"beats baseline by noise_floor"` makes the FIRST
+   adopted trial close the campaign as `CLOSE_WON` with every other declared stage untried, and it
+   was only ever checked by `bootstrap-campaign`: `register-model` and
+   `register-model-with-baseline` take it unexamined. A campaign that genuinely means
+   first-adoption-wins declares `"win_on_adoption_ok": true` next to it; without that declaration
+   `af-ml-campaign-loop.sh` refuses to launch (exit `3`) and `supervise-campaign` warns.
 2. **A version-2 ledger.** `results.tsv` with header
    `commit  metric_value  memory_gb  status  description  throughput  diff_lines`.
    Versions 0 and 1 lack `throughput`/`diff_lines` and cannot be adjudicated: a synthesized
@@ -441,6 +449,37 @@ the pattern, so `pkill` matches and kills the shell before any later command in 
 invocation runs. That is precisely how the orphan above survived a kill that appeared to succeed:
 `pkill -f "…campaign"; pkill -f "…train"` never reached the second statement.
 
+### An arm that will outlive the claim lease MUST heartbeat
+
+**An idea claim's lease is 900s (`lifecycle.DEFAULT_IDEA_CLAIM_LEASE_TTL_S`), and an EXPIRED lease
+is the registry's only evidence that a worker died.** `supervisor._reclaim_dead_trial` acts on it:
+it supersedes that idea's in-flight trial and registers a new one. Nothing calls
+`heartbeat-idea-claim` on its own, so an arm that simply RUNS LONGER THAN 15 MINUTES without
+checking in is indistinguishable from a dead one — and the reclaim then puts two runs on the same
+idea racing each other, which is the exact duplicate-dispatch failure this whole section exists to
+prevent.
+
+Association arms run ~50s and never noticed this. **Detection arms, contact arms, and any training
+arm at all exceed 900s routinely.**
+
+- Dispatching through `af-ml-campaign-loop.sh` handles it: the loop renews every claimed idea of
+  the model it is driving, every `AF_HEARTBEAT_INTERVAL_S` (default 300s), and ONLY while
+  `$AF_DISPATCH` is actually running — so it can never keep a dead worker's claim alive.
+- **Dispatching any other way, the supervising session owns the heartbeat.** Beat at least twice
+  per lease:
+
+  ```sh
+  python -m knowledge.ml_registry.cli heartbeat-idea-claim \
+      --space-file <state>.json --idea-id <id> --owner <the same owner that claimed it>
+  ```
+
+  Renewal requires the `claim_owner` to match, so a dead worker can never renew itself and a
+  heartbeat you emit on an arm's behalf is a claim that it is still alive. Do not emit one for a
+  run you have not confirmed is running: an orphaned heartbeat holds the lease open for a worker
+  nobody is running any more, which is strictly worse than no heartbeat at all.
+- If an arm cannot heartbeat, raise the lease for it at claim time (`claim-idea --ttl <s>`, past
+  the arm's worst-case wall clock) and say so in the campaign's contract.
+
 If a run genuinely died without resolving, its trial stays in flight and would wedge the idea
 forever. Free it deliberately:
 
@@ -479,7 +518,7 @@ The loop stops for exactly three reasons, and conflating them is how a campaign 
 | exit | meaning |
 |---|---|
 | `0` COMPLETE | `campaign-complete` passed |
-| `3` BLOCKED | a diagnosis more arms cannot fix — a budget that truncates every retry, a stage nobody authored |
+| `3` BLOCKED | a diagnosis more arms cannot fix — a budget that truncates every retry, a stage nobody authored, an undeclared first-adoption `win_condition` (refused before iteration 1) |
 | `4` STALLED | an iteration produced no new trial; repeating it changes nothing |
 
 ### What `campaign-complete` demands

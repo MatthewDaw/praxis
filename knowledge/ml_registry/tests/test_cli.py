@@ -534,3 +534,68 @@ def test_load_ledger_rows_refuses_duplicate_join_keys_naming_them(tmp_path):
         load_ledger_rows(path)
     assert excinfo.value.field == "commit"
     assert "abc" in str(excinfo.value)
+
+
+def test_load_ledger_rows_lets_a_scored_but_unfair_row_be_rerun_under_the_same_key(tmp_path):
+    """Mirror of the same rule in knowledge.ml_registry.floor.load_ledger_values, over the
+    same file. A run cut short but still SCORED (numeric metric, status=budget_exhausted --
+    the row shape FAIR_RUN_STATUSES exists to describe) plus its legitimate rerun raised the
+    duplicate refusal and made the whole ledger unreadable, which contradicts register_trial's
+    doctrine that a voided trial may be re-run: the only escape was inventing an arm tag,
+    corrupting the join key's meaning to get around a guard aimed at something else."""
+    from knowledge.ml_registry.cli import load_ledger_rows
+
+    path = tmp_path / "results.tsv"
+    path.write_text(
+        "commit\tmetric_value\tthroughput\tdiff_lines\tstatus\n"
+        "sha1:armA\t0.90\t3.5\t10\tbudget_exhausted\n"
+        "sha1:armA\t0.72\t3.5\t12\tok\n"
+    )
+    rows = load_ledger_rows(path)
+    assert rows["sha1:armA"].value == pytest.approx(0.72)
+    assert rows["sha1:armA"].status == "ok"
+
+
+def test_load_ledger_rows_keeps_an_unfair_row_no_fair_rerun_has_replaced(tmp_path):
+    """Not adjudicating on the row is verdict.adjudicate_verdict's job; the loader's job is
+    to read it. With no rerun yet the row is present exactly as it was."""
+    from knowledge.ml_registry.cli import load_ledger_rows
+
+    path = tmp_path / "results.tsv"
+    path.write_text(
+        "commit\tmetric_value\tthroughput\tdiff_lines\tstatus\n"
+        "sha1:armA\t0.90\t3.5\t10\tbudget_exhausted\n"
+    )
+    assert load_ledger_rows(path)["sha1:armA"].status == "budget_exhausted"
+
+
+def test_load_ledger_rows_still_refuses_two_FAIR_rows_under_one_key(tmp_path):
+    """The exemption must not weaken the duplicate detection: two completed runs claiming
+    one key is the silent last-write-wins the refusal exists for."""
+    from knowledge.ml_registry.cli import load_ledger_rows
+    from knowledge.ml_registry.schema import RegistryValidationError
+
+    path = tmp_path / "results.tsv"
+    path.write_text(
+        "commit\tmetric_value\tthroughput\tdiff_lines\tstatus\n"
+        "abc\t0.70\t3.5\t10\tok\n"
+        "abc\t0.95\t3.5\t10\tok\n"
+    )
+    with pytest.raises(RegistryValidationError) as excinfo:
+        load_ledger_rows(path)
+    assert excinfo.value.field == "commit"
+    assert "abc" in str(excinfo.value)
+
+
+def test_load_ledger_rows_still_skips_an_unscored_crash_and_loads_its_rerun(tmp_path):
+    """What already worked and must keep working: a truly UNSCORED crash row (blank metric)
+    contributes no value to collide with, so its rerun loads cleanly."""
+    from knowledge.ml_registry.cli import load_ledger_rows
+
+    path = tmp_path / "results.tsv"
+    path.write_text(
+        "commit\tmetric_value\tthroughput\tdiff_lines\tstatus\n"
+        "sha1:armA\t\t3.5\t10\tcrashed\n"
+        "sha1:armA\t0.72\t3.5\t12\tok\n"
+    )
+    assert load_ledger_rows(path)["sha1:armA"].value == pytest.approx(0.72)

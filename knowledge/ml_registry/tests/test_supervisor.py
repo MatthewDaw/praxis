@@ -48,6 +48,7 @@ from knowledge.ml_registry.supervisor import (
     TRIAL_STATUS_TIMED_OUT,
     Intervention,
     axis_streak,
+    check_win_on_adoption_declared,
     consecutive_void_count,
     dispatch_trial,
     parse_win_condition,
@@ -66,7 +67,11 @@ BASELINE_COMMIT = "commit-abc123"
 MODEL_META = {
     "metric": "val_bpb",
     "direction": "minimize",
+    # These fixtures genuinely mean first-adoption-wins -- most of them dispatch one or two
+    # scripted trials and assert on the close -- so they DECLARE it, which is exactly the
+    # declaration check_win_on_adoption_declared asks a real campaign for.
     "win_condition": "beats baseline by noise_floor",
+    "win_on_adoption_ok": True,
     "baseline": BASELINE_COMMIT,
     "noise_floor": 0.01,
     "baseline_throughput": 1200,
@@ -82,6 +87,11 @@ MODEL_META = {
 LEDGER: dict[str, LedgerRow] = {BASELINE_COMMIT: LedgerRow(value=1.0, throughput=1200, diff_lines=0)}
 LEDGER.update({f"c{i}": LedgerRow(value=0.5, throughput=1200, diff_lines=100) for i in range(1, 20)})
 LEDGER.update({f"lose{i}": LedgerRow(value=5000.0, throughput=1200, diff_lines=100) for i in range(1, 10)})
+# "near*" commits reject against an ADOPTED baseline but would have parked against the 1.0 the
+# adoption replaced. That gap is the whole question the ratchet asks: a loss only counts as
+# evidence the adoption was noise if the raised bar is what caused it. A "lose*" arm at 5000.0
+# loses against both bars, says nothing about the adoption, and deliberately does not count.
+LEDGER.update({f"near{i}": LedgerRow(value=1.0, throughput=1200, diff_lines=100) for i in range(1, 10)})
 # "slow*" commits are the ONLY way a trial gets voided: their LEDGER throughput falls more
 # than THROUGHPUT_FLOOR_FRACTION (5%) below baseline_throughput=1200, so adjudicate_verdict
 # -- and only adjudicate_verdict, never a dispatcher's self-report -- voids them.
@@ -418,7 +428,7 @@ def test_three_consecutive_dispatch_trial_rejections_on_distinct_ideas_fire_the_
 
     losers = [_idea(space, model_id, "architecture", SEEDED, f"loser-{i}") for i in range(3)]
     ratchet_counts_seen = []
-    for expected_loser, commit in zip(losers, ["lose1", "lose2", "lose3"]):
+    for expected_loser, commit in zip(losers, ["near1", "near2", "near3"]):
         result = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher([commit]))
         assert result["candidate"] == expected_loser
         assert result["status"] == "rejected"
@@ -754,6 +764,48 @@ def test_parse_win_condition_refuses_anything_unevaluable(declared):
     with pytest.raises(RegistryValidationError) as excinfo:
         parse_win_condition(declared)
     assert excinfo.value.field == "win_condition"
+
+
+def test_the_bare_adoption_string_is_refused_unless_the_model_declares_it():
+    """(P5) Only bootstrap ever checked a win condition -- build_model_meta refuses the bare
+    string, so does the win_condition_declared precondition, and --win-condition is a required
+    flag. register_model, register_model_with_baseline and both CLI verbs never looked: schema
+    only asks that the key be non-empty. So a campaign stood up outside bootstrap was one
+    string away from closing WON on its first adopted trial, which was reproduced end to end.
+    The string keeps working -- it is what these fixtures and ball_campaign mean -- but meaning
+    it now has to be said."""
+    space, model_id = _space_with_model()
+    del space.get(model_id).meta["win_on_adoption_ok"]
+
+    with pytest.raises(RegistryValidationError) as excinfo:
+        check_win_on_adoption_declared(space.get(model_id))
+    assert excinfo.value.field == "win_condition"
+    assert "win_on_adoption_ok" in str(excinfo.value)
+
+    space.get(model_id).meta["win_on_adoption_ok"] = True
+    check_win_on_adoption_declared(space.get(model_id))
+
+
+@pytest.mark.parametrize("declared", [{"metric_at_most": 0.8}, "metric_at_least 12"])
+def test_a_declared_numeric_target_needs_no_opt_in(declared):
+    space, model_id = _space_with_model(win_condition=declared)
+    del space.get(model_id).meta["win_on_adoption_ok"]
+    check_win_on_adoption_declared(space.get(model_id))
+
+
+def test_supervise_campaign_warns_but_still_resumes_an_undeclared_first_adoption_campaign():
+    """The refusal belongs in the campaign loop's preflight, before trial one. Here it can only
+    warn: supervise_campaign is also how an in-flight campaign RESUMES -- nothing distinguishes a
+    resume from a fresh start -- and a campaign already several trials deep must not be bricked
+    by a declaration it can no longer make retroactively."""
+    space, model_id = _space_with_model()
+    del space.get(model_id).meta["win_on_adoption_ok"]
+    _idea(space, model_id, "architecture", SEEDED, "arch-1")
+
+    with pytest.warns(UserWarning, match="win_on_adoption_ok") as warned:
+        outcome = supervise_campaign(space, model_id, LEDGER, _scripted_dispatcher(["c1"]))
+    assert outcome["close"] == CLOSE_WON
+    assert model_id in str(warned[0].message)
 
 
 def test_a_maximizing_campaign_wins_only_at_its_declared_floor():
