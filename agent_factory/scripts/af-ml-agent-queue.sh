@@ -40,6 +40,7 @@ AF_ML_BACKEND="${AF_ML_BACKEND:-grok}"
 CODEX_BIN="${CODEX_BIN:-$(command -v codex 2>/dev/null || echo "$HOME/.nvm/versions/node/v22.23.1/bin/codex")}"
 AF_CODEX_MODEL="${AF_CODEX_MODEL:-gpt-5.6-sol}"
 AF_GROK_MODEL="${AF_GROK_MODEL:-grok-4.6}"
+AF_OMP_NUM_THREADS="${AF_OMP_NUM_THREADS:-7}"
 ONLY=""; CONTINUE=0; DRY=0; MAX_NUDGES=40; POLL=60
 
 while [ $# -gt 0 ]; do
@@ -91,7 +92,7 @@ launch_agent() { # $1=session $2=cwd $3=prompt
     # present, which silently spends usage-based credits while the pane still looks like a normal
     # subscription session -- the bill is the only place the difference shows up.
     tmux new-session -d -s "$1" -c "$2" \
-      "unset OPENAI_API_KEY XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN; $CODEX_BIN --model $AF_CODEX_MODEL --dangerously-bypass-approvals-and-sandbox 2>&1 | tee -a /workspace/$1.log"
+      "unset OPENAI_API_KEY XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN; export OMP_NUM_THREADS=$AF_OMP_NUM_THREADS; $CODEX_BIN --model $AF_CODEX_MODEL --dangerously-bypass-approvals-and-sandbox 2>&1 | tee -a /workspace/$1.log"
     # Verified 2026-08-20: this placeholder is painted once codex accepts input. It is NOT usable
     # as an idle signal afterwards -- it stays on screen mid-turn (see session_idle in the
     # keepalive) -- but for FIRST-PAINT it is the right marker.
@@ -154,7 +155,7 @@ while IFS='|' read -r name space model stages; do
   # session, so the restarted agent re-enters the SAME campaign contract rather than a paraphrase.
   prompt_file="/tmp/af-ml-prompt-$name.txt"
   printf '%s' "$prompt" > "$prompt_file"
-  say "$name: launching agent session $session ($AF_GROK_MODEL)"
+  say "$name: launching agent session $session ($([ "$AF_ML_BACKEND" = codex ] && echo "$AF_CODEX_MODEL" || echo "$AF_GROK_MODEL"), OMP_NUM_THREADS=$AF_OMP_NUM_THREADS)"
   launch_agent "$session" "$REPO" "$prompt"
   ran=$((ran+1))
 
