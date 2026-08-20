@@ -11,6 +11,8 @@ from knowledge.ml_registry.floor import (
     BASELINE_FIELD,
     BASELINE_THROUGHPUT_FIELD,
     NOISE_FLOOR_FIELD,
+    NOISE_FLOOR_METHOD_FIELD,
+    NOISE_FLOOR_METHOD_REPEAT_STDEV,
     PREVIOUS_BASELINE_FIELD,
     RATCHET_COUNT_FIELD,
     REJECTION_STREAK_FIELD,
@@ -65,10 +67,12 @@ def test_compute_noise_floor_is_sample_stdev_and_mean_of_exactly_4_runs():
     assert throughput == pytest.approx(statistics.mean(RUN_VALUES))
 
 
-@pytest.mark.parametrize("count", [3, 5])
-def test_compute_noise_floor_refuses_anything_other_than_4_runs(count):
+@pytest.mark.parametrize("count", [1, 2, 3])
+def test_compute_noise_floor_refuses_fewer_than_4_runs(count):
+    """4 is a MINIMUM, not an exact count -- more repeats are strictly better evidence,
+    so only too FEW is a reason to refuse."""
     with pytest.raises(RegistryValidationError) as excinfo:
-        compute_noise_floor(list(RUN_VALUES[:count]) if count <= 4 else RUN_VALUES + [1.0])
+        compute_noise_floor(list(RUN_VALUES[:count]))
     assert excinfo.value.field == "baseline_runs"
 
 
@@ -510,3 +514,86 @@ def test_load_ledger_values_refuses_duplicate_join_keys_naming_them(tmp_path):
         load_ledger_values(path)
     assert excinfo.value.field == "commit"
     assert "abc" in str(excinfo.value)
+
+
+# --- B1: a zero noise floor is refused at registration, never clamped -----------------
+
+
+def test_registration_refuses_a_zero_floor_from_a_deterministic_incumbent():
+    """Four IDENTICAL baseline rows -- what a classical-CV incumbent with no random seed
+    produces -- give statistics.stdev exactly 0.0, and a registered floor of 0 is not a
+    strict bar but the absence of one: `delta > noise_floor` adopts on a float wobble and
+    the symmetric `delta < -noise_floor` rejection leaves the stagnant band a measure-zero
+    set, so nothing can ever park. Registration must refuse and name the remedy."""
+    space = RegistrySpace()
+    deterministic = {"d1": 0.42, "d2": 0.42, "d3": 0.42, "d4": 0.42}
+    meta = dict(MODEL_META, baseline_runs=["d1", "d2", "d3", "d4"], baseline="d1")
+    with pytest.raises(RegistryValidationError) as excinfo:
+        register_model_with_baseline(space, meta, deterministic)
+    assert excinfo.value.field == NOISE_FLOOR_FIELD
+    message = str(excinfo.value)
+    assert "bootstrap" in message and "eval set" in message.lower()
+    # Refused, not clamped: nothing was registered.
+    assert space.list_facts("model") == []
+
+
+def test_registration_accepts_a_bootstrap_floor_where_the_repeats_are_degenerate():
+    """The escape hatch from the refusal above: a caller who measured the floor by
+    bootstrap-resampling the eval set may register it even though the repeats say 0.0."""
+    space = RegistrySpace()
+    deterministic = {"d1": 0.42, "d2": 0.42, "d3": 0.42, "d4": 0.42}
+    meta = dict(
+        MODEL_META,
+        baseline_runs=["d1", "d2", "d3", "d4"],
+        baseline="d1",
+        noise_floor=0.011,
+        noise_floor_method="bootstrap",
+    )
+    model_id = register_model_with_baseline(space, meta, deterministic)
+    model = space.get(model_id)
+    assert model.meta[NOISE_FLOOR_FIELD] == 0.011
+    assert model.meta[NOISE_FLOOR_METHOD_FIELD] == "bootstrap"
+
+
+# --- B4: more than the minimum baseline runs, and a declared measured floor -----------
+
+
+def test_registration_accepts_more_than_the_minimum_baseline_runs():
+    """af-seed-ml-supervise's own advice is "if a run is cheap, do more than 4". Logging
+    12 baselines used to be refused for having 12 baseline_runs, which left plain
+    register-model (which checks nothing) as the only way through."""
+    space = RegistrySpace()
+    values = {f"b{i}": 1.0 + 0.01 * (i % 5) for i in range(12)}
+    meta = dict(MODEL_META, baseline_runs=sorted(values), baseline="b0")
+    model_id = register_model_with_baseline(space, meta, values)
+    model = space.get(model_id)
+    assert model.meta[NOISE_FLOOR_FIELD] == pytest.approx(statistics.stdev(values.values()))
+    assert model.meta[NOISE_FLOOR_METHOD_FIELD] == NOISE_FLOOR_METHOD_REPEAT_STDEV
+
+
+def test_a_declared_bootstrap_floor_may_disagree_with_the_recomputation():
+    space = RegistrySpace()
+    meta = dict(MODEL_META, noise_floor=0.004, noise_floor_method="bootstrap")
+    model_id = register_model_with_baseline(space, meta, LEDGER)
+    model = space.get(model_id)
+    assert model.meta[NOISE_FLOOR_FIELD] == 0.004
+    assert model.meta[NOISE_FLOOR_METHOD_FIELD] == "bootstrap"
+
+
+def test_an_undeclared_floor_that_disagrees_is_still_refused():
+    """The refusal was never about forcing one method -- it catches a number nobody can
+    account for. Without a declared method the recomputation still rules."""
+    space = RegistrySpace()
+    meta = dict(MODEL_META, noise_floor=0.004)
+    with pytest.raises(RegistryValidationError) as excinfo:
+        register_model_with_baseline(space, meta, LEDGER)
+    assert excinfo.value.field == NOISE_FLOOR_FIELD
+    assert NOISE_FLOOR_METHOD_FIELD in str(excinfo.value)
+
+
+def test_compute_noise_floor_accepts_more_than_the_minimum_and_refuses_fewer():
+    assert compute_noise_floor([1.0, 1.02, 0.98, 1.04, 1.01])[0] == pytest.approx(
+        statistics.stdev([1.0, 1.02, 0.98, 1.04, 1.01])
+    )
+    with pytest.raises(RegistryValidationError):
+        compute_noise_floor([1.0, 1.02, 0.98])

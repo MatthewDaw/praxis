@@ -3,10 +3,26 @@
 Builds on R11's write path (:func:`knowledge.ml_registry.write_path.register_model`) and
 R3's idea lifecycle (:func:`knowledge.ml_registry.lifecycle.invalidate_adoption`). A
 model's ``noise_floor`` and ``baseline_throughput`` are not caller-asserted numbers: they
-are RECOMPUTED here from 4 baseline runs named by commit in ``meta["baseline_runs"]``,
+are RECOMPUTED here from the baseline runs named by commit in ``meta["baseline_runs"]``
+(at least 4, and MORE is better -- an SD from 4 points carries ~40% relative uncertainty),
 read off the external results ledger, and a registration whose stored values disagree
-with that recomputation is refused naming the disagreeing field. ``noise_floor`` is the
-sample standard deviation of those 4 runs; ``baseline_throughput`` is their mean, or --
+with that recomputation is refused naming the disagreeing field. The one exception is a
+floor that declares HOW it was measured in :data:`NOISE_FLOOR_METHOD_FIELD`: a bootstrap
+resampling of the eval set measures a different thing than repeats of the run do, so it is
+allowed to disagree and is stored as measured, stamped with its method. An UNDECLARED
+disagreement is still refused -- that refusal exists to catch an unexplained number, not
+to force one method.
+
+A registered floor must be POSITIVE. A deterministic incumbent (classical CV, no random
+seed) produces identical baseline rows, ``statistics.stdev`` returns exactly 0.0, and a
+zero floor is the absence of a bar rather than a strict one: ``delta > noise_floor``
+adopts on a 1e-12 float wobble, and the symmetric ``delta < -noise_floor`` rejection makes
+the stagnant band a measure-zero set, so no arm can ever park. Registration REFUSES such a
+floor and names the remedy rather than clamping it to some small positive number -- a
+clamp would invent uncertainty the data does not show and then decide every later verdict
+against that invention. The guard runs at REGISTRATION only; floors are stored per model,
+so an already-registered model never re-enters this path. ``noise_floor`` is the
+sample standard deviation of those runs; ``baseline_throughput`` is their mean, or --
 when the caller passes ``ledger_throughputs`` -- the slowest of their rows/sec. Those two
 meanings are NOT interchangeable, so registration stamps which one is stored in
 :data:`BASELINE_THROUGHPUT_UNITS_FIELD` and :func:`adjudicate_trial` refuses to read a
@@ -75,8 +91,25 @@ PREVIOUS_BASELINE_FIELD = "previous_baseline"
 ACTIVE = "active"
 STALLED = "stalled_pending_baseline"
 
+# The MINIMUM number of baseline repeats a registration is built from -- not an exact
+# count. It was exactly-4 until a campaign tried to follow af-seed-ml-supervise's own
+# advice ("if a run is cheap, do more than 4 and pass the measured floor in") and was
+# refused for logging 12 baselines, whose SD (0.0115 on sports_analysis) is the better
+# number: 4 points carry ~40% relative uncertainty. More repeats are strictly better
+# evidence, so more of them can never be the reason to refuse.
 REQUIRED_BASELINE_RUN_COUNT = 4
 FLOOR_AGREEMENT_TOLERANCE = 1e-9
+
+# HOW the stored noise_floor was measured, when it was not measured by this module.
+# Recomputing the SD of the baseline repeats is the default and needs no declaration; any
+# OTHER measurement must say so, because a caller-supplied floor that disagrees with the
+# recomputation is otherwise indistinguishable from a typo. Stamping the method keeps a
+# bootstrap floor and a repeat-stdev floor tellable apart after the fact -- they answer
+# different questions (how much the EVAL SET wobbles vs how much the RUN wobbles) and a
+# reader who cannot tell which one is stored cannot interpret a 1-sigma margin.
+NOISE_FLOOR_METHOD_FIELD = "noise_floor_method"
+#: sigmas * sample stdev of the baseline repeats -- what this module computes itself.
+NOISE_FLOOR_METHOD_REPEAT_STDEV = "repeat_stdev"
 
 # The judging fields R12 holds even more tightly than R1's PROTECTED_MODEL_FIELDS: a
 # change to any of them retires the noise floor and baseline throughput derived under
@@ -141,10 +174,10 @@ def load_ledger_values(path: Path) -> dict[str, float]:
 
 
 def compute_noise_floor(values: list[float]) -> tuple[float, float]:
-    """``(noise_floor, baseline_throughput)`` = ``(sample stdev, mean)`` of exactly 4 runs."""
-    if len(values) != REQUIRED_BASELINE_RUN_COUNT:
+    """``(noise_floor, baseline_throughput)`` = ``(sample stdev, mean)`` of AT LEAST 4 runs."""
+    if len(values) < REQUIRED_BASELINE_RUN_COUNT:
         raise RegistryValidationError(
-            f"noise floor requires exactly {REQUIRED_BASELINE_RUN_COUNT} baseline runs, got {len(values)}",
+            f"noise floor requires at least {REQUIRED_BASELINE_RUN_COUNT} baseline runs, got {len(values)}",
             field=BASELINE_RUNS_FIELD,
         )
     return statistics.stdev(values), statistics.mean(values)
@@ -159,9 +192,16 @@ def register_model_with_baseline(
     ledger_throughputs: dict[str, float] | None = None,
 ) -> str:
     """Register (or re-register) a model, recomputing ``noise_floor``/``baseline_throughput``
-    from the 4 ledger rows named in ``meta["baseline_runs"]``. Refuses naming the field
+    from the (>= 4) ledger rows named in ``meta["baseline_runs"]``. Refuses naming the field
     when a caller-supplied ``noise_floor`` or ``baseline_throughput`` disagrees with that
-    recomputation. Delegates the rest of registration (campaign-budget defaults, the
+    recomputation AND declares no measurement method, and refuses a non-positive floor
+    outright.
+
+    ``meta[NOISE_FLOOR_METHOD_FIELD]`` is the declared escape hatch: a floor measured by
+    bootstrap-resampling the eval set (what ``mvpvu.ball_campaign`` does) is a BETTER
+    number than the SD of a handful of repeats, and refusing it forced callers to bypass
+    this helper for plain ``register-model``, which checks nothing at all. The method is
+    stored on the model so a bootstrap floor and a repeat-stdev floor stay tellable apart. Delegates the rest of registration (campaign-budget defaults, the
     metric freeze) to :func:`~knowledge.ml_registry.write_path.register_model` unchanged.
 
     ``meta["sigmas"]`` defaults to 1 so in-process R12 callers keep a one-sigma floor.
@@ -171,9 +211,9 @@ def register_model_with_baseline(
     mean of the metric values -- the two meanings this field used to collapse.
     """
     runs = meta.get(BASELINE_RUNS_FIELD)
-    if not isinstance(runs, list) or len(runs) != REQUIRED_BASELINE_RUN_COUNT:
+    if not isinstance(runs, list) or len(runs) < REQUIRED_BASELINE_RUN_COUNT:
         raise RegistryValidationError(
-            f"model registration requires exactly {REQUIRED_BASELINE_RUN_COUNT} baseline_runs commits, "
+            f"model registration requires at least {REQUIRED_BASELINE_RUN_COUNT} baseline_runs commits, "
             f"got {runs!r}",
             field=BASELINE_RUNS_FIELD,
         )
@@ -203,17 +243,52 @@ def register_model_with_baseline(
         throughput = statistics.mean(values)
         throughput_units = THROUGHPUT_UNITS_METRIC_MEAN
 
+    declared_method = meta.get(NOISE_FLOOR_METHOD_FIELD)
+    method = NOISE_FLOOR_METHOD_REPEAT_STDEV
     stored_floor = meta.get(NOISE_FLOOR_FIELD)
     if stored_floor not in (None, ""):
         stored_floor_f = float(stored_floor)
-        # bootstrap.measure_noise_floor rounds to 6 d.p.; accept that as the same value.
-        if not (_agree(stored_floor_f, floor) or _agree(stored_floor_f, round(floor, 6))):
+        agrees = _agree(stored_floor_f, floor) or _agree(stored_floor_f, round(floor, 6))
+        if declared_method not in (None, "", NOISE_FLOOR_METHOD_REPEAT_STDEV):
+            # A DECLARED measurement is allowed to disagree, because it is answering a
+            # different question than the repeats are. Only an UNDECLARED disagreement is
+            # still refused -- the point of that refusal was never to force one method, it
+            # was to catch a number nobody can account for.
+            method = str(declared_method)
+        elif not agrees:
             raise RegistryValidationError(
                 f"stored noise_floor {stored_floor!r} disagrees with the recomputed value {floor!r} "
-                f"from baseline_runs {runs!r}",
+                f"from baseline_runs {runs!r}; if it was measured some OTHER way (bootstrap "
+                f"resampling of the eval set, a held-out replicate study), declare it in "
+                f"{NOISE_FLOOR_METHOD_FIELD!r} and it will be stored as measured",
                 field=NOISE_FLOOR_FIELD,
             )
         floor = stored_floor_f
+    elif declared_method not in (None, "", NOISE_FLOOR_METHOD_REPEAT_STDEV):
+        raise RegistryValidationError(
+            f"{NOISE_FLOOR_METHOD_FIELD} {declared_method!r} is declared but no noise_floor is "
+            "stored to go with it; a declared method describes a floor the caller MEASURED, so "
+            "pass that measured value in noise_floor or drop the method",
+            field=NOISE_FLOOR_METHOD_FIELD,
+        )
+
+    if not (float(floor) > 0.0):
+        raise RegistryValidationError(
+            f"noise_floor {floor!r} is not positive (recomputed {sd!r} x {sigmas!r} sigmas over "
+            f"{len(runs)} baseline runs {values!r}). A DETERMINISTIC incumbent -- classical CV, no "
+            "random seed -- returns four IDENTICAL rows and statistics.stdev of those is exactly "
+            "0.0. A zero floor is not a strict bar, it is the absence of one: adjudication adopts "
+            "on delta > noise_floor, so a 1e-12 float wobble adopts, and the symmetric "
+            "delta < -noise_floor rejection makes the stagnant band a measure-zero set, so nothing "
+            "can ever park -- every arm adopts or rejects. Measure the floor the way "
+            "sports_analysis's mvpvu.ball_campaign does (bootstrap_se: resample the EVAL SET, "
+            f"since 'the noise floor is measured from bootstrap resampling of those 16 frames, not "
+            f"from detector stochasticity'), then pass it as noise_floor with "
+            f"{NOISE_FLOOR_METHOD_FIELD}='bootstrap'. It is deliberately NOT clamped to some small "
+            "positive number here: a clamp would invent uncertainty this data does not show, and "
+            "every later verdict would be decided against that invention.",
+            field=NOISE_FLOOR_FIELD,
+        )
     stored_throughput = meta.get(BASELINE_THROUGHPUT_FIELD)
     if stored_throughput not in (None, ""):
         stored_tput_f = float(stored_throughput)
@@ -229,6 +304,7 @@ def register_model_with_baseline(
     merged[NOISE_FLOOR_FIELD] = floor
     merged[BASELINE_THROUGHPUT_FIELD] = throughput
     merged[BASELINE_THROUGHPUT_UNITS_FIELD] = throughput_units
+    merged[NOISE_FLOOR_METHOD_FIELD] = method
     merged.setdefault(RATCHET_COUNT_FIELD, 0)
     merged[CAMPAIGN_STATUS_FIELD] = ACTIVE
     return register_model(space, merged, model_id=model_id)

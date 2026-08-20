@@ -51,6 +51,8 @@ from knowledge.ml_registry.supervisor import (
     consecutive_void_count,
     dispatch_trial,
     parse_win_condition,
+    NON_IMPROVING_STREAK_TRIGGER,
+    model_non_improving_trigger,
     record_keep_pushing_marker,
     record_out_of_diff_change,
     resolve_interventions,
@@ -778,3 +780,36 @@ def test_axis_streak_is_empty_with_no_trials_and_recomputed_fresh_not_cached():
     dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["c1"]))
     # an adopted (improving) trial resets the non-improving streak to zero.
     assert axis_streak(space, model_id) == {"axis": "architecture", "same_axis_streak": 1, "non_improving_streak": 0}
+
+
+def test_a_model_may_raise_its_own_non_improving_streak_trigger():
+    """(S3) A wide stage -- here 4 representation arms -- is abandoned after 2 misses at the
+    default trigger. A model that sets ``non_improving_streak_trigger`` on its own meta
+    raises the bar for ITSELF only, so the stage keeps drawing its untried arms."""
+    space, model_id = _space_with_model(max_trials=100, non_improving_streak_trigger=4)
+    rep_ideas = [_idea(space, model_id, "representation", SEEDED, f"rep-{i}") for i in range(4)]
+    other = _idea(space, model_id, "data", SEEDED, "data-1")
+
+    drawn = []
+    for commit in ("lose1", "lose2", "lose3"):
+        drawn.append(dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher([commit]))["candidate"])
+
+    # At the default trigger of 2 the third draw would have escaped to "data"; at 4 it stays.
+    assert drawn == rep_ideas[:3]
+    assert other not in drawn
+    assert axis_streak(space, model_id)["non_improving_streak"] == 3
+
+    # The raised trigger still FIRES, it is only later: the 4th miss excludes the axis.
+    fourth = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose4"]))
+    assert fourth["candidate"] == rep_ideas[3]
+    fifth = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose5"]))
+    assert fifth["candidate"] == other
+
+
+def test_the_non_improving_streak_trigger_defaults_to_two_when_a_model_sets_none():
+    """(S3) Opt-in only: a model with no ``non_improving_streak_trigger`` on its meta keeps
+    the :data:`NON_IMPROVING_STREAK_TRIGGER` default, so an already-running campaign is
+    bit-identical."""
+    space, model_id = _space_with_model(max_trials=100)
+    assert "non_improving_streak_trigger" not in space.get(model_id).meta
+    assert model_non_improving_trigger(space.get(model_id).meta) == NON_IMPROVING_STREAK_TRIGGER

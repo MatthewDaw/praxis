@@ -42,7 +42,10 @@ never drawn from an axis the CALLER excluded):
 
 * the "rabbit-hole" intervention -- :data:`NON_IMPROVING_STREAK_TRIGGER` (2) trailing
   non-improving (not adopted) trials in a row on the SAME axis auto-fires an
-  ``exclude_axis`` intervention against it, UNLESS a durable :func:`record_keep_pushing_marker`
+  ``exclude_axis`` intervention against it. A model carrying its own
+  ``non_improving_streak_trigger`` meta field raises (or lowers) that bar for itself alone
+  -- see :func:`model_non_improving_trigger`; a model that sets nothing keeps the 2. The
+  intervention fires UNLESS a durable :func:`record_keep_pushing_marker`
   is on file for that axis. That marker is the ONLY suppression: nothing a dispatcher
   returns in a trial's own payload can suppress it, only an explicitly-authored, separately
   recorded marker can. An out-of-diff code change (a change landed outside any trial's own
@@ -114,6 +117,7 @@ INTERVENTION_KINDS: tuple[str, ...] = (FORCED_AXIS, EXCLUDE_AXIS)
 
 # (R9) axis-watchdog thresholds -- see the module docstring's AXIS WATCHDOG section.
 NON_IMPROVING_STREAK_TRIGGER = 2
+NON_IMPROVING_STREAK_TRIGGER_FIELD = "non_improving_streak_trigger"
 SAME_AXIS_STREAK_TRIGGER = 5
 
 # The durable keep-pushing marker lives on the model fact, keyed by axis: {axis: {"author": str}}.
@@ -460,6 +464,27 @@ def _next_retrieval_axis(
     return None
 
 
+def model_non_improving_trigger(model_meta: dict[str, object]) -> int:
+    """How many trailing non-improving trials on one axis auto-fire the rabbit-hole
+    ``exclude_axis`` intervention for THIS model.
+
+    A model may raise (or lower) the bar for itself by putting
+    ``non_improving_streak_trigger`` on its own meta -- a wide stage, say a ten-arm
+    representation sweep, is otherwise abandoned after its second miss with eight arms
+    never dispatched. A model that sets nothing, or sets an unusable value (non-integer,
+    or below 1), falls back to :data:`NON_IMPROVING_STREAK_TRIGGER`, so every campaign
+    that never opts in behaves exactly as before.
+    """
+    raw = model_meta.get(NON_IMPROVING_STREAK_TRIGGER_FIELD)
+    if raw is None or isinstance(raw, bool):
+        return NON_IMPROVING_STREAK_TRIGGER
+    try:
+        trigger = int(raw)
+    except (TypeError, ValueError):
+        return NON_IMPROVING_STREAK_TRIGGER
+    return trigger if trigger >= 1 else NON_IMPROVING_STREAK_TRIGGER
+
+
 def _auto_interventions(
     space: RegistrySpace, model_id: str, caller_interventions: tuple[Intervention, ...] = ()
 ) -> tuple[Intervention, ...]:
@@ -486,8 +511,8 @@ def _auto_interventions(
         # No retrieval axis available -- FALL THROUGH to the rabbit-hole check rather than
         # returning empty: being MORE stuck must never disable the weaker guard.
 
-    if streak["non_improving_streak"] >= NON_IMPROVING_STREAK_TRIGGER:
-        model = _model(space, model_id)
+    model = _model(space, model_id)
+    if streak["non_improving_streak"] >= model_non_improving_trigger(model.meta):
         markers = model.meta.get(KEEP_PUSHING_MARKER_FIELD) or {}
         marker = markers.get(axis) if isinstance(markers, dict) else None
         suppressed = isinstance(marker, dict) and bool(str(marker.get("author") or "").strip())

@@ -116,7 +116,8 @@ def test_bootstrap_emits_schema_valid_meta_when_ready(tmp_path: Path) -> None:
     from knowledge.ml_registry.schema import REQUIRED_META_KEYS
     rep = bootstrap(ledger=_ledger(tmp_path, _baselines(4)),
                     backlog=[{"id": "R01", "axis": "rep", "hypothesis": "h", "basis": "b"}],
-                    model_id="m", metric="f1", direction="maximize", diff_size_limit=8)
+                    model_id="m", metric="f1", direction="maximize", diff_size_limit=8,
+                    win_condition={"metric_at_least": 0.9})
     assert rep.ready, rep.to_dict()["blocking"]
     assert not set(REQUIRED_META_KEYS["model"]) - set(rep.model_meta)
     assert not set(REQUIRED_META_KEYS["idea"]) - set(rep.ideas[0])
@@ -144,7 +145,8 @@ def test_baseline_is_the_row_nearest_the_mean_not_the_best_one(tmp_path) -> None
     backlog = [{"id": "R01", "axis": "representation", "description": "d"}]
 
     report = bootstrap(ledger=ledger, backlog=backlog, model_id="m", metric="f1",
-                       direction="maximize", diff_size_limit=8, baseline_prefix="baseline")
+                       direction="maximize", diff_size_limit=8, baseline_prefix="baseline",
+                       win_condition={"metric_at_least": 0.9})
     assert report.ready
     # mean is 0.677875; baseline_6 (0.6795) is nearest it, baseline_5 (0.6811) is the max
     assert report.model_meta["baseline"] == "sha:baseline_6"
@@ -196,7 +198,8 @@ def test_baseline_throughput_is_the_slowest_baseline_not_the_median(tmp_path) ->
     report = bootstrap(ledger=ledger, backlog=[{"id": "R01", "axis": "representation",
                                                 "description": "d"}],
                        model_id="m", metric="f1", direction="maximize",
-                       diff_size_limit=8, baseline_prefix="baseline")
+                       diff_size_limit=8, baseline_prefix="baseline",
+                       win_condition={"metric_at_least": 0.9})
     assert report.ready
     assert report.model_meta["baseline_throughput"] == 3.38     # min, not median 3.48
     # the arm that voided under the median must now clear the gate
@@ -207,8 +210,71 @@ def test_bootstrap_emits_baseline_runs_and_sigmas(tmp_path: Path) -> None:
     """register-model-with-baseline consumes these; without them the documented path refuses."""
     report = bootstrap(ledger=_ledger(tmp_path, _baselines(4)),
                        backlog=[{"id": "R01", "axis": "representation", "hypothesis": "h"}],
-                       model_id="m", metric="f1", direction="maximize", diff_size_limit=8)
+                       model_id="m", metric="f1", direction="maximize", diff_size_limit=8,
+                       win_condition={"metric_at_least": 0.9})
     assert report.ready
     assert report.model_meta["sigmas"] == 2.0
     assert len(report.model_meta["baseline_runs"]) == 4
     assert report.model_meta["baseline_runs"] == [row[0] for row in _baselines(4)]
+
+
+# --- B2: what "winning" means is asked for, never defaulted ---------------------------
+
+
+def test_build_model_meta_refuses_a_missing_win_condition() -> None:
+    """It defaulted to the WIN_ON_ADOPTION string, which closes the campaign as WON on the
+    first adopted trial with every other declared stage untried."""
+    from knowledge.ml_registry.bootstrap import build_model_meta
+    from knowledge.ml_registry.schema import RegistryValidationError
+
+    kwargs = dict(metric="f1", direction="maximize", baseline_commit="sha", noise_floor=0.01,
+                  baseline_throughput=3.0, diff_size_limit=8)
+    with pytest.raises(TypeError):
+        build_model_meta(**kwargs)  # type: ignore[arg-type]
+    with pytest.raises(RegistryValidationError) as excinfo:
+        build_model_meta(**kwargs, win_condition=None)
+    assert excinfo.value.field == "win_condition"
+    message = str(excinfo.value)
+    assert "metric_at_most" in message and "metric_at_least" in message
+    assert "first" in message.lower() and "supervisor.py" in message
+
+
+def test_build_model_meta_refuses_the_bare_adoption_string() -> None:
+    from knowledge.ml_registry.bootstrap import WIN_ON_ADOPTION, build_model_meta
+    from knowledge.ml_registry.schema import RegistryValidationError
+
+    with pytest.raises(RegistryValidationError) as excinfo:
+        build_model_meta(metric="f1", direction="maximize", baseline_commit="sha",
+                         noise_floor=0.01, baseline_throughput=3.0, diff_size_limit=8,
+                         win_condition=WIN_ON_ADOPTION)
+    assert excinfo.value.field == "win_condition"
+
+
+def test_bootstrap_is_not_ready_without_a_declared_win_condition(tmp_path: Path) -> None:
+    report = bootstrap(ledger=_ledger(tmp_path, _baselines(4)),
+                       backlog=[{"id": "R01", "axis": "rep", "hypothesis": "h"}],
+                       model_id="m", metric="f1", direction="maximize", diff_size_limit=8)
+    assert not report.ready and report.model_meta is None
+    assert "win_condition_declared" in report.to_dict()["blocking"]
+
+
+def test_bootstrap_carries_the_declared_win_condition_onto_the_meta(tmp_path: Path) -> None:
+    report = bootstrap(ledger=_ledger(tmp_path, _baselines(4)),
+                       backlog=[{"id": "R01", "axis": "rep", "hypothesis": "h"}],
+                       model_id="m", metric="f1", direction="maximize", diff_size_limit=8,
+                       win_condition={"metric_at_least": 0.72})
+    assert report.ready, report.to_dict()["blocking"]
+    assert report.model_meta["win_condition"] == {"metric_at_least": 0.72}
+
+
+def test_a_supplied_floor_carries_its_measurement_method(tmp_path: Path) -> None:
+    """floor.register_model_with_baseline accepts a supplied floor that disagrees with its
+    own recomputation only when the method is declared, so the method must travel with it."""
+    report = bootstrap(ledger=_ledger(tmp_path, _baselines(4)),
+                       backlog=[{"id": "R01", "axis": "rep", "hypothesis": "h"}],
+                       model_id="m", metric="f1", direction="maximize", diff_size_limit=8,
+                       win_condition={"metric_at_least": 0.72},
+                       noise_floor_override=0.009, noise_floor_method="bootstrap")
+    assert report.ready, report.to_dict()["blocking"]
+    assert report.model_meta["noise_floor"] == 0.009
+    assert report.model_meta["noise_floor_method"] == "bootstrap"

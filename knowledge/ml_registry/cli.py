@@ -34,7 +34,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 from typing import Callable, TypeVar
@@ -341,7 +343,99 @@ def _parse_intervention(raw: str) -> Intervention:
     return Intervention(kind=kind, axis=axis)
 
 
-def _load_mutate_save(space_file: str, fn: Callable[[RegistrySpace], _T]) -> _T:
+_LOCK_TIMEOUT_ENV = "ML_REGISTRY_LOCK_TIMEOUT"
+_DEFAULT_LOCK_TIMEOUT_SECONDS = 900.0
+
+
+def _lock_timeout_seconds(override: float | None = None) -> float:
+    """How long to wait for the space lock before refusing, in seconds.
+
+    900s (15 minutes) because the two populations are orders of magnitude apart and the default
+    only has to separate them. Every ordinary mutation -- register, adjudicate, acknowledge,
+    complete -- is a load, an in-memory edit and a save of a JSON file: milliseconds, and it is
+    bounded by no external work at all, so no legitimate short mutation comes within three orders
+    of magnitude of tripping this. The thing on the other side is ``supervise-campaign``, which
+    holds the lock across real training runs and can hold it for hours; waiting a quarter of an
+    hour before concluding "something else owns this" is generous even against a slow dispatch,
+    and still returns an answer inside one coffee break rather than never.
+
+    ``ML_REGISTRY_LOCK_TIMEOUT`` overrides it (seconds; ``0`` means fail immediately on
+    contention), and an explicit argument to :func:`_load_mutate_save` overrides that.
+    """
+    if override is not None:
+        return float(override)
+    raw = os.environ.get(_LOCK_TIMEOUT_ENV)
+    if raw is None or not raw.strip():
+        return _DEFAULT_LOCK_TIMEOUT_SECONDS
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise ValueError(
+            f"{_LOCK_TIMEOUT_ENV}={raw!r} is not a number of seconds") from None
+    if seconds < 0:
+        raise ValueError(f"{_LOCK_TIMEOUT_ENV}={raw!r} must not be negative")
+    return seconds
+
+
+def _stamp_the_holder(lock) -> None:  # noqa: ANN001 - an open file object
+    """Record who holds the lock, so a waiter that times out can name it rather than guess.
+
+    Written only while the lock is HELD, so there is exactly one writer and the line a waiter
+    reads is either the current holder's or absent. It is best-effort by construction: a holder
+    killed with SIGKILL leaves its line behind, so :func:`_describe_the_holder` presents it as
+    the last known holder rather than as fact. Cheap, and it does not touch the locking itself.
+    """
+    try:
+        lock.seek(0)
+        lock.truncate()
+        lock.write(f"{os.getpid()} {' '.join(sys.argv)}\n")
+        lock.flush()
+    except OSError:  # pragma: no cover - a stamp is a nicety, never a reason to refuse a mutation
+        pass
+
+
+def _describe_the_holder(lock_path: Path) -> str:
+    """The holder's pid and command line, as recorded by :func:`_stamp_the_holder`."""
+    try:
+        stamp = lock_path.read_text().strip()
+    except OSError:  # pragma: no cover - we just failed to lock it, so it exists
+        stamp = ""
+    return f"last recorded holder: {stamp}" if stamp else "the holder did not record itself"
+
+
+def _acquire_or_refuse(lock, lock_path: Path, timeout_seconds: float | None) -> None:  # noqa: ANN001
+    """Take LOCK_EX, polling, and refuse by name once the budget is spent.
+
+    Polling a non-blocking ``flock`` rather than arming ``SIGALRM``: the CLI runs inside other
+    people's processes (``main`` is imported and called directly by tests and by the supervising
+    skill), and installing a process-wide signal handler there would be a far larger blast radius
+    than a 50ms poll. Contention is rare and the loser is about to wait minutes anyway.
+    """
+    import fcntl
+
+    budget = _lock_timeout_seconds(timeout_seconds)
+    deadline = time.monotonic() + budget
+    while True:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError:
+            waited = time.monotonic() - (deadline - budget)
+            if time.monotonic() >= deadline:
+                raise RegistryValidationError(
+                    f"could not lock {lock_path} after waiting {waited:.0f}s: another process "
+                    f"still holds it ({_describe_the_holder(lock_path)}). A supervise-campaign "
+                    "run holds this lock for the WHOLE campaign, so this is expected while one is "
+                    "in flight -- wait for it to finish, or give each campaign a separate space "
+                    f"file so they do not contend. Raise {_LOCK_TIMEOUT_ENV} (seconds, currently "
+                    f"{budget:g}) to wait longer.",
+                    field="space_file",
+                ) from None
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+
+
+def _load_mutate_save(space_file: str, fn: Callable[[RegistrySpace], _T],
+                      timeout_seconds: float | None = None) -> _T:
     """Load, apply ONE mutation, save — holding an exclusive lock for the whole cycle.
 
     THE LOCK IS THE POINT. Without it this is a textbook lost update: two commands each load the
@@ -362,21 +456,32 @@ def _load_mutate_save(space_file: str, fn: Callable[[RegistrySpace], _T]) -> _T:
     The save still happens in a ``finally``: a refusal raised part-way through a MULTI-write run
     (``supervise-campaign`` is forty dispatches, not one) must not discard everything the run
     already durably decided.
-    """
-    import fcntl
 
+    The wait is BOUNDED (:func:`_lock_timeout_seconds`). ``supervise-campaign`` holds this lock
+    for an entire campaign -- forty dispatches, potentially hours -- so a second command against
+    the same space file used to block on a plain blocking ``flock`` with no timeout and no output.
+    Contention was then indistinguishable from a crash: the operator sees a command that prints
+    nothing and never returns, and the only way to tell the two apart is to go reading /proc. The
+    scope of the lock is correct and is deliberately unchanged; what is fixed is that exceeding
+    the budget now REFUSES loudly, naming the lock file, the holder, and the remedy.
+    """
     space_path = Path(space_file)
     lock_path = space_path.with_suffix(space_path.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "w") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    # NOT "w": truncating on open would erase the CURRENT holder's identity line before we even
+    # ask for the lock, which is precisely the information a waiter needs to report on timeout.
+    with open(lock_path, "a+") as lock:
+        _acquire_or_refuse(lock, lock_path, timeout_seconds)
         try:
+            _stamp_the_holder(lock)
             space = RegistrySpace.load(space_path)
             try:
                 return fn(space)
             finally:
                 space.save(space_path)
         finally:
+            import fcntl
+
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 def _fixed_outcome_resolver(outcome: str, title: str, authors: tuple[str, ...]) -> Resolver:
@@ -454,6 +559,23 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap_p.add_argument("--baseline-prefix", default="baseline",
                              help="ledger rows whose description starts with this are baselines")
     bootstrap_p.add_argument("--sigmas", type=float, default=2.0)
+    # REQUIRED, and deliberately so. The former default was the bare adoption string, which
+    # `parse_win_condition` maps to WIN_ON_ADOPTION -- `win_condition_met` then returns True
+    # unconditionally (supervisor.py:262) and the campaign closes as WON on its FIRST adopted
+    # trial (supervisor.py:698), with every other declared stage untouched. An automatic default
+    # is a guess about what winning means for a campaign the registry knows nothing about, so
+    # there is no safe one to pick. Accepts a JSON object -- {"metric_at_least": 0.92} or
+    # {"metric_at_most": 0.80}.
+    bootstrap_p.add_argument(
+        "--win-condition", required=True,
+        help='JSON object naming an explicit numeric target, e.g. \'{"metric_at_least": 0.92}\' '
+             'or \'{"metric_at_most": 0.80}\'. Required: the old default closed a campaign on '
+             'its first adoption.')
+    bootstrap_p.add_argument(
+        "--noise-floor-method", default=None,
+        help="How --noise-floor was measured, e.g. 'bootstrap'. A DECLARED method lets a supplied "
+             "floor stand where recomputing from repeated baseline runs would give a degenerate "
+             "one -- a deterministic incumbent repeats bit-identically, so its stdev is exactly 0.")
     bootstrap_p.add_argument("--noise-floor", type=float, default=None,
                              help="override the floor measured from the ledger; use when it was "
                                   "measured over MORE runs than the ledger holds")
@@ -857,6 +979,8 @@ def main(argv: list[str] | None = None) -> int:
                 metric=args.metric, direction=args.direction,
                 diff_size_limit=args.diff_size_limit, baseline_prefix=args.baseline_prefix,
                 sigmas=args.sigmas, noise_floor_override=args.noise_floor,
+                noise_floor_method=args.noise_floor_method,
+                win_condition=_json_arg(args.win_condition),
                 skip_ids={i for i in args.skip_ids.split(",") if i}, notes=args.notes,
                 void_throughput_fraction=args.void_throughput_fraction)
             if args.out_dir and report.ready:

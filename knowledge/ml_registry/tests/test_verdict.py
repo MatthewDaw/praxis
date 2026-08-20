@@ -30,6 +30,7 @@ from knowledge.ml_registry.verdict import (
     VERDICT_PARKED,
     VERDICT_REJECTED,
     VERDICT_VOIDED,
+    RATCHET_STREAK_LENGTH,
     LedgerRow,
     adjudicate_verdict,
 )
@@ -59,6 +60,8 @@ ALL_COMMITS = frozenset(
         "b1", "b2", "b3", "b4", "b5", "same1", "same2", "same3", "noop1", "noop2", "noop3",
         "bad-throughput", "bad-diff", "no-self-report",
         "win1", "win2", "exact-improving", "exact-worsening",
+        "ax1", "ax2", "ax3", "sameax1", "sameax2", "sameax3",
+        "bad1", "bad2", "bad3", "bad4", "bad5", "bad6",
     }
 )
 
@@ -87,8 +90,8 @@ def _exact_rows(commit: str, value: float) -> dict[str, LedgerRow]:
     return rows
 
 
-def _idea_meta(model_id, description="try RoPE scaling"):
-    return {"model_id": model_id, "origin": "seeded", "axis": "architecture", "description": description}
+def _idea_meta(model_id, description="try RoPE scaling", axis="architecture"):
+    return {"model_id": model_id, "origin": "seeded", "axis": axis, "description": description}
 
 
 def _space_with_model():
@@ -367,6 +370,105 @@ def test_ratchet_fires_on_the_third_consecutive_worsening_reject_on_a_distinct_i
     backlog_ids = {i.id for i in untried_backlog(space, model_id=model_id)}
     for loser_id in loser_ids:
         assert loser_id in backlog_ids
+
+
+def test_ratchet_streak_resets_when_the_trial_axis_changes():
+    """B3 regression: three rejections from three DIFFERENT axes are three unrelated
+    experiments, not accumulated evidence against the adoption, so they must not roll it back.
+
+    `reset_ratchet`'s own docstring says the streak's inference is invalid across a stage
+    boundary, and the supervisor has no stage awareness at all, so interleaved axes are the
+    normal case. Here a genuine +0.0358 adoption is followed by one data, one architecture and
+    one optimization rejection, each MARGINALLY below the new baseline (1.5 noise floors, inside
+    the 2-sigma materiality line): the adoption must survive and the streak must never exceed 1.
+    """
+    space, model_id = _space_with_model()
+
+    winner_id = register_idea(space, _idea_meta(model_id, "winner", axis="architecture"))
+    winner_trial = _trial(space, model_id, winner_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
+    assert adjudicate_verdict(
+        space, winner_trial, _rows(adopt1=(1.0 - NOISE_FLOOR - 0.01, BASELINE_THROUGHPUT, 100))
+    ) == VERDICT_ADOPTED
+
+    # Marginally below the new baseline: past the floor (so it rejects) but inside the 2-sigma
+    # materiality line, i.e. a loss but not a verdict on the adoption. This is the B3 shape.
+    worse_value = (1.0 - NOISE_FLOOR - 0.01) + 1.5 * NOISE_FLOOR
+    for axis, commit in zip(["data", "architecture", "optimization"], ["ax1", "ax2", "ax3"]):
+        loser_id = register_idea(space, _idea_meta(model_id, f"loser-{axis}", axis=axis))
+        trial_id = _trial(space, model_id, loser_id, commit, throughput=BASELINE_THROUGHPUT, diff_lines=100)
+        ledger = _rows(**{commit: (worse_value, BASELINE_THROUGHPUT, 100),
+                          "adopt1": (1.0 - NOISE_FLOOR - 0.01, BASELINE_THROUGHPUT, 100)})
+        assert adjudicate_verdict(space, trial_id, ledger) == VERDICT_REJECTED
+        model = space.get(model_id)
+        assert model.meta[RATCHET_COUNT_FIELD] == 1, f"axis {axis} should have started a fresh streak"
+
+    model = space.get(model_id)
+    assert space.get(winner_id).meta["status"] == STATUS_ADOPTED  # the real win survives
+    assert model.meta[BASELINE_FIELD] == "adopt1"
+    assert model.meta[PREVIOUS_BASELINE_FIELD] == "r1"
+    assert model.meta[REJECTION_STREAK_FIELD] == [space.get(model_id).meta[REJECTION_STREAK_FIELD][0]]
+
+
+def test_ratchet_still_catches_a_genuinely_bad_adoption_under_full_interleaving():
+    """The axis reset must not make the ratchet INERT. A genuinely bad adoption degrades every
+    downstream arm, and in a stage-blind supervisor that evidence arrives round-robin across
+    axes -- data, architecture, optimization, data, ... -- so a pure axis-change reset would
+    truncate the streak to 1 forever and never roll the bad adoption back.
+
+    Six consecutive rejections, all MATERIALLY below the restored baseline (10x the noise floor,
+    far past the 2x materiality line), on six distinct ideas cycling three axes. That is a bad
+    adoption by any reading, and the ratchet must fire.
+    """
+    space, model_id = _space_with_model()
+
+    winner_id = register_idea(space, _idea_meta(model_id, "the bad adoption", axis="data"))
+    winner_trial = _trial(space, model_id, winner_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
+    assert adjudicate_verdict(
+        space, winner_trial, _rows(adopt1=(1.0 - NOISE_FLOOR - 0.01, BASELINE_THROUGHPUT, 100))
+    ) == VERDICT_ADOPTED
+
+    axes = ["data", "architecture", "optimization"]
+    worse_value = 1.0 + 10 * NOISE_FLOOR  # materially worse, far beyond 2x the floor
+    fired_after = None
+    for i, commit in enumerate(["bad1", "bad2", "bad3", "bad4", "bad5", "bad6"]):
+        axis = axes[i % len(axes)]
+        loser_id = register_idea(space, _idea_meta(model_id, f"bad-loser-{i}", axis=axis))
+        trial_id = _trial(space, model_id, loser_id, commit, throughput=BASELINE_THROUGHPUT, diff_lines=100)
+        ledger = _rows(**{commit: (worse_value, BASELINE_THROUGHPUT, 100),
+                          "adopt1": (1.0 - NOISE_FLOOR - 0.01, BASELINE_THROUGHPUT, 100)})
+        assert adjudicate_verdict(space, trial_id, ledger) == VERDICT_REJECTED
+        if space.get(winner_id).meta["status"] == STATUS_UNTRIED:
+            fired_after = i + 1
+            break
+
+    assert fired_after is not None, "the ratchet went inert: a bad adoption survived 6 interleaved rejections"
+    assert fired_after <= RATCHET_STREAK_LENGTH
+    assert space.get(model_id).meta[BASELINE_FIELD] == "r1"
+
+
+def test_ratchet_still_fires_on_three_distinct_ideas_on_the_SAME_axis():
+    """The axis reset must not defang the ratchet: three distinct ideas all probing the same
+    axis are still the same line of attack, and still invalidate the adoption."""
+    space, model_id = _space_with_model()
+
+    winner_id = register_idea(space, _idea_meta(model_id, "winner", axis="data"))
+    winner_trial = _trial(space, model_id, winner_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
+    assert adjudicate_verdict(
+        space, winner_trial, _rows(adopt1=(1.0 - NOISE_FLOOR - 0.01, BASELINE_THROUGHPUT, 100))
+    ) == VERDICT_ADOPTED
+
+    worse_value = 1.0 + 10 * NOISE_FLOOR
+    for i, commit in enumerate(["sameax1", "sameax2", "sameax3"]):
+        loser_id = register_idea(space, _idea_meta(model_id, f"same-axis-loser-{i}", axis="data"))
+        trial_id = _trial(space, model_id, loser_id, commit, throughput=BASELINE_THROUGHPUT, diff_lines=100)
+        ledger = _rows(**{commit: (worse_value, BASELINE_THROUGHPUT, 100),
+                          "adopt1": (1.0 - NOISE_FLOOR - 0.01, BASELINE_THROUGHPUT, 100)})
+        assert adjudicate_verdict(space, trial_id, ledger) == VERDICT_REJECTED
+
+    model = space.get(model_id)
+    assert space.get(winner_id).meta["status"] == STATUS_UNTRIED
+    assert model.meta[BASELINE_FIELD] == "r1"
+    assert model.meta[RATCHET_COUNT_FIELD] == 0
 
 
 def test_ratchet_does_not_fire_on_the_same_idea_rejected_repeatedly():

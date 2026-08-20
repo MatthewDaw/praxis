@@ -98,6 +98,9 @@ def _bootstrap(tmp_path: Path, *extra: object) -> tuple[subprocess.CompletedProc
         "--metric", "stroke_macro_f1",
         "--direction", "maximize",
         "--diff-size-limit", "8",
+        # Required since the bare adoption default was removed: it closed a campaign on its first
+        # adopted trial (supervisor.py:262, :698) with every other declared stage untouched.
+        "--win-condition", '{"metric_at_least": 0.72}',
         "--skip-ids", "R04",
         "--out-dir", out_dir,
         *extra,

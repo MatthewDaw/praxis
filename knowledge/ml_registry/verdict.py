@@ -46,7 +46,15 @@ and its baseline restored to ``previous_baseline``. 3 consecutive rejections on 
 ideas are the evidence that the adoption was noise and the baseline it set was FALSE --
 so every idea rejected while that false bar stood, the streak's own rejections included,
 was judged against a bar that never existed and is RE-QUEUED to the untried backlog. The
-ratchet counter and streak reset either way. Nothing else resets the ratchet: an adoption
+ratchet counter and streak reset either way.
+
+The streak is ALSO reset when a MARGINAL rejection arrives on a different ``axis`` than the one
+the streak has been probing: three rejections spread over three axes are three unrelated
+experiments, and a stage-blind supervisor interleaves them as a matter of course, so counting
+them as accumulated evidence against one adoption is the inference :func:`reset_ratchet` calls
+invalid. A rejection more than :data:`MATERIAL_REJECTION_FLOORS` floors below baseline is exempt
+-- real damage counts whatever axis found it, or the ratchet goes inert against exactly the bad
+adoption it exists to roll back. Nothing else resets the ratchet: an adoption
 resets it (a fresh baseline earns a fresh streak), an invalidation resets it (fired or not
 -- when there is no active adoption to invalidate, the rule is a no-op that still
 consumes/resets the streak), and any other verdict leaves it untouched.
@@ -92,6 +100,20 @@ THROUGHPUT_FLOOR_FRACTION = 0.05
 
 # A trial rejected consecutively on 3 distinct ideas fires the ratchet.
 RATCHET_STREAK_LENGTH = 3
+
+#: How many noise floors below baseline a rejection must fall to count as MATERIAL rather than
+#: marginal. The floor is one standard deviation of the baseline runs, so this is the 2-sigma
+#: line: a delta past it is not a plausible sampling wobble, it is real damage, and real damage
+#: is evidence against the adoption no matter which axis found it. A rejection between one and
+#: two floors below baseline is a loss but not a verdict on the adoption, so it is the one that
+#: the axis reset is allowed to discard.
+MATERIAL_REJECTION_FLOORS = 2.0
+
+#: The axis the current rejection streak is probing. Stored ALONGSIDE (never inside)
+#: :data:`~knowledge.ml_registry.floor.REJECTION_STREAK_FIELD` so the streak itself keeps its
+#: stored shape -- a plain list of idea ids -- and a streak written before this field existed
+#: stays readable by every reader, this module included.
+REJECTION_STREAK_AXIS_FIELD = "rejection_streak_axis"
 
 _AGREEMENT_TOLERANCE = 1e-9
 
@@ -143,6 +165,20 @@ def _ledger_row(ledger_rows: dict[str, LedgerRow], commit: str, *, field: str) -
 def _reset_ratchet(model: Fact) -> None:
     model.meta[RATCHET_COUNT_FIELD] = 0
     model.meta[REJECTION_STREAK_FIELD] = []
+    model.meta.pop(REJECTION_STREAK_AXIS_FIELD, None)
+
+
+def _idea_axis(space: RegistrySpace, idea_id: str) -> str:
+    """The axis of the idea behind a trial -- the line of attack the trial is probing.
+
+    An idea fact is REQUIRED to carry ``axis`` (see :data:`~knowledge.ml_registry.schema.
+    REQUIRED_META_KEYS`), so a missing one means the idea was never registered; that is not
+    this function's refusal to make, and an unknown axis simply reads as its own axis.
+    """
+    idea = space.get(idea_id)
+    if idea is None:
+        return ""
+    return str(idea.meta.get("axis") or "")
 
 
 def _invalidate_ratchet(space: RegistrySpace, model: Fact, model_id: str, reason: str) -> None:
@@ -269,7 +305,45 @@ def adjudicate_verdict(
     if delta < -noise_floor:
         trial.meta["status"] = "failed"
         reject_idea(space, idea_id, "trial fell more than one noise-floor standard deviation below the current baseline")
+        # AXIS RESET, gated on materiality. The streak is evidence ABOUT THE ADOPTION only while
+        # its rejections compete with the adoption on the same line of attack -- exactly the
+        # argument `reset_ratchet` below makes about stage boundaries. `supervisor.py` has no
+        # stage awareness whatsoever (`grep -c stage` returns 0), so it interleaves arms from
+        # unrelated stages and cross-stage streaks are the NORMAL case, not an edge case: three
+        # rejections from three different axes are three unrelated experiments that look, to a
+        # stage-blind counter, identical to three probes of one hypothesis. The axis is the
+        # closest thing to a stage this module can see without reaching into the supervisor, so
+        # a change of axis starts a fresh streak.
+        #
+        # But a PURE axis reset makes the ratchet inert against the case it exists for. A
+        # genuinely bad adoption degrades every downstream arm, and under a stage-blind
+        # supervisor that evidence arrives round-robin -- data, architecture, optimization,
+        # data, ... -- so a pure reset truncates the streak to 1 forever. Measured: six
+        # consecutive rejections at 10x the floor, spread over three axes, never fired at all.
+        # So the reset is gated on MATERIALITY. A rejection more than
+        # MATERIAL_REJECTION_FLOORS (2 sigma) below baseline is real damage rather than a
+        # sampling wobble and counts toward the streak whatever its axis; only a MARGINAL
+        # rejection -- between one and two floors below -- is discarded on an axis change. That
+        # is precisely the B3 case: a real +0.06 win erased by three arms sitting a hair below
+        # it on three unrelated axes.
+        #
+        # Note the noise floor is the ONLY materiality test being applied here, and it is not
+        # duplicated: a degenerate (near-zero) floor is refused at REGISTRATION, and adding a
+        # second absolute threshold in this module would mask that refusal rather than help it.
+        # MATERIAL_REJECTION_FLOORS scales with the model's own floor for the same reason.
+        #
+        # A streak carried over from before REJECTION_STREAK_AXIS_FIELD existed has no recorded
+        # axis; it is ADOPTED by the current rejection rather than discarded, so an in-flight
+        # campaign neither loses accumulated evidence nor has a phantom axis change invented
+        # for it. A stale axis left behind by another module's reset is inert: an empty streak
+        # always starts fresh.
+        axis = _idea_axis(space, idea_id)
+        material = delta < -MATERIAL_REJECTION_FLOORS * noise_floor
         streak = list(model.meta.get(REJECTION_STREAK_FIELD) or [])
+        streak_axis = model.meta.get(REJECTION_STREAK_AXIS_FIELD)
+        if streak and not material and streak_axis is not None and str(streak_axis) != axis:
+            streak = []
+        model.meta[REJECTION_STREAK_AXIS_FIELD] = axis
         streak.append(idea_id)
         model.meta[REJECTION_STREAK_FIELD] = streak
         model.meta[RATCHET_COUNT_FIELD] = len(streak)

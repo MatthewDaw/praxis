@@ -23,6 +23,16 @@ campaign 4 runs suggested SD 0.0164 while 12 gave 0.0115 -- the small sample was
 artifact that only the larger one exposed. So `measure_noise_floor` reports the sample size and
 the uncertainty alongside the value, and `sigmas` defaults to 2 rather than 1: at one sigma a
 35-arm backlog is expected to manufacture roughly five winners from optimiser noise alone.
+
+WHAT "WINNING" MEANS IS ASKED FOR, NEVER DEFAULTED. `win_condition` used to default to the
+string supervisor.py reads as WIN_ON_ADOPTION, which closes a campaign as WON on its FIRST
+adopted trial -- so a bootstrapped campaign with nine declared stages could end on a 0.001
+improvement in stage one. There is no safe automatic answer (a target metric value is a
+project fact, not a ledger fact), so a missing or bare-adoption-string win_condition is
+REFUSED at setup time, where the failure is cheap and lands on the person who can answer it.
+A floor measured some other way is treated the same: `noise_floor_override` now travels with
+a `noise_floor_method`, which is what lets floor.register_model_with_baseline accept a
+bootstrap-measured floor that disagrees with the SD of the repeats instead of refusing it.
 """
 
 from __future__ import annotations
@@ -33,10 +43,31 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from knowledge.ml_registry.schema import RegistryValidationError
+
 LEDGER_V2_HEADER = ["commit", "metric_value", "memory_gb", "status", "description",
                     "throughput", "diff_lines"]
 REQUIRED_BASELINE_RUN_COUNT = 4
 DEFAULT_SIGMAS = 2.0
+
+# The win_condition string supervisor.parse_win_condition reads as WIN_ON_ADOPTION, which
+# makes win_condition_met return True unconditionally (supervisor.py:262) and closes the
+# campaign as WON on the FIRST adopted trial (supervisor.py:698) with every other declared
+# stage untouched. It was this module's DEFAULT, so every campaign bootstrapped here was
+# armed to close on its first 0.001 improvement unless the caller happened to override it.
+# It is now refused rather than defaulted -- see build_model_meta.
+WIN_ON_ADOPTION = "beats baseline by noise_floor"
+
+WIN_CONDITION_REFUSAL = (
+    "win_condition must be declared explicitly, e.g. {'metric_at_most': 0.80} or "
+    "{'metric_at_least': 0.92} (the direction that means BETTER for this metric). The bare "
+    f"string {WIN_ON_ADOPTION!r} is refused as a declared target: supervisor.win_condition_met "
+    "returns True unconditionally for it (supervisor.py:262), so the campaign closes as WON on "
+    "the FIRST adopted trial (supervisor.py:698) -- a 0.001 improvement ends the campaign with "
+    "every other declared stage untried. What 'winning' means is the one thing the registry "
+    "cannot infer from a ledger, so it is asked for at setup time, where a loud failure is cheap "
+    "and lands on the person who can answer it."
+)
 
 
 @dataclass
@@ -131,10 +162,23 @@ def measure_noise_floor(baselines: list[dict], sigmas: float = DEFAULT_SIGMAS) -
 
 def build_model_meta(*, metric: str, direction: str, baseline_commit: str, noise_floor: float,
                      baseline_throughput: float, diff_size_limit: int,
-                     win_condition: str = "beats baseline by noise_floor",
+                     win_condition: Any,
                      notes: str | None = None, sigmas: float | None = None,
                      baseline_runs: list | None = None,
                      void_throughput_fraction: float | None = None) -> dict[str, Any]:
+    """``win_condition`` is REQUIRED and may not be the bare adoption string.
+
+    It used to default to :data:`WIN_ON_ADOPTION`, which closes the campaign as WON on the
+    first adopted trial. No automatic default can be better than that one is bad: any value
+    this function picks is a guess about what winning means for a campaign the registry knows
+    nothing about, and a guess that ends the campaign early is the most expensive guess
+    available. So it is refused instead -- a caller who genuinely wants first-adoption-wins
+    can still store that string through the plain write path, deliberately.
+    """
+    if win_condition in (None, "") or (
+        isinstance(win_condition, str) and win_condition.strip().lower() == WIN_ON_ADOPTION
+    ):
+        raise RegistryValidationError(WIN_CONDITION_REFUSAL, field="win_condition")
     meta = {
         "metric": metric, "direction": direction, "win_condition": win_condition,
         "baseline": baseline_commit, "noise_floor": noise_floor,
@@ -183,11 +227,23 @@ def build_ideas(backlog: list[dict[str, Any]], *, model_id: str,
 
 
 def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, metric: str,
-              direction: str, diff_size_limit: int, baseline_prefix: str = "baseline",
+              direction: str, diff_size_limit: int, win_condition: Any = None,
+              baseline_prefix: str = "baseline",
               sigmas: float = DEFAULT_SIGMAS, noise_floor_override: float | None = None,
+              noise_floor_method: str | None = None,
               skip_ids: set[str] | None = None, notes: str | None = None,
               void_throughput_fraction: float | None = None) -> BootstrapReport:
     checks, baselines = check_ledger(ledger, baseline_prefix)
+    # A missing win_condition is reported as a failing PRECONDITION, not raised: it belongs
+    # with the other "this campaign is not adjudicable yet, here is exactly why" answers, and
+    # a caller reading the report gets it alongside any ledger problem instead of one at a time.
+    declared = not (
+        win_condition in (None, "")
+        or (isinstance(win_condition, str) and win_condition.strip().lower() == WIN_ON_ADOPTION)
+    )
+    checks.append(Precondition(
+        "win_condition_declared", declared,
+        f"win_condition {win_condition!r}" if declared else WIN_CONDITION_REFUSAL))
     if not all(c.ok for c in checks):
         return BootstrapReport(ready=False, preconditions=checks)
 
@@ -196,6 +252,12 @@ def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, met
         floor["noise_floor_measured_here"] = floor["noise_floor"]
         floor["noise_floor"] = noise_floor_override
         floor["override_reason"] = "caller supplied a floor measured over more runs than the ledger holds"
+        # HOW it was measured travels with the number. floor.register_model_with_baseline
+        # accepts a supplied floor that disagrees with its own recomputation only when the
+        # method is declared, and a bootstrap floor (resampling the eval set) answers a
+        # different question than the SD of repeats does -- a later reader who cannot tell
+        # which is stored cannot interpret a one-sigma margin.
+        floor["noise_floor_method"] = noise_floor_method or "caller_supplied"
 
     # The baseline is the row CLOSEST TO THE MEAN, not the best one, and the distinction is the
     # difference between two paradigms that share this file's vocabulary.
@@ -223,6 +285,7 @@ def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, met
     best = min(baselines, key=lambda b: abs(float(b["metric_value"]) - mean_value))
     meta = build_model_meta(
         metric=metric, direction=direction, baseline_commit=best["commit"],
+        win_condition=win_condition,
         noise_floor=floor["noise_floor"],
         # The SLOWEST healthy baseline, not the median. The VOID gate means "this run was
         # abnormally slow, so do not trust its number", which only works if the line sits BELOW
@@ -240,6 +303,8 @@ def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, met
         diff_size_limit=diff_size_limit, notes=notes, sigmas=sigmas,
         baseline_runs=[b["commit"] for b in baselines],
         void_throughput_fraction=void_throughput_fraction)
+    if "noise_floor_method" in floor:
+        meta["noise_floor_method"] = floor["noise_floor_method"]
     return BootstrapReport(ready=True, preconditions=checks, model_meta=meta,
                            ideas=build_ideas(backlog, model_id=model_id, skip_ids=skip_ids),
                            floor=floor)
