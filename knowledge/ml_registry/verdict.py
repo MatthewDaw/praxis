@@ -73,7 +73,6 @@ from knowledge.ml_registry.floor import (
     scaled_noise_floor,
 )
 from knowledge.ml_registry.lifecycle import (
-    TRIAL_STATUS_SUCCEEDED,
     active_adoption,
     adopt_idea,
     invalidate_adoption,
@@ -81,6 +80,7 @@ from knowledge.ml_registry.lifecycle import (
     reject_idea,
     supersede_adoption,
 )
+from knowledge.ml_registry.domain.status import trial_status_for_verdict
 from knowledge.ml_registry.schema import MODEL, TRIAL, RegistryValidationError
 from knowledge.ml_registry.write_path import Fact, RegistrySpace, mutate_model
 
@@ -281,7 +281,7 @@ def adjudicate_verdict(
     # and the registry scored the truncated mean as a -0.2766 rejection of the entire model family.
     # LedgerRow did not carry `status`, so this could not be seen at all.
     if str(row.status).strip().lower() not in FAIR_RUN_STATUSES:
-        trial.meta["status"] = VERDICT_VOIDED
+        trial.meta["status"] = trial_status_for_verdict(VERDICT_VOIDED).value
         trial.meta["void_reason"] = f"ledger status {row.status!r} is not a fair run"
         return VERDICT_VOIDED
 
@@ -332,7 +332,7 @@ def adjudicate_verdict(
                 field=BASELINE_THROUGHPUT_UNITS_FIELD,
             )
         if row.throughput < baseline_throughput * (1 - void_fraction):
-            trial.meta["status"] = VERDICT_VOIDED
+            trial.meta["status"] = trial_status_for_verdict(VERDICT_VOIDED).value
             trial.meta["void_reason"] = (
                 f"throughput {row.throughput} is more than {void_fraction:.0%} below "
                 f"baseline_throughput {baseline_throughput}"
@@ -355,7 +355,7 @@ def adjudicate_verdict(
     diff_size_limit = float(model.meta["diff_size_limit"])
 
     if delta > noise_floor:
-        trial.meta["status"] = TRIAL_STATUS_SUCCEEDED
+        trial.meta["status"] = trial_status_for_verdict(VERDICT_ADOPTED).value
         mutate_model(
             space,
             model_id,
@@ -374,7 +374,7 @@ def adjudicate_verdict(
     # Symmetric with the strict `delta > noise_floor` adoption test above: a delta of exactly
     # one floor is one standard deviation, i.e. no evidence, in EITHER direction.
     if delta < -noise_floor:
-        trial.meta["status"] = "failed"
+        trial.meta["status"] = trial_status_for_verdict(VERDICT_REJECTED).value
         reject_idea(space, idea_id, "trial fell more than one noise-floor standard deviation below the current baseline")
         # COUNTERFACTUAL ATTRIBUTION. The streak is evidence ABOUT THE ADOPTION, so a
         # rejection joins it only when the adoption is what caused the rejection: the trial
@@ -430,7 +430,7 @@ def adjudicate_verdict(
 
     # stagnant band, closed on both sides: -noise_floor <= delta <= noise_floor
     if row.diff_lines <= diff_size_limit:
-        trial.meta["status"] = "stagnant"
+        trial.meta["status"] = trial_status_for_verdict(VERDICT_PARKED).value
         # A delta of EXACTLY zero is not the same claim as "measured, did not help", and the
         # difference decides whether an axis gets abandoned. Measured on detection 2026-08-20:
         # nms_iou_strict, nms_iou_loose and score_floor_shipped emitted 43,488 / 71,756 / 7,130
@@ -446,7 +446,7 @@ def adjudicate_verdict(
         park_idea(space, idea_id, reactivation_trigger)
         return VERDICT_PARKED
 
-    trial.meta["status"] = "failed"
+    trial.meta["status"] = trial_status_for_verdict(VERDICT_REJECTED).value
     reject_idea(space, idea_id, "stagnant trial breached the model's net-line bound")
     return VERDICT_REJECTED
 

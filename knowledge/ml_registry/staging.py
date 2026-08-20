@@ -31,10 +31,12 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
+from knowledge.ml_registry.domain.status import ANSWERED_IDEA_STATUSES
+
 #: A verdict in any of these states counts as "this arm has been answered", so a stage holding
 #: only such arms is closed. `errored` is deliberately ABSENT: an arm that crashed is not an arm
 #: that lost, and letting a crash close a stage would silently shrink the campaign.
-ANSWERED = frozenset({"adopted", "rejected", "parked", "voided", "superseded"})
+ANSWERED = ANSWERED_IDEA_STATUSES
 
 
 def default_stage_of(item: dict[str, Any]) -> str:

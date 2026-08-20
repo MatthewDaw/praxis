@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from knowledge.ml_registry.schema import IDEA, MODEL, TERMINAL_TRIAL_STATUSES, TRIAL
+from knowledge.ml_registry.domain.status import ANSWERING_TRIAL_STATUSES, terminal
+from knowledge.ml_registry.schema import IDEA, MODEL, TRIAL
 from knowledge.ml_registry.write_path import RegistrySpace
 
 #: Verdict statuses an idea can carry, ordered so a report reads worst-to-best consistently.
@@ -33,8 +34,7 @@ def campaign_status(space: RegistrySpace, model_id: str) -> dict[str, Any]:
 
     ideas = [f for f in space.list_facts(IDEA) if f.meta.get("model_id") == model_id]
     trials = [f for f in space.list_facts(TRIAL) if f.meta.get("model_id") == model_id]
-    in_flight = [t for t in trials
-                 if str(t.meta.get("status", "")) not in TERMINAL_TRIAL_STATUSES]
+    in_flight = [t for t in trials if not _is_terminal(t.meta.get("status"))]
 
     by_status: dict[str, list[str]] = {}
     for idea in ideas:
@@ -339,9 +339,6 @@ def _void_counts(space: RegistrySpace, model_id: str) -> dict[str, int]:
 #: `voided` is absent deliberately: a voided run was unfair, so the question is still open and the
 #: arm must be re-run. `complete`/`running` are absent because the trial is still IN FLIGHT --
 #: `complete` means the training finished and is awaiting adjudication, not that a verdict exists.
-ANSWERING_TRIAL_STATUSES = frozenset({"succeeded", "failed", "stagnant", "superseded"})
-
-
 def idea_verdicts(space: RegistrySpace, model_id: str, *,
                   statuses: frozenset[str] | None = ANSWERING_TRIAL_STATUSES) -> dict[str, str]:
     """``{idea tag: trial status}`` for ideas whose LATEST trial answered them.
@@ -381,3 +378,10 @@ def idea_verdicts(space: RegistrySpace, model_id: str, *,
     return {ideas[i]: str(t.meta.get("status"))
             for i, t in latest.items()
             if statuses is None or str(t.meta.get("status")) in statuses}
+
+
+def _is_terminal(value: object) -> bool:
+    try:
+        return terminal(str(value or ""))
+    except ValueError:
+        return False

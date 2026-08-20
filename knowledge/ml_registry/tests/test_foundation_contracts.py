@@ -20,7 +20,7 @@ def test_ledger_v2_is_byte_stable_and_rejects_legacy_headers():
 def test_status_predicates_distinguish_terminal_fair_answer_and_retry():
     assert terminal("voided") and not fairly_measured("voided") and not answers_question("voided")
     assert retryable("voided")
-    assert fairly_measured("parked") and answers_question("parked")
+    assert fairly_measured("stagnant") and answers_question("stagnant")
     assert not terminal("complete") and not answers_question("complete")
 
 

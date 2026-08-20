@@ -8,6 +8,9 @@ external-ledger checks, ...) belong to later tickets that build on this schema.
 
 from __future__ import annotations
 
+from knowledge.ml_registry.domain.status import (TERMINAL_TRIAL_STATUSES as TERMINAL_TRIAL_STATUSES,
+                                                 TrialStatus)
+
 #: A trial in one of these statuses is FINISHED: it has a verdict, or was deliberately abandoned.
 #: Anything else means the trial is still in flight, and an idea may have only one of those at a
 #: time -- see `write_path.register_trial`. Defined here, in the leaf module, because `lifecycle`
@@ -24,10 +27,7 @@ from __future__ import annotations
 #: "complete" and "running" are NOT terminal, and that is the point. "complete" means the training
 #: run finished and is awaiting adjudication -- a trial in that state is exactly the one a
 #: duplicate dispatch would race.
-STATUS_SUPERSEDED = "superseded"
-TERMINAL_TRIAL_STATUSES: frozenset[str] = frozenset(
-    {"succeeded", "failed", "stagnant", "voided", STATUS_SUPERSEDED}
-)
+STATUS_SUPERSEDED = TrialStatus.SUPERSEDED.value
 
 MODEL = "model"
 IDEA = "idea"
@@ -38,7 +38,7 @@ REGISTRY_CATEGORIES: tuple[str, ...] = (MODEL, IDEA, TRIAL)
 # The trial status meaning "this run is unreliable on its face, re-run it" -- the single source
 # of truth every module that needs to exclude a voided trial (supervisor's max_trials budget,
 # insight's cross-model trial counts, ...) imports rather than re-literals.
-TRIAL_STATUS_VOIDED = "voided"
+TRIAL_STATUS_VOIDED = TrialStatus.VOIDED.value
 
 # The "judging fields" a registered model is compared against, plus its baseline --
 # R1's acceptance condition and R11's registration contract agree on this set.
