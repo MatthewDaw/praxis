@@ -1,0 +1,19 @@
+{
+  "artifacts": [
+    {
+      "coverage": 0.9,
+      "created_at": "2026-08-20T12:34:56+00:00",
+      "dataset_manifest_hash": "de6dccebfb6c86010c8883f7add2ca1ec51cb6c031e0ba9b5f0864b0c4402da1",
+      "id": "artifact-weights-v1",
+      "input_artifact_ids": [],
+      "model_id": "model-canonical",
+      "prediction_manifest_hash": "98efcbfbd577a6d89ea01ca9d55d8ea46b913f5fd24af44bf40004265895856f",
+      "split_manifest_hash": "5a32dc7c592318f07b9dcaf95dda95b617075c81c20c85901e6c287cd523ab86",
+      "superseded_at": null,
+      "superseded_by": null,
+      "verdict": "adopted"
+    }
+  ],
+  "campaigns": [],
+  "schema_version": 1
+}

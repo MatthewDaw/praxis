@@ -1,0 +1,24 @@
+{
+  "active": {
+    "sha256:6372533ad5d27345efc4dded0db6db4a37607426757c5e113cb700fb07cac6a7": "sha256:f4053558799dbb6424cc558db89e65b9cb19ae3826edb0c5c308addd297798e6"
+  },
+  "entries": {
+    "sha256:f4053558799dbb6424cc558db89e65b9cb19ae3826edb0c5c308addd297798e6": {
+      "checksum": "sha256:predictions",
+      "coverage": 0.9,
+      "entry_id": "sha256:f4053558799dbb6424cc558db89e65b9cb19ae3826edb0c5c308addd297798e6",
+      "key": {
+        "dataset_manifest": "de6dccebfb6c86010c8883f7add2ca1ec51cb6c031e0ba9b5f0864b0c4402da1",
+        "feature_schema": "features-v1",
+        "preprocessing": "preprocess-v1",
+        "split": "5a32dc7c592318f07b9dcaf95dda95b617075c81c20c85901e6c287cd523ab86",
+        "upstream_artifact_id": "artifact-weights-v1",
+        "upstream_fit_id": "fit-canonical"
+      },
+      "prediction_scope": "oof",
+      "uri": "file:///canonical/predictions.parquet"
+    }
+  },
+  "superseded": {},
+  "version": 1
+}
