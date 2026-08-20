@@ -140,7 +140,8 @@ while IFS='|' read -r name space model stages; do
   say "$name: keepalive attached; this blocks until the campaign reaches a terminal state"
   "$KEEPALIVE" --session "$session" --ledger "$REPO/ml/$name/results.tsv" \
       --space-file "$space" --model-id "$model" --stages "$stages" \
-      --praxis "$PRAXIS" --poll "$POLL" --max-nudges "$MAX_NUDGES"
+      --praxis "$PRAXIS" --poll "$POLL" --max-nudges "$MAX_NUDGES" \
+      --watch-dir "$REPO/src"
   rc=$?
 
   # The session is torn down whatever happened: a finished campaign's session left alive holds a

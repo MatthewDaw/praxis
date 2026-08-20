@@ -22,9 +22,10 @@
 #   COMPLETE  -- campaign-complete exits 0. The real end.
 #   BUDGET    -- --max-nudges reached. The loop refuses to run forever unattended.
 #   GONE      -- the tmux session died. Nothing to nudge.
-#   STUCK     -- the ledger has not grown across --stall-nudges consecutive nudges. Nudging harder
-#                will not fix a campaign with nothing left to run, and a keepalive that spins on a
-#                dead campaign burns a subscription while looking busy.
+#   STUCK     -- across --stall-nudges consecutive nudges the agent produced NO ledger row and
+#                touched NO source file (see --watch-dir). Nudging harder will not fix a campaign
+#                with nothing left to run, and a keepalive that spins on a dead campaign burns a
+#                subscription while looking busy. Authoring counts as progress -- see below.
 #
 # Usage:
 #   af-ml-supervise-keepalive.sh --session ml-supervise-detection \
@@ -33,12 +34,15 @@
 #       --model-id model-533010b57800 \
 #       --stages representation,architecture,augmentation,training,tuning,capacity \
 #       [--praxis /workspace/praxis] [--poll 60] [--idle-polls 3] \
-#       [--max-nudges 50] [--stall-nudges 3] [--message-file FILE]
+#       [--max-nudges 50] [--stall-nudges 6] [--message-file FILE]
+#       [--watch-dir DIR]   # source tree whose writes count as progress; without it, only the
+#                           # ledger does, which mistakes arm-authoring for a stall
 set -uo pipefail
 
 PRAXIS="${PRAXIS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-SESSION=""; LEDGER=""; SPACE=""; MODEL=""; STAGES=""; MSG_FILE=""
-POLL=60; IDLE_POLLS=3; MAX_NUDGES=50; STALL_NUDGES=3
+SESSION=""; LEDGER=""; SPACE=""; MODEL=""; STAGES=""; MSG_FILE=""; WATCH_DIR=""
+# STALL_NUDGES is 6, not 3: authoring an arm legitimately spans several turns and several nudges.
+POLL=60; IDLE_POLLS=3; MAX_NUDGES=50; STALL_NUDGES=6
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -53,6 +57,7 @@ while [ $# -gt 0 ]; do
     --max-nudges) MAX_NUDGES="$2"; shift 2;;
     --stall-nudges) STALL_NUDGES="$2"; shift 2;;
     --message-file) MSG_FILE="$2"; shift 2;;
+    --watch-dir) WATCH_DIR="$2"; shift 2;;
     *) echo "unknown argument: $1" >&2; exit 2;;
   esac
 done
@@ -70,6 +75,22 @@ nudge_text() { if [ -n "$MSG_FILE" ] && [ -r "$MSG_FILE" ]; then cat "$MSG_FILE"
 
 ledger_rows() { [ -r "$LEDGER" ] && wc -l < "$LEDGER" | tr -d ' ' || echo 0; }
 
+# PROGRESS IS NOT THE SAME AS A LEDGER ROW, and conflating them declared a working agent dead.
+# Measured on detection 2026-08-20: the agent spent ~6 minutes authoring a new arm -- writing
+# det_lab/families.py and det_lab/rink_mask.py and pulling model weights -- across several turns,
+# returning to the prompt between each. The ledger could not grow until that arm RAN, so a
+# ledger-only stall test counted three nudges and gave up. The arm it was writing then scored
+# 0.6123 against a 0.6076 baseline: the first arm in the campaign to beat the incumbent, produced
+# while the watchdog was calling it stuck. Authoring IS the work, so the newest source mtime counts
+# as progress alongside the ledger.
+newest_source_mtime() {
+  [ -n "$WATCH_DIR" ] && [ -d "$WATCH_DIR" ] || { echo 0; return; }
+  find "$WATCH_DIR" -type f \( -name '*.py' -o -name '*.json' -o -name '*.tsv' \) \
+       -newermt '-1 day' -printf '%T@\n' 2>/dev/null | sort -rn | head -1 | cut -d. -f1 || echo 0
+}
+
+progress_token() { echo "$(ledger_rows):$(newest_source_mtime)"; }
+
 campaign_complete() {
   (cd "$PRAXIS" && PRAXIS_DB_DISABLED=1 uv run python -m knowledge.ml_registry.cli \
       campaign-complete --space-file "$SPACE" --model-id "$MODEL" --stages "$STAGES" >/dev/null 2>&1)
@@ -83,8 +104,8 @@ session_idle() {
   return 0
 }
 
-nudges=0; idle_run=0; stall=0; last_rows="$(ledger_rows)"
-say "watching $SESSION; ledger $LEDGER at $last_rows rows; poll ${POLL}s, idle after $IDLE_POLLS polls"
+nudges=0; idle_run=0; stall=0; last_progress="$(progress_token)"
+say "watching $SESSION; ledger $LEDGER at $(ledger_rows) rows; poll ${POLL}s, idle after $IDLE_POLLS polls; progress = ledger rows OR source writes under ${WATCH_DIR:-<none>}"
 
 while :; do
   sleep "$POLL"
@@ -110,17 +131,18 @@ while :; do
   fi
 
   rows="$(ledger_rows)"
-  if [ "$rows" -le "$last_rows" ]; then
+  progress="$(progress_token)"
+  if [ "$progress" = "$last_progress" ]; then
     stall=$((stall + 1))
     if [ "$stall" -ge "$STALL_NUDGES" ]; then
-      say "STUCK: $STALL_NUDGES consecutive nudges and the ledger is still $rows rows. The agent is"
-      say "STUCK: idling for a reason nudging cannot fix -- read the pane. Stopping."
+      say "STUCK: $STALL_NUDGES consecutive nudges with NO ledger row and NO source file touched."
+      say "STUCK: not even authoring. Idling for a reason nudging cannot fix -- read the pane."
       exit 5
     fi
   else
     stall=0
   fi
-  last_rows="$rows"
+  last_progress="$progress"
 
   nudges=$((nudges + 1))
   say "idle for $((IDLE_POLLS * POLL))s at $rows ledger rows -- nudge $nudges/$MAX_NUDGES (stall $stall/$STALL_NUDGES)"
