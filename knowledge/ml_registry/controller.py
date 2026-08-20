@@ -13,7 +13,7 @@ import tempfile
 import time
 from typing import Any, Mapping, Protocol, Sequence
 
-from knowledge.ml_registry.portfolio import CampaignStatus, Portfolio, PortfolioValidationError
+from knowledge.ml_registry.portfolio import CampaignStatus, Portfolio
 from knowledge.ml_registry.scheduler import JobSpec, JobState, ResourceProfile, ScheduleDecision, schedule
 
 
@@ -139,6 +139,7 @@ class PortfolioController:
             return
         values = dict(payload)
         values.pop("artifact_id", None)
+        values.pop("producer_campaign_id", None)
         self.portfolio.register_artifact(artifact_id, **values)
 
     def tick(self) -> TickResult:
@@ -240,4 +241,6 @@ class ExecutorProcessBackend:
         if not state_path.exists():
             return PollResult("running")
         state = json.loads(state_path.read_text())
-        return PollResult(str(state["state"]), message=state.get("message"))
+        return PollResult(
+            str(state["state"]), artifact=state.get("artifact"), message=state.get("message")
+        )

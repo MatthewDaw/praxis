@@ -61,6 +61,41 @@ def test_failure_and_checkpoint_metadata_are_durable(tmp_path: Path):
     assert (state["checkpoint_uri"], state["resume_from"]) == ("artifact://next", "artifact://prior")
 
 
+def test_declared_artifact_result_is_validated_and_embedded(tmp_path: Path):
+    result_path = tmp_path / "artifact.json"
+    payload = {
+        "artifact_id": "fit-v1", "model_id": "tracking", "verdict": "adopted",
+        "dataset_manifest_hash": "data", "split_manifest_hash": "split",
+        "prediction_manifest_hash": "pred", "coverage": 1,
+        "producer_campaign_id": "campaign",
+    }
+    command = (sys.executable, "-c", f"import json; open({str(result_path)!r}, 'w').write(json.dumps({payload!r}))")
+    result = LocalSubprocessBackend(log_dir=tmp_path / "logs").execute(
+        job(*command, artifact_result_path=str(result_path)), state_path=tmp_path / "state.json",
+    )
+    assert result.state == "completed"
+    assert result.artifact == payload
+    assert json.loads((tmp_path / "state.json").read_text())["artifact"]["artifact_id"] == "fit-v1"
+
+
+@pytest.mark.parametrize("payload, match", [
+    ({}, "missing/invalid fields"),
+    ({"artifact_id": "x", "model_id": "m", "verdict": "adopted",
+      "dataset_manifest_hash": "d", "split_manifest_hash": "s",
+      "prediction_manifest_hash": "p", "coverage": 1,
+      "producer_campaign_id": "some-other-campaign"}, "does not match"),
+])
+def test_completed_process_with_invalid_required_artifact_fails(tmp_path: Path, payload, match):
+    result_path = tmp_path / "artifact.json"
+    result_path.write_text(json.dumps(payload))
+    result = LocalSubprocessBackend(log_dir=tmp_path / "logs").execute(
+        job(sys.executable, "-c", "pass", artifact_result_path=str(result_path)),
+        state_path=tmp_path / "state.json",
+    )
+    assert result.state == "failed"
+    assert match in result.message
+
+
 def test_backend_registration_is_pluggable():
     class Stub:
         pass

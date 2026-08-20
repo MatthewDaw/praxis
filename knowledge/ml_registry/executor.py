@@ -30,6 +30,7 @@ class ExecutionResult:
     checkpoint_uri: str | None
     resume_from: str | None
     message: str | None = None
+    artifact: Mapping[str, object] | None = None
 
 
 class ExecutionBackend(Protocol):
@@ -97,6 +98,36 @@ class LocalSubprocessBackend:
         environment.update(overrides)
         return environment
 
+    @staticmethod
+    def _artifact(job: JobSpec) -> dict[str, object] | None:
+        if job.artifact_result_path is None:
+            return None
+        path = Path(job.artifact_result_path)
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ExecutorError(f"artifact result is unavailable or malformed: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ExecutorError("artifact result must be a JSON object")
+        required_strings = (
+            "artifact_id", "model_id", "verdict", "dataset_manifest_hash",
+            "split_manifest_hash", "prediction_manifest_hash", "producer_campaign_id",
+        )
+        missing = [name for name in required_strings
+                   if not isinstance(payload.get(name), str) or not payload[name].strip()]
+        if missing:
+            raise ExecutorError("artifact result has missing/invalid fields: " + ", ".join(missing))
+        if payload["producer_campaign_id"] != job.campaign_id:
+            raise ExecutorError(
+                f"artifact producer_campaign_id {payload['producer_campaign_id']!r} does not match "
+                f"job campaign_id {job.campaign_id!r}"
+            )
+        coverage = payload.get("coverage")
+        if (not isinstance(coverage, (int, float)) or isinstance(coverage, bool)
+                or not 0 <= coverage <= 1):
+            raise ExecutorError("artifact result coverage must be a number between 0 and 1")
+        return payload
+
     def execute(self, job: JobSpec, *, state_path: Path, dry_run: bool = False) -> ExecutionResult:
         if not job.command or not all(isinstance(arg, str) and arg for arg in job.command):
             raise ExecutorError("job command must be a non-empty argv vector of non-empty strings")
@@ -137,9 +168,18 @@ class LocalSubprocessBackend:
             stdout_path.write_bytes(completed.stdout)
             stderr_path.write_bytes(completed.stderr)
             final_state = "completed" if completed.returncode == 0 else "failed"
+            artifact = None
+            message = None
+            if final_state == "completed":
+                try:
+                    artifact = self._artifact(job)
+                except ExecutorError as exc:
+                    final_state = "failed"
+                    message = str(exc)
             result = ExecutionResult(
                 job.campaign_id, final_state, completed.returncode, started, time.time(),
                 str(stdout_path), str(stderr_path), job.checkpoint_uri, job.resume_from,
+                message, artifact,
             )
         except subprocess.TimeoutExpired as exc:
             stdout_path.write_bytes(exc.stdout or b"")

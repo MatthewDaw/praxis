@@ -1,8 +1,17 @@
 from pathlib import Path
+import json
+import sys
+import time
 
 import pytest
 
-from knowledge.ml_registry.controller import ControllerError, PollResult, PortfolioController, portfolio_schedule
+from knowledge.ml_registry.controller import (
+    ControllerError,
+    ExecutorProcessBackend,
+    PollResult,
+    PortfolioController,
+    portfolio_schedule,
+)
 from knowledge.ml_registry.portfolio import ArtifactDependency, CampaignStatus, Portfolio
 from knowledge.ml_registry.scheduler import JobState
 
@@ -49,7 +58,8 @@ class FakeBackend:
 
 def test_hard_cap_allows_only_two_and_running_one_allows_one():
     portfolio = Portfolio()
-    for cid in ("a", "b", "c"): ready(portfolio, cid)
+    for cid in ("a", "b", "c"):
+        ready(portfolio, cid)
     first = portfolio_schedule(portfolio, [spec("a"), spec("b"), spec("c")], {}, RESOURCES)
     assert len(first.jobs) == 2
     second = portfolio_schedule(portfolio, [spec("a"), spec("b"), spec("c")],
@@ -82,7 +92,8 @@ def test_supersession_immediately_removes_downstream_frontier():
 
 def test_controller_refills_restarts_without_duplicate_and_completes(tmp_path: Path):
     portfolio = Portfolio()
-    for cid in ("a", "b", "c"): ready(portfolio, cid)
+    for cid in ("a", "b", "c"):
+        ready(portfolio, cid)
     backend = FakeBackend()
     kwargs = dict(portfolio=portfolio, campaign_specs=[spec("a"), spec("b"), spec("c")],
                   capacity=RESOURCES, backend=backend, state_path=tmp_path / "controller.json")
@@ -130,7 +141,8 @@ def test_controller_reports_terminally_blocked_portfolio(tmp_path: Path):
 
 def test_run_continuously_refills_without_busy_spin(tmp_path: Path):
     portfolio = Portfolio()
-    for cid in ("a", "b", "c"): ready(portfolio, cid)
+    for cid in ("a", "b", "c"):
+        ready(portfolio, cid)
     backend = FakeBackend()
     sleeps = []
     def sleeper(interval):
@@ -162,3 +174,41 @@ def test_failed_job_waits_for_backoff_then_retries(tmp_path: Path):
     now[0] = 110
     assert controller.tick().started == ("a",)
     assert backend.submitted == ["a", "a"]
+
+
+def test_real_executor_process_publishes_artifact_and_unlocks_downstream(tmp_path: Path):
+    portfolio = Portfolio()
+    ready(portfolio, "up", model="up")
+    portfolio.add_campaign("down", "down", [dep("fit", "up")]).status = CampaignStatus.READY
+    artifact_path = tmp_path / "produced-artifact.json"
+    payload = {
+        "artifact_id": "fit", "model_id": "up", "verdict": "adopted",
+        "dataset_manifest_hash": "d-fit", "split_manifest_hash": "s-fit",
+        "prediction_manifest_hash": "p-fit", "coverage": 1,
+        "producer_campaign_id": "up",
+    }
+    write_artifact = (
+        sys.executable, "-c",
+        f"import json; open({str(artifact_path)!r}, 'w').write(json.dumps({payload!r}))",
+    )
+    controller = PortfolioController(
+        portfolio=portfolio,
+        campaign_specs=[
+            spec("up", command=list(write_artifact), artifact_result_path=str(artifact_path)),
+            spec("down", command=[sys.executable, "-c", "pass"]),
+        ],
+        capacity=RESOURCES,
+        backend=ExecutorProcessBackend(tmp_path / "dispatch"),
+        state_path=tmp_path / "controller.json",
+    )
+    assert controller.tick().started == ("up",)
+    executor_state = tmp_path / "dispatch" / "up.state.json"
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if executor_state.exists() and json.loads(executor_state.read_text()).get("state") != "running":
+            break
+        time.sleep(.02)
+    assert json.loads(executor_state.read_text())["state"] == "completed"
+    result = controller.tick()
+    assert "fit" in portfolio.artifacts
+    assert result.started == ("down",)

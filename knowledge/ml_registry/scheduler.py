@@ -82,6 +82,7 @@ class JobSpec:
     preemptible: bool = False
     max_retries: int = 0
     timeout_minutes: int | None = None
+    artifact_result_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -228,6 +229,7 @@ def schedule(
             preemptible=bool(campaign.get("preemptible", False)),
             max_retries=int(campaign.get("max_retries", 0)),
             timeout_minutes=int(campaign.get("timeout_minutes", resources.wall_time_minutes)),
+            artifact_result_path=campaign.get("artifact_result_path"),
         ))
         available = available.subtract(resources)
         if cost_left is not None:
