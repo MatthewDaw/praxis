@@ -56,7 +56,7 @@ def test_an_empty_stage_blocks_rather_than_closing_silently() -> None:
         _full(space, mid, s)
     space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
 
-    out = campaign_completeness(space, mid, STAGES)
+    out = campaign_completeness(space, mid, STAGES, require_convergence=False)
     assert not out["done"]
     blocked = [b for b in out["blocking"] if b["kind"] == "stage_never_authored"]
     assert [b["stage"] for b in blocked] == ["tuning"]
@@ -74,14 +74,15 @@ def test_a_campaign_with_no_convergence_run_is_not_finished() -> None:
     assert any(b["kind"] == "no_convergence_run" for b in out["blocking"])
 
 
-def test_all_stages_populated_closed_and_converged_is_done() -> None:
+def test_all_stages_closed_but_truthy_legacy_convergence_is_not_done() -> None:
     space, mid = _space()
     for s in STAGES:
         _full(space, mid, s)
     space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
 
     out = campaign_completeness(space, mid, STAGES)
-    assert out["done"], out["blocking"]
+    assert not out["done"]
+    assert any(item["kind"] == "invalid_convergence" for item in out["blocking"])
 
 
 def test_an_open_stage_blocks() -> None:
@@ -91,7 +92,7 @@ def test_an_open_stage_blocks() -> None:
     _idea(space, mid, "tu0", "tuning")                       # untried
     space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
 
-    out = campaign_completeness(space, mid, STAGES)
+    out = campaign_completeness(space, mid, STAGES, require_convergence=False)
     assert any(b["kind"] == "stage_open" and b["stage"] == "tuning" for b in out["blocking"])
 
 
@@ -131,7 +132,7 @@ def test_an_arm_whose_dependency_is_not_an_idea_does_not_hold_its_stage_open() -
                           "depends_on": ["player tracks on the same frames"]})
     space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
 
-    out = campaign_completeness(space, mid, STAGES)
+    out = campaign_completeness(space, mid, STAGES, require_convergence=False)
     assert out["done"], out["blocking"]
 
 
@@ -204,7 +205,9 @@ def test_in_flight_and_awaiting_adjudication_trials_never_measure_or_answer(stat
     iid = _idea(space, mid, "arm", "representation")
     _trial(space, mid, iid, "candidate", status=status)
     space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
-    out = campaign_completeness(space, mid, ("representation",), min_measured=1)
+    out = campaign_completeness(
+        space, mid, ("representation",), min_measured=1, require_convergence=False,
+    )
     assert not out["done"]
     assert out["coverage"][0]["measured"] == 0
     assert any(item["kind"] == "stage_open" for item in out["blocking"])
@@ -216,7 +219,9 @@ def test_unfair_abandoned_latest_trials_are_retryable_not_measurements(status) -
     iid = _idea(space, mid, "arm", "representation")
     _trial(space, mid, iid, "candidate", status=status)
     space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
-    out = campaign_completeness(space, mid, ("representation",), min_measured=1)
+    out = campaign_completeness(
+        space, mid, ("representation",), min_measured=1, require_convergence=False,
+    )
     assert not out["done"]
     assert out["coverage"][0]["measured"] == 0
     assert any(item["kind"] == "awaiting_rerun" for item in out["blocking"])
@@ -244,7 +249,9 @@ def test_latest_fair_retry_wins_over_an_older_void() -> None:
     _trial(space, mid, iid, "void", status="voided")
     _trial(space, mid, iid, "retry", status="failed")
     space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
-    out = campaign_completeness(space, mid, ("representation",), min_measured=1)
+    out = campaign_completeness(
+        space, mid, ("representation",), min_measured=1, require_convergence=False,
+    )
     assert out["done"], out["blocking"]
     assert out["coverage"][0]["measured"] == 1
 
@@ -269,21 +276,18 @@ def _otherwise_complete_with_convergence(value):
     return campaign_completeness(space, mid, STAGES)
 
 
-@pytest.mark.xfail(strict=True, reason="finalize step must replace truthy malformed convergence metadata")
 def test_malformed_truthy_convergence_does_not_complete_campaign() -> None:
     out = _otherwise_complete_with_convergence({"artifact": True})
     assert not out["done"]
     assert any(item["kind"] == "invalid_convergence" for item in out["blocking"])
 
 
-@pytest.mark.xfail(strict=True, reason="finalize step must bind convergence to current adopted lineage")
 def test_wrong_lineage_convergence_does_not_complete_campaign() -> None:
     out = _otherwise_complete_with_convergence({"artifact_id": "fit", "lineage_id": "superseded"})
     assert not out["done"]
     assert any(item["kind"] == "wrong_lineage_convergence" for item in out["blocking"])
 
 
-@pytest.mark.xfail(strict=True, reason="finalize step must reject stale convergence artifacts")
 def test_stale_convergence_does_not_complete_campaign() -> None:
     out = _otherwise_complete_with_convergence({"artifact_id": "fit", "stale": True})
     assert not out["done"]

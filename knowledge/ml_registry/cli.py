@@ -716,6 +716,11 @@ def main(argv: list[str] | None = None) -> int:
              "representation,architecture,augmentation,training,tuning,capacity")
     complete_p.add_argument("--min-measured", type=int, default=3)
     complete_p.add_argument(
+        "--artifact-store",
+        help="canonical ArtifactStore root containing the PromotionRecord; required for "
+             "production completion unless convergence is explicitly waived",
+    )
+    complete_p.add_argument(
         "--no-require-convergence", action="store_true",
         help="a campaign that only ever meant to SELECT, never to ship. Deliberate, not a default")
     complete_p.add_argument("--json", action="store_true")
@@ -1099,11 +1104,15 @@ def main(argv: list[str] | None = None) -> int:
                        f"it will fire again on the next NEW void of this kind")
             return 0
         if args.command == "campaign-complete":
+            from knowledge.ml_registry.storage import ArtifactStore
+
             out = campaign_completeness(
                 RegistrySpace.load(Path(args.space_file)), args.model_id,
                 tuple(x.strip() for x in args.stages.split(",") if x.strip()),
                 min_measured=args.min_measured,
-                require_convergence=not args.no_require_convergence)
+                require_convergence=not args.no_require_convergence,
+                promotion_source=(ArtifactStore(args.artifact_store)
+                                  if args.artifact_store else None))
             if args.json:
                 print(json.dumps(out, indent=2))
             elif out["done"]:

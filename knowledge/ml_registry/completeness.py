@@ -28,9 +28,11 @@ Each check answers a different way of being unfinished, and they are genuinely d
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Protocol
 
+from knowledge.ml_registry.contracts import CampaignArtifact, PromotionRecord
 from knowledge.ml_registry.domain.status import answers_question, retryable
+from knowledge.ml_registry.lifecycle import active_adoption
 from knowledge.ml_registry.schema import IDEA, MODEL, TRIAL
 from knowledge.ml_registry.report import idea_verdicts
 from knowledge.ml_registry.staging import stage_coverage, unreachable
@@ -41,9 +43,16 @@ from knowledge.ml_registry.write_path import RegistrySpace
 CONVERGENCE_FIELD = "convergence_run"
 
 
+class PromotionSource(Protocol):
+    def promotion_for_model(self, model_id: str) -> PromotionRecord | None: ...
+
+    def verify_artifact(self, artifact_id: str) -> CampaignArtifact: ...
+
+
 def campaign_completeness(space: RegistrySpace, model_id: str, stages: Sequence[str], *,
                           stage_of=None, min_measured: int = 3,
-                          require_convergence: bool = True) -> dict[str, Any]:
+                          require_convergence: bool = True,
+                          promotion_source: PromotionSource | None = None) -> dict[str, Any]:
     """Whether the campaign may stop, and every reason it may not.
 
     Returns ``{"done": bool, "blocking": [{kind, stage, detail}, ...]}``. A supervising loop runs
@@ -122,15 +131,10 @@ def campaign_completeness(space: RegistrySpace, model_id: str, stages: Sequence[
             "detail": f"retryable arms are UNMEASURED, not answered: {', '.join(rerun)}",
         })
 
-    if require_convergence and not model.meta.get(CONVERGENCE_FIELD):
-        blocking.append({
-            "kind": "no_convergence_run", "stage": "",
-            "detail": "every arm so far is a short cross-validation probe tuned to DISCRIMINATE "
-                      "between candidates, not a trained model. Train the winning configuration "
-                      "to convergence, record it on the model as "
-                      f"{CONVERGENCE_FIELD!r}, and only then is the campaign finished. Selecting "
-                      "a winner and never training it is half a job.",
-        })
+    if require_convergence:
+        convergence_blocker = _convergence_blocker(space, model_id, model.meta, promotion_source)
+        if convergence_blocker is not None:
+            blocking.append(convergence_blocker)
 
     return {"model_id": model_id, "done": not blocking, "blocking": blocking,
             "coverage": coverage}
@@ -153,3 +157,59 @@ def _retryable(value: object) -> bool:
         return retryable(str(value or ""))
     except ValueError:
         return False
+
+
+def _convergence_blocker(
+    space: RegistrySpace,
+    model_id: str,
+    model_meta: dict[str, Any],
+    promotion_source: PromotionSource | None,
+) -> dict[str, str] | None:
+    marker = model_meta.get(CONVERGENCE_FIELD)
+    if promotion_source is None:
+        if not marker:
+            return _blocker(
+                "no_convergence_run",
+                "every arm so far is a short cross-validation probe tuned to DISCRIMINATE "
+                "between candidates, not a trained model. Finalize the winning configuration "
+                "into a canonical PromotionRecord before declaring the campaign complete.",
+            )
+        if isinstance(marker, dict) and marker.get("stale") is True:
+            return _blocker("stale_convergence", "convergence metadata names a stale artifact")
+        if isinstance(marker, dict) and marker.get("lineage_id"):
+            return _blocker(
+                "wrong_lineage_convergence",
+                "convergence metadata is not a canonical promotion bound to the current adoption",
+            )
+        return _blocker(
+            "invalid_convergence",
+            "truthy convergence metadata is not a canonical PromotionRecord lookup",
+        )
+    try:
+        promotion = promotion_source.promotion_for_model(model_id)
+    except Exception as exc:
+        return _blocker("invalid_convergence", f"canonical promotion lookup failed: {exc}")
+    if promotion is None:
+        return _blocker("no_convergence_run", "no canonical PromotionRecord exists for this model")
+    if promotion.model_id != model_id or not promotion.compatibility_passed:
+        return _blocker("invalid_convergence", "canonical PromotionRecord is malformed or incompatible")
+    adopted = active_adoption(space, model_id)
+    if adopted is None or adopted.meta.get("adopted_trial_id") != promotion.adopted_trial_id:
+        return _blocker(
+            "wrong_lineage_convergence",
+            "canonical promotion is not bound to the current adopted trial",
+        )
+    try:
+        artifact = promotion_source.verify_artifact(promotion.convergence_artifact_id)
+    except Exception as exc:
+        return _blocker("stale_convergence", f"convergence artifact is missing or tampered: {exc}")
+    if artifact.trial_id != promotion.adopted_trial_id or artifact.lineage_id != promotion.lineage_id:
+        return _blocker(
+            "wrong_lineage_convergence",
+            "convergence artifact is not bound to the current adopted lineage",
+        )
+    return None
+
+
+def _blocker(kind: str, detail: str) -> dict[str, str]:
+    return {"kind": kind, "stage": "", "detail": detail}
