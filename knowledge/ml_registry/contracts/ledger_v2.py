@@ -4,6 +4,7 @@ import csv
 from dataclasses import dataclass
 from enum import Enum
 import io
+from pathlib import Path
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
@@ -141,6 +142,161 @@ class LedgerProjection:
     metric_values: Mapping[str, float]
     throughputs: Mapping[str, float]
     throughput_units: ThroughputUnit | None
+
+
+@dataclass(frozen=True)
+class LegacyLedgerMeasurement:
+    """A scored row projected from either LedgerV2 or the historical ``val_bpb`` form."""
+
+    commit: str
+    metric_value: float
+    throughput: float | None
+    diff_lines: float | None
+    status: str
+
+
+@dataclass(frozen=True)
+class LedgerCompatibilityProjection:
+    """Behaviour-neutral views used while legacy ledgers migrate to strict LedgerV2.
+
+    Parsing lives here so callers cannot drift on headers, blank/unscored rows, status
+    fairness, or duplicate join keys.  This adapter deliberately does not weaken
+    :meth:`LedgerV2.parse`: historical ``val_bpb`` and partial ledgers remain compatibility
+    inputs, not new versions of the wire contract.
+    """
+
+    has_header: bool
+    header: tuple[str, ...]
+    raw_rows: tuple[Mapping[str, str], ...]
+    commits: frozenset[str]
+    metric_values: Mapping[str, float]
+    duplicate_fair_metric_commits: tuple[str, ...]
+    measurements: Mapping[str, LegacyLedgerMeasurement]
+    duplicate_fair_commits: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LedgerCompatibilityHeader:
+    """Header-only view for callers whose validation must precede body consumption."""
+
+    has_header: bool
+    columns: tuple[str, ...]
+
+
+def read_ledger_compatibility_header(path: Path) -> LedgerCompatibilityHeader:
+    """Read only the first TSV record, preserving empty-file versus blank-header semantics."""
+    with path.open(newline="") as stream:
+        reader = csv.reader(stream, delimiter="\t")
+        try:
+            return LedgerCompatibilityHeader(
+                True, tuple(column.strip() for column in next(reader)),
+            )
+        except StopIteration:
+            return LedgerCompatibilityHeader(False, ())
+
+
+def read_ledger_compatibility(path: Path) -> LedgerCompatibilityProjection:
+    """Read one external TSV once and expose canonical legacy-compatible projections."""
+    with path.open(newline="") as stream:
+        reader = csv.reader(stream, delimiter="\t")
+        try:
+            header = tuple(column.strip() for column in next(reader))
+        except StopIteration:
+            return LedgerCompatibilityProjection(
+                False, (), (), frozenset(), MappingProxyType({}), (), MappingProxyType({}), (),
+            )
+
+        raw_rows: list[Mapping[str, str]] = []
+        commits: set[str] = set()
+        metric_values: dict[str, float] = {}
+        fair_metric_keys: set[str] = set()
+        duplicate_metric_keys: set[str] = set()
+        measurements: dict[str, LegacyLedgerMeasurement] = {}
+        fair_keys: set[str] = set()
+        duplicates: set[str] = set()
+        commit_at = header.index("commit") if "commit" in header else None
+        metric_at = next(
+            (header.index(column) for column in ("metric_value", "val_bpb") if column in header),
+            None,
+        )
+        throughput_at = header.index("throughput") if "throughput" in header else None
+        diff_lines_at = header.index("diff_lines") if "diff_lines" in header else None
+        status_at = header.index("status") if "status" in header else None
+
+        for fields in reader:
+            if not fields or not any(column.strip() for column in fields):
+                continue
+            raw_rows.append(MappingProxyType(dict(zip(header, fields))))
+            # The historical commit-only reader intentionally uses column zero even when the
+            # header is malformed.  Preserve that compatibility while named projections require
+            # the canonical commit column below.
+            if fields[0].strip():
+                commits.add(fields[0].strip())
+            # The value-only reader historically consumes columns zero and one while resolving
+            # only ``status`` by name.  Keep that legacy projection explicit; the verdict view
+            # below remains fully column-named.
+            if len(fields) >= 2 and fields[0].strip():
+                try:
+                    positional_metric = float(fields[1])
+                except ValueError:
+                    pass
+                else:
+                    positional_commit = fields[0].strip()
+                    positional_status = (
+                        fields[status_at].strip()
+                        if status_at is not None and len(fields) > status_at
+                        else ""
+                    )
+                    if positional_status.lower() not in FAIR_LEDGER_STATUSES:
+                        if positional_commit not in fair_metric_keys:
+                            metric_values[positional_commit] = positional_metric
+                    else:
+                        if positional_commit in fair_metric_keys:
+                            duplicate_metric_keys.add(positional_commit)
+                        fair_metric_keys.add(positional_commit)
+                        metric_values[positional_commit] = positional_metric
+            if commit_at is None or metric_at is None:
+                continue
+            widest = max(commit_at, metric_at, throughput_at or 0, diff_lines_at or 0,
+                         status_at or 0)
+            if len(fields) <= widest or not fields[commit_at].strip():
+                continue
+            try:
+                metric_value = float(fields[metric_at])
+            except ValueError:
+                continue
+            try:
+                throughput = (None if throughput_at is None else float(fields[throughput_at]))
+                diff_lines = (None if diff_lines_at is None else float(fields[diff_lines_at]))
+            except ValueError:
+                # The verdict reader historically skipped this row before it could reserve a
+                # fair join key.  A later fully measured retry therefore remains the first fair
+                # row, rather than being misclassified as a duplicate.
+                continue
+            commit = fields[commit_at].strip()
+            status = fields[status_at].strip() if status_at is not None else "ok"
+            measurement = LegacyLedgerMeasurement(
+                commit, metric_value, throughput, diff_lines, status,
+            )
+            if status.lower() not in FAIR_LEDGER_STATUSES:
+                if commit not in fair_keys:
+                    measurements[commit] = measurement
+                continue
+            if commit in fair_keys:
+                duplicates.add(commit)
+            fair_keys.add(commit)
+            measurements[commit] = measurement
+
+    return LedgerCompatibilityProjection(
+        has_header=True,
+        header=header,
+        raw_rows=tuple(raw_rows),
+        commits=frozenset(commits),
+        metric_values=MappingProxyType(metric_values),
+        duplicate_fair_metric_commits=tuple(sorted(duplicate_metric_keys)),
+        measurements=MappingProxyType(measurements),
+        duplicate_fair_commits=tuple(sorted(duplicates)),
+    )
 
 
 @dataclass(frozen=True)

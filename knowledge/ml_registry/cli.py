@@ -32,7 +32,6 @@ recomputed from that durable substrate, which only works if the substrate surviv
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import os
 import sys
@@ -42,6 +41,10 @@ from pathlib import Path
 from typing import Callable, TypeVar
 
 from knowledge.ml_registry.citation import Resolver, ResolvedCitation, ResolverUnreachable
+from knowledge.ml_registry.contracts.ledger_v2 import (
+    read_ledger_compatibility,
+    read_ledger_compatibility_header,
+)
 from knowledge.ml_registry.cross_project import TicketIndex, model_to_projects, project_to_models
 from knowledge.ml_registry.floor import (DEFAULT_SIGMAS, adjudicate_trial, load_ledger_values,
                                           register_model_with_baseline, retire_harness)
@@ -77,7 +80,7 @@ from knowledge.ml_registry.supervisor import (
 from knowledge.ml_registry.completeness import campaign_completeness
 from knowledge.ml_registry.report import (acknowledge_diagnosis, campaign_status,
                                           format_status)
-from knowledge.ml_registry.verdict import FAIR_RUN_STATUSES, LedgerRow, adjudicate_verdict, reset_ratchet
+from knowledge.ml_registry.verdict import LedgerRow, adjudicate_verdict, reset_ratchet
 from knowledge.ml_registry.write_path import (
     MAX_DISCOVERED_IDEAS_FIELD,
     METRIC_FIELD,
@@ -136,85 +139,55 @@ def load_ledger_rows(path: Path) -> dict[str, LedgerRow]:
     :func:`~knowledge.ml_registry.floor.load_ledger_values` has for the same file. The commit
     is then simply absent, and whichever caller actually needed it refuses naming it.
     """
-    with path.open(newline="") as fh:
-        reader = csv.reader(fh, delimiter="\t")
-        try:
-            header = [column.strip() for column in next(reader)]
-        except StopIteration:
-            raise RegistryValidationError(
-                f"external ledger {str(path)!r} is empty; it must carry a header row",
-                field="ledger",
-            ) from None
+    header_projection = read_ledger_compatibility_header(path)
+    header = list(header_projection.columns)
+    if not header_projection.has_header:
+        raise RegistryValidationError(
+            f"external ledger {str(path)!r} is empty; it must carry a header row",
+            field="ledger",
+        )
 
-        def _column(name: str) -> int:
-            if name not in header:
-                raise RegistryValidationError(
-                    f"external ledger {str(path)!r} carries no {name!r} column (header {header!r}); "
-                    "a trial verdict is decided on the ledger's own measurements, so a ledger that "
-                    "does not record this one cannot adjudicate -- add the column to the loop that "
-                    "writes results.tsv",
-                    field=name,
-                )
-            return header.index(name)
-
-        commit_at = _column(LEDGER_COMMIT_COLUMN)
-        metric_at = next((header.index(c) for c in LEDGER_METRIC_COLUMNS if c in header), None)
-        if metric_at is None:
+    def _require(name: str) -> None:
+        if name not in header:
             raise RegistryValidationError(
-                f"external ledger {str(path)!r} carries no metric column "
-                f"(expected one of {LEDGER_METRIC_COLUMNS}, header {header!r})",
-                field="metric",
+                f"external ledger {str(path)!r} carries no {name!r} column (header {header!r}); "
+                "a trial verdict is decided on the ledger's own measurements, so a ledger that "
+                "does not record this one cannot adjudicate -- add the column to the loop that "
+                "writes results.tsv",
+                field=name,
             )
-        throughput_at = _column(LEDGER_THROUGHPUT_COLUMN)
-        diff_lines_at = _column(LEDGER_DIFF_LINES_COLUMN)
-        # Optional, and NOT via _column: a ledger without it is older, not broken, and defaults to
-        # "ok" so nothing changes for it. Where it exists it is load-bearing -- see FAIR_RUN_STATUSES.
-        status_at = header.index("status") if "status" in header else None
-        widest = max(commit_at, metric_at, throughput_at, diff_lines_at,
-                     status_at if status_at is not None else 0)
 
-        rows: dict[str, LedgerRow] = {}
-        fair_keys: set[str] = set()
-        duplicates: list[str] = []
-        for row in reader:
-            if len(row) <= widest or not row[commit_at].strip():
-                continue
-            key = row[commit_at].strip()
-            try:
-                parsed = LedgerRow(
-                    value=float(row[metric_at]),
-                    throughput=float(row[throughput_at]),
-                    diff_lines=float(row[diff_lines_at]),
-                    status=(row[status_at].strip() if status_at is not None else "ok"),
-                )
-            except ValueError:
-                continue  # unscored run (crashed/aborted): nothing to adjudicate against
-            if parsed.status.lower() not in FAIR_RUN_STATUSES:
-                # A scored-but-UNFAIR row does not collide -- see
-                # :func:`~knowledge.ml_registry.floor.load_ledger_values`, which applies the
-                # identical rule to the identical file. Such a row is one adjudicate_verdict
-                # has already decided not to judge on, so its legitimate re-run is not a
-                # second opinion about one run, it is the first real measurement; raising on
-                # the pair made the entire ledger unreadable for every model in it, and left
-                # inventing an arm tag as the only way past. Kept, but overwritten by any
-                # fair row for the same key.
-                if key not in fair_keys:
-                    rows[key] = parsed
-                continue
-            if key in fair_keys:
-                duplicates.append(key)
-            fair_keys.add(key)
-            rows[key] = parsed
-        if duplicates:
-            raise RegistryValidationError(
-                f"external ledger {str(path)!r} carries more than one scored row for "
-                f"{sorted(set(duplicates))!r}; a verdict joins a trial to its row BY THIS KEY, so a "
-                "repeat silently adjudicates whichever run was written LAST. Write "
-                "'{sha}:{arm_tag}' so a campaign that varies arms by CONFIG still gets one key "
-                "per run.",
-                field=LEDGER_COMMIT_COLUMN,
-            )
-        return rows
+    _require(LEDGER_COMMIT_COLUMN)
+    if not any(column in header for column in LEDGER_METRIC_COLUMNS):
+        raise RegistryValidationError(
+            f"external ledger {str(path)!r} carries no metric column "
+            f"(expected one of {LEDGER_METRIC_COLUMNS}, header {header!r})",
+            field="metric",
+        )
+    _require(LEDGER_THROUGHPUT_COLUMN)
+    _require(LEDGER_DIFF_LINES_COLUMN)
+    # Header refusal deliberately happens before the body is consumed.  A malformed body
+    # cannot mask the more actionable missing-column error that the former reader raised first.
+    projection = read_ledger_compatibility(path)
+    if projection.duplicate_fair_commits:
+        raise RegistryValidationError(
+            f"external ledger {str(path)!r} carries more than one scored row for "
+            f"{list(projection.duplicate_fair_commits)!r}; a verdict joins a trial to its row BY THIS KEY, so a "
+            "repeat silently adjudicates whichever run was written LAST. Write "
+            "'{sha}:{arm_tag}' so a campaign that varies arms by CONFIG still gets one key "
+            "per run.",
+            field=LEDGER_COMMIT_COLUMN,
+        )
+    return {
+        key: LedgerRow(
+            value=row.metric_value,
+            throughput=float(row.throughput),
+            diff_lines=float(row.diff_lines),
+            status=row.status,
+        )
+        for key, row in projection.measurements.items()
+        if row.throughput is not None and row.diff_lines is not None
+    }
 
 
 def _checked_model_budgets(meta: dict[str, object], *, fill_missing: bool) -> dict[str, object]:

@@ -35,13 +35,13 @@ acceptance condition. A Praxis-backed space need only expose the same ``insert``
 
 from __future__ import annotations
 
-import csv
 import json
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from knowledge.ml_registry.citation import Resolver, resolve_citation
+from knowledge.ml_registry.contracts.ledger_v2 import read_ledger_compatibility
 from knowledge.ml_registry.guards import guard_baseline_move, guard_model_mutation
 from knowledge.ml_registry.schema import (IDEA, MODEL, STATUS_SUPERSEDED,
                                           TERMINAL_TRIAL_STATUSES, TRIAL,
@@ -153,13 +153,7 @@ def load_ledger_commits(path: Path) -> frozenset[str]:
     ``commit\tval_bpb\tmemory_gb\tstatus\tdescription``); a trial is only real if its
     commit has a matching row here.
     """
-    with path.open(newline="") as fh:
-        reader = csv.reader(fh, delimiter="\t")
-        try:
-            next(reader)  # header
-        except StopIteration:
-            return frozenset()
-        return frozenset(row[0].strip() for row in reader if row and row[0].strip())
+    return read_ledger_compatibility(path).commits
 
 
 def register_model(space: RegistrySpace, meta: dict[str, object], *, model_id: str | None = None) -> str:

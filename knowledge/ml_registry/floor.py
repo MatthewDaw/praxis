@@ -67,10 +67,10 @@ baseline commit left standing after that reversion.
 
 from __future__ import annotations
 
-import csv
 import statistics
 from pathlib import Path
 
+from knowledge.ml_registry.contracts.ledger_v2 import read_ledger_compatibility
 from knowledge.ml_registry.guards import ADJUDICATION_SOURCE
 from knowledge.ml_registry.lifecycle import active_adoption, invalidate_adoption
 from knowledge.ml_registry.schema import RegistryValidationError
@@ -485,58 +485,20 @@ def load_ledger_values(path: Path) -> dict[str, float]:
     that commit (:func:`register_model_with_baseline`, :func:`adjudicate_trial`) instead
     of one unrelated crashed run making the whole ledger unreadable.
     """
-    # Imported HERE rather than at module scope: knowledge.ml_registry.verdict imports this
-    # module for the ratchet and units fields, so a top-level import back would be a cycle.
-    # The set stays defined next to the verdict rule it governs, and both loaders read that
-    # one definition instead of each keeping a copy to drift.
-    from knowledge.ml_registry.verdict import FAIR_RUN_STATUSES
-
-    with path.open(newline="") as fh:
-        reader = csv.reader(fh, delimiter="\t")
-        try:
-            header = [column.strip() for column in next(reader)]
-        except StopIteration:
-            return {}
-        # Optional, exactly as in cli.load_ledger_rows: a ledger without a status column is
-        # older, not broken, and every row in it reads as fair.
-        status_at = header.index("status") if "status" in header else None
-        values: dict[str, float] = {}
-        fair_keys: set[str] = set()
-        duplicates: list[str] = []
-        for row in reader:
-            if not row or not row[0].strip():
-                continue
-            if len(row) < 2:
-                continue
-            key = row[0].strip()
-            try:
-                value = float(row[1])
-            except ValueError:
-                continue  # unscored run (crashed/aborted): no metric to join against
-            status = row[status_at].strip() if status_at is not None and len(row) > status_at else ""
-            if status.lower() not in FAIR_RUN_STATUSES:
-                # Readable, but never authoritative: it fills the key only while no fair row
-                # has, and a fair row arriving later overwrites it without complaint.
-                if key not in fair_keys:
-                    values[key] = value
-                continue
-            if key in fair_keys:
-                duplicates.append(key)
-            fair_keys.add(key)
-            values[key] = value
-        if duplicates:
-            raise RegistryValidationError(
-                f"external ledger {str(path)!r} carries more than one scored row for "
-                f"{sorted(set(duplicates))!r}; the registry joins a trial to its row BY THIS KEY, so "
-                "a repeat silently decides the verdict on whichever run was written LAST and "
-                "discards the other measurement entirely. Write '{sha}:{arm_tag}' so a campaign "
-                "that varies arms by CONFIG still gets one key per run "
-                "(bootstrap.check_ledger's join_keys_unique precondition checks the same thing at "
-                "bootstrap time; this checks it again at every adjudication, because rows are "
-                "appended long after bootstrap).",
-                field="commit",
-            )
-        return values
+    projection = read_ledger_compatibility(path)
+    if projection.duplicate_fair_metric_commits:
+        raise RegistryValidationError(
+            f"external ledger {str(path)!r} carries more than one scored row for "
+            f"{list(projection.duplicate_fair_metric_commits)!r}; the registry joins a trial to its row BY THIS KEY, so "
+            "a repeat silently decides the verdict on whichever run was written LAST and "
+            "discards the other measurement entirely. Write '{sha}:{arm_tag}' so a campaign "
+            "that varies arms by CONFIG still gets one key per run "
+            "(bootstrap.check_ledger's join_keys_unique precondition checks the same thing at "
+            "bootstrap time; this checks it again at every adjudication, because rows are "
+            "appended long after bootstrap).",
+            field="commit",
+        )
+    return dict(projection.metric_values)
 
 
 def compute_noise_floor(values: list[float]) -> tuple[float, float]:

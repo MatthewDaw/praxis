@@ -65,12 +65,12 @@ bootstrap-measured floor that disagrees with the SD of the repeats instead of re
 
 from __future__ import annotations
 
-import csv
 import statistics as st
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from knowledge.ml_registry.contracts.ledger_v2 import read_ledger_compatibility
 from knowledge.ml_registry.floor import DEFAULT_SIGMAS as FLOOR_DEFAULT_SIGMAS
 from knowledge.ml_registry.schema import RegistryValidationError
 
@@ -129,11 +129,10 @@ class BootstrapReport:
 
 
 def read_ledger(path: Path) -> tuple[list[str], list[dict[str, str]]]:
-    with path.open(newline="") as fh:
-        reader = csv.reader(fh, delimiter="\t")
-        header = [c.strip() for c in next(reader)]
-        rows = [dict(zip(header, r)) for r in reader if r and any(c.strip() for c in r)]
-    return header, rows
+    projection = read_ledger_compatibility(path)
+    if not projection.has_header:
+        raise StopIteration
+    return list(projection.header), [dict(row) for row in projection.raw_rows]
 
 
 def check_ledger(path: Path, baseline_prefix: str) -> tuple[list[Precondition], list[dict]]:
