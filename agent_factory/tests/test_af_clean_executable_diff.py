@@ -122,6 +122,31 @@ def test_failed_witness_applies_nothing(tmp_path: Path) -> None:
     assert (repo / "x.py").read_text() == "VALUE = 1\n"
 
 
+def test_blind_verifier_cannot_receive_witness_output(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    secret = "witness-only-secret"
+    verifier_inputs: dict[str, str] = {}
+
+    def command_runner(argv, **kwargs):
+        if argv[:2] == ["python", "-c"]:
+            return SimpleNamespace(returncode=0, stdout=secret, stderr=f"{secret}-stderr")
+        return subprocess.run(argv, **kwargs)
+
+    def verifier(argv, **kwargs):
+        verifier_inputs["argv"] = " ".join(argv)
+        verifier_inputs["input"] = kwargs["input"]
+        verifier_inputs["env"] = json.dumps(kwargs.get("env", {}), sort_keys=True)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"endorsed_hunk_ids": ["h1"]}),
+            stderr="",
+        )
+
+    _apply(repo, command_runner=command_runner, verifier_runner=verifier)
+
+    assert all(secret not in value for value in verifier_inputs.values())
+
+
 def test_refuses_unexpected_dirty_path_before_cloning_or_verification(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     (repo / "unrelated.txt").write_text("mine\n")
