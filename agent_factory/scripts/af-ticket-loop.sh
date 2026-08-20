@@ -905,8 +905,17 @@ af_wait_ready(){   # $1=tmux session  $2=optional poll cap (default READY_POLL_M
     sleep 2
     pane=$(tmux capture-pane -t "$sess" -p 2>/dev/null || echo "")
     if echo "$pane" | grep -qE "bypass permissions on"; then return 0; fi
-    if [ "$BACKEND" = grok ] && echo "$pane" | grep -qiE "Grok Build|always-approve|Always approve|to interrupt"; then
-      return 0
+    if [ "$BACKEND" = grok ]; then
+      # The first-run directory-trust splash also prints "Grok Build 1.0.5".
+      # Treating that banner as ready made unattended grok rounds sit 10–30min
+      # with the prompt never started (hudl-cv-download 2026-08-19).
+      if echo "$pane" | grep -qiE "Do you trust the contents|Yes, proceed"; then
+        tmux send-keys -t "$sess" "y" Enter
+        continue
+      fi
+      if echo "$pane" | grep -qiE "always-approve|Always approve|to interrupt|Waiting for response|Subagents"; then
+        return 0
+      fi
     fi
   done
   return 1
@@ -1671,9 +1680,15 @@ integrate_round(){
   # Commit anything loose first: `git merge` refuses to run on a dirty tree, and refusing to
   # integrate a whole round because one stray file is uncommitted is the wrong trade.
   commit_wip
+  # Grok isolation=worktree checks out under $WT/.grok/worktrees and
+  # ~/.grok/worktrees/, not only $WT/.claude/worktrees/. Filtering to the
+  # Claude path made a 16-ticket grok round finish in Praxis with zero
+  # commits on main (hudl-cv-download 2026-08-19): the driver logged
+  # "0 unmerged branches" and post-merge verification regressed all 16.
   while read -r path; do
     [ -n "$path" ] || continue
-    case "$path" in */.claude/worktrees/*) ;; *) continue ;; esac
+    [ "$path" = "$WT" ] && continue
+    [ "$path" = "${WT%/}" ] && continue
     br=$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
     [ -n "$br" ] && [ "$br" != "HEAD" ] || continue
     ahead=$(git rev-list --count "HEAD..$br" 2>/dev/null || echo 0)
@@ -1718,6 +1733,37 @@ integrate_round(){
   [ "$merged" -gt 0 ] && say "round integrated: $merged branch(es) merged into $(git rev-parse --abbrev-ref HEAD)"
   [ "$conflicted" -gt 0 ] && say "$conflicted branch(es) conflicted — handing them to the conflict resolver"
   [ "$skipped" -gt 0 ] && say "$skipped branch(es) skipped as unproven — their commits stay on their branches"
+  return 0
+}
+
+# Grok spawn_subagent isolation=worktree often materializes a SEPARATE clone under
+# ~/.grok/worktrees/workspace-<checkout>/subagent-*, not a `git worktree add` of $WT.
+# Those commits never appear in this repo's worktree list, so integrate_round and
+# queue_orphan_branches cannot see them. Fetch each unique HEAD into a local
+# worktree-agent-* ref so the existing merge/orphan path can land it.
+# Observed 2026-08-19 on hudl-cv-download: 16 tickets finished in those clones,
+# this repo had zero worker branches, post-merge verification regressed all 16.
+salvage_external_grok_clones(){
+  cd "$WT" || return 0
+  local root d sha short br ahead
+  root="${HOME}/.grok/worktrees/workspace-$(basename "$WT")"
+  [ -d "$root" ] || return 0
+  for d in "$root"/subagent-*; do
+    [ -d "$d" ] || continue
+    sha=$(git -C "$d" rev-parse HEAD 2>/dev/null || echo "")
+    [ -n "$sha" ] || continue
+    if git merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
+      continue
+    fi
+    short=$(basename "$d" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40)
+    br="worktree-agent-salvage-${short}"
+    if git fetch --no-tags "$d" "HEAD:refs/heads/$br" 2>/dev/null; then
+      ahead=$(git rev-list --count "HEAD..$br" 2>/dev/null || echo 0)
+      [ "${ahead:-0}" -gt 0 ] && say "salvaged $ahead commit(s) from $d onto $br"
+    else
+      say "WARNING: could not fetch grok clone $d — its commits stay outside this repo"
+    fi
+  done
   return 0
 }
 
@@ -3715,6 +3761,7 @@ while :; do
   # three must finish before the loop clears context and dispatches the next batch, or a round's
   # work is carried forward unintegrated and unchecked into a session that no longer remembers it.
   : > "$CONFLICTS"
+  salvage_external_grok_clones
   integrate_round
   # REQUIRED, not optional: sweep in any branch stranded by an earlier round so the resolver lands it
   # too. Without this the resolver only ever fixes the round that created the conflict, and anything
