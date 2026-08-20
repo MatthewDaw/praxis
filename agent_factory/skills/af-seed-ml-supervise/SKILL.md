@@ -35,7 +35,8 @@ Do not reimplement the registry.
   ledger, and runs the ratchet. This one stops when the campaign is READY. Never
   start the supervisor from here unless the human explicitly chained the two.
 - **Not `af-ml-model`.** That skill is a thin trigger over Karpathy's autoresearch.
-  Different paradigm; do not merge them.
+  Different paradigm; do not merge them. Do decide where its loop sits beside this
+  backlog, and record the seam — F.1 strand 4.
 - **Not a side channel.** Every idea this skill writes goes through
   `knowledge.ml_registry.write_path.register_idea` with `origin="seeded"` and a
   `meta.axis` drawn from `IDEATION_AXES`.
@@ -63,15 +64,20 @@ This skill is not done until every line below is true. A half-setup is not a han
    `model_id` is what later calls use, not a local alias.
 7. **The nine-axis closed set has been swept** and `seed-campaign` has written
    `origin="seeded"` ideas. Every retrieval axis has a receipt, including empties.
-8. **Every stage you will declare to `campaign-complete` has authored arms.**
+8. **The four-strand plan has been run and its answers landed as ideas** (Phase
+   F.1): already-solved, pretraining corpus, regime-derived augmentation, and
+   the Karpathy-loop seam. A backlog whose detectors all share one pretraining
+   corpus is not a search, however many architectures it names; a stage padded
+   to clear a counter is not coverage.
+9. **Every stage you will declare to `campaign-complete` has authored arms.**
    An empty stage is trivially "all answered" and the campaign will sail past a
    question nobody asked (`stage_never_authored` in
    `knowledge.ml_registry.completeness`). Either populate the stage or drop it
    from the plan on purpose.
-9. **The handoff pack exists** — space file, minted model id, ledger path,
-   dispatch command, stage list, void-throughput setting, and the exact
-   `/af-ml-supervise` invocation. A human (or a later turn) can start supervise
-   without asking you what to type.
+10. **The handoff pack exists** — space file, minted model id, ledger path,
+    dispatch command, stage list, void-throughput setting, and the exact
+    `/af-ml-supervise` invocation. A human (or a later turn) can start supervise
+    without asking you what to type.
 
 `bootstrap-campaign` is the external check for items 2–6. Do not hand-roll those
 preconditions. What is systematic lives in `knowledge.ml_registry.bootstrap`;
@@ -282,10 +288,16 @@ set, not an exhaustive plan.
 kept idea onto the stage list from Phase B. If a declared stage has zero arms,
 author them or drop the stage. `campaign-complete` will otherwise block later
 with `stage_never_authored`, and that is a setup bug, not a supervise bug.
+Author them from the regime, not from the counter: three ideas written to clear
+a `stage_thin` check are a stage that reads covered and is not (F.1 strand 3).
 
-**Enumerate model families before treating `ml_architectures` as populated.**
-Arms that differ only in depth or width are one family. State which families
-you did not try and why.
+**Enumerate model families — and their PRETRAINING CORPORA — before treating
+`ml_architectures` as populated.** Arms that differ only in depth or width are
+one family. Arms that differ in family but share one pretraining corpus are one
+experiment repeated N times: the deciding variable is held fixed while the
+document reads as a thorough search. State which families you did not try, which
+corpora you did not try, and why. Phase F.1 is where those corpora get named;
+this is where you check the sweep actually spent them.
 
 ## Generators and retrievers are injected — this skill is the wiring
 
@@ -320,11 +332,161 @@ Only after Phase E. `seed_campaign` refuses an unregistered `model_id`.
 
 ### 0. Skip-research short-circuit
 
-If skip-research resolved above, **do not run F.1 or F.2**. Use the loaded
-scripts, jump to F.3 (batch unless overridden), then F.5. Record in the
+If skip-research resolved above, **do not run F.2 or F.3**. Use the loaded
+scripts, jump to F.4 (batch unless overridden), then F.6. Record in the
 handoff that research was reused and from which paths.
 
-### 1. Dispatch the six generative axes in parallel
+One exception, and only one: F.1 still runs unless the loaded generator script
+already carries its four strands — an adopted-system arm or a recorded negative,
+arms that vary the **pretraining corpus** and not just the architecture,
+regime-derived augmentations, and a loop seam. Skip-research means "the ideas
+exist", and a script missing a strand is evidence that strand was never planned.
+Append the missing strands to the loaded script rather than re-sweeping the
+other axes.
+
+### 1. Plan the campaign before proposing to build
+
+Do this BEFORE F.2. Generative axes propose; this step reads and decides. Run it
+first or the generators will spend their budget varying architecture on top of
+whatever weights the incumbent already happens to carry.
+
+Four strands, in this priority order, and the order is the point — each one is
+cheaper than the one below it:
+
+| # | strand | the question |
+|---|---|---|
+| 1 | **Already solved?** | has someone published a SYSTEM that does this job? |
+| 2 | **Pretraining corpus** | if not, whose WEIGHTS saw a regime like ours? |
+| 3 | **Augmentation** | what does OUR measured regime demand of the data? |
+| 4 | **The Karpathy loop** | where does on-the-fly generation sit beside the backlog? |
+
+#### Strand 1 — is it already solved, end to end?
+
+Broader than strand 2: not "what trained models fit" but **has someone already
+built and published a SYSTEM that solves this campaign's goal?** A challenge
+winner, a released pipeline, a benchmark leader. For EACH declared campaign goal,
+answer in writing:
+
+- What published system targets this exact goal?
+- What does it report, and on what object scale and camera rig?
+- Is a checkpoint or a runnable pipeline released?
+
+**Adopting a working solution and measuring it as arm one is strictly better
+than rebuilding it over twenty arms.** Make the campaign look before it builds:
+an adopted system that scores today converts the rest of the campaign from
+"can we reach this?" into "can we beat a known number?", which is a far better
+question to spend arms on. Where nothing solves the goal end to end, that
+documented negative IS the answer — record it, and the next session does not
+re-run this search.
+
+#### Strand 2 — pretraining corpus is a first-class axis
+
+The second question, once strand 1 finds no whole system: whose weights saw a
+regime like ours?
+
+**The failure this exists to stop.** A live detection campaign
+(`sports_analysis`, `model-533010b57800`, metric `tiny_person_recall_at_p90`,
+baseline 0.6076) ran nine arms against a zero-shot COCO incumbent
+(`PekingU/rtdetr_v2_r50vd`): three threshold/NMS variants, class-agnostic
+scoring, YOLOv8m, YOLO-World, Deformable-DETR, a second-stage patch verifier.
+Every one scored at or below the incumbent. The only arm that beat it (0.6123)
+added a geometric region prior — not a new model. The regime is a 2560x600
+panorama whose median player box is 42.7 x 20.5 px; the eval downscales a
+1280x720 broadcast corpus by 0.3588 to match. Grepping all three campaigns'
+backlogs — 152 seeded ideas across detection, association and contact_point —
+for a model pretrained on people in crowded scenes or on sport rather than
+generic COCO (`crowdhuman`, `sportsmot`, `mot17`, `mot20`, `market1501`,
+`dukemtmc`, `posetrack`) returned ZERO mentions. COCO's person class is
+dominated by large isolated subjects; that regime is small, dense and occluded —
+close to its opposite, and CrowdHuman-pretrained detectors are near-standard
+practice in the MOT literature for exactly this failure. Nine arms of measured
+evidence say it plainly: **seeding N architecture variants that all share one
+pretraining corpus is ONE experiment run N times, not N experiments.** It was a
+seeding failure, not a supervision failure — the ideas were never written, so
+the supervisor could never run them.
+
+Answer all five in writing, and put the answers where a supervisor will read
+them (the handoff pack, and the `basis` of the ideas F.1 produces):
+
+1. **What published work already solves THIS problem, or the closest neighbour?**
+   Name the models, the benchmark they lead, and the corpus they were trained on.
+2. **For each candidate, does its TRAINING DISTRIBUTION match our regime** —
+   object scale, crowding, occlusion, camera rig, sport — or only its
+   architecture? Pretraining match is what usually decides transfer.
+   Architecture usually is not.
+3. **Is there a checkpoint we can simply RUN as an arm, at inference cost,
+   before anything is trained?** A zero-shot arm that takes minutes is worth
+   more than a fine-tune that needs a GPU we may not have.
+4. **What does the INCUMBENT's pretraining actually cover, and where does our
+   regime fall outside it?** That question is what exposes a whole family of
+   unseeded ideas.
+5. **If no existing trained model fits, say so explicitly and record WHY.** A
+   documented negative is what stops the next session re-running this survey.
+
+#### Strand 3 — augmentation derived from the MEASURED regime
+
+Augmentation is the thinnest stage in every live campaign, and thin for a
+telling reason: detection carries 3 augmentation ideas and association 3, and
+both sets were padded to clear a `stage_thin` check rather than because three
+good ones existed. **A stage padded to satisfy a counter is worse than a stage
+dropped on purpose, because it reads as covered.** Phase B already lets you drop
+a stage you will not author; use that rather than filling it.
+
+So derive augmentations from the numbers Phase A measured, never from a generic
+list. For the 42.7 x 20.5 px object above, the live questions are downscale
+consistency (the eval's own 0.3588 resize is a transform the training data may
+never see), small-object copy-paste, mosaic, and blur/compression matched to the
+rig's optics. For a different regime they will be different — that is the test:
+if an augmentation idea would read identically in another project's backlog, it
+was not derived from this regime and it is padding.
+
+#### Strand 4 — where the Karpathy loop sits, decided and recorded
+
+The repo ships `/af-ml-model`
+(`agent_factory/skills/af-ml-model/SKILL.md`) — Karpathy's autoresearch loop:
+mutate, run, keep or revert on a scalar, forever, under NEVER STOP. It is a
+different paradigm from this curated backlog (see **What it is NOT**), and
+seeding must decide the seam between them explicitly rather than leaving one to
+be bolted on later. Record all four:
+
+- **What it is pointed at** — which trainer/config surface it may mutate.
+- **What it must NEVER touch**: the frozen judging contract from Phase B (the
+  metric, its eval split, `EVAL_TOKENS`-equivalents) and the registered
+  incumbent baseline rows. A loop mutating freely against a frozen contract is
+  how a campaign silently invalidates its own baseline — every prior verdict
+  rebases and nothing announces it.
+- **Which axes it OWNS** versus which stay curated. It is good at dense local
+  search inside one family — `tuning`, and `training`-stage knobs. It cannot
+  discover a checkpoint trained on a different corpus, which is strands 1–3's
+  whole job. Do not hand it `ml_architectures` or `representation` and call the
+  backlog covered.
+- **Its budget and its write path.** Loop-generated ideas are
+  `origin="discovered"` under `max_discovered_ideas`, never `origin="seeded"`;
+  the write path enforces that budget at the data layer. Seeding never writes a
+  discovered idea (see **Never**).
+
+If the answer is "no loop on this campaign", record that too. That is a decision,
+and it is a legitimate one.
+
+#### All four strands land as REGISTERED ideas
+
+**The plan's output has to land in the backlog as ideas, not as prose.** A
+research doc nothing dispatches is not a seeded arm; an idea nobody registered
+cannot be run — and that holds for all four strands, not just the checkpoints.
+Each becomes a candidate in the generator script for its axis, with a `stage`
+and a `basis`:
+
+| strand | axis it usually lands on | the `basis` must name |
+|---|---|---|
+| 1 adopted system | `supplements`, or `ce_ideate_breadth` for an adjacent approach | the system, what it reports, the rig it reported on |
+| 2 checkpoint | `ml_architectures` / `supplements` | the corpus, the benchmark, the regime mismatch it closes |
+| 3 augmentation | `ce_ideate_breadth` / `supplements` | the measured number it was derived from |
+| 4 loop seam | recorded in the handoff, plus any curated arm it displaces | which axes it owns and what it may not touch |
+
+Cheapest first: a released system or a runnable zero-shot checkpoint outranks
+anything that needs training, and both outrank an architecture variant.
+
+### 2. Dispatch the six generative axes in parallel
 
 Skip this subsection when skip-research is set.
 
@@ -333,13 +495,18 @@ One research pass per generative axis, in parallel, each given:
 - the model's meta (`metric`, `direction`, `win_condition`, `baseline`, `noise_floor`, …)
 - the ONE axis it is responsible for
 - the data inventory and the frozen contract from Phases A–B
+- **the F.1 plan**: what already solves this end to end, what is already trained
+  for it and on what corpus, where the incumbent's pretraining stops covering our
+  regime, the measured numbers augmentation must answer to, and which axes the
+  Karpathy loop owns. A generator that does not get this proposes another
+  COCO-weighted architecture on an axis already spoken for.
 - enough project context to propose a real hypothesis, not a slogan
 
 Each pass returns a list of candidate metas for that axis only. An empty list
 is legal. A candidate for a different axis is not — drop it, do not refile it
 under the wrong key.
 
-### 2. Run the three retrieval axes and keep the receipts
+### 3. Run the three retrieval axes and keep the receipts
 
 Skip this subsection when skip-research is set. The loaded retriever script
 already carries each axis's receipt (`query` + `rows`).
@@ -364,7 +531,7 @@ found nothing still proves it ran. **Never omit an empty retrieval axis from
 the script** to "keep the file tidy": omit the key and the receipt's `query`
 is `""` and the axis looks like it was never searched.
 
-### 3. Confirm — interactive or batch
+### 4. Confirm — interactive or batch
 
 `--mode` is ONE seam (`confirm`). Both modes write ideas of IDENTICAL shape
 (`origin="seeded"`, a `meta.axis` drawn from `IDEATION_AXES`); only which
@@ -382,7 +549,7 @@ candidates get through differs.
   is written. `--confirm-script` is ignored. Use this only when the human
   asked for batch.
 
-### 4. Write the scripts
+### 5. Write the scripts
 
 ```jsonc
 // generator.json — keys MUST be the six GENERATIVE_AXES strings
@@ -423,7 +590,7 @@ Never put an off-set key in either script. The CLI will look up only the
 closed-set names; an extra key is silently ignored AND it is a sign you
 invented an axis.
 
-### 5. Run seed-campaign
+### 6. Run seed-campaign
 
 ```sh
 cd <praxis repo root>
@@ -460,6 +627,15 @@ Report:
 - the frozen metric, direction, void-throughput setting, and stage list
 - the dispatch command and the ledger path
 - `bootstrap-campaign` ready:true, and the minted `model_id`
+- the F.1 plan, all four strands: (1) the published systems that target each
+  campaign goal, what they report and on what rig, and whether a checkpoint is
+  released — or the reasoned negative if nothing solves it end to end; (2) the
+  trained models found, the corpus each saw, which regime dimensions they match,
+  which are runnable zero-shot, and where the incumbent's pretraining stops
+  covering our regime; (3) the measured numbers each augmentation was derived
+  from; (4) the Karpathy-loop seam — what it is pointed at, what it may never
+  touch, which axes it owns, its discovered-idea budget, or that no loop runs
+  here
 - every axis in the closed nine, with the idea ids written on it (empty list included)
 - every retrieval receipt: the query issued, the count returned, the ids retrieved
 - how many candidates were declined (interactive) or that batch confirmed everything
@@ -505,6 +681,18 @@ not ask to run.
 - Never seed against an unregistered model. Finish Phase E first.
 - Never set `origin="discovered"` on a seeded candidate. Discovery is the
   supervisor's job, under `max_discovered_ideas`.
+- Never seed architecture variants before F.1 has asked whether a published
+  system already solves this goal, and named the trained models and corpora that
+  already exist for it. N architectures over one pretraining corpus is one
+  experiment, not N.
+- Never leave the plan as prose. Every strand — adopted system, checkpoint,
+  augmentation, loop seam — becomes a seeded idea with a `stage` and a `basis`,
+  or a recorded decision in the handoff. Otherwise it will never be dispatched.
+- Never pad a stage to clear a thinness counter. Drop the stage in Phase B
+  instead; padding reads as coverage and a dropped stage does not.
+- Never point the Karpathy loop at the frozen judging contract or the incumbent
+  baseline rows, and never let it own `ml_architectures` or `representation` in
+  place of a curated arm.
 - Never treat this run as an exhaustive plan. A generator or retriever may
   legitimately propose nothing on an axis for this model.
 - Never add `throughput` / `diff_lines` to a ledger by hand. The dispatch
