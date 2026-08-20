@@ -92,6 +92,21 @@ class Campaign:
 
 
 CAMPAIGNS: dict[str, Campaign] = {
+    "detection_shipped": Campaign(
+        name="detection_shipped",
+        space="ml/detection_shipped/registry/space.json",
+        model_id="model-dcc0557b8454",
+        ledger="ml/detection_shipped/results.tsv",
+        corpus_probe=(
+            "from det_lab.regime import eval_frames\n"
+            "f = eval_frames()\n"
+            "print('OK eval_frames=%d' % len(f))\n"
+        ),
+        arms_probe="from det_lab.campaign import ARMS; print('ARMS ' + ','.join(sorted(ARMS)))",
+        composing_module="det_lab.campaign2",
+        dispatch=("uv run python -m det_lab.campaign2 run --arm ARM --tag TAG "
+                  "--base-tag incumbent"),
+    ),
     "detection": Campaign(
         name="detection",
         space="ml/detection/registry/space.json",
