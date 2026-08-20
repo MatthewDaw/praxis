@@ -40,6 +40,14 @@ def _parser() -> argparse.ArgumentParser:
     add_artifact.add_argument("--split-hash", required=True)
     add_artifact.add_argument("--prediction-hash", required=True)
     add_artifact.add_argument("--coverage", required=True, type=float)
+    add_artifact.add_argument(
+        "--input-artifact",
+        action="append",
+        default=[],
+        dest="input_artifact",
+        metavar="ARTIFACT_ID",
+        help="repeatable upstream artifact id this artifact was produced from",
+    )
 
     add_campaign = commands.add_parser("add-campaign", help="declare a planned campaign")
     add_campaign.add_argument("--campaign-id", required=True)
@@ -54,6 +62,16 @@ def _parser() -> argparse.ArgumentParser:
             "artifact_id, required_verdict, dataset_manifest_hash, split_manifest_hash, "
             "prediction_manifest_hash, minimum_coverage"
         ),
+    )
+
+    repin = commands.add_parser("repin", help="re-pin a stale campaign onto fresh dependencies")
+    repin.add_argument("--campaign-id", required=True)
+    repin.add_argument(
+        "--dependency",
+        action="append",
+        default=[],
+        metavar="JSON",
+        help="repeatable ArtifactDependency JSON object, as for add-campaign",
     )
 
     readiness = commands.add_parser("readiness", help="evaluate and persist campaign readiness")
@@ -140,6 +158,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 split_manifest_hash=args.split_hash,
                 prediction_manifest_hash=args.prediction_hash,
                 coverage=args.coverage,
+                input_artifact_ids=tuple(args.input_artifact),
             ),
             allow_new=True,
         )
@@ -153,6 +172,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             allow_new=True,
         )
         return {"ok": True, "campaign": asdict(campaign)}
+
+    if args.command == "repin":
+        dependencies = _dependencies(args.dependency)
+
+        def repin(portfolio: Portfolio) -> dict[str, Any]:
+            portfolio.repin(args.campaign_id, dependencies)
+            return _campaign_json(portfolio, args.campaign_id)
+
+        return {"ok": True, "campaign": _mutate(path, repin)}
 
     if args.command == "readiness":
         def refresh(portfolio: Portfolio) -> dict[str, Any]:

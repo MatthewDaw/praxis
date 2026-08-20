@@ -1,4 +1,15 @@
-"""Small cross-process advisory lock for registry read-modify-write transactions."""
+"""Small cross-process advisory lock for registry read-modify-write transactions.
+
+Assumptions, deliberately narrow:
+
+* ``flock`` is advisory and POSIX-local.  It is reliable on a local filesystem and is
+  NOT safe over NFS (or any network filesystem whose ``flock`` is emulated or a no-op);
+  registry files must live on local disk.
+* The lock has no timeout and no deadlock detection: a caller blocks until the holder
+  releases.  That is intentional -- these critical sections are a load, an in-memory
+  mutation, and an atomic rename -- but a wedged holder wedges every writer.
+"""
+
 
 from __future__ import annotations
 

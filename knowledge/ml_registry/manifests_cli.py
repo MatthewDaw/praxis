@@ -107,7 +107,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         if path.exists():
             raise ManifestValidationError(f"manifest registry {str(path)!r} already exists")
         _mutate(path, lambda registry: None, allow_new=True)
-        return {"ok": True, "file": str(path), "schema_version": 1}
+        return {"ok": True, "file": str(path), "schema_version": ManifestRegistry.SCHEMA_VERSION}
     if args.command == "add-dataset":
         manifest = _dataset(_spec(args.spec))
         stored = _mutate(path, lambda registry: registry.add_dataset(manifest), allow_new=True)
@@ -162,7 +162,9 @@ def main(argv: list[str] | None = None) -> int:
     except ManifestValidationError as exc:
         print(json.dumps({"ok": False, "error": "validation", "message": str(exc)}))
         return EXIT_VALIDATION_ERROR
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, ArithmeticError) as exc:
+        # Persisted state is untrusted input: a malformed document must refuse with a
+        # documented exit code, never escape as a traceback.
         print(json.dumps({"ok": False, "error": "malformed_input", "message": str(exc)}))
         return EXIT_MALFORMED_INPUT
 

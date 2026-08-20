@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import tempfile
 from dataclasses import asdict, dataclass
@@ -15,11 +16,39 @@ class ManifestValidationError(ValueError):
     """A manifest is malformed, leaks groups, or has drifted from its hash."""
 
 
+def _canonical(value: Any) -> Any:
+    """Collapse representations that mean the same number so hashes cannot drift.
+
+    ``1`` and ``1.0`` are the same JSON value to every consumer of these manifests, so
+    they must hash identically; non-finite floats have no RFC 8259 representation and
+    are refused outright rather than serialised as ``NaN``/``Infinity``.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ManifestValidationError("manifest values must be finite numbers")
+        return int(value) if value.is_integer() else value
+    if isinstance(value, dict):
+        return {key: _canonical(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical(item) for item in value]
+    return value
+
+
 def _hash(kind: str, payload: dict[str, Any]) -> str:
     canonical = json.dumps(
-        {"kind": kind, **payload}, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        _canonical({"kind": kind, **payload}), sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+def _count(value: Any, name: str) -> int:
+    """A count or size is an ``int``; ``True`` and ``1.5`` are not counts."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ManifestValidationError(f"{name} must be an integer")
+    return value
 
 
 def _nonempty_mapping(value: dict[str, Any], name: str) -> None:
@@ -36,6 +65,9 @@ class DatasetFile:
     def __post_init__(self) -> None:
         if not self.identity or not self.checksum:
             raise ManifestValidationError("dataset file identity and checksum must be non-empty")
+        if not isinstance(self.identity, str) or not isinstance(self.checksum, str):
+            raise ManifestValidationError("dataset file identity and checksum must be strings")
+        _count(self.size_bytes, "dataset file size_bytes")
         if self.size_bytes < 0:
             raise ManifestValidationError("dataset file size_bytes cannot be negative")
 
@@ -75,6 +107,14 @@ class DatasetManifest:
         return cls(manifest_id, records, schema, provenance, _hash("dataset", payload))
 
 
+#: The closed split vocabulary, in strict temporal order.  A campaign that needs
+#: another split name must extend this list deliberately rather than by typo.
+SPLIT_ORDER: tuple[str, ...] = ("train", "calibration", "validation", "test")
+SPLIT_RANK: dict[str, int] = {name: index for index, name in enumerate(SPLIT_ORDER)}
+#: Splits whose groups must lie strictly after everything a fold trained on.
+EVALUATION_SPLITS = frozenset(SPLIT_ORDER[1:])
+
+
 @dataclass(frozen=True)
 class GroupAssignment:
     group_id: str
@@ -82,8 +122,12 @@ class GroupAssignment:
     temporal_order: int
 
     def __post_init__(self) -> None:
-        if not self.group_id or not self.split:
-            raise ManifestValidationError("group_id and split must be non-empty")
+        if not isinstance(self.group_id, str) or not self.group_id:
+            raise ManifestValidationError("group_id must be a non-empty string")
+        if self.split not in SPLIT_RANK:
+            raise ManifestValidationError(
+                f"unknown split {self.split!r}; split must be one of {list(SPLIT_ORDER)}"
+            )
         if isinstance(self.temporal_order, bool) or not isinstance(self.temporal_order, int):
             raise ManifestValidationError("temporal_order must be an integer")
 
@@ -120,12 +164,12 @@ class SplitManifest:
         ranks: dict[str, list[int]] = {}
         for record in records:
             ranks.setdefault(record.split, []).append(record.temporal_order)
-        if "train" in ranks:
-            for evaluation in ("validation", "test"):
-                if evaluation in ranks and max(ranks["train"]) >= min(ranks[evaluation]):
-                    raise ManifestValidationError(
-                        f"temporal leakage: train must precede {evaluation}"
-                    )
+        present = [name for name in SPLIT_ORDER if name in ranks]
+        for earlier, later in zip(present, present[1:]):
+            if max(ranks[earlier]) >= min(ranks[later]):
+                raise ManifestValidationError(
+                    f"temporal leakage: {earlier} must precede {later}"
+                )
         payload = {
             "id": manifest_id,
             "dataset_manifest_hash": dataset_manifest_hash,
@@ -178,10 +222,25 @@ class PredictionManifest:
         fold_id_by_group: dict[str, str],
         training_groups_by_fold: dict[str, list[str]],
     ) -> "PredictionManifest":
-        if not manifest_id or not upstream_artifact_id or not split_manifest_hash:
-            raise ManifestValidationError(
-                "prediction id, upstream_artifact_id, and split_manifest_hash must be non-empty"
-            )
+        for name, value in (("id", manifest_id), ("upstream_artifact_id", upstream_artifact_id),
+                            ("split_manifest_hash", split_manifest_hash)):
+            if not isinstance(value, str) or not value:
+                raise ManifestValidationError(
+                    "prediction id, upstream_artifact_id, and split_manifest_hash must be "
+                    f"non-empty strings ({name} was {value!r})"
+                )
+        _count(predicted_count, "predicted_count")
+        _count(eligible_count, "eligible_count")
+        if isinstance(coverage, bool) or not isinstance(coverage, (int, float)):
+            raise ManifestValidationError("prediction coverage must be numeric")
+        if not math.isfinite(float(coverage)):
+            raise ManifestValidationError("prediction coverage must be finite")
+        if not isinstance(out_of_fold, bool):
+            raise ManifestValidationError("out_of_fold must be a boolean")
+        if not isinstance(fold_id_by_group, dict):
+            raise ManifestValidationError("fold_id_by_group must be a JSON object")
+        if not isinstance(training_groups_by_fold, dict):
+            raise ManifestValidationError("training_groups_by_fold must be a JSON object")
         if eligible_count <= 0 or predicted_count < 0 or predicted_count > eligible_count:
             raise ManifestValidationError("prediction counts must satisfy 0 <= predicted <= eligible")
         if not 0.0 <= coverage <= 1.0:
@@ -204,11 +263,30 @@ class PredictionManifest:
         if set(fold_id_by_group) != groups:
             raise ManifestValidationError("fold proof must assign every predicted group")
         for group, fold in fold_id_by_group.items():
+            if not isinstance(group, str) or not group or not isinstance(fold, str) or not fold:
+                raise ManifestValidationError("fold_id_by_group must map group ids to fold ids")
             training = training_groups_by_fold.get(fold)
             if not isinstance(training, list) or group in training:
                 raise ManifestValidationError(
                     f"fold proof does not exclude predicted group {group!r} from training"
                 )
+        for fold, training in training_groups_by_fold.items():
+            if not isinstance(fold, str) or not fold:
+                raise ManifestValidationError("training_groups_by_fold keys must be fold ids")
+            if not isinstance(training, list) or not training:
+                raise ManifestValidationError(
+                    f"fold {fold!r} must declare a non-empty training group list"
+                )
+            if not all(isinstance(item, str) and item for item in training):
+                raise ManifestValidationError(
+                    f"fold {fold!r} training groups must all be non-empty strings"
+                )
+            if len(set(training)) != len(training):
+                raise ManifestValidationError(f"fold {fold!r} repeats a training group")
+        if len(training_groups_by_fold) < 2:
+            raise ManifestValidationError(
+                "out-of-fold proof requires at least two folds"
+            )
         payload = {
             "id": manifest_id,
             "upstream_artifact_id": upstream_artifact_id,
@@ -233,7 +311,7 @@ class PredictionManifest:
 class ManifestRegistry:
     """An immutable manifest catalog with atomic JSON persistence."""
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = Path(path) if path is not None else None
@@ -273,6 +351,31 @@ class ManifestRegistry:
                 f"prediction group_coverage does not match split groups; "
                 f"missing={missing!r}, extra={extra!r}"
             )
+        unreferenced = sorted(
+            set(manifest.training_groups_by_fold) - set(manifest.fold_id_by_group.values())
+        )
+        if unreferenced:
+            raise ManifestValidationError(
+                f"training_groups_by_fold declares folds no group is predicted by: {unreferenced!r}"
+            )
+        temporal = {item.group_id: item.temporal_order for item in split.assignments}
+        split_of = {item.group_id: item.split for item in split.assignments}
+        held_out: dict[str, set[str]] = {}
+        for group, fold in manifest.fold_id_by_group.items():
+            held_out.setdefault(fold, set()).add(group)
+        for fold, training in manifest.training_groups_by_fold.items():
+            unknown = sorted(set(training) - expected)
+            if unknown:
+                raise ManifestValidationError(
+                    f"fold {fold!r} trains on groups absent from the split: {unknown!r}"
+                )
+            latest = max(temporal[group] for group in training)
+            for group in sorted(held_out.get(fold, set())):
+                if split_of[group] in EVALUATION_SPLITS and latest >= temporal[group]:
+                    raise ManifestValidationError(
+                        f"temporal leakage: fold {fold!r} trained through order {latest} but "
+                        f"predicts {split_of[group]} group {group!r} at order {temporal[group]}"
+                    )
 
     @staticmethod
     def _add(collection: dict[str, Any], manifest: Any) -> Any:
@@ -345,7 +448,7 @@ class ManifestRegistry:
         fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(document, handle, indent=2, sort_keys=True)
+                json.dump(document, handle, indent=2, sort_keys=True, allow_nan=False)
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -362,7 +465,14 @@ class ManifestRegistry:
             raise ManifestValidationError(f"invalid manifest registry: {exc}") from exc
         if not isinstance(document, dict):
             raise ManifestValidationError("manifest registry must be a JSON object")
-        if document.get("schema_version") != cls.SCHEMA_VERSION:
+        version = document.get("schema_version")
+        if version != cls.SCHEMA_VERSION:
+            if isinstance(version, int) and version < cls.SCHEMA_VERSION:
+                raise ManifestValidationError(
+                    f"manifest registry schema_version {version} predates version "
+                    f"{cls.SCHEMA_VERSION}; migrate the document by re-creating its split "
+                    "assignments with an explicit temporal_order and a known split name"
+                )
             raise ManifestValidationError("unsupported manifest registry schema_version")
         registry = cls(path)
         try:
@@ -382,7 +492,9 @@ class ManifestRegistry:
             for item in document.get("predictions", []):
                 manifest = PredictionManifest(**dict(item))
                 registry.predictions[manifest.id] = manifest
-        except (TypeError, KeyError, ValueError, AttributeError) as exc:
+            registry.validate()
+        except ManifestValidationError:
+            raise
+        except (TypeError, KeyError, ValueError, AttributeError, ArithmeticError) as exc:
             raise ManifestValidationError(f"malformed manifest registry: {exc}") from exc
-        registry.validate()
         return registry

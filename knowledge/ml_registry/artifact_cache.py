@@ -63,7 +63,31 @@ def key_from_dict(raw: Mapping[str, object]) -> CacheKey:
     return CacheKey(**values)
 
 
+PREDICTION_SCOPES = frozenset({"oof", "in_fold", "not_predictions"})
+
+
+def _coverage(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RegistryValidationError("coverage must be numeric", field="coverage")
+    number = float(value)
+    if not math.isfinite(number) or not 0 <= number <= 1:
+        raise RegistryValidationError(
+            "coverage must be finite and within [0, 1]", field="coverage"
+        )
+    return number
+
+
+def _prediction_scope(value: object) -> str:
+    if value not in PREDICTION_SCOPES:
+        raise RegistryValidationError(
+            "prediction_scope must be oof, in_fold, or not_predictions",
+            field="prediction_scope",
+        )
+    return str(value)
+
+
 def _entry_from_dict(raw: Mapping[str, object]) -> CacheEntry:
+    """Persisted entries are untrusted: re-run every register-time validator."""
     key_raw = raw.get("key")
     if not isinstance(key_raw, Mapping):
         raise RegistryValidationError("entry key must be an object", field="key")
@@ -72,8 +96,8 @@ def _entry_from_dict(raw: Mapping[str, object]) -> CacheEntry:
         key=key_from_dict(key_raw),
         uri=_text(raw.get("uri"), "uri"),
         checksum=_text(raw.get("checksum"), "checksum"),
-        coverage=float(raw.get("coverage", -1)),
-        prediction_scope=_text(raw.get("prediction_scope"), "prediction_scope"),
+        coverage=_coverage(raw.get("coverage", -1)),
+        prediction_scope=_prediction_scope(raw.get("prediction_scope")),
     )
 
 
@@ -96,20 +120,8 @@ class ArtifactCacheIndex:
     ) -> CacheEntry:
         uri = _text(uri, "uri")
         checksum = _text(checksum, "checksum")
-        if (
-            isinstance(coverage, bool)
-            or not math.isfinite(coverage)
-            or not 0 <= coverage <= 1
-        ):
-            raise RegistryValidationError(
-                "coverage must be finite and within [0, 1]", field="coverage"
-            )
-        coverage = float(coverage)
-        if prediction_scope not in {"oof", "in_fold", "not_predictions"}:
-            raise RegistryValidationError(
-                "prediction_scope must be oof, in_fold, or not_predictions",
-                field="prediction_scope",
-            )
+        coverage = _coverage(coverage)
+        prediction_scope = _prediction_scope(prediction_scope)
         payload = {
             "key": asdict(key),
             "uri": uri,
@@ -220,6 +232,29 @@ class ArtifactCacheIndex:
             if not isinstance(value, Mapping):
                 raise RegistryValidationError(f"{name} must be an object", field=name)
             target.update({str(k): str(v) for k, v in value.items()})
+        for key_id, entry_id in index.active.items():
+            entry = index.entries.get(entry_id)
+            if entry is None:
+                raise RegistryValidationError(
+                    f"active pointer {key_id!r} names unknown cache entry {entry_id!r}",
+                    field="active",
+                )
+            if entry.key.id != key_id:
+                raise RegistryValidationError(
+                    f"active pointer {key_id!r} does not match entry key {entry.key.id!r}",
+                    field="active",
+                )
+        for entry_id, replacement in index.superseded.items():
+            if entry_id not in index.entries:
+                raise RegistryValidationError(
+                    f"superseded pointer names unknown cache entry {entry_id!r}",
+                    field="superseded",
+                )
+            if not replacement.startswith("invalidated:") and replacement not in index.entries:
+                raise RegistryValidationError(
+                    f"superseded entry {entry_id!r} names unknown replacement {replacement!r}",
+                    field="superseded",
+                )
         return index
 
 

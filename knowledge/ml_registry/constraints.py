@@ -109,7 +109,9 @@ def _valid_name(value: object, *, field: str) -> str:
 
 
 def _valid_direction(value: object, *, field: str) -> str:
-    if value not in VALID_DIRECTIONS:
+    # `value in VALID_DIRECTIONS` on an unhashable value (a list from persisted JSON)
+    # raises TypeError, so the type gate must come first.
+    if not isinstance(value, str) or value not in VALID_DIRECTIONS:
         raise RegistryValidationError(
             f"{field} must be one of {sorted(VALID_DIRECTIONS)}, got {value!r}",
             field=field,

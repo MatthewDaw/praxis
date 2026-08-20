@@ -188,3 +188,194 @@ def test_prediction_group_coverage_must_exactly_match_split_groups():
                                   "invented": "fold-a"},
             )
         )
+
+
+# --------------------------------------------------------------------------- P15 splits
+
+
+def test_unknown_split_names_are_refused():
+    with pytest.raises(ManifestValidationError, match="unknown split 'holdout'"):
+        GroupAssignment("g", "holdout", 1)
+    with pytest.raises(ManifestValidationError, match="unknown split 'Train'"):
+        GroupAssignment("g", "Train", 1)
+
+
+@pytest.mark.parametrize("assignments, message", [
+    ([("a", "train", 5), ("b", "test", 1)], "train must precede"),
+    ([("a", "validation", 3), ("b", "test", 2)], "validation must precede test"),
+    ([("a", "train", 5), ("b", "calibration", 0)], "train must precede calibration"),
+    ([("a", "calibration", 4), ("b", "validation", 4)], "calibration must precede validation"),
+])
+def test_every_adjacent_split_pair_is_temporally_ordered(assignments, message):
+    with pytest.raises(ManifestValidationError, match=message):
+        SplitManifest.create(
+            "bad-split", "data-hash",
+            [GroupAssignment(*item) for item in assignments],
+        )
+
+
+def test_a_correctly_ordered_four_split_manifest_is_accepted():
+    manifest = SplitManifest.create(
+        "ordered", "data-hash",
+        [
+            GroupAssignment("a", "train", 1),
+            GroupAssignment("b", "calibration", 2),
+            GroupAssignment("c", "validation", 3),
+            GroupAssignment("d", "test", 4),
+        ],
+    )
+    assert len(manifest.assignments) == 4
+
+
+# --------------------------------------------------------------------------- P14 oof proof
+
+
+@pytest.mark.parametrize("overrides, message", [
+    ({"training_groups_by_fold": {"fold-a": [], "fold-b": ["match-a"]}}, "non-empty training"),
+    ({"training_groups_by_fold": {"fold-a": ["match-b"], "fold-b": [None]}}, "must all be non-empty strings"),
+    ({"training_groups_by_fold": {"fold-a": ["match-b"], "fold-b": [5]}}, "must all be non-empty strings"),
+    (
+        {
+            "fold_id_by_group": {"match-a": "fold-a", "match-b": "fold-a"},
+            "training_groups_by_fold": {"fold-a": ["match-z"]},
+        },
+        "at least two folds",
+    ),
+])
+def test_out_of_fold_proof_shape_is_enforced(overrides, message):
+    with pytest.raises(ManifestValidationError, match=message):
+        _prediction("any-split-hash", **overrides)
+
+
+def test_training_groups_outside_the_split_are_refused():
+    registry = ManifestRegistry()
+    dataset = registry.add_dataset(_dataset())
+    split = registry.add_split(_split(dataset.hash))
+
+    with pytest.raises(ManifestValidationError, match=r"absent from the split: \['zzz'\]"):
+        registry.add_prediction(
+            _prediction(
+                split.hash,
+                training_groups_by_fold={"fold-a": ["zzz"], "fold-b": ["match-a"]},
+            )
+        )
+
+
+def test_an_unreferenced_fold_is_refused():
+    registry = ManifestRegistry()
+    dataset = registry.add_dataset(_dataset())
+    split = registry.add_split(_split(dataset.hash))
+
+    with pytest.raises(ManifestValidationError, match=r"no group is predicted by: \['fold-c'\]"):
+        registry.add_prediction(
+            _prediction(
+                split.hash,
+                training_groups_by_fold={
+                    "fold-a": ["match-b"], "fold-b": ["match-a"], "fold-c": ["match-a"],
+                },
+            )
+        )
+
+
+def test_a_fold_may_not_train_on_a_group_later_than_the_evaluation_group_it_predicts():
+    registry = ManifestRegistry()
+    dataset = registry.add_dataset(_dataset())
+    split = SplitManifest.create(
+        "match-split", dataset.hash,
+        [
+            GroupAssignment("match-a", "train", 1),
+            GroupAssignment("match-b", "test", 3),
+            GroupAssignment("match-d", "test", 4),
+        ],
+    )
+    registry.add_split(split)
+
+    with pytest.raises(ManifestValidationError, match="temporal leakage: fold 'fold-b'"):
+        registry.add_prediction(
+            PredictionManifest.create(
+                "leaky-oof", "fit-v1", split.hash,
+                predicted_count=90, eligible_count=100, coverage=0.9,
+                schema={"p": "float32"},
+                group_coverage={"match-a": 0.9, "match-b": 0.9, "match-d": 0.9},
+                out_of_fold=True,
+                fold_id_by_group={"match-a": "fold-a", "match-b": "fold-b", "match-d": "fold-c"},
+                training_groups_by_fold={
+                    "fold-a": ["match-b"], "fold-b": ["match-d"], "fold-c": ["match-a"],
+                },
+            )
+        )
+
+
+# --------------------------------------------------------------------------- P21 hashing
+
+
+def test_integral_floats_and_ints_hash_identically():
+    first = DatasetManifest.create(
+        "ints", [DatasetFile("a", "sha", 1)], {"v": 1}, {"source": "x"}
+    )
+    second = DatasetManifest.create(
+        "ints", [DatasetFile("a", "sha", 1)], {"v": 1.0}, {"source": "x"}
+    )
+    assert first.hash == second.hash
+
+    registry = ManifestRegistry()
+    registry.add_dataset(first)
+    assert registry.add_dataset(second) is first
+
+
+def test_non_finite_schema_values_are_refused():
+    with pytest.raises(ManifestValidationError, match="finite"):
+        DatasetManifest.create(
+            "nan", [DatasetFile("a", "sha", 1)], {"a": float("nan")}, {"source": "x"}
+        )
+
+
+@pytest.mark.parametrize("size", [True, 1.5])
+def test_dataset_file_size_must_be_an_integer(size):
+    with pytest.raises(ManifestValidationError, match="size_bytes must be an integer"):
+        DatasetFile("a", "sha", size)
+
+
+@pytest.mark.parametrize("field", ["predicted_count", "eligible_count"])
+@pytest.mark.parametrize("value", [True, 1.5])
+def test_prediction_counts_must_be_integers(field, value):
+    with pytest.raises(ManifestValidationError, match="must be an integer"):
+        _prediction("any-split-hash", **{field: value})
+
+
+# --------------------------------------------------------------------------- P13/P16 state
+
+
+def _registry(tmp_path):
+    registry = ManifestRegistry(tmp_path / "manifests.json")
+    dataset = registry.add_dataset(_dataset())
+    split = registry.add_split(_split(dataset.hash))
+    registry.add_prediction(_prediction(split.hash))
+    registry.save()
+    return registry.path
+
+
+@pytest.mark.parametrize("mutation", [
+    {"predicted_count": "5"},
+    {"fold_id_by_group": 5},
+    {"training_groups_by_fold": 5},
+    {"coverage": True},
+])
+def test_malformed_persisted_prediction_is_refused_not_raised(tmp_path, mutation):
+    path = _registry(tmp_path)
+    document = json.loads(path.read_text())
+    document["predictions"][0].update(mutation)
+    path.write_text(json.dumps(document))
+
+    with pytest.raises(ManifestValidationError):
+        ManifestRegistry.load(path)
+
+
+def test_pre_v2_manifest_registry_is_refused_with_a_migration_message(tmp_path):
+    path = _registry(tmp_path)
+    document = json.loads(path.read_text())
+    document["schema_version"] = 1
+    path.write_text(json.dumps(document))
+
+    with pytest.raises(ManifestValidationError, match="predates version 2"):
+        ManifestRegistry.load(path)

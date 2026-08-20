@@ -124,3 +124,35 @@ def test_campaign_spec_coercions_fail_closed(field, bad):
 def test_resource_spec_coercions_fail_closed(resources):
     with pytest.raises(PortfolioError):
         ResourceProfile.from_mapping(resources)
+
+
+def test_unknown_campaign_keys_are_refused_rather_than_silently_dropped():
+    with pytest.raises(PortfolioError, match="unknown campaign fields: timeout_minute"):
+        schedule([campaign("a", timeout_minute=5)], {}, CPU, max_concurrency=1)
+
+
+def test_a_known_timeout_key_still_reaches_the_job_spec():
+    result = schedule([campaign("a", timeout_minutes=5)], {}, CPU, max_concurrency=1)
+    assert result.jobs[0].timeout_minutes == 5
+
+
+@pytest.mark.parametrize("state", ["running", None, 5, [], ["running"]])
+def test_non_object_state_entries_refuse_as_portfolio_errors(state):
+    with pytest.raises(PortfolioError, match="must be an object or JobState"):
+        schedule([campaign("a")], {"a": state}, CPU, max_concurrency=1)
+
+
+def test_state_with_unknown_fields_refuses_as_a_portfolio_error():
+    with pytest.raises(PortfolioError, match="invalid state for a"):
+        schedule([campaign("a")], {"a": {"campaign_id": "a", "state": "planned", "nope": 1}},
+                 CPU, max_concurrency=1)
+
+
+def test_states_must_be_a_mapping():
+    with pytest.raises(PortfolioError, match="states must be an object"):
+        schedule([campaign("a")], [], CPU, max_concurrency=1)
+
+
+def test_non_string_checkpoint_uri_is_refused():
+    with pytest.raises(PortfolioError, match="checkpoint_uri for a"):
+        schedule([campaign("a", checkpoint_uri=5)], {}, CPU, max_concurrency=1)

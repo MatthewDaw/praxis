@@ -13,6 +13,13 @@ from typing import Any, Mapping, Sequence
 
 
 TERMINAL_SUCCESS = frozenset({"completed", "skipped"})
+#: The closed set of campaign-level keys ``schedule`` understands.  A typo such as
+#: ``timeout_minute`` must refuse loudly rather than be silently dropped.
+CAMPAIGN_KEYS = frozenset({
+    "id", "depends_on", "resources", "command", "environment", "checkpoint_uri",
+    "preemptible", "max_retries", "priority", "timeout_minutes", "estimated_cost",
+    "artifact_result_path", "working_directory",
+})
 KNOWN_STATES = frozenset({"planned", "blocked", "ready", "running", "completed", "failed", "skipped"})
 
 
@@ -190,6 +197,11 @@ def schedule(
                 else ResourceProfile.from_mapping(capacity, allow_zero_cpus=True))
     by_id: dict[str, Mapping[str, Any]] = {}
     for campaign in campaigns:
+        if not isinstance(campaign, Mapping):
+            raise PortfolioError("every campaign must be an object")
+        unknown = sorted(set(campaign) - CAMPAIGN_KEYS)
+        if unknown:
+            raise PortfolioError("unknown campaign fields: " + ", ".join(unknown))
         campaign_id = campaign.get("id", "")
         if not isinstance(campaign_id, str) or not campaign_id.strip():
             raise PortfolioError("every campaign requires a non-empty id")
@@ -209,10 +221,22 @@ def schedule(
         raise PortfolioError("unknown dependencies: " + ", ".join(missing))
     _detect_cycle(dependencies)
 
+    if not isinstance(states, Mapping):
+        raise PortfolioError("states must be an object keyed by campaign id")
     normalized: dict[str, JobState] = {}
     for cid in by_id:
         raw = states.get(cid, {"campaign_id": cid, "state": "planned"})
-        normalized[cid] = raw if isinstance(raw, JobState) else JobState(**dict(raw))
+        if isinstance(raw, JobState):
+            normalized[cid] = raw
+        elif isinstance(raw, Mapping):
+            try:
+                normalized[cid] = JobState(**dict(raw))
+            except (TypeError, ValueError) as exc:
+                if isinstance(exc, PortfolioError):
+                    raise
+                raise PortfolioError(f"invalid state for {cid}: {exc}") from exc
+        else:
+            raise PortfolioError(f"state for {cid} must be an object or JobState")
         if normalized[cid].campaign_id != cid:
             raise PortfolioError(f"state key {cid!r} does not match campaign_id {normalized[cid].campaign_id!r}")
 

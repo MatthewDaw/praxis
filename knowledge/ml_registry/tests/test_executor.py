@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import signal
 import sys
+import threading
+import time
 
 import pytest
 import subprocess
 
+from knowledge.ml_registry import process_probe
 from knowledge.ml_registry.executor import ExecutorError, LocalSubprocessBackend, create_backend, register_backend
 from knowledge.ml_registry.scheduler import JobSpec, ResourceProfile
 
@@ -142,3 +146,116 @@ def test_working_directory_and_heartbeat_are_recorded(tmp_path: Path):
     assert Path(result.stdout_log).read_text().strip() == str(work)
     assert state["pid"] > 0
     assert state["heartbeat_at"] >= state["started_at"]
+
+
+def test_zero_or_negative_timeout_is_refused_instead_of_silently_falling_back(tmp_path: Path):
+    backend = LocalSubprocessBackend(log_dir=tmp_path / "logs")
+    for minutes in (0, -1):
+        with pytest.raises(ExecutorError, match="timeout must be a positive"):
+            backend.execute(job(sys.executable, "-c", "pass", timeout_minutes=minutes),
+                            state_path=tmp_path / "state.json")
+
+
+def test_sigterm_kills_the_child_group_and_records_failure(tmp_path: Path):
+    state_path = tmp_path / "state.json"
+    main_thread = threading.main_thread().ident
+    timer = threading.Timer(.7, lambda: signal.pthread_kill(main_thread, signal.SIGTERM))
+    timer.start()
+    try:
+        result = LocalSubprocessBackend(log_dir=tmp_path / "logs").execute(
+            job(sys.executable, "-c", "import time; time.sleep(60)"), state_path=state_path,
+        )
+    finally:
+        timer.cancel()
+    assert result.state == "failed"
+    assert "received signal" in result.message
+    assert json.loads(state_path.read_text())["state"] == "failed"
+    child = json.loads(state_path.read_text())["pid"]
+    deadline = time.time() + 5
+    while time.time() < deadline and process_probe.probe(child)[0]:
+        time.sleep(.05)
+    assert not process_probe.probe(child)[0], "the training child was orphaned"
+
+
+def test_unexpected_exception_kills_the_child_and_fails_the_state(tmp_path: Path, monkeypatch):
+    import knowledge.ml_registry.executor as executor_module
+    state_path = tmp_path / "state.json"
+
+    real_sleep = time.sleep
+    exploded = []
+
+    def exploding_sleep(interval):
+        if not exploded:
+            exploded.append(interval)
+            raise RuntimeError("supervisor bug")
+        return real_sleep(interval)
+
+    monkeypatch.setattr(executor_module.time, "sleep", exploding_sleep)
+    result = LocalSubprocessBackend(log_dir=tmp_path / "logs").execute(
+        job(sys.executable, "-c", "import time; time.sleep(60)"), state_path=state_path,
+    )
+    monkeypatch.undo()
+    assert result.state == "failed"
+    assert "supervisor bug" in result.message
+    assert json.loads(state_path.read_text())["state"] == "failed"
+    child = result.pid
+    deadline = time.time() + 5
+    while time.time() < deadline and process_probe.probe(child)[0]:
+        time.sleep(.05)
+    assert not process_probe.probe(child)[0], "the training child was orphaned"
+
+
+def test_heartbeat_failure_is_survivable_and_never_truncates_logs(tmp_path: Path, monkeypatch):
+    import knowledge.ml_registry.executor as executor_module
+    real = executor_module._atomic_json
+    calls = []
+
+    def flaky(path, payload, **kwargs):
+        calls.append(payload.get("heartbeat_at"))
+        if len(calls) > 1 and payload.get("state") == "running":
+            raise OSError("no space left on device")
+        return real(path, payload, **kwargs)
+
+    monkeypatch.setattr(executor_module, "_atomic_json", flaky)
+    result = LocalSubprocessBackend(log_dir=tmp_path / "logs").execute(
+        job(sys.executable, "-c", "import time; print('work'); time.sleep(2.5)"),
+        state_path=tmp_path / "state.json",
+    )
+    assert result.state == "completed"
+    assert len([beat for beat in calls if beat is not None]) > 2  # heartbeats were retried
+    assert Path(result.stdout_log).read_text().strip() == "work"
+
+
+def test_os_error_during_launch_does_not_clobber_existing_logs(tmp_path: Path, monkeypatch):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "campaign.stdout.log").write_text("previous attempt output")
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(
+        OSError("Exec format error")))
+    result = LocalSubprocessBackend(log_dir=logs).execute(
+        job("worker"), state_path=tmp_path / "state.json",
+    )
+    assert result.state == "failed"
+    assert "Exec format error" in result.message
+    assert json.loads((tmp_path / "state.json").read_text())["state"] == "failed"
+
+
+def test_heartbeats_are_written_at_about_one_hertz(tmp_path: Path, monkeypatch):
+    import knowledge.ml_registry.executor as executor_module
+    real = executor_module._atomic_json
+    fsyncs = []
+    beats = []
+
+    def counting(path, payload, **kwargs):
+        if payload.get("state") == "running":
+            beats.append(payload.get("heartbeat_at"))
+            fsyncs.append(kwargs.get("fsync", True))
+        return real(path, payload, **kwargs)
+
+    monkeypatch.setattr(executor_module, "_atomic_json", counting)
+    LocalSubprocessBackend(log_dir=tmp_path / "logs").execute(
+        job(sys.executable, "-c", "import time; time.sleep(2.2)"),
+        state_path=tmp_path / "state.json",
+    )
+    assert 2 <= len(beats) <= 5  # ~1 Hz, not the old 4 Hz
+    assert fsyncs[1:] == [False] * (len(fsyncs) - 1)  # only the opening write is fsynced

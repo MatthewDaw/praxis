@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 import json
 
 import pytest
@@ -177,3 +178,70 @@ def test_cli_register_lookup_and_refusal(tmp_path, capsys):
         == 2
     )
     assert json.loads(capsys.readouterr().err)["status"] == "refused"
+
+
+def _persisted(tmp_path, **overrides):
+    index = ArtifactCacheIndex()
+    entry = index.register(
+        KEY, uri="s3://b/p", checksum="sha256:abc", coverage=0.9, prediction_scope="oof"
+    )
+    path = tmp_path / "cache.json"
+    save_index(path, index)
+    document = json.loads(path.read_text())
+    if overrides:
+        document["entries"][entry.entry_id].update(overrides)
+    return path, document, entry
+
+
+@pytest.mark.parametrize("coverage", [7.0, float("nan"), True, "0.9"])
+def test_persisted_coverage_is_revalidated_on_load(tmp_path, coverage):
+    path, document, entry = _persisted(tmp_path)
+    document["entries"][entry.entry_id]["coverage"] = coverage
+    path.write_text(json.dumps(document, allow_nan=True))
+
+    with pytest.raises(RegistryValidationError) as error:
+        load_index(path)
+    assert error.value.field == "coverage"
+
+
+def test_persisted_prediction_scope_is_revalidated_on_load(tmp_path):
+    path, document, entry = _persisted(tmp_path)
+    document["entries"][entry.entry_id]["prediction_scope"] = "bogus"
+    path.write_text(json.dumps(document))
+
+    with pytest.raises(RegistryValidationError) as error:
+        load_index(path)
+    assert error.value.field == "prediction_scope"
+
+
+def test_active_pointer_to_a_missing_entry_is_refused(tmp_path):
+    path, document, _ = _persisted(tmp_path)
+    document["active"] = {"some-key": "no-such-entry"}
+    path.write_text(json.dumps(document))
+
+    with pytest.raises(RegistryValidationError, match="unknown cache entry"):
+        load_index(path)
+
+
+def test_active_pointer_whose_key_does_not_match_its_entry_is_refused(tmp_path):
+    path, document, entry = _persisted(tmp_path)
+    document["active"] = {"wrong-key-id": entry.entry_id}
+    path.write_text(json.dumps(document))
+
+    with pytest.raises(RegistryValidationError, match="does not match entry key"):
+        load_index(path)
+
+
+def test_cli_lookup_refuses_a_tampered_index_rather_than_exiting_zero(tmp_path, capsys):
+    path, document, entry = _persisted(tmp_path)
+    document["entries"][entry.entry_id]["coverage"] = 7.0
+    path.write_text(json.dumps(document))
+
+    code = main([
+        "--index", str(path), "lookup",
+        "--key-json", json.dumps(asdict(KEY)),
+        "--require-oof", "--minimum-coverage", "0.5",
+    ])
+
+    assert code == 2
+    assert json.loads(capsys.readouterr().err)["field"] == "coverage"

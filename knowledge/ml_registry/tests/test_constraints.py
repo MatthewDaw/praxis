@@ -173,3 +173,18 @@ def test_huge_integer_is_refused_without_overflowing():
         MetricContract("f1", "maximize"), {"f1": 10 ** 10000}
     )
     assert result.status == STATUS_REFUSED
+
+
+@pytest.mark.parametrize("direction", [["maximize"], {"maximize": 1}, 5, None])
+def test_unhashable_or_non_string_direction_refuses_instead_of_raising_typeerror(direction):
+    with pytest.raises(RegistryValidationError) as error:
+        validate_metric_contract(MetricContract("idf1", direction))
+    assert error.value.field == "primary_direction"
+
+
+def test_unhashable_constraint_direction_also_refuses():
+    contract = MetricContract(
+        "idf1", "maximize", (MetricConstraint("fps", ["at_least"], 30.0),)
+    )
+    with pytest.raises(RegistryValidationError):
+        validate_metric_contract(contract)
