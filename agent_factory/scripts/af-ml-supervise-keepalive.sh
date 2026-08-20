@@ -41,6 +41,8 @@ set -uo pipefail
 
 PRAXIS="${PRAXIS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 SESSION=""; LEDGER=""; SPACE=""; MODEL=""; STAGES=""; MSG_FILE=""; WATCH_DIR=""
+RELAUNCH_FILE=""; CONTEXT_PCT=75; GROK_BIN="${GROK_BIN:-$HOME/.grok/bin/grok}"
+AF_GROK_MODEL="${AF_GROK_MODEL:-grok-4.6}"; CWD=""
 # STALL_NUDGES is 6, not 3: authoring an arm legitimately spans several turns and several nudges.
 POLL=60; IDLE_POLLS=3; MAX_NUDGES=50; STALL_NUDGES=6
 
@@ -58,6 +60,9 @@ while [ $# -gt 0 ]; do
     --stall-nudges) STALL_NUDGES="$2"; shift 2;;
     --message-file) MSG_FILE="$2"; shift 2;;
     --watch-dir) WATCH_DIR="$2"; shift 2;;
+    --relaunch-prompt-file) RELAUNCH_FILE="$2"; shift 2;;
+    --relaunch-cwd) CWD="$2"; shift 2;;
+    --context-pct) CONTEXT_PCT="$2"; shift 2;;
     *) echo "unknown argument: $1" >&2; exit 2;;
   esac
 done
@@ -96,12 +101,78 @@ campaign_complete() {
       campaign-complete --space-file "$SPACE" --model-id "$MODEL" --stages "$STAGES" >/dev/null 2>&1)
 }
 
-# grok keeps "Esc:cancel" in its status bar for the duration of a turn. Absent means the turn ended.
+# BUSY IS NOT ONE STRING, and getting this wrong nudges a working agent.
+# "Esc:cancel" appears while a TURN is in flight, but grok also runs tool calls with the turn
+# already returned, showing "N command(s) still running" instead -- and it QUEUES anything typed
+# while that is true. Measured on detection 2026-08-20: the Esc:cancel-only test read a working
+# agent as idle and piled up FOUR queued nudges, each of which would land later as a redundant
+# instruction in a context already at 237K/500K. A queued nudge is worse than a missed one: it is
+# not a no-op, it is future noise the agent must read and reconcile.
+# So: any of these means DO NOT SEND.
 session_idle() {
   local pane
   pane="$(tmux capture-pane -p -t "$SESSION" 2>/dev/null)" || return 1
-  printf '%s' "$pane" | grep -q "Esc:cancel" && return 1
+  printf '%s' "$pane" | grep -qE "Esc:cancel|still running|queued|Thinking|Responding" && return 1
   return 0
+}
+
+# CONTEXT EXHAUSTION IS A SILENT FAILURE, and it is the one this loop could not previously see.
+# grok prints "340K / 500K" in its status bar. As that fills the agent does not crash -- it degrades,
+# and a degrading agent still reads as BUSY to every check above, so the keepalive would happily
+# nurse a session that had stopped being able to think. Measured on detection 2026-08-20: 237K at
+# 10:20, 340K by 10:55 -- roughly 100K per half hour, i.e. under two hours of useful life.
+#
+# The remedy is a RESTART, not a nudge, and it is cheap here for a specific reason: the campaign's
+# state is DURABLE ON DISK. The ledger, the registry space and every registered idea survive the
+# session; /af-ml-supervise reloads all of it. What a restart discards is only the conversation,
+# which past the threshold is a liability rather than an asset.
+#
+# It only ever cycles an IDLE session. Killing a session mid-dispatch would lose a running arm and
+# leave its idea claimed, which is exactly the two-runs-racing damage the lease exists to prevent.
+context_used_pct() {
+  local pane used total
+  pane="$(tmux capture-pane -p -t "$SESSION" 2>/dev/null)" || { echo 0; return; }
+  # e.g. "340K / 500K"
+  read -r used total <<<"$(printf '%s' "$pane" | grep -oE '[0-9]+K */ *[0-9]+K' | tail -1 | tr -d 'K' | tr '/' ' ')"
+  [ -n "${used:-}" ] && [ -n "${total:-}" ] && [ "$total" -gt 0 ] || { echo 0; return; }
+  echo $(( used * 100 / total ))
+}
+
+cycle_session() {
+  local pct="$1"
+  if [ -z "$RELAUNCH_FILE" ] || [ ! -r "$RELAUNCH_FILE" ]; then
+    say "CONTEXT ${pct}% but no --relaunch-prompt-file given, so this loop cannot restart the agent."
+    say "CONTEXT the session will keep degrading. Pass --relaunch-prompt-file to enable cycling."
+    return 1
+  fi
+  say "CONTEXT ${pct}% of window used -- cycling the session. Campaign state is on disk; only the"
+  say "CONTEXT conversation is discarded, and past this threshold it is costing more than it carries."
+  tmux kill-session -t "$SESSION" 2>/dev/null
+  sleep 3
+  tmux new-session -d -s "$SESSION" -c "${CWD:-$PWD}" \
+    "unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN; export PATH=\"\$HOME/.grok/bin:\$PATH\"; $GROK_BIN --model $AF_GROK_MODEL --always-approve 2>&1 | tee -a /workspace/$SESSION.log"
+  local i
+  for i in $(seq 1 30); do
+    sleep 2
+    tmux capture-pane -p -t "$SESSION" 2>/dev/null | grep -q "always-approve" && break
+  done
+  sleep 3
+  tmux send-keys -t "$SESSION" "$(cat "$RELAUNCH_FILE")"
+  sleep 3
+  send_submit
+  say "CONTEXT cycled; fresh session re-entered /af-ml-supervise and reloaded state from the registry."
+  return 0
+}
+
+# Enter QUEUES while grok is mid-command and only SUBMITS at an empty prompt; Ctrl-Enter sends now.
+# Sending the wrong one leaves the message sitting in the box looking delivered -- which cost real
+# time today when a steer sat unsent while the campaign ran arms it had been told to skip.
+send_submit() {
+  tmux send-keys -t "$SESSION" Enter
+  sleep 2
+  if tmux capture-pane -p -t "$SESSION" 2>/dev/null | grep -qE "Pasted:|Enter:queue|Enter:send now"; then
+    tmux send-keys -t "$SESSION" C-Enter
+  fi
 }
 
 nudges=0; idle_run=0; stall=0; last_progress="$(progress_token)"
@@ -116,6 +187,11 @@ while :; do
 
   if campaign_complete; then
     say "COMPLETE: campaign-complete exits 0 after $nudges nudge(s). Nothing left to drive."; exit 0
+  fi
+
+  pct="$(context_used_pct)"
+  if [ "${pct:-0}" -ge "$CONTEXT_PCT" ] && session_idle; then
+    cycle_session "$pct" && { nudges=0; idle_run=0; stall=0; last_progress="$(progress_token)"; continue; }
   fi
 
   if ! session_idle; then idle_run=0; continue; fi
@@ -150,5 +226,5 @@ while :; do
   # in the same call, which leaves the message sitting unsent in the prompt looking like it worked.
   tmux send-keys -t "$SESSION" "$(nudge_text)"
   sleep 3
-  tmux send-keys -t "$SESSION" Enter
+  send_submit
 done

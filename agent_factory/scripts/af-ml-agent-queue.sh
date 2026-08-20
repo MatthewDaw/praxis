@@ -133,6 +133,10 @@ while IFS='|' read -r name space model stages; do
   fi
 
   tmux kill-session -t "$session" 2>/dev/null
+  # Persist the prompt: the keepalive re-sends it verbatim when it cycles a context-exhausted
+  # session, so the restarted agent re-enters the SAME campaign contract rather than a paraphrase.
+  prompt_file="/tmp/af-ml-prompt-$name.txt"
+  printf '%s' "$prompt" > "$prompt_file"
   say "$name: launching agent session $session ($AF_GROK_MODEL)"
   launch_agent "$session" "$REPO" "$prompt"
   ran=$((ran+1))
@@ -141,7 +145,8 @@ while IFS='|' read -r name space model stages; do
   "$KEEPALIVE" --session "$session" --ledger "$REPO/ml/$name/results.tsv" \
       --space-file "$space" --model-id "$model" --stages "$stages" \
       --praxis "$PRAXIS" --poll "$POLL" --max-nudges "$MAX_NUDGES" \
-      --watch-dir "$REPO/src"
+      --watch-dir "$REPO/src" \
+      --relaunch-prompt-file "$prompt_file" --relaunch-cwd "$REPO" --context-pct 75
   rc=$?
 
   # The session is torn down whatever happened: a finished campaign's session left alive holds a
