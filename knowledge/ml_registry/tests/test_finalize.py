@@ -14,6 +14,7 @@ from knowledge.ml_registry.services.finalize import (
     FinalizationRequest,
     Finalizer,
 )
+from knowledge.ml_registry.services.ratchet import ACTIVE_LINEAGE_FIELD, record_adoption_lineage
 from knowledge.ml_registry.storage import ArtifactStore
 from knowledge.ml_registry.write_path import RegistrySpace, register_idea, register_model, register_trial
 
@@ -39,10 +40,15 @@ def _campaign(tmp_path: Path):
             "model_id": model_id, "idea_id": idea_id, "commit": f"commit-{index}",
             "status": "complete", "throughput": 1.0, "diff_lines": 1,
         }, frozenset({f"commit-{index}"}))
-        space.get(trial_id).meta.update(status="succeeded", lineage_id="lineage-1")
+        space.get(trial_id).meta.update(status="succeeded")
         if stage == "tuning":
             adopt_idea(space, idea_id, trial_id)
             adopted_trial_id = trial_id
+
+    lineage = record_adoption_lineage(
+        model_id, space.get(model_id).meta, idea_id=idea_id, trial_id=adopted_trial_id,
+        adopted_commit="commit-2", parent_baseline_commit="base",
+    )
 
     source = tmp_path / "weights.bin"
     source.write_bytes(b"converged weights")
@@ -52,13 +58,13 @@ def _campaign(tmp_path: Path):
         "schema_version": 1, "artifact_id": "fit-1", "artifact_type": "weights",
         "uri": source.resolve().as_uri(), "sha256": digest, "size_bytes": source.stat().st_size,
         "producer_campaign_id": "campaign-1", "trial_id": adopted_trial_id,
-        "lineage_id": "lineage-1", "interface_version": "v1",
+        "lineage_id": lineage.lineage_id, "interface_version": "v1",
     })
     store.ingest_artifact(source, artifact)
     promotion = PromotionRecord.from_mapping({
         "schema_version": 1, "promotion_record_id": "promotion-1",
         "campaign_id": "campaign-1", "model_id": model_id,
-        "adopted_trial_id": adopted_trial_id, "lineage_id": "lineage-1",
+        "adopted_trial_id": adopted_trial_id, "lineage_id": lineage.lineage_id,
         "convergence_artifact_id": "fit-1", "dataset_manifest_hash": "dataset",
         "split_manifest_hash": "split", "preprocessing_hash": "preprocessing",
         "code_commit": "code", "configuration_hash": "configuration", "metric_name": "f1",
@@ -156,6 +162,17 @@ def test_finalize_rejects_wrong_current_lineage_without_writing(tmp_path: Path) 
 
     with pytest.raises(FinalizationError, match="artifact is not bound to the adopted trial"):
         Finalizer(store, lambda _name, _artifact: True).finalize(space, wrong)
+    assert store.promotion_for_campaign("campaign-1") is None
+
+
+def test_finalize_rejects_a_promotion_after_its_adoption_lineage_changed(
+    tmp_path: Path,
+) -> None:
+    space, model_id, store, request = _campaign(tmp_path)
+    space.get(model_id).meta[ACTIVE_LINEAGE_FIELD] = "adoption:newer-trial"
+
+    with pytest.raises(FinalizationError, match="current adoption lineage"):
+        Finalizer(store, lambda _name, _artifact: True).finalize(space, request)
     assert store.promotion_for_campaign("campaign-1") is None
 
 

@@ -10,6 +10,7 @@ from knowledge.ml_registry.completeness import campaign_completeness
 from knowledge.ml_registry.contracts import CampaignArtifact, PromotionRecord
 from knowledge.ml_registry.lifecycle import active_adoption
 from knowledge.ml_registry.schema import TRIAL
+from knowledge.ml_registry.services.ratchet import current_lineage
 from knowledge.ml_registry.storage import ArtifactStore, ArtifactStoreError, FinalizationCommit
 from knowledge.ml_registry.write_path import RegistrySpace
 
@@ -132,9 +133,8 @@ class Finalizer:
             raise FinalizationError("adopted trial is missing from the registry")
         if trial.meta.get("status") != "succeeded":
             raise FinalizationError("adopted trial is not a succeeded trial")
-        trial_lineage = trial.meta.get("lineage_id")
-        if trial_lineage is not None and trial_lineage != promotion.lineage_id:
-            raise FinalizationError("promotion lineage differs from the adopted trial lineage")
+        if current_lineage(promotion.model_id, space.get(promotion.model_id).meta) != promotion.lineage_id:
+            raise FinalizationError("promotion lineage is not the model's current adoption lineage")
         if artifact.lineage_id != promotion.lineage_id:
             raise FinalizationError("artifact lineage differs from the current adoption")
 
