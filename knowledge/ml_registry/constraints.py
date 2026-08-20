@@ -16,6 +16,7 @@ value on the wrong side of a threshold is a genuine failure.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import asdict
 import math
 import re
 from typing import Mapping
@@ -92,6 +93,11 @@ class ConstraintEvaluation:
     def passed(self) -> bool:
         return self.status == STATUS_PASSED
 
+    def to_dict(self) -> dict[str, object]:
+        """Return a stable JSON-ready representation for CLI and report consumers."""
+
+        return asdict(self)
+
 
 def _valid_name(value: object, *, field: str) -> str:
     if not isinstance(value, str) or not _METRIC_NAME.fullmatch(value):
@@ -154,6 +160,60 @@ def validate_metric_contract(contract: MetricContract) -> None:
                 field=f"{prefix}.metric",
             )
         seen.add(key)
+
+
+def metric_contract_from_dict(raw: Mapping[str, object]) -> MetricContract:
+    """Parse a JSON-shaped dictionary into a validated metric contract."""
+
+    for required in ("primary_metric", "primary_direction"):
+        if required not in raw:
+            raise RegistryValidationError(
+                f"metric contract is missing required field {required!r}",
+                field=required,
+            )
+    raw_constraints = raw.get("constraints", [])
+    if not isinstance(raw_constraints, list):
+        raise RegistryValidationError(
+            "constraints must be a JSON array", field="constraints"
+        )
+    constraints: list[MetricConstraint] = []
+    for index, item in enumerate(raw_constraints):
+        field = f"constraints[{index}]"
+        if not isinstance(item, Mapping):
+            raise RegistryValidationError(f"{field} must be a JSON object", field=field)
+        missing = next(
+            (name for name in ("metric", "direction", "threshold") if name not in item),
+            None,
+        )
+        if missing is not None:
+            raise RegistryValidationError(
+                f"{field} is missing required field {missing!r}",
+                field=f"{field}.{missing}",
+            )
+        raw_slices = item.get("slices", [])
+        if not isinstance(raw_slices, list) or not all(
+            isinstance(name, str) for name in raw_slices
+        ):
+            raise RegistryValidationError(
+                f"{field}.slices must be an array of strings", field=f"{field}.slices"
+            )
+        constraints.append(
+            MetricConstraint(
+                metric=item["metric"],  # type: ignore[arg-type]
+                direction=item["direction"],  # type: ignore[arg-type]
+                threshold=item["threshold"],  # type: ignore[arg-type]
+                scope=item.get("scope", SCOPE_OVERALL),  # type: ignore[arg-type]
+                slices=tuple(raw_slices),
+                label=item.get("label", ""),  # type: ignore[arg-type]
+            )
+        )
+    contract = MetricContract(
+        primary_metric=raw["primary_metric"],  # type: ignore[arg-type]
+        primary_direction=raw["primary_direction"],  # type: ignore[arg-type]
+        constraints=tuple(constraints),
+    )
+    validate_metric_contract(contract)
+    return contract
 
 
 def _metric_container(row: Mapping[str, object]) -> Mapping[str, object]:
