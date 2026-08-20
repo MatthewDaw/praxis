@@ -5,6 +5,7 @@ from copy import deepcopy
 import pytest
 
 from knowledge.ml_registry.contracts import LedgerRowV2, LedgerV2, migrate_ledger, migrate_mapping
+from knowledge.ml_registry.contracts.migration import migrate_registry_ratchet_lineage
 from knowledge.ml_registry.contracts._validation import ContractError
 
 
@@ -50,3 +51,40 @@ def test_ledger_v2_offline_migration_is_byte_stable():
 def test_legacy_ledgers_are_refused_instead_of_inventing_adjudication_inputs(legacy):
     with pytest.raises(ContractError, match="must be emitted by the writer"):
         migrate_ledger(legacy)
+
+
+def test_ratchet_lineage_migration_marks_historical_evidence_unknown_without_inventing_it():
+    raw = {"facts": [
+        {"id": "model-1", "category": "model", "meta": {"baseline": "base"}, "derivedFrom": []},
+        {"id": "trial-1", "category": "trial", "meta": {
+            "model_id": "model-1", "commit": "candidate",
+        }, "derivedFrom": ["idea-1"]},
+    ]}
+    migrated = migrate_registry_ratchet_lineage(raw)
+    assert "active_adoption_lineage" not in raw["facts"][0]["meta"]
+    model = migrated["facts"][0]["meta"]
+    trial = migrated["facts"][1]["meta"]
+    assert model["active_adoption_lineage"] == "root:model-1:base"
+    assert model["ratchet_lineage_migration"] == "counterfactual_unknown"
+    assert trial["base_lineage_id"].startswith("legacy-unknown:")
+    assert trial["base_commit"] == "legacy-unknown"
+    assert trial["ratchet_evidence"] == "counterfactual_unknown"
+
+
+def test_ratchet_lineage_migration_recovers_the_active_adoptions_direct_parent():
+    raw = {"facts": [
+        {"id": "model-1", "category": "model", "meta": {
+            "baseline": "winner", "previous_baseline": "base",
+        }},
+        {"id": "idea-1", "category": "idea", "meta": {
+            "model_id": "model-1", "status": "adopted", "adopted_trial_id": "trial-win",
+        }},
+        {"id": "trial-win", "category": "trial", "meta": {
+            "model_id": "model-1", "commit": "winner",
+        }},
+    ]}
+    model = migrate_registry_ratchet_lineage(raw)["facts"][0]["meta"]
+    assert model["active_adoption_lineage"] == "adoption:trial-win"
+    lineage = model["adoption_lineages"]["adoption:trial-win"]
+    assert lineage["parent_lineage_id"] == "root:model-1:base"
+    assert lineage["parent_baseline_commit"] == "base"

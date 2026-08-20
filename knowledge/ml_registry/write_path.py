@@ -346,6 +346,11 @@ def register_trial(space: RegistrySpace, meta: dict[str, object], ledger_commits
     Refuses a trial whose idea was never registered, and refuses a trial whose commit
     has no matching row in ``ledger_commits`` (the external results ledger).
     """
+    # Import locally while the legacy write-path module is being decomposed into domain
+    # services; the service itself depends only on schema errors, not this module.
+    from knowledge.ml_registry.services.ratchet import stamp_trial_lineage
+
+    meta = dict(meta)
     validate_fact(TRIAL, meta)
     idea_id = str(meta["idea_id"])
     idea = space.get(idea_id)
@@ -353,10 +358,23 @@ def register_trial(space: RegistrySpace, meta: dict[str, object], ledger_commits
         raise RegistryValidationError(
             f"trial references idea {idea_id!r} that was never registered", field="idea_id"
         )
+    model_id = str(meta["model_id"])
+    model = space.get(model_id)
+    if model is None or model.category != MODEL:
+        raise RegistryValidationError(
+            f"trial references model {model_id!r} that was never registered", field="model_id"
+        )
+    stamp_trial_lineage(model_id, model.meta, meta)
     commit = str(meta["commit"])
     if commit not in ledger_commits:
         raise RegistryValidationError(
             f"trial commit {commit!r} has no matching row in the external ledger", field="commit"
+        )
+    counterfactual = meta.get("counterfactual_commit")
+    if counterfactual is not None and str(counterfactual) not in ledger_commits:
+        raise RegistryValidationError(
+            f"counterfactual trial commit {counterfactual!r} has no matching row in the external ledger",
+            field="counterfactual_commit",
         )
 
     # An idea may have only ONE trial in flight. A second one means the same question is being

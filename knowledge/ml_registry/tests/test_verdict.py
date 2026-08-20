@@ -72,6 +72,9 @@ ALL_COMMITS = frozenset(
         "mix1", "mix2", "mix3", "mix4",
         "wide1", "wide2", "wide3", "deep1", "deep2", "deep3", "ghost-loser", "slow1",
         "ordinary1", "ordinary2", "ordinary3", "inherit1", "inherit2", "inherit3",
+        "ordinary-cf1", "ordinary-cf2", "ordinary-cf3",
+        "inherit-cf1", "inherit-cf2", "inherit-cf3",
+        "stack-cf1", "stack-cf2", "stack-cf3",
     }
 )
 
@@ -138,12 +141,13 @@ def _space_with_model():
     return space, model_id
 
 
-def _trial(space, model_id, idea_id, commit, *, throughput, diff_lines):
+def _trial(space, model_id, idea_id, commit, *, throughput, diff_lines, **lineage):
     return register_trial(
         space,
         {
             "model_id": model_id, "idea_id": idea_id, "commit": commit, "status": "running",
             "throughput": throughput, "diff_lines": diff_lines,
+            **lineage,
         },
         ALL_COMMITS,
     )
@@ -704,11 +708,10 @@ def test_a_rejection_that_loses_against_the_previous_baseline_too_is_not_counted
 
 
 # ---------------------------------------------------------------------------
-# Adversarial: the two holes counterfactual attribution opened, pinned as xfail
+# Adversarial: the two holes closed by paired ancestry counterfactuals
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="attribution reverts genuine wins: the band it counts IS the win")
 def test_a_genuine_win_survives_three_arms_that_merely_reproduce_the_old_baseline():
     """The band attribution counts as evidence is exactly the size of the adoption's win.
 
@@ -735,10 +738,19 @@ def test_a_genuine_win_survives_three_arms_that_merely_reproduce_the_old_baselin
         space, winner_trial, _rows(adopt1=(big_win, BASELINE_THROUGHPUT, 100))
     ) == VERDICT_ADOPTED
 
+    lineage = space.get(model_id).meta["active_adoption_lineage"]
+    parent = space.get(model_id).meta["adoption_lineages"][lineage]["parent_lineage_id"]
     for i, commit in enumerate(["ordinary1", "ordinary2", "ordinary3"]):
+        cf_commit = f"ordinary-cf{i + 1}"
         loser_id = register_idea(space, _idea_meta(model_id, f"a no-op arm {i}", axis=f"axis-{i}"))
-        trial_id = _trial(space, model_id, loser_id, commit, throughput=BASELINE_THROUGHPUT, diff_lines=100)
+        trial_id = _trial(
+            space, model_id, loser_id, commit, throughput=BASELINE_THROUGHPUT, diff_lines=100,
+            counterfactual_commit=cf_commit, counterfactual_lineage_id=parent,
+            intervention_digest=f"sha256:ordinary-{i}",
+            counterfactual_intervention_digest=f"sha256:ordinary-{i}",
+        )
         ledger = _rows(**{commit: (1.0, BASELINE_THROUGHPUT, 100),  # exactly the r1 baseline
+                          cf_commit: (1.0, BASELINE_THROUGHPUT, 100),
                           "adopt1": (big_win, BASELINE_THROUGHPUT, 100)})
         assert adjudicate_verdict(space, trial_id, ledger) == VERDICT_REJECTED
 
@@ -746,7 +758,6 @@ def test_a_genuine_win_survives_three_arms_that_merely_reproduce_the_old_baselin
     assert space.get(model_id).meta[BASELINE_FIELD] == "adopt1"
 
 
-@pytest.mark.xfail(strict=True, reason="attribution goes inert on the bad adoption it exists to roll back")
 def test_the_ratchet_still_catches_an_adoption_whose_damage_its_children_inherit():
     """The mirror hole, and the one the supervisor's own integration test still fails on:
     ``test_supervisor.py::test_three_consecutive_dispatch_trial_rejections_on_distinct_ideas_
@@ -771,15 +782,107 @@ def test_the_ratchet_still_catches_an_adoption_whose_damage_its_children_inherit
         space, bad_trial, _rows(adopt1=(ADOPTED_VALUE, BASELINE_THROUGHPUT, 100))
     ) == VERDICT_ADOPTED
 
+    lineage = space.get(model_id).meta["active_adoption_lineage"]
+    parent = space.get(model_id).meta["adoption_lineages"][lineage]["parent_lineage_id"]
     for i, commit in enumerate(["inherit1", "inherit2", "inherit3"]):
+        cf_commit = f"inherit-cf{i + 1}"
         loser_id = register_idea(space, _idea_meta(model_id, f"child of the bad adoption {i}", axis=f"axis-{i}"))
-        trial_id = _trial(space, model_id, loser_id, commit, throughput=BASELINE_THROUGHPUT, diff_lines=100)
+        trial_id = _trial(
+            space, model_id, loser_id, commit, throughput=BASELINE_THROUGHPUT, diff_lines=100,
+            counterfactual_commit=cf_commit, counterfactual_lineage_id=parent,
+            intervention_digest=f"sha256:inherit-{i}",
+            counterfactual_intervention_digest=f"sha256:inherit-{i}",
+        )
         ledger = _rows(**{commit: (UNATTRIBUTABLE_LOSS, BASELINE_THROUGHPUT, 100),
+                          cf_commit: (1.0, BASELINE_THROUGHPUT, 100),
                           "adopt1": (ADOPTED_VALUE, BASELINE_THROUGHPUT, 100)})
         assert adjudicate_verdict(space, trial_id, ledger) == VERDICT_REJECTED
 
     assert space.get(bad_id).meta["status"] == STATUS_UNTRIED
     assert space.get(model_id).meta[BASELINE_FIELD] == "r1"
+
+
+def test_unfair_paired_counterfactual_is_not_rollback_evidence():
+    space, model_id = _space_with_model()
+    winner_id = register_idea(space, _idea_meta(model_id, "winner"))
+    winner_trial = _trial(space, model_id, winner_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
+    assert adjudicate_verdict(space, winner_trial, _rows(
+        adopt1=(ADOPTED_VALUE, BASELINE_THROUGHPUT, 100))) == VERDICT_ADOPTED
+    lineage = space.get(model_id).meta["active_adoption_lineage"]
+    parent = space.get(model_id).meta["adoption_lineages"][lineage]["parent_lineage_id"]
+    loser_id = register_idea(space, _idea_meta(model_id, "paired but unfair"))
+    trial_id = _trial(
+        space, model_id, loser_id, "inherit1", throughput=BASELINE_THROUGHPUT, diff_lines=100,
+        counterfactual_commit="inherit-cf1", counterfactual_lineage_id=parent,
+        intervention_digest="sha256:paired",
+        counterfactual_intervention_digest="sha256:paired",
+    )
+    ledger = _rows(inherit1=(UNATTRIBUTABLE_LOSS, BASELINE_THROUGHPUT, 100),
+                   adopt1=(ADOPTED_VALUE, BASELINE_THROUGHPUT, 100),
+                   **{"inherit-cf1": (1.0, BASELINE_THROUGHPUT, 100)})
+    ledger["inherit-cf1"] = LedgerRow(1.0, BASELINE_THROUGHPUT, 100, status="budget_exhausted")
+    assert adjudicate_verdict(space, trial_id, ledger) == VERDICT_REJECTED
+    assert space.get(model_id).meta[RATCHET_COUNT_FIELD] == 0
+    assert space.get(trial_id).meta["ratchet_evidence"] == "counterfactual_unfair"
+
+
+def test_counterfactual_from_a_non_parent_lineage_is_refused():
+    space, model_id = _space_with_model()
+    winner_id = register_idea(space, _idea_meta(model_id, "winner"))
+    winner_trial = _trial(space, model_id, winner_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
+    assert adjudicate_verdict(space, winner_trial, _rows(
+        adopt1=(ADOPTED_VALUE, BASELINE_THROUGHPUT, 100))) == VERDICT_ADOPTED
+    loser_id = register_idea(space, _idea_meta(model_id, "mismatched pair"))
+    trial_id = _trial(
+        space, model_id, loser_id, "inherit1", throughput=BASELINE_THROUGHPUT, diff_lines=100,
+        counterfactual_commit="inherit-cf1", counterfactual_lineage_id="unrelated-lineage",
+        intervention_digest="sha256:mismatch",
+        counterfactual_intervention_digest="sha256:mismatch",
+    )
+    with pytest.raises(RegistryValidationError) as excinfo:
+        adjudicate_verdict(space, trial_id, _rows(
+            inherit1=(UNATTRIBUTABLE_LOSS, BASELINE_THROUGHPUT, 100),
+            adopt1=(ADOPTED_VALUE, BASELINE_THROUGHPUT, 100),
+            **{"inherit-cf1": (1.0, BASELINE_THROUGHPUT, 100)}))
+    assert excinfo.value.field == "counterfactual_lineage_id"
+
+
+def test_stacked_adoption_rollback_restores_its_direct_parent_lineage_and_adoption():
+    space, model_id = _space_with_model()
+    first_id = register_idea(space, _idea_meta(model_id, "first winner"))
+    first_trial = _trial(space, model_id, first_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
+    assert adjudicate_verdict(space, first_trial, _rows(
+        adopt1=(ADOPTED_VALUE, BASELINE_THROUGHPUT, 100))) == VERDICT_ADOPTED
+    first_lineage = space.get(model_id).meta["active_adoption_lineage"]
+
+    second_value = ADOPTED_VALUE - NOISE_FLOOR - .01
+    second_id = register_idea(space, _idea_meta(model_id, "second winner"))
+    second_trial = _trial(space, model_id, second_id, "win2", throughput=BASELINE_THROUGHPUT, diff_lines=100)
+    assert adjudicate_verdict(space, second_trial, _rows(
+        adopt1=(ADOPTED_VALUE, BASELINE_THROUGHPUT, 100),
+        win2=(second_value, BASELINE_THROUGHPUT, 100))) == VERDICT_ADOPTED
+    second_lineage = space.get(model_id).meta["active_adoption_lineage"]
+    assert second_lineage != first_lineage
+
+    for i, commit in enumerate(("b1", "b2", "b3"), 1):
+        loser_id = register_idea(space, _idea_meta(model_id, f"stack child {i}"))
+        trial_id = _trial(
+            space, model_id, loser_id, commit, throughput=BASELINE_THROUGHPUT, diff_lines=100,
+            counterfactual_commit=f"stack-cf{i}", counterfactual_lineage_id=first_lineage,
+            intervention_digest=f"sha256:stack-{i}",
+            counterfactual_intervention_digest=f"sha256:stack-{i}",
+        )
+        assert adjudicate_verdict(space, trial_id, _rows(**{
+            commit: (UNATTRIBUTABLE_LOSS, BASELINE_THROUGHPUT, 100),
+            f"stack-cf{i}": (ADOPTED_VALUE, BASELINE_THROUGHPUT, 100),
+            "win2": (second_value, BASELINE_THROUGHPUT, 100),
+        })) == VERDICT_REJECTED
+
+    model = space.get(model_id)
+    assert model.meta[BASELINE_FIELD] == "adopt1"
+    assert model.meta["active_adoption_lineage"] == first_lineage
+    assert space.get(first_id).meta["status"] == STATUS_ADOPTED
+    assert space.get(second_id).meta["status"] == STATUS_UNTRIED
 
 
 def test_a_rejection_counts_when_the_previous_baseline_has_no_ledger_row_to_ask():

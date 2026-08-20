@@ -20,6 +20,66 @@ from .outcome import CampaignOutcomeRecord
 from .promotion import PromotionRecord
 
 
+def migrate_registry_ratchet_lineage(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Offline-add ancestry markers without inventing counterfactual measurements.
+
+    Historical trials cannot be made causally attributable after the fact. They are
+    therefore bound to the best recoverable baseline lineage and explicitly marked
+    ``counterfactual_unknown``; callers must not interpret migration as ratchet proof.
+    """
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("facts"), list):
+        raise ContractError("registry migration payload must contain a facts list")
+    result = deepcopy(dict(payload))
+    facts = result["facts"]
+    models = {
+        str(fact.get("id")): fact for fact in facts
+        if isinstance(fact, dict) and fact.get("category") == "model"
+    }
+    by_id = {
+        str(fact.get("id")): fact for fact in facts if isinstance(fact, dict)
+    }
+    for model_id, model in models.items():
+        meta = model.setdefault("meta", {})
+        baseline = str(meta.get("baseline"))
+        previous = meta.get("previous_baseline")
+        root_commit = str(previous if previous is not None else baseline)
+        root = f"root:{model_id}:{root_commit}"
+        history = meta.setdefault("adoption_lineages", {})
+        adopted = next((
+            fact for fact in facts
+            if isinstance(fact, dict) and fact.get("category") == "idea"
+            and fact.get("meta", {}).get("model_id") == model_id
+            and fact.get("meta", {}).get("status") == "adopted"
+        ), None)
+        if adopted is not None and previous is not None:
+            adopted_trial_id = str(adopted.get("meta", {}).get("adopted_trial_id"))
+            adopted_trial = by_id.get(adopted_trial_id, {})
+            lineage_id = f"adoption:{adopted_trial_id}"
+            history.setdefault(lineage_id, {
+                "lineage_id": lineage_id,
+                "adoption_idea_id": str(adopted.get("id")),
+                "adoption_trial_id": adopted_trial_id,
+                "adopted_commit": str(adopted_trial.get("meta", {}).get("commit", baseline)),
+                "parent_lineage_id": root,
+                "parent_baseline_commit": root_commit,
+            })
+            meta.setdefault("active_adoption_lineage", lineage_id)
+        else:
+            meta.setdefault("active_adoption_lineage", root)
+        meta["ratchet_lineage_migration"] = "counterfactual_unknown"
+    for fact in facts:
+        if not isinstance(fact, dict) or fact.get("category") != "trial":
+            continue
+        meta = fact.setdefault("meta", {})
+        model = models.get(str(meta.get("model_id")))
+        if model is None:
+            continue
+        meta.setdefault("base_lineage_id", f"legacy-unknown:{meta.get('model_id')}:{fact.get('id')}")
+        meta.setdefault("base_commit", "legacy-unknown")
+        meta.setdefault("ratchet_evidence", "counterfactual_unknown")
+    return result
+
+
 LATEST_SCHEMA_VERSIONS = {
     "campaign_spec": CampaignSpec.VERSION,
     "campaign_artifact": CampaignArtifact.VERSION,

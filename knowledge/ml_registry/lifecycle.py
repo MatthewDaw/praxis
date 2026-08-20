@@ -156,10 +156,14 @@ def reject_idea(space: RegistrySpace, idea_id: str, reason: str) -> None:
     if not reason:
         raise RegistryValidationError("reject requires a non-empty reason", field="reason")
     idea = _idea(space, idea_id)
-    active = _active_adoption(space, str(idea.meta.get("model_id")))
+    model_id = str(idea.meta.get("model_id"))
+    active = _active_adoption(space, model_id)
+    model = space.get(model_id)
+    active_lineage = model.meta.get("active_adoption_lineage") if model else None
     idea.meta.update(
         status=STATUS_REJECTED, rejection_reason=reason,
         rejected_under_adoption=active.id if active else None,
+        rejected_under_lineage_id=active_lineage if active else None,
     )
 
 
@@ -252,10 +256,18 @@ def invalidate_adoption(space: RegistrySpace, idea_id: str, reason: str) -> None
     adoption with a better one, use :func:`supersede_adoption`, which keeps the tenure's
     rejections intact.
     """
+    idea = _idea(space, idea_id)
+    model = space.get(str(idea.meta.get("model_id")))
+    invalidated_lineage = model.meta.get("active_adoption_lineage") if model else None
     _end_adoption(space, idea_id, reason, status=STATUS_UNTRIED)
     for other in space.list_facts(IDEA):
-        if other.meta.get("rejected_under_adoption") == idea_id:
-            for key in ("status", "rejection_reason", "rejected_under_adoption"):
+        belongs = (
+            other.meta.get("rejected_under_lineage_id") == invalidated_lineage
+            if invalidated_lineage is not None
+            else other.meta.get("rejected_under_adoption") == idea_id
+        )
+        if belongs:
+            for key in ("status", "rejection_reason", "rejected_under_adoption", "rejected_under_lineage_id"):
                 other.meta.pop(key, None)
 
 def reopen_idea(space: RegistrySpace, idea_id: str, reason: str) -> dict[str, object]:

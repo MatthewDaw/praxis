@@ -83,6 +83,15 @@ from knowledge.ml_registry.lifecycle import (
 )
 from knowledge.ml_registry.domain.status import trial_status_for_verdict
 from knowledge.ml_registry.schema import MODEL, TRIAL, RegistryValidationError
+from knowledge.ml_registry.services.ratchet import (
+    COUNTERFACTUAL_COMMIT_FIELD,
+    active_adoption_lineage,
+    counterfactual_harm,
+    current_lineage,
+    lineage_by_id,
+    record_adoption_lineage,
+    restore_parent_lineage,
+)
 from knowledge.ml_registry.write_path import Fact, RegistrySpace, mutate_model
 
 VERDICT_ADOPTED = "adopted"
@@ -220,12 +229,21 @@ def _invalidate_ratchet(space: RegistrySpace, model: Fact, model_id: str, reason
     :func:`~knowledge.ml_registry.lifecycle.invalidate_adoption`. A no-op (beyond resetting
     the streak) when nothing is adopted.
     """
+    lineage = active_adoption_lineage(model.meta)
     adopted = active_adoption(space, model_id)
     if adopted is not None:
         invalidate_adoption(space, adopted.id, reason)
         previous = model.meta.pop(PREVIOUS_BASELINE_FIELD, None)
         if previous is not None:
             mutate_model(space, model_id, {BASELINE_FIELD: previous}, source=ADJUDICATION_SOURCE)
+        if lineage is not None:
+            restore_parent_lineage(model.meta, lineage)
+            parent = lineage_by_id(model.meta, lineage.parent_lineage_id)
+            if parent is not None:
+                # A stacked adoption superseded its direct parent only while the child
+                # stood. Invalidating the child restores the parent's lifecycle as well
+                # as its commit; otherwise ancestry and active_adoption() disagree.
+                adopt_idea(space, parent.adoption_idea_id, parent.adoption_trial_id)
     _reset_ratchet(model)
 
 
@@ -356,6 +374,7 @@ def adjudicate_verdict(
     diff_size_limit = float(model.meta["diff_size_limit"])
 
     if delta > noise_floor:
+        parent_lineage_id = current_lineage(model_id, model.meta)
         trial.meta["status"] = trial_status_for_verdict(VERDICT_ADOPTED).value
         mutate_model(
             space,
@@ -369,6 +388,11 @@ def adjudicate_verdict(
             # so the ideas rejected under its tenure stay rejected.
             supersede_adoption(space, prior.id, f"superseded by trial {trial_id}")
         adopt_idea(space, idea_id, trial_id)
+        record_adoption_lineage(
+            model_id, model.meta, idea_id=idea_id, trial_id=trial_id,
+            adopted_commit=commit, parent_baseline_commit=baseline_commit,
+            parent_lineage_id=parent_lineage_id,
+        )
         _reset_ratchet(model)
         return VERDICT_ADOPTED
 
@@ -414,9 +438,19 @@ def adjudicate_verdict(
         # instead of skipping is what turned "this one does not count" into "forget everything
         # that did", which is how a false adoption used to survive a mixed run of attributable
         # and unattributable losses.
-        if not _attributable_to_the_adoption(
-            model, ledger_rows, row.value, direction=direction
-        ):
+        if COUNTERFACTUAL_COMMIT_FIELD in trial.meta:
+            # A paired trial answers the causal question directly. Never fall back to the
+            # old absolute-score proxy when its counterfactual is unfair or unavailable.
+            if counterfactual_harm(
+                model.meta, trial.meta, ledger_rows,
+                observed_value=row.value, direction=direction,
+            ) is not True:
+                return VERDICT_REJECTED
+        elif not _attributable_to_the_adoption(
+                model, ledger_rows, row.value, direction=direction):
+            # Compatibility for already-persisted trials. New autonomous dispatch is
+            # separately required to provide paired evidence before rollback.
+            trial.meta["ratchet_evidence"] = "legacy_counterfactual_proxy"
             return VERDICT_REJECTED
         streak = list(model.meta.get(REJECTION_STREAK_FIELD) or [])
         streak.append(idea_id)
