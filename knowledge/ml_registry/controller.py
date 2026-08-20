@@ -13,7 +13,7 @@ import tempfile
 import time
 from typing import Any, Mapping, Protocol, Sequence
 
-from knowledge.ml_registry.portfolio import CampaignStatus, Portfolio
+from knowledge.ml_registry.portfolio import CampaignStatus, Portfolio, PortfolioValidationError
 from knowledge.ml_registry.scheduler import JobSpec, JobState, ResourceProfile, ScheduleDecision, schedule
 
 
@@ -29,6 +29,7 @@ class PollResult:
     state: str
     artifact: Mapping[str, Any] | None = None
     message: str | None = None
+    checkpoint_uri: str | None = None
 
 
 class AsyncBackend(Protocol):
@@ -43,6 +44,8 @@ class DispatchRecord:
     attempt: int = 1
     next_retry_at: float = 0.0
     message: str | None = None
+    started_at: float | None = None
+    checkpoint_uri: str | None = None
 
 
 @dataclass(frozen=True)
@@ -109,7 +112,8 @@ class PortfolioController:
     def __init__(self, *, portfolio: Portfolio, campaign_specs: Sequence[Mapping[str, Any]],
                  capacity: ResourceProfile | Mapping[str, Any], backend: AsyncBackend,
                  state_path: str | Path, max_active: int = MAX_ACTIVE_CAMPAIGNS,
-                 retry_backoff_seconds: float = 60.0, clock=time.time):
+                 retry_backoff_seconds: float = 60.0, max_retry_backoff_seconds: float = 3600.0,
+                 clock=time.time):
         if not 1 <= max_active <= MAX_ACTIVE_CAMPAIGNS:
             raise ControllerError(f"max_active must be between 1 and {MAX_ACTIVE_CAMPAIGNS}")
         self.portfolio = portfolio
@@ -119,11 +123,23 @@ class PortfolioController:
         self.state_path = Path(state_path)
         self.max_active = max_active
         self.retry_backoff_seconds = retry_backoff_seconds
+        self.max_retry_backoff_seconds = max_retry_backoff_seconds
         self.clock = clock
         self.records: dict[str, DispatchRecord] = {}
         if self.state_path.exists():
-            raw = json.loads(self.state_path.read_text())
-            self.records = {cid: DispatchRecord(**record) for cid, record in raw.get("records", {}).items()}
+            try:
+                raw = json.loads(self.state_path.read_text())
+                if not isinstance(raw, dict) or not isinstance(raw.get("records", {}), dict):
+                    raise ControllerError("controller state must be an object containing records")
+                self.records = {cid: DispatchRecord(**record) for cid, record in raw.get("records", {}).items()}
+            except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise ControllerError(f"invalid controller state: {exc}") from exc
+            # A dispatching record was persisted before process launch.  It may have
+            # launched, so never blindly submit it again; fail it into normal retry.
+            for record in self.records.values():
+                if record.state == "dispatching":
+                    record.state = "failed"
+                    record.message = "controller restarted during dispatch; refusing duplicate launch"
 
     def _persist(self, status: str) -> None:
         _atomic(self.state_path, {
@@ -133,13 +149,18 @@ class PortfolioController:
         if self.portfolio.path is not None:
             self.portfolio.save()
 
-    def _register_artifact(self, payload: Mapping[str, Any]) -> None:
+    def _register_artifact(self, campaign_id: str, payload: Mapping[str, Any]) -> None:
         artifact_id = str(payload.get("artifact_id", ""))
         if artifact_id in self.portfolio.artifacts:
-            return
-        values = dict(payload)
-        values.pop("artifact_id", None)
-        values.pop("producer_campaign_id", None)
+            raise ControllerError(f"artifact {artifact_id!r} already exists")
+        campaign = self.portfolio.campaigns[campaign_id]
+        if payload.get("producer_campaign_id") not in {None, campaign_id}:
+            raise ControllerError("artifact producer does not match campaign")
+        if payload.get("model_id") != campaign.model_id:
+            raise ControllerError("artifact model_id does not match campaign model_id")
+        allowed = {"model_id", "verdict", "dataset_manifest_hash", "split_manifest_hash",
+                   "prediction_manifest_hash", "coverage", "input_artifact_ids"}
+        values = {key: payload[key] for key in allowed if key in payload}
         self.portfolio.register_artifact(artifact_id, **values)
 
     def tick(self) -> TickResult:
@@ -147,15 +168,28 @@ class PortfolioController:
         for cid, record in sorted(self.records.items()):
             if record.state != "running":
                 continue
-            polled = self.backend.poll(record.backend_job_id)
+            try:
+                polled = self.backend.poll(record.backend_job_id)
+            except Exception as exc:
+                polled = PollResult("failed", message=f"backend poll failed: {exc}")
             if polled.state == "completed":
-                record.state = "completed"
-                if polled.artifact:
-                    self._register_artifact(polled.artifact)
+                try:
+                    if polled.artifact:
+                        self._register_artifact(cid, polled.artifact)
+                    record.state = "completed"
+                except (ControllerError, PortfolioValidationError, TypeError, ValueError) as exc:
+                    record.state = "failed"
+                    record.message = f"artifact refused: {exc}"
+                    record.next_retry_at = now + self._backoff(cid, record.attempt)
             elif polled.state in {"failed", "timed_out"}:
                 record.state = "failed"
-                record.next_retry_at = now + self.retry_backoff_seconds * record.attempt
+                record.checkpoint_uri = polled.checkpoint_uri or record.checkpoint_uri
+                record.next_retry_at = now + self._backoff(cid, record.attempt)
                 record.message = polled.message
+            elif polled.state != "running":
+                record.state = "failed"
+                record.message = f"unknown backend state: {polled.state!r}"
+                record.next_retry_at = now + self._backoff(cid, record.attempt)
 
         states: dict[str, JobState] = {}
         for cid, record in self.records.items():
@@ -164,17 +198,38 @@ class PortfolioController:
                                        message=f"retry backoff until {record.next_retry_at:g}")
             else:
                 states[cid] = JobState(cid, record.state, attempt=record.attempt,
-                                       backend_job_id=record.backend_job_id, message=record.message)
-        decision = portfolio_schedule(
-            self.portfolio, self.specs, states, self.capacity, max_active=self.max_active,
-        )
+                                       backend_job_id=record.backend_job_id,
+                                       checkpoint_uri=record.checkpoint_uri,
+                                       message=record.message)
+        try:
+            decision = portfolio_schedule(
+                self.portfolio, self.specs, states, self.capacity, max_active=self.max_active,
+            )
+        except Exception as exc:
+            self._persist("blocked")
+            return TickResult("blocked", (), (), (), {"controller": str(exc)})
         started: list[str] = []
         for job in decision.jobs:
             prior = self.records.get(job.campaign_id)
             attempt = (prior.attempt + 1) if prior else 1
-            backend_id = self.backend.submit(job)
-            self.records[job.campaign_id] = DispatchRecord(backend_id, attempt=attempt)
-            started.append(job.campaign_id)
+            token = f"{job.campaign_id}.attempt-{attempt}"
+            self.records[job.campaign_id] = DispatchRecord(
+                token, state="dispatching", attempt=attempt, started_at=now,
+            )
+            self._persist("dispatching")
+            try:
+                prepared = getattr(self.backend, "submit_prepared", None)
+                backend_id = prepared(job, token) if prepared else self.backend.submit(job)
+                self.records[job.campaign_id] = DispatchRecord(
+                    backend_id, attempt=attempt, started_at=now,
+                )
+                self._persist("running")
+                started.append(job.campaign_id)
+            except Exception as exc:
+                record = self.records[job.campaign_id]
+                record.state = "failed"
+                record.message = f"dispatch failed: {exc}"
+                record.next_retry_at = now + self._backoff(job.campaign_id, attempt)
 
         completed = tuple(sorted(cid for cid, record in self.records.items() if record.state == "completed"))
         running = tuple(sorted(cid for cid, record in self.records.items() if record.state == "running"))
@@ -193,6 +248,13 @@ class PortfolioController:
             status = "blocked"
         self._persist(status)
         return TickResult(status, tuple(started), running, completed, decision.blocked)
+
+    def _backoff(self, campaign_id: str, attempt: int) -> float:
+        base = min(self.max_retry_backoff_seconds,
+                   self.retry_backoff_seconds * (2 ** max(0, attempt - 1)))
+        # Stable jitter prevents synchronized restart storms while retaining replayability.
+        jitter = 0.9 + (sum(campaign_id.encode("utf-8")) % 21) / 100
+        return min(self.max_retry_backoff_seconds, base * jitter)
 
     def run(self, *, poll_interval: float = 10.0, one_shot: bool = False,
             sleeper=time.sleep) -> TickResult:
@@ -218,29 +280,63 @@ class PortfolioController:
 
 class ExecutorProcessBackend:
     """Restart-safe adapter that delegates local work to executor_cli processes."""
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, *, heartbeat_timeout_seconds: float = 30.0):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
 
     def submit(self, job: JobSpec) -> str:
-        job_id = job.campaign_id
+        return self.submit_prepared(job, f"{job.campaign_id}.attempt-1")
+
+    def submit_prepared(self, job: JobSpec, job_id: str) -> str:
         job_path = self.root / f"{job_id}.job.json"
         state_path = self.root / f"{job_id}.state.json"
+        artifact_path = Path(job.artifact_result_path) if job.artifact_result_path else None
+        if artifact_path is not None:
+            artifact_path.unlink(missing_ok=True)
         _atomic(job_path, asdict(job))
-        subprocess.Popen(
+        process = subprocess.Popen(
             [sys.executable, "-m", "knowledge.ml_registry.executor_cli", "run-job",
              "--job", str(job_path), "--state", str(state_path),
              "--log-dir", str(self.root / "logs")],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        _atomic(self.root / f"{job_id}.process.json", {
+            "pid": process.pid, "started_at": time.time(), "state_path": str(state_path),
+        })
         return job_id
 
     def poll(self, backend_job_id: str) -> PollResult:
         state_path = self.root / f"{backend_job_id}.state.json"
         if not state_path.exists():
-            return PollResult("running")
-        state = json.loads(state_path.read_text())
+            process_path = self.root / f"{backend_job_id}.process.json"
+            try:
+                process = json.loads(process_path.read_text())
+                os.kill(int(process["pid"]), 0)
+                return PollResult("running")
+            except (OSError, ValueError, KeyError, json.JSONDecodeError):
+                return PollResult("failed", message="executor state missing and process is not alive")
+        try:
+            state = json.loads(state_path.read_text())
+            if not isinstance(state, dict) or state.get("state") not in {
+                "running", "completed", "failed", "timed_out"
+            }:
+                raise ValueError("unknown or malformed executor state")
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            return PollResult("failed", message=str(exc))
+        if state["state"] == "running":
+            heartbeat = state.get("heartbeat_at")
+            if (not isinstance(heartbeat, (int, float)) or isinstance(heartbeat, bool)
+                    or time.time() - heartbeat > self.heartbeat_timeout_seconds):
+                return PollResult("failed", message="executor heartbeat is missing or stale")
+            process_path = self.root / f"{backend_job_id}.process.json"
+            try:
+                process = json.loads(process_path.read_text())
+                os.kill(int(process["pid"]), 0)
+            except (OSError, ValueError, KeyError, json.JSONDecodeError):
+                return PollResult("failed", message="executor process died while state was running")
         return PollResult(
-            str(state["state"]), artifact=state.get("artifact"), message=state.get("message")
+            str(state["state"]), artifact=state.get("artifact"), message=state.get("message"),
+            checkpoint_uri=state.get("checkpoint_uri"),
         )

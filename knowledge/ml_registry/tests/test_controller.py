@@ -47,9 +47,11 @@ def dep(aid, model, **extra):
 class FakeBackend:
     def __init__(self):
         self.submitted = []
+        self.submitted_specs = []
         self.results = {}
     def submit(self, job):
         self.submitted.append(job.campaign_id)
+        self.submitted_specs.append(job)
         self.results.setdefault(job.campaign_id, PollResult("running"))
         return job.campaign_id
     def poll(self, backend_job_id):
@@ -171,9 +173,62 @@ def test_failed_job_waits_for_backoff_then_retries(tmp_path: Path):
     controller.tick()
     backend.results["a"] = PollResult("failed", message="preempted")
     assert controller.tick().status == "waiting"
-    now[0] = 110
+    now[0] = controller.records["a"].next_retry_at
     assert controller.tick().started == ("a",)
     assert backend.submitted == ["a", "a"]
+
+
+def test_unknown_poll_state_fails_closed_instead_of_stalling(tmp_path: Path):
+    portfolio = Portfolio()
+    ready(portfolio, "a")
+    backend = FakeBackend()
+    controller = PortfolioController(
+        portfolio=portfolio, campaign_specs=[spec("a")], capacity=RESOURCES,
+        backend=backend, state_path=tmp_path / "state.json", retry_backoff_seconds=10,
+        clock=lambda: 100,
+    )
+    controller.tick()
+    backend.results["a"] = PollResult("garbage")
+    assert controller.tick().status == "waiting"
+    assert "unknown backend state" in controller.records["a"].message
+
+
+def test_artifact_extra_fields_are_ignored_but_wrong_model_fails(tmp_path: Path):
+    portfolio = Portfolio()
+    ready(portfolio, "a", model="expected")
+    backend = FakeBackend()
+    controller = PortfolioController(
+        portfolio=portfolio, campaign_specs=[spec("a")], capacity=RESOURCES,
+        backend=backend, state_path=tmp_path / "state.json", retry_backoff_seconds=10,
+        clock=lambda: 100,
+    )
+    controller.tick()
+    backend.results["a"] = PollResult("completed", artifact={
+        "artifact_id": "fit", "model_id": "wrong", "verdict": "adopted",
+        "dataset_manifest_hash": "d", "split_manifest_hash": "s",
+        "prediction_manifest_hash": "p", "coverage": 1, "future_field": "safe",
+    })
+    assert controller.tick().status == "waiting"
+    assert "model_id" in controller.records["a"].message
+
+
+def test_failed_checkpoint_is_forwarded_to_retry_resume_from(tmp_path: Path):
+    portfolio = Portfolio()
+    ready(portfolio, "a")
+    backend = FakeBackend()
+    now = [100.0]
+    controller = PortfolioController(
+        portfolio=portfolio, campaign_specs=[spec("a", max_retries=1)], capacity=RESOURCES,
+        backend=backend, state_path=tmp_path / "state.json", retry_backoff_seconds=1,
+        clock=lambda: now[0],
+    )
+    controller.tick()
+    backend.results["a"] = PollResult("failed", checkpoint_uri="artifact://checkpoint/1")
+    controller.tick()
+    now[0] = controller.records["a"].next_retry_at
+    controller.tick()
+    assert backend.submitted == ["a", "a"]
+    assert backend.submitted_specs[-1].resume_from == "artifact://checkpoint/1"
 
 
 def test_real_executor_process_publishes_artifact_and_unlocks_downstream(tmp_path: Path):
@@ -202,7 +257,7 @@ def test_real_executor_process_publishes_artifact_and_unlocks_downstream(tmp_pat
         state_path=tmp_path / "controller.json",
     )
     assert controller.tick().started == ("up",)
-    executor_state = tmp_path / "dispatch" / "up.state.json"
+    executor_state = tmp_path / "dispatch" / "up.attempt-1.state.json"
     deadline = time.time() + 5
     while time.time() < deadline:
         if executor_state.exists() and json.loads(executor_state.read_text()).get("state") != "running":

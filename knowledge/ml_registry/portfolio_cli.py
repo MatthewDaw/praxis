@@ -19,6 +19,7 @@ from knowledge.ml_registry.portfolio import (
     Portfolio,
     PortfolioValidationError,
 )
+from knowledge.ml_registry.file_lock import exclusive_file_lock
 
 EXIT_VALIDATION_ERROR = 3
 EXIT_MALFORMED_INPUT = 2
@@ -84,10 +85,11 @@ def _load(path: Path, *, allow_new: bool = False) -> Portfolio:
 
 
 def _mutate(path: Path, operation: Callable[[Portfolio], Any], *, allow_new: bool = False) -> Any:
-    portfolio = _load(path, allow_new=allow_new)
-    result = operation(portfolio)
-    portfolio.save()
-    return result
+    with exclusive_file_lock(path):
+        portfolio = _load(path, allow_new=allow_new)
+        result = operation(portfolio)
+        portfolio.save()
+        return result
 
 
 def _campaign_json(portfolio: Portfolio, campaign_id: str) -> dict[str, Any]:

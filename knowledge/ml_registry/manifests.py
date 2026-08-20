@@ -79,10 +79,13 @@ class DatasetManifest:
 class GroupAssignment:
     group_id: str
     split: str
+    temporal_order: int
 
     def __post_init__(self) -> None:
         if not self.group_id or not self.split:
             raise ManifestValidationError("group_id and split must be non-empty")
+        if isinstance(self.temporal_order, bool) or not isinstance(self.temporal_order, int):
+            raise ManifestValidationError("temporal_order must be an integer")
 
 
 @dataclass(frozen=True)
@@ -114,6 +117,15 @@ class SplitManifest:
             seen[record.group_id] = record.split
         if len(set(seen.values())) < 2:
             raise ManifestValidationError("split manifest must contain at least two disjoint splits")
+        ranks: dict[str, list[int]] = {}
+        for record in records:
+            ranks.setdefault(record.split, []).append(record.temporal_order)
+        if "train" in ranks:
+            for evaluation in ("validation", "test"):
+                if evaluation in ranks and max(ranks["train"]) >= min(ranks[evaluation]):
+                    raise ManifestValidationError(
+                        f"temporal leakage: train must precede {evaluation}"
+                    )
         payload = {
             "id": manifest_id,
             "dataset_manifest_hash": dataset_manifest_hash,
@@ -146,6 +158,8 @@ class PredictionManifest:
     schema: dict[str, Any]
     group_coverage: dict[str, float]
     out_of_fold: bool
+    fold_id_by_group: dict[str, str]
+    training_groups_by_fold: dict[str, list[str]]
     hash: str
 
     @classmethod
@@ -161,6 +175,8 @@ class PredictionManifest:
         schema: dict[str, Any],
         group_coverage: dict[str, float],
         out_of_fold: bool,
+        fold_id_by_group: dict[str, str],
+        training_groups_by_fold: dict[str, list[str]],
     ) -> "PredictionManifest":
         if not manifest_id or not upstream_artifact_id or not split_manifest_hash:
             raise ManifestValidationError(
@@ -184,6 +200,15 @@ class PredictionManifest:
                 )
         if not out_of_fold:
             raise ManifestValidationError("prediction manifest must guarantee out_of_fold=true")
+        groups = set(group_coverage)
+        if set(fold_id_by_group) != groups:
+            raise ManifestValidationError("fold proof must assign every predicted group")
+        for group, fold in fold_id_by_group.items():
+            training = training_groups_by_fold.get(fold)
+            if not isinstance(training, list) or group in training:
+                raise ManifestValidationError(
+                    f"fold proof does not exclude predicted group {group!r} from training"
+                )
         payload = {
             "id": manifest_id,
             "upstream_artifact_id": upstream_artifact_id,
@@ -194,10 +219,13 @@ class PredictionManifest:
             "schema": schema,
             "group_coverage": group_coverage,
             "out_of_fold": out_of_fold,
+            "fold_id_by_group": fold_id_by_group,
+            "training_groups_by_fold": training_groups_by_fold,
         }
         return cls(
             manifest_id, upstream_artifact_id, split_manifest_hash, predicted_count,
             eligible_count, coverage, schema, group_coverage, out_of_fold,
+            fold_id_by_group, training_groups_by_fold,
             _hash("prediction", payload),
         )
 
@@ -283,6 +311,8 @@ class ManifestRegistry:
                 schema=manifest.schema,
                 group_coverage=manifest.group_coverage,
                 out_of_fold=manifest.out_of_fold,
+                fold_id_by_group=manifest.fold_id_by_group,
+                training_groups_by_fold=manifest.training_groups_by_fold,
             )
             self._assert_hash(manifest, rebuilt)
             split = next(
@@ -326,20 +356,33 @@ class ManifestRegistry:
 
     @classmethod
     def load(cls, path: str | Path) -> "ManifestRegistry":
-        document = json.loads(Path(path).read_text(encoding="utf-8"))
+        try:
+            document = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ManifestValidationError(f"invalid manifest registry: {exc}") from exc
+        if not isinstance(document, dict):
+            raise ManifestValidationError("manifest registry must be a JSON object")
         if document.get("schema_version") != cls.SCHEMA_VERSION:
             raise ManifestValidationError("unsupported manifest registry schema_version")
         registry = cls(path)
-        for raw in document.get("datasets", []):
-            raw["files"] = tuple(DatasetFile(**item) for item in raw["files"])
-            manifest = DatasetManifest(**raw)
-            registry.datasets[manifest.id] = manifest
-        for raw in document.get("splits", []):
-            raw["assignments"] = tuple(GroupAssignment(**item) for item in raw["assignments"])
-            manifest = SplitManifest(**raw)
-            registry.splits[manifest.id] = manifest
-        for raw in document.get("predictions", []):
-            manifest = PredictionManifest(**raw)
-            registry.predictions[manifest.id] = manifest
+        try:
+            for name in ("datasets", "splits", "predictions"):
+                if not isinstance(document.get(name, []), list):
+                    raise TypeError(f"{name} must be an array")
+            for item in document.get("datasets", []):
+                raw = dict(item)
+                raw["files"] = tuple(DatasetFile(**entry) for entry in raw["files"])
+                manifest = DatasetManifest(**raw)
+                registry.datasets[manifest.id] = manifest
+            for item in document.get("splits", []):
+                raw = dict(item)
+                raw["assignments"] = tuple(GroupAssignment(**entry) for entry in raw["assignments"])
+                manifest = SplitManifest(**raw)
+                registry.splits[manifest.id] = manifest
+            for item in document.get("predictions", []):
+                manifest = PredictionManifest(**dict(item))
+                registry.predictions[manifest.id] = manifest
+        except (TypeError, KeyError, ValueError, AttributeError) as exc:
+            raise ManifestValidationError(f"malformed manifest registry: {exc}") from exc
         registry.validate()
         return registry

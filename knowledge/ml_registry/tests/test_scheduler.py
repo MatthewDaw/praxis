@@ -105,3 +105,22 @@ def test_backend_neutral_job_contract_carries_execution_metadata():
 def test_resource_profile_rejects_vram_without_gpu():
     with pytest.raises(PortfolioError, match="requires at least one GPU"):
         ResourceProfile.from_mapping({"cpus": 1, "gpus": 0, "gpu_vram_gb": 8})
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("max_retries", None), ("max_retries", "2"), ("priority", True),
+    ("estimated_cost", float("nan")), ("estimated_cost", float("inf")),
+    ("preemptible", 1), ("timeout_minutes", 1.5),
+])
+def test_campaign_spec_coercions_fail_closed(field, bad):
+    with pytest.raises(PortfolioError):
+        schedule([campaign("bad", **{field: bad})], {}, CPU, max_concurrency=1)
+
+
+@pytest.mark.parametrize("resources", [
+    {"cpus": None}, {"cpus": "1"}, {"cpus": True}, {"ram_gb": float("nan")},
+    {"ram_gb": float("inf")}, {"unknown": 1},
+])
+def test_resource_spec_coercions_fail_closed(resources):
+    with pytest.raises(PortfolioError):
+        ResourceProfile.from_mapping(resources)

@@ -37,8 +37,8 @@ def test_cli_builds_manifest_chain_with_portfolio_ready_outputs(tmp_path, capsys
         "manifest_id": "soccer-split",
         "dataset_manifest_hash": dataset_hash,
         "assignments": [
-            {"group_id": "match-a", "split": "train"},
-            {"group_id": "match-b", "split": "validation"},
+            {"group_id": "match-a", "split": "train", "temporal_order": 1},
+            {"group_id": "match-b", "split": "validation", "temporal_order": 2},
         ],
     })
     code, split = _invoke(
@@ -57,6 +57,8 @@ def test_cli_builds_manifest_chain_with_portfolio_ready_outputs(tmp_path, capsys
         "schema": {"track_id": "string"},
         "group_coverage": {"match-a": 1.0, "match-b": 1.0},
         "out_of_fold": True,
+        "fold_id_by_group": {"match-a": "fold-a", "match-b": "fold-b"},
+        "training_groups_by_fold": {"fold-a": ["match-b"], "fold-b": ["match-a"]},
     })
     code, prediction = _invoke(
         capsys, "--file", str(registry_path), "add-prediction", "--spec", prediction_spec

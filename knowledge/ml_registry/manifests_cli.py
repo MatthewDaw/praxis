@@ -18,6 +18,7 @@ from knowledge.ml_registry.manifests import (
     PredictionManifest,
     SplitManifest,
 )
+from knowledge.ml_registry.file_lock import exclusive_file_lock
 
 EXIT_MALFORMED_INPUT = 2
 EXIT_VALIDATION_ERROR = 3
@@ -52,10 +53,11 @@ def _mutate(
     *,
     allow_new: bool = False,
 ) -> Any:
-    registry = _load(path, allow_new)
-    result = operation(registry)
-    registry.save()
-    return result
+    with exclusive_file_lock(path):
+        registry = _load(path, allow_new)
+        result = operation(registry)
+        registry.save()
+        return result
 
 
 def _spec(path: str) -> dict[str, Any]:

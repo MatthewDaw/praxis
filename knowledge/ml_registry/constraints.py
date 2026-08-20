@@ -120,7 +120,10 @@ def _valid_direction(value: object, *, field: str) -> str:
 def _finite_number(value: object, *, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise RegistryValidationError(f"{field} must be numeric", field=field)
-    result = float(value)
+    try:
+        result = float(value)
+    except (OverflowError, ValueError, TypeError) as exc:
+        raise RegistryValidationError(f"{field} must be finite", field=field) from exc
     if not math.isfinite(result):
         raise RegistryValidationError(f"{field} must be finite", field=field)
     return result

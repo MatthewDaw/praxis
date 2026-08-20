@@ -166,3 +166,10 @@ def test_duplicate_constraint_is_rejected():
         validate_metric_contract(
             MetricContract("f1", "maximize", (constraint, constraint))
         )
+
+
+def test_huge_integer_is_refused_without_overflowing():
+    result = evaluate_metric_contract(
+        MetricContract("f1", "maximize"), {"f1": 10 ** 10000}
+    )
+    assert result.status == STATUS_REFUSED

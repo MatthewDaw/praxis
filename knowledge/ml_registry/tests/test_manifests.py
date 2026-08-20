@@ -30,7 +30,7 @@ def _split(dataset_hash):
     return SplitManifest.create(
         "match-split",
         dataset_hash,
-        [GroupAssignment("match-b", "validation"), GroupAssignment("match-a", "train")],
+        [GroupAssignment("match-b", "validation", 2), GroupAssignment("match-a", "train", 1)],
     )
 
 
@@ -42,6 +42,8 @@ def _prediction(split_hash, **overrides):
         "schema": {"track_id": "string", "probability": "float32"},
         "group_coverage": {"match-a": 0.9, "match-b": 0.9},
         "out_of_fold": True,
+        "fold_id_by_group": {"match-a": "fold-a", "match-b": "fold-b"},
+        "training_groups_by_fold": {"fold-a": ["match-b"], "fold-b": ["match-a"]},
     }
     values.update(overrides)
     return PredictionManifest.create("tracking-oof", "tracking-fit-v1", split_hash, **values)
@@ -76,7 +78,7 @@ def test_duplicate_file_identity_and_group_leakage_are_refused():
     with pytest.raises(ManifestValidationError, match="duplicate group leakage"):
         SplitManifest.create(
             "bad-split", "data-hash",
-            [GroupAssignment("match-a", "train"), GroupAssignment("match-a", "validation")],
+            [GroupAssignment("match-a", "train", 1), GroupAssignment("match-a", "validation", 2)],
         )
 
 
@@ -84,7 +86,22 @@ def test_split_requires_real_disjoint_partitions():
     with pytest.raises(ManifestValidationError, match="at least two"):
         SplitManifest.create(
             "one", "data-hash",
-            [GroupAssignment("match-a", "train"), GroupAssignment("match-b", "train")],
+            [GroupAssignment("match-a", "train", 1), GroupAssignment("match-b", "train", 2)],
+        )
+
+
+def test_split_refuses_temporal_leakage_and_oof_requires_fold_proof():
+    with pytest.raises(ManifestValidationError, match="temporal leakage"):
+        SplitManifest.create(
+            "leaky", "data-hash",
+            [GroupAssignment("future-train", "train", 3),
+             GroupAssignment("past-test", "test", 2)],
+        )
+    with pytest.raises(ManifestValidationError, match="does not exclude"):
+        _prediction(
+            "split", training_groups_by_fold={
+                "fold-a": ["match-a", "match-b"], "fold-b": ["match-a"]
+            },
         )
 
 
@@ -159,12 +176,15 @@ def test_prediction_group_coverage_must_exactly_match_split_groups():
 
     with pytest.raises(ManifestValidationError, match=r"missing=\['match-b'\]"):
         registry.add_prediction(
-            _prediction(split.hash, group_coverage={"match-a": 0.9})
+            _prediction(split.hash, group_coverage={"match-a": 0.9},
+                        fold_id_by_group={"match-a": "fold-a"})
         )
     with pytest.raises(ManifestValidationError, match=r"extra=\['invented'\]"):
         registry.add_prediction(
             _prediction(
                 split.hash,
                 group_coverage={"match-a": 0.9, "match-b": 0.9, "invented": 0.9},
+                fold_id_by_group={"match-a": "fold-a", "match-b": "fold-b",
+                                  "invented": "fold-a"},
             )
         )

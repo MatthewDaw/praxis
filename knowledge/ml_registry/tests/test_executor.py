@@ -87,9 +87,10 @@ def test_declared_artifact_result_is_validated_and_embedded(tmp_path: Path):
 ])
 def test_completed_process_with_invalid_required_artifact_fails(tmp_path: Path, payload, match):
     result_path = tmp_path / "artifact.json"
-    result_path.write_text(json.dumps(payload))
+    command = (sys.executable, "-c",
+               f"import json; open({str(result_path)!r}, 'w').write(json.dumps({payload!r}))")
     result = LocalSubprocessBackend(log_dir=tmp_path / "logs").execute(
-        job(sys.executable, "-c", "pass", artifact_result_path=str(result_path)),
+        job(*command, artifact_result_path=str(result_path)),
         state_path=tmp_path / "state.json",
     )
     assert result.state == "failed"
@@ -106,14 +107,21 @@ def test_backend_registration_is_pluggable():
 
 
 def test_timeout_is_recorded_atomically(tmp_path: Path, monkeypatch):
-    def expires(*args, **kwargs):
-        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"], output=b"partial", stderr=b"late")
-    monkeypatch.setattr(subprocess, "run", expires)
+    class NeverFinishes:
+        pid = 424242
+        returncode = None
+        def poll(self): return None
+        def wait(self, timeout=None):
+            self.returncode = -15
+            return self.returncode
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: NeverFinishes())
+    monkeypatch.setattr("knowledge.ml_registry.executor.time.time", iter([0.0, 61.0, 61.0, 61.0]).__next__)
+    monkeypatch.setattr("knowledge.ml_registry.executor.os.killpg", lambda *args: None)
     result = LocalSubprocessBackend(log_dir=tmp_path / "logs").execute(
         job("worker", timeout_minutes=1), state_path=tmp_path / "state.json",
     )
     assert result.state == "timed_out"
-    assert Path(result.stdout_log).read_bytes() == b"partial"
+    assert Path(result.stdout_log).read_bytes() == b""
     assert json.loads((tmp_path / "state.json").read_text())["state"] == "timed_out"
 
 
@@ -121,3 +129,16 @@ def test_campaign_id_cannot_escape_log_directory(tmp_path: Path):
     unsafe = JobSpec("../escape", ("true",), ResourceProfile())
     with pytest.raises(ExecutorError, match="safe single path component"):
         LocalSubprocessBackend(log_dir=tmp_path).execute(unsafe, state_path=tmp_path / "state.json")
+
+
+def test_working_directory_and_heartbeat_are_recorded(tmp_path: Path):
+    work = tmp_path / "work"
+    work.mkdir()
+    result = LocalSubprocessBackend(log_dir=tmp_path / "logs").execute(
+        job(sys.executable, "-c", "import os; print(os.getcwd())",
+            working_directory=str(work)), state_path=tmp_path / "state.json",
+    )
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert Path(result.stdout_log).read_text().strip() == str(work)
+    assert state["pid"] > 0
+    assert state["heartbeat_at"] >= state["started_at"]

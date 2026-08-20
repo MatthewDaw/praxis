@@ -14,6 +14,7 @@ import tempfile
 from typing import Mapping
 
 from knowledge.ml_registry.schema import RegistryValidationError
+from knowledge.ml_registry.file_lock import exclusive_file_lock
 
 
 def _digest(value: object) -> str:
@@ -281,14 +282,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         index = load_index(path)
         if args.command == "register":
-            result = index.register(
-                key_from_dict(_object(args.key_json)),
-                uri=args.uri,
-                checksum=args.checksum,
-                coverage=args.coverage,
-                prediction_scope=args.prediction_scope,
-            )
-            save_index(path, index)
+            with exclusive_file_lock(path):
+                index = load_index(path)
+                result = index.register(
+                    key_from_dict(_object(args.key_json)),
+                    uri=args.uri,
+                    checksum=args.checksum,
+                    coverage=args.coverage,
+                    prediction_scope=args.prediction_scope,
+                )
+                save_index(path, index)
             print(json.dumps(result.to_dict(), indent=2))
         elif args.command == "lookup":
             result = index.lookup(
@@ -299,8 +302,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(result.to_dict(), indent=2))
         else:
-            index.invalidate(args.entry_id, reason=args.reason)
-            save_index(path, index)
+            with exclusive_file_lock(path):
+                index = load_index(path)
+                index.invalidate(args.entry_id, reason=args.reason)
+                save_index(path, index)
             print(json.dumps({"status": "invalidated", "entry_id": args.entry_id}))
         return 0
     except (RegistryValidationError, ValueError, OSError, json.JSONDecodeError) as exc:

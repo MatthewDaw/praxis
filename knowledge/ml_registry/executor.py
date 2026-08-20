@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
 import time
@@ -31,6 +32,8 @@ class ExecutionResult:
     resume_from: str | None
     message: str | None = None
     artifact: Mapping[str, object] | None = None
+    pid: int | None = None
+    heartbeat_at: float | None = None
 
 
 class ExecutionBackend(Protocol):
@@ -126,6 +129,10 @@ class LocalSubprocessBackend:
         if (not isinstance(coverage, (int, float)) or isinstance(coverage, bool)
                 or not 0 <= coverage <= 1):
             raise ExecutorError("artifact result coverage must be a number between 0 and 1")
+        lineage = payload.get("input_artifact_ids", [])
+        if (not isinstance(lineage, list)
+                or not all(isinstance(item, str) and item for item in lineage)):
+            raise ExecutorError("artifact result input_artifact_ids must be a list of artifact ids")
         return payload
 
     def execute(self, job: JobSpec, *, state_path: Path, dry_run: bool = False) -> ExecutionResult:
@@ -138,6 +145,11 @@ class LocalSubprocessBackend:
         if timeout <= 0:
             raise ExecutorError("job timeout must be positive")
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        working_directory = None
+        if job.working_directory is not None:
+            working_directory = Path(job.working_directory)
+            if not working_directory.is_dir():
+                raise ExecutorError("working_directory must be an existing directory")
         stdout_path = self.log_dir / f"{job.campaign_id}.stdout.log"
         stderr_path = self.log_dir / f"{job.campaign_id}.stderr.log"
 
@@ -149,25 +161,43 @@ class LocalSubprocessBackend:
             _atomic_json(state_path, asdict(result))
             return result
 
+        if job.artifact_result_path is not None:
+            # A successful process must publish this attempt's artifact, never inherit
+            # a file left by an earlier attempt.
+            Path(job.artifact_result_path).unlink(missing_ok=True)
         started = time.time()
-        running = ExecutionResult(
-            job.campaign_id, "running", None, started, None, str(stdout_path), str(stderr_path),
-            job.checkpoint_uri, job.resume_from,
-        )
-        _atomic_json(state_path, asdict(running))
         try:
-            completed = subprocess.run(
-                list(job.command),
-                shell=False,
-                env=environment,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=timeout * 60,
-                check=False,
-            )
-            stdout_path.write_bytes(completed.stdout)
-            stderr_path.write_bytes(completed.stderr)
-            final_state = "completed" if completed.returncode == 0 else "failed"
+            with stdout_path.open("wb") as stdout_stream, stderr_path.open("wb") as stderr_stream:
+                process = subprocess.Popen(
+                    list(job.command), shell=False, env=environment, cwd=working_directory,
+                    stdout=stdout_stream, stderr=stderr_stream, start_new_session=True,
+                )
+                running = ExecutionResult(
+                    job.campaign_id, "running", None, started, None, str(stdout_path),
+                    str(stderr_path), job.checkpoint_uri, job.resume_from,
+                    pid=process.pid, heartbeat_at=started,
+                )
+                _atomic_json(state_path, asdict(running))
+                deadline = started + timeout * 60
+                while process.poll() is None:
+                    now = time.time()
+                    if now >= deadline:
+                        try:
+                            os.killpg(process.pid, signal.SIGTERM)
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            process.wait()
+                        raise subprocess.TimeoutExpired(job.command, timeout * 60)
+                    heartbeat = ExecutionResult(
+                        job.campaign_id, "running", None, started, None, str(stdout_path),
+                        str(stderr_path), job.checkpoint_uri, job.resume_from,
+                        pid=process.pid, heartbeat_at=now,
+                    )
+                    _atomic_json(state_path, asdict(heartbeat))
+                    time.sleep(min(0.25, max(0.01, deadline - now)))
+                returncode = process.returncode
+            final_state = "completed" if returncode == 0 else "failed"
             artifact = None
             message = None
             if final_state == "completed":
@@ -177,17 +207,16 @@ class LocalSubprocessBackend:
                     final_state = "failed"
                     message = str(exc)
             result = ExecutionResult(
-                job.campaign_id, final_state, completed.returncode, started, time.time(),
+                job.campaign_id, final_state, returncode, started, time.time(),
                 str(stdout_path), str(stderr_path), job.checkpoint_uri, job.resume_from,
-                message, artifact,
+                message, artifact, process.pid, time.time(),
             )
-        except subprocess.TimeoutExpired as exc:
-            stdout_path.write_bytes(exc.stdout or b"")
-            stderr_path.write_bytes(exc.stderr or b"")
+        except subprocess.TimeoutExpired:
             result = ExecutionResult(
                 job.campaign_id, "timed_out", None, started, time.time(), str(stdout_path),
                 str(stderr_path), job.checkpoint_uri, job.resume_from,
-                f"exceeded timeout of {timeout} minutes",
+                f"exceeded timeout of {timeout} minutes", pid=getattr(locals().get("process"), "pid", None),
+                heartbeat_at=time.time(),
             )
         except OSError as exc:
             stdout_path.write_bytes(b"")

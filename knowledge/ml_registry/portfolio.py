@@ -69,6 +69,7 @@ class Artifact:
     created_at: str
     superseded_by: str | None = None
     superseded_at: str | None = None
+    input_artifact_ids: tuple[str, ...] = ()
 
     @property
     def current(self) -> bool:
@@ -109,17 +110,30 @@ class Portfolio:
     @classmethod
     def load(cls, path: str | Path) -> "Portfolio":
         portfolio = cls(path)
-        document = json.loads(Path(path).read_text(encoding="utf-8"))
+        try:
+            document = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PortfolioValidationError(f"invalid portfolio document: {exc}") from exc
+        if not isinstance(document, dict):
+            raise PortfolioValidationError("portfolio document must be a JSON object")
         if document.get("schema_version") != cls.SCHEMA_VERSION:
             raise PortfolioValidationError("unsupported portfolio schema_version")
-        for raw in document.get("artifacts", []):
-            artifact = Artifact(**raw)
-            portfolio.artifacts[artifact.id] = artifact
-        for raw in document.get("campaigns", []):
-            dependencies = [ArtifactDependency(**dep) for dep in raw.pop("dependencies", [])]
-            raw["status"] = CampaignStatus(raw["status"])
-            campaign = Campaign(dependencies=dependencies, **raw)
-            portfolio.campaigns[campaign.id] = campaign
+        try:
+            if not isinstance(document.get("artifacts", []), list) or not isinstance(document.get("campaigns", []), list):
+                raise TypeError("campaigns and artifacts must be arrays")
+            for item in document.get("artifacts", []):
+                raw = dict(item)
+                raw["input_artifact_ids"] = tuple(raw.get("input_artifact_ids", ()))
+                artifact = Artifact(**raw)
+                portfolio.artifacts[artifact.id] = artifact
+            for item in document.get("campaigns", []):
+                raw = dict(item)
+                dependencies = [ArtifactDependency(**dep) for dep in raw.pop("dependencies", [])]
+                raw["status"] = CampaignStatus(raw["status"])
+                campaign = Campaign(dependencies=dependencies, **raw)
+                portfolio.campaigns[campaign.id] = campaign
+        except (TypeError, KeyError, ValueError, AttributeError) as exc:
+            raise PortfolioValidationError(f"malformed portfolio document: {exc}") from exc
         portfolio.validate()
         return portfolio
 
@@ -155,6 +169,7 @@ class Portfolio:
         split_manifest_hash: str,
         prediction_manifest_hash: str,
         coverage: float,
+        input_artifact_ids: Iterable[str] = (),
     ) -> Artifact:
         if artifact_id in self.artifacts:
             raise PortfolioValidationError(f"artifact {artifact_id!r} already exists")
@@ -163,9 +178,12 @@ class Portfolio:
             raise PortfolioValidationError("artifact identity and manifest fields must be non-empty")
         if not 0.0 <= coverage <= 1.0:
             raise PortfolioValidationError("artifact coverage must be between 0 and 1")
+        lineage = tuple(sorted(set(input_artifact_ids)))
+        if any(not item or item not in self.artifacts for item in lineage):
+            raise PortfolioValidationError("artifact lineage must reference existing artifact ids")
         artifact = Artifact(
             artifact_id, model_id, verdict, dataset_manifest_hash, split_manifest_hash,
-            prediction_manifest_hash, coverage, _now(),
+            prediction_manifest_hash, coverage, _now(), input_artifact_ids=lineage,
         )
         self.artifacts[artifact_id] = artifact
         return artifact
@@ -193,6 +211,8 @@ class Portfolio:
     def readiness(self, campaign_id: str) -> Readiness:
         campaign = self._campaign(campaign_id)
         reasons: list[str] = []
+        if campaign.stale:
+            reasons.append("campaign is stale and must be reseeded with current artifact lineage")
         for dependency in campaign.dependencies:
             artifact = self.artifacts.get(dependency.artifact_id)
             prefix = f"dependency {dependency.artifact_id!r}"
@@ -231,7 +251,7 @@ class Portfolio:
         campaign = self._campaign(campaign_id)
         if campaign.status != CampaignStatus.ACTIVATABLE:
             raise PortfolioValidationError("only an ACTIVATABLE campaign can start seeding")
-        if not self.readiness(campaign_id).activatable:
+        if campaign.stale or not self.readiness(campaign_id).activatable:
             raise PortfolioValidationError("campaign dependencies are not ready")
         self._transition(campaign, CampaignStatus.SEEDING, "seeding started")
 
@@ -242,7 +262,6 @@ class Portfolio:
         result = self.readiness(campaign_id)
         if not result.activatable:
             raise PortfolioValidationError("campaign dependencies are not ready")
-        campaign.stale = False
         campaign.blocked_reasons.clear()
         self._transition(campaign, CampaignStatus.READY, "seeding completed")
 

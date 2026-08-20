@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import sys
 
-from knowledge.ml_registry.executor import ExecutorError, create_backend
+from knowledge.ml_registry.executor import ExecutorError, _atomic_json, create_backend
 from knowledge.ml_registry.scheduler import JobSpec, PortfolioError, ResourceProfile
 
 
@@ -41,9 +41,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(asdict(result), indent=2, sort_keys=True))
         return 0 if result.state in {"completed", "dry_run"} else 1
     except (ExecutorError, PortfolioError) as exc:
+        _atomic_json(Path(args.state), {"state": "failed", "message": str(exc),
+                                       "finished_at": __import__("time").time()})
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 1
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        _atomic_json(Path(args.state), {"state": "failed", "message": f"malformed input: {exc}",
+                                       "finished_at": __import__("time").time()})
         print(f"MALFORMED INPUT: {exc}", file=sys.stderr)
         return 2
 
