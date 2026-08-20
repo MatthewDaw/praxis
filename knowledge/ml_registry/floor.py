@@ -207,8 +207,8 @@ _PROVENANCE_MISMATCHES: dict[tuple[str, str], str] = {
     (TRIAL_COMPARISON_PAIRED, FLOOR_VARIES_EVAL_SAMPLE): (
         "the floor measures how much the score moves when you change WHICH ITEMS are "
         "scored, and paired trials score the arm on the SAME draw as the baseline row, so "
-        "exactly that variance CANCELS out of every delta. The bar is therefore orders of "
-        "magnitude above the noise it claims to describe and nothing can clear it"
+        "much of that variance CANCELS out of every delta. The bar therefore sits above "
+        "the noise it claims to describe and little or nothing can clear it"
     ),
     (TRIAL_COMPARISON_UNPAIRED, FLOOR_VARIES_PAIRED_DELTA): (
         "the floor measures the spread of arm-minus-baseline deltas taken on IDENTICAL "
@@ -234,16 +234,34 @@ def guard_floor_provenance(meta: dict[str, object]) -> None:
     eight baseline ledger rows. Those rows were frame-BOOTSTRAP DRAWS of a deterministic
     detector -- the harness resampled which eval frames were scored on each run -- so that
     SD measured SAMPLING noise. But every trial was dispatched PAIRED, on the same draw
-    (seed 2) as the registered baseline row, and under pairing the frame-sampling noise
-    cancels. The campaign spent 34 trials demanding a +0.0998 improvement from a
-    comparison whose real noise was orders of magnitude smaller. ZERO adoptions, ratchet
-    0. Five arms genuinely beat the incumbent -- 0.6203, 0.6177, 0.6159, 0.6138, 0.6123
-    against 0.6076 -- and all five were filed "stagnant". Because an adopted arm composes
-    into every later arm, the campaign's whole composition mechanism never opened: a
-    silent, total loss of campaign progress with every individual component behaving
-    exactly as written. The sibling association campaign, same registry and same CLI, took
-    its floor as "2x the largest PAIRED-BOOTSTRAP DELTA SD over four perturbation arms"
-    and was fine -- so nothing here noticed the difference, which is what this closes.
+    (seed 2) as the registered baseline row, and pairing removes part of that variance.
+    34 trials, ZERO adoptions, ratchet 0.
+
+    HOW MUCH IT REMOVES DEPENDS ON THE METRIC, AND THE FIRST VERSION OF THIS DOCSTRING GOT
+    THAT WRONG. It claimed the paired noise was "orders of magnitude smaller", generalising
+    from the sibling association campaign, where HOTA -- a smooth pooled statistic -- does
+    collapse ~100x under pairing. It was then MEASURED here: 2000 paired bootstrap draws
+    over five real detection arms gave a delta SD of 0.0094-0.0351, a reduction of only
+    2.9x-9.5x, and a correct floor of 0.0703 rather than the ~0.005 the collapse assumption
+    predicted. At that floor NOT ONE of the 34 recorded verdicts changes.
+
+    The reason is that tiny_person_recall_at_p90 is a CONSTRAINED ARGMAX -- max recall
+    subject to precision >= 0.90 -- not a pooled mean. The operating threshold is
+    re-selected per arm and per draw (baseline threshold SD 0.0292 over 0.701-0.866), and
+    the arm picks a different threshold from the baseline on 79-100% of draws, so the two
+    land on different points of different PR curves and the sampling noise is only
+    PARTIALLY common. Expect a large collapse for a smooth statistic and a modest one for
+    an argmax or any other selection-based metric -- and MEASURE it rather than assuming,
+    because the assumption is what cost this campaign its floor.
+
+    The mismatch this guard refuses is real either way: an eval_sample floor is still the
+    wrong quantity for a paired comparison, whatever the ratio turns out to be. What the
+    measurement changed is the SIZE of the error, not its direction. And the deeper defect
+    it exposed was never the floor at all -- detection scored every arm on ONE seed-2 draw
+    whose own SD is ~0.064, roughly 9x the deltas being adjudicated, so its arm ranking was
+    largely noise: the arm ranked best on seed 2 measured -0.0003 on the full eval, while
+    the one ranked fourth measured +0.0432. A floor cannot rescue a point estimate that
+    noisy; only scoring the full eval can.
     """
     varies = meta.get(NOISE_FLOOR_VARIES_FIELD)
     comparison = meta.get(TRIAL_COMPARISON_FIELD)
