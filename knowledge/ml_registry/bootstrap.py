@@ -231,6 +231,8 @@ def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, met
               baseline_prefix: str = "baseline",
               sigmas: float = DEFAULT_SIGMAS, noise_floor_override: float | None = None,
               noise_floor_method: str | None = None,
+              noise_floor_varies: str | None = None,
+              trial_comparison: str | None = None,
               skip_ids: set[str] | None = None, notes: str | None = None,
               void_throughput_fraction: float | None = None) -> BootstrapReport:
     checks, baselines = check_ledger(ledger, baseline_prefix)
@@ -316,6 +318,14 @@ def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, met
         void_throughput_fraction=void_throughput_fraction)
     if "noise_floor_method" in floor:
         meta["noise_floor_method"] = floor["noise_floor_method"]
+    # WHAT VARIED when the floor was measured, and how trials are dispatched against it.
+    # Both optional and both travel unchanged to floor.guard_floor_provenance, which
+    # refuses the combination "paired trials + eval-sample floor" -- the one that cost the
+    # detection campaign 34 trials and every one of five real wins.
+    if noise_floor_varies is not None:
+        meta["noise_floor_varies"] = noise_floor_varies
+    if trial_comparison is not None:
+        meta["trial_comparison"] = trial_comparison
     return BootstrapReport(ready=True, preconditions=checks, model_meta=meta,
                            ideas=build_ideas(backlog, model_id=model_id, skip_ids=skip_ids),
                            floor=floor)

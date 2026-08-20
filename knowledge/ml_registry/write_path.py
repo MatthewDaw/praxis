@@ -199,6 +199,16 @@ def register_model(space: RegistrySpace, meta: dict[str, object], *, model_id: s
                 "incumbent) and register that positive number.",
                 field="noise_floor",
             )
+    # The floor's PROVENANCE against how trials are actually compared. Imported HERE
+    # rather than at module scope: knowledge.ml_registry.floor imports this module, so a
+    # top-level import back would be a cycle. It sits on register_model -- not only on
+    # floor.register_model_with_baseline -- for the same reason the zero-floor guard
+    # above does: this is the choke point every model write passes, including the plain
+    # `praxis register-model` CLI path that checks nothing else at all, and registration
+    # is the last moment before trials start burning against the wrong bar.
+    from knowledge.ml_registry.floor import guard_floor_provenance
+
+    guard_floor_provenance(merged)
     validate_fact(MODEL, merged)
 
     if model_id is None:
@@ -248,8 +258,15 @@ def mutate_model(
         raise RegistryValidationError(
             f"model {model_id!r} was never registered", field="model_id"
         )
+    from knowledge.ml_registry.floor import guard_floor_provenance
+
     guard_model_mutation(patch, source=source)
     guard_baseline_move(patch, source=source)
+    # Declaring the pairing AFTER registration must not be a way around the provenance
+    # guard, so it is checked against the meta the patch would leave behind, not the
+    # patch alone -- a patch naming only trial_comparison is exactly how a live campaign
+    # would acquire the mismatch.
+    guard_floor_provenance({**model.meta, **patch})
     model.meta.update(patch)
     return model
 

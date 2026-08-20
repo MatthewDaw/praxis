@@ -592,6 +592,17 @@ def main(argv: list[str] | None = None) -> int:
         help="How --noise-floor was measured, e.g. 'bootstrap'. A DECLARED method lets a supplied "
              "floor stand where recomputing from repeated baseline runs would give a degenerate "
              "one -- a deterministic incumbent repeats bit-identically, so its stdev is exactly 0.")
+    bootstrap_p.add_argument(
+        "--noise-floor-varies", default=None,
+        choices=["eval_sample", "run_repeat", "paired_delta"],
+        help="WHAT VARIED when the floor was measured: which eval items were scored "
+             "(eval_sample), repeats of one fixed config (run_repeat), or arm-minus-baseline "
+             "deltas on identical data (paired_delta). Paired trials cancel eval_sample noise, "
+             "so that pairing is refused at registration.")
+    bootstrap_p.add_argument(
+        "--trial-comparison", default=None, choices=["paired", "unpaired"],
+        help="whether each arm is scored on the SAME eval draw as the registered baseline row "
+             "(paired) or its own (unpaired). praxis cannot infer this from the ledger.")
     bootstrap_p.add_argument("--noise-floor", type=float, default=None,
                              help="override the floor measured from the ledger; use when it was "
                                   "measured over MORE runs than the ledger holds")
@@ -996,6 +1007,8 @@ def main(argv: list[str] | None = None) -> int:
                 diff_size_limit=args.diff_size_limit, baseline_prefix=args.baseline_prefix,
                 sigmas=args.sigmas, noise_floor_override=args.noise_floor,
                 noise_floor_method=args.noise_floor_method,
+                noise_floor_varies=args.noise_floor_varies,
+                trial_comparison=args.trial_comparison,
                 win_condition=_json_arg(args.win_condition),
                 skip_ids={i for i in args.skip_ids.split(",") if i}, notes=args.notes,
                 void_throughput_fraction=args.void_throughput_fraction)

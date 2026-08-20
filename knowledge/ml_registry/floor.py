@@ -17,6 +17,18 @@ Declaring a method does not buy an ARBITRARY floor, only a disagreeing one: a de
 floor is still bounded in MAGNITUDE against the spread the baseline rows show, since a
 declaration is prose and nothing else in this module bounded the number it admitted.
 
+Magnitude was the lesser half. A floor can be a perfectly reasonable number and still
+measure the WRONG VARIANCE, so :data:`NOISE_FLOOR_VARIES_FIELD` states what VARIED across
+the replicates it was measured over (``eval_sample`` / ``run_repeat`` / ``paired_delta``)
+and :data:`TRIAL_COMPARISON_FIELD` states whether trials are dispatched ``paired`` against
+the baseline row or ``unpaired``. :func:`guard_floor_provenance` refuses the two
+combinations no magnitude check can see -- paired trials judged against a sampling-derived
+floor (the noise cancels, so nothing clears the bar) and unpaired trials judged against a
+paired-delta floor (the noise does not cancel, so wobble adopts). Both fields are
+OPTIONAL: a record declaring neither is judged exactly as it was before they existed.
+praxis reads a ledger and a model record and never runs the harness, so pairing cannot be
+inferred -- it is DECLARED, and the guard holds the declared pair together.
+
 A registered floor must be POSITIVE. A deterministic incumbent (classical CV, no random
 seed) produces identical baseline rows, ``statistics.stdev`` returns exactly 0.0, and a
 zero floor is the absence of a bar rather than a strict one: ``delta > noise_floor``
@@ -144,6 +156,135 @@ SUPPLIED_FLOOR_MAX_SPREAD_RATIO = 10.0
 # reason rather than a boolean so the number stays accountable to a reader who finds it
 # years later, which is the same thing NOISE_FLOOR_METHOD_FIELD is for.
 NOISE_FLOOR_OVERRIDE_REASON_FIELD = "noise_floor_override_reason"
+
+# WHAT VARIED when the floor was measured, and HOW a trial is compared to the baseline.
+# These two are one guard, not two fields: a floor is only a bar on the comparison whose
+# noise it measured, and the pair is the only way this module can tell whether it does.
+#
+# noise_floor_method answered "by what procedure", which turned out to be the lesser
+# half -- 'bootstrap' is a procedure, and the same word covers resampling the eval set
+# (whose noise a paired comparison CANCELS) and resampling arm-minus-baseline deltas on
+# identical data (whose noise it does not). The magnitude bound in
+# _check_floor_against_spread cannot separate them either: both are perfectly reasonable
+# numbers a few tenths of the baseline spread apart. So provenance is stated as the thing
+# the guard actually needs -- what SOURCE OF VARIANCE the replicates carried.
+#
+# The vocabulary is deliberately three words, because a fourth would be a judgement call
+# nobody could make consistently at registration time:
+NOISE_FLOOR_VARIES_FIELD = "noise_floor_varies"
+#: WHICH eval items were scored varied between replicates -- frame/example bootstrap
+#: resampling of a fixed config. Measures SAMPLING noise.
+FLOOR_VARIES_EVAL_SAMPLE = "eval_sample"
+#: One fixed config re-run on the SAME eval data; seeds and nondeterminism varied.
+#: Measures RUN noise.
+FLOOR_VARIES_RUN_REPEAT = "run_repeat"
+#: Arm-minus-baseline DELTAS, each pair scored on identical data. Measures the noise of
+#: the difference itself -- the quantity adjudication actually compares to the floor.
+FLOOR_VARIES_PAIRED_DELTA = "paired_delta"
+KNOWN_FLOOR_VARIES: frozenset[str] = frozenset(
+    {FLOOR_VARIES_EVAL_SAMPLE, FLOOR_VARIES_RUN_REPEAT, FLOOR_VARIES_PAIRED_DELTA}
+)
+
+#: How the harness dispatches a trial against the baseline. praxis reads a ledger and a
+#: model record; it never runs the harness, so it CANNOT infer this -- a ledger row is a
+#: commit and a number and carries no trace of which eval draw produced it. A guard that
+#: needed to infer it would not be a guard, so the model DECLARES it and the registry
+#: holds it to the declaration.
+TRIAL_COMPARISON_FIELD = "trial_comparison"
+#: Every arm is scored on the SAME eval draw as the registered baseline row.
+TRIAL_COMPARISON_PAIRED = "paired"
+#: Each arm gets its own draw; arm and baseline share no per-item pairing.
+TRIAL_COMPARISON_UNPAIRED = "unpaired"
+KNOWN_TRIAL_COMPARISONS: frozenset[str] = frozenset(
+    {TRIAL_COMPARISON_PAIRED, TRIAL_COMPARISON_UNPAIRED}
+)
+
+# The two combinations that are wrong in a way no magnitude check can see. Everything
+# else registers: run_repeat noise does not cancel under pairing and does not vanish
+# without it, so it is a defensible (if conservative) bar either way, and this guard
+# refuses only what it can be SURE about.
+_PROVENANCE_MISMATCHES: dict[tuple[str, str], str] = {
+    (TRIAL_COMPARISON_PAIRED, FLOOR_VARIES_EVAL_SAMPLE): (
+        "the floor measures how much the score moves when you change WHICH ITEMS are "
+        "scored, and paired trials score the arm on the SAME draw as the baseline row, so "
+        "exactly that variance CANCELS out of every delta. The bar is therefore orders of "
+        "magnitude above the noise it claims to describe and nothing can clear it"
+    ),
+    (TRIAL_COMPARISON_UNPAIRED, FLOOR_VARIES_PAIRED_DELTA): (
+        "the floor measures the spread of arm-minus-baseline deltas taken on IDENTICAL "
+        "data, which is the small residue left after pairing cancels the sampling noise. "
+        "Unpaired trials do not cancel it, so the real comparison carries that noise on "
+        "top and the bar sits far below it -- resampling wobble adjudicates as a win"
+    ),
+}
+
+
+def guard_floor_provenance(meta: dict[str, object]) -> None:
+    """Refuse a model whose noise floor measures a variance its trials do not carry.
+
+    Both fields are OPTIONAL and independent. A model that declares neither -- every
+    model registered before this guard existed, and every one whose operator has nothing
+    to say -- passes untouched; this guard has an opinion only where the record gives it
+    one. What it will not accept is a value outside the vocabulary, for the reason
+    ``baseline_throughput_units`` learned the hard way: an unrecognised string reads to a
+    later checker as NO opinion, which is silently the unguarded case the stamp exists to
+    close.
+
+    THE INCIDENT. The detection campaign registered noise_floor=0.099758 = 2x the SD of
+    eight baseline ledger rows. Those rows were frame-BOOTSTRAP DRAWS of a deterministic
+    detector -- the harness resampled which eval frames were scored on each run -- so that
+    SD measured SAMPLING noise. But every trial was dispatched PAIRED, on the same draw
+    (seed 2) as the registered baseline row, and under pairing the frame-sampling noise
+    cancels. The campaign spent 34 trials demanding a +0.0998 improvement from a
+    comparison whose real noise was orders of magnitude smaller. ZERO adoptions, ratchet
+    0. Five arms genuinely beat the incumbent -- 0.6203, 0.6177, 0.6159, 0.6138, 0.6123
+    against 0.6076 -- and all five were filed "stagnant". Because an adopted arm composes
+    into every later arm, the campaign's whole composition mechanism never opened: a
+    silent, total loss of campaign progress with every individual component behaving
+    exactly as written. The sibling association campaign, same registry and same CLI, took
+    its floor as "2x the largest PAIRED-BOOTSTRAP DELTA SD over four perturbation arms"
+    and was fine -- so nothing here noticed the difference, which is what this closes.
+    """
+    varies = meta.get(NOISE_FLOOR_VARIES_FIELD)
+    comparison = meta.get(TRIAL_COMPARISON_FIELD)
+    if varies not in (None, "") and str(varies) not in KNOWN_FLOOR_VARIES:
+        raise RegistryValidationError(
+            f"{NOISE_FLOOR_VARIES_FIELD} {varies!r} is not one of {sorted(KNOWN_FLOOR_VARIES)!r}. "
+            "This field names the SOURCE OF VARIANCE the floor's replicates carried -- which eval "
+            "items were scored (eval_sample), repeats of one fixed config on fixed data "
+            "(run_repeat), or arm-minus-baseline deltas on identical data (paired_delta) -- and a "
+            "word outside that vocabulary reads to this guard as no declaration at all, which is "
+            "the unguarded case it exists to close",
+            field=NOISE_FLOOR_VARIES_FIELD,
+        )
+    if comparison not in (None, "") and str(comparison) not in KNOWN_TRIAL_COMPARISONS:
+        raise RegistryValidationError(
+            f"{TRIAL_COMPARISON_FIELD} {comparison!r} is not one of "
+            f"{sorted(KNOWN_TRIAL_COMPARISONS)!r}. praxis cannot infer this from the ledger -- a "
+            "row is a commit and a number, with no trace of which eval draw produced it -- so the "
+            "model must say it in a word this guard recognises or say nothing",
+            field=TRIAL_COMPARISON_FIELD,
+        )
+    if varies in (None, "") or comparison in (None, ""):
+        return
+    why = _PROVENANCE_MISMATCHES.get((str(comparison), str(varies)))
+    if why is None:
+        return
+    raise RegistryValidationError(
+        f"{TRIAL_COMPARISON_FIELD}={comparison!r} cannot be judged against a noise_floor with "
+        f"{NOISE_FLOOR_VARIES_FIELD}={varies!r}: {why}. This is the LAST point it can be caught -- "
+        "praxis reads a ledger and a model record, it does not run the harness, so after "
+        "registration every trial looks individually correct and the loss shows up only as a "
+        "campaign that never adopts. It cost the detection campaign 34 trials and zero adoptions: "
+        "five arms genuinely beat the incumbent (0.6203, 0.6177, 0.6159, 0.6138, 0.6123 against "
+        "0.6076) and all five were filed stagnant, so the composition mechanism -- an adopted arm "
+        "composes into every later arm -- never opened at all. Re-measure the floor over the "
+        "variance the trials actually carry (for paired trials: the SD of arm-minus-baseline "
+        f"deltas on identical data, {NOISE_FLOOR_VARIES_FIELD}={FLOOR_VARIES_PAIRED_DELTA!r}), or "
+        f"dispatch the trials the way the floor was measured",
+        field=NOISE_FLOOR_VARIES_FIELD,
+    )
+
 
 # The judging fields R12 holds even more tightly than R1's PROTECTED_MODEL_FIELDS: a
 # change to any of them retires the noise floor and baseline throughput derived under
