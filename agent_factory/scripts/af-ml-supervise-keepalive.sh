@@ -22,6 +22,10 @@
 #   COMPLETE  -- campaign-complete exits 0. The real end.
 #   BUDGET    -- --max-nudges reached. The loop refuses to run forever unattended.
 #   GONE      -- the tmux session died. Nothing to nudge.
+#   QUOTA     -- the backend refused: a weekly/usage limit or an auth failure. NOT a stall, and
+#                nudging it is pointless -- no number of retries buys credit. Detected on the FIRST
+#                poll rather than after a stall budget, because the operator needs to know the
+#                difference between "the agent is stuck" and "the account is out".
 #   STUCK     -- across --stall-nudges consecutive nudges the agent produced NO ledger row and
 #                touched NO source file (see --watch-dir). Nudging harder will not fix a campaign
 #                with nothing left to run, and a keepalive that spins on a dead campaign burns a
@@ -99,6 +103,19 @@ progress_token() { echo "$(ledger_rows):$(newest_source_mtime)"; }
 campaign_complete() {
   (cd "$PRAXIS" && PRAXIS_DB_DISABLED=1 uv run python -m knowledge.ml_registry.cli \
       campaign-complete --space-file "$SPACE" --model-id "$MODEL" --stages "$STAGES" >/dev/null 2>&1)
+}
+
+# A QUOTA WALL LOOKS EXACTLY LIKE A HEALTHY SESSION to every other check here: the tmux session is
+# alive, the context is intact, the status bar still renders, and grok keeps its busy markers while
+# parked on a "Buy more credits" dialog. Measured 2026-08-20: work stopped at 14:51 and the loop
+# went on nudging until 15:08 -- and a human reading ledger COUNT rather than the pane reported the
+# run as healthy ten minutes into the outage. Row counts are historical; they say what HAS happened,
+# never what IS happening. So this is checked first and exits immediately.
+session_blocked_on_quota() {
+  local pane
+  pane="$(tmux capture-pane -p -t "$SESSION" 2>/dev/null)" || return 1
+  printf '%s' "$pane" | grep -qiE "weekly limit|buy more credits|upgrade tier|usage limit|out of credits|rate limit exceeded|authentication failed|not authenticated" && return 0
+  return 1
 }
 
 # BUSY IS NOT ONE STRING, and getting this wrong nudges a working agent.
@@ -183,6 +200,13 @@ while :; do
 
   if ! tmux has-session -t "$SESSION" 2>/dev/null; then
     say "GONE: tmux session $SESSION no longer exists after $nudges nudge(s)."; exit 3
+  fi
+
+  if session_blocked_on_quota; then
+    say "QUOTA: the backend refused -- weekly/usage limit or auth. This is NOT a stall; nudging buys"
+    say "QUOTA: nothing. Campaign state is durable on disk (ledger, registry space, ideas), so this"
+    say "QUOTA: is safe to resume once credit is restored. Stopping after $nudges nudge(s)."
+    exit 8
   fi
 
   if campaign_complete; then

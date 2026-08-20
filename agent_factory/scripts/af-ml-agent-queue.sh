@@ -176,6 +176,9 @@ while IFS='|' read -r name space model stages; do
     4) say "$name: nudge BUDGET spent without closing. Still open; re-run to continue."; overall=1;;
     5) say "$name: STUCK -- idle across repeated nudges with no new trial. Read the pane before re-running."; overall=1;;
     6) say "$name: UNCONFIRMED -- the registry does not agree the campaign is finished."; overall=1;;
+    8) say "$name: QUOTA -- the model backend refused (weekly/usage limit or auth). Nothing here can"
+       say "$name: fix that, and the NEXT campaign would hit the same wall, so the queue stops."
+       overall=1;;
     *) say "$name: keepalive exited $rc."; overall=1;;
   esac
 
@@ -184,6 +187,10 @@ while IFS='|' read -r name space model stages; do
     # stopping points an operator may choose to step over; rc=6 means the registry contradicts a
     # claim of completion, and stepping over a contradiction is how a queue reports a clean sweep
     # having finished nothing. That one is not overridable by a flag.
+    if [ "$rc" = 8 ]; then
+      say "STOPPING: out of model credit. Every remaining campaign shares that account."
+      break
+    fi
     if [ "$rc" = 6 ]; then
       say "STOPPING at $name. A disputed completion is never stepped over, with or without --continue-past-incomplete."
       break
