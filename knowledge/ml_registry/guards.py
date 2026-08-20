@@ -24,6 +24,15 @@ PROTECTED_MODEL_FIELDS: frozenset[str] = frozenset(
         "direction",
         "win_condition",
         "noise_floor",
+        # The four fields a SCALED floor is derived from (knowledge.ml_registry.floor's
+        # residual-to-ceiling section). Protecting `noise_floor` alone would harden the
+        # bar's magnitude and leave its SHAPE writable: a patch moving `metric_ceiling`
+        # from 1.0 to 0.62 shrinks every later bar toward the armor without touching a
+        # single protected field, which is the same exploit `noise_floor=-99` was.
+        "noise_floor_scaling",
+        "metric_ceiling",
+        "noise_floor_armor",
+        "noise_floor_measured_at",
         "baseline_throughput",
         "diff_size_limit",
     }

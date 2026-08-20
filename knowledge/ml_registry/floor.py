@@ -694,6 +694,11 @@ def register_model_with_baseline(
         throughput = stored_tput_f
 
     merged = dict(meta)
+    # v_measured for a scaled floor: the metric level these replicates describe. Stamped
+    # here because this is the only registration path that HAS the ledger rows to derive it
+    # from; register_model refuses a scaling declaration that arrives without it.
+    if _floor_scaling_mode(merged) == FLOOR_SCALING_RESIDUAL:
+        merged.setdefault(FLOOR_MEASURED_AT_FIELD, statistics.mean(values))
     merged[NOISE_FLOOR_FIELD] = floor
     merged[BASELINE_THROUGHPUT_FIELD] = throughput
     merged[BASELINE_THROUGHPUT_UNITS_FIELD] = throughput_units
@@ -892,6 +897,10 @@ def adjudicate_trial(
             field=BASELINE_THROUGHPUT_FIELD,
         )
     baseline = _metric_baseline(model, model_id, ledger_values, stored_bar)
+    # The bar is derived AT THE BASELINE LEVEL, never at the trial's own value: an arm that
+    # could shrink its own bar by scoring well would be grading its own homework. For a
+    # model that declared no scaling this is the registered floor unchanged.
+    floor = scaled_noise_floor(model.meta, baseline)
     direction = model.meta.get("direction")
     if direction == "minimize":
         delta = float(baseline) - observed_value
@@ -965,3 +974,259 @@ def retire_harness(space: RegistrySpace, model_id: str, patch: dict[str, object]
         revert_adoption(space, model_id, "harness field mutation retired the noise floor")
     model.meta.update(patch)
     return model
+
+
+# ---------------------------------------------------------------------------
+# A BAR THAT SHRINKS AS THE CAMPAIGN APPROACHES ITS CEILING
+#
+# WHY. A floor is measured ONCE, at registration, in the regime the incumbent was in --
+# and a campaign exists to LEAVE that regime. +1pp at 0.90 recall is not the same finding
+# as +1pp at 0.74: it cuts the residual error by 10% rather than 3.8%. A bar frozen at the
+# registered number therefore charges a campaign the SAME absolute price for a discovery
+# that is worth several times more, and it charges it exactly where progress is hardest.
+# So the adoption bar is allowed to SHRINK as the metric closes on its ceiling.
+#
+# WHAT THIS IS NOT, and the four ways the obvious versions of it are wrong:
+#
+#   1. NOT sqrt(p(1-p)/n). The binomial SE peaks at p=0.5 and shrinks only ABOVE it, so it
+#      RAISES the bar for every campaign climbing through the low half. court_marking runs
+#      0.155648 -> 0.70 and would be handed a bar 26% HIGHER at its win condition than at
+#      registration -- the exact inversion of the intent. Residual-to-ceiling is monotone
+#      over the whole range and for BOTH directions, which is why it is the shape used.
+#   2. NOT a pure relative-error scaling. residual -> 0 makes the bar -> 0 and certifies
+#      pure noise as a win: association at HOTA 0.99 scales to ~0.0002, BELOW the 0.000790
+#      SD of a perturbation whose true effect is zero. :data:`DEFAULT_FLOOR_ARMOR` is the
+#      answer to that and is not optional.
+#   3. The bar is derived AT A BASELINE LEVEL, never at the trial's own value -- an arm
+#      that could shrink its own bar by scoring well is grading its own homework. Each
+#      comparison uses the level of the bar it is being compared to, which is also what
+#      makes the ratchet's counterfactual (verdict._attributable_to_the_adoption) able to
+#      ask its question at the PREVIOUS baseline's era rather than the current one's.
+#   4. The derived bar is BOUNDED to [armor x registered, registered]. A floor evaluated at
+#      a future metric level is a number no ledger row constrains, so it inherits its
+#      magnitude guarantee from the registered floor instead of escaping it -- see
+#      :func:`scaled_noise_floor`.
+#
+# WHAT PRAXIS CANNOT CHECK, said out loud rather than implied: that the measurement noise
+# REALLY does shrink in proportion to the residual. praxis holds a ledger and a model
+# record; it never ran the harness and has exactly one measurement of the noise, at one
+# metric level. The proportionality is a MODEL the campaign asserts, and the stamp
+# :data:`FLOOR_SCALING_BASIS_FIELD` says so in as many words -- the same choice
+# :func:`check_declared_sigmas` makes when it labels an unverifiable external floor
+# :data:`SIGMAS_BASIS_UNVERIFIED` rather than pretending it verified one.
+
+#: Opt-in. ABSENT means a static absolute floor, exactly as before this existed -- every
+#: model registered without it, including all four live campaigns, is untouched.
+FLOOR_SCALING_FIELD = "noise_floor_scaling"
+#: The registered floor is the bar at every metric level. The default.
+FLOOR_SCALING_STATIC = "static"
+#: The bar scales with distance-to-ceiling, armored below. See this section's header.
+FLOOR_SCALING_RESIDUAL = "residual_to_ceiling"
+KNOWN_FLOOR_SCALINGS: frozenset[str] = frozenset({FLOOR_SCALING_STATIC, FLOOR_SCALING_RESIDUAL})
+
+#: WHERE THE METRIC RUNS OUT. Declared, never assumed: a maximize metric is NOT always
+#: bounded at 1 (mAP-style sums, counts, speedups are not), and a minimize metric's floor
+#: is not always 0. Residual is measured to THIS number, so guessing it wrong silently
+#: mis-scales every later bar.
+METRIC_CEILING_FIELD = "metric_ceiling"
+#: The metric level the floor was MEASURED at -- v_measured, the denominator of the
+#: residual ratio. Stamped by :func:`register_model_with_baseline` as the mean of the
+#: baseline runs (the level those replicates describe); required to be declared on any
+#: other registration path, which has no ledger to derive it from.
+FLOOR_MEASURED_AT_FIELD = "noise_floor_measured_at"
+
+# THE ARMOR: the fraction of the originally-measured floor below which the bar may never
+# fall, whatever the residual says.
+#
+# WHY IT EXISTS is defect 2 above: relative scaling alone has no lower bound and hands a
+# campaign a bar below its own measured noise as soon as it gets close to the ceiling.
+#
+# WHY 0.5, and it is an empirical number rather than a taste: the one direct measurement
+# this registry has of a TRUE-ZERO effect is association's perturbation study -- delta SD
+# 0.000790 HOTA against a registered floor of 0.0016, i.e. 0.494 of the floor. An armor of
+# 0.5 is the largest round shrinkage that still keeps that campaign's bar (0.0008) ABOVE
+# the noise of a perturbation known to do nothing (0.000790). Below 0.5 the only measured
+# null this registry holds starts adjudicating as a win.
+#
+# WHAT IT COSTS, stated because it is not free: if the noise does NOT shrink with the
+# residual -- the assumption praxis cannot check -- a fully-armored bar is 0.5 sigma
+# instead of `sigmas` sigma, so a null arm's one-sided false-adoption rate rises from
+# ~16% (1 sigma) to ~31%. That is the price of the whole feature, paid only by campaigns
+# that opt in and bounded by this constant. A campaign with its own null measurement
+# should override it: `noise_floor_armor` takes any fraction in (0, 1].
+DEFAULT_FLOOR_ARMOR = 0.5
+FLOOR_ARMOR_FIELD = "noise_floor_armor"
+
+#: WHAT THE REGISTRY ESTABLISHED about the scaling, stamped at registration so a later
+#: reader never has to infer it -- the same job :data:`SIGMAS_BASIS_FIELD` does.
+FLOOR_SCALING_BASIS_FIELD = "noise_floor_scaling_basis"
+#: no scaling declared; the floor is the registered constant.
+FLOOR_SCALING_BASIS_STATIC = "static_registered_floor"
+#: the shape and its inputs are well-formed and bounded, and the PROPORTIONALITY ITSELF --
+#: that the noise really shrinks with the residual -- was NOT verified here and cannot be:
+#: praxis holds one noise measurement, at one metric level.
+FLOOR_SCALING_BASIS_UNVERIFIED_MODEL = "shape_checked_noise_model_unverified"
+
+
+def _floor_scaling_mode(meta: dict[str, object]) -> str:
+    declared = meta.get(FLOOR_SCALING_FIELD)
+    if declared in (None, ""):
+        return FLOOR_SCALING_STATIC
+    return str(declared)
+
+
+def _residual(direction: str, ceiling: float, value: float) -> float:
+    """Distance from ``value`` to the ceiling, in the direction the metric improves."""
+    return (ceiling - value) if direction == "maximize" else (value - ceiling)
+
+
+def guard_floor_scaling(meta: dict[str, object]) -> str:
+    """Check a declared floor scaling and return its :data:`FLOOR_SCALING_BASIS_FIELD` stamp.
+
+    Sits on the registration choke point next to :func:`guard_floor_provenance` and
+    :func:`check_declared_sigmas`, for the reason those two do: it is the one path every
+    model write passes, including the plain ``praxis register-model`` CLI, and it is the
+    last moment before trials start burning against a bar nobody can reconstruct.
+
+    A model that declares NOTHING passes untouched and keeps a static absolute floor --
+    that is the backward-compatible case and it is the majority of them. What is refused is
+    a half-declaration: a scaling word outside the vocabulary (which would read to a later
+    checker as no declaration at all, the failure mode ``baseline_throughput_units``
+    learned), a scaling with no ceiling to measure residual to, a ceiling the metric has
+    already reached or passed at the level the floor was measured (residual zero: every
+    later bar would be 0/0 or armored flat, so the declaration is not describing this
+    campaign), or an armor outside (0, 1] (above 1 the bar would GROW away from the
+    registered floor, at or below 0 there is no armor at all -- which is defect 2).
+    """
+    mode = _floor_scaling_mode(meta)
+    if mode not in KNOWN_FLOOR_SCALINGS:
+        raise RegistryValidationError(
+            f"{FLOOR_SCALING_FIELD} {meta.get(FLOOR_SCALING_FIELD)!r} is not one of "
+            f"{sorted(KNOWN_FLOOR_SCALINGS)!r}; a word outside that vocabulary reads to every "
+            "later checker as NO declaration, which silently restores the static bar this "
+            "field was set to change",
+            field=FLOOR_SCALING_FIELD,
+        )
+    if mode == FLOOR_SCALING_STATIC:
+        return FLOOR_SCALING_BASIS_STATIC
+
+    direction = meta.get("direction")
+    if direction not in ("minimize", "maximize"):
+        raise RegistryValidationError(
+            f"{FLOOR_SCALING_FIELD}={mode!r} needs a direction to know which way the ceiling "
+            f"lies, got direction={direction!r}",
+            field="direction",
+        )
+    ceiling = meta.get(METRIC_CEILING_FIELD)
+    if ceiling in (None, ""):
+        raise RegistryValidationError(
+            f"{FLOOR_SCALING_FIELD}={mode!r} scales the bar by DISTANCE TO THE CEILING and no "
+            f"{METRIC_CEILING_FIELD} is declared. It is not defaulted to 1.0 (or 0.0): a "
+            "maximize metric is not always bounded at 1 -- a count, a speedup or an unnormalised "
+            "sum is not -- and a wrong ceiling mis-scales every bar this campaign ever "
+            "adjudicates without ever looking wrong",
+            field=METRIC_CEILING_FIELD,
+        )
+    measured_at = meta.get(FLOOR_MEASURED_AT_FIELD)
+    if measured_at in (None, ""):
+        raise RegistryValidationError(
+            f"{FLOOR_SCALING_FIELD}={mode!r} needs {FLOOR_MEASURED_AT_FIELD}, the metric level "
+            "the floor was MEASURED at -- it is the denominator of the residual ratio, so "
+            "without it the scaling has no reference regime. Register through "
+            "register_model_with_baseline and it is stamped from the mean of the baseline "
+            "runs, or declare it",
+            field=FLOOR_MEASURED_AT_FIELD,
+        )
+    try:
+        ceiling_f = float(ceiling)  # type: ignore[arg-type]
+        measured_at_f = float(measured_at)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise RegistryValidationError(
+            f"{METRIC_CEILING_FIELD} {ceiling!r} and {FLOOR_MEASURED_AT_FIELD} {measured_at!r} "
+            "must both be numbers; the bar is a ratio of the distances between them",
+            field=METRIC_CEILING_FIELD,
+        ) from None
+    if _residual(str(direction), ceiling_f, measured_at_f) <= 0.0:
+        raise RegistryValidationError(
+            f"{METRIC_CEILING_FIELD} {ceiling_f!r} is not beyond {FLOOR_MEASURED_AT_FIELD} "
+            f"{measured_at_f!r} in the {direction!r} direction, so the residual the floor was "
+            "measured at is zero or negative and there is no regime to scale FROM. Either the "
+            "ceiling is wrong or this campaign has already finished",
+            field=METRIC_CEILING_FIELD,
+        )
+    armor = meta.get(FLOOR_ARMOR_FIELD, DEFAULT_FLOOR_ARMOR)
+    try:
+        armor_f = float(armor)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise RegistryValidationError(
+            f"{FLOOR_ARMOR_FIELD} {armor!r} is not a number; it is the FRACTION of the measured "
+            "floor the bar may never fall below",
+            field=FLOOR_ARMOR_FIELD,
+        ) from None
+    if not (0.0 < armor_f <= 1.0):
+        raise RegistryValidationError(
+            f"{FLOOR_ARMOR_FIELD} {armor_f!r} is outside (0, 1]. At or below 0 there is no armor "
+            "at all and the bar falls to zero as the metric nears its ceiling, certifying pure "
+            "noise as a win (association at HOTA 0.99 would scale to ~0.0002, below the 0.000790 "
+            "SD of a perturbation whose true effect is zero). Above 1 the derived bar would rise "
+            f"above the registered floor, which no ledger row constrains. Default "
+            f"{DEFAULT_FLOOR_ARMOR}",
+            field=FLOOR_ARMOR_FIELD,
+        )
+    return FLOOR_SCALING_BASIS_UNVERIFIED_MODEL
+
+
+def scaled_noise_floor(meta: dict[str, object], at_value: float) -> float:
+    """The adoption bar at metric level ``at_value`` -- the registered floor for a model
+    that declared no scaling, and the residual-scaled, armored bar for one that did.
+
+    ``at_value`` is always a BASELINE level (the bar a trial is measured against), never
+    the trial's own value; see this section's header, point 3.
+
+    THE MAGNITUDE GUARANTEE that survives here, and it is the whole of defect 4. A bar
+    derived at a FUTURE metric level is a number no ledger row constrains --
+    :func:`_check_floor_against_spread` bounded the REGISTERED floor to [0.1x, 10x] of the
+    spread the baseline rows show, and it can say nothing about a level nobody has run. So
+    the derived bar never leaves the registered floor's neighbourhood: it is clamped to
+    ``[armor x registered, registered]``. The upper clamp means the bar can only ever
+    SHRINK (a scaling that would raise it -- a campaign that has moved AWAY from its
+    ceiling -- is capped at the number that was actually checked), and the lower clamp is
+    the armor. With the default armor every derived bar is therefore within
+    [0.05x, 10x] of the measured baseline spread, and that is inherited from a check that
+    ran against real rows rather than asserted about a level nobody has reached.
+    """
+    floor = float(meta[NOISE_FLOOR_FIELD])
+    if _floor_scaling_mode(meta) != FLOOR_SCALING_RESIDUAL:
+        return floor
+    direction = str(meta["direction"])
+    ceiling = float(meta[METRIC_CEILING_FIELD])  # type: ignore[arg-type]
+    measured_at = float(meta[FLOOR_MEASURED_AT_FIELD])  # type: ignore[arg-type]
+    armor = float(meta.get(FLOOR_ARMOR_FIELD, DEFAULT_FLOOR_ARMOR))  # type: ignore[arg-type]
+    ratio = _residual(direction, ceiling, at_value) / _residual(direction, ceiling, measured_at)
+    return floor * min(1.0, max(armor, ratio))
+
+
+def describe_noise_floor(meta: dict[str, object], at_value: float) -> dict[str, object]:
+    """The bar at ``at_value`` plus WHY it is that number -- for report/CLI surfaces that
+    have to explain a moving bar to a human, and labelled with what was and was not
+    verified rather than presented as measured fact."""
+    mode = _floor_scaling_mode(meta)
+    registered = float(meta[NOISE_FLOOR_FIELD])
+    bar = scaled_noise_floor(meta, at_value)
+    described: dict[str, object] = {
+        "noise_floor": bar,
+        "registered_noise_floor": registered,
+        "at_value": at_value,
+        FLOOR_SCALING_FIELD: mode,
+        FLOOR_SCALING_BASIS_FIELD: meta.get(FLOOR_SCALING_BASIS_FIELD, FLOOR_SCALING_BASIS_STATIC),
+    }
+    if mode == FLOOR_SCALING_RESIDUAL:
+        armor = float(meta.get(FLOOR_ARMOR_FIELD, DEFAULT_FLOOR_ARMOR))  # type: ignore[arg-type]
+        described["scale"] = bar / registered if registered else 1.0
+        described["armored"] = bar <= registered * armor + FLOOR_AGREEMENT_TOLERANCE
+        described["caveat"] = (
+            "the bar is scaled by distance to a DECLARED ceiling; that the measurement noise "
+            "really shrinks in proportion is a model this campaign asserts and praxis never "
+            "verified -- it holds one noise measurement, at one metric level"
+        )
+    return described

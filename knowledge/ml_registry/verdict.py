@@ -70,6 +70,7 @@ from knowledge.ml_registry.floor import (
     RATCHET_COUNT_FIELD,
     REJECTION_STREAK_FIELD,
     THROUGHPUT_UNITS_METRIC_MEAN,
+    scaled_noise_floor,
 )
 from knowledge.ml_registry.lifecycle import (
     TRIAL_STATUS_SUCCEEDED,
@@ -181,7 +182,6 @@ def _attributable_to_the_adoption(
     value: float,
     *,
     direction: str,
-    noise_floor: float,
 ) -> bool:
     """Would this rejected trial have PARKED or WON against the bar the adoption replaced?
 
@@ -197,7 +197,17 @@ def _attributable_to_the_adoption(
     previous_row = ledger_rows.get(str(previous_commit))
     if previous_row is None:
         return True
-    return _delta_against(direction, previous_row.value, value) >= -noise_floor
+    # THE PREVIOUS ERA'S BAR, not the current one. The question is counterfactual -- would
+    # this trial have parked-or-won against the bar the adoption REPLACED -- so it must be
+    # asked with the floor that stood at `previous_row.value`. Under a floor that MOVES,
+    # using the current (smaller, because the adoption improved the metric) bar answers a
+    # question nobody asked and answers it conservatively: fewer rejections are judged
+    # attributable, so the ratchet under-fires and a false adoption survives longer exactly
+    # when a looser bar is producing more of them. For a static floor the two are the same
+    # number and this is a no-op.
+    return _delta_against(
+        direction, previous_row.value, value
+    ) >= -scaled_noise_floor(model.meta, previous_row.value)
 
 
 def _invalidate_ratchet(space: RegistrySpace, model: Fact, model_id: str, reason: str) -> None:
@@ -337,7 +347,11 @@ def adjudicate_verdict(
     direction = str(direction)
     delta = _delta_against(direction, baseline_row.value, row.value)
 
-    noise_floor = float(model.meta["noise_floor"])
+    # THE BAR AT THIS BASELINE'S LEVEL. For a model that declared no scaling this is the
+    # registered floor, byte for byte, and every campaign registered before scaling existed
+    # is in that case. For a scaled one it is derived at `baseline_row.value` -- the level
+    # of the bar the trial is actually being compared to.
+    noise_floor = scaled_noise_floor(model.meta, baseline_row.value)
     diff_size_limit = float(model.meta["diff_size_limit"])
 
     if delta > noise_floor:
@@ -400,7 +414,7 @@ def adjudicate_verdict(
         # that did", which is how a false adoption used to survive a mixed run of attributable
         # and unattributable losses.
         if not _attributable_to_the_adoption(
-            model, ledger_rows, row.value, direction=direction, noise_floor=noise_floor
+            model, ledger_rows, row.value, direction=direction
         ):
             return VERDICT_REJECTED
         streak = list(model.meta.get(REJECTION_STREAK_FIELD) or [])
