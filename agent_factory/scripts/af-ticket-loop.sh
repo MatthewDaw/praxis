@@ -53,13 +53,18 @@
 # it agrees. Each branch sets its own variables AND unsets the other branch's, so there is
 # no reachable half-configured state. Resolution order and the deliberately-cheap default:
 #
-#     AF_MODEL_BACKEND=deepseek|sonnet|grok   (env var, per-run, wins)
+#     AF_MODEL_BACKEND=deepseek|sonnet|grok|codex   (env var, per-run, wins)
 #       else contents of ~/.af-backend   (the existing `af-backend` command still works)
 #       else deepseek
 #
 #     grok is the native Grok CLI on an OAuth session token (~/.grok/auth.json).
 #     It UNSETS XAI_API_KEY so the run cannot silently spend API credits. A
 #     missing auth.json or a probe that reports apiKeySource=user is FATAL.
+#
+#     codex is the OpenAI Codex CLI on the owner's CHATGPT SUBSCRIPTION (`codex login`,
+#     device-code path). It UNSETS OPENAI_API_KEY so the run cannot silently spend API
+#     credits, and refuses outright when `codex login status` (or ~/.codex/auth.json)
+#     reports an API key — the same wrong-bill refusal grok makes for apiKeySource=user.
 #
 # Anything unrecognized — empty, typo'd, "Sonnet", "sonet" — logs a warning and falls back
 # to DEEPSEEK, never to the subscription. A typo must cost nothing; only an exact, spelled
@@ -207,7 +212,7 @@
 #   8  QUOTA BLOCKED: a headless session hit the Claude subscription's session/usage limit and was
 #      stranded on the interactive /rate-limit-options menu. Distinct from 3 (that is API credits):
 #      the remedy is to wait for the subscription window to reset, or switch the plan/backend.
-#   AF_MODEL_BACKEND       sonnet | deepseek | grok (see v3)
+#   AF_MODEL_BACKEND       sonnet | deepseek | grok | codex (see v3)
 #   AF_PLUGIN_DIR / AF_REPO / AF_PYTHON / AF_STATE_DIR / AF_LOG   for an unusual layout
 set -euo pipefail
 
@@ -239,7 +244,7 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
 
   BACKEND="$requested"
   case "$BACKEND" in
-    sonnet|deepseek|grok) ;;
+    sonnet|deepseek|grok|codex) ;;
     *) echo "[backend] WARNING: unrecognized backend '$BACKEND' — falling back to deepseek (never to a paid subscription)" >&2
        BACKEND="deepseek" ;;
   esac
@@ -359,6 +364,64 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
       return 1
     fi
     printf '%s' "$probe" | grep -q 'PONG' || echo "[backend] WARNING: grok auth probe returned no PONG and no auth error (network/transient?) — continuing" >&2
+  elif [ "$BACKEND" = "codex" ]; then
+    # OpenAI Codex CLI on the owner's ChatGPT *subscription* (the "Sign in with ChatGPT"
+    # path), never on an API key. OPENAI_API_KEY and friends are UNSET rather than
+    # out-ranked, for exactly the reason the grok branch unsets XAI_API_KEY: if the env
+    # key is present codex spends usage-based API credits while the session still looks
+    # perfectly healthy, and nothing in the pane says which bill is being charged.
+    # `codex login status` is the authoritative check (it is offline, instant, and exits
+    # nonzero when there is no credential); a status that names an API key is FATAL --
+    # that is the wrong bill, the same refusal grok makes for apiKeySource=user.
+    CODEX_BIN="${CODEX_BIN:-$(command -v codex 2>/dev/null || echo "$HOME/.nvm/versions/node/v22.23.1/bin/codex")}"
+    CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
+    AF_CODEX_MODEL="${AF_CODEX_MODEL:-}"
+    BACKEND_NOTE="OpenAI Codex on a ChatGPT subscription plan, model=${AF_CODEX_MODEL:-<config.toml default>} — spends ChatGPT plan usage, NOT OpenAI API credits"
+    if [ ! -x "$CODEX_BIN" ]; then
+      echo "[backend] FATAL: codex requested but $CODEX_BIN is missing or not executable." >&2
+      echo "[backend]   fix: npm install -g @openai/codex" >&2
+      return 1
+    fi
+    # The credential is whatever `codex login` wrote under $CODEX_HOME_DIR. Do not assert a
+    # filename -- ask the CLI. An empty/absent auth file and a revoked one look identical on
+    # disk, and only the CLI can tell them apart.
+    local status_out
+    status_out="$("$CODEX_BIN" login status 2>&1 || true)"
+    if printf '%s' "$status_out" | grep -qiE 'not logged in|no (stored )?credential|please (run )?(codex )?login'; then
+      echo "[backend] FATAL: codex requested but there is no credential in $CODEX_HOME_DIR:" >&2
+      printf '%s\n' "$status_out" | head -3 | sed 's/^/[backend]   /' >&2
+      echo "[backend]   fix, once, as ec2-user:  codex login   # then pick 'Sign in with Device Code' (this box has no browser)" >&2
+      echo "[backend]   do NOT use 'codex login --with-api-key': that bills OpenAI API credits, not the ChatGPT plan, and this backend refuses it" >&2
+      return 1
+    fi
+    # WRONG BILL, refused: an API-key credential masquerading as a working session.
+    if printf '%s' "$status_out" | grep -qiE 'api key'; then
+      echo "[backend] FATAL: codex credential is an API key (usage-based billing), not the ChatGPT subscription:" >&2
+      printf '%s\n' "$status_out" | head -3 | sed 's/^/[backend]   /' >&2
+      echo "[backend]   fix: codex logout && codex login   # choose 'Sign in with ChatGPT' / device code" >&2
+      return 1
+    fi
+    if [ -s "$CODEX_HOME_DIR/auth.json" ] && grep -qE '"OPENAI_API_KEY"[[:space:]]*:[[:space:]]*"[^"]+"' "$CODEX_HOME_DIR/auth.json" 2>/dev/null; then
+      echo "[backend] FATAL: $CODEX_HOME_DIR/auth.json holds an OPENAI_API_KEY — that is the API-credit path, not the subscription." >&2
+      echo "[backend]   fix: codex logout && codex login   # choose 'Sign in with ChatGPT' / device code" >&2
+      return 1
+    fi
+    # --dangerously-bypass-approvals-and-sandbox is codex's equivalent of grok's
+    # --always-approve: the loop's sessions are unattended, so an approval prompt is a
+    # silent 30-minute stall. --no-alt-screen keeps the TUI inline so `tmux capture-pane`
+    # sees real scrollback (the stall detector hashes that pane).
+    CLAUDE_LAUNCH="unset OPENAI_API_KEY OPENAI_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN XAI_API_KEY; ${CODEX_BIN} --dangerously-bypass-approvals-and-sandbox --no-alt-screen${AF_CODEX_MODEL:+ --model $AF_CODEX_MODEL}"
+    # Cheap live probe, same contract as the other three: only an explicit auth rejection is
+    # fatal; no answer and no auth error is a network blip, not a reason to refuse the run.
+    local probe
+    probe="$(cd /tmp && unset OPENAI_API_KEY OPENAI_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN && timeout 120 "$CODEX_BIN" exec --skip-git-repo-check --color never -s read-only ${AF_CODEX_MODEL:+--model "$AF_CODEX_MODEL"} 'Reply with exactly: PONG' </dev/null 2>&1 || true)"
+    if printf '%s' "$probe" | grep -qiE '401 unauthorized|missing bearer|not logged in|invalid api key|authentication_error|please (run )?(codex )?login'; then
+      echo "[backend] FATAL: codex credential present but REJECTED by OpenAI:" >&2
+      printf '%s\n' "$probe" | head -5 | sed 's/^/[backend]   /' >&2
+      echo "[backend]   fix, once, as ec2-user:  codex login   # 'Sign in with Device Code'" >&2
+      return 1
+    fi
+    printf '%s' "$probe" | grep -q 'PONG' || echo "[backend] WARNING: codex auth probe returned no PONG and no auth error (network/transient?) — continuing" >&2
   else
     # DeepSeek mode. The subscription token is unset rather than out-ranked: the CLI has
     # been observed preferring a cached credential over an env token, so exclusivity is
@@ -881,16 +944,23 @@ STALL_POLLS=30
 # receive text — present in every ready-state pane capture observed on this box.
 READY_POLL_MAX=40   # 40 * 2s = 80s cap
 
-# Launch the configured agent into a detached tmux session. For grok, the prompt is
-# the TUI's initial argv so we do not have to type a 4KB string into a not-quite-ready
+# Does this backend take the round prompt as the TUI's initial argv, instead of having it
+# typed in afterwards? grok and codex both do (`grok ... -- "<prompt>"`, `codex ... -- "<prompt>"`),
+# and that is strictly safer: a 4KB string send-keys'd into a not-quite-ready input box is
+# swallowed whole and the round waits out the stall net for nothing. sonnet and deepseek start
+# empty and still need the send-keys path.
+af_prompt_is_argv(){ [ "$BACKEND" = grok ] || [ "$BACKEND" = codex ]; }
+
+# Launch the configured agent into a detached tmux session. For grok and codex, the prompt
+# is the TUI's initial argv so we do not have to type a 4KB string into a not-quite-ready
 # input box (the failure mode the Claude send-keys path exists to detect). For sonnet
 # and deepseek the CLI still starts empty and the caller send-keys the prompt after
 # pane_is_ready.
-af_launch_agent(){   # $1=tmux session  $2=optional initial prompt (grok only)
+af_launch_agent(){   # $1=tmux session  $2=optional initial prompt (grok/codex only)
   local sess="$1" prompt="${2:-}" pf
   tmux kill-session -t "$sess" 2>/dev/null || true
   tmux new-session -d -s "$sess" -c "$WT"
-  if [ "$BACKEND" = grok ] && [ -n "$prompt" ]; then
+  if af_prompt_is_argv && [ -n "$prompt" ]; then
     pf="${AF_STATE_DIR}/af-${sess}.prompt"
     printf '%s' "$prompt" > "$pf"
     tmux send-keys -t "$sess" "cd $WT && set -a && . '${AF_STATE_DIR}/af-agent.env' && set +a && $CLAUDE_LAUNCH -- \"\$(cat '$pf')\"" Enter
@@ -1064,6 +1134,7 @@ say "backend=$BACKEND ($BACKEND_NOTE)"
 # still stops, so for a long unattended build prefer an API-credit backend or watch for the halt.
 case "$BACKEND" in
   sonnet) say "NOTE: backend is a Claude subscription (session quota, not API credits) — a long unattended run can hit the session limit; the loop will halt with exit $AF_EXIT_QUOTA_BLOCKED if it does, but consider API credits for very long runs." ;;
+  codex) say "NOTE: backend is a ChatGPT subscription plan via the Codex CLI (not OPENAI_API_KEY) — API credits are unset on every launch." ;;
   grok) say "NOTE: backend is an xAI Grok subscription (OAuth session token, not XAI_API_KEY) — API credits are unset on every launch." ;;
 esac
 
@@ -1827,7 +1898,7 @@ resolve_conflicts(){   # $1 = round number
     tmux kill-session -t "$rsession" 2>/dev/null || true
     return 1
   fi
-  if [ "$BACKEND" != grok ]; then
+  if ! af_prompt_is_argv; then
     sleep 3; tmux send-keys -t "$rsession" Enter
     tmux send-keys -t "$rsession" "$rprompt"
     sleep 3; tmux send-keys -t "$rsession" Enter
@@ -2784,7 +2855,7 @@ PYEOF
   if ! af_wait_ready "$vsession"; then
     say "WARNING: verify REPL not confirmed ready, sending anyway"
   fi
-  if [ "$BACKEND" != grok ]; then
+  if ! af_prompt_is_argv; then
     tmux send-keys -t "$vsession" "$vprompt"
     sleep 3; tmux send-keys -t "$vsession" Enter
   fi
@@ -3560,7 +3631,7 @@ while :; do
     continue
   fi
   submitted=0
-  if [ "$BACKEND" = grok ]; then
+  if af_prompt_is_argv; then
     submitted=1
   else
     # Submit, then CONFIRM the prompt landed. The wedge this catches is measured, not hypothetical:
