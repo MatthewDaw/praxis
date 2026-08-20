@@ -48,6 +48,7 @@ from knowledge.ml_registry.supervisor import (
     TRIAL_STATUS_TIMED_OUT,
     Intervention,
     axis_streak,
+    _auto_interventions,
     check_win_on_adoption_declared,
     consecutive_void_count,
     dispatch_trial,
@@ -59,7 +60,7 @@ from knowledge.ml_registry.supervisor import (
     resolve_interventions,
     supervise_campaign,
 )
-from knowledge.ml_registry.verdict import BASELINE_FIELD, LedgerRow
+from knowledge.ml_registry.verdict import BASELINE_FIELD, METRIC_UNMOVED_FIELD, LedgerRow
 from knowledge.ml_registry.write_path import DISCOVERED, SEEDED, RegistrySpace, register_idea, register_model
 
 BASELINE_COMMIT = "commit-abc123"
@@ -92,6 +93,9 @@ LEDGER.update({f"lose{i}": LedgerRow(value=5000.0, throughput=1200, diff_lines=1
 # evidence the adoption was noise if the raised bar is what caused it. A "lose*" arm at 5000.0
 # loses against both bars, says nothing about the adoption, and deliberately does not count.
 LEDGER.update({f"near{i}": LedgerRow(value=1.0, throughput=1200, diff_lines=100) for i in range(1, 10)})
+# "wobble*" commits land INSIDE the noise floor but not exactly on it -- a real measurement
+# that really did not help, which must still count against the axis.
+LEDGER.update({f"wobble{i}": LedgerRow(value=1.0001, throughput=1200, diff_lines=100) for i in range(1, 10)})
 # "slow*" commits are the ONLY way a trial gets voided: their LEDGER throughput falls more
 # than THROUGHPUT_FLOOR_FRACTION (5%) below baseline_throughput=1200, so adjudicate_verdict
 # -- and only adjudicate_verdict, never a dispatcher's self-report -- voids them.
@@ -517,6 +521,57 @@ def test_a_value_in_the_dispatcher_payload_never_suppresses_the_rabbit_hole_inte
     r3 = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher(["lose3"]))
     assert r3["candidate"] == data_idea
     assert r3["candidate"] != third_arch
+
+
+def test_arms_the_metric_cannot_see_never_walk_an_axis_toward_exclusion():
+    """A delta of EXACTLY zero says the arm did not reach the metric, not that the axis failed.
+
+    Measured on the detection campaign 2026-08-20: nms_iou_strict, nms_iou_loose and
+    score_floor_shipped emitted 43,488 / 71,756 / 7,130 detections -- a 10x spread -- and all
+    three scored 0.6076 at the SAME operating threshold 0.7699, because the metric maximises
+    recall subject to a precision floor and everything those arms strip scores BELOW that point.
+    Under the old accounting each was one more non-improving trial, and three of them put a
+    56-idea axis three fifths of the way to being retired on evidence that never existed.
+    """
+    space, model_id = _space_with_model(max_trials=100)
+    _idea(space, model_id, "architecture", SEEDED, "arch-1")
+    _idea(space, model_id, "architecture", SEEDED, "arch-2")
+    _idea(space, model_id, "architecture", SEEDED, "arch-3")
+    fourth_arch = _idea(space, model_id, "architecture", SEEDED, "arch-4")
+
+    # near* rows sit at EXACTLY the baseline value, so delta is exactly 0.0.
+    for commit in ("near1", "near2", "near3"):
+        result = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher([commit]))
+        assert result["status"] == "parked", result
+        trial = space.get(result["trial_id"])
+        assert trial.meta["status"] == "stagnant"
+        assert trial.meta[METRIC_UNMOVED_FIELD] is True
+
+    # Three trials on one axis, and the axis has not moved one step toward exclusion.
+    assert axis_streak(space, model_id)["non_improving_streak"] == 0
+    assert _auto_interventions(space, model_id) == ()
+
+    # A fourth architecture idea is still reachable -- the axis was never retired.
+    assert fourth_arch in {f.id for f in untried_backlog(space, model_id=model_id)}
+
+
+def test_a_stagnant_trial_that_did_move_the_metric_still_counts_as_non_improving():
+    """The guard is narrow on purpose: only an EXACTLY-zero delta is uncountable.
+
+    An arm that moved the metric a little and landed inside the noise floor really was measured,
+    really did not help, and is exactly what the rabbit-hole watchdog exists to notice.
+    """
+    space, model_id = _space_with_model(max_trials=100)
+    _idea(space, model_id, "architecture", SEEDED, "arch-1")
+    _idea(space, model_id, "architecture", SEEDED, "arch-2")
+
+    for commit in ("wobble1", "wobble2"):
+        result = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher([commit]))
+        trial = space.get(result["trial_id"])
+        assert trial.meta["status"] == "stagnant"
+        assert METRIC_UNMOVED_FIELD not in trial.meta
+
+    assert axis_streak(space, model_id)["non_improving_streak"] == 2
 
 
 def test_an_authored_out_of_diff_change_resets_the_non_improving_count_exactly_once():

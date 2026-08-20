@@ -97,7 +97,12 @@ from knowledge.ml_registry.schema import (
     TRIAL_STATUS_VOIDED,
     RegistryValidationError,
 )
-from knowledge.ml_registry.verdict import LedgerRow, VERDICT_ADOPTED, adjudicate_verdict
+from knowledge.ml_registry.verdict import (
+    METRIC_UNMOVED_FIELD,
+    LedgerRow,
+    VERDICT_ADOPTED,
+    adjudicate_verdict,
+)
 from knowledge.ml_registry.write_path import (
     DISCOVERED,
     MAX_DISCOVERED_IDEAS_FIELD,
@@ -489,6 +494,13 @@ def axis_streak(space: RegistrySpace, model_id: str) -> dict[str, object]:
         if (run_offset + offset) in out_of_diff_at and not reset_used:
             non_improving_streak = 0
             reset_used = True
+        if t.meta.get(METRIC_UNMOVED_FIELD):
+            # An arm the metric could not see is NEITHER evidence the axis is exhausted nor
+            # evidence it is paying off, so it neither counts nor clears. Skipping it is the
+            # conservative direction on purpose: the cost of not excluding an axis is a few more
+            # arms, and the cost of excluding one wrongly is abandoning a whole stage -- on
+            # detection that is 56 untried ideas retired by trials that measured nothing.
+            continue
         if t.meta.get("status") == TRIAL_STATUS_SUCCEEDED:
             non_improving_streak = 0
         else:

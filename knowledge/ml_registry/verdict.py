@@ -106,6 +106,11 @@ THROUGHPUT_FLOOR_FRACTION = 0.05
 # A trial rejected consecutively on 3 distinct ideas fires the ratchet.
 RATCHET_STREAK_LENGTH = 3
 
+#: Stamped on a stagnant trial whose delta was EXACTLY zero -- the arm changed nothing the metric
+#: can see. Read by :func:`supervisor.axis_streak`, which neither counts nor clears such a trial:
+#: it carries no information about whether the axis is worth pursuing, in either direction.
+METRIC_UNMOVED_FIELD = "metric_unmoved"
+
 #: The axis the rejection streak was probing, under the axis-reset rule that
 #: counterfactual attribution replaced (see the ratchet block in :func:`adjudicate_verdict`).
 #: No longer written; still CLEARED alongside the streak so a model carrying one from an
@@ -412,6 +417,18 @@ def adjudicate_verdict(
     # stagnant band, closed on both sides: -noise_floor <= delta <= noise_floor
     if row.diff_lines <= diff_size_limit:
         trial.meta["status"] = "stagnant"
+        # A delta of EXACTLY zero is not the same claim as "measured, did not help", and the
+        # difference decides whether an axis gets abandoned. Measured on detection 2026-08-20:
+        # nms_iou_strict, nms_iou_loose and score_floor_shipped emitted 43,488 / 71,756 / 7,130
+        # detections -- a 10x spread -- and every one scored 0.6076 with the SAME operating
+        # threshold 0.7699, because tiny_person_recall_at_p90 maximises recall subject to a
+        # precision floor and everything those arms remove scores BELOW the operating point.
+        # The metric could not see any of them. Three such trials are not three pieces of
+        # evidence that an axis is exhausted; they are one piece of evidence that the arms never
+        # reached the metric. Left uncounted they would have driven the axis to exclusion at
+        # detection's trigger of 5 on measurements that never measured anything.
+        if delta == 0.0:
+            trial.meta[METRIC_UNMOVED_FIELD] = True
         park_idea(space, idea_id, reactivation_trigger)
         return VERDICT_PARKED
 
