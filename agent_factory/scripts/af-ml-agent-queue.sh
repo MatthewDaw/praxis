@@ -147,17 +147,45 @@ while IFS='|' read -r name space model stages; do
   # subscription seat and confuses the next run's session-name check.
   tmux kill-session -t "$session" 2>/dev/null
 
+  # THE GATE. Advancing on the keepalive's return code alone would trust a process that could have
+  # exited 0 for a reason unrelated to the campaign -- a race in its own poll, a tmux hiccup, a
+  # future edit to its exit codes. So completion is RE-ASKED of the registry itself, which is the
+  # only thing that actually knows: campaign-complete exits 0 when every declared stage is populated
+  # and closed, no arm awaits a re-run, and the winner is trained to convergence. An empty queue is
+  # not a finished campaign, and neither is a keepalive that happened to stop.
+  if [ "$rc" = 0 ]; then
+    if (cd "$PRAXIS" && PRAXIS_DB_DISABLED=1 uv run python -m knowledge.ml_registry.cli \
+          campaign-complete --space-file "$space" --model-id "$model" --stages "$stages" >/dev/null 2>&1); then
+      say "$name: COMPLETE -- confirmed by campaign-complete, not merely by the keepalive exiting."
+    else
+      say "$name: keepalive exited 0 but campaign-complete DISAGREES. Treating as NOT finished."
+      say "$name: refusing to advance on a completion the registry will not confirm."
+      rc=6
+    fi
+  fi
+
   case "$rc" in
-    0) say "$name: COMPLETE."; done_ok=$((done_ok+1));;
+    0) done_ok=$((done_ok+1));;
     3) say "$name: session GONE -- the agent died. See /workspace/$session.log."; overall=1;;
     4) say "$name: nudge BUDGET spent without closing. Still open; re-run to continue."; overall=1;;
     5) say "$name: STUCK -- idle across repeated nudges with no new trial. Read the pane before re-running."; overall=1;;
+    6) say "$name: UNCONFIRMED -- the registry does not agree the campaign is finished."; overall=1;;
     *) say "$name: keepalive exited $rc."; overall=1;;
   esac
 
-  if [ "$rc" != 0 ] && [ "$CONTINUE" != 1 ]; then
-    say "STOPPING at $name. An unfinished campaign is not a finished one; pass --continue-past-incomplete to move on anyway."
-    break
+  if [ "$rc" != 0 ]; then
+    # --continue-past-incomplete deliberately does NOT apply to rc=6. The other outcomes are honest
+    # stopping points an operator may choose to step over; rc=6 means the registry contradicts a
+    # claim of completion, and stepping over a contradiction is how a queue reports a clean sweep
+    # having finished nothing. That one is not overridable by a flag.
+    if [ "$rc" = 6 ]; then
+      say "STOPPING at $name. A disputed completion is never stepped over, with or without --continue-past-incomplete."
+      break
+    fi
+    if [ "$CONTINUE" != 1 ]; then
+      say "STOPPING at $name. An unfinished campaign is not a finished one; pass --continue-past-incomplete to move on anyway."
+      break
+    fi
   fi
 done < "$CONFIG"
 
