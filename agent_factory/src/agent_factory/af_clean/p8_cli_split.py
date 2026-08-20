@@ -79,10 +79,10 @@ def read_prebuilt_diff(path: str | Path) -> str:
 def generate_prebuilt_diff(
     repo_root: str | Path, candidate_ref: str, *, base_ref: str = "HEAD",
 ) -> str:
-    """Generate deletion/addition form because the bounded applier refuses rename metadata."""
+    """Generate a compact, reviewable diff that preserves structural rename metadata."""
     root = Path(repo_root).resolve()
     argv = [
-        "git", "diff", "--no-ext-diff", "--no-renames", "--binary",
+        "git", "diff", "--no-ext-diff", "--find-renames", "--binary",
         base_ref, candidate_ref, "--", *sorted(P8_DIFF_ALLOWLIST),
     ]
     result = subprocess.run(argv, cwd=root, capture_output=True, text=True)
@@ -112,5 +112,6 @@ def apply_p8_diff(
         diff_allowlist=P8_DIFF_ALLOWLIST,
         witnesses=P8_WITNESSES,
         change_class=CLASS_SPLIT,
+        allow_renames=True,
         **adapter_overrides,
     )

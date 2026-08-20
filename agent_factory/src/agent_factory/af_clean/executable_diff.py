@@ -61,7 +61,7 @@ def _require_success(result: object, label: str) -> None:
         raise ExecutableDiffRefused(f"{label} failed: {detail}")
 
 
-def _diff_paths(diff: str) -> frozenset[str]:
+def _diff_paths(diff: str, *, allow_renames: bool = False) -> frozenset[str]:
     paths: set[str] = set()
     for line in diff.splitlines():
         if not line.startswith("diff --git "):
@@ -73,9 +73,9 @@ def _diff_paths(diff: str) -> frozenset[str]:
         if len(parts) != 4 or not parts[2].startswith("a/") or not parts[3].startswith("b/"):
             raise ExecutableDiffRefused(f"unsupported diff header: {line!r}")
         before, after = parts[2][2:], parts[3][2:]
-        if before != after:
+        if before != after and not allow_renames:
             raise ExecutableDiffRefused("renames are outside the bounded executable-diff adapter")
-        paths.add(after)
+        paths.update((before, after))
     if not paths:
         raise ExecutableDiffRefused("prebuilt diff contains no git diff paths")
     return frozenset(paths)
@@ -111,6 +111,7 @@ def apply_bounded_executable_diff(
     diff_allowlist: frozenset[str],
     witnesses: Sequence[WitnessCommand],
     change_class: str,
+    allow_renames: bool = False,
     command_runner: CommandRunner = subprocess.run,
     verifier_runner: CommandRunner = default_subprocess_runner,
 ) -> ExecutableDiffResult:
@@ -151,7 +152,7 @@ def apply_bounded_executable_diff(
             f"got {sorted(actual_locations)!r}"
         )
 
-    paths = _diff_paths(diff)
+    paths = _diff_paths(diff, allow_renames=allow_renames)
     if paths != diff_allowlist:
         raise ExecutableDiffRefused(
             f"diff paths differ from exact allowlist: expected {sorted(diff_allowlist)!r}, "

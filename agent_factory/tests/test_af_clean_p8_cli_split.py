@@ -29,7 +29,7 @@ def test_p8_boundary_is_exact_and_split_specific() -> None:
     assert len(P8_WITNESSES) == 2
 
 
-def test_generate_diff_disables_rename_detection(monkeypatch, tmp_path: Path) -> None:
+def test_generate_diff_preserves_rename_detection(monkeypatch, tmp_path: Path) -> None:
     observed = {}
 
     def run(argv, **kwargs):
@@ -38,7 +38,7 @@ def test_generate_diff_disables_rename_detection(monkeypatch, tmp_path: Path) ->
 
     monkeypatch.setattr("agent_factory.af_clean.p8_cli_split.subprocess.run", run)
     assert generate_prebuilt_diff(tmp_path, "candidate")
-    assert "--no-renames" in observed["argv"]
+    assert "--find-renames" in observed["argv"]
     assert set(observed["argv"][-len(P8_DIFF_ALLOWLIST):]) == set(P8_DIFF_ALLOWLIST)
 
 
@@ -67,6 +67,7 @@ def test_apply_forwards_only_the_fixed_boundary(monkeypatch, tmp_path: Path) -> 
     assert observed["expected_locations"] == frozenset(P8_LOCATIONS)
     assert observed["diff_allowlist"] == P8_DIFF_ALLOWLIST
     assert observed["witnesses"] == P8_WITNESSES
+    assert observed["allow_renames"] is True
 
 
 @pytest.mark.parametrize("name", [

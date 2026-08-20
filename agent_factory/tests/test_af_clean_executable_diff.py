@@ -187,3 +187,23 @@ def test_blind_verification_cannot_be_disabled(tmp_path: Path) -> None:
     with pytest.raises(ExecutableDiffRefused, match="cannot be skipped"):
         _apply(repo, verifier_runner=None)
     assert (repo / "x.py").read_text() == "VALUE = 1\n"
+
+
+def test_rename_metadata_is_refused_by_default_and_bounded_when_enabled(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    rename_patch = PATCH.replace(
+        "diff --git a/x.py b/x.py", "diff --git a/x.py b/y.py",
+    ).replace("--- a/x.py", "--- a/x.py").replace("+++ b/x.py", "+++ b/y.py")
+    with pytest.raises(ExecutableDiffRefused, match="renames are outside"):
+        _apply(repo, diff=rename_patch)
+
+    result = _apply(
+        repo,
+        diff=rename_patch,
+        diff_allowlist=frozenset({"x.py", "y.py"}),
+        allow_renames=True,
+        witnesses=(WitnessCommand((
+            "python", "-c", "from pathlib import Path; assert Path('y.py').read_text() == 'VALUE = 2\\n'",
+        )),),
+    )
+    assert result.applied_paths == ("x.py", "y.py")
