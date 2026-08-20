@@ -33,6 +33,7 @@ from .findings import (
     CLASS_JS_TO_TS,
     CLASS_LINT_FIX,
     CLASS_REPORT_ONLY,
+    CLASS_SPLIT,
 )
 
 #: Default argv for the blind verifier subprocess -- a fresh, non-interactive CLI
@@ -72,6 +73,16 @@ _CLASS_QUESTIONS: dict[str, str] = {
         "branch, a different order of effects, a different type at one site only. If the merged "
         "form requires the callers to differ by a flag or a branch, that is a failed "
         "centralization -- refuse it. Endorse only if the behaviour at every site is unchanged."
+    ),
+    CLASS_SPLIT: (
+        "One module has been divided into smaller modules. Decide whether this is a purely "
+        "structural move whose public behaviour is identical. Every former public import path "
+        "and symbol, executable or module entry point, command name, argument/default, help byte, "
+        "stdout/stderr byte, exit code, validation and error order, side effect, and persistence "
+        "boundary must remain available and unchanged. Refuse if the split drops or duplicates "
+        "dispatch, forks policy across compatibility shims, introduces an import cycle or new "
+        "observable eager import, or mixes in a semantic change. Endorse only if callers cannot "
+        "observe the relocation."
     ),
     CLASS_ANNOTATION: (
         "Type annotations have been added or tightened. Judge CORRECTNESS, not acceptance: a "

@@ -41,6 +41,7 @@ a `change_class`, and `verifier.instruction_for` maps it to its own question:
 |---|---|
 | `deletion` | Is this genuinely unreachable, and is nothing observable lost? |
 | `consolidation` | Do all former call sites behave identically? What divergence is the merge erasing? |
+| `split` | Are all public imports, entry points, CLI bytes/exit codes, validation order, and side effects identical after a purely structural module split? |
 | `annotation` | Is each type CORRECT (not merely accepted), and is the diff behaviour-neutral? |
 | `lint-fix` | Purely stylistic, or did the auto-fix change semantics? |
 | `js-to-ts` | Same emitted behaviour, no `any` smuggled in to compile, no import-graph change? |

@@ -18,6 +18,7 @@ from agent_factory.af_clean.findings import (
     CLASS_ANNOTATION,
     CLASS_DELETION,
     CLASS_REPORT_ONLY,
+    CLASS_SPLIT,
     Finding,
     Location,
     admit_finding,
@@ -220,6 +221,12 @@ def test_a_report_only_finding_needs_no_slop_pole():
     assert admit_finding(f).admitted
 
 
+def test_a_structural_split_is_admitted_without_a_slop_pole():
+    f = Finding(rule="module-split", tier="enforce", location=Location("large.py", 1),
+                change_class=CLASS_SPLIT)
+    assert admit_finding(f).admitted
+
+
 def test_a_deletion_still_requires_a_pole():
     f = Finding(rule="r", tier="advise", location=Location("a.py", 1))
     assert f.change_class == CLASS_DELETION            # the pre-split default is preserved
@@ -246,7 +253,7 @@ def test_an_unpoled_class_may_not_declare_a_bogus_pole():
 def test_every_change_class_asks_its_own_question():
     questions = {
         cls: instruction_for(cls)
-        for cls in ("deletion", "consolidation", "annotation", "lint-fix", "js-to-ts")
+        for cls in ("deletion", "consolidation", "split", "annotation", "lint-fix", "js-to-ts")
     }
     assert len(set(questions.values())) == len(questions), "a shared question verifies nothing"
 
@@ -263,6 +270,16 @@ def test_the_annotation_question_judges_correctness_not_acceptance():
 
 def test_consolidation_asks_about_erased_divergence_between_the_duplicates():
     assert "diverg" in instruction_for("consolidation").lower()
+
+
+def test_split_question_pins_every_observable_cli_and_import_surface():
+    text = instruction_for("split").lower()
+    for required in (
+        "public import path", "entry point", "argument/default", "help byte", "stdout/stderr",
+        "exit code", "validation and error order", "side effect", "persistence", "import cycle",
+        "semantic change",
+    ):
+        assert required in text
 
 
 def test_report_only_has_no_question_and_refuses_to_borrow_the_deletion_one():
