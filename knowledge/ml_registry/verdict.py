@@ -72,6 +72,7 @@ from knowledge.ml_registry.floor import (
     THROUGHPUT_UNITS_METRIC_MEAN,
     scaled_noise_floor,
 )
+from knowledge.ml_registry.contracts.ledger_v2 import FAIR_LEDGER_STATUSES
 from knowledge.ml_registry.lifecycle import (
     active_adoption,
     adopt_idea,
@@ -93,7 +94,7 @@ VERDICT_VOIDED = "voided"
 #: The trainer writes this column precisely to say so -- `budget_exhausted` marks a run cut short
 #: by wall clock, and scoring an under-trained model as a rejection records a settled answer to a
 #: question that was never actually asked.
-FAIR_RUN_STATUSES: frozenset[str] = frozenset({"ok", ""})
+FAIR_RUN_STATUSES = FAIR_LEDGER_STATUSES
 
 BASELINE_FIELD = "baseline"
 PREVIOUS_BASELINE_FIELD = "previous_baseline"

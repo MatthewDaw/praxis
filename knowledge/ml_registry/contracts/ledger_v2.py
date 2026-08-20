@@ -14,6 +14,7 @@ LEDGER_V2_HEADER = (
     "commit", "metric_value", "memory_gb", "status", "description", "throughput",
     "diff_lines",
 )
+FAIR_LEDGER_STATUSES: frozenset[str] = frozenset({"ok", ""})
 
 
 class LedgerStatus(str, Enum):

@@ -12,6 +12,8 @@ from knowledge.ml_registry.contracts import (
     LedgerValidity,
     ThroughputUnit,
 )
+from knowledge.ml_registry.contracts.ledger_v2 import FAIR_LEDGER_STATUSES
+from knowledge.ml_registry.verdict import FAIR_RUN_STATUSES
 from knowledge.ml_registry.contracts._validation import ContractError
 
 
@@ -41,6 +43,10 @@ def test_exact_seven_column_header_and_byte_stable_round_trip() -> None:
     payload = ledger.serialize()
     assert payload.splitlines()[0] == "\t".join(LEDGER_V2_HEADER)
     assert LedgerV2.parse(payload) == ledger
+
+
+def test_ledger_and_verdict_share_one_fair_status_policy() -> None:
+    assert FAIR_RUN_STATUSES is FAIR_LEDGER_STATUSES
 
 
 @pytest.mark.parametrize("status", ["mystery", "", "failed"])
