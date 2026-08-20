@@ -987,6 +987,33 @@ af_wait_ready(){   # $1=tmux session  $2=optional poll cap (default READY_POLL_M
         return 0
       fi
     fi
+    if [ "$BACKEND" = codex ]; then
+      # Codex ships the SAME directory-trust splash grok does, and it appears AFTER a
+      # successful ChatGPT login -- so "authenticated" is not "ready". Captured verbatim on
+      # praxis-devbox 2026-08-20 with a live subscription session:
+      #   "Do you trust the contents of this directory?" / "1. Yes, continue" / "2. No, quit"
+      # Answer it and keep polling; the composer is one screen further on.
+      if echo "$pane" | grep -qiE "Do you trust the contents|Yes, continue"; then
+        tmux send-keys -t "$sess" Enter
+        continue
+      fi
+      # NOT READY, and each of these is a screen a careless pattern would match. The sign-in
+      # menu renders the product name and the version banner exactly as the composer does, so
+      # matching "OpenAI Codex" or a version string would read a login prompt as a live agent
+      # and fire a round's prompt into a void. Refuse explicitly rather than relying on the
+      # positive test below to happen not to match.
+      if echo "$pane" | grep -qiE "Sign in with ChatGPT|Sign in with Device Code|Provide your own API key|Press enter to continue"; then
+        continue
+      fi
+      # READY. "Ask Codex to do anything" is the composer placeholder and is absent from both
+      # the sign-in menu and the trust splash -- verified against captures of all three panes.
+      # It is the only string checked BECAUSE it is the only one that discriminates: the model
+      # line, the directory line and the permissions line all render on screens that are not
+      # ready to accept a prompt.
+      if echo "$pane" | grep -qiE "Ask Codex to do anything"; then
+        return 0
+      fi
+    fi
   done
   return 1
 }
