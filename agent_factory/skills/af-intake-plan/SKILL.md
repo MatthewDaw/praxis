@@ -692,6 +692,30 @@ that did exist. Nothing in the plan ever started the thing. Two dependent ticket
 human sign-off nobody could give — there was nothing to look at — and the build loop idled for
 eleven hours against a stall it could not clear.
 
+**A running entrypoint is not enough if the check still targets the wrong function — non-skippable.**
+"RUNs the artifact" means the check drives the requirement through the path a REAL request takes —
+the API route, the CLI command, or the public service function reachable from the app's actual
+entrypoint — and asserts on the produced artifact/response. A check that instead imports the
+implementing module and calls the private function directly proves the LOGIC is correct, never that
+the PRODUCT reaches it, and that gap is invisible from inside the check: it goes green either way.
+Derive the real-path assertion here; author it via **af-ingest author-check**, naming the route/CLI/
+public entrypoint in the check's `run`, not the internal unit that happens to implement it. Where the
+requirement itself IS a gate, a guard, or a check — the whole point of the ticket is to catch or
+prevent something — the building-validation check must additionally assert **reachability**: mechanical
+proof the guard fires on the real path ("the route rejects the bad input with the expected
+status/error", "the CLI exits non-zero and prints X"), not merely that the guard function returns the
+right value when called directly. "Real path" means a MECHANICAL integration assertion the build itself
+runs and reads pass/fail from — never a human-in-the-loop review step; this factory verifies
+autonomously, so this is about which CODE PATH the check exercises, not who looks at the output.
+
+**Why this rule exists.** A cross-family content-leakage guard was implemented correctly and covered
+by a unit test that called the guard function directly with crafted inputs — the test went green. The
+guard had zero callers anywhere in the production letter-generation path, so a real generated letter
+could leak content across families and nothing in the build-validation set would have caught it: the
+check proved the function worked, not that the product ever ran it. Multiply this by every "guard"/
+"check" requirement in a plan and a fully-green building-validation suite stops being evidence the
+product is safe to ship.
+
 **Every-site sweeps get ONE guard.** If the plan contains a change that must land at EVERY call
 site (a provider swap, a rename, a config-key migration, a banned-import purge), author a single
 completeness check — typically `! grep -rq '<old pattern>' <scope>` — by running
@@ -1100,6 +1124,15 @@ apply is the build's fresh RESOLVE query (tag ∪ "*" ∪ surface), same as ever
   AND a smoke invocation of the real entrypoint, authored via af-ingest author-check. Lint,
   typecheck and the unit suite all pass on a tree whose entrypoint was never written, so a plan
   carrying only those has no gate that would notice the product missing.
+- **Never bless a check that RUNs an entrypoint but asserts on the wrong thing (B2)** — it must
+  assert on the artifact/response produced by the real API route, CLI command, or public service
+  function, never on the private/internal unit that implements it; a check that imports and calls
+  the implementing function directly can pass even when nothing in the app ever calls it (a
+  unit-tested guard with zero production callers is exactly this failure). Any requirement that IS
+  itself a gate/guard/check additionally needs a reachability assertion — mechanical proof it fires
+  on the real path, not just that the guard function returns the right value in isolation — and
+  "real path" always means a mechanical integration assertion the build reads, never a
+  human-in-the-loop review step.
 - **Never leave a known every-site refactor (B2) without a build-validation
   guard check** — the every-site scan (`! grep -rq '<old>' <scope>`) and the tricky-case test are exactly
   what af-build silently drops; author each via af-ingest author-check or record an explicit exception.
