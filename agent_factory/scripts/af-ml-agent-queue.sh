@@ -36,6 +36,9 @@ CONFIG="$HERE/af-ml-agent-queue.conf"
 KEEPALIVE="$HERE/af-ml-supervise-keepalive.sh"
 PREFLIGHT="$HERE/af-ml-campaign-preflight.sh"
 GROK_BIN="${GROK_BIN:-$HOME/.grok/bin/grok}"
+AF_ML_BACKEND="${AF_ML_BACKEND:-grok}"
+CODEX_BIN="${CODEX_BIN:-$(command -v codex 2>/dev/null || echo "$HOME/.nvm/versions/node/v22.23.1/bin/codex")}"
+AF_CODEX_MODEL="${AF_CODEX_MODEL:-gpt-5.6-sol}"
 AF_GROK_MODEL="${AF_GROK_MODEL:-grok-4.6}"
 ONLY=""; CONTINUE=0; DRY=0; MAX_NUDGES=40; POLL=60
 
@@ -82,12 +85,26 @@ echo "$$" > "$LOCK/pid"
 trap 'rm -rf "$LOCK"' EXIT
 
 launch_agent() { # $1=session $2=cwd $3=prompt
-  tmux new-session -d -s "$1" -c "$2" \
-    "unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN; export PATH=\"\$HOME/.grok/bin:\$PATH\"; $GROK_BIN --model $AF_GROK_MODEL --always-approve 2>&1 | tee -a /workspace/$1.log"
-  # grok paints a first-run splash before it accepts input; sending into that loses the message.
+  local ready_pat
+  if [ "$AF_ML_BACKEND" = "codex" ]; then
+    # OPENAI_API_KEY is unset with the rest ON PURPOSE. codex prefers an API key when one is
+    # present, which silently spends usage-based credits while the pane still looks like a normal
+    # subscription session -- the bill is the only place the difference shows up.
+    tmux new-session -d -s "$1" -c "$2" \
+      "unset OPENAI_API_KEY XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN; $CODEX_BIN --model $AF_CODEX_MODEL --dangerously-bypass-approvals-and-sandbox 2>&1 | tee -a /workspace/$1.log"
+    # Verified 2026-08-20: this placeholder is painted once codex accepts input. It is NOT usable
+    # as an idle signal afterwards -- it stays on screen mid-turn (see session_idle in the
+    # keepalive) -- but for FIRST-PAINT it is the right marker.
+    ready_pat="Ask Codex to do anything"
+  else
+    tmux new-session -d -s "$1" -c "$2" \
+      "unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN; export PATH=\"\$HOME/.grok/bin:\$PATH\"; $GROK_BIN --model $AF_GROK_MODEL --always-approve 2>&1 | tee -a /workspace/$1.log"
+    ready_pat="always-approve"
+  fi
+  # both paint a first-run splash before accepting input; sending into that loses the message.
   for _ in $(seq 1 30); do
     sleep 2
-    tmux capture-pane -p -t "$1" 2>/dev/null | grep -q "always-approve" && break
+    tmux capture-pane -p -t "$1" 2>/dev/null | grep -q "$ready_pat" && break
   done
   sleep 3
   tmux send-keys -t "$1" "$3"

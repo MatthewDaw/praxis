@@ -46,6 +46,11 @@ set -uo pipefail
 PRAXIS="${PRAXIS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 SESSION=""; LEDGER=""; SPACE=""; MODEL=""; STAGES=""; MSG_FILE=""; WATCH_DIR=""
 RELAUNCH_FILE=""; CONTEXT_PCT=75; GROK_BIN="${GROK_BIN:-$HOME/.grok/bin/grok}"
+# BACKEND selects the pane vocabulary used by every check below. grok and codex paint DIFFERENT
+# status bars, and a check written for one silently never matches on the other -- which is the
+# dangerous direction: a busy-test that never matches reports a WORKING agent as idle, forever.
+AF_ML_BACKEND="${AF_ML_BACKEND:-grok}"
+CODEX_BIN="${CODEX_BIN:-$(command -v codex 2>/dev/null || echo "$HOME/.nvm/versions/node/v22.23.1/bin/codex")}"
 AF_GROK_MODEL="${AF_GROK_MODEL:-grok-4.6}"; CWD=""
 # STALL_NUDGES is 6, not 3: authoring an arm legitimately spans several turns and several nudges.
 POLL=60; IDLE_POLLS=3; MAX_NUDGES=50; STALL_NUDGES=6
@@ -115,6 +120,16 @@ session_blocked_on_quota() {
   local pane
   pane="$(tmux capture-pane -p -t "$SESSION" 2>/dev/null)" || return 1
   printf '%s' "$pane" | grep -qiE "weekly limit|buy more credits|upgrade tier|usage limit|out of credits|rate limit exceeded|authentication failed|not authenticated" && return 0
+  if [ "$AF_ML_BACKEND" = "codex" ]; then
+    # AUTHORITATIVE and offline: codex can be running, painting a normal status bar, and still be
+    # unable to think because the ChatGPT session lapsed. Verified 2026-08-20: prints
+    # "Logged in using ChatGPT" and exits 0 when healthy.
+    "$CODEX_BIN" login status >/dev/null 2>&1 || return 0
+    # UNVERIFIED against a real codex rate-limit pane -- no exhausted codex session was available
+    # when this was written, so these strings are inferred, not measured. The login check above is
+    # the load-bearing one; treat a miss here as expected until someone confirms the real text.
+    printf '%s' "$pane" | grep -qiE "hit your usage limit|try again later|quota exceeded" && return 0
+  fi
   return 1
 }
 
@@ -129,6 +144,19 @@ session_blocked_on_quota() {
 session_idle() {
   local pane
   pane="$(tmux capture-pane -p -t "$SESSION" 2>/dev/null)" || return 1
+  if [ "$AF_ML_BACKEND" = "codex" ]; then
+    # CODEX INVERTS THE GROK RULE. grok shows its prompt only when idle, so "prompt visible" is a
+    # usable ready signal there. codex paints "Ask Codex to do anything" as a PLACEHOLDER that is
+    # present mid-turn too -- captured 2026-08-20 from hudl-explode-codex with "Working (1m 00s"
+    # on the line directly above it. Porting grok's ready-pattern across would therefore match on
+    # every poll and nudge a working agent continuously.
+    # The turn marker is "esc to interrupt", inside codex's "Working (...)" line.
+    # "background terminal running" is counted BUSY deliberately: codex may sit at an accepting
+    # prompt while a background job runs, but the cost asymmetry from the grok incident applies --
+    # a queued nudge is future noise the agent must reconcile, a missed one is a no-op.
+    printf '%s' "$pane" | grep -qiE "esc to interrupt|background terminal running|Working \(" && return 1
+    return 0
+  fi
   printf '%s' "$pane" | grep -qE "Esc:cancel|still running|queued|Thinking|Responding" && return 1
   return 0
 }
@@ -149,6 +177,13 @@ session_idle() {
 context_used_pct() {
   local pane used total
   pane="$(tmux capture-pane -p -t "$SESSION" 2>/dev/null)" || { echo 0; return; }
+  if [ "$AF_ML_BACKEND" = "codex" ]; then
+    # codex does not print a token readout, so there is NOTHING to scrape and cycling cannot fire.
+    # Returning 0 here is a real capability gap, not a safe default: the silent-degradation failure
+    # this function exists to catch is UNPROTECTED under codex. Said out loud once at startup
+    # rather than left to look like a healthy 0%.
+    echo 0; return
+  fi
   # e.g. "340K / 500K"
   read -r used total <<<"$(printf '%s' "$pane" | grep -oE '[0-9]+K */ *[0-9]+K' | tail -1 | tr -d 'K' | tr '/' ' ')"
   [ -n "${used:-}" ] && [ -n "${total:-}" ] && [ "$total" -gt 0 ] || { echo 0; return; }
@@ -195,6 +230,14 @@ send_submit() {
 nudges=0; idle_run=0; stall=0; last_progress="$(progress_token)"
 say "watching $SESSION; ledger $LEDGER at $(ledger_rows) rows; poll ${POLL}s, idle after $IDLE_POLLS polls; progress = ledger rows OR source writes under ${WATCH_DIR:-<none>}"
 
+say "backend=$AF_ML_BACKEND session=$SESSION"
+if [ "$AF_ML_BACKEND" = "codex" ]; then
+  # Stated plainly because the failure is invisible: under codex there is no token readout to
+  # scrape, so context_used_pct always returns 0 and cycle_session can never fire. A session that
+  # degrades from a full context will keep reading BUSY and this loop will keep nursing it.
+  say "WARNING: context cycling is DISABLED under codex (no token readout to scrape)."
+  say "WARNING: long campaigns need a manual /new or an external turn budget."
+fi
 while :; do
   sleep "$POLL"
 
