@@ -323,9 +323,13 @@ def adjudicate_verdict(
         # So the reset is gated on MATERIALITY. A rejection more than
         # MATERIAL_REJECTION_FLOORS (2 sigma) below baseline is real damage rather than a
         # sampling wobble and counts toward the streak whatever its axis; only a MARGINAL
-        # rejection -- between one and two floors below -- is discarded on an axis change. That
-        # is precisely the B3 case: a real +0.06 win erased by three arms sitting a hair below
-        # it on three unrelated axes.
+        # rejection -- between one and two floors below -- is SKIPPED on an axis change
+        # (it does not append AND it does not wipe prior material items). That is the B3
+        # case: a real +0.06 win erased by three arms sitting a hair below it on three
+        # unrelated axes. 2.0 is conventional (the same 2-sigma the floor itself uses);
+        # it is not derived. A 1.0 threshold would make every rejection "material" and
+        # restore the original ratchet; a large one (say 10) would restore the inert
+        # pure-axis-reset against any realistic degradation.
         #
         # Note the noise floor is the ONLY materiality test being applied here, and it is not
         # duplicated: a degenerate (near-zero) floor is refused at REGISTRATION, and adding a
@@ -342,7 +346,12 @@ def adjudicate_verdict(
         streak = list(model.meta.get(REJECTION_STREAK_FIELD) or [])
         streak_axis = model.meta.get(REJECTION_STREAK_AXIS_FIELD)
         if streak and not material and streak_axis is not None and str(streak_axis) != axis:
-            streak = []
+            # A marginal rejection on a NEW axis is not evidence against the adoption.
+            # It also must not ERASE material evidence already on the streak: wiping here
+            # then appending the marginal turned "skip this one" into "forget the 10x-floor
+            # losses and start over at 1", which is how a bad adoption survives a mixed
+            # interleaving of real damage and wobble. Leave the streak and its axis alone.
+            return VERDICT_REJECTED
         model.meta[REJECTION_STREAK_AXIS_FIELD] = axis
         streak.append(idea_id)
         model.meta[REJECTION_STREAK_FIELD] = streak

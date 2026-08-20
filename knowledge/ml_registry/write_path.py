@@ -179,6 +179,26 @@ def register_model(space: RegistrySpace, meta: dict[str, object], *, model_id: s
     merged = dict(meta)
     for field_name, default in MODEL_DEFAULTS.items():
         merged.setdefault(field_name, default)
+    # The R12 helper refuses a non-positive floor, but this is the path C1 and every
+    # test fixture actually use. A zero floor is the absence of a bar: delta > 0 adopts
+    # on a float wobble and the park band is empty. Guard it here so bypassing
+    # register_model_with_baseline cannot re-open that hole. Already-registered models
+    # are not re-validated until someone writes them again.
+    stored_floor = merged.get("noise_floor")
+    if stored_floor not in (None, ""):
+        try:
+            floor_f = float(stored_floor)
+        except (TypeError, ValueError):
+            floor_f = 0.0
+        if not (floor_f > 0.0):
+            raise RegistryValidationError(
+                f"noise_floor {stored_floor!r} is not positive. A zero floor is not a strict "
+                "bar: adjudication adopts on delta > noise_floor (a 1e-12 wobble) and rejects "
+                "on delta < -noise_floor, so the stagnant band is empty and nothing can park. "
+                "Measure a floor by resampling the eval set (not by repeating a deterministic "
+                "incumbent) and register that positive number.",
+                field="noise_floor",
+            )
     validate_fact(MODEL, merged)
 
     if model_id is None:

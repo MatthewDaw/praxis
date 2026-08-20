@@ -44,6 +44,15 @@ def _trial_meta(model_id: str, idea_id: str, *, commit: str = "deadbeef") -> dic
     return {"model_id": model_id, "idea_id": idea_id, "commit": commit, "status": "running"}
 
 
+def test_register_model_refuses_a_zero_noise_floor():
+    """register_model_with_baseline already refused this; the plain write path did not,
+    which is the path every test fixture and C1 actually use."""
+    space = RegistrySpace()
+    with pytest.raises(RegistryValidationError) as excinfo:
+        register_model(space, dict(MODEL_META, noise_floor=0.0))
+    assert excinfo.value.field == "noise_floor"
+
+
 def test_register_model_idea_trial_readback_returns_all_three_and_trial_derives_from_idea():
     space = RegistrySpace()
     model_id = register_model(space, dict(MODEL_META))

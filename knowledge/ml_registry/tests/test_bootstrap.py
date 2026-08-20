@@ -267,6 +267,16 @@ def test_bootstrap_carries_the_declared_win_condition_onto_the_meta(tmp_path: Pa
     assert report.model_meta["win_condition"] == {"metric_at_least": 0.72}
 
 
+def test_bootstrap_is_not_ready_when_baseline_rows_are_identical(tmp_path: Path) -> None:
+    rows = [(f"sha:baseline_{i}", 0.42, 3.0, f"baseline_{i}") for i in range(4)]
+    report = bootstrap(
+        ledger=_ledger(tmp_path, rows), backlog=[], model_id="m",
+        metric="f1", direction="maximize", diff_size_limit=8,
+        win_condition={"metric_at_least": 0.7})
+    assert not report.ready and report.model_meta is None
+    assert "noise_floor_positive" in report.to_dict()["blocking"]
+
+
 def test_a_supplied_floor_carries_its_measurement_method(tmp_path: Path) -> None:
     """floor.register_model_with_baseline accepts a supplied floor that disagrees with its
     own recomputation only when the method is declared, so the method must travel with it."""

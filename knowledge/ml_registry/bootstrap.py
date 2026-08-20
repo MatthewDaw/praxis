@@ -248,6 +248,17 @@ def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, met
         return BootstrapReport(ready=False, preconditions=checks)
 
     floor = measure_noise_floor(baselines, sigmas=sigmas)
+    effective_floor = (
+        noise_floor_override if noise_floor_override is not None else floor["noise_floor"]
+    )
+    if float(effective_floor) <= 0.0:
+        checks.append(Precondition(
+            "noise_floor_positive", False,
+            f"noise_floor {effective_floor!r} is not positive (measured "
+            f"{floor['noise_floor']!r} from identical baseline rows). A zero floor is the "
+            "absence of a bar -- pass --noise-floor with a bootstrap resample of the eval "
+            "set and --noise-floor-method naming how it was measured."))
+        return BootstrapReport(ready=False, preconditions=checks, model_meta=None)
     if noise_floor_override is not None:
         floor["noise_floor_measured_here"] = floor["noise_floor"]
         floor["noise_floor"] = noise_floor_override

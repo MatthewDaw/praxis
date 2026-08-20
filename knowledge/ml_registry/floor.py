@@ -9,9 +9,10 @@ read off the external results ledger, and a registration whose stored values dis
 with that recomputation is refused naming the disagreeing field. The one exception is a
 floor that declares HOW it was measured in :data:`NOISE_FLOOR_METHOD_FIELD`: a bootstrap
 resampling of the eval set measures a different thing than repeats of the run do, so it is
-allowed to disagree and is stored as measured, stamped with its method. An UNDECLARED
-disagreement is still refused -- that refusal exists to catch an unexplained number, not
-to force one method.
+allowed to disagree and is stored as measured, stamped with its method. The method field
+is therefore a GATE (does this disagreement get in) as well as provenance (how was it
+measured). An UNDECLARED disagreement is still refused -- that refusal exists to catch an
+unexplained number, not to force one method. The method is not consulted at adjudication.
 
 A registered floor must be POSITIVE. A deterministic incumbent (classical CV, no random
 seed) produces identical baseline rows, ``statistics.stdev`` returns exactly 0.0, and a

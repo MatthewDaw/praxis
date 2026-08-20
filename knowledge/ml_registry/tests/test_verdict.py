@@ -62,6 +62,7 @@ ALL_COMMITS = frozenset(
         "win1", "win2", "exact-improving", "exact-worsening",
         "ax1", "ax2", "ax3", "sameax1", "sameax2", "sameax3",
         "bad1", "bad2", "bad3", "bad4", "bad5", "bad6",
+        "mix1", "mix2", "mix3", "mix4",
     }
 )
 
@@ -469,6 +470,39 @@ def test_ratchet_still_fires_on_three_distinct_ideas_on_the_SAME_axis():
     assert space.get(winner_id).meta["status"] == STATUS_UNTRIED
     assert model.meta[BASELINE_FIELD] == "r1"
     assert model.meta[RATCHET_COUNT_FIELD] == 0
+
+
+def test_a_marginal_cross_axis_rejection_does_not_wipe_material_streak_items():
+    """The hybrid's first version RESET the whole streak on a marginal axis change, then
+    appended the marginal -- so one wobble on a new axis erased two 10x-floor losses and
+    a bad adoption survived a mixed interleaving. Skipping the marginal (leave the streak)
+    is the behaviour the comment claimed; this pins it.
+    """
+    space, model_id = _space_with_model()
+
+    winner_id = register_idea(space, _idea_meta(model_id, "the bad adoption", axis="data"))
+    winner_trial = _trial(space, model_id, winner_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
+    assert adjudicate_verdict(
+        space, winner_trial, _rows(adopt1=(1.0 - NOISE_FLOOR - 0.01, BASELINE_THROUGHPUT, 100))
+    ) == VERDICT_ADOPTED
+
+    material_value = 1.0 + 10 * NOISE_FLOOR
+    marginal_value = (1.0 - NOISE_FLOOR - 0.01) + 1.5 * NOISE_FLOOR
+    sequence = [
+        ("mix1", "data", material_value),
+        ("mix2", "architecture", marginal_value),
+        ("mix3", "optimization", material_value),
+        ("mix4", "data", material_value),
+    ]
+    for commit, axis, value in sequence:
+        loser_id = register_idea(space, _idea_meta(model_id, f"mix-{commit}", axis=axis))
+        trial_id = _trial(space, model_id, loser_id, commit, throughput=BASELINE_THROUGHPUT, diff_lines=100)
+        ledger = _rows(**{commit: (value, BASELINE_THROUGHPUT, 100),
+                          "adopt1": (1.0 - NOISE_FLOOR - 0.01, BASELINE_THROUGHPUT, 100)})
+        assert adjudicate_verdict(space, trial_id, ledger) == VERDICT_REJECTED
+
+    assert space.get(winner_id).meta["status"] == STATUS_UNTRIED
+    assert space.get(model_id).meta[BASELINE_FIELD] == "r1"
 
 
 def test_ratchet_does_not_fire_on_the_same_idea_rejected_repeatedly():
