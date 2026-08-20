@@ -8,8 +8,12 @@ from threading import Barrier
 
 import pytest
 
-from knowledge.ml_registry.contracts import CampaignArtifact
-from knowledge.ml_registry.storage.artifact_store import ArtifactStore, ArtifactStoreError
+from knowledge.ml_registry.contracts import CampaignArtifact, PromotionRecord
+from knowledge.ml_registry.storage.artifact_store import (
+    ArtifactStore,
+    ArtifactStoreError,
+    FinalizationCommit,
+)
 
 
 def _artifact(source: Path, artifact_id: str = "fit-1", **changes: object) -> CampaignArtifact:
@@ -28,6 +32,31 @@ def _artifact(source: Path, artifact_id: str = "fit-1", **changes: object) -> Ca
     }
     values.update(changes)
     return CampaignArtifact.from_mapping(values)
+
+
+def _promotion(**changes: object) -> PromotionRecord:
+    values: dict[str, object] = {
+        "schema_version": 1,
+        "promotion_record_id": "promotion-1",
+        "campaign_id": "campaign-1",
+        "model_id": "model-1",
+        "adopted_trial_id": "trial-1",
+        "lineage_id": "lineage-1",
+        "convergence_artifact_id": "fit-1",
+        "dataset_manifest_hash": "dataset",
+        "split_manifest_hash": "split",
+        "preprocessing_hash": "preprocessing",
+        "code_commit": "commit",
+        "configuration_hash": "configuration",
+        "metric_name": "f1",
+        "metric_value": 0.9,
+        "thresholds_hash": "thresholds",
+        "upstream_artifact_ids": [],
+        "compatibility_test": "fixture:load",
+        "compatibility_passed": True,
+    }
+    values.update(changes)
+    return PromotionRecord.from_mapping(values)
 
 
 def test_ingest_copies_content_addressed_blob_and_replay_is_idempotent(tmp_path: Path) -> None:
@@ -166,6 +195,35 @@ def test_concurrent_distinct_ingests_form_one_contiguous_hash_chain(tmp_path: Pa
         current.previous_event_sha256 == previous.event_sha256
         for previous, current in zip(snapshot.events, snapshot.events[1:])
     )
+
+
+def test_finalization_is_one_idempotent_event_and_campaign_promotion_is_unique(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "model.bin"
+    source.write_bytes(b"weights")
+    store = ArtifactStore(tmp_path / "store")
+    store.ingest_artifact(source, _artifact(source))
+    commit = FinalizationCommit(
+        promotion=_promotion(), result={"status": "complete"}, verdict={"status": "adopted"},
+        baseline={"value": 0.9}, readiness={"ready": True},
+    )
+
+    assert store._commit_finalization(commit) == _promotion()
+    assert store._commit_finalization(commit) == _promotion()
+    snapshot = store.replay()
+    assert [event.event_type for event in snapshot.events] == [
+        "artifact_ingested", "campaign_finalized",
+    ]
+    assert store.promotion_for_campaign("campaign-1") == _promotion()
+    assert store.promotion_for_model("model-1") == _promotion()
+
+    changed = FinalizationCommit(
+        promotion=_promotion(promotion_record_id="promotion-2"), result={}, verdict={},
+        baseline={}, readiness={},
+    )
+    with pytest.raises(ArtifactStoreError, match="already has promotion"):
+        store._commit_finalization(changed)
 
 
 def test_nonfinite_event_time_is_refused_before_history_is_written(tmp_path: Path) -> None:

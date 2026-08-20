@@ -5,6 +5,10 @@ from .artifact_store import (
     ArtifactSnapshot,
     ArtifactStore,
     ArtifactStoreError,
+    FinalizationCommit,
 )
 
-__all__ = ["ArtifactEvent", "ArtifactSnapshot", "ArtifactStore", "ArtifactStoreError"]
+__all__ = [
+    "ArtifactEvent", "ArtifactSnapshot", "ArtifactStore", "ArtifactStoreError",
+    "FinalizationCommit",
+]

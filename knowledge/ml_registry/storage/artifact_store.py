@@ -18,8 +18,9 @@ from types import MappingProxyType
 from typing import Any, Callable, Mapping
 import uuid
 
-from knowledge.ml_registry.contracts.artifact_manifest import CampaignArtifact
 from knowledge.ml_registry.contracts._validation import ContractError
+from knowledge.ml_registry.contracts.artifact_manifest import CampaignArtifact
+from knowledge.ml_registry.contracts.promotion import PromotionRecord
 from knowledge.ml_registry.file_lock import exclusive_file_lock
 
 
@@ -46,6 +47,20 @@ class ArtifactEvent:
 class ArtifactSnapshot:
     events: tuple[ArtifactEvent, ...]
     artifacts: Mapping[str, CampaignArtifact]
+    promotions: Mapping[str, PromotionRecord]
+    promotion_by_campaign: Mapping[str, str]
+    finalizations: Mapping[str, Mapping[str, Any]]
+
+
+@dataclass(frozen=True)
+class FinalizationCommit:
+    """The complete canonical state transition emitted by a successful finalizer."""
+
+    promotion: PromotionRecord
+    result: Mapping[str, Any]
+    verdict: Mapping[str, Any]
+    baseline: Mapping[str, Any]
+    readiness: Mapping[str, Any]
 
 
 def _canonical_json(value: object) -> bytes:
@@ -138,6 +153,58 @@ class ArtifactStore:
         """Validate and fold the complete event hash chain."""
         with exclusive_file_lock(self._lock_target):
             return self._replay_unlocked()
+
+    def promotion(self, promotion_record_id: str) -> PromotionRecord:
+        snapshot = self.replay()
+        try:
+            return snapshot.promotions[promotion_record_id]
+        except KeyError as exc:
+            raise ArtifactStoreError(f"unknown promotion {promotion_record_id!r}") from exc
+
+    def promotion_for_campaign(self, campaign_id: str) -> PromotionRecord | None:
+        snapshot = self.replay()
+        promotion_id = snapshot.promotion_by_campaign.get(campaign_id)
+        return None if promotion_id is None else snapshot.promotions[promotion_id]
+
+    def promotion_for_model(self, model_id: str) -> PromotionRecord | None:
+        matches = [item for item in self.replay().promotions.values() if item.model_id == model_id]
+        if len(matches) > 1:
+            raise ArtifactStoreError(f"model {model_id!r} has multiple canonical promotions")
+        return matches[0] if matches else None
+
+    def _commit_finalization(self, commit: FinalizationCommit) -> PromotionRecord:
+        """Atomically append one complete finalization transition.
+
+        ``services.finalize.Finalizer`` is the sole production caller. Keeping the transition in
+        one event prevents result, verdict, baseline, artifact and readiness projections from
+        observing different halves of a finalization.
+        """
+        with exclusive_file_lock(self._lock_target):
+            snapshot = self._replay_unlocked()
+            promotion = commit.promotion
+            artifact = snapshot.artifacts.get(promotion.convergence_artifact_id)
+            if artifact is None:
+                raise ArtifactStoreError("promotion references an unknown convergence artifact")
+            existing = snapshot.promotions.get(promotion.promotion_record_id)
+            previous_id = snapshot.promotion_by_campaign.get(promotion.campaign_id)
+            payload = self._finalization_payload(commit, artifact)
+            if existing is not None:
+                event_payload = snapshot.finalizations[promotion.promotion_record_id]
+                if existing != promotion or dict(event_payload) != payload:
+                    raise ArtifactStoreError(
+                        f"promotion id {promotion.promotion_record_id!r} is immutable and drifted"
+                    )
+                self._rebuild_projections_unlocked(snapshot)
+                return existing
+            if previous_id is not None:
+                raise ArtifactStoreError(
+                    f"campaign {promotion.campaign_id!r} already has promotion {previous_id!r}"
+                )
+            event = self._new_event(snapshot, "campaign_finalized", payload)
+            self._write_event(event)
+            updated = self._replay_unlocked()
+            self._rebuild_projections_unlocked(updated)
+            return promotion
 
     def artifact(self, artifact_id: str) -> CampaignArtifact:
         snapshot = self.replay()
@@ -241,6 +308,9 @@ class ArtifactStore:
         event_paths = sorted(self.events_path.glob("*.json")) if self.events_path.exists() else []
         events: list[ArtifactEvent] = []
         artifacts: dict[str, CampaignArtifact] = {}
+        promotions: dict[str, PromotionRecord] = {}
+        promotion_by_campaign: dict[str, str] = {}
+        finalizations: dict[str, Mapping[str, Any]] = {}
         previous: str | None = None
         for expected_sequence, path in enumerate(event_paths, 1):
             try:
@@ -257,24 +327,57 @@ class ArtifactStore:
                 raise ArtifactStoreError(f"artifact event hash chain is broken at {path}")
             if _event_digest(document) != event.event_sha256:
                 raise ArtifactStoreError(f"artifact event hash does not verify at {path}")
-            if event.event_type != "artifact_ingested":
+            if event.event_type == "artifact_ingested":
+                raw_artifact = event.payload.get("artifact")
+                if not isinstance(raw_artifact, Mapping):
+                    raise ArtifactStoreError("artifact_ingested event has no artifact object")
+                try:
+                    artifact = CampaignArtifact.from_mapping(raw_artifact)
+                except ContractError as exc:
+                    raise ArtifactStoreError(f"invalid artifact contract in event {path}: {exc}") from exc
+                existing = artifacts.get(artifact.artifact_id)
+                if existing is not None and existing != artifact:
+                    raise ArtifactStoreError(
+                        f"artifact id {artifact.artifact_id!r} has conflicting immutable events"
+                    )
+                artifacts[artifact.artifact_id] = artifact
+            elif event.event_type == "campaign_finalized":
+                raw_promotion = event.payload.get("promotion")
+                if not isinstance(raw_promotion, Mapping):
+                    raise ArtifactStoreError("campaign_finalized event has no promotion object")
+                try:
+                    promotion = PromotionRecord.from_mapping(raw_promotion)
+                except ContractError as exc:
+                    raise ArtifactStoreError(f"invalid promotion contract in event {path}: {exc}") from exc
+                if promotion.convergence_artifact_id not in artifacts:
+                    raise ArtifactStoreError("finalization precedes its convergence artifact")
+                if promotion.promotion_record_id in promotions:
+                    raise ArtifactStoreError("duplicate promotion event")
+                if promotion.campaign_id in promotion_by_campaign:
+                    raise ArtifactStoreError("campaign has multiple promotion events")
+                for field in ("result", "verdict", "baseline", "readiness"):
+                    if not isinstance(event.payload.get(field), Mapping):
+                        raise ArtifactStoreError(f"finalization {field} must be an object")
+                raw_artifact = event.payload.get("artifact")
+                if not isinstance(raw_artifact, Mapping):
+                    raise ArtifactStoreError("finalization artifact must be an object")
+                try:
+                    finalized_artifact = CampaignArtifact.from_mapping(raw_artifact)
+                except ContractError as exc:
+                    raise ArtifactStoreError(f"invalid finalization artifact in event {path}: {exc}") from exc
+                if artifacts[promotion.convergence_artifact_id] != finalized_artifact:
+                    raise ArtifactStoreError("finalization artifact differs from immutable artifact history")
+                promotions[promotion.promotion_record_id] = promotion
+                promotion_by_campaign[promotion.campaign_id] = promotion.promotion_record_id
+                finalizations[promotion.promotion_record_id] = event.payload
+            else:
                 raise ArtifactStoreError(f"unsupported artifact event type {event.event_type!r}")
-            raw_artifact = event.payload.get("artifact")
-            if not isinstance(raw_artifact, Mapping):
-                raise ArtifactStoreError("artifact_ingested event has no artifact object")
-            try:
-                artifact = CampaignArtifact.from_mapping(raw_artifact)
-            except ContractError as exc:
-                raise ArtifactStoreError(f"invalid artifact contract in event {path}: {exc}") from exc
-            existing = artifacts.get(artifact.artifact_id)
-            if existing is not None and existing != artifact:
-                raise ArtifactStoreError(
-                    f"artifact id {artifact.artifact_id!r} has conflicting immutable events"
-                )
-            artifacts[artifact.artifact_id] = artifact
             events.append(event)
             previous = event.event_sha256
-        return ArtifactSnapshot(tuple(events), MappingProxyType(artifacts))
+        return ArtifactSnapshot(
+            tuple(events), MappingProxyType(artifacts), MappingProxyType(promotions),
+            MappingProxyType(promotion_by_campaign), MappingProxyType(finalizations),
+        )
 
     def _rebuild_projections_unlocked(self, snapshot: ArtifactSnapshot) -> None:
         for name, builder in self._projection_builders.items():
@@ -285,6 +388,19 @@ class ArtifactStore:
                 self.projections_path / f"{name}.json",
                 json.dumps(document, indent=2, sort_keys=True).encode("utf-8") + b"\n",
             )
+
+    @staticmethod
+    def _finalization_payload(
+        commit: FinalizationCommit, artifact: CampaignArtifact,
+    ) -> dict[str, Any]:
+        return {
+            "promotion": commit.promotion.to_mapping(),
+            "artifact": artifact.to_mapping(),
+            "result": dict(commit.result),
+            "verdict": dict(commit.verdict),
+            "baseline": dict(commit.baseline),
+            "readiness": dict(commit.readiness),
+        }
 
     @classmethod
     def _event_from_document(cls, document: Mapping[str, Any]) -> ArtifactEvent:
