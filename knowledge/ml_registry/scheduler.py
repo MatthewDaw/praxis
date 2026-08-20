@@ -31,11 +31,19 @@ class ResourceProfile:
     wall_time_minutes: int = 60
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any] | None) -> "ResourceProfile":
+    def from_mapping(
+        cls,
+        value: Mapping[str, Any] | None,
+        *,
+        allow_zero_cpus: bool = False,
+    ) -> "ResourceProfile":
+        """Parse resources, allowing an empty CPU pool only for capacity snapshots."""
         profile = cls(**dict(value or {}))
         numeric = (profile.cpus, profile.gpus, profile.gpu_vram_gb, profile.ram_gb,
                    profile.disk_gb, profile.wall_time_minutes)
-        if any(item < 0 for item in numeric) or profile.cpus == 0 or profile.wall_time_minutes == 0:
+        if (any(item < 0 for item in numeric)
+                or (profile.cpus == 0 and not allow_zero_cpus)
+                or profile.wall_time_minutes == 0):
             raise PortfolioError("resource quantities must be non-negative; cpus and wall_time_minutes must be positive")
         if profile.gpus == 0 and profile.gpu_vram_gb:
             raise PortfolioError("gpu_vram_gb requires at least one GPU")
@@ -135,7 +143,8 @@ def schedule(
     """
     if max_concurrency < 1:
         raise PortfolioError("max_concurrency must be positive")
-    capacity = capacity if isinstance(capacity, ResourceProfile) else ResourceProfile.from_mapping(capacity)
+    capacity = (capacity if isinstance(capacity, ResourceProfile)
+                else ResourceProfile.from_mapping(capacity, allow_zero_cpus=True))
     by_id: dict[str, Mapping[str, Any]] = {}
     for campaign in campaigns:
         campaign_id = str(campaign.get("id", "")).strip()

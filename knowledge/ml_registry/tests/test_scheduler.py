@@ -49,6 +49,23 @@ def test_running_jobs_consume_capacity_and_concurrency():
     assert result.blocked["next"] == "concurrency limit"
 
 
+def test_job_may_exactly_consume_cpu_and_gpu_capacity():
+    result = schedule([campaign("exact", resources=GPU)], {}, GPU, max_concurrency=1)
+    assert [job.campaign_id for job in result.jobs] == ["exact"]
+    assert result.available.cpus == 0
+    assert result.available.gpus == 0
+    assert result.available.gpu_vram_gb == 0
+    assert result.available.ram_gb == 0
+    assert result.available.disk_gb == 0
+
+
+def test_empty_capacity_is_valid_but_cannot_admit_a_job():
+    empty = {"cpus": 0, "gpus": 0, "ram_gb": 0, "disk_gb": 0}
+    result = schedule([campaign("waiting")], {}, empty, max_concurrency=1)
+    assert result.jobs == ()
+    assert result.blocked["waiting"] == "insufficient resources"
+
+
 def test_gpu_vram_and_cost_are_admission_gates():
     campaigns = [campaign("gpu", resources=GPU, estimated_cost=4), campaign("cpu", estimated_cost=2)]
     capacity = {"cpus": 16, "gpus": 1, "gpu_vram_gb": 16, "ram_gb": 64, "disk_gb": 200}
