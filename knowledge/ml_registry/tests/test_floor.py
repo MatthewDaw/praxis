@@ -444,3 +444,69 @@ def test_stored_two_sigma_floor_from_bootstrap_agrees():
     meta = dict(MODEL_META, sigmas=2.0, noise_floor=round(2 * sd, 6))
     model_id = register_model_with_baseline(space, meta, LEDGER)
     assert space.get(model_id).meta[NOISE_FLOOR_FIELD] == pytest.approx(round(2 * sd, 6))
+
+
+# --- adjudicate_trial must compare a METRIC against a METRIC baseline ------------------
+# `baseline_throughput` carries two incompatible meanings (mean of the baseline metric
+# values when registration is given no throughputs, slowest rows/sec when it is), and
+# adjudicate_trial read it as the metric bar either way. With bootstrap's own model_meta
+# (throughput 3.5 rows/sec) an F1 of 0.99 was adjudicated against 3.5 and "failed".
+
+_TPUT_META: dict[str, object] = {
+    "metric": "f1",
+    "direction": "maximize",
+    "win_condition": "beats baseline by noise_floor",
+    "baseline": "b-metric",
+    "diff_size_limit": 800,
+    "baseline_runs": ["t1", "t2", "t3", "t4"],
+}
+_TPUT_VALUES = {"t1": 0.90, "t2": 0.92, "t3": 0.88, "t4": 0.94, "b-metric": 0.90, "c-better": 0.99}
+_TPUT_THROUGHPUTS = {c: 3.5 for c in ("t1", "t2", "t3", "t4")}
+
+
+def test_adjudication_compares_the_metric_against_the_metric_baseline_not_a_throughput():
+    """A model registered with real rows/sec throughputs stores 3.5 in baseline_throughput.
+    An F1 of 0.99 beats its 0.90 metric baseline by far more than the floor; comparing it
+    against 3.5 rows/sec instead made every trial on such a model fail."""
+    space = RegistrySpace()
+    model_id = register_model_with_baseline(
+        space, dict(_TPUT_META), _TPUT_VALUES, ledger_throughputs=_TPUT_THROUGHPUTS
+    )
+    assert space.get(model_id).meta[BASELINE_THROUGHPUT_FIELD] == pytest.approx(3.5)
+    idea_id = register_idea(space, _idea_meta(model_id))
+    trial_id = _trial(space, model_id, idea_id, "c-better", ledger=set(_TPUT_VALUES))
+
+    assert adjudicate_trial(space, trial_id, _TPUT_VALUES) == "succeeded"
+
+
+def test_adjudication_refuses_a_rows_per_sec_baseline_it_cannot_replace_with_a_metric():
+    """When baseline_throughput is rows/sec and the model's baseline commit has no scored
+    ledger row, there is no metric bar to adjudicate against -- refuse, never fall back to
+    comparing the metric with a throughput."""
+    space = RegistrySpace()
+    model_id = register_model_with_baseline(
+        space, dict(_TPUT_META), _TPUT_VALUES, ledger_throughputs=_TPUT_THROUGHPUTS
+    )
+    idea_id = register_idea(space, _idea_meta(model_id))
+    trial_id = _trial(space, model_id, idea_id, "c-better", ledger=set(_TPUT_VALUES))
+    without_baseline = {k: v for k, v in _TPUT_VALUES.items() if k != "b-metric"}
+
+    with pytest.raises(RegistryValidationError) as excinfo:
+        adjudicate_trial(space, trial_id, without_baseline)
+    assert excinfo.value.field == BASELINE_THROUGHPUT_FIELD
+    assert space.get(trial_id).meta["status"] == "running"
+
+
+# --- a duplicate join key must be refused, never silently last-write-win ---------------
+
+
+def test_load_ledger_values_refuses_duplicate_join_keys_naming_them(tmp_path):
+    """Two rows for one key used to leave only the LAST value, silently discarding the
+    other run's measurement -- the exact collapse bootstrap's join_keys_unique
+    precondition exists to catch, but which nothing re-checked at adjudication time."""
+    path = tmp_path / "results.tsv"
+    path.write_text("commit\tval_bpb\nabc\t0.70\nabc\t0.95\nother\t1.0\n")
+    with pytest.raises(RegistryValidationError) as excinfo:
+        load_ledger_values(path)
+    assert excinfo.value.field == "commit"
+    assert "abc" in str(excinfo.value)

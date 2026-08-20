@@ -68,6 +68,20 @@ def _claim_is_live(idea: Fact, *, now: float) -> bool:
     )
 
 
+def claim_is_stale(idea: Fact, *, now: float | None = None) -> bool:
+    """True iff this idea IS claimed and its lease has EXPIRED -- the registry's only
+    evidence that the worker holding it died rather than being slow.
+
+    A live-leased claim (heartbeat within ttl) is a worker still checking in every
+    :data:`DEFAULT_IDEA_CLAIM_LEASE_TTL_S` seconds at worst; an unclaimed idea says nothing
+    about any worker at all. Both are False here, so a caller acting on staleness can never
+    act on a run that may still be alive. :func:`untried_backlog` already draws the same
+    line when it returns a stale-claimed idea to the backlog.
+    """
+    now = time.time() if now is None else now
+    return _status(idea) == STATUS_CLAIMED and not _claim_is_live(idea, now=now)
+
+
 def claim_idea(
     space: RegistrySpace, idea_id: str, owner: str, *,
     ttl: int = DEFAULT_IDEA_CLAIM_LEASE_TTL_S, now: float | None = None,

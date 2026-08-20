@@ -122,6 +122,10 @@ def load_ledger_rows(path: Path) -> dict[str, LedgerRow]:
     into dead code. The fix for a ledger that lacks them is to record them in the loop that
     writes it, not here.
 
+    A duplicated commit key is REFUSED naming it rather than last-write-winning -- see
+    :func:`~knowledge.ml_registry.floor.load_ledger_values`, which refuses the same shape
+    for the same file.
+
     A row whose metric/throughput/diff_lines cell is empty, short, or non-numeric is an
     UNSCORED run (a crash or an abort) and is skipped individually -- the same tolerance
     :func:`~knowledge.ml_registry.floor.load_ledger_values` has for the same file. The commit
@@ -165,11 +169,13 @@ def load_ledger_rows(path: Path) -> dict[str, LedgerRow]:
                      status_at if status_at is not None else 0)
 
         rows: dict[str, LedgerRow] = {}
+        duplicates: list[str] = []
         for row in reader:
             if len(row) <= widest or not row[commit_at].strip():
                 continue
+            key = row[commit_at].strip()
             try:
-                rows[row[commit_at].strip()] = LedgerRow(
+                parsed = LedgerRow(
                     value=float(row[metric_at]),
                     throughput=float(row[throughput_at]),
                     diff_lines=float(row[diff_lines_at]),
@@ -177,6 +183,18 @@ def load_ledger_rows(path: Path) -> dict[str, LedgerRow]:
                 )
             except ValueError:
                 continue  # unscored run (crashed/aborted): nothing to adjudicate against
+            if key in rows:
+                duplicates.append(key)
+            rows[key] = parsed
+        if duplicates:
+            raise RegistryValidationError(
+                f"external ledger {str(path)!r} carries more than one scored row for "
+                f"{sorted(set(duplicates))!r}; a verdict joins a trial to its row BY THIS KEY, so a "
+                "repeat silently adjudicates whichever run was written LAST. Write "
+                "'{sha}:{arm_tag}' so a campaign that varies arms by CONFIG still gets one key "
+                "per run.",
+                field=LEDGER_COMMIT_COLUMN,
+            )
         return rows
 
 

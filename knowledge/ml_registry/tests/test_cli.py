@@ -515,3 +515,22 @@ def test_register_trial_copies_ledger_measurements_so_resolve_verdict_needs_no_s
     assert _cli("resolve-verdict", "--space-file", space_file, "--trial-id", trial_id,
                 "--ledger", ledger, "--json") == 0
     assert json.loads(_out(capsys))["verdict"] == "adopted"
+
+
+def test_load_ledger_rows_refuses_duplicate_join_keys_naming_them(tmp_path):
+    """Same collapse as knowledge.ml_registry.floor.load_ledger_values: a repeated
+    ``{sha}:{arm_tag}`` key silently kept only the last row, so a verdict could be decided
+    on a different run than the one whose trial was registered."""
+    from knowledge.ml_registry.cli import load_ledger_rows
+    from knowledge.ml_registry.schema import RegistryValidationError
+
+    path = tmp_path / "results.tsv"
+    path.write_text(
+        "commit\tmetric_value\tthroughput\tdiff_lines\n"
+        "abc\t0.70\t3.5\t10\n"
+        "abc\t0.95\t3.5\t10\n"
+    )
+    with pytest.raises(RegistryValidationError) as excinfo:
+        load_ledger_rows(path)
+    assert excinfo.value.field == "commit"
+    assert "abc" in str(excinfo.value)

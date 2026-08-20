@@ -6,7 +6,11 @@ model's ``noise_floor`` and ``baseline_throughput`` are not caller-asserted numb
 are RECOMPUTED here from 4 baseline runs named by commit in ``meta["baseline_runs"]``,
 read off the external results ledger, and a registration whose stored values disagree
 with that recomputation is refused naming the disagreeing field. ``noise_floor`` is the
-sample standard deviation of those 4 runs; ``baseline_throughput`` is their mean.
+sample standard deviation of those 4 runs; ``baseline_throughput`` is their mean, or --
+when the caller passes ``ledger_throughputs`` -- the slowest of their rows/sec. Those two
+meanings are NOT interchangeable, so registration stamps which one is stored in
+:data:`BASELINE_THROUGHPUT_UNITS_FIELD` and :func:`adjudicate_trial` refuses to read a
+rows/sec value as a metric bar.
 
 Once a floor is registered, a candidate idea is adjudicated on a SINGLE trial --
 :func:`adjudicate_trial` never asks for a confirmation run, however close the margin. Its
@@ -43,6 +47,19 @@ from knowledge.ml_registry.write_path import Fact, RegistrySpace, mutate_model, 
 BASELINE_RUNS_FIELD = "baseline_runs"
 NOISE_FLOOR_FIELD = "noise_floor"
 BASELINE_THROUGHPUT_FIELD = "baseline_throughput"
+# WHICH of the two things `baseline_throughput` holds. The field collapsed two
+# incompatible meanings -- the mean of the 4 baseline METRIC values when registration is
+# given no throughputs, the slowest of their rows/sec when it is -- and nothing recorded
+# which. adjudicate_trial read it as a metric bar either way, so a model registered from
+# bootstrap's model_meta.json (throughput 3.5 rows/sec) adjudicated an F1 of 0.99 against
+# 3.5 and failed it. Registration now STAMPS the meaning, so a later reader can tell the
+# two apart instead of guessing. A model registered before this field existed carries no
+# stamp; it is read as the legacy metric mean, which is what it in fact was.
+BASELINE_THROUGHPUT_UNITS_FIELD = "baseline_throughput_units"
+#: rows/sec measured from the ledger's own throughput column -- NOT comparable to a metric.
+THROUGHPUT_UNITS_ROWS_PER_SEC = "rows_per_sec"
+#: the mean of the 4 baseline runs' metric values -- a legitimate metric bar.
+THROUGHPUT_UNITS_METRIC_MEAN = "metric_mean"
 RATCHET_COUNT_FIELD = "ratchet_count"
 # R10: the distinct idea ids behind the model's current consecutive-rejection streak --
 # reset alongside RATCHET_COUNT_FIELD wherever the ratchet itself resets (here, on a
@@ -73,6 +90,13 @@ def load_ledger_values(path: Path) -> dict[str, float]:
     (``results.tsv``), the same file :func:`knowledge.ml_registry.write_path.load_ledger_commits`
     reads and must tolerate identically.
 
+    A key that appears TWICE is REFUSED naming it, never last-write-wins: the mapping is
+    the join a verdict is decided through, so a silent overwrite decides that verdict on a
+    different run than the one whose trial was registered (observed: rows ``abc 0.70``
+    then ``abc 0.95`` left only 0.95, the 0.70 run gone with no warning). Only SCORED rows
+    count as duplicates -- a crashed run and its re-run share a key legitimately, and the
+    crashed one contributes no value to collide.
+
     That ledger carries a ``status`` column, so a crashed or aborted run is a real row
     with an empty (or short, or non-numeric) metric cell. Such a row is UNSCORED, not
     malformed input to choke on: it is skipped individually, and the commit is simply
@@ -87,15 +111,32 @@ def load_ledger_values(path: Path) -> dict[str, float]:
         except StopIteration:
             return {}
         values: dict[str, float] = {}
+        duplicates: list[str] = []
         for row in reader:
             if not row or not row[0].strip():
                 continue
             if len(row) < 2:
                 continue
+            key = row[0].strip()
             try:
-                values[row[0].strip()] = float(row[1])
+                value = float(row[1])
             except ValueError:
                 continue  # unscored run (crashed/aborted): no metric to join against
+            if key in values:
+                duplicates.append(key)
+            values[key] = value
+        if duplicates:
+            raise RegistryValidationError(
+                f"external ledger {str(path)!r} carries more than one scored row for "
+                f"{sorted(set(duplicates))!r}; the registry joins a trial to its row BY THIS KEY, so "
+                "a repeat silently decides the verdict on whichever run was written LAST and "
+                "discards the other measurement entirely. Write '{sha}:{arm_tag}' so a campaign "
+                "that varies arms by CONFIG still gets one key per run "
+                "(bootstrap.check_ledger's join_keys_unique precondition checks the same thing at "
+                "bootstrap time; this checks it again at every adjudication, because rows are "
+                "appended long after bootstrap).",
+                field="commit",
+            )
         return values
 
 
@@ -157,8 +198,10 @@ def register_model_with_baseline(
                 )
             tputs.append(ledger_throughputs[commit])
         throughput = min(tputs)
+        throughput_units = THROUGHPUT_UNITS_ROWS_PER_SEC
     else:
         throughput = statistics.mean(values)
+        throughput_units = THROUGHPUT_UNITS_METRIC_MEAN
 
     stored_floor = meta.get(NOISE_FLOOR_FIELD)
     if stored_floor not in (None, ""):
@@ -185,6 +228,7 @@ def register_model_with_baseline(
     merged = dict(meta)
     merged[NOISE_FLOOR_FIELD] = floor
     merged[BASELINE_THROUGHPUT_FIELD] = throughput
+    merged[BASELINE_THROUGHPUT_UNITS_FIELD] = throughput_units
     merged.setdefault(RATCHET_COUNT_FIELD, 0)
     merged[CAMPAIGN_STATUS_FIELD] = ACTIVE
     return register_model(space, merged, model_id=model_id)
@@ -192,6 +236,37 @@ def register_model_with_baseline(
 
 def _agree(a: float, b: float) -> bool:
     return abs(a - b) <= FLOOR_AGREEMENT_TOLERANCE
+
+
+def _metric_baseline(
+    model: Fact, model_id: str, ledger_values: dict[str, float], stored_bar: object
+) -> float:
+    """The METRIC value a trial is adjudicated against, in the order a reader would trust it.
+
+    1. The ledger's value for the model's own ``baseline`` commit -- the same number
+       :func:`~knowledge.ml_registry.verdict.adjudicate_verdict` uses (its
+       ``baseline_row.value``), so the two adjudications cannot disagree about the bar.
+    2. Failing that, ``baseline_throughput`` -- but ONLY when it is stamped (or, on a model
+       registered before the stamp existed, implied) to be the mean of the baseline runs'
+       metric values, which is a real metric bar.
+    3. A ``baseline_throughput`` stamped :data:`THROUGHPUT_UNITS_ROWS_PER_SEC` is REFUSED,
+       not used. Comparing an F1 of 0.99 against 3.5 rows/sec is not a close call to be
+       resolved conservatively -- it is a category error, and the honest answer when the
+       metric bar cannot be recovered is that this trial cannot be adjudicated here.
+    """
+    baseline_commit = model.meta.get(BASELINE_FIELD)
+    if baseline_commit is not None and str(baseline_commit) in ledger_values:
+        return float(ledger_values[str(baseline_commit)])
+    if model.meta.get(BASELINE_THROUGHPUT_UNITS_FIELD) == THROUGHPUT_UNITS_ROWS_PER_SEC:
+        raise RegistryValidationError(
+            f"model {model_id!r} records baseline_throughput {stored_bar!r} in rows/sec, which is "
+            f"not a metric bar, and its baseline commit {baseline_commit!r} has no scored row in "
+            "the external ledger to read the metric baseline from -- adjudicate against the ledger "
+            "row for the baseline commit (resolve-verdict), or re-register the model so the "
+            "baseline commit is scored",
+            field=BASELINE_THROUGHPUT_FIELD,
+        )
+    return float(stored_bar)  # type: ignore[arg-type]
 
 
 def adjudicate_trial(
@@ -202,8 +277,12 @@ def adjudicate_trial(
     self_reported_value: float | None = None,
 ) -> str:
     """Decide a trial's ``status`` from the EXTERNAL LEDGER value for its own ``commit``,
-    against its model's ``baseline_throughput`` +/- ``noise_floor`` per the model's
-    ``direction``. A SINGLE call is the whole adjudication -- no confirmation run is ever
+    against its model's METRIC baseline +/- ``noise_floor`` per the model's ``direction``
+    (:func:`_metric_baseline` -- the ledger value for the model's ``baseline`` commit,
+    exactly the number ``adjudicate_verdict`` compares against, falling back to
+    ``baseline_throughput`` only where that field demonstrably holds the mean of the
+    baseline runs' metric values, and REFUSING where it holds rows/sec). A SINGLE call is
+    the whole adjudication -- no confirmation run is ever
     required, however close the margin. Sets and returns the trial's ``status``
     (``"succeeded"`` or ``"failed"``).
 
@@ -252,14 +331,15 @@ def adjudicate_trial(
         raise RegistryValidationError(
             f"trial references model {model_id!r} that was never registered", field="model_id"
         )
-    baseline = model.meta.get(BASELINE_THROUGHPUT_FIELD)
+    stored_bar = model.meta.get(BASELINE_THROUGHPUT_FIELD)
     floor = model.meta.get(NOISE_FLOOR_FIELD)
-    if baseline is None or floor is None:
+    if stored_bar is None or floor is None:
         raise RegistryValidationError(
             f"model {model_id!r} has no registered baseline_throughput/noise_floor to adjudicate against "
             "-- its harness was retired and must be re-registered with a fresh baseline",
             field=BASELINE_THROUGHPUT_FIELD,
         )
+    baseline = _metric_baseline(model, model_id, ledger_values, stored_bar)
     direction = model.meta.get("direction")
     if direction == "minimize":
         delta = float(baseline) - observed_value
@@ -327,6 +407,7 @@ def retire_harness(space: RegistrySpace, model_id: str, patch: dict[str, object]
     if mutates_harness:
         model.meta.pop(NOISE_FLOOR_FIELD, None)
         model.meta.pop(BASELINE_THROUGHPUT_FIELD, None)
+        model.meta.pop(BASELINE_THROUGHPUT_UNITS_FIELD, None)
         model.meta.pop(BASELINE_RUNS_FIELD, None)
         model.meta[CAMPAIGN_STATUS_FIELD] = STALLED
         revert_adoption(space, model_id, "harness field mutation retired the noise floor")

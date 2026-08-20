@@ -84,8 +84,15 @@ from typing import Callable, Optional
 from knowledge.ml_registry.floor import CAMPAIGN_STATUS_FIELD
 from knowledge.ml_registry.ideate import RETRIEVAL_AXES
 from knowledge.ml_registry.insight import LessonFiler, maybe_file_cross_model_lesson, sweep_cross_model_lessons
-from knowledge.ml_registry.lifecycle import TRIAL_STATUS_SUCCEEDED, untried_backlog
-from knowledge.ml_registry.schema import IDEA, MODEL, TRIAL, TRIAL_STATUS_VOIDED, RegistryValidationError
+from knowledge.ml_registry.lifecycle import TRIAL_STATUS_SUCCEEDED, claim_is_stale, untried_backlog
+from knowledge.ml_registry.schema import (
+    IDEA,
+    MODEL,
+    TERMINAL_TRIAL_STATUSES,
+    TRIAL,
+    TRIAL_STATUS_VOIDED,
+    RegistryValidationError,
+)
 from knowledge.ml_registry.verdict import LedgerRow, VERDICT_ADOPTED, adjudicate_verdict
 from knowledge.ml_registry.write_path import (
     DISCOVERED,
@@ -98,6 +105,7 @@ from knowledge.ml_registry.write_path import (
     discovered_idea_budget,
     register_idea,
     register_trial,
+    supersede_trial,
 )
 
 FORCED_AXIS = "forced_axis"
@@ -489,6 +497,52 @@ def _auto_interventions(
     return ()
 
 
+def _reclaim_dead_trial(
+    space: RegistrySpace,
+    idea: Fact,
+    trial_meta: dict[str, object],
+    ledger_commits: frozenset[str],
+    refusal: RegistryValidationError,
+) -> str:
+    """Supersede the in-flight trial of an idea whose CLAIM LEASE HAS EXPIRED, then register
+    the new one. Re-raises the refusal untouched for any other cause.
+
+    :func:`~knowledge.ml_registry.write_path.register_trial` allows an idea only one trial in
+    flight, and that trial has no lease of its own -- so a worker killed mid-run leaves it
+    ``running`` forever. Meanwhile the IDEA's claim does have a lease
+    (:data:`~knowledge.ml_registry.lifecycle.DEFAULT_IDEA_CLAIM_LEASE_TTL_S`, 900s), it goes
+    stale, and :func:`~knowledge.ml_registry.lifecycle.untried_backlog` hands the idea back
+    to :func:`_select_candidate` -- which picks it, is refused, and the refusal propagated
+    uncaught: every subsequent supervise-campaign died on the same idea, with a manual
+    ``supersede-trial`` the only way out.
+
+    The escape is the LEASE, not a timeout invented here, so this cannot cancel a run that
+    might still be alive: a live-leased claim means a worker heartbeating within the last
+    900s (that idea is not even in the backlog, so this path is unreachable for it), and an
+    idea with NO claim at all is no evidence of a dead worker either -- both re-raise, and
+    a genuinely-running trial keeps the one-in-flight protection the rule exists for. Only
+    an EXPIRED lease -- a worker that stopped checking in -- is treated as dead, which is the
+    same inference :func:`untried_backlog` already makes when it re-offers the idea.
+    """
+    if not claim_is_stale(idea):
+        raise refusal
+    in_flight = [
+        f for f in space.list_facts(TRIAL)
+        if str(f.meta.get("idea_id")) == idea.id
+        and str(f.meta.get("status", "")) not in TERMINAL_TRIAL_STATUSES
+    ]
+    if not in_flight:
+        raise refusal
+    for trial in in_flight:
+        supersede_trial(
+            space,
+            trial.id,
+            f"idea claim lease went stale (owner {idea.meta.get('claim_owner')!r} stopped "
+            f"heartbeating); the worker running this trial is dead, not slow",
+        )
+    return register_trial(space, trial_meta, ledger_commits)
+
+
 def dispatch_trial(
     space: RegistrySpace,
     model_id: str,
@@ -533,6 +587,12 @@ def dispatch_trial(
     if so and only if ``lesson_filer`` is supplied, files exactly one af-learn lesson for it.
     A voided trial never reaches this: its idea stays untried, so nothing here ever fires at
     trial granularity alone.
+
+    A candidate whose previous worker DIED mid-trial -- its idea claim lease expired, which
+    is why the idea came back to the backlog at all -- has that dead trial superseded and
+    replaced rather than raising register_trial's one-in-flight refusal out of the campaign
+    forever (:func:`_reclaim_dead_trial`, ``result["superseded_dead_trial"]``). A trial whose
+    worker is merely SLOW is never touched: its claim lease is live.
     """
     model = _model(space, model_id)
     all_interventions = interventions + _auto_interventions(space, model_id, interventions)
@@ -590,7 +650,13 @@ def dispatch_trial(
         trial_meta.setdefault("throughput", row.throughput)
         trial_meta.setdefault("diff_lines", row.diff_lines)
     ledger_commits = frozenset(ledger_rows.keys())
-    trial_id = register_trial(space, trial_meta, ledger_commits)
+    try:
+        trial_id = register_trial(space, trial_meta, ledger_commits)
+    except RegistryValidationError as exc:
+        if exc.field != "idea_id":
+            raise
+        trial_id = _reclaim_dead_trial(space, idea, trial_meta, ledger_commits, exc)
+        result["superseded_dead_trial"] = True
     trial = space.get(trial_id)
     assert trial is not None
 

@@ -103,3 +103,68 @@ def test_supersede_requires_a_stated_reason() -> None:
     tid = register_trial(space, _meta(model_id, idea_id, "c1", "complete"), LEDGER)
     with pytest.raises(RegistryValidationError):
         supersede_trial(space, tid, reason="   ")
+
+
+# --- a DEAD worker's in-flight trial must not wedge its idea forever -------------------
+# The idea claim has a lease; the trial has none. A worker that dies mid-trial leaves the
+# trial `running` forever, while the stale claim returns the idea to the untried backlog --
+# so _select_candidate keeps picking it and register_trial keeps refusing, uncaught, and
+# every subsequent supervise-campaign died on the same idea.
+
+_DISPATCH_MODEL_META = {
+    "metric": "val_bpb", "direction": "minimize", "win_condition": "beats baseline by noise_floor",
+    "baseline": "base", "noise_floor": 0.01, "baseline_throughput": 1200.0, "diff_size_limit": 800,
+    "max_trials": 5, "max_discovered_ideas": 0,
+}
+
+
+def _dispatch_fixture(claim_age_s: float):
+    """A model whose only idea is claimed ``claim_age_s`` ago under a 900s lease, with an
+    in-flight trial left behind by that claim's worker."""
+    import time as _time
+
+    from knowledge.ml_registry.lifecycle import DEFAULT_IDEA_CLAIM_LEASE_TTL_S, claim_idea
+    from knowledge.ml_registry.verdict import LedgerRow
+
+    ledger = {
+        "base": LedgerRow(value=1.0, throughput=1200.0, diff_lines=0),
+        "dead": LedgerRow(value=1.0, throughput=1200.0, diff_lines=10),
+        "fresh": LedgerRow(value=0.5, throughput=1200.0, diff_lines=10),
+    }
+    space = RegistrySpace()
+    model_id = register_model(space, dict(_DISPATCH_MODEL_META))
+    idea_id = register_idea(space, {"model_id": model_id, "origin": "seeded",
+                                    "axis": "architecture", "description": "d"})
+    claim_idea(space, idea_id, "worker-1", ttl=DEFAULT_IDEA_CLAIM_LEASE_TTL_S,
+               now=_time.time() - claim_age_s)
+    stuck = register_trial(space, _meta(model_id, idea_id, "dead", "running"), frozenset(ledger))
+    return space, model_id, idea_id, stuck, ledger
+
+
+def test_a_stale_claims_in_flight_trial_is_auto_superseded_instead_of_wedging_the_campaign():
+    from knowledge.ml_registry.lifecycle import STATUS_SUPERSEDED
+    from knowledge.ml_registry.supervisor import dispatch_trial
+
+    space, model_id, idea_id, stuck, ledger = _dispatch_fixture(claim_age_s=10_000)
+
+    result = dispatch_trial(space, model_id, ledger, lambda s, m, i: {"commit": "fresh"})
+
+    assert result["candidate"] == idea_id
+    assert result["trial_id"] not in (None, stuck)
+    assert space.get(stuck).meta["status"] == STATUS_SUPERSEDED
+    assert "stale" in str(space.get(stuck).meta.get("superseded_reason", "")).lower()
+
+
+def test_a_live_claim_never_reaches_the_auto_supersede_so_two_workers_cannot_race():
+    """A slow worker is not a dead one: while its claim lease is LIVE the idea is not in the
+    untried backlog at all, so no candidate is selected and its in-flight trial is left
+    exactly as it is. That distinction -- lease live vs lease expired -- is what keeps the
+    auto-supersede from ever cancelling a run that is genuinely still going."""
+    from knowledge.ml_registry.supervisor import dispatch_trial
+
+    space, model_id, idea_id, stuck, ledger = _dispatch_fixture(claim_age_s=1)
+
+    result = dispatch_trial(space, model_id, ledger, lambda s, m, i: {"commit": "fresh"})
+
+    assert result["candidate"] is None
+    assert space.get(stuck).meta["status"] == "running"
