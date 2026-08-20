@@ -99,10 +99,19 @@ def test_annotation_mappings_are_frozen_copies() -> None:
 
 def test_status_and_validity_must_agree_at_projection_boundary() -> None:
     ledger = LedgerV2.from_rows([row(status=LedgerStatus.BUDGET_EXHAUSTED)])
-    with pytest.raises(ContractError, match="requires validity"):
+    with pytest.raises(ContractError, match="cannot be declared valid"):
         ledger.project(annotations(
             ("abc:arm", 0, LedgerValidity.VALID, ThroughputUnit.ROWS_PER_SECOND)
         ))
+
+
+def test_external_validity_can_void_an_ok_row_without_rewriting_history() -> None:
+    ledger = LedgerV2.from_rows([row(metric_value=0)])
+    projection = ledger.project(annotations(
+        ("abc:arm", 0, LedgerValidity.INVALID, ThroughputUnit.ROWS_PER_SECOND)
+    ))
+    assert "abc:arm" not in projection.fair_by_commit
+    assert projection.unfair_by_commit["abc:arm"] == (ledger.rows[0],)
 
 
 def test_throughput_units_are_typed_and_homogeneous_per_ledger() -> None:

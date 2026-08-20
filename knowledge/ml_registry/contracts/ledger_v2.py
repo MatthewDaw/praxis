@@ -60,10 +60,9 @@ class LedgerRowV2:
         validity = self.validity
         validity = (None if validity is None
                     else _enum(LedgerValidity, validity, "ledger validity"))
-        expected = LedgerValidity.VALID if status is LedgerStatus.OK else LedgerValidity.INVALID
-        if validity is not None and validity is not expected:
+        if validity is LedgerValidity.VALID and status is not LedgerStatus.OK:
             raise ContractError(
-                f"ledger status {status.value!r} requires validity {expected.value!r}"
+                f"ledger status {status.value!r} cannot be declared valid"
             )
 
         object.__setattr__(self, "commit", commit)
@@ -214,11 +213,9 @@ class LedgerV2:
                 )
             validity = _enum(LedgerValidity, raw_validity, "ledger validity")
             row_units = _enum(ThroughputUnit, raw_units, "ledger throughput_units")
-            expected = (LedgerValidity.VALID if row.status is LedgerStatus.OK
-                        else LedgerValidity.INVALID)
-            if validity is not expected:
+            if validity is LedgerValidity.VALID and row.status is not LedgerStatus.OK:
                 raise ContractError(
-                    f"ledger status {row.status.value!r} requires validity {expected.value!r}"
+                    f"ledger status {row.status.value!r} cannot be declared valid"
                 )
             if units is None:
                 units = row_units
