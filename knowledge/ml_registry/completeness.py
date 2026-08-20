@@ -30,6 +30,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from knowledge.ml_registry.domain.status import answers_question, retryable
 from knowledge.ml_registry.schema import IDEA, MODEL, TRIAL
 from knowledge.ml_registry.report import idea_verdicts
 from knowledge.ml_registry.staging import stage_coverage, unreachable
@@ -83,7 +84,7 @@ def campaign_completeness(space: RegistrySpace, model_id: str, stages: Sequence[
     # An arm counts as MEASURED only if it produced a verdict from its own result. A voided trial
     # did not: voided means the run was unfair, so the question is still open.
     measured = {fact_to_tag[i] for i, t in latest.items()
-                if i in fact_to_tag and str(t.meta.get("status")) not in ("voided",)}
+                if i in fact_to_tag and _fair_candidate_measurement(t.meta)}
 
     kw = {"stage_of": stage_of} if stage_of else {}
     coverage = stage_coverage(items, stages, measured_ids=measured, answered_ids=answered,
@@ -114,11 +115,11 @@ def campaign_completeness(space: RegistrySpace, model_id: str, stages: Sequence[
             })
 
     rerun = sorted(fact_to_tag[i] for i, t in latest.items()
-                   if i in fact_to_tag and str(t.meta.get("status")) == "voided")
+                   if i in fact_to_tag and _retryable(t.meta.get("status")))
     if rerun:
         blocking.append({
             "kind": "awaiting_rerun", "stage": "",
-            "detail": f"voided arms are UNMEASURED, not answered: {', '.join(rerun)}",
+            "detail": f"retryable arms are UNMEASURED, not answered: {', '.join(rerun)}",
         })
 
     if require_convergence and not model.meta.get(CONVERGENCE_FIELD):
@@ -133,3 +134,22 @@ def campaign_completeness(space: RegistrySpace, model_id: str, stages: Sequence[
 
     return {"model_id": model_id, "done": not blocking, "blocking": blocking,
             "coverage": coverage}
+
+
+def _fair_candidate_measurement(meta: dict[str, Any]) -> bool:
+    try:
+        fair = answers_question(str(meta.get("status") or ""))
+    except ValueError:
+        return False
+    if not fair or meta.get("incumbent_remeasurement") is True:
+        return False
+    resolved = meta.get("resolved_configuration")
+    incumbent = meta.get("incumbent_configuration")
+    return resolved is None or incumbent is None or resolved != incumbent
+
+
+def _retryable(value: object) -> bool:
+    try:
+        return retryable(str(value or ""))
+    except ValueError:
+        return False

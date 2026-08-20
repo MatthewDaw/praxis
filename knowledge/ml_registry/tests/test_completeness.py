@@ -164,7 +164,7 @@ def test_unreachable_arms_do_not_block_completion() -> None:
     for s in STAGES:
         _full(space, mid, s)
     # a composition arm whose dependency parked -- permanently ineligible
-    dep = _idea(space, mid, "R01", "representation", status="parked")
+    _idea(space, mid, "R01", "representation", status="parked")
     register_idea(space, {"model_id": mid, "origin": "seeded", "axis": "representation",
                           "description": "compose", "id": "R07", "depends_on": ["R01"]})
     space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
@@ -196,3 +196,95 @@ def test_completeness_uses_meta_stage_not_just_axis() -> None:
     assert any(b["kind"] == "stage_open" and b["stage"] == "tuning" for b in out["blocking"]), (
         out["blocking"]
     )
+
+
+@pytest.mark.parametrize("status", ["running", "complete"])
+def test_in_flight_and_awaiting_adjudication_trials_never_measure_or_answer(status) -> None:
+    space, mid = _space()
+    iid = _idea(space, mid, "arm", "representation")
+    _trial(space, mid, iid, "candidate", status=status)
+    space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
+    out = campaign_completeness(space, mid, ("representation",), min_measured=1)
+    assert not out["done"]
+    assert out["coverage"][0]["measured"] == 0
+    assert any(item["kind"] == "stage_open" for item in out["blocking"])
+
+
+@pytest.mark.parametrize("status", ["errored", "voided", "superseded"])
+def test_unfair_abandoned_latest_trials_are_retryable_not_measurements(status) -> None:
+    space, mid = _space()
+    iid = _idea(space, mid, "arm", "representation")
+    _trial(space, mid, iid, "candidate", status=status)
+    space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
+    out = campaign_completeness(space, mid, ("representation",), min_measured=1)
+    assert not out["done"]
+    assert out["coverage"][0]["measured"] == 0
+    assert any(item["kind"] == "awaiting_rerun" for item in out["blocking"])
+
+
+@pytest.mark.parametrize("marker", [
+    {"incumbent_remeasurement": True},
+    {"resolved_configuration": "incumbent", "incumbent_configuration": "incumbent"},
+])
+def test_no_op_incumbent_remeasurement_does_not_satisfy_measured_floor(marker) -> None:
+    space, mid = _space()
+    iid = _idea(space, mid, "arm", "representation")
+    tid = _trial(space, mid, iid, "candidate", status="stagnant")
+    space.get(tid).meta.update(marker)
+    space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
+    out = campaign_completeness(space, mid, ("representation",), min_measured=1)
+    assert not out["done"]
+    assert out["coverage"][0]["measured"] == 0
+    assert any(item["kind"] == "stage_thin" for item in out["blocking"])
+
+
+def test_latest_fair_retry_wins_over_an_older_void() -> None:
+    space, mid = _space()
+    iid = _idea(space, mid, "arm", "representation")
+    _trial(space, mid, iid, "void", status="voided")
+    _trial(space, mid, iid, "retry", status="failed")
+    space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
+    out = campaign_completeness(space, mid, ("representation",), min_measured=1)
+    assert out["done"], out["blocking"]
+    assert out["coverage"][0]["measured"] == 1
+
+
+def test_latest_void_retry_state_wins_over_an_older_fair_result() -> None:
+    space, mid = _space()
+    iid = _idea(space, mid, "arm", "representation")
+    _trial(space, mid, iid, "fair", status="failed")
+    _trial(space, mid, iid, "void", status="voided")
+    space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
+    out = campaign_completeness(space, mid, ("representation",), min_measured=1)
+    assert not out["done"]
+    assert out["coverage"][0]["measured"] == 0
+    assert any(item["kind"] == "awaiting_rerun" for item in out["blocking"])
+
+
+def _otherwise_complete_with_convergence(value):
+    space, mid = _space()
+    for stage in STAGES:
+        _full(space, mid, stage)
+    space.get(mid).meta[CONVERGENCE_FIELD] = value
+    return campaign_completeness(space, mid, STAGES)
+
+
+@pytest.mark.xfail(strict=True, reason="finalize step must replace truthy malformed convergence metadata")
+def test_malformed_truthy_convergence_does_not_complete_campaign() -> None:
+    out = _otherwise_complete_with_convergence({"artifact": True})
+    assert not out["done"]
+    assert any(item["kind"] == "invalid_convergence" for item in out["blocking"])
+
+
+@pytest.mark.xfail(strict=True, reason="finalize step must bind convergence to current adopted lineage")
+def test_wrong_lineage_convergence_does_not_complete_campaign() -> None:
+    out = _otherwise_complete_with_convergence({"artifact_id": "fit", "lineage_id": "superseded"})
+    assert not out["done"]
+    assert any(item["kind"] == "wrong_lineage_convergence" for item in out["blocking"])
+
+
+@pytest.mark.xfail(strict=True, reason="finalize step must reject stale convergence artifacts")
+def test_stale_convergence_does_not_complete_campaign() -> None:
+    out = _otherwise_complete_with_convergence({"artifact_id": "fit", "stale": True})
+    assert not out["done"]
+    assert any(item["kind"] == "stale_convergence" for item in out["blocking"])
