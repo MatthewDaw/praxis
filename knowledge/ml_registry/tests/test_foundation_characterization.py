@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -61,18 +65,40 @@ def test_fixture_b_a_campaign_cannot_run_two_trials_for_one_idea():
         register_trial(space, {**first, "commit": "candidate"}, frozenset({"base", "candidate"}))
 
 
-@pytest.mark.xfail(strict=True, reason="fixture D: process exit is still treated as canonical completion")
-def test_fixture_d_exit_zero_without_promotion_is_failed(tmp_path):
+@pytest.mark.xfail(
+    strict=True,
+    reason="fixture D: process exit is not reverified against a production ModelVersion alias",
+)
+@pytest.mark.parametrize(
+    ("completion_claim", "reason"),
+    [
+        (None, "outcome"),
+        ({"outcome": "COMPLETE", "model_id": "model-root"}, "production alias"),
+        ({
+            "outcome": "COMPLETE", "model_id": "model-root", "version": 1,
+            "alias": "production", "artifact_checksum": "wrong",
+        }, "checksum"),
+        ({
+            "outcome": "COMPLETE", "model_id": "model-root", "version": 1,
+            "alias": "production", "artifact_checksum": "a" * 64,
+            "lineage_status": "superseded",
+        }, "lineage"),
+    ],
+    ids=("no-outcome", "no-production-alias", "checksum-mismatch", "superseded-lineage"),
+)
+def test_fixture_d_exit_zero_without_verified_production_alias_is_failed(
+    tmp_path, completion_claim, reason,
+):
     portfolio = Portfolio()
     _ready(portfolio, "root")
     backend = Backend()
     controller = PortfolioController(portfolio=portfolio, campaign_specs=[_spec("root")], capacity=CAPACITY,
                                      backend=backend, state_path=tmp_path / "controller.json")
     controller.tick()
-    backend.results["root"] = PollResult("completed", artifact=None)
+    backend.results["root"] = PollResult("completed", artifact=completion_claim)
     controller.tick()
     assert controller.records["root"].state == "failed"
-    assert "PromotionRecord" in (controller.records["root"].message or "")
+    assert reason in (controller.records["root"].message or "").lower()
 
 
 @pytest.mark.xfail(strict=True, reason="P-4: scheduler still accepts loose campaign depends_on edges")
@@ -104,3 +130,71 @@ def test_fixture_f_backend_exposes_force_cancel_and_drain():
     backend = Backend()
     assert callable(backend.cancel)
     assert callable(backend.drain)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="fixture O: the canonical SQLite registry schema and write guards do not exist",
+)
+def test_fixture_o_sqlite_registry_has_exact_canonical_tables_and_guards(tmp_path):
+    registry_module = importlib.import_module("knowledge.ml_registry.storage.registry")
+    registry = registry_module.RegistryStore(tmp_path / "registry")
+
+    assert registry.table_names() == {
+        "experiments", "runs", "artifacts", "registered_models", "model_versions",
+        "lineage", "aliases", "events",
+    }
+    assert registry.is_single_writer
+    assert registry.model_versions_are_immutable
+    assert registry.alias_writer("champion") == "adjudication"
+    assert registry.alias_writer("production") == "finalize"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="fixture O: results.tsv is not yet a byte-stable export of canonical runs",
+)
+def test_fixture_o_results_tsv_is_a_runs_export_not_an_input(tmp_path):
+    registry_module = importlib.import_module("knowledge.ml_registry.storage.registry")
+    export_module = importlib.import_module("knowledge.ml_registry.contracts.runs_export")
+    registry = registry_module.RegistryStore(tmp_path / "registry")
+
+    run_id = registry.insert_fixture_run(code_ref={
+        "repo": str(tmp_path), "sha": "a" * 40, "base_sha": "b" * 40,
+        "diff_hash": "c" * 64, "diff_lines": 3,
+    })
+    payload = export_module.RunsExport.from_registry(registry).serialize()
+
+    assert run_id.encode() in payload
+    assert registry.imports_results_tsv is False
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="public CLI help still exposes superseded artifact/promotion/convergence vocabulary",
+)
+def test_public_cli_help_uses_standard_registry_vocabulary():
+    outputs = []
+    for module in (
+        "knowledge.ml_registry.cli",
+        "knowledge.ml_registry.controller_cli",
+        "knowledge.ml_registry.portfolio_cli",
+    ):
+        result = subprocess.run(
+            [sys.executable, "-m", module, "--help"],
+            cwd=Path(__file__).resolve().parents[3],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0
+        outputs.append(f"{result.stdout}\n{result.stderr}")
+    help_text = "\n".join(outputs).lower().replace("-", "")
+
+    assert all(forbidden not in help_text for forbidden in (
+        "promotionrecord", "campaignartifact", "convergence_run", "artifactstore",
+    ))
+    assert "run" in help_text
+    assert "registered model" in help_text
+    assert "model version" in help_text
+    assert "alias" in help_text

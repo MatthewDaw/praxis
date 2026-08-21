@@ -24,13 +24,32 @@ def test_status_predicates_distinguish_terminal_fair_answer_and_retry():
     assert not terminal("complete") and not answers_question("complete")
 
 
-def test_complete_outcome_requires_a_promotion_record():
+@pytest.mark.xfail(
+    strict=True,
+    reason="COMPLETE outcomes do not yet carry canonical production-alias proof",
+)
+def test_complete_outcome_requires_production_alias_proof():
     base = {"schema_version": 1, "campaign_id": "c", "outcome": "COMPLETE",
-            "reason": "verified", "attempt": 1, "promotion_record_id": None}
-    with pytest.raises(ContractError, match="requires promotion"):
+            "reason": "verified", "attempt": 1, "production_alias": None}
+    with pytest.raises(ContractError, match="production alias"):
         CampaignOutcomeRecord.from_mapping(base)
-    base["promotion_record_id"] = "promotion-1"
+    base["production_alias"] = {"model_id": "model-c", "alias": "production", "version": 1}
     assert CampaignOutcomeRecord.from_mapping(base).outcome is CampaignOutcome.COMPLETE
+
+
+@pytest.mark.xfail(strict=True, reason="the required versioned CodeRef contract does not exist")
+def test_code_ref_is_versioned_and_records_the_arm_commit():
+    from knowledge.ml_registry.contracts.code_ref import CodeRef
+
+    payload = {
+        "schema_version": 1,
+        "repo": "sports_analysis",
+        "sha": "a" * 40,
+        "base_sha": "b" * 40,
+        "diff_hash": "c" * 64,
+        "diff_lines": 7,
+    }
+    assert CodeRef.from_mapping(payload).to_mapping() == payload
 
 
 def test_artifact_promotion_intent_and_lease_round_trip():
