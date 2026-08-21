@@ -365,7 +365,12 @@ class PortfolioController:
                 retry_state=(None if record.attempt <= 1 else f"attempt {record.attempt}"),
                 blocker=record.message,
             ))
-        reasons = iter(self._last_blocked.values())
+        reason_values = list(dict.fromkeys(self._last_blocked.values()))
+        reason_values.sort(key=lambda reason: (
+            1 if reason.startswith(("waiting ", "campaign status", "concurrency")) else 0,
+            reason,
+        ))
+        reasons = iter(reason_values)
         while len(slots) < self.max_active:
             slots.append(SlotStatus(None, next(reasons, "no_ready_campaign")))
         ready = tuple(sorted(str(spec["id"]) for spec in self.specs
