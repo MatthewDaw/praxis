@@ -10,11 +10,7 @@ def test_cli_dead_code_finding_is_located_and_admitted():
 
 
 def test_cli_dead_code_driver_is_exactly_bounded_and_witnessed():
-    assert ALLOWLIST == {
-        "knowledge/ml_registry/cli.py",
-        "knowledge/ml_registry/tests/test_cli.py",
-        "knowledge/ml_registry/tests/test_registry_cli_golden.py",
-    }
+    assert ALLOWLIST == {"knowledge/ml_registry/cli/registry.py"}
     assert len(WITNESSES) == 2
     assert any(
         "knowledge/ml_registry/tests/test_registry_cli_golden.py" in witness.argv

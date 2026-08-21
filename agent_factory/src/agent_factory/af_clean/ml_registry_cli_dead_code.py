@@ -9,12 +9,10 @@ from .findings import CLASS_CODE_DELETION, Finding, Location
 from .p8_cli_split import read_prebuilt_diff
 
 
-RULE = "ml-registry-private-cli-dead-code"
-LOCATIONS = frozenset({("knowledge/ml_registry/cli.py", 516)})
+RULE = "ml-registry-private-cli-dispatch"
+LOCATIONS = frozenset({("knowledge/ml_registry/cli/registry.py", 711)})
 ALLOWLIST = frozenset({
-    "knowledge/ml_registry/cli.py",
-    "knowledge/ml_registry/tests/test_cli.py",
-    "knowledge/ml_registry/tests/test_registry_cli_golden.py",
+    "knowledge/ml_registry/cli/registry.py",
 })
 WITNESSES = (
     WitnessCommand((
@@ -33,13 +31,13 @@ def finding() -> Finding:
     return Finding(
         rule=RULE,
         tier="enforce",
-        location=Location("knowledge/ml_registry/cli.py", 516),
+        location=Location("knowledge/ml_registry/cli/registry.py", 711),
         pole="bloat",
         change_class=CLASS_CODE_DELETION,
         proposal=(
-            "delete only parser, dispatch, helpers, imports, and migrated tests that are reachable "
-            "solely from the private pre-cutover CLI; preserve IDEA bridges and canonical "
-            "historical import/export"
+            "delete only the unreachable private pre-cutover dispatcher; preserve every helper, "
+            "IDEA bridge, public command, and canonical historical import/export for a later, "
+            "independently witnessed batch"
         ),
     )
 
