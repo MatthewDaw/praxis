@@ -18,6 +18,7 @@ from agent_factory.af_clean.findings import (
     CLASS_ANNOTATION,
     CLASS_CODE_DELETION,
     CLASS_DELETION,
+    CLASS_DOCS_REWRITE,
     CLASS_MIGRATION,
     CLASS_REPORT_ONLY,
     CLASS_SPLIT,
@@ -262,7 +263,8 @@ def test_every_change_class_asks_its_own_question():
     questions = {
         cls: instruction_for(cls)
         for cls in (
-            "deletion", "code-deletion", "consolidation", "split", "migration", "annotation", "lint-fix",
+            "deletion", "code-deletion", "consolidation", "split", "migration", "docs-rewrite",
+            "annotation", "lint-fix",
             "js-to-ts",
         )
     }
@@ -277,6 +279,14 @@ def test_the_annotation_question_judges_correctness_not_acceptance():
     assert "correctness" in text
     assert "any" in text and "ignore" in text
     assert "behaviour-neutral" in text
+
+
+def test_docs_rewrite_question_judges_semantic_and_operational_completeness():
+    text = instruction_for(CLASS_DOCS_REWRITE).lower()
+    assert "factual" in text
+    assert "authorization" in text
+    assert "broken references" in text
+    assert "omitted invariant" in text
 
 
 def test_code_deletion_fails_closed_on_reachability_and_compatibility_obligations():

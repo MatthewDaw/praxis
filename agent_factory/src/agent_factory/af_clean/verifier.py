@@ -31,6 +31,7 @@ from .findings import (
     CLASS_CONSOLIDATION,
     CLASS_CODE_DELETION,
     CLASS_DELETION,
+    CLASS_DOCS_REWRITE,
     CLASS_JS_TO_TS,
     CLASS_LINT_FIX,
     CLASS_MIGRATION,
@@ -105,6 +106,16 @@ _CLASS_QUESTIONS: dict[str, str] = {
         "Crash/restart must be idempotent, and no old write path may remain a competing source of "
         "truth after cutover. Refuse mixed semantic policy changes. Endorse only a complete, "
         "witnessed, reversible cutover."
+    ),
+    CLASS_DOCS_REWRITE: (
+        "Operational documentation has been rewritten. Decide whether the replacement is factually "
+        "accurate against the interfaces visible in the diff, preserves every safety and authorization "
+        "boundary carried by the removed prose, and names only commands, paths, schemas, and lifecycle "
+        "transitions that actually exist. Refuse stale vocabulary, broken references, hidden project- or "
+        "domain-specific assumptions in generic guidance, any instruction that weakens single-writer or "
+        "external-adjudication boundaries, or any omitted invariant that could change operator behavior. "
+        "Endorse only a semantically complete, internally consistent replacement whose examples are "
+        "executable or explicitly schematic."
     ),
     CLASS_ANNOTATION: (
         "Type annotations have been added or tightened. Judge CORRECTNESS, not acceptance: a "
