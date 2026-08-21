@@ -1,11 +1,11 @@
 """Stable facade for the split ML-registry command groups."""
 
 from . import registry as _registry
-from .registry import *  # noqa: F403 -- compatibility facade for the former module
 from .registry import (
     _json_arg as _json_arg,
     _load_mutate_save as _load_mutate_save,
     _lock_timeout_seconds as _lock_timeout_seconds,
+    load_ledger_rows as load_ledger_rows,
     main as main,
 )
 

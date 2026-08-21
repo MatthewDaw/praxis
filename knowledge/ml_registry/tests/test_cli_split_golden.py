@@ -73,7 +73,7 @@ ERROR_SHA256 = {
 }
 
 PUBLIC_NAME_SHA256 = {
-    "knowledge.ml_registry.cli": "90f9872519f39d3ea0c87c8ce0250fd2c193dbdcefff60f488e75bbcc76a4ed3",
+    "knowledge.ml_registry.cli": "919c1ce3f38cda40c1da9bcbfd0726650c9d517117bae969cc7032546350345d",
     "knowledge.ml_registry.portfolio_cli": "26fd6552f72ca211cc77a21f8f6a1b9c4b10030f639303cf6982cbd454442f50",
     "knowledge.ml_registry.manifests_cli": "f7d03d28cb7438edf013aae36d9f21142ffc1a93b9d16d9f283f43055e030dbb",
 }
