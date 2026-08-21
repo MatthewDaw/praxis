@@ -16,16 +16,14 @@ from .findings import CLASS_CONSOLIDATION, Finding, Location
 
 P6_RULE = "p6-artifact-view-consolidation"
 P6_LOCATIONS = (
-    ("knowledge/ml_registry/manifests.py", 233),
-    ("knowledge/ml_registry/artifact_cache.py", 80),
-    ("knowledge/ml_registry/portfolio.py", 108),
+    ("knowledge/ml_registry/manifests.py", 236),
+    ("knowledge/ml_registry/artifact_cache.py", 83),
+    ("knowledge/ml_registry/portfolio.py", 104),
 )
 P6_DIFF_ALLOWLIST = frozenset({
     "knowledge/ml_registry/manifests.py",
     "knowledge/ml_registry/artifact_cache.py",
     "knowledge/ml_registry/portfolio.py",
-    "knowledge/ml_registry/storage/artifact_store.py",
-    "knowledge/ml_registry/storage/projections.py",
     "knowledge/ml_registry/tests/test_artifact_projection_golden.py",
 })
 P6_WITNESSES = (
@@ -54,8 +52,8 @@ def p6_findings() -> tuple[Finding, ...]:
             is_dry=True,
             observable="co-change",
             proposal=(
-                "project the byte-compatible legacy view from the immutable artifact store "
-                "without caller-selectable policy"
+                "retain the byte-compatible legacy validators as read-only projections from "
+                "canonical Registry records and remove their independent path persistence"
             ),
         )
         for file, line in P6_LOCATIONS
