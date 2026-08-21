@@ -48,12 +48,6 @@ from knowledge.ml_registry.lifecycle import (
     untried_backlog,
 )
 from knowledge.ml_registry.schema import IDEA, RegistryValidationError
-from knowledge.ml_registry.supervisor import (
-    Intervention,
-    record_keep_pushing_marker,
-    record_out_of_diff_change,
-    supervise_campaign,
-)
 from knowledge.ml_registry.completeness import campaign_completeness
 from knowledge.ml_registry.report import (acknowledge_diagnosis, campaign_status,
                                           format_status)

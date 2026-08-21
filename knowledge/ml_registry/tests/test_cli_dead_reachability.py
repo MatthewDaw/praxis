@@ -15,19 +15,19 @@ EXPECTED_ABSENT_SYMBOLS: set[str] = {
     "_update_registered_model",
 }
 EXPECTED_DEAD_IMPORTS = {
-    "Intervention", "MAX_DISCOVERED_IDEAS_FIELD", "METRIC_FIELD",
+    "MAX_DISCOVERED_IDEAS_FIELD", "METRIC_FIELD",
     "MODEL_DEFAULTS", "UNLIMITED_DISCOVERED_IDEAS",
     "acknowledge_diagnosis", "adjudicate_verdict",
     "campaign_completeness", "campaign_status", "format_status",
     "load_ledger_commits", "mutate_model",
-    "record_keep_pushing_marker", "record_out_of_diff_change",
     "register_model", "register_trial", "reset_ratchet",
-    "supervise_campaign", "supersede_trial",
+    "supersede_trial",
 }
 EXPECTED_ABSENT_IMPORTS: set[str] = {
     "DEFAULT_SIGMAS", "TicketIndex", "adjudicate_trial", "load_ledger_values",
     "flagged_trials", "guard_baseline_move", "guard_model_mutation", "model_to_projects",
-    "MODEL", "per_axis_yield", "project_to_models", "validate_fact",
+    "Intervention", "MODEL", "per_axis_yield", "project_to_models",
+    "record_keep_pushing_marker", "record_out_of_diff_change", "supervise_campaign", "validate_fact",
     "register_model_with_baseline", "retire_harness",
 }
 
