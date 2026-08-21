@@ -14,6 +14,26 @@
       "verdict": "adopted"
     }
   ],
-  "campaigns": [],
+  "campaigns": [
+    {
+      "blocked_reasons": [],
+      "dependencies": [
+        {
+          "artifact_id": "artifact-weights-v1",
+          "dataset_manifest_hash": "de6dccebfb6c86010c8883f7add2ca1ec51cb6c031e0ba9b5f0864b0c4402da1",
+          "minimum_coverage": 0.9,
+          "prediction_manifest_hash": "98efcbfbd577a6d89ea01ca9d55d8ea46b913f5fd24af44bf40004265895856f",
+          "required_verdict": "adopted",
+          "split_manifest_hash": "5a32dc7c592318f07b9dcaf95dda95b617075c81c20c85901e6c287cd523ab86",
+          "upstream_model_id": "model-canonical"
+        }
+      ],
+      "history": [],
+      "id": "consumer-canonical",
+      "model_id": "model-consumer",
+      "stale": false,
+      "status": "ACTIVATABLE"
+    }
+  ],
   "schema_version": 1
 }
