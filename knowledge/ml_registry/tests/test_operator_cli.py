@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 
+from knowledge.ml_registry import Registry
 from knowledge.ml_registry.operator_cli import main
 
 
@@ -13,6 +14,17 @@ def _write(path: Path, value: object) -> Path:
 
 
 def _config(tmp_path: Path) -> Path:
+    Registry(tmp_path / "registry").register_campaign_spec({
+        "schema_version": 1, "campaign_id": "R1", "model_id_policy": "model-R1",
+        "axis": "fixture", "sport_scope": "shared", "target_ontology": "fixture",
+        "metric": {"name": "f1"}, "stages": [{"name": "representation"}],
+        "corpora": [{"id": "fixture"}], "requires": [],
+        "produces": [{"artifact_type": "fit", "schema_version": "1", "oof_for": []}],
+        "supervision": {"mode": "composing"}, "resources": {"lane": "cpu"},
+        "isolation": {"state_root": "state/R1"},
+        "production": {"protocol": "Fixture"}, "extends": [],
+        "deterministic_incumbent": None, "learned_escalation": False,
+    })
     _write(tmp_path / "portfolio.json", {
         "schema_version": 1,
         "campaigns": [{
