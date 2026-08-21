@@ -18,15 +18,16 @@ EXPECTED_DEAD_IMPORTS = {
     "Intervention", "MAX_DISCOVERED_IDEAS_FIELD", "METRIC_FIELD",
     "MODEL", "MODEL_DEFAULTS", "UNLIMITED_DISCOVERED_IDEAS",
     "acknowledge_diagnosis", "adjudicate_verdict",
-    "campaign_completeness", "campaign_status", "flagged_trials", "format_status",
-    "load_ledger_commits", "mutate_model", "per_axis_yield",
+    "campaign_completeness", "campaign_status", "format_status",
+    "load_ledger_commits", "mutate_model",
     "record_keep_pushing_marker", "record_out_of_diff_change",
     "register_model", "register_trial", "reset_ratchet",
     "supervise_campaign", "supersede_trial", "validate_fact",
 }
 EXPECTED_ABSENT_IMPORTS: set[str] = {
     "DEFAULT_SIGMAS", "TicketIndex", "adjudicate_trial", "load_ledger_values",
-    "guard_baseline_move", "guard_model_mutation", "model_to_projects", "project_to_models",
+    "flagged_trials", "guard_baseline_move", "guard_model_mutation", "model_to_projects",
+    "per_axis_yield", "project_to_models",
     "register_model_with_baseline", "retire_harness",
 }
 

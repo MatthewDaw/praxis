@@ -38,13 +38,11 @@ from knowledge.ml_registry.ideate import (
 from knowledge.ml_registry.lifecycle import (
     adopt_idea,
     claim_idea,
-    flagged_trials,
     heartbeat_idea_claim,
     invalidate_adoption,
     is_retriable,
     park_idea,
     reopen_idea,
-    per_axis_yield,
     reject_idea,
     rejection_memory,
     untried_backlog,
