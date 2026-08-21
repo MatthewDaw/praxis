@@ -1,7 +1,6 @@
 """Versioned, project-neutral ML campaign wire contracts."""
 
 from ._validation import ContractError
-from .artifact_manifest import CampaignArtifact
 from .campaign_spec import CampaignSpec
 from .code_ref import CodeRef, LegacyCodeRef
 from .launch_intent import LaunchIntent
@@ -22,10 +21,8 @@ from .outcome import CampaignOutcome, CampaignOutcomeRecord
 from .partition import Partition
 from .production_alias import ProductionAliasRef
 from .runs_export import RunsExport
-from .promotion import PromotionRecord
 
 __all__ = [
-    "CampaignArtifact",
     "CampaignLease",
     "CampaignOutcome",
     "CampaignOutcomeRecord",
@@ -44,7 +41,6 @@ __all__ = [
     "LedgerStatus",
     "LedgerV2",
     "LedgerValidity",
-    "PromotionRecord",
     "ProductionAliasRef",
     "Partition",
     "RunsExport",

@@ -114,7 +114,10 @@ EXPECTED_ABSENT_CALLERS = {
     "knowledge/ml_registry/tests/test_finalize.py",
 }
 LEGACY_MODULES = {
+    "knowledge.ml_registry.completeness": "knowledge/ml_registry/completeness.py",
     "knowledge.ml_registry.services.finalize": "knowledge/ml_registry/services/finalize.py",
+    "knowledge.ml_registry.storage.artifact_store":
+        "knowledge/ml_registry/storage/artifact_store.py",
 }
 MODULE_REPLACEMENT_OBLIGATIONS = {
     "knowledge.ml_registry.services.finalize": {
@@ -127,8 +130,24 @@ MODULE_REPLACEMENT_OBLIGATIONS = {
             "test_completeness_compatibility_and_blob_are_hard_gates",
         ),
     },
+    "knowledge.ml_registry.completeness": {
+        "knowledge/ml_registry/services/completeness.py": ("def campaign_completeness",),
+        "knowledge/ml_registry/tests/test_registry_completeness.py": (
+            "test_completion_requires_current_compatible_verified_production_lineage",
+        ),
+    },
+    "knowledge.ml_registry.storage.artifact_store": {
+        "knowledge/ml_registry/storage/registry.py": ("def create_artifact",),
+        "knowledge/ml_registry/tests/test_standard_registry.py": (
+            "test_event_tamper_and_blob_tamper_are_detected",
+            "test_single_writer_serializes_concurrent_events",
+        ),
+    },
 }
-EXPECTED_DEAD_MODULES: set[str] = set()
+EXPECTED_DEAD_MODULES = {
+    "knowledge.ml_registry.completeness",
+    "knowledge.ml_registry.storage.artifact_store",
+}
 EXPECTED_ABSENT_MODULES = {"knowledge.ml_registry.services.finalize"}
 
 
