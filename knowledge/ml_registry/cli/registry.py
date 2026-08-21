@@ -177,27 +177,6 @@ def load_ledger_rows(path: Path) -> dict[str, LedgerRow]:
 
 
 
-def _refuse_a_campaign_with_no_floor(space: RegistrySpace, model_id: str) -> None:
-    """Refuse to spend a dispatch on a model that cannot be adjudicated.
-
-    A model whose harness was retired (:func:`~knowledge.ml_registry.floor.retire_harness`)
-    has no ``baseline_throughput``/``noise_floor`` until it is re-registered with a fresh
-    4-run baseline, and ``verdict.adjudicate_verdict`` reads both by bare subscript -- so
-    without this the campaign dispatches a real worker session and then dies on a ``KeyError``
-    that neither of ``main``'s handlers catches. Refused BEFORE any compute is spent, naming
-    the missing field.
-    """
-    model = space.get(model_id)
-    if model is None or model.category != MODEL:
-        raise RegistryValidationError(f"model {model_id!r} was never registered", field="model_id")
-    for missing in ("baseline_throughput", "noise_floor"):
-        if model.meta.get(missing) is None:
-            raise RegistryValidationError(
-                f"model {model_id!r} has no registered {missing} to adjudicate against "
-                f"(campaign_status={model.meta.get('campaign_status')!r}); re-register it with "
-                "register-model-with-baseline before running a campaign",
-                field=missing,
-            )
 
 
 def _json_arg(raw: str) -> dict[str, object]:
