@@ -32,6 +32,27 @@ CANONICAL_OBLIGATIONS = {
         "knowledge/ml_registry/tests/test_registry_completeness.py",
     ),
 }
+ARTIFACT_STORE_BEHAVIOR_MAP = {
+    "test_ingest_copies_content_addressed_blob_and_replay_is_idempotent":
+        "test_artifact_identity_and_size_are_derived_only_from_stored_bytes",
+    "test_ingest_refuses_source_checksum_or_size_mismatch":
+        "test_artifact_creation_refuses_caller_claimed_identity_checksum_or_size",
+    "test_artifact_id_drift_is_refused_without_appending_history":
+        "test_artifact_creation_refuses_caller_claimed_identity_checksum_or_size",
+    "test_replay_detects_event_payload_and_hash_chain_tampering":
+        "test_event_tamper_and_blob_tamper_are_detected",
+    "test_replay_detects_a_broken_link_between_valid_event_documents":
+        "test_event_tamper_and_blob_tamper_are_detected",
+    "test_verify_detects_blob_tampering": "test_event_tamper_and_blob_tamper_are_detected",
+    "test_projection_failure_leaves_event_replayable_and_rebuild_repairs_view":
+        "test_event_before_projection_recovers_after_crash",
+    "test_concurrent_distinct_ingests_form_one_contiguous_hash_chain":
+        "test_single_writer_serializes_concurrent_events",
+    "test_finalization_is_one_idempotent_event_and_campaign_promotion_is_unique":
+        "test_finalization_is_one_registry_event_and_returns_canonical_views",
+    "test_nonfinite_event_time_is_refused_before_history_is_written":
+        "test_event_log_refuses_nonfinite_or_boolean_time_before_writing",
+}
 EXPECTED_ABSENT_CALLERS = {"knowledge/ml_registry/tests/test_finalize.py"}
 LEGACY_MODULES = {
     "knowledge.ml_registry.services.finalize": "knowledge/ml_registry/services/finalize.py",
@@ -71,6 +92,21 @@ def test_each_legacy_test_caller_has_explicit_canonical_replacement_obligations(
         for replacement in CANONICAL_OBLIGATIONS[caller]:
             replacement_path = ROOT / replacement
             assert replacement_path.is_file() and replacement_path.stat().st_size > 0
+
+
+def test_each_legacy_artifact_store_behavior_has_a_concrete_canonical_test() -> None:
+    canonical = "\n".join(
+        (ROOT / path).read_text()
+        for path in (
+            "knowledge/ml_registry/tests/test_standard_registry.py",
+            "knowledge/ml_registry/tests/test_registry_finalizer.py",
+        )
+    )
+    legacy = ROOT / "knowledge/ml_registry/tests/test_artifact_store.py"
+    if str(legacy.relative_to(ROOT)) not in EXPECTED_ABSENT_CALLERS:
+        legacy_text = legacy.read_text()
+        assert all(name in legacy_text for name in ARTIFACT_STORE_BEHAVIOR_MAP)
+    assert all(name in canonical for name in ARTIFACT_STORE_BEHAVIOR_MAP.values())
 
 
 def test_legacy_modules_are_unreachable_or_witnessed_absent() -> None:
