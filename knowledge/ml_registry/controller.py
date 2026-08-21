@@ -18,6 +18,8 @@ from knowledge.ml_registry.contracts import LaunchIntent
 from knowledge.ml_registry.portfolio import CampaignStatus, Portfolio, PortfolioValidationError
 from knowledge.ml_registry.runtime import LeaseIntentCoordinator, ResourceConflict, StopReport
 from knowledge.ml_registry.scheduler import JobSpec, JobState, ResourceProfile, ScheduleDecision, schedule
+from knowledge.ml_registry.services.readiness import explain_readiness
+from knowledge.ml_registry.storage.registry import Registry
 
 
 MAX_ACTIVE_CAMPAIGNS = 2
@@ -96,6 +98,7 @@ def portfolio_schedule(
     *,
     max_active: int = MAX_ACTIVE_CAMPAIGNS,
     remaining_cost: float | None = None,
+    registry: Registry | None = None,
 ) -> ScheduleDecision:
     """Schedule only READY campaigns whose exact artifact contracts remain current."""
     if not 1 <= max_active <= MAX_ACTIVE_CAMPAIGNS:
@@ -110,6 +113,13 @@ def portfolio_schedule(
             existing.get("state") if isinstance(existing, Mapping) else None
         )
         if existing_state in {"running", "completed"}:
+            continue
+        if registry is not None:
+            artifact_readiness = explain_readiness(registry, campaign_id)
+            if not artifact_readiness.ready:
+                gated[campaign_id] = JobState(
+                    campaign_id, "blocked", message=artifact_readiness.reason,
+                )
             continue
         readiness = portfolio.refresh(campaign_id)
         campaign = portfolio.campaigns[campaign_id]
@@ -138,7 +148,7 @@ class PortfolioController:
                  retry_backoff_seconds: float = 60.0, max_retry_backoff_seconds: float = 3600.0,
                  clock=time.time, coordinator: LeaseIntentCoordinator | None = None,
                  lease_factory=None, completion_verifier=None, run_superseder=None,
-                 failpoint=None):
+                 failpoint=None, registry: Registry | None = None):
         if not 1 <= max_active <= MAX_ACTIVE_CAMPAIGNS:
             raise ControllerError(f"max_active must be between 1 and {MAX_ACTIVE_CAMPAIGNS}")
         self.portfolio = portfolio
@@ -154,6 +164,7 @@ class PortfolioController:
         self.lease_factory = lease_factory
         self.completion_verifier = completion_verifier
         self.run_superseder = run_superseder
+        self.registry = registry
         self.failpoint = failpoint or (lambda _boundary, _campaign_id: None)
         self.admission_stopped = False
         self._last_blocked: dict[str, str] = {}
@@ -247,6 +258,7 @@ class PortfolioController:
         try:
             decision = portfolio_schedule(
                 self.portfolio, self.specs, states, self.capacity, max_active=self.max_active,
+                registry=self.registry,
             )
         except Exception as exc:
             self._persist("blocked")
