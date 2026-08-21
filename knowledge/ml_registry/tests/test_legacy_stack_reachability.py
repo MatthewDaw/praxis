@@ -154,10 +154,10 @@ MODULE_REPLACEMENT_OBLIGATIONS = {
     },
 }
 EXPECTED_DEAD_MODULES = {
-    "knowledge.ml_registry.contracts.artifact_manifest",
     "knowledge.ml_registry.contracts.promotion",
 }
 EXPECTED_ABSENT_MODULES = {
+    "knowledge.ml_registry.contracts.artifact_manifest",
     "knowledge.ml_registry.completeness",
     "knowledge.ml_registry.services.finalize",
     "knowledge.ml_registry.storage.artifact_store",
