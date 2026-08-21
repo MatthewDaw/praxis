@@ -1,4 +1,4 @@
-"""The af-ml-research registry: model / idea / trial facts (R1: schema + mutation guards).
+"""Praxis's generic model registry and campaign adjudication services.
 
 The registry tracks an autoresearch campaign as three Praxis fact categories --
 ``model`` (a registered comparison contract), ``idea`` (a hypothesis to trial against
@@ -11,3 +11,9 @@ This is pure, DB-free validation logic. The actual write path that persists thes
 facts, the origin/ledger/budget business rules, and the adopt/park/reject lifecycle
 are later tickets (R2+) built on this schema.
 """
+
+from .contracts import RunsExport
+from .storage import Registry
+from .storage.importers import HistoricalLedgerImporter
+
+__all__ = ["HistoricalLedgerImporter", "Registry", "RunsExport"]
