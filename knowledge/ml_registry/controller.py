@@ -467,6 +467,8 @@ class PortfolioController:
 
 class ExecutorProcessBackend:
     """Restart-safe adapter that delegates local work to executor_cli processes."""
+    _PRAXIS_ROOT = Path(__file__).resolve().parents[2]
+
     def __init__(self, root: str | Path, *, heartbeat_timeout_seconds: float = 30.0,
                  coordinator: LeaseIntentCoordinator | None = None):
         self.root = Path(root)
@@ -491,6 +493,7 @@ class ExecutorProcessBackend:
              "--log-dir", str(self.root / "logs")],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
+            cwd=self._PRAXIS_ROOT,
         )
         self._processes[job_id] = process
         _atomic(self.root / f"{job_id}.process.json", {
@@ -546,6 +549,19 @@ class ExecutorProcessBackend:
     def poll(self, backend_job_id: str) -> PollResult:
         state_path = self.root / f"{backend_job_id}.state.json"
         if not state_path.exists():
+            # Popen.poll() performs waitpid(WNOHANG): unlike os.kill(pid, 0), it
+            # reaps an owned child and does not misclassify a dead zombie as a
+            # live executor. The executor may fail before it can publish state
+            # (for example an import/bootstrap error), which must be terminal.
+            owned = self._processes.get(backend_job_id)
+            if owned is not None:
+                returncode = owned.poll()
+                if returncode is not None:
+                    return PollResult(
+                        "failed",
+                        message=("executor exited before publishing state "
+                                 f"(returncode {returncode})"),
+                    )
             process_path = self.root / f"{backend_job_id}.process.json"
             try:
                 process = json.loads(process_path.read_text())

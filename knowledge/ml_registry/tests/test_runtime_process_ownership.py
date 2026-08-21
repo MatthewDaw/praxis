@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import subprocess
 import sys
 import time
 
 from knowledge.ml_registry.contracts import CampaignLease
 from knowledge.ml_registry.controller import ExecutorProcessBackend, PortfolioController
+from knowledge.ml_registry.scheduler import JobSpec, ResourceProfile
 from knowledge.ml_registry.portfolio import CampaignStatus, Portfolio
 from knowledge.ml_registry.runtime import LeaseIntentCoordinator
 
@@ -44,6 +46,49 @@ def _groups_dead(backend: ExecutorProcessBackend) -> bool:
             continue
         return False
     return True
+
+
+def test_executor_backend_bootstraps_and_reaps_outside_praxis_checkout(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The operator is importable from a sports checkout without being installed.
+
+    Its executor child must therefore bootstrap from the Praxis package root.
+    Before the regression fix that child exited before writing state.json and
+    remained a zombie; os.kill(pid, 0) then made poll report `running` forever.
+    """
+
+    outside = tmp_path / "sports-checkout"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    backend = ExecutorProcessBackend(tmp_path / "dispatch")
+    job = JobSpec(
+        campaign_id="contact-rehearsal",
+        command=(sys.executable, "-c", "print('contact rehearsal')"),
+        resources=ResourceProfile(cpus=1),
+        timeout_minutes=1,
+        working_directory=str(outside),
+    )
+
+    job_id = backend.submit(job)
+    deadline = time.time() + 5
+    result = backend.poll(job_id)
+    while result.state == "running" and time.time() < deadline:
+        time.sleep(0.02)
+        result = backend.poll(job_id)
+
+    assert result.state == "completed"
+    assert (tmp_path / "dispatch" / f"{job_id}.state.json").is_file()
+    owned = backend._processes[job_id]
+    assert owned.returncode == 0
+    observed = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(owned.pid)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert not observed.stdout.strip(), observed.stdout
 
 
 def test_force_kills_real_groups_supersedes_runs_and_releases_leases(tmp_path: Path) -> None:
