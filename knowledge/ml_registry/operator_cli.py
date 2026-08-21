@@ -189,6 +189,7 @@ class OperatorRuntime:
             retry_backoff_seconds=float(self.config.get("retry_backoff_seconds", 60)),
             coordinator=self.coordinator, lease_factory=self._lease,
             completion_verifier=self.completion, run_superseder=supersede,
+            registry=Registry(self.registry_root),
         )
 
     def status_document(self) -> dict[str, object]:

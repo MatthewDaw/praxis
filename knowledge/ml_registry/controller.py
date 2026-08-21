@@ -244,7 +244,10 @@ class PortfolioController:
                     if self.completion_verifier is not None:
                         self.failpoint("finalizing", cid)
                         artifact = self.completion_verifier(cid, polled)
-                    if artifact:
+                    # Registry-native readiness resolves the producer's immutable
+                    # version/artifact directly.  The compatibility Portfolio view
+                    # is membership-only and must not become a second artifact store.
+                    if artifact and self.registry is None:
                         self._register_artifact(cid, artifact)
                     record.state = "completed"
                     self.failpoint("finalized_before_lease_release", cid)
