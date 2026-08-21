@@ -47,7 +47,7 @@ from knowledge.ml_registry.lifecycle import (
     rejection_memory,
     untried_backlog,
 )
-from knowledge.ml_registry.schema import IDEA, MODEL, RegistryValidationError, validate_fact
+from knowledge.ml_registry.schema import IDEA, RegistryValidationError
 from knowledge.ml_registry.supervisor import (
     Intervention,
     record_keep_pushing_marker,
