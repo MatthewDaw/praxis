@@ -11,13 +11,11 @@ from copy import deepcopy
 from typing import Any, Mapping
 
 from ._validation import ContractError
-from .artifact_manifest import CampaignArtifact
 from .campaign_spec import CampaignSpec
 from .launch_intent import LaunchIntent
 from .lease import CampaignLease
 from .ledger_v2 import LEDGER_V2_HEADER, LedgerV2
 from .outcome import CampaignOutcomeRecord
-from .promotion import PromotionRecord
 
 
 def migrate_legacy_trial_state(status: str, verdict: str | None = None) -> tuple[str, str | None]:
@@ -106,8 +104,6 @@ def migrate_registry_ratchet_lineage(payload: Mapping[str, Any]) -> dict[str, An
 
 LATEST_SCHEMA_VERSIONS = {
     "campaign_spec": CampaignSpec.VERSION,
-    "campaign_artifact": CampaignArtifact.VERSION,
-    "promotion_record": PromotionRecord.VERSION,
     "campaign_outcome": CampaignOutcomeRecord.VERSION,
     "launch_intent": LaunchIntent.VERSION,
     "campaign_lease": CampaignLease.VERSION,
@@ -116,8 +112,6 @@ LATEST_SCHEMA_VERSIONS = {
 
 _VALIDATORS = {
     "campaign_spec": CampaignSpec.from_mapping,
-    "campaign_artifact": CampaignArtifact.from_mapping,
-    "promotion_record": PromotionRecord.from_mapping,
     "campaign_outcome": CampaignOutcomeRecord.from_mapping,
     "launch_intent": LaunchIntent.from_mapping,
     "campaign_lease": CampaignLease.from_mapping,
@@ -131,6 +125,12 @@ def migrate_mapping(kind: str, payload: Mapping[str, Any], *, source_version: in
     already present but ``schema_version`` was absent. This migration adds only
     that discriminator. It deliberately provides no aliases or inferred data.
     """
+    if kind in {"campaign_artifact", "promotion_record"}:
+        raise ContractError(
+            f"retired contract kind {kind!r} has no lossless standard-registry mapping; "
+            "authenticate its frozen event log with read_retired_event_log and import the "
+            "underlying run/artifact evidence explicitly"
+        )
     if kind not in _VALIDATORS:
         raise ContractError(f"unknown contract kind {kind!r}")
     if not isinstance(payload, Mapping):

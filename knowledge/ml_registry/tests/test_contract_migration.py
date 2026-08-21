@@ -39,6 +39,12 @@ def test_mapping_migration_rejects_mismatched_and_future_versions():
         migrate_mapping("campaign_outcome", {"schema_version": 99, **OUTCOME_V0})
 
 
+@pytest.mark.parametrize("kind", ["campaign_artifact", "promotion_record"])
+def test_retired_contracts_are_dispositioned_without_inventing_registry_records(kind):
+    with pytest.raises(ContractError, match="no lossless standard-registry mapping"):
+        migrate_mapping(kind, {})
+
+
 def test_ledger_v2_offline_migration_is_byte_stable():
     current = LedgerV2.from_rows([LedgerRowV2("sha:arm", .8, 1.0, "ok", "arm", 2.0, 3)]).serialize()
     assert migrate_ledger(current) == current
