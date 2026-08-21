@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable
@@ -339,40 +337,15 @@ class ManifestRegistry:
             )
 
     def save(self) -> None:
-        self._assert_mutable()
-        if self.path is None:
-            raise ManifestValidationError("cannot save a manifest registry without a path")
-        self.validate()
-        document = {
-            "schema_version": self.SCHEMA_VERSION,
-            "datasets": [asdict(value) for _, value in sorted(self.datasets.items())],
-            "splits": [asdict(value) for _, value in sorted(self.splits.items())],
-            "predictions": [asdict(value) for _, value in sorted(self.predictions.items())],
-        }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(document, handle, indent=2, sort_keys=True)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, self.path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        raise ManifestValidationError(
+            "manifest compatibility views are read-only; write through Registry"
+        )
 
     @classmethod
     def load(cls, path: str | Path) -> "ManifestRegistry":
-        try:
-            document = json.loads(Path(path).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ManifestValidationError(f"invalid manifest registry: {exc}") from exc
-        if not isinstance(document, dict):
-            raise ManifestValidationError("manifest registry must be a JSON object")
-        if document.get("schema_version") != cls.SCHEMA_VERSION:
-            raise ManifestValidationError("unsupported manifest registry schema_version")
-        return cls._from_document(document, path=path)
+        raise ManifestValidationError(
+            "path-owned manifest registries are retired; read through ManifestRegistry.from_registry"
+        )
 
     @classmethod
     def from_registry(cls, registry: "Registry") -> "ManifestRegistry":

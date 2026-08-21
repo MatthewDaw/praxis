@@ -7,10 +7,8 @@ from dataclasses import asdict, dataclass
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
 import sys
-import tempfile
 from typing import TYPE_CHECKING, Mapping
 
 if TYPE_CHECKING:
@@ -246,31 +244,16 @@ class ArtifactCacheIndex:
 
 
 def load_index(path: Path) -> ArtifactCacheIndex:
-    if not path.exists():
-        return ArtifactCacheIndex()
-    raw = json.loads(path.read_text())
-    if not isinstance(raw, Mapping):
-        raise RegistryValidationError(
-            "cache index must be a JSON object", field="index"
-        )
-    return ArtifactCacheIndex.from_dict(raw)
+    raise RegistryValidationError(
+        "path-owned cache indexes are retired; read through ArtifactCacheIndex.from_registry",
+        field="index",
+    )
 
 
 def save_index(path: Path, index: ArtifactCacheIndex) -> None:
-    """Atomically replace the index; blob contents remain at their external URI."""
-    index._assert_mutable()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as stream:
-            json.dump(index.to_dict(), stream, indent=2, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+    raise RegistryValidationError(
+        "cache compatibility views are read-only; write through Registry", field="index"
+    )
 
 
 def _object(raw: str) -> dict[str, object]:
