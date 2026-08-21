@@ -143,12 +143,12 @@ _CLASS_QUESTIONS: dict[str, str] = {
     ),
     CLASS_TEST_GRADUATION: (
         "A skip or expected-failure marker has been removed from a test. Endorse only when the "
-        "bounded diff changes no test body, parameters, assertion, fixture, or production code; "
-        "focused witnesses demonstrate that every newly enforced case passes without XPASS, skip, "
-        "or collection error; and the relevant broader collection or suite witness completes. "
-        "Refuse if the marker still describes an unimplemented behavior, the reason remains true, "
-        "the test was weakened or narrowed, or environmental absence merely prevented the test "
-        "from running. This change intentionally makes a formerly tolerated failure observable."
+        "bounded diff changes no test body, parameters, assertion, fixture, or production code. "
+        "Refuse if the test was weakened or narrowed, another skip/xfail was added, or the removed "
+        "marker covered cases outside the unchanged test. Focused and broader execution witnesses "
+        "are enforced by the caller before this blind review and are deliberately not shown here; "
+        "do not speculate about their output. This change intentionally makes a formerly tolerated "
+        "failure observable."
     ),
 }
 

@@ -284,8 +284,8 @@ def test_the_annotation_question_judges_correctness_not_acceptance():
 def test_test_graduation_question_requires_real_focused_and_broader_witnesses():
     text = instruction_for("test-graduation").lower()
     for required in (
-        "expected-failure marker", "no test body", "focused witnesses", "without xpass",
-        "collection", "test was weakened", "environmental absence", "observable",
+        "expected-failure marker", "no test body", "test was weakened", "another skip/xfail",
+        "execution witnesses", "deliberately not shown", "do not speculate", "observable",
     ):
         assert required in text
 
