@@ -31,3 +31,11 @@ def adopt_run_and_promote(registry: Registry, *, run_id: str, model_id: str, rea
 
 def supersede_run(registry: Registry, *, run_id: str, reason: str) -> None:
     registry._supersede_run(run_id=run_id, reason=reason, capability=_ADJUDICATOR_CAPABILITY)
+
+
+def record_ratchet_evidence(registry: Registry, payload: dict[str, object]) -> None:
+    registry._record_ratchet_evidence(payload, capability=_ADJUDICATOR_CAPABILITY)
+
+
+def invalidate_adoption(registry: Registry, payload: dict[str, object]) -> None:
+    registry._invalidate_adoption(payload, capability=_ADJUDICATOR_CAPABILITY)

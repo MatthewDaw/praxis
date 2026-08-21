@@ -16,12 +16,16 @@ def adjudicate_against_champion(
     model_id: str,
     reason: str,
     promotion: Mapping[str, Any] | None = None,
+    counterfactual_run_id: str | None = None,
+    intervention_digest: str | None = None,
 ) -> str:
     """Derive a verdict from canonical registry state and, for a win, promote its version.
 
     The trainer supplies measurements only. The current champion supplies the comparison
     baseline; callers cannot assert either a verdict or a comparison value.
     """
+    if (counterfactual_run_id is None) != (intervention_digest is None):
+        raise RegistryError("ratchet evidence requires both counterfactual_run_id and intervention_digest")
     run = _one(registry.rows("runs"), "run_id", run_id, "run")
     if run["status"] == "succeeded" and run["verdict"] == "adopted":
         if promotion is None:
@@ -80,6 +84,13 @@ def adjudicate_against_champion(
                               model_version=values)
     else:
         adjudicate_run(registry, run_id=run_id, verdict=verdict, status=status, reason=reason)
+    if verdict == "rejected" and counterfactual_run_id is not None:
+        from .registry_ratchet import consider_rejection
+        consider_rejection(
+            registry, run_id=run_id, model_id=model_id,
+            counterfactual_run_id=counterfactual_run_id,
+            intervention_digest=str(intervention_digest),
+        )
     return verdict
 
 
