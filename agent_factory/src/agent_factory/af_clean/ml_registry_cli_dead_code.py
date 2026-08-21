@@ -13,6 +13,7 @@ RULE = "ml-registry-private-cli-dispatch"
 LOCATIONS = frozenset({("knowledge/ml_registry/cli/registry.py", 711)})
 ALLOWLIST = frozenset({
     "knowledge/ml_registry/cli/registry.py",
+    "knowledge/ml_registry/tests/test_registry_cli_golden.py",
 })
 WITNESSES = (
     WitnessCommand((
