@@ -130,7 +130,8 @@ class PortfolioController:
                  state_path: str | Path, max_active: int = MAX_ACTIVE_CAMPAIGNS,
                  retry_backoff_seconds: float = 60.0, max_retry_backoff_seconds: float = 3600.0,
                  clock=time.time, coordinator: LeaseIntentCoordinator | None = None,
-                 lease_factory=None, completion_verifier=None, failpoint=None):
+                 lease_factory=None, completion_verifier=None, run_superseder=None,
+                 failpoint=None):
         if not 1 <= max_active <= MAX_ACTIVE_CAMPAIGNS:
             raise ControllerError(f"max_active must be between 1 and {MAX_ACTIVE_CAMPAIGNS}")
         self.portfolio = portfolio
@@ -145,6 +146,7 @@ class PortfolioController:
         self.coordinator = coordinator
         self.lease_factory = lease_factory
         self.completion_verifier = completion_verifier
+        self.run_superseder = run_superseder
         self.failpoint = failpoint or (lambda _boundary, _campaign_id: None)
         self.admission_stopped = False
         self._last_blocked: dict[str, str] = {}
@@ -200,8 +202,10 @@ class PortfolioController:
                 polled = PollResult("failed", message=f"backend poll failed: {exc}")
             if polled.state == "completed":
                 try:
+                    self.failpoint("outcome_written", cid)
                     artifact = polled.artifact
                     if self.completion_verifier is not None:
+                        self.failpoint("finalizing", cid)
                         artifact = self.completion_verifier(cid, polled)
                     if artifact:
                         self._register_artifact(cid, artifact)
@@ -271,6 +275,7 @@ class PortfolioController:
                 )
                 self._persist("running")
                 self.failpoint("process_spawned", job.campaign_id)
+                self.failpoint("arm_running", job.campaign_id)
                 started.append(job.campaign_id)
             except Exception as exc:
                 record = self.records[job.campaign_id]
@@ -348,6 +353,8 @@ class PortfolioController:
                 record.state = "failed"
                 record.message = "operator force stop"
                 retryable.add(cid)
+                if self.run_superseder is not None:
+                    self.run_superseder(cid, "operator force stop")
                 if self.coordinator is not None:
                     self.coordinator.release(cid)
         self._persist("stopped")
@@ -391,6 +398,7 @@ class ExecutorProcessBackend:
         self.root.mkdir(parents=True, exist_ok=True)
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
         self.coordinator = coordinator
+        self._processes: dict[str, subprocess.Popen[bytes]] = {}
 
     def submit(self, job: JobSpec) -> str:
         return self.submit_prepared(job, f"{job.campaign_id}.attempt-1")
@@ -409,6 +417,7 @@ class ExecutorProcessBackend:
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        self._processes[job_id] = process
         _atomic(self.root / f"{job_id}.process.json", {
             "pid": process.pid, "pgid": process.pid, "started_at": time.time(),
             "state_path": str(state_path),
@@ -432,6 +441,13 @@ class ExecutorProcessBackend:
             return True
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             return False
+        owned = self._processes.get(backend_job_id)
+        if owned is not None:
+            try:
+                owned.wait(timeout=5)
+                return True
+            except subprocess.TimeoutExpired:
+                return False
         deadline = time.time() + 5
         while time.time() < deadline:
             try:
@@ -470,6 +486,8 @@ class ExecutorProcessBackend:
                 os.kill(int(process["pid"]), 0)
             except (OSError, ValueError, KeyError, json.JSONDecodeError):
                 return PollResult("failed", message="executor process died while state was running")
+        elif backend_job_id in self._processes:
+            self._processes[backend_job_id].wait(timeout=1)
         return PollResult(
             str(state["state"]), artifact=state.get("artifact"), message=state.get("message"),
             checkpoint_uri=state.get("checkpoint_uri"),
