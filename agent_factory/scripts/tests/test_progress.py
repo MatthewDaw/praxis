@@ -27,7 +27,7 @@ def _run(scores, total=None, **kw):
 
 
 def test_every_step_emits_a_greppable_line() -> None:
-    lines = [l for l in _run([0.6, 0.61, 0.62]) if l.startswith(PREFIX)]
+    lines = [line for line in _run([0.6, 0.61, 0.62]) if line.startswith(PREFIX)]
     assert len(lines) == 4                      # 3 steps + COMPLETE
 
 
@@ -47,7 +47,7 @@ def test_the_real_M06_sequence_warns_before_the_run_ends() -> None:
     scores = [0.61, 0.62, 0.60, 0.63, 0.6183, 0.6273, 0.4123, 0.0491]
     out = "\n".join(_run(scores, total=20))
     assert WARN_PREFIX in out
-    warn_at = [i for i, l in enumerate(_run(scores, total=20)) if l.startswith(WARN_PREFIX)]
+    warn_at = [i for i, line in enumerate(_run(scores, total=20)) if line.startswith(WARN_PREFIX)]
     assert warn_at and warn_at[0] < len(scores)     # fired mid-run, not at the end
 
 
@@ -65,14 +65,14 @@ def test_no_warning_before_enough_samples() -> None:
 def test_the_collapsing_value_does_not_pollute_the_mean_it_is_judged_against() -> None:
     """Compared BEFORE being appended, or a large drop inflates the SD and hides itself."""
     lines = _run([0.70, 0.70, 0.70, 0.70, 0.01])
-    warn = [l for l in lines if l.startswith(WARN_PREFIX)]
+    warn = [line for line in lines if line.startswith(WARN_PREFIX)]
     assert warn and "0.7000" in warn[0]          # mean of the PREVIOUS four
 
 
 def test_min_interval_throttles_but_always_emits_the_last_step() -> None:
     """A chatty step should not flood a supervisor's log, but the final unit must be visible."""
     lines = _run([0.6] * 5, total=5, min_interval_s=3600)
-    assert any("5/5 100%" in l for l in lines)
+    assert any("5/5 100%" in line for line in lines)
 
 
 def test_done_reports_total_time_and_mean() -> None:

@@ -79,7 +79,8 @@ def test_court_marking_does_not_invert_where_the_binomial_form_would():
     """p(1-p) peaks at 0.5, so sqrt(p(1-p)/n) RAISES the bar for a campaign climbing
     through the low half -- 26% higher at court_marking's win condition than at its
     baseline. Residual-to-ceiling is monotone over the whole range."""
-    binomial = lambda p: math.sqrt(p * (1 - p) / 429)
+    def binomial(p: float) -> float:
+        return math.sqrt(p * (1 - p) / 429)
     assert binomial(0.70) / binomial(0.155648) > 1.25  # the defect, reproduced
 
     meta = _scaled_meta("maximize", 1.0, 0.155648, 0.024962)
