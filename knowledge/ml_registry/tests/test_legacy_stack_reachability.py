@@ -92,6 +92,22 @@ COMPLETENESS_BEHAVIOR_MAP = {
     "test_convergence_can_be_waived_explicitly":
         "test_completion_requires_current_compatible_verified_production_lineage",
 }
+FINALIZER_BEHAVIOR_MAP = {
+    "test_finalize_writes_one_promotion_and_canonical_completeness_accepts_it":
+        "test_finalization_is_one_registry_event_and_returns_canonical_views",
+    "test_every_precommit_failpoint_leaves_no_partial_finalization":
+        "test_pending_projection_refuses_champion_race_before_event_append",
+    "test_failure_after_commit_is_recovered_by_idempotent_retry":
+        "test_crash_after_event_recovers_alias_and_finalization_together",
+    "test_idempotent_retry_refuses_changed_finalization_payload":
+        "test_full_payload_retry_is_idempotent_and_drift_is_refused",
+    "test_finalize_rejects_wrong_current_lineage_without_writing":
+        "test_only_current_champion_adopted_lineage_can_finalize",
+    "test_finalize_rejects_a_promotion_after_its_adoption_lineage_changed":
+        "test_only_current_champion_adopted_lineage_can_finalize",
+    "test_finalize_rejects_tampered_artifact_upstream_and_compatibility":
+        "test_completeness_compatibility_and_blob_are_hard_gates",
+}
 EXPECTED_ABSENT_CALLERS = {
     "knowledge/ml_registry/tests/test_artifact_store.py",
     "knowledge/ml_registry/tests/test_completeness.py",
@@ -165,6 +181,11 @@ def test_each_relevant_legacy_completeness_behavior_has_a_canonical_test() -> No
         legacy_text = legacy.read_text()
         assert all(name in legacy_text for name in COMPLETENESS_BEHAVIOR_MAP)
     assert all(name in canonical for name in COMPLETENESS_BEHAVIOR_MAP.values())
+
+
+def test_each_retired_finalizer_behavior_has_a_concrete_canonical_test() -> None:
+    canonical = (ROOT / "knowledge/ml_registry/tests/test_registry_finalizer.py").read_text()
+    assert all(name in canonical for name in FINALIZER_BEHAVIOR_MAP.values())
 
 
 def test_legacy_modules_are_unreachable_or_witnessed_absent() -> None:
