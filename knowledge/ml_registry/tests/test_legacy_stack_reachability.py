@@ -114,12 +114,21 @@ EXPECTED_ABSENT_CALLERS = {
     "knowledge/ml_registry/tests/test_finalize.py",
 }
 LEGACY_MODULES = {
+    "knowledge.ml_registry.contracts.artifact_manifest":
+        "knowledge/ml_registry/contracts/artifact_manifest.py",
+    "knowledge.ml_registry.contracts.promotion": "knowledge/ml_registry/contracts/promotion.py",
     "knowledge.ml_registry.completeness": "knowledge/ml_registry/completeness.py",
     "knowledge.ml_registry.services.finalize": "knowledge/ml_registry/services/finalize.py",
     "knowledge.ml_registry.storage.artifact_store":
         "knowledge/ml_registry/storage/artifact_store.py",
 }
 MODULE_REPLACEMENT_OBLIGATIONS = {
+    "knowledge.ml_registry.contracts.artifact_manifest": {
+        "knowledge/ml_registry/domain/registry.py": ("class Artifact", "class ModelVersion"),
+    },
+    "knowledge.ml_registry.contracts.promotion": {
+        "knowledge/ml_registry/domain/registry.py": ("class Alias", "class ModelVersion"),
+    },
     "knowledge.ml_registry.services.finalize": {
         "knowledge/ml_registry/services/registry_finalize.py": (
             "class RegistryFinalizeService",
@@ -144,7 +153,10 @@ MODULE_REPLACEMENT_OBLIGATIONS = {
         ),
     },
 }
-EXPECTED_DEAD_MODULES: set[str] = set()
+EXPECTED_DEAD_MODULES = {
+    "knowledge.ml_registry.contracts.artifact_manifest",
+    "knowledge.ml_registry.contracts.promotion",
+}
 EXPECTED_ABSENT_MODULES = {
     "knowledge.ml_registry.completeness",
     "knowledge.ml_registry.services.finalize",

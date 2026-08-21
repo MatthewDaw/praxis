@@ -11,9 +11,11 @@ from .p8_cli_split import read_prebuilt_diff
 
 REACHABILITY_TEST = "knowledge/ml_registry/tests/test_legacy_stack_reachability.py"
 MODULES = {
+    "artifact_manifest": "knowledge/ml_registry/contracts/artifact_manifest.py",
     "artifact_store": "knowledge/ml_registry/storage/artifact_store.py",
     "completeness": "knowledge/ml_registry/completeness.py",
     "finalize": "knowledge/ml_registry/services/finalize.py",
+    "promotion": "knowledge/ml_registry/contracts/promotion.py",
 }
 
 
