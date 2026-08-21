@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import math
 from pathlib import Path
@@ -163,6 +164,47 @@ def test_model_version_requires_convergence_matching_code_and_blob(tmp_path: Pat
                   compat_result={"head_sha": SHA, "passed": True, "at": 1}, status="active")
     with pytest.raises(RegistryError, match="externally adjudicated"):
         registry.create_model_version(**values)
+
+
+def test_artifact_identity_and_size_are_derived_only_from_stored_bytes(tmp_path: Path) -> None:
+    registry = Registry(tmp_path)
+    _experiment(registry)
+    _run(registry)
+    content = b"canonical weights"
+    digest = registry.create_artifact(
+        run_id="run-1", kind="checkpoint", content=content, schema_version="1",
+    )
+    assert digest == hashlib.sha256(content).hexdigest()
+    assert registry.rows("artifacts") == [{
+        "artifact_id": digest,
+        "run_id": "run-1",
+        "kind": "checkpoint",
+        "uri": str(registry.blobs.path(digest)),
+        "bytes": len(content),
+        "schema_version": "1",
+    }]
+    assert set(inspect.signature(registry.create_artifact).parameters) == {
+        "run_id", "kind", "content", "schema_version",
+    }
+
+
+@pytest.mark.parametrize("claim", [
+    {"artifact_id": "0" * 64},
+    {"checksum": "0" * 64},
+    {"size_bytes": 999},
+])
+def test_artifact_creation_refuses_caller_claimed_identity_checksum_or_size(
+    tmp_path: Path, claim: dict[str, object],
+) -> None:
+    registry = Registry(tmp_path)
+    _experiment(registry)
+    _run(registry)
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        registry.create_artifact(
+            run_id="run-1", kind="checkpoint", content=b"weights", schema_version="1", **claim,
+        )
+    assert registry.rows("artifacts") == []
+    assert registry.list_events()[-1].event_type != "artifact_created"
 
 
 def test_event_before_projection_recovers_after_crash(tmp_path: Path) -> None:
