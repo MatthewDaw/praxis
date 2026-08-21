@@ -235,10 +235,10 @@ def test_idea_verdicts_come_from_the_TRIAL_not_the_idea() -> None:
     tid = register_trial(space, {"model_id": mid, "idea_id": iid, "commit": "c1",
                                  "status": "complete", "throughput": 3.4, "diff_lines": 1},
                          frozenset({"c1"}))
-    space.get(tid).meta["status"] = "failed"          # a verdict, on the TRIAL only
+    space.get(tid).meta.update(status="succeeded", verdict="rejected")
     assert space.get(iid).meta.get("status") is None  # idea was never stamped
 
-    assert idea_verdicts(space, mid) == {"M09": "failed"}
+    assert idea_verdicts(space, mid) == {"M09": "succeeded"}
 
 
 def test_a_voided_trial_does_not_answer_its_idea() -> None:
@@ -301,9 +301,9 @@ def test_an_explicit_reopen_outranks_a_stale_trial() -> None:
     tid = register_trial(space, {"model_id": mid, "idea_id": iid, "commit": "c1",
                                  "status": "complete", "throughput": 3.4, "diff_lines": 1},
                          frozenset({"c1"}))
-    space.get(tid).meta["status"] = "stagnant"
+    space.get(tid).meta.update(status="succeeded", verdict="parked")
     space.get(iid).meta["status"] = "parked"
-    assert idea_verdicts(space, mid) == {"T02": "stagnant"}
+    assert idea_verdicts(space, mid) == {"T02": "succeeded"}
 
     reopen_idea(space, iid, reason="measured on a superseded architecture")
     assert idea_verdicts(space, mid) == {}          # the reopen wins
@@ -314,5 +314,5 @@ def test_an_explicit_reopen_outranks_a_stale_trial() -> None:
     tid2 = register_trial(space, {"model_id": mid, "idea_id": iid, "commit": "c2",
                                   "status": "complete", "throughput": 3.4, "diff_lines": 1},
                           frozenset({"c2"}))
-    space.get(tid2).meta["status"] = "failed"
-    assert idea_verdicts(space, mid) == {"T02": "failed"}
+    space.get(tid2).meta.update(status="succeeded", verdict="rejected")
+    assert idea_verdicts(space, mid) == {"T02": "succeeded"}

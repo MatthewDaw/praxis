@@ -544,7 +544,8 @@ def test_arms_the_metric_cannot_see_never_walk_an_axis_toward_exclusion():
         result = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher([commit]))
         assert result["status"] == "parked", result
         trial = space.get(result["trial_id"])
-        assert trial.meta["status"] == "stagnant"
+        assert trial.meta["status"] == "succeeded"
+        assert trial.meta["verdict"] == "parked"
         assert trial.meta[METRIC_UNMOVED_FIELD] is True
 
     # Three trials on one axis, and the axis has not moved one step toward exclusion.
@@ -568,7 +569,8 @@ def test_a_stagnant_trial_that_did_move_the_metric_still_counts_as_non_improving
     for commit in ("wobble1", "wobble2"):
         result = dispatch_trial(space, model_id, LEDGER, _scripted_dispatcher([commit]))
         trial = space.get(result["trial_id"])
-        assert trial.meta["status"] == "stagnant"
+        assert trial.meta["status"] == "succeeded"
+        assert trial.meta["verdict"] == "parked"
         assert METRIC_UNMOVED_FIELD not in trial.meta
 
     assert axis_streak(space, model_id)["non_improving_streak"] == 2

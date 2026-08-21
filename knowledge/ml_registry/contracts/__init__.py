@@ -17,7 +17,7 @@ from .ledger_v2 import (
     LedgerValidity,
     ThroughputUnit,
 )
-from .migration import LATEST_SCHEMA_VERSIONS, migrate_ledger, migrate_mapping
+from .migration import LATEST_SCHEMA_VERSIONS, migrate_ledger, migrate_legacy_trial_state, migrate_mapping
 from .outcome import CampaignOutcome, CampaignOutcomeRecord
 from .partition import Partition
 from .production_alias import ProductionAliasRef
@@ -50,5 +50,6 @@ __all__ = [
     "RunsExport",
     "ThroughputUnit",
     "migrate_ledger",
+    "migrate_legacy_trial_state",
     "migrate_mapping",
 ]

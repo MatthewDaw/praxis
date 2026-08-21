@@ -88,7 +88,7 @@ from typing import Callable, Optional
 from knowledge.ml_registry.floor import CAMPAIGN_STATUS_FIELD
 from knowledge.ml_registry.ideate import RETRIEVAL_AXES
 from knowledge.ml_registry.insight import LessonFiler, maybe_file_cross_model_lesson, sweep_cross_model_lessons
-from knowledge.ml_registry.lifecycle import TRIAL_STATUS_SUCCEEDED, claim_is_stale, untried_backlog
+from knowledge.ml_registry.lifecycle import claim_is_stale, untried_backlog
 from knowledge.ml_registry.schema import (
     IDEA,
     MODEL,
@@ -501,7 +501,7 @@ def axis_streak(space: RegistrySpace, model_id: str) -> dict[str, object]:
             # arms, and the cost of excluding one wrongly is abandoning a whole stage -- on
             # detection that is 56 untried ideas retired by trials that measured nothing.
             continue
-        if t.meta.get("status") == TRIAL_STATUS_SUCCEEDED:
+        if t.meta.get("verdict") == "adopted":
             non_improving_streak = 0
         else:
             non_improving_streak += 1

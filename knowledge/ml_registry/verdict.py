@@ -301,6 +301,7 @@ def adjudicate_verdict(
     # LedgerRow did not carry `status`, so this could not be seen at all.
     if str(row.status).strip().lower() not in FAIR_RUN_STATUSES:
         trial.meta["status"] = trial_status_for_verdict(VERDICT_VOIDED).value
+        trial.meta["verdict"] = VERDICT_VOIDED
         trial.meta["void_reason"] = f"ledger status {row.status!r} is not a fair run"
         return VERDICT_VOIDED
 
@@ -352,6 +353,7 @@ def adjudicate_verdict(
             )
         if row.throughput < baseline_throughput * (1 - void_fraction):
             trial.meta["status"] = trial_status_for_verdict(VERDICT_VOIDED).value
+            trial.meta["verdict"] = VERDICT_VOIDED
             trial.meta["void_reason"] = (
                 f"throughput {row.throughput} is more than {void_fraction:.0%} below "
                 f"baseline_throughput {baseline_throughput}"
@@ -376,6 +378,7 @@ def adjudicate_verdict(
     if delta > noise_floor:
         parent_lineage_id = current_lineage(model_id, model.meta)
         trial.meta["status"] = trial_status_for_verdict(VERDICT_ADOPTED).value
+        trial.meta["verdict"] = VERDICT_ADOPTED
         mutate_model(
             space,
             model_id,
@@ -400,6 +403,7 @@ def adjudicate_verdict(
     # one floor is one standard deviation, i.e. no evidence, in EITHER direction.
     if delta < -noise_floor:
         trial.meta["status"] = trial_status_for_verdict(VERDICT_REJECTED).value
+        trial.meta["verdict"] = VERDICT_REJECTED
         reject_idea(space, idea_id, "trial fell more than one noise-floor standard deviation below the current baseline")
         # COUNTERFACTUAL ATTRIBUTION. The streak is evidence ABOUT THE ADOPTION, so a
         # rejection joins it only when the adoption is what caused the rejection: the trial
@@ -466,6 +470,7 @@ def adjudicate_verdict(
     # stagnant band, closed on both sides: -noise_floor <= delta <= noise_floor
     if row.diff_lines <= diff_size_limit:
         trial.meta["status"] = trial_status_for_verdict(VERDICT_PARKED).value
+        trial.meta["verdict"] = VERDICT_PARKED
         # A delta of EXACTLY zero is not the same claim as "measured, did not help", and the
         # difference decides whether an axis gets abandoned. Measured on detection 2026-08-20:
         # nms_iou_strict, nms_iou_loose and score_floor_shipped emitted 43,488 / 71,756 / 7,130
@@ -482,6 +487,7 @@ def adjudicate_verdict(
         return VERDICT_PARKED
 
     trial.meta["status"] = trial_status_for_verdict(VERDICT_REJECTED).value
+    trial.meta["verdict"] = VERDICT_REJECTED
     reject_idea(space, idea_id, "stagnant trial breached the model's net-line bound")
     return VERDICT_REJECTED
 

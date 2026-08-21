@@ -18,7 +18,8 @@ from knowledge.ml_registry.domain.status import (TERMINAL_TRIAL_STATUSES as TERM
 #:
 #: Note these are the TRIAL's status vocabulary, which is deliberately not the verdict vocabulary:
 #: `adjudicate_verdict` RETURNS "adopted"/"parked"/"rejected"/"voided" while writing
-#: "succeeded"/"failed"/"stagnant"/"voided" onto the trial. Listing the verdict names here instead
+#: a six-value execution status onto the trial and an orthogonal verdict tag beside it.
+#: Listing the verdict names as statuses instead
 #: would leave every adjudicated trial looking in flight forever.
 #:
 #: `voided` is terminal on purpose: a voided run is meant to be RE-RUN, so it must not keep

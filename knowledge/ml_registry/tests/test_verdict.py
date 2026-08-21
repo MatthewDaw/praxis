@@ -197,7 +197,8 @@ def test_park_when_stagnant_and_within_both_bounds():
     verdict = adjudicate_verdict(space, trial_id, ledger)
 
     assert verdict == VERDICT_PARKED
-    assert space.get(trial_id).meta["status"] == "stagnant"
+    assert space.get(trial_id).meta["status"] == "succeeded"
+    assert space.get(trial_id).meta["verdict"] == "parked"
     assert space.get(idea_id).meta["status"] == STATUS_PARKED
 
 

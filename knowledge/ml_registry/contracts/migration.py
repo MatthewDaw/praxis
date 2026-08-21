@@ -20,6 +20,30 @@ from .outcome import CampaignOutcomeRecord
 from .promotion import PromotionRecord
 
 
+def migrate_legacy_trial_state(status: str, verdict: str | None = None) -> tuple[str, str | None]:
+    """Losslessly translate the two pre-standard trial statuses.
+
+    ``stagnant`` carried the parked adjudication inline; the standard registry
+    separates it into execution status ``succeeded`` and verdict ``parked``.
+    ``errored`` carried no adjudication and becomes the retryable execution status
+    ``failed``. Current values pass through after strict validation.
+    """
+    from knowledge.ml_registry.domain.status import TrialStatus, Verdict
+
+    if status == "stagnant":
+        if verdict not in (None, Verdict.PARKED.value):
+            raise ContractError("legacy stagnant status conflicts with its verdict")
+        return TrialStatus.SUCCEEDED.value, Verdict.PARKED.value
+    if status == "errored":
+        if verdict is not None:
+            raise ContractError("legacy errored status cannot carry an adjudication verdict")
+        return TrialStatus.FAILED.value, None
+    parsed = TrialStatus(status).value
+    if verdict is not None:
+        Verdict(verdict)
+    return parsed, verdict
+
+
 def migrate_registry_ratchet_lineage(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Offline-add ancestry markers without inventing counterfactual measurements.
 

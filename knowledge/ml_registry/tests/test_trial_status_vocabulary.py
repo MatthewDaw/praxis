@@ -14,10 +14,8 @@ from knowledge.ml_registry.write_path import RegistrySpace, register_idea, regis
     ("running", False, False, False, False),
     ("complete", False, False, False, False),
     ("succeeded", True, True, True, False),
-    ("failed", True, True, True, False),
-    ("stagnant", True, True, True, False),
+    ("failed", True, False, False, True),
     ("voided", True, False, False, True),
-    ("errored", True, False, False, True),
     ("superseded", True, False, False, True),
 ])
 def test_every_persisted_trial_status_has_one_explicit_lifecycle_meaning(
@@ -30,17 +28,18 @@ def test_every_persisted_trial_status_has_one_explicit_lifecycle_meaning(
 
 @pytest.mark.parametrize(("verdict", "status"), [
     (Verdict.ADOPTED, TrialStatus.SUCCEEDED),
-    (Verdict.REJECTED, TrialStatus.FAILED),
-    (Verdict.PARKED, TrialStatus.STAGNANT),
+    (Verdict.REJECTED, TrialStatus.SUCCEEDED),
+    (Verdict.PARKED, TrialStatus.SUCCEEDED),
     (Verdict.VOIDED, TrialStatus.VOIDED),
 ])
 def test_external_verdict_to_persisted_trial_status_mapping_is_exhaustive(verdict, status):
     assert trial_status_for_verdict(verdict) is status
-    assert verdict_for_trial_status(status) is verdict
+    assert verdict_for_trial_status(status) is None
 
 
 @pytest.mark.parametrize("status", [
-    TrialStatus.RUNNING, TrialStatus.COMPLETE, TrialStatus.ERRORED, TrialStatus.SUPERSEDED,
+    TrialStatus.RUNNING, TrialStatus.COMPLETE, TrialStatus.SUCCEEDED, TrialStatus.FAILED,
+    TrialStatus.SUPERSEDED,
 ])
 def test_statuses_without_an_adjudication_verdict_do_not_invent_one(status):
     assert verdict_for_trial_status(status) is None
@@ -69,13 +68,13 @@ def test_latest_retry_replaces_a_nonanswer_only_after_a_fair_verdict():
     _trial(space, model_id, idea_id, "void", "voided")
     assert idea_verdicts(space, model_id) == {}
     assert idea_verdicts(space, model_id, statuses=None) == {"arm": "voided"}
-    _trial(space, model_id, idea_id, "retry", "failed")
-    assert idea_verdicts(space, model_id) == {"arm": "failed"}
+    _trial(space, model_id, idea_id, "retry", "succeeded")
+    assert idea_verdicts(space, model_id) == {"arm": "succeeded"}
 
 
 def test_latest_nonanswer_reopens_reporting_even_after_an_older_fair_measurement():
     space, model_id, idea_id = _space_with_idea()
-    _trial(space, model_id, idea_id, "fair", "failed")
+    _trial(space, model_id, idea_id, "fair", "succeeded")
     _trial(space, model_id, idea_id, "reopened", "superseded")
     assert idea_verdicts(space, model_id) == {}
     assert idea_verdicts(space, model_id, statuses=None) == {"arm": "superseded"}

@@ -213,7 +213,7 @@ def test_in_flight_and_awaiting_adjudication_trials_never_measure_or_answer(stat
     assert any(item["kind"] == "stage_open" for item in out["blocking"])
 
 
-@pytest.mark.parametrize("status", ["errored", "voided", "superseded"])
+@pytest.mark.parametrize("status", ["failed", "voided", "superseded"])
 def test_unfair_abandoned_latest_trials_are_retryable_not_measurements(status) -> None:
     space, mid = _space()
     iid = _idea(space, mid, "arm", "representation")
@@ -234,7 +234,7 @@ def test_unfair_abandoned_latest_trials_are_retryable_not_measurements(status) -
 def test_no_op_incumbent_remeasurement_does_not_satisfy_measured_floor(marker) -> None:
     space, mid = _space()
     iid = _idea(space, mid, "arm", "representation")
-    tid = _trial(space, mid, iid, "candidate", status="stagnant")
+    tid = _trial(space, mid, iid, "candidate", status="succeeded")
     space.get(tid).meta.update(marker)
     space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
     out = campaign_completeness(space, mid, ("representation",), min_measured=1)
@@ -247,7 +247,7 @@ def test_latest_fair_retry_wins_over_an_older_void() -> None:
     space, mid = _space()
     iid = _idea(space, mid, "arm", "representation")
     _trial(space, mid, iid, "void", status="voided")
-    _trial(space, mid, iid, "retry", status="failed")
+    _trial(space, mid, iid, "retry", status="succeeded")
     space.get(mid).meta[CONVERGENCE_FIELD] = "c-final"
     out = campaign_completeness(
         space, mid, ("representation",), min_measured=1, require_convergence=False,

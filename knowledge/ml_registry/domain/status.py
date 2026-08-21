@@ -4,16 +4,12 @@ from __future__ import annotations
 
 from enum import Enum
 
+from .run import RunStatus
 
-class TrialStatus(str, Enum):
-    RUNNING = "running"
-    COMPLETE = "complete"
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
-    STAGNANT = "stagnant"
-    VOIDED = "voided"
-    ERRORED = "errored"
-    SUPERSEDED = "superseded"
+
+# Compatibility name for the Praxis-fact API. The standard Registry's typed RunStatus
+# is the one six-value execution vocabulary; keeping a second enum would let them drift.
+TrialStatus = RunStatus
 
 
 class Verdict(str, Enum):
@@ -25,22 +21,21 @@ class Verdict(str, Enum):
 
 VERDICT_TO_TRIAL_STATUS = {
     Verdict.ADOPTED: TrialStatus.SUCCEEDED,
-    Verdict.REJECTED: TrialStatus.FAILED,
-    Verdict.PARKED: TrialStatus.STAGNANT,
+    Verdict.REJECTED: TrialStatus.SUCCEEDED,
+    Verdict.PARKED: TrialStatus.SUCCEEDED,
     Verdict.VOIDED: TrialStatus.VOIDED,
 }
-TRIAL_STATUS_TO_VERDICT = {status: verdict for verdict, status in VERDICT_TO_TRIAL_STATUS.items()}
 
 TERMINAL_TRIAL_STATUSES = frozenset({
-    TrialStatus.SUCCEEDED.value, TrialStatus.FAILED.value, TrialStatus.STAGNANT.value,
-    TrialStatus.VOIDED.value, TrialStatus.ERRORED.value, TrialStatus.SUPERSEDED.value,
+    TrialStatus.SUCCEEDED.value, TrialStatus.FAILED.value, TrialStatus.VOIDED.value,
+    TrialStatus.SUPERSEDED.value,
 })
 FAIRLY_MEASURED_TRIAL_STATUSES = frozenset({
-    TrialStatus.SUCCEEDED.value, TrialStatus.FAILED.value, TrialStatus.STAGNANT.value,
+    TrialStatus.SUCCEEDED.value,
 })
 ANSWERING_TRIAL_STATUSES = FAIRLY_MEASURED_TRIAL_STATUSES
 RETRYABLE_TRIAL_STATUSES = frozenset({
-    TrialStatus.VOIDED.value, TrialStatus.ERRORED.value, TrialStatus.SUPERSEDED.value,
+    TrialStatus.FAILED.value, TrialStatus.VOIDED.value, TrialStatus.SUPERSEDED.value,
 })
 ANSWERED_IDEA_STATUSES = frozenset({"adopted", "rejected", "parked", "superseded"})
 
@@ -71,4 +66,11 @@ def trial_status_for_verdict(value: Verdict | str) -> TrialStatus:
 
 
 def verdict_for_trial_status(value: TrialStatus | str) -> Verdict | None:
-    return TRIAL_STATUS_TO_VERDICT.get(parse_trial_status(value))
+    """Execution state never implies an external verdict.
+
+    Even ``voided`` is validated as a separate tag at adjudication time. Keeping
+    the reverse lookup total-but-empty prevents callers from reconstructing verdict
+    authority from execution state.
+    """
+    parse_trial_status(value)
+    return None
