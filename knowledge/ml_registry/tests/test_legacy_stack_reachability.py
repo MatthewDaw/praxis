@@ -144,12 +144,11 @@ MODULE_REPLACEMENT_OBLIGATIONS = {
         ),
     },
 }
-EXPECTED_DEAD_MODULES = {
-    "knowledge.ml_registry.storage.artifact_store",
-}
+EXPECTED_DEAD_MODULES: set[str] = set()
 EXPECTED_ABSENT_MODULES = {
     "knowledge.ml_registry.completeness",
     "knowledge.ml_registry.services.finalize",
+    "knowledge.ml_registry.storage.artifact_store",
 }
 
 
