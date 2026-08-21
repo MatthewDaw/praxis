@@ -36,6 +36,18 @@ EXPECTED_ABSENT_CALLERS = {"knowledge/ml_registry/tests/test_finalize.py"}
 LEGACY_MODULES = {
     "knowledge.ml_registry.services.finalize": "knowledge/ml_registry/services/finalize.py",
 }
+MODULE_REPLACEMENT_OBLIGATIONS = {
+    "knowledge.ml_registry.services.finalize": {
+        "knowledge/ml_registry/services/registry_finalize.py": (
+            "class RegistryFinalizeService",
+            "def move_production",
+        ),
+        "knowledge/ml_registry/tests/test_registry_finalizer.py": (
+            "test_finalization_is_one_registry_event_and_returns_canonical_views",
+            "test_completeness_compatibility_and_blob_are_hard_gates",
+        ),
+    },
+}
 EXPECTED_DEAD_MODULES = {"knowledge.ml_registry.services.finalize"}
 EXPECTED_ABSENT_MODULES: set[str] = set()
 
@@ -68,6 +80,9 @@ def test_legacy_modules_are_unreachable_or_witnessed_absent() -> None:
         for module in _imports(path)
     }
     for module, source in LEGACY_MODULES.items():
+        for replacement, required_symbols in MODULE_REPLACEMENT_OBLIGATIONS[module].items():
+            replacement_text = (ROOT / replacement).read_text()
+            assert all(symbol in replacement_text for symbol in required_symbols)
         path = ROOT / source
         if module in EXPECTED_ABSENT_MODULES:
             assert not path.exists()
