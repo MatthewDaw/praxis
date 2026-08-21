@@ -53,6 +53,45 @@ ARTIFACT_STORE_BEHAVIOR_MAP = {
     "test_nonfinite_event_time_is_refused_before_history_is_written":
         "test_event_log_refuses_nonfinite_or_boolean_time_before_writing",
 }
+COMPLETENESS_BEHAVIOR_MAP = {
+    "test_an_empty_stage_blocks_rather_than_closing_silently":
+        "test_empty_open_and_thin_stages_have_distinct_blockers",
+    "test_an_open_stage_blocks": "test_empty_open_and_thin_stages_have_distinct_blockers",
+    "test_a_thin_stage_blocks_even_though_it_closed":
+        "test_empty_open_and_thin_stages_have_distinct_blockers",
+    "test_a_voided_arm_blocks_because_it_is_unmeasured":
+        "test_latest_run_status_and_verdict_drive_coverage",
+    "test_in_flight_and_awaiting_adjudication_trials_never_measure_or_answer":
+        "test_latest_run_status_and_verdict_drive_coverage",
+    "test_unfair_abandoned_latest_trials_are_retryable_not_measurements":
+        "test_latest_run_status_and_verdict_drive_coverage",
+    "test_no_op_incumbent_remeasurement_does_not_satisfy_measured_floor":
+        "test_both_noop_encodings_are_answered_but_not_measured",
+    "test_latest_fair_retry_wins_over_an_older_void":
+        "test_latest_run_status_and_verdict_drive_coverage",
+    "test_latest_void_retry_state_wins_over_an_older_fair_result":
+        "test_latest_retry_and_noop_do_not_populate_or_close_stage",
+    "test_unreachable_arms_do_not_block_completion":
+        "test_rejected_dependency_makes_dependent_unreachable_but_retry_does_not",
+    "test_an_arm_whose_dependency_is_not_an_idea_does_not_hold_its_stage_open":
+        "test_view_rejects_unknown_stage_or_dependency",
+    "test_completeness_uses_meta_stage_not_just_axis":
+        "test_view_rejects_unknown_stage_or_dependency",
+    "test_an_unregistered_model_is_refused":
+        "test_view_joins_only_on_fact_id_and_canonicalizes_dependencies",
+    "test_a_campaign_with_no_convergence_run_is_not_finished":
+        "test_completion_requires_current_compatible_verified_production_lineage",
+    "test_all_stages_closed_but_truthy_legacy_convergence_is_not_done":
+        "test_completion_requires_current_compatible_verified_production_lineage",
+    "test_malformed_truthy_convergence_does_not_complete_campaign":
+        "test_missing_or_wrong_champion_version_is_wrong_lineage",
+    "test_wrong_lineage_convergence_does_not_complete_campaign":
+        "test_wrong_or_superseded_version_lineage_blocks",
+    "test_stale_convergence_does_not_complete_campaign":
+        "test_checksum_drift_is_stale_artifact",
+    "test_convergence_can_be_waived_explicitly":
+        "test_completion_requires_current_compatible_verified_production_lineage",
+}
 EXPECTED_ABSENT_CALLERS = {
     "knowledge/ml_registry/tests/test_artifact_store.py",
     "knowledge/ml_registry/tests/test_finalize.py",
@@ -110,6 +149,21 @@ def test_each_legacy_artifact_store_behavior_has_a_concrete_canonical_test() -> 
         legacy_text = legacy.read_text()
         assert all(name in legacy_text for name in ARTIFACT_STORE_BEHAVIOR_MAP)
     assert all(name in canonical for name in ARTIFACT_STORE_BEHAVIOR_MAP.values())
+
+
+def test_each_relevant_legacy_completeness_behavior_has_a_canonical_test() -> None:
+    canonical = "\n".join(
+        (ROOT / path).read_text()
+        for path in (
+            "knowledge/ml_registry/tests/test_registry_completeness.py",
+            "knowledge/ml_registry/tests/test_campaign_view.py",
+        )
+    )
+    legacy = ROOT / "knowledge/ml_registry/tests/test_completeness.py"
+    if str(legacy.relative_to(ROOT)) not in EXPECTED_ABSENT_CALLERS:
+        legacy_text = legacy.read_text()
+        assert all(name in legacy_text for name in COMPLETENESS_BEHAVIOR_MAP)
+    assert all(name in canonical for name in COMPLETENESS_BEHAVIOR_MAP.values())
 
 
 def test_legacy_modules_are_unreachable_or_witnessed_absent() -> None:
