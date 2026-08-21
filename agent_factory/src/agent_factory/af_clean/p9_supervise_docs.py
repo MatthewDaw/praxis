@@ -17,7 +17,8 @@ P9_DIFF_ALLOWLIST = frozenset({
 })
 P9_WITNESSES = (
     WitnessCommand((
-        "env", "PRAXIS_DB_DISABLED=1", "uv", "run", "pytest",
+        "env", "PRAXIS_DB_DISABLED=1", "PYTHONPATH=agent_factory/src:agent_factory",
+        "uv", "run", "pytest",
         "agent_factory/tests/test_af_ml_supervise_skill_docs.py",
         "knowledge/ml_registry/tests/test_standard_campaign_fixture.py",
         "-q", "-p", "no:cacheprovider",
