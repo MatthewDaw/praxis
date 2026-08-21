@@ -295,6 +295,8 @@ class Registry:
             # Evidence is canonical in the append-only event stream.  Keeping it out of
             # mutable model metadata preserves the eight-table registry contract.
             return
+        elif op == "trial_refused":
+            return
         elif op == "adoption_invalidated":
             run = db.execute("SELECT * FROM runs WHERE run_id=?", (p["adoption_run_id"],)).fetchone()
             if run is None or run["status"] != "succeeded" or run["verdict"] != "adopted":
@@ -426,6 +428,19 @@ class Registry:
             raise RegistryError("new runs must start running with no finished_at")
         if values.get("metrics") not in (None, {}):
             raise RegistryError("trainer records metrics only when completing a run")
+        running = next((row for row in self.rows("runs")
+                        if row["experiment_id"] == values.get("experiment_id")
+                        and row["idea_id"] == values.get("idea_id")
+                        and row["status"] == "running"), None)
+        if running is not None:
+            self._write("trial_refused", {
+                "experiment_id": values.get("experiment_id"),
+                "idea_id": values.get("idea_id"),
+                "existing_run_id": running["run_id"],
+                "refused_run_id": values.get("run_id"),
+                "reason_code": "trial_already_in_flight",
+            })
+            raise RegistryError("trial_already_in_flight")
         payload = dict(values)
         payload["code_ref"] = code_ref.to_mapping()
         payload["metrics"] = {}

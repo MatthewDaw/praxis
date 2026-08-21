@@ -115,6 +115,13 @@ def portfolio_schedule(
         campaign = portfolio.campaigns[campaign_id]
         if campaign.status != CampaignStatus.READY or campaign.stale or not readiness.activatable:
             reasons = list(readiness.reasons)
+            missing = [dependency for dependency in campaign.dependencies
+                       if dependency.artifact_id not in portfolio.artifacts]
+            if missing:
+                producers = {candidate.model_id: candidate.id
+                             for candidate in portfolio.campaigns.values()}
+                reasons = [f"waiting on {producers.get(item.upstream_model_id, item.upstream_model_id)}:"
+                           f"{item.artifact_id}" for item in missing]
             if campaign.status != CampaignStatus.READY:
                 reasons.insert(0, f"campaign status is {campaign.status.value}, expected READY")
             gated[campaign_id] = JobState(campaign_id, "blocked", message="; ".join(reasons))
@@ -311,7 +318,8 @@ class PortfolioController:
         while len(slots) < self.max_active:
             slots.append(SlotStatus(None, next(reasons, "no_ready_campaign")))
         ready = tuple(sorted(str(spec["id"]) for spec in self.specs
-                             if self.records.get(str(spec["id"]), DispatchRecord("")).state
+                             if self.records.get(str(spec["id"])) is None
+                             or self.records[str(spec["id"])].state
                              not in {"running", "completed"}))
         return ControllerStatus(tuple(slots), ready)
 

@@ -27,6 +27,25 @@ class StopReport:
     orphaned: frozenset[str] = frozenset()
 
 
+class ProgressTracker:
+    """Typed in-memory projection of persisted run events for operator status."""
+
+    def __init__(self) -> None:
+        self._active: dict[str, int] = {}
+        self._maximum: dict[str, int] = {}
+
+    def started(self, campaign_id: str) -> None:
+        active = self._active.get(campaign_id, 0) + 1
+        self._active[campaign_id] = active
+        self._maximum[campaign_id] = max(active, self._maximum.get(campaign_id, 0))
+
+    def finished(self, campaign_id: str) -> None:
+        self._active[campaign_id] = max(0, self._active.get(campaign_id, 0) - 1)
+
+    def maximum_concurrent_arms(self, *, campaign_id: str) -> int:
+        return self._maximum.get(campaign_id, 0)
+
+
 def _atomic(path: Path, value: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)

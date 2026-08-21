@@ -18,13 +18,6 @@ def _public(module: str, name: str):
     return value
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "fixture A: the two-root test does not yet prove distinct named leases or "
-        "artifact-specific descendant blocking"
-    ),
-)
 def test_fixture_a_two_roots_have_distinct_leases_and_child_waits_on_fit(tmp_path):
     scenario = _public("knowledge.ml_registry.testing.portfolio_fixtures", "three_node_scenario")(
         tmp_path
@@ -36,13 +29,6 @@ def test_fixture_a_two_roots_have_distinct_leases_and_child_waits_on_fit(tmp_pat
     assert result.blocked["C1"] == "waiting on R1:fit"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "fixture B: one-trial refusal is not yet evidenced by registry events and the "
-        "typed progress stream's maximum concurrent arm count"
-    ),
-)
 def test_fixture_b_registry_events_and_progress_prove_one_arm_per_campaign(tmp_path):
     scenario = _public("knowledge.ml_registry.testing.portfolio_fixtures", "serial_arm_scenario")(
         tmp_path
@@ -54,13 +40,6 @@ def test_fixture_b_registry_events_and_progress_prove_one_arm_per_campaign(tmp_p
     assert scenario.progress.maximum_concurrent_arms(campaign_id="R1") == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "fixture C: finalize verification, atomic lease release, descendant refresh, "
-        "and same-poll slot backfill do not yet share one controller transaction"
-    ),
-)
 def test_fixture_c_verified_completion_backfills_in_the_same_poll(tmp_path):
     scenario = _public("knowledge.ml_registry.testing.portfolio_fixtures", "three_node_scenario")(
         tmp_path
@@ -138,13 +117,6 @@ def test_fixture_g_invalid_promoted_artifact_blocks_consumer(
     assert expected_reason in readiness.reason.lower()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "fixture J: named-device leases and throughput/cotenancy conflicts are not yet "
-        "represented, so status cannot explain a scientifically invalid empty slot"
-    ),
-)
 @pytest.mark.parametrize("conflict", ["shared_cuda_0", "exclusive_cpu_throughput"])
 def test_fixture_j_conflicting_ready_pair_uses_one_slot_and_explains_other(tmp_path, conflict):
     scenario = _public("knowledge.ml_registry.testing.portfolio_fixtures", "resource_conflict_scenario")(
@@ -160,13 +132,6 @@ def test_fixture_j_conflicting_ready_pair_uses_one_slot_and_explains_other(tmp_p
     assert status.ready_frontier == scenario.ready_campaign_ids
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "fixture E: reconciliation is required at intent-written, spawned, arm-running, "
-        "outcome-written, finalizing, and finalized-before-release crash boundaries"
-    ),
-)
 @pytest.mark.parametrize(
     "boundary",
     [
@@ -190,13 +155,6 @@ def test_fixture_e_restart_is_idempotent_at_every_persisted_boundary(tmp_path, b
     assert scenario.alias_count("R1", alias="production") <= 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "fixture F: force/drain stop semantics, process-group death proof, trial "
-        "supersession, lease release, and StopReport are not implemented"
-    ),
-)
 @pytest.mark.parametrize("mode", ["force", "drain"])
 def test_fixture_f_stop_owns_process_groups_and_arm_admission(tmp_path, mode):
     scenario = _public("knowledge.ml_registry.testing.portfolio_fixtures", "two_root_process_scenario")(
