@@ -94,6 +94,7 @@ COMPLETENESS_BEHAVIOR_MAP = {
 }
 EXPECTED_ABSENT_CALLERS = {
     "knowledge/ml_registry/tests/test_artifact_store.py",
+    "knowledge/ml_registry/tests/test_completeness.py",
     "knowledge/ml_registry/tests/test_finalize.py",
 }
 LEGACY_MODULES = {
