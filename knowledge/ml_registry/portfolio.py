@@ -15,7 +15,11 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
+
+if TYPE_CHECKING:
+    from knowledge.ml_registry.storage.projections import PortfolioProjectionSpec
+    from knowledge.ml_registry.storage.registry import Registry
 
 
 class PortfolioValidationError(ValueError):
@@ -104,16 +108,34 @@ class Portfolio:
 
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = Path(path) if path is not None else None
+        self._registry_backed = False
         self.campaigns: dict[str, Campaign] = {}
         self.artifacts: dict[str, Artifact] = {}
 
     @classmethod
     def load(cls, path: str | Path) -> "Portfolio":
-        portfolio = cls(path)
         try:
             document = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise PortfolioValidationError(f"invalid portfolio document: {exc}") from exc
+        return cls._from_document(document, path=path)
+
+    @classmethod
+    def from_registry(
+        cls, registry: "Registry", *, portfolio_spec: "PortfolioProjectionSpec"
+    ) -> "Portfolio":
+        """Return legacy artifact/readiness APIs as a read-only registry projection."""
+        from knowledge.ml_registry.storage.projections import project_portfolio_artifacts
+
+        portfolio = cls._from_document(
+            project_portfolio_artifacts(registry, portfolio_spec=portfolio_spec), path=None
+        )
+        portfolio._registry_backed = True
+        return portfolio
+
+    @classmethod
+    def _from_document(cls, document: object, *, path: str | Path | None) -> "Portfolio":
+        portfolio = cls(path)
         if not isinstance(document, dict):
             raise PortfolioValidationError("portfolio document must be a JSON object")
         if document.get("schema_version") != cls.SCHEMA_VERSION:
@@ -138,6 +160,7 @@ class Portfolio:
         return portfolio
 
     def save(self) -> None:
+        self._assert_mutable()
         if self.path is None:
             raise PortfolioValidationError("cannot save a portfolio without a path")
         self.validate()
@@ -171,6 +194,7 @@ class Portfolio:
         coverage: float,
         input_artifact_ids: Iterable[str] = (),
     ) -> Artifact:
+        self._assert_mutable()
         if artifact_id in self.artifacts:
             raise PortfolioValidationError(f"artifact {artifact_id!r} already exists")
         if not all((artifact_id, model_id, verdict, dataset_manifest_hash, split_manifest_hash,
@@ -194,6 +218,7 @@ class Portfolio:
         model_id: str,
         dependencies: Iterable[ArtifactDependency] = (),
     ) -> Campaign:
+        self._assert_mutable()
         if not campaign_id or not model_id:
             raise PortfolioValidationError("campaign_id and model_id must be non-empty")
         if campaign_id in self.campaigns:
@@ -239,6 +264,7 @@ class Portfolio:
         return Readiness(not reasons, tuple(reasons))
 
     def refresh(self, campaign_id: str) -> Readiness:
+        self._assert_mutable()
         campaign = self._campaign(campaign_id)
         result = self.readiness(campaign_id)
         campaign.blocked_reasons = list(result.reasons)
@@ -248,6 +274,7 @@ class Portfolio:
         return result
 
     def start_seeding(self, campaign_id: str) -> None:
+        self._assert_mutable()
         campaign = self._campaign(campaign_id)
         if campaign.status != CampaignStatus.ACTIVATABLE:
             raise PortfolioValidationError("only an ACTIVATABLE campaign can start seeding")
@@ -256,6 +283,7 @@ class Portfolio:
         self._transition(campaign, CampaignStatus.SEEDING, "seeding started")
 
     def mark_ready(self, campaign_id: str) -> None:
+        self._assert_mutable()
         campaign = self._campaign(campaign_id)
         if campaign.status != CampaignStatus.SEEDING:
             raise PortfolioValidationError("only a SEEDING campaign can become READY")
@@ -266,6 +294,7 @@ class Portfolio:
         self._transition(campaign, CampaignStatus.READY, "seeding completed")
 
     def supersede_artifact(self, artifact_id: str, replacement_id: str) -> set[str]:
+        self._assert_mutable()
         old = self._artifact(artifact_id)
         replacement = self._artifact(replacement_id)
         if not old.current:
@@ -350,6 +379,12 @@ class Portfolio:
             return self.artifacts[artifact_id]
         except KeyError as exc:
             raise PortfolioValidationError(f"unknown artifact {artifact_id!r}") from exc
+
+    def _assert_mutable(self) -> None:
+        if self._registry_backed:
+            raise PortfolioValidationError(
+                "registry-backed portfolio projections are read-only; write through Registry"
+            )
 
     @staticmethod
     def _transition(

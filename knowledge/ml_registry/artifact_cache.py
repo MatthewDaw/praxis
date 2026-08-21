@@ -11,7 +11,10 @@ import os
 from pathlib import Path
 import sys
 import tempfile
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
+
+if TYPE_CHECKING:
+    from knowledge.ml_registry.storage.registry import Registry
 
 from knowledge.ml_registry.schema import RegistryValidationError
 from knowledge.ml_registry.file_lock import exclusive_file_lock
@@ -81,6 +84,7 @@ class ArtifactCacheIndex:
     """Index whose entries never change or disappear; only active pointers move."""
 
     def __init__(self) -> None:
+        self._registry_backed = False
         self.entries: dict[str, CacheEntry] = {}
         self.active: dict[str, str] = {}
         self.superseded: dict[str, str] = {}
@@ -94,6 +98,7 @@ class ArtifactCacheIndex:
         coverage: float,
         prediction_scope: str,
     ) -> CacheEntry:
+        self._assert_mutable()
         uri = _text(uri, "uri")
         checksum = _text(checksum, "checksum")
         if (
@@ -165,6 +170,7 @@ class ArtifactCacheIndex:
         return entry
 
     def invalidate(self, entry_id: str, *, reason: str) -> None:
+        self._assert_mutable()
         if entry_id not in self.entries:
             raise RegistryValidationError(
                 f"unknown cache entry {entry_id!r}", field="entry_id"
@@ -222,6 +228,22 @@ class ArtifactCacheIndex:
             target.update({str(k): str(v) for k, v in value.items()})
         return index
 
+    @classmethod
+    def from_registry(cls, registry: "Registry") -> "ArtifactCacheIndex":
+        """Return the legacy cache API as a read-only canonical projection."""
+        from knowledge.ml_registry.storage.projections import project_artifact_cache_index
+
+        index = cls.from_dict(project_artifact_cache_index(registry))
+        index._registry_backed = True
+        return index
+
+    def _assert_mutable(self) -> None:
+        if self._registry_backed:
+            raise RegistryValidationError(
+                "registry-backed cache projections are read-only; write through Registry",
+                field="index",
+            )
+
 
 def load_index(path: Path) -> ArtifactCacheIndex:
     if not path.exists():
@@ -236,6 +258,7 @@ def load_index(path: Path) -> ArtifactCacheIndex:
 
 def save_index(path: Path, index: ArtifactCacheIndex) -> None:
     """Atomically replace the index; blob contents remain at their external URI."""
+    index._assert_mutable()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:

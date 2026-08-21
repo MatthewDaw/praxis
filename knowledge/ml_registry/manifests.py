@@ -8,7 +8,10 @@ import os
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
+
+if TYPE_CHECKING:
+    from knowledge.ml_registry.storage.registry import Registry
 
 
 class ManifestValidationError(ValueError):
@@ -237,14 +240,17 @@ class ManifestRegistry:
 
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = Path(path) if path is not None else None
+        self._registry_backed = False
         self.datasets: dict[str, DatasetManifest] = {}
         self.splits: dict[str, SplitManifest] = {}
         self.predictions: dict[str, PredictionManifest] = {}
 
     def add_dataset(self, manifest: DatasetManifest) -> DatasetManifest:
+        self._assert_mutable()
         return self._add(self.datasets, manifest)
 
     def add_split(self, manifest: SplitManifest) -> SplitManifest:
+        self._assert_mutable()
         dataset_hashes = {item.hash for item in self.datasets.values()}
         if manifest.dataset_manifest_hash not in dataset_hashes:
             raise ManifestValidationError("split references an unknown dataset manifest hash")
@@ -252,6 +258,7 @@ class ManifestRegistry:
         return self._add(self.splits, manifest)
 
     def add_prediction(self, manifest: PredictionManifest) -> PredictionManifest:
+        self._assert_mutable()
         split = next(
             (item for item in self.splits.values() if item.hash == manifest.split_manifest_hash),
             None,
@@ -332,6 +339,7 @@ class ManifestRegistry:
             )
 
     def save(self) -> None:
+        self._assert_mutable()
         if self.path is None:
             raise ManifestValidationError("cannot save a manifest registry without a path")
         self.validate()
@@ -364,6 +372,25 @@ class ManifestRegistry:
             raise ManifestValidationError("manifest registry must be a JSON object")
         if document.get("schema_version") != cls.SCHEMA_VERSION:
             raise ManifestValidationError("unsupported manifest registry schema_version")
+        return cls._from_document(document, path=path)
+
+    @classmethod
+    def from_registry(cls, registry: "Registry") -> "ManifestRegistry":
+        """Return the legacy manifest API as a read-only canonical projection."""
+        from knowledge.ml_registry.storage.projections import project_manifest_registry
+
+        view = cls._from_document(project_manifest_registry(registry), path=None)
+        view._registry_backed = True
+        return view
+
+    @classmethod
+    def _from_document(
+        cls, document: object, *, path: str | Path | None
+    ) -> "ManifestRegistry":
+        if not isinstance(document, dict):
+            raise ManifestValidationError("manifest registry must be a JSON object")
+        if document.get("schema_version") != cls.SCHEMA_VERSION:
+            raise ManifestValidationError("unsupported manifest registry schema_version")
         registry = cls(path)
         try:
             for name in ("datasets", "splits", "predictions"):
@@ -386,3 +413,9 @@ class ManifestRegistry:
             raise ManifestValidationError(f"malformed manifest registry: {exc}") from exc
         registry.validate()
         return registry
+
+    def _assert_mutable(self) -> None:
+        if self._registry_backed:
+            raise ManifestValidationError(
+                "registry-backed manifest projections are read-only; write through Registry"
+            )
