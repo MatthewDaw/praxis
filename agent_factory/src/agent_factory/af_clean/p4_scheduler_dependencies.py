@@ -1,0 +1,71 @@
+"""Bounded ``/af-clean`` driver for obsolete scheduler dependency code."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from .executable_diff import ExecutableDiffResult, WitnessCommand, apply_bounded_executable_diff
+from .findings import CLASS_CODE_DELETION, Finding, Location
+from .p8_cli_split import read_prebuilt_diff
+
+
+RULE = "p4-raw-scheduler-dependency-deletion"
+LOCATIONS = frozenset({
+    ("knowledge/ml_registry/scheduler.py", 143),
+    ("knowledge/ml_registry/scheduler.py", 207),
+})
+ALLOWLIST = frozenset({"knowledge/ml_registry/scheduler.py"})
+WITNESSES = (
+    WitnessCommand((
+        "env", "PRAXIS_DB_DISABLED=1", "uv", "run", "pytest",
+        "knowledge/ml_registry/tests/test_artifact_readiness.py",
+        "knowledge/ml_registry/tests/test_scheduler.py",
+        "knowledge/ml_registry/tests/test_scheduler_cli.py",
+        "knowledge/ml_registry/tests/test_foundation_characterization.py",
+        "knowledge/ml_registry/tests/test_remaining_fixture_characterization.py",
+        "-q", "-p", "no:cacheprovider",
+    )),
+    WitnessCommand((
+        "env", "PRAXIS_DB_DISABLED=1", "uv", "run", "pytest",
+        "knowledge/ml_registry/tests", "-q", "-p", "no:cacheprovider",
+    )),
+)
+
+
+def findings() -> tuple[Finding, ...]:
+    return tuple(
+        Finding(
+            rule=RULE,
+            tier="enforce",
+            location=Location(file, line),
+            pole="bloat",
+            change_class=CLASS_CODE_DELETION,
+            proposal=(
+                "delete only the unreachable raw depends_on parser/cycle evaluator after "
+                "the public scheduler rejects that key and artifact readiness owns the graph"
+            ),
+        )
+        for file, line in sorted(LOCATIONS)
+    )
+
+
+def apply_p4_diff(
+    repo_root: str | Path, diff_path: str | Path, **overrides: object,
+) -> ExecutableDiffResult:
+    forbidden = {
+        "diff", "findings", "expected_rule", "expected_locations", "diff_allowlist",
+        "witnesses", "change_class",
+    }.intersection(overrides)
+    if forbidden:
+        raise TypeError(f"P-4 safety boundary cannot be overridden: {sorted(forbidden)!r}")
+    return apply_bounded_executable_diff(
+        repo_root=repo_root,
+        diff=read_prebuilt_diff(diff_path),
+        findings=findings(),
+        expected_rule=RULE,
+        expected_locations=LOCATIONS,
+        diff_allowlist=ALLOWLIST,
+        witnesses=WITNESSES,
+        change_class=CLASS_CODE_DELETION,
+        **overrides,
+    )
