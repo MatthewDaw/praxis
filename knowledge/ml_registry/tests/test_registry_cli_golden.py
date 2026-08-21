@@ -50,6 +50,19 @@ def test_root_help_is_the_desired_registry_and_idea_bridge_golden() -> None:
         assert removed_noun not in normalized
 
 
+def test_private_pre_cutover_dispatcher_is_absent_and_obsolete_commands_are_unreachable() -> None:
+    source = (ROOT / "knowledge/ml_registry/cli/registry.py").read_text()
+    assert "def _legacy_main(" not in source
+    assert "_legacy_main(" not in source
+    for command in ("bootstrap-campaign", "campaign-complete", "supervise-campaign"):
+        result = subprocess.run(
+            [sys.executable, "-m", "knowledge.ml_registry.cli", command],
+            cwd=ROOT, text=True, capture_output=True, check=False,
+        )
+        assert result.returncode == 2
+        assert "invalid choice" in result.stderr
+
+
 def test_every_live_registry_command_names_registry_root_authority() -> None:
     for command in LIVE_COMMANDS | HISTORICAL_COMMANDS:
         assert "--registry-root" in help_text(command)
