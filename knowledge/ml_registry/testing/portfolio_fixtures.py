@@ -22,7 +22,9 @@ from knowledge.ml_registry.runtime import (
     RegistryCompletionVerifier,
 )
 from knowledge.ml_registry.services.registry_aliases import adopt_run_and_promote
+from knowledge.ml_registry.services.registry_aliases import invalidate_adoption
 from knowledge.ml_registry.services.registry_finalize import RegistryFinalizer
+from knowledge.ml_registry.services.registry_finalize import RegistryFinalizeService
 from knowledge.ml_registry.services.registry_runs import complete_run
 from knowledge.ml_registry.services.registry_runs import supersede_run
 from knowledge.ml_registry.storage import RegistryError
@@ -176,6 +178,80 @@ def three_node_scenario(tmp_path):
 
 def serial_arm_scenario(tmp_path):
     return _Scenario(tmp_path)
+
+
+def _campaign_spec(campaign_id, *, requires=(), schema_version="1"):
+    return {
+        "schema_version": 1, "campaign_id": campaign_id,
+        "model_id_policy": campaign_id, "axis": "fixture", "sport_scope": ["shared"],
+        "target_ontology": "fixture", "metric": {"name": "f1", "direction": "maximize"},
+        "stages": [{"name": "representation"}], "corpora": [{"id": "fixture"}],
+        "requires": list(requires),
+        "produces": [{"artifact_type": "checkpoint", "schema_version": schema_version,
+                      "oof_for": []}],
+        "supervision": {"mode": "composing"}, "resources": {"lane": "cpu"},
+        "isolation": {"state_root": campaign_id},
+        "production": {"protocol": "Fixture"}, "extends": [],
+        "deterministic_incumbent": None, "learned_escalation": False,
+    }
+
+
+class _PromotedArtifactScenario:
+    def __init__(self, root: Path) -> None:
+        self.registry, _view, _finalizer = _registry(Path(root) / "registry")
+        self.fit_artifact_id = self.registry.rows("model_versions")[0]["artifact_id"]
+        RegistryFinalizeService(self.registry).move_production(
+            model_id="R1", version=1, reason="fixture production v1",
+        )
+        self.registry.register_campaign_spec(_campaign_spec("R1"))
+        self.registry.register_campaign_spec(_campaign_spec("C1", requires=[{
+            "artifact_type": "checkpoint", "producer_campaign_id": "R1",
+            "min_coverage": 1.0, "oof": False,
+        }]))
+
+    def apply(self, mutation: str) -> None:
+        if mutation == "tamper_bytes":
+            self.registry.blobs.path(self.fit_artifact_id).write_bytes(b"tampered")
+            return
+        if mutation == "backdate_manifest":
+            # The manifest advanced while production still carries the older schema.
+            self.registry.register_campaign_spec(_campaign_spec("R1", schema_version="2"))
+            return
+        if mutation == "supersede_trial":
+            _run(self.registry, "run-R1-v2", idea_id="idea-2")
+            complete_run(self.registry, run_id="run-R1-v2", metrics={
+                "metric": .81, "validity": "valid", "throughput": 1,
+                "throughput_unit": "rows_per_second", "memory_gb": .1,
+                "cpu_time": 1, "load": {"start_1m": 0, "end_1m": 0},
+            })
+            artifact = self.registry.create_artifact(
+                run_id="run-R1-v2", kind="checkpoint", content=b"fixture-model-v2",
+                schema_version="1",
+            )
+            adopt_run_and_promote(
+                self.registry, run_id="run-R1-v2", model_id="R1", reason="fixture v2",
+                model_version={"version": 2, "artifact_id": artifact, "checksum": artifact,
+                    "family_version": "linear@1", "code_sha": SHA,
+                    "preprocessing_hash": "prep", "calibration": {}, "thresholds": {},
+                    "compat_result": {"head_sha": SHA, "passed": True, "at": 2},
+                    "status": "active"},
+            )
+            RegistryFinalizeService(self.registry).move_production(
+                model_id="R1", version=2, reason="fixture production v2",
+            )
+            invalidate_adoption(self.registry, {
+                "model_id": "R1", "invalidated_version": 2, "parent_version": 1,
+                "adoption_run_id": "run-R1-v2", "evidence_run_ids": ["fixture"],
+                "invalidated_lineage_id": "R1@2", "requeue_idea_ids": [],
+                "reason": "fixture superseded lineage",
+            })
+            self.fit_artifact_id = artifact
+            return
+        raise ValueError(f"unknown fixture mutation {mutation!r}")
+
+
+def promoted_artifact_scenario(tmp_path):
+    return _PromotedArtifactScenario(tmp_path)
 
 
 def resource_conflict_scenario(tmp_path, *, conflict):

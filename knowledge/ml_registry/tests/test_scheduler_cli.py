@@ -16,10 +16,12 @@ def _write(tmp_path: Path, name: str, payload: object) -> Path:
 
 def _inputs(tmp_path: Path):
     campaigns = _write(tmp_path, "campaigns.json", [
-        {"id": "value", "depends_on": ["tracking"], "command": ["train", "value"]},
+        {"id": "value", "command": ["train", "value"]},
         {"id": "tracking", "priority": 1, "command": ["train", "tracking"]},
     ])
-    states = _write(tmp_path, "states.json", {})
+    states = _write(tmp_path, "states.json", {
+        "value": {"campaign_id": "value", "state": "blocked", "message": "waiting on tracking:fit"},
+    })
     capacity = _write(tmp_path, "capacity.json", {
         "resources": {"cpus": 2, "ram_gb": 4}, "max_concurrency": 1, "remaining_cost": 10,
     })
@@ -33,7 +35,7 @@ def test_schedule_portfolio_emits_stable_read_only_json(tmp_path: Path, capsys):
                  "--states", str(states), "--capacity", str(capacity)]) == 0
     output = json.loads(capsys.readouterr().out)
     assert [job["campaign_id"] for job in output["jobs"]] == ["tracking"]
-    assert output["blocked"] == {"value": "waiting for dependencies: tracking"}
+    assert output["blocked"] == {"value": "waiting on tracking:fit"}
     assert output["available"]["cpus"] == 1
     assert before == {path: path.read_text() for path in (campaigns, states, capacity)}
 
@@ -41,7 +43,7 @@ def test_schedule_portfolio_emits_stable_read_only_json(tmp_path: Path, capsys):
 def test_state_list_and_top_level_capacity_are_accepted(tmp_path: Path, capsys):
     campaigns = _write(tmp_path, "c.json", [
         {"id": "base", "command": ["base"]},
-        {"id": "child", "depends_on": ["base"], "command": ["child"]},
+        {"id": "child", "command": ["child"]},
     ])
     states = _write(tmp_path, "s.json", [{"campaign_id": "base", "state": "completed"}])
     capacity = _write(tmp_path, "r.json", {"cpus": 1, "ram_gb": 2, "max_concurrency": 1})
@@ -56,7 +58,7 @@ def test_invalid_graph_is_a_refusal(tmp_path: Path, capsys):
     capacity = _write(tmp_path, "r.json", {"cpus": 1, "max_concurrency": 1})
     assert main(["schedule-portfolio", "--campaigns", str(campaigns),
                  "--states", str(states), "--capacity", str(capacity)]) == 1
-    assert "REFUSED: unknown dependencies: missing" in capsys.readouterr().err
+    assert "REFUSED: depends_on is not a campaign scheduling field" in capsys.readouterr().err
 
 
 def test_malformed_json_has_exit_two(tmp_path: Path, capsys):

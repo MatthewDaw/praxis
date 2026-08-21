@@ -297,6 +297,10 @@ class Registry:
             return
         elif op == "trial_refused":
             return
+        elif op == "campaign_spec_registered":
+            # CampaignSpec is a versioned control-plane contract, not a ninth
+            # model-registry entity. Its canonical copy lives in the event log.
+            return
         elif op == "adoption_invalidated":
             run = db.execute("SELECT * FROM runs WHERE run_id=?", (p["adoption_run_id"],)).fetchone()
             if run is None or run["status"] != "succeeded" or run["verdict"] != "adopted":
@@ -596,6 +600,25 @@ class Registry:
         for item in payload["evidence"]:
             self.blobs.verify(item["blob_sha256"])
         self._write("historical_evidence_freeze_imported", payload)
+        return True
+
+    def register_campaign_spec(self, spec: Mapping[str, Any]) -> bool:
+        """Persist a validated project-owned CampaignSpec in the canonical event log.
+
+        Campaign specifications are control-plane inputs rather than registry entities,
+        so they deliberately have no ninth projection table.  The latest event for a
+        campaign is the durable portfolio-manifest snapshot used by readiness.
+        """
+        from knowledge.ml_registry.contracts import CampaignSpec
+
+        canonical = CampaignSpec.from_mapping(spec).to_mapping()
+        campaign_id = canonical["campaign_id"]
+        prior = [event for event in self.events.read()
+                 if event.event_type == "campaign_spec_registered"
+                 and event.payload.get("campaign_id") == campaign_id]
+        if prior and prior[-1].payload == canonical:
+            return False
+        self._write("campaign_spec_registered", canonical)
         return True
 
     def register_model(self, **values: Any) -> None:

@@ -101,7 +101,6 @@ def test_fixture_d_exit_zero_without_verified_production_alias_is_failed(
     assert reason in (controller.records["root"].message or "").lower()
 
 
-@pytest.mark.xfail(strict=True, reason="P-4: scheduler still accepts loose campaign depends_on edges")
 def test_p4_scheduler_rejects_depends_on_key():
     with pytest.raises(PortfolioError, match="depends_on"):
         schedule([_spec("root", depends_on=[])], {}, CAPACITY, max_concurrency=1)

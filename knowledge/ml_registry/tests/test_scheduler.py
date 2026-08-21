@@ -7,31 +7,33 @@ CPU = {"cpus": 4, "gpus": 0, "ram_gb": 16, "disk_gb": 100, "wall_time_minutes": 
 GPU = {"cpus": 8, "gpus": 1, "gpu_vram_gb": 24, "ram_gb": 32, "disk_gb": 100, "wall_time_minutes": 120}
 
 
-def campaign(cid, *, deps=(), priority=100, resources=CPU, **extra):
-    return {"id": cid, "depends_on": deps, "priority": priority, "resources": resources,
+def campaign(cid, *, priority=100, resources=CPU, **extra):
+    return {"id": cid, "priority": priority, "resources": resources,
             "command": ["train", cid], **extra}
 
 
 def test_dependency_and_priority_produce_deterministic_frontier():
-    campaigns = [campaign("base", priority=20), campaign("soccer", priority=1), campaign("value", deps=("base",))]
-    result = schedule(campaigns, {}, {"cpus": 8, "ram_gb": 32, "disk_gb": 200}, max_concurrency=2)
+    campaigns = [campaign("base", priority=20), campaign("soccer", priority=1), campaign("value")]
+    states = {"value": JobState("value", "blocked", message="waiting on base:fit")}
+    result = schedule(campaigns, states, {"cpus": 8, "ram_gb": 32, "disk_gb": 200}, max_concurrency=2)
     assert [job.campaign_id for job in result.jobs] == ["soccer", "base"]
-    assert result.blocked["value"] == "waiting for dependencies: base"
+    assert result.blocked["value"] == "waiting on base:fit"
 
 
 def test_completed_dependency_unlocks_child():
-    campaigns = [campaign("base"), campaign("child", deps=("base",))]
+    campaigns = [campaign("base"), campaign("child")]
     result = schedule(campaigns, {"base": JobState("base", "completed")}, CPU, max_concurrency=1)
     assert [job.campaign_id for job in result.jobs] == ["child"]
 
 
 def test_failed_optional_branch_does_not_block_unrelated_work():
-    campaigns = [campaign("optional"), campaign("child", deps=("optional",)), campaign("soccer")]
-    states = {"optional": JobState("optional", "failed", attempt=1)}
+    campaigns = [campaign("optional"), campaign("child"), campaign("soccer")]
+    states = {"optional": JobState("optional", "failed", attempt=1),
+              "child": JobState("child", "blocked", message="producer optional failed")}
     result = schedule(campaigns, states, CPU, max_concurrency=1)
     assert [job.campaign_id for job in result.jobs] == ["soccer"]
     assert result.blocked["optional"] == "retry budget exhausted"
-    assert "dependency failed" in result.blocked["child"]
+    assert result.blocked["child"] == "producer optional failed"
 
 
 def test_external_blocker_is_not_overridden_by_satisfied_dependencies():
@@ -83,8 +85,8 @@ def test_retry_resumes_from_latest_checkpoint():
 
 
 @pytest.mark.parametrize("campaigns, match", [
-    ([campaign("a", deps=("missing",))], "unknown dependencies"),
-    ([campaign("a", deps=("b",)), campaign("b", deps=("a",))], "dependency cycle: a -> b -> a"),
+    ([campaign("a", depends_on=("missing",))], "depends_on"),
+    ([campaign("a", depends_on=("b",)), campaign("b", depends_on=("a",))], "depends_on"),
     ([campaign("same"), campaign("same")], "duplicate campaign"),
 ])
 def test_refuses_invalid_graphs(campaigns, match):

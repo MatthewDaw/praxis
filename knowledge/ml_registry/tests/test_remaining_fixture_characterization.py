@@ -85,13 +85,6 @@ def test_fixture_d_invalid_completion_never_unlocks_descendant(
     assert result.blocked["C1"] == "waiting on R1:fit"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "fixture G: readiness has no canonical checksum, freshness, and active-lineage "
-        "verification service for promoted artifacts"
-    ),
-)
 @pytest.mark.parametrize(
     ("mutation", "expected_reason"),
     [

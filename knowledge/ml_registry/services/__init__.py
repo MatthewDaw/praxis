@@ -7,6 +7,8 @@ from .completeness import campaign_completeness, campaign_coverage
 from .registry_ratchet import consider_rejection, reconcile_registry_space_requeue
 from .registry_finalize import (FinalizedModel, RegistryFinalizationError,
                                 RegistryFinalizer)
+from .readiness import (ArtifactReadiness, ReadinessError, explain_readiness,
+                        validate_artifact_graph)
 
 registry_campaign_completeness = campaign_completeness
 
@@ -15,3 +17,5 @@ __all__ = ["CampaignViewError", "FinalizationError", "FinalizationRequest", "Fin
            "adjudicate_against_champion", "build_campaign_view", "consider_rejection",
            "reconcile_registry_space_requeue"]
 __all__ += ["FinalizedModel", "RegistryFinalizationError", "RegistryFinalizer"]
+__all__ += ["ArtifactReadiness", "ReadinessError", "explain_readiness",
+            "validate_artifact_graph"]

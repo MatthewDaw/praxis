@@ -190,6 +190,11 @@ def schedule(
                 else ResourceProfile.from_mapping(capacity, allow_zero_cpus=True))
     by_id: dict[str, Mapping[str, Any]] = {}
     for campaign in campaigns:
+        if "depends_on" in campaign:
+            raise PortfolioError(
+                "depends_on is not a campaign scheduling field; derive readiness from "
+                "CampaignSpec requires/produces and production registry artifacts"
+            )
         campaign_id = campaign.get("id", "")
         if not isinstance(campaign_id, str) or not campaign_id.strip():
             raise PortfolioError("every campaign requires a non-empty id")
