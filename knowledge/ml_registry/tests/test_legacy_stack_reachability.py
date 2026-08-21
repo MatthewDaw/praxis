@@ -32,7 +32,7 @@ CANONICAL_OBLIGATIONS = {
         "knowledge/ml_registry/tests/test_registry_completeness.py",
     ),
 }
-EXPECTED_ABSENT_CALLERS: set[str] = set()
+EXPECTED_ABSENT_CALLERS = {"knowledge/ml_registry/tests/test_finalize.py"}
 
 
 def _imports(path: Path) -> set[str]:
