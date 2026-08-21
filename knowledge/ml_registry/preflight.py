@@ -91,6 +91,56 @@ class Campaign:
     nonmove_evidence: str = ""
 
 
+@dataclass(frozen=True)
+class PreflightManifest:
+    """Versioned project input consumed by the generic preflight engine."""
+
+    schema_version: int
+    campaigns: dict[str, Campaign]
+    refused: dict[str, str]
+
+
+def load_manifest(path: Path) -> PreflightManifest:
+    """Load a version-1 preflight manifest without importing project code."""
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read preflight manifest {path}: {exc}") from exc
+    if payload.get("schema_version") != 1:
+        raise ValueError("preflight manifest schema_version must be 1")
+    raw_campaigns = payload.get("campaigns")
+    if not isinstance(raw_campaigns, list):
+        raise ValueError("preflight manifest campaigns must be a list")
+    campaigns: dict[str, Campaign] = {}
+    required = {
+        "name", "space", "model_id", "ledger", "corpus_probe", "arms_probe",
+        "composing_module", "dispatch",
+    }
+    for index, raw in enumerate(raw_campaigns):
+        if not isinstance(raw, dict):
+            raise ValueError(f"campaigns[{index}] must be an object")
+        missing = sorted(required - raw.keys())
+        if missing:
+            raise ValueError(f"campaigns[{index}] missing: {', '.join(missing)}")
+        unknown = sorted(set(raw) - required - {"known_nonmove_arms", "nonmove_evidence"})
+        if unknown:
+            raise ValueError(f"campaigns[{index}] unknown keys: {', '.join(unknown)}")
+        campaign = Campaign(
+            **{key: raw[key] for key in required},
+            known_nonmove_arms=tuple(raw.get("known_nonmove_arms", ())),
+            nonmove_evidence=raw.get("nonmove_evidence", ""),
+        )
+        if campaign.name in campaigns:
+            raise ValueError(f"duplicate campaign name: {campaign.name}")
+        campaigns[campaign.name] = campaign
+    raw_refused = payload.get("refused", {})
+    if not isinstance(raw_refused, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in raw_refused.items()
+    ):
+        raise ValueError("preflight manifest refused must map names to reasons")
+    return PreflightManifest(1, campaigns, dict(raw_refused))
+
+
 CAMPAIGNS: dict[str, Campaign] = {
     "detection_shipped": Campaign(
         name="detection_shipped",
@@ -471,19 +521,26 @@ def _check_structure(rep: Report, repo: Path, camp: Campaign) -> None:
 
 # --------------------------------------------------------------------------- driver
 
-def preflight(name: str, repo: Path, praxis: Path) -> tuple[int, Report]:
+def preflight(
+    name: str,
+    repo: Path,
+    praxis: Path,
+    *,
+    campaigns: dict[str, Campaign] | None = None,
+    refused: dict[str, str] | None = None,
+) -> tuple[int, Report]:
+    campaigns = CAMPAIGNS if campaigns is None else campaigns
+    refused = FORBIDDEN if refused is None else refused
     rep = Report(name)
-    if name in FORBIDDEN:
+    if name in refused:
         rep.check("REFUSAL", False,
-                  "C1 court-marking is NOT READY and must never be queued or supervised. "
-                  "Refusing to preflight it.",
-                  campaign=name, model_id=FORBIDDEN[name],
-                  detail="not ready; must not be supervised")
+                  f"campaign {name!r} is refused by the project manifest",
+                  campaign=name, detail=refused[name])
         return REFUSED, rep
-    camp = CAMPAIGNS.get(name)
+    camp = campaigns.get(name)
     if camp is None:
         rep.check("REFUSAL", False,
-                  f"unknown campaign {name!r}; known: {', '.join(sorted(CAMPAIGNS))}",
+                  f"unknown campaign {name!r}; known: {', '.join(sorted(campaigns))}",
                   campaign=name)
         return REFUSED, rep
 
@@ -529,23 +586,33 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="af-ml-campaign-preflight",
         description="Can each campaign actually run right now, on THIS machine, with evidence.")
+    ap.add_argument("--manifest", type=Path,
+                    help="versioned project preflight manifest (schema_version 1)")
     ap.add_argument("--campaign", action="append", default=[],
-                    help="campaign name; repeatable. Known: " + ", ".join(sorted(CAMPAIGNS)))
-    ap.add_argument("--all", action="store_true", help="every live campaign")
+                    help="campaign name from the manifest; repeatable")
+    ap.add_argument("--all", action="store_true", help="every campaign in the manifest")
+    ap.add_argument("--project-root", type=Path,
+                    help="checkout holding project state and probe implementations")
     ap.add_argument("--repo", default=os.environ.get("AF_SPORTS_REPO", ""),
                     help="sports_analysis checkout holding the spaces, ledgers and labs")
     ap.add_argument("--praxis", default=os.environ.get("PRAXIS", ""),
                     help="praxis checkout providing knowledge.ml_registry.cli")
     args = ap.parse_args(argv)
 
-    names = list(CAMPAIGNS) if args.all else list(args.campaign)
+    try:
+        manifest = load_manifest(args.manifest) if args.manifest else PreflightManifest(
+            1, CAMPAIGNS, FORBIDDEN
+        )
+    except ValueError as exc:
+        ap.error(str(exc))
+    names = list(manifest.campaigns) if args.all else list(args.campaign)
     if not names:
         print("PREFLIGHT ALL RESULT NOT_READY exit=2 detail=pass --campaign NAME or --all")
         print("give --campaign NAME (repeatable) or --all", file=sys.stderr)
         return USAGE
 
     praxis = Path(args.praxis) if args.praxis else Path(__file__).resolve().parents[2]
-    repo = Path(args.repo) if args.repo else _guess_repo()
+    repo = args.project_root or (Path(args.repo) if args.repo else _guess_repo())
     if repo is None or not repo.is_dir():
         print("PREFLIGHT ALL RESULT NOT_READY exit=2 detail=sports_analysis_repo_not_found")
         print("could not locate the sports_analysis checkout; pass --repo", file=sys.stderr)
@@ -554,7 +621,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"preflight on {os.uname().nodename}  repo={repo}  praxis={praxis}", file=sys.stderr)
     worst, ready = READY, 0
     for name in names:
-        code, rep = preflight(name, repo, praxis)
+        code, rep = preflight(
+            name, repo, praxis, campaigns=manifest.campaigns, refused=manifest.refused
+        )
         for line in rep.lines:
             print(line, flush=True)
         print(f"PREFLIGHT {name} RESULT {_VERDICT[code]} exit={code} pass={rep.n_pass} "
