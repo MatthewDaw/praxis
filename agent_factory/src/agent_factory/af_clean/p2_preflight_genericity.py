@@ -20,6 +20,18 @@ P2_WITNESSES = (
         "knowledge/ml_registry/preflight.py",
         "knowledge/ml_registry/tests/test_preflight_manifest.py",
     )),
+    WitnessCommand((
+        "env", "PRAXIS_ROOT=.", "bash",
+        "/Users/matthewdaw/Documents/official_repos/sports_analysis/"
+        "scripts/af-ml-campaign-preflight.sh",
+        "--help",
+    )),
+    WitnessCommand((
+        "env", "PRAXIS_ROOT=.", "bash",
+        "/Users/matthewdaw/Documents/official_repos/sports_analysis/"
+        "scripts/af-ml-campaign-preflight-all.sh",
+        "--help",
+    )),
 )
 
 
