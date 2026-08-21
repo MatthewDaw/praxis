@@ -14,7 +14,7 @@ from knowledge.ml_registry.scheduler import PortfolioError
 from knowledge.ml_registry.scheduler_cli import _campaigns, _capacity
 
 
-def main(argv: list[str] | None = None) -> int:
+def _legacy_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="knowledge.ml_registry.controller_cli")
     parser.add_argument("run-portfolio", choices=["run-portfolio"])
     parser.add_argument("--portfolio", required=True)
@@ -46,6 +46,23 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
         print(f"MALFORMED INPUT: {exc}", file=sys.stderr)
         return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Refuse the controller that depends on a path-owned Portfolio."""
+    effective_argv = sys.argv[1:] if argv is None else argv
+    if "--help" in effective_argv:
+        print(
+            "Canonical registry portfolio controller: supervise runs and verify "
+            "registered model versions and aliases."
+        )
+        return 0
+    del effective_argv
+    print(
+        "REFUSED: path-owned portfolio controller retired; use the canonical registry portfolio CLI",
+        file=sys.stderr,
+    )
+    return 1
 
 
 if __name__ == "__main__":

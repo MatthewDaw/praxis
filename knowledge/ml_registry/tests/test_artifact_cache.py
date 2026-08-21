@@ -7,11 +7,11 @@ import pytest
 from knowledge.ml_registry.artifact_cache import (
     ArtifactCacheIndex,
     CacheKey,
-    load_index,
     main,
-    save_index,
 )
 from knowledge.ml_registry.schema import RegistryValidationError
+from knowledge.ml_registry.storage.registry import Registry
+from knowledge.ml_registry.tests.artifact_projection_fixture import render_legacy_artifact_views
 
 
 KEY = CacheKey("fit-1", "weights-1", "data-sha", "folds-v1", "prep-v2", "features-v3")
@@ -106,74 +106,18 @@ def test_invalidation_keeps_history_but_refuses_lookup():
 
 
 def test_atomic_round_trip_and_tamper_detection(tmp_path):
-    path = tmp_path / "cache.json"
-    index = ArtifactCacheIndex()
-    entry = index.register(
-        KEY, uri="s3://x", checksum="sha256:x", coverage=1, prediction_scope="oof"
-    )
-    save_index(path, index)
-    assert load_index(path).lookup(KEY) == entry
-    raw = json.loads(path.read_text())
-    raw["entries"][entry.entry_id]["checksum"] = "tampered"
-    path.write_text(json.dumps(raw))
-    with pytest.raises(RegistryValidationError, match="content hash"):
-        load_index(path)
+    render_legacy_artifact_views(tmp_path)
+    index = ArtifactCacheIndex.from_registry(Registry(tmp_path / "canonical_registry"))
+    assert len(index.entries) == 1
+    with pytest.raises(RegistryValidationError, match="read-only"):
+        index.invalidate(next(iter(index.entries)), reason="tampered")
 
 
 def test_cli_register_lookup_and_refusal(tmp_path, capsys):
     path = tmp_path / "cache.json"
     key = json.dumps(KEY.__dict__)
-    assert (
-        main(
-            [
-                "--index",
-                str(path),
-                "register",
-                "--key-json",
-                key,
-                "--uri",
-                "s3://x",
-                "--checksum",
-                "sha256:x",
-                "--coverage",
-                "1",
-                "--prediction-scope",
-                "oof",
-            ]
-        )
-        == 0
-    )
-    capsys.readouterr()
-    assert (
-        main(
-            [
-                "--index",
-                str(path),
-                "lookup",
-                "--key-json",
-                key,
-                "--require-oof",
-                "--minimum-coverage",
-                ".9",
-                "--expected-checksum",
-                "sha256:x",
-            ]
-        )
-        == 0
-    )
-    assert json.loads(capsys.readouterr().out)["uri"] == "s3://x"
-    assert (
-        main(
-            [
-                "--index",
-                str(path),
-                "lookup",
-                "--key-json",
-                key,
-                "--expected-checksum",
-                "wrong",
-            ]
-        )
-        == 2
-    )
-    assert json.loads(capsys.readouterr().err)["status"] == "refused"
+    assert main(["--index", str(path), "lookup", "--key-json", key]) == 2
+    refusal = json.loads(capsys.readouterr().err)
+    assert refusal["status"] == "refused"
+    assert "canonical registry" in refusal["reason"]
+    assert not path.exists()

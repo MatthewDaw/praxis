@@ -155,7 +155,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     raise ValueError(f"unknown command {args.command!r}")  # pragma: no cover
 
 
-def main(argv: list[str] | None = None) -> int:
+def _legacy_main(argv: list[str] | None = None) -> int:
     try:
         print(json.dumps(run(_parser().parse_args(argv)), sort_keys=True))
         return 0
@@ -165,6 +165,17 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": "malformed_input", "message": str(exc)}))
         return EXIT_MALFORMED_INPUT
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Refuse the retired path-owned manifest command surface."""
+    del argv
+    print(json.dumps({
+        "ok": False,
+        "error": "validation",
+        "message": "path-owned manifests retired; use the canonical registry CLI",
+    }))
+    return EXIT_VALIDATION_ERROR
 
 
 if __name__ == "__main__":

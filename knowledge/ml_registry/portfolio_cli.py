@@ -204,7 +204,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     raise ValueError(f"unknown command {args.command!r}")  # pragma: no cover
 
 
-def main(argv: list[str] | None = None) -> int:
+def _legacy_main(argv: list[str] | None = None) -> int:
     try:
         result = run(_parser().parse_args(argv))
         print(json.dumps(result, sort_keys=True))
@@ -215,6 +215,24 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({"ok": False, "error": "malformed_input", "message": str(exc)}))
         return EXIT_MALFORMED_INPUT
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Refuse the retired path-owned portfolio command surface."""
+    effective_argv = sys.argv[1:] if argv is None else argv
+    if "--help" in effective_argv:
+        print(
+            "Canonical registry portfolio: inspect runs, registered models, "
+            "model versions, artifacts, and aliases."
+        )
+        return 0
+    del effective_argv
+    print(json.dumps({
+        "ok": False,
+        "error": "validation",
+        "message": "path-owned portfolios retired; use the canonical registry portfolio CLI",
+    }))
+    return EXIT_VALIDATION_ERROR
 
 
 if __name__ == "__main__":

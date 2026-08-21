@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from knowledge.ml_registry.portfolio import (
@@ -96,19 +94,17 @@ def test_dependency_validation_refuses_dangling_artifacts_and_wrong_owner():
 
 
 def test_planned_dependency_may_wait_for_artifact_from_declared_upstream_campaign(tmp_path):
-    portfolio = Portfolio(tmp_path / "portfolio.json")
+    portfolio = Portfolio()
     portfolio.add_campaign("train-tracking", "tracking")
     downstream = portfolio.add_campaign(
         "train-possession", "possession", [_dependency("tracking-future", "tracking")]
     )
 
     readiness = portfolio.refresh(downstream.id)
-    portfolio.save()
 
     assert not readiness.activatable
     assert readiness.reasons == ("dependency 'tracking-future' is missing",)
     assert downstream.status == CampaignStatus.BLOCKED
-    assert Portfolio.load(portfolio.path).campaigns[downstream.id].status == CampaignStatus.BLOCKED
 
 
 def test_cycle_is_refused_without_leaving_partial_campaign():
@@ -174,22 +170,19 @@ def test_exact_replacement_dependency_remains_independently_current():
 
 
 def test_json_round_trip_is_durable_and_human_readable(tmp_path):
-    path = tmp_path / "portfolio.json"
-    portfolio = Portfolio(path)
-    _artifact(portfolio, "tracking-v1", "tracking")
-    campaign = portfolio.add_campaign(
-        "possession-campaign", "possession", [_dependency("tracking-v1", "tracking")]
+    from knowledge.ml_registry.storage.projections import PortfolioProjectionSpec
+    from knowledge.ml_registry.storage.registry import Registry
+    from knowledge.ml_registry.tests.artifact_projection_fixture import render_legacy_artifact_views
+
+    render_legacy_artifact_views(tmp_path)
+    loaded = Portfolio.from_registry(
+        Registry(tmp_path / "canonical_registry"),
+        portfolio_spec=PortfolioProjectionSpec(1, ()),
     )
-    portfolio.refresh(campaign.id)
-    portfolio.save()
-
-    loaded = Portfolio.load(path)
-
-    assert loaded.path == path
-    assert loaded.campaigns[campaign.id].status == CampaignStatus.ACTIVATABLE
-    assert loaded.campaigns[campaign.id].dependencies == campaign.dependencies
-    assert loaded.artifacts["tracking-v1"].coverage == 0.99
-    assert json.loads(path.read_text())["schema_version"] == 1
+    assert loaded.path is None
+    assert loaded.artifacts["artifact-weights-v1"].coverage == 0.9
+    with pytest.raises(PortfolioValidationError, match="read-only"):
+        loaded.add_campaign("forbidden", "model")
 
 
 @pytest.mark.parametrize("coverage", [-0.01, 1.01])

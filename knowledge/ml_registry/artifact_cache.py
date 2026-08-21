@@ -280,7 +280,7 @@ def _object(raw: str) -> dict[str, object]:
     return value
 
 
-def main(argv: list[str] | None = None) -> int:
+def _legacy_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Metadata-only shared artifact cache index"
     )
@@ -338,6 +338,25 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Refuse the retired path-owned cache CLI.
+
+    Cache entries are a read-only projection of canonical registry records.  The
+    registry CLI owns writes; keeping this entry point fail-closed prevents an old
+    invocation from recreating a second source of truth.
+    """
+    del argv
+    print(
+        json.dumps({
+            "status": "refused",
+            "field": "registry_root",
+            "reason": "path-owned artifact cache retired; use the canonical registry CLI",
+        }),
+        file=sys.stderr,
+    )
+    return 2
 
 
 if __name__ == "__main__":

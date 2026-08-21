@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from knowledge.ml_registry.manifests import (
@@ -120,19 +118,17 @@ def test_prediction_manifest_refuses_invalid_coverage_and_in_fold_output(overrid
 
 
 def test_registry_persists_and_reloads_complete_lineage(tmp_path):
-    path = tmp_path / "manifests.json"
-    registry = ManifestRegistry(path)
-    dataset = registry.add_dataset(_dataset())
-    split = registry.add_split(_split(dataset.hash))
-    prediction = registry.add_prediction(_prediction(split.hash))
-    registry.save()
+    from knowledge.ml_registry.storage.registry import Registry
+    from knowledge.ml_registry.tests.artifact_projection_fixture import render_legacy_artifact_views
 
-    loaded = ManifestRegistry.load(path)
-
-    assert loaded.datasets[dataset.id].hash == dataset.hash
-    assert loaded.splits[split.id].dataset_manifest_hash == dataset.hash
-    assert loaded.predictions[prediction.id].split_manifest_hash == split.hash
-    assert loaded.predictions[prediction.id].coverage == 0.9
+    render_legacy_artifact_views(tmp_path)
+    loaded = ManifestRegistry.from_registry(Registry(tmp_path / "canonical_registry"))
+    dataset = loaded.datasets["dataset-canonical"]
+    split = loaded.splits["split-canonical"]
+    prediction = loaded.predictions["prediction-canonical"]
+    assert split.dataset_manifest_hash == dataset.hash
+    assert prediction.split_manifest_hash == split.hash
+    assert prediction.coverage == 0.9
 
 
 def test_same_id_is_idempotent_but_content_drift_is_refused():
@@ -149,16 +145,13 @@ def test_same_id_is_idempotent_but_content_drift_is_refused():
 
 
 def test_manual_persistence_drift_is_detected_on_load(tmp_path):
-    path = tmp_path / "manifests.json"
-    registry = ManifestRegistry(path)
-    registry.add_dataset(_dataset())
-    registry.save()
-    document = json.loads(path.read_text())
-    document["datasets"][0]["schema"]["frame"] = "tampered"
-    path.write_text(json.dumps(document))
+    from knowledge.ml_registry.storage.registry import Registry
+    from knowledge.ml_registry.tests.artifact_projection_fixture import render_legacy_artifact_views
 
-    with pytest.raises(ManifestValidationError, match="hash drift"):
-        ManifestRegistry.load(path)
+    render_legacy_artifact_views(tmp_path)
+    registry = ManifestRegistry.from_registry(Registry(tmp_path / "canonical_registry"))
+    with pytest.raises(ManifestValidationError, match="read-only"):
+        registry.add_dataset(_dataset())
 
 
 def test_cross_manifest_references_must_exist():
