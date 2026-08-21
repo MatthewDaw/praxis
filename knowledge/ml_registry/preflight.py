@@ -1,30 +1,9 @@
-"""Can this campaign actually RUN, right now, on THIS machine?
+"""Read-only, project-injected campaign readiness checks.
 
-WHY THIS EXISTS. af-ml-campaign-loop.sh answers "is the campaign finished?" and nothing answers
-"could it start?". Measured: the three live campaigns are byte-identical in git on the laptop and
-on the devbox, and only one of them can run in either place -- the corpora are staged per machine,
-outside git, and a campaign whose registry is perfectly green refuses at the first arm because the
-pixels are not there. A queue runner that dispatches on registry state alone burns a slot to find
-that out, and reports the refusal as a dispatch failure.
+Project-specific identities, paths, probes, dispatch commands, and refusal policy arrive through a
+versioned manifest. The generic engine owns only the checks and their output contract.
 
-So every check here is a check a queue runner can act on BEFORE spending a slot, and the two that
-matter most are the two that differ by machine and are invisible to git:
-
-  CORPUS    -- asked by calling each lab's OWN resolver (det_lab.regime, contact_lab.paths,
-               assoc_lab.corpus) in the lab's OWN interpreter. Never reimplemented here: two
-               definitions of "present" drift, and the one that drifts is always the cheap copy.
-               The lab's refusal message is reported VERBATIM, because it names the sync command.
-  DISPATCH  -- IMPLEMENTED arms beside UNTRIED backlog ideas. That ratio, not the green ticks, is
-               the readiness signal: measured today it is 4 arms against 56 ideas (detection),
-               3 against 40 (contact_point), and for association 6 toggles that are all MEASURED
-               NON-MOVES against 56 ideas. A campaign with zero un-run implemented arms is not
-               ready to run unattended however green the rest of this output looks, because a
-               shell loop cannot author an arm.
-
-Everything here is READ-ONLY. campaign-status and campaign-complete never mutate a space, the
-ledger is read with open(), and the corpus probes are the labs' own resolvers, which load.
-
-OUTPUT CONTRACT (see also the header of af-ml-campaign-preflight.sh):
+OUTPUT CONTRACT:
 
   stdout, one line per check, for programs:
       PREFLIGHT <campaign> <CHECK> <PASS|FAIL|INFO> k=v k=v ... [detail=<free text, last>]
@@ -39,8 +18,7 @@ OUTPUT CONTRACT (see also the header of af-ml-campaign-preflight.sh):
       0  READY            -- every check passed and there is at least one un-run implemented arm.
       1  NOT_READY        -- at least one check FAILED.
       2  usage error.
-      3  REFUSED          -- the campaign must not be supervised at all (C1 court-marking), or is
-                            not a campaign this tool knows.
+      3  REFUSED          -- project policy refuses supervision, or the name is unknown.
       4  NO_RUNNABLE_ARMS -- every check passed and there is NOTHING LEFT TO DISPATCH. Green, and
                             still not something to hand a loop. Separate from 1 so a queue can
                             tell "broken" from "needs an agent to author work".
@@ -63,9 +41,7 @@ from typing import Any
 READY, NOT_READY, USAGE, REFUSED, NO_RUNNABLE_ARMS = 0, 1, 2, 3, 4
 _SEVERITY = {READY: 0, NO_RUNNABLE_ARMS: 1, NOT_READY: 2, REFUSED: 3}
 
-#: How long any single lab probe may take. assoc_lab.corpus.load_eval parses 28,494 annotated
-#: frames; det_lab.regime.eval_frames stats 429 paths. Neither decodes a pixel, so a probe that
-#: has not returned in five minutes is wedged, not slow.
+#: How long any single project probe may take before it is considered wedged.
 PROBE_TIMEOUT_S = 300
 
 
@@ -74,15 +50,14 @@ class Campaign:
     """One live campaign, and the three questions only its own code can answer."""
 
     name: str
-    space: str                 # relative to the sports_analysis repo
+    space: str                 # relative to the project root
     model_id: str
     ledger: str
-    #: Python run in the LAB's interpreter. Prints "OK <detail>" or raises; the raised message is
-    #: reported verbatim. This is the lab's own resolver, never a reimplementation of it.
+    #: Python run in the project's interpreter. Prints "OK <detail>" or raises.
     corpus_probe: str
     #: Prints "ARMS <comma-separated>" from whatever the lab calls its arm table.
     arms_probe: str
-    #: The module af-ml-campaign-loop.sh would drive, or "" when the campaign has none.
+    #: The composing module, or "" when the campaign has none.
     composing_module: str
     dispatch: str
     #: Implemented arms already MEASURED as no-ops. They are implemented and un-run by the ledger,
@@ -141,84 +116,6 @@ def load_manifest(path: Path) -> PreflightManifest:
     return PreflightManifest(1, campaigns, dict(raw_refused))
 
 
-CAMPAIGNS: dict[str, Campaign] = {
-    "detection_shipped": Campaign(
-        name="detection_shipped",
-        space="ml/detection_shipped/registry/space.json",
-        model_id="model-dcc0557b8454",
-        ledger="ml/detection_shipped/results.tsv",
-        corpus_probe=(
-            "from det_lab.regime import eval_frames\n"
-            "f = eval_frames()\n"
-            "print('OK eval_frames=%d' % len(f))\n"
-        ),
-        arms_probe="from det_lab.campaign import ARMS; print('ARMS ' + ','.join(sorted(ARMS)))",
-        composing_module="det_lab.campaign2",
-        dispatch=("uv run python -m det_lab.campaign2 run --arm ARM --tag TAG "
-                  "--base-tag incumbent"),
-    ),
-    "detection": Campaign(
-        name="detection",
-        space="ml/detection/registry/space.json",
-        model_id="model-533010b57800",
-        ledger="ml/detection/results.tsv",
-        corpus_probe=(
-            "from det_lab.regime import eval_frames\n"
-            "f = eval_frames()\n"
-            "print('OK eval_frames=%d' % len(f))\n"
-        ),
-        arms_probe="from det_lab.campaign import ARMS; print('ARMS ' + ','.join(sorted(ARMS)))",
-        composing_module="det_lab.campaign",
-        dispatch="uv run python -m det_lab.campaign run --arm ARM --tag TAG",
-    ),
-    "contact_point": Campaign(
-        name="contact_point",
-        space="ml/contact_point/registry/space.json",
-        model_id="model-ebcad2dd3125",
-        ledger="ml/contact_point/results.tsv",
-        corpus_probe=(
-            "import contact_lab.paths as p\n"
-            "print('OK frames_dir=%s' % p.frames_dir())\n"
-        ),
-        arms_probe="from contact_lab.train import ARMS; print('ARMS ' + ','.join(sorted(ARMS)))",
-        composing_module="contact_lab.campaign",
-        dispatch="uv run python -m contact_lab.campaign --stage STAGE --max-arms 8",
-    ),
-    "association": Campaign(
-        name="association",
-        space="ml/association/registry/space.json",
-        model_id="model-1d148ef55231",
-        ledger="ml/association/results.tsv",
-        corpus_probe=(
-            "import assoc_lab.corpus as c\n"
-            "s = c.load_eval()\n"
-            "print('OK eval_sequences=%d frames=%d' % (len(s), sum(len(x.boxes) for x in s)))\n"
-        ),
-        arms_probe=(
-            "from assoc_lab.arms import KNOWN_TOGGLES\n"
-            "print('ARMS ' + ','.join(sorted(KNOWN_TOGGLES)))\n"
-        ),
-        composing_module="",   # there is none -- see the STRUCTURE check
-        dispatch="(agent-authored, one arm at a time -- no composing module)",
-        known_nonmove_arms=("buffer60", "buffer15", "buffer5", "buffer300", "cmc", "act30"),
-        nonmove_evidence=(
-            "every buffer value scores within 0.001 HOTA of the 0.851439 baseline; cmc is a "
-            "literal no-op (ECC gets a zero frame, identity warp, the corpus carries no pixels); "
-            "act30 is dead code, never passed to BotSort"
-        ),
-    ),
-}
-
-#: Named so the refusal is specific rather than a generic "unknown campaign". C1 is registered and
-#: reachable, which is exactly why it needs a refusal: nothing else stops a queue picking it up.
-FORBIDDEN = {
-    "court_marking": "model-16659b6b8e45",
-    "court-marking": "model-16659b6b8e45",
-    "c1": "model-16659b6b8e45",
-    "model-16659b6b8e45": "model-16659b6b8e45",
-}
-
-
 @dataclass
 class Report:
     campaign: str
@@ -268,12 +165,7 @@ def _registry(praxis: Path, args: list[str]) -> tuple[int, str, str]:
 
 
 def _lab_probe(repo: Path, code: str) -> tuple[int, str, str]:
-    """Run ``code`` in the LAB's interpreter, not this one.
-
-    The labs live in a different repo with a different virtualenv. Importing them from praxis's
-    interpreter would either fail or -- far worse -- succeed against a stale copy on sys.path and
-    report a corpus that the lab itself cannot reach.
-    """
+    """Run ``code`` in the project's interpreter, not Praxis's."""
     return _run(["uv", "run", "python", "-c", code], repo)
 
 
@@ -495,13 +387,7 @@ def _arms_seen_in_ledger(ledger: Path, arms: list[str]) -> set[str]:
 
 
 def _check_structure(rep: Report, repo: Path, camp: Campaign) -> None:
-    """Whether af-ml-campaign-loop.sh can drive this campaign at all.
-
-    Association has no campaign.py: src/assoc_lab holds arms.py, corpus.py, hota.py and train.py
-    and nothing that composes a stage's worth of arms. The loop's AF_DISPATCH contract is "one
-    command that runs ONE BATCH of arms", and no such command exists -- so association is
-    agent-driven by design. Structural fact, reported as INFO, not a defect to fix.
-    """
+    """Report whether the project declares an importable composing module."""
     if not camp.composing_module:
         rep.check("STRUCTURE", None,
                   "NO composing module -- af-ml-campaign-loop.sh CANNOT drive this campaign. "
@@ -529,8 +415,8 @@ def preflight(
     campaigns: dict[str, Campaign] | None = None,
     refused: dict[str, str] | None = None,
 ) -> tuple[int, Report]:
-    campaigns = CAMPAIGNS if campaigns is None else campaigns
-    refused = FORBIDDEN if refused is None else refused
+    campaigns = {} if campaigns is None else campaigns
+    refused = {} if refused is None else refused
     rep = Report(name)
     if name in refused:
         rep.check("REFUSAL", False,
@@ -586,23 +472,19 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="af-ml-campaign-preflight",
         description="Can each campaign actually run right now, on THIS machine, with evidence.")
-    ap.add_argument("--manifest", type=Path,
+    ap.add_argument("--manifest", type=Path, required=True,
                     help="versioned project preflight manifest (schema_version 1)")
     ap.add_argument("--campaign", action="append", default=[],
                     help="campaign name from the manifest; repeatable")
     ap.add_argument("--all", action="store_true", help="every campaign in the manifest")
-    ap.add_argument("--project-root", type=Path,
+    ap.add_argument("--project-root", type=Path, required=True,
                     help="checkout holding project state and probe implementations")
-    ap.add_argument("--repo", default=os.environ.get("AF_SPORTS_REPO", ""),
-                    help="sports_analysis checkout holding the spaces, ledgers and labs")
     ap.add_argument("--praxis", default=os.environ.get("PRAXIS", ""),
                     help="praxis checkout providing knowledge.ml_registry.cli")
     args = ap.parse_args(argv)
 
     try:
-        manifest = load_manifest(args.manifest) if args.manifest else PreflightManifest(
-            1, CAMPAIGNS, FORBIDDEN
-        )
+        manifest = load_manifest(args.manifest)
     except ValueError as exc:
         ap.error(str(exc))
     names = list(manifest.campaigns) if args.all else list(args.campaign)
@@ -612,10 +494,10 @@ def main(argv: list[str] | None = None) -> int:
         return USAGE
 
     praxis = Path(args.praxis) if args.praxis else Path(__file__).resolve().parents[2]
-    repo = args.project_root or (Path(args.repo) if args.repo else _guess_repo())
-    if repo is None or not repo.is_dir():
-        print("PREFLIGHT ALL RESULT NOT_READY exit=2 detail=sports_analysis_repo_not_found")
-        print("could not locate the sports_analysis checkout; pass --repo", file=sys.stderr)
+    repo = args.project_root
+    if not repo.is_dir():
+        print("PREFLIGHT ALL RESULT NOT_READY exit=2 detail=project_root_not_found")
+        print("project root does not exist; pass --project-root", file=sys.stderr)
         return USAGE
 
     print(f"preflight on {os.uname().nodename}  repo={repo}  praxis={praxis}", file=sys.stderr)
@@ -641,14 +523,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nOVERALL {_VERDICT[worst]} (exit {worst}): {ready} of {len(names)} campaign(s) "
           f"ready to dispatch unattended on this machine.", file=sys.stderr)
     return worst
-
-
-def _guess_repo() -> Path | None:
-    for candidate in (Path("/workspace/sports_analysis"),
-                      Path.home() / "Documents/official_repos/sports_analysis"):
-        if (candidate / "ml").is_dir():
-            return candidate
-    return None
 
 
 if __name__ == "__main__":
