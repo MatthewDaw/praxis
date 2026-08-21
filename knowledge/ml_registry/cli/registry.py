@@ -173,53 +173,6 @@ def load_ledger_rows(path: Path) -> dict[str, LedgerRow]:
     }
 
 
-def _checked_model_budgets(meta: dict[str, object], *, fill_missing: bool) -> dict[str, object]:
-    """``meta`` with its campaign budgets (:data:`MODEL_DEFAULTS`) checked, and -- on a fresh
-    registration -- defaulted.
-
-    ``setdefault`` alone is not enough: it fills only a MISSING key, so an explicit
-    ``{"max_discovered_ideas": null}`` survives into the model fact, and a budget that is
-    null, blank, unparseable or negative must never be read as "unlimited" or crash a
-    campaign mid-run with a bare ``TypeError``. A null/blank budget is a budget the caller
-    did not state, so it takes the documented default; anything unparseable or non-positive
-    is a NAMED refusal. Unlimited discovered ideas stay reachable only through the explicit
-    :data:`UNLIMITED_DISCOVERED_IDEAS` sentinel.
-
-    ``fill_missing=False`` is the update path: an omitted budget means "leave this model's
-    budget alone", never "reset it to the default".
-    """
-    checked = dict(meta)
-    for field_name, default in MODEL_DEFAULTS.items():
-        if field_name not in checked:
-            if fill_missing:
-                checked[field_name] = default
-            continue
-        raw = checked[field_name]
-        if raw is None or (isinstance(raw, str) and not raw.strip()):
-            checked[field_name] = default
-            continue
-        try:
-            value: object = float(raw) if field_name == "per_trial_seconds" else int(raw)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            raise RegistryValidationError(
-                f"campaign budget {field_name}={raw!r} is not a number; omit it to take the "
-                f"default {default!r}",
-                field=field_name,
-            ) from None
-        if field_name == MAX_DISCOVERED_IDEAS_FIELD:
-            if int(value) < 0 and int(value) != UNLIMITED_DISCOVERED_IDEAS:  # type: ignore[arg-type]
-                raise RegistryValidationError(
-                    f"campaign budget {field_name}={value} is not a budget; use "
-                    f"{UNLIMITED_DISCOVERED_IDEAS} to ask for unlimited discovered ideas explicitly",
-                    field=field_name,
-                )
-        elif float(value) <= 0:  # type: ignore[arg-type]
-            raise RegistryValidationError(
-                f"campaign budget {field_name}={value} is not a budget; it must be positive",
-                field=field_name,
-            )
-        checked[field_name] = value
-    return checked
 
 
 def _update_registered_model(

@@ -9,12 +9,11 @@ from pathlib import Path
 MODULE = Path(__file__).resolve().parents[1] / "cli/registry.py"
 
 EXPECTED_DEAD_SYMBOLS = {
-    "_checked_model_budgets",
     "_parse_intervention",
     "_refuse_a_campaign_with_no_floor",
     "_update_registered_model",
 }
-EXPECTED_ABSENT_SYMBOLS: set[str] = set()
+EXPECTED_ABSENT_SYMBOLS: set[str] = {"_checked_model_budgets"}
 
 
 def _inventory() -> tuple[set[str], dict[str, int]]:
