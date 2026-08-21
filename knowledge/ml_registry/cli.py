@@ -513,6 +513,201 @@ def _test_resolver_or_refuse(args: argparse.Namespace) -> Resolver:
     return _fixed_outcome_resolver(args.outcome, args.title, tuple(args.author))
 
 
+def _idea_bridge_main(argv: list[str] | None = None) -> int:
+    """Permanent RegistrySpace bridge for IDEA inventory, claims, citations, and staging."""
+    parser = argparse.ArgumentParser(prog="knowledge.ml_registry.cli")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    register_p = sub.add_parser("register-idea", help="register an idea fact")
+    register_p.add_argument("--space-file", required=True)
+    register_p.add_argument("--meta-json", required=True)
+    resolve_p = sub.add_parser("resolve-citation", help="resolve a registered idea's reference (R7)")
+    resolve_p.add_argument("--space-file", required=True)
+    resolve_p.add_argument("--idea-id", required=True)
+    resolve_p.add_argument("--reference", required=True)
+    resolve_p.add_argument("--test-resolver", action="store_true")
+    resolve_p.add_argument("--outcome", choices=["resolved", "non-existent", "unreachable"])
+    resolve_p.add_argument("--title", default="")
+    resolve_p.add_argument("--author", action="append", default=[])
+    readback_p = sub.add_parser("readback", help="read back every fact in the space")
+    readback_p.add_argument("--space-file", required=True)
+    readback_p.add_argument("--category", choices=["model", "idea", "trial"])
+
+    claim_p = sub.add_parser("claim-idea", help="claim (or reclaim, if stale) an idea's lease")
+    claim_p.add_argument("--space-file", required=True)
+    claim_p.add_argument("--idea-id", required=True)
+    claim_p.add_argument("--owner", required=True)
+    claim_p.add_argument("--ttl", type=int)
+    claim_p.add_argument("--now", type=float)
+    heartbeat_p = sub.add_parser("heartbeat-idea-claim", help="bump a held idea claim's heartbeat")
+    heartbeat_p.add_argument("--space-file", required=True)
+    heartbeat_p.add_argument("--idea-id", required=True)
+    heartbeat_p.add_argument("--owner", required=True)
+    heartbeat_p.add_argument("--now", type=float)
+
+    for name, option, help_text in (
+        ("adopt-idea", "--trial-id", "adopt an idea from one of its own succeeded trials"),
+        ("park-idea", "--trigger", "park an idea with a reactivation trigger"),
+        ("reject-idea", "--reason", "reject an idea, naming a reason"),
+        ("invalidate-adoption", "--reason", "revert an adoption, naming a reason"),
+    ):
+        command = sub.add_parser(name, help=help_text)
+        command.add_argument("--space-file", required=True)
+        command.add_argument("--idea-id", required=True)
+        command.add_argument(option, required=True)
+    reopen_p = sub.add_parser("reopen-idea", help="return an idea to UNTRIED after an unfair verdict")
+    reopen_p.add_argument("--space-file", required=True)
+    reopen_p.add_argument("--idea-id", required=True)
+    reopen_p.add_argument("--reason", required=True)
+    reopen_p.add_argument("--json", action="store_true")
+
+    backlog_p = sub.add_parser("backlog", help="the untried-idea backlog")
+    backlog_p.add_argument("--space-file", required=True)
+    backlog_p.add_argument("--model-id")
+    backlog_p.add_argument("--now", type=float)
+    rejection_p = sub.add_parser("rejection-memory", help="every rejected idea, with its reason")
+    rejection_p.add_argument("--space-file", required=True)
+    rejection_p.add_argument("--model-id")
+    retriable_p = sub.add_parser("retriable-ideas", help="parked ideas whose trigger has fired")
+    retriable_p.add_argument("--space-file", required=True)
+    retriable_p.add_argument("--fired-trigger", action="append", default=[])
+
+    seed_p = sub.add_parser("seed-campaign", help="seed a model's starting idea set")
+    seed_p.add_argument("--space-file", required=True)
+    seed_p.add_argument("--model-id", required=True)
+    seed_p.add_argument("--mode", choices=["batch", "interactive"], default="batch")
+    seed_p.add_argument("--generator-script", required=True)
+    seed_p.add_argument("--retriever-script", required=True)
+    seed_p.add_argument("--confirm-script")
+
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "register-idea":
+            fact_id = _load_mutate_save(
+                args.space_file, lambda space: register_idea(space, _json_arg(args.meta_json))
+            )
+            print(f"OK: registered idea {fact_id}")
+            return 0
+        if args.command == "resolve-citation":
+            resolver = _test_resolver_or_refuse(args)
+            meta = _load_mutate_save(
+                args.space_file,
+                lambda space: resolve_idea_citation(space, args.idea_id, args.reference, resolver),
+            )
+            print(json.dumps(meta))
+            return 0
+        if args.command == "readback":
+            space = RegistrySpace.load(Path(args.space_file))
+            print(json.dumps([fact.to_json() for fact in space.list_facts(args.category)]))
+            return 0
+        if args.command == "claim-idea":
+            kwargs = {key: value for key, value in (("ttl", args.ttl), ("now", args.now))
+                      if value is not None}
+            claimed = _load_mutate_save(
+                args.space_file, lambda space: claim_idea(space, args.idea_id, args.owner, **kwargs)
+            )
+            print(json.dumps({"claimed": claimed}))
+            return 0 if claimed else 1
+        if args.command == "heartbeat-idea-claim":
+            kwargs = {"now": args.now} if args.now is not None else {}
+            heartbeat = _load_mutate_save(
+                args.space_file,
+                lambda space: heartbeat_idea_claim(space, args.idea_id, args.owner, **kwargs),
+            )
+            print(json.dumps({"heartbeat": heartbeat}))
+            return 0 if heartbeat else 1
+        if args.command == "adopt-idea":
+            _load_mutate_save(args.space_file, lambda space: adopt_idea(space, args.idea_id, args.trial_id))
+            print(f"OK: adopted {args.idea_id}")
+            return 0
+        if args.command == "park-idea":
+            _load_mutate_save(args.space_file, lambda space: park_idea(space, args.idea_id, args.trigger))
+            print(f"OK: parked {args.idea_id}")
+            return 0
+        if args.command == "reject-idea":
+            _load_mutate_save(args.space_file, lambda space: reject_idea(space, args.idea_id, args.reason))
+            print(f"OK: rejected {args.idea_id}")
+            return 0
+        if args.command == "invalidate-adoption":
+            _load_mutate_save(
+                args.space_file, lambda space: invalidate_adoption(space, args.idea_id, args.reason)
+            )
+            print(f"OK: invalidated adoption of {args.idea_id}")
+            return 0
+        if args.command == "reopen-idea":
+            outcome = _load_mutate_save(
+                args.space_file, lambda space: reopen_idea(space, args.idea_id, args.reason)
+            )
+            print(json.dumps(outcome) if args.json
+                  else f"OK: reopened {outcome['idea_id']} (was {outcome['previous_status']})")
+            return 0
+        if args.command == "backlog":
+            space = RegistrySpace.load(Path(args.space_file))
+            kwargs = {"model_id": args.model_id} if args.model_id is not None else {}
+            if args.now is not None:
+                kwargs["now"] = args.now
+            print(json.dumps([fact.to_json() for fact in untried_backlog(space, **kwargs)]))
+            return 0
+        if args.command == "rejection-memory":
+            space = RegistrySpace.load(Path(args.space_file))
+            kwargs = {"model_id": args.model_id} if args.model_id is not None else {}
+            print(json.dumps([
+                {"idea": fact.to_json(), "reason": reason}
+                for fact, reason in rejection_memory(space, **kwargs)
+            ]))
+            return 0
+        if args.command == "retriable-ideas":
+            space = RegistrySpace.load(Path(args.space_file))
+            fired = set(args.fired_trigger)
+            print(json.dumps([
+                fact.to_json() for fact in space.list_facts(IDEA) if is_retriable(fact, fired)
+            ]))
+            return 0
+        if args.command == "seed-campaign":
+            generator_script = json.loads(Path(args.generator_script).read_text())
+            retriever_script = json.loads(Path(args.retriever_script).read_text())
+            confirmations = (list(json.loads(Path(args.confirm_script).read_text()))
+                             if args.confirm_script else [])
+            confirmation_iter = iter(confirmations)
+
+            def generator(axis: str, model_meta: dict[str, object]) -> list[dict[str, object]]:
+                return [dict(candidate) for candidate in generator_script.get(axis, [])]
+
+            def retriever(axis: str, model_meta: dict[str, object]) -> RetrievalResult:
+                entry = retriever_script.get(axis, {})
+                return RetrievalResult(str(entry.get("query", "")),
+                                       tuple(dict(row) for row in entry.get("rows", [])))
+
+            def interactive_confirm(axis: str, candidate: dict[str, object]) -> bool:
+                try:
+                    return bool(next(confirmation_iter))
+                except StopIteration as exc:
+                    raise RegistryValidationError(
+                        "confirm-script exhausted before every candidate was confirmed",
+                        field="confirm_script",
+                    ) from exc
+
+            confirm = always_confirm if args.mode == "batch" else interactive_confirm
+
+            def seed_space(space: RegistrySpace) -> dict[str, object]:
+                run = seed_campaign(space, args.model_id, generator=generator,
+                                    retriever=retriever, confirm=confirm)
+                return {"written": run.written,
+                        "receipts": [receipt.to_meta() for receipt in run.receipts],
+                        "generative_axes": list(GENERATIVE_AXES),
+                        "retrieval_axes": list(RETRIEVAL_AXES)}
+
+            print(json.dumps(_load_mutate_save(args.space_file, seed_space)))
+            return 0
+    except RegistryValidationError as exc:
+        print(f"REFUSED [{exc.field}]: {exc}", file=sys.stderr)
+        return 1
+    except (ValueError, OSError) as exc:
+        print(f"MALFORMED INPUT: {exc}", file=sys.stderr)
+        return 2
+    return 2  # pragma: no cover
+
+
 def _legacy_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="knowledge.ml_registry.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1529,7 +1724,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in _IDEA_BRIDGE_COMMANDS:
         # RegistrySpace remains the permanent IDEA/adjudication inventory.  Preserve its
         # mature command contracts without allowing any legacy live-registry command through.
-        return _legacy_main(argv)
+        return _idea_bridge_main(argv)
     if remainder:
         parser.error(f"unrecognized arguments: {' '.join(remainder)}")
     try:
