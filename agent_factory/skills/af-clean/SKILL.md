@@ -40,6 +40,7 @@ a `change_class`, and `verifier.instruction_for` maps it to its own question:
 | Class | What the blind verifier is asked |
 |---|---|
 | `deletion` | Is this genuinely unreachable, and is nothing observable lost? |
+| `code-deletion` | Does a located reachability proof establish executable dead code is unreachable, with compatibility obligations preserved and public-surface witnesses passing? |
 | `consolidation` | Do all former call sites behave identically? What divergence is the merge erasing? |
 | `split` | Are all public imports, entry points, CLI bytes/exit codes, validation order, and side effects identical after a purely structural module split? |
 | `migration` | Does every source record map exactly once without loss, invention, identity drift, or a competing old write path, with idempotent crash recovery and pinned export? |
@@ -98,6 +99,9 @@ checker and only one is true. Callers SELECT a class; they never write the quest
    133 files. All of it is `change_class="report-only"`: located, admitted, reported, never applied.
 8. **Verify blind.** `verifier.build_verifier_payload(...)` → `verifier.run_verifier(...)` →
    `verifier.parse_verifier_output(...)`.
+   Executable dead-code removal uses `change_class="code-deletion"`, never the comment-oriented
+   `deletion` class. It requires a bounded executable diff, a located reachability proof, and
+   tier-2 public-surface witnesses; unknown or dynamic reachability fails closed.
 9. **Apply only through the witness gate.** `af_clean_witness` — the applier is witness-tiered and
    the aggression dial is pinned at its floor. Findings that do not clear their tier are REPORTED,
    not applied.

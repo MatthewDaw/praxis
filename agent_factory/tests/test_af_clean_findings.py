@@ -14,7 +14,12 @@ as failed centralization.
 
 from __future__ import annotations
 
-from agent_factory.af_clean.findings import Finding, Location, admit_finding
+from agent_factory.af_clean.findings import (
+    CLASS_CODE_DELETION,
+    Finding,
+    Location,
+    admit_finding,
+)
 
 
 def _base_finding(**overrides) -> Finding:
@@ -33,6 +38,11 @@ def test_well_formed_finding_is_admitted():
     verdict = admit_finding(finding)
     assert verdict.admitted is True
     assert verdict.reason is None
+
+
+def test_located_executable_dead_code_deletion_is_a_distinct_admitted_class():
+    finding = _base_finding(change_class=CLASS_CODE_DELETION)
+    assert admit_finding(finding).admitted is True
 
 
 def test_finding_with_no_location_is_dropped_with_recorded_reason():

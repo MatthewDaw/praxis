@@ -29,6 +29,7 @@ from typing import Any
 from .findings import (
     CLASS_ANNOTATION,
     CLASS_CONSOLIDATION,
+    CLASS_CODE_DELETION,
     CLASS_DELETION,
     CLASS_JS_TO_TS,
     CLASS_LINT_FIX,
@@ -66,6 +67,16 @@ _CLASS_QUESTIONS: dict[str, str] = {
         "behaviour. A comment that merely restates the identifier it annotates is safe to remove. A "
         "comment carrying a reason, an invariant, a caveat, a date, or an incident reference is NOT. "
         "Any change to executable code is NOT safe to endorse."
+    ),
+    CLASS_CODE_DELETION: (
+        "Executable dead code has been deleted. Endorse only when the diff itself and its located "
+        "reachability proof establish that every removed executable path is unreachable, every "
+        "preserved caller and observable behavior is identical, no compatibility or migration "
+        "obligation is being discarded, and tier-2 witnesses cover the affected public surfaces. "
+        "Refuse when reachability is unknown, a dynamic/string/import caller could still exist, "
+        "tests merely stop asserting removed behavior, or the diff contains an unrelated semantic "
+        "change. The deletion must be complete and bounded: imports, helpers, dispatch, and tests "
+        "may disappear only when they exist solely for the unreachable paths."
     ),
     CLASS_CONSOLIDATION: (
         "Two or more near-identical constructs have been merged into one. Decide whether EVERY "

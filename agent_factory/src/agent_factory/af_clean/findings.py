@@ -25,6 +25,7 @@ _VALID_POLES = frozenset({"bloat", "fragmentation"})
 # not say which class it belongs to would be verified against whichever question happened to be the
 # default -- which is how a cleaner starts approving changes its verifier never actually checked.
 CLASS_DELETION = "deletion"
+CLASS_CODE_DELETION = "code-deletion"
 CLASS_CONSOLIDATION = "consolidation"
 CLASS_SPLIT = "split"
 CLASS_MIGRATION = "migration"
@@ -36,7 +37,7 @@ CLASS_JS_TO_TS = "js-to-ts"
 CLASS_REPORT_ONLY = "report-only"
 
 _VALID_CHANGE_CLASSES = frozenset({
-    CLASS_DELETION, CLASS_CONSOLIDATION, CLASS_SPLIT, CLASS_MIGRATION, CLASS_ANNOTATION,
+    CLASS_DELETION, CLASS_CODE_DELETION, CLASS_CONSOLIDATION, CLASS_SPLIT, CLASS_MIGRATION, CLASS_ANNOTATION,
     CLASS_LINT_FIX, CLASS_JS_TO_TS, CLASS_REPORT_ONLY,
 })
 
@@ -44,7 +45,7 @@ _VALID_CHANGE_CLASSES = frozenset({
 # are opposite remedies, so a deletion or a consolidation must say which one it is. An annotation, a
 # structural split, migration, lint fix, a JS->TS conversion, or a posture report is on neither pole --
 # demanding one there would force every such finding to lie about itself to get admitted.
-_POLED_CLASSES = frozenset({CLASS_DELETION, CLASS_CONSOLIDATION})
+_POLED_CLASSES = frozenset({CLASS_DELETION, CLASS_CODE_DELETION, CLASS_CONSOLIDATION})
 
 # The DRY conflict resolves only by an observable discriminator (B15/idea 10) -- never a guess.
 _VALID_DRY_OBSERVABLES = frozenset({"co-change", "parameter-accretion"})

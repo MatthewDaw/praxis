@@ -16,6 +16,7 @@ import pytest
 
 from agent_factory.af_clean.findings import (
     CLASS_ANNOTATION,
+    CLASS_CODE_DELETION,
     CLASS_DELETION,
     CLASS_MIGRATION,
     CLASS_REPORT_ONLY,
@@ -261,7 +262,7 @@ def test_every_change_class_asks_its_own_question():
     questions = {
         cls: instruction_for(cls)
         for cls in (
-            "deletion", "consolidation", "split", "migration", "annotation", "lint-fix",
+            "deletion", "code-deletion", "consolidation", "split", "migration", "annotation", "lint-fix",
             "js-to-ts",
         )
     }
@@ -276,6 +277,15 @@ def test_the_annotation_question_judges_correctness_not_acceptance():
     assert "correctness" in text
     assert "any" in text and "ignore" in text
     assert "behaviour-neutral" in text
+
+
+def test_code_deletion_fails_closed_on_reachability_and_compatibility_obligations():
+    text = instruction_for(CLASS_CODE_DELETION).lower()
+    for required in (
+        "located reachability proof", "unreachable", "preserved caller", "observable behavior",
+        "compatibility", "migration", "tier-2 witnesses", "dynamic", "bounded",
+    ):
+        assert required in text
 
 
 def test_consolidation_asks_about_erased_divergence_between_the_duplicates():
