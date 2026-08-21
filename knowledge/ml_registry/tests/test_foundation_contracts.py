@@ -3,10 +3,11 @@ from __future__ import annotations
 import pytest
 
 from knowledge.ml_registry.contracts import (
-    CampaignArtifact, CampaignLease, CampaignOutcome, CampaignOutcomeRecord, CampaignSpec,
-    LaunchIntent, LeaseSet, LedgerRowV2, LedgerV2, PromotionRecord,
+    CampaignLease, CampaignOutcome, CampaignOutcomeRecord, CampaignSpec,
+    LaunchIntent, LeaseSet, LedgerRowV2, LedgerV2,
 )
 from knowledge.ml_registry.contracts._validation import ContractError
+from knowledge.ml_registry.domain.registry import Alias, Artifact, ModelVersion
 from knowledge.ml_registry.domain.status import answers_question, fairly_measured, retryable, terminal
 
 
@@ -48,22 +49,22 @@ def test_code_ref_is_versioned_and_records_the_arm_commit():
     assert CodeRef.from_mapping(payload).to_mapping() == payload
 
 
-def test_artifact_promotion_intent_and_lease_round_trip():
-    artifact = CampaignArtifact.from_mapping({
-        "schema_version": 1, "artifact_id": "fit", "artifact_type": "weights", "uri": "file:///fit",
-        "sha256": "a" * 64, "size_bytes": 4, "producer_campaign_id": "c", "trial_id": "t",
-        "lineage_id": "l", "interface_version": "v1",
-    })
-    assert CampaignArtifact.from_mapping(artifact.to_mapping()) == artifact
-    promotion = PromotionRecord.from_mapping({
-        "schema_version": 1, "promotion_record_id": "p", "campaign_id": "c", "model_id": "m",
-        "adopted_trial_id": "t", "lineage_id": "l", "convergence_artifact_id": "fit",
-        "dataset_manifest_hash": "d", "split_manifest_hash": "s", "preprocessing_hash": "pre",
-        "code_commit": "abc", "configuration_hash": "cfg", "metric_name": "f1", "metric_value": .8,
-        "thresholds_hash": "thr", "upstream_artifact_ids": [], "compatibility_test": "pkg:test",
-        "compatibility_passed": True,
-    })
-    assert PromotionRecord.from_mapping(promotion.to_mapping()) == promotion
+def test_registry_artifact_version_alias_and_launch_intent_contracts():
+    artifact = Artifact(
+        artifact_id="fit", run_id="run-1", kind="weights", uri="blob://fit", bytes=4,
+        schema_version="1",
+    )
+    version = ModelVersion(
+        model_id="m", version=1, run_id=artifact.run_id, artifact_id=artifact.artifact_id,
+        checksum="a" * 64, family_version="v1", code_sha="abc", preprocessing_hash="pre",
+        calibration={}, thresholds={}, compat_result={"passed": True}, status="registered",
+    )
+    alias = Alias(
+        model_id=version.model_id, alias="production", version=version.version,
+        set_by="finalize", reason="compatibility passed", at=1.0,
+    )
+    assert version.artifact_id == artifact.artifact_id
+    assert alias.alias == "production" and alias.version == version.version
     lease_payload = {"schema_version": 1, "lease_id": "lease-c", "campaign_id": "c", "owner": "worker",
                      "lane": "cpu", "device": "cpu:0", "exclusive": True, "cpu_threads": 2,
                      "cotenancy": "forbid", "throughput_gated": True, "state_root": "state/c",
