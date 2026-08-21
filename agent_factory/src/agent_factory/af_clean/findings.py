@@ -33,6 +33,7 @@ CLASS_DOCS_REWRITE = "docs-rewrite"
 CLASS_ANNOTATION = "annotation"
 CLASS_LINT_FIX = "lint-fix"
 CLASS_JS_TO_TS = "js-to-ts"
+CLASS_TEST_GRADUATION = "test-graduation"
 #: A finding that proposes NO edit at all -- a posture report a human actions. It still must be
 #: located, because "somewhere in this repo the type gate is unenforced" is not actionable.
 CLASS_REPORT_ONLY = "report-only"
@@ -40,7 +41,7 @@ CLASS_REPORT_ONLY = "report-only"
 _VALID_CHANGE_CLASSES = frozenset({
     CLASS_DELETION, CLASS_CODE_DELETION, CLASS_CONSOLIDATION, CLASS_SPLIT, CLASS_MIGRATION,
     CLASS_DOCS_REWRITE, CLASS_ANNOTATION,
-    CLASS_LINT_FIX, CLASS_JS_TO_TS, CLASS_REPORT_ONLY,
+    CLASS_LINT_FIX, CLASS_JS_TO_TS, CLASS_TEST_GRADUATION, CLASS_REPORT_ONLY,
 })
 
 # The pole is the SLOP axis, and only the slop classes sit on it: removing bloat and un-fragmenting

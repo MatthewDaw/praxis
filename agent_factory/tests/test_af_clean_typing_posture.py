@@ -265,7 +265,7 @@ def test_every_change_class_asks_its_own_question():
         for cls in (
             "deletion", "code-deletion", "consolidation", "split", "migration", "docs-rewrite",
             "annotation", "lint-fix",
-            "js-to-ts",
+            "js-to-ts", "test-graduation",
         )
     }
     assert len(set(questions.values())) == len(questions), "a shared question verifies nothing"
@@ -279,6 +279,15 @@ def test_the_annotation_question_judges_correctness_not_acceptance():
     assert "correctness" in text
     assert "any" in text and "ignore" in text
     assert "behaviour-neutral" in text
+
+
+def test_test_graduation_question_requires_real_focused_and_broader_witnesses():
+    text = instruction_for("test-graduation").lower()
+    for required in (
+        "expected-failure marker", "no test body", "focused witnesses", "without xpass",
+        "collection", "test was weakened", "environmental absence", "observable",
+    ):
+        assert required in text
 
 
 def test_docs_rewrite_question_judges_semantic_and_operational_completeness():

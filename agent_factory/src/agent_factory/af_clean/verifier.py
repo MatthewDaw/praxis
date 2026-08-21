@@ -37,6 +37,7 @@ from .findings import (
     CLASS_MIGRATION,
     CLASS_REPORT_ONLY,
     CLASS_SPLIT,
+    CLASS_TEST_GRADUATION,
 )
 
 #: Default argv for the blind verifier subprocess -- a fresh, non-interactive CLI
@@ -139,6 +140,15 @@ _CLASS_QUESTIONS: dict[str, str] = {
         "make it compile rather than because it is true; refuse if the import graph changed "
         "(a moved file, a rewritten specifier, a changed default/named export shape); refuse if "
         "any statement's runtime meaning differs. Endorse only a rename plus honest types."
+    ),
+    CLASS_TEST_GRADUATION: (
+        "A skip or expected-failure marker has been removed from a test. Endorse only when the "
+        "bounded diff changes no test body, parameters, assertion, fixture, or production code; "
+        "focused witnesses demonstrate that every newly enforced case passes without XPASS, skip, "
+        "or collection error; and the relevant broader collection or suite witness completes. "
+        "Refuse if the marker still describes an unimplemented behavior, the reason remains true, "
+        "the test was weakened or narrowed, or environmental absence merely prevented the test "
+        "from running. This change intentionally makes a formerly tolerated failure observable."
     ),
 }
 
