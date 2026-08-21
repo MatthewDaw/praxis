@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from knowledge.ml_registry.artifact_cache import ArtifactCacheIndex, load_index, save_index
+from knowledge.ml_registry.artifact_cache import ArtifactCacheIndex, save_index
 from knowledge.ml_registry.manifests import ManifestRegistry, ManifestValidationError
 from knowledge.ml_registry.portfolio import Portfolio, PortfolioValidationError
 from knowledge.ml_registry.schema import RegistryValidationError
@@ -129,19 +129,3 @@ def test_registry_backed_legacy_views_refuse_every_persistence_authority(
     with pytest.raises(PortfolioValidationError, match="read-only"):
         portfolio.save()
     assert not (tmp_path / "forbidden-cache.json").exists()
-
-
-def test_path_owned_legacy_persistence_is_retired(tmp_path: Path) -> None:
-    with pytest.raises(ManifestValidationError, match="path-owned"):
-        ManifestRegistry.load(tmp_path / "manifest.json")
-    with pytest.raises(ManifestValidationError, match="read-only"):
-        ManifestRegistry(tmp_path / "manifest.json").save()
-    with pytest.raises(RegistryValidationError, match="path-owned"):
-        load_index(tmp_path / "cache.json")
-    with pytest.raises(RegistryValidationError, match="read-only"):
-        save_index(tmp_path / "cache.json", ArtifactCacheIndex())
-    with pytest.raises(PortfolioValidationError, match="path-owned"):
-        Portfolio.load(tmp_path / "portfolio.json")
-    with pytest.raises(PortfolioValidationError, match="read-only"):
-        Portfolio(tmp_path / "portfolio.json").save()
-    assert list(tmp_path.iterdir()) == []

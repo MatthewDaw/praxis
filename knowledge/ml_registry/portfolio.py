@@ -8,7 +8,10 @@ their evidence depends on.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+import os
+import tempfile
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -111,9 +114,11 @@ class Portfolio:
 
     @classmethod
     def load(cls, path: str | Path) -> "Portfolio":
-        raise PortfolioValidationError(
-            "path-owned portfolios are retired; read through Portfolio.from_registry"
-        )
+        try:
+            document = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PortfolioValidationError(f"invalid portfolio document: {exc}") from exc
+        return cls._from_document(document, path=path)
 
     @classmethod
     def from_registry(
@@ -155,9 +160,27 @@ class Portfolio:
         return portfolio
 
     def save(self) -> None:
-        raise PortfolioValidationError(
-            "portfolio compatibility views are read-only; write through Registry"
-        )
+        self._assert_mutable()
+        if self.path is None:
+            raise PortfolioValidationError("cannot save a portfolio without a path")
+        self.validate()
+        document = {
+            "schema_version": self.SCHEMA_VERSION,
+            "campaigns": [asdict(value) for _, value in sorted(self.campaigns.items())],
+            "artifacts": [asdict(value) for _, value in sorted(self.artifacts.items())],
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(document, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def register_artifact(
         self,
