@@ -14,6 +14,18 @@ EXPECTED_ABSENT_SYMBOLS: set[str] = {
     "_checked_model_budgets", "_parse_intervention", "_refuse_a_campaign_with_no_floor",
     "_update_registered_model",
 }
+EXPECTED_DEAD_IMPORTS = {
+    "DEFAULT_SIGMAS", "Intervention", "MAX_DISCOVERED_IDEAS_FIELD", "METRIC_FIELD",
+    "MODEL", "MODEL_DEFAULTS", "TicketIndex", "UNLIMITED_DISCOVERED_IDEAS",
+    "acknowledge_diagnosis", "adjudicate_trial", "adjudicate_verdict",
+    "campaign_completeness", "campaign_status", "flagged_trials", "format_status",
+    "guard_baseline_move", "guard_model_mutation", "load_ledger_commits",
+    "load_ledger_values", "model_to_projects", "mutate_model", "per_axis_yield",
+    "project_to_models", "record_keep_pushing_marker", "record_out_of_diff_change",
+    "register_model", "register_model_with_baseline", "register_trial", "reset_ratchet",
+    "retire_harness", "supervise_campaign", "supersede_trial", "validate_fact",
+}
+EXPECTED_ABSENT_IMPORTS: set[str] = set()
 
 
 def _inventory() -> tuple[set[str], dict[str, int]]:
@@ -28,6 +40,15 @@ def _inventory() -> tuple[set[str], dict[str, int]]:
     return definitions, loads
 
 
+def _imports() -> set[str]:
+    tree = ast.parse(MODULE.read_text())
+    return {
+        alias.asname or alias.name
+        for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+
+
 def test_each_located_private_cli_symbol_is_defined_but_has_no_reachable_reference():
     definitions, loads = _inventory()
     for symbol in EXPECTED_DEAD_SYMBOLS:
@@ -40,3 +61,19 @@ def test_each_witnessed_private_cli_deletion_is_absent():
     for symbol in EXPECTED_ABSENT_SYMBOLS:
         assert symbol not in definitions
         assert loads.get(symbol, 0) == 0
+
+
+def test_each_located_private_cli_import_is_present_but_unreferenced():
+    imports = _imports()
+    _, loads = _inventory()
+    for name in EXPECTED_DEAD_IMPORTS:
+        assert name in imports
+        assert loads.get(name, 0) == 0
+
+
+def test_each_witnessed_private_cli_import_deletion_is_absent():
+    imports = _imports()
+    _, loads = _inventory()
+    for name in EXPECTED_ABSENT_IMPORTS:
+        assert name not in imports
+        assert loads.get(name, 0) == 0
