@@ -38,7 +38,7 @@ class CacheKey:
 
 
 @dataclass(frozen=True)
-class CacheEntry:
+class ProjectedCacheArtifact:
     entry_id: str
     key: CacheKey
     uri: str
@@ -64,11 +64,11 @@ def key_from_dict(raw: Mapping[str, object]) -> CacheKey:
     return CacheKey(**values)
 
 
-def _entry_from_dict(raw: Mapping[str, object]) -> CacheEntry:
+def _entry_from_dict(raw: Mapping[str, object]) -> ProjectedCacheArtifact:
     key_raw = raw.get("key")
     if not isinstance(key_raw, Mapping):
         raise RegistryValidationError("entry key must be an object", field="key")
-    return CacheEntry(
+    return ProjectedCacheArtifact(
         entry_id=_text(raw.get("entry_id"), "entry_id"),
         key=key_from_dict(key_raw),
         uri=_text(raw.get("uri"), "uri"),
@@ -83,7 +83,7 @@ class ArtifactCacheIndex:
 
     def __init__(self) -> None:
         self._registry_backed = False
-        self.entries: dict[str, CacheEntry] = {}
+        self.entries: dict[str, ProjectedCacheArtifact] = {}
         self.active: dict[str, str] = {}
         self.superseded: dict[str, str] = {}
 
@@ -95,7 +95,7 @@ class ArtifactCacheIndex:
         checksum: str,
         coverage: float,
         prediction_scope: str,
-    ) -> CacheEntry:
+    ) -> ProjectedCacheArtifact:
         self._assert_mutable()
         uri = _text(uri, "uri")
         checksum = _text(checksum, "checksum")
@@ -120,7 +120,7 @@ class ArtifactCacheIndex:
             "coverage": coverage,
             "prediction_scope": prediction_scope,
         }
-        entry = CacheEntry(
+        entry = ProjectedCacheArtifact(
             _digest(payload), key, uri, checksum, coverage, prediction_scope
         )
         existing = self.entries.get(entry.entry_id)
@@ -140,7 +140,7 @@ class ArtifactCacheIndex:
         require_oof: bool = False,
         minimum_coverage: float = 0.0,
         expected_checksum: str | None = None,
-    ) -> CacheEntry:
+    ) -> ProjectedCacheArtifact:
         entry_id = self.active.get(key.id)
         if entry_id is None:
             raise RegistryValidationError(

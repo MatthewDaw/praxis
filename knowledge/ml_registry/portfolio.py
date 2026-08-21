@@ -59,7 +59,7 @@ class ArtifactDependency:
 
 
 @dataclass
-class Artifact:
+class ProjectedPortfolioArtifact:
     id: str
     model_id: str
     verdict: str
@@ -107,7 +107,7 @@ class Portfolio:
         self.path = Path(path) if path is not None else None
         self._registry_backed = False
         self.campaigns: dict[str, Campaign] = {}
-        self.artifacts: dict[str, Artifact] = {}
+        self.artifacts: dict[str, ProjectedPortfolioArtifact] = {}
 
     @classmethod
     def load(cls, path: str | Path) -> "Portfolio":
@@ -141,7 +141,7 @@ class Portfolio:
             for item in document.get("artifacts", []):
                 raw = dict(item)
                 raw["input_artifact_ids"] = tuple(raw.get("input_artifact_ids", ()))
-                artifact = Artifact(**raw)
+                artifact = ProjectedPortfolioArtifact(**raw)
                 portfolio.artifacts[artifact.id] = artifact
             for item in document.get("campaigns", []):
                 raw = dict(item)
@@ -170,7 +170,7 @@ class Portfolio:
         prediction_manifest_hash: str,
         coverage: float,
         input_artifact_ids: Iterable[str] = (),
-    ) -> Artifact:
+    ) -> ProjectedPortfolioArtifact:
         self._assert_mutable()
         if artifact_id in self.artifacts:
             raise PortfolioValidationError(f"artifact {artifact_id!r} already exists")
@@ -182,7 +182,7 @@ class Portfolio:
         lineage = tuple(sorted(set(input_artifact_ids)))
         if any(not item or item not in self.artifacts for item in lineage):
             raise PortfolioValidationError("artifact lineage must reference existing artifact ids")
-        artifact = Artifact(
+        artifact = ProjectedPortfolioArtifact(
             artifact_id, model_id, verdict, dataset_manifest_hash, split_manifest_hash,
             prediction_manifest_hash, coverage, _now(), input_artifact_ids=lineage,
         )
@@ -351,7 +351,7 @@ class Portfolio:
         except KeyError as exc:
             raise PortfolioValidationError(f"unknown campaign {campaign_id!r}") from exc
 
-    def _artifact(self, artifact_id: str) -> Artifact:
+    def _artifact(self, artifact_id: str) -> ProjectedPortfolioArtifact:
         try:
             return self.artifacts[artifact_id]
         except KeyError as exc:
