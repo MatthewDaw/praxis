@@ -32,6 +32,7 @@ from .findings import (
     CLASS_DELETION,
     CLASS_JS_TO_TS,
     CLASS_LINT_FIX,
+    CLASS_MIGRATION,
     CLASS_REPORT_ONLY,
     CLASS_SPLIT,
 )
@@ -83,6 +84,16 @@ _CLASS_QUESTIONS: dict[str, str] = {
         "dispatch, forks policy across compatibility shims, introduces an import cycle or new "
         "observable eager import, or mixes in a semantic change. Endorse only if callers cannot "
         "observe the relocation."
+    ),
+    CLASS_MIGRATION: (
+        "State has been migrated from one canonical representation to another. Decide whether "
+        "EVERY source record maps exactly once without loss, duplication, invented provenance, "
+        "identity drift, reordered evidence, or weakened validation. The source must remain "
+        "reconstructable through a pinned export when byte stability is promised; malformed or "
+        "ambiguous source data must be refused or explicitly dispositioned, never guessed. "
+        "Crash/restart must be idempotent, and no old write path may remain a competing source of "
+        "truth after cutover. Refuse mixed semantic policy changes. Endorse only a complete, "
+        "witnessed, reversible cutover."
     ),
     CLASS_ANNOTATION: (
         "Type annotations have been added or tightened. Judge CORRECTNESS, not acceptance: a "

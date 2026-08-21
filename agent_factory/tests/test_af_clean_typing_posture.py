@@ -17,6 +17,7 @@ import pytest
 from agent_factory.af_clean.findings import (
     CLASS_ANNOTATION,
     CLASS_DELETION,
+    CLASS_MIGRATION,
     CLASS_REPORT_ONLY,
     CLASS_SPLIT,
     Finding,
@@ -227,6 +228,12 @@ def test_a_structural_split_is_admitted_without_a_slop_pole():
     assert admit_finding(f).admitted
 
 
+def test_a_state_migration_is_admitted_without_a_slop_pole():
+    f = Finding(rule="canonical-store-migration", tier="enforce",
+                location=Location("legacy.py", 1), change_class=CLASS_MIGRATION)
+    assert admit_finding(f).admitted
+
+
 def test_a_deletion_still_requires_a_pole():
     f = Finding(rule="r", tier="advise", location=Location("a.py", 1))
     assert f.change_class == CLASS_DELETION            # the pre-split default is preserved
@@ -253,7 +260,10 @@ def test_an_unpoled_class_may_not_declare_a_bogus_pole():
 def test_every_change_class_asks_its_own_question():
     questions = {
         cls: instruction_for(cls)
-        for cls in ("deletion", "consolidation", "split", "annotation", "lint-fix", "js-to-ts")
+        for cls in (
+            "deletion", "consolidation", "split", "migration", "annotation", "lint-fix",
+            "js-to-ts",
+        )
     }
     assert len(set(questions.values())) == len(questions), "a shared question verifies nothing"
 
@@ -278,6 +288,15 @@ def test_split_question_pins_every_observable_cli_and_import_surface():
         "public import path", "entry point", "argument/default", "help byte", "stdout/stderr",
         "exit code", "validation and error order", "side effect", "persistence", "import cycle",
         "semantic change",
+    ):
+        assert required in text
+
+
+def test_migration_question_pins_losslessness_and_single_authority():
+    text = instruction_for("migration").lower()
+    for required in (
+        "exactly once", "invented provenance", "identity drift", "reconstructable", "byte",
+        "crash/restart", "idempotent", "source of truth", "reversible",
     ):
         assert required in text
 

@@ -27,6 +27,7 @@ _VALID_POLES = frozenset({"bloat", "fragmentation"})
 CLASS_DELETION = "deletion"
 CLASS_CONSOLIDATION = "consolidation"
 CLASS_SPLIT = "split"
+CLASS_MIGRATION = "migration"
 CLASS_ANNOTATION = "annotation"
 CLASS_LINT_FIX = "lint-fix"
 CLASS_JS_TO_TS = "js-to-ts"
@@ -35,13 +36,13 @@ CLASS_JS_TO_TS = "js-to-ts"
 CLASS_REPORT_ONLY = "report-only"
 
 _VALID_CHANGE_CLASSES = frozenset({
-    CLASS_DELETION, CLASS_CONSOLIDATION, CLASS_SPLIT, CLASS_ANNOTATION,
+    CLASS_DELETION, CLASS_CONSOLIDATION, CLASS_SPLIT, CLASS_MIGRATION, CLASS_ANNOTATION,
     CLASS_LINT_FIX, CLASS_JS_TO_TS, CLASS_REPORT_ONLY,
 })
 
 # The pole is the SLOP axis, and only the slop classes sit on it: removing bloat and un-fragmenting
 # are opposite remedies, so a deletion or a consolidation must say which one it is. An annotation, a
-# structural split, lint fix, a JS->TS conversion, or a posture report is on neither pole --
+# structural split, migration, lint fix, a JS->TS conversion, or a posture report is on neither pole --
 # demanding one there would force every such finding to lie about itself to get admitted.
 _POLED_CLASSES = frozenset({CLASS_DELETION, CLASS_CONSOLIDATION})
 
