@@ -14,6 +14,7 @@ class EventLogError(ValueError):
 
 @dataclass(frozen=True)
 class RegistryEvent:
+    schema_version: int
     sequence: int
     event_type: str
     payload: Mapping[str, Any]
@@ -38,12 +39,20 @@ class EventLog:
             return ()
         result: list[RegistryEvent] = []
         previous: str | None = None
-        for number, line in enumerate(self.path.read_text().splitlines(), 1):
+        content = self.path.read_bytes()
+        raw_lines = content.splitlines(keepends=True)
+        if raw_lines and not raw_lines[-1].endswith((b"\n", b"\r")):
+            self._quarantine_torn(raw_lines[-1], b"".join(raw_lines[:-1]))
+            raw_lines = raw_lines[:-1]
+        for number, raw_line in enumerate(raw_lines, 1):
             try:
-                raw = json.loads(line)
+                raw = json.loads(raw_line)
             except json.JSONDecodeError as exc:
+                if number == len(raw_lines):
+                    self._quarantine_torn(raw_line, b"".join(raw_lines[:-1]))
+                    break
                 raise EventLogError(f"malformed event line {number}") from exc
-            required = {"sequence", "event_type", "payload", "at", "previous_hash", "event_hash"}
+            required = {"schema_version", "sequence", "event_type", "payload", "at", "previous_hash", "event_hash"}
             if not isinstance(raw, dict) or set(raw) != required:
                 raise EventLogError(f"invalid event fields at line {number}")
             body = {key: raw[key] for key in required - {"event_hash"}}
@@ -52,19 +61,31 @@ class EventLog:
                 raise EventLogError(f"event hash chain is broken at line {number}")
             if not isinstance(raw["payload"], dict) or not isinstance(raw["event_type"], str):
                 raise EventLogError(f"invalid event payload at line {number}")
-            result.append(RegistryEvent(number, raw["event_type"], raw["payload"], float(raw["at"]),
+            if raw["schema_version"] != 1:
+                raise EventLogError(f"unsupported event schema_version at line {number}")
+            result.append(RegistryEvent(1, number, raw["event_type"], raw["payload"], float(raw["at"]),
                                         previous, digest))
             previous = digest
         return tuple(result)
 
     def append(self, event_type: str, payload: Mapping[str, Any], *, at: float) -> RegistryEvent:
         events = self.read()
-        body = {"sequence": len(events) + 1, "event_type": event_type, "payload": dict(payload),
+        body = {"schema_version": 1, "sequence": len(events) + 1, "event_type": event_type, "payload": dict(payload),
                 "at": float(at), "previous_hash": events[-1].event_hash if events else None}
         raw = {**body, "event_hash": hashlib.sha256(_canonical(body)).hexdigest()}
         with self.path.open("ab") as handle:
             handle.write(_canonical(raw) + b"\n")
             handle.flush()
             os.fsync(handle.fileno())
-        return RegistryEvent(raw["sequence"], event_type, dict(payload), float(at),
+        return RegistryEvent(1, raw["sequence"], event_type, dict(payload), float(at),
                              raw["previous_hash"], raw["event_hash"])
+
+    def _quarantine_torn(self, torn: bytes, intact: bytes) -> None:
+        quarantine = self.path.with_name(
+            f"{self.path.name}.torn-{hashlib.sha256(torn).hexdigest()[:16]}"
+        )
+        quarantine.write_bytes(torn)
+        with self.path.open("wb") as handle:
+            handle.write(intact)
+            handle.flush()
+            os.fsync(handle.fileno())

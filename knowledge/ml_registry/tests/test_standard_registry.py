@@ -29,15 +29,20 @@ def _experiment(registry: Registry, name: str = "campaign") -> None:
     )
 
 
-def _run(registry: Registry, name: str = "run-1", *, convergence: bool = True) -> None:
+def _run(registry: Registry, name: str = "run-1", *, adjudicated: bool = True) -> None:
     registry.create_run(
         run_id=name, experiment_id="campaign", idea_id="idea-1", stage="representation", family="linear",
-        params={"convergence": convergence, "description": "baseline"},
-        metrics={"metric": 0.91, "memory_gb": 1.0, "throughput": 2.0},
-        code_ref={"repo": str(REPO), "sha": SHA, "base_sha": BASE, "diff_hash": DIFF, "diff_lines": 3},
-        device_fingerprint="cpu:test", status="succeeded", verdict="adopted", started_at=1.0,
-        finished_at=2.0, claim_owner="worker", heartbeat_at=2.0,
+        params={"description": "baseline"},
+        metrics={},
+        code_ref={"schema_version": 1, "repo": str(REPO), "sha": SHA, "base_sha": BASE, "diff_hash": DIFF, "diff_lines": 3},
+        device_fingerprint="cpu:test", status="running", verdict=None, started_at=1.0,
+        finished_at=None, claim_owner="worker", heartbeat_at=1.0,
     )
+    from knowledge.ml_registry.services.registry_runs import complete_run
+    complete_run(registry, run_id=name, metrics={"metric": 0.91, "memory_gb": 1.0, "throughput": 2.0})
+    if adjudicated:
+        from knowledge.ml_registry.services.registry_aliases import adjudicate_run
+        adjudicate_run(registry, run_id=name, verdict="adopted", status="succeeded", reason="won")
 
 
 def _version(registry: Registry) -> str:
@@ -60,8 +65,61 @@ def test_standard_tables_and_strict_contracts(tmp_path: Path) -> None:
     )
     assert Partition.parse("oof") is Partition.OUT_OF_FOLD
     with pytest.raises(ContractError, match="full 40- or 64"):
-        CodeRef.from_mapping({"repo": "r", "sha": "abc", "base_sha": BASE,
+        CodeRef.from_mapping({"schema_version": 1, "repo": "r", "sha": "abc", "base_sha": BASE,
                               "diff_hash": DIFF, "diff_lines": 0})
+
+
+def test_trainer_cannot_write_a_verdict(tmp_path: Path) -> None:
+    registry = Registry(tmp_path)
+    _experiment(registry)
+    with pytest.raises(RegistryError, match="trainer.*cannot write a verdict"):
+        registry.create_run(
+            run_id="bad", experiment_id="campaign", idea_id="i", stage="s", family="f", params={}, metrics={},
+            code_ref={"schema_version": 1, "repo": str(REPO), "sha": SHA, "base_sha": SHA, "diff_hash": DIFF, "diff_lines": 0},
+            device_fingerprint="cpu", status="succeeded", verdict="adopted", started_at=1,
+            finished_at=1, claim_owner="trainer", heartbeat_at=1,
+        )
+
+
+def test_run_transitions_are_reasoned_idempotent_and_evented(tmp_path: Path) -> None:
+    registry = Registry(tmp_path)
+    _experiment(registry)
+    registry.create_run(
+        run_id="run", experiment_id="campaign", idea_id="i", stage="s", family="f", params={}, metrics={},
+        code_ref={"schema_version": 1, "repo": str(REPO), "sha": SHA, "base_sha": SHA, "diff_hash": DIFF, "diff_lines": 0},
+        device_fingerprint="cpu", status="running", verdict=None, started_at=1,
+        finished_at=None, claim_owner="trainer", heartbeat_at=1,
+    )
+    from knowledge.ml_registry.services.registry_runs import complete_run
+    from knowledge.ml_registry.services.registry_aliases import adjudicate_run
+    complete_run(registry, run_id="run", metrics={"metric": 1.0})
+    after_complete = registry.list_events()
+    complete_run(registry, run_id="run", metrics={"metric": 1.0})
+    assert registry.list_events() == after_complete
+    adjudicate_run(registry, run_id="run", verdict="rejected", status="succeeded", reason="below floor")
+    after_verdict = registry.list_events()
+    adjudicate_run(registry, run_id="run", verdict="rejected", status="succeeded", reason="below floor")
+    assert registry.list_events() == after_verdict
+    assert registry.list_runs(experiment_id="campaign")[0]["verdict"] == "rejected"
+
+
+def test_reasoned_supersession_is_distinct_and_idempotent(tmp_path: Path) -> None:
+    registry = Registry(tmp_path)
+    _experiment(registry)
+    registry.create_run(
+        run_id="run", experiment_id="campaign", idea_id="i", stage="s", family="f", params={}, metrics={},
+        code_ref={"schema_version": 1, "repo": str(REPO), "sha": SHA, "base_sha": SHA, "diff_hash": DIFF, "diff_lines": 0},
+        device_fingerprint="cpu", status="running", verdict=None, started_at=1,
+        finished_at=None, claim_owner="trainer", heartbeat_at=1,
+    )
+    from knowledge.ml_registry.services.registry_aliases import supersede_run
+    with pytest.raises(RegistryError, match="reason"):
+        supersede_run(registry, run_id="run", reason="")
+    supersede_run(registry, run_id="run", reason="controller stopped")
+    count = len(registry.list_events())
+    supersede_run(registry, run_id="run", reason="controller stopped")
+    assert len(registry.list_events()) == count
+    assert registry.list_runs(experiment_id="campaign")[0]["status"] == "superseded"
 
 
 def test_fixture_o_immutable_versions_and_alias_authorities(tmp_path: Path) -> None:
@@ -75,9 +133,10 @@ def test_fixture_o_immutable_versions_and_alias_authorities(tmp_path: Path) -> N
         registry.set_alias(model_id="model", alias="production", version=1, set_by="adjudicate", reason="bad")
     with pytest.raises(RegistryError, match="service-owned"):
         registry.set_alias(model_id="model", alias="champion", version=1, set_by="finalize", reason="bad")
-    from knowledge.ml_registry.services.registry_aliases import move_champion, move_production
+    from knowledge.ml_registry.services.registry_aliases import move_champion
+    from knowledge.ml_registry.services.registry_finalize import RegistryFinalizeService
     move_champion(registry, model_id="model", version=1, reason="won")
-    move_production(registry, model_id="model", version=1, reason="compat")
+    RegistryFinalizeService(registry).move_production(model_id="model", version=1, reason="compat")
     aliases = {row["alias"]: row for row in registry.rows("aliases")}
     assert aliases["champion"]["reason"] == "won"
     assert aliases["production"]["set_by"] == "finalize"
@@ -86,13 +145,13 @@ def test_fixture_o_immutable_versions_and_alias_authorities(tmp_path: Path) -> N
 def test_model_version_requires_convergence_matching_code_and_blob(tmp_path: Path) -> None:
     registry = Registry(tmp_path)
     _experiment(registry)
-    _run(registry, convergence=False)
+    _run(registry, adjudicated=False)
     registry.register_model(model_id="model", family="f", sport_scope="shared", axis="a", protocol="P", extends=None)
     digest = registry.create_artifact(run_id="run-1", kind="checkpoint", content=b"x", schema_version="1")
     values = dict(model_id="model", version=1, run_id="run-1", artifact_id=digest, checksum=digest,
                   family_version="f@1", code_sha=SHA, preprocessing_hash="p", calibration={}, thresholds={},
                   compat_result={"head_sha": SHA, "passed": True, "at": 1}, status="active")
-    with pytest.raises(RegistryError, match="convergence"):
+    with pytest.raises(RegistryError, match="externally adjudicated"):
         registry.create_model_version(**values)
 
 
@@ -117,9 +176,9 @@ def test_refused_constraint_does_not_poison_durable_events(tmp_path: Path) -> No
     with pytest.raises(sqlite3.IntegrityError):
         registry.create_run(
             run_id="orphan", experiment_id="missing", idea_id="i", stage="s", family="f",
-            params={}, metrics={}, code_ref={"repo": str(REPO), "sha": SHA, "base_sha": SHA,
-            "diff_hash": DIFF, "diff_lines": 0}, device_fingerprint="cpu", status="complete",
-            verdict=None, started_at=1, finished_at=1, claim_owner="x", heartbeat_at=1,
+            params={}, metrics={}, code_ref={"schema_version": 1, "repo": str(REPO), "sha": SHA, "base_sha": SHA,
+            "diff_hash": DIFF, "diff_lines": 0}, device_fingerprint="cpu", status="running",
+            verdict=None, started_at=1, finished_at=None, claim_owner="x", heartbeat_at=1,
         )
     assert registry.list_events() == before
     assert Registry.open(tmp_path).rows("experiments")[0]["experiment_id"] == "campaign"
@@ -140,6 +199,37 @@ def test_event_tamper_and_blob_tamper_are_detected(tmp_path: Path) -> None:
     (tmp_path / "events.jsonl").write_text("\n".join(lines) + "\n")
     with pytest.raises(EventLogError, match="hash chain"):
         Registry(tmp_path)
+
+
+def test_torn_final_event_is_quarantined_and_projection_rebuilt(tmp_path: Path) -> None:
+    registry = Registry(tmp_path)
+    _experiment(registry)
+    with (tmp_path / "events.jsonl").open("ab") as handle:
+        handle.write(b'{"schema_version":1,"sequence":2')
+    registry.db_path.unlink()
+    recovered = Registry(tmp_path)
+    assert recovered.rows("experiments")[0]["experiment_id"] == "campaign"
+    quarantines = list(tmp_path.glob("events.jsonl.torn-*"))
+    assert len(quarantines) == 1 and quarantines[0].read_bytes().startswith(b'{"schema_version"')
+
+
+def test_future_sqlite_schema_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "registry.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute("PRAGMA user_version=99")
+    with pytest.raises(RegistryError, match="newer than supported"):
+        Registry(tmp_path)
+
+
+@pytest.mark.parametrize("table", [
+    "experiments", "runs", "artifacts", "registered_models", "model_versions", "lineage", "aliases",
+])
+def test_external_sql_cannot_mutate_any_projection_table(tmp_path: Path, table: str) -> None:
+    registry = Registry(tmp_path)
+    before = registry.list_events()
+    with sqlite3.connect(registry.db_path) as db, pytest.raises(sqlite3.DatabaseError, match="authority"):
+        db.execute(f"INSERT INTO {table} DEFAULT VALUES")
+    assert registry.list_events() == before
 
 
 def test_single_writer_serializes_concurrent_events(tmp_path: Path) -> None:
@@ -166,9 +256,25 @@ def test_compatibility_changes_are_append_only_effective_state(tmp_path: Path) -
     effective = registry.effective_model_version("model", 1)
     assert effective["effective_status"] == "incompatible"
     assert effective["effective_compat_result"]["passed"] is False
-    from knowledge.ml_registry.services.registry_aliases import move_production
+    from knowledge.ml_registry.services.registry_finalize import RegistryFinalizeService
+    with pytest.raises(ValueError, match="incompatible"):
+        RegistryFinalizeService(registry).move_production(
+            model_id="model", version=1, reason="must not bypass latest compat"
+        )
+    with pytest.raises(RegistryError, match="current HEAD"):
+        registry.record_compatibility(model_id="model", version=1, head_sha="f" * 40,
+                                      passed=True, reason="stale checkout")
+
+
+def test_production_rechecks_head_after_the_compatibility_pass(tmp_path: Path, monkeypatch) -> None:
+    registry = Registry(tmp_path)
+    _experiment(registry)
+    _run(registry)
+    _version(registry)
+    monkeypatch.setattr(registry, "_git_head", lambda _repo: "f" * 40)
+    from knowledge.ml_registry.services.registry_finalize import RegistryFinalizeService
     with pytest.raises(RegistryError, match="compatibility-passing"):
-        move_production(registry, model_id="model", version=1, reason="must not bypass latest compat")
+        RegistryFinalizeService(registry).move_production(model_id="model", version=1, reason="stale pass")
 
 
 def test_historical_import_and_runs_export_are_byte_exact(tmp_path: Path) -> None:
@@ -183,15 +289,29 @@ def test_historical_import_and_runs_export_are_byte_exact(tmp_path: Path) -> Non
     )
     assert count == 1
     assert RunsExport.from_registry(registry, "legacy").serialize() == content
+    before = registry.list_events()
+    HistoricalLedgerImporter(registry).import_ledger(
+        content, experiment_id="legacy", spec_digest="d" * 64, metric="score",
+        direction="maximize", repo=str(REPO),
+    )
+    assert registry.list_events() == before
+    with pytest.raises(RegistryError, match="full semantic payload"):
+        HistoricalLedgerImporter(registry).import_ledger(
+            content, experiment_id="legacy", spec_digest="d" * 64, metric="different",
+            direction="maximize", repo=str(REPO),
+        )
 
 
-def test_zero_metric_ok_import_requires_external_disposition(tmp_path: Path) -> None:
+def test_historical_zero_metric_without_disposition_stays_explicitly_unknown(tmp_path: Path) -> None:
     content = (
         "commit\tmetric_value\tmemory_gb\tstatus\tdescription\tthroughput\tdiff_lines\n"
         f"{SHA}\t0.0\t1.0\tok\tbroken\t1.0\t1\n"
     )
-    with pytest.raises(ValueError, match="external validity disposition"):
-        HistoricalLedgerImporter(Registry(tmp_path)).import_ledger(
-            content, experiment_id="legacy", spec_digest="d" * 64, metric="score",
-            direction="maximize", repo=str(REPO),
-        )
+    registry = Registry(tmp_path)
+    HistoricalLedgerImporter(registry).import_ledger(
+        content, experiment_id="legacy", spec_digest="d" * 64, metric="score",
+        direction="maximize", repo=str(REPO),
+    )
+    run = registry.list_runs(experiment_id="legacy")[0]
+    assert json.loads(run["metrics"])["validity"] == "unknown"
+    assert run["verdict"] is None

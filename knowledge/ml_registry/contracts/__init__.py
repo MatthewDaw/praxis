@@ -3,7 +3,7 @@
 from ._validation import ContractError
 from .artifact_manifest import CampaignArtifact
 from .campaign_spec import CampaignSpec
-from .code_ref import CodeRef
+from .code_ref import CodeRef, LegacyCodeRef
 from .launch_intent import LaunchIntent
 from .lease import CampaignLease, LeaseSet
 from .ledger_v2 import (
@@ -37,6 +37,7 @@ __all__ = [
     "LATEST_SCHEMA_VERSIONS",
     "LeaseSet",
     "LedgerRowV2",
+    "LegacyCodeRef",
     "LedgerAnnotations",
     "LedgerProjection",
     "LedgerRowIdentity",

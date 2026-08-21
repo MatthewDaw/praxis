@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from knowledge.ml_registry.contracts import CodeRef
+from knowledge.ml_registry.contracts import CodeRef, LegacyCodeRef
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,7 @@ class Run:
     family: str
     params: Mapping[str, Any]
     metrics: Mapping[str, Any]
-    code_ref: CodeRef
+    code_ref: CodeRef | LegacyCodeRef
     device_fingerprint: str
     status: str
     verdict: str | None

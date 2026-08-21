@@ -23,18 +23,19 @@ class RunsExport:
     def from_registry(cls, registry: "Registry", experiment_id: str) -> "RunsExport":
         rows = [row for row in registry.rows("runs") if row["experiment_id"] == experiment_id]
         rows.sort(key=lambda row: (row["started_at"], row["run_id"]))
+        imported = [json.loads(row["params"]).get("import_provenance") for row in rows]
+        if rows and all(item is not None for item in imported):
+            digests = {item["source_blob_sha256"] for item in imported}
+            ordinals = sorted(item["row_ordinal"] for item in imported)
+            if len(digests) != 1 or ordinals != list(range(1, len(rows) + 1)):
+                raise ContractError("historical run import provenance is incomplete or mixed")
+            return cls(content=registry.blobs.verify(next(iter(digests))).read_bytes().decode("utf-8"))
         stream = io.StringIO(newline="")
         writer = csv.writer(stream, delimiter="\t", lineterminator="\n")
         writer.writerow(LEDGER_V2_HEADER)
         for row in rows:
             params = json.loads(row["params"])
             metrics = json.loads(row["metrics"])
-            preserved = params.get("_runs_export_fields")
-            if preserved is not None:
-                if not isinstance(preserved, list) or len(preserved) != len(LEDGER_V2_HEADER):
-                    raise ContractError("run has malformed _runs_export_fields")
-                writer.writerow(preserved)
-                continue
             code_ref = json.loads(row["code_ref"])
             status = metrics.get("export_status")
             if status is None:

@@ -8,7 +8,7 @@ import subprocess
 import time
 from typing import Any
 
-from knowledge.ml_registry.contracts import CodeRef
+from knowledge.ml_registry.contracts import CodeRef, LegacyCodeRef
 from knowledge.ml_registry.file_lock import exclusive_file_lock
 
 from .blobs import BlobStore
@@ -21,7 +21,6 @@ class RegistryError(ValueError):
 
 DDL = """
 PRAGMA foreign_keys=ON;
-PRAGMA user_version=1;
 CREATE TABLE IF NOT EXISTS experiments(
  experiment_id TEXT PRIMARY KEY, spec_digest TEXT NOT NULL, stages TEXT NOT NULL, metric TEXT NOT NULL,
  direction TEXT NOT NULL CHECK(direction IN ('maximize','minimize')), win_condition TEXT NOT NULL,
@@ -59,7 +58,7 @@ CREATE TABLE IF NOT EXISTS aliases(
  at REAL NOT NULL, PRIMARY KEY(model_id,alias),
  FOREIGN KEY(model_id,version) REFERENCES model_versions(model_id,version));
 CREATE TABLE IF NOT EXISTS events(
- sequence INTEGER PRIMARY KEY, event_type TEXT NOT NULL, payload TEXT NOT NULL, at REAL NOT NULL,
+ sequence INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL, event_type TEXT NOT NULL, payload TEXT NOT NULL, at REAL NOT NULL,
  previous_hash TEXT, event_hash TEXT NOT NULL UNIQUE);
 CREATE TRIGGER IF NOT EXISTS immutable_artifacts_update BEFORE UPDATE ON artifacts BEGIN
  SELECT RAISE(ABORT,'artifacts are immutable'); END;
@@ -76,7 +75,37 @@ CREATE TRIGGER IF NOT EXISTS production_authority_update BEFORE UPDATE ON aliase
 CREATE TRIGGER IF NOT EXISTS champion_authority_insert BEFORE INSERT ON aliases
  WHEN NEW.alias='champion' AND NEW.set_by NOT IN ('adjudicate','ratchet') BEGIN SELECT RAISE(ABORT,'champion alias requires adjudicate or ratchet'); END;
 CREATE TRIGGER IF NOT EXISTS champion_authority_update BEFORE UPDATE ON aliases
- WHEN NEW.alias='champion' AND NEW.set_by NOT IN ('adjudicate','ratchet') BEGIN SELECT RAISE(ABORT,'champion alias requires adjudicate or ratchet'); END;
+WHEN NEW.alias='champion' AND NEW.set_by NOT IN ('adjudicate','ratchet') BEGIN SELECT RAISE(ABORT,'champion alias requires adjudicate or ratchet'); END;
+CREATE TRIGGER IF NOT EXISTS guard_experiments_insert BEFORE INSERT ON experiments
+ WHEN registry_authority() NOT IN ('experiment_created','historical_ledger_imported') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+CREATE TRIGGER IF NOT EXISTS guard_experiments_update BEFORE UPDATE ON experiments BEGIN SELECT RAISE(ABORT,'experiments are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS guard_experiments_delete BEFORE DELETE ON experiments BEGIN SELECT RAISE(ABORT,'experiments are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS guard_runs_insert BEFORE INSERT ON runs
+ WHEN registry_authority() NOT IN ('run_created','historical_ledger_imported') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+CREATE TRIGGER IF NOT EXISTS guard_runs_update BEFORE UPDATE ON runs
+ WHEN registry_authority() NOT IN ('run_completed','run_adjudicated','run_superseded') BEGIN SELECT RAISE(ABORT,'run write authority required'); END;
+CREATE TRIGGER IF NOT EXISTS guard_runs_delete BEFORE DELETE ON runs BEGIN SELECT RAISE(ABORT,'runs cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS guard_artifacts_insert BEFORE INSERT ON artifacts
+ WHEN registry_authority()!='artifact_created' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+CREATE TRIGGER IF NOT EXISTS guard_models_insert BEFORE INSERT ON registered_models
+ WHEN registry_authority()!='registered_model_created' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+CREATE TRIGGER IF NOT EXISTS guard_models_update BEFORE UPDATE ON registered_models BEGIN SELECT RAISE(ABORT,'registered_models are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS guard_models_delete BEFORE DELETE ON registered_models BEGIN SELECT RAISE(ABORT,'registered_models are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS guard_versions_insert BEFORE INSERT ON model_versions
+ WHEN registry_authority()!='model_version_created' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+CREATE TRIGGER IF NOT EXISTS guard_lineage_insert BEFORE INSERT ON lineage
+ WHEN registry_authority()!='lineage_created' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+CREATE TRIGGER IF NOT EXISTS guard_lineage_update BEFORE UPDATE ON lineage BEGIN SELECT RAISE(ABORT,'lineage is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS guard_lineage_delete BEFORE DELETE ON lineage BEGIN SELECT RAISE(ABORT,'lineage is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS guard_aliases_insert BEFORE INSERT ON aliases
+ WHEN registry_authority()!='alias_set' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+CREATE TRIGGER IF NOT EXISTS guard_aliases_update BEFORE UPDATE ON aliases
+ WHEN registry_authority()!='alias_set' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+CREATE TRIGGER IF NOT EXISTS guard_aliases_delete BEFORE DELETE ON aliases BEGIN SELECT RAISE(ABORT,'aliases cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS guard_events_insert BEFORE INSERT ON events
+ WHEN registry_authority()='' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+CREATE TRIGGER IF NOT EXISTS guard_events_update BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT,'events are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS guard_events_delete BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT,'events are immutable'); END;
 """
 
 
@@ -86,6 +115,8 @@ def _json(value: object) -> str:
 
 _CHAMPION_CAPABILITY = object()
 _PRODUCTION_CAPABILITY = object()
+_TRAINER_CAPABILITY = object()
+_ADJUDICATOR_CAPABILITY = object()
 
 
 class Registry:
@@ -102,15 +133,29 @@ class Registry:
         self.clock = clock
         self.after_event = after_event
         with self._connect() as db:
-            db.executescript(DDL)
+            from .migration import migrate_schema
+            migrate_schema(db)
         self.recover()
 
     @classmethod
     def open(cls, root: str | Path, **kwargs: Any) -> "Registry":
         return cls(root, **kwargs)
 
-    def _connect(self) -> sqlite3.Connection:
+    is_single_writer = True
+    model_versions_are_immutable = True
+    imports_results_tsv = False
+
+    @staticmethod
+    def alias_writer(alias: str) -> str:
+        if alias == "champion":
+            return "adjudication"
+        if alias == "production":
+            return "finalize"
+        raise RegistryError(f"alias {alias!r} has no exclusive writer")
+
+    def _connect(self, authority: str = "") -> sqlite3.Connection:
         db = sqlite3.connect(self.db_path, timeout=30)
+        db.create_function("registry_authority", 0, lambda: authority)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys=ON")
         db.execute("PRAGMA journal_mode=WAL")
@@ -118,22 +163,65 @@ class Registry:
         return db
 
     def recover(self) -> None:
-        with exclusive_file_lock(self.lock_path), self._connect() as db:
-            projected = {row[0] for row in db.execute("SELECT sequence FROM events")}
-            for event in self.events.read():
-                if event.sequence not in projected:
-                    self._project(db, event)
-                    self._record_event(db, event)
+        with exclusive_file_lock(self.lock_path):
+            events = self.events.read()
+            with self._connect() as db:
+                if self._projection_matches(db, events):
+                    return
+            self._rebuild_projection(events)
+
+    def _projection_matches(self, db: sqlite3.Connection,
+                            events: tuple[RegistryEvent, ...]) -> bool:
+        expected = sqlite3.connect(":memory:")
+        expected.row_factory = sqlite3.Row
+        expected.execute("PRAGMA foreign_keys=ON")
+        authority = {"value": ""}
+        expected.create_function("registry_authority", 0, lambda: authority["value"])
+        expected.executescript(DDL)
+        for event in events:
+            authority["value"] = event.event_type
+            self._project(expected, event)
+            self._record_event(expected, event)
+        expected.commit()
+        try:
+            for table in self.table_names():
+                columns = [row[1] for row in expected.execute(f"PRAGMA table_info({table})")]
+                select = ",".join(columns)
+                actual = [tuple(row) for row in db.execute(f"SELECT {select} FROM {table} ORDER BY rowid")]
+                wanted = [tuple(row) for row in expected.execute(f"SELECT {select} FROM {table} ORDER BY rowid")]
+                if actual != wanted:
+                    return False
+            return True
+        finally:
+            expected.close()
+
+    def _rebuild_projection(self, events: tuple[RegistryEvent, ...]) -> None:
+        quarantine = self.db_path.with_name(f"{self.db_path.name}.projection-quarantine")
+        quarantine.unlink(missing_ok=True)
+        if self.db_path.exists():
+            self.db_path.replace(quarantine)
+        for suffix in ("-wal", "-shm"):
+            Path(f"{self.db_path}{suffix}").unlink(missing_ok=True)
+        with self._connect() as bootstrap:
+            from .migration import migrate_schema
+            migrate_schema(bootstrap)
+        for event in events:
+            with self._connect(event.event_type) as db:
+                self._project(db, event)
+                self._record_event(db, event)
 
     def _write(self, event_type: str, payload: Mapping[str, Any]) -> None:
         with exclusive_file_lock(self.lock_path):
-            with self._connect() as db:
+            with self._connect(event_type) as db:
                 db.execute("BEGIN IMMEDIATE")
                 try:
                     at = self.clock()
-                    pending = RegistryEvent(len(self.events.read()) + 1, event_type, dict(payload), at, None, "")
+                    pending = RegistryEvent(1, len(self.events.read()) + 1, event_type, dict(payload), at, None, "")
                     # Apply invisibly first: refused constraints must never poison durable history.
-                    self._project(db, pending)
+                    changed = self._project(db, pending)
+                    if changed is False:
+                        db.rollback()
+                        return
                     event = self.events.append(event_type, payload, at=at)
                     if self.after_event is not None:
                         self.after_event(event)
@@ -144,10 +232,10 @@ class Registry:
                     raise
 
     def _record_event(self, db: sqlite3.Connection, event: RegistryEvent) -> None:
-        db.execute("INSERT INTO events VALUES(?,?,?,?,?,?)", (event.sequence, event.event_type,
-                   _json(event.payload), event.at, event.previous_hash, event.event_hash))
+        db.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?)", (event.sequence, event.schema_version,
+                   event.event_type, _json(event.payload), event.at, event.previous_hash, event.event_hash))
 
-    def _project(self, db: sqlite3.Connection, event: RegistryEvent) -> None:
+    def _project(self, db: sqlite3.Connection, event: RegistryEvent) -> bool:
         p = event.payload
         op = event.event_type
         if op == "experiment_created":
@@ -155,11 +243,48 @@ class Registry:
                        _json(p["stages"]), p["metric"], p["direction"], _json(p["win_condition"]),
                        p["noise_floor"], p["baseline_throughput"]))
         elif op == "run_created":
-            db.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (p["run_id"],
-                       p["experiment_id"], p["idea_id"], p["stage"], p["family"], _json(p["params"]),
-                       _json(p["metrics"]), _json(p["code_ref"]), p["device_fingerprint"], p["status"],
-                       p.get("verdict"), p["started_at"], p.get("finished_at"), p["claim_owner"],
-                       p["heartbeat_at"]))
+            self._insert_run(db, p)
+        elif op == "run_adjudicated":
+            row = db.execute("SELECT * FROM runs WHERE run_id=?", (p["run_id"],)).fetchone()
+            if row is None:
+                raise RegistryError("unknown run")
+            if row["status"] == p["status"] and row["verdict"] == p["verdict"]:
+                return False
+            if row["status"] != "complete" or row["verdict"] is not None:
+                raise RegistryError("adjudication requires one complete, unadjudicated run")
+            db.execute("UPDATE runs SET status=?,verdict=?,finished_at=?,heartbeat_at=? WHERE run_id=?",
+                       (p["status"], p["verdict"], p["at"], p["at"], p["run_id"]))
+        elif op == "run_completed":
+            row = db.execute("SELECT * FROM runs WHERE run_id=?", (p["run_id"],)).fetchone()
+            if row is None:
+                raise RegistryError("unknown run")
+            encoded = _json(p["metrics"])
+            if row["status"] == "complete" and row["metrics"] == encoded:
+                return False
+            if row["status"] != "running" or row["verdict"] is not None:
+                raise RegistryError("trainer completion requires one running, unadjudicated run")
+            db.execute("UPDATE runs SET status='complete',metrics=?,finished_at=?,heartbeat_at=? WHERE run_id=?",
+                       (encoded, p["at"], p["at"], p["run_id"]))
+        elif op == "run_superseded":
+            row = db.execute("SELECT * FROM runs WHERE run_id=?", (p["run_id"],)).fetchone()
+            if row is None:
+                raise RegistryError("unknown run")
+            if row["status"] == "superseded" and row["verdict"] is None:
+                return False
+            if row["status"] not in {"running", "complete"}:
+                raise RegistryError("only a non-terminal run can be superseded")
+            db.execute("UPDATE runs SET status='superseded',verdict=NULL,finished_at=?,heartbeat_at=? WHERE run_id=?",
+                       (p["at"], p["at"], p["run_id"]))
+        elif op == "historical_ledger_imported":
+            experiment = p["experiment"]
+            db.execute("INSERT INTO experiments VALUES(?,?,?,?,?,?,?,?)", (
+                experiment["experiment_id"], experiment["spec_digest"], _json(experiment["stages"]),
+                experiment["metric"], experiment["direction"], _json(experiment["win_condition"]),
+                experiment["noise_floor"], experiment["baseline_throughput"],
+            ))
+            for run in p["runs"]:
+                LegacyCodeRef.from_mapping(run["code_ref"])
+                self._insert_run(db, run)
         elif op == "artifact_created":
             db.execute("INSERT INTO artifacts VALUES(?,?,?,?,?,?)", tuple(p[k] for k in
                        ("artifact_id", "run_id", "kind", "uri", "bytes", "schema_version")))
@@ -182,6 +307,15 @@ class Registry:
             return
         else:
             raise RegistryError(f"unknown event type {op!r}")
+        return True
+
+    @staticmethod
+    def _insert_run(db: sqlite3.Connection, p: Mapping[str, Any]) -> None:
+        db.execute("INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (p["run_id"],
+                   p["experiment_id"], p["idea_id"], p["stage"], p["family"], _json(p["params"]),
+                   _json(p["metrics"]), _json(p["code_ref"]), p["device_fingerprint"], p["status"],
+                   p.get("verdict"), p["started_at"], p.get("finished_at"), p["claim_owner"],
+                   p["heartbeat_at"]))
 
     def create_experiment(self, **values: Any) -> None:
         self._write("experiment_created", values)
@@ -195,19 +329,65 @@ class Registry:
             )
         except (OSError, subprocess.CalledProcessError) as exc:
             raise RegistryError("code_ref sha does not exist as a commit in its declared repo") from exc
+        if values.get("verdict") is not None:
+            raise RegistryError("trainer run creation cannot write a verdict")
+        if values.get("status", "running") != "running" or values.get("finished_at") is not None:
+            raise RegistryError("new runs must start running with no finished_at")
+        if values.get("metrics") not in (None, {}):
+            raise RegistryError("trainer records metrics only when completing a run")
         payload = dict(values)
         payload["code_ref"] = code_ref.to_mapping()
-        payload.setdefault("status", "complete")
+        payload["metrics"] = {}
+        payload.setdefault("status", "running")
         payload.setdefault("verdict", None)
-        payload.setdefault("finished_at", payload.get("started_at"))
+        payload.setdefault("finished_at", None)
         payload.setdefault("heartbeat_at", payload.get("started_at"))
         self._write("run_created", payload)
+
+    def _complete_run(self, *, run_id: str, metrics: Mapping[str, Any], capability: object) -> None:
+        if capability is not _TRAINER_CAPABILITY:
+            raise RegistryError("run completion requires trainer authority")
+        if metrics.get("metric") == 0 and metrics.get("validity") not in {"valid", "invalid"}:
+            raise RegistryError("a new zero metric requires an explicit validity field")
+        if not metrics:
+            raise RegistryError("run completion requires metrics")
+        self._write("run_completed", {"run_id": run_id, "metrics": dict(metrics), "at": self.clock()})
+
+    def _adjudicate_run(self, *, run_id: str, verdict: str, status: str, reason: str,
+                        capability: object) -> None:
+        if capability is not _ADJUDICATOR_CAPABILITY:
+            raise RegistryError("run verdict requires adjudication authority")
+        expected = {"adopted": "succeeded", "rejected": "succeeded", "parked": "succeeded", "voided": "voided"}
+        if expected.get(verdict) != status or not reason:
+            raise RegistryError("run verdict and terminal status are inconsistent")
+        self._write("run_adjudicated", {"run_id": run_id, "verdict": verdict, "status": status,
+                    "reason": reason, "at": self.clock()})
+
+    def _supersede_run(self, *, run_id: str, reason: str, capability: object) -> None:
+        if capability is not _ADJUDICATOR_CAPABILITY:
+            raise RegistryError("supersession requires adjudication authority")
+        if not reason.strip():
+            raise RegistryError("supersession requires a reason")
+        self._write("run_superseded", {"run_id": run_id, "reason": reason, "at": self.clock()})
 
     def create_artifact(self, *, run_id: str, kind: str, content: bytes, schema_version: str) -> str:
         digest, path = self.blobs.put(content)
         self._write("artifact_created", {"artifact_id": digest, "run_id": run_id, "kind": kind,
                     "uri": str(path), "bytes": len(content), "schema_version": schema_version})
         return digest
+
+    def import_historical_ledger(self, *, import_id: str, experiment: Mapping[str, Any],
+                                 runs: list[Mapping[str, Any]], source_blob_sha256: str) -> bool:
+        payload = {"import_id": import_id, "experiment": dict(experiment),
+                   "runs": [dict(run) for run in runs], "source_blob_sha256": source_blob_sha256}
+        for event in self.events.read():
+            if event.event_type == "historical_ledger_imported" and event.payload.get("import_id") == import_id:
+                if event.payload != payload:
+                    raise RegistryError("historical import id drifted from its full semantic payload")
+                return False
+        self.blobs.verify(source_blob_sha256)
+        self._write("historical_ledger_imported", payload)
+        return True
 
     def register_model(self, **values: Any) -> None:
         self._write("registered_model_created", values)
@@ -224,13 +404,17 @@ class Registry:
         run = runs.get(str(values.get("run_id")))
         if run is None:
             raise RegistryError("model version references an unknown run")
-        if json.loads(run["code_ref"])["sha"] != code_sha:
+        run_code_ref = json.loads(run["code_ref"])
+        if run_code_ref.get("sha") != code_sha:
             raise RegistryError("model version code_sha differs from its run code_ref")
-        if json.loads(run["params"]).get("convergence") is not True:
-            raise RegistryError("model versions may be created only by convergence runs")
+        if run["status"] != "succeeded" or run["verdict"] != "adopted":
+            raise RegistryError("model versions require an externally adjudicated adopted run")
         compat = values.get("compat_result")
         if not isinstance(compat, Mapping) or set(compat) != {"head_sha", "passed", "at"}:
             raise RegistryError("compat_result requires exactly head_sha, passed, and at")
+        head = self._git_head(run_code_ref["repo"])
+        if compat["head_sha"] != head or compat["passed"] is not True:
+            raise RegistryError("initial compatibility must pass against the declared repo's current HEAD")
         self._write("model_version_created", values)
 
     def create_lineage(self, **values: Any) -> None:
@@ -241,6 +425,8 @@ class Registry:
 
     def _set_alias(self, *, model_id: str, alias: str, version: int, set_by: str, reason: str,
                    capability: object) -> None:
+        if not reason.strip():
+            raise RegistryError("alias move requires a non-empty reason")
         if alias == "production" and capability is not _PRODUCTION_CAPABILITY:
             raise RegistryError("production alias requires finalize authority")
         if alias == "champion" and capability is not _CHAMPION_CAPABILITY:
@@ -248,7 +434,12 @@ class Registry:
         if alias == "production":
             effective = self.effective_model_version(model_id, version)
             compat = effective["effective_compat_result"]
-            if compat.get("passed") is not True or effective["effective_status"] != "active":
+            run = next(row for row in self.rows("runs") if row["run_id"] == effective["run_id"])
+            code_ref = json.loads(run["code_ref"])
+            if "repo" not in code_ref:
+                raise RegistryError("production alias requires known git provenance")
+            if (compat.get("passed") is not True or effective["effective_status"] != "active"
+                    or compat.get("head_sha") != self._git_head(code_ref["repo"])):
                 raise RegistryError("production alias requires an active, compatibility-passing version")
         self._write("alias_set", {"model_id": model_id, "alias": alias, "version": version,
                     "set_by": set_by, "reason": reason, "at": self.clock()})
@@ -260,8 +451,21 @@ class Registry:
         if not any(row["model_id"] == model_id and row["version"] == version
                    for row in self.rows("model_versions")):
             raise RegistryError("compatibility result references an unknown model version")
+        effective = self.effective_model_version(model_id, version)
+        run = next(row for row in self.rows("runs") if row["run_id"] == effective["run_id"])
+        code_ref = json.loads(run["code_ref"])
+        if "repo" not in code_ref:
+            raise RegistryError("legacy unknown code provenance cannot receive a compatibility result")
+        current_head = self._git_head(code_ref["repo"])
+        if head_sha != current_head:
+            raise RegistryError("compatibility result must name the declared repo's current HEAD")
         self._write("compatibility_recorded", {"model_id": model_id, "version": version,
                     "head_sha": head_sha, "passed": passed, "reason": reason, "at": self.clock()})
+
+    @staticmethod
+    def _git_head(repo: str) -> str:
+        return subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], check=True,
+                              capture_output=True, text=True).stdout.strip()
 
     def effective_model_version(self, model_id: str, version: int) -> dict[str, Any]:
         matches = [row for row in self.rows("model_versions")

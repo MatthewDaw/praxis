@@ -132,15 +132,11 @@ def test_fixture_f_backend_exposes_force_cancel_and_drain():
     assert callable(backend.drain)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="fixture O: the canonical SQLite registry schema and write guards do not exist",
-)
 def test_fixture_o_sqlite_registry_has_exact_canonical_tables_and_guards(tmp_path):
     registry_module = importlib.import_module("knowledge.ml_registry.storage.registry")
-    registry = registry_module.RegistryStore(tmp_path / "registry")
+    registry = registry_module.Registry(tmp_path / "registry")
 
-    assert registry.table_names() == {
+    assert set(registry.table_names()) == {
         "experiments", "runs", "artifacts", "registered_models", "model_versions",
         "lineage", "aliases", "events",
     }
@@ -150,22 +146,18 @@ def test_fixture_o_sqlite_registry_has_exact_canonical_tables_and_guards(tmp_pat
     assert registry.alias_writer("production") == "finalize"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="fixture O: results.tsv is not yet a byte-stable export of canonical runs",
-)
 def test_fixture_o_results_tsv_is_a_runs_export_not_an_input(tmp_path):
-    registry_module = importlib.import_module("knowledge.ml_registry.storage.registry")
-    export_module = importlib.import_module("knowledge.ml_registry.contracts.runs_export")
-    registry = registry_module.RegistryStore(tmp_path / "registry")
-
-    run_id = registry.insert_fixture_run(code_ref={
-        "repo": str(tmp_path), "sha": "a" * 40, "base_sha": "b" * 40,
-        "diff_hash": "c" * 64, "diff_lines": 3,
-    })
-    payload = export_module.RunsExport.from_registry(registry).serialize()
-
-    assert run_id.encode() in payload
+    from knowledge.ml_registry import HistoricalLedgerImporter, Registry, RunsExport
+    registry = Registry(tmp_path / "registry")
+    payload = (
+        b"commit\tmetric_value\tmemory_gb\tstatus\tdescription\tthroughput\tdiff_lines\r\n"
+        b"abc1234:arm\t.8\t1\tok\tarm\t2\t3\r\n"
+    )
+    HistoricalLedgerImporter(registry).import_ledger(
+        payload, experiment_id="fixture", spec_digest="d" * 64,
+        metric="score", direction="maximize",
+    )
+    assert RunsExport(registry).render(experiment_id="fixture") == payload
     assert registry.imports_results_tsv is False
 
 

@@ -33,7 +33,6 @@ def test_complete_outcome_requires_production_alias_proof():
     assert CampaignOutcomeRecord.from_mapping(base).outcome is CampaignOutcome.COMPLETE
 
 
-@pytest.mark.xfail(strict=True, reason="the required versioned CodeRef contract does not exist")
 def test_code_ref_is_versioned_and_records_the_arm_commit():
     from knowledge.ml_registry.contracts.code_ref import CodeRef
 
