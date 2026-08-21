@@ -29,12 +29,12 @@ BATCHES = {batch.key: batch for batch in (
     ImportBatch("floor", 31, ("DEFAULT_SIGMAS", "adjudicate_trial", "load_ledger_values", "register_model_with_baseline", "retire_harness")),
     ImportBatch("guards", 31, ("guard_baseline_move", "guard_model_mutation")),
     ImportBatch("lifecycle", 38, ("flagged_trials", "per_axis_yield")),
-    ImportBatch("schema", 52, ("MODEL", "validate_fact")),
-    ImportBatch("supervisor", 53, ("Intervention", "record_keep_pushing_marker", "record_out_of_diff_change", "supervise_campaign")),
-    ImportBatch("completeness", 59, ("campaign_completeness",)),
-    ImportBatch("report", 60, ("acknowledge_diagnosis", "campaign_status", "format_status")),
-    ImportBatch("verdict", 62, ("adjudicate_verdict", "reset_ratchet")),
-    ImportBatch("write-path", 63, ("MAX_DISCOVERED_IDEAS_FIELD", "METRIC_FIELD", "MODEL_DEFAULTS", "UNLIMITED_DISCOVERED_IDEAS", "load_ledger_commits", "mutate_model", "register_model", "register_trial", "supersede_trial")),
+    ImportBatch("schema", 50, ("MODEL", "validate_fact")),
+    ImportBatch("supervisor", 51, ("Intervention", "record_keep_pushing_marker", "record_out_of_diff_change", "supervise_campaign")),
+    ImportBatch("completeness", 57, ("campaign_completeness",)),
+    ImportBatch("report", 58, ("acknowledge_diagnosis", "campaign_status", "format_status")),
+    ImportBatch("verdict", 60, ("adjudicate_verdict", "reset_ratchet")),
+    ImportBatch("write-path", 61, ("MAX_DISCOVERED_IDEAS_FIELD", "METRIC_FIELD", "MODEL_DEFAULTS", "UNLIMITED_DISCOVERED_IDEAS", "load_ledger_commits", "mutate_model", "register_model", "register_trial", "supersede_trial")),
 )}
 ALLOWLIST = frozenset({SOURCE, TEST})
 WITNESSES = (
