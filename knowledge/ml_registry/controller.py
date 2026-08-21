@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,9 @@ import tempfile
 import time
 from typing import Any, Mapping, Protocol, Sequence
 
+from knowledge.ml_registry.contracts import LaunchIntent
 from knowledge.ml_registry.portfolio import CampaignStatus, Portfolio, PortfolioValidationError
+from knowledge.ml_registry.runtime import LeaseIntentCoordinator, ResourceConflict, StopReport
 from knowledge.ml_registry.scheduler import JobSpec, JobState, ResourceProfile, ScheduleDecision, schedule
 
 
@@ -35,6 +38,7 @@ class PollResult:
 class AsyncBackend(Protocol):
     def submit(self, job: JobSpec) -> str: ...
     def poll(self, backend_job_id: str) -> PollResult: ...
+    def cancel(self, backend_job_id: str, *, force: bool) -> bool: ...
 
 
 @dataclass
@@ -55,6 +59,18 @@ class TickResult:
     running: tuple[str, ...]
     completed: tuple[str, ...]
     blocked: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class SlotStatus:
+    campaign_id: str | None
+    reason_code: str
+
+
+@dataclass(frozen=True)
+class ControllerStatus:
+    slots: tuple[SlotStatus, ...]
+    ready_frontier: tuple[str, ...]
 
 
 def _atomic(path: Path, payload: Mapping[str, Any]) -> None:
@@ -113,7 +129,8 @@ class PortfolioController:
                  capacity: ResourceProfile | Mapping[str, Any], backend: AsyncBackend,
                  state_path: str | Path, max_active: int = MAX_ACTIVE_CAMPAIGNS,
                  retry_backoff_seconds: float = 60.0, max_retry_backoff_seconds: float = 3600.0,
-                 clock=time.time):
+                 clock=time.time, coordinator: LeaseIntentCoordinator | None = None,
+                 lease_factory=None, completion_verifier=None, failpoint=None):
         if not 1 <= max_active <= MAX_ACTIVE_CAMPAIGNS:
             raise ControllerError(f"max_active must be between 1 and {MAX_ACTIVE_CAMPAIGNS}")
         self.portfolio = portfolio
@@ -125,6 +142,12 @@ class PortfolioController:
         self.retry_backoff_seconds = retry_backoff_seconds
         self.max_retry_backoff_seconds = max_retry_backoff_seconds
         self.clock = clock
+        self.coordinator = coordinator
+        self.lease_factory = lease_factory
+        self.completion_verifier = completion_verifier
+        self.failpoint = failpoint or (lambda _boundary, _campaign_id: None)
+        self.admission_stopped = False
+        self._last_blocked: dict[str, str] = {}
         self.records: dict[str, DispatchRecord] = {}
         if self.state_path.exists():
             try:
@@ -134,12 +157,15 @@ class PortfolioController:
                 self.records = {cid: DispatchRecord(**record) for cid, record in raw.get("records", {}).items()}
             except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
                 raise ControllerError(f"invalid controller state: {exc}") from exc
-            # A dispatching record was persisted before process launch.  It may have
-            # launched, so never blindly submit it again; fail it into normal retry.
             for record in self.records.values():
                 if record.state == "dispatching":
-                    record.state = "failed"
-                    record.message = "controller restarted during dispatch; refusing duplicate launch"
+                    reconcile = getattr(self.backend, "reconcile", None)
+                    result = reconcile(record.backend_job_id) if reconcile else None
+                    if result is not None:
+                        record.state, record.message = result.state, result.message
+                    else:
+                        record.state = "failed"
+                        record.message = "unresolved launch intent; duplicate launch refused"
 
     def _persist(self, status: str) -> None:
         _atomic(self.state_path, {
@@ -174,9 +200,15 @@ class PortfolioController:
                 polled = PollResult("failed", message=f"backend poll failed: {exc}")
             if polled.state == "completed":
                 try:
-                    if polled.artifact:
-                        self._register_artifact(cid, polled.artifact)
+                    artifact = polled.artifact
+                    if self.completion_verifier is not None:
+                        artifact = self.completion_verifier(cid, polled)
+                    if artifact:
+                        self._register_artifact(cid, artifact)
                     record.state = "completed"
+                    self.failpoint("finalized_before_lease_release", cid)
+                    if self.coordinator is not None:
+                        self.coordinator.release(cid)
                 except (ControllerError, PortfolioValidationError, TypeError, ValueError) as exc:
                     record.state = "failed"
                     record.message = f"artifact refused: {exc}"
@@ -209,13 +241,27 @@ class PortfolioController:
             self._persist("blocked")
             return TickResult("blocked", (), (), (), {"controller": str(exc)})
         started: list[str] = []
-        for job in decision.jobs:
+        for job in (() if self.admission_stopped else decision.jobs):
             prior = self.records.get(job.campaign_id)
             attempt = (prior.attempt + 1) if prior else 1
             token = f"{job.campaign_id}.attempt-{attempt}"
             self.records[job.campaign_id] = DispatchRecord(
                 token, state="dispatching", attempt=attempt, started_at=now,
             )
+            if self.coordinator is not None and self.lease_factory is not None:
+                try:
+                    lease = self.lease_factory(job, token)
+                    self.coordinator.acquire(lease)
+                    digest = hashlib.sha256(json.dumps(asdict(job), sort_keys=True).encode()).hexdigest()
+                    self.coordinator.prepare(LaunchIntent(
+                        LaunchIntent.VERSION, token, job.campaign_id, attempt, digest,
+                        (lease.lease_id,), lease.owner, "prepared", now,
+                    ))
+                    self.failpoint("intent_written", job.campaign_id)
+                except ResourceConflict as exc:
+                    self.records.pop(job.campaign_id, None)
+                    self._last_blocked[job.campaign_id] = exc.reason_code
+                    continue
             self._persist("dispatching")
             try:
                 prepared = getattr(self.backend, "submit_prepared", None)
@@ -224,6 +270,7 @@ class PortfolioController:
                     backend_id, attempt=attempt, started_at=now,
                 )
                 self._persist("running")
+                self.failpoint("process_spawned", job.campaign_id)
                 started.append(job.campaign_id)
             except Exception as exc:
                 record = self.records[job.campaign_id]
@@ -247,7 +294,65 @@ class PortfolioController:
         else:
             status = "blocked"
         self._persist(status)
-        return TickResult(status, tuple(started), running, completed, decision.blocked)
+        blocked = dict(decision.blocked)
+        blocked.update(self._last_blocked)
+        return TickResult(status, tuple(started), running, completed, blocked)
+
+    def status(self) -> ControllerStatus:
+        running = tuple(sorted(cid for cid, record in self.records.items()
+                               if record.state == "running"))
+        slots = [SlotStatus(cid, "occupied") for cid in running[:self.max_active]]
+        reasons = iter(self._last_blocked.values())
+        while len(slots) < self.max_active:
+            slots.append(SlotStatus(None, next(reasons, "no_ready_campaign")))
+        ready = tuple(sorted(str(spec["id"]) for spec in self.specs
+                             if self.records.get(str(spec["id"]), DispatchRecord("")).state
+                             not in {"running", "completed"}))
+        return ControllerStatus(tuple(slots), ready)
+
+    def stop(self, *, mode: str, sleeper=time.sleep) -> StopReport:
+        if mode not in {"force", "drain"}:
+            raise ControllerError("stop mode must be force or drain")
+        self.admission_stopped = True
+        active = {cid: record for cid, record in self.records.items() if record.state == "running"}
+        graceful: set[str] = set()
+        forced: set[str] = set()
+        retryable: set[str] = set()
+        orphaned: set[str] = set()
+        if mode == "drain":
+            while active:
+                for cid, record in list(active.items()):
+                    result = self.backend.poll(record.backend_job_id)
+                    if result.state == "running":
+                        continue
+                    if result.state == "completed":
+                        if self.completion_verifier is not None:
+                            self.completion_verifier(cid, result)
+                        record.state = "completed"
+                        graceful.add(cid)
+                    else:
+                        record.state = "failed"
+                        retryable.add(cid)
+                    if self.coordinator is not None:
+                        self.coordinator.release(cid)
+                    del active[cid]
+                if active:
+                    sleeper(0.02)
+        else:
+            for cid, record in active.items():
+                cancel = getattr(self.backend, "cancel", None)
+                if cancel is not None and cancel(record.backend_job_id, force=True):
+                    forced.add(cid)
+                else:
+                    orphaned.add(cid)
+                record.state = "failed"
+                record.message = "operator force stop"
+                retryable.add(cid)
+                if self.coordinator is not None:
+                    self.coordinator.release(cid)
+        self._persist("stopped")
+        return StopReport(frozenset(graceful), frozenset(forced),
+                          frozenset(retryable), frozenset(orphaned))
 
     def _backoff(self, campaign_id: str, attempt: int) -> float:
         base = min(self.max_retry_backoff_seconds,
@@ -280,10 +385,12 @@ class PortfolioController:
 
 class ExecutorProcessBackend:
     """Restart-safe adapter that delegates local work to executor_cli processes."""
-    def __init__(self, root: str | Path, *, heartbeat_timeout_seconds: float = 30.0):
+    def __init__(self, root: str | Path, *, heartbeat_timeout_seconds: float = 30.0,
+                 coordinator: LeaseIntentCoordinator | None = None):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.heartbeat_timeout_seconds = heartbeat_timeout_seconds
+        self.coordinator = coordinator
 
     def submit(self, job: JobSpec) -> str:
         return self.submit_prepared(job, f"{job.campaign_id}.attempt-1")
@@ -303,9 +410,36 @@ class ExecutorProcessBackend:
             start_new_session=True,
         )
         _atomic(self.root / f"{job_id}.process.json", {
-            "pid": process.pid, "started_at": time.time(), "state_path": str(state_path),
+            "pid": process.pid, "pgid": process.pid, "started_at": time.time(),
+            "state_path": str(state_path),
         })
+        if self.coordinator is not None and job_id in self.coordinator.intents:
+            self.coordinator.transition(job_id, state="spawned", pid=process.pid, pgid=process.pid)
         return job_id
+
+    def reconcile(self, backend_job_id: str) -> PollResult | None:
+        process_path = self.root / f"{backend_job_id}.process.json"
+        if not process_path.exists():
+            return None
+        return self.poll(backend_job_id)
+
+    def cancel(self, backend_job_id: str, *, force: bool) -> bool:
+        try:
+            process = json.loads((self.root / f"{backend_job_id}.process.json").read_text())
+            pgid = int(process["pgid"])
+            os.killpg(pgid, signal.SIGKILL if force else signal.SIGTERM)
+        except ProcessLookupError:
+            return True
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            return False
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                return True
+            time.sleep(0.02)
+        return False
 
     def poll(self, backend_job_id: str) -> PollResult:
         state_path = self.root / f"{backend_job_id}.state.json"
