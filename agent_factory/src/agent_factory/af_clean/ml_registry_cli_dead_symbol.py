@@ -29,7 +29,7 @@ BATCHES = {
         DeadSymbolBatch("_checked_model_budgets", 176),
         DeadSymbolBatch("_update_registered_model", 178),
         DeadSymbolBatch("_refuse_a_campaign_with_no_floor", 180),
-        DeadSymbolBatch("_parse_intervention", 233),
+        DeadSymbolBatch("_parse_intervention", 212),
     )
 }
 ALLOWLIST = frozenset({SOURCE, REACHABILITY_TEST})
