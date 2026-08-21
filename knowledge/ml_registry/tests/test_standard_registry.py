@@ -324,3 +324,42 @@ def test_historical_zero_metric_without_disposition_stays_explicitly_unknown(tmp
     run = registry.list_runs(experiment_id="legacy")[0]
     assert json.loads(run["metrics"])["validity"] == "unknown"
     assert run["verdict"] is None
+
+
+def test_historical_invalid_annotation_projects_voided_verdict_without_rewriting_source(
+    tmp_path: Path,
+) -> None:
+    from knowledge.ml_registry.contracts import (
+        LedgerAnnotations,
+        LedgerRowIdentity,
+        LedgerValidity,
+        ThroughputUnit,
+    )
+
+    content = (
+        "commit\tmetric_value\tmemory_gb\tstatus\tdescription\tthroughput\tdiff_lines\n"
+        f"{SHA}:invalid\t0.0\t1.0\tok\tprecision gate failed\t1.0\t1\n"
+        f"{SHA}:unknown\t0.1\t1.0\tok\tunadjudicated\t1.0\t1\n"
+    )
+    annotations = LedgerAnnotations(
+        {LedgerRowIdentity(f"{SHA}:invalid", 0): LedgerValidity.INVALID},
+        {
+            LedgerRowIdentity(f"{SHA}:invalid", 0): ThroughputUnit.SAMPLES_PER_SECOND,
+            LedgerRowIdentity(f"{SHA}:unknown", 0): ThroughputUnit.SAMPLES_PER_SECOND,
+        },
+    )
+    registry = Registry(tmp_path)
+    HistoricalLedgerImporter(registry).import_ledger(
+        content,
+        experiment_id="legacy",
+        spec_digest="d" * 64,
+        metric="score",
+        direction="maximize",
+        annotations=annotations,
+    )
+    runs = registry.list_runs(experiment_id="legacy")
+    assert [(run["status"], run["verdict"]) for run in runs] == [
+        ("voided", "voided"),
+        ("complete", None),
+    ]
+    assert RunsExport.from_registry(registry, "legacy").serialize() == content

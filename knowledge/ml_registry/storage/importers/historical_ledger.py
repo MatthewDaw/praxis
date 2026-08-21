@@ -55,6 +55,7 @@ class HistoricalLedgerImporter:
             occurrence = occurrences.get(commit, 0)
             occurrences[commit] = occurrence + 1
             validity = annotations.validity.get(LedgerRowIdentity(commit, occurrence)) if annotations else None
+            voided = validity == LedgerValidity.INVALID or fields[3] != "ok"
             row_digest = hashlib.sha256(
                 (archive_manifest_hash + "\0" + source_path + "\0" + str(index) + "\0" + "\t".join(fields)).encode()
             ).hexdigest()
@@ -72,8 +73,9 @@ class HistoricalLedgerImporter:
                 "code_ref": {"schema_version": 1, "source_ref": commit,
                              "provenance_status": "abbreviated" if commit else "unknown"},
                 "device_fingerprint": "legacy:unknown",
-                "status": "voided" if validity == LedgerValidity.INVALID or fields[3] != "ok" else "complete",
-                "verdict": None, "started_at": float(index), "finished_at": float(index),
+                "status": "voided" if voided else "complete",
+                "verdict": "voided" if voided else None,
+                "started_at": float(index), "finished_at": float(index),
                 "claim_owner": "historical-import", "heartbeat_at": float(index),
             })
         self.registry.import_historical_ledger(import_id=import_id, experiment=experiment, runs=runs,
