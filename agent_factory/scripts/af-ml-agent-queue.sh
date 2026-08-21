@@ -64,6 +64,12 @@ say() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) [agent-queue] $*"; }
 
 # C1 is refused for the whole table before anything launches, not skipped mid-run: discovering a
 # forbidden campaign an hour in is worse than refusing the table up front.
+#
+# TODO(P-2, CODEX-ML-CAMPAIGN-FOUNDATION-AUDIT-PLAN.md #7.1): model-16659b6b8e45 duplicates the
+# `refused` map in the versioned sports CampaignSpec manifest at
+# sports_analysis/src/sports_analysis/experimentation/portfolio/preflight_manifest.json, which
+# knowledge/ml_registry/preflight.py already reads generically. This check stays a literal string
+# match until af-ml-agent-queue.sh itself is retired under P-3 -- keep both in sync by hand.
 while IFS='|' read -r name space model stages; do
   case "${name// /}" in ''|\#*) continue;; esac
   if [ "${model// /}" = "model-16659b6b8e45" ] || printf '%s' "$name" | grep -qi court; then

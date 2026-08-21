@@ -79,6 +79,13 @@ say () { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG";
 #     non-moves anyway (cmc is a literal no-op, act30 is dead code, every buffer value scores within
 #     0.001 HOTA), so a loop over them would burn the night reproducing a flat line.
 #   C1 court-marking model-16659b6b8e45 -- NOT READY. Never queued, never supervised.
+#
+# TODO(P-2, CODEX-ML-CAMPAIGN-FOUNDATION-AUDIT-PLAN.md #7.1): these model ids duplicate the
+# `refused` map in the versioned sports CampaignSpec manifest at
+# sports_analysis/src/sports_analysis/experimentation/portfolio/preflight_manifest.json, which
+# knowledge/ml_registry/preflight.py already reads generically. This function stays a literal
+# case match (rather than reading that JSON) until af-ml-campaign-queue.sh itself is retired
+# under P-3 -- keep both in sync by hand until then.
 refused_reason () {
   case "$1|$2" in
     association*|*\|model-1d148ef55231)

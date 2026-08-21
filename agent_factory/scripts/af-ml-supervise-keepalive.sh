@@ -35,7 +35,7 @@
 #   af-ml-supervise-keepalive.sh --session ml-supervise-detection \
 #       --ledger /workspace/sports_analysis/ml/detection/results.tsv \
 #       --space-file /workspace/sports_analysis/ml/detection/registry/space.json \
-#       --model-id model-533010b57800 \
+#       --model-id <model-id-from-sports-CampaignSpec-manifest> \
 #       --stages representation,architecture,augmentation,training,tuning,capacity \
 #       [--praxis /workspace/praxis] [--poll 60] [--idle-polls 3] \
 #       [--max-nudges 50] [--stall-nudges 6] [--message-file FILE]
