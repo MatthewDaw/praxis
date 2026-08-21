@@ -11,7 +11,7 @@ from knowledge.ml_registry.contracts._validation import ContractError
 
 OUTCOME_V0 = {
     "campaign_id": "fixture", "outcome": "COMPLETE", "reason": "verified",
-    "attempt": 1, "promotion_record_id": "promotion-fixture",
+    "attempt": 1, "production_alias": {"model_id": "model-fixture", "version": 1, "alias": "production"},
 }
 
 
@@ -19,7 +19,7 @@ def test_unversioned_fixture_migration_is_additive_pure_and_idempotent():
     original = deepcopy(OUTCOME_V0)
     migrated = migrate_mapping("campaign_outcome", OUTCOME_V0)
     assert OUTCOME_V0 == original
-    assert migrated == {"schema_version": 1, **original}
+    assert migrated == {"schema_version": 2, **original}
     assert migrate_mapping("campaign_outcome", migrated) == migrated
 
 
@@ -27,14 +27,14 @@ def test_mapping_migration_never_aliases_or_infers_missing_fields():
     with pytest.raises(ContractError, match="unknown campaign outcome fields"):
         migrate_mapping("campaign_outcome", {**OUTCOME_V0, "result": "complete"})
     incomplete = dict(OUTCOME_V0)
-    incomplete.pop("promotion_record_id")
-    with pytest.raises(ContractError, match="requires promotion_record_id"):
+    incomplete.pop("production_alias")
+    with pytest.raises(ContractError, match="requires a canonical production alias"):
         migrate_mapping("campaign_outcome", incomplete)
 
 
 def test_mapping_migration_rejects_mismatched_and_future_versions():
     with pytest.raises(ContractError, match="does not match embedded"):
-        migrate_mapping("campaign_outcome", {"schema_version": 1, **OUTCOME_V0}, source_version=0)
+        migrate_mapping("campaign_outcome", {"schema_version": 2, **OUTCOME_V0}, source_version=0)
     with pytest.raises(ContractError, match="future"):
         migrate_mapping("campaign_outcome", {"schema_version": 99, **OUTCOME_V0})
 

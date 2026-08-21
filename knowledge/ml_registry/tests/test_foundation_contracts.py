@@ -24,12 +24,8 @@ def test_status_predicates_distinguish_terminal_fair_answer_and_retry():
     assert not terminal("complete") and not answers_question("complete")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="COMPLETE outcomes do not yet carry canonical production-alias proof",
-)
 def test_complete_outcome_requires_production_alias_proof():
-    base = {"schema_version": 1, "campaign_id": "c", "outcome": "COMPLETE",
+    base = {"schema_version": 2, "campaign_id": "c", "outcome": "COMPLETE",
             "reason": "verified", "attempt": 1, "production_alias": None}
     with pytest.raises(ContractError, match="production alias"):
         CampaignOutcomeRecord.from_mapping(base)

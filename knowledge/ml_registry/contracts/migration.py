@@ -125,8 +125,12 @@ def migrate_mapping(kind: str, payload: Mapping[str, Any], *, source_version: in
     if source_version > target:
         raise ContractError(f"cannot migrate future {kind} schema_version {source_version}")
     if source_version == 0:
-        result["schema_version"] = 1
-        source_version = 1
+        result["schema_version"] = target
+        source_version = target
+    if kind == "campaign_outcome" and source_version == 1 and target == 2:
+        raise ContractError(
+            "campaign outcome v1 cannot be migrated losslessly: promotion_record_id does not identify a model version"
+        )
     if source_version != target:
         raise ContractError(f"no {kind} migration path from schema_version {source_version} to {target}")
     return _VALIDATORS[kind](result).to_mapping()
