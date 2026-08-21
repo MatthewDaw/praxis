@@ -9,10 +9,10 @@ from pathlib import Path
 MODULE = Path(__file__).resolve().parents[1] / "cli/registry.py"
 
 EXPECTED_DEAD_SYMBOLS = {
-    "_parse_intervention",
 }
 EXPECTED_ABSENT_SYMBOLS: set[str] = {
-    "_checked_model_budgets", "_refuse_a_campaign_with_no_floor", "_update_registered_model",
+    "_checked_model_budgets", "_parse_intervention", "_refuse_a_campaign_with_no_floor",
+    "_update_registered_model",
 }
 
 

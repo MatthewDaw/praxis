@@ -209,11 +209,6 @@ def _json_arg(raw: str) -> dict[str, object]:
     return parsed
 
 
-def _parse_intervention(raw: str) -> Intervention:
-    kind, _, axis = raw.partition(":")
-    if not axis:
-        raise ValueError(f"--intervention must be 'kind:axis', got {raw!r}")
-    return Intervention(kind=kind, axis=axis)
 
 
 _LOCK_TIMEOUT_ENV = "ML_REGISTRY_LOCK_TIMEOUT"
