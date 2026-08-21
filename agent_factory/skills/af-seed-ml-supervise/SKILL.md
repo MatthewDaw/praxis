@@ -642,20 +642,17 @@ Report:
 - that every written idea carries `origin="seeded"`
 - that every declared stage has at least one authored arm, or was dropped on purpose
 
-Then give the exact supervise invocation, not a paraphrase:
+Then give the exact canonical handoff, not a paraphrase:
 
 ```sh
-# non-composing
-python -m knowledge.ml_registry.cli supervise-campaign \
-    --space-file <state>.json --model-id <minted-id> \
-    --ledger <project>/results.tsv --dispatch-script <trials>.json
+# The project-owned CampaignSpec names the composing or agent supervision adapter.
+# The canonical portfolio controller runs either mode through campaign_job/agent_session,
+# verifies finalize-only production before completion, and owns restart/stop semantics.
+agent_factory/scripts/af-ml-portfolio-launch.sh \
+    --config <project>/campaign_state/operator.json run --poll-interval 10
 
-# composing — the project loop, registry only for the verdict; wrap with
-# agent_factory/scripts/af-ml-campaign-loop.sh so an empty queue is not "done"
-AF_DISPATCH="<project dispatch>" \
-agent_factory/scripts/af-ml-campaign-loop.sh \
-    --space-file <state>.json --model-id <minted-id> \
-    --stages <the same list frozen in Phase B>
+python -m knowledge.ml_registry.controller_cli \
+    --config <project>/campaign_state/operator.json status
 ```
 
 Point at `/af-ml-supervise` (`agent_factory/skills/af-ml-supervise/SKILL.md`).

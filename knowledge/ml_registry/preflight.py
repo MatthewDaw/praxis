@@ -390,8 +390,7 @@ def _check_structure(rep: Report, repo: Path, camp: Campaign) -> None:
     """Report whether the project declares an importable composing module."""
     if not camp.composing_module:
         rep.check("STRUCTURE", None,
-                  "NO composing module -- af-ml-campaign-loop.sh CANNOT drive this campaign. "
-                  "It is one-arm-at-a-time and needs the af-ml-supervise AGENT.",
+                  "NO composing module -- campaign_job requires an agent_session adapter. ",
                   composing_module="none", loop_drivable="false", detail=camp.dispatch)
         return
     code, out, err = _lab_probe(
@@ -399,7 +398,7 @@ def _check_structure(rep: Report, repo: Path, camp: Campaign) -> None:
     found = _last_line(out) == "SPEC True"
     rep.check("STRUCTURE", found,
               (f"composing module {camp.composing_module} imports; "
-               f"af-ml-campaign-loop.sh can drive it with AF_DISPATCH=\"{camp.dispatch}\""
+               f"campaign_job can drive its declared dispatch {camp.dispatch!r}"
                if found else f"composing module {camp.composing_module} does NOT import"),
               composing_module=camp.composing_module, loop_drivable=str(found).lower(),
               exit=code, detail=camp.dispatch if found else (_last_line(err) or "not importable"))

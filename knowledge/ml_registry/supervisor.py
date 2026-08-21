@@ -289,9 +289,9 @@ def check_win_on_adoption_declared(model: Fact) -> None:
     verbs) took the string unexamined, and a campaign whose author simply never thought about
     winning closed WON on its first adopted trial with every other stage untried.
 
-    Raises rather than returns a flag so a PREFLIGHT can gate on it before a campaign starts
-    -- which is where the answer still costs one line. ``af-ml-campaign-loop.sh`` calls it
-    that way and refuses to launch; :func:`supervise_campaign` only WARNS on it, see there.
+    Raises rather than returns a flag so a project adapter's preflight can gate on it before a
+    campaign job starts -- which is where the answer still costs one line.
+    :func:`supervise_campaign` only WARNS on it, see there.
     """
     condition = parse_win_condition(model.meta.get("win_condition"))
     if condition["kind"] != WIN_ON_ADOPTION or model.meta.get(WIN_ON_ADOPTION_OPT_IN_FIELD) is True:
@@ -795,7 +795,7 @@ def supervise_campaign(
     is not evaluable (:func:`parse_win_condition`) is REFUSED here rather than run to a
     silent first-adoption "win"; one whose win condition IS first-adoption-wins without
     having declared it (:func:`check_win_on_adoption_declared`) is warned about on stderr
-    and refused outright by the campaign loop's preflight.
+    and refused outright by the campaign job adapter's preflight.
 
     Close conditions, checked in this order once a dispatch's side effects have landed:
       1. the dispatch found no candidate (backlog and discovered-idea budget both
@@ -821,7 +821,7 @@ def supervise_campaign(
     # campaign RESUMES (nothing distinguishes a resume from a fresh start), and a campaign
     # already six trials deep must not be bricked by a declaration it can no longer make
     # retroactively. The refusal belongs one step earlier, before trial one is dispatched:
-    # `check_win_on_adoption_declared` is that gate and af-ml-campaign-loop.sh calls it as a
+    # `check_win_on_adoption_declared` is that gate and the campaign job adapter calls it during
     # preflight, so the unattended path -- the one that closed a campaign after ONE dispatch
     # on a +1.2-floor adoption -- does not start at all.
     try:
