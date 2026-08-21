@@ -27,9 +27,9 @@ class DeadSymbolBatch:
 BATCHES = {
     batch.symbol: batch for batch in (
         DeadSymbolBatch("_checked_model_budgets", 176),
-        DeadSymbolBatch("_update_registered_model", 225),
-        DeadSymbolBatch("_refuse_a_campaign_with_no_floor", 259),
-        DeadSymbolBatch("_parse_intervention", 312),
+        DeadSymbolBatch("_update_registered_model", 178),
+        DeadSymbolBatch("_refuse_a_campaign_with_no_floor", 212),
+        DeadSymbolBatch("_parse_intervention", 265),
     )
 }
 ALLOWLIST = frozenset({SOURCE, REACHABILITY_TEST})
