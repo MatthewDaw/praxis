@@ -28,8 +28,6 @@ from knowledge.ml_registry.contracts.ledger_v2 import (
     read_ledger_compatibility,
     read_ledger_compatibility_header,
 )
-from knowledge.ml_registry.floor import (DEFAULT_SIGMAS, adjudicate_trial, load_ledger_values,
-                                          register_model_with_baseline, retire_harness)
 from knowledge.ml_registry.guards import guard_baseline_move, guard_model_mutation
 from knowledge.ml_registry.ideate import (
     GENERATIVE_AXES,

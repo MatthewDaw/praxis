@@ -15,17 +15,19 @@ EXPECTED_ABSENT_SYMBOLS: set[str] = {
     "_update_registered_model",
 }
 EXPECTED_DEAD_IMPORTS = {
-    "DEFAULT_SIGMAS", "Intervention", "MAX_DISCOVERED_IDEAS_FIELD", "METRIC_FIELD",
+    "Intervention", "MAX_DISCOVERED_IDEAS_FIELD", "METRIC_FIELD",
     "MODEL", "MODEL_DEFAULTS", "UNLIMITED_DISCOVERED_IDEAS",
-    "acknowledge_diagnosis", "adjudicate_trial", "adjudicate_verdict",
+    "acknowledge_diagnosis", "adjudicate_verdict",
     "campaign_completeness", "campaign_status", "flagged_trials", "format_status",
-    "guard_baseline_move", "guard_model_mutation", "load_ledger_commits",
-    "load_ledger_values", "mutate_model", "per_axis_yield",
+    "guard_baseline_move", "guard_model_mutation", "load_ledger_commits", "mutate_model", "per_axis_yield",
     "record_keep_pushing_marker", "record_out_of_diff_change",
-    "register_model", "register_model_with_baseline", "register_trial", "reset_ratchet",
-    "retire_harness", "supervise_campaign", "supersede_trial", "validate_fact",
+    "register_model", "register_trial", "reset_ratchet",
+    "supervise_campaign", "supersede_trial", "validate_fact",
 }
-EXPECTED_ABSENT_IMPORTS: set[str] = {"TicketIndex", "model_to_projects", "project_to_models"}
+EXPECTED_ABSENT_IMPORTS: set[str] = {
+    "DEFAULT_SIGMAS", "TicketIndex", "adjudicate_trial", "load_ledger_values",
+    "model_to_projects", "project_to_models", "register_model_with_baseline", "retire_harness",
+}
 
 
 def _inventory() -> tuple[set[str], dict[str, int]]:
