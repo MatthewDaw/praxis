@@ -17,6 +17,11 @@ from knowledge.ml_registry.services.registry_runs import complete_run
 from knowledge.ml_registry.storage import Registry
 
 
+def compatibility_load(_version, path: Path, _head_sha: str) -> bool:
+    """Load the deterministic fixture bytes through the declared public adapter."""
+    return path.read_bytes().startswith(b"fixture-model:")
+
+
 def _head(repo: Path) -> str:
     return subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
