@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -77,18 +78,18 @@ CREATE TRIGGER IF NOT EXISTS champion_authority_insert BEFORE INSERT ON aliases
 CREATE TRIGGER IF NOT EXISTS champion_authority_update BEFORE UPDATE ON aliases
 WHEN NEW.alias='champion' AND NEW.set_by NOT IN ('adjudicate','ratchet') BEGIN SELECT RAISE(ABORT,'champion alias requires adjudicate or ratchet'); END;
 CREATE TRIGGER IF NOT EXISTS guard_experiments_insert BEFORE INSERT ON experiments
- WHEN registry_authority() NOT IN ('experiment_created','historical_ledger_imported') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+ WHEN registry_authority() NOT IN ('experiment_created','historical_ledger_imported','historical_archive_imported') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_experiments_update BEFORE UPDATE ON experiments BEGIN SELECT RAISE(ABORT,'experiments are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_experiments_delete BEFORE DELETE ON experiments BEGIN SELECT RAISE(ABORT,'experiments are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_runs_insert BEFORE INSERT ON runs
- WHEN registry_authority() NOT IN ('run_created','historical_ledger_imported') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+ WHEN registry_authority() NOT IN ('run_created','historical_ledger_imported','historical_archive_imported') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_runs_update BEFORE UPDATE ON runs
  WHEN registry_authority() NOT IN ('run_completed','run_adjudicated','run_superseded') BEGIN SELECT RAISE(ABORT,'run write authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_runs_delete BEFORE DELETE ON runs BEGIN SELECT RAISE(ABORT,'runs cannot be deleted'); END;
 CREATE TRIGGER IF NOT EXISTS guard_artifacts_insert BEFORE INSERT ON artifacts
  WHEN registry_authority()!='artifact_created' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_models_insert BEFORE INSERT ON registered_models
- WHEN registry_authority()!='registered_model_created' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+ WHEN registry_authority() NOT IN ('registered_model_created','historical_archive_imported') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_models_update BEFORE UPDATE ON registered_models BEGIN SELECT RAISE(ABORT,'registered_models are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_models_delete BEFORE DELETE ON registered_models BEGIN SELECT RAISE(ABORT,'registered_models are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_versions_insert BEFORE INSERT ON model_versions
@@ -285,6 +286,26 @@ class Registry:
             for run in p["runs"]:
                 LegacyCodeRef.from_mapping(run["code_ref"])
                 self._insert_run(db, run)
+        elif op == "historical_archive_imported":
+            experiment = p["experiment"]
+            db.execute("INSERT INTO experiments VALUES(?,?,?,?,?,?,?,?)", (
+                experiment["experiment_id"], experiment["spec_digest"], _json(experiment["stages"]),
+                experiment["metric"], experiment["direction"], _json(experiment["win_condition"]),
+                experiment["noise_floor"], experiment["baseline_throughput"],
+            ))
+            for run in p["runs"]:
+                LegacyCodeRef.from_mapping(run["code_ref"])
+                self._insert_run(db, run)
+            model = p.get("model")
+            if model is not None:
+                db.execute("INSERT INTO registered_models VALUES(?,?,?,?,?,?)", (
+                    model["model_id"], model["family"], model["sport_scope"], model["axis"],
+                    model["protocol"], _json(model.get("extends")) if model.get("extends") else None,
+                ))
+        elif op == "historical_evidence_freeze_imported":
+            # Evidence is content-addressed in BlobStore and described by this event;
+            # it deliberately has no canonical SQL projection.
+            return
         elif op == "artifact_created":
             db.execute("INSERT INTO artifacts VALUES(?,?,?,?,?,?)", tuple(p[k] for k in
                        ("artifact_id", "run_id", "kind", "uri", "bytes", "schema_version")))
@@ -387,6 +408,31 @@ class Registry:
                 return False
         self.blobs.verify(source_blob_sha256)
         self._write("historical_ledger_imported", payload)
+        return True
+
+    def import_historical_archive(self, payload: Mapping[str, Any]) -> bool:
+        """Commit one fully validated archive projection as a single durable event."""
+        import_id = str(payload["import_id"])
+        for event in self.events.read():
+            if event.event_type == "historical_archive_imported" and event.payload.get("import_id") == import_id:
+                if event.payload != payload:
+                    raise RegistryError("historical import id drifted from its full semantic payload")
+                return False
+        for item in payload["evidence"]:
+            self.blobs.verify(item["blob_sha256"])
+        self._write("historical_archive_imported", payload)
+        return True
+
+    def import_historical_evidence_freeze(self, payload: Mapping[str, Any]) -> bool:
+        import_id = str(payload["import_id"])
+        for event in self.events.read():
+            if event.event_type == "historical_evidence_freeze_imported" and event.payload.get("import_id") == import_id:
+                if event.payload != payload:
+                    raise RegistryError("historical evidence import id drifted")
+                return False
+        for item in payload["evidence"]:
+            self.blobs.verify(item["blob_sha256"])
+        self._write("historical_evidence_freeze_imported", payload)
         return True
 
     def register_model(self, **values: Any) -> None:
@@ -509,3 +555,32 @@ class Registry:
     def alias_authorities() -> Mapping[str, frozenset[str]]:
         return {"champion": frozenset({"adjudicate", "ratchet"}),
                 "production": frozenset({"finalize"})}
+
+    def snapshot_digest(self) -> str:
+        payload = {table: self.rows(table) for table in self.table_names()}
+        return hashlib.sha256(_json(payload).encode()).hexdigest()
+
+    def canonical_projection_digest(self) -> str:
+        tables = ("experiments", "runs", "artifacts", "registered_models", "model_versions", "lineage", "aliases")
+        return hashlib.sha256(_json({table: self.rows(table) for table in tables}).encode()).hexdigest()
+
+    def verify_event_chain(self) -> bool:
+        self.events.read()
+        return True
+
+    def projection_is_empty(self) -> bool:
+        return not any(self.rows(table) for table in self.table_names())
+
+    def is_empty(self) -> bool:
+        """Return whether the registry has no projection, events, or CAS bytes."""
+        return (self.projection_is_empty() and not self.events.read()
+                and not any(path.is_file() for path in self.blobs.root.rglob("*")))
+
+    def model_versions(self) -> list[dict[str, Any]]:
+        return self.rows("model_versions")
+
+    def aliases(self) -> list[dict[str, Any]]:
+        return self.rows("aliases")
+
+    def verdicts(self) -> list[dict[str, Any]]:
+        return [row for row in self.rows("runs") if row["verdict"] is not None]

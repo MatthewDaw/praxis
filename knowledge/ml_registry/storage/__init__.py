@@ -10,9 +10,11 @@ from .artifact_store import (
 from .blobs import BlobError, BlobStore
 from .events import EventLog, EventLogError, RegistryEvent
 from .registry import DDL, Registry, RegistryError
+from .importers import HistoricalStoreImporter
 
 __all__ = [
     "BlobError", "BlobStore", "DDL", "EventLog", "EventLogError", "Registry", "RegistryError", "RegistryEvent",
     "ArtifactEvent", "ArtifactSnapshot", "ArtifactStore", "ArtifactStoreError",
     "FinalizationCommit",
+    "HistoricalStoreImporter",
 ]

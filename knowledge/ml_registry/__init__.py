@@ -14,6 +14,6 @@ are later tickets (R2+) built on this schema.
 
 from .contracts import RunsExport
 from .storage import Registry
-from .storage.importers import HistoricalLedgerImporter
+from .storage.importers import HistoricalLedgerImporter, HistoricalStoreImporter
 
-__all__ = ["HistoricalLedgerImporter", "Registry", "RunsExport"]
+__all__ = ["HistoricalLedgerImporter", "HistoricalStoreImporter", "Registry", "RunsExport"]
