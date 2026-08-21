@@ -145,10 +145,12 @@ MODULE_REPLACEMENT_OBLIGATIONS = {
     },
 }
 EXPECTED_DEAD_MODULES = {
-    "knowledge.ml_registry.completeness",
     "knowledge.ml_registry.storage.artifact_store",
 }
-EXPECTED_ABSENT_MODULES = {"knowledge.ml_registry.services.finalize"}
+EXPECTED_ABSENT_MODULES = {
+    "knowledge.ml_registry.completeness",
+    "knowledge.ml_registry.services.finalize",
+}
 
 
 def _imports(path: Path) -> set[str]:
