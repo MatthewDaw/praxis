@@ -175,38 +175,6 @@ def load_ledger_rows(path: Path) -> dict[str, LedgerRow]:
 
 
 
-def _update_registered_model(
-    space: RegistrySpace, model_id: str, patch: dict[str, object], *, source: str | None
-) -> str:
-    """Re-register (update) an ALREADY REGISTERED model through the GUARDED write path.
-
-    ``register_model(..., model_id=...)`` replaces the fact wholesale: it froze only
-    ``metric``, ran neither R1 guard, and dropped every derived campaign field the model had
-    accumulated (``campaign_status``, ``ratchet_count``, ``rejection_streak_ideas``, the
-    keep-pushing markers) -- the very state the registry recomputes its counters from. This
-    path instead MERGES the caller's keys onto the existing meta through
-    :func:`~knowledge.ml_registry.write_path.mutate_model`, so both guards sit on the data
-    path (a worker-sourced patch cannot touch a judging field; ``baseline`` moves only from
-    adjudication) and derived state survives. ``metric`` stays frozen for the model's life.
-    """
-    if not (source or "").strip():
-        raise RegistryValidationError(
-            "updating an already-registered model is a guarded mutation: name its --source "
-            "(e.g. 'worker' or 'adjudication')",
-            field="source",
-        )
-    model = space.get(model_id)
-    if model is None or model.category != MODEL:
-        raise RegistryValidationError(f"model {model_id!r} was never registered", field="model_id")
-    if METRIC_FIELD in patch and patch[METRIC_FIELD] != model.meta.get(METRIC_FIELD):
-        raise RegistryValidationError(
-            f"model {model_id!r} metric is frozen for the life of the model; cannot change it from "
-            f"{model.meta.get(METRIC_FIELD)!r} to {patch[METRIC_FIELD]!r}",
-            field=METRIC_FIELD,
-        )
-    validate_fact(MODEL, {**model.meta, **patch})
-    mutate_model(space, model_id, patch, source=str(source))
-    return model_id
 
 
 def _refuse_a_campaign_with_no_floor(space: RegistrySpace, model_id: str) -> None:

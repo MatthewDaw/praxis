@@ -11,9 +11,8 @@ MODULE = Path(__file__).resolve().parents[1] / "cli/registry.py"
 EXPECTED_DEAD_SYMBOLS = {
     "_parse_intervention",
     "_refuse_a_campaign_with_no_floor",
-    "_update_registered_model",
 }
-EXPECTED_ABSENT_SYMBOLS: set[str] = {"_checked_model_budgets"}
+EXPECTED_ABSENT_SYMBOLS: set[str] = {"_checked_model_budgets", "_update_registered_model"}
 
 
 def _inventory() -> tuple[set[str], dict[str, int]]:
