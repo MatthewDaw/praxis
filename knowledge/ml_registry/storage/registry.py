@@ -113,9 +113,9 @@ CREATE TRIGGER IF NOT EXISTS guard_lineage_insert BEFORE INSERT ON lineage
 CREATE TRIGGER IF NOT EXISTS guard_lineage_update BEFORE UPDATE ON lineage BEGIN SELECT RAISE(ABORT,'lineage is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_lineage_delete BEFORE DELETE ON lineage BEGIN SELECT RAISE(ABORT,'lineage is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_aliases_insert BEFORE INSERT ON aliases
- WHEN registry_authority() NOT IN ('alias_set','run_adopted') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+ WHEN registry_authority() NOT IN ('alias_set','run_adopted','registry_finalized') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_aliases_update BEFORE UPDATE ON aliases
- WHEN registry_authority() NOT IN ('alias_set','run_adopted','adoption_invalidated') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+ WHEN registry_authority() NOT IN ('alias_set','run_adopted','adoption_invalidated','registry_finalized') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_aliases_delete BEFORE DELETE ON aliases BEGIN SELECT RAISE(ABORT,'aliases cannot be deleted'); END;
 CREATE TRIGGER IF NOT EXISTS guard_events_insert BEFORE INSERT ON events
  WHEN registry_authority()='' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
@@ -380,6 +380,22 @@ class Registry:
                        tuple(p[k] for k in ("model_id", "alias", "version", "set_by", "reason", "at")))
         elif op == "compatibility_recorded":
             return
+        elif op == "registry_finalized":
+            champion = db.execute(
+                "SELECT version FROM aliases WHERE model_id=? AND alias='champion'", (p["model_id"],),
+            ).fetchone()
+            if champion is None or champion["version"] != p["version"]:
+                raise RegistryError("finalization target is no longer the current champion")
+            for upstream in p["upstreams"]:
+                production = db.execute(
+                    "SELECT version FROM aliases WHERE model_id=? AND alias='production'",
+                    (upstream["model_id"],),
+                ).fetchone()
+                if production is None or production["version"] != upstream["version"]:
+                    raise RegistryError("finalization upstream production alias moved before commit")
+            db.execute("INSERT INTO aliases VALUES(?,?,?,?,?,?) ON CONFLICT(model_id,alias) DO UPDATE SET "
+                       "version=excluded.version,set_by=excluded.set_by,reason=excluded.reason,at=excluded.at",
+                       (p["model_id"], "production", p["version"], "finalize", p["reason"], event.at))
         else:
             raise RegistryError(f"unknown event type {op!r}")
         return True
@@ -622,6 +638,22 @@ class Registry:
         self._write("alias_set", {"model_id": model_id, "alias": alias, "version": version,
                     "set_by": set_by, "reason": reason, "at": self.clock()})
 
+    def _finalize_registry_version(self, payload: Mapping[str, Any], *, capability: object) -> bool:
+        """Commit the canonical production move and its evidence as one durable event."""
+        if capability is not _PRODUCTION_CAPABILITY:
+            raise RegistryError("registry finalization requires finalize authority")
+        identity = (payload.get("model_id"), payload.get("version"))
+        prior = [event for event in self.events.read()
+                 if event.event_type == "registry_finalized"
+                 and (event.payload.get("model_id"), event.payload.get("version")) == identity]
+        if prior:
+            if prior[-1].payload != payload:
+                raise RegistryError("registry finalization retry drifted from its full semantic payload")
+            self.recover()
+            return False
+        self._write("registry_finalized", payload)
+        return True
+
     def record_compatibility(self, *, model_id: str, version: int, head_sha: str,
                              passed: bool, reason: str) -> None:
         if not isinstance(passed, bool) or not reason:
@@ -652,16 +684,18 @@ class Registry:
             raise RegistryError("unknown model version")
         result = dict(matches[0])
         compat = json.loads(result["compat_result"])
+        invalidated = False
         for event in self.events.read():
             if (event.event_type == "compatibility_recorded" and event.payload["model_id"] == model_id
                     and event.payload["version"] == version):
                 compat = {key: event.payload[key] for key in ("head_sha", "passed", "at")}
-        invalidated = any(
-            event.event_type == "adoption_invalidated"
-            and event.payload.get("model_id") == model_id
-            and event.payload.get("invalidated_version") == version
-            for event in self.events.read()
-        )
+            elif (event.event_type == "registry_finalized" and event.payload["model_id"] == model_id
+                  and event.payload["version"] == version):
+                compat = {"head_sha": event.payload["head_sha"], "passed": True, "at": event.at}
+            elif (event.event_type == "adoption_invalidated"
+                  and event.payload.get("model_id") == model_id
+                  and event.payload.get("invalidated_version") == version):
+                invalidated = True
         result["effective_compat_result"] = compat
         result["effective_status"] = (
             "superseded" if invalidated else result["status"] if compat["passed"] else "incompatible"

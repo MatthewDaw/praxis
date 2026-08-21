@@ -167,7 +167,7 @@ def _production_blocker(view: CampaignView, registry: Registry,
     except (OSError, subprocess.CalledProcessError) as exc:
         return _blocker("stale_production_code", "", f"cannot resolve current HEAD: {exc}")
     compat = version["effective_compat_result"]
-    if version["code_sha"] != code_ref["sha"] or head != code_ref["sha"] or compat["head_sha"] != head:
+    if version["code_sha"] != code_ref["sha"] or compat["head_sha"] != head:
         return _blocker("stale_production_code", "", "production compatibility is not verified for current HEAD")
     return None
 
