@@ -113,3 +113,26 @@ def apply_p9_diff(
         change_class=CLASS_DOCS_REWRITE,
         **adapter_overrides,
     )
+
+
+def apply_p9_candidate(
+    repo_root: str | Path, candidate_ref: str, **adapter_overrides: object,
+) -> ExecutableDiffResult:
+    """Generate and apply the exact bounded diff without a writable patch artifact."""
+    forbidden = {
+        "diff", "findings", "expected_rule", "expected_locations", "diff_allowlist",
+        "witnesses", "change_class",
+    }.intersection(adapter_overrides)
+    if forbidden:
+        raise TypeError(f"P-9 safety boundary cannot be overridden: {sorted(forbidden)!r}")
+    return apply_bounded_executable_diff(
+        repo_root=repo_root,
+        diff=generate_prebuilt_diff(repo_root, candidate_ref),
+        findings=p9_findings(),
+        expected_rule=P9_RULE,
+        expected_locations=frozenset(P9_LOCATIONS),
+        diff_allowlist=P9_DIFF_ALLOWLIST,
+        witnesses=P9_WITNESSES,
+        change_class=CLASS_DOCS_REWRITE,
+        **adapter_overrides,
+    )

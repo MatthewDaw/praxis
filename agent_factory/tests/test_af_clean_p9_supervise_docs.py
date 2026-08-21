@@ -12,6 +12,7 @@ from agent_factory.af_clean.p9_supervise_docs import (
     P9_LOCATIONS,
     P9_RULE,
     P9_WITNESSES,
+    apply_p9_candidate,
     apply_p9_diff,
     generate_prebuilt_diff,
     p9_findings,
@@ -69,6 +70,27 @@ def test_apply_forwards_only_fixed_p9_boundary(monkeypatch, tmp_path: Path) -> N
     assert observed["expected_locations"] == frozenset(P9_LOCATIONS)
     assert observed["diff_allowlist"] == P9_DIFF_ALLOWLIST
     assert observed["witnesses"] == P9_WITNESSES
+
+
+def test_apply_candidate_generates_then_forwards_fixed_boundary(monkeypatch, tmp_path: Path) -> None:
+    observed = {}
+    monkeypatch.setattr(
+        "agent_factory.af_clean.p9_supervise_docs.generate_prebuilt_diff",
+        lambda root, ref: "diff --git a/a b/a\n",
+    )
+
+    def apply(**kwargs):
+        observed.update(kwargs)
+        return ExecutableDiffResult(tuple(sorted(P9_DIFF_ALLOWLIST)), 3, CLASS_DOCS_REWRITE)
+
+    monkeypatch.setattr(
+        "agent_factory.af_clean.p9_supervise_docs.apply_bounded_executable_diff", apply,
+    )
+    result = apply_p9_candidate(tmp_path, "candidate")
+    assert result.change_class == CLASS_DOCS_REWRITE
+    assert observed["diff"] == "diff --git a/a b/a\n"
+    assert observed["findings"] == p9_findings()
+    assert observed["change_class"] == CLASS_DOCS_REWRITE
 
 
 @pytest.mark.parametrize("name", [
