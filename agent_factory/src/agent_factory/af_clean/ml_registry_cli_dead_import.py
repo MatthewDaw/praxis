@@ -33,8 +33,8 @@ BATCHES = {batch.key: batch for batch in (
     ImportBatch("supervisor", 51, ("Intervention", "record_keep_pushing_marker", "record_out_of_diff_change", "supervise_campaign")),
     ImportBatch("completeness", 51, ("campaign_completeness",)),
     ImportBatch("report", 51, ("acknowledge_diagnosis", "campaign_status", "format_status")),
-    ImportBatch("verdict", 53, ("adjudicate_verdict", "reset_ratchet")),
-    ImportBatch("write-path", 54, ("MAX_DISCOVERED_IDEAS_FIELD", "METRIC_FIELD", "MODEL_DEFAULTS", "UNLIMITED_DISCOVERED_IDEAS", "load_ledger_commits", "mutate_model", "register_model", "register_trial", "supersede_trial")),
+    ImportBatch("verdict", 51, ("adjudicate_verdict", "reset_ratchet")),
+    ImportBatch("write-path", 52, ("MAX_DISCOVERED_IDEAS_FIELD", "METRIC_FIELD", "MODEL_DEFAULTS", "UNLIMITED_DISCOVERED_IDEAS", "load_ledger_commits", "mutate_model", "register_model", "register_trial", "supersede_trial")),
 )}
 ALLOWLIST = frozenset({SOURCE, TEST})
 WITNESSES = (
