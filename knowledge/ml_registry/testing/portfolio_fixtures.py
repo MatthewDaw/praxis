@@ -180,6 +180,43 @@ def serial_arm_scenario(tmp_path):
     return _Scenario(tmp_path)
 
 
+class _InvalidCompletionScenario(_Scenario):
+    def __init__(self, root: Path, *, claim: str) -> None:
+        super().__init__(root)
+        self.claim = claim
+
+    def finish_root_and_poll(self):
+        self.controller.tick()
+        artifact = {"outcome": "COMPLETE"}
+        if self.claim == "missing_outcome":
+            artifact = None
+        elif self.claim == "missing_production_alias":
+            pass
+        elif self.claim == "checksum_mismatch":
+            self.finalizer.finalize(self.view, version=1, reason="fixture release")
+            artifact_id = self.registry.rows("model_versions")[0]["artifact_id"]
+            self.registry.blobs.path(artifact_id).write_bytes(b"tampered fixture bytes")
+        elif self.claim == "superseded_lineage":
+            self.finalizer.finalize(self.view, version=1, reason="fixture release")
+            invalidate_adoption(self.registry, {
+                "model_id": "R1", "invalidated_version": 1, "parent_version": 1,
+                "adoption_run_id": "run-R1", "evidence_run_ids": ["fixture"],
+                "invalidated_lineage_id": "R1@1", "requeue_idea_ids": [],
+                "reason": "fixture superseded lineage",
+            })
+        else:
+            raise ValueError(f"unknown invalid completion claim {self.claim!r}")
+        self.backend.results["R1"] = PollResult("completed", artifact=artifact)
+        return self.controller.tick()
+
+    def record(self, campaign_id):
+        return self.controller.records[campaign_id]
+
+
+def invalid_completion_scenario(tmp_path, *, claim):
+    return _InvalidCompletionScenario(tmp_path, claim=claim)
+
+
 def _campaign_spec(campaign_id, *, requires=(), schema_version="1"):
     return {
         "schema_version": 1, "campaign_id": campaign_id,
@@ -341,6 +378,9 @@ class _RestartScenario(_Scenario):
                 self.finalizer.finalize(self.view, version=1, reason="fixture release")
                 token = self.controller.records["R1"].backend_job_id
                 state_path = self.root / "dispatch" / f"{token}.state.json"
+                deadline = time.time() + 2
+                while not state_path.exists() and time.time() < deadline:
+                    time.sleep(.01)
                 state = json.loads(state_path.read_text())
                 state.update(state="completed", returncode=0, finished_at=time.time(),
                              artifact={"outcome": "COMPLETE"})

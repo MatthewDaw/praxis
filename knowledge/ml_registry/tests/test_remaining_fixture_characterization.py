@@ -56,13 +56,6 @@ def test_fixture_c_verified_completion_backfills_in_the_same_poll(tmp_path):
     assert set(second.running) == {"R2", "C1"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "fixture D: each invalid completion claim must fail R1 with its exact finalize "
-        "reason while C1 remains blocked on R1:fit"
-    ),
-)
 @pytest.mark.parametrize(
     ("claim", "expected_reason"),
     [
@@ -166,13 +159,6 @@ def test_fixture_f_stop_owns_process_groups_and_arm_admission(tmp_path, mode):
         assert scenario.new_arms_started_after_stop == 0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "fixture O: registry integrity audit does not yet prove every version code_sha "
-        "exists and every champion move has a reason-bearing event"
-    ),
-)
 def test_fixture_o_integrity_audit_checks_code_refs_and_champion_events(tmp_path):
     scenario = _public("knowledge.ml_registry.testing.registry_fixtures", "registry_invariant_scenario")(
         tmp_path

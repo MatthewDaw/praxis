@@ -94,13 +94,13 @@ class RegistryFinalizer:
         events = [event for event in self.registry.list_events()
                   if event.event_type == "registry_finalized"
                   and event.payload.get("model_id") == model_id and event.payload.get("version") == version]
-        if not events:
-            raise RegistryFinalizationError("model version has no canonical finalization event")
-        event = events[-1]
         alias_row = next((row for row in self.registry.rows("aliases")
                           if row["model_id"] == model_id and row["alias"] == "production"), None)
         if alias_row is None or alias_row["version"] != version:
             raise RegistryFinalizationError("production alias does not match the finalized model version")
+        if not events:
+            raise RegistryFinalizationError("model version has no canonical finalization event")
+        event = events[-1]
         code_ref = _decoded(run, "code_ref")
         if event.payload["head_sha"] != head_sha or self.registry._git_head(code_ref["repo"]) != head_sha:
             raise RegistryFinalizationError("finalization compatibility evidence is stale for current HEAD")
@@ -137,6 +137,13 @@ class RegistryFinalizer:
                          if row["model_id"] == model_id and row["alias"] == "champion"), None)
         if version_row is None or champion is None or champion["version"] != version:
             raise RegistryFinalizationError("finalization requires the current champion model version")
+        effective = self.registry.effective_model_version(model_id, version)
+        if effective["effective_status"] == "superseded":
+            raise RegistryFinalizationError("champion model version has superseded lineage")
+        if effective["effective_status"] != "active":
+            raise RegistryFinalizationError(
+                f"champion model version is {effective['effective_status']}"
+            )
         run = next((row for row in self.registry.rows("runs")
                     if row["run_id"] == version_row["run_id"]), None)
         if run is None or (run["status"], run["verdict"]) != ("succeeded", "adopted"):

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 from pathlib import Path
 import subprocess
 import sys
@@ -65,40 +64,24 @@ def test_fixture_b_a_campaign_cannot_run_two_trials_for_one_idea():
         register_trial(space, {**first, "commit": "candidate"}, frozenset({"base", "candidate"}))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="fixture D: process exit is not reverified against a production ModelVersion alias",
-)
 @pytest.mark.parametrize(
-    ("completion_claim", "reason"),
+    ("claim", "reason"),
     [
-        (None, "outcome"),
-        ({"outcome": "COMPLETE", "model_id": "model-root"}, "production alias"),
-        ({
-            "outcome": "COMPLETE", "model_id": "model-root", "version": 1,
-            "alias": "production", "artifact_checksum": "wrong",
-        }, "checksum"),
-        ({
-            "outcome": "COMPLETE", "model_id": "model-root", "version": 1,
-            "alias": "production", "artifact_checksum": "a" * 64,
-            "lineage_status": "superseded",
-        }, "lineage"),
+        ("missing_outcome", "outcome"),
+        ("missing_production_alias", "production alias"),
+        ("checksum_mismatch", "checksum"),
+        ("superseded_lineage", "superseded lineage"),
     ],
     ids=("no-outcome", "no-production-alias", "checksum-mismatch", "superseded-lineage"),
 )
 def test_fixture_d_exit_zero_without_verified_production_alias_is_failed(
-    tmp_path, completion_claim, reason,
+    tmp_path, claim, reason,
 ):
-    portfolio = Portfolio()
-    _ready(portfolio, "root")
-    backend = Backend()
-    controller = PortfolioController(portfolio=portfolio, campaign_specs=[_spec("root")], capacity=CAPACITY,
-                                     backend=backend, state_path=tmp_path / "controller.json")
-    controller.tick()
-    backend.results["root"] = PollResult("completed", artifact=completion_claim)
-    controller.tick()
-    assert controller.records["root"].state == "failed"
-    assert reason in (controller.records["root"].message or "").lower()
+    fixtures = importlib.import_module("knowledge.ml_registry.testing.portfolio_fixtures")
+    scenario = fixtures.invalid_completion_scenario(tmp_path, claim=claim)
+    scenario.finish_root_and_poll()
+    assert scenario.record("R1").state == "failed"
+    assert reason in (scenario.record("R1").message or "").lower()
 
 
 def test_p4_scheduler_rejects_depends_on_key():
@@ -106,29 +89,21 @@ def test_p4_scheduler_rejects_depends_on_key():
         schedule([_spec("root", depends_on=[])], {}, CAPACITY, max_concurrency=1)
 
 
-@pytest.mark.xfail(strict=True, reason="fixture E: restart does not reconcile a persisted launch intent")
 def test_fixture_e_restart_reads_launch_intent_before_retry(tmp_path):
-    state = tmp_path / "controller.json"
-    state.write_text(json.dumps({"records": {"root": {
-        "backend_job_id": "root.attempt-1", "state": "dispatching", "attempt": 1,
-        "next_retry_at": 0.0, "message": None, "started_at": 1.0, "checkpoint_uri": None,
-    }}}))
-    dispatch = tmp_path / "dispatch"
-    dispatch.mkdir()
-    (dispatch / "root.attempt-1.process.json").write_text(json.dumps({"pid": 1, "pgid": 1,
-        "intent_id": "root-1", "spec_digest": "a" * 64, "registry_trial_id": None}))
-    portfolio = Portfolio()
-    _ready(portfolio, "root")
-    controller = PortfolioController(portfolio=portfolio, campaign_specs=[_spec("root")], capacity=CAPACITY,
-                                     backend=Backend(), state_path=state)
-    assert controller.records["root"].state == "running"
+    fixtures = importlib.import_module("knowledge.ml_registry.testing.portfolio_fixtures")
+    scenario = fixtures.restart_scenario(tmp_path, crash_after="intent_written")
+    scenario.run_until_crash()
+    scenario.restart_and_reconcile()
+    assert scenario.live_process_group_count("R1") <= 1
+    assert scenario.trial_count("R1", idea_id="idea-1") == 1
 
 
-@pytest.mark.xfail(strict=True, reason="fixture F: controller backend owns no process-group cancellation API")
-def test_fixture_f_backend_exposes_force_cancel_and_drain():
-    backend = Backend()
+def test_fixture_f_backend_exposes_reconcile_and_cancel_while_controller_owns_drain(tmp_path):
+    controller_module = importlib.import_module("knowledge.ml_registry.controller")
+    backend = controller_module.ExecutorProcessBackend(tmp_path / "dispatch")
+    assert callable(backend.reconcile)
     assert callable(backend.cancel)
-    assert callable(backend.drain)
+    assert callable(controller_module.PortfolioController.stop)
 
 
 def test_fixture_o_sqlite_registry_has_exact_canonical_tables_and_guards(tmp_path):
