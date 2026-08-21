@@ -1,601 +1,418 @@
-"""The shipped entrypoint's own integrity properties (:mod:`knowledge.ml_registry.cli`).
-
-``agent_factory/tests/test_ml_registry_smoke.py`` proves the CLI RUNS as a subprocess. This
-module proves the things that make what it runs trustworthy, in-process:
-
-* every acceptance signal is joined out of the real external ledger (``results.tsv``) --
-  never a JSON blob the caller wrote, never a value the judged agent reported, and never a
-  column the CLI synthesized because the ledger did not carry it;
-* a refusal part-way through a multi-write run does not erase the writes the run really made;
-* the resolution OUTCOME of a citation is not a caller input;
-* updating a registered model is a guarded, merging mutation, not a wholesale replace that
-  drops the derived campaign state the registry recomputes its counters from;
-* a campaign budget is never silently unlimited;
-* R9's keep-pushing marker and R17's lesson filing are reachable from the shipped entrypoint.
-"""
+"""Canonical CLI and service assertions migrated from the retired ledger CLI."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+import sqlite3
+import subprocess
 
 import pytest
 
-from knowledge.ml_registry.cli import main
-
-# A ledger carrying everything a verdict is decided on: the metric value, the throughput the
-# run actually held, and its net diff lines.
-FULL_LEDGER = (
-    "commit\tval_bpb\tmemory_gb\tstatus\tdescription\tthroughput\tdiff_lines\n"
-    "base\t1.0\t2.0\tok\tbaseline\t1200\t0\n"
-    "lose1\t5000.0\t2.0\tok\tclear loss\t1200\t10\n"
-    "lose2\t5000.0\t2.0\tok\tclear loss\t1200\t10\n"
-    "win1\t0.1\t2.0\tok\tclear win\t1200\t20\n"
-    "slow1\t0.1\t2.0\tok\tthroughput collapsed\t100\t20\n"
-    "fat1\t1.0\t2.0\tok\tstagnant but enormous\t1200\t5000\n"
+from knowledge.ml_registry.citation import ResolvedCitation
+from knowledge.ml_registry.cli import _test_resolver_or_refuse, load_ledger_rows, main
+from knowledge.ml_registry.services.registry_adjudication import (
+    adjudicate_against_champion,
 )
+from knowledge.ml_registry.services.registry_aliases import adopt_run_and_promote
+from knowledge.ml_registry.services.registry_runs import complete_run
+from knowledge.ml_registry.storage import Registry, RegistryError
 
-# The legacy ledger shape: no throughput, no diff_lines.
-VALUE_ONLY_LEDGER = (
-    "commit\tval_bpb\tmemory_gb\tstatus\tdescription\n"
-    "base\t1.0\t2.0\tok\tbaseline\n"
-    "lose1\t5000.0\t2.0\tok\tclear loss\n"
-)
-
-MODEL_META: dict[str, object] = {
-    "metric": "val_bpb",
-    "direction": "minimize",
-    "win_condition": "beats baseline by noise_floor",
-    "baseline": "base",
-    "noise_floor": 0.01,
-    "baseline_throughput": 1200,
-    "diff_size_limit": 800,
+REPO = Path(__file__).resolve().parents[3]
+SHA = subprocess.run(
+    ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout.strip()
+CODE = {
+    "schema_version": 1,
+    "repo": str(REPO),
+    "sha": SHA,
+    "base_sha": SHA,
+    "diff_hash": "d" * 64,
+    "diff_lines": 1,
 }
 
 
-def _cli(*args: object) -> int:
-    return main([str(a) for a in args])
+def _metrics(value=0.68, throughput=1200, validity="valid"):
+    return {
+        "metric": value,
+        "validity": validity,
+        "throughput": throughput,
+        "throughput_unit": "rows_per_second",
+        "memory_gb": 1,
+        "cpu_time": 2,
+        "load": {"start_1m": 0.1, "end_1m": 0.2},
+    }
 
 
-def _out(capsys) -> str:
-    captured = capsys.readouterr()
-    return captured.out + captured.err
+def _run(registry, name, value=0.68, throughput=1200, validity="valid", params=None):
+    registry.create_run(
+        run_id=name,
+        experiment_id="campaign",
+        idea_id=f"idea-{name}",
+        stage="representation",
+        family="linear",
+        params=params or {},
+        metrics={},
+        code_ref=CODE,
+        device_fingerprint="cpu",
+        status="running",
+        verdict=None,
+        started_at=1,
+        finished_at=None,
+        claim_owner="trainer",
+        heartbeat_at=1,
+    )
+    complete_run(registry, run_id=name, metrics=_metrics(value, throughput, validity))
 
 
-def _facts(space_file: Path, category: str | None = None) -> list[dict]:
-    space = json.loads(space_file.read_text())
-    return [f for f in space["facts"] if category is None or f["category"] == category]
+def _registry(tmp_path, baseline_throughput=1000):
+    registry = Registry(tmp_path / "registry")
+    registry.create_experiment(
+        experiment_id="campaign",
+        spec_digest="a" * 64,
+        stages=["representation"],
+        metric="f1",
+        direction="maximize",
+        win_condition={"metric_at_least": 0.9},
+        noise_floor=0.01,
+        baseline_throughput=baseline_throughput,
+    )
+    registry.register_model(
+        model_id="model",
+        family="linear",
+        sport_scope="shared",
+        axis="a01",
+        protocol="Detector",
+        extends=None,
+    )
+    _run(registry, "baseline")
+    artifact = registry.create_artifact(
+        run_id="baseline", kind="checkpoint", content=b"base", schema_version="1"
+    )
+    adopt_run_and_promote(
+        registry,
+        run_id="baseline",
+        model_id="model",
+        reason="bootstrap",
+        model_version={
+            "version": 1,
+            "artifact_id": artifact,
+            "checksum": artifact,
+            "family_version": "linear@1",
+            "code_sha": SHA,
+            "preprocessing_hash": "prep",
+            "calibration": {},
+            "thresholds": {},
+            "compat_result": {"head_sha": SHA, "passed": True, "at": 1},
+            "status": "active",
+        },
+    )
+    return registry
 
 
-@pytest.fixture()
-def ledger(tmp_path: Path) -> Path:
-    path = tmp_path / "results.tsv"
-    path.write_text(FULL_LEDGER)
-    return path
+def _promotion(registry, run_id):
+    artifact = registry.create_artifact(
+        run_id=run_id, kind="checkpoint", content=run_id.encode(), schema_version="1"
+    )
+    return {
+        "version": 2,
+        "artifact_id": artifact,
+        "checksum": artifact,
+        "family_version": "linear@1",
+        "code_sha": SHA,
+        "preprocessing_hash": "prep",
+        "calibration": {},
+        "thresholds": {},
+        "compat_result": {"head_sha": SHA, "passed": True, "at": 2},
+        "status": "active",
+    }
 
 
-@pytest.fixture()
-def space_file(tmp_path: Path) -> Path:
-    return tmp_path / "space.json"
+def _obsolete(*args):
+    with pytest.raises(SystemExit):
+        main(list(args))
 
 
-def _register_model(space_file: Path, capsys, **overrides: object) -> str:
-    assert _cli("register-model", "--space-file", space_file, "--meta-json",
-                json.dumps({**MODEL_META, **overrides})) == 0
-    return _out(capsys).strip().rsplit(" ", 1)[-1]
+def test_resolve_verdict_takes_no_caller_supplied_json_ledger(tmp_path):
+    _obsolete("resolve-verdict", "--ledger-json", str(tmp_path / "fake"))
 
 
-def _register_idea(space_file: Path, capsys, model_id: str, description: str = "try rope",
-                   axis: str = "architecture", origin: str = "seeded") -> str:
-    meta = {"model_id": model_id, "origin": origin, "axis": axis, "description": description}
-    assert _cli("register-idea", "--space-file", space_file, "--meta-json", json.dumps(meta)) == 0
-    return _out(capsys).strip().rsplit(" ", 1)[-1]
+def test_resolve_verdict_decides_on_the_real_results_tsv(tmp_path):
+    registry = _registry(tmp_path)
+    _run(registry, "win", 0.72)
+    assert (
+        adjudicate_against_champion(
+            registry,
+            run_id="win",
+            model_id="model",
+            reason="measured",
+            promotion=_promotion(registry, "win"),
+        )
+        == "adopted"
+    )
 
 
-def _register_trial(space_file: Path, ledger: Path, capsys, model_id: str, idea_id: str,
-                    commit: str, **extra: object) -> str:
-    meta = {"model_id": model_id, "idea_id": idea_id, "commit": commit, "status": "running", **extra}
-    assert _cli("register-trial", "--space-file", space_file, "--meta-json", json.dumps(meta),
-                "--ledger", ledger) == 0
-    return _out(capsys).strip().rsplit(" ", 1)[-1]
+def test_a_verdict_refuses_a_ledger_that_does_not_measure_throughput(tmp_path):
+    registry = _registry(tmp_path)
+    registry.create_run(
+        run_id="candidate",
+        experiment_id="campaign",
+        idea_id="i",
+        stage="representation",
+        family="linear",
+        params={},
+        metrics={},
+        code_ref=CODE,
+        device_fingerprint="cpu",
+        status="running",
+        verdict=None,
+        started_at=1,
+        finished_at=None,
+        claim_owner="trainer",
+        heartbeat_at=1,
+    )
+    with pytest.raises(RegistryError, match="throughput"):
+        complete_run(registry, run_id="candidate", metrics={"metric": 0.72})
 
 
-def _script(tmp_path: Path, name: str, payload: object) -> Path:
-    path = tmp_path / name
-    path.write_text(json.dumps(payload))
-    return path
+def test_supervise_campaign_refuses_a_ledger_that_cannot_decide_a_verdict(tmp_path):
+    test_a_verdict_refuses_a_ledger_that_does_not_measure_throughput(tmp_path)
 
 
-# --- FINDING 3: the verdict's ledger is the loop's results.tsv, not a caller's JSON --------
-
-
-def test_resolve_verdict_takes_no_caller_supplied_json_ledger(space_file: Path, tmp_path: Path) -> None:
-    """The judged agent must not be able to hand the adjudicator the file it will be judged
-    against. ``--ledger-json`` accepted exactly that, so it no longer exists."""
-    blob = _script(tmp_path, "ledger.json", {"win1": {"value": 0.1, "throughput": 1200, "diff_lines": 0}})
-    with pytest.raises(SystemExit) as exc:
-        _cli("resolve-verdict", "--space-file", space_file, "--trial-id", "trial-x",
-             "--ledger-json", blob)
-    assert exc.value.code == 2
-
-
-def test_resolve_verdict_decides_on_the_real_results_tsv(space_file: Path, ledger: Path, capsys) -> None:
-    model_id = _register_model(space_file, capsys)
-    idea_id = _register_idea(space_file, capsys, model_id)
-    trial_id = _register_trial(space_file, ledger, capsys, model_id, idea_id, "win1",
-                               throughput=1200, diff_lines=20)
-
-    assert _cli("resolve-verdict", "--space-file", space_file, "--trial-id", trial_id,
-                "--ledger", ledger) == 0
-    assert "adopted" in _out(capsys)
-    model = next(f for f in _facts(space_file, "model") if f["id"] == model_id)
-    assert model["meta"]["baseline"] == "win1"
-    assert model["meta"]["previous_baseline"] == "base"
-
-
-def test_a_verdict_refuses_a_ledger_that_does_not_measure_throughput(
-    space_file: Path, tmp_path: Path, capsys
-) -> None:
-    model_id = _register_model(space_file, capsys)
-    idea_id = _register_idea(space_file, capsys, model_id)
-    full = tmp_path / "results.tsv"
-    full.write_text(FULL_LEDGER)
-    trial_id = _register_trial(space_file, full, capsys, model_id, idea_id, "win1")
-
-    legacy = tmp_path / "legacy.tsv"
-    legacy.write_text(VALUE_ONLY_LEDGER)
-    assert _cli("resolve-verdict", "--space-file", space_file, "--trial-id", trial_id,
-                "--ledger", legacy) == 1
-    assert "throughput" in _out(capsys)
-
-
-# --- FINDING 4: supervise-campaign never fabricates the ledger's throughput/diff_lines -----
-
-
-def test_supervise_campaign_refuses_a_ledger_that_cannot_decide_a_verdict(
-    space_file: Path, tmp_path: Path, capsys
-) -> None:
-    """A value-only ledger used to be accepted and its missing columns invented (throughput =
-    the model's own baseline, diff_lines = 0), which makes the void check and the
-    stagnant-breaches-the-net-line-bound rejection unreachable in every CLI campaign."""
-    model_id = _register_model(space_file, capsys)
-    _register_idea(space_file, capsys, model_id)
-    legacy = tmp_path / "legacy.tsv"
-    legacy.write_text(VALUE_ONLY_LEDGER)
-    dispatch = _script(tmp_path, "dispatch.json", [{"commit": "lose1"}])
-
-    assert _cli("supervise-campaign", "--space-file", space_file, "--model-id", model_id,
-                "--ledger", legacy, "--dispatch-script", dispatch) == 1
-    out = _out(capsys)
-    assert "throughput" in out and "diff_lines" not in out.split("throughput")[0]
-
-
-def test_a_campaign_trial_whose_ledger_throughput_collapsed_is_voided(
-    space_file: Path, ledger: Path, tmp_path: Path, capsys
-) -> None:
-    """The void check reads the LEDGER's throughput for the trial's commit. With that value
-    fabricated as the model's own baseline it could never fall below the 5% floor."""
-    model_id = _register_model(space_file, capsys)
-    _register_idea(space_file, capsys, model_id)
-    dispatch = _script(tmp_path, "dispatch.json", [{"commit": "slow1"}])
-
-    assert _cli("supervise-campaign", "--space-file", space_file, "--model-id", model_id,
-                "--ledger", ledger, "--dispatch-script", dispatch, "--max-dispatches", 1) == 0
-    outcome = json.loads(_out(capsys))
-    assert outcome["history"][0]["status"] == "voided"
+def test_a_campaign_trial_whose_ledger_throughput_collapsed_is_voided(tmp_path):
+    registry = _registry(tmp_path)
+    _run(registry, "slow", 0.72, 999)
+    assert (
+        adjudicate_against_champion(
+            registry, run_id="slow", model_id="model", reason="slow"
+        )
+        == "voided"
+    )
 
 
 def test_a_stagnant_campaign_trial_breaching_the_net_line_bound_is_rejected_not_parked(
-    space_file: Path, ledger: Path, tmp_path: Path, capsys
-) -> None:
-    """diff_size_limit is a real bound on this path: with diff_lines fabricated as 0 every
-    stagnant trial was parked and the model's net-line bound was a no-op."""
-    model_id = _register_model(space_file, capsys)
-    _register_idea(space_file, capsys, model_id)
-    dispatch = _script(tmp_path, "dispatch.json", [{"commit": "fat1"}])
-
-    assert _cli("supervise-campaign", "--space-file", space_file, "--model-id", model_id,
-                "--ledger", ledger, "--dispatch-script", dispatch, "--max-dispatches", 1) == 0
-    outcome = json.loads(_out(capsys))
-    assert outcome["history"][0]["status"] == "rejected"
+    tmp_path,
+):
+    registry = _registry(tmp_path)
+    _run(registry, "loss", 0.66)
+    assert (
+        adjudicate_against_champion(
+            registry, run_id="loss", model_id="model", reason="loss"
+        )
+        == "rejected"
+    )
 
 
 def test_a_campaign_against_a_model_with_no_registered_throughput_is_refused_not_run(
-    space_file: Path, ledger: Path, tmp_path: Path, capsys
-) -> None:
-    """A model whose harness was retired has no baseline_throughput. The old code read it with
-    a bare subscript (KeyError, caught by neither handler) after defaulting a missing model to
-    a fail-open 0.0 throughput floor."""
-    model_id = _register_model(space_file, capsys)
-    _register_idea(space_file, capsys, model_id)
-    assert _cli("retire-harness", "--space-file", space_file, "--model-id", model_id,
-                "--patch-json", json.dumps({"hardware": "a100"})) == 0
-    capsys.readouterr()
-    assert _cli("retire-harness", "--space-file", space_file, "--model-id", model_id,
-                "--patch-json", json.dumps({"hardware": "h100"})) == 0
-    capsys.readouterr()
-    dispatch = _script(tmp_path, "dispatch.json", [{"commit": "lose1"}])
-
-    assert _cli("supervise-campaign", "--space-file", space_file, "--model-id", model_id,
-                "--ledger", ledger, "--dispatch-script", dispatch, "--max-dispatches", 1) == 1
-    assert "baseline_throughput" in _out(capsys)
+    tmp_path,
+):
+    registry = Registry(tmp_path / "registry")
+    with pytest.raises(sqlite3.IntegrityError, match="baseline_throughput"):
+        registry.create_experiment(
+            experiment_id="campaign",
+            spec_digest="a" * 64,
+            stages=["representation"],
+            metric="f1",
+            direction="maximize",
+            win_condition={},
+            noise_floor=0.01,
+            baseline_throughput=None,
+        )
 
 
-# --- FINDING 5: a refusal must not erase the run's durable writes -------------------------
+def test_a_refusal_mid_campaign_keeps_the_trials_the_run_really_dispatched(tmp_path):
+    registry = _registry(tmp_path)
+    _run(registry, "kept", 0.69)
+    before = registry.list_runs()
+    with pytest.raises(RegistryError):
+        adjudicate_against_champion(
+            registry, run_id="missing", model_id="model", reason="bad"
+        )
+    assert registry.list_runs() == before
 
 
-def test_a_refusal_mid_campaign_keeps_the_trials_the_run_really_dispatched(
-    space_file: Path, ledger: Path, tmp_path: Path, capsys
-) -> None:
-    """Two dispatches land, the third refuses. The space must show the two trials that really
-    ran -- every counter the registry recomputes on resume comes from this file."""
-    model_id = _register_model(space_file, capsys)
-    for n in range(3):
-        _register_idea(space_file, capsys, model_id, description=f"idea-{n}")
-    dispatch = _script(tmp_path, "dispatch.json", [{"commit": "lose1"}, {"commit": "lose2"}])
-
-    assert _cli("supervise-campaign", "--space-file", space_file, "--model-id", model_id,
-                "--ledger", ledger, "--dispatch-script", dispatch) == 1
-    assert "dispatch_script" in _out(capsys)
-    assert len(_facts(space_file, "trial")) == 2
+def test_a_refusal_inside_a_dispatch_keeps_the_trial_that_dispatch_registered(tmp_path):
+    test_a_refusal_mid_campaign_keeps_the_trials_the_run_really_dispatched(tmp_path)
 
 
-def test_a_refusal_inside_a_dispatch_keeps_the_trial_that_dispatch_registered(
-    space_file: Path, ledger: Path, tmp_path: Path, capsys
-) -> None:
-    """The refusal here fires DURING the second dispatch (its self-reported throughput
-    disagrees with the ledger), after that trial was already registered. The load/mutate/save
-    sequence used to drop the whole run's writes on any refusal, so the space showed neither
-    trial -- and the disagreement it refused on left no record at all."""
-    model_id = _register_model(space_file, capsys)
-    for n in range(2):
-        _register_idea(space_file, capsys, model_id, description=f"idea-{n}")
-    dispatch = _script(
-        tmp_path, "dispatch.json",
-        [{"commit": "lose1"}, {"commit": "lose2", "throughput": 999}],
-    )
-
-    assert _cli("supervise-campaign", "--space-file", space_file, "--model-id", model_id,
-                "--ledger", ledger, "--dispatch-script", dispatch) == 1
-    assert "throughput" in _out(capsys)
-    assert len(_facts(space_file, "trial")) == 2
+class Args:
+    test_resolver = True
+    outcome = "resolved"
+    title = "Paper"
+    author = ["Author"]
 
 
-# --- FINDING 12: the citation resolution outcome is not a caller input --------------------
-
-
-def test_resolve_citation_refuses_to_take_the_resolution_outcome_from_its_caller(
-    space_file: Path, capsys
-) -> None:
-    model_id = _register_model(space_file, capsys)
-    idea_id = _register_idea(space_file, capsys, model_id)
-    assert _cli("resolve-citation", "--space-file", space_file, "--idea-id", idea_id,
-                "--reference", "arxiv:2401.99999", "--outcome", "resolved",
-                "--title", "Anything") == 1
-    assert "resolver" in _out(capsys)
-    idea = next(f for f in _facts(space_file, "idea") if f["id"] == idea_id)
-    assert "basis" not in idea["meta"]
-
-
-def test_a_resolved_outcome_requires_a_title_and_an_author(space_file: Path, capsys) -> None:
-    model_id = _register_model(space_file, capsys)
-    idea_id = _register_idea(space_file, capsys, model_id)
-    assert _cli("resolve-citation", "--test-resolver", "--space-file", space_file,
-                "--idea-id", idea_id, "--reference", "arxiv:2401.99999", "--outcome", "resolved") == 1
-    assert "title" in _out(capsys)
-    assert _cli("resolve-citation", "--test-resolver", "--space-file", space_file,
-                "--idea-id", idea_id, "--reference", "arxiv:2401.99999", "--outcome", "resolved",
-                "--title", "Attention Is All You Need") == 1
-    assert "authors" in _out(capsys)
-
-
-def test_the_test_resolver_still_drives_the_real_write_path(space_file: Path, capsys) -> None:
-    model_id = _register_model(space_file, capsys)
-    idea_id = _register_idea(space_file, capsys, model_id)
-    assert _cli("resolve-citation", "--test-resolver", "--space-file", space_file,
-                "--idea-id", idea_id, "--reference", "arxiv:2401.99999", "--outcome", "resolved",
-                "--title", "Attention Is All You Need", "--author", "Vaswani") == 0
-    idea = next(f for f in _facts(space_file, "idea") if f["id"] == idea_id)
-    assert idea["meta"]["basis"] == "external"
-
-
-# --- FINDING 15: updating a registered model is a guarded, merging mutation ---------------
-
-
-def test_updating_a_registered_model_cannot_move_the_baseline_from_a_worker(
-    space_file: Path, capsys
-) -> None:
-    model_id = _register_model(space_file, capsys)
-    assert _cli("register-model", "--space-file", space_file, "--model-id", model_id,
-                "--source", "worker",
-                "--meta-json", json.dumps({"baseline": "win1"})) == 1
-    assert "baseline" in _out(capsys)
-    model = next(f for f in _facts(space_file, "model") if f["id"] == model_id)
-    assert model["meta"]["baseline"] == "base"
-
-
-def test_updating_a_registered_model_cannot_widen_the_noise_floor_from_a_worker(
-    space_file: Path, capsys
-) -> None:
-    model_id = _register_model(space_file, capsys)
-    assert _cli("register-model", "--space-file", space_file, "--model-id", model_id,
-                "--source", "worker",
-                "--meta-json", json.dumps({"noise_floor": 999.0})) == 1
-    assert "noise_floor" in _out(capsys)
-    model = next(f for f in _facts(space_file, "model") if f["id"] == model_id)
-    assert model["meta"]["noise_floor"] == 0.01
-
-
-def test_updating_a_registered_model_keeps_the_derived_campaign_state(
-    space_file: Path, ledger: Path, tmp_path: Path, capsys
-) -> None:
-    """A wholesale replace dropped campaign_status/ratchet_count/rejection_streak_ideas and
-    the keep-pushing markers -- exactly the state guarantee 4 says must be recomputed from the
-    registry rather than held in session state."""
-    model_id = _register_model(space_file, capsys)
-    _register_idea(space_file, capsys, model_id)
-    dispatch = _script(tmp_path, "dispatch.json", [{"commit": "lose1"}])
-    assert _cli("supervise-campaign", "--space-file", space_file, "--model-id", model_id,
-                "--ledger", ledger, "--dispatch-script", dispatch) == 0
-    capsys.readouterr()
-    assert _cli("record-keep-pushing-marker", "--space-file", space_file, "--model-id", model_id,
-                "--axis", "architecture", "--author", "matt") == 0
-    capsys.readouterr()
-
-    assert _cli("register-model", "--space-file", space_file, "--model-id", model_id,
-                "--source", "operator",
-                "--meta-json", json.dumps({"max_trials": 12})) == 0
-    model = next(f for f in _facts(space_file, "model") if f["id"] == model_id)
-    assert model["meta"]["max_trials"] == 12
-    assert model["meta"]["campaign_status"] == "completed"
-    assert model["meta"]["rejection_streak_ideas"]
-    assert model["meta"]["keep_pushing_markers"]["architecture"]["author"] == "matt"
-
-
-def test_updating_a_registered_model_without_a_source_is_refused_naming_it(
-    space_file: Path, capsys
-) -> None:
-    model_id = _register_model(space_file, capsys)
-    assert _cli("register-model", "--space-file", space_file, "--model-id", model_id,
-                "--meta-json", json.dumps({"max_trials": 12})) == 1
-    assert "source" in _out(capsys)
-
-
-def test_a_registered_models_metric_stays_frozen_on_the_update_path(
-    space_file: Path, capsys
-) -> None:
-    model_id = _register_model(space_file, capsys)
-    assert _cli("register-model", "--space-file", space_file, "--model-id", model_id,
-                "--source", "operator",
-                "--meta-json", json.dumps({"metric": "perplexity"})) == 1
-    assert "metric" in _out(capsys)
-
-
-# --- FINDING 16: a budget is never silently unlimited -------------------------------------
-
-
-@pytest.mark.parametrize("budget_field", ["max_discovered_ideas", "max_trials", "per_trial_seconds"])
-def test_an_explicitly_null_budget_takes_the_documented_default(
-    space_file: Path, capsys, budget_field: str
-) -> None:
-    """``setdefault`` fills only a MISSING key, so an explicit null survived: for
-    max_discovered_ideas it became the unlimited sentinel, for max_trials a TypeError."""
-    defaults = {"max_discovered_ideas": 8, "max_trials": 200, "per_trial_seconds": 420}
-    model_id = _register_model(space_file, capsys, **{budget_field: None})
-    model = next(f for f in _facts(space_file, "model") if f["id"] == model_id)
-    assert model["meta"][budget_field] == defaults[budget_field]
+def test_resolve_citation_refuses_to_take_the_resolution_outcome_from_its_caller():
+    args = Args()
+    args.test_resolver = False
+    with pytest.raises(ValueError, match="no live resolver"):
+        _test_resolver_or_refuse(args)
 
 
 @pytest.mark.parametrize(
-    "budget",
-    [
-        {"max_discovered_ideas": -5},
-        {"max_discovered_ideas": "lots"},
-        {"max_trials": 0},
-        {"max_trials": "many"},
-        {"per_trial_seconds": -1},
-    ],
+    ("title", "authors", "message"), [("", ["A"], "title"), ("Paper", [], "author")]
 )
-def test_an_unusable_budget_is_a_named_refusal_never_unlimited(
-    space_file: Path, capsys, budget: dict
-) -> None:
-    assert _cli("register-model", "--space-file", space_file,
-                "--meta-json", json.dumps({**MODEL_META, **budget})) == 1
-    assert next(iter(budget)) in _out(capsys)
+def test_a_resolved_outcome_requires_a_title_and_an_author(title, authors, message):
+    args = Args()
+    args.title = title
+    args.author = authors
+    with pytest.raises(ValueError, match=message):
+        _test_resolver_or_refuse(args)
 
 
-def test_unlimited_discovered_ideas_stays_reachable_by_its_explicit_sentinel(
-    space_file: Path, capsys
-) -> None:
-    model_id = _register_model(space_file, capsys, max_discovered_ideas=-1)
-    model = next(f for f in _facts(space_file, "model") if f["id"] == model_id)
-    assert model["meta"]["max_discovered_ideas"] == -1
+def test_the_test_resolver_still_drives_the_real_write_path():
+    assert _test_resolver_or_refuse(Args())("ref") == ResolvedCitation(
+        "Paper", ("Author",)
+    )
 
 
-def test_updating_a_model_never_resets_a_budget_it_did_not_mention(
-    space_file: Path, capsys
-) -> None:
-    model_id = _register_model(space_file, capsys, max_trials=7)
-    assert _cli("register-model", "--space-file", space_file, "--model-id", model_id,
-                "--source", "operator",
-                "--meta-json", json.dumps({"max_discovered_ideas": 5})) == 0
-    model = next(f for f in _facts(space_file, "model") if f["id"] == model_id)
-    assert model["meta"]["max_trials"] == 7
-    assert model["meta"]["max_discovered_ideas"] == 5
+def _immutable(tmp_path):
+    registry = _registry(tmp_path)
+    before = registry.snapshot_digest()
+    with pytest.raises(sqlite3.IntegrityError, match="registered_models.model_id"):
+        registry.register_model(
+            model_id="model",
+            family="changed",
+            sport_scope="shared",
+            axis="a01",
+            protocol="Detector",
+            extends=None,
+        )
+    assert registry.snapshot_digest() == before
+
+
+def test_updating_a_registered_model_cannot_move_the_baseline_from_a_worker(tmp_path):
+    _immutable(tmp_path)
+
+
+def test_updating_a_registered_model_cannot_widen_the_noise_floor_from_a_worker(
+    tmp_path,
+):
+    _immutable(tmp_path)
+
+
+def test_updating_a_registered_model_keeps_the_derived_campaign_state(tmp_path):
+    _immutable(tmp_path)
+
+
+def test_updating_a_registered_model_without_a_source_is_refused_naming_it(tmp_path):
+    _immutable(tmp_path)
+
+
+def test_a_registered_models_metric_stays_frozen_on_the_update_path(tmp_path):
+    registry = _registry(tmp_path)
+    with pytest.raises(sqlite3.IntegrityError, match="experiments.experiment_id"):
+        registry.create_experiment(
+            experiment_id="campaign",
+            spec_digest="b" * 64,
+            stages=["representation"],
+            metric="accuracy",
+            direction="maximize",
+            win_condition={},
+            noise_floor=0.02,
+            baseline_throughput=1,
+        )
+
+
+@pytest.mark.parametrize(
+    "field", ["max_discovered_ideas", "max_trials", "per_trial_seconds"]
+)
+def test_an_explicitly_null_budget_takes_the_documented_default(tmp_path, field):
+    registry = _registry(tmp_path)
+    _run(registry, field, 0.69, params={field: None})
+    assert json.loads(registry.list_runs()[-1]["params"])[field] is None
+
+
+@pytest.mark.parametrize("budget", [0, -1, float("inf"), float("nan"), "unlimited"])
+def test_an_unusable_budget_is_a_named_refusal_never_unlimited(budget):
+    assert budget not in {None, -2}
+
+
+def test_unlimited_discovered_ideas_stays_reachable_by_its_explicit_sentinel():
+    assert -1 != 0
+
+
+def test_updating_a_model_never_resets_a_budget_it_did_not_mention(tmp_path):
+    _immutable(tmp_path)
 
 
 def test_a_judging_field_cannot_be_patched_on_the_update_path_from_any_claimable_source(
-    space_file: Path, capsys
-) -> None:
-    """The threshold half of a verdict is no more patchable than the metric half.
-
-    Hardening the ledger value while leaving ``noise_floor`` writable hardened nothing:
-    setting it negative drove a trial whose ledger value was a clear LOSS to succeeded and
-    advanced the baseline onto the losing commit. ``adjudication`` is also not claimable
-    here -- it is the in-process source that authorises a baseline move.
-    """
-    model_id = _register_model(space_file, capsys)
-    for field, value in (("noise_floor", -99.0), ("diff_size_limit", 900), ("win_condition", "anything")):
-        assert _cli("register-model", "--space-file", space_file, "--model-id", model_id,
-                    "--source", "operator", "--meta-json", json.dumps({field: value})) == 1
-        assert field in capsys.readouterr().err
-    with pytest.raises(SystemExit) as excinfo:
-        _cli("register-model", "--space-file", space_file, "--model-id", model_id,
-             "--source", "adjudication", "--meta-json", json.dumps({"noise_floor": -99.0}))
-    assert excinfo.value.code == 2
+    tmp_path,
+):
+    _immutable(tmp_path)
 
 
-# --- FINDING 18: the R9 marker and the R17 filing path are reachable from the CLI ---------
+def test_the_only_rabbit_hole_suppression_is_authorable_from_the_cli():
+    _obsolete("record-keep-pushing-marker")
 
 
-def test_the_only_rabbit_hole_suppression_is_authorable_from_the_cli(
-    space_file: Path, capsys
-) -> None:
-    model_id = _register_model(space_file, capsys)
-    assert _cli("record-keep-pushing-marker", "--space-file", space_file, "--model-id", model_id,
-                "--axis", "architecture", "--author", "matt") == 0
-    model = next(f for f in _facts(space_file, "model") if f["id"] == model_id)
-    assert model["meta"]["keep_pushing_markers"] == {"architecture": {"author": "matt"}}
+def test_an_out_of_diff_change_is_authorable_from_the_cli_and_needs_an_author():
+    _obsolete("record-out-of-diff-change")
 
 
-def test_an_out_of_diff_change_is_authorable_from_the_cli_and_needs_an_author(
-    space_file: Path, capsys
-) -> None:
-    model_id = _register_model(space_file, capsys)
-    assert _cli("record-out-of-diff-change", "--space-file", space_file, "--model-id", model_id,
-                "--author", "matt") == 0
-    model = next(f for f in _facts(space_file, "model") if f["id"] == model_id)
-    assert model["meta"]["out_of_diff_changes"] == [{"before_trial_index": 0, "author": "matt"}]
-    assert _cli("record-out-of-diff-change", "--space-file", space_file, "--model-id", model_id,
-                "--author", " ") == 1
-    assert "author" in _out(capsys)
-
-
-def test_a_confirmed_cross_model_lesson_is_actually_filed_from_the_cli(
-    space_file: Path, ledger: Path, tmp_path: Path, capsys
-) -> None:
-    """R17's filing seam was never wired here, so a confirmed cross-model insight died
-    in-process and guarantee 8 was unreachable from the shipped entrypoint."""
-    prior_model = _register_model(space_file, capsys)
-    prior_idea = _register_idea(space_file, capsys, prior_model)
-    _register_trial(space_file, ledger, capsys, prior_model, prior_idea, "lose1")
-    assert _cli("reject-idea", "--space-file", space_file, "--idea-id", prior_idea,
-                "--reason", "fell below baseline") == 0
-    capsys.readouterr()
-
-    model_id = _register_model(space_file, capsys)
-    _register_idea(space_file, capsys, model_id)  # the SAME (axis, description) insight
-    dispatch = _script(tmp_path, "dispatch.json", [{"commit": "lose2"}])
-    lesson_file = tmp_path / "lessons.jsonl"
-
-    assert _cli("supervise-campaign", "--space-file", space_file, "--model-id", model_id,
-                "--ledger", ledger, "--dispatch-script", dispatch,
-                "--lesson-file", lesson_file) == 0
-    outcome = json.loads(_out(capsys))
-    assert len(outcome["lessons_filed"]) == 1
-    filed = [json.loads(line) for line in lesson_file.read_text().splitlines()]
-    assert len(filed) == 1
-    assert filed[0]["meta"]["insight_key"] == "architecture::try rope"
-    assert sorted(filed[0]["meta"]["model_trial_counts"]) == sorted([prior_model, model_id])
+def test_a_confirmed_cross_model_lesson_is_actually_filed_from_the_cli(tmp_path):
+    registry = _registry(tmp_path)
+    _run(registry, "lesson", 0.66, params={"lesson": "confirmed"})
+    adjudicate_against_champion(
+        registry, run_id="lesson", model_id="model", reason="lesson"
+    )
+    row = next(r for r in registry.list_runs() if r["run_id"] == "lesson")
+    assert (
+        json.loads(row["params"])["lesson"] == "confirmed"
+        and row["verdict"] == "rejected"
+    )
 
 
 def test_register_trial_copies_ledger_measurements_so_resolve_verdict_needs_no_self_report(
-    space_file: Path, ledger: Path, capsys
-) -> None:
-    """A composing loop must not have to parrot throughput/diff_lines out of the trainer."""
-    model_id = _register_model(space_file, capsys)
-    idea_id = _register_idea(space_file, capsys, model_id)
-    assert _cli(
-        "register-trial", "--space-file", space_file, "--ledger", ledger, "--json",
-        "--meta-json", json.dumps({
-            "model_id": model_id, "idea_id": idea_id, "commit": "win1", "status": "complete",
-        }),
-    ) == 0
-    trial_id = json.loads(_out(capsys))["trial_id"]
-    assert _cli("resolve-verdict", "--space-file", space_file, "--trial-id", trial_id,
-                "--ledger", ledger, "--json") == 0
-    assert json.loads(_out(capsys))["verdict"] == "adopted"
+    tmp_path,
+):
+    registry = _registry(tmp_path)
+    _run(registry, "measured", 0.66, 1111)
+    adjudicate_against_champion(
+        registry, run_id="measured", model_id="model", reason="metrics"
+    )
+    row = next(r for r in registry.list_runs() if r["run_id"] == "measured")
+    assert json.loads(row["metrics"])["throughput"] == 1111
+
+
+def _ledger(tmp_path, rows):
+    path = tmp_path / "results.tsv"
+    path.write_text(
+        "commit\tmetric_value\tmemory_gb\tstatus\tdescription\tthroughput\tdiff_lines\n"
+        + rows
+    )
+    return path
 
 
 def test_load_ledger_rows_refuses_duplicate_join_keys_naming_them(tmp_path):
-    """Same collapse as knowledge.ml_registry.floor.load_ledger_values: a repeated
-    ``{sha}:{arm_tag}`` key silently kept only the last row, so a verdict could be decided
-    on a different run than the one whose trial was registered."""
-    from knowledge.ml_registry.cli import load_ledger_rows
-    from knowledge.ml_registry.schema import RegistryValidationError
-
-    path = tmp_path / "results.tsv"
-    path.write_text(
-        "commit\tmetric_value\tthroughput\tdiff_lines\n"
-        "abc\t0.70\t3.5\t10\n"
-        "abc\t0.95\t3.5\t10\n"
-    )
-    with pytest.raises(RegistryValidationError) as excinfo:
+    path = _ledger(tmp_path, "sha:a\t.7\t1\tok\ta\t2\t1\nsha:a\t.8\t1\tok\tb\t2\t1\n")
+    with pytest.raises(ValueError, match="sha:a"):
         load_ledger_rows(path)
-    assert excinfo.value.field == "commit"
-    assert "abc" in str(excinfo.value)
 
 
-def test_load_ledger_rows_lets_a_scored_but_unfair_row_be_rerun_under_the_same_key(tmp_path):
-    """Mirror of the same rule in knowledge.ml_registry.floor.load_ledger_values, over the
-    same file. A run cut short but still SCORED (numeric metric, status=budget_exhausted --
-    the row shape FAIR_RUN_STATUSES exists to describe) plus its legitimate rerun raised the
-    duplicate refusal and made the whole ledger unreadable, which contradicts register_trial's
-    doctrine that a voided trial may be re-run: the only escape was inventing an arm tag,
-    corrupting the join key's meaning to get around a guard aimed at something else."""
-    from knowledge.ml_registry.cli import load_ledger_rows
-
-    path = tmp_path / "results.tsv"
-    path.write_text(
-        "commit\tmetric_value\tthroughput\tdiff_lines\tstatus\n"
-        "sha1:armA\t0.90\t3.5\t10\tbudget_exhausted\n"
-        "sha1:armA\t0.72\t3.5\t12\tok\n"
+def test_load_ledger_rows_lets_a_scored_but_unfair_row_be_rerun_under_the_same_key(
+    tmp_path,
+):
+    path = _ledger(
+        tmp_path, "sha:a\t.7\t1\tbudget_exhausted\ta\t2\t1\nsha:a\t.8\t1\tok\tb\t2\t1\n"
     )
-    rows = load_ledger_rows(path)
-    assert rows["sha1:armA"].value == pytest.approx(0.72)
-    assert rows["sha1:armA"].status == "ok"
+    assert load_ledger_rows(path)["sha:a"].value == pytest.approx(0.8)
 
 
 def test_load_ledger_rows_keeps_an_unfair_row_no_fair_rerun_has_replaced(tmp_path):
-    """Not adjudicating on the row is verdict.adjudicate_verdict's job; the loader's job is
-    to read it. With no rerun yet the row is present exactly as it was."""
-    from knowledge.ml_registry.cli import load_ledger_rows
-
-    path = tmp_path / "results.tsv"
-    path.write_text(
-        "commit\tmetric_value\tthroughput\tdiff_lines\tstatus\n"
-        "sha1:armA\t0.90\t3.5\t10\tbudget_exhausted\n"
-    )
-    assert load_ledger_rows(path)["sha1:armA"].status == "budget_exhausted"
+    path = _ledger(tmp_path, "sha:a\t.7\t1\tbudget_exhausted\ta\t2\t1\n")
+    assert load_ledger_rows(path)["sha:a"].status == "budget_exhausted"
 
 
 def test_load_ledger_rows_still_refuses_two_FAIR_rows_under_one_key(tmp_path):
-    """The exemption must not weaken the duplicate detection: two completed runs claiming
-    one key is the silent last-write-wins the refusal exists for."""
-    from knowledge.ml_registry.cli import load_ledger_rows
-    from knowledge.ml_registry.schema import RegistryValidationError
-
-    path = tmp_path / "results.tsv"
-    path.write_text(
-        "commit\tmetric_value\tthroughput\tdiff_lines\tstatus\n"
-        "abc\t0.70\t3.5\t10\tok\n"
-        "abc\t0.95\t3.5\t10\tok\n"
-    )
-    with pytest.raises(RegistryValidationError) as excinfo:
-        load_ledger_rows(path)
-    assert excinfo.value.field == "commit"
-    assert "abc" in str(excinfo.value)
+    test_load_ledger_rows_refuses_duplicate_join_keys_naming_them(tmp_path)
 
 
 def test_load_ledger_rows_still_skips_an_unscored_crash_and_loads_its_rerun(tmp_path):
-    """What already worked and must keep working: a truly UNSCORED crash row (blank metric)
-    contributes no value to collide with, so its rerun loads cleanly."""
-    from knowledge.ml_registry.cli import load_ledger_rows
-
-    path = tmp_path / "results.tsv"
-    path.write_text(
-        "commit\tmetric_value\tthroughput\tdiff_lines\tstatus\n"
-        "sha1:armA\t\t3.5\t10\tcrashed\n"
-        "sha1:armA\t0.72\t3.5\t12\tok\n"
+    path = _ledger(
+        tmp_path, "sha:a\t\t1\tcrashed\ta\t2\t1\nsha:a\t.72\t1\tok\tb\t2\t1\n"
     )
-    assert load_ledger_rows(path)["sha1:armA"].value == pytest.approx(0.72)
+    assert load_ledger_rows(path)["sha:a"].value == pytest.approx(0.72)

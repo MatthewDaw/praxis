@@ -165,8 +165,13 @@ class RegistryFinalizer:
         return version_row, run, artifact, head_sha
 
     def _upstream_payload(self, model_id: str, version: int) -> list[dict[str, Any]]:
+        # A model's prior champion is adoption ancestry, not an external readiness
+        # dependency. Requiring it to remain the production alias after this atomic move
+        # would make verification of every version after v1 fail by construction.
         links = sorted((row for row in self.registry.rows("lineage")
-                        if row["child_model_id"] == model_id and row["child_version"] == version),
+                        if row["child_model_id"] == model_id and row["child_version"] == version
+                        and not (row["parent_model_id"] == model_id
+                                 and row["kind"] == "derived_from")),
                        key=lambda row: (row["parent_model_id"], row["parent_version"], row["kind"]))
         versions = self.registry.rows("model_versions")
         aliases = self.registry.rows("aliases")

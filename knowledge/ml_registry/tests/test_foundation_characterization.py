@@ -161,10 +161,6 @@ def test_fixture_o_results_tsv_is_a_runs_export_not_an_input(tmp_path):
     assert registry.imports_results_tsv is False
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="public CLI help still exposes superseded artifact/promotion/convergence vocabulary",
-)
 def test_public_cli_help_uses_standard_registry_vocabulary():
     outputs = []
     for module in (

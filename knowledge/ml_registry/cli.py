@@ -1,32 +1,14 @@
-"""Runnable entrypoint for the af-ml-research registry (R1 schema/guards, R2 write path,
-R3 idea lifecycle, R4 query surface, R5 cross-project model linkage, R6 ideation axis sweep,
-R10 trial verdict).
+"""Monolithic command line for the canonical standard registry and IDEA bridge.
 
-``python -m knowledge.ml_registry.cli <subcommand> ...`` -- exit 0 on acceptance, 1 on a
-named registry refusal, 2 on malformed input. This is the real entrypoint later tickets
-call into for their own decisions; it also gives the registry a runnable surface an
-automated check can invoke rather than merely import.
+Live experiment, run, artifact, registered-model, model-version, lineage, alias, status,
+and finalization commands open :class:`storage.Registry` through ``--registry-root``.
+``RegistrySpace`` remains permanently authoritative for IDEA inventory and adjudication
+metadata; those bridge commands alone use ``--space-file``. Historical tabular evidence is
+accepted only by the explicitly named import commands and is emitted only by ``export-runs``.
 
-The R2 ``register-*``/``readback`` subcommands persist a :class:`RegistrySpace` as JSON
-at ``--space-file`` across separate process invocations, so a CLI-driven test can
-register a model, then an idea against it, then a trial against that idea, then read
-all three back -- the same sequence the write API supports in-process.
-
-THE LEDGER IS THE ONLY ACCEPTANCE SIGNAL. Every subcommand that decides something about a
-trial (``adjudicate-trial``, ``resolve-verdict``, ``supervise-campaign``) reads the
-autoresearch loop's real ``results.tsv`` via ``--ledger`` and joins the trial's own commit
-against it (:func:`load_ledger_rows`). No subcommand accepts a caller-supplied JSON blob
-standing in for that file, and none SYNTHESIZES a ledger column it cannot read: a ledger
-carrying no ``throughput``/``diff_lines`` column is REFUSED naming the missing column,
-because inventing agreeing values for them silently disables the throughput void and the
-net-line rejection. The same rule governs citations: ``resolve-citation`` will not take the
-resolution outcome from its caller outside an explicit ``--test-resolver``.
-
-DURABILITY. A mutating subcommand saves the space it mutated even when the run ends in a
-refusal (:func:`_load_mutate_save` saves in a ``finally``), and ``supervise-campaign``
-additionally checkpoints between dispatches, so a campaign that refuses on its 41st
-dispatch keeps the 40 trials it really ran. Every counter the registry reports is
-recomputed from that durable substrate, which only works if the substrate survives.
+The pre-cutover parser and handlers remain private in this module until their underlying
+legacy modules can be removed in a later witnessed deletion. They are intentionally not
+reachable through the public parser.
 """
 
 from __future__ import annotations
@@ -34,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -530,7 +513,7 @@ def _test_resolver_or_refuse(args: argparse.Namespace) -> Resolver:
     return _fixed_outcome_resolver(args.outcome, args.title, tuple(args.author))
 
 
-def main(argv: list[str] | None = None) -> int:
+def _legacy_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="knowledge.ml_registry.cli")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1411,6 +1394,248 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     return 2  # pragma: no cover - argparse's `required=True` makes this unreachable
+
+
+_IDEA_BRIDGE_COMMANDS = frozenset({
+    "register-idea", "resolve-citation", "claim-idea", "heartbeat-idea-claim",
+    "adopt-idea", "park-idea", "reject-idea", "invalidate-adoption", "reopen-idea",
+    "backlog", "rejection-memory", "retriable-ideas", "seed-campaign", "readback",
+})
+
+
+def _object(value: str, *, noun: str) -> dict[str, object]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{noun} must be valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{noun} must be a JSON object")
+    return parsed
+
+
+def _semantic_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="knowledge.ml_registry.cli",
+        description=("Canonical experiment/run/artifact/registered-model/model-version/alias registry. "
+                     "Live registry commands use --registry-root; IDEA and adjudication inventory "
+                     "remain in RegistrySpace and use --space-file."),
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    def registry_command(name: str, help_text: str) -> argparse.ArgumentParser:
+        command = sub.add_parser(name, help=help_text)
+        command.add_argument("--registry-root", required=True,
+                             help="root of the canonical SQLite registry, blob store, and event log")
+        return command
+
+    experiment = registry_command("create-experiment", "create an immutable experiment")
+    experiment.add_argument("--experiment-json", required=True)
+    run = registry_command("create-run", "create a trainer-owned running run")
+    run.add_argument("--run-json", required=True)
+    complete = registry_command("complete-run", "record trainer measurements for a run")
+    complete.add_argument("--run-id", required=True)
+    complete.add_argument("--metrics-json", required=True)
+    artifact = registry_command("create-artifact", "store an immutable run artifact")
+    artifact.add_argument("--run-id", required=True)
+    artifact.add_argument("--kind", required=True,
+                          choices=["checkpoint", "oof_predictions", "split_manifest",
+                                   "dataset_manifest", "report"])
+    artifact.add_argument("--content-file", required=True)
+    artifact.add_argument("--schema-version", required=True)
+    model = registry_command("register-model", "create an immutable registered model")
+    model.add_argument("--model-json", required=True)
+    lineage = registry_command("create-lineage", "link model versions in the artifact lineage")
+    lineage.add_argument("--lineage-json", required=True)
+    adjudicate = registry_command(
+        "adjudicate-run", "derive and record a run verdict against the champion alias")
+    adjudicate.add_argument("--run-id", required=True)
+    adjudicate.add_argument("--model-id", required=True)
+    adjudicate.add_argument("--reason", required=True)
+    adjudicate.add_argument("--promotion-json")
+
+    status = registry_command(
+        "registry-status", "show experiments, runs, artifacts, registered models, model versions, and aliases")
+    status.add_argument("--experiment-id")
+    status.add_argument("--model-id")
+    status.add_argument("--json", action="store_true")
+
+    finalize = registry_command(
+        "finalize", "verify a champion model version and atomically move its production alias")
+    finalize.add_argument("--space-file", required=True,
+                          help="RegistrySpace IDEA inventory used only to build the adjudication view")
+    finalize.add_argument("--experiment-id", required=True)
+    finalize.add_argument("--model-id", required=True)
+    finalize.add_argument("--model-fact-id", required=True)
+    finalize.add_argument("--version", required=True, type=int)
+    finalize.add_argument("--reason", required=True)
+    finalize.add_argument("--compatibility-command-json", required=True,
+                          help="JSON argv; receives artifact path and HEAD sha as its final two arguments")
+    finalize.add_argument("--min-measured", type=int, default=3)
+
+    archive = registry_command(
+        "import-historical-archive", "explicitly import one sealed pre-registry archive")
+    archive.add_argument("--archive", required=True)
+    archive.add_argument("--archive-root")
+    archive.add_argument("--mappings-json", default="{}")
+    freeze = registry_command(
+        "import-historical-evidence-freeze", "explicitly import one noncanonical evidence freeze")
+    freeze.add_argument("--freeze", required=True)
+    freeze.add_argument("--archive-root")
+    ledger = registry_command(
+        "import-historical-ledger", "explicitly import a sealed historical results export")
+    ledger.add_argument("--input", required=True)
+    ledger.add_argument("--experiment-id", required=True)
+    ledger.add_argument("--spec-digest", required=True)
+    ledger.add_argument("--metric", required=True)
+    ledger.add_argument("--direction", required=True, choices=["maximize", "minimize"])
+    export = registry_command(
+        "export-runs", "export canonical runs in the historical tabular interchange format")
+    export.add_argument("--experiment-id", required=True)
+    export.add_argument("--output")
+
+    for name in sorted(_IDEA_BRIDGE_COMMANDS):
+        bridge = sub.add_parser(
+            name, add_help=False,
+            help="RegistrySpace IDEA/adjudication bridge; use --space-file (run COMMAND --help for details)",
+        )
+        bridge.add_argument("--space-file", required=False, help=argparse.SUPPRESS)
+    return parser
+
+
+def _registry_status(registry, args: argparse.Namespace) -> dict[str, object]:
+    experiments = registry.rows("experiments")
+    runs = registry.rows("runs")
+    models = registry.rows("registered_models")
+    versions = registry.rows("model_versions")
+    aliases = registry.rows("aliases")
+    if args.experiment_id:
+        experiments = [row for row in experiments if row["experiment_id"] == args.experiment_id]
+        runs = [row for row in runs if row["experiment_id"] == args.experiment_id]
+    if args.model_id:
+        models = [row for row in models if row["model_id"] == args.model_id]
+        versions = [row for row in versions if row["model_id"] == args.model_id]
+        aliases = [row for row in aliases if row["model_id"] == args.model_id]
+    run_ids = {row["run_id"] for row in runs}
+    artifacts = [row for row in registry.rows("artifacts") if not args.experiment_id
+                 or row["run_id"] in run_ids]
+    return {"experiments": experiments, "runs": runs, "artifacts": artifacts,
+            "registered_models": models, "model_versions": versions, "aliases": aliases}
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    parser = _semantic_parser()
+    args, remainder = parser.parse_known_args(argv)
+    if args.command in _IDEA_BRIDGE_COMMANDS:
+        # RegistrySpace remains the permanent IDEA/adjudication inventory.  Preserve its
+        # mature command contracts without allowing any legacy live-registry command through.
+        return _legacy_main(argv)
+    if remainder:
+        parser.error(f"unrecognized arguments: {' '.join(remainder)}")
+    try:
+        from knowledge.ml_registry.storage import Registry
+        registry = Registry(args.registry_root)
+        if args.command == "create-experiment":
+            registry.create_experiment(**_object(args.experiment_json, noun="experiment-json"))
+        elif args.command == "create-run":
+            registry.create_run(**_object(args.run_json, noun="run-json"))
+        elif args.command == "complete-run":
+            from knowledge.ml_registry.services.registry_runs import complete_run
+            complete_run(registry, run_id=args.run_id,
+                         metrics=_object(args.metrics_json, noun="metrics-json"))
+        elif args.command == "create-artifact":
+            artifact_id = registry.create_artifact(
+                run_id=args.run_id, kind=args.kind, content=Path(args.content_file).read_bytes(),
+                schema_version=args.schema_version,
+            )
+            print(json.dumps({"artifact_id": artifact_id}))
+            return 0
+        elif args.command == "register-model":
+            registry.register_model(**_object(args.model_json, noun="model-json"))
+        elif args.command == "create-lineage":
+            registry.create_lineage(**_object(args.lineage_json, noun="lineage-json"))
+        elif args.command == "adjudicate-run":
+            from knowledge.ml_registry.services.registry_adjudication import adjudicate_against_champion
+            promotion = (_object(args.promotion_json, noun="promotion-json")
+                         if args.promotion_json else None)
+            verdict = adjudicate_against_champion(
+                registry, run_id=args.run_id, model_id=args.model_id,
+                reason=args.reason, promotion=promotion,
+            )
+            print(json.dumps({"run_id": args.run_id, "verdict": verdict}))
+            return 0
+        elif args.command == "registry-status":
+            payload = _registry_status(registry, args)
+            if args.json:
+                print(json.dumps(payload, sort_keys=True))
+            else:
+                print(f"experiments: {len(payload['experiments'])}")
+                print(f"runs: {len(payload['runs'])}")
+                print(f"artifacts: {len(payload['artifacts'])}")
+                print(f"registered models: {len(payload['registered_models'])}")
+                print(f"model versions: {len(payload['model_versions'])}")
+                for alias in payload["aliases"]:
+                    print(f"alias {alias['model_id']}:{alias['alias']} -> version {alias['version']}")
+            return 0
+        elif args.command == "finalize":
+            from knowledge.ml_registry.domain import CampaignBinding
+            from knowledge.ml_registry.services import build_campaign_view
+            from knowledge.ml_registry.services.registry_finalize import RegistryFinalizer
+            space = RegistrySpace.load(Path(args.space_file))
+            command = json.loads(args.compatibility_command_json)
+            if not isinstance(command, list) or not command or not all(isinstance(v, str) for v in command):
+                raise ValueError("compatibility-command-json must be a non-empty JSON argv list")
+            def compatibility_loader(_version, artifact_path, head_sha):
+                return subprocess.run(
+                    [*command, str(artifact_path), head_sha], check=False,
+                ).returncode == 0
+            view = build_campaign_view(
+                space, registry,
+                CampaignBinding(args.experiment_id, args.model_id, args.model_fact_id),
+            )
+            result = RegistryFinalizer(
+                registry, compatibility_loader=compatibility_loader,
+                min_measured=args.min_measured,
+            ).finalize(view, version=args.version, reason=args.reason)
+            print(json.dumps({"model_id": result.model_version.model_id,
+                              "version": result.model_version.version,
+                              "alias": result.production_alias.alias}))
+            return 0
+        elif args.command == "import-historical-archive":
+            from knowledge.ml_registry.storage.importers import HistoricalStoreImporter
+            result = HistoricalStoreImporter(registry, archive_root=args.archive_root).import_archive(
+                args.archive, mappings=_object(args.mappings_json, noun="mappings-json"))
+            print(json.dumps(result.__dict__, sort_keys=True))
+            return 0
+        elif args.command == "import-historical-evidence-freeze":
+            from knowledge.ml_registry.storage.importers import HistoricalStoreImporter
+            result = HistoricalStoreImporter(registry, archive_root=args.archive_root).import_evidence_freeze(
+                args.freeze)
+            print(json.dumps(result.__dict__, sort_keys=True))
+            return 0
+        elif args.command == "import-historical-ledger":
+            from knowledge.ml_registry.storage.importers import HistoricalLedgerImporter
+            imported_runs = HistoricalLedgerImporter(registry).import_ledger(
+                Path(args.input).read_bytes(), experiment_id=args.experiment_id,
+                spec_digest=args.spec_digest, metric=args.metric, direction=args.direction,
+            )
+            print(json.dumps({"imported_runs": imported_runs}, sort_keys=True))
+            return 0
+        elif args.command == "export-runs":
+            from knowledge.ml_registry.contracts import RunsExport
+            content = RunsExport(registry).render(experiment_id=args.experiment_id)
+            if args.output:
+                Path(args.output).write_bytes(content)
+            else:
+                sys.stdout.buffer.write(content)
+            return 0
+        else:  # pragma: no cover
+            return 2
+        print("ok")
+        return 0
+    except (RegistryValidationError, ValueError, OSError) as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
