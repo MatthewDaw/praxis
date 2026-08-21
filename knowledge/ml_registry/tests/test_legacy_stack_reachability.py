@@ -53,7 +53,10 @@ ARTIFACT_STORE_BEHAVIOR_MAP = {
     "test_nonfinite_event_time_is_refused_before_history_is_written":
         "test_event_log_refuses_nonfinite_or_boolean_time_before_writing",
 }
-EXPECTED_ABSENT_CALLERS = {"knowledge/ml_registry/tests/test_finalize.py"}
+EXPECTED_ABSENT_CALLERS = {
+    "knowledge/ml_registry/tests/test_artifact_store.py",
+    "knowledge/ml_registry/tests/test_finalize.py",
+}
 LEGACY_MODULES = {
     "knowledge.ml_registry.services.finalize": "knowledge/ml_registry/services/finalize.py",
 }
