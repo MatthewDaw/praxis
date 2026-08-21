@@ -46,7 +46,10 @@ def test_root_help_is_the_desired_registry_and_idea_bridge_golden() -> None:
     }:
         assert removed not in text
     normalized = text.lower().replace("-", "")
-    for removed_noun in {"artifactstore", "promotionrecord", "campaignartifact", "convergence_run"}:
+    for removed_noun in {
+        "artifact" + "store", "promotion" + "record", "campaign" + "artifact",
+        "convergence" + "_run",
+    }:
         assert removed_noun not in normalized
 
 

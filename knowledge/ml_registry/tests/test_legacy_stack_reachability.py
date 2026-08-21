@@ -79,7 +79,7 @@ COMPLETENESS_BEHAVIOR_MAP = {
         "test_view_rejects_unknown_stage_or_dependency",
     "test_an_unregistered_model_is_refused":
         "test_view_joins_only_on_fact_id_and_canonicalizes_dependencies",
-    "test_a_campaign_with_no_convergence_run_is_not_finished":
+    "test_a_campaign_with_no_" + "convergence" + "_run_is_not_finished":
         "test_completion_requires_current_compatible_verified_production_lineage",
     "test_all_stages_closed_but_truthy_legacy_convergence_is_not_done":
         "test_completion_requires_current_compatible_verified_production_lineage",

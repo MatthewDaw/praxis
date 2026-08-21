@@ -302,8 +302,8 @@ def _check_complete(rep: Report, praxis: Path, space: Path, model_id: str,
         missing = [s for s in stages if s not in open_stages and s not in never]
         if missing:
             problems.append("0 trials but no stage_open for " + ",".join(missing))
-        if "no_convergence_run" not in kinds:
-            problems.append("0 trials but no no_convergence_run reason")
+        if "no_production_alias" not in kinds:
+            problems.append("0 trials but no no_production_alias reason")
 
     rep.check(
         "COMPLETE", not problems,
@@ -547,7 +547,7 @@ def main(argv: list[str] | None = None) -> int:
     praxis = Path(args.praxis) if args.praxis else Path(__file__).resolve().parents[2]
     repo = Path(args.repo) if args.repo else _guess_repo()
     if repo is None or not repo.is_dir():
-        print(f"PREFLIGHT ALL RESULT NOT_READY exit=2 detail=sports_analysis_repo_not_found")
+        print("PREFLIGHT ALL RESULT NOT_READY exit=2 detail=sports_analysis_repo_not_found")
         print("could not locate the sports_analysis checkout; pass --repo", file=sys.stderr)
         return USAGE
 

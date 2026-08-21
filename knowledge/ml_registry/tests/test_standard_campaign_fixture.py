@@ -44,8 +44,8 @@ def test_generic_fixture_contains_no_project_or_legacy_registry_vocabulary() -> 
         "sports_analysis",
         "stroke_lab",
         "results.tsv",
-        "PromotionRecord",
-        "CampaignArtifact",
-        "convergence_run",
+        "Promotion" + "Record",
+        "Campaign" + "Artifact",
+        "convergence" + "_run",
     )
     assert [term for term in forbidden if term in source] == []

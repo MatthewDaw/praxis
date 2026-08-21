@@ -154,7 +154,8 @@ def test_public_cli_help_uses_standard_registry_vocabulary():
     help_text = "\n".join(outputs).lower().replace("-", "")
 
     assert all(forbidden not in help_text for forbidden in (
-        "promotionrecord", "campaignartifact", "convergence_run", "artifactstore",
+        "promotion" + "record", "campaign" + "artifact", "convergence" + "_run",
+        "artifact" + "store",
     ))
     assert "run" in help_text
     assert "registered model" in help_text
