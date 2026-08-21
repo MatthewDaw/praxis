@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -11,7 +12,7 @@ import pytest
 
 from knowledge.ml_registry import HistoricalLedgerImporter, Registry, RunsExport
 from knowledge.ml_registry.contracts import CodeRef, ContractError, Partition
-from knowledge.ml_registry.storage import BlobError, EventLogError, RegistryError
+from knowledge.ml_registry.storage import BlobError, EventLog, EventLogError, RegistryError
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -174,6 +175,22 @@ def test_event_before_projection_recovers_after_crash(tmp_path: Path) -> None:
     recovered = Registry(tmp_path)
     assert recovered.rows("experiments")[0]["experiment_id"] == "campaign"
     assert len(recovered.rows("events")) == 1
+
+
+@pytest.mark.parametrize("at", [math.nan, math.inf, -math.inf, True])
+def test_event_log_refuses_nonfinite_or_boolean_time_before_writing(tmp_path: Path, at) -> None:
+    log = EventLog(tmp_path / "events.jsonl")
+    with pytest.raises(EventLogError, match="time must be finite"):
+        log.append("artifact_created", {"artifact_id": "a" * 64}, at=at)
+    assert not log.path.exists()
+
+
+def test_preexisting_finite_event_log_replays_after_time_validation_upgrade(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    log = EventLog(path)
+    written = log.append("artifact_created", {"artifact_id": "a" * 64}, at=1)
+    reopened = EventLog(path).read()
+    assert reopened == (written,)
 
 
 def test_refused_constraint_does_not_poison_durable_events(tmp_path: Path) -> None:

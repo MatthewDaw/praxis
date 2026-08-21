@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Mapping
@@ -63,12 +64,17 @@ class EventLog:
                 raise EventLogError(f"invalid event payload at line {number}")
             if raw["schema_version"] != 1:
                 raise EventLogError(f"unsupported event schema_version at line {number}")
+            if isinstance(raw["at"], bool) or not isinstance(raw["at"], (int, float)) \
+                    or not math.isfinite(float(raw["at"])):
+                raise EventLogError(f"event time must be finite at line {number}")
             result.append(RegistryEvent(1, number, raw["event_type"], raw["payload"], float(raw["at"]),
                                         previous, digest))
             previous = digest
         return tuple(result)
 
     def append(self, event_type: str, payload: Mapping[str, Any], *, at: float) -> RegistryEvent:
+        if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(float(at)):
+            raise EventLogError("event time must be finite")
         events = self.read()
         body = {"schema_version": 1, "sequence": len(events) + 1, "event_type": event_type, "payload": dict(payload),
                 "at": float(at), "previous_hash": events[-1].event_hash if events else None}
