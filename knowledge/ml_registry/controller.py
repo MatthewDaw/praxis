@@ -17,6 +17,7 @@ from typing import Any, Mapping, Protocol, Sequence
 from knowledge.ml_registry.contracts import LaunchIntent
 from knowledge.ml_registry.portfolio import CampaignStatus, Portfolio, PortfolioValidationError
 from knowledge.ml_registry.runtime import LeaseIntentCoordinator, ResourceConflict, StopReport
+from knowledge.ml_registry.runtime.progress import ProgressSnapshot, read_latest_progress
 from knowledge.ml_registry.scheduler import JobSpec, JobState, ResourceProfile, ScheduleDecision, schedule
 from knowledge.ml_registry.services.readiness import explain_readiness
 from knowledge.ml_registry.storage.registry import Registry
@@ -35,6 +36,7 @@ class PollResult:
     artifact: Mapping[str, Any] | None = None
     message: str | None = None
     checkpoint_uri: str | None = None
+    progress: ProgressSnapshot | None = None
 
 
 class AsyncBackend(Protocol):
@@ -67,12 +69,23 @@ class TickResult:
 class SlotStatus:
     campaign_id: str | None
     reason_code: str
+    stage: str | None = None
+    idea_id: str | None = None
+    run_id: str | None = None
+    latest_metric: float | None = None
+    verdict: str | None = None
+    progress: ProgressSnapshot | None = None
+    heartbeat_age_seconds: float | None = None
+    lease: Mapping[str, Any] | None = None
+    retry_state: str | None = None
+    blocker: str | None = None
 
 
 @dataclass(frozen=True)
 class ControllerStatus:
     slots: tuple[SlotStatus, ...]
     ready_frontier: tuple[str, ...]
+    dependency_waits: Mapping[str, str] | None = None
 
 
 def _atomic(path: Path, payload: Mapping[str, Any]) -> None:
@@ -175,6 +188,10 @@ class PortfolioController:
                 if not isinstance(raw, dict) or not isinstance(raw.get("records", {}), dict):
                     raise ControllerError("controller state must be an object containing records")
                 self.records = {cid: DispatchRecord(**record) for cid, record in raw.get("records", {}).items()}
+                blocked = raw.get("blocked", {})
+                if isinstance(blocked, dict) and all(isinstance(key, str) and isinstance(value, str)
+                                                     for key, value in blocked.items()):
+                    self._last_blocked = dict(blocked)
             except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
                 raise ControllerError(f"invalid controller state: {exc}") from exc
             for record in self.records.values():
@@ -190,6 +207,7 @@ class PortfolioController:
     def _persist(self, status: str) -> None:
         _atomic(self.state_path, {
             "records": {cid: asdict(record) for cid, record in sorted(self.records.items())},
+            "blocked": dict(sorted(self._last_blocked.items())),
             "status": status, "updated_at": self.clock(),
         })
         if self.portfolio.path is not None:
@@ -211,6 +229,7 @@ class PortfolioController:
 
     def tick(self) -> TickResult:
         now = self.clock()
+        self._last_blocked = {}
         for cid, record in sorted(self.records.items()):
             if record.state != "running":
                 continue
@@ -317,15 +336,35 @@ class PortfolioController:
             status = "waiting"
         else:
             status = "blocked"
-        self._persist(status)
         blocked = dict(decision.blocked)
         blocked.update(self._last_blocked)
+        self._last_blocked = blocked
+        self._persist(status)
         return TickResult(status, tuple(started), running, completed, blocked)
 
     def status(self) -> ControllerStatus:
         running = tuple(sorted(cid for cid, record in self.records.items()
                                if record.state == "running"))
-        slots = [SlotStatus(cid, "occupied") for cid in running[:self.max_active]]
+        slots = []
+        for cid in running[:self.max_active]:
+            record = self.records[cid]
+            try:
+                polled = self.backend.poll(record.backend_job_id)
+            except Exception:
+                polled = PollResult("running")
+            lease = None
+            if self.coordinator is not None and cid in self.coordinator.leases:
+                lease = self.coordinator.leases[cid].to_mapping()
+            heartbeat_age = None
+            heartbeat_reader = getattr(self.backend, "heartbeat_age", None)
+            if heartbeat_reader is not None:
+                heartbeat_age = heartbeat_reader(record.backend_job_id)
+            slots.append(SlotStatus(
+                cid, "occupied", progress=polled.progress,
+                heartbeat_age_seconds=heartbeat_age, lease=lease,
+                retry_state=(None if record.attempt <= 1 else f"attempt {record.attempt}"),
+                blocker=record.message,
+            ))
         reasons = iter(self._last_blocked.values())
         while len(slots) < self.max_active:
             slots.append(SlotStatus(None, next(reasons, "no_ready_campaign")))
@@ -333,13 +372,14 @@ class PortfolioController:
                              if self.records.get(str(spec["id"])) is None
                              or self.records[str(spec["id"])].state
                              not in {"running", "completed"}))
-        return ControllerStatus(tuple(slots), ready)
+        return ControllerStatus(tuple(slots), ready, dict(self._last_blocked))
 
     def stop(self, *, mode: str, sleeper=time.sleep) -> StopReport:
         if mode not in {"force", "drain"}:
             raise ControllerError("stop mode must be force or drain")
         self.admission_stopped = True
-        active = {cid: record for cid, record in self.records.items() if record.state == "running"}
+        active = {cid: record for cid, record in self.records.items()
+                  if record.state in {"dispatching", "running"}}
         graceful: set[str] = set()
         forced: set[str] = set()
         retryable: set[str] = set()
@@ -351,10 +391,17 @@ class PortfolioController:
                     if result.state == "running":
                         continue
                     if result.state == "completed":
-                        if self.completion_verifier is not None:
-                            self.completion_verifier(cid, result)
-                        record.state = "completed"
-                        graceful.add(cid)
+                        try:
+                            artifact = (self.completion_verifier(cid, result)
+                                        if self.completion_verifier is not None else result.artifact)
+                            if artifact:
+                                self._register_artifact(cid, artifact)
+                            record.state = "completed"
+                            graceful.add(cid)
+                        except (ControllerError, PortfolioValidationError, TypeError, ValueError) as exc:
+                            record.state = "failed"
+                            record.message = f"artifact refused: {exc}"
+                            retryable.add(cid)
                     else:
                         record.state = "failed"
                         retryable.add(cid)
@@ -474,6 +521,17 @@ class ExecutorProcessBackend:
                 os.killpg(pgid, 0)
             except ProcessLookupError:
                 return True
+            except PermissionError:
+                # Darwin can return EPERM briefly for a killed group whose leader
+                # is a zombie awaiting reaping. A zombie owns no executable child;
+                # verify that state instead of reporting an orphan.
+                checked = subprocess.run(
+                    ["ps", "-o", "stat=", "-p", str(process.get("pid", pgid))],
+                    capture_output=True, text=True, check=False,
+                )
+                states = checked.stdout.split()
+                if checked.returncode != 0 or not states or all(state.startswith("Z") for state in states):
+                    return True
             time.sleep(0.02)
         return False
 
@@ -508,7 +566,21 @@ class ExecutorProcessBackend:
                 return PollResult("failed", message="executor process died while state was running")
         elif backend_job_id in self._processes:
             self._processes[backend_job_id].wait(timeout=1)
+        progress = None
+        stdout_log = state.get("stdout_log")
+        if isinstance(stdout_log, str):
+            progress = read_latest_progress(stdout_log)
         return PollResult(
             str(state["state"]), artifact=state.get("artifact"), message=state.get("message"),
-            checkpoint_uri=state.get("checkpoint_uri"),
+            checkpoint_uri=state.get("checkpoint_uri"), progress=progress,
         )
+
+    def heartbeat_age(self, backend_job_id: str) -> float | None:
+        try:
+            state = json.loads((self.root / f"{backend_job_id}.state.json").read_text())
+            heartbeat = state.get("heartbeat_at")
+            if isinstance(heartbeat, (int, float)) and not isinstance(heartbeat, bool):
+                return max(0.0, time.time() - float(heartbeat))
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+        return None

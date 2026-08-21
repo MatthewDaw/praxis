@@ -36,7 +36,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         job = _job(args.job)
         allowlist = set(args.allow_env) if args.allow_env else None
-        backend = create_backend(args.backend, log_dir=args.log_dir, env_allowlist=allowlist)
+        # ExecutorProcessBackend already made this wrapper the owned process-group
+        # leader.  The actual job must remain in that group so force-stop cannot
+        # leave a nested child orphaned.
+        backend = create_backend(
+            args.backend, log_dir=args.log_dir, env_allowlist=allowlist,
+            start_new_session=False,
+        )
         result = backend.execute(job, state_path=Path(args.state), dry_run=args.dry_run)
         print(json.dumps(asdict(result), indent=2, sort_keys=True))
         return 0 if result.state in {"completed", "dry_run"} else 1

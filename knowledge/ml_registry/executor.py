@@ -13,6 +13,7 @@ import time
 from typing import Callable, Mapping, Protocol
 
 from knowledge.ml_registry.scheduler import JobSpec
+from knowledge.ml_registry.contracts import CampaignOutcomeRecord
 
 
 class ExecutorError(ValueError):
@@ -85,8 +86,11 @@ class LocalSubprocessBackend:
 
     DEFAULT_ENV_ALLOWLIST = frozenset({"PATH", "LANG", "LC_ALL", "TMPDIR"})
 
-    def __init__(self, *, log_dir: str | Path, env_allowlist: set[str] | frozenset[str] | None = None):
+    def __init__(self, *, log_dir: str | Path,
+                 env_allowlist: set[str] | frozenset[str] | None = None,
+                 start_new_session: bool = True):
         self.log_dir = Path(log_dir)
+        self.start_new_session = start_new_session
         self.env_allowlist = frozenset(
             self.DEFAULT_ENV_ALLOWLIST if env_allowlist is None else env_allowlist
         )
@@ -112,6 +116,12 @@ class LocalSubprocessBackend:
             raise ExecutorError(f"artifact result is unavailable or malformed: {exc}") from exc
         if not isinstance(payload, dict):
             raise ExecutorError("artifact result must be a JSON object")
+        if "outcome" in payload:
+            try:
+                CampaignOutcomeRecord.from_mapping(payload)
+            except ValueError as exc:
+                raise ExecutorError(f"campaign outcome is malformed: {exc}") from exc
+            return payload
         required_strings = (
             "artifact_id", "model_id", "verdict", "dataset_manifest_hash",
             "split_manifest_hash", "prediction_manifest_hash", "producer_campaign_id",
@@ -170,7 +180,8 @@ class LocalSubprocessBackend:
             with stdout_path.open("wb") as stdout_stream, stderr_path.open("wb") as stderr_stream:
                 process = subprocess.Popen(
                     list(job.command), shell=False, env=environment, cwd=working_directory,
-                    stdout=stdout_stream, stderr=stderr_stream, start_new_session=True,
+                    stdout=stdout_stream, stderr=stderr_stream,
+                    start_new_session=self.start_new_session,
                 )
                 running = ExecutionResult(
                     job.campaign_id, "running", None, started, None, str(stdout_path),
@@ -183,10 +194,16 @@ class LocalSubprocessBackend:
                     now = time.time()
                     if now >= deadline:
                         try:
-                            os.killpg(process.pid, signal.SIGTERM)
+                            if self.start_new_session:
+                                os.killpg(process.pid, signal.SIGTERM)
+                            else:
+                                process.terminate()
                             process.wait(timeout=5)
                         except subprocess.TimeoutExpired:
-                            os.killpg(process.pid, signal.SIGKILL)
+                            if self.start_new_session:
+                                os.killpg(process.pid, signal.SIGKILL)
+                            else:
+                                process.kill()
                             process.wait()
                         raise subprocess.TimeoutExpired(job.command, timeout * 60)
                     heartbeat = ExecutionResult(

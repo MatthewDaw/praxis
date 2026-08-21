@@ -70,3 +70,47 @@ def test_drain_waits_for_real_groups_without_cancelling_or_admitting(tmp_path: P
     assert superseded == []
     assert coordinator.leases == {}
     assert _groups_dead(backend)
+
+
+def test_force_kills_nested_worker_in_the_executor_group(tmp_path: Path) -> None:
+    child_pid = tmp_path / "child.pid"
+    source = (
+        "import subprocess,sys,time; "
+        "p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); "
+        f"open({str(child_pid)!r},'w').write(str(p.pid)); "
+        "time.sleep(30)"
+    )
+    portfolio = Portfolio()
+    portfolio.add_campaign("R1", "R1").status = CampaignStatus.READY
+    coordinator = LeaseIntentCoordinator(tmp_path / "ownership.json")
+    backend = ExecutorProcessBackend(tmp_path / "dispatch", coordinator=coordinator)
+    controller = PortfolioController(
+        portfolio=portfolio,
+        campaign_specs=[{"id": "R1", "command": [sys.executable, "-c", source],
+                         "resources": {"cpus": 1}, "timeout_minutes": 1}],
+        capacity={"cpus": 2, "ram_gb": 2}, backend=backend,
+        state_path=tmp_path / "controller.json", coordinator=coordinator,
+        lease_factory=lambda job, token: CampaignLease(
+            1, "lease:R1", "R1", token, "cpu", "cpu:R1", True, 1, "forbid", False,
+            "state/R1", "checkout/R1", "cache/R1", "registry:runs:R1",
+            time.time(), time.time() + 60,
+        ),
+    )
+    controller.tick()
+    deadline = time.time() + 5
+    while not child_pid.exists() and time.time() < deadline:
+        time.sleep(.02)
+    assert child_pid.exists()
+    pid = int(child_pid.read_text())
+
+    controller.stop(mode="force")
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(.02)
+    else:
+        raise AssertionError(f"nested worker {pid} survived force-stop")
