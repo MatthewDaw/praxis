@@ -5,7 +5,7 @@ import sqlite3
 from .registry import DDL, RegistryError
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def migrate_schema(connection: sqlite3.Connection) -> int:
@@ -17,11 +17,15 @@ def migrate_schema(connection: sqlite3.Connection) -> int:
         connection.executescript(DDL)
         connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         version = SCHEMA_VERSION
-    elif version == 1:
+    elif version in {1, 2}:
+        if version == 1:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(events)")}
+            if "schema_version" not in columns:
+                connection.execute("ALTER TABLE events ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 0")
+        for trigger in ("guard_runs_update", "guard_versions_insert", "guard_aliases_insert",
+                        "guard_aliases_update", "valid_run_pair_insert", "valid_run_pair_update"):
+            connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
         connection.executescript(DDL)
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(events)")}
-        if "schema_version" not in columns:
-            connection.execute("ALTER TABLE events ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 0")
         connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         version = SCHEMA_VERSION
     if version != SCHEMA_VERSION:

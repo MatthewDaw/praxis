@@ -21,6 +21,15 @@ BASE = SHA
 DIFF = "c" * 64
 
 
+def _metrics(metric: float = 0.91, *, throughput: float = 2.0,
+             validity: str = "valid") -> dict[str, object]:
+    return {
+        "metric": metric, "validity": validity, "throughput": throughput,
+        "throughput_unit": "rows_per_second", "memory_gb": 1.0, "cpu_time": 2.0,
+        "load": {"start_1m": 0.25, "end_1m": 0.5},
+    }
+
+
 def _experiment(registry: Registry, name: str = "campaign") -> None:
     registry.create_experiment(
         experiment_id=name, spec_digest="d" * 64, stages=["representation"], metric="score",
@@ -29,7 +38,7 @@ def _experiment(registry: Registry, name: str = "campaign") -> None:
     )
 
 
-def _run(registry: Registry, name: str = "run-1", *, adjudicated: bool = True) -> None:
+def _run(registry: Registry, name: str = "run-1", *, adjudicated: bool = False) -> None:
     registry.create_run(
         run_id=name, experiment_id="campaign", idea_id="idea-1", stage="representation", family="linear",
         params={"description": "baseline"},
@@ -39,21 +48,20 @@ def _run(registry: Registry, name: str = "run-1", *, adjudicated: bool = True) -
         finished_at=None, claim_owner="worker", heartbeat_at=1.0,
     )
     from knowledge.ml_registry.services.registry_runs import complete_run
-    complete_run(registry, run_id=name, metrics={"metric": 0.91, "memory_gb": 1.0, "throughput": 2.0})
-    if adjudicated:
-        from knowledge.ml_registry.services.registry_aliases import adjudicate_run
-        adjudicate_run(registry, run_id=name, verdict="adopted", status="succeeded", reason="won")
+    complete_run(registry, run_id=name, metrics=_metrics())
+    assert not adjudicated, "adoption requires the atomic version/promotion helper"
 
 
 def _version(registry: Registry) -> str:
     registry.register_model(model_id="model", family="linear", sport_scope="shared", axis="a01",
                             protocol="Detector", extends=None)
     digest = registry.create_artifact(run_id="run-1", kind="checkpoint", content=b"weights", schema_version="1")
-    registry.create_model_version(
-        model_id="model", version=1, run_id="run-1", artifact_id=digest, checksum=digest,
+    from knowledge.ml_registry.services.registry_aliases import adopt_run_and_promote
+    adopt_run_and_promote(registry, run_id="run-1", model_id="model", reason="won", model_version=dict(
+        version=1, artifact_id=digest, checksum=digest,
         family_version="linear@1", code_sha=SHA, preprocessing_hash="prep", calibration={}, thresholds={},
         compat_result={"head_sha": SHA, "passed": True, "at": 3.0}, status="active",
-    )
+    ))
     return digest
 
 
@@ -92,15 +100,16 @@ def test_run_transitions_are_reasoned_idempotent_and_evented(tmp_path: Path) -> 
     )
     from knowledge.ml_registry.services.registry_runs import complete_run
     from knowledge.ml_registry.services.registry_aliases import adjudicate_run
-    complete_run(registry, run_id="run", metrics={"metric": 1.0})
+    complete_run(registry, run_id="run", metrics=_metrics(1.0))
     after_complete = registry.list_events()
-    complete_run(registry, run_id="run", metrics={"metric": 1.0})
+    complete_run(registry, run_id="run", metrics=_metrics(1.0))
     assert registry.list_events() == after_complete
     adjudicate_run(registry, run_id="run", verdict="rejected", status="succeeded", reason="below floor")
     after_verdict = registry.list_events()
     adjudicate_run(registry, run_id="run", verdict="rejected", status="succeeded", reason="below floor")
     assert registry.list_events() == after_verdict
     assert registry.list_runs(experiment_id="campaign")[0]["verdict"] == "rejected"
+    assert registry.list_runs(experiment_id="campaign")[0]["status"] == "succeeded"
 
 
 def test_reasoned_supersession_is_distinct_and_idempotent(tmp_path: Path) -> None:

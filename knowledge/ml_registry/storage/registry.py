@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from knowledge.ml_registry.contracts import CodeRef, LegacyCodeRef
+from knowledge.ml_registry.domain.run import RunMetricError, RunMetrics
 from knowledge.ml_registry.file_lock import exclusive_file_lock
 
 from .blobs import BlobStore
@@ -32,7 +33,10 @@ CREATE TABLE IF NOT EXISTS runs(
  device_fingerprint TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN
  ('running','complete','succeeded','failed','voided','superseded')), verdict TEXT CHECK(verdict IS NULL OR verdict IN
  ('adopted','rejected','parked','voided')), started_at REAL NOT NULL, finished_at REAL,
- claim_owner TEXT NOT NULL, heartbeat_at REAL NOT NULL);
+ claim_owner TEXT NOT NULL, heartbeat_at REAL NOT NULL, CHECK(COALESCE(
+ (status IN ('running','complete','failed','superseded') AND verdict IS NULL) OR
+ (status='succeeded' AND verdict IN ('adopted','rejected','parked')) OR
+ (status='voided' AND verdict='voided'),0)));
 CREATE TABLE IF NOT EXISTS artifacts(
  artifact_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL CHECK(kind IN
  ('checkpoint','oof_predictions','split_manifest','dataset_manifest','report')), uri TEXT NOT NULL,
@@ -84,8 +88,18 @@ CREATE TRIGGER IF NOT EXISTS guard_experiments_delete BEFORE DELETE ON experimen
 CREATE TRIGGER IF NOT EXISTS guard_runs_insert BEFORE INSERT ON runs
  WHEN registry_authority() NOT IN ('run_created','historical_ledger_imported','historical_archive_imported') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_runs_update BEFORE UPDATE ON runs
- WHEN registry_authority() NOT IN ('run_completed','run_adjudicated','run_superseded') BEGIN SELECT RAISE(ABORT,'run write authority required'); END;
+ WHEN registry_authority() NOT IN ('run_completed','run_adjudicated','run_adopted','run_superseded') BEGIN SELECT RAISE(ABORT,'run write authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_runs_delete BEFORE DELETE ON runs BEGIN SELECT RAISE(ABORT,'runs cannot be deleted'); END;
+CREATE TRIGGER IF NOT EXISTS valid_run_pair_insert BEFORE INSERT ON runs WHEN NOT COALESCE(
+ (NEW.status IN ('running','complete','failed','superseded') AND NEW.verdict IS NULL) OR
+ (NEW.status='succeeded' AND NEW.verdict IN ('adopted','rejected','parked')) OR
+ (NEW.status='voided' AND NEW.verdict='voided'),0)
+ BEGIN SELECT RAISE(ABORT,'invalid run status/verdict pair'); END;
+CREATE TRIGGER IF NOT EXISTS valid_run_pair_update BEFORE UPDATE ON runs WHEN NOT COALESCE(
+ (NEW.status IN ('running','complete','failed','superseded') AND NEW.verdict IS NULL) OR
+ (NEW.status='succeeded' AND NEW.verdict IN ('adopted','rejected','parked')) OR
+ (NEW.status='voided' AND NEW.verdict='voided'),0)
+ BEGIN SELECT RAISE(ABORT,'invalid run status/verdict pair'); END;
 CREATE TRIGGER IF NOT EXISTS guard_artifacts_insert BEFORE INSERT ON artifacts
  WHEN registry_authority()!='artifact_created' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_models_insert BEFORE INSERT ON registered_models
@@ -93,15 +107,15 @@ CREATE TRIGGER IF NOT EXISTS guard_models_insert BEFORE INSERT ON registered_mod
 CREATE TRIGGER IF NOT EXISTS guard_models_update BEFORE UPDATE ON registered_models BEGIN SELECT RAISE(ABORT,'registered_models are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_models_delete BEFORE DELETE ON registered_models BEGIN SELECT RAISE(ABORT,'registered_models are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_versions_insert BEFORE INSERT ON model_versions
- WHEN registry_authority()!='model_version_created' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+ WHEN registry_authority() NOT IN ('model_version_created','run_adopted') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_lineage_insert BEFORE INSERT ON lineage
  WHEN registry_authority()!='lineage_created' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_lineage_update BEFORE UPDATE ON lineage BEGIN SELECT RAISE(ABORT,'lineage is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_lineage_delete BEFORE DELETE ON lineage BEGIN SELECT RAISE(ABORT,'lineage is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_aliases_insert BEFORE INSERT ON aliases
- WHEN registry_authority()!='alias_set' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+ WHEN registry_authority() NOT IN ('alias_set','run_adopted') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_aliases_update BEFORE UPDATE ON aliases
- WHEN registry_authority()!='alias_set' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+ WHEN registry_authority() NOT IN ('alias_set','run_adopted') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_aliases_delete BEFORE DELETE ON aliases BEGIN SELECT RAISE(ABORT,'aliases cannot be deleted'); END;
 CREATE TRIGGER IF NOT EXISTS guard_events_insert BEFORE INSERT ON events
  WHEN registry_authority()='' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
@@ -255,6 +269,22 @@ class Registry:
                 raise RegistryError("adjudication requires one complete, unadjudicated run")
             db.execute("UPDATE runs SET status=?,verdict=?,finished_at=?,heartbeat_at=? WHERE run_id=?",
                        (p["status"], p["verdict"], p["at"], p["at"], p["run_id"]))
+        elif op == "run_adopted":
+            row = db.execute("SELECT * FROM runs WHERE run_id=?", (p["run_id"],)).fetchone()
+            if row is None or row["status"] != "complete" or row["verdict"] is not None:
+                raise RegistryError("atomic adoption requires one complete, unadjudicated run")
+            version = p["model_version"]
+            db.execute("UPDATE runs SET status='succeeded',verdict='adopted',finished_at=?,heartbeat_at=? "
+                       "WHERE run_id=?", (event.at, event.at, p["run_id"]))
+            db.execute("INSERT INTO model_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (
+                version["model_id"], version["version"], p["run_id"], version["artifact_id"],
+                version["checksum"], version["family_version"], version["code_sha"],
+                version["preprocessing_hash"], _json(version["calibration"]), _json(version["thresholds"]),
+                _json(version["compat_result"]), version["status"],
+            ))
+            db.execute("INSERT INTO aliases VALUES(?,?,?,?,?,?) ON CONFLICT(model_id,alias) DO UPDATE SET "
+                       "version=excluded.version,set_by=excluded.set_by,reason=excluded.reason,at=excluded.at",
+                       (version["model_id"], "champion", version["version"], "adjudicate", p["reason"], event.at))
         elif op == "run_completed":
             row = db.execute("SELECT * FROM runs WHERE run_id=?", (p["run_id"],)).fetchone()
             if row is None:
@@ -368,21 +398,75 @@ class Registry:
     def _complete_run(self, *, run_id: str, metrics: Mapping[str, Any], capability: object) -> None:
         if capability is not _TRAINER_CAPABILITY:
             raise RegistryError("run completion requires trainer authority")
-        if metrics.get("metric") == 0 and metrics.get("validity") not in {"valid", "invalid"}:
-            raise RegistryError("a new zero metric requires an explicit validity field")
-        if not metrics:
-            raise RegistryError("run completion requires metrics")
-        self._write("run_completed", {"run_id": run_id, "metrics": dict(metrics), "at": self.clock()})
+        try:
+            typed = RunMetrics.from_mapping(metrics)
+        except RunMetricError as exc:
+            raise RegistryError(str(exc)) from exc
+        self._write("run_completed", {"run_id": run_id, "metrics": dict(typed.to_mapping()),
+                    "at": self.clock()})
 
     def _adjudicate_run(self, *, run_id: str, verdict: str, status: str, reason: str,
                         capability: object) -> None:
         if capability is not _ADJUDICATOR_CAPABILITY:
             raise RegistryError("run verdict requires adjudication authority")
-        expected = {"adopted": "succeeded", "rejected": "succeeded", "parked": "succeeded", "voided": "voided"}
+        if verdict == "adopted":
+            raise RegistryError("adoption requires the atomic model-version and champion promotion path")
+        expected = {"rejected": "succeeded", "parked": "succeeded", "voided": "voided"}
         if expected.get(verdict) != status or not reason:
             raise RegistryError("run verdict and terminal status are inconsistent")
         self._write("run_adjudicated", {"run_id": run_id, "verdict": verdict, "status": status,
                     "reason": reason, "at": self.clock()})
+
+    def _adopt_run_and_promote(self, *, run_id: str, model_id: str, reason: str,
+                               model_version: Mapping[str, Any], capability: object) -> bool:
+        if capability is not _ADJUDICATOR_CAPABILITY:
+            raise RegistryError("atomic adoption requires adjudication authority")
+        version = dict(model_version)
+        version["model_id"] = model_id
+        version["run_id"] = run_id
+        payload = {"run_id": run_id, "reason": reason, "model_version": version}
+        prior = [event for event in self.events.read()
+                 if event.event_type == "run_adopted" and event.payload.get("run_id") == run_id]
+        if prior:
+            if prior[-1].payload != payload:
+                raise RegistryError("atomic adoption retry drifted from its full semantic payload")
+            self.recover()
+            return False
+        self._validate_adoption_payload(run_id=run_id, model_id=model_id, reason=reason,
+                                        model_version=version)
+        self._write("run_adopted", payload)
+        return True
+
+    def _validate_adoption_payload(self, *, run_id: str, model_id: str, reason: str,
+                                    model_version: Mapping[str, Any]) -> None:
+        if not reason.strip():
+            raise RegistryError("adoption requires a reason")
+        run = next((row for row in self.rows("runs") if row["run_id"] == run_id), None)
+        if run is None or run["status"] != "complete" or run["verdict"] is not None:
+            raise RegistryError("atomic adoption requires one complete, unadjudicated run")
+        if not any(row["model_id"] == model_id for row in self.rows("registered_models")):
+            raise RegistryError("atomic adoption references an unknown registered model")
+        artifact_id = str(model_version.get("artifact_id", ""))
+        artifact = next((row for row in self.rows("artifacts") if row["artifact_id"] == artifact_id), None)
+        if artifact is None or artifact["run_id"] != run_id:
+            raise RegistryError("atomic adoption requires the adjudicated run's artifact")
+        self.blobs.verify(artifact_id)
+        if model_version.get("checksum") != artifact_id:
+            raise RegistryError("model version checksum must equal its content-addressed artifact id")
+        code_ref = json.loads(run["code_ref"])
+        if model_version.get("code_sha") != code_ref.get("sha"):
+            raise RegistryError("model version code_sha differs from its run code_ref")
+        compat = model_version.get("compat_result")
+        if not isinstance(compat, Mapping) or set(compat) != {"head_sha", "passed", "at"}:
+            raise RegistryError("compat_result requires exactly head_sha, passed, and at")
+        if compat["passed"] is not True or compat["head_sha"] != self._git_head(code_ref["repo"]):
+            raise RegistryError("initial compatibility must pass against the declared repo's current HEAD")
+        if model_version.get("status") != "active":
+            raise RegistryError("an adopted model version must start active")
+        required = {"model_id", "run_id", "version", "artifact_id", "checksum", "family_version",
+                    "code_sha", "preprocessing_hash", "calibration", "thresholds", "compat_result", "status"}
+        if set(model_version) != required:
+            raise RegistryError("atomic adoption model version payload has missing or unknown fields")
 
     def _supersede_run(self, *, run_id: str, reason: str, capability: object) -> None:
         if capability is not _ADJUDICATOR_CAPABILITY:

@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from knowledge.ml_registry.contracts import CodeRef, LegacyCodeRef
+from .run import RunMetrics, RunStatus
+from .status import Verdict
 
 
 @dataclass(frozen=True)
@@ -26,11 +28,11 @@ class Run:
     stage: str
     family: str
     params: Mapping[str, Any]
-    metrics: Mapping[str, Any]
+    metrics: RunMetrics
     code_ref: CodeRef | LegacyCodeRef
     device_fingerprint: str
-    status: str
-    verdict: str | None
+    status: RunStatus
+    verdict: Verdict | None
     started_at: float
     finished_at: float | None
     claim_owner: str
