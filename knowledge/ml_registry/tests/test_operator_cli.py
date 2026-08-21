@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 
 from knowledge.ml_registry import Registry
-from knowledge.ml_registry.operator_cli import main
+from knowledge.ml_registry.cli.portfolio import main
 
 
 def _write(path: Path, value: object) -> Path:

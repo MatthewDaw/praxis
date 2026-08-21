@@ -1,25 +1,31 @@
 from __future__ import annotations
 
-import json
+import pytest
 
-from knowledge.ml_registry.portfolio_cli import EXIT_VALIDATION_ERROR, main
+from knowledge.ml_registry.cli.portfolio import main as canonical_main
+from knowledge.ml_registry.portfolio_cli import main
 
 
-def test_path_portfolio_cli_refuses_without_creating_state(tmp_path, capsys) -> None:
+def test_compatibility_facade_is_the_canonical_operator(tmp_path, capsys) -> None:
+    assert main is canonical_main
     path = tmp_path / "portfolio.json"
-    assert main(["--file", str(path), "init"]) == EXIT_VALIDATION_ERROR
-    result = json.loads(capsys.readouterr().out)
-    assert result["error"] == "validation"
-    assert "canonical registry" in result["message"]
+    with pytest.raises(SystemExit, match="2"):
+        main(["--file", str(path), "init"])
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "invalid choice" in captured.err
     assert not path.exists()
 
 
 def test_path_portfolio_cli_refuses_mutation(tmp_path, capsys) -> None:
     path = tmp_path / "portfolio.json"
-    assert main([
-        "--file", str(path), "add-artifact", "--artifact-id", "old",
-        "--model-id", "old", "--verdict", "adopted", "--dataset-hash", "d",
-        "--split-hash", "s", "--prediction-hash", "p", "--coverage", "1",
-    ]) == EXIT_VALIDATION_ERROR
-    assert json.loads(capsys.readouterr().out)["ok"] is False
+    with pytest.raises(SystemExit, match="2"):
+        main([
+            "--file", str(path), "add-artifact", "--artifact-id", "old",
+            "--model-id", "old", "--verdict", "adopted", "--dataset-hash", "d",
+            "--split-hash", "s", "--prediction-hash", "p", "--coverage", "1",
+        ])
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "invalid choice" in captured.err
     assert not path.exists()

@@ -11,5 +11,5 @@ def test_path_portfolio_controller_refuses_before_opening_inputs(tmp_path, capsy
         "--controller-state", str(tmp_path / "controller.json"),
         "--dispatch-dir", str(tmp_path / "dispatch"), "--one-shot",
     ]) == 1
-    assert "canonical registry portfolio CLI" in capsys.readouterr().err
+    assert "knowledge.ml_registry.cli.portfolio" in capsys.readouterr().err
     assert list(tmp_path.iterdir()) == []

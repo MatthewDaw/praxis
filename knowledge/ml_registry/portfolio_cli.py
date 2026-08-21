@@ -1,9 +1,9 @@
-"""Compatibility facade for :mod:`knowledge.ml_registry.cli.portfolio`."""
+"""Compatibility facade for the canonical portfolio operator CLI."""
 
 import sys
 
 from knowledge.ml_registry.cli import portfolio as _portfolio
-from knowledge.ml_registry.cli.portfolio import *  # noqa: F403 -- former public surface
+from knowledge.ml_registry.cli.portfolio import *  # noqa: F403 -- compatibility export
 
 
 def __getattr__(name: str):

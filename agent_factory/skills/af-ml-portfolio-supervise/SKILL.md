@@ -16,12 +16,12 @@ campaign belongs to the campaign job's declared setup adapter; never seed from t
 Use the canonical surface:
 
 ```sh
-python -m knowledge.ml_registry.controller_cli --config OPERATOR.json status
-python -m knowledge.ml_registry.controller_cli --config OPERATOR.json explain CAMPAIGN
+python -m knowledge.ml_registry.cli.portfolio --config OPERATOR.json status
+python -m knowledge.ml_registry.cli.portfolio --config OPERATOR.json explain CAMPAIGN
 agent_factory/scripts/af-ml-portfolio-launch.sh --config OPERATOR.json run --poll-interval 10
-python -m knowledge.ml_registry.controller_cli --config OPERATOR.json stop --drain
-python -m knowledge.ml_registry.controller_cli --config OPERATOR.json stop --force
-python -m knowledge.ml_registry.controller_cli --config OPERATOR.json resume
+python -m knowledge.ml_registry.cli.portfolio --config OPERATOR.json stop --drain
+python -m knowledge.ml_registry.cli.portfolio --config OPERATOR.json stop --force
+python -m knowledge.ml_registry.cli.portfolio --config OPERATOR.json resume
 ```
 
 `status` reports occupied slots, typed progress and ETA, heartbeat age, named leases, the ready

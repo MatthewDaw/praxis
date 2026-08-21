@@ -74,8 +74,17 @@ ERROR_SHA256 = {
 
 PUBLIC_NAME_SHA256 = {
     "knowledge.ml_registry.cli": "919c1ce3f38cda40c1da9bcbfd0726650c9d517117bae969cc7032546350345d",
-    "knowledge.ml_registry.portfolio_cli": "26fd6552f72ca211cc77a21f8f6a1b9c4b10030f639303cf6982cbd454442f50",
+    "knowledge.ml_registry.portfolio_cli": "e35685022ab87fb046a616f820527b1a547d801d9cb82b4ef85c54ecb3c17a76",
     "knowledge.ml_registry.manifests_cli": "f7d03d28cb7438edf013aae36d9f21142ffc1a93b9d16d9f283f43055e030dbb",
+}
+
+PORTFOLIO_HELP_SHA256 = {
+    "__root__": "7c3e0c444d3dba89a3467e37f0cd6c38adcb99e914e335a616faa2041b932218",
+    "run": "45f3c7cc0d603670d79ae522132c9fe0c59f629a4cdc5075b26dae5db06bdc0c",
+    "status": "1f4a0e759ddd7e89fa1d6b0158f115e00b3afca85023487c395bf5b3439f7edc",
+    "stop": "292e2ba0981ea95050f8c7ead37cf4157f0cd4bc197e37c35e3428bef3e257a7",
+    "resume": "fb19ffd731f0a2994e90062569c707e1e807bd25cd9b35275ccaf7d6d2260aa0",
+    "explain": "f5d3601d66db15246649b24eac30d7c440634136cd837fcae67c4a0ca2c65669",
 }
 
 
@@ -103,13 +112,19 @@ def test_every_registry_missing_argument_surface_matches_post_cutover_golden(com
     assert hashlib.sha256(result.stderr.encode()).hexdigest() == ERROR_SHA256[command]
 
 
+@pytest.mark.parametrize("command", PORTFOLIO_HELP_SHA256)
+def test_every_portfolio_operator_help_surface_matches_cutover_golden(command: str) -> None:
+    arguments = ("--help",) if command == "__root__" else (
+        "--config", "fixture.json", command, "--help",
+    )
+    result = _run("knowledge.ml_registry.cli.portfolio", *arguments)
+    assert (result.returncode, result.stderr) == (0, "")
+    assert hashlib.sha256(result.stdout.encode()).hexdigest() == PORTFOLIO_HELP_SHA256[command]
+
+
 @pytest.mark.parametrize(
     ("module", "arguments", "code", "stdout"),
     [
-        ("knowledge.ml_registry.portfolio_cli", ("--help",), 0,
-         "Canonical registry portfolio: inspect runs, registered models, model versions, artifacts, and aliases.\n"),
-        ("knowledge.ml_registry.portfolio_cli", (), 3,
-         '{"ok": false, "error": "validation", "message": "path-owned portfolios retired; use the canonical registry portfolio CLI"}\n'),
         ("knowledge.ml_registry.manifests_cli", ("--help",), 3,
          '{"ok": false, "error": "validation", "message": "path-owned manifests retired; use the canonical registry CLI"}\n'),
     ],

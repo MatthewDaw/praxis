@@ -49,17 +49,17 @@ def _legacy_main(argv: list[str] | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Expose the canonical operator while refusing the retired command spelling."""
+    """Compatibility facade for the canonical portfolio operator."""
     effective_argv = sys.argv[1:] if argv is None else argv
     if effective_argv and effective_argv[0] == "run-portfolio":
         print(
-            "REFUSED: path-owned portfolio controller retired; use the canonical registry portfolio CLI "
-            "run command with an operator config",
+            "REFUSED: path-owned portfolio controller retired; use "
+            "python -m knowledge.ml_registry.cli.portfolio run with an operator config",
             file=sys.stderr,
         )
         return 1
-    from knowledge.ml_registry.operator_cli import main as operator_main
-    return operator_main(effective_argv)
+    from knowledge.ml_registry.cli.portfolio import main as portfolio_main
+    return portfolio_main(effective_argv)
 
 
 if __name__ == "__main__":

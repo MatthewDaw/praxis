@@ -251,7 +251,7 @@ class OperatorRuntime:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m knowledge.ml_registry.controller_cli",
+        prog="python -m knowledge.ml_registry.cli.portfolio",
         description="Run and inspect registry experiments with verified model-version aliases",
     )
     parser.add_argument("--config", required=True, help="versioned portfolio operator JSON")

@@ -10,10 +10,10 @@ fi
 RUNTIME_LOG="${AF_ML_PORTFOLIO_LOG:-portfolio-controller.log}"
 PYTHON_BIN="${AF_ML_PORTFOLIO_PYTHON:-python}"
 if command -v setsid >/dev/null 2>&1; then
-  nohup setsid "$PYTHON_BIN" -m knowledge.ml_registry.controller_cli "$@" \
+  nohup setsid "$PYTHON_BIN" -m knowledge.ml_registry.cli.portfolio "$@" \
     </dev/null >>"$RUNTIME_LOG" 2>&1 &
 else
-  nohup "$PYTHON_BIN" -m knowledge.ml_registry.controller_cli "$@" \
+  nohup "$PYTHON_BIN" -m knowledge.ml_registry.cli.portfolio "$@" \
     </dev/null >>"$RUNTIME_LOG" 2>&1 &
 fi
 printf '%s\n' "$!"
