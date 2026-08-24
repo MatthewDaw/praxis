@@ -57,13 +57,13 @@ def _prompt(integration_ref: str = "build/research-engine", size: int = 2) -> st
 
 # ------------------------------------------------------------------------------- the fix ------
 
-def test_the_worker_is_told_to_cut_its_worktree_from_the_integration_ref():
+def test_the_worker_is_told_to_cut_its_worktree_from_the_integration_ref() -> None:
     p = _prompt()
     assert "git worktree add -b <your-branch> <path> build/research-engine" in p
     assert "no divergence to reconcile and cannot conflict" in p
 
 
-def test_the_integration_ref_is_interpolated_not_left_as_a_variable():
+def test_the_integration_ref_is_interpolated_not_left_as_a_variable() -> None:
     """A worker handed the literal '$INTEGRATION_REF' would branch from a ref that does not exist."""
     p = _prompt(integration_ref="build/some-other-branch")
     assert "build/some-other-branch" in p
@@ -72,13 +72,13 @@ def test_the_integration_ref_is_interpolated_not_left_as_a_variable():
 
 # --------------------------------------------------- the fallback, and what it must warn about --
 
-def test_the_rebase_fallback_survives_for_harness_created_worktrees():
+def test_the_rebase_fallback_survives_for_harness_created_worktrees() -> None:
     p = _prompt()
     assert "git merge --ff-only build/research-engine" in p
     assert "git rebase build/research-engine instead" in p
 
 
-def test_the_worker_is_warned_that_a_base_conflict_is_not_its_ticket():
+def test_the_worker_is_warned_that_a_base_conflict_is_not_its_ticket() -> None:
     """Without this a worker reads any conflict as its own problem and hard-stops — which is what
     took out the whole praxis dependency graph."""
     p = _prompt()
@@ -87,13 +87,13 @@ def test_the_worker_is_warned_that_a_base_conflict_is_not_its_ticket():
     assert "the conflict is in the base and not in your work" in lowered
 
 
-def test_the_worker_is_told_how_to_resolve_a_base_conflict():
+def test_the_worker_is_told_how_to_resolve_a_base_conflict() -> None:
     p = _prompt()
     assert "taking the integration ref's side for any file your ticket does not touch" in p
     assert "only record a blocker if a file you DO touch genuinely conflicts" in p
 
 
-def test_the_hard_stop_on_an_unusable_base_is_preserved():
+def test_the_hard_stop_on_an_unusable_base_is_preserved() -> None:
     """The refusal itself was correct and must remain: anything built on a bad base cannot land."""
     p = _prompt()
     assert "anything built on that base is unmergeable by construction" in p
