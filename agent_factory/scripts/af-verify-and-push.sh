@@ -57,10 +57,28 @@ git rev-parse --git-dir >/dev/null 2>&1 || { say "not a git worktree: $WT"; exit
 
 # A dirty tree cannot be verified: the gates would run over files the push will not carry, so a
 # green result would be a statement about a tree that never existed anywhere else.
-if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+#
+# ONE EXEMPTION, and it is not a loosening: `.af-loop.lock` is af-ticket-loop.sh's own bookkeeping,
+# rewritten on every run and on every heartbeat. It is untracked on main but a worker committed it
+# onto build/research-engine, where it IS tracked -- so for the entire duration of a build the
+# worktree reports `M .af-loop.lock` and is never clean. This tool then refuses, correctly by its
+# own rule, and the two DEADLOCK: the push half can only run when no loop is running, which is
+# exactly when the loop's END-OF-RUN message tells you to run it, and relaunching the loop dirties
+# the tree again. Observed three times on 2026-08-24, with the branch 24 commits ahead of origin and
+# unpublishable because of it.
+#
+# Exempting it changes nothing about what is verified: it is not part of the work, no gate reads it,
+# and it is excluded from the push by the same reasoning. Untracking it on the build branch is the
+# other half of the fix and belongs on that branch at a round boundary; this makes the tool correct
+# even where it is still tracked.
+AF_LOOP_BOOKKEEPING='^ *[MADRCU?]* *\.af-loop\.lock$'
+if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null | grep -vE "$AF_LOOP_BOOKKEEPING" || true)" ]; then
   say "REFUSING: the worktree has uncommitted tracked changes. Verification would run over a tree"
   say "  that is not what would be pushed. Commit or stash them first:"
-  git status --short --untracked-files=no | head -10 | sed 's/^/    /'
+  # Same filter as the test above, and `sed -n` rather than `head` so the truncation cannot
+  # SIGPIPE git under pipefail. Listing the exempted file as a REASON would send the reader
+  # after the one thing this tool deliberately does not care about.
+  git status --short --untracked-files=no | grep -vE "$AF_LOOP_BOOKKEEPING" | sed -n '1,10p' | sed 's/^/    /'
   exit 1
 fi
 
