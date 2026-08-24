@@ -129,7 +129,7 @@ def test_the_ladder_is_a_closed_first_class_field_not_opaque_text() -> None:
     assert "7" in str(exc_info.value)
 
 
-def test_the_stored_noise_floor_field_no_longer_exists_and_nothing_reads_it() -> None:
+def test_the_stored_threshold_field_no_longer_exists_and_nothing_reads_it() -> None:
     """Two thresholds must not decide one verdict: the rope is computed per comparison and
     the value stored at registration is gone from the schema and from every source file."""
     assert RETIRED_FIELD not in REQUIRED_META_KEYS[MODEL]
