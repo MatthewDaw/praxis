@@ -52,7 +52,8 @@ LIVE_CAMPAIGNS = [
 ]
 
 
-def _scaled_meta(direction, ceiling, measured_at, floor, **extra):
+def _scaled_meta(direction: str, ceiling: float, measured_at: float, floor: float,
+                 **extra: object) -> dict[str, object]:
     return {
         "direction": direction,
         METRIC_CEILING_FIELD: ceiling,
@@ -69,8 +70,8 @@ def _bar(meta: dict[str, object], rope: float, at: float) -> float:
 
 @pytest.mark.parametrize("name,direction,ceiling,measured_at,floor,win", LIVE_CAMPAIGNS)
 def test_every_live_campaign_shrinks_monotonically_toward_its_ceiling(
-    name, direction, ceiling, measured_at, floor, win
-):
+    name: str, direction: str, ceiling: float, measured_at: float, floor: float, win: float,
+) -> None:
     meta = _scaled_meta(direction, ceiling, measured_at, floor)
     steps = [measured_at + (win - measured_at) * i / 200 for i in range(201)]
     bars = [_bar(meta, floor, v) for v in steps]
@@ -80,7 +81,7 @@ def test_every_live_campaign_shrinks_monotonically_toward_its_ceiling(
         assert later <= earlier + 1e-15, f"{name} bar rose while the metric improved"
 
 
-def test_court_marking_does_not_invert_where_the_binomial_form_would():
+def test_court_marking_does_not_invert_where_the_binomial_form_would() -> None:
     """p(1-p) peaks at 0.5, so sqrt(p(1-p)/n) RAISES the bar for a campaign climbing
     through the low half -- 26% higher at court_marking's win condition than at its
     baseline. Residual-to-ceiling is monotone over the whole range."""
@@ -92,7 +93,7 @@ def test_court_marking_does_not_invert_where_the_binomial_form_would():
     assert _bar(meta, 0.024962, 0.70) < _bar(meta, 0.024962, 0.155648)
 
 
-def test_minimize_metric_shrinks_toward_a_ceiling_of_zero():
+def test_minimize_metric_shrinks_toward_a_ceiling_of_zero() -> None:
     meta = _scaled_meta("minimize", 0.0, 0.20, 0.004)
     assert _bar(meta, 0.004, 0.20) == pytest.approx(0.004)
     assert _bar(meta, 0.004, 0.10) == pytest.approx(0.002)
@@ -101,7 +102,7 @@ def test_minimize_metric_shrinks_toward_a_ceiling_of_zero():
     assert _bar(meta, 0.004, 0.40) == pytest.approx(0.004)
 
 
-def test_armor_stops_the_bar_at_a_fraction_of_the_measured_rope():
+def test_armor_stops_the_bar_at_a_fraction_of_the_measured_rope() -> None:
     """A pure relative-error floor has no lower bound: association at HOTA 0.99 scales to
     ~0.0002, below the 0.000790 SD of a perturbation whose true effect is ZERO."""
     meta = _scaled_meta("maximize", 1.0, 0.851439, 0.0016)
@@ -117,15 +118,15 @@ def test_armor_stops_the_bar_at_a_fraction_of_the_measured_rope():
     assert _bar(meta, 0.0016, 1.5) == pytest.approx(0.0016 * DEFAULT_ROPE_ARMOR)
 
 
-def test_armor_is_overridable_per_model():
+def test_armor_is_overridable_per_model() -> None:
     meta = _scaled_meta("maximize", 1.0, 0.851439, 0.0016, **{ROPE_ARMOR_FIELD: 0.8})
     assert _bar(meta, 0.0016, 0.99) == pytest.approx(0.0016 * 0.8)
 
 
 @pytest.mark.parametrize("name,direction,ceiling,measured_at,floor,win", LIVE_CAMPAIGNS)
 def test_derived_bar_never_leaves_the_measured_ropes_neighbourhood(
-    name, direction, ceiling, measured_at, floor, win
-):
+    name: str, direction: str, ceiling: float, measured_at: float, floor: float, win: float,
+) -> None:
     """The magnitude guarantee. The rope the baseline rows actually show is evidence; a bar
     evaluated at a metric level nobody has run is not. So the derived bar is clamped to
     [armor x measured, measured] and inherits the rows' magnitude instead of escaping it."""
@@ -153,7 +154,7 @@ STATIC_FLOOR = statistics.stdev(BASELINE_LEDGER.values())
 
 
 @pytest.mark.parametrize("at", [0.0, 0.5, 1.0, 1.5, 100.0])
-def test_a_model_that_declares_nothing_gets_the_measured_rope_at_every_level(at):
+def test_a_model_that_declares_nothing_gets_the_measured_rope_at_every_level(at: float) -> None:
     space = RegistrySpace()
     model_id = register_model_with_baseline(space, dict(UNDECLARED_META), BASELINE_LEDGER)
     meta = space.get(model_id).meta
@@ -165,8 +166,8 @@ def test_a_model_that_declares_nothing_gets_the_measured_rope_at_every_level(at)
 
 @pytest.mark.parametrize("name,direction,ceiling,measured_at,floor,win", LIVE_CAMPAIGNS)
 def test_a_live_campaign_that_does_not_opt_in_is_untouched(
-    name, direction, ceiling, measured_at, floor, win
-):
+    name: str, direction: str, ceiling: float, measured_at: float, floor: float, win: float,
+) -> None:
     static = {"direction": direction}
     assert _bar(static, floor, measured_at) == floor
     assert _bar(static, floor, win) == floor
@@ -178,7 +179,7 @@ def test_a_live_campaign_that_does_not_opt_in_is_untouched(
 # ---------------------------------------------------------------------------
 
 
-def _register_scaled(**overrides):
+def _register_scaled(**overrides: object) -> tuple[RegistrySpace, str, dict[str, float]]:
     space = RegistrySpace()
     meta = dict(
         UNDECLARED_META,
@@ -194,7 +195,7 @@ def _register_scaled(**overrides):
     return space, register_model_with_baseline(space, meta, ledger), ledger
 
 
-def test_registration_stamps_the_level_the_rope_was_measured_at_and_labels_what_it_checked():
+def test_registration_stamps_the_level_the_rope_was_measured_at_and_labels_what_it_checked() -> None:
     space, model_id, ledger = _register_scaled()
     meta = space.get(model_id).meta
     assert meta[ROPE_MEASURED_AT_FIELD] == pytest.approx(statistics.mean(ledger.values()))
@@ -214,13 +215,13 @@ def test_registration_stamps_the_level_the_rope_was_measured_at_and_labels_what_
         ({ROPE_ARMOR_FIELD: "half"}, ROPE_ARMOR_FIELD),
     ],
 )
-def test_a_half_declared_scaling_is_refused_naming_the_field(overrides, field):
+def test_a_half_declared_scaling_is_refused_naming_the_field(overrides: dict[str, object], field: str) -> None:
     with pytest.raises(RegistryValidationError) as excinfo:
         _register_scaled(**overrides)
     assert excinfo.value.field == field
 
 
-def test_a_scaling_declared_where_no_ledger_can_supply_the_measured_level_is_refused():
+def test_a_scaling_declared_where_no_ledger_can_supply_the_measured_level_is_refused() -> None:
     from knowledge.ml_registry.write_path import register_model
 
     space = RegistrySpace()
@@ -242,14 +243,14 @@ def test_a_scaling_declared_where_no_ledger_can_supply_the_measured_level_is_ref
 ALL_COMMITS = frozenset({"b1", "b2", "b3", "b4", "adopt1", "loss1"})
 
 
-def _rows(ledger, **extra):
+def _rows(ledger: dict[str, float], **extra: float) -> dict[str, LedgerRow]:
     rows = {c: LedgerRow(value=v, throughput=1.0, diff_lines=0) for c, v in ledger.items()}
     for commit, value in extra.items():
         rows[commit] = LedgerRow(value=value, throughput=1.0, diff_lines=1)
     return rows
 
 
-def test_the_ratchet_counterfactual_uses_the_bar_of_the_era_it_asks_about():
+def test_the_ratchet_counterfactual_uses_the_bar_of_the_era_it_asks_about() -> None:
     """The question is "would this trial have PARKED OR WON against the bar the adoption
     REPLACED" -- so it must be asked with the bar that stood at previous_baseline's
     level. Under a moving bar the current one is a different (smaller, because the
@@ -302,7 +303,7 @@ DETECTION_BASELINE_LEDGER = {
 }
 
 
-def test_the_detection_campaign_registers_and_adjudicates_exactly_as_before():
+def test_the_detection_campaign_registers_and_adjudicates_exactly_as_before() -> None:
     """The live record: no scaling declaration, so the bar is the rope its own eight
     baseline rows measure, and its best recorded arm (clahe 0.6203, +0.0127 over the
     registered baseline) is the same non-adoption it is today."""

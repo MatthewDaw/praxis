@@ -16,6 +16,7 @@ VISIBLE rather than silent, which is the half of the incident that survives the 
 
 from __future__ import annotations
 
+from pathlib import Path
 import statistics
 
 import pytest
@@ -58,7 +59,7 @@ def _meta(**extra: object) -> dict[str, object]:
     return meta
 
 
-def _space(tmp_path) -> RegistrySpace:
+def _space(tmp_path: Path) -> RegistrySpace:
     return RegistrySpace.load(tmp_path / "space.json")
 
 
@@ -71,13 +72,13 @@ def _registered(space: RegistrySpace, **extra: object) -> dict[str, object]:
 # --- the multiplier's own contract ------------------------------------------------------
 
 @pytest.mark.parametrize("bad", ["two", 0.0, -1.0])
-def test_a_sigmas_that_describes_no_bar_is_refused(bad):
+def test_a_sigmas_that_describes_no_bar_is_refused(bad: object) -> None:
     with pytest.raises(RegistryValidationError) as excinfo:
         declared_sigmas(_meta(**{SIGMAS_FIELD: bad}))
     assert excinfo.value.field == SIGMAS_FIELD
 
 
-def test_the_court_marking_contradiction_is_now_unreachable(tmp_path):
+def test_the_court_marking_contradiction_is_now_unreachable(tmp_path: Path) -> None:
     """A record cannot declare 2 and carry a one-sigma bar, because the bar is not carried:
     it is measured here, from these rows, times this field."""
     stored = _registered(_space(tmp_path), **{SIGMAS_FIELD: 2.0})
@@ -88,21 +89,21 @@ def test_the_court_marking_contradiction_is_now_unreachable(tmp_path):
     )
 
 
-def test_a_record_declaring_no_sigmas_gets_the_standing_default(tmp_path):
+def test_a_record_declaring_no_sigmas_gets_the_standing_default(tmp_path: Path) -> None:
     stored = _registered(_space(tmp_path))
     assert comparison_rope(stored, baseline_values(stored, LEDGER), 0.60) == pytest.approx(
         DEFAULT_SIGMAS * BASELINE_SD
     )
 
 
-def test_one_sigma_is_the_standing_default():
+def test_one_sigma_is_the_standing_default() -> None:
     """Changed deliberately, with the trade recorded in bootstrap's module docstring: a
     2-sigma bar over a noisy metric is one nothing can clear."""
     assert DEFAULT_SIGMAS == 1.0
     assert CONSERVATIVE_SIGMAS == 2.0
 
 
-def test_the_default_change_does_not_reinterpret_an_explicit_two(tmp_path):
+def test_the_default_change_does_not_reinterpret_an_explicit_two(tmp_path: Path) -> None:
     """All four live campaigns declare sigmas 2.0 EXPLICITLY. Moving the DEFAULT to 1 must
     not silently rescale them: a declared value is a declaration, never a default."""
     stored = _registered(_space(tmp_path), **{SIGMAS_FIELD: 2.0})
@@ -114,7 +115,7 @@ def test_the_default_change_does_not_reinterpret_an_explicit_two(tmp_path):
 
 # --- a deliberate loose bar registers, survives, and is VISIBLE ------------------------
 
-def test_a_deliberate_one_sigma_campaign_registers_and_keeps_its_reason(tmp_path):
+def test_a_deliberate_one_sigma_campaign_registers_and_keeps_its_reason(tmp_path: Path) -> None:
     """It must NOT require lying about sigmas to get a narrow bar through -- which is
     exactly what a registry that refused a declared 1 would produce."""
     space = _space(tmp_path)
@@ -134,7 +135,7 @@ def test_a_deliberate_one_sigma_campaign_registers_and_keeps_its_reason(tmp_path
     assert "sigmas=1.0" in format_status(status)
 
 
-def test_a_loose_bar_over_a_large_backlog_warns_and_does_not_block(tmp_path):
+def test_a_loose_bar_over_a_large_backlog_warns_and_does_not_block(tmp_path: Path) -> None:
     """The precise condition the old 2-sigma default named. WARNED, never refused: a loose
     bar is a legitimate explore-bias choice, and silence about it is how court-marking ran
     a whole campaign at half the band its record claimed."""
@@ -150,7 +151,7 @@ def test_a_loose_bar_over_a_large_backlog_warns_and_does_not_block(tmp_path):
     assert "15.9%" in loose[0]["detail"] and "ratchet" in loose[0]["detail"].lower()
 
 
-def test_a_small_backlog_at_one_sigma_says_nothing(tmp_path):
+def test_a_small_backlog_at_one_sigma_says_nothing(tmp_path: Path) -> None:
     """The concern is MULTIPLICITY. One arm at one sigma is a coin-flip nobody needs warning
     about, and an advisory that fires on every campaign is one nobody reads."""
     space = _space(tmp_path)
@@ -161,7 +162,7 @@ def test_a_small_backlog_at_one_sigma_says_nothing(tmp_path):
                 if d["kind"] == "loose_bar_with_large_backlog"]
 
 
-def test_a_two_sigma_campaign_is_never_warned(tmp_path):
+def test_a_two_sigma_campaign_is_never_warned(tmp_path: Path) -> None:
     space = _space(tmp_path)
     model_id = register_model(space, _meta(**{SIGMAS_FIELD: 2.0}))
     for i in range(LOOSE_BAR_BACKLOG_THRESHOLD * 2):
@@ -183,7 +184,7 @@ def test_a_two_sigma_campaign_is_never_warned(tmp_path):
         ("court_marking", 2.0, "eval_sample", "unpaired"),
     ],
 )
-def test_the_live_campaigns_still_register(tmp_path, name, sigmas, varies, comparison):
+def test_the_live_campaigns_still_register(tmp_path: Path, name: str, sigmas: float, varies: str, comparison: str) -> None:
     """Three of these carry live trials. Each declared its bar OUTSIDE praxis; none of them
     now stores one, and each keeps adjudicating against `sigmas` times the spread its own
     baseline rows show."""

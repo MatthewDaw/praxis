@@ -114,13 +114,25 @@ def validate_rung(value: object, *, candidate_id: str = "") -> int:
     return value
 
 
-def _finite(value: object, field: str, candidate_id: str) -> float:
+def _finite(value: object, field: str, where: str = "") -> float:
+    """``value`` as a finite number, refused BY NAME otherwise. ``where`` names the
+    candidate the value came from, and is empty for a campaign-level input."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise RegistryValidationError(
-            f"{field} for candidate {candidate_id!r} must be a finite number, got {value!r}",
-            field=field,
+            f"{field}{where} must be a finite number, got {value!r}", field=field
         )
     return float(value)
+
+
+def _non_negative(value: object, field: str, where: str = "") -> float:
+    """``value`` as a finite number at least 0 -- the one rule both a candidate's own spread
+    and the campaign rope are held to, since neither can be a negative width."""
+    number = _finite(value, field, where)
+    if number < 0:
+        raise RegistryValidationError(
+            f"{field}{where} must be at least 0, got {value!r}", field=field
+        )
+    return number
 
 
 def _loss(direction: str, best: float, value: float) -> float:
@@ -140,12 +152,7 @@ def select(candidates: Sequence[Candidate], *, direction: str, rope: float) -> S
         raise RegistryValidationError(
             f"direction must be one of {DIRECTIONS}, got {direction!r}", field="direction"
         )
-    if isinstance(rope, bool) or not isinstance(rope, (int, float)) or not math.isfinite(rope) or rope < 0:
-        raise RegistryValidationError(
-            f"rope must be a finite number at least 0, got {rope!r}; compute it from the "
-            "campaign's scoring corpus before selecting",
-            field="rope",
-        )
+    rope = _non_negative(rope, "rope")
     if not candidates:
         raise RegistryValidationError(
             "selection needs at least one measured candidate; a stage with no arms is not a "
@@ -165,23 +172,17 @@ def select(candidates: Sequence[Candidate], *, direction: str, rope: float) -> S
                 field="candidate_id",
             )
         seen.add(candidate_id)
-        sigma = _finite(candidate.sigma, "sigma", candidate_id)
-        if sigma < 0:
-            raise RegistryValidationError(
-                f"sigma for candidate {candidate_id!r} must be at least 0, got {sigma!r}",
-                field="sigma",
-            )
+        where = f" for candidate {candidate_id!r}"
         checked.append(
             Candidate(
                 candidate_id=candidate_id,
                 rung=validate_rung(candidate.rung, candidate_id=candidate_id),
-                value=_finite(candidate.value, "value", candidate_id),
-                sigma=sigma,
+                value=_finite(candidate.value, "value", where),
+                sigma=_non_negative(candidate.sigma, "sigma", where),
                 family=candidate.family,
             )
         )
 
-    rope = float(rope)
     best = max(c.value for c in checked) if direction == "maximize" else min(c.value for c in checked)
     ordered = sorted(checked, key=lambda c: (_loss(direction, best, c.value), c.rung, c.candidate_id))
     top = ordered[0]

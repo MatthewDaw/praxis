@@ -55,7 +55,7 @@ def _recomputed_meta(**extra: object) -> dict[str, object]:
 
 # --- the guard itself, both directions ------------------------------------------------
 
-def test_paired_trials_against_an_eval_sample_rope_are_refused():
+def test_paired_trials_against_an_eval_sample_rope_are_refused() -> None:
     with pytest.raises(RegistryValidationError) as excinfo:
         guard_rope_provenance(
             _meta(
@@ -69,7 +69,7 @@ def test_paired_trials_against_an_eval_sample_rope_are_refused():
     assert "CANCELS" in str(excinfo.value)
 
 
-def test_unpaired_trials_against_a_paired_delta_rope_are_refused():
+def test_unpaired_trials_against_a_paired_delta_rope_are_refused() -> None:
     with pytest.raises(RegistryValidationError) as excinfo:
         guard_rope_provenance(
             _meta(
@@ -95,7 +95,7 @@ def test_unpaired_trials_against_a_paired_delta_rope_are_refused():
         (TRIAL_COMPARISON_UNPAIRED, ROPE_VARIES_RUN_REPEAT),
     ],
 )
-def test_legitimate_combinations_are_not_refused(comparison, varies):
+def test_legitimate_combinations_are_not_refused(comparison: str, varies: str) -> None:
     guard_rope_provenance(
         _meta(**{TRIAL_COMPARISON_FIELD: comparison, ROPE_VARIES_FIELD: varies})
     )
@@ -110,7 +110,7 @@ def test_legitimate_combinations_are_not_refused(comparison, varies):
         {TRIAL_COMPARISON_FIELD: "", ROPE_VARIES_FIELD: ""},
     ],
 )
-def test_an_undeclared_or_half_declared_record_has_no_opinion(extra):
+def test_an_undeclared_or_half_declared_record_has_no_opinion(extra: dict[str, object]) -> None:
     guard_rope_provenance(_meta(**extra))
 
 
@@ -122,7 +122,7 @@ def test_an_undeclared_or_half_declared_record_has_no_opinion(extra):
         (TRIAL_COMPARISON_FIELD, "same_seed"),
     ],
 )
-def test_a_word_outside_the_vocabulary_is_refused_rather_than_read_as_silence(field, value):
+def test_a_word_outside_the_vocabulary_is_refused_rather_than_read_as_silence(field: str, value: str) -> None:
     with pytest.raises(RegistryValidationError) as excinfo:
         guard_rope_provenance(_meta(**{field: value}))
     assert excinfo.value.field == field
@@ -130,7 +130,7 @@ def test_a_word_outside_the_vocabulary_is_refused_rather_than_read_as_silence(fi
 
 # --- where the guard sits -------------------------------------------------------------
 
-def test_plain_register_model_refuses_the_mismatch():
+def test_plain_register_model_refuses_the_mismatch() -> None:
     """The CLI `register-model` path checks nothing else at all, so it is the choke point."""
     space = RegistrySpace()
     with pytest.raises(RegistryValidationError):
@@ -146,7 +146,7 @@ def test_plain_register_model_refuses_the_mismatch():
     assert space.list_facts("model") == []
 
 
-def test_register_model_with_baseline_refuses_the_detection_registration():
+def test_register_model_with_baseline_refuses_the_detection_registration() -> None:
     """The live shape: a bar measured over eight frame-bootstrap draws, trials paired."""
     draws = [0.6076, 0.6011, 0.6152, 0.5893, 0.6208, 0.5977, 0.6104, 0.6039]
     ledger = {f"d{i}": v for i, v in enumerate(draws)}
@@ -171,7 +171,7 @@ def test_register_model_with_baseline_refuses_the_detection_registration():
     assert register_model_with_baseline(space, meta, ledger)
 
 
-def test_declaring_the_pairing_after_registration_is_not_a_way_around_the_guard():
+def test_declaring_the_pairing_after_registration_is_not_a_way_around_the_guard() -> None:
     space = RegistrySpace()
     model_id = register_model(space, _meta(**{ROPE_VARIES_FIELD: ROPE_VARIES_EVAL_SAMPLE}))
     with pytest.raises(RegistryValidationError):
@@ -197,7 +197,7 @@ LIVE_CAMPAIGNS = {
 
 
 @pytest.mark.parametrize("name", sorted(LIVE_CAMPAIGNS))
-def test_the_four_live_campaigns_still_register_and_still_adjudicate(name):
+def test_the_four_live_campaigns_still_register_and_still_adjudicate(name: str) -> None:
     """An existing record that declares NEITHER new field must behave exactly as today."""
     bar, rows = LIVE_CAMPAIGNS[name]
     ledger = {f"{name}-b{i}": v for i, v in enumerate(rows)}
