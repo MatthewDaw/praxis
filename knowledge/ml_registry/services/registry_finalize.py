@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 from pathlib import Path
@@ -9,6 +9,7 @@ from typing import Any
 
 from knowledge.ml_registry.domain import Alias, CampaignView, ModelVersion
 from knowledge.ml_registry.services.completeness import campaign_completeness, campaign_coverage
+from knowledge.ml_registry.services.registry_adjudication import adjudicate_against_champion
 from knowledge.ml_registry.storage.blobs import BlobError
 from knowledge.ml_registry.storage.registry import Registry, RegistryError, _PRODUCTION_CAPABILITY
 
@@ -24,6 +25,16 @@ CompatibilityLoader = Callable[[ModelVersion, Path, str], bool]
 class FinalizedModel:
     model_version: ModelVersion
     production_alias: Alias
+
+
+LandingCommitWriter = Callable[[FinalizedModel], str]
+
+
+@dataclass(frozen=True)
+class ConvergePromotion:
+    verdict: str
+    finalized: FinalizedModel | None = None
+    landing_commit: str | None = None
 
 
 def _decoded(row: Mapping[str, Any], key: str) -> Any:
@@ -215,6 +226,86 @@ class RegistryFinalizer:
                            "artifact_id": parent["artifact_id"], "checksum": parent["checksum"],
                            "kind": link["kind"]})
         return result
+
+
+class ConvergePromoter:
+    """Adjudicate a full-length run, finalize its aliases, then call the landing writer."""
+
+    def __init__(
+        self,
+        registry: Registry,
+        *,
+        compatibility_loader: CompatibilityLoader,
+        landing_commit: LandingCommitWriter,
+        min_measured: int = 3,
+    ) -> None:
+        self.registry = registry
+        self.finalizer = RegistryFinalizer(
+            registry, compatibility_loader=compatibility_loader, min_measured=min_measured,
+        )
+        self.landing_commit = landing_commit
+
+    def run(
+        self,
+        view: CampaignView,
+        *,
+        run_id: str,
+        version: int,
+        reason: str,
+        promotion: Mapping[str, Any] | None = None,
+        consuming_sports: tuple[str, ...] = (),
+        measured_sports: tuple[str, ...] = (),
+    ) -> ConvergePromotion:
+        if view.registered_model["sport_scope"] == "shared":
+            missing = sorted(set(consuming_sports) - set(measured_sports))
+            if missing:
+                raise RegistryFinalizationError(
+                    "shared-family promotion is missing consumer measurements: " + ", ".join(missing)
+                )
+        aliases = {
+            row["alias"]: dict(row)
+            for row in self.registry.rows("aliases")
+            if row["model_id"] == view.binding.model_id
+            and row["alias"] in {"champion", "production"}
+        }
+        verdict = adjudicate_against_champion(
+            self.registry,
+            run_id=run_id,
+            model_id=view.binding.model_id,
+            reason=reason,
+            promotion=promotion,
+        )
+        if verdict != "adopted":
+            return ConvergePromotion(verdict)
+        current_runs = self.registry.rows("runs")
+        refreshed = CampaignView(
+            view.binding,
+            view.experiment,
+            view.registered_model,
+            view.model_fact,
+            tuple(replace(idea, runs=tuple(
+                row for row in current_runs if row["idea_id"] == idea.fact_id
+            )) for idea in view.ideas),
+        )
+        try:
+            finalized = self.finalizer.finalize(refreshed, version=version, reason=reason)
+            commit = self.landing_commit(finalized).strip()
+            if not commit:
+                raise RegistryFinalizationError("landing writer returned no commit")
+        except Exception as exc:
+            try:
+                self.registry._rollback_failed_landing(
+                    model_id=view.binding.model_id,
+                    failed_version=version,
+                    aliases=aliases,
+                    capability=_PRODUCTION_CAPABILITY,
+                )
+            except Exception as rollback_exc:
+                raise RegistryFinalizationError(
+                    f"promotion failed ({exc}); alias rollback also failed: {rollback_exc}"
+                ) from rollback_exc
+            raise RegistryFinalizationError(f"promotion failed: {exc}") from exc
+        return ConvergePromotion(verdict, finalized, commit)
 
 
 class RegistryFinalizeService:
