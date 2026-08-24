@@ -16,6 +16,7 @@ from knowledge.ml_registry.write_path import (RegistrySpace, register_idea, regi
                                               register_trial, supersede_trial)
 
 from knowledge.ml_registry.testing.rope_fixtures import rope_ledger_rows
+from knowledge.ml_registry.verdict import LedgerRow
 
 LEDGER = frozenset({"c1", "c2"})
 
@@ -125,13 +126,12 @@ _DISPATCH_MODEL_META = {
 
 
 def _dispatch_fixture(claim_age_s: float
-                      ) -> tuple[RegistrySpace, str, str, str, dict[str, object]]:
+                      ) -> tuple[RegistrySpace, str, str, str, dict[str, LedgerRow]]:
     """A model whose only idea is claimed ``claim_age_s`` ago under a 900s lease, with an
     in-flight trial left behind by that claim's worker."""
     import time as _time
 
     from knowledge.ml_registry.lifecycle import DEFAULT_IDEA_CLAIM_LEASE_TTL_S, claim_idea
-    from knowledge.ml_registry.verdict import LedgerRow
 
     ledger = {
         "base": LedgerRow(value=1.0, throughput=1200.0, diff_lines=0),

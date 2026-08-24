@@ -821,7 +821,7 @@ def test_a_campaign_whose_win_condition_cannot_be_evaluated_is_refused_naming_it
     ],
 )
 def test_parse_win_condition_accepts_the_structured_forms(
-    declared: str, expected: dict[str, object],
+    declared: object, expected: dict[str, object],
 ) -> None:
     assert parse_win_condition(declared) == expected
 
