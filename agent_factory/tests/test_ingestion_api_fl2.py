@@ -346,15 +346,26 @@ def test_rollback_wave_deactivates_checks_and_annotates_lessons_in_one_command(
 
 # --------------------------------------------------------------------------- R1a: plan-time entry point
 
-def test_plan_time_author_check_writes_no_lesson_and_attempts_no_proof(
+def test_plan_time_author_check_writes_no_lesson_and_proves_the_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """R1a still writes NO lesson. It no longer skips proof.
+
+    This test used to assert "attempts no proof" and authored `grep -R TODO docs/` to show it —
+    which is, exactly, the inverted absence check that became a build blocker: its exit code is 0
+    when TODOs EXIST and 1 when the invariant holds, so it is red on a healthy tree and green only
+    once the thing it guards has broken. The old contract wrote it without comment. The new one
+    runs it first, and a check that is already red is refused.
+    """
     _authed(monkeypatch)
     calls = _recording_request(monkeypatch)
+    monkeypatch.setattr(ingestion_api, "prove_check_is_passable",
+                        lambda run, **kw: {"exit_code": 0, "passed": True, "at": 0.0,
+                                           "cwd": ".", "argv": ["pytest", "-q"], "output": ""})
 
     result = ingestion_api.plan_time_author_check(
         "the doc-sync completeness guard must pass", "proj",
-        applies_to=["*"], run="grep -R TODO docs/",
+        applies_to=["*"], run="pytest -q",
     )
 
     assert result["id"] is not None
@@ -364,9 +375,29 @@ def test_plan_time_author_check_writes_no_lesson_and_attempts_no_proof(
     body = calls[0]["body"]
     assert body["category"] == "check"
     meta = body["meta"]
-    assert meta["proof_status"] == "exempt"
+    # No lesson was written: the ONLY request made was the check insert asserted above.
+    assert meta["proof_status"] == "proven"
+    assert meta["authoring_proof"]["passed"] is True
     assert meta[ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_GATING
-    assert meta["run_hash"] == ingestion_api._hash_text("grep -R TODO docs/")
+    assert meta["run_hash"] == ingestion_api._hash_text("pytest -q")
+
+
+def test_plan_time_author_check_refuses_a_body_that_is_red_when_authored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """And writes NOTHING when it refuses — a half-written gating check is worse than none."""
+    _authed(monkeypatch)
+    calls = _recording_request(monkeypatch)
+    monkeypatch.setattr(ingestion_api, "prove_check_is_passable",
+                        lambda run, **kw: {"exit_code": 1, "passed": False, "at": 0.0,
+                                           "cwd": ".", "argv": ["grep", "-R", "TODO", "docs/"],
+                                           "output": ""})
+
+    with pytest.raises(ingestion_api.CheckIsAlreadyRed):
+        ingestion_api.plan_time_author_check(
+            "no doc carries a TODO", "proj", applies_to=["*"], run="grep -R TODO docs/")
+
+    assert calls == [], "nothing may reach Praxis when the check is refused"
 
 
 def test_plan_time_author_lens_inserts_a_planning_lens_and_re_arms_the_audit(

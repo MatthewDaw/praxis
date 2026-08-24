@@ -79,6 +79,7 @@ import base64
 import concurrent.futures
 import hashlib
 import json
+import os
 import posixpath
 import re
 import shlex
@@ -1848,15 +1849,84 @@ def rollback_wave(wave_id: str, project: str, *, identity: str | None = None) ->
 
 # --------------------------------------------------------------------------- R1a: plan-time entry point
 
+class CheckIsAlreadyRed(ValueError):
+    """Raised when a check being authored FAILS the moment it is written.
+
+    NOTHING USED TO VALIDATE A CHECK AT AUTHORING TIME. Three separate build blockers on this box
+    were checks that could not pass, ever, and each cost a full round to discover:
+
+      * an inverted ``grep -rL``, which exits 1 EXACTLY WHEN the invariant it guards HOLDS -- so it
+        was red on a healthy tree and would have gone green only once the invariant broke;
+      * ``make check-factory``, which gated 25 failures that predated the check and belonged to
+        nobody;
+      * an absence invariant that the run-body grammar cannot express at all (no ``!``, ``&&`` or
+        ``|``), so what got written was a command that ran but asserted something else.
+
+    All three share one observable property: RUN THEM AND THEY ARE RED. That is cheap to test and
+    it catches all three, which is why authoring now executes the body instead of trusting it.
+    """
+
+
+def prove_check_is_passable(run: str, *, cwd: str | None = None,
+                            timeout_s: int = 300) -> dict[str, Any]:
+    """Execute a validated run body once and report what happened.
+
+    Never ``shell=True`` and never the stored string: the body is re-parsed through
+    :func:`parse_run_body`, exactly as :func:`_default_runner` does, so authoring cannot become a
+    way to reach a shell that execution refuses.
+
+    Returns the record that will be stored on the check, so the evidence for admitting it is the
+    same evidence a later reader sees.
+    """
+    argv = parse_run_body(run)
+    started = time.time()
+    try:
+        proc = subprocess.run(argv, check=False, capture_output=True, text=True,
+                              cwd=cwd or os.getcwd(), timeout=timeout_s)
+        exit_code, output = proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+    except subprocess.TimeoutExpired:
+        # A check that cannot answer inside the timeout cannot gate a round either: the loop would
+        # hang on it every single ticket. Red, and named as such rather than crashing the author.
+        exit_code, output = 124, f"timed out after {timeout_s}s with no verdict"
+    except OSError as exc:
+        # 127 is the shell's own "command not found", reused here for the same meaning.
+        exit_code, output = 127, f"{type(exc).__name__}: {exc}"
+    return {
+        "exit_code": exit_code,
+        "passed": exit_code == 0,
+        "at": started,
+        "cwd": cwd or os.getcwd(),
+        "argv": argv,
+        # Tail, not head: a suite prints its failures last, and secrets are scrubbed because this
+        # lands in Praxis where every later reader of the check can see it.
+        "output": redact_secrets(output)[-2000:],
+    }
+
+
 def plan_time_author_check(check_text: str, project: str, *, applies_to: list[str] | None = None,
                            run: str | None = None, rubric: dict[str, Any] | None = None,
                            surfaces: list[str] | None = None, source: str | None = None,
-                           identity: str | None = None) -> dict[str, Any]:
-    """R1a — the lenient plan-time authoring entry point: exempt from the lesson/proof
-    requirements (writes NO lesson, attempts NO proof) for completeness guards and doc-sync
-    checks that have no failure to prove against. Still requires an org-authenticated identity
-    (R1b) and still hash-pins its content at insertion (KD8 anchor 1 applies regardless of
-    channel)."""
+                           identity: str | None = None, expect_red: bool = False,
+                           cwd: str | None = None) -> dict[str, Any]:
+    """R1a — the lenient plan-time authoring entry point: exempt from the LESSON requirement
+    (writes no lesson) for completeness guards and doc-sync checks that have no failure to prove
+    against. Still requires an org-authenticated identity (R1b) and still hash-pins its content at
+    insertion (KD8 anchor 1 applies regardless of channel).
+
+    IT IS NO LONGER EXEMPT FROM PROOF. A binary check's body is EXECUTED here, once, and a check
+    that is already red is REFUSED (:class:`CheckIsAlreadyRed`). Three build blockers on this box
+    were checks that could never pass, and every one of them was red the moment it was authored --
+    the cheapest possible moment to notice, and the one nobody was looking at. The cost of finding
+    out later is a full round per check plus a worker blamed for a gate that was never satisfiable.
+
+    ``expect_red=True`` is the deliberate red-to-green case: a guard authored BEFORE the work that
+    makes it pass. It is explicit rather than the default because "it's supposed to be red" is also
+    what a broken check looks like, and the difference has to be an author's assertion on the record
+    -- the observed failure is stored either way, so a reviewer can see WHY it was red and judge
+    whether that reason is the invariant or a defect in the check.
+
+    Graded (rubric) checks are judge-scored and have no body to run; they stay ``exempt``.
+    """
     authenticated_as = _require_authenticated(identity)
     meta: dict[str, Any] = {
         "check_id": f"plan-{uuid.uuid4().hex[:12]}", "scope": "validation", "channel": "human",
@@ -1864,6 +1934,32 @@ def plan_time_author_check(check_text: str, project: str, *, applies_to: list[st
         M_ENFORCEMENT_STATE: STATE_GATING, "proof_status": "exempt", "authored_by": authenticated_as,
     }
     validated_run = _validate_run_body(run, channel="human") if (run is not None and rubric is None) else None
+    if validated_run is not None:
+        proof = prove_check_is_passable(validated_run, cwd=cwd)
+        meta["authoring_proof"] = proof
+        if proof["passed"]:
+            meta["proof_status"] = "proven"
+        elif expect_red:
+            # Visibly flagged, exactly as a lenient human insert is (R10/FL11) -- gating now,
+            # carrying its own evidence that it has never once been observed to pass.
+            meta["proof_status"] = "unproven"
+            meta["expected_red_at_authoring"] = True
+        else:
+            raise CheckIsAlreadyRed(
+                f"refusing to author check {meta['check_id']!r}: its run body FAILED "
+                f"(exit {proof['exit_code']}) the moment it was written, so it would block every "
+                f"ticket it applies to without ever being satisfiable.\n"
+                f"  argv   : {proof['argv']}\n"
+                f"  cwd    : {proof['cwd']}\n"
+                f"  output : {proof['output'][-600:] or '<none>'}\n"
+                "Three known ways to land here, all seen on this box: the predicate is INVERTED "
+                "(grep -rL exits 1 exactly when the invariant HOLDS); the command gates "
+                "PRE-EXISTING failures that belong to nobody (make check-factory over 25 of them); "
+                "or the invariant is an ABSENCE that the run-body grammar cannot express, since "
+                "there is no shell and no '!', '&&' or '|'. If instead this is a genuine "
+                "red-to-green guard authored before the work that satisfies it, say so explicitly: "
+                "expect_red=True (CLI: --expect-red)."
+            )
     _pin_content(meta, validated_run=validated_run, rubric=rubric)
     return write_check(check_text, project, meta=meta, source=source)
 
@@ -2297,11 +2393,22 @@ def _cmd_author_check(args: argparse.Namespace) -> int:
     checks were deleted and every remaining instruction points at ``plan_time_author_check``, which
     until now nothing could invoke: the factory had LOST the ability to author a build check."""
     rubric = json.loads(args.rubric) if args.rubric else None
-    written = plan_time_author_check(
-        args.text, args.project, applies_to=_csv(args.applies_to) or None,
-        run=args.run, rubric=rubric, surfaces=_csv(args.surfaces) or None, source=args.source,
-    )
-    print(json.dumps({"id": written.get("id"), "action": written.get("action")}, sort_keys=True))
+    try:
+        written = plan_time_author_check(
+            args.text, args.project, applies_to=_csv(args.applies_to) or None,
+            run=args.run, rubric=rubric, surfaces=_csv(args.surfaces) or None, source=args.source,
+            expect_red=bool(getattr(args, "expect_red", False)), cwd=getattr(args, "cwd", None),
+        )
+    except CheckIsAlreadyRed as exc:
+        # Exit 2, not 1: an unsatisfiable check is a REFUSAL to write, not a transport failure, and
+        # a caller scripting this needs to tell them apart. Nothing was written to Praxis.
+        print(str(exc), file=sys.stderr)
+        return 2
+    meta = written.get("meta") or {}
+    print(json.dumps({"id": written.get("id"), "action": written.get("action"),
+                      "proof_status": meta.get("proof_status"),
+                      "authoring_exit_code": (meta.get("authoring_proof") or {}).get("exit_code")},
+                     sort_keys=True))
     return 0
 
 
@@ -2342,8 +2449,9 @@ def main(argv: list[str] | None = None) -> int:
     rollback.set_defaults(func=_cmd_rollback)
 
     author = sub.add_parser(
-        "author-check", help="author ONE plan-time building-validation check (R1a): no lesson, no "
-                             "proof, hash-pinned and gating on arrival")
+        "author-check", help="author ONE plan-time building-validation check (R1a): no lesson, "
+                             "hash-pinned and gating on arrival. The run body is EXECUTED first and "
+                             "an already-red check is refused (see --expect-red)")
     author.add_argument("text", help="the check criterion")
     author.add_argument("--project", required=True, help="the project space to write into")
     author.add_argument("--applies-to", default=None, dest="applies_to",
@@ -2352,6 +2460,13 @@ def main(argv: list[str] | None = None) -> int:
     author.add_argument("--rubric", default=None, help="a graded check's rubric, as JSON")
     author.add_argument("--surfaces", default=None, help="comma-separated surface ids")
     author.add_argument("--source", default=None, help="provenance pointer")
+    author.add_argument("--expect-red", action="store_true", dest="expect_red",
+                        help="this is a red-to-green guard authored BEFORE the work that satisfies "
+                             "it; record the observed failure and write it anyway. Without this a "
+                             "check that fails when authored is REFUSED (exit 2), because that is "
+                             "also exactly what an unsatisfiable check looks like.")
+    author.add_argument("--cwd", default=None,
+                        help="working directory to run the check body in (default: the cwd)")
     author.set_defaults(func=_cmd_author_check)
 
     lens = sub.add_parser(
