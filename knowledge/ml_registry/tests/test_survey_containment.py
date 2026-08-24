@@ -10,6 +10,7 @@ prompt quotes it as data.
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -145,10 +146,18 @@ def test_pool_text_reaches_a_prompt_only_as_quoted_data() -> None:
     assert json.loads(quoted) == breakout
 
 
-_POOL_TEXT_FIELDS = frozenset({
-    "title", "abstract", "proven_where", "how_it_differs", "mechanism",
-    "why_it_should_still_help",
-})
+def _pool_text_fields() -> frozenset[str]:
+    """Every attribute of a pool entry that carries retrieved TEXT.
+
+    Read off the real classes rather than hand-listed, so the guard cannot drift from the shape it
+    guards -- a field added to either one is covered the day it lands. Only the two identity fields
+    are excluded: an id and a URL are not prose and appear in messages routinely.
+    """
+    names: set[str] = set()
+    for source in (survey.Technique, survey.RetrievedWork):
+        names.update(field.name for field in dataclasses.fields(source))
+        names.update(name for name, value in vars(source).items() if isinstance(value, property))
+    return frozenset(names) - {"id", "source_url"}
 
 
 def _interpolated(tree: ast.AST) -> Iterator[ast.AST]:
@@ -174,6 +183,7 @@ def test_no_code_path_interpolates_pool_text_into_a_prompt() -> None:
     through ``json.dumps`` instead, so it passes this scan by construction.
     """
     root = Path(survey.__file__).resolve().parent.parent
+    fields = _pool_text_fields()
     offenders: list[str] = []
     for path in sorted(root.rglob("*.py")):
         if "/tests/" in path.as_posix():
@@ -185,7 +195,7 @@ def test_no_code_path_interpolates_pool_text_into_a_prompt() -> None:
             offenders.extend(
                 f"{path.relative_to(root)}:{inner.lineno} {inner.attr}"
                 for inner in ast.walk(node)
-                if isinstance(inner, ast.Attribute) and inner.attr in _POOL_TEXT_FIELDS
+                if isinstance(inner, ast.Attribute) and inner.attr in fields
             )
 
     assert offenders == []
