@@ -29,14 +29,12 @@ import pathlib
 import subprocess
 import tempfile
 
-import pytest
-
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "af-ticket-loop.sh"
 
 
 def _prompt(integration_ref: str = "build/research-engine", size: int = 2) -> str:
     src = SCRIPT.read_text()
-    line = next(l for l in src.splitlines() if l.strip().startswith("round_prompt="))
+    line = next(line for line in src.splitlines() if line.strip().startswith("round_prompt="))
     body = line.strip()[len("round_prompt=") :]
     prog = (
         "set -u\n"
