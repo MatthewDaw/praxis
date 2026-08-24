@@ -153,6 +153,24 @@ DEFAULT_SIGMAS = 1.0
 CONSERVATIVE_SIGMAS = 2.0
 
 
+def _as_float(value: object, field: str, meaning: str) -> float:
+    """A meta value read as a number, refused BY NAME when it cannot be one.
+
+    ``meaning`` says what the number is for, so the refusal tells a reader why the unusable
+    value mattered rather than only that it was unusable. This is the single narrowing point
+    for every numeric meta read in this module -- ``meta`` is ``dict[str, object]``, and the
+    alternative to narrowing once here is an ignore comment at each call site.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise RegistryValidationError(f"{field} {value!r} is not a number. {meaning}", field=field)
+    try:
+        return float(value)
+    except ValueError:
+        raise RegistryValidationError(
+            f"{field} {value!r} is not a number. {meaning}", field=field
+        ) from None
+
+
 def declared_sigmas(meta: dict[str, object]) -> float:
     """The multiplier this model's bar is measured in, defaulting to :data:`DEFAULT_SIGMAS`.
 
@@ -163,15 +181,11 @@ def declared_sigmas(meta: dict[str, object]) -> float:
     declared = meta.get(SIGMAS_FIELD)
     if declared in (None, ""):
         return DEFAULT_SIGMAS
-    try:
-        sigmas = float(declared)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        raise RegistryValidationError(
-            f"{SIGMAS_FIELD} {declared!r} is not a number. It states how many multiples of the "
-            "measured dispersion the bar is, and a value that cannot be multiplied cannot "
-            "produce a bar at all",
-            field=SIGMAS_FIELD,
-        ) from None
+    sigmas = _as_float(
+        declared, SIGMAS_FIELD,
+        "It states how many multiples of the measured dispersion the bar is, and a value that "
+        "cannot be multiplied cannot produce a bar at all",
+    )
     if not sigmas > 0.0:
         raise RegistryValidationError(
             f"{SIGMAS_FIELD} {sigmas!r} is not positive; a bar is a positive multiple of a "
@@ -360,13 +374,8 @@ def load_ledger_values(path: Path) -> dict[str, float]:
     return dict(projection.metric_values)
 
 
-def baseline_values(meta: dict[str, object], ledger_values: dict[str, float]) -> list[float]:
-    """The ledger values of the (>= 4) commits named in ``baseline_runs`` -- the rope's
-    evidence, read fresh at every comparison rather than distilled into a stored number.
-
-    Refuses a model with too few baseline runs, and a run whose commit has no scored row:
-    an absent measurement is not a narrow rope, it is no rope at all.
-    """
+def baseline_runs(meta: dict[str, object]) -> list[str]:
+    """The (>= 4) commits whose ledger rows ARE the rope's evidence, refusing too few."""
     runs = meta.get(BASELINE_RUNS_FIELD)
     if not isinstance(runs, list) or len(runs) < REQUIRED_BASELINE_RUN_COUNT:
         raise RegistryValidationError(
@@ -374,8 +383,18 @@ def baseline_values(meta: dict[str, object], ledger_values: dict[str, float]) ->
             f"{BASELINE_RUNS_FIELD} commits, got {runs!r}",
             field=BASELINE_RUNS_FIELD,
         )
+    return [str(commit) for commit in runs]
+
+
+def baseline_values(meta: dict[str, object], ledger_values: dict[str, float]) -> list[float]:
+    """The ledger values of those commits -- the rope's evidence, read fresh at every
+    comparison rather than distilled into a stored number.
+
+    Refuses a run whose commit has no scored row: an absent measurement is not a narrow
+    rope, it is no rope at all.
+    """
     values = []
-    for commit in runs:
+    for commit in baseline_runs(meta):
         if commit not in ledger_values:
             raise RegistryValidationError(
                 f"baseline run commit {commit!r} has no matching row in the external ledger",
@@ -417,8 +436,8 @@ def register_model_with_baseline(
     runs (rows/sec) rather than the mean of the metric values -- the two meanings this
     field used to collapse -- and registration stamps which one it stored.
     """
+    runs = baseline_runs(meta)
     values = baseline_values(meta, ledger_values)
-    runs = list(meta[BASELINE_RUNS_FIELD])  # type: ignore[arg-type]
     if ledger_throughputs is not None:
         tputs = []
         for commit in runs:
@@ -458,7 +477,10 @@ def register_model_with_baseline(
 
     stored_throughput = meta.get(BASELINE_THROUGHPUT_FIELD)
     if stored_throughput not in (None, ""):
-        stored_tput_f = float(stored_throughput)  # type: ignore[arg-type]
+        stored_tput_f = _as_float(
+            stored_throughput, BASELINE_THROUGHPUT_FIELD,
+            "It is the speed bar a trial's recomputed throughput is voided against",
+        )
         if not (_agree(stored_tput_f, throughput) or _agree(stored_tput_f, round(throughput, 4))):
             raise RegistryValidationError(
                 f"stored baseline_throughput {stored_throughput!r} disagrees with the recomputed value "
@@ -545,7 +567,8 @@ def _metric_baseline(
             "baseline commit is scored",
             field=BASELINE_THROUGHPUT_FIELD,
         )
-    return float(stored_bar)  # type: ignore[arg-type]
+    return _as_float(stored_bar, BASELINE_THROUGHPUT_FIELD,
+                     "It is standing in for the metric baseline, so it must be a number")
 
 
 def adjudicate_trial(
@@ -781,6 +804,12 @@ ROPE_SCALING_BASIS_STATIC = "static_measured_rope"
 ROPE_SCALING_BASIS_UNVERIFIED_MODEL = "shape_checked_noise_model_unverified"
 
 
+#: Why a scaling input has to be a number, for the refusal a malformed one raises. Reached
+#: only when a record slipped past :func:`guard_rope_scaling`, which checks the same fields
+#: at registration.
+_SCALING_INPUT = "The bar is a ratio of the distances between these, so it must be a number"
+
+
 def _rope_scaling_mode(meta: dict[str, object]) -> str:
     declared = meta.get(ROPE_SCALING_FIELD)
     if declared in (None, ""):
@@ -850,15 +879,8 @@ def guard_rope_scaling(meta: dict[str, object]) -> str:
             "runs, or declare it",
             field=ROPE_MEASURED_AT_FIELD,
         )
-    try:
-        ceiling_f = float(ceiling)  # type: ignore[arg-type]
-        measured_at_f = float(measured_at)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        raise RegistryValidationError(
-            f"{METRIC_CEILING_FIELD} {ceiling!r} and {ROPE_MEASURED_AT_FIELD} {measured_at!r} "
-            "must both be numbers; the bar is a ratio of the distances between them",
-            field=METRIC_CEILING_FIELD,
-        ) from None
+    ceiling_f = _as_float(ceiling, METRIC_CEILING_FIELD, _SCALING_INPUT)
+    measured_at_f = _as_float(measured_at, ROPE_MEASURED_AT_FIELD, _SCALING_INPUT)
     if _residual(str(direction), ceiling_f, measured_at_f) <= 0.0:
         raise RegistryValidationError(
             f"{METRIC_CEILING_FIELD} {ceiling_f!r} is not beyond {ROPE_MEASURED_AT_FIELD} "
@@ -867,15 +889,10 @@ def guard_rope_scaling(meta: dict[str, object]) -> str:
             "ceiling is wrong or this campaign has already finished",
             field=METRIC_CEILING_FIELD,
         )
-    armor = meta.get(ROPE_ARMOR_FIELD, DEFAULT_ROPE_ARMOR)
-    try:
-        armor_f = float(armor)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        raise RegistryValidationError(
-            f"{ROPE_ARMOR_FIELD} {armor!r} is not a number; it is the FRACTION of the measured "
-            "rope the bar may never fall below",
-            field=ROPE_ARMOR_FIELD,
-        ) from None
+    armor_f = _as_float(
+        meta.get(ROPE_ARMOR_FIELD, DEFAULT_ROPE_ARMOR), ROPE_ARMOR_FIELD,
+        "It is the FRACTION of the measured rope the bar may never fall below",
+    )
     if not (0.0 < armor_f <= 1.0):
         raise RegistryValidationError(
             f"{ROPE_ARMOR_FIELD} {armor_f!r} is outside (0, 1]. At or below 0 there is no armor "
@@ -915,9 +932,9 @@ def comparison_rope(
     if _rope_scaling_mode(meta) != ROPE_SCALING_RESIDUAL:
         return rope
     direction = str(meta["direction"])
-    ceiling = float(meta[METRIC_CEILING_FIELD])  # type: ignore[arg-type]
-    measured_at = float(meta[ROPE_MEASURED_AT_FIELD])  # type: ignore[arg-type]
-    armor = float(meta.get(ROPE_ARMOR_FIELD, DEFAULT_ROPE_ARMOR))  # type: ignore[arg-type]
+    ceiling = _as_float(meta[METRIC_CEILING_FIELD], METRIC_CEILING_FIELD, _SCALING_INPUT)
+    measured_at = _as_float(meta[ROPE_MEASURED_AT_FIELD], ROPE_MEASURED_AT_FIELD, _SCALING_INPUT)
+    armor = _as_float(meta.get(ROPE_ARMOR_FIELD, DEFAULT_ROPE_ARMOR), ROPE_ARMOR_FIELD, _SCALING_INPUT)
     ratio = _residual(direction, ceiling, at_value) / _residual(direction, ceiling, measured_at)
     return rope * min(1.0, max(armor, ratio))
 
@@ -939,7 +956,8 @@ def describe_rope(
         ROPE_SCALING_BASIS_FIELD: meta.get(ROPE_SCALING_BASIS_FIELD, ROPE_SCALING_BASIS_STATIC),
     }
     if mode == ROPE_SCALING_RESIDUAL:
-        armor = float(meta.get(ROPE_ARMOR_FIELD, DEFAULT_ROPE_ARMOR))  # type: ignore[arg-type]
+        armor = _as_float(meta.get(ROPE_ARMOR_FIELD, DEFAULT_ROPE_ARMOR), ROPE_ARMOR_FIELD,
+                          _SCALING_INPUT)
         described["scale"] = bar / measured if measured else 1.0
         described["armored"] = bar <= measured * armor + AGREEMENT_TOLERANCE
         described["caveat"] = (

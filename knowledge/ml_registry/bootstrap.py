@@ -74,6 +74,7 @@ from typing import Any
 
 from knowledge.ml_registry.contracts.ledger_v2 import read_ledger_compatibility
 from knowledge.ml_registry.floor import DEFAULT_SIGMAS as FLOOR_DEFAULT_SIGMAS
+from knowledge.ml_registry.floor import measure_rope as floor_measure_rope
 from knowledge.ml_registry.schema import RegistryValidationError
 
 LEDGER_V2_HEADER = ["commit", "metric_value", "memory_gb", "status", "description",
@@ -175,11 +176,14 @@ def check_ledger(path: Path, baseline_prefix: str) -> tuple[list[Precondition], 
     return out, baselines
 
 
-def measure_rope(baselines: list[dict], sigmas: float = DEFAULT_SIGMAS) -> dict[str, Any]:
+def measure_rope(baselines: list[dict[str, Any]],
+                 sigmas: float = DEFAULT_SIGMAS) -> dict[str, Any]:
     """The rope these baseline rows imply, WITH the evidence a reader needs to judge it.
 
     Reported for the operator, never registered: the registry recomputes this same number
-    from the same commits at every comparison.
+    from the same commits at every comparison, so WHAT the rope is comes from
+    :func:`knowledge.ml_registry.floor.measure_rope` rather than being restated here --
+    two definitions of one bar is the defect R3a retired in the first place.
     """
     values = [float(b["metric_value"]) for b in baselines]
     sd = st.stdev(values) if len(values) > 1 else 0.0
@@ -191,7 +195,7 @@ def measure_rope(baselines: list[dict], sigmas: float = DEFAULT_SIGMAS) -> dict[
         "sd": round(sd, 6),
         "sd_relative_uncertainty": round(rel_unc, 3),
         "sigmas": sigmas,
-        "rope": round(sigmas * sd, 6),
+        "rope": round(floor_measure_rope(values, sigmas=sigmas), 6) if len(values) > 1 else 0.0,
         "note": ("SD from few runs is itself uncertain; prefer >= 12 runs when a run is cheap. "
                  "sigmas defaults to 1: a null arm clears a one-sigma bar 15.9% of the time "
                  "one-sided (2.3% at two sigma), ~10 expected false adoptions over a 66-idea "
@@ -208,7 +212,7 @@ def build_model_meta(*, metric: str, direction: str, baseline_commit: str,
                      win_condition: Any,
                      notes: str | None = None, sigmas: float | None = None,
                      sigmas_reason: str | None = None,
-                     baseline_runs: list | None = None,
+                     baseline_runs: list[str] | None = None,
                      void_throughput_fraction: float | None = None) -> dict[str, Any]:
     """``win_condition`` is REQUIRED and may not be the bare adoption string.
 
