@@ -533,16 +533,18 @@ class ExecutorProcessBackend:
             except ProcessLookupError:
                 return True
             except PermissionError:
-                # Darwin can return EPERM briefly for a killed group whose leader
-                # is a zombie awaiting reaping. A zombie owns no executable child;
-                # verify that state instead of reporting an orphan.
-                checked = subprocess.run(
-                    ["ps", "-o", "stat=", "-p", str(process.get("pid", pgid))],
-                    capture_output=True, text=True, check=False,
-                )
-                states = checked.stdout.split()
-                if checked.returncode != 0 or not states or all(state.startswith("Z") for state in states):
-                    return True
+                pass
+            # A reconstructed backend has no Popen handle with which to reap its
+            # executor. Linux reports a killed zombie group as present, while Darwin
+            # may report EPERM. In both cases the zombie owns no executable child and
+            # cancellation is complete rather than orphaned.
+            checked = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(process.get("pid", pgid))],
+                capture_output=True, text=True, check=False,
+            )
+            states = checked.stdout.split()
+            if checked.returncode != 0 or not states or all(state.startswith("Z") for state in states):
+                return True
             time.sleep(0.02)
         return False
 

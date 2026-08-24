@@ -17,14 +17,23 @@ def _config(tmp_path: Path) -> Path:
     Registry(tmp_path / "registry").register_campaign_spec({
         "schema_version": 1, "campaign_id": "R1", "model_id_policy": "model-R1",
         "axis": "fixture", "sport_scope": "shared", "target_ontology": "fixture",
-        "metric": {"name": "f1"}, "stages": [{"name": "representation"}],
-        "corpora": [{"id": "fixture"}], "requires": [],
+        "metric": {
+            "name": "f1", "direction": "maximize",
+            "operating_point": {"selection": "frozen", "threshold": .5},
+            "aggregation": [{"level": "item", "unit": "item_id", "minimum_sample": 2}],
+            "scoring_corpus": "fixture", "split_unit": "item_id",
+        },
+        "stages": [{"name": "representation"}],
+        "corpora": [{"id": "fixture", "roles": ["scoring"], "split_unit": "item_id"}],
+        "requires": [],
         "produces": [{"artifact_type": "fit", "schema_version": "1", "oof_for": []}],
         "supervision": {"mode": "composing"}, "resources": {"lane": "cpu"},
         "isolation": {"state_root": "state/R1"},
         "production": {"protocol": "Fixture"}, "extends": [],
         "deterministic_incumbent": None, "learned_escalation": False,
-    })
+    }, scoring_corpora={"fixture": [
+        {"item_id": "one", "f1": .7}, {"item_id": "two", "f1": .8},
+    ]})
     _write(tmp_path / "portfolio.json", {
         "schema_version": 1,
         "campaigns": [{
