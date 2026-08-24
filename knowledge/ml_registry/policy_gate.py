@@ -34,7 +34,7 @@ def _finite(value: object, field: str) -> float:
     return result
 
 
-def _metric_contract(spec: CampaignSpec) -> tuple[str, str, tuple[Mapping[str, object], ...]]:
+def _metric_contract(spec: CampaignSpec) -> tuple[str, str, tuple[tuple[str, str, int], ...]]:
     metric = spec.metric
     operating_point = _mapping(metric.get("operating_point"), "metric.operating_point")
     selection = operating_point.get("selection")
@@ -52,7 +52,7 @@ def _metric_contract(spec: CampaignSpec) -> tuple[str, str, tuple[Mapping[str, o
             "metric.aggregation must declare at least one level with level, unit, and "
             "minimum_sample so effective sample size can be checked before registration"
         )
-    aggregation: list[Mapping[str, object]] = []
+    aggregation: list[tuple[str, str, int]] = []
     seen_levels: set[str] = set()
     for index, raw_level in enumerate(raw_aggregation):
         level = _mapping(raw_level, f"metric.aggregation[{index}]")
@@ -60,13 +60,13 @@ def _metric_contract(spec: CampaignSpec) -> tuple[str, str, tuple[Mapping[str, o
         if name in seen_levels:
             raise ContractError(f"metric.aggregation[{name}].level is duplicated; name each level once")
         seen_levels.add(name)
-        _text(level.get("unit"), f"metric.aggregation[{name}].unit")
+        unit = _text(level.get("unit"), f"metric.aggregation[{name}].unit")
         minimum = level.get("minimum_sample")
         if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum < 1:
             raise ContractError(
                 f"metric.aggregation[{name}].minimum_sample must be an integer at least 1"
             )
-        aggregation.append(level)
+        aggregation.append((name, unit, minimum))
     return (
         _text(metric.get("name"), "metric.name"),
         _text(metric.get("scoring_corpus"), "metric.scoring_corpus"),
@@ -78,7 +78,7 @@ def _scoring_rows(
     spec: CampaignSpec,
     scoring_corpora: Mapping[str, Sequence[Mapping[str, object]]],
     corpus_id: str,
-) -> tuple[Mapping[str, object], ...]:
+) -> tuple[Mapping[str, object], tuple[Mapping[str, object], ...]]:
     declaration = next(
         (corpus for corpus in spec.corpora if corpus.get("id") == corpus_id),
         None,
@@ -101,15 +101,13 @@ def _scoring_rows(
             f"scoring_corpora[{corpus_id}] must provide at least one score row; pass the named "
             "corpus at registration so its rope can be recomputed"
         )
-    return tuple(rows)
+    return declaration, tuple(rows)
 
 
 def _validate_sample_sizes(
-    rows: Sequence[Mapping[str, object]], aggregation: Sequence[Mapping[str, object]],
+    rows: Sequence[Mapping[str, object]], aggregation: Sequence[tuple[str, str, int]],
 ) -> None:
-    for declaration in aggregation:
-        level = str(declaration["level"])
-        unit = str(declaration["unit"])
+    for level, unit, minimum in aggregation:
         missing = sum(row.get(unit) in (None, "") for row in rows)
         if missing:
             raise ContractError(
@@ -117,7 +115,6 @@ def _validate_sample_sizes(
                 f"lack it; populate {unit!r} on every row"
             )
         found = len({str(row[unit]) for row in rows})
-        minimum = int(declaration["minimum_sample"])
         if found < minimum:
             raise ContractError(
                 f"metric.aggregation[{level}].minimum_sample requires {minimum} unique "
@@ -134,10 +131,9 @@ def compute_campaign_rope(
     """Validate ``spec`` policy and return its deterministic split-unit bootstrap rope."""
 
     metric_name, corpus_id, aggregation = _metric_contract(spec)
-    rows = _scoring_rows(spec, scoring_corpora, corpus_id)
+    corpus, rows = _scoring_rows(spec, scoring_corpora, corpus_id)
     _validate_sample_sizes(rows, aggregation)
     split_unit = _text(spec.metric.get("split_unit"), "metric.split_unit")
-    corpus = next(item for item in spec.corpora if item.get("id") == corpus_id)
     if corpus.get("split_unit") != split_unit:
         raise ContractError(
             f"metric.split_unit {split_unit!r} does not match corpora[{corpus_id}].split_unit "
