@@ -127,9 +127,9 @@ def test_the_persisted_stage_close_validates_against_the_shared_stage_contract()
                if idea.meta.get("stage") == "architecture"]
     assert len(untried) == 1, "the stop must pre-empt a remaining arm, not exhaust the stage"
 
-    record = StageCloseRecord.from_mapping(
-        space.get(model_id).meta[STAGE_CLOSES_FIELD][0],  # type: ignore[union-attr]
-    )
+    model = space.get(model_id)
+    assert model is not None
+    record = StageCloseRecord.from_mapping(model.meta[STAGE_CLOSES_FIELD][0])
     assert record.outcome is StageOutcome.STAGNANT
     assert record.reason == ("no improvement in the last 10 experiments; "
                              "1 of 11 material families untried")
