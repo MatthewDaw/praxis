@@ -49,7 +49,46 @@ from typing import Any, NamedTuple
 DEFAULT_API_BASE = "http://localhost:8000"
 DEFAULT_ORG = "agent-factory"
 _DEFAULT_CACHE_PATH = Path.home() / ".praxis" / "mcp.json"
-_HTTP_TIMEOUT_S = 10
+# A COLD START IS NOT AN OUTAGE. Praxis runs on App Runner, which scales to zero: the first
+# request after an idle period waits for a container to come up, and 10s with no retry read that
+# as PRAXIS UNREACHABLE. Because the client is fail-CLOSED by contract, that verdict blocked every
+# Stop gate on the box -- twice -- while the service was perfectly healthy and merely asleep.
+# Fail-closed is right; treating "not answered yet" as "answered no" is not.
+_HTTP_TIMEOUT_S = int(os.environ.get("PRAXIS_HTTP_TIMEOUT_S", "30"))
+# Attempts INCLUDING the first, so 1 disables retrying entirely. Backoff is 1s, 2s, 4s ... which
+# covers a cold start comfortably inside the Stop hook's own patience.
+_HTTP_ATTEMPTS = max(1, int(os.environ.get("PRAXIS_HTTP_ATTEMPTS", "4")))
+_HTTP_BACKOFF_S = float(os.environ.get("PRAXIS_HTTP_BACKOFF_S", "1"))
+
+# Statuses a GATEWAY returns when the app itself never saw the request. App Runner emits 503 while
+# a scaled-to-zero service wakes; 502/504 are the same shape. 429 is a rate limit -- nothing was
+# applied, so it is equally safe to repeat.
+_RETRYABLE_STATUS = frozenset({429, 502, 503, 504})
+
+
+def _is_retryable(exc: BaseException, method: str) -> bool:
+    """Whether repeating THIS request is both useful and safe.
+
+    Two separate questions, and conflating them is how a retry turns one lease claim into two:
+
+      * useful  -- the failure is transient (a sleeping container, a gateway, a rate limit),
+                   not a definite answer. A 401/403/404/409 is the server TELLING us something;
+                   repeating it just says it again, slower. That is the "a 403 burns the retry
+                   budget" bug: an answer was being counted as an outage.
+      * safe    -- for a non-idempotent method, we must know the request was NEVER APPLIED.
+                   A connection-level failure and a gateway 5xx both prove that (nothing reached
+                   the app). A read TIMEOUT does not: the server may have applied the write and
+                   simply been slow to say so, and urllib cannot tell a connect timeout from a
+                   read timeout. So a timeout retries for GET/HEAD only.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in _RETRYABLE_STATUS
+    if isinstance(exc, TimeoutError):                      # socket.timeout is an alias since 3.10
+        return method in ("GET", "HEAD")
+    if isinstance(exc, urllib.error.URLError):
+        # Connection refused / DNS / TLS reset: the request did not land. Safe for any method.
+        return not isinstance(exc.reason, TimeoutError)
+    return False
 
 
 def _cache_path() -> Path:
@@ -355,10 +394,34 @@ def _request(method: str, path: str, *, params: dict | None = None,
         headers["Content-Type"] = "application/json"
 
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    last: BaseException | None = None
+    for attempt in range(_HTTP_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw.strip() else {}
+        except Exception as exc:  # noqa: BLE001 -- classified by _is_retryable, then re-raised
+            # A benign 404 the caller opted into is a RESULT, not a failure; never spend a retry
+            # (or a backoff sleep) on it.
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 404 and not_found_ok:
+                return {}
+            last = exc
+            if attempt + 1 < _HTTP_ATTEMPTS and _is_retryable(exc, method):
+                # stderr, not silence: an operator reading a hook's log should be able to see that
+                # the gate waited for a cold start rather than wondering why it took 7 seconds.
+                delay = _HTTP_BACKOFF_S * (2 ** attempt)
+                print(
+                    f"[praxis] {method} {path} transient ({type(exc).__name__}: {exc}); "
+                    f"retry {attempt + 1}/{_HTTP_ATTEMPTS - 1} in {delay:.0f}s",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                continue
+            break
+    exc = last  # noqa: F841 -- re-raised through the classifiers below
+    assert exc is not None
     try:
-        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
-            raw = resp.read().decode("utf-8")
-            return json.loads(raw) if raw.strip() else {}
+        raise exc
     except urllib.error.HTTPError as exc:
         # A benign 404 (route/resource not found, e.g. a surface with no checks endpoint) is NOT
         # "Praxis unreachable" — the round-trip succeeded. Callers that opt in get an empty result

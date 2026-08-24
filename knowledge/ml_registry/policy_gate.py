@@ -124,12 +124,29 @@ def _validate_sample_sizes(
             )
 
 
+def _validate_disposition(spec: CampaignSpec) -> None:
+    model_family = spec.production.get("model_family")
+    for index, artifact in enumerate(spec.produces):
+        artifact_type = artifact.get("artifact_type")
+        if (
+            model_family == "measurement_only_no_weights"
+            and isinstance(artifact_type, str)
+            and "checkpoint" in artifact_type.casefold()
+        ):
+            raise ContractError(
+                "production.model_family declares 'measurement_only_no_weights', but "
+                f"produces[{index}].artifact_type emits checkpoint {artifact_type!r}; remove the "
+                "checkpoint artifact or declare a weights-bearing model family"
+            )
+
+
 def compute_campaign_rope(
     spec: CampaignSpec,
     scoring_corpora: Mapping[str, Sequence[Mapping[str, object]]],
 ) -> dict[str, object]:
     """Validate ``spec`` policy and return its deterministic split-unit bootstrap rope."""
 
+    _validate_disposition(spec)
     metric_name, corpus_id, aggregation = _metric_contract(spec)
     corpus, rows = _scoring_rows(spec, scoring_corpora, corpus_id)
     _validate_sample_sizes(rows, aggregation)

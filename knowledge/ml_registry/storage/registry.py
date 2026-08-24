@@ -607,16 +607,21 @@ class Registry:
         spec: Mapping[str, Any],
         *,
         scoring_corpora: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
+        structural_validator: Callable[[Mapping[str, Any]], object] | None = None,
     ) -> bool:
         """Persist a validated project-owned CampaignSpec in the canonical event log.
 
         Campaign specifications are control-plane inputs rather than registry entities,
         so they deliberately have no ninth projection table.  The latest event for a
-        campaign is the durable portfolio-manifest snapshot used by readiness.
+        campaign is the durable portfolio-manifest snapshot used by readiness.  The
+        injectable validator is the seam for the project-owned structural gate; until
+        that gate exists, fixtures can prove that its refusals propagate unchanged.
         """
         from knowledge.ml_registry.contracts import CampaignSpec, ContractError
         from knowledge.ml_registry.policy_gate import compute_campaign_rope
 
+        if structural_validator is not None:
+            structural_validator(spec)
         campaign = CampaignSpec.from_mapping(spec)
         if campaign.rope is not None:
             raise ContractError(

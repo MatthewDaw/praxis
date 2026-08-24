@@ -236,8 +236,117 @@ print((d.get("claudeAiOauth") or {}).get("subscriptionType", ""))
 PYEOF
 }
 
+# ------------------------------------------------------ live generation probe (the real gate) ----
+# WHY THIS EXISTS: `--check` printed `preflight: OK` for a backend that could not emit a single
+# token. AUTH IS NOT QUOTA. Measured on 2026-08-24: grok (subscription quota wall) and deepseek
+# ("Insufficient Balance") BOTH passed preflight -- deepseek because it had no probe at all, only a
+# key-FILE existence test, and grok because a probe returning no PONG and no *auth* error was
+# downgraded to a WARNING. The run launched, every session died on its first turn, and the operator
+# was told "builds are running". A preflight that cannot fail is not a preflight.
+#
+# The contract is now: PREFLIGHT MUST WITNESS ONE REAL GENERATION. Five verdicts, split the way the
+# REMEDIES split -- "top up", "log in again", and "wait for the window" are three different jobs,
+# and collapsing them into one exit code is why the last false OK took an operator to diagnose:
+#   live         PONG observed. The ONLY way to pass.
+#   credit       credential valid, account cannot spend: insufficient balance, 402. -> exit 3.
+#   quota        credential valid, allowance spent: usage/rate limit, 429.          -> exit 8.
+#   rejected     credential itself refused: 401, /login.                            -> exit 1.
+#   inconclusive neither a token nor a recognised error (a network blip). Retried once with
+#                backoff; STILL inconclusive is FATAL, because "we could not prove it works" is
+#                precisely the state that produced the false OK. AF_PROBE_LENIENT=1 downgrades a
+#                persistent inconclusive to a warning -- an escape hatch for a genuinely offline
+#                box. It can never downgrade credit/quota/rejected: those are proof of failure,
+#                not absence of proof.
+AF_PROBE_KIND=""        # live|credit|quota|rejected|inconclusive -- set by af_probe_generation
+AF_PROBE_OUTPUT=""      # last probe transcript, for the caller's error report
+AF_BACKEND_EXIT=1       # exit code the caller should use when resolve_backend fails
+
+# Classify one probe transcript. Error patterns are tested BEFORE the success token deliberately:
+# if a transcript carries both, the error is the honest reading, and a preflight that guesses
+# optimistically is the bug being fixed. The prompt echo is stripped first because `codex exec`
+# (and grok's json transcript) replay the user prompt, which literally contains the word PONG --
+# matching that would make every probe "pass" without the model ever answering.
+_af_classify_probe(){
+  local out="$1" answer
+  answer="$(printf '%s\n' "$out" | grep -v 'Reply with exactly' || true)"
+  if printf '%s' "$out" | grep -qiE 'insufficient balance|insufficient_quota|insufficient funds|billing_not_active|credit balance is too low|exceeded your current quota|payment required|\b402\b'; then
+    echo credit; return 0
+  fi
+  if printf '%s' "$out" | grep -qiE 'usage limit reached|rate.?limit|quota exceeded|too many requests|\b429\b|out of (credits|quota)|limit will reset|upgrade to increase'; then
+    echo quota; return 0
+  fi
+  if printf '%s' "$out" | grep -qiE 'please run /login|invalid api key|authentication_error|authentication failed|oauth.*invalid|not authenticated|login required|missing bearer|\b401\b|unauthorized'; then
+    echo rejected; return 0
+  fi
+  if printf '%s' "$answer" | grep -q 'PONG'; then echo live; return 0; fi
+  echo inconclusive
+}
+
+# A throwaway CLAUDE_CONFIG_DIR. Installed plugins MUTE headless `claude -p` -- it exits 0 having
+# printed nothing -- so a probe run against the real config dir is indistinguishable from a dead
+# credential. Pointing at a bare dir is what the graded judge does (evals/plan_repro/claude_cli.py).
+# $1 = dir suffix, $2 = optional credentials file to SYMLINK (never copy: no secret is duplicated,
+# and a re-login is picked up on the next run).
+_af_probe_config_dir(){
+  local dir="${TMPDIR:-/tmp}/af-probe-$1-config"
+  mkdir -p "$dir" 2>/dev/null || true
+  if [ -n "${2:-}" ] && [ -r "$2" ]; then ln -sf "$2" "$dir/.credentials.json" 2>/dev/null || true; fi
+  printf '%s' "$dir"
+}
+
+# $1 = backend label, $2 = a shell command string that must print the model's answer on stdout or
+# its error on stderr (the caller builds it, env-scrubbing included, so the probe spends exactly
+# the credential the sessions will spend -- a probe against a different identity is theatre).
+af_probe_generation(){
+  local label="$1" cmd="$2" attempt out kind
+  for attempt in 1 2; do
+    out="$(bash -c "$cmd" 2>&1 || true)"
+    kind="$(_af_classify_probe "$out")"
+    AF_PROBE_KIND="$kind"; AF_PROBE_OUTPUT="$out"
+    case "$kind" in
+      live)                    return 0 ;;
+      credit|quota|rejected)   return 1 ;;
+    esac
+    if [ "$attempt" = 1 ]; then
+      echo "[backend] $label probe inconclusive (no token, no recognised error) - retrying once in ${AF_PROBE_RETRY_S:-5}s" >&2
+      sleep "${AF_PROBE_RETRY_S:-5}"
+    fi
+  done
+  return 1
+}
+
+# Report a failed probe and pick the exit code. Returns 0 ONLY on the lenient-inconclusive path, so
+# every caller reads:   af_probe_generation ... || af_probe_refuse ... || return 1
+af_probe_refuse(){
+  local label="$1" remedy="$2"
+  case "$AF_PROBE_KIND" in
+    credit)
+      AF_BACKEND_EXIT=3
+      echo "[backend] FATAL: $label authenticates but the account CANNOT SPEND (insufficient balance / 402)." >&2 ;;
+    quota)
+      AF_BACKEND_EXIT=8
+      echo "[backend] FATAL: $label authenticates but its ALLOWANCE IS SPENT (usage/rate limit)." >&2 ;;
+    rejected)
+      AF_BACKEND_EXIT=1
+      echo "[backend] FATAL: $label credential was REJECTED." >&2 ;;
+    *)
+      if [ "${AF_PROBE_LENIENT:-0}" = "1" ]; then
+        echo "[backend] WARNING: $label probe stayed inconclusive twice; AF_PROBE_LENIENT=1 - continuing UNPROVEN" >&2
+        return 0
+      fi
+      AF_BACKEND_EXIT=1
+      echo "[backend] FATAL: $label probe could not witness a generation (twice, no recognised error)." >&2
+      echo "[backend]   preflight proves the backend can EMIT A TOKEN, not merely that it authenticates." >&2
+      echo "[backend]   if this box is genuinely offline and you accept the risk: AF_PROBE_LENIENT=1" >&2 ;;
+  esac
+  printf '%s\n' "$AF_PROBE_OUTPUT" | head -6 | sed 's/^/[backend]   /' >&2
+  echo "[backend]   $remedy" >&2
+  return 1
+}
+
 resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if preflight fails
   local requested
+  AF_BACKEND_EXIT=1
   requested="${AF_MODEL_BACKEND:-}"
   [ -n "$requested" ] || [ ! -r "$HOME/.af-backend" ] || requested="$(tr -d ' \n\r' < "$HOME/.af-backend")"
   [ -n "$requested" ] || requested="deepseek"
@@ -313,21 +422,11 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     #     only the credential, exactly as the graded judge does (see
     #     evals/plan_repro/claude_cli.py). The credential is symlinked, never
     #     copied, so no secret is duplicated and a re-login is picked up.
-    local probe probe_cfg
-    probe_cfg="${TMPDIR:-/tmp}/af-probe-claude-config"
-    mkdir -p "$probe_cfg" 2>/dev/null || true
-    if [ -r "$CREDENTIALS_FILE" ]; then
-      ln -sf "$CREDENTIALS_FILE" "$probe_cfg/.credentials.json" 2>/dev/null || true
-    fi
-    probe="$(cd /tmp && bash -c "unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN; export CLAUDE_CONFIG_DIR='$probe_cfg'; timeout 120 claude --model ${AF_CLAUDE_MODEL:-sonnet} -p 'Reply with exactly: PONG'" 2>&1 || true)"
-    if printf '%s' "$probe" | grep -qiE 'please run /login|invalid api key|authentication_error|oauth.*invalid|401'; then
-      echo "[backend] FATAL: sonnet credential present but REJECTED by Anthropic:" >&2
-      printf '%s\n' "$probe" | head -3 | sed 's/^/[backend]   /' >&2
-      echo "[backend]   fix, once, as ec2-user:  claude setup-token   # then write into $OAUTH_TOKEN_FILE as: export CLAUDE_CODE_OAUTH_TOKEN=..." >&2
-      echo "[backend]   or:                      claude   ->  /login" >&2
-      return 1
-    fi
-    printf '%s' "$probe" | grep -q 'PONG' || echo "[backend] WARNING: sonnet auth probe returned no PONG and no auth error (network/transient?) — continuing" >&2
+    local probe_cfg
+    probe_cfg="$(_af_probe_config_dir claude "$CREDENTIALS_FILE")"
+    af_probe_generation sonnet "cd /tmp; unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN; export CLAUDE_CONFIG_DIR='$probe_cfg'; timeout 120 claude --model ${AF_CLAUDE_MODEL:-sonnet} -p 'Reply with exactly: PONG'" \
+      || af_probe_refuse sonnet "fix, once, as ec2-user:  claude setup-token   (or:  claude  ->  /login)" \
+      || return 1
   elif [ "$BACKEND" = "grok" ]; then
     # Native Grok CLI on the xAI *subscription* (OAuth session token). XAI_API_KEY is
     # unset, not merely out-ranked: if the env key is present Grok spends API credits
@@ -350,20 +449,19 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
       return 1
     fi
     CLAUDE_LAUNCH="unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN; export PATH=\"\$HOME/.grok/bin:\$HOME/.local/bin:\$PATH\"; ${GROK_BIN} --model ${AF_GROK_MODEL} --always-approve"
-    local probe
-    probe="$(cd /tmp && unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN && timeout 120 "$GROK_BIN" --model "$AF_GROK_MODEL" --always-approve -p 'Reply with exactly: PONG' --output-format json 2>&1 || true)"
-    if printf '%s' "$probe" | grep -qiE '"apiKeySource"[[:space:]]*:[[:space:]]*"user"'; then
+    local grok_ok=0
+    af_probe_generation grok "cd /tmp; unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN; timeout 120 '$GROK_BIN' --model '$AF_GROK_MODEL' --always-approve -p 'Reply with exactly: PONG' --output-format json" && grok_ok=1
+    # The WRONG-BILL refusal reads the same transcript, and is checked even on a live probe: a
+    # generation that succeeded is not acceptable if it succeeded by spending API credits.
+    if printf '%s' "$AF_PROBE_OUTPUT" | grep -qiE '"apiKeySource"[[:space:]]*:[[:space:]]*"user"'; then
       echo "[backend] FATAL: grok probe billed as apiKeySource=user (XAI_API_KEY / API credits)." >&2
       echo "[backend]   unset XAI_API_KEY and GROK_CODE_XAI_API_KEY, confirm $GROK_AUTH is an OAuth login, rerun --check." >&2
+      AF_BACKEND_EXIT=1
       return 1
     fi
-    if printf '%s' "$probe" | grep -qiE 'authentication failed|please (run |sign in)|not authenticated|login required|invalid api key'; then
-      echo "[backend] FATAL: grok credential present but REJECTED:" >&2
-      printf '%s\n' "$probe" | head -5 | sed 's/^/[backend]   /' >&2
-      echo "[backend]   fix, once, as ec2-user:  grok login --device-auth" >&2
-      return 1
-    fi
-    printf '%s' "$probe" | grep -q 'PONG' || echo "[backend] WARNING: grok auth probe returned no PONG and no auth error (network/transient?) — continuing" >&2
+    [ "$grok_ok" = 1 ] \
+      || af_probe_refuse grok "fix, once, as ec2-user:  grok login --device-auth" \
+      || return 1
   elif [ "$BACKEND" = "codex" ]; then
     # OpenAI Codex CLI on the owner's ChatGPT *subscription* (the "Sign in with ChatGPT"
     # path), never on an API key. OPENAI_API_KEY and friends are UNSET rather than
@@ -413,15 +511,9 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     CLAUDE_LAUNCH="unset OPENAI_API_KEY OPENAI_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN XAI_API_KEY; ${CODEX_BIN} --dangerously-bypass-approvals-and-sandbox --no-alt-screen${AF_CODEX_MODEL:+ --model $AF_CODEX_MODEL}"
     # Cheap live probe, same contract as the other three: only an explicit auth rejection is
     # fatal; no answer and no auth error is a network blip, not a reason to refuse the run.
-    local probe
-    probe="$(cd /tmp && unset OPENAI_API_KEY OPENAI_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN && timeout 120 "$CODEX_BIN" exec --skip-git-repo-check --color never -s read-only ${AF_CODEX_MODEL:+--model "$AF_CODEX_MODEL"} 'Reply with exactly: PONG' </dev/null 2>&1 || true)"
-    if printf '%s' "$probe" | grep -qiE '401 unauthorized|missing bearer|not logged in|invalid api key|authentication_error|please (run )?(codex )?login'; then
-      echo "[backend] FATAL: codex credential present but REJECTED by OpenAI:" >&2
-      printf '%s\n' "$probe" | head -5 | sed 's/^/[backend]   /' >&2
-      echo "[backend]   fix, once, as ec2-user:  codex login   # 'Sign in with Device Code'" >&2
-      return 1
-    fi
-    printf '%s' "$probe" | grep -q 'PONG' || echo "[backend] WARNING: codex auth probe returned no PONG and no auth error (network/transient?) — continuing" >&2
+    af_probe_generation codex "cd /tmp; unset OPENAI_API_KEY OPENAI_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN; timeout 120 '$CODEX_BIN' exec --skip-git-repo-check --color never -s read-only ${AF_CODEX_MODEL:+--model '$AF_CODEX_MODEL'} 'Reply with exactly: PONG' </dev/null" \
+      || af_probe_refuse codex "fix, once, as ec2-user:  codex login   # 'Sign in with Device Code'" \
+      || return 1
   else
     # DeepSeek mode. The subscription token is unset rather than out-ranked: the CLI has
     # been observed preferring a cached credential over an env token, so exclusivity is
@@ -435,6 +527,15 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
       return 1
     fi
     CLAUDE_LAUNCH="unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; export ANTHROPIC_BASE_URL=${AF_DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}; export ANTHROPIC_MODEL=${AF_DEEPSEEK_MODEL:-deepseek-v4-pro}; export ANTHROPIC_AUTH_TOKEN=\"\$(tr -d ' \\n\\r' < \$HOME/.deepseek_key)\"; claude --dangerously-skip-permissions"
+    # A NON-EMPTY KEY FILE IS NOT A WORKING BACKEND. This branch had no probe at all, so a DeepSeek
+    # account reading "Insufficient Balance" preflighted OK and the loop launched into it. The
+    # prepaid-balance model makes that the MOST likely failure of the four backends, not the least.
+    # Same env the sessions get, read the same way (the key never lands in this script's log).
+    local ds_cfg
+    ds_cfg="$(_af_probe_config_dir deepseek)"
+    af_probe_generation deepseek "cd /tmp; unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; export CLAUDE_CONFIG_DIR='$ds_cfg'; export ANTHROPIC_BASE_URL=${AF_DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}; export ANTHROPIC_MODEL=${AF_DEEPSEEK_MODEL:-deepseek-v4-pro}; export ANTHROPIC_AUTH_TOKEN=\"\$(tr -d ' \\n\\r' < '$DEEPSEEK_KEY_FILE')\"; timeout 120 claude --dangerously-skip-permissions -p 'Reply with exactly: PONG'" \
+      || af_probe_refuse deepseek "top up at https://platform.deepseek.com/  (balance), or rotate the key in $DEEPSEEK_KEY_FILE" \
+      || return 1
   fi
   return 0
 }
@@ -446,12 +547,20 @@ if [ "${1:-}" = "--check" ]; then
     echo "resolved    : $BACKEND"
     echo "billing     : $BACKEND_NOTE"
     echo "launch cmd  : $CLAUDE_LAUNCH"
+    # Say WHAT WAS PROVEN, not just "OK". The old word was unfalsifiable: it meant "no auth error
+    # was seen", which is also what an exhausted account produces.
+    case "$AF_PROBE_KIND" in
+      live) echo "generation  : WITNESSED (the backend emitted a token just now)" ;;
+      *)    echo "generation  : NOT witnessed (AF_PROBE_LENIENT=1) — this run is UNPROVEN" ;;
+    esac
     echo "preflight   : OK"
     exit 0
   fi
   echo "resolved    : ${BACKEND:-?}"
-  echo "preflight   : FAILED (see above) — a real run would refuse to start"
-  exit 1
+  echo "preflight   : FAILED (see above) - a real run would refuse to start"
+  # Propagate the DIAGNOSIS, not a flat 1: 3 = top up, 8 = wait for the window, 1 = fix the config.
+  echo "exit code   : $AF_BACKEND_EXIT"
+  exit "$AF_BACKEND_EXIT"
 fi
 
 # ------------------------------------------------------------------- where everything lives ----
@@ -1152,7 +1261,7 @@ halt_quota_blocked(){
 # Resolve the backend BEFORE any ticket work, and refuse to start a multi-hour run on a
 # half-configured one. Failing here costs seconds; failing three tickets in costs an hour
 # and a lease that has to be released by hand.
-resolve_backend || { say "FATAL: model backend preflight failed for '${BACKEND:-?}' — refusing to start"; exit 1; }
+resolve_backend || { say "FATAL: model backend preflight failed for '${BACKEND:-?}' - refusing to start (exit $AF_BACKEND_EXIT)"; exit "$AF_BACKEND_EXIT"; }
 say "backend=$BACKEND ($BACKEND_NOTE)"
 # PREFLIGHT NOTE for a subscription backend: a Claude Max/Pro subscription meters a session/usage
 # QUOTA, not API credits, so a long unattended run can exhaust it mid-flight and strand a headless
@@ -1280,14 +1389,30 @@ preflight_universal_lane || exit 1
 # nothing for a genuine dependency stall, and that is a real answer the loop must be free to act on
 # — treating empty-but-successful as a failure would retry a true stall forever instead of halting
 # loudly, trading a silent death for a silent spin.
+#
+# NOT EVERY FAILURE IS TRANSIENT, and treating them alike costs twice. A 403 ("API key is not
+# scoped to org X") and a 404 ("unknown space") are the backend ANSWERING: the config is wrong, and
+# it will still be wrong on the fifth attempt. Retried anyway, each pass burned ~2.5 minutes and
+# then incremented the OUTAGE counter, so a five-character typo in PRAXIS_ORG presented as "Praxis
+# unreachable" and eventually halted the run for a cause that was never true. A misconfiguration
+# should fail in seconds and SAY WHAT IS MISCONFIGURED.
+AF_PRAXIS_FATAL=""   # set by praxis_q when the backend gave a definite answer; read by outage()
 praxis_q(){  # args: query-fn [args...] -> its stdout; 1 if it never succeeded
-  local out="" i
+  local out="" i err
+  err="$(mktemp)"
+  AF_PRAXIS_FATAL=""
   for i in 1 2 3 4 5; do
-    if out=$("$@" 2>/dev/null); then printf '%s' "$out"; return 0; fi
+    if out=$("$@" 2>"$err"); then rm -f "$err"; printf '%s' "$out"; return 0; fi
+    if grep -qE 'HTTP 40[0134]|not scoped to org|unknown space|OrgMismatch|partial snapshot reference' "$err" 2>/dev/null; then
+      AF_PRAXIS_FATAL="$(grep -oE '(HTTP 40[0134][^"]*|not scoped to org .*|unknown space .*)' "$err" 2>/dev/null | head -1)"
+      AF_PRAXIS_FATAL="${AF_PRAXIS_FATAL:-definite error from Praxis}"
+      rm -f "$err"; return 1
+    fi
     # Linear backoff, ~2.5min total across 5 attempts. Overridable so the regression test can drive
     # the retry path without sleeping through it.
     sleep $((i * ${AF_QUERY_BACKOFF_S:-10}))
   done
+  rm -f "$err"
   return 1
 }
 
@@ -1297,6 +1422,17 @@ praxis_q(){  # args: query-fn [args...] -> its stdout; 1 if it never succeeded
 # silent death this whole mechanism replaces.
 outages=0
 outage(){  # args: what-failed -> waits, or halts the run once the streak is too long
+  # A DEFINITE ANSWER IS NOT AN OUTAGE. Waiting 60s and trying again cannot make an API key become
+  # scoped to an org it is not scoped to, so this path would spend ten passes and ten minutes to
+  # reach the same halt -- reported, wrongly, as the backend being down. Halt immediately, and name
+  # the actual fault, because the remedy is a config edit and not patience.
+  if [ -n "${AF_PRAXIS_FATAL:-}" ]; then
+    say "HALTING — Praxis answered a definite error on '$1': ${AF_PRAXIS_FATAL}"
+    say "  This is a MISCONFIGURATION, not an outage: retrying cannot change the answer."
+    say "  Check PRAXIS_ORG / PRAXIS_API_KEY / the space name in this worktree's .claude/settings.local.json"
+    say "  (a key only works in its own org), then relaunch."
+    exit 6
+  fi
   outages=$((outages + 1))
   if [ "$outages" -ge "${AF_MAX_OUTAGES:-10}" ]; then
     say "HALTING — Praxis unreachable for $outages consecutive passes (last: $1). Nothing can be claimed, dispatched or verified until it is back; check the backend, then relaunch."
@@ -1306,13 +1442,17 @@ outage(){  # args: what-failed -> waits, or halts the run once the streak is too
   sleep 60
 }
 
-claimable(){  # -> count of incomplete|in_progress for PROJECT
+claimable(){  # -> count of tickets that still OWE WORK for PROJECT (fresh ones included)
+  # Nothing stamps build_state at bless, so a just-blessed ticket has NO state. Asking for
+  # `in ('incomplete','in_progress')` therefore missed the entire plan: a blessed 21-ticket set
+  # read claimable=0 and the loop announced "drained -- nothing claimable" having built nothing.
+  # ts.is_open_state is the single predicate; the TERMINAL states are what get excluded.
   $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
 import sys
-import _praxis
+import _praxis, _ticket_state as ts
 p=sys.argv[1]
 f=_praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}')
-print(sum(1 for x in f if ((x.get('meta') or {}).get('build_state')) in ('incomplete','in_progress')))
+print(sum(1 for x in f if ts.owes_work(x)))
 PYEOF
 }
 
@@ -1537,7 +1677,10 @@ for r in sorted(roots):
 PYEOF
 }
 
-batch_open(){  # args: ids... -> how many are still incomplete|in_progress (blocked counts as done)
+batch_open(){  # args: ids... -> how many still OWE WORK (finished/blocked count as done)
+  # Same inclusion-list defect as claimable(), and worse here: a ticket dispatched THIS round has
+  # no build_state until its worker claims it, so the round's own freshly-sent work counted as
+  # already closed -- a round could declare itself complete before a single worker had started.
   # PARKED-ON-MANUAL also counts as done. A ticket whose every automated obligation is met and
   # which now waits only on a human sign-off cannot be closed by any amount of wall clock — the
   # worker may never self-certify a manual requirement — so counting it open makes the round
@@ -1553,7 +1696,7 @@ n, parked = 0, []
 for f in _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}'):
     m = f.get('meta') or {}
     ids = {str(f.get('id') or ''), str(m.get('requirement_id') or '')} - {''}
-    if (ids & want) and m.get('build_state') in ('incomplete', 'in_progress'):
+    if (ids & want) and ts.is_open_state(m.get('build_state')):
         try:
             if ts.parked_on_manual(f, ref):
                 parked.append(str(m.get('requirement_id') or f.get('id')))
@@ -2147,28 +2290,66 @@ af_force_remove_worktree(){   # $1 = path
   return 1
 }
 
+# Is any live process sitting in this directory (or under it)?
+#
+# THIS CHECK DID NOT FIRE, EVER, in any of the three places that used it. The driver runs under
+# `set -o pipefail`, and every one of them was spelled
+#     readlink /proc/*/cwd 2>/dev/null | grep -qF "$dir"
+# `readlink` exits NON-ZERO when ANY single argument is unreadable, and a handful of root-owned
+# processes make that certain on every real box -- so pipefail handed the pipeline readlink's 1 even
+# when grep had matched, the `if` took the false arm, and the caller proceeded to delete. Two of the
+# three callers go straight to `rm -rf`. A worker's tree could be, and was, removed while it was
+# building in it -- surfacing later as a "flaky" worker rather than as the deletion it was.
+#
+# It read as a correct liveness check in every review, because the defect is in the plumbing and not
+# in the logic. Hence one function, tested directly, rather than three inline pipelines.
+#
+# Capture-then-test, so no pipeline status can be stolen. The match is ANCHORED: a substring test
+# would let a live process in /x/foobar protect an unrelated /x/foo forever.
+af_dir_in_use(){   # $1 = directory
+  local hit=""
+  if [ ! -r /proc/self/cwd ]; then
+    if [ "${AF_PROC_WARNED:-0}" != 1 ]; then
+      AF_PROC_WARNED=1
+      say "NOTE: /proc is not readable here — a directory's liveness cannot be proven before it is removed"
+    fi
+    return 1
+  fi
+  hit=$(readlink /proc/*/cwd 2>/dev/null | awk -v p="$1" '$0 == p || index($0, p "/") == 1 {print; exit}' || true)
+  [ -n "$hit" ]
+}
+
 sweep_worktrees(){
   cd "$WT" || return 0
-  local kept=0
+  local kept=0 main_wt
+  main_wt=$(af_main_worktree)
   unset AF_WT_BRANCH_CACHE   # this function mutates the worktree set the ownership rule reads
   while read -r path; do
     [ -n "$path" ] || continue
     [ "$path" = "$WT" ] && continue
-    # ONLY agent scratch trees are removable. `git worktree list` reports every worktree of the
-    # repo, which includes the MAIN CHECKOUT and every sibling project worktree — and a build branch
-    # is normally ahead of main, so `is-ancestor main HEAD` is TRUE and the merged-check below would
-    # have happily deleted the factory checkout that all three loops execute from. Observed on the
-    # first real sweep, which reported "/workspace/praxis holds UNMERGED commits" — it was one
-    # ancestry check away from removing the repo root. Scratch trees live under one of the roots
-    # af_scratch_roots names; nothing else is this function's business.
-    af_is_scratch "$path" || continue
+    # WHAT MAY BE REMOVED IS DECIDED BY af_worktree_is_removable, not by the path alone.
+    #
+    # The danger this guards is real and was nearly realised: `git worktree list` reports every
+    # worktree of the repo, including the MAIN CHECKOUT and every sibling project's tree, and a
+    # build branch is normally ahead of main — so `is-ancestor main HEAD` is TRUE and the
+    # merged-check below would have happily deleted the factory checkout all three loops execute
+    # from. The first real sweep reported "/workspace/praxis holds UNMERGED commits" and was one
+    # ancestry check away from removing the repo root.
+    #
+    # The old guard answered that with "only trees under a scratch root", which was safe and too
+    # narrow: a worker tree created OUTSIDE those roots could never be swept, so the straggler
+    # invariant reported it forever and `--resolve-orphans` had nothing to land. Ownership is now a
+    # FACT (a ticket id this project owns, on a non-human branch, fully contained in HEAD) rather
+    # than a path prefix — strictly stronger than the path test where it matters, and satisfiable.
+    [ -n "$main_wt" ] && [ "$path" = "$main_wt" ] && continue
+    local head; head=$(git -C "$path" rev-parse HEAD 2>/dev/null || echo "")
+    af_worktree_is_removable "$path" "$head" || continue
     # Never yank a tree out from under a live worker: its evals are executing against these files.
-    if [ -n "$(ls /proc/*/cwd 2>/dev/null | head -1)" ] && \
-       readlink /proc/*/cwd 2>/dev/null | grep -qF "$path"; then
+    #
+    if af_dir_in_use "$path"; then
       say "worktree $path is IN USE by a live process — skipping"
       continue
     fi
-    local head; head=$(git -C "$path" rev-parse HEAD 2>/dev/null || echo "")
     # PURGE unconditionally. Removing a worktree KEEPS its branch, so an unintegrated commit is not
     # lost by this -- it stays reachable on worktree-agent-* and is merged by integrate_round once
     # its ticket is finished. Leaving the trees instead is what put 29 of them on one box and filled
@@ -2208,7 +2389,7 @@ sweep_worktrees(){
     for d in "$root"/*; do
       [ -d "$d" ] || continue
       printf '%s\n' "$registered" | grep -qxF "$d" && continue
-      if readlink /proc/*/cwd 2>/dev/null | grep -qF "$d"; then
+      if af_dir_in_use "$d"; then
         say "orphan dir $d is IN USE by a live process — skipping"
         continue
       fi
@@ -2222,7 +2403,7 @@ sweep_worktrees(){
     for d in $g; do
       [ -d "$d" ] || continue
       printf '%s\n' "$registered" | grep -qxF "$d" && continue
-      if readlink /proc/*/cwd 2>/dev/null | grep -qF "$d"; then
+      if af_dir_in_use "$d"; then
         say "orphan dir $d is IN USE by a live process — skipping"
         continue
       fi
@@ -2358,8 +2539,50 @@ af_is_owed_merge(){   # $1 = branch name
 # longer makes af_is_owed_merge answer no, which is the second silent-miss path the old code had.
 af_is_factory_named(){   # $1 = branch name
   case "$1" in worktree-agent-*|worktree-wf_*) return 0 ;; esac
-  case "${AF_KNOWN_IDS:-}" in *" ${1##*/} "*) return 0 ;; esac
+  local seg="${1##*/}" id lid
+  case "${AF_KNOWN_IDS:-}" in *" $seg "*) return 0 ;; esac
+  # A worker names its branch after the WHOLE ROUND, not just the ticket: this factory's real
+  # branches read `af-build/praxis-r0a-d3a01c6b` -- <project>-<ticket>-<cid8>. The exact-segment
+  # test above therefore matched almost NONE of the branches this factory actually mints, so a
+  # spent worker tree was never recognised as ours, never swept, and got reported as a leftover by
+  # an invariant nothing could satisfy (observed at praxis round #1: `--resolve-orphans` ran, found
+  # 0 commits to land, and the violation stood).
+  #
+  # Still a FACT, not a prefix guess: the id has to be one Praxis says THIS PROJECT owns, and it has
+  # to appear as a whole hyphen-delimited token, so a human's `build/login-redesign` cannot match.
+  # Case-folded because ids are upper-case in Praxis and lower-cased into a branch slug.
+  for id in ${AF_KNOWN_IDS:-}; do
+    [ -n "$id" ] || continue
+    case "-$seg-" in *"-$id-"*) return 0 ;; esac
+    lid=$(printf '%s' "$id" | tr 'A-Z' 'a-z')
+    case "-$(printf '%s' "$seg" | tr 'A-Z' 'a-z')-" in *"-$lid-"*) return 0 ;; esac
+  done
   return 1
+}
+
+# May this worktree be REMOVED? Distinct from "is it scratch": the sweep used to remove only trees
+# under a scratch root, which was the right instinct (an early version was one ancestry check away
+# from deleting the factory checkout all three loops execute from) but the wrong RULE -- it made a
+# spent tree that a worker created elsewhere permanently unremovable, and therefore made the
+# straggler invariant permanently unsatisfiable.
+#
+# The replacement is ownership by FACT plus proof the tree is spent, and every guard that protected
+# the checkout still holds:
+#   * the main checkout and $WT are excluded by the caller;
+#   * a human/base branch (main, the integration ref, AF_HUMAN_BRANCHES) is refused outright;
+#   * the branch must be factory-named -- i.e. carry a ticket id THIS PROJECT owns;
+#   * and every commit in the tree must ALREADY be on HEAD, so removal cannot lose work.
+# A tree failing any of those is left exactly where it is, reported, and never deleted.
+af_worktree_is_removable(){   # $1 = path; $2 = its HEAD sha (may be empty)
+  local p="$1" head="$2" br
+  af_is_scratch "$p" && return 0
+  br=$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  [ -n "$br" ] && [ "$br" != HEAD ] || return 1
+  af_is_human_branch "$br" && return 1
+  af_is_factory_named "$br" || return 1
+  [ -n "$head" ] || return 1
+  git merge-base --is-ancestor "$head" HEAD 2>/dev/null || return 1
+  return 0
 }
 
 # FOREIGN ERA: was this branch's newest commit written BEFORE this run started?
@@ -2814,6 +3037,10 @@ PYEOF
 # AF_VERIFY_ROUND=0 disables it. Skipped when a round finished zero tickets — nothing was integrated —
 # and skipped for a single-ticket round, which merges exactly the tree its worker already validated.
 VERDICT="$AF_STATE_DIR/af-round-verdict-$PROJECT.json"
+# The commit the round merged INTO — verification's baseline for telling a failure this round caused
+# from one that was already there. Set in the round tail immediately before integrate_round; declared
+# here so `set -u` can never kill a run through an unset expansion.
+AF_PREMERGE_SHA=""
 # Conflict-resolution handoff: integrate_round appends "<branch>\t<ticket ids>" here, and
 # resolve_conflicts drains it. Per-project, so concurrent loops never read each other's.
 CONFLICTS="$AF_STATE_DIR/af-round-conflicts-$PROJECT.tsv"
@@ -2850,6 +3077,11 @@ SERVICES=""
 
 verify_round(){   # $1 = round number, $2.. = the round's ticket ids
   local rnd="$1"; shift
+  # An empty baseline would turn the attribution rule into prose about a commit that does not exist,
+  # and the verifier would fall back to regressing whatever looked red. Prefer the captured value;
+  # fall back to the merge-base of this branch and the round's merges, which is the same tree.
+  local premerge="${AF_PREMERGE_SHA:-}"
+  [ -n "$premerge" ] || premerge=$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo "HEAD")
   local ids_csv; ids_csv=$(printf '%s,' "$@"); ids_csv=${ids_csv%,}
   local vsession="$SESSION-verify"
   rm -f "$VERDICT" "$PARKED_REPORT"
@@ -2877,7 +3109,7 @@ print(json.dumps(out, indent=2))
 PYEOF
   [ -s "$FINDINGS" ] || printf '[]' > "$FINDINGS"
 
-  local vprompt="Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv. Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. THIS IS THE ONLY PLACE THOSE GATES RUN: the workers were told to skip them so that N of them would not run N concurrent suites, so you are the authoritative repo-wide gate for this round and nothing else has proven the merged tree compiles or passes. If any gate is red, identify which ticket's change caused it and regress that ticket per step 3; if you genuinely cannot attribute it, regress the whole batch rather than passing a red tree. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. If this round merged only ONE ticket, the cross-ticket lens is trivially satisfied and you may skip lens A, but step 1's gates and lenses B and C still run in full — they are the only repo-wide check this ticket gets. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: NAME every ticket whose work does NOT survive integration. A ticket whose meta.verify reads manual is the one class where absence of a commit is NOT evidence of anything: its acceptance is a human sign-off over something rendered or observed, so it produces no commit BY DESIGN and its work being missing from src, tests and docs is the expected shape, not a defect. Judge such a ticket only on code it actually landed, and never name it for having produced no merged commit — that regression is suppressed by the loop and reported as parked awaiting sign-off, so naming it wastes the round. Do NOT write that regression to Praxis yourself and do not try to fix the ticket — the loop that dispatched you performs the regression from your verdict, using a write path it already owns. Your job is the judgement, not the write. This split is deliberate: when verifiers were asked to do their own Praxis write, nine consecutive rounds reported zero regressions while their own notes named the failing tickets, so every one of those tickets stayed marked finished on work that had failed integration. Step 3b: read the file $FINDINGS. It is a JSON array of the OPEN findings these tickets still owe an answer to, each with id, check_id, symptom and evidence. If the array is empty, skip this step entirely. Otherwise, for EACH entry do TWO INDEPENDENT things and never let either one decide the other. First, run the check named by check_id against the merged tree and record whether it passes; if check_id is empty there is no check to run and check_passed is false. Second, and SEPARATELY, re-evaluate the recorded symptom itself against the merged tree — read the code, run the specific reproduction the evidence describes — and record whether that symptom is STILL PRESENT. A check that exits zero is NOT evidence the symptom is gone: a check can be defeated by a change that satisfies the command while leaving the defect exactly where it was, and the case where your two answers DISAGREE is the single most valuable thing you can report here, so report both honestly rather than making them agree. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, notes which is one short string, regressed which is an array of OBJECTS — one per ticket that must be regressed, each with four string fields: id the ticket id, reason what actually failed stated concretely, evidence the exact failing test name, gate, file and error text or the precise merge symptom, and fix what the rebuild must do differently — plus an OPTIONAL fifth string field check, a single command that FAILS on this broken merged tree and would PASS once the fix lands. Supply check only when you actually ran that command and watched it fail; a guess is worse than omitting it. It must be one plain command with no shell operators, no pipes, no redirection and no absolute paths, starting with one of pytest, python, python3, npm, npx, make, ruff, mypy, eslint, playwright or grep — anything else is rejected and the check is dropped, though your regression still lands. And findings_recheck which is an array of objects carrying step 3b's answers, each with id the ticket id, check_id copied from $FINDINGS, check_passed true or false, and symptom_present true or false; write an empty array if step 3b was skipped. An empty array asserts every ticket survived integration. Write these for the NEXT WORKER, not for a log: it will claim the ticket cold with no memory of this round, so a bare id or a vague \"tests failed\" wastes an entire rebuild while it re-derives what you already know. Name the failing test, quote the error, and say what the fix has to address. Good: {\"id\":\"REM-10\",\"reason\":\"its new default-prefix-attribution controller is unregistered in RESTRICTED_RECORD_MANIFEST and the permission_pages seed\",\"evidence\":\"chat14-restricted-record-manifest.test.ts and chat16-chart-access-record.test.ts both fail on the merged tree with 'scope not registered'\",\"fix\":\"register the new controller/scope in RESTRICTED_RECORD_MANIFEST and add its permission_pages seed row, then re-run both suites against the merged tree\"}. Bad: {\"id\":\"REM-10\",\"reason\":\"failed\",\"evidence\":\"\",\"fix\":\"fix it\"}. Write that file LAST, after everything else is done, and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. If you cannot verify at all, that is itself a verdict: write the JSON with verdict fail and notes saying why, rather than asking what to do."
+  local vprompt="Post-merge verification of build round $rnd for project $PROJECT. Tickets just merged: $ids_csv. Each was built and validated ALONE in its own worktree, so the merged tree you are looking at has never been verified as a whole. Do NOT build features, do NOT claim tickets, do NOT start new work, do NOT push. Verify the integrated result only. Step 1: run the repo's whole-repo gates on the current merged tree — full test suite, build, repo-wide typecheck and lint. THIS IS THE ONLY PLACE THOSE GATES RUN: the workers were told to skip them so that N of them would not run N concurrent suites, so you are the authoritative repo-wide gate for this round and nothing else has proven the merged tree compiles or passes. If any gate is red you must ATTRIBUTE each failure before you regress anything, and the burden of proof is on attribution, not on innocence. The tree this round merged INTO is commit $premerge, and it was very likely ALREADY RED — this repository carries pre-existing failures that no ticket in this round caused, and on this box there are dozens of them. So for every failing test, gate or lint error you find, determine whether it ALSO fails at $premerge: make a scratch tree with git worktree add /tmp/af-premerge-$rnd $premerge, run that one failure there, and remove the tree with git worktree remove --force when you are done. A failure that reproduces at $premerge is PRE-EXISTING: list it in the preexisting array so it is visible as debt, and DO NOT put any ticket in regressed for it. Regressing a ticket over a failure that predates it sends a worker to rebuild work that was never wrong, and because the failure is still there when the rebuild lands, the very same verdict regresses it again — forever, at full cost. That infinite loop is not hypothetical: praxis round #1 regressed R0a while its own verdict recorded that R0a's acceptance passed 4/4 and that its diff touched none of the failing files. Only a failure that does NOT reproduce at $premerge belongs to this round, and only those may cause a regression: identify which ticket's change caused it and regress that ticket per step 3, and if you genuinely cannot attribute a NEW failure to one ticket, regress the whole batch rather than passing a tree this round broke. gates_green reports whether the round introduced NO NEW failures — a tree that is red only in the ways it was already red is gates_green true, with the debt named in preexisting. Step 2: dispatch INDEPENDENT parallel review subagents over the combined diff of this round, one per lens, each told to actively look for a failure rather than confirm success. If this round merged only ONE ticket, the cross-ticket lens is trivially satisfied and you may skip lens A, but step 1's gates and lenses B and C still run in full — they are the only repo-wide check this ticket gets. Lens A integration conflict: did two of these tickets edit the same module, config, migration, schema, or shared type in ways that are individually fine and jointly wrong, or did one silently revert another. Lens B acceptance survival: for EACH ticket id above, re-run its own acceptance test against the MERGED tree and confirm it still passes here, not just in its worktree. Lens C test integrity: did any ticket reach green by deleting, skipping, xfailing, narrowing assertions on, or excluding from config a test that used to run — treat that as a failure, not a pass. Step 3: NAME every ticket whose work does NOT survive integration. A ticket whose meta.verify reads manual is the one class where absence of a commit is NOT evidence of anything: its acceptance is a human sign-off over something rendered or observed, so it produces no commit BY DESIGN and its work being missing from src, tests and docs is the expected shape, not a defect. Judge such a ticket only on code it actually landed, and never name it for having produced no merged commit — that regression is suppressed by the loop and reported as parked awaiting sign-off, so naming it wastes the round. Do NOT write that regression to Praxis yourself and do not try to fix the ticket — the loop that dispatched you performs the regression from your verdict, using a write path it already owns. Your job is the judgement, not the write. This split is deliberate: when verifiers were asked to do their own Praxis write, nine consecutive rounds reported zero regressions while their own notes named the failing tickets, so every one of those tickets stayed marked finished on work that had failed integration. Step 3b: read the file $FINDINGS. It is a JSON array of the OPEN findings these tickets still owe an answer to, each with id, check_id, symptom and evidence. If the array is empty, skip this step entirely. Otherwise, for EACH entry do TWO INDEPENDENT things and never let either one decide the other. First, run the check named by check_id against the merged tree and record whether it passes; if check_id is empty there is no check to run and check_passed is false. Second, and SEPARATELY, re-evaluate the recorded symptom itself against the merged tree — read the code, run the specific reproduction the evidence describes — and record whether that symptom is STILL PRESENT. A check that exits zero is NOT evidence the symptom is gone: a check can be defeated by a change that satisfies the command while leaving the defect exactly where it was, and the case where your two answers DISAGREE is the single most valuable thing you can report here, so report both honestly rather than making them agree. Step 4: write your verdict as JSON to $VERDICT with exactly these keys: verdict which is pass or fail, gates_green true or false, notes which is one short string, preexisting which is an array of strings naming every failure you PROVED also fails at $premerge (write an empty array only if you proved there were none — never as a shortcut for not having checked), regressed which is an array of OBJECTS — one per ticket that must be regressed, each with four string fields: id the ticket id, reason what actually failed stated concretely, evidence the exact failing test name, gate, file and error text or the precise merge symptom, and fix what the rebuild must do differently — plus an OPTIONAL fifth string field check, a single command that FAILS on this broken merged tree and would PASS once the fix lands. Supply check only when you actually ran that command and watched it fail; a guess is worse than omitting it. It must be one plain command with no shell operators, no pipes, no redirection and no absolute paths, starting with one of pytest, python, python3, npm, npx, make, ruff, mypy, eslint, playwright or grep — anything else is rejected and the check is dropped, though your regression still lands. And findings_recheck which is an array of objects carrying step 3b's answers, each with id the ticket id, check_id copied from $FINDINGS, check_passed true or false, and symptom_present true or false; write an empty array if step 3b was skipped. An empty array asserts every ticket survived integration. Write these for the NEXT WORKER, not for a log: it will claim the ticket cold with no memory of this round, so a bare id or a vague \"tests failed\" wastes an entire rebuild while it re-derives what you already know. Name the failing test, quote the error, and say what the fix has to address. Good: {\"id\":\"REM-10\",\"reason\":\"its new default-prefix-attribution controller is unregistered in RESTRICTED_RECORD_MANIFEST and the permission_pages seed\",\"evidence\":\"chat14-restricted-record-manifest.test.ts and chat16-chart-access-record.test.ts both fail on the merged tree with 'scope not registered'\",\"fix\":\"register the new controller/scope in RESTRICTED_RECORD_MANIFEST and add its permission_pages seed row, then re-run both suites against the merged tree\"}. Bad: {\"id\":\"REM-10\",\"reason\":\"failed\",\"evidence\":\"\",\"fix\":\"fix it\"}. Write that file LAST, after everything else is done, and then STOP. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. If you cannot verify at all, that is itself a verdict: write the JSON with verdict fail and notes saying why, rather than asking what to do."
   af_launch_agent "$vsession" "$vprompt"
   if ! af_wait_ready "$vsession"; then
     say "WARNING: verify REPL not confirmed ready, sending anyway"
@@ -2951,9 +3183,12 @@ PYEOF
   # disagreement and carried on as though the round had passed. Observed live: a round logged
   # `verdict=pass gates_green=False regressed=0`, which asserts simultaneously that the merged tree's
   # repo-wide gates were RED and that every ticket survived integration and nothing needs rebuilding.
-  # The verify prompt already forbids exactly that state -- "if you genuinely cannot attribute it,
-  # regress the whole batch rather than passing a red tree" -- but a prompt is not an enforcement
-  # point, and self-reported verdicts are precisely where self-judgement leaks back in.
+  # The verify prompt already forbids exactly that state -- a NEW failure it cannot attribute to one
+  # ticket makes it regress the whole batch rather than pass a tree this round broke -- but a prompt
+  # is not an enforcement point, and self-reported verdicts are precisely where self-judgement leaks
+  # back in. Note what gates_green now MEANS: no failure this round INTRODUCED, measured against the
+  # pre-merge commit. A tree red only in the ways it was already red is green here, and that debt is
+  # named in `preexisting` instead of being charged to a ticket that did not cause it.
   #
   # Deliberately NOT auto-regressing the batch on incoherence. `gates_green=false` is also what a
   # verifier reports when a repo simply has no lint/typecheck tooling configured, so regressing on it
@@ -3859,6 +4094,10 @@ while :; do
   # three must finish before the loop clears context and dispatches the next batch, or a round's
   # work is carried forward unintegrated and unchecked into a session that no longer remembers it.
   : > "$CONFLICTS"
+  # THE BASELINE. Verification has to be able to tell a failure THIS ROUND CAUSED from one that was
+  # already there, and the only honest reference is the exact tree the round merged into. Captured
+  # here, before a single branch lands, because afterwards it is unrecoverable.
+  AF_PREMERGE_SHA=$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo "")
   salvage_external_grok_clones
   integrate_round
   # REQUIRED, not optional: sweep in any branch stranded by an earlier round so the resolver lands it

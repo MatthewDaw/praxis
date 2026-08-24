@@ -92,3 +92,68 @@ def test_each_campaigns_own_scores_determine_its_rope(tmp_path: Path) -> None:
     second_rope = registry.list_events()[-1].payload["rope"]["value"]
     assert second_rope == 0
     assert second_rope != first_rope
+
+
+def test_measurement_only_campaign_cannot_emit_a_checkpoint(tmp_path: Path) -> None:
+    spec, corpora = _fixture()
+    spec["production"] = {
+        "protocol": "FixtureProtocol",
+        "model_family": "measurement_only_no_weights",
+    }
+    spec["produces"] = [{"artifact_type": "fixture_checkpoint"}]
+
+    with pytest.raises(ContractError) as exc_info:
+        Registry(tmp_path).register_campaign_spec(spec, scoring_corpora=corpora)
+
+    message = str(exc_info.value)
+    assert "production.model_family" in message
+    assert "measurement_only_no_weights" in message
+    assert "produces[0].artifact_type" in message
+    assert "remove the checkpoint" in message
+    assert "weights-bearing model family" in message
+
+
+def test_structural_validator_refuses_an_unloadable_corpus_verbatim(tmp_path: Path) -> None:
+    spec, corpora = _fixture()
+    spec["corpora"] = [*spec["corpora"], {"id": "missing_training", "roles": ["training"]}]
+
+    def fixture_t7(candidate: object) -> None:
+        assert isinstance(candidate, dict)
+        declarations = candidate["corpora"]
+        assert isinstance(declarations, list)
+        if any(item.get("id") == "missing_training" for item in declarations):
+            raise ContractError(
+                "corpus 'missing_training' cannot load; register a loadable DataSource for that id"
+            )
+
+    with pytest.raises(ContractError) as exc_info:
+        Registry(tmp_path).register_campaign_spec(
+            spec,
+            scoring_corpora=corpora,
+            structural_validator=fixture_t7,
+        )
+
+    assert str(exc_info.value) == (
+        "corpus 'missing_training' cannot load; register a loadable DataSource for that id"
+    )
+
+
+def test_fixture_structural_refusal_is_surfaced_without_restating_it(tmp_path: Path) -> None:
+    spec, corpora = _fixture()
+    calls: list[object] = []
+
+    def fixture_t7(candidate: object) -> None:
+        calls.append(candidate)
+        raise ContractError("fixture T7 says campaign_id does not match folder; rename the folder")
+
+    with pytest.raises(ContractError) as exc_info:
+        Registry(tmp_path).register_campaign_spec(
+            spec,
+            scoring_corpora=corpora,
+            structural_validator=fixture_t7,
+        )
+
+    assert calls == [spec]
+    assert str(exc_info.value) == (
+        "fixture T7 says campaign_id does not match folder; rename the folder"
+    )
