@@ -317,7 +317,7 @@ def test_retire_harness_refuses_an_unregistered_model_naming_it() -> None:
     assert excinfo.value.field == "model_id"
 
 
-def _model_with_adoption(space: RegistrySpace) -> tuple[str, str, str]:
+def _model_with_adoption(space: RegistrySpace) -> str:
     """A model whose baseline was advanced by an adoption, as verdict.adjudicate_verdict
     leaves it: baseline == the adopted trial's commit, previous_baseline == what it displaced."""
     model_id = register_model_with_baseline(space, dict(MODEL_META), LEDGER)
