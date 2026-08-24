@@ -378,7 +378,14 @@ def test_unsamplable_signals_report_UNKNOWN_and_never_warn(tmp_path):
 def test_the_wait_loop_actually_calls_the_heartbeat(tmp_path):
     """The block existing is not enough — it has to be wired into the round wait."""
     text = SCRIPT.read_text()
-    assert 'af_round_heartbeat "$round" "$now/$open" "$ids_csv"' in text
+    # Pins the WIRING, not the literal third argument: that argument changed from the whole round
+    # to the queried open set (a stall warning naming finished tickets is a report acted on wrongly),
+    # and a test spelling out the old literal would have to be rewritten for every such correction
+    # while proving nothing more than that the call exists.
+    call = next(l for l in text.splitlines()
+                if "af_round_heartbeat " in l and not l.strip().startswith("#"))
+    assert '"$round"' in call and '"$now/$open"' in call
+    assert "hb_open" in call, "the heartbeat must be handed the tickets still outstanding"
     # and the sentinel checks go through the TTL/legacy-aware helper, not a bare -f test
     assert '[ -f "$WATCH_STOP" ]' not in text
     assert text.count("af_watch_stopped &&") == 3

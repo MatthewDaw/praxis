@@ -85,7 +85,7 @@ def test_a_freshly_blessed_plan_is_not_reported_as_drained(plan, capsys):
 
 def test_a_just_dispatched_round_is_not_already_closed(plan, capsys):
     """batch_open over unstamped tickets: the round has 3 open, not 0."""
-    assert _run("if (ids & want) and ts.is_open_state(", ["sports_analysis", "T1", "T2", "T3"], capsys) == "3"
+    assert _run("print(n)\nif parked:", ["sports_analysis", "T1", "T2", "T3"], capsys) == "3"
 
 
 def test_terminal_states_still_close(plan, monkeypatch, capsys):
@@ -100,8 +100,8 @@ def test_terminal_states_still_close(plan, monkeypatch, capsys):
     monkeypatch.setattr(_praxis, "facts_by", lambda **kw: list(facts))
 
     assert _run("print(sum(1 for x in f if ts.owes_work(x)))", ["sports_analysis"], capsys) == "3"
-    assert _run("if (ids & want) and ts.is_open_state(", ["sports_analysis", "T1", "T2"], capsys) == "0"
-    assert _run("if (ids & want) and ts.is_open_state(", ["sports_analysis", "T3", "T4", "T5"], capsys) == "3"
+    assert _run("print(n)\nif parked:", ["sports_analysis", "T1", "T2"], capsys) == "0"
+    assert _run("print(n)\nif parked:", ["sports_analysis", "T3", "T4", "T5"], capsys) == "3"
 
 
 def test_the_two_spellings_of_the_predicate_agree(plan):
