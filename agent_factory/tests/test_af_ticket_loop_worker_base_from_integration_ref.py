@@ -32,7 +32,7 @@ import tempfile
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "af-ticket-loop.sh"
 
 
-def _prompt(integration_ref: str = "build/research-engine", size: int = 2) -> str:
+def _prompt(integration_ref: str = "build/research-engine") -> str:
     src = SCRIPT.read_text()
     line = next(
         candidate for candidate in src.splitlines() if candidate.strip().startswith("round_prompt=")
@@ -40,7 +40,7 @@ def _prompt(integration_ref: str = "build/research-engine", size: int = 2) -> st
     body = line.strip()[len("round_prompt=") :]
     prog = (
         "set -u\n"
-        f"size={size}; WORKFLOW_CAP=2; PROJECT=praxis; ids_csv=R1,R2\n"
+        "size=2; WORKFLOW_CAP=2; PROJECT=praxis; ids_csv=R1,R2\n"
         f"INTEGRATION_REF={integration_ref}\n"
         "PY=/usr/bin/python3; SERVICES=''; SWEEP_AMENDMENT=' A.'; PREEXISTING_RULE=' B.'\n"
         f"round_prompt={body}\n"
