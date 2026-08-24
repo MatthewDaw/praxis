@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "campaign_id": "fixture_policy_campaign",
+  "model_id_policy": "mint",
+  "axis": "fixture",
+  "sport_scope": "shared",
+  "target_ontology": "fixture_label",
+  "metric": {
+    "name": "fixture_score",
+    "direction": "maximize",
+    "operating_point": {
+      "selection": "frozen",
+      "threshold": 0.5
+    },
+    "aggregation": [
+      {
+        "level": "example",
+        "unit": "example_id",
+        "minimum_sample": 2
+      },
+      {
+        "level": "match",
+        "unit": "match_id",
+        "minimum_sample": 3
+      }
+    ],
+    "scoring_corpus": "fixture_scoring",
+    "split_unit": "match_id"
+  },
+  "stages": [
+    {
+      "name": "fixture_stage"
+    }
+  ],
+  "corpora": [
+    {
+      "id": "fixture_scoring",
+      "roles": [
+        "scoring"
+      ],
+      "split_unit": "match_id"
+    }
+  ],
+  "requires": [],
+  "produces": [
+    {
+      "artifact_type": "report"
+    }
+  ],
+  "supervision": {
+    "mode": "measurement"
+  },
+  "resources": {
+    "lane": "cpu"
+  },
+  "isolation": {
+    "state_root": "state/fixture_policy_campaign"
+  },
+  "production": {
+    "protocol": "FixtureProtocol"
+  },
+  "extends": [],
+  "deterministic_incumbent": null,
+  "learned_escalation": false
+}
