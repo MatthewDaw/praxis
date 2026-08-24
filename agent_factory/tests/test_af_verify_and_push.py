@@ -194,3 +194,51 @@ def test_an_unpublished_branch_treats_every_failure_as_introduced(repo):
 
     assert res.returncode == 2, res.stdout + res.stderr
     assert "nothing has been published" in res.stdout
+
+
+# ------------------------------------------------------- the deadlock with the loop's own lock ---
+
+def test_the_loops_lock_file_does_not_count_as_a_dirty_tree(repo):
+    """THE DEADLOCK. `.af-loop.lock` is af-ticket-loop.sh's bookkeeping, rewritten every run and
+    every heartbeat. It is untracked on main but a worker committed it onto build/research-engine,
+    so for the whole duration of a build the worktree reports `M .af-loop.lock` and is never clean.
+
+    This tool then refuses -- correctly by its own rule -- and the two deadlock: the push half can
+    only run when no loop is running, which is exactly when the loop's END-OF-RUN message tells you
+    to run it, and relaunching the loop dirties the tree again. Observed three times on 2026-08-24
+    with the branch 24 commits ahead and unpublishable because of it.
+    """
+    work, origin = repo
+    before = _remote_head(origin)
+    (work / ".af-loop.lock").write_text("12345 demo 5432\n")
+    _sh("git add -A && git commit -qm 'chore: track the lock the way the build branch does'", work)
+    _sh("git push -q origin main", work)
+    # ...and now the running loop rewrites it, exactly as it does on every heartbeat.
+    (work / ".af-loop.lock").write_text("67890 demo 5432\n")
+    (work / "real.txt").write_text("the work being published\n")
+    _sh("git add real.txt && git commit -qm 'feat: real work (R0a)'", work)
+
+    res = _run(work, "--gate", GREEN)
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "uncommitted" not in res.stdout
+    assert _remote_head(origin) != before
+
+
+def test_a_genuinely_dirty_tree_is_still_refused_alongside_the_lock(repo):
+    """The exemption must be exactly one file wide — otherwise it is a hole, not an exemption."""
+    work, origin = repo
+    (work / ".af-loop.lock").write_text("1 demo 1\n")
+    (work / "src.txt").write_text("committed\n")
+    _sh("git add -A && git commit -qm base2 && git push -q origin main", work)
+    before = _remote_head(origin)   # AFTER the setup push, or this asserts against the setup
+    (work / ".af-loop.lock").write_text("2 demo 1\n")
+    (work / "src.txt").write_text("EDITED BUT NOT COMMITTED\n")
+
+    res = _run(work, "--gate", GREEN)
+
+    assert res.returncode == 1, res.stdout + res.stderr
+    assert "uncommitted" in res.stdout
+    assert "src.txt" in res.stdout
+    assert ".af-loop.lock" not in res.stdout, "the exempted file must not be listed as a reason"
+    assert _remote_head(origin) == before
