@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sqlite3
 from threading import RLock
+from types import ModuleType
 from typing import Iterator, Mapping
 
 from knowledge.ml_registry.schema import IDEA, MODEL, TRIAL
@@ -55,7 +56,7 @@ def _metric_change(direction: str, baseline: float, candidate: float) -> float:
 
 
 @contextmanager
-def _local_trackio(store_root: Path) -> Iterator[object]:
+def _local_trackio(store_root: Path) -> Iterator[ModuleType]:
     """Bind Trackio's process-global local store for the duration of one projection."""
     with _TRACKIO_LOCK:
         store_root.mkdir(parents=True, exist_ok=True)
@@ -96,23 +97,42 @@ def _config(idea: Fact, trial: Fact, *, record_type: str) -> dict[str, object]:
     }
 
 
+def _publish_run(
+    trackio: ModuleType,
+    *,
+    project: str,
+    name: str,
+    group: str,
+    config: dict[str, object],
+    metrics: dict[str, object],
+) -> None:
+    trackio.init(
+        project=project,
+        name=name,
+        group=group,
+        config=config,
+        embed=False,
+        auto_log_gpu=False,
+        auto_log_cpu=False,
+    )
+    trackio.log({"record_type": config["record_type"], **metrics})
+    trackio.finish()
+
+
 def _verify_database(database: Path, *, experiments: int, dead_ends: int) -> None:
     with sqlite3.connect(database) as connection:
         configs = [json.loads(row[0]) for row in connection.execute("SELECT config FROM configs")]
         logs = [json.loads(row[0]) for row in connection.execute("SELECT metrics FROM metrics")]
     expected_runs = {"experiment": experiments, "champion": 1, "dead-end": dead_ends}
-    actual_runs = {
-        kind: sum(config.get("record_type") == kind for config in configs)
-        for kind in expected_runs
-    }
-    if actual_runs != expected_runs:
-        raise RuntimeError(f"Trackio run readback mismatch: expected {expected_runs}, got {actual_runs}")
-    actual_logs = {
-        kind: sum(log.get("record_type") == kind for log in logs)
-        for kind in expected_runs
-    }
-    if actual_logs != expected_runs:
-        raise RuntimeError(f"Trackio log readback mismatch: expected {expected_runs}, got {actual_logs}")
+    for label, rows in (("run", configs), ("log", logs)):
+        actual = {
+            kind: sum(row.get("record_type") == kind for row in rows)
+            for kind in expected_runs
+        }
+        if actual != expected_runs:
+            raise RuntimeError(
+                f"Trackio {label} readback mismatch: expected {expected_runs}, got {actual}"
+            )
 
 
 def publish_campaign_telemetry(
@@ -160,54 +180,47 @@ def publish_campaign_telemetry(
 
     with _local_trackio(store_root) as trackio:
         for idea, trial, row, change in records:
-            trackio.init(
+            _publish_run(
+                trackio,
                 project=project,
                 name=f"experiment-{trial.id}",
                 group="experiment-log",
                 config=_config(idea, trial, record_type="experiment"),
-                embed=False,
-                auto_log_gpu=False,
-                auto_log_cpu=False,
+                metrics={
+                    "metric_value": row.value,
+                    "metric_delta": change,
+                    "throughput": row.throughput,
+                    "diff_lines": row.diff_lines,
+                    "verdict": trial.meta.get("verdict"),
+                    "training_diagnostics": trackio.Markdown(
+                        "```json\n"
+                        + json.dumps(trial.meta["training_diagnostics"], indent=2, sort_keys=True)
+                        + "\n```"
+                    ),
+                },
             )
-            trackio.log({
-                "record_type": "experiment",
-                "metric_value": row.value,
-                "metric_delta": change,
-                "throughput": row.throughput,
-                "diff_lines": row.diff_lines,
-                "verdict": trial.meta.get("verdict"),
-                "training_diagnostics": trackio.Markdown(
-                    "```json\n"
-                    + json.dumps(trial.meta["training_diagnostics"], indent=2, sort_keys=True)
-                    + "\n```"
-                ),
-            })
-            trackio.finish()
 
         idea, trial, row, change = champion
         champion_config = _config(idea, trial, record_type="champion")
         if not champion_config["reproduction_instructions"]:
             raise ValueError(f"champion {trial.id!r} has no reproduction instructions")
-        trackio.init(
+        _publish_run(
+            trackio,
             project=project,
             name="champion",
             group="champion",
             config=champion_config,
-            embed=False,
-            auto_log_gpu=False,
-            auto_log_cpu=False,
+            metrics={
+                "metric_value": row.value,
+                "metric_delta": change,
+                "champion_record": trackio.Markdown(
+                    f"# Champion\n\nCommit: `{trial.meta['commit']}`\n\n"
+                    f"Reproduce: `{champion_config['reproduction_instructions']}`\n\n"
+                    f"Hyperparameters:\n```json\n"
+                    f"{json.dumps(champion_config['hyperparameters'], indent=2, sort_keys=True)}\n```"
+                ),
+            },
         )
-        trackio.log({
-            "record_type": "champion",
-            "metric_value": row.value,
-            "metric_delta": change,
-            "champion_record": trackio.Markdown(
-                f"# Champion\n\nCommit: `{trial.meta['commit']}`\n\n"
-                f"Reproduce: `{champion_config['reproduction_instructions']}`\n\n"
-                f"Hyperparameters:\n```json\n{json.dumps(champion_config['hyperparameters'], indent=2, sort_keys=True)}\n```"
-            ),
-        })
-        trackio.finish()
 
         for idea, trial, row, change in dead_ends:
             reason = str(idea.meta.get("rejection_reason") or trial.meta.get("rejection_reason") or "")
@@ -217,25 +230,21 @@ def publish_campaign_telemetry(
                 raise ValueError(
                     f"rejected trial {trial.id!r} needs a rejection reason, diff summary, and diff blob"
                 )
-            trackio.init(
+            _publish_run(
+                trackio,
                 project=project,
                 name=f"dead-end-{trial.id}",
                 group="dead-end-registry",
                 config=_config(idea, trial, record_type="dead-end"),
-                embed=False,
-                auto_log_gpu=False,
-                auto_log_cpu=False,
+                metrics={
+                    "tested_axis": idea.meta.get("axis"),
+                    "direction": direction,
+                    "performance_change": change,
+                    "rejection_reason": reason,
+                    "diff_summary": summary,
+                    "rejected_arm_diff": trackio.Markdown(f"```diff\n{diff_blob}\n```"),
+                },
             )
-            trackio.log({
-                "record_type": "dead-end",
-                "tested_axis": idea.meta.get("axis"),
-                "direction": direction,
-                "performance_change": change,
-                "rejection_reason": reason,
-                "diff_summary": summary,
-                "rejected_arm_diff": trackio.Markdown(f"```diff\n{diff_blob}\n```"),
-            })
-            trackio.finish()
 
         from trackio.sqlite_storage import SQLiteStorage
 
