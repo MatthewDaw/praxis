@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from typing import Callable, Mapping, Protocol, Sequence, TypeVar
+from typing import Mapping, Protocol, Sequence
 
 
 class SealError(ValueError):
@@ -73,7 +73,7 @@ class SeatbeltProfile:
 
 @dataclass(frozen=True)
 class PredictionsArtifact:
-    """The complete output contract of an arm. Scores are intentionally absent."""
+    """The arm's complete output; its trusted caller reads this path and scores it outside."""
 
     path: Path
 
@@ -170,7 +170,7 @@ def launch_sealed_arm(
     """Prove all three denies, then run an arm whose sole artifact is predictions."""
     if not command or not all(isinstance(item, str) and item for item in command):
         raise SealError("arm command must be a non-empty argv sequence")
-    if Path(predictions_file).name != predictions_file or predictions_file in {"", ".", ".."}:
+    if not predictions_file or Path(predictions_file).name != predictions_file:
         raise SealError("predictions_file must be a safe single filename")
     existing = list(profile.predictions_dir.iterdir())
     if existing:
@@ -191,13 +191,3 @@ def launch_sealed_arm(
         unexpected = sorted(os.fspath(path.relative_to(profile.predictions_dir)) for path in emitted)
         raise SealError(f"arm emitted unexpected output; expected only {predictions_file}: {unexpected}")
     return PredictionsArtifact(output)
-
-
-Score = TypeVar("Score")
-
-
-def score_predictions(
-    artifact: PredictionsArtifact, scorer: Callable[[Path], Score],
-) -> Score:
-    """Score in the trusted orchestrator process, never in the Seatbelt subprocess."""
-    return scorer(artifact.path)

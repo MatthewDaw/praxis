@@ -10,7 +10,6 @@ from knowledge.ml_registry.runtime.seal import (
     SealError,
     SeatbeltProfile,
     launch_sealed_arm,
-    score_predictions,
 )
 
 
@@ -21,7 +20,7 @@ class FakeSeatbelt:
 
     def __call__(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         environment = kwargs.get("env")
-        assert environment is None or isinstance(environment, dict)
+        assert isinstance(environment, dict)
         self.calls.append((argv, environment))
         command = argv[4:]
         if command[:2] == [sys.executable, "-c"]:
@@ -99,7 +98,7 @@ def test_arm_can_emit_only_predictions_and_scoring_runs_outside_sandbox(tmp_path
         profile, ["valid-arm"], predictions_file="predictions.csv",
         cwd=tmp_path, runner=runner,
     )
-    score = score_predictions(artifact, lambda path: len(path.read_text().splitlines()) - 1)
+    score = len(artifact.path.read_text().splitlines()) - 1
 
     assert artifact.path == profile.predictions_dir / "predictions.csv"
     assert score == 1
