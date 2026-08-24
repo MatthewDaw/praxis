@@ -64,12 +64,14 @@ def campaign_coverage(
         advanced = any(idea.fact_id in adopted for idea in members)
         outcome: StageOutcome | None = None
         reason: str | None = None
-        if not members:
-            outcome = StageOutcome.VACUOUS
-            reason = "stage has no material families"
-        elif not open_ideas and len(measured) >= min_measured:
-            outcome = StageOutcome.ADVANCED if advanced else StageOutcome.STAGNANT
+        if not open_ideas and (not members or len(measured) >= min_measured):
+            outcome = StageOutcome.for_stage(
+                material_families=len(members),
+                completed_families=len(members),
+                advanced=advanced,
+            )
             reason = ("a material family cleared the rope" if advanced
+                      else "stage has no material families" if not members
                       else "all material families ran; none cleared the rope")
         row = {"stage": stage, "total": len(members), "measured": len(measured),
                "closed": not open_ideas, "thin": bool(members) and not open_ideas

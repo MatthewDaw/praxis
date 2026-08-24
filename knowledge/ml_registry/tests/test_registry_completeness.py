@@ -94,7 +94,7 @@ def test_latest_run_status_and_verdict_drive_coverage(
     assert ("awaiting_rerun" in {item["kind"] for item in out["blocking"]}) is retry
 
 
-def test_empty_open_and_thin_stages_have_distinct_blockers(tmp_path):
+def test_empty_open_and_thin_stages_have_distinct_blockers(tmp_path: Path) -> None:
     space, registry, binding = _fixture(tmp_path, stages=("empty", "open", "thin"))
     _idea(space, binding, "open", stage="open")
     thin = _idea(space, binding, "thin", stage="thin")
@@ -116,7 +116,9 @@ def test_empty_open_and_thin_stages_have_distinct_blockers(tmp_path):
     {"incumbent_remeasurement": True},
     {"resolved_configuration": "same", "incumbent_configuration": "same"},
 ])
-def test_both_noop_encodings_are_answered_but_not_measured(tmp_path, params):
+def test_both_noop_encodings_are_answered_but_not_measured(
+    tmp_path: Path, params: dict[str, object],
+) -> None:
     space, registry, binding = _fixture(tmp_path)
     idea = _idea(space, binding, "noop")
     _run(registry, idea, "noop", params=params)
@@ -127,7 +129,7 @@ def test_both_noop_encodings_are_answered_but_not_measured(tmp_path, params):
         ("stage_thin", "representation")]
 
 
-def test_latest_retry_and_noop_do_not_populate_or_close_stage(tmp_path):
+def test_latest_retry_and_noop_do_not_populate_or_close_stage(tmp_path: Path) -> None:
     space, registry, binding = _fixture(tmp_path)
     idea = _idea(space, binding, "arm")
     _run(registry, idea, "fair")

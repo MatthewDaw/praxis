@@ -63,7 +63,7 @@ class CampaignLifecycle(Protocol):
     def complete(self, context: CampaignJobContext) -> ProductionAliasRef | None: ...
     def terminal_outcome(
         self, context: CampaignJobContext,
-    ) -> tuple[CampaignOutcome, str] | CampaignOutcomeRecord | None: ...
+    ) -> tuple[CampaignOutcome, str] | None: ...
     def blocking_diagnosis(self, context: CampaignJobContext) -> str | None: ...
     def trial_count(self, context: CampaignJobContext) -> int: ...
     def dispatch_one(self, context: CampaignJobContext) -> Sequence[str] | CampaignOutcomeRecord: ...
@@ -198,12 +198,8 @@ class CampaignJob:
                     "campaign reports canonical completion",
                     production_alias,
                 )
-            terminal = getattr(self.adapter, "terminal_outcome", None)
-            if callable(terminal):
-                declared = terminal(self.context)
-                if isinstance(declared, CampaignOutcomeRecord):
-                    _atomic_json(self.outcome_path, declared.to_mapping())
-                    return declared
+            if hasattr(self.adapter, "terminal_outcome"):
+                declared = self.adapter.terminal_outcome(self.context)
                 if declared is not None:
                     outcome, reason = declared
                     if outcome not in {

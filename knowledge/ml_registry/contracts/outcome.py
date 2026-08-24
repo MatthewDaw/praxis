@@ -88,7 +88,6 @@ class CampaignOutcomeRecord:
                    production)
 
     def to_mapping(self) -> dict[str, Any]:
-        self.__post_init__()
         result = asdict(self)
         result["outcome"] = self.outcome.value
         result["production_alias"] = (None if self.production_alias is None
