@@ -390,8 +390,11 @@ def test_the_wait_loop_actually_calls_the_heartbeat(tmp_path):
     #     af_round_heartbeat "$now/$open" "$round" "$hb_open"
     # -- argv 1 and argv 2 swapped -- which satisfied every one of those checks. Argument ORDER is
     # the entire content of a wiring test; a membership check tests nothing that a typo could break.
-    call = next(l for l in text.splitlines()
-                if "af_round_heartbeat " in l and not l.strip().startswith("#"))
+    call = next(
+        line
+        for line in text.splitlines()
+        if "af_round_heartbeat " in line and not line.strip().startswith("#")
+    )
     assert call.strip() == EXACT_HEARTBEAT_CALL, (
         "the heartbeat call changed shape; if that is intentional, update EXACT_HEARTBEAT_CALL "
         "rather than relaxing this into a membership check.\n"
