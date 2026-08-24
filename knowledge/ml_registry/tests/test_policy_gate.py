@@ -24,7 +24,11 @@ def _fixture() -> tuple[dict[str, object], dict[str, list[dict[str, object]]]]:
 def test_per_arm_operating_point_is_refused_with_the_field_and_fix(tmp_path: Path) -> None:
     spec, corpora = _fixture()
     bad = deepcopy(spec)
-    bad["metric"]["operating_point"]["selection"] = "per_arm"  # type: ignore[index]
+    metric = bad["metric"]
+    assert isinstance(metric, dict)
+    operating_point = metric["operating_point"]
+    assert isinstance(operating_point, dict)
+    operating_point["selection"] = "per_arm"
 
     with pytest.raises(ContractError) as exc_info:
         Registry(tmp_path).register_campaign_spec(bad, scoring_corpora=corpora)
@@ -38,7 +42,13 @@ def test_per_arm_operating_point_is_refused_with_the_field_and_fix(tmp_path: Pat
 def test_every_aggregation_level_enforces_its_declared_minimum(tmp_path: Path) -> None:
     spec, corpora = _fixture()
     bad = deepcopy(spec)
-    bad["metric"]["aggregation"][1]["minimum_sample"] = 4  # type: ignore[index]
+    metric = bad["metric"]
+    assert isinstance(metric, dict)
+    aggregation = metric["aggregation"]
+    assert isinstance(aggregation, list)
+    level = aggregation[1]
+    assert isinstance(level, dict)
+    level["minimum_sample"] = 4
 
     with pytest.raises(ContractError) as exc_info:
         Registry(tmp_path).register_campaign_spec(bad, scoring_corpora=corpora)
