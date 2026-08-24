@@ -95,7 +95,7 @@ def test_the_wide_amendment_never_weakens_the_per_ticket_gate():
 def test_the_prompt_interpolates_the_selected_text():
     """A variable that never reaches the prompt would make all of the above decorative."""
     src = SCRIPT.read_text()
-    prompt = next(l for l in src.splitlines() if l.strip().startswith("round_prompt="))
+    prompt = next(line for line in src.splitlines() if line.strip().startswith("round_prompt="))
     assert "$SWEEP_AMENDMENT" in prompt
     # and exactly once, so a stale second copy cannot contradict the chosen one
     assert prompt.count("$SWEEP_AMENDMENT") == 1
