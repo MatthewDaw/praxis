@@ -13,7 +13,7 @@ from knowledge.ml_registry.schema import RegistryValidationError
 
 
 @pytest.mark.parametrize("field", sorted(PROTECTED_MODEL_FIELDS))
-def test_worker_sourced_mutation_of_a_protected_field_is_refused_naming_it(field) -> None:
+def test_worker_sourced_mutation_of_a_protected_field_is_refused_naming_it(field: object) -> None:
     """A worker-sourced write mutating metric/direction/win_condition/baseline_runs/
     baseline_throughput/diff_size_limit is refused naming that field."""
     with pytest.raises(RegistryValidationError) as excinfo:
@@ -27,7 +27,7 @@ def test_worker_sourced_mutation_of_an_unprotected_field_is_allowed():
 
 
 @pytest.mark.parametrize("source", ["worker", "adjudication", "operator", "totally-made-up", ""])
-def test_a_protected_field_may_not_be_patched_from_ANY_source(source) -> None:
+def test_a_protected_field_may_not_be_patched_from_ANY_source(source: str) -> None:
     """The guard is a deny-all, not a denylist of one source.
 
     It previously refused only ``source == "worker"``, which made it a no-op for every

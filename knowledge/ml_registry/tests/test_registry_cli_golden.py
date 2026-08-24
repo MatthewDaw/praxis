@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from knowledge.ml_registry.cli import main
 
 
@@ -76,7 +78,7 @@ def test_every_live_registry_command_names_registry_root_authority() -> None:
         assert "--registry-root" not in text
 
 
-def test_registry_status_reads_canonical_store(tmp_path: Path, capsys) -> None:
+def test_registry_status_reads_canonical_store(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = tmp_path / "registry"
     experiment = {
         "experiment_id": "fixture", "spec_digest": "d" * 64, "stages": ["model"],

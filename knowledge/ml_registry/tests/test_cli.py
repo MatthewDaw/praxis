@@ -207,7 +207,7 @@ def test_a_stagnant_campaign_trial_breaching_the_net_line_bound_is_rejected_not_
 
 
 def test_a_campaign_against_a_model_with_no_registered_throughput_is_refused_not_run(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     registry = Registry(tmp_path / "registry")
     with pytest.raises(sqlite3.IntegrityError, match="baseline_throughput"):
@@ -289,7 +289,7 @@ def test_updating_a_registered_model_cannot_move_the_baseline_from_a_worker(tmp_
 
 
 def test_updating_a_registered_model_cannot_repoint_the_rope_evidence_from_a_worker(
-    tmp_path,
+    tmp_path: Path,
 ) -> None:
     _immutable(tmp_path)
 
@@ -302,7 +302,7 @@ def test_updating_a_registered_model_without_a_source_is_refused_naming_it(tmp_p
     _immutable(tmp_path)
 
 
-def test_a_registered_models_metric_stays_frozen_on_the_update_path(tmp_path) -> None:
+def test_a_registered_models_metric_stays_frozen_on_the_update_path(tmp_path: Path) -> None:
     registry = _registry(tmp_path)
     with pytest.raises(sqlite3.IntegrityError, match="experiments.experiment_id"):
         registry.create_experiment(
