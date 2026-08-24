@@ -33,6 +33,7 @@ about rubrics. What this module adds around that boolean:
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -60,7 +61,25 @@ PATH_EXEMPTION_SOURCE = "path-exemption"  # R33: auto-pass, never a human/attest
 # its own source makes "not evaluated" greppable and auditable, exactly as
 # path-exemption does for its case.
 EMPTY_DIFF_SOURCE = "no-diff"
-DEFAULT_GRADED_ITER_CAP = 3
+# MEASURED, not guessed. The cap is a BACKSTOP; the sharp anti-spin guards are the two rules beside
+# it — advise-only defects escalate immediately as unremediable, and a round that fails to REDUCE
+# the defect count blocks after a single non-improving iteration. So the raw cap only ever bites
+# work that is steadily improving, and setting it below what improving work actually needs converts
+# it from a safety net into the main cause of blocked tickets.
+#
+# Iterations taken by every graded ticket observed on 2026-08-24, by outcome:
+#     finished: 1, 1, 1, 2, 2, 2, 2, 3, 4, 5      <- R1a took 4, T8 took 5
+#     blocked:  3, 3                              <- R3b (ONE defect left), T6a
+# R1a and T8 are above the old cap of 3 and finished anyway, because `should_block` is a returned
+# value with no enforcement and their workers pushed past it. R3b and T6a honoured it and blocked.
+# Whether a ticket shipped therefore depended on whether its worker obeyed a suggestion, which is
+# not a policy. R3b is the ticket that lands the campaign terminal outcomes, and it stopped with
+# acceptance and every executable gate GREEN and one advisory defect outstanding.
+#
+# 8 leaves real headroom above the observed maximum of 5 without weakening anything: a spinning
+# check still dies on the non-convergence rule after one bad iteration, and an unremediable one
+# still dies immediately.
+DEFAULT_GRADED_ITER_CAP = int(os.environ.get("AF_GRADED_ITER_CAP", "8"))
 M_GRADED_LOOP = ts.M_GRADED_LOOP  # {validation_id: {iters, last_defects, last_hash}} — shared with
                                   # _ticket_state.claim(), which resets it on a fresh ticket pick.
 

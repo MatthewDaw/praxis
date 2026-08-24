@@ -144,11 +144,16 @@ def test_iteration_cap_trips_block(monkeypatch):
     d = [{"file": "x", "line": 1, "problem": "p", "remedy": "r", "confidence": 8}]
     # Code changes each round (no caching); defects strictly DECREASE so the convergence guard is
     # satisfied and only the iteration cap can trip the block.
+    # cap is passed EXPLICITLY: this test is about the cap MECHANISM, not about whatever the
+    # default happens to be. Depending on the default made it fail the moment the default was
+    # raised (measured: tickets finish at 4 and 5 iterations, so a default of 3 blocked working
+    # ones), which tells you nothing about whether the mechanism works.
     counts = [5, 3]
     for i, n in enumerate(counts, start=1):
-        r = gv.verify_graded_check("R1", "v1", f"code{i}", _stub(0.3, d * n), ref=PLAN, now=float(i))
+        r = gv.verify_graded_check("R1", "v1", f"code{i}", _stub(0.3, d * n), ref=PLAN,
+                                   cap=3, now=float(i))
         assert not r.should_block
-    r = gv.verify_graded_check("R1", "v1", "code3", _stub(0.3, d * 1), ref=PLAN, now=3.0)
+    r = gv.verify_graded_check("R1", "v1", "code3", _stub(0.3, d * 1), ref=PLAN, cap=3, now=3.0)
     assert r.should_block and "cap" in r.block_reason
 
 
