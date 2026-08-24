@@ -15,7 +15,6 @@ while a genuinely clean pass and a properly-reported failure are left alone.
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 import sys
@@ -36,20 +35,8 @@ def _summary(verdict: dict, tmp_path: Path) -> str:
     argv[1], code on stdin) and return the one-line summary it prints."""
     vpath = tmp_path / "verdict.json"
     vpath.write_text(json.dumps(verdict))
-    apath = tmp_path / "authorship.json"
-    authored = {}
-    for item in verdict.get("regressed") or []:
-        if isinstance(item, dict) and item.get("id"):
-            authored[item["id"]] = {"commits": ["abc"], "paths": item.get("paths") or []}
-    apath.write_text(json.dumps(authored))
-    ipath = tmp_path / "test-integrity.json"
-    ipath.write_text("[]")
-    env = dict(os.environ)
-    source_root = str(Path(__file__).resolve().parents[1] / "src")
-    env["PYTHONPATH"] = source_root + (os.pathsep + env["PYTHONPATH"]
-                                       if env.get("PYTHONPATH") else "")
-    out = subprocess.run([sys.executable, "-", str(vpath), str(apath), str(ipath)],
-                         input=_coherence_block(), capture_output=True, text=True, env=env)
+    out = subprocess.run([sys.executable, "-", str(vpath)], input=_coherence_block(),
+                         capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     return out.stdout.strip()
 
@@ -82,8 +69,7 @@ def test_a_properly_reported_failure_is_not_flagged_by_the_underreport_rule(tmp_
     """When the tickets ARE in `regressed`, the loop's regression pass carries them -- notes naming
     them is expected, not incoherent. The under-report rule fires only on an EMPTY `regressed`."""
     summary = _summary({"verdict": "fail", "gates_green": False,
-                        "regressed": [{"id": "REM-29", "reason": "migration overwritten",
-                                       "paths": ["migrations/29.sql"]}],
+                        "regressed": [{"id": "REM-29", "reason": "migration overwritten"}],
                         "notes": "REM-29 should be regressed: its migration was overwritten"}, tmp_path)
     assert not summary.startswith("INCOHERENT"), summary
 
