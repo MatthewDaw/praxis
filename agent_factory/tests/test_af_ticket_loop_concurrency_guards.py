@@ -381,7 +381,7 @@ def test_unsamplable_signals_report_UNKNOWN_and_never_warn(tmp_path):
     assert "pane UNKNOWN" in p.stdout
 
 
-def test_the_wait_loop_actually_calls_the_heartbeat(tmp_path: Path) -> None:
+def test_the_wait_loop_actually_calls_the_heartbeat(tmp_path):
     """The block existing is not enough — it has to be wired into the round wait."""
     text = SCRIPT.read_text()
     # EXACT AND POSITIONAL, deliberately. This assertion was briefly rewritten as unordered
@@ -390,11 +390,8 @@ def test_the_wait_loop_actually_calls_the_heartbeat(tmp_path: Path) -> None:
     #     af_round_heartbeat "$now/$open" "$round" "$hb_open"
     # -- argv 1 and argv 2 swapped -- which satisfied every one of those checks. Argument ORDER is
     # the entire content of a wiring test; a membership check tests nothing that a typo could break.
-    call = next(
-        line
-        for line in text.splitlines()
-        if "af_round_heartbeat " in line and not line.strip().startswith("#")
-    )
+    call = next(l for l in text.splitlines()
+                if "af_round_heartbeat " in l and not l.strip().startswith("#"))
     assert call.strip() == EXACT_HEARTBEAT_CALL, (
         "the heartbeat call changed shape; if that is intentional, update EXACT_HEARTBEAT_CALL "
         "rather than relaxing this into a membership check.\n"
