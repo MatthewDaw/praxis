@@ -59,7 +59,7 @@ class HistoricalStoreImporter:
             "metric": meta.get("metric") or "metric_value",
             "direction": meta.get("direction") if meta.get("direction") in {"maximize", "minimize"} else "maximize",
             "win_condition": meta.get("win_condition") or {"historical": "unasserted"},
-            "noise_floor": float(meta.get("noise_floor") or 0),
+            "rope": float(meta.get("rope") or 0),
             "baseline_throughput": float(meta.get("baseline_throughput") or 0),
         }
         model = None if model_id is None else {

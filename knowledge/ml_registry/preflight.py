@@ -194,10 +194,10 @@ def _check_status(rep: Report, praxis: Path, space: Path, model_id: str) -> dict
     rep.check(
         "STATUS", ok,
         f"baseline={st['baseline']} metric={st['metric']}({st['direction']}) "
-        f"floor={st['noise_floor']} trials={st['trials_total']} untried={untried} "
+        f"rope_over={len(st['baseline_runs'])} run(s) trials={st['trials_total']} untried={untried} "
         f"in_flight={len(st['trials_in_flight'])} blocking={len(blocking)}",
         baseline=st["baseline"], metric=st["metric"], direction=st["direction"],
-        floor=st["noise_floor"], trials=st["trials_total"], untried=untried,
+        baseline_runs=len(st["baseline_runs"]), trials=st["trials_total"], untried=untried,
         ideas_total=st["ideas_total"], in_flight=len(st["trials_in_flight"]),
         ratchet=st.get("ratchet_count", 0), blocking=len(blocking),
         detail="; ".join(f"{d.get('kind')}: {d.get('detail')}" for d in blocking) or "none",

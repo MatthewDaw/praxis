@@ -42,14 +42,16 @@ REGISTRY_CATEGORIES: tuple[str, ...] = (MODEL, IDEA, TRIAL)
 TRIAL_STATUS_VOIDED = TrialStatus.VOIDED.value
 
 # The "judging fields" a registered model is compared against, plus its baseline --
-# R1's acceptance condition and R11's registration contract agree on this set.
+# R1's acceptance condition and R11's registration contract agree on this set. The
+# threshold itself is NOT among them: R3a retired the stored one, and the rope is
+# recomputed per comparison from the model's `baseline_runs` evidence
+# (knowledge.ml_registry.floor.comparison_rope).
 REQUIRED_META_KEYS: dict[str, tuple[str, ...]] = {
     MODEL: (
         "metric",
         "direction",
         "win_condition",
         "baseline",
-        "noise_floor",
         "baseline_throughput",
         "diff_size_limit",
     ),

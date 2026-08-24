@@ -1,29 +1,32 @@
 """Table-driven trial verdict + baseline ratchet (R10).
 
-Builds on R3's idea lifecycle (:mod:`knowledge.ml_registry.lifecycle`) and R12's noise
-floor (:mod:`knowledge.ml_registry.floor`). :func:`adjudicate_verdict` is the full
+Builds on R3's idea lifecycle (:mod:`knowledge.ml_registry.lifecycle`) and R12's rope
+(:mod:`knowledge.ml_registry.floor`). :func:`adjudicate_verdict` is the full
 adjudication a trial goes through once its idea is claimed and run: it joins the trial's
 ``commit`` (and the model's current ``baseline`` commit) against an external ledger of
 per-commit rows -- metric value, throughput, and net diff lines -- and decides ONE of
 four verdicts:
 
-The stagnant band is CLOSED on both sides: ``-noise_floor <= delta <= noise_floor`` is
-stagnant. The floor is one standard deviation of the baseline runs, so a delta of exactly
-one floor is not evidence of anything in EITHER direction -- adoption needs
-``delta > noise_floor`` and rejection needs ``delta < -noise_floor``, both strict.
+The bar is the ROPE, recomputed for this comparison from the model's own ``baseline_runs``
+rows in the ledger this call was handed (:func:`~knowledge.ml_registry.floor.comparison_rope`)
+-- R3a retired the threshold a model used to store at registration, so one number decides
+one verdict. The stagnant band is CLOSED on both sides: ``-rope <= delta <= rope`` is
+stagnant. The rope is ``sigmas`` standard deviations of the baseline runs, so a delta of
+exactly one rope is not evidence of anything in EITHER direction -- adoption needs
+``delta > rope`` and rejection needs ``delta < -rope``, both strict.
 
 * ``"adopted"``  -- the trial's ledger value beats the current baseline by MORE than one
-  ``noise_floor`` in the model's improving direction. The model's ``baseline`` advances to
+  ``rope`` in the model's improving direction. The model's ``baseline`` advances to
   the trial's commit, the commit it replaces is retained as ``previous_baseline``, and the
   idea is adopted (:func:`~knowledge.ml_registry.lifecycle.adopt_idea`). Any PRIOR adoption
   for the model is superseded
   (:func:`~knowledge.ml_registry.lifecycle.supersede_adoption`), not invalidated: it was a
   real bar while it stood, so the ideas rejected during its tenure stay rejected.
-* ``"parked"``   -- the delta is within one ``noise_floor`` of the baseline, inclusive
+* ``"parked"``   -- the delta is within one ``rope`` of the baseline, inclusive
   (stagnant), and the trial's recomputed ``diff_lines`` is within the model's
   ``diff_size_limit`` (its net-line bound). The idea is parked
   (:func:`~knowledge.ml_registry.lifecycle.park_idea`).
-* ``"rejected"`` -- either the trial's ledger value falls MORE than one ``noise_floor``
+* ``"rejected"`` -- either the trial's ledger value falls MORE than one ``rope``
   below baseline in the worsening direction, or it is stagnant but breaches the net-line
   bound. The idea is rejected (:func:`~knowledge.ml_registry.lifecycle.reject_idea`).
 * ``"voided"``   -- the trial's recomputed throughput falls more than
@@ -37,9 +40,9 @@ Before any of that, a trial's SELF-REPORTED ``throughput``/``diff_lines`` (recor
 trial at registration time) is checked against the authoritative ledger row for its own
 commit -- a disagreement is refused naming the disagreeing field, the same
 recompute-refuses-drift shape R12's :func:`~knowledge.ml_registry.floor.register_model_with_baseline`
-uses for a model's stored floor/throughput.
+uses for a model's stored throughput.
 
-RATCHET: only a REJECTED verdict caused by the worsening-direction noise-floor breach (not
+RATCHET: only a REJECTED verdict caused by the worsening-direction rope breach (not
 a stagnant/diff-bound rejection) advances the model's consecutive-rejection ratchet
 (``ratchet_count`` plus the distinct idea ids behind it, ``rejection_streak_ideas``). The
 moment the last 3 entries of that streak name 3 DISTINCT ideas, the model's last adoption
@@ -70,7 +73,8 @@ from knowledge.ml_registry.floor import (
     RATCHET_COUNT_FIELD,
     REJECTION_STREAK_FIELD,
     THROUGHPUT_UNITS_METRIC_MEAN,
-    scaled_noise_floor,
+    baseline_values,
+    comparison_rope,
 )
 from knowledge.ml_registry.contracts.ledger_v2 import FAIR_LEDGER_STATUSES
 from knowledge.ml_registry.lifecycle import (
@@ -192,6 +196,7 @@ def _attributable_to_the_adoption(
     value: float,
     *,
     direction: str,
+    rope_values: list[float],
 ) -> bool:
     """Would this rejected trial have PARKED or WON against the bar the adoption replaced?
 
@@ -209,7 +214,7 @@ def _attributable_to_the_adoption(
         return True
     # THE PREVIOUS ERA'S BAR, not the current one. The question is counterfactual -- would
     # this trial have parked-or-won against the bar the adoption REPLACED -- so it must be
-    # asked with the floor that stood at `previous_row.value`. Under a floor that MOVES,
+    # asked with the rope evaluated at `previous_row.value`. Under a bar that MOVES,
     # using the current (smaller, because the adoption improved the metric) bar answers a
     # question nobody asked and answers it conservatively: fewer rejections are judged
     # attributable, so the ratchet under-fires and a false adoption survives longer exactly
@@ -217,7 +222,7 @@ def _attributable_to_the_adoption(
     # number and this is a no-op.
     return _delta_against(
         direction, previous_row.value, value
-    ) >= -scaled_noise_floor(model.meta, previous_row.value)
+    ) >= -comparison_rope(model.meta, rope_values, previous_row.value)
 
 
 def _invalidate_ratchet(space: RegistrySpace, model: Fact, model_id: str, reason: str) -> None:
@@ -368,14 +373,17 @@ def adjudicate_verdict(
     direction = str(direction)
     delta = _delta_against(direction, baseline_row.value, row.value)
 
-    # THE BAR AT THIS BASELINE'S LEVEL. For a model that declared no scaling this is the
-    # registered floor, byte for byte, and every campaign registered before scaling existed
-    # is in that case. For a scaled one it is derived at `baseline_row.value` -- the level
+    # THE BAR AT THIS BASELINE'S LEVEL, RECOMPUTED HERE. R3a retired the threshold a model
+    # used to store at registration: the rope is measured from the model's own
+    # `baseline_runs` rows in THIS ledger, so there is no second number that could decide
+    # the same verdict differently. For a model that declared no scaling that measurement
+    # IS the bar; for a scaled one it is then derived at `baseline_row.value` -- the level
     # of the bar the trial is actually being compared to.
-    noise_floor = scaled_noise_floor(model.meta, baseline_row.value)
+    rope_values = baseline_values(model.meta, {c: r.value for c, r in ledger_rows.items()})
+    rope = comparison_rope(model.meta, rope_values, baseline_row.value)
     diff_size_limit = float(model.meta["diff_size_limit"])
 
-    if delta > noise_floor:
+    if delta > rope:
         parent_lineage_id = current_lineage(model_id, model.meta)
         trial.meta["status"] = trial_status_for_verdict(VERDICT_ADOPTED).value
         trial.meta["verdict"] = VERDICT_ADOPTED
@@ -399,12 +407,12 @@ def adjudicate_verdict(
         _reset_ratchet(model)
         return VERDICT_ADOPTED
 
-    # Symmetric with the strict `delta > noise_floor` adoption test above: a delta of exactly
-    # one floor is one standard deviation, i.e. no evidence, in EITHER direction.
-    if delta < -noise_floor:
+    # Symmetric with the strict `delta > rope` adoption test above: a delta of exactly one
+    # rope is `sigmas` standard deviations, i.e. no evidence, in EITHER direction.
+    if delta < -rope:
         trial.meta["status"] = trial_status_for_verdict(VERDICT_REJECTED).value
         trial.meta["verdict"] = VERDICT_REJECTED
-        reject_idea(space, idea_id, "trial fell more than one noise-floor standard deviation below the current baseline")
+        reject_idea(space, idea_id, "trial fell more than one rope below the current baseline")
         # COUNTERFACTUAL ATTRIBUTION. The streak is evidence ABOUT THE ADOPTION, so a
         # rejection joins it only when the adoption is what caused the rejection: the trial
         # would have PARKED or WON against `previous_baseline`, the bar the adoption replaced,
@@ -447,11 +455,11 @@ def adjudicate_verdict(
             # old absolute-score proxy when its counterfactual is unfair or unavailable.
             if counterfactual_harm(
                 model.meta, trial.meta, ledger_rows,
-                observed_value=row.value, direction=direction,
+                observed_value=row.value, direction=direction, rope_values=rope_values,
             ) is not True:
                 return VERDICT_REJECTED
         elif not _attributable_to_the_adoption(
-                model, ledger_rows, row.value, direction=direction):
+                model, ledger_rows, row.value, direction=direction, rope_values=rope_values):
             # Compatibility for already-persisted trials. New autonomous dispatch is
             # separately required to provide paired evidence before rollback.
             trial.meta["ratchet_evidence"] = "legacy_counterfactual_proxy"
@@ -467,7 +475,7 @@ def adjudicate_verdict(
             )
         return VERDICT_REJECTED
 
-    # stagnant band, closed on both sides: -noise_floor <= delta <= noise_floor
+    # stagnant band, closed on both sides: -rope <= delta <= rope
     if row.diff_lines <= diff_size_limit:
         trial.meta["status"] = trial_status_for_verdict(VERDICT_PARKED).value
         trial.meta["verdict"] = VERDICT_PARKED

@@ -66,7 +66,7 @@ def _registry(root: Path) -> tuple[Registry, CampaignView, RegistryFinalizer]:
     registry = Registry(root)
     registry.create_experiment(experiment_id="R1", spec_digest="a" * 64,
         stages=["representation"], metric="f1", direction="maximize",
-        win_condition={"metric_at_least": .5}, noise_floor=.01, baseline_throughput=1)
+        win_condition={"metric_at_least": .5}, rope=.01, baseline_throughput=1)
     registry.register_model(model_id="R1", family="linear", sport_scope="shared", axis="a01",
                             protocol="Detector", extends=None)
     _run(registry, "run-R1")
@@ -324,7 +324,7 @@ class _ProcessScenario:
         for cid in ("R1", "R2"):
             self.registry.create_experiment(experiment_id=cid, spec_digest="a" * 64,
                 stages=["representation"], metric="f1", direction="maximize",
-                win_condition={"metric_at_least": .5}, noise_floor=.01, baseline_throughput=1)
+                win_condition={"metric_at_least": .5}, rope=.01, baseline_throughput=1)
             _create_named_run(self.registry, cid)
         self.coordinator = LeaseIntentCoordinator(self.root / "ownership.json")
         self.backend = ExecutorProcessBackend(self.root / "dispatch", coordinator=self.coordinator)

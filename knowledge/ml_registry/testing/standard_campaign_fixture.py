@@ -110,7 +110,7 @@ def run_fixture(registry_root: Path, *, repo: Path = REPO_ROOT) -> dict[str, Any
         metric="fixture_score",
         direction="maximize",
         win_condition={"metric_at_least": 0.7},
-        noise_floor=0.01,
+        rope=0.01,
         baseline_throughput=9.0,
     )
     registry.register_model(
