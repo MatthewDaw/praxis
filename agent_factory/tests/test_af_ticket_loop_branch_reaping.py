@@ -68,6 +68,13 @@ FUNCS = _extract(*OWNERSHIP, "reap_branches")
 # wins), which is also the pessimistic case the red-path test wants: resolution that fixes nothing.
 INVARIANT_FUNCS = _extract(
     *OWNERSHIP,
+    # af_main_worktree was ALREADY missing here: af_scratch_roots calls it, and under the harness's
+    # `set -uo pipefail` (no -e) a "command not found" is a silent 127 that degrades the scratch-root
+    # list instead of failing. The gap only became visible when sweep_worktrees started calling it
+    # directly. Extracting it makes the harness run the same code the driver runs.
+    "af_main_worktree",
+    "af_dir_in_use",
+    "af_worktree_is_removable",
     "af_scratch_roots",
     "af_scratch_globs",
     "af_is_scratch",

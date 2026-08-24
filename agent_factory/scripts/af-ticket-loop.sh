@@ -1389,14 +1389,30 @@ preflight_universal_lane || exit 1
 # nothing for a genuine dependency stall, and that is a real answer the loop must be free to act on
 # — treating empty-but-successful as a failure would retry a true stall forever instead of halting
 # loudly, trading a silent death for a silent spin.
+#
+# NOT EVERY FAILURE IS TRANSIENT, and treating them alike costs twice. A 403 ("API key is not
+# scoped to org X") and a 404 ("unknown space") are the backend ANSWERING: the config is wrong, and
+# it will still be wrong on the fifth attempt. Retried anyway, each pass burned ~2.5 minutes and
+# then incremented the OUTAGE counter, so a five-character typo in PRAXIS_ORG presented as "Praxis
+# unreachable" and eventually halted the run for a cause that was never true. A misconfiguration
+# should fail in seconds and SAY WHAT IS MISCONFIGURED.
+AF_PRAXIS_FATAL=""   # set by praxis_q when the backend gave a definite answer; read by outage()
 praxis_q(){  # args: query-fn [args...] -> its stdout; 1 if it never succeeded
-  local out="" i
+  local out="" i err
+  err="$(mktemp)"
+  AF_PRAXIS_FATAL=""
   for i in 1 2 3 4 5; do
-    if out=$("$@" 2>/dev/null); then printf '%s' "$out"; return 0; fi
+    if out=$("$@" 2>"$err"); then rm -f "$err"; printf '%s' "$out"; return 0; fi
+    if grep -qE 'HTTP 40[0134]|not scoped to org|unknown space|OrgMismatch|partial snapshot reference' "$err" 2>/dev/null; then
+      AF_PRAXIS_FATAL="$(grep -oE '(HTTP 40[0134][^"]*|not scoped to org .*|unknown space .*)' "$err" 2>/dev/null | head -1)"
+      AF_PRAXIS_FATAL="${AF_PRAXIS_FATAL:-definite error from Praxis}"
+      rm -f "$err"; return 1
+    fi
     # Linear backoff, ~2.5min total across 5 attempts. Overridable so the regression test can drive
     # the retry path without sleeping through it.
     sleep $((i * ${AF_QUERY_BACKOFF_S:-10}))
   done
+  rm -f "$err"
   return 1
 }
 
@@ -1406,6 +1422,17 @@ praxis_q(){  # args: query-fn [args...] -> its stdout; 1 if it never succeeded
 # silent death this whole mechanism replaces.
 outages=0
 outage(){  # args: what-failed -> waits, or halts the run once the streak is too long
+  # A DEFINITE ANSWER IS NOT AN OUTAGE. Waiting 60s and trying again cannot make an API key become
+  # scoped to an org it is not scoped to, so this path would spend ten passes and ten minutes to
+  # reach the same halt -- reported, wrongly, as the backend being down. Halt immediately, and name
+  # the actual fault, because the remedy is a config edit and not patience.
+  if [ -n "${AF_PRAXIS_FATAL:-}" ]; then
+    say "HALTING — Praxis answered a definite error on '$1': ${AF_PRAXIS_FATAL}"
+    say "  This is a MISCONFIGURATION, not an outage: retrying cannot change the answer."
+    say "  Check PRAXIS_ORG / PRAXIS_API_KEY / the space name in this worktree's .claude/settings.local.json"
+    say "  (a key only works in its own org), then relaunch."
+    exit 6
+  fi
   outages=$((outages + 1))
   if [ "$outages" -ge "${AF_MAX_OUTAGES:-10}" ]; then
     say "HALTING — Praxis unreachable for $outages consecutive passes (last: $1). Nothing can be claimed, dispatched or verified until it is back; check the backend, then relaunch."
@@ -1415,13 +1442,17 @@ outage(){  # args: what-failed -> waits, or halts the run once the streak is too
   sleep 60
 }
 
-claimable(){  # -> count of incomplete|in_progress for PROJECT
+claimable(){  # -> count of tickets that still OWE WORK for PROJECT (fresh ones included)
+  # Nothing stamps build_state at bless, so a just-blessed ticket has NO state. Asking for
+  # `in ('incomplete','in_progress')` therefore missed the entire plan: a blessed 21-ticket set
+  # read claimable=0 and the loop announced "drained -- nothing claimable" having built nothing.
+  # ts.is_open_state is the single predicate; the TERMINAL states are what get excluded.
   $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
 import sys
-import _praxis
+import _praxis, _ticket_state as ts
 p=sys.argv[1]
 f=_praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}')
-print(sum(1 for x in f if ((x.get('meta') or {}).get('build_state')) in ('incomplete','in_progress')))
+print(sum(1 for x in f if ts.owes_work(x)))
 PYEOF
 }
 
@@ -1646,7 +1677,10 @@ for r in sorted(roots):
 PYEOF
 }
 
-batch_open(){  # args: ids... -> how many are still incomplete|in_progress (blocked counts as done)
+batch_open(){  # args: ids... -> how many still OWE WORK (finished/blocked count as done)
+  # Same inclusion-list defect as claimable(), and worse here: a ticket dispatched THIS round has
+  # no build_state until its worker claims it, so the round's own freshly-sent work counted as
+  # already closed -- a round could declare itself complete before a single worker had started.
   # PARKED-ON-MANUAL also counts as done. A ticket whose every automated obligation is met and
   # which now waits only on a human sign-off cannot be closed by any amount of wall clock — the
   # worker may never self-certify a manual requirement — so counting it open makes the round
@@ -1662,7 +1696,7 @@ n, parked = 0, []
 for f in _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}'):
     m = f.get('meta') or {}
     ids = {str(f.get('id') or ''), str(m.get('requirement_id') or '')} - {''}
-    if (ids & want) and m.get('build_state') in ('incomplete', 'in_progress'):
+    if (ids & want) and ts.is_open_state(m.get('build_state')):
         try:
             if ts.parked_on_manual(f, ref):
                 parked.append(str(m.get('requirement_id') or f.get('id')))
@@ -2256,28 +2290,66 @@ af_force_remove_worktree(){   # $1 = path
   return 1
 }
 
+# Is any live process sitting in this directory (or under it)?
+#
+# THIS CHECK DID NOT FIRE, EVER, in any of the three places that used it. The driver runs under
+# `set -o pipefail`, and every one of them was spelled
+#     readlink /proc/*/cwd 2>/dev/null | grep -qF "$dir"
+# `readlink` exits NON-ZERO when ANY single argument is unreadable, and a handful of root-owned
+# processes make that certain on every real box -- so pipefail handed the pipeline readlink's 1 even
+# when grep had matched, the `if` took the false arm, and the caller proceeded to delete. Two of the
+# three callers go straight to `rm -rf`. A worker's tree could be, and was, removed while it was
+# building in it -- surfacing later as a "flaky" worker rather than as the deletion it was.
+#
+# It read as a correct liveness check in every review, because the defect is in the plumbing and not
+# in the logic. Hence one function, tested directly, rather than three inline pipelines.
+#
+# Capture-then-test, so no pipeline status can be stolen. The match is ANCHORED: a substring test
+# would let a live process in /x/foobar protect an unrelated /x/foo forever.
+af_dir_in_use(){   # $1 = directory
+  local hit=""
+  if [ ! -r /proc/self/cwd ]; then
+    if [ "${AF_PROC_WARNED:-0}" != 1 ]; then
+      AF_PROC_WARNED=1
+      say "NOTE: /proc is not readable here — a directory's liveness cannot be proven before it is removed"
+    fi
+    return 1
+  fi
+  hit=$(readlink /proc/*/cwd 2>/dev/null | awk -v p="$1" '$0 == p || index($0, p "/") == 1 {print; exit}' || true)
+  [ -n "$hit" ]
+}
+
 sweep_worktrees(){
   cd "$WT" || return 0
-  local kept=0
+  local kept=0 main_wt
+  main_wt=$(af_main_worktree)
   unset AF_WT_BRANCH_CACHE   # this function mutates the worktree set the ownership rule reads
   while read -r path; do
     [ -n "$path" ] || continue
     [ "$path" = "$WT" ] && continue
-    # ONLY agent scratch trees are removable. `git worktree list` reports every worktree of the
-    # repo, which includes the MAIN CHECKOUT and every sibling project worktree — and a build branch
-    # is normally ahead of main, so `is-ancestor main HEAD` is TRUE and the merged-check below would
-    # have happily deleted the factory checkout that all three loops execute from. Observed on the
-    # first real sweep, which reported "/workspace/praxis holds UNMERGED commits" — it was one
-    # ancestry check away from removing the repo root. Scratch trees live under one of the roots
-    # af_scratch_roots names; nothing else is this function's business.
-    af_is_scratch "$path" || continue
+    # WHAT MAY BE REMOVED IS DECIDED BY af_worktree_is_removable, not by the path alone.
+    #
+    # The danger this guards is real and was nearly realised: `git worktree list` reports every
+    # worktree of the repo, including the MAIN CHECKOUT and every sibling project's tree, and a
+    # build branch is normally ahead of main — so `is-ancestor main HEAD` is TRUE and the
+    # merged-check below would have happily deleted the factory checkout all three loops execute
+    # from. The first real sweep reported "/workspace/praxis holds UNMERGED commits" and was one
+    # ancestry check away from removing the repo root.
+    #
+    # The old guard answered that with "only trees under a scratch root", which was safe and too
+    # narrow: a worker tree created OUTSIDE those roots could never be swept, so the straggler
+    # invariant reported it forever and `--resolve-orphans` had nothing to land. Ownership is now a
+    # FACT (a ticket id this project owns, on a non-human branch, fully contained in HEAD) rather
+    # than a path prefix — strictly stronger than the path test where it matters, and satisfiable.
+    [ -n "$main_wt" ] && [ "$path" = "$main_wt" ] && continue
+    local head; head=$(git -C "$path" rev-parse HEAD 2>/dev/null || echo "")
+    af_worktree_is_removable "$path" "$head" || continue
     # Never yank a tree out from under a live worker: its evals are executing against these files.
-    if [ -n "$(ls /proc/*/cwd 2>/dev/null | head -1)" ] && \
-       readlink /proc/*/cwd 2>/dev/null | grep -qF "$path"; then
+    #
+    if af_dir_in_use "$path"; then
       say "worktree $path is IN USE by a live process — skipping"
       continue
     fi
-    local head; head=$(git -C "$path" rev-parse HEAD 2>/dev/null || echo "")
     # PURGE unconditionally. Removing a worktree KEEPS its branch, so an unintegrated commit is not
     # lost by this -- it stays reachable on worktree-agent-* and is merged by integrate_round once
     # its ticket is finished. Leaving the trees instead is what put 29 of them on one box and filled
@@ -2317,7 +2389,7 @@ sweep_worktrees(){
     for d in "$root"/*; do
       [ -d "$d" ] || continue
       printf '%s\n' "$registered" | grep -qxF "$d" && continue
-      if readlink /proc/*/cwd 2>/dev/null | grep -qF "$d"; then
+      if af_dir_in_use "$d"; then
         say "orphan dir $d is IN USE by a live process — skipping"
         continue
       fi
@@ -2331,7 +2403,7 @@ sweep_worktrees(){
     for d in $g; do
       [ -d "$d" ] || continue
       printf '%s\n' "$registered" | grep -qxF "$d" && continue
-      if readlink /proc/*/cwd 2>/dev/null | grep -qF "$d"; then
+      if af_dir_in_use "$d"; then
         say "orphan dir $d is IN USE by a live process — skipping"
         continue
       fi
@@ -2467,8 +2539,50 @@ af_is_owed_merge(){   # $1 = branch name
 # longer makes af_is_owed_merge answer no, which is the second silent-miss path the old code had.
 af_is_factory_named(){   # $1 = branch name
   case "$1" in worktree-agent-*|worktree-wf_*) return 0 ;; esac
-  case "${AF_KNOWN_IDS:-}" in *" ${1##*/} "*) return 0 ;; esac
+  local seg="${1##*/}" id lid
+  case "${AF_KNOWN_IDS:-}" in *" $seg "*) return 0 ;; esac
+  # A worker names its branch after the WHOLE ROUND, not just the ticket: this factory's real
+  # branches read `af-build/praxis-r0a-d3a01c6b` -- <project>-<ticket>-<cid8>. The exact-segment
+  # test above therefore matched almost NONE of the branches this factory actually mints, so a
+  # spent worker tree was never recognised as ours, never swept, and got reported as a leftover by
+  # an invariant nothing could satisfy (observed at praxis round #1: `--resolve-orphans` ran, found
+  # 0 commits to land, and the violation stood).
+  #
+  # Still a FACT, not a prefix guess: the id has to be one Praxis says THIS PROJECT owns, and it has
+  # to appear as a whole hyphen-delimited token, so a human's `build/login-redesign` cannot match.
+  # Case-folded because ids are upper-case in Praxis and lower-cased into a branch slug.
+  for id in ${AF_KNOWN_IDS:-}; do
+    [ -n "$id" ] || continue
+    case "-$seg-" in *"-$id-"*) return 0 ;; esac
+    lid=$(printf '%s' "$id" | tr 'A-Z' 'a-z')
+    case "-$(printf '%s' "$seg" | tr 'A-Z' 'a-z')-" in *"-$lid-"*) return 0 ;; esac
+  done
   return 1
+}
+
+# May this worktree be REMOVED? Distinct from "is it scratch": the sweep used to remove only trees
+# under a scratch root, which was the right instinct (an early version was one ancestry check away
+# from deleting the factory checkout all three loops execute from) but the wrong RULE -- it made a
+# spent tree that a worker created elsewhere permanently unremovable, and therefore made the
+# straggler invariant permanently unsatisfiable.
+#
+# The replacement is ownership by FACT plus proof the tree is spent, and every guard that protected
+# the checkout still holds:
+#   * the main checkout and $WT are excluded by the caller;
+#   * a human/base branch (main, the integration ref, AF_HUMAN_BRANCHES) is refused outright;
+#   * the branch must be factory-named -- i.e. carry a ticket id THIS PROJECT owns;
+#   * and every commit in the tree must ALREADY be on HEAD, so removal cannot lose work.
+# A tree failing any of those is left exactly where it is, reported, and never deleted.
+af_worktree_is_removable(){   # $1 = path; $2 = its HEAD sha (may be empty)
+  local p="$1" head="$2" br
+  af_is_scratch "$p" && return 0
+  br=$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  [ -n "$br" ] && [ "$br" != HEAD ] || return 1
+  af_is_human_branch "$br" && return 1
+  af_is_factory_named "$br" || return 1
+  [ -n "$head" ] || return 1
+  git merge-base --is-ancestor "$head" HEAD 2>/dev/null || return 1
+  return 0
 }
 
 # FOREIGN ERA: was this branch's newest commit written BEFORE this run started?

@@ -2403,6 +2403,29 @@ def _ids_of(item: dict) -> set[str]:
     return ids
 
 
+# The states a ticket can be in while it still OWES WORK. Written as an exclusion, and the
+# distinction is not cosmetic: an INCLUSION list -- `state in ("incomplete", "in_progress")` --
+# silently drops the state a freshly-blessed ticket actually has, which is NO STATE AT ALL. Nothing
+# stamps build_state at bless; the first writer is the claim. So a blessed 21-ticket plan read
+# `claimable=0` and the loop reported "drained -- nothing claimable" with the entire plan untouched,
+# and `batch_open` (same inclusion list) counted every just-dispatched ticket as already CLOSED,
+# which would let a round declare itself finished the instant it started.
+#
+# `ready_tickets`/`unfinished_ids` already got this right by excluding the terminal states, so the
+# two spellings disagreed about the same ticket. One predicate now, so they cannot drift again.
+_TERMINAL_BUILD_STATES = frozenset({"finished", "blocked"})
+
+
+def is_open_state(state: object) -> bool:
+    """True iff a ticket in ``state`` still owes work -- including a fresh ticket with no state."""
+    return str(state or "").strip() not in _TERMINAL_BUILD_STATES
+
+
+def owes_work(item: dict) -> bool:
+    """:func:`is_open_state` over a whole requirement fact."""
+    return is_open_state((item.get("meta") or {}).get(M_BUILD_STATE))
+
+
 def unfinished_ids(items: list[dict]) -> set[str]:
     """The id set of every ticket in ``items`` that is NOT finished (incomplete | in_progress |
     blocked). A dependency is SATISFIED iff none of the ids it names appears here."""
