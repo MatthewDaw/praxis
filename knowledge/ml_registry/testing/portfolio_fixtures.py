@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import json
 import os
 from pathlib import Path
@@ -217,7 +218,12 @@ def invalid_completion_scenario(tmp_path, *, claim):
     return _InvalidCompletionScenario(tmp_path, claim=claim)
 
 
-def _campaign_spec(campaign_id, *, requires=(), schema_version="1"):
+def _campaign_spec(
+    campaign_id: str,
+    *,
+    requires: Sequence[Mapping[str, object]] = (),
+    schema_version: str = "1",
+) -> dict[str, object]:
     return {
         "schema_version": 1, "campaign_id": campaign_id,
         "model_id_policy": campaign_id, "axis": "fixture", "sport_scope": ["shared"],
@@ -239,7 +245,7 @@ def _campaign_spec(campaign_id, *, requires=(), schema_version="1"):
     }
 
 
-_SCORING_CORPORA = {"fixture": [
+_SCORING_CORPORA: dict[str, list[dict[str, object]]] = {"fixture": [
     {"item_id": "one", "f1": .7},
     {"item_id": "two", "f1": .8},
 ]}
