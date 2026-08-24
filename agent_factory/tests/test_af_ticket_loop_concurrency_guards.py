@@ -284,7 +284,7 @@ def heartbeat_runner(tmp_path: Path, tag: str, body: str, stubs: str = "") -> Pa
 
 # CPU reads out of a file the test body rewrites between polls; the pane likewise.
 CPU_STUB = """
-session_cpu(){ cat "$CPUF"; }
+worker_cpu(){ cat "$CPUF"; }
 hash_text(){ md5sum | cut -d' ' -f1; }
 tmux(){ case "$1" in has-session) return 0 ;; capture-pane) cat "$PANEF" ;; *) return 0 ;; esac; }
 """
@@ -310,13 +310,32 @@ def sampled(tmp_path: Path, tag: str, cpu: list[str], pane: list[str]) -> str:
 
 
 def test_tickets_quiet_but_cpu_advancing_is_progress_not_a_stall(tmp_path):
-    """The live 2026-08-19 false positive: workers burning CPU, tickets not yet moving."""
+    """Actual worker CPU, and only worker CPU, proves workers are active."""
     body = sampled(tmp_path, "cpu", cpu=["100", "137"], pane=["same pane", "same pane"])
     p = run(heartbeat_runner(tmp_path, "cpu", body, CPU_STUB), {"AF_ROUND_QUIET_WARN_S": "1"})
     assert p.returncode == 0, p.stderr
     assert "STALL" not in p.stdout, p.stdout
     assert "round #7 still working" in p.stdout
     assert "cpu +37s" in p.stdout
+
+
+def test_polling_driver_cpu_does_not_masquerade_as_worker_progress(tmp_path):
+    """Regression: the driver's while/poll loop produced +17s and hid a dead worker for two hours."""
+    cpuf, panef, sessionf = tmp_path / "worker", tmp_path / "pane", tmp_path / "session"
+    body = (
+        f'export CPUF="{cpuf}" PANEF="{panef}" SESSIONF="{sessionf}"\n'
+        'printf 100 > "$CPUF"; printf 100 > "$SESSIONF"; printf wedged > "$PANEF"\n'
+        + QUIET + "sleep 2\n"
+        'printf 100 > "$CPUF"; printf 117 > "$SESSIONF"; printf wedged > "$PANEF"\n'
+        + QUIET
+    )
+    stubs = CPU_STUB + '\nsession_cpu(){ cat "$SESSIONF"; }\n'
+    p = run(heartbeat_runner(tmp_path, "driver-cpu", body, stubs),
+            {"AF_ROUND_QUIET_WARN_S": "1"})
+    assert p.returncode == 0, p.stderr
+    assert "STALL WARNING round #7" in p.stdout
+    assert "worker cpu flat (+0s)" in p.stdout
+    assert "cpu +17s" not in p.stdout
 
 
 def test_tickets_quiet_but_pane_changed_is_progress_not_a_stall(tmp_path):
@@ -381,7 +400,7 @@ def test_unsamplable_signals_report_UNKNOWN_and_never_warn(tmp_path):
     assert "pane UNKNOWN" in p.stdout
 
 
-def test_the_wait_loop_actually_calls_the_heartbeat(tmp_path: Path) -> None:
+def test_the_wait_loop_actually_calls_the_heartbeat(tmp_path):
     """The block existing is not enough — it has to be wired into the round wait."""
     text = SCRIPT.read_text()
     # EXACT AND POSITIONAL, deliberately. This assertion was briefly rewritten as unordered
@@ -390,11 +409,8 @@ def test_the_wait_loop_actually_calls_the_heartbeat(tmp_path: Path) -> None:
     #     af_round_heartbeat "$now/$open" "$round" "$hb_open"
     # -- argv 1 and argv 2 swapped -- which satisfied every one of those checks. Argument ORDER is
     # the entire content of a wiring test; a membership check tests nothing that a typo could break.
-    call = next(
-        line
-        for line in text.splitlines()
-        if "af_round_heartbeat " in line and not line.strip().startswith("#")
-    )
+    call = next(line for line in text.splitlines()
+                if "af_round_heartbeat " in line and not line.strip().startswith("#"))
     assert call.strip() == EXACT_HEARTBEAT_CALL, (
         "the heartbeat call changed shape; if that is intentional, update EXACT_HEARTBEAT_CALL "
         "rather than relaxing this into a membership check.\n"
@@ -403,3 +419,14 @@ def test_the_wait_loop_actually_calls_the_heartbeat(tmp_path: Path) -> None:
     # and the sentinel checks go through the TTL/legacy-aware helper, not a bare -f test
     assert '[ -f "$WATCH_STOP" ]' not in text
     assert text.count("af_watch_stopped &&") == 3
+
+
+def test_each_ticket_has_a_fixed_wall_clock_independent_of_batch_width():
+    text = SCRIPT.read_text()
+    assert 'ticket_deadline=${AF_TICKET_DEADLINE_S:-7200}' in text
+    assert 'if [ "$waited" -ge "$ticket_deadline" ]' in text
+    assert "TICKET WALL CLOCK EXCEEDED" in text
+    assert "exit 10" in text
+    # The round deadline scales with width; the ticket bound must not.
+    line = next(candidate for candidate in text.splitlines() if "ticket_deadline=" in candidate)
+    assert "size" not in line
