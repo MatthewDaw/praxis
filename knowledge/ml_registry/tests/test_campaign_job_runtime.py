@@ -57,7 +57,7 @@ class _Adapter:
 def _job(tmp_path: Path, adapter: _Adapter) -> CampaignJob:
     context = CampaignJobContext("fixture", 1, tmp_path, tmp_path / "progress.json")
     return CampaignJob(context=context, adapter=adapter, outcome_path=tmp_path / "outcome.json",
-                       heartbeat_s=.1, working_directory=tmp_path)
+                       heartbeat_s=.01, working_directory=tmp_path)
 
 
 def test_campaign_job_runs_one_arm_at_a_time_and_writes_typed_promotion(tmp_path: Path) -> None:

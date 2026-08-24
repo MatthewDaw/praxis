@@ -50,6 +50,7 @@ EXIT_BY_OUTCOME = {
 # Projects with larger declared corpora must opt in to a larger campaign-local budget.
 DEFAULT_CAMPAIGN_DISK_BUDGET_BYTES = 50 * 1024**3
 DEFAULT_ARM_TIMEOUT_S = 60 * 60
+ARM_STARTUP_GRACE_S = 1.0
 
 
 class CampaignJobError(ValueError):
@@ -165,13 +166,15 @@ class _ArmProcess:
         reader.start()
         started = time.monotonic()
         last_progress = started
+        progress_seen = False
 
         def record_line(line: str) -> None:
-            nonlocal last_progress
+            nonlocal last_progress, progress_seen
             sys.stdout.write(line)
             sys.stdout.flush()
             snapshot = parse_progress_line(line)
             if snapshot is not None:
+                progress_seen = True
                 last_progress = time.monotonic()
                 write_progress_snapshot(self.progress_path, snapshot)
                 self.heartbeat()
@@ -196,7 +199,10 @@ class _ArmProcess:
                             f"{self.timeout_s:g} seconds"
                         )
                         self._terminate()
-                    elif now - last_progress > self.heartbeat_s:
+                    elif now - last_progress > (
+                        self.heartbeat_s if progress_seen
+                        else max(self.heartbeat_s, ARM_STARTUP_GRACE_S)
+                    ):
                         self.failure_reason = (
                             "VOIDED on throughput: arm emitted no progress heartbeat inside its "
                             f"declared {self.heartbeat_s:g}-second cadence"
