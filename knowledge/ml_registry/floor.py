@@ -906,33 +906,19 @@ def guard_rope_scaling(meta: dict[str, object]) -> str:
     return ROPE_SCALING_BASIS_UNVERIFIED_MODEL
 
 
-# THE RETIRED VOCABULARY, and why deleting the readers was only half of retiring it.
-#
-# R3a removed the threshold a model STORED at registration, plus the provenance fields that
-# existed only to make that stored number interpretable. Every reader went. But a
-# registration merges caller meta VERBATIM, so a caller who still sends `noise_floor: 999.0`
-# gets it written onto the model fact -- unread, and indistinguishable to any later reader
-# from a live bar. That is the two-thresholds-decide-one-verdict state the retirement
-# removed, rebuilt by the write path, and it is what post-merge verification caught.
-#
-# REFUSED, not silently dropped. A caller sending one of these believes their number decides
-# verdicts; dropping it leaves that belief intact while the rope quietly decides instead,
-# which is the same misreading one layer further down. The refusal names the field and what
-# says the same thing now -- an empty string where NOTHING does, because the rope is
-# recomputed from `baseline_runs` at every comparison (:func:`comparison_rope`) and no
-# stored number can stand in for it.
+# Deleting the readers was only HALF of retiring the stored threshold: a registration merges
+# caller meta VERBATIM, so a `noise_floor: 999.0` nothing reads is still a `noise_floor: 999.0`
+# STORED, which no later reader can tell from a live bar. Retired name -> what says the same
+# thing now; "" where nothing does, the rope being recomputed per comparison from the
+# baseline rows (:func:`comparison_rope`).
 RETIRED_THRESHOLD_FIELDS: dict[str, str] = {
     "noise_floor": "",
-    # How the stored floor was measured, and the stated way past the band that bounded a
-    # declared measurement. Both described a number that no longer exists.
     "noise_floor_method": "",
     "noise_floor_override_reason": SIGMAS_REASON_FIELD,
-    # The one-sigma dispersion the floor was multiplied up from, and the stamp saying
-    # whether the registry could check that multiplication. With the floor gone there is no
-    # product left to divide, so nothing replaces the basis stamp.
     "noise_floor_sigma": SIGMAS_FIELD,
+    # What the registry could CHECK about a declared sigmas -- it checked it against the
+    # stored floor, so with that gone there is no such relationship left to stamp.
     "sigmas_basis": "",
-    # Straight renames: the same knob, spelled for the rope it now configures.
     "noise_floor_varies": ROPE_VARIES_FIELD,
     "noise_floor_scaling": ROPE_SCALING_FIELD,
     "noise_floor_measured_at": ROPE_MEASURED_AT_FIELD,
@@ -945,8 +931,9 @@ def guard_retired_threshold_fields(meta: dict[str, object]) -> None:
     """Refuse a write carrying any field R3a retired with the stored threshold.
 
     PRESENCE is the refusal, whatever the value: a key that reached the fact is a key a
-    later reader finds. See :data:`RETIRED_THRESHOLD_FIELDS` for why this refuses rather
-    than strips.
+    later reader finds. Refused rather than silently dropped -- a caller who sends a
+    threshold believes it decides verdicts, and dropping it leaves that belief intact while
+    the rope quietly decides instead.
     """
     for name, replacement in RETIRED_THRESHOLD_FIELDS.items():
         if name not in meta:

@@ -106,7 +106,7 @@ def test_tickets_outside_the_round_are_not_reported(monkeypatch, capsys):
 
 # ------------------------------------------------------------------------------- the wiring ----
 
-def test_the_heartbeat_is_handed_the_open_ids_not_the_whole_round():
+def test_the_heartbeat_is_handed_the_open_ids_not_the_whole_round() -> None:
     src = SCRIPT.read_text()
     call = next(line for line in src.splitlines()
                 if "af_round_heartbeat " in line and not line.strip().startswith("#"))
