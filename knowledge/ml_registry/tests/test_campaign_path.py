@@ -63,7 +63,8 @@ def _metrics(value, throughput):
     }
 
 
-def _campaign(tmp_path, *, throughput_floor=3.211):
+def _campaign(tmp_path: Path, *, throughput_floor: float = 3.211
+              ) -> tuple[Path, Path, str, Registry, str]:
     root = tmp_path / "registry"
     space_path = tmp_path / "space.json"
     space = RegistrySpace()

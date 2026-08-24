@@ -41,7 +41,7 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess:
     )
 
 
-def test_cli_accepts_a_well_formed_model_fact():
+def test_cli_accepts_a_well_formed_model_fact() -> None:
     meta = {
         "metric": "val_bpb",
         "direction": "minimize",
@@ -62,7 +62,7 @@ def test_cli_rejects_a_fact_missing_a_required_key_naming_it():
     assert "description" in result.stdout + result.stderr
 
 
-def test_cli_refuses_worker_sourced_mutation_of_a_protected_field_naming_it():
+def test_cli_refuses_worker_sourced_mutation_of_a_protected_field_naming_it() -> None:
     patch = {"baseline_runs": ["cherry-picked"]}
     result = _run_cli(
         "guard-model-mutation", "--patch-json", json.dumps(patch), "--source", "worker"

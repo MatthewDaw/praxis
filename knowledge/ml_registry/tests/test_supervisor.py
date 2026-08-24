@@ -421,7 +421,7 @@ def test_close_evaluated_only_after_a_supersession_has_landed():
     assert first_winner not in {f.id for f in untried_backlog(space, model_id=model_id)}
 
 
-def test_three_consecutive_dispatch_trial_rejections_on_distinct_ideas_fire_the_ratchet_and_invalidate_the_adoption():
+def test_three_consecutive_dispatch_trial_rejections_on_distinct_ideas_fire_the_ratchet_and_invalidate_the_adoption() -> None:
     """Cross-module integration (R8+R10): dispatch_trial routes every trial through
     verdict.adjudicate_verdict, not floor.adjudicate_trial -- so the ratchet feature R10
     built is actually reachable through the campaign supervisor, the production entry
@@ -873,7 +873,7 @@ def test_supervise_campaign_warns_but_still_resumes_an_undeclared_first_adoption
     assert model_id in str(warned[0].message)
 
 
-def test_a_maximizing_campaign_wins_only_at_its_declared_floor():
+def test_a_maximizing_campaign_wins_only_at_its_declared_floor() -> None:
     space, model_id = _space_with_model(
         direction="maximize", max_trials=10, win_condition={"metric_at_least": 100.0}
     )

@@ -25,7 +25,8 @@ def _metrics():
             "load": {"start_1m": .1, "end_1m": .2}}
 
 
-def _fixture(tmp_path: Path, stages=("representation",)):
+def _fixture(tmp_path: Path, stages: tuple[str, ...] = ("representation",)
+             ) -> tuple[RegistrySpace, Registry, CampaignBinding]:
     space = RegistrySpace()
     model_fact = space.insert("model", {"metric": "score"})
     registry = Registry(tmp_path, clock=lambda: 10.)

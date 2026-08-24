@@ -100,7 +100,7 @@ EXACT_ROPE = 0.125
 EXACT_THROUGHPUT = 1.0625
 
 
-def _space_with_exact_rope_model():
+def _space_with_exact_rope_model() -> tuple[RegistrySpace, str]:
     space = RegistrySpace()
     meta = dict(MODEL_META, baseline="e1", baseline_runs=["e1", "e2", "e3", "e4"])
     model_id = register_model_with_baseline(
@@ -172,7 +172,7 @@ def _rows(**by_commit: tuple[float, float, float]) -> dict[str, LedgerRow]:
 # ---------------------------------------------------------------------------
 
 
-def test_adopt_beyond_one_rope_in_the_improving_direction():
+def test_adopt_beyond_one_rope_in_the_improving_direction() -> None:
     space, model_id = _space_with_model()
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
@@ -219,7 +219,7 @@ def test_reject_when_stagnant_but_breaching_the_net_line_bound():
     assert model.meta[RATCHET_COUNT_FIELD] == 0
 
 
-def test_reject_beyond_one_rope_in_the_worsening_direction():
+def test_reject_beyond_one_rope_in_the_worsening_direction() -> None:
     space, model_id = _space_with_model()
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "wr1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
@@ -239,7 +239,7 @@ def test_reject_beyond_one_rope_in_the_worsening_direction():
 # ---------------------------------------------------------------------------
 
 
-def test_delta_exactly_one_rope_improving_is_stagnant_not_adopted():
+def test_delta_exactly_one_rope_improving_is_stagnant_not_adopted() -> None:
     space, model_id = _space_with_model()
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "boundary-park", throughput=BASELINE_THROUGHPUT, diff_lines=100)
@@ -250,7 +250,7 @@ def test_delta_exactly_one_rope_improving_is_stagnant_not_adopted():
     assert verdict == VERDICT_PARKED  # "within" one std dev is stagnant, "beyond" (strict) adopts
 
 
-def test_delta_beyond_one_rope_worsening_rejects():
+def test_delta_beyond_one_rope_worsening_rejects() -> None:
     space, model_id = _space_with_model()
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "boundary-reject", throughput=BASELINE_THROUGHPUT, diff_lines=100)
@@ -266,7 +266,7 @@ def test_delta_beyond_one_rope_worsening_rejects():
 # exact-floor model so the delta really is +/- the floor bit-for-bit, not a hair off it.
 
 
-def test_delta_exactly_one_rope_improving_is_stagnant():
+def test_delta_exactly_one_rope_improving_is_stagnant() -> None:
     space, model_id = _space_with_exact_rope_model()
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "exact-improving", throughput=EXACT_THROUGHPUT, diff_lines=100)
@@ -277,7 +277,7 @@ def test_delta_exactly_one_rope_improving_is_stagnant():
     assert space.get(idea_id).meta["status"] == STATUS_PARKED
 
 
-def test_delta_exactly_one_rope_worsening_is_stagnant_too_not_rejected():
+def test_delta_exactly_one_rope_worsening_is_stagnant_too_not_rejected() -> None:
     """Bug 3 regression: the boundary used to be asymmetric -- exactly +1sd was stagnant
     while exactly -1sd rejected, so the same amount of evidence was read two ways."""
     space, model_id = _space_with_exact_rope_model()
@@ -291,7 +291,7 @@ def test_delta_exactly_one_rope_worsening_is_stagnant_too_not_rejected():
     assert space.get(model_id).meta[RATCHET_COUNT_FIELD] == 0  # and no ratchet advance
 
 
-def test_throughput_more_than_5_percent_below_baseline_is_voided_not_adjudicated():
+def test_throughput_more_than_5_percent_below_baseline_is_voided_not_adjudicated() -> None:
     space, model_id = _space_with_model()
     idea_id = register_idea(space, _idea_meta(model_id))
     low_throughput = BASELINE_THROUGHPUT * 0.94  # > 5% below
@@ -321,7 +321,7 @@ def test_throughput_exactly_5_percent_below_baseline_is_not_voided():
     assert verdict == VERDICT_PARKED
 
 
-def test_void_throughput_fraction_zero_skips_the_void_gate():
+def test_void_throughput_fraction_zero_skips_the_void_gate() -> None:
     """CV campaigns disable VOID rather than hacking baseline_throughput=0.01."""
     space, model_id = _space_with_model()
     space.get(model_id).meta["void_throughput_fraction"] = 0
@@ -336,7 +336,7 @@ def test_void_throughput_fraction_zero_skips_the_void_gate():
     assert verdict == VERDICT_ADOPTED
 
 
-def test_throughput_void_records_a_reason_so_it_is_not_confused_with_an_unfair_run():
+def test_throughput_void_records_a_reason_so_it_is_not_confused_with_an_unfair_run() -> None:
     space, model_id = _space_with_model()
     idea_id = register_idea(space, _idea_meta(model_id))
     low_throughput = BASELINE_THROUGHPUT * 0.94
@@ -349,7 +349,7 @@ def test_throughput_void_records_a_reason_so_it_is_not_confused_with_an_unfair_r
     assert "budget_exhausted" not in reason
 
 
-def test_void_throughput_fraction_zero_does_not_disable_unfair_run_voids():
+def test_void_throughput_fraction_zero_does_not_disable_unfair_run_voids() -> None:
     """#32's unfair-run void is a different gate. Disabling speed VOID must not adjudicate
     a budget_exhausted arm -- that would re-introduce the truncated-graph-model rejection."""
     space, model_id = _space_with_model()
@@ -367,7 +367,7 @@ def test_void_throughput_fraction_zero_does_not_disable_unfair_run_voids():
     assert "budget_exhausted" in space.get(trial_id).meta["void_reason"]
 
 
-def test_explicit_void_throughput_fraction_matches_the_default():
+def test_explicit_void_throughput_fraction_matches_the_default() -> None:
     space, model_id = _space_with_model()
     space.get(model_id).meta["void_throughput_fraction"] = 0.05
     idea_id = register_idea(space, _idea_meta(model_id))
@@ -426,7 +426,7 @@ def test_a_metric_mean_model_that_disabled_the_speed_void_adjudicates_normally()
     assert adjudicate_verdict(space, trial_id, _rows(slow1=(1.0, slow, 100))) == VERDICT_PARKED
 
 
-def test_an_unstamped_model_keeps_the_speed_void():
+def test_an_unstamped_model_keeps_the_speed_void() -> None:
     """A model registered through plain ``register_model`` -- the path the supervisor's own
     campaigns take -- carries no units stamp and a caller-supplied rows/sec bar. Skipping the
     void for every such model would retire a real guard on all of them, so an ABSENT stamp
@@ -448,7 +448,7 @@ def test_an_unstamped_model_keeps_the_speed_void():
 # ---------------------------------------------------------------------------
 
 
-def test_ratchet_fires_on_the_third_consecutive_worsening_reject_on_a_distinct_idea():
+def test_ratchet_fires_on_the_third_consecutive_worsening_reject_on_a_distinct_idea() -> None:
     space, model_id = _space_with_model()
 
     winner_id = register_idea(space, _idea_meta(model_id, "winner"))
@@ -484,7 +484,7 @@ def test_ratchet_fires_on_the_third_consecutive_worsening_reject_on_a_distinct_i
         assert loser_id in backlog_ids
 
 
-def test_deep_losers_that_also_lose_against_the_old_baseline_never_wipe_a_good_adoption():
+def test_deep_losers_that_also_lose_against_the_old_baseline_never_wipe_a_good_adoption() -> None:
     """Construction (a), reproduced against the depth threshold this replaced: a GENUINE
     +10-floor adoption followed by three deep exploratory losers -- 20 floors below the new
     baseline, on three distinct axes -- fired the ratchet and reverted a real win.
@@ -557,7 +557,7 @@ def test_ratchet_fires_across_three_axes_when_no_axis_ever_repeats():
     assert space.get(model_id).meta[BASELINE_FIELD] == "r1"
 
 
-def test_ratchet_still_fires_on_three_distinct_ideas_on_the_SAME_axis():
+def test_ratchet_still_fires_on_three_distinct_ideas_on_the_SAME_axis() -> None:
     """The axis reset must not defang the ratchet: three distinct ideas all probing the same
     axis are still the same line of attack, and still invalidate the adoption."""
     space, model_id = _space_with_model()
@@ -617,7 +617,7 @@ def test_an_unattributable_rejection_does_not_wipe_the_streak_it_interrupts():
     assert space.get(model_id).meta[BASELINE_FIELD] == "r1"
 
 
-def test_ratchet_does_not_fire_on_the_same_idea_rejected_repeatedly():
+def test_ratchet_does_not_fire_on_the_same_idea_rejected_repeatedly() -> None:
     space, model_id = _space_with_model()
     idea_id = register_idea(space, _idea_meta(model_id))
     worse_value = 1.0 + 10 * ROPE
@@ -633,7 +633,7 @@ def test_ratchet_does_not_fire_on_the_same_idea_rejected_repeatedly():
     assert model.meta[REJECTION_STREAK_FIELD] == [idea_id, idea_id, idea_id]
 
 
-def test_ratchet_with_no_prior_adoption_is_a_no_op_that_only_resets_the_counter():
+def test_ratchet_with_no_prior_adoption_is_a_no_op_that_only_resets_the_counter() -> None:
     space, model_id = _space_with_model()
     loser_ids = [register_idea(space, _idea_meta(model_id, f"noop-{i}")) for i in range(3)]
     worse_value = 1.0 + 10 * ROPE
@@ -651,7 +651,7 @@ def test_ratchet_with_no_prior_adoption_is_a_no_op_that_only_resets_the_counter(
         assert space.get(loser_id).meta["status"] == STATUS_REJECTED
 
 
-def test_ratchet_invalidation_requeues_ideas_rejected_under_the_false_baseline():
+def test_ratchet_invalidation_requeues_ideas_rejected_under_the_false_baseline() -> None:
     """Bug 2 regression: the ratchet fires BECAUSE the adoption is proven to be noise, so
     the baseline it set was false. Every idea rejected during its tenure was judged against
     a bar that never existed and must return to the untried backlog -- otherwise one lucky
@@ -715,7 +715,7 @@ def test_a_rejection_that_loses_against_the_previous_baseline_too_is_not_counted
 # ---------------------------------------------------------------------------
 
 
-def test_a_genuine_win_survives_three_arms_that_merely_reproduce_the_old_baseline():
+def test_a_genuine_win_survives_three_arms_that_merely_reproduce_the_old_baseline() -> None:
     """The band attribution counts as evidence is exactly the size of the adoption's win.
 
     A rejection is ATTRIBUTABLE when it is no worse than one floor below `previous_baseline`,
@@ -850,7 +850,7 @@ def test_counterfactual_from_a_non_parent_lineage_is_refused():
     assert excinfo.value.field == "counterfactual_lineage_id"
 
 
-def test_stacked_adoption_rollback_restores_its_direct_parent_lineage_and_adoption():
+def test_stacked_adoption_rollback_restores_its_direct_parent_lineage_and_adoption() -> None:
     space, model_id = _space_with_model()
     first_id = register_idea(space, _idea_meta(model_id, "first winner"))
     first_trial = _trial(space, model_id, first_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
@@ -907,7 +907,7 @@ def test_a_rejection_counts_when_the_previous_baseline_has_no_ledger_row_to_ask(
 # ---------------------------------------------------------------------------
 
 
-def test_a_better_adoption_supersedes_the_prior_one_and_keeps_its_rejections_rejected():
+def test_a_better_adoption_supersedes_the_prior_one_and_keeps_its_rejections_rejected() -> None:
     """Bug 1 regression: supersession used to run the full invalidate_adoption, wiping the
     registry's rejection memory on EVERY successful adoption. The prior adoption was a real
     bar while it stood, so ideas rejected under it were legitimately rejected and stay so."""

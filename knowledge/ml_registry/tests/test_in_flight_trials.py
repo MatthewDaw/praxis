@@ -124,7 +124,8 @@ _DISPATCH_MODEL_META = {
 }
 
 
-def _dispatch_fixture(claim_age_s: float):
+def _dispatch_fixture(claim_age_s: float
+                      ) -> tuple[RegistrySpace, str, str, str, dict[str, object]]:
     """A model whose only idea is claimed ``claim_age_s`` ago under a 900s lease, with an
     in-flight trial left behind by that claim's worker."""
     import time as _time

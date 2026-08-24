@@ -44,7 +44,7 @@ def _trial_meta(model_id: str, idea_id: str, *, commit: str = "deadbeef") -> dic
     return {"model_id": model_id, "idea_id": idea_id, "commit": commit, "status": "running"}
 
 
-def test_register_model_stores_no_threshold_of_its_own():
+def test_register_model_stores_no_threshold_of_its_own() -> None:
     """R3a retired the stored threshold. Both write paths used to police a caller-supplied
     number -- and both refused a ZERO one, which is exactly what a deterministic incumbent
     measures. There is nothing to police now: what a model records is the EVIDENCE, and the
@@ -158,7 +158,7 @@ def test_a_negative_budget_that_is_not_the_sentinel_is_refused_naming_the_field(
     assert excinfo.value.field == "max_discovered_ideas"
 
 
-def test_worker_sourced_write_path_mutation_of_a_protected_field_is_refused():
+def test_worker_sourced_write_path_mutation_of_a_protected_field_is_refused() -> None:
     """The guards must sit on the DATA PATH, not only behind the CLI: a direct
     mutate_model call is refused just the same."""
     space = RegistrySpace()

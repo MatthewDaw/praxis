@@ -16,7 +16,7 @@ SHA = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], check=True,
                      capture_output=True, text=True).stdout.strip()
 
 
-def _stores(tmp_path: Path):
+def _stores(tmp_path: Path) -> tuple[RegistrySpace, Registry, CampaignBinding, str, str]:
     space = RegistrySpace()
     model_fact = space.insert("model", {"metric": "score"})
     first = space.insert("idea", {"model_id": model_fact, "id": "pretty", "stage": "representation"})

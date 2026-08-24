@@ -45,7 +45,7 @@ def test_statuses_without_an_adjudication_verdict_do_not_invent_one(status):
     assert verdict_for_trial_status(status) is None
 
 
-def _space_with_idea():
+def _space_with_idea() -> tuple[RegistrySpace, str, str]:
     space = RegistrySpace()
     model_id = register_model(space, {
         "metric": "f1", "direction": "maximize", "win_condition": {"metric_at_least": .9},
