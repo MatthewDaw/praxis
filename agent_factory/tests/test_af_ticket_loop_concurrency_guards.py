@@ -41,6 +41,31 @@ def run(script: Path, env: dict | None = None, timeout: int = 60):
         ["bash", str(script)], capture_output=True, text=True, timeout=timeout, env=e
     )
 
+def await_lock(path: Path, *, seconds: int = 90) -> None:
+    """Wait for the holder subprocess to actually take its lock, and FAIL LOUDLY if it never does.
+
+    Three of these waits used to spin for a fixed 15s and then simply carry on. Under CPU pressure
+    -- a full 1800-test suite on four vCPU while two build loops run codex sessions -- the holder
+    does not get scheduled in time, the lock never appears, and the test proceeds to assert on a
+    contention that never existed. The failure then surfaces as an unrelated assertion about a log
+    message, which reads as a flaky guard rather than as a starved box.
+
+    That is the whole of "it only fails on the box": treat it as a capacity hypothesis first. So the
+    budget is generous, and running out of it says CAPACITY in as many words instead of leaving the
+    next assertion to lie about what went wrong.
+    """
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.05)
+    raise AssertionError(
+        f"the holder never took {path} within {seconds}s. This is almost certainly CAPACITY, not a "
+        "broken guard: the holder is a subprocess that has to be scheduled before it can write the "
+        "lock. Re-run with the box quiet before suspecting the code under test."
+    )
+
+
 
 # --------------------------------------------------------------- defect 1: shared Postgres port --
 
@@ -82,11 +107,7 @@ def test_same_port_with_a_live_holder_is_refused_naming_both_projects(tmp_path):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     try:
-        for _ in range(300):
-            if (a / ".af-loop.lock").exists():
-                break
-            time.sleep(0.05)
-        assert (a / ".af-loop.lock").exists(), "the holder never took its lock"
+        await_lock(a / ".af-loop.lock")
         p = run(db_runner(tmp_path, b, "mvpvu-data-collection", tag="second"), {"AF_LOCK_SCAN_ROOT": str(root)})
         assert p.returncode != 0
         assert "PAST_DB_GUARD" not in p.stdout
@@ -119,10 +140,7 @@ def test_different_ports_proceed(tmp_path):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     try:
-        for _ in range(300):
-            if (a / ".af-loop.lock").exists():
-                break
-            time.sleep(0.05)
+        await_lock(a / ".af-loop.lock")
         p = run(db_runner(tmp_path, b, "mine-project", tag="second"), {"AF_LOCK_SCAN_ROOT": str(root)})
         assert p.returncode == 0, p.stderr
         assert "PAST_DB_GUARD" in p.stdout
@@ -141,10 +159,7 @@ def test_af_allow_shared_db_proceeds_and_logs_the_override(tmp_path):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     try:
-        for _ in range(300):
-            if (a / ".af-loop.lock").exists():
-                break
-            time.sleep(0.05)
+        await_lock(a / ".af-loop.lock")
         p = run(
             db_runner(tmp_path, b, "mine-project", tag="second"),
             {"AF_LOCK_SCAN_ROOT": str(root), "AF_ALLOW_SHARED_DB": "1"},
@@ -168,10 +183,7 @@ def test_a_refusal_still_releases_the_worktree_lock(tmp_path):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     try:
-        for _ in range(300):
-            if (a / ".af-loop.lock").exists():
-                break
-            time.sleep(0.05)
+        await_lock(a / ".af-loop.lock")
         p = run(db_runner(tmp_path, b, "mine-project", tag="second"), {"AF_LOCK_SCAN_ROOT": str(root)})
         assert p.returncode != 0
         assert not (b / ".af-loop.lock").exists()
