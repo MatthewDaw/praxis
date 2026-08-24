@@ -191,7 +191,7 @@ def _reproduce_one(
 ) -> BaselineResult:
     try:
         commit = reproduce(candidate)
-    except Exception as exc:  # noqa: BLE001 - any reproduction failure is data, not a crash
+    except Exception as exc:  # however a reproduction fails, that failure is data, not a crash
         return BaselineResult(candidate, unreproduced_reason=f"{type(exc).__name__}: {exc}")
     measurement = ledger.measurements.get(commit)
     if measurement is None:
