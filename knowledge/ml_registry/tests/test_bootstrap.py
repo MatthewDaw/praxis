@@ -70,16 +70,16 @@ def test_heterogeneous_baseline_throughput_is_flagged(tmp_path: Path) -> None:
     assert not [c for c in checks if c.name == "baseline_throughput_homogeneous"][0].ok
 
 
-def test_noise_floor_reports_its_own_uncertainty() -> None:
+def test_the_rope_reports_its_own_uncertainty() -> None:
     """An SD from 4 points carries ~40% relative uncertainty. Reporting the value without that is
-    how a floor measured on 4 runs (0.0164) gets trusted over one measured on 12 (0.0115)."""
+    how a bar measured on 4 runs (0.0164) gets trusted over one measured on 12 (0.0115)."""
     few = measure_rope([{"metric_value": v} for v in (0.68, 0.69, 0.67, 0.70)])
     many = measure_rope([{"metric_value": 0.68 + 0.001 * i} for i in range(13)])
     assert few["sd_relative_uncertainty"] > many["sd_relative_uncertainty"]
     assert few["n_baseline_runs"] == 4
 
 
-def test_floor_defaults_to_one_sigma_and_says_what_that_costs() -> None:
+def test_the_rope_defaults_to_one_sigma_and_says_what_that_costs() -> None:
     """ONE sigma is the standing default, and a deliberate trade rather than an oversight: a
     null arm clears it 15.9% of the time one-sided (2.3% at two sigma), ~10 expected false
     adoptions over a 66-idea backlog rather than ~1.5. It is accepted because a two-sigma bar
@@ -87,7 +87,7 @@ def test_floor_defaults_to_one_sigma_and_says_what_that_costs() -> None:
     nothing. The note must carry that reasoning, because the number alone cannot."""
     f = measure_rope([{"metric_value": v} for v in (0.68, 0.69, 0.67, 0.70)])
     assert f["sigmas"] == 1.0
-    assert f["noise_floor"] == pytest.approx(f["sd"], rel=1e-6)
+    assert f["rope"] == pytest.approx(f["sd"], rel=1e-6)
     assert "15.9%" in f["note"] and "ratchet" in f["note"]
 
 
@@ -95,7 +95,7 @@ def test_two_sigma_is_one_field_away() -> None:
     """A campaign that wants the old bar back must not have to compute it by hand."""
     f = measure_rope([{"metric_value": v} for v in (0.68, 0.69, 0.67, 0.70)], sigmas=2.0)
     assert f["sigmas"] == 2.0
-    assert f["noise_floor"] == pytest.approx(2 * f["sd"], rel=1e-6)
+    assert f["rope"] == pytest.approx(2 * f["sd"], rel=1e-6)
 
 
 def test_ideas_carry_the_basis_not_just_the_hypothesis() -> None:
@@ -239,7 +239,7 @@ def test_build_model_meta_refuses_a_missing_win_condition() -> None:
     from knowledge.ml_registry.bootstrap import build_model_meta
     from knowledge.ml_registry.schema import RegistryValidationError
 
-    kwargs = dict(metric="f1", direction="maximize", baseline_commit="sha", rope=0.01,
+    kwargs = dict(metric="f1", direction="maximize", baseline_commit="sha",
                   baseline_throughput=3.0, diff_size_limit=8)
     with pytest.raises(TypeError):
         build_model_meta(**kwargs)  # type: ignore[arg-type]
@@ -257,7 +257,7 @@ def test_build_model_meta_refuses_the_bare_adoption_string() -> None:
 
     with pytest.raises(RegistryValidationError) as excinfo:
         build_model_meta(metric="f1", direction="maximize", baseline_commit="sha",
-                         rope=0.01, baseline_throughput=3.0, diff_size_limit=8,
+                         baseline_throughput=3.0, diff_size_limit=8,
                          win_condition=WIN_ON_ADOPTION)
     assert excinfo.value.field == "win_condition"
 
@@ -279,24 +279,31 @@ def test_bootstrap_carries_the_declared_win_condition_onto_the_meta(tmp_path: Pa
     assert report.model_meta["win_condition"] == {"metric_at_least": 0.72}
 
 
-def test_bootstrap_is_not_ready_when_baseline_rows_are_identical(tmp_path: Path) -> None:
+def test_identical_baseline_rows_bootstrap_a_campaign_and_report_a_zero_rope(tmp_path: Path) -> None:
+    """A DETERMINISTIC incumbent -- classical CV, no random seed -- produces four identical
+    rows. That used to block the bootstrap, because the zero it measures was about to be
+    stored as a threshold. Nothing is stored now, so the measurement is simply reported:
+    the campaign is set up, and a positive bar for such a model is measured over its
+    scoring corpus (policy_gate.compute_campaign_rope) rather than over repeats that cannot
+    vary."""
     rows = [(f"sha:baseline_{i}", 0.42, 3.0, f"baseline_{i}") for i in range(4)]
     report = bootstrap(
         ledger=_ledger(tmp_path, rows), backlog=[], model_id="m",
         metric="f1", direction="maximize", diff_size_limit=8,
         win_condition={"metric_at_least": 0.7})
-    assert not report.ready and report.model_meta is None
-    assert "noise_floor_positive" in report.to_dict()["blocking"]
+
+    assert report.ready, report.to_dict()["blocking"]
+    assert report.to_dict()["rope"]["rope"] == 0.0
+    assert report.model_meta["baseline_runs"] == [f"sha:baseline_{i}" for i in range(4)]
 
 
-def test_a_supplied_floor_carries_its_measurement_method(tmp_path: Path) -> None:
-    """floor.register_model_with_baseline accepts a supplied floor that disagrees with its
-    own recomputation only when the method is declared, so the method must travel with it."""
+def test_the_model_meta_carries_the_ropes_evidence_and_no_threshold(tmp_path: Path) -> None:
+    """What bootstrap hands the registry is the baseline commits, not a number: the rope is
+    recomputed from their ledger rows at every comparison."""
     report = bootstrap(ledger=_ledger(tmp_path, _baselines(4)),
                        backlog=[{"id": "R01", "axis": "rep", "hypothesis": "h"}],
                        model_id="m", metric="f1", direction="maximize", diff_size_limit=8,
-                       win_condition={"metric_at_least": 0.72},
-                       noise_floor_override=0.009, noise_floor_method="bootstrap")
+                       win_condition={"metric_at_least": 0.72})
     assert report.ready, report.to_dict()["blocking"]
-    assert report.model_meta["noise_floor"] == 0.009
-    assert report.model_meta["noise_floor_method"] == "bootstrap"
+    assert len(report.model_meta["baseline_runs"]) == 4
+    assert not [key for key in report.model_meta if "floor" in key]
