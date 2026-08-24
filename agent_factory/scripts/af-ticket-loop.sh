@@ -2431,8 +2431,37 @@ af_force_remove_worktree(){   # $1 = path
 #
 # Capture-then-test, so no pipeline status can be stolen. The match is ANCHORED: a substring test
 # would let a live process in /x/foobar protect an unrelated /x/foo forever.
+# Set by af_dir_in_use to the process that actually holds the directory, so the caller can NAME it.
+# Without this the log says only "IN USE by a live process" and identifying the holder means walking
+# /proc by hand — which it took twice before the culprit below was found.
+AF_DIR_HOLDER=""
+
+# Processes that may sit in a directory without holding any WORK in it. `claude bg-spare` is a
+# pre-warmed Claude Code spare parked on a claim socket: it does nothing until claimed, it never
+# exits on its own, and its cwd is wherever it happened to be started.
+#
+# Left counting as a holder it is a PERMANENT veto. Observed 2026-08-24 on two praxis rounds: after
+# the round's real workers had exited and their branches were fully merged (0 commits not on HEAD),
+# two spares -- one of them 2h23m old and predating the round entirely, with 2m48s of CPU across
+# that whole life -- kept `af-build-r3a-...-rerun` and `af-build-r4b-...-rerun` alive. Every round
+# then reported STRAGGLER INVARIANT VIOLATED, and at drain that FAILS the run (exit 7) over trees
+# whose every commit had already landed.
+#
+# This is a hazard created by FIXING the liveness check. While it was broken (see af_dir_in_use's
+# pipefail note) it never fired, so these trees were removed regardless and nobody noticed a spare
+# could veto one. A guard that now works has to know what it is guarding: work in progress, not an
+# idle process's working directory.
+_AF_NOT_A_HOLDER='bg-spare'
+
 af_dir_in_use(){   # $1 = directory
-  local hit=""
+  # `d` IS LOAD-BEARINGLY LOCAL. The orphan-directory reaper below iterates `for d in "$root"/*` and
+  # then calls this function inside that loop before `rm -rf "$d"`. Without `local d`, this
+  # function's own /proc scan clobbers the caller's loop variable, and the reaper deletes the LAST
+  # /proc ENTRY instead of the orphan directory. Caught by test only because /proc refuses the
+  # unlink ("rm: cannot remove '/proc/959265/task/.../fd/0': Permission denied"); against any other
+  # value of `d` it would simply have removed the wrong directory, silently.
+  local dir="$1" d pid cw argv
+  AF_DIR_HOLDER=""
   if [ ! -r /proc/self/cwd ]; then
     if [ "${AF_PROC_WARNED:-0}" != 1 ]; then
       AF_PROC_WARNED=1
@@ -2440,8 +2469,19 @@ af_dir_in_use(){   # $1 = directory
     fi
     return 1
   fi
-  hit=$(readlink /proc/*/cwd 2>/dev/null | awk -v p="$1" '$0 == p || index($0, p "/") == 1 {print; exit}' || true)
-  [ -n "$hit" ]
+  for d in /proc/[0-9]*; do
+    pid=${d#/proc/}
+    cw=$(readlink "$d/cwd" 2>/dev/null) || continue
+    case "$cw" in "$dir"|"$dir"/*) ;; *) continue ;; esac
+    argv=$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null || true)
+    # Defaulted, not bare: a harness (or a future caller) that sources this function without the
+    # constant would otherwise die on `set -u` mid-loop and report NOTHING as a holder -- silently
+    # inverting the guard, which is precisely the failure mode this file keeps rediscovering.
+    case "$argv" in *${_AF_NOT_A_HOLDER:-bg-spare}*) continue ;; esac
+    AF_DIR_HOLDER="pid $pid: $(printf '%s' "${argv:-<unreadable argv>}" | cut -c1-110)"
+    return 0
+  done
+  return 1
 }
 
 sweep_worktrees(){
@@ -2472,7 +2512,7 @@ sweep_worktrees(){
     # Never yank a tree out from under a live worker: its evals are executing against these files.
     #
     if af_dir_in_use "$path"; then
-      say "worktree $path is IN USE by a live process — skipping"
+      say "worktree $path is IN USE — skipping. Holder: ${AF_DIR_HOLDER:-<unidentified>}"
       continue
     fi
     # PURGE unconditionally. Removing a worktree KEEPS its branch, so an unintegrated commit is not
@@ -2515,7 +2555,7 @@ sweep_worktrees(){
       [ -d "$d" ] || continue
       af_hasx "$registered" "$d" && continue
       if af_dir_in_use "$d"; then
-        say "orphan dir $d is IN USE by a live process — skipping"
+        say "orphan dir $d is IN USE — skipping. Holder: ${AF_DIR_HOLDER:-<unidentified>}"
         continue
       fi
       rm -rf "$d" && say "removed orphaned worktree dir $d"
@@ -2529,7 +2569,7 @@ sweep_worktrees(){
       [ -d "$d" ] || continue
       af_hasx "$registered" "$d" && continue
       if af_dir_in_use "$d"; then
-        say "orphan dir $d is IN USE by a live process — skipping"
+        say "orphan dir $d is IN USE — skipping. Holder: ${AF_DIR_HOLDER:-<unidentified>}"
         continue
       fi
       rm -rf "$d" && say "removed orphaned worktree dir $d"

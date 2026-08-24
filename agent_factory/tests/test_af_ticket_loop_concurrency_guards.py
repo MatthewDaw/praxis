@@ -23,6 +23,12 @@ import subprocess
 import time
 from pathlib import Path
 
+#: The heartbeat call, spelled out. Order is the point — see the assertion below.
+EXACT_HEARTBEAT_CALL = (
+    'af_round_heartbeat "$round" "$now/$open" '
+    '"$(printf \'%s\' "${hb_open:-$ids_csv}" | tr \' \' \',\')"'
+)
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "af-ticket-loop.sh"
 
 
@@ -378,14 +384,22 @@ def test_unsamplable_signals_report_UNKNOWN_and_never_warn(tmp_path):
 def test_the_wait_loop_actually_calls_the_heartbeat(tmp_path: Path) -> None:
     """The block existing is not enough — it has to be wired into the round wait."""
     text = SCRIPT.read_text()
-    # Pins the WIRING, not the literal third argument: that argument changed from the whole round
-    # to the queried open set (a stall warning naming finished tickets is a report acted on wrongly),
-    # and a test spelling out the old literal would have to be rewritten for every such correction
-    # while proving nothing more than that the call exists.
-    call = next(line for line in text.splitlines()
-                if "af_round_heartbeat " in line and not line.strip().startswith("#"))
-    assert '"$round"' in call and '"$now/$open"' in call
-    assert "hb_open" in call, "the heartbeat must be handed the tickets still outstanding"
+    # EXACT AND POSITIONAL, deliberately. This assertion was briefly rewritten as unordered
+    # membership checks when the third argument changed, and post-merge verification proved the
+    # consequence by executing the malformed call
+    #     af_round_heartbeat "$now/$open" "$round" "$hb_open"
+    # -- argv 1 and argv 2 swapped -- which satisfied every one of those checks. Argument ORDER is
+    # the entire content of a wiring test; a membership check tests nothing that a typo could break.
+    call = next(
+        line
+        for line in text.splitlines()
+        if "af_round_heartbeat " in line and not line.strip().startswith("#")
+    )
+    assert call.strip() == EXACT_HEARTBEAT_CALL, (
+        "the heartbeat call changed shape; if that is intentional, update EXACT_HEARTBEAT_CALL "
+        "rather than relaxing this into a membership check.\n"
+        f"  found:    {call.strip()}\n  expected: {EXACT_HEARTBEAT_CALL}"
+    )
     # and the sentinel checks go through the TTL/legacy-aware helper, not a bare -f test
     assert '[ -f "$WATCH_STOP" ]' not in text
     assert text.count("af_watch_stopped &&") == 3

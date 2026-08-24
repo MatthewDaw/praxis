@@ -106,12 +106,28 @@ def test_tickets_outside_the_round_are_not_reported(monkeypatch, capsys):
 
 # ------------------------------------------------------------------------------- the wiring ----
 
-def test_the_heartbeat_is_handed_the_open_ids_not_the_whole_round() -> None:
+#: Spelled out, because ORDER is what a wiring test is for.
+EXACT_HEARTBEAT_CALL = (
+    'af_round_heartbeat "$round" "$now/$open" '
+    '"$(printf \'%s\' "${hb_open:-$ids_csv}" | tr \' \' \',\')"'
+)
+
+
+def test_the_heartbeat_is_handed_the_open_ids_in_the_right_position() -> None:
+    """Membership is not enough, and this file got that wrong first time.
+
+    Verification executed the malformed call `af_round_heartbeat "$now/$open" "$round" "$hb_open"`
+    -- argv 1 and argv 2 swapped -- and it satisfied every membership assertion written here. A
+    wiring test whose subject is argument ORDER has to assert order.
+    """
     src = SCRIPT.read_text()
-    call = next(line for line in src.splitlines()
-                if "af_round_heartbeat " in line and not line.strip().startswith("#"))
-    assert "$ids_csv" not in call or "hb_open" in call, call
-    assert "hb_open" in call, "the heartbeat must receive the queried open set"
+    call = next(
+        line
+        for line in src.splitlines()
+        if "af_round_heartbeat " in line and not line.strip().startswith("#")
+    )
+    assert call.strip() == EXACT_HEARTBEAT_CALL, (
+        f"  found:    {call.strip()}\n  expected: {EXACT_HEARTBEAT_CALL}")
 
 
 def test_an_unanswerable_query_widens_the_report_rather_than_emptying_it():
