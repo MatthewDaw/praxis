@@ -349,7 +349,7 @@ af_probe_refuse(){
       echo "[backend]   preflight proves the backend can EMIT A TOKEN, not merely that it authenticates." >&2
       echo "[backend]   if this box is genuinely offline and you accept the risk: AF_PROBE_LENIENT=1" >&2 ;;
   esac
-  printf '%s\n' "$AF_PROBE_OUTPUT" | head -6 | sed 's/^/[backend]   /' >&2
+  printf '%s\n' "$AF_PROBE_OUTPUT" | sed -n '1,6p' | sed 's/^/[backend]   /' >&2
   echo "[backend]   $remedy" >&2
   return 1
 }
@@ -520,7 +520,7 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     status_out="$("$CODEX_BIN" login status 2>&1 || true)"
     if af_ihas "$status_out" 'not logged in|no (stored )?credential|please (run )?(codex )?login'; then
       echo "[backend] FATAL: codex requested but there is no credential in $CODEX_HOME_DIR:" >&2
-      printf '%s\n' "$status_out" | head -3 | sed 's/^/[backend]   /' >&2
+      printf '%s\n' "$status_out" | sed -n '1,3p' | sed 's/^/[backend]   /' >&2
       echo "[backend]   fix, once, as ec2-user:  codex login   # then pick 'Sign in with Device Code' (this box has no browser)" >&2
       echo "[backend]   do NOT use 'codex login --with-api-key': that bills OpenAI API credits, not the ChatGPT plan, and this backend refuses it" >&2
       return 1
@@ -528,7 +528,7 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     # WRONG BILL, refused: an API-key credential masquerading as a working session.
     if af_ihas "$status_out" 'api key'; then
       echo "[backend] FATAL: codex credential is an API key (usage-based billing), not the ChatGPT subscription:" >&2
-      printf '%s\n' "$status_out" | head -3 | sed 's/^/[backend]   /' >&2
+      printf '%s\n' "$status_out" | sed -n '1,3p' | sed 's/^/[backend]   /' >&2
       echo "[backend]   fix: codex logout && codex login   # choose 'Sign in with ChatGPT' / device code" >&2
       return 1
     fi
@@ -1407,6 +1407,64 @@ PYEOF
 }
 preflight_universal_lane || exit 1
 
+# ---------------------------------------------------------------- declared lane vs THIS host ----
+# A ticket names the compute it needs in meta.device (the closed cpu/gpu set the plan gate enforces
+# at intake). NOTHING CHECKED THAT AGAINST THE MACHINE. On a box with no GPU a gpu-declared ticket
+# does not fail -- ML code falls back to CPU silently and by design -- so it builds, goes green, and
+# is recorded as having exercised a regime that was never exercised. A crash would be kinder.
+#
+# This WARNS rather than refuses, deliberately. Two reasons, and the second is the honest one:
+#   * many such tickets verify against FIXTURES and never touch a device, so refusing them would
+#     stall a build over a declaration that costs nothing in practice;
+#   * and a refusal here would be this driver overruling a BLESSED plan, which is not its call.
+# Naming it at startup puts the discrepancy in front of whoever can fix it -- either the marker is
+# wrong or this is the wrong box -- instead of leaving it to be discovered in a results table.
+preflight_declared_lanes(){
+  local out
+  out=$("$PY" - "$PROJECT" <<'PYEOF' 2>/dev/null || true
+import sys
+sys.path[:0] = ["agent_factory/hooks", "agent_factory/src", "agent_factory"]
+try:
+    import _praxis, _ticket_state as ts
+    from agent_factory.host_capability import capability
+except Exception:
+    raise SystemExit(0)   # never let a reporting nicety block a run
+p = sys.argv[1]
+try:
+    facts = _praxis.facts_by(category="requirement", space=p, snapshot=f"prd-{p}") or []
+except Exception:
+    raise SystemExit(0)
+want = {}
+for f in facts:
+    m = f.get("meta") or {}
+    if not ts.owes_work(f):
+        continue
+    lane = str(m.get("device") or "cpu").strip().lower()
+    if lane != "cpu":
+        want.setdefault(lane, []).append(str(m.get("requirement_id") or f.get("id")))
+for lane, ids in sorted(want.items()):
+    try:
+        cap = capability(lane)
+    except ValueError:
+        continue
+    if not cap.available:
+        print(f"{lane}\t{len(ids)}\t{' '.join(sorted(ids)[:12])}\t{cap.why()}")
+PYEOF
+)
+  [ -n "$out" ] || return 0
+  while IFS=$'\t' read -r lane n ids why; do
+    [ -n "$lane" ] || continue
+    say "WARNING: $n unfinished ticket(s) declare device=$lane, which THIS HOST CANNOT PROVIDE: $ids"
+    say "  evidence: $why"
+    say "  They will still be built, on CPU, and nothing downstream will mark that — so either the"
+    say "  declaration is wrong (fixture-based acceptance that never touches the device) or this is"
+    say "  the wrong box for them. This is a WARNING: a blessed plan is not this driver's to overrule."
+  done <<< "$out"
+  return 0
+}
+preflight_declared_lanes
+
+
 # Run a Praxis query so a transient backend failure CANNOT kill the driver.
 #
 # Every query below is invoked as `var=$(query)` and swallows its own stderr with 2>/dev/null.
@@ -1444,7 +1502,7 @@ praxis_q(){  # args: query-fn [args...] -> its stdout; 1 if it never succeeded
   for i in 1 2 3 4 5; do
     if out=$("$@" 2>"$err"); then rm -f "$err"; printf '%s' "$out"; return 0; fi
     if grep -qE 'HTTP 40[0134]|not scoped to org|unknown space|OrgMismatch|partial snapshot reference' "$err" 2>/dev/null; then
-      AF_PRAXIS_FATAL="$(grep -oE '(HTTP 40[0134][^"]*|not scoped to org .*|unknown space .*)' "$err" 2>/dev/null | head -1)"
+      AF_PRAXIS_FATAL="$(grep -oE '(HTTP 40[0134][^"]*|not scoped to org .*|unknown space .*)' "$err" 2>/dev/null | sed -n '1,1p' || true)"
       AF_PRAXIS_FATAL="${AF_PRAXIS_FATAL:-definite error from Praxis}"
       rm -f "$err"; return 1
     fi
@@ -1987,7 +2045,14 @@ integrate_round(){
       skipped=$((skipped+1))
       say "WARNING: STRANDING $br ($ahead commit(s)) — no commit subject ends in a $PROJECT ticket id, so provenance cannot be established and this work will NOT be merged"
       say "  subjects seen:"
-      git log --format='    %h %s' "HEAD..$br" 2>/dev/null | head -5 | tee -a "$LOG"
+      # `| head -5 |` here KILLED AN ENTIRE RUN. head exits after five lines and SIGPIPEs
+      # `git log`; the driver runs `set -euo pipefail`, so the pipeline inherits that failure and
+      # `set -e` terminates the loop MID-ROUND -- after the merge stage had started and before it
+      # finished, with no error line anywhere. Exactly the silent death this file's own comments
+      # describe. It was dormant for as long as fewer than five commits were ever stranded (four
+      # printed fine at 08:31; nine killed the run at 08:57), which is why it survived every
+      # earlier round. `sed -n` reads its input to the end, so there is nothing to SIGPIPE.
+      git log --format='    %h %s' "HEAD..$br" 2>/dev/null | sed -n '1,5p' | tee -a "$LOG"
       say "  fix: the id must be TRAILING and exact, e.g. 'feat(scope): what it did (${known%% *})' — a conventional-commit scope does not count"
       continue
     fi
@@ -3777,6 +3842,33 @@ fi
 until require_blessed_plan; do :; done
 
 n=0
+# ------------------------------------------------------------- who owns a branch, known EARLY ----
+# AF_KNOWN_IDS is how ownership is decided: a branch is ours when it carries a ticket id THIS
+# PROJECT owns -- a fact from Praxis, never a name guess. It was populated ONLY inside
+# integrate_round, which means a run that never integrates a round never learns it, and every
+# ownership question on the exit path is answered with an empty set. Empty answers NO, deliberately
+# (nothing is ever deleted on a guess) -- so the straggler invariant becomes UNSATISFIABLE on
+# exactly the runs that exit early.
+#
+# Observed 2026-08-24: a praxis run stalled on a blocked root before any round, and at exit reported
+#   orphan branch ... queued for landing: af-build/r0b-codex-20260824 (ticket(s): )
+#   STRAGGLER INVARIANT VIOLATED at exit -- resolution ran and did NOT clear these:
+#     leftover worktree /workspace/praxis-build-r0b
+# The empty `ticket(s): ` is the tell. The resolver LANDED the branch and the tree still could not
+# be recognised as ours, so the run ended dirty (exit 7) over a tree whose every commit was already
+# merged. Every precondition for removing it was true; the driver simply had no way to know it.
+#
+# Reading it once at startup costs one Praxis query and makes ownership answerable on every path.
+# integrate_round still refreshes it per round, so a ticket authored mid-run is picked up as before.
+# A failed read leaves it empty, which is the pre-existing conservative behaviour, not a new risk.
+if _known_now=$(praxis_q known_ids); then
+  AF_KNOWN_IDS=" ${_known_now} "
+  say "ownership: $(printf '%s' "$_known_now" | wc -w) ticket id(s) known for $PROJECT"
+else
+  say "WARNING: could not read this project's ticket ids at startup — branch OWNERSHIP will answer"
+  say "  'not ours' until the first round integrates, so an early exit cannot clear a straggler."
+fi
+
 round=0
 while :; do
   # RE-CHECKED EVERY ROUND, not just at startup: a plan can be re-armed mid-run (an amendment, a
@@ -3931,7 +4023,36 @@ while :; do
   # next session is meant to own. Parentheses are avoided in this string on purpose — if the REPL is not
   # actually ready, the text lands on a bash prompt, and a stray paren there is a syntax error that
   # leaves the session dead at a shell prompt.
-  round_prompt="/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is derived from CPU count and on THIS machine resolves to $WORKFLOW_CAP concurrent agent(s), which would throttle a $size-wide round for no reason. Instead spawn ONE worktree-isolated subagent per ticket (Claude Agent, or Grok spawn_subagent with isolation=worktree), ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. CRITICAL — REBASE FIRST, before reading a single file or writing a line of code. A worktree is created from the repo default branch, NOT from the branch this run integrates into, so every worker starts on the wrong base. The FIRST command each worker runs in its own worktree is: git merge --ff-only $INTEGRATION_REF — and if that is refused because the worktree has diverged, git rebase $INTEGRATION_REF instead. A worker that skips this authors its change against files the integration branch does not have, and its work will not apply back onto it even cherry-picked alone; that failure is silent, because the ticket still goes green in its own tree and only the round's merge discovers the work cannot land. If BOTH commands fail, do NOT build: record the blocker on the ticket and stop, because anything built on that base is unmergeable by construction. ONE deliberate amendment to that contract, and state it to every worker, precisely — this narrows WHICH tests run, it does not remove the ticket's gate. Each worker STILL runs, and still has to pass, every test related to the code it is changing: its red-to-green acceptance eval, every one of its pinned validations, the existing test files covering the modules it edited, the tests of any caller or dependent of what it changed, and typecheck plus lint SCOPED to the touched paths. A worker whose own related tests are red is NOT finished and must not release the ticket — that gate is unchanged and non-negotiable. What a worker skips is ONLY the repo-wide sweep: the full test suite across the whole repository, and repo-wide build, typecheck, or lint over paths it never touched. The repo-wide gates are run ONCE, on the MERGED tree, by this round's post-merge verification. The reason is measured: $size workers each running the full suite at end-of-ticket puts $size concurrent suites on a box with a handful of cores, and a suite that takes two minutes alone took twenty, with a worker burning 26 minutes and 259k tokens without producing a commit. Deferring the SWEEP is not removing a gate: each ticket is still gated on its own related tests, and the repo-wide sweep still runs before the round is done — once, on the tree that actually matters. All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. CRITICAL — do NOT end your turn while any ticket in that list is still unfinished. Waiting on agent-completion notifications is NOT enough: a turn that ends with workers in flight gets those workers STOPPED, and the round scores zero even though real work was happening. So HOLD the turn open by polling instead: run a shell sleep of 60 seconds, then re-query the build_state of every batch ticket from Praxis, and repeat that sleep-and-query cycle for as long as any of them is still incomplete or in_progress. Only after every batch ticket reads finished or blocked may you merge, reap, and report. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push. Every worker edits ONLY the files inside its OWN assigned worktree — the factory checkout that holds this driver and the af-build hooks is TOOLING, not the project, and editing it is out of bounds even when a ticket is about that code. Two reasons it matters: those hook files are imported at runtime by every project's loop on this machine, so a half-finished edit there can break builds that have nothing to do with this ticket; and edits made outside a worktree sit on no branch, so the round's merge step cannot see them and they are silently dropped when the round ends. For ANY factory or Praxis python invocation, run $PY rather than a bare python3 — this run preflighted that interpreter and a bare python3 may resolve to an older one whose missing tomllib makes the universal quality checks load as an empty list. Pass that same path down to every subagent you spawn.$SERVICES."
+# WHO RUNS THE REPO-WIDE SWEEP, and why the answer depends on the round's WIDTH.
+#
+# The amendment below tells a worker to skip the repo-wide suite/build/typecheck/lint and leaves
+# them to post-merge verification. It exists for a measured reason: N workers each running the full
+# suite at end-of-ticket puts N concurrent suites on a box with a handful of cores, and a suite that
+# takes two minutes alone took twenty, with one worker burning 26 minutes and 259k tokens without
+# producing a commit.
+#
+# IT WAS SENT UNCONDITIONALLY, INCLUDING TO ONE-TICKET ROUNDS, where its own rationale renders as
+# "1 workers each running the full suite puts 1 concurrent suites on a box" -- not a contention
+# argument, just the ordinary case. On a 1-wide round the amendment buys nothing whatsoever.
+#
+# And it costs something real, because it CONTRADICTS THE COMPLETION GATE. A ticket's mandatory
+# declared checks are byte-exact commands, and a plan is entitled to declare repo-wide ones --
+# praxis R0b declares `make check-engine`, `make check-ml-registry` and `make check-lint`. The
+# worker is then forbidden precisely the commands its own gate requires, so all_validations_passed
+# can never honestly go true. Observed 2026-08-24: R0b's worker did the only correct thing left to
+# it -- refused to record checks it had not run as passed, and BLOCKED -- and because R0b is the
+# root of the dependency graph that stalled all 14 remaining tickets and ended the run. The worker
+# was right; the contract was contradictory. A refusal is evidence about the contract first.
+#
+# So the amendment is sent only where it pays for something. At width 1 the worker runs the
+# repo-wide gates, which is what its mandatory checks demanded all along.
+if [ "$size" -gt 1 ]; then
+  SWEEP_AMENDMENT=" ONE deliberate amendment to that contract, and state it to every worker, precisely — this narrows WHICH tests run, it does not remove the ticket's gate. Each worker STILL runs, and still has to pass, every test related to the code it is changing: its red-to-green acceptance eval, every one of its pinned validations, the existing test files covering the modules it edited, the tests of any caller or dependent of what it changed, and typecheck plus lint SCOPED to the touched paths. A worker whose own related tests are red is NOT finished and must not release the ticket — that gate is unchanged and non-negotiable. What a worker skips is ONLY the repo-wide sweep: the full test suite across the whole repository, and repo-wide build, typecheck, or lint over paths it never touched. The repo-wide gates are run ONCE, on the MERGED tree, by this round's post-merge verification. The reason is measured: $size workers each running the full suite at end-of-ticket puts $size concurrent suites on a box with a handful of cores, and a suite that takes two minutes alone took twenty, with a worker burning 26 minutes and 259k tokens without producing a commit. Deferring the SWEEP is not removing a gate: each ticket is still gated on its own related tests, and the repo-wide sweep still runs before the round is done — once, on the tree that actually matters."
+else
+  SWEEP_AMENDMENT=" NO amendment to that contract: this is a ONE-TICKET round, so there is no fan-out to protect and nothing to defer. Run the repo-wide gates yourself -- the full test suite, the repo build, and repo-wide typecheck and lint -- exactly as this ticket's own mandatory declared checks require, and record their real results. If one of those checks is a byte-exact repo-wide command, that command is YOURS to run: it is the only reason the completion gate can go true, and a check recorded as passed without being run is the one thing this factory refuses outright."
+fi
+
+  round_prompt="/af-build $PROJECT $ids_csv — build EXACTLY these $size tickets and nothing else. They are dependency-independent, so build them ALL AT ONCE. Do NOT use the Workflow tool for this: its concurrency is derived from CPU count and on THIS machine resolves to $WORKFLOW_CAP concurrent agent(s), which would throttle a $size-wide round for no reason. Instead spawn ONE worktree-isolated subagent per ticket (Claude Agent, or Grok spawn_subagent with isolation=worktree), ALL of them in a SINGLE message so they actually run concurrently, each with isolation set to worktree so their edits never collide. Give each subagent the af-build per-ticket worker contract VERBATIM, scoped to its own single ticket id, so every worker stays eval-first and lease-safe. CRITICAL — REBASE FIRST, before reading a single file or writing a line of code. A worktree is created from the repo default branch, NOT from the branch this run integrates into, so every worker starts on the wrong base. The FIRST command each worker runs in its own worktree is: git merge --ff-only $INTEGRATION_REF — and if that is refused because the worktree has diverged, git rebase $INTEGRATION_REF instead. A worker that skips this authors its change against files the integration branch does not have, and its work will not apply back onto it even cherry-picked alone; that failure is silent, because the ticket still goes green in its own tree and only the round's merge discovers the work cannot land. If BOTH commands fail, do NOT build: record the blocker on the ticket and stop, because anything built on that base is unmergeable by construction.$SWEEP_AMENDMENT All $size must be in flight together — a round that runs them a couple at a time is a bug, not a safe choice. CRITICAL — do NOT end your turn while any ticket in that list is still unfinished. Waiting on agent-completion notifications is NOT enough: a turn that ends with workers in flight gets those workers STOPPED, and the round scores zero even though real work was happening. So HOLD the turn open by polling instead: run a shell sleep of 60 seconds, then re-query the build_state of every batch ticket from Praxis, and repeat that sleep-and-query cycle for as long as any of them is still incomplete or in_progress. Only after every batch ticket reads finished or blocked may you merge, reap, and report. When every ticket is finished or blocked: merge each ticket branch into the already-checked-out branch, remove ALL worktrees the round created, then STOP and report. You are running HEADLESS with no human attached: never ask a clarifying question or present a numbered choice, because nothing can answer it and the session will sit until it is reaped. Decide, or record the blocker and stop. Do NOT claim, read, or start any ticket outside that id list even if more remain — a fresh session picks up the next batch. Work ONLY on the already-checked-out branch, do NOT push. Every worker edits ONLY the files inside its OWN assigned worktree — the factory checkout that holds this driver and the af-build hooks is TOOLING, not the project, and editing it is out of bounds even when a ticket is about that code. Two reasons it matters: those hook files are imported at runtime by every project's loop on this machine, so a half-finished edit there can break builds that have nothing to do with this ticket; and edits made outside a worktree sit on no branch, so the round's merge step cannot see them and they are silently dropped when the round ends. For ANY factory or Praxis python invocation, run $PY rather than a bare python3 — this run preflighted that interpreter and a bare python3 may resolve to an older one whose missing tomllib makes the universal quality checks load as an empty list. Pass that same path down to every subagent you spawn.$SERVICES."
   # The env preamble runs in the tmux shell AFTER ~/.bashrc has already sourced the
   # machine-wide backend file, so it deliberately overrides that file rather than
   # trusting it to agree with $AF_MODEL_BACKEND. Grok gets the prompt as argv.

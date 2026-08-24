@@ -38,6 +38,13 @@ _HEREDOC_RE = re.compile(r"<<'PYEOF'[^\n]*\n(.*?)\n *PYEOF\n", re.S)
 
 
 def _block(marker: str) -> str:
+    """The single embedded python block containing ``marker``.
+
+    The uniqueness assertion is load-bearing -- it is what stops a test silently drifting onto a
+    different block than the one it was written for -- so markers have to stay specific. `ts.owes_work`
+    alone stopped being unique the moment the startup lane preflight (correctly) reused the same
+    predicate, which is why these markers are whole statements.
+    """
     hits = [b for b in _HEREDOC_RE.findall(SCRIPT.read_text()) if marker in b]
     assert len(hits) == 1, f"expected exactly one embedded block containing {marker!r}, got {len(hits)}"
     return hits[0]
@@ -73,12 +80,12 @@ def plan(monkeypatch):
 
 def test_a_freshly_blessed_plan_is_not_reported_as_drained(plan, capsys):
     """THE REGRESSION: 21 unstamped tickets used to count as 0."""
-    assert _run("ts.owes_work", ["sports_analysis"], capsys) == "21"
+    assert _run("print(sum(1 for x in f if ts.owes_work(x)))", ["sports_analysis"], capsys) == "21"
 
 
 def test_a_just_dispatched_round_is_not_already_closed(plan, capsys):
     """batch_open over unstamped tickets: the round has 3 open, not 0."""
-    assert _run("ts.is_open_state", ["sports_analysis", "T1", "T2", "T3"], capsys) == "3"
+    assert _run("if (ids & want) and ts.is_open_state(", ["sports_analysis", "T1", "T2", "T3"], capsys) == "3"
 
 
 def test_terminal_states_still_close(plan, monkeypatch, capsys):
@@ -92,9 +99,9 @@ def test_terminal_states_still_close(plan, monkeypatch, capsys):
     ]
     monkeypatch.setattr(_praxis, "facts_by", lambda **kw: list(facts))
 
-    assert _run("ts.owes_work", ["sports_analysis"], capsys) == "3"
-    assert _run("ts.is_open_state", ["sports_analysis", "T1", "T2"], capsys) == "0"
-    assert _run("ts.is_open_state", ["sports_analysis", "T3", "T4", "T5"], capsys) == "3"
+    assert _run("print(sum(1 for x in f if ts.owes_work(x)))", ["sports_analysis"], capsys) == "3"
+    assert _run("if (ids & want) and ts.is_open_state(", ["sports_analysis", "T1", "T2"], capsys) == "0"
+    assert _run("if (ids & want) and ts.is_open_state(", ["sports_analysis", "T3", "T4", "T5"], capsys) == "3"
 
 
 def test_the_two_spellings_of_the_predicate_agree(plan):
