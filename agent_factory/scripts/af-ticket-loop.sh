@@ -236,8 +236,117 @@ print((d.get("claudeAiOauth") or {}).get("subscriptionType", ""))
 PYEOF
 }
 
+# ------------------------------------------------------ live generation probe (the real gate) ----
+# WHY THIS EXISTS: `--check` printed `preflight: OK` for a backend that could not emit a single
+# token. AUTH IS NOT QUOTA. Measured on 2026-08-24: grok (subscription quota wall) and deepseek
+# ("Insufficient Balance") BOTH passed preflight -- deepseek because it had no probe at all, only a
+# key-FILE existence test, and grok because a probe returning no PONG and no *auth* error was
+# downgraded to a WARNING. The run launched, every session died on its first turn, and the operator
+# was told "builds are running". A preflight that cannot fail is not a preflight.
+#
+# The contract is now: PREFLIGHT MUST WITNESS ONE REAL GENERATION. Five verdicts, split the way the
+# REMEDIES split -- "top up", "log in again", and "wait for the window" are three different jobs,
+# and collapsing them into one exit code is why the last false OK took an operator to diagnose:
+#   live         PONG observed. The ONLY way to pass.
+#   credit       credential valid, account cannot spend: insufficient balance, 402. -> exit 3.
+#   quota        credential valid, allowance spent: usage/rate limit, 429.          -> exit 8.
+#   rejected     credential itself refused: 401, /login.                            -> exit 1.
+#   inconclusive neither a token nor a recognised error (a network blip). Retried once with
+#                backoff; STILL inconclusive is FATAL, because "we could not prove it works" is
+#                precisely the state that produced the false OK. AF_PROBE_LENIENT=1 downgrades a
+#                persistent inconclusive to a warning -- an escape hatch for a genuinely offline
+#                box. It can never downgrade credit/quota/rejected: those are proof of failure,
+#                not absence of proof.
+AF_PROBE_KIND=""        # live|credit|quota|rejected|inconclusive -- set by af_probe_generation
+AF_PROBE_OUTPUT=""      # last probe transcript, for the caller's error report
+AF_BACKEND_EXIT=1       # exit code the caller should use when resolve_backend fails
+
+# Classify one probe transcript. Error patterns are tested BEFORE the success token deliberately:
+# if a transcript carries both, the error is the honest reading, and a preflight that guesses
+# optimistically is the bug being fixed. The prompt echo is stripped first because `codex exec`
+# (and grok's json transcript) replay the user prompt, which literally contains the word PONG --
+# matching that would make every probe "pass" without the model ever answering.
+_af_classify_probe(){
+  local out="$1" answer
+  answer="$(printf '%s\n' "$out" | grep -v 'Reply with exactly' || true)"
+  if printf '%s' "$out" | grep -qiE 'insufficient balance|insufficient_quota|insufficient funds|billing_not_active|credit balance is too low|exceeded your current quota|payment required|\b402\b'; then
+    echo credit; return 0
+  fi
+  if printf '%s' "$out" | grep -qiE 'usage limit reached|rate.?limit|quota exceeded|too many requests|\b429\b|out of (credits|quota)|limit will reset|upgrade to increase'; then
+    echo quota; return 0
+  fi
+  if printf '%s' "$out" | grep -qiE 'please run /login|invalid api key|authentication_error|authentication failed|oauth.*invalid|not authenticated|login required|missing bearer|\b401\b|unauthorized'; then
+    echo rejected; return 0
+  fi
+  if printf '%s' "$answer" | grep -q 'PONG'; then echo live; return 0; fi
+  echo inconclusive
+}
+
+# A throwaway CLAUDE_CONFIG_DIR. Installed plugins MUTE headless `claude -p` -- it exits 0 having
+# printed nothing -- so a probe run against the real config dir is indistinguishable from a dead
+# credential. Pointing at a bare dir is what the graded judge does (evals/plan_repro/claude_cli.py).
+# $1 = dir suffix, $2 = optional credentials file to SYMLINK (never copy: no secret is duplicated,
+# and a re-login is picked up on the next run).
+_af_probe_config_dir(){
+  local dir="${TMPDIR:-/tmp}/af-probe-$1-config"
+  mkdir -p "$dir" 2>/dev/null || true
+  if [ -n "${2:-}" ] && [ -r "$2" ]; then ln -sf "$2" "$dir/.credentials.json" 2>/dev/null || true; fi
+  printf '%s' "$dir"
+}
+
+# $1 = backend label, $2 = a shell command string that must print the model's answer on stdout or
+# its error on stderr (the caller builds it, env-scrubbing included, so the probe spends exactly
+# the credential the sessions will spend -- a probe against a different identity is theatre).
+af_probe_generation(){
+  local label="$1" cmd="$2" attempt out kind
+  for attempt in 1 2; do
+    out="$(bash -c "$cmd" 2>&1 || true)"
+    kind="$(_af_classify_probe "$out")"
+    AF_PROBE_KIND="$kind"; AF_PROBE_OUTPUT="$out"
+    case "$kind" in
+      live)                    return 0 ;;
+      credit|quota|rejected)   return 1 ;;
+    esac
+    if [ "$attempt" = 1 ]; then
+      echo "[backend] $label probe inconclusive (no token, no recognised error) - retrying once in ${AF_PROBE_RETRY_S:-5}s" >&2
+      sleep "${AF_PROBE_RETRY_S:-5}"
+    fi
+  done
+  return 1
+}
+
+# Report a failed probe and pick the exit code. Returns 0 ONLY on the lenient-inconclusive path, so
+# every caller reads:   af_probe_generation ... || af_probe_refuse ... || return 1
+af_probe_refuse(){
+  local label="$1" remedy="$2"
+  case "$AF_PROBE_KIND" in
+    credit)
+      AF_BACKEND_EXIT=3
+      echo "[backend] FATAL: $label authenticates but the account CANNOT SPEND (insufficient balance / 402)." >&2 ;;
+    quota)
+      AF_BACKEND_EXIT=8
+      echo "[backend] FATAL: $label authenticates but its ALLOWANCE IS SPENT (usage/rate limit)." >&2 ;;
+    rejected)
+      AF_BACKEND_EXIT=1
+      echo "[backend] FATAL: $label credential was REJECTED." >&2 ;;
+    *)
+      if [ "${AF_PROBE_LENIENT:-0}" = "1" ]; then
+        echo "[backend] WARNING: $label probe stayed inconclusive twice; AF_PROBE_LENIENT=1 - continuing UNPROVEN" >&2
+        return 0
+      fi
+      AF_BACKEND_EXIT=1
+      echo "[backend] FATAL: $label probe could not witness a generation (twice, no recognised error)." >&2
+      echo "[backend]   preflight proves the backend can EMIT A TOKEN, not merely that it authenticates." >&2
+      echo "[backend]   if this box is genuinely offline and you accept the risk: AF_PROBE_LENIENT=1" >&2 ;;
+  esac
+  printf '%s\n' "$AF_PROBE_OUTPUT" | head -6 | sed 's/^/[backend]   /' >&2
+  echo "[backend]   $remedy" >&2
+  return 1
+}
+
 resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if preflight fails
   local requested
+  AF_BACKEND_EXIT=1
   requested="${AF_MODEL_BACKEND:-}"
   [ -n "$requested" ] || [ ! -r "$HOME/.af-backend" ] || requested="$(tr -d ' \n\r' < "$HOME/.af-backend")"
   [ -n "$requested" ] || requested="deepseek"
@@ -313,21 +422,11 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     #     only the credential, exactly as the graded judge does (see
     #     evals/plan_repro/claude_cli.py). The credential is symlinked, never
     #     copied, so no secret is duplicated and a re-login is picked up.
-    local probe probe_cfg
-    probe_cfg="${TMPDIR:-/tmp}/af-probe-claude-config"
-    mkdir -p "$probe_cfg" 2>/dev/null || true
-    if [ -r "$CREDENTIALS_FILE" ]; then
-      ln -sf "$CREDENTIALS_FILE" "$probe_cfg/.credentials.json" 2>/dev/null || true
-    fi
-    probe="$(cd /tmp && bash -c "unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN; export CLAUDE_CONFIG_DIR='$probe_cfg'; timeout 120 claude --model ${AF_CLAUDE_MODEL:-sonnet} -p 'Reply with exactly: PONG'" 2>&1 || true)"
-    if printf '%s' "$probe" | grep -qiE 'please run /login|invalid api key|authentication_error|oauth.*invalid|401'; then
-      echo "[backend] FATAL: sonnet credential present but REJECTED by Anthropic:" >&2
-      printf '%s\n' "$probe" | head -3 | sed 's/^/[backend]   /' >&2
-      echo "[backend]   fix, once, as ec2-user:  claude setup-token   # then write into $OAUTH_TOKEN_FILE as: export CLAUDE_CODE_OAUTH_TOKEN=..." >&2
-      echo "[backend]   or:                      claude   ->  /login" >&2
-      return 1
-    fi
-    printf '%s' "$probe" | grep -q 'PONG' || echo "[backend] WARNING: sonnet auth probe returned no PONG and no auth error (network/transient?) — continuing" >&2
+    local probe_cfg
+    probe_cfg="$(_af_probe_config_dir claude "$CREDENTIALS_FILE")"
+    af_probe_generation sonnet "cd /tmp; unset ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN; export CLAUDE_CONFIG_DIR='$probe_cfg'; timeout 120 claude --model ${AF_CLAUDE_MODEL:-sonnet} -p 'Reply with exactly: PONG'" \
+      || af_probe_refuse sonnet "fix, once, as ec2-user:  claude setup-token   (or:  claude  ->  /login)" \
+      || return 1
   elif [ "$BACKEND" = "grok" ]; then
     # Native Grok CLI on the xAI *subscription* (OAuth session token). XAI_API_KEY is
     # unset, not merely out-ranked: if the env key is present Grok spends API credits
@@ -350,20 +449,19 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
       return 1
     fi
     CLAUDE_LAUNCH="unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN; export PATH=\"\$HOME/.grok/bin:\$HOME/.local/bin:\$PATH\"; ${GROK_BIN} --model ${AF_GROK_MODEL} --always-approve"
-    local probe
-    probe="$(cd /tmp && unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN && timeout 120 "$GROK_BIN" --model "$AF_GROK_MODEL" --always-approve -p 'Reply with exactly: PONG' --output-format json 2>&1 || true)"
-    if printf '%s' "$probe" | grep -qiE '"apiKeySource"[[:space:]]*:[[:space:]]*"user"'; then
+    local grok_ok=0
+    af_probe_generation grok "cd /tmp; unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN; timeout 120 '$GROK_BIN' --model '$AF_GROK_MODEL' --always-approve -p 'Reply with exactly: PONG' --output-format json" && grok_ok=1
+    # The WRONG-BILL refusal reads the same transcript, and is checked even on a live probe: a
+    # generation that succeeded is not acceptable if it succeeded by spending API credits.
+    if printf '%s' "$AF_PROBE_OUTPUT" | grep -qiE '"apiKeySource"[[:space:]]*:[[:space:]]*"user"'; then
       echo "[backend] FATAL: grok probe billed as apiKeySource=user (XAI_API_KEY / API credits)." >&2
       echo "[backend]   unset XAI_API_KEY and GROK_CODE_XAI_API_KEY, confirm $GROK_AUTH is an OAuth login, rerun --check." >&2
+      AF_BACKEND_EXIT=1
       return 1
     fi
-    if printf '%s' "$probe" | grep -qiE 'authentication failed|please (run |sign in)|not authenticated|login required|invalid api key'; then
-      echo "[backend] FATAL: grok credential present but REJECTED:" >&2
-      printf '%s\n' "$probe" | head -5 | sed 's/^/[backend]   /' >&2
-      echo "[backend]   fix, once, as ec2-user:  grok login --device-auth" >&2
-      return 1
-    fi
-    printf '%s' "$probe" | grep -q 'PONG' || echo "[backend] WARNING: grok auth probe returned no PONG and no auth error (network/transient?) — continuing" >&2
+    [ "$grok_ok" = 1 ] \
+      || af_probe_refuse grok "fix, once, as ec2-user:  grok login --device-auth" \
+      || return 1
   elif [ "$BACKEND" = "codex" ]; then
     # OpenAI Codex CLI on the owner's ChatGPT *subscription* (the "Sign in with ChatGPT"
     # path), never on an API key. OPENAI_API_KEY and friends are UNSET rather than
@@ -413,15 +511,9 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     CLAUDE_LAUNCH="unset OPENAI_API_KEY OPENAI_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL CLAUDE_CODE_OAUTH_TOKEN XAI_API_KEY; ${CODEX_BIN} --dangerously-bypass-approvals-and-sandbox --no-alt-screen${AF_CODEX_MODEL:+ --model $AF_CODEX_MODEL}"
     # Cheap live probe, same contract as the other three: only an explicit auth rejection is
     # fatal; no answer and no auth error is a network blip, not a reason to refuse the run.
-    local probe
-    probe="$(cd /tmp && unset OPENAI_API_KEY OPENAI_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN && timeout 120 "$CODEX_BIN" exec --skip-git-repo-check --color never -s read-only ${AF_CODEX_MODEL:+--model "$AF_CODEX_MODEL"} 'Reply with exactly: PONG' </dev/null 2>&1 || true)"
-    if printf '%s' "$probe" | grep -qiE '401 unauthorized|missing bearer|not logged in|invalid api key|authentication_error|please (run )?(codex )?login'; then
-      echo "[backend] FATAL: codex credential present but REJECTED by OpenAI:" >&2
-      printf '%s\n' "$probe" | head -5 | sed 's/^/[backend]   /' >&2
-      echo "[backend]   fix, once, as ec2-user:  codex login   # 'Sign in with Device Code'" >&2
-      return 1
-    fi
-    printf '%s' "$probe" | grep -q 'PONG' || echo "[backend] WARNING: codex auth probe returned no PONG and no auth error (network/transient?) — continuing" >&2
+    af_probe_generation codex "cd /tmp; unset OPENAI_API_KEY OPENAI_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN; timeout 120 '$CODEX_BIN' exec --skip-git-repo-check --color never -s read-only ${AF_CODEX_MODEL:+--model '$AF_CODEX_MODEL'} 'Reply with exactly: PONG' </dev/null" \
+      || af_probe_refuse codex "fix, once, as ec2-user:  codex login   # 'Sign in with Device Code'" \
+      || return 1
   else
     # DeepSeek mode. The subscription token is unset rather than out-ranked: the CLI has
     # been observed preferring a cached credential over an env token, so exclusivity is
@@ -435,6 +527,15 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
       return 1
     fi
     CLAUDE_LAUNCH="unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; export ANTHROPIC_BASE_URL=${AF_DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}; export ANTHROPIC_MODEL=${AF_DEEPSEEK_MODEL:-deepseek-v4-pro}; export ANTHROPIC_AUTH_TOKEN=\"\$(tr -d ' \\n\\r' < \$HOME/.deepseek_key)\"; claude --dangerously-skip-permissions"
+    # A NON-EMPTY KEY FILE IS NOT A WORKING BACKEND. This branch had no probe at all, so a DeepSeek
+    # account reading "Insufficient Balance" preflighted OK and the loop launched into it. The
+    # prepaid-balance model makes that the MOST likely failure of the four backends, not the least.
+    # Same env the sessions get, read the same way (the key never lands in this script's log).
+    local ds_cfg
+    ds_cfg="$(_af_probe_config_dir deepseek)"
+    af_probe_generation deepseek "cd /tmp; unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY; export CLAUDE_CONFIG_DIR='$ds_cfg'; export ANTHROPIC_BASE_URL=${AF_DEEPSEEK_BASE_URL:-https://api.deepseek.com/anthropic}; export ANTHROPIC_MODEL=${AF_DEEPSEEK_MODEL:-deepseek-v4-pro}; export ANTHROPIC_AUTH_TOKEN=\"\$(tr -d ' \\n\\r' < '$DEEPSEEK_KEY_FILE')\"; timeout 120 claude --dangerously-skip-permissions -p 'Reply with exactly: PONG'" \
+      || af_probe_refuse deepseek "top up at https://platform.deepseek.com/  (balance), or rotate the key in $DEEPSEEK_KEY_FILE" \
+      || return 1
   fi
   return 0
 }
@@ -446,12 +547,20 @@ if [ "${1:-}" = "--check" ]; then
     echo "resolved    : $BACKEND"
     echo "billing     : $BACKEND_NOTE"
     echo "launch cmd  : $CLAUDE_LAUNCH"
+    # Say WHAT WAS PROVEN, not just "OK". The old word was unfalsifiable: it meant "no auth error
+    # was seen", which is also what an exhausted account produces.
+    case "$AF_PROBE_KIND" in
+      live) echo "generation  : WITNESSED (the backend emitted a token just now)" ;;
+      *)    echo "generation  : NOT witnessed (AF_PROBE_LENIENT=1) — this run is UNPROVEN" ;;
+    esac
     echo "preflight   : OK"
     exit 0
   fi
   echo "resolved    : ${BACKEND:-?}"
-  echo "preflight   : FAILED (see above) — a real run would refuse to start"
-  exit 1
+  echo "preflight   : FAILED (see above) - a real run would refuse to start"
+  # Propagate the DIAGNOSIS, not a flat 1: 3 = top up, 8 = wait for the window, 1 = fix the config.
+  echo "exit code   : $AF_BACKEND_EXIT"
+  exit "$AF_BACKEND_EXIT"
 fi
 
 # ------------------------------------------------------------------- where everything lives ----
@@ -1152,7 +1261,7 @@ halt_quota_blocked(){
 # Resolve the backend BEFORE any ticket work, and refuse to start a multi-hour run on a
 # half-configured one. Failing here costs seconds; failing three tickets in costs an hour
 # and a lease that has to be released by hand.
-resolve_backend || { say "FATAL: model backend preflight failed for '${BACKEND:-?}' — refusing to start"; exit 1; }
+resolve_backend || { say "FATAL: model backend preflight failed for '${BACKEND:-?}' - refusing to start (exit $AF_BACKEND_EXIT)"; exit "$AF_BACKEND_EXIT"; }
 say "backend=$BACKEND ($BACKEND_NOTE)"
 # PREFLIGHT NOTE for a subscription backend: a Claude Max/Pro subscription meters a session/usage
 # QUOTA, not API credits, so a long unattended run can exhaust it mid-flight and strand a headless
