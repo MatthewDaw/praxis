@@ -22,6 +22,7 @@ dependencies = [
     "imagehash>=4.3",
     "yoyo-migrations>=9.0.0",
     "slowapi>=0.1.10",
+    "trackio==0.36.0",
 ]
 
 [project.scripts]

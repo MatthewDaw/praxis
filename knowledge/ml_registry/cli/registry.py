@@ -451,6 +451,15 @@ def _idea_bridge_main(argv: list[str] | None = None) -> int:
     seed_p.add_argument("--retriever-script", required=True)
     seed_p.add_argument("--confirm-script")
 
+    telemetry_p = sub.add_parser(
+        "campaign-telemetry", help="publish the durable Trackio per-arm campaign record"
+    )
+    telemetry_p.add_argument("--space-file", required=True)
+    telemetry_p.add_argument("--model-id", required=True)
+    telemetry_p.add_argument("--ledger", required=True)
+    telemetry_p.add_argument("--store-root", required=True)
+    telemetry_p.add_argument("--project", required=True)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "register-idea":
@@ -570,6 +579,23 @@ def _idea_bridge_main(argv: list[str] | None = None) -> int:
 
             print(json.dumps(_load_mutate_save(args.space_file, seed_space)))
             return 0
+        if args.command == "campaign-telemetry":
+            from knowledge.ml_registry.telemetry import publish_campaign_telemetry
+
+            receipt = publish_campaign_telemetry(
+                RegistrySpace.load(Path(args.space_file)),
+                args.model_id,
+                load_ledger_rows(Path(args.ledger)),
+                store_root=Path(args.store_root),
+                project=args.project,
+            )
+            print(json.dumps({
+                "project": receipt.project,
+                "database": str(receipt.database),
+                "experiments": receipt.experiment_count,
+                "dead_ends": receipt.dead_end_count,
+            }, sort_keys=True))
+            return 0
     except RegistryValidationError as exc:
         print(f"REFUSED [{exc.field}]: {exc}", file=sys.stderr)
         return 1
@@ -585,6 +611,7 @@ _IDEA_BRIDGE_COMMANDS = frozenset({
     "register-idea", "resolve-citation", "claim-idea", "heartbeat-idea-claim",
     "adopt-idea", "park-idea", "reject-idea", "invalidate-adoption", "reopen-idea",
     "backlog", "rejection-memory", "retriable-ideas", "seed-campaign", "readback",
+    "campaign-telemetry",
 })
 
 

@@ -11,11 +11,12 @@ import pytest
 
 
 HELP_SHA256 = {
-    "__root__": "49b1088bd2c15b991f7eed080cdff3bf92744d0256e38168bd4daa74dede8bb0",
+    "__root__": "65e2f81114f9100fe0098f6cdb5a41a38d268cf9d7b1047996a4666522d4f27b",
     "adjudicate-run": "4037229e386f8e7980b0a8146f2e0dc5033e71975bf8fee85deb47322109314a",
     "adopt-idea": "2634a0014387d7fd901ae5fcc7c237ebf3af8af4e1abf652235f3a0f70554e18",
     "backlog": "d02ef7e0961d5bcfcfb24a645e4d0b8f2b7b9f83518ea58c37de7225860c41ef",
     "claim-idea": "41804fa5e205a4861c1a69984c742d233d45e2038bcbf12d1430bbef0b8952d5",
+    "campaign-telemetry": "e064ce4f3513c55a0c7733ccaeed0dde63485e13f275b21261751f85f6243cec",
     "complete-run": "f613cc9720df319bcc9f4330fccef8c8cad93753c588591937e04a3e1d72674d",
     "create-artifact": "b15ffecccf40ae79cbabc8313ebeb21c71673ab97d62aa6a47c4e87a5a489450",
     "create-experiment": "d125db6015378c7d440bbab54a1397f406d231965c465f1cd43def8f985a52e6",
@@ -42,11 +43,12 @@ HELP_SHA256 = {
 }
 
 ERROR_SHA256 = {
-    "__root__": "212679c6b42e3c8520677b1b70171c582eceaf3abcf7076115d7ed09a49c735b",
+    "__root__": "a1b9564d6b0de6d38487541e32282bfbc9bffbf7fcb54c5ca854a394f5f9d5b8",
     "adjudicate-run": "e044c8fbb511f2943f99aeb4dd2f616e262c98a308bfd98c6b55389e075a249b",
     "adopt-idea": "511283fe14ca352e9a21f3d4eeb4a2222b728b63b7b251f9ac16db3808e0f472",
     "backlog": "5b316447b4dce9de3f1f330f8b7d0d7a337cfdaadb9503bdeca936754b9c6959",
     "claim-idea": "4a3a51a85f808b5c67e5f8bace9ef2d3e8007a1b058d1de2dc0cc3766ba60188",
+    "campaign-telemetry": "bbea7c7d4b279905fd9646f3c47837d0014a29aad53b36e9a2aa2bf315d96f57",
     "complete-run": "16b0f0a476513bf9936c434e43dc4757c231b1f6abc1b517f67b852b269654a2",
     "create-artifact": "2105c6af4d3cb197e0727abe978c9528cd2e0986b3e5241eb564be0d011e9fc3",
     "create-experiment": "ed77048293a0a890fa7d507c92131e397bf59f61c2bde1c1f013f45a4d0c9225",
