@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+import re
 
 import pytest
 
@@ -12,6 +13,8 @@ from knowledge.ml_registry.baselines import (
     reproduce_baselines,
 )
 from knowledge.ml_registry.contracts.ledger_v2 import LEDGER_V2_HEADER
+from knowledge.ml_registry.schema import RegistryValidationError
+from knowledge.ml_registry.selection import validate_rung
 
 _CANDIDATES = (
     BaselineCandidate("botsort", "tracking-by-detection", "https://example.test/botsort", 1),
@@ -122,3 +125,27 @@ def test_an_unreproduced_baseline_keeps_its_place_below_the_measured_ones(tmp_pa
     assert [entry.candidate.id for entry in suite.ranking()] == [
         "timm-convnext", "botsort", "kp-homography",
     ]
+
+
+#: Values a rung field plausibly receives from a survey harvest or a hand-written campaign file,
+#: chosen so the ladder's three refusals are all represented: booleans (``True`` is an ``int`` in
+#: Python and silently reads as rung 1), non-integers, and integers off the ladder.
+_LADDER_PROBES = (True, False, None, "1", 1.0, 2.5, -1, 5, 0, 1, 2, 3, 4)
+
+
+@pytest.mark.parametrize("rung", _LADDER_PROBES)
+def test_a_baseline_candidate_takes_exactly_the_rungs_selection_takes(rung: object) -> None:
+    """The harness and phase 2 SELECT share ONE rung contract, refusal message included.
+
+    Round 3 shipped two: reproduction checked only ``0 <= rung <= 4``, so ``True`` entered as
+    rung 1 and a candidate the harness happily measured was refused downstream by
+    :func:`~knowledge.ml_registry.selection.validate_rung`. A baseline that cannot be selected is
+    not a baseline, so the two must agree by construction rather than in parallel.
+    """
+    try:
+        validate_rung(rung, candidate_id="probe")
+    except RegistryValidationError as refusal:
+        with pytest.raises(RegistryValidationError, match=re.escape(str(refusal))):
+            BaselineCandidate("probe", "family", "https://example.test", rung)
+    else:
+        assert BaselineCandidate("probe", "family", "https://example.test", rung).rung == rung
