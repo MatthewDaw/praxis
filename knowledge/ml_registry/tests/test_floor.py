@@ -10,6 +10,8 @@ of each comparison."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from pathlib import Path
 import statistics
 
@@ -140,7 +142,9 @@ def test_registration_accepts_a_stored_throughput_that_agrees_with_the_recomputa
 
 
 def _trial(space: RegistrySpace, model_id: str, idea_id: str, commit: str,
-           ledger: dict[str, float] | None = None) -> str:
+           ledger: Iterable[str] | None = None) -> str:
+    """``ledger`` is anything that iterates the ledger's COMMITS -- the values mapping or a
+    bare set of its keys -- since register_trial only checks membership."""
     return register_trial(
         space,
         {"model_id": model_id, "idea_id": idea_id, "commit": commit, "status": "running"},

@@ -13,7 +13,7 @@ from knowledge.ml_registry.schema import RegistryValidationError
 
 
 @pytest.mark.parametrize("field", sorted(PROTECTED_MODEL_FIELDS))
-def test_worker_sourced_mutation_of_a_protected_field_is_refused_naming_it(field: object) -> None:
+def test_worker_sourced_mutation_of_a_protected_field_is_refused_naming_it(field: str) -> None:
     """A worker-sourced write mutating metric/direction/win_condition/baseline_runs/
     baseline_throughput/diff_size_limit is refused naming that field."""
     with pytest.raises(RegistryValidationError) as excinfo:
