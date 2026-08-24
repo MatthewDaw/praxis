@@ -1,12 +1,11 @@
 """The graded iteration cap is a BACKSTOP, and it was set below what working tickets need.
 
-`verify_graded_check` has three escalation rules. Two are sharp and do the real work:
+`verify_graded_check` has two sharp exits before the raw cap:
 
-  * advise-only defects escalate IMMEDIATELY as unremediable — there is no enforce-tier lever the
-    worker could pull, so re-grading cannot flip the verdict;
+  * advise-only defects are recorded as pass-with-advice and never enter the correction loop;
   * a round that fails to REDUCE the defect count blocks after ONE non-improving iteration.
 
-The third is the raw iteration cap. Because the first two already catch spinning and futility, the
+Then comes the raw iteration cap. Because the exits already catch advice and non-convergence, the
 cap only ever bites work that is steadily improving — so setting it below what improving work
 actually needs turns a safety net into the main cause of blocked tickets.
 
@@ -73,15 +72,13 @@ def test_non_convergence_still_blocks_after_one_bad_iteration():
     assert "last_defects is not None and last_defects > 0 and n_defects >= last_defects" in src
 
 
-def test_advise_only_defects_still_escalate_immediately():
-    """The other sharp guard: feedback that cannot flip the verdict must not burn the cap. Note
-    this is a SEPARATE exit — raising the cap does nothing for a ticket blocked here, which is why
-    sports_analysis T6a stays blocked and needs its own decision."""
+def test_advise_only_defects_exit_before_the_blocking_guards():
+    """Advice must neither burn the cap nor route to ``block()``."""
     src = open(gv.__file__).read()
-    assert "unremediable, no enforce-tier defect to fix" in src
+    assert "return _pass_with_advice" in src
     i_advise = src.index("all(d.tier == DEFECT_TIER_ADVISE")
     i_cap = src.index("if iters >= cap")
-    assert i_advise < i_cap, "the unremediable check must precede the cap, or advice burns the cap"
+    assert i_advise < i_cap, "the advisory exit must precede every blocking guard"
 
 
 def test_an_unchanged_diff_still_escalates_within_the_cap():

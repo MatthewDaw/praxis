@@ -98,9 +98,9 @@ lands, a fresh session re-runs the whole-repo gates on the integrated tree and d
 adversarial lenses over the combined diff — integration conflict, per-ticket acceptance re-run against
 the MERGED tree, test integrity — and regresses in Praxis any ticket whose work does not survive
 integration, so the next round rebuilds it. It builds nothing and pushes nothing. Single-ticket rounds
-skip it, since they merge exactly the tree their worker already validated. `AF_VERIFY_ROUND=0` disables
-it; `AF_VERIFY_TIMEOUT_S` bounds it, default 2700. A round that produces no verdict is logged as
-UNVERIFIED, never as a pass.
+are verified too, because workers no longer own the repo-wide sweep. `AF_VERIFY_TIMEOUT_S` bounds the
+session, default 2700. A round that produces no verdict halts; verification cannot be disabled or
+treated as a pass.
 
 ## Box auth — set up or repair the Claude identity (do this BEFORE launching)
 
@@ -328,7 +328,8 @@ restarting anything.
 
 Optional knobs, prefixed before the command: `AF_MODEL_BACKEND=sonnet` (default deepseek),
 `AF_BATCH_MAX=<n>` (round width, default 16), `AF_MIN_FREE_GB=<n>` (disk floor, default 15),
-`AF_VERIFY_ROUND=0` (skip post-merge verification), `AF_WATCH_POLL_S=<n>` (watch cadence, default 300).
+`AF_VERIFY_TIMEOUT_S=<n>` (verification bound, default 2700), `AF_WATCH_POLL_S=<n>` (watch cadence,
+default 300).
 
 **7. Confirm it came up** — the loop refuses to start on a half-configured model backend, and that
 failure is otherwise silent:

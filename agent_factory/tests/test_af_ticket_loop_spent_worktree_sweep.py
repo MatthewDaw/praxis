@@ -38,6 +38,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "af-ticket-loop.sh"
 # Every helper the sweep reaches. Extracted rather than re-implemented: a copy would prove only
 # that this file agrees with itself.
 _FUNCS = (
+    "af_factory_nested_worktrees", "af_remove_clean_factory_nested_worktrees",
     "af_main_worktree", "af_scratch_roots", "af_scratch_globs", "af_is_scratch",
     "af_is_human_branch", "af_is_worktree_branch", "af_is_factory_named",
     "af_worktree_is_removable", "af_force_remove_worktree", "af_stragglers",
@@ -101,6 +102,7 @@ def _run(repo: Path, body: str, *, known_ids: str = " R0a ") -> subprocess.Compl
         WT={repo}
         INTEGRATION_REF=build/research-engine
         AF_KNOWN_IDS="{known_ids}"
+        AF_FACTORY_CHECKOUT={repo}
         """
     )
     program = preamble + _matchers() + "\n" + _constants() + "\n" + "\n".join(_function(f) for f in _FUNCS) + "\n" + body
@@ -119,6 +121,54 @@ def test_a_spent_worker_tree_is_swept(repo: Path, tmp_path: Path):
 
     assert not tree.exists(), f"the spent tree survived the sweep\n{res.stdout}{res.stderr}"
     assert "purged integrated worktree" in res.stdout
+
+
+def test_a_locked_clean_spent_worker_tree_is_unlocked_and_swept(repo: Path, tmp_path: Path):
+    """Regression: git refuses even ``worktree remove --force`` while a tree is locked.
+
+    A lock is not a claim on work. Once the branch has no commits outside HEAD and status is clean,
+    the sweep must unlock and remove it instead of leaving an invariant no resolution can clear.
+    """
+    root = repo / ".claude" / "worktrees"
+    root.mkdir(parents=True)
+    tree = _worker_tree(repo, root / "af-build-r3a-20260824",
+                        "af-build/praxis-r0a-locked", merge_back=True)
+    _sh(f"git worktree lock --reason stale-worker {tree}", repo)
+    assert _sh(f"git -C {tree} status --porcelain", repo) == ""
+    assert _sh("git rev-list --count HEAD..af-build/praxis-r0a-locked", repo) == "0"
+
+    res = _run(repo, "sweep_worktrees")
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert not tree.exists(), f"locked clean tree survived:\n{res.stdout}{res.stderr}"
+    assert "purged integrated worktree" in res.stdout
+
+
+def test_a_registered_tree_inside_the_factory_checkout_is_refused_and_removed(repo: Path):
+    """R3a's forbidden ``<factory>/.claude/worktrees/*`` layout is detected mechanically."""
+    tree = _worker_tree(repo, repo / ".claude" / "worktrees" / "af-build-r3a",
+                        "af-build/praxis-r3a", merge_back=True)
+
+    detected = _run(repo, "af_factory_nested_worktrees")
+    assert str(tree) in detected.stdout
+
+    swept = _run(repo, "af_remove_clean_factory_nested_worktrees")
+    assert swept.returncode == 0, swept.stderr
+    assert not tree.exists()
+
+
+def test_factory_nested_work_with_unmerged_or_dirty_content_is_preserved(repo: Path):
+    root = repo / ".claude" / "worktrees"
+    root.mkdir(parents=True)
+    tree = _worker_tree(repo, root / "af-build-r3a-dirty",
+                        "af-build/praxis-r3a-dirty", merge_back=False)
+    (tree / "uncommitted.txt").write_text("do not destroy\n")
+
+    result = _run(repo, "af_remove_clean_factory_nested_worktrees")
+
+    assert tree.exists()
+    assert (tree / "uncommitted.txt").read_text() == "do not destroy\n"
+    assert "PRESERVED" in result.stdout
 
 
 def test_after_the_sweep_the_straggler_invariant_can_actually_be_satisfied(repo: Path, tmp_path: Path):

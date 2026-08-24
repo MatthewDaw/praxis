@@ -99,3 +99,21 @@ def test_the_hard_stop_on_an_unusable_base_is_preserved():
     """The refusal itself was correct and must remain: anything built on a bad base cannot land."""
     p = _prompt()
     assert "anything built on that base is unmergeable by construction" in p
+
+
+def test_worker_worktrees_are_refused_inside_the_factory_checkout():
+    """R3a landed in /workspace/praxis/.claude/worktrees, the live driver home."""
+    src = SCRIPT.read_text()
+    assert 'AF_WORKTREE_ROOT="${AF_WORKTREE_ROOT:-$AF_STATE_DIR/.af-worktrees/$PROJECT}"' in src
+    assert '"$AF_FACTORY_CHECKOUT"|"$AF_FACTORY_CHECKOUT"/*)' in src
+    assert "WORKTREE LOCATION IS A HARD PRECONDITION" in src
+    assert "FACTORY WORKTREE VIOLATION" in src
+    assert "exit 11" in src
+    assert "interrupt that worker before it reads or edits anything" in src
+    assert 'SWEEP_AMENDMENT="$WORKTREE_LOCATION_RULE$AUTHORED_SCOPE_RULE$SWEEP_AMENDMENT"' in src
+
+
+def test_the_sweep_covers_both_factory_tree_layouts():
+    src = SCRIPT.read_text()
+    assert '"$WT/.claude/worktrees"' in src
+    assert 'printf \'%s\\n\' "$AF_WORKTREE_ROOT"' in src
