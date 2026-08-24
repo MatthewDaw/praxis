@@ -215,7 +215,7 @@ KNOWN_TRIAL_COMPARISONS: frozenset[str] = frozenset(
 _PROVENANCE_MISMATCHES: dict[tuple[str, str], str] = {
     (TRIAL_COMPARISON_PAIRED, ROPE_VARIES_EVAL_SAMPLE): (
         "a paired trial is scored on the SAME eval draw as the baseline row, so the sampling "
-        "noise the rope measured is partly common to both sides and cancels in the delta -- the "
+        "noise the rope measured is partly common to both sides and CANCELS in the delta -- the "
         "bar is measured over variance the comparison does not carry, and nothing clears it"
     ),
     (TRIAL_COMPARISON_UNPAIRED, ROPE_VARIES_PAIRED_DELTA): (

@@ -1,4 +1,4 @@
-"""A noise floor that SHRINKS as the campaign approaches its ceiling.
+"""A rope that SHRINKS as the campaign approaches its ceiling.
 
 Pins both directions of the shape, the armor that stops it falling to zero, that
 court_marking (0.155648 -> 0.70, the case the binomial form INVERTS) shrinks like the
@@ -23,11 +23,11 @@ from knowledge.ml_registry.floor import (
     ROPE_SCALING_FIELD,
     ROPE_SCALING_RESIDUAL,
     METRIC_CEILING_FIELD,
-    NOISE_FLOOR_FIELD,
     RATCHET_COUNT_FIELD,
+    baseline_values,
+    comparison_rope,
     describe_rope,
     register_model_with_baseline,
-    scaled_noise_floor,
 )
 from knowledge.ml_registry.schema import RegistryValidationError
 from knowledge.ml_registry.verdict import (
@@ -41,7 +41,7 @@ from knowledge.ml_registry.write_path import RegistrySpace, register_idea, regis
 
 # ---------------------------------------------------------------------------
 # The four live campaigns, at their registered baseline and at their win condition.
-# (campaign, direction, ceiling, v_measured, registered floor, win condition)
+# (campaign, direction, ceiling, v_measured, measured rope, win condition)
 # ---------------------------------------------------------------------------
 LIVE_CAMPAIGNS = [
     ("detection", "maximize", 1.0, 0.6076, 0.099758, 0.80),
@@ -54,12 +54,21 @@ LIVE_CAMPAIGNS = [
 def _scaled_meta(direction, ceiling, measured_at, floor, **extra):
     return {
         "direction": direction,
-        NOISE_FLOOR_FIELD: floor,
         METRIC_CEILING_FIELD: ceiling,
         ROPE_MEASURED_AT_FIELD: measured_at,
         ROPE_SCALING_FIELD: ROPE_SCALING_RESIDUAL,
         **extra,
     }
+
+
+def _replicates(rope):
+    """Four baseline rows whose SAMPLE stdev is exactly ``rope`` -- the evidence the bar is
+    now measured from, in place of the number a model used to store."""
+    return [0.0, 0.0, 0.0, 2 * rope]
+
+
+def _bar(meta, floor, at):
+    return comparison_rope(meta, _replicates(floor), at)
 
 
 @pytest.mark.parametrize("name,direction,ceiling,measured_at,floor,win", LIVE_CAMPAIGNS)
@@ -68,8 +77,8 @@ def test_every_live_campaign_shrinks_monotonically_toward_its_ceiling(
 ):
     meta = _scaled_meta(direction, ceiling, measured_at, floor)
     steps = [measured_at + (win - measured_at) * i / 200 for i in range(201)]
-    bars = [scaled_noise_floor(meta, v) for v in steps]
-    assert bars[0] == pytest.approx(floor), f"{name} starts at its registered floor"
+    bars = [_bar(meta, floor, v) for v in steps]
+    assert bars[0] == pytest.approx(floor), f"{name} starts at its measured rope"
     assert bars[-1] < bars[0], f"{name} bar must SHRINK from baseline to win, not grow"
     for earlier, later in zip(bars, bars[1:]):
         assert later <= earlier + 1e-15, f"{name} bar rose while the metric improved"
@@ -84,56 +93,55 @@ def test_court_marking_does_not_invert_where_the_binomial_form_would():
     assert binomial(0.70) / binomial(0.155648) > 1.25  # the defect, reproduced
 
     meta = _scaled_meta("maximize", 1.0, 0.155648, 0.024962)
-    assert scaled_noise_floor(meta, 0.70) < scaled_noise_floor(meta, 0.155648)
+    assert _bar(meta, 0.024962, 0.70) < _bar(meta, 0.024962, 0.155648)
 
 
 def test_minimize_metric_shrinks_toward_a_ceiling_of_zero():
     meta = _scaled_meta("minimize", 0.0, 0.20, 0.004)
-    assert scaled_noise_floor(meta, 0.20) == pytest.approx(0.004)
-    assert scaled_noise_floor(meta, 0.10) == pytest.approx(0.002)
-    # ...and rises back toward -- but never above -- the registered floor if the campaign
+    assert _bar(meta, 0.004, 0.20) == pytest.approx(0.004)
+    assert _bar(meta, 0.004, 0.10) == pytest.approx(0.002)
+    # ...and rises back toward -- but never above -- the measured rope if the campaign
     # moves AWAY from the ceiling.
-    assert scaled_noise_floor(meta, 0.40) == pytest.approx(0.004)
+    assert _bar(meta, 0.004, 0.40) == pytest.approx(0.004)
 
 
-def test_armor_stops_the_bar_at_a_fraction_of_the_measured_floor():
+def test_armor_stops_the_bar_at_a_fraction_of_the_measured_rope():
     """A pure relative-error floor has no lower bound: association at HOTA 0.99 scales to
     ~0.0002, below the 0.000790 SD of a perturbation whose true effect is ZERO."""
     meta = _scaled_meta("maximize", 1.0, 0.851439, 0.0016)
     unarmored = 0.0016 * (0.01 / (1.0 - 0.851439))
     assert unarmored < 0.000790  # the defect, reproduced
 
-    bar = scaled_noise_floor(meta, 0.99)
+    bar = _bar(meta, 0.0016, 0.99)
     assert bar == pytest.approx(0.0016 * DEFAULT_ROPE_ARMOR)
     assert bar > 0.000790  # above the one measured null this registry holds
-    assert describe_rope(meta, 0.99)["armored"] is True
+    assert describe_rope(meta, _replicates(0.0016), 0.99)["armored"] is True
     # and it never goes lower, however close to the ceiling the campaign gets
-    assert scaled_noise_floor(meta, 1.0) == pytest.approx(0.0016 * DEFAULT_ROPE_ARMOR)
-    assert scaled_noise_floor(meta, 1.5) == pytest.approx(0.0016 * DEFAULT_ROPE_ARMOR)
+    assert _bar(meta, 0.0016, 1.0) == pytest.approx(0.0016 * DEFAULT_ROPE_ARMOR)
+    assert _bar(meta, 0.0016, 1.5) == pytest.approx(0.0016 * DEFAULT_ROPE_ARMOR)
 
 
 def test_armor_is_overridable_per_model():
     meta = _scaled_meta("maximize", 1.0, 0.851439, 0.0016, **{ROPE_ARMOR_FIELD: 0.8})
-    assert scaled_noise_floor(meta, 0.99) == pytest.approx(0.0016 * 0.8)
+    assert _bar(meta, 0.0016, 0.99) == pytest.approx(0.0016 * 0.8)
 
 
 @pytest.mark.parametrize("name,direction,ceiling,measured_at,floor,win", LIVE_CAMPAIGNS)
-def test_derived_bar_never_leaves_the_registered_floors_neighbourhood(
+def test_derived_bar_never_leaves_the_measured_ropes_neighbourhood(
     name, direction, ceiling, measured_at, floor, win
 ):
-    """The magnitude guarantee. _check_floor_against_spread bounds the REGISTERED floor
-    against the spread real ledger rows show; it can say nothing about a metric level
-    nobody has run. So the derived bar is clamped to [armor x registered, registered] and
-    inherits that bound instead of escaping it."""
+    """The magnitude guarantee. The rope the baseline rows actually show is evidence; a bar
+    evaluated at a metric level nobody has run is not. So the derived bar is clamped to
+    [armor x measured, measured] and inherits the rows' magnitude instead of escaping it."""
     meta = _scaled_meta(direction, ceiling, measured_at, floor)
     span = [-10.0, -1.0, 0.0, measured_at, win, ceiling, ceiling + 5.0, 1e6]
     for v in span:
-        bar = scaled_noise_floor(meta, v)
+        bar = _bar(meta, floor, v)
         assert floor * DEFAULT_ROPE_ARMOR - 1e-15 <= bar <= floor + 1e-15, (name, v, bar)
 
 
 # ---------------------------------------------------------------------------
-# BACKWARD COMPATIBILITY: a model that declares nothing keeps a static absolute floor.
+# BACKWARD COMPATIBILITY: a model that declares nothing keeps a static bar.
 # ---------------------------------------------------------------------------
 
 UNDECLARED_META: dict[str, object] = {
@@ -149,23 +157,24 @@ STATIC_FLOOR = statistics.stdev(BASELINE_LEDGER.values())
 
 
 @pytest.mark.parametrize("at", [0.0, 0.5, 1.0, 1.5, 100.0])
-def test_a_model_that_declares_nothing_gets_the_registered_floor_at_every_level(at):
+def test_a_model_that_declares_nothing_gets_the_measured_rope_at_every_level(at):
     space = RegistrySpace()
     model_id = register_model_with_baseline(space, dict(UNDECLARED_META), BASELINE_LEDGER)
     meta = space.get(model_id).meta
     assert meta[ROPE_SCALING_BASIS_FIELD] == ROPE_SCALING_BASIS_STATIC
     assert ROPE_MEASURED_AT_FIELD not in meta  # nothing stamped that nobody asked for
-    assert scaled_noise_floor(meta, at) == meta[NOISE_FLOOR_FIELD] == pytest.approx(STATIC_FLOOR)
+    values = baseline_values(meta, BASELINE_LEDGER)
+    assert comparison_rope(meta, values, at) == pytest.approx(STATIC_FLOOR)
 
 
 @pytest.mark.parametrize("name,direction,ceiling,measured_at,floor,win", LIVE_CAMPAIGNS)
 def test_a_live_campaign_that_does_not_opt_in_is_untouched(
     name, direction, ceiling, measured_at, floor, win
 ):
-    static = {"direction": direction, NOISE_FLOOR_FIELD: floor}
-    assert scaled_noise_floor(static, measured_at) == floor
-    assert scaled_noise_floor(static, win) == floor
-    assert describe_rope(static, win)[ROPE_SCALING_FIELD] == "static"
+    static = {"direction": direction}
+    assert _bar(static, floor, measured_at) == floor
+    assert _bar(static, floor, win) == floor
+    assert describe_rope(static, _replicates(floor), win)[ROPE_SCALING_FIELD] == "static"
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +198,7 @@ def _register_scaled(**overrides):
     return space, register_model_with_baseline(space, meta, ledger), ledger
 
 
-def test_registration_stamps_the_level_the_floor_was_measured_at_and_labels_what_it_checked():
+def test_registration_stamps_the_level_the_rope_was_measured_at_and_labels_what_it_checked():
     space, model_id, ledger = _register_scaled()
     meta = space.get(model_id).meta
     assert meta[ROPE_MEASURED_AT_FIELD] == pytest.approx(statistics.mean(ledger.values()))
@@ -222,7 +231,6 @@ def test_a_scaling_declared_where_no_ledger_can_supply_the_measured_level_is_ref
     meta = dict(
         UNDECLARED_META,
         direction="maximize",
-        rope=0.02,
         baseline_throughput=0.5,
         **{ROPE_SCALING_FIELD: ROPE_SCALING_RESIDUAL, METRIC_CEILING_FIELD: 1.0},
     )
@@ -247,15 +255,16 @@ def _rows(ledger, **extra):
 
 def test_the_ratchet_counterfactual_uses_the_bar_of_the_era_it_asks_about():
     """The question is "would this trial have PARKED OR WON against the bar the adoption
-    REPLACED" -- so it must be asked with the floor that stood at previous_baseline's
-    level. Under a moving bar the current floor is a different (smaller, because the
+    REPLACED" -- so it must be asked with the bar that stood at previous_baseline's
+    level. Under a moving bar the current one is a different (smaller, because the
     adoption improved the metric) number, and using it errs toward UNDER-firing: the
     rejection is filed unattributable, the streak never starts, and a false adoption
     survives longer exactly when the looser bar is creating more of them.
     """
     space, model_id, ledger = _register_scaled()
-    floor = space.get(model_id).meta[NOISE_FLOOR_FIELD]
-    measured_at = space.get(model_id).meta[ROPE_MEASURED_AT_FIELD]
+    meta = space.get(model_id).meta
+    floor = comparison_rope(meta, baseline_values(meta, ledger), meta[ROPE_MEASURED_AT_FIELD])
+    measured_at = meta[ROPE_MEASURED_AT_FIELD]
 
     idea1 = register_idea(space, {"model_id": model_id, "origin": "seeded", "axis": "a", "description": "one"})
     trial1 = register_trial(
@@ -267,8 +276,9 @@ def test_the_ratchet_counterfactual_uses_the_bar_of_the_era_it_asks_about():
     assert adjudicate_verdict(space, trial1, _rows(ledger, adopt1=0.80)) == VERDICT_ADOPTED
     assert space.get(model_id).meta[PREVIOUS_BASELINE_FIELD] == "b1"
 
-    bar_now = scaled_noise_floor(space.get(model_id).meta, 0.80)
-    bar_then = scaled_noise_floor(space.get(model_id).meta, 0.50)
+    live = space.get(model_id).meta
+    bar_now = comparison_rope(live, baseline_values(live, ledger), 0.80)
+    bar_then = comparison_rope(live, baseline_values(live, ledger), 0.50)
     assert bar_now < bar_then  # the bar really did move; otherwise this test proves nothing
 
     # A loss that rejects against the NEW baseline (0.80) and would merely have PARKED
@@ -297,9 +307,9 @@ DETECTION_BASELINE_LEDGER = {
 
 
 def test_the_detection_campaign_registers_and_adjudicates_exactly_as_before():
-    """The live record, unchanged: a declared bootstrap floor, no scaling declaration. It
-    must register to the same 0.099758 and adjudicate its best recorded arm (clahe 0.6203,
-    +0.0127 over the registered baseline) as the same non-adoption it is today."""
+    """The live record: no scaling declaration, so the bar is the rope its own eight
+    baseline rows measure, and its best recorded arm (clahe 0.6203, +0.0127 over the
+    registered baseline) is the same non-adoption it is today."""
     from knowledge.ml_registry.floor import adjudicate_trial
 
     space = RegistrySpace()
@@ -310,17 +320,17 @@ def test_the_detection_campaign_registers_and_adjudicates_exactly_as_before():
         win_condition={"metric_at_least": 0.80},
         baseline="d2",
         baseline_runs=list(DETECTION_BASELINE_LEDGER),
-        noise_floor=0.099758,
-        noise_floor_method="bootstrap",
         rope_varies="paired_delta",
         trial_comparison="paired",
     )
     ledger = dict(DETECTION_BASELINE_LEDGER, clahe=0.6203)
     model_id = register_model_with_baseline(space, meta, ledger)
     stored = space.get(model_id).meta
-    assert stored[NOISE_FLOOR_FIELD] == 0.099758
     assert stored[ROPE_SCALING_BASIS_FIELD] == ROPE_SCALING_BASIS_STATIC
-    assert scaled_noise_floor(stored, 0.6076) == 0.099758
+    values = baseline_values(stored, ledger)
+    assert comparison_rope(stored, values, 0.6076) == pytest.approx(
+        statistics.stdev(DETECTION_BASELINE_LEDGER.values())
+    )
 
     idea_id = register_idea(space, {"model_id": model_id, "origin": "seeded", "axis": "a", "description": "clahe"})
     trial_id = register_trial(
