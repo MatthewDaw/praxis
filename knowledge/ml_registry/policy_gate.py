@@ -157,7 +157,7 @@ def compute_campaign_rope(
         statistics.fmean(rng.choice(unit_scores) for _ in unit_scores)
         for _ in range(BOOTSTRAP_RESAMPLES)
     )
-    rope = statistics.stdev(draw_means) if len(unit_scores) > 1 else 0.0
+    rope = statistics.stdev(draw_means)
     return {
         "method": "split_unit_bootstrap",
         "metric": metric_name,
