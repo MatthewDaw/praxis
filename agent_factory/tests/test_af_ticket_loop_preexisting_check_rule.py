@@ -30,8 +30,6 @@ import pathlib
 import subprocess
 import tempfile
 
-import pytest
-
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "af-ticket-loop.sh"
 
 
@@ -51,7 +49,8 @@ def _rule() -> str:
 
 
 def _prompt_line() -> str:
-    return next(l for l in SCRIPT.read_text().splitlines() if l.strip().startswith("round_prompt="))
+    return next(line for line in SCRIPT.read_text().splitlines()
+                if line.strip().startswith("round_prompt="))
 
 
 # ------------------------------------------------------------------------------- the rule ------
