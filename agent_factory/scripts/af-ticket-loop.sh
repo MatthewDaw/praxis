@@ -1992,7 +1992,10 @@ af_owned_ids(){
   # Still deliberately narrow: anchored to a TRAILING (...) so a conventional-commit
   # scope cannot be mistaken for an id, and every candidate is intersected with
   # this project's known id set below, so another tracker's (JIRA-42) is ignored.
-  raw=$(git log --format=%s "$1" 2>/dev/null \
+  # $3 is an OPTIONAL ref to exclude (the base a worktree was cut from). Passed as its own
+  # argument rather than smuggled into $1 as extra words: word-splitting a rev range changes how
+  # every existing caller's argument is parsed, for one caller's benefit.
+  raw=$(git log --format=%s "$1" ${3:+"^$3"} 2>/dev/null \
         | sed -n 's/.*(\([A-Za-z][A-Za-z0-9_-]*\))[[:space:]]*$/\1/p' \
         | grep '[0-9]' | sort -u)
   for i in $raw; do
@@ -2053,7 +2056,7 @@ integrate_round(){
     ahead=$(git rev-list --count "HEAD..$br" 2>/dev/null || echo 0)
     [ "${ahead:-0}" -gt 0 ] || continue
     # Keep only ids this project actually owns; everything else is another tracker's history.
-    ids=$(af_owned_ids "HEAD..$br" "$known")
+    ids=$(af_owned_ids "HEAD..$br" "$known" "$(af_base_ref || true)")
     if [ -z "$ids" ]; then
       # LOUD on purpose. This is finished work being left behind, not a routine
       # skip: the branch holds commits nobody will merge, and because workers
@@ -2149,6 +2152,10 @@ queue_orphan_branches(){
     [ -n "$br" ] || continue
     af_is_owed_merge "$br" || continue
     git merge-base --is-ancestor "$br" HEAD 2>/dev/null && continue        # already landed
+    # ...and neither is a branch whose every commit is already on the BASE the worktree was cut
+    # from. Queueing one sends the conflict resolver to land unrelated commits that reached main
+    # while the build ran, dressed as ticket recovery.
+    af_branch_has_own_work "$br" || continue
     already=$(cut -f1 "$CONFLICTS" 2>/dev/null | grep -xF "$br" || true)
     [ -n "$already" ] && continue                                          # this round already queued it
     ids=$(af_branch_ids "HEAD..$br")
@@ -2702,6 +2709,57 @@ af_is_owed_merge(){   # $1 = branch name
 # while never matching a human's `build/login-redesign` or a sibling project's ticket. An empty
 # AF_KNOWN_IDS therefore makes this answer NO (nothing is deleted), never yes -- and, crucially, it no
 # longer makes af_is_owed_merge answer no, which is the second silent-miss path the old code had.
+# A TICKET BRANCH'S OWN COMMITS, which is not the same as "commits not on the integration ref".
+#
+# A worktree is created from the repo's DEFAULT branch (refs/remotes/origin/HEAD), not from the
+# branch the round integrates into -- the round prompt says so and tells every worker to rebase.
+# So a ticket branch carries every commit the default branch has that the integration ref does not,
+# and judging its work by `HEAD..$br` attributes all of those to the ticket.
+#
+# Measured 2026-08-24: af-build/r4b-20260824 and af-build/r3a-20260824 each showed 20 commits in
+# HEAD..branch and ZERO of them unreachable from main -- every one was an unrelated tooling commit
+# pushed to main while the build ran. The driver reported "STRANDING af-build/r4b-20260824 (20
+# commit(s)) — no commit subject ends in a praxis ticket id", which is true and completely
+# misleading: none of them was the ticket's work, nothing was stranded, and the branches were then
+# queued to the conflict resolver, which would have landed main's tooling into the integration
+# branch dressed as ticket recovery.
+#
+# Excluding the base is what makes "did this ticket produce provenance-marked work" answerable.
+# When the integration ref IS the default branch there is nothing extra to exclude and this is a
+# no-op, which is the sports_analysis case.
+af_base_ref(){   # -> the default branch to exclude, or nonzero when there is nothing to exclude
+  local b c
+  b=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || b=""
+  if [ -z "$b" ]; then
+    for c in origin/main origin/master main master; do
+      git rev-parse --verify -q "$c" >/dev/null 2>&1 && { b="$c"; break; }
+    done
+  fi
+  [ -n "$b" ] || return 1
+  [ "$b" = "${INTEGRATION_REF:-}" ] && return 1
+  git rev-parse --verify -q "$b" >/dev/null 2>&1 || return 1
+  printf '%s' "$b"
+}
+
+# Does this branch carry any commit of its own at all? A branch whose every commit is already on the
+# base is not unmerged work -- it is the base, and it must not be reported, queued or resolved.
+af_branch_has_own_work(){   # $1 = branch
+  local n base
+  if base=$(af_base_ref); then
+    n=$(git rev-list --count "HEAD..$1" "^$base" 2>/dev/null || echo "")
+  else
+    n=$(git rev-list --count "HEAD..$1" 2>/dev/null || echo "")
+  fi
+  # FAILS SAFE TOWARDS REPORTING. An unanswerable count must mean "assume it has work", never
+  # "assume it has none": every caller uses this to decide whether to REPORT or LAND a branch, so
+  # the empty answer has to widen the report, not silence it. Getting this backwards is not
+  # hypothetical -- when a test harness sourced af_stragglers without this function, the 127 made
+  # the `|| continue` skip every branch and the invariant announced "straggler invariant HOLDS"
+  # while an unmerged branch sat right there.
+  [ -z "$n" ] && return 0
+  [ "$n" -gt 0 ]
+}
+
 af_is_factory_named(){   # $1 = branch name
   case "$1" in worktree-agent-*|worktree-wf_*) return 0 ;; esac
   local seg="${1##*/}" id lid
@@ -2832,7 +2890,7 @@ reap_branches(){
       continue
     fi
     # Unique commits. Whose, and did that ticket land some other way?
-    ids=$(af_owned_ids "HEAD..$br" "${AF_KNOWN_IDS:- }")
+    ids=$(af_owned_ids "HEAD..$br" "${AF_KNOWN_IDS:- }" "$(af_base_ref || true)")
     status=superseded; reason=""
     if [ -z "$ids" ]; then
       status=survivor; reason="its commits name no $PROJECT ticket, so its provenance cannot be established"
@@ -2942,6 +3000,10 @@ af_stragglers(){   # prints one line per straggler; EMPTY output means clean
     [ -n "$br" ] || continue
     af_is_owed_merge "$br" || continue
     git merge-base --is-ancestor "$br" HEAD 2>/dev/null && continue
+    # A branch carrying only commits from the BASE the worktree was cut from has no work of its
+    # own, so it cannot be a straggler. Without this the invariant reports every ticket branch as
+    # unmerged for as long as the default branch is ahead of the integration ref.
+    af_branch_has_own_work "$br" || continue
     # `git cherry`, same authority reap_branches uses: a rebuilt or cherry-picked equivalent has
     # landed and is not a straggler, however its sha reads.
     [ -n "$(git cherry HEAD "$br" 2>/dev/null | sed -n 's/^+ //p')" ] || continue
