@@ -5,7 +5,7 @@ pool from the literature; this half turns candidate approaches into MEASURED bas
 own split, because a survey whose output is a reading list has not settled the
 between-families question the plan asks phase 1 to settle.
 
-Three properties hold the harness honest.
+Four properties hold the harness honest.
 
 *Scores come from the ledger, never from the reproducer.* Praxis reads a results ledger and
 never runs the harness itself, so :func:`reproduce_baselines` takes a ``reproduce`` seam that
@@ -20,6 +20,13 @@ stamped :data:`INCUMBENT_RUNG` and reproduced, scored and ranked by the identica
 every challenger, so "is there something better than what we already have" is answered by the
 same comparison as everything else. Rung zero is the incumbent's alone: an ordinary candidate
 claiming it is refused rather than quietly promoted into the warm-start slot.
+
+*The rung ladder is R3a's, not a second copy of it.* A candidate's ``rung`` is validated by
+:func:`~knowledge.ml_registry.selection.validate_rung`, the same function phase 2 SELECT holds
+its arms to, so a baseline this harness measures is by construction one that ladder will accept.
+Enforcing the range here separately is how round 3 shipped two contracts: a local ``0 <= rung <=
+4`` test admitted ``True`` as rung 1 and floats as fractional rungs, and selection then refused
+the very candidates reproduction had spent compute measuring.
 
 *A baseline that will not reproduce is recorded, not dropped.* Reproduction fails in three
 distinguishable ways — the attempt raised, its commit has no scored row, or the row it has is
@@ -39,11 +46,11 @@ from knowledge.ml_registry.contracts.ledger_v2 import (
     LedgerCompatibilityProjection,
     read_ledger_compatibility,
 )
+from knowledge.ml_registry.selection import REUSE_RUNGS, validate_rung
 
-#: The warm start's slot: what we already run, entered as an ordinary phase-1 candidate.
-INCUMBENT_RUNG = 0
-#: Rung 4 is novel code — the bottom of the plan's reuse ladder, so no rung sorts below it.
-NOVEL_CODE_RUNG = 4
+#: The warm start's slot: the bottom of R3a's ladder, what we already run, entered as an
+#: ordinary phase-1 candidate.
+INCUMBENT_RUNG = min(REUSE_RUNGS)
 
 
 class BaselineReproductionError(ValueError):
@@ -64,11 +71,7 @@ class BaselineCandidate:
             value = getattr(self, field)
             if not isinstance(value, str) or not value.strip():
                 raise BaselineReproductionError(f"baseline candidate requires non-empty {field}")
-        if not INCUMBENT_RUNG <= self.rung <= NOVEL_CODE_RUNG:
-            raise BaselineReproductionError(
-                f"baseline {self.id!r} declares rung {self.rung}, outside "
-                f"{INCUMBENT_RUNG}-{NOVEL_CODE_RUNG}",
-            )
+        validate_rung(self.rung, candidate_id=self.id)
 
 
 @dataclass(frozen=True)
