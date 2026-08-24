@@ -103,9 +103,9 @@ def test_claim_carries_concrete_upstream_artifact_version_or_is_refused(tmp_path
     )
     consumer = next(job for job in decision.jobs if job.campaign_id == "C1")
     assert len(consumer.artifact_pins) == 1
-    assert consumer.artifact_pins[0]["producer_campaign_id"] == "R1"
-    assert consumer.artifact_pins[0]["version"] == 1
-    assert consumer.artifact_pins[0]["artifact_id"] == scenario.fit_artifact_id
+    assert consumer.artifact_pins[0].producer_campaign_id == "R1"
+    assert consumer.artifact_pins[0].version == 1
+    assert consumer.artifact_pins[0].artifact_id == scenario.fit_artifact_id
 
     scenario.registry.blobs.path(scenario.fit_artifact_id).unlink()
     refused = portfolio_schedule(
@@ -113,4 +113,3 @@ def test_claim_carries_concrete_upstream_artifact_version_or_is_refused(tmp_path
     )
     assert all(job.campaign_id != "C1" for job in refused.jobs)
     assert "C1" in refused.blocked
-

@@ -1,6 +1,7 @@
 """Versioned, project-neutral ML campaign wire contracts."""
 
 from ._validation import ContractError
+from .artifact_pin import ArtifactPin
 from .campaign_spec import CampaignSpec
 from .code_ref import CodeRef, LegacyCodeRef
 from .launch_intent import LaunchIntent
@@ -25,6 +26,7 @@ from .runs_export import RunsExport
 __all__ = [
     "CampaignLease",
     "CampaignOutcome",
+    "ArtifactPin",
     "CampaignOutcomeRecord",
     "StageOutcome",
     "CampaignSpec",

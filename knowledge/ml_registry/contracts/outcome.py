@@ -33,9 +33,8 @@ class StageOutcome(str, Enum):
     def for_stage(
         cls, *, material_families: int, completed_families: int, advanced: bool,
     ) -> "StageOutcome":
-        counts = (material_families, completed_families)
-        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts):
-            raise ContractError("stage family counts must be non-negative integers")
+        material_families = integer(material_families, "material_families", minimum=0)
+        completed_families = integer(completed_families, "completed_families", minimum=0)
         if completed_families > material_families:
             raise ContractError("completed stage families cannot exceed material families")
         if not isinstance(advanced, bool):

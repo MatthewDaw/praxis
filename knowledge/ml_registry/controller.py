@@ -14,7 +14,7 @@ import tempfile
 import time
 from typing import Any, Mapping, Protocol, Sequence
 
-from knowledge.ml_registry.contracts import LaunchIntent
+from knowledge.ml_registry.contracts import ArtifactPin, LaunchIntent
 from knowledge.ml_registry.portfolio import CampaignStatus, Portfolio, PortfolioValidationError
 from knowledge.ml_registry.runtime import LeaseIntentCoordinator, ResourceConflict, StopReport
 from knowledge.ml_registry.runtime.progress import ProgressSnapshot, read_latest_progress
@@ -117,7 +117,7 @@ def portfolio_schedule(
     if not 1 <= max_active <= MAX_ACTIVE_CAMPAIGNS:
         raise ControllerError(f"max_active must be between 1 and {MAX_ACTIVE_CAMPAIGNS}")
     gated: dict[str, JobState | Mapping[str, Any]] = dict(states)
-    artifact_pins: dict[str, tuple[Mapping[str, Any], ...]] = {}
+    artifact_pins: dict[str, tuple[ArtifactPin, ...]] = {}
     for spec in campaign_specs:
         campaign_id = str(spec.get("id", ""))
         if campaign_id not in portfolio.campaigns:
@@ -135,9 +135,7 @@ def portfolio_schedule(
                     campaign_id, "blocked", message=artifact_readiness.reason,
                 )
             else:
-                artifact_pins[campaign_id] = tuple(
-                    pin.to_mapping() for pin in artifact_readiness.pins
-                )
+                artifact_pins[campaign_id] = artifact_readiness.pins
             continue
         readiness = portfolio.refresh(campaign_id)
         campaign = portfolio.campaigns[campaign_id]

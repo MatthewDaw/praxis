@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 import math
 from typing import Any, Mapping, Sequence
 
+from knowledge.ml_registry.contracts import ArtifactPin
+
 
 TERMINAL_SUCCESS = frozenset({"completed", "skipped"})
 KNOWN_STATES = frozenset({"planned", "blocked", "ready", "running", "completed", "failed", "skipped"})
@@ -119,7 +121,7 @@ class JobSpec:
     timeout_minutes: int | None = None
     artifact_result_path: str | None = None
     working_directory: str | None = None
-    artifact_pins: tuple[Mapping[str, Any], ...] = ()
+    artifact_pins: tuple[ArtifactPin, ...] = ()
 
 
 @dataclass(frozen=True)

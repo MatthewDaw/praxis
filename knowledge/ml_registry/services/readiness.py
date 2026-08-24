@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import json
 from typing import Any, Mapping, Sequence
 
-from knowledge.ml_registry.contracts import CampaignSpec
+from knowledge.ml_registry.contracts import ArtifactPin, CampaignSpec
 from knowledge.ml_registry.storage.blobs import BlobError
 from knowledge.ml_registry.storage.registry import Registry, RegistryError
 
@@ -22,24 +22,6 @@ class ArtifactReadiness:
     artifact_id: str | None
     reason: str
     pins: tuple["ArtifactPin", ...] = ()
-
-
-@dataclass(frozen=True)
-class ArtifactPin:
-    producer_campaign_id: str
-    artifact_type: str
-    model_id: str
-    version: int
-    artifact_id: str
-
-    def to_mapping(self) -> dict[str, str | int]:
-        return {
-            "producer_campaign_id": self.producer_campaign_id,
-            "artifact_type": self.artifact_type,
-            "model_id": self.model_id,
-            "version": self.version,
-            "artifact_id": self.artifact_id,
-        }
 
 
 def _specs_from_events(registry: Registry) -> tuple[CampaignSpec, ...]:
