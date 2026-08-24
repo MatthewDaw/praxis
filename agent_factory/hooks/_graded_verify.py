@@ -19,9 +19,9 @@ about rubrics. What this module adds around that boolean:
   UNCHANGED (cache-hit) failing code-state also counts toward the same cap (R33) — otherwise a
   ticket that never edits its diff would re-verify the identical cached failure forever without
   ever tripping the escalation.
-* **advise-tier unremediable escalation** (R33) — a verdict failing on ADVISE-tier defects only
-  (see :data:`agent_factory.rubric.DEFECT_TIER_ADVISE`) has no ENFORCE-tier lever the worker can
-  act on, so it escalates immediately as unremediable instead of consuming the iteration cap.
+* **advise-tier findings are advisory** — a verdict whose only located defects are ADVISE-tier
+  (see :data:`agent_factory.rubric.DEFECT_TIER_ADVISE`) is recorded as a pass-with-advice. Advice
+  cannot both be forbidden remediation and a reason to route the ticket to ``block()``.
 * **path-predicate exemption** (R33) — a UNIVERSAL-lane pinned entry (``meta.universal``) whose
   ACTUAL touched paths (parsed from ``code_diff``, which this module already receives) sit entirely
   inside an immutable/generated directory is auto-passed here ("pass-by-exemption") with no judge
@@ -42,11 +42,12 @@ from typing import Callable, Optional
 import _ticket_state as ts
 
 from agent_factory.graded_verdict import grade
-from agent_factory.rubric import DEFECT_TIER_ADVISE, Rubric, Verdict, rubric_from_dict
+from agent_factory.rubric import DEFECT_TIER_ADVISE, Defect, Rubric, Verdict, rubric_from_dict
 
 Complete = Callable[[str], str]
 
 GRADED_SOURCE = "graded-judge"
+GRADED_ADVISORY_SOURCE = "graded-advisory"
 PATH_EXEMPTION_SOURCE = "path-exemption"  # R33: auto-pass, never a human/attested source
 # An EMPTY diff is "nothing to grade", not "graded and clean". Asking a judge to
 # score a code-quality rubric against zero lines gets a confident pass -- observed
@@ -62,8 +63,8 @@ PATH_EXEMPTION_SOURCE = "path-exemption"  # R33: auto-pass, never a human/attest
 # path-exemption does for its case.
 EMPTY_DIFF_SOURCE = "no-diff"
 # MEASURED, not guessed. The cap is a BACKSTOP; the sharp anti-spin guards are the two rules beside
-# it — advise-only defects escalate immediately as unremediable, and a round that fails to REDUCE
-# the defect count blocks after a single non-improving iteration. So the raw cap only ever bites
+# it — advise-only defects discharge as advisory, and a round that fails to REDUCE an enforce-tier
+# defect count blocks after a single non-improving iteration. So the raw cap only ever bites
 # work that is steadily improving, and setting it below what improving work actually needs converts
 # it from a safety net into the main cause of blocked tickets.
 #
@@ -74,11 +75,11 @@ EMPTY_DIFF_SOURCE = "no-diff"
 # value with no enforcement and their workers pushed past it. R3b and T6a honoured it and blocked.
 # Whether a ticket shipped therefore depended on whether its worker obeyed a suggestion, which is
 # not a policy. R3b is the ticket that lands the campaign terminal outcomes, and it stopped with
-# acceptance and every executable gate GREEN and one advisory defect outstanding.
+# acceptance and every executable gate GREEN and one advisory defect outstanding (which now passes
+# with advice instead of contradictorily routing to block).
 #
 # 8 leaves real headroom above the observed maximum of 5 without weakening anything: a spinning
-# check still dies on the non-convergence rule after one bad iteration, and an unremediable one
-# still dies immediately.
+# check still dies on the non-convergence rule after one bad iteration.
 DEFAULT_GRADED_ITER_CAP = int(os.environ.get("AF_GRADED_ITER_CAP", "8"))
 M_GRADED_LOOP = ts.M_GRADED_LOOP  # {validation_id: {iters, last_defects, last_hash}} — shared with
                                   # _ticket_state.claim(), which resets it on a fresh ticket pick.
@@ -170,6 +171,27 @@ def _pass_no_diff(cid: str, validation_id: str, h: str, now: float,
     return GradedResult(v, cached=False, iterations=0, should_block=False)
 
 
+def _pass_with_advice(cid: str, validation_id: str, verdict: Verdict, h: str, now: float,
+                      ref: Optional[tuple[str, str]], *, cached: bool = False) -> GradedResult:
+    """Discharge a result backed only by explicitly non-blocking findings.
+
+    Preserve the judge's scores and located advice in the recorded payload, but make the binary
+    gate agree with the tier contract: an ``advise`` finding is visible and actionable later, not a
+    reason to strand an otherwise-green ticket in HITL.
+    """
+    advisory = Verdict(
+        passed=True,
+        axis_scores=verdict.axis_scores,
+        defects=verdict.defects,
+        min_axis=verdict.min_axis,
+        reason=f"advisory only — does not gate completion: {verdict.reason}",
+    )
+    ts.record_validation_pass(cid, validation_id, True, ran_at=now,
+                              source=GRADED_ADVISORY_SOURCE,
+                              verdict=_verdict_payload(advisory, h), ref=ref)
+    return GradedResult(advisory, cached=cached, iterations=0, should_block=False)
+
+
 def verify_graded_check(cid: str, validation_id: str, code_diff: str, complete: Complete, *,
                         rubric: Optional[Rubric] = None,
                         cap: int = DEFAULT_GRADED_ITER_CAP,
@@ -217,10 +239,28 @@ def verify_graded_check(cid: str, validation_id: str, code_diff: str, complete: 
     # forever without ever escalating, since the fresh-grade path below (which advances ``iters``)
     # never runs for it.
     if cached.get("code_hash") == h:
+        cached_defects = tuple(
+            Defect(
+                problem=str(d.get("problem") or ""),
+                remedy=str(d.get("remedy") or ""),
+                confidence=int(d.get("confidence") or 0),
+                file=str(d.get("file") or ""),
+                line=d.get("line"),
+                tier=str(d.get("tier") or "enforce"),
+            )
+            for d in (cached.get("defects") or [])
+            if isinstance(d, dict)
+        )
         v = Verdict(passed=bool(cached.get("passed")),
                     axis_scores=dict(cached.get("axis_scores") or {}),
+                    defects=cached_defects,
                     min_axis=cached.get("min_axis"),
                     reason=str(cached.get("reason") or ""))
+        # Migrate stale advise-only failures written by the contradictory pre-fix contract. Without
+        # this cache-path repair an unchanged diff keeps replaying the obsolete failure and can still
+        # reach block(), even though a freshly judged copy of the same code passes with advice.
+        if not v.passed and v.defects and all(d.tier == DEFECT_TIER_ADVISE for d in v.defects):
+            return _pass_with_advice(cid, validation_id, v, h, now, ref, cached=True)
         if v.passed:
             return GradedResult(v, cached=True, iterations=int(loop.get("iters", 0)),
                                 should_block=False)
@@ -239,26 +279,25 @@ def verify_graded_check(cid: str, validation_id: str, code_diff: str, complete: 
 
     # Code changed — grade fresh against the frozen rubric.
     v = grade(complete, rubric, code_diff)
+    # An advise-tier finding is advisory by definition. The old path returned should_block=True
+    # while its own reason said there was no permitted remediation, leaving the worker only the
+    # contradictory instruction to block. Preserve the finding, discharge the validation, and do
+    # not consume the correction-loop budget.
+    if not v.passed and v.defects and all(d.tier == DEFECT_TIER_ADVISE for d in v.defects):
+        return _pass_with_advice(cid, validation_id, v, h, now, ref)
+
     n_defects = len(v.defects)
     iters = int(loop.get("iters", 0)) + 1
     should_block, reason = False, ""
     if not v.passed:
-        # UNREMEDIABLE (R33): every credible defect is ADVISE-tier — there is no ENFORCE-tier lever
-        # the worker can pull, so escalate immediately rather than burn the iteration cap re-grading
-        # feedback that cannot, by its own tier, be acted on to flip the verdict.
-        if v.defects and all(d.tier == DEFECT_TIER_ADVISE for d in v.defects):
+        last_defects = loop.get("last_defects")
+        if iters >= cap:
             should_block = True
-            reason = (f"graded check {validation_id} fails only on advise-tier defect(s) — "
-                      f"unremediable, no enforce-tier defect to fix")
-        else:
-            last_defects = loop.get("last_defects")
-            if iters >= cap:
-                should_block = True
-                reason = f"graded check {validation_id} failed {iters} iteration(s) (cap {cap})"
-            elif last_defects is not None and last_defects > 0 and n_defects >= last_defects:
-                should_block = True
-                reason = (f"graded check {validation_id} not converging "
-                          f"({last_defects} -> {n_defects} defects)")
+            reason = f"graded check {validation_id} failed {iters} iteration(s) (cap {cap})"
+        elif last_defects is not None and last_defects > 0 and n_defects >= last_defects:
+            should_block = True
+            reason = (f"graded check {validation_id} not converging "
+                      f"({last_defects} -> {n_defects} defects)")
 
     loop.update(iters=iters, last_defects=n_defects, last_hash=h, cache_repeats=0)
     loop_all[str(validation_id)] = loop

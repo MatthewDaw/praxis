@@ -10,7 +10,7 @@ grade-time result WINS when the two disagree. Bundled with it (absorbed R34/R35/
   * deadlock escape: a grade-time-exempted universal requirement is discharged, not a stall.
   * graded loop reset: a re-picked ticket starts a fresh iteration budget.
   * loop termination: a ticket whose diff never changes still escalates within the cap.
-  * unremediable verdict: a ticket failing only on advise-tier defects escalates immediately.
+  * advisory verdict: a ticket with advise-tier defects only passes-with-advice and never blocks.
 """
 
 from __future__ import annotations
@@ -196,18 +196,18 @@ def test_unchanged_diff_escalates_within_cap_instead_of_looping(monkeypatch):
     assert stub.calls["n"] == 1
 
 
-# ------------------------------------------------------------ 4) unremediable advise-tier verdict
+# ------------------------------------------------------------ 4) advise-tier verdict stays advisory
 
-def test_advise_tier_only_failure_escalates_as_unremediable(monkeypatch):
+def test_advise_tier_only_failure_is_recorded_but_does_not_block(monkeypatch):
     _install(monkeypatch, {})
     ts.pin_validations("R5", [{"validation_id": "v1", "covers": ["R5"],
                                "kind": "graded", "rubric": RUBRIC}], ref=PLAN)
     advise_defect = {"file": "x", "line": 1, "problem": "p", "remedy": "r",
                      "confidence": 8, "tier": "advise"}
     r = gv.verify_graded_check("R5", "v1", "diffA", _stub(0.3, [advise_defect]), ref=PLAN, now=1.0)
-    assert not r.verdict.passed
-    assert r.should_block  # escalates on the FIRST failure, well under the default cap
-    assert "unremediable" in r.block_reason.casefold()
+    assert r.verdict.passed
+    assert not r.should_block
+    assert r.verdict.defects[0].tier == "advise", "the advice must remain visible"
 
 
 def test_enforce_tier_defect_does_not_escalate_early(monkeypatch):

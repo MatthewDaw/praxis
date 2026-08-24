@@ -29,18 +29,18 @@ import pathlib
 import subprocess
 import tempfile
 
+import pytest
+
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "af-ticket-loop.sh"
 
 
-def _prompt(integration_ref: str = "build/research-engine") -> str:
+def _prompt(integration_ref: str = "build/research-engine", size: int = 2) -> str:
     src = SCRIPT.read_text()
-    line = next(
-        candidate for candidate in src.splitlines() if candidate.strip().startswith("round_prompt=")
-    )
+    line = next(l for l in src.splitlines() if l.strip().startswith("round_prompt="))
     body = line.strip()[len("round_prompt=") :]
     prog = (
         "set -u\n"
-        "size=2; WORKFLOW_CAP=2; PROJECT=praxis; ids_csv=R1,R2\n"
+        f"size={size}; WORKFLOW_CAP=2; PROJECT=praxis; ids_csv=R1,R2\n"
         f"INTEGRATION_REF={integration_ref}\n"
         "PY=/usr/bin/python3; SERVICES=''; SWEEP_AMENDMENT=' A.'; PREEXISTING_RULE=' B.'\n"
         f"round_prompt={body}\n"
@@ -59,13 +59,13 @@ def _prompt(integration_ref: str = "build/research-engine") -> str:
 
 # ------------------------------------------------------------------------------- the fix ------
 
-def test_the_worker_is_told_to_cut_its_worktree_from_the_integration_ref() -> None:
+def test_the_worker_is_told_to_cut_its_worktree_from_the_integration_ref():
     p = _prompt()
     assert "git worktree add -b <your-branch> <path> build/research-engine" in p
     assert "no divergence to reconcile and cannot conflict" in p
 
 
-def test_the_integration_ref_is_interpolated_not_left_as_a_variable() -> None:
+def test_the_integration_ref_is_interpolated_not_left_as_a_variable():
     """A worker handed the literal '$INTEGRATION_REF' would branch from a ref that does not exist."""
     p = _prompt(integration_ref="build/some-other-branch")
     assert "build/some-other-branch" in p
@@ -74,13 +74,13 @@ def test_the_integration_ref_is_interpolated_not_left_as_a_variable() -> None:
 
 # --------------------------------------------------- the fallback, and what it must warn about --
 
-def test_the_rebase_fallback_survives_for_harness_created_worktrees() -> None:
+def test_the_rebase_fallback_survives_for_harness_created_worktrees():
     p = _prompt()
     assert "git merge --ff-only build/research-engine" in p
     assert "git rebase build/research-engine instead" in p
 
 
-def test_the_worker_is_warned_that_a_base_conflict_is_not_its_ticket() -> None:
+def test_the_worker_is_warned_that_a_base_conflict_is_not_its_ticket():
     """Without this a worker reads any conflict as its own problem and hard-stops — which is what
     took out the whole praxis dependency graph."""
     p = _prompt()
@@ -89,13 +89,31 @@ def test_the_worker_is_warned_that_a_base_conflict_is_not_its_ticket() -> None:
     assert "the conflict is in the base and not in your work" in lowered
 
 
-def test_the_worker_is_told_how_to_resolve_a_base_conflict() -> None:
+def test_the_worker_is_told_how_to_resolve_a_base_conflict():
     p = _prompt()
     assert "taking the integration ref's side for any file your ticket does not touch" in p
     assert "only record a blocker if a file you DO touch genuinely conflicts" in p
 
 
-def test_the_hard_stop_on_an_unusable_base_is_preserved() -> None:
+def test_the_hard_stop_on_an_unusable_base_is_preserved():
     """The refusal itself was correct and must remain: anything built on a bad base cannot land."""
     p = _prompt()
     assert "anything built on that base is unmergeable by construction" in p
+
+
+def test_worker_worktrees_are_refused_inside_the_factory_checkout():
+    """R3a landed in /workspace/praxis/.claude/worktrees, the live driver home."""
+    src = SCRIPT.read_text()
+    assert 'AF_WORKTREE_ROOT="${AF_WORKTREE_ROOT:-$AF_STATE_DIR/.af-worktrees/$PROJECT}"' in src
+    assert '"$AF_FACTORY_CHECKOUT"|"$AF_FACTORY_CHECKOUT"/*)' in src
+    assert "WORKTREE LOCATION IS A HARD PRECONDITION" in src
+    assert "FACTORY WORKTREE VIOLATION" in src
+    assert "exit 11" in src
+    assert "interrupt that worker before it reads or edits anything" in src
+    assert 'SWEEP_AMENDMENT="$WORKTREE_LOCATION_RULE$AUTHORED_SCOPE_RULE$SWEEP_AMENDMENT"' in src
+
+
+def test_the_sweep_covers_both_factory_tree_layouts():
+    src = SCRIPT.read_text()
+    assert '"$WT/.claude/worktrees"' in src
+    assert 'printf \'%s\\n\' "$AF_WORKTREE_ROOT"' in src

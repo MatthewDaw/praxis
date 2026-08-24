@@ -94,6 +94,47 @@ def test_graded_fail_records_passed_false(monkeypatch):
     assert fake._meta[ts.M_PINNED_CHECKS][0]["passed"] is False
 
 
+def test_advise_only_result_passes_without_hiding_the_finding(monkeypatch):
+    """Regression: should_block=True plus 'advise-tier is unremediable' was contradictory."""
+    fake = _install(monkeypatch, {ts.M_REQUIRED_VALIDATIONS: ["R1"]})
+    _pin_graded(fake)
+    advice = [{"file": "x.py", "line": 7, "problem": "style", "remedy": "consider rename",
+               "confidence": 8, "tier": "advise"}]
+    r = gv.verify_graded_check("R1", "v1", "diffA", _stub(0.3, advice), ref=PLAN, now=1.0)
+
+    assert r.verdict.passed and not r.should_block
+    entry = fake._meta[ts.M_PINNED_CHECKS][0]
+    assert entry["passed"] is True
+    assert entry["source"] == gv.GRADED_ADVISORY_SOURCE
+    assert entry["verdict"]["defects"][0]["tier"] == "advise"
+    assert ts.all_validations_passed("R1", ref=PLAN) is True
+
+
+def test_cached_advise_only_failure_is_migrated_to_advisory_pass(monkeypatch):
+    """An obsolete cached failure must not retain the old contradiction indefinitely."""
+    fake = _install(monkeypatch, {ts.M_REQUIRED_VALIDATIONS: ["R1"]})
+    _pin_graded(fake)
+    diff = "diffA"
+    entry = fake._meta[ts.M_PINNED_CHECKS][0]
+    entry["passed"] = False
+    entry["verdict"] = {
+        "code_hash": gv.code_state_hash(diff),
+        "passed": False,
+        "axis_scores": {"a": 0.3},
+        "min_axis": "a",
+        "reason": "old contradictory failure",
+        "defects": [{"file": "x.py", "line": 7, "problem": "style",
+                     "remedy": "consider rename", "confidence": 8, "tier": "advise"}],
+    }
+    stub = _stub(0.9)
+
+    result = gv.verify_graded_check("R1", "v1", diff, stub, ref=PLAN, now=2.0)
+
+    assert result.cached and result.verdict.passed and not result.should_block
+    assert stub.calls["n"] == 0
+    assert fake._meta[ts.M_PINNED_CHECKS][0]["source"] == gv.GRADED_ADVISORY_SOURCE
+
+
 def test_identical_code_reuses_cached_verdict_no_judge_call(monkeypatch):
     fake = _install(monkeypatch, {})
     _pin_graded(fake)

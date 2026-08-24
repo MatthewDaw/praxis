@@ -31,16 +31,14 @@ import pathlib
 import subprocess
 import tempfile
 
+import pytest
+
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "af-ticket-loop.sh"
 
 
 def _prompt(basebr: str = "origin/main") -> str:
     src = SCRIPT.read_text()
-    line = next(
-        source_line
-        for source_line in src.splitlines()
-        if source_line.strip().startswith("local vprompt=")
-    )
+    line = next(l for l in src.splitlines() if l.strip().startswith("local vprompt="))
     body = line.strip()[len("local vprompt=") :]
     prog = (
         "set -u\n"

@@ -818,7 +818,9 @@ check only *fails* on a below-threshold axis or a located, above-confidence-floo
 dissatisfaction with no located defect passes. The rubric is the copy **frozen** onto the pinned validation
 at synthesis time, so editing the seeded library never moves the target mid-ticket. `verify_graded_check`
 returns `should_block=True` once the graded iteration cap is hit or the defect set stops shrinking; route
-that to `block()` (the existing HITL escalation tier), never an endless retry.
+that to `block()` (the existing HITL escalation tier), never an endless retry. A verdict whose located
+findings are **advise-tier only** is recorded as pass-with-advice: advice remains visible in the verdict but
+never returns `should_block=True`. A tier cannot simultaneously forbid remediation and block completion.
 
 Alongside the pinned validations, run the project's real external gates so the acceptance condition is
 actually observable (discover the commands; don't assume):
@@ -883,24 +885,22 @@ and is NOT what that budget authorizes. FLAG its tradeoff if anyone asks for it:
 merge non-green, so the repo is not guaranteed buildable between tickets. Present it as an option, never the
 default.)
 
-**FIX EVERYTHING THE GATES SURFACE — "my slice didn't cause it" is not a disposition.** When the end-of-ticket
-whole-repo pass (or any gate, at any point) comes back red, you **fix every failure it reports**, whether or
-not your change caused it. Do **not** spend a cycle establishing provenance: no re-running the suite on a
-stashed or reverted tree, no diffing against a "known baseline" of pre-existing failures, no reasoning about
-whether the breakage predates your claim. That triage is the single most expensive habit this section
-deletes — each provenance re-run is another full-suite pass (~2 minutes on the repo above), and the answer
-cannot change what you do next, because the disposition is identical either way: **fix it.** The ticket
-finishes only with the whole repo green, so an inherited failure is yours now. Fixing one is in scope by
-definition and is not scope creep (§4c's "nothing broader" governs *features*, not *repo greenness*).
+**A TICKET ANSWERS FOR ITS AUTHORED DIFF.** Record the aligned HEAD before editing and derive the ticket's
+changed paths from that parent. Graded gates (`minimalism-dry`, `typed-and-linted`, and peers), scoped
+type/lint gates, and source-level findings receive only those paths. A failure in an unowned file is never a
+reason to fail or block this ticket. Whole-repo executable gates still run, but when one is red compare the
+specific failure against the recorded parent baseline: a failure present there is inherited debt; a new
+failure is attributed to the ticket whose provenance-marked commit introduced its path. This authorship
+check is per finding — one ticket may have both genuine authored defects and unrelated inherited ones.
 
 **Skipping is NEVER the resolution.** Deleting a failing test, `.skip()`/`xfail`/`it.todo`-ing it, narrowing
 its assertions, or excluding its path from the suite / lint / typecheck config is a **faked pass** — the same
 prohibition as weakening a whole-repo gate (above) and faking a validation (§6), and it is worse than an
 honest red because it hides the signal from every later ticket.
 
-**A discovered failure you genuinely cannot close from here ESCALATES — bounded, never silent.** Some
-inherited breakage is truly out of reach: it needs a credential or live infrastructure, an upstream/vendor
-fix, or a change large enough to be its own ticket. Route it through the tiers already defined below, in
+**An authored failure you genuinely cannot close from here ESCALATES — bounded, never silent.** Some
+breakage is truly out of reach: it needs a credential or live infrastructure, an upstream/vendor fix, or a
+change large enough to be its own ticket. Route it through the tiers already defined below, in
 this order and no other:
 1. **Fix it** — the default, and the answer for the large majority. Attempt it under the correction loop's
    max-attempts cap, driven by the captured failing signal.
@@ -1197,6 +1197,11 @@ snapshot>. Checks resolve from (space=PROJECT, snapshot=CHECKS_SNAPSHOT). Run he
 hooks/_ticket_state.py (contract: docs/factory-state-contract.md). af-intake-plan is NOT in this path — it
 does not author eval requirements at build time; never wait on it.
 
+WORKTREE LOCATION is a hard precondition: the factory checkout that contains this driver and its hooks is
+live shared tooling, not a worker root. Refuse any automatic or manual worktree whose resolved path equals
+that checkout or is below it (including `<factory>/.claude/worktrees/*`). Interrupt it before reading or
+editing, remove it only if clean/empty, and respawn under the driver's external `AF_WORKTREE_ROOT`.
+
 TICKET STATE lives ON THE PLAN SNAPSHOT, never working memory: let PLAN=(PROJECT, "prd-"+PROJECT) and
 pass ref=PLAN to EVERY _ticket_state state call below (pin/coverage/heartbeat/record/all_/release/block).
 start_ticket takes PROJECT and derives PLAN itself, so it needs no ref. Missing the ref on any one call
@@ -1222,6 +1227,9 @@ splits that write into working memory and the ticket never reads back as done �
    fails. Do NOT run the whole-repo evals here (full suite / repo build / repo-wide typecheck+lint): they are
    not expected to be red, and each pass is expensive. Do NOT write implementation in this step.
 5. BUILD  — only now make the change that satisfies the acceptance condition; nothing broader.
+   Before the first edit, record the aligned HEAD as TICKET_BASE. For every graded gate, typed/linted
+   gate, and source-quality check, derive changed paths from TICKET_BASE..HEAD and pass ONLY that authored
+   diff. An aligned-base or default-branch file absent from that diff is not this ticket's responsibility.
    heartbeat(TICKET, OWNER, ref=PLAN) across long stretches so the lease stays live. While iterating, re-run
    ONLY the targeted evals — never the whole-repo suite; that is the per-edit feedback loop.
 6. CONFIRM GREEN + RECORD  — with every targeted eval green, run the whole-repo evals + the project's real
@@ -1232,14 +1240,13 @@ splits that write into working memory and the ticket never reads back as done �
    again. Budget: at most ONE whole-repo pass per fix cycle, never one per attempt and never as an iteration
    signal (a ~1835-test suite costs ~2 minutes a pass; one ticket that ran it three times blew past 20
    minutes without finishing).
-6b. FIX EVERY FAILURE THE GATES REPORT — including ones your slice did not cause. Do NOT investigate whether
-   a failure is pre-existing: do not re-run the suite on a stashed/reverted tree, do not compare against a
-   "known baseline". The disposition is the same either way — fix it — so the investigation is pure waste.
-   NEVER skip, delete, .skip()/xfail, loosen, or config-exclude a failing test to get green. If a failure is
-   genuinely unfixable from this ticket's context (needs a credential / live infra / an upstream fix / a
-   change big enough to be its own ticket), attempt it under the same bounded retry budget as any other
-   failure, then block(TICKET, OWNER, reason, ref=PLAN) naming the failing test(s) and the captured signal —
-   never silently pass over it, never loop on it forever.
+6b. ATTRIBUTE EVERY FAILURE BEFORE ACTING. Reproduce the specific failure at TICKET_BASE. If it already
+   fails there, record it as inherited debt and do not fix or block this ticket for it. If it is new, confirm
+   the implicated path is in TICKET_BASE..HEAD; then fix it under the normal bounded correction loop. NEVER
+   skip, delete, .skip()/xfail, loosen, turn an exact comparison into membership checks, config-exclude a
+   failing test, or change production behavior/thresholds merely to push the observation under its bar. If
+   an AUTHORED failure is genuinely unfixable from this ticket's context (credential / live infra / upstream
+   fix), block(TICKET, OWNER, reason, ref=PLAN) with the captured signal.
 7. COMMIT  — commit AS YOU GO on YOUR OWN worktree branch, not once at the end: `git add -A` then
    `git commit -m "<type>(<scope>): <what the ticket delivered> (<TICKET requirement_id>)"`. Then assert the
    tree is CLEAN — `git status --porcelain` must print NOTHING. You build in an ISOLATED worktree, and the
