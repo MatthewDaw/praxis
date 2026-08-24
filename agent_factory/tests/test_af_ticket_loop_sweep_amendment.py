@@ -85,6 +85,20 @@ def test_every_wide_round_keeps_the_deferral(size: int):
     assert "ONE deliberate amendment" in _amendment_for(size)
 
 
+def test_a_pinned_check_that_is_repo_wide_is_still_the_workers_to_run():
+    """The contradiction survives at width > 1 unless PRECEDENCE is stated.
+
+    The amendment says a worker still runs "every one of its pinned validations" AND that it skips
+    "the full test suite across the whole repository". When a pinned validation IS `make check`,
+    both clauses name the same command and they disagree. praxis R0b's worker hit exactly that and
+    refused rather than guess — the right call, and a wasted round.
+    """
+    text = _amendment_for(5)
+    assert "PRECEDENCE" in text
+    assert "that command is YOURS to run" in text
+    assert "the sweep NOBODY pinned" in text
+
+
 def test_the_wide_amendment_never_weakens_the_per_ticket_gate():
     """It narrows WHICH tests run; it must never read as permission to skip a ticket's own."""
     text = _amendment_for(5)
