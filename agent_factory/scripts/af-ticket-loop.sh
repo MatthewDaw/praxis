@@ -349,7 +349,7 @@ af_probe_refuse(){
       echo "[backend]   preflight proves the backend can EMIT A TOKEN, not merely that it authenticates." >&2
       echo "[backend]   if this box is genuinely offline and you accept the risk: AF_PROBE_LENIENT=1" >&2 ;;
   esac
-  printf '%s\n' "$AF_PROBE_OUTPUT" | head -6 | sed 's/^/[backend]   /' >&2
+  printf '%s\n' "$AF_PROBE_OUTPUT" | sed -n '1,6p' | sed 's/^/[backend]   /' >&2
   echo "[backend]   $remedy" >&2
   return 1
 }
@@ -520,7 +520,7 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     status_out="$("$CODEX_BIN" login status 2>&1 || true)"
     if af_ihas "$status_out" 'not logged in|no (stored )?credential|please (run )?(codex )?login'; then
       echo "[backend] FATAL: codex requested but there is no credential in $CODEX_HOME_DIR:" >&2
-      printf '%s\n' "$status_out" | head -3 | sed 's/^/[backend]   /' >&2
+      printf '%s\n' "$status_out" | sed -n '1,3p' | sed 's/^/[backend]   /' >&2
       echo "[backend]   fix, once, as ec2-user:  codex login   # then pick 'Sign in with Device Code' (this box has no browser)" >&2
       echo "[backend]   do NOT use 'codex login --with-api-key': that bills OpenAI API credits, not the ChatGPT plan, and this backend refuses it" >&2
       return 1
@@ -528,7 +528,7 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     # WRONG BILL, refused: an API-key credential masquerading as a working session.
     if af_ihas "$status_out" 'api key'; then
       echo "[backend] FATAL: codex credential is an API key (usage-based billing), not the ChatGPT subscription:" >&2
-      printf '%s\n' "$status_out" | head -3 | sed 's/^/[backend]   /' >&2
+      printf '%s\n' "$status_out" | sed -n '1,3p' | sed 's/^/[backend]   /' >&2
       echo "[backend]   fix: codex logout && codex login   # choose 'Sign in with ChatGPT' / device code" >&2
       return 1
     fi
@@ -1444,7 +1444,7 @@ praxis_q(){  # args: query-fn [args...] -> its stdout; 1 if it never succeeded
   for i in 1 2 3 4 5; do
     if out=$("$@" 2>"$err"); then rm -f "$err"; printf '%s' "$out"; return 0; fi
     if grep -qE 'HTTP 40[0134]|not scoped to org|unknown space|OrgMismatch|partial snapshot reference' "$err" 2>/dev/null; then
-      AF_PRAXIS_FATAL="$(grep -oE '(HTTP 40[0134][^"]*|not scoped to org .*|unknown space .*)' "$err" 2>/dev/null | head -1)"
+      AF_PRAXIS_FATAL="$(grep -oE '(HTTP 40[0134][^"]*|not scoped to org .*|unknown space .*)' "$err" 2>/dev/null | sed -n '1,1p' || true)"
       AF_PRAXIS_FATAL="${AF_PRAXIS_FATAL:-definite error from Praxis}"
       rm -f "$err"; return 1
     fi
@@ -1987,7 +1987,14 @@ integrate_round(){
       skipped=$((skipped+1))
       say "WARNING: STRANDING $br ($ahead commit(s)) — no commit subject ends in a $PROJECT ticket id, so provenance cannot be established and this work will NOT be merged"
       say "  subjects seen:"
-      git log --format='    %h %s' "HEAD..$br" 2>/dev/null | head -5 | tee -a "$LOG"
+      # `| head -5 |` here KILLED AN ENTIRE RUN. head exits after five lines and SIGPIPEs
+      # `git log`; the driver runs `set -euo pipefail`, so the pipeline inherits that failure and
+      # `set -e` terminates the loop MID-ROUND -- after the merge stage had started and before it
+      # finished, with no error line anywhere. Exactly the silent death this file's own comments
+      # describe. It was dormant for as long as fewer than five commits were ever stranded (four
+      # printed fine at 08:31; nine killed the run at 08:57), which is why it survived every
+      # earlier round. `sed -n` reads its input to the end, so there is nothing to SIGPIPE.
+      git log --format='    %h %s' "HEAD..$br" 2>/dev/null | sed -n '1,5p' | tee -a "$LOG"
       say "  fix: the id must be TRAILING and exact, e.g. 'feat(scope): what it did (${known%% *})' — a conventional-commit scope does not count"
       continue
     fi
