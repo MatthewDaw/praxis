@@ -13,7 +13,22 @@ are later tickets (R2+) built on this schema.
 """
 
 from .contracts import RunsExport
+from .runner import (
+    CampaignDispatch,
+    CampaignRunReport,
+    register_campaign_for_run,
+    run_registered_campaigns,
+)
 from .storage import Registry
 from .storage.importers import HistoricalLedgerImporter, HistoricalStoreImporter
 
-__all__ = ["HistoricalLedgerImporter", "HistoricalStoreImporter", "Registry", "RunsExport"]
+__all__ = [
+    "CampaignDispatch",
+    "CampaignRunReport",
+    "HistoricalLedgerImporter",
+    "HistoricalStoreImporter",
+    "Registry",
+    "RunsExport",
+    "register_campaign_for_run",
+    "run_registered_campaigns",
+]

@@ -58,7 +58,7 @@ def register_campaign_for_run(
             scoring_corpora=scoring_corpora,
             structural_validator=structural_validator,
         )
-    except (ContractError, RegistryError) as exc:
+    except ContractError as exc:
         registry.record_campaign_registration_refusal(campaign_id, str(exc))
         return False
 

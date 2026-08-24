@@ -66,6 +66,19 @@ def test_fixture_portfolio_reports_refusal_and_runs_every_other_campaign(
         assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
 
 
+def test_corrected_registration_supersedes_its_recorded_refusal(tmp_path: Path) -> None:
+    registry = Registry(tmp_path)
+    spec, corpora = _fixture("corrected")
+    invalid = dict(spec)
+    invalid["rope"] = {"value": 999}
+    assert not register_campaign_for_run(registry, invalid, scoring_corpora=corpora)
+    assert register_campaign_for_run(registry, spec, scoring_corpora=corpora)
+
+    report = run_registered_campaigns(registry, _measured)
+
+    assert report.outcomes[0].outcome is CampaignOutcome.MEASURED
+
+
 def test_restart_redispatches_unanswered_claim_and_never_duplicates_a_verdict(
     tmp_path: Path,
 ) -> None:

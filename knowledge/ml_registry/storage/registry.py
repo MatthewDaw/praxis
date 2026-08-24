@@ -661,9 +661,11 @@ class Registry:
         canonical["rope"] = compute_campaign_rope(campaign, scoring_corpora)
         campaign_id = canonical["campaign_id"]
         prior = [event for event in self.events.read()
-                 if event.event_type == "campaign_spec_registered"
-                 and event.payload.get("campaign_id") == campaign_id]
-        if prior and prior[-1].payload == canonical:
+                 if event.event_type in {
+                     "campaign_spec_registered", "campaign_registration_refused",
+                 } and event.payload.get("campaign_id") == campaign_id]
+        if (prior and prior[-1].event_type == "campaign_spec_registered"
+                and prior[-1].payload == canonical):
             return False
         self._write("campaign_spec_registered", canonical)
         return True
@@ -674,9 +676,11 @@ class Registry:
             raise RegistryError("campaign registration refusal requires an id and reason")
         payload = {"campaign_id": campaign_id.strip(), "reason": reason.strip()}
         prior = [event for event in self.events.read()
-                 if event.event_type == "campaign_registration_refused"
-                 and event.payload.get("campaign_id") == payload["campaign_id"]]
-        if prior and prior[-1].payload == payload:
+                 if event.event_type in {
+                     "campaign_spec_registered", "campaign_registration_refused",
+                 } and event.payload.get("campaign_id") == payload["campaign_id"]]
+        if (prior and prior[-1].event_type == "campaign_registration_refused"
+                and prior[-1].payload == payload):
             return False
         self._write("campaign_registration_refused", payload)
         return True
