@@ -115,7 +115,12 @@ def capability(lane: str) -> Capability:
     if lane_n not in LANES:
         raise ValueError(f"unknown lane {lane!r} — must be one of {list(LANES)}")
     if lane_n == "cpu":
-        return Capability("cpu", True, [f"{os.cpu_count() or '?'} logical CPU(s)"])
+        # No core COUNT here, deliberately. tools/check_no_core_derived_cap.py fails the build on any
+        # core-derived expression under agent_factory/, and it is right to: a number read off the host
+        # reshapes behaviour per machine, which is exactly what the fixed R15 lanes exist to prevent.
+        # It cannot tell "deriving a cap" from "printing evidence", and it should not have to — the
+        # cpu lane is satisfiable on any host that got far enough to ask, and the count adds nothing.
+        return Capability("cpu", True, ["this host is running the factory, so the cpu lane is satisfiable"])
     return _gpu_capability()
 
 

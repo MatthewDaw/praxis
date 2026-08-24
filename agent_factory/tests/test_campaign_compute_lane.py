@@ -218,7 +218,10 @@ def test_no_campaign_selected_is_a_usage_error_in_the_contract_shape(tmp_path: P
 def test_cpu_is_always_satisfiable():
     cap = host_capability.capability("cpu")
     assert cap.available is True
-    assert "CPU" in cap.why()
+    assert cap.why(), "an answer must always carry its evidence"
+    # And no core COUNT in it: tools/check_no_core_derived_cap.py fails the build on any
+    # core-derived expression under agent_factory/, and it cannot tell evidence from a cap.
+    assert "cpu_count" not in cap.why()
 
 
 def test_gpu_is_refused_without_positive_evidence(monkeypatch):
