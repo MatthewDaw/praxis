@@ -1,4 +1,4 @@
-"""Workers must be rebased onto the integration ref before they build.
+"""Workers must be on the integration ref's base before they build.
 
 `isolation: worktree` creates each worker's tree from the repo's DEFAULT branch
 (`refs/remotes/origin/HEAD`, i.e. origin/main), never from the branch the run integrates into.
@@ -105,8 +105,13 @@ def test_branch_checkout_still_resolves_to_the_branch_name():
         assert _resolve(d) == "trunk"
 
 
-def test_dispatch_prompt_orders_the_rebase_before_any_work():
-    assert "REBASE FIRST" in SRC
+def test_dispatch_prompt_orders_base_alignment_before_any_work():
+    """The banner changed from "REBASE FIRST" to "GET YOUR BASE RIGHT" when the primary instruction
+    became "cut the worktree from $INTEGRATION_REF" -- a worktree on the right base has nothing to
+    rebase. The rebase fallback, and its ordering, still have to be there for a harness that creates
+    the worktree itself."""
+    assert "GET YOUR BASE RIGHT" in SRC
+    assert "git worktree add -b <your-branch> <path> $INTEGRATION_REF" in SRC
     assert "git merge --ff-only $INTEGRATION_REF" in SRC
     assert "git rebase $INTEGRATION_REF" in SRC, "no fallback when ff-only is refused"
 
@@ -114,7 +119,7 @@ def test_dispatch_prompt_orders_the_rebase_before_any_work():
 def test_rebase_instruction_precedes_the_build_instructions():
     """Ordering is the whole point -- a rebase told after the edits is worthless."""
     prompt = SRC[SRC.index("/af-build $PROJECT $ids_csv") :]
-    assert prompt.index("REBASE FIRST") < prompt.index("do NOT end your turn")
+    assert prompt.index("GET YOUR BASE RIGHT") < prompt.index("do NOT end your turn")
 
 
 def test_failure_to_rebase_blocks_the_build():
