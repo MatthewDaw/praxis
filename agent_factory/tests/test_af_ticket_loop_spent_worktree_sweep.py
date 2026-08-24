@@ -24,7 +24,9 @@ was in what the functions did to a real worktree layout; every function involved
 
 from __future__ import annotations
 
+import re
 import subprocess
+import sys
 import textwrap
 import time
 from pathlib import Path
@@ -40,6 +42,7 @@ _FUNCS = (
     "af_is_human_branch", "af_is_worktree_branch", "af_is_factory_named",
     "af_worktree_is_removable", "af_force_remove_worktree", "af_stragglers",
     "af_dir_in_use",
+    "af_is_owed_merge",
     "af_is_owed_merge", "sweep_worktrees",
 )
 
@@ -49,6 +52,18 @@ def _function(name: str) -> str:
     start = text.index(f"\n{name}(){{")
     end = text.index("\n}\n", start)
     return text[start + 1 : end + 3]
+
+
+def _matchers() -> str:
+    """The one-line text matchers. Missing from a harness they are a silent 127 that reads as
+    "no match" and inverts whatever guard is under test."""
+    return "\n".join(re.findall(r"^af_(?:i?has|hasf|hasx)\(\)\{.*$", SCRIPT.read_text(), re.M))
+
+
+def _constants() -> str:
+    """Module-level constants the extracted functions read. Missing, `set -u` kills the function
+    mid-loop and it reports no holder at all — inverting the guard under test."""
+    return "\n".join(re.findall(r"^_AF_NOT_A_HOLDER=.*$", SCRIPT.read_text(), re.M))
 
 
 def _sh(cmd: str, cwd: Path) -> str:
@@ -88,7 +103,7 @@ def _run(repo: Path, body: str, *, known_ids: str = " R0a ") -> subprocess.Compl
         AF_KNOWN_IDS="{known_ids}"
         """
     )
-    program = preamble + "\n".join(_function(f) for f in _FUNCS) + "\n" + body
+    program = preamble + _matchers() + "\n" + _constants() + "\n" + "\n".join(_function(f) for f in _FUNCS) + "\n" + body
     return subprocess.run(["bash", "-c", program], cwd=repo, capture_output=True, text=True,
                           timeout=120)
 
@@ -178,7 +193,7 @@ def test_a_tree_in_use_by_a_live_process_is_skipped(repo: Path, tmp_path: Path):
 
         res = _run(repo, "sweep_worktrees")
         assert tree.exists(), res.stdout + res.stderr
-        assert "IN USE by a live process" in res.stdout
+        assert "IN USE" in res.stdout
     finally:
         holder.kill()
         holder.wait()
@@ -235,7 +250,7 @@ def test_the_liveness_guard_survives_pipefail(repo: Path, tmp_path: Path):
                 break
             time.sleep(0.05)
         res = _run(repo, "sweep_worktrees")
-        assert "IN USE by a live process" in res.stdout, res.stdout + res.stderr
+        assert "IN USE" in res.stdout, res.stdout + res.stderr
         assert tree.exists()
     finally:
         holder.kill()
@@ -293,7 +308,7 @@ def test_the_orphan_directory_reaper_will_not_rm_rf_a_live_tree(repo: Path, tmp_
 
         assert orphan.exists(), f"rm -rf'd a live worker's tree\n{res.stdout}{res.stderr}"
         assert (orphan / "work.txt").exists()
-        assert "IN USE by a live process" in res.stdout
+        assert "IN USE" in res.stdout
     finally:
         holder.kill()
         holder.wait()
@@ -311,3 +326,102 @@ def test_the_orphan_directory_reaper_still_removes_a_dead_tree(repo: Path, tmp_p
 
     assert not orphan.exists(), res.stdout + res.stderr
     assert "removed orphaned worktree dir" in res.stdout
+
+
+# ------------------------------------------------- a parked spare must not veto a merged tree ---
+
+def test_an_idle_spare_does_not_hold_a_worktree(repo: Path, tmp_path: Path):
+    """THE HAZARD CREATED BY FIXING THE LIVENESS CHECK.
+
+    `claude bg-spare` is a pre-warmed Claude Code spare parked on a claim socket. It does no work,
+    its cwd is wherever it was started, and it never exits on its own. Counting it as a holder makes
+    it a PERMANENT veto on removing that tree.
+
+    Observed on two consecutive praxis rounds: with the round's real workers gone and both branches
+    fully merged (0 commits not on HEAD), two spares — one 2h23m old, predating the round, with
+    2m48s of CPU across its whole life — kept the trees alive. Every round logged STRAGGLER
+    INVARIANT VIOLATED, and at drain that FAILS the run over trees whose commits had all landed.
+
+    While the liveness check was broken by pipefail it never fired, so these trees were swept
+    regardless and nobody could discover a spare could veto one. Fixing the check is what exposed it.
+    """
+    tree = _worker_tree(repo, tmp_path / "project-r0a-spare", "af-build/praxis-r0a-spare",
+                        merge_back=True)
+    # argv is what distinguishes a spare, so the HOLDING process must carry it itself. A wrapper
+    # script that shells out to `sleep` does not work: the process whose cwd sits in the tree is
+    # then the child, whose argv is just "sleep 30".
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)",
+         "bg-spare", "--bg-spare", "/tmp/x.claim.sock"],
+        cwd=tree)
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if Path(f"/proc/{holder.pid}/cwd").resolve() == tree.resolve():
+                break
+            time.sleep(0.05)
+
+        res = _run(repo, "sweep_worktrees")
+
+        assert not tree.exists(), (
+            "an idle spare vetoed removal of a fully-merged tree:\n" + res.stdout + res.stderr)
+        assert "purged integrated worktree" in res.stdout
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_a_real_worker_still_holds_the_tree_and_is_named(repo: Path, tmp_path: Path):
+    """The guard must still guard — and say WHO, because 'IN USE by a live process' cost two rounds
+    of walking /proc by hand to identify the culprit."""
+    tree = _worker_tree(repo, tmp_path / "project-r0a-busy2", "af-build/praxis-r0a-busy2",
+                        merge_back=True)
+    holder = subprocess.Popen(["sleep", "30"], cwd=tree)
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if Path(f"/proc/{holder.pid}/cwd").resolve() == tree.resolve():
+                break
+            time.sleep(0.05)
+
+        res = _run(repo, "sweep_worktrees")
+
+        assert tree.exists(), res.stdout + res.stderr
+        assert "IN USE" in res.stdout
+        assert f"pid {holder.pid}" in res.stdout, "the holder must be named"
+        assert "sleep" in res.stdout, "and identifiable from its argv"
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_af_dir_in_use_does_not_clobber_its_callers_loop_variable(repo: Path, tmp_path: Path):
+    """A near-miss worth pinning forever.
+
+    The orphan reaper runs `for d in "$root"/*` and calls af_dir_in_use inside that loop, then
+    `rm -rf "$d"`. af_dir_in_use scans /proc with its own `for d in /proc/[0-9]*`. Without
+    `local d`, the callee overwrites the caller's loop variable and the reaper deletes the LAST
+    /PROC ENTRY instead of the orphan directory.
+
+    It surfaced only because /proc refuses the unlink ("rm: cannot remove
+    '/proc/959265/task/959265/fd/0': Permission denied"). Against any other value of `d` it would
+    have silently removed the wrong directory — and this reaper is one of the two callers that go
+    straight to `rm -rf`.
+    """
+    program = (
+        textwrap.dedent(
+            f"""
+            set -uo pipefail
+            say(){{ echo "$*"; }}
+            WT={repo}
+            """
+        )
+        + _matchers() + "\n" + _constants() + "\n"
+        + _function("af_dir_in_use")
+        + '\nd=SENTINEL\naf_dir_in_use /definitely/not/a/real/path || true\necho "d=$d"\n'
+    )
+    res = subprocess.run(["bash", "-c", program], capture_output=True, text=True, timeout=60)
+    assert "d=SENTINEL" in res.stdout, (
+        "af_dir_in_use clobbered its caller's `d` — the orphan reaper rm -rf's that variable\n"
+        + res.stdout + res.stderr
+    )
