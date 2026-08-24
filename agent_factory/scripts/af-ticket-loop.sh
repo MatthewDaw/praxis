@@ -1407,6 +1407,64 @@ PYEOF
 }
 preflight_universal_lane || exit 1
 
+# ---------------------------------------------------------------- declared lane vs THIS host ----
+# A ticket names the compute it needs in meta.device (the closed cpu/gpu set the plan gate enforces
+# at intake). NOTHING CHECKED THAT AGAINST THE MACHINE. On a box with no GPU a gpu-declared ticket
+# does not fail -- ML code falls back to CPU silently and by design -- so it builds, goes green, and
+# is recorded as having exercised a regime that was never exercised. A crash would be kinder.
+#
+# This WARNS rather than refuses, deliberately. Two reasons, and the second is the honest one:
+#   * many such tickets verify against FIXTURES and never touch a device, so refusing them would
+#     stall a build over a declaration that costs nothing in practice;
+#   * and a refusal here would be this driver overruling a BLESSED plan, which is not its call.
+# Naming it at startup puts the discrepancy in front of whoever can fix it -- either the marker is
+# wrong or this is the wrong box -- instead of leaving it to be discovered in a results table.
+preflight_declared_lanes(){
+  local out
+  out=$("$PY" - "$PROJECT" <<'PYEOF' 2>/dev/null || true
+import sys
+sys.path[:0] = ["agent_factory/hooks", "agent_factory/src", "agent_factory"]
+try:
+    import _praxis, _ticket_state as ts
+    from agent_factory.host_capability import capability
+except Exception:
+    raise SystemExit(0)   # never let a reporting nicety block a run
+p = sys.argv[1]
+try:
+    facts = _praxis.facts_by(category="requirement", space=p, snapshot=f"prd-{p}") or []
+except Exception:
+    raise SystemExit(0)
+want = {}
+for f in facts:
+    m = f.get("meta") or {}
+    if not ts.owes_work(f):
+        continue
+    lane = str(m.get("device") or "cpu").strip().lower()
+    if lane != "cpu":
+        want.setdefault(lane, []).append(str(m.get("requirement_id") or f.get("id")))
+for lane, ids in sorted(want.items()):
+    try:
+        cap = capability(lane)
+    except ValueError:
+        continue
+    if not cap.available:
+        print(f"{lane}\t{len(ids)}\t{' '.join(sorted(ids)[:12])}\t{cap.why()}")
+PYEOF
+)
+  [ -n "$out" ] || return 0
+  while IFS=$'\t' read -r lane n ids why; do
+    [ -n "$lane" ] || continue
+    say "WARNING: $n unfinished ticket(s) declare device=$lane, which THIS HOST CANNOT PROVIDE: $ids"
+    say "  evidence: $why"
+    say "  They will still be built, on CPU, and nothing downstream will mark that — so either the"
+    say "  declaration is wrong (fixture-based acceptance that never touches the device) or this is"
+    say "  the wrong box for them. This is a WARNING: a blessed plan is not this driver's to overrule."
+  done <<< "$out"
+  return 0
+}
+preflight_declared_lanes
+
+
 # Run a Praxis query so a transient backend failure CANNOT kill the driver.
 #
 # Every query below is invoked as `var=$(query)` and swallows its own stderr with 2>/dev/null.
@@ -3784,6 +3842,33 @@ fi
 until require_blessed_plan; do :; done
 
 n=0
+# ------------------------------------------------------------- who owns a branch, known EARLY ----
+# AF_KNOWN_IDS is how ownership is decided: a branch is ours when it carries a ticket id THIS
+# PROJECT owns -- a fact from Praxis, never a name guess. It was populated ONLY inside
+# integrate_round, which means a run that never integrates a round never learns it, and every
+# ownership question on the exit path is answered with an empty set. Empty answers NO, deliberately
+# (nothing is ever deleted on a guess) -- so the straggler invariant becomes UNSATISFIABLE on
+# exactly the runs that exit early.
+#
+# Observed 2026-08-24: a praxis run stalled on a blocked root before any round, and at exit reported
+#   orphan branch ... queued for landing: af-build/r0b-codex-20260824 (ticket(s): )
+#   STRAGGLER INVARIANT VIOLATED at exit -- resolution ran and did NOT clear these:
+#     leftover worktree /workspace/praxis-build-r0b
+# The empty `ticket(s): ` is the tell. The resolver LANDED the branch and the tree still could not
+# be recognised as ours, so the run ended dirty (exit 7) over a tree whose every commit was already
+# merged. Every precondition for removing it was true; the driver simply had no way to know it.
+#
+# Reading it once at startup costs one Praxis query and makes ownership answerable on every path.
+# integrate_round still refreshes it per round, so a ticket authored mid-run is picked up as before.
+# A failed read leaves it empty, which is the pre-existing conservative behaviour, not a new risk.
+if _known_now=$(praxis_q known_ids); then
+  AF_KNOWN_IDS=" ${_known_now} "
+  say "ownership: $(printf '%s' "$_known_now" | wc -w) ticket id(s) known for $PROJECT"
+else
+  say "WARNING: could not read this project's ticket ids at startup — branch OWNERSHIP will answer"
+  say "  'not ours' until the first round integrates, so an early exit cannot clear a straggler."
+fi
+
 round=0
 while :; do
   # RE-CHECKED EVERY ROUND, not just at startup: a plan can be re-armed mid-run (an amendment, a
