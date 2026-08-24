@@ -83,10 +83,11 @@ from __future__ import annotations
 import time
 import warnings
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Callable, Optional
 
 from knowledge.ml_registry.floor import CAMPAIGN_STATUS_FIELD
-from knowledge.ml_registry.ideate import RETRIEVAL_AXES
+from knowledge.ml_registry.ideate import ABLATION, RETRIEVAL_AXES
 from knowledge.ml_registry.insight import LessonFiler, maybe_file_cross_model_lesson, sweep_cross_model_lessons
 from knowledge.ml_registry.lifecycle import claim_is_stale, untried_backlog
 from knowledge.ml_registry.schema import (
@@ -97,6 +98,7 @@ from knowledge.ml_registry.schema import (
     TRIAL_STATUS_VOIDED,
     RegistryValidationError,
 )
+from knowledge.ml_registry.survey import TechniquePool
 from knowledge.ml_registry.verdict import (
     METRIC_UNMOVED_FIELD,
     LedgerRow,
@@ -183,6 +185,87 @@ WIN_ON_ADOPTION_OPT_IN_FIELD = "win_on_adoption_ok"
 # module stamps) when the backlog holds nothing more to try.
 Dispatcher = Callable[[RegistrySpace, Fact, Fact], dict[str, object]]
 IdeaGenerator = Callable[[RegistrySpace, str, Optional[str], frozenset], Optional[dict[str, object]]]
+
+ABLATION_RESULT_FIELD = "ablation_result"
+TARGET_BLOCK_FIELD = "target_block"
+TECHNIQUE_ID_FIELD = "technique_id"
+PROPOSAL_ORIGIN_FIELD = "proposal_origin"
+POOL_PROPOSAL = "technique_pool"
+OUTSIDE_POOL_PROPOSAL = "outside_pool"
+OUTSIDE_POOL_REASON_FIELD = "outside_pool_reason"
+
+
+def _latest_ablation_target(space: RegistrySpace, model_id: str) -> Optional[str]:
+    """The newest measured ablation's recommended target block, if one is recorded."""
+    for trial in reversed(space.list_facts(TRIAL)):
+        if trial.meta.get("model_id") != model_id or not trial.meta.get("verdict"):
+            continue
+        idea = space.get(trial.derived_from[0]) if trial.derived_from else None
+        if idea is None or idea.meta.get("axis") != ABLATION:
+            continue
+        result = trial.meta.get(ABLATION_RESULT_FIELD)
+        if not isinstance(result, Mapping):
+            continue
+        target = str(result.get(TARGET_BLOCK_FIELD) or "").strip()
+        if target:
+            return target
+    return None
+
+
+@dataclass(frozen=True)
+class PoolIdeaGenerator:
+    """Adapt a vetted technique pool to the supervisor's :data:`IdeaGenerator` seam.
+
+    Each pool-backed proposal records the exact technique id it cites and the block selected
+    by the latest adjudicated ablation result. Once every pool entry has been proposed, an
+    optional fallback may still propose work, but that proposal is explicitly stamped as
+    outside the pool before :func:`dispatch_trial` persists it.
+    """
+
+    pool: TechniquePool
+    default_target_block: str
+    outside_pool_generator: Optional[IdeaGenerator] = None
+
+    def __post_init__(self) -> None:
+        if not self.default_target_block.strip():
+            raise RegistryValidationError(
+                "default_target_block must not be empty", field="default_target_block",
+            )
+
+    def __call__(
+        self,
+        space: RegistrySpace,
+        model_id: str,
+        forced_axis: Optional[str],
+        permitted_axes: frozenset,
+    ) -> Optional[dict[str, object]]:
+        used_ids = {
+            str(idea.meta[TECHNIQUE_ID_FIELD])
+            for idea in space.list_facts(IDEA)
+            if idea.meta.get("model_id") == model_id and idea.meta.get(TECHNIQUE_ID_FIELD)
+        }
+        technique = next((item for item in self.pool.techniques if item.id not in used_ids), None)
+        if technique is not None:
+            target = _latest_ablation_target(space, model_id) or self.default_target_block.strip()
+            return {
+                "axis": forced_axis or target,
+                "description": f"Apply vetted technique {technique.id} to block {target}",
+                "basis": f"technique_pool:{technique.id}",
+                TECHNIQUE_ID_FIELD: technique.id,
+                TARGET_BLOCK_FIELD: target,
+                PROPOSAL_ORIGIN_FIELD: POOL_PROPOSAL,
+            }
+
+        if self.outside_pool_generator is None:
+            return None
+        proposal = self.outside_pool_generator(space, model_id, forced_axis, permitted_axes)
+        if proposal is None:
+            return None
+        recorded = dict(proposal)
+        recorded.pop(TECHNIQUE_ID_FIELD, None)
+        recorded[PROPOSAL_ORIGIN_FIELD] = OUTSIDE_POOL_PROPOSAL
+        recorded[OUTSIDE_POOL_REASON_FIELD] = "technique_pool_exhausted"
+        return recorded
 
 
 @dataclass(frozen=True)
@@ -686,6 +769,9 @@ def dispatch_trial(
         proposed = idea_generator(space, model_id, forced_axis, permitted_axes)
         if proposed is not None:
             meta = dict(proposed)
+            meta.setdefault(PROPOSAL_ORIGIN_FIELD, OUTSIDE_POOL_PROPOSAL)
+            if meta[PROPOSAL_ORIGIN_FIELD] == OUTSIDE_POOL_PROPOSAL:
+                meta.setdefault(OUTSIDE_POOL_REASON_FIELD, "unwrapped_idea_generator")
             meta["model_id"] = model_id
             meta["origin"] = DISCOVERED
             meta.setdefault("axis", forced_axis or "discovered")
