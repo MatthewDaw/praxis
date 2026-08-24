@@ -35,6 +35,7 @@ from knowledge.ml_registry.floor import (
 )
 from knowledge.ml_registry.lifecycle import STATUS_ADOPTED, adopt_idea, reject_idea, untried_backlog
 from knowledge.ml_registry.schema import RegistryValidationError
+from knowledge.ml_registry.testing.rope_fixtures import rope_ledger
 from knowledge.ml_registry.write_path import RegistrySpace, register_idea, register_trial
 
 MODEL_META: dict[str, object] = {
@@ -45,6 +46,9 @@ MODEL_META: dict[str, object] = {
     "diff_size_limit": 800,
     "baseline_runs": ["r1", "r2", "r3", "r4"],
 }
+
+#: The strict-boundary model's own replicates, measuring a rope of exactly 0.25.
+EXACT_COMMITS = ("e1", "e2", "e3", "e4")
 
 # stdev([1.0, 1.02, 0.98, 1.04], sample) and mean of the same 4 values.
 RUN_VALUES = [1.0, 1.02, 0.98, 1.04]
@@ -58,12 +62,8 @@ LEDGER = {
     "other": 5.0,
     "c-win": 0.5,
     "c-inside": 1.005,
-    # The strict-boundary model's replicates: stdev([1.0, 1.0, 1.0, 1.5]) is EXACTLY 0.25,
-    # so "c-exact" at 0.75 sits exactly one rope better than the "e1" baseline.
-    "e1": 1.0,
-    "e2": 1.0,
-    "e3": 1.0,
-    "e4": 1.5,
+    # "c-exact" at 0.75 sits exactly one rope (0.25) better than the "e1" baseline.
+    **rope_ledger(0.25, at=1.0, commits=EXACT_COMMITS),
     "c-exact": 0.75,
 }
 
@@ -220,7 +220,7 @@ def test_adjudication_win_test_is_strict_so_it_cannot_disagree_with_adjudicate_v
     space = RegistrySpace()
     # stdev([1.0, 1.0, 1.0, 1.5]) is exactly 0.25, so the boundary is bit-for-bit rather
     # than a hair off it -- and it is MEASURED from these rows, not asserted onto the model.
-    meta = dict(MODEL_META, baseline_runs=["e1", "e2", "e3", "e4"], baseline="e1")
+    meta = dict(MODEL_META, baseline_runs=list(EXACT_COMMITS), baseline="e1")
     model_id = register_model_with_baseline(space, meta, LEDGER)
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "c-exact")  # 0.75 -> delta exactly 0.25

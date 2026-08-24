@@ -61,7 +61,11 @@ from knowledge.ml_registry.supervisor import (
     supervise_campaign,
 )
 from knowledge.ml_registry.verdict import BASELINE_FIELD, METRIC_UNMOVED_FIELD, LedgerRow
+from knowledge.ml_registry.testing.rope_fixtures import rope_ledger_rows
 from knowledge.ml_registry.write_path import DISCOVERED, SEEDED, RegistrySpace, register_idea, register_model
+
+#: The rope's evidence for every fixture below: four rows measuring exactly 0.01.
+ROPE_ROWS = rope_ledger_rows(0.01, at=1.0, throughput=1200)
 
 BASELINE_COMMIT = "commit-abc123"
 
@@ -74,10 +78,10 @@ MODEL_META = {
     "win_condition": "beats baseline by the rope",
     "win_on_adoption_ok": True,
     "baseline": BASELINE_COMMIT,
-    # THE ROPE'S EVIDENCE. Three equal rows plus one differing by 0.02 have a sample stdev
-    # of exactly 0.01 -- the number these fixtures used to store as a floor -- so every
-    # scripted verdict below is decided against the same bar as before the retirement.
-    "baseline_runs": ["b1", "b2", "b3", "b4"],
+    # THE ROPE'S EVIDENCE, measuring exactly 0.01 -- the number these fixtures used to
+    # store as a floor -- so every scripted verdict below is decided against the same bar
+    # as before the retirement.
+    "baseline_runs": list(ROPE_ROWS),
     "baseline_throughput": 1200,
     "diff_size_limit": 800,
     "max_trials": 5,
@@ -89,9 +93,7 @@ MODEL_META = {
 # "c*" commits win beyond the rope against ANY baseline value used below; "lose*"
 # commits worsen far enough (5000.0) to reject against any baseline value used below too.
 LEDGER: dict[str, LedgerRow] = {BASELINE_COMMIT: LedgerRow(value=1.0, throughput=1200, diff_lines=0)}
-# The rope's replicates: stdev([1.0, 1.0, 1.0, 1.02]) == 0.01 exactly.
-LEDGER.update({c: LedgerRow(value=v, throughput=1200, diff_lines=0)
-               for c, v in (("b1", 1.0), ("b2", 1.0), ("b3", 1.0), ("b4", 1.02))})
+LEDGER.update(ROPE_ROWS)
 LEDGER.update({f"c{i}": LedgerRow(value=0.5, throughput=1200, diff_lines=100) for i in range(1, 20)})
 LEDGER.update({f"lose{i}": LedgerRow(value=5000.0, throughput=1200, diff_lines=100) for i in range(1, 10)})
 # "near*" commits reject against an ADOPTED baseline but would have parked against the 1.0 the
@@ -884,8 +886,7 @@ def test_a_maximizing_campaign_wins_only_at_its_declared_floor():
         "up-b": LedgerRow(value=140.0, throughput=1200, diff_lines=100),
         # The rope is recomputed from these at each comparison, so a hand-built ledger has
         # to carry the model's baseline_runs rows too.
-        **{c: LedgerRow(value=v, throughput=1200, diff_lines=0)
-           for c, v in (("b1", 1.0), ("b2", 1.0), ("b3", 1.0), ("b4", 1.02))},
+        **ROPE_ROWS,
     }
     outcome = supervise_campaign(space, model_id, ledger, _scripted_dispatcher(["up-a", "up-b"]))
     assert [h["status"] for h in outcome["history"]] == ["adopted", "adopted"]

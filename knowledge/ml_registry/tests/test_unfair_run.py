@@ -18,8 +18,13 @@ from knowledge.ml_registry.verdict import (FAIR_RUN_STATUSES, LedgerRow, VERDICT
 from knowledge.ml_registry.write_path import (RegistrySpace, register_idea, register_model,
                                               register_trial)
 
+from knowledge.ml_registry.testing.rope_fixtures import rope_ledger_rows
+
+#: Four rows measuring a rope of exactly 0.01, at this campaign's baseline level.
+ROPE_ROWS = rope_ledger_rows(0.01, at=0.7, throughput=3.38)
+
 META = {"metric": "f1", "direction": "maximize", "win_condition": "beats baseline by the rope",
-        "baseline": "base", "baseline_runs": ["b1", "b2", "b3", "b4"],
+        "baseline": "base", "baseline_runs": list(ROPE_ROWS),
         "baseline_throughput": 3.38,
         "diff_size_limit": 8, "max_trials": 9, "max_discovered_ideas": 2}
 
@@ -35,9 +40,7 @@ def _setup(status: str, throughput: float = 3.40
                                 "description": "a graph head"})
     ledger = {"base": LedgerRow(value=0.7034, throughput=3.38, diff_lines=0),
               "c1": LedgerRow(value=0.4268, throughput=throughput, diff_lines=1, status=status),
-              # The rope's replicates: stdev([0.7, 0.7, 0.7, 0.72]) == 0.01.
-              **{c: LedgerRow(value=v, throughput=3.38, diff_lines=0)
-                 for c, v in (("b1", 0.7), ("b2", 0.7), ("b3", 0.7), ("b4", 0.72))}}
+              **ROPE_ROWS}
     tid = register_trial(space, {"model_id": mid, "idea_id": iid, "commit": "c1",
                                  "status": "complete", "throughput": throughput, "diff_lines": 1},
                          frozenset(ledger))
@@ -78,6 +81,5 @@ def test_a_ledger_without_a_status_column_behaves_exactly_as_before() -> None:
     space, tid, _ = _setup("ok")
     ledger = {"base": LedgerRow(value=0.7034, throughput=3.38, diff_lines=0),
               "c1": LedgerRow(value=0.72, throughput=3.40, diff_lines=1),
-              **{c: LedgerRow(value=v, throughput=3.38, diff_lines=0)
-                 for c, v in (("b1", 0.7), ("b2", 0.7), ("b3", 0.7), ("b4", 0.72))}}
+              **ROPE_ROWS}
     assert adjudicate_verdict(space, tid, ledger) != VERDICT_VOIDED

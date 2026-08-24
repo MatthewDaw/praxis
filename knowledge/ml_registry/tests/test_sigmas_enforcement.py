@@ -62,7 +62,7 @@ def _space(tmp_path) -> RegistrySpace:
     return RegistrySpace.load(tmp_path / "space.json")
 
 
-def _registered(space, **extra):
+def _registered(space: RegistrySpace, **extra: object) -> dict[str, object]:
     meta = _meta(**extra)
     meta.pop("baseline_throughput")
     return space.get(register_model_with_baseline(space, meta, dict(LEDGER))).meta

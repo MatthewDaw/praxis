@@ -30,6 +30,7 @@ from knowledge.ml_registry.floor import (
     register_model_with_baseline,
 )
 from knowledge.ml_registry.schema import RegistryValidationError
+from knowledge.ml_registry.testing.rope_fixtures import rope_replicates
 from knowledge.ml_registry.verdict import (
     PREVIOUS_BASELINE_FIELD,
     VERDICT_ADOPTED,
@@ -61,14 +62,9 @@ def _scaled_meta(direction, ceiling, measured_at, floor, **extra):
     }
 
 
-def _replicates(rope):
-    """Four baseline rows whose SAMPLE stdev is exactly ``rope`` -- the evidence the bar is
-    now measured from, in place of the number a model used to store."""
-    return [0.0, 0.0, 0.0, 2 * rope]
-
-
-def _bar(meta, floor, at):
-    return comparison_rope(meta, _replicates(floor), at)
+def _bar(meta: dict[str, object], rope: float, at: float) -> float:
+    """The bar this meta derives at level ``at`` from replicates measuring ``rope``."""
+    return comparison_rope(meta, rope_replicates(rope), at)
 
 
 @pytest.mark.parametrize("name,direction,ceiling,measured_at,floor,win", LIVE_CAMPAIGNS)
@@ -115,7 +111,7 @@ def test_armor_stops_the_bar_at_a_fraction_of_the_measured_rope():
     bar = _bar(meta, 0.0016, 0.99)
     assert bar == pytest.approx(0.0016 * DEFAULT_ROPE_ARMOR)
     assert bar > 0.000790  # above the one measured null this registry holds
-    assert describe_rope(meta, _replicates(0.0016), 0.99)["armored"] is True
+    assert describe_rope(meta, rope_replicates(0.0016), 0.99)["armored"] is True
     # and it never goes lower, however close to the ceiling the campaign gets
     assert _bar(meta, 0.0016, 1.0) == pytest.approx(0.0016 * DEFAULT_ROPE_ARMOR)
     assert _bar(meta, 0.0016, 1.5) == pytest.approx(0.0016 * DEFAULT_ROPE_ARMOR)
@@ -174,7 +170,7 @@ def test_a_live_campaign_that_does_not_opt_in_is_untouched(
     static = {"direction": direction}
     assert _bar(static, floor, measured_at) == floor
     assert _bar(static, floor, win) == floor
-    assert describe_rope(static, _replicates(floor), win)[ROPE_SCALING_FIELD] == "static"
+    assert describe_rope(static, rope_replicates(floor), win)[ROPE_SCALING_FIELD] == "static"
 
 
 # ---------------------------------------------------------------------------

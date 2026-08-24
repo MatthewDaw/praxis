@@ -15,7 +15,12 @@ from knowledge.ml_registry.schema import RegistryValidationError
 from knowledge.ml_registry.write_path import (RegistrySpace, register_idea, register_model,
                                               register_trial, supersede_trial)
 
+from knowledge.ml_registry.testing.rope_fixtures import rope_ledger_rows
+
 LEDGER = frozenset({"c1", "c2"})
+
+#: Four rows measuring a rope of exactly 0.01, at the fixtures' baseline level.
+ROPE_ROWS = rope_ledger_rows(0.01, at=1.0, throughput=1200.0)
 
 
 MODEL_META = {
@@ -113,7 +118,7 @@ def test_supersede_requires_a_stated_reason() -> None:
 
 _DISPATCH_MODEL_META = {
     "metric": "val_bpb", "direction": "minimize", "win_condition": "beats baseline by the rope",
-    "baseline": "base", "baseline_runs": ["b1", "b2", "b3", "b4"],
+    "baseline": "base", "baseline_runs": list(ROPE_ROWS),
     "baseline_throughput": 1200.0, "diff_size_limit": 800,
     "max_trials": 5, "max_discovered_ideas": 0,
 }
@@ -131,9 +136,7 @@ def _dispatch_fixture(claim_age_s: float):
         "base": LedgerRow(value=1.0, throughput=1200.0, diff_lines=0),
         "dead": LedgerRow(value=1.0, throughput=1200.0, diff_lines=10),
         "fresh": LedgerRow(value=0.5, throughput=1200.0, diff_lines=10),
-        # The rope's replicates: stdev([1.0, 1.0, 1.0, 1.02]) == 0.01.
-        **{c: LedgerRow(value=v, throughput=1200.0, diff_lines=0)
-           for c, v in (("b1", 1.0), ("b2", 1.0), ("b3", 1.0), ("b4", 1.02))},
+        **ROPE_ROWS,
     }
     space = RegistrySpace()
     model_id = register_model(space, dict(_DISPATCH_MODEL_META))
