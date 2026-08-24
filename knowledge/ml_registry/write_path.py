@@ -19,6 +19,10 @@ rules that schema validation alone cannot express:
   are unaffected.
 * (R11) a model's ``metric`` is frozen for its life -- re-registering against an existing
   ``model_id`` that tries to change it is refused naming it (:func:`register_model`).
+* (R3a) a write carrying any field retired with the stored threshold is refused naming it
+  (:func:`~knowledge.ml_registry.floor.guard_retired_threshold_fields`). Meta is merged
+  verbatim, so a retired key nothing READS is still a retired key STORED, and a later
+  reader cannot tell that fossil from a live bar.
 * (R1) every patch against an ALREADY REGISTERED model goes through :func:`mutate_model`,
   which applies both of R1's mutation guards
   (:mod:`knowledge.ml_registry.guards`) on the data path itself rather than leaving the
