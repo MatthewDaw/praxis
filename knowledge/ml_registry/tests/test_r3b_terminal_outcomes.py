@@ -43,6 +43,9 @@ class _MeasuredCampaign:
     def heartbeat(self, _context: CampaignJobContext) -> None:
         return None
 
+    def void_arm(self, _context: CampaignJobContext, _reason: str) -> None:
+        raise AssertionError("a terminal measurement must not void an arm")
+
 
 def test_non_promoting_campaign_closes_measured_with_a_reason(tmp_path: Path) -> None:
     context = CampaignJobContext("measurement", 1, tmp_path, tmp_path / "progress.json")

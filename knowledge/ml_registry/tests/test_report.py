@@ -9,6 +9,8 @@ caught immediately.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from knowledge.ml_registry.report import campaign_status, format_status
@@ -55,6 +57,31 @@ def test_it_surfaces_an_in_flight_trial() -> None:
     assert len(st["trials_in_flight"]) == 1
     assert st["trials_in_flight"][0]["commit"] == "c1"
     assert "IN FLIGHT" in format_status(st)
+
+
+def test_in_flight_status_distinguishes_progressing_from_wedged() -> None:
+    space, mid = _space()
+    space.get(mid).meta["progress_heartbeat_cadence_s"] = 10
+    progressing = _idea(space, mid, "progressing")
+    wedged = _idea(space, mid, "wedged")
+    now = time.time()
+    for idea_id, commit, heartbeat in (
+        (progressing, "c1", now - 5),
+        (wedged, "c2", now - 11),
+    ):
+        trial_id = register_trial(
+            space,
+            {"model_id": mid, "idea_id": idea_id, "commit": commit, "status": "running"},
+            frozenset({commit}),
+        )
+        space.get(trial_id).meta["progress_heartbeat_at"] = heartbeat
+
+    status = campaign_status(space, mid)
+    liveness = {item["idea_id"]: item["liveness"] for item in status["trials_in_flight"]}
+    assert liveness == {progressing: "progressing", wedged: "wedged"}
+    rendered = format_status(status)
+    assert "liveness=progressing" in rendered
+    assert "liveness=wedged" in rendered
 
 
 def test_a_resolved_trial_is_not_in_flight() -> None:

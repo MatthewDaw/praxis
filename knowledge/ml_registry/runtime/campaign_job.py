@@ -9,17 +9,20 @@ asks :class:`RegistryFinalizer` to verify the ``production`` alias.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 import importlib
 import json
 import os
 from pathlib import Path
+import queue
 import signal
 import subprocess
 import sys
 import tempfile
 import threading
-from typing import Callable, Mapping, Protocol, Sequence
+import time
+from typing import Protocol
 
 from knowledge.ml_registry.contracts import (
     CampaignOutcome,
@@ -43,6 +46,11 @@ EXIT_BY_OUTCOME = {
     CampaignOutcome.CANCELLED: 130,
 }
 
+# Fifty GiB leaves room for ordinary checkpoints while making the default finite and visible.
+# Projects with larger declared corpora must opt in to a larger campaign-local budget.
+DEFAULT_CAMPAIGN_DISK_BUDGET_BYTES = 50 * 1024**3
+DEFAULT_ARM_TIMEOUT_S = 60 * 60
+
 
 class CampaignJobError(ValueError):
     pass
@@ -54,6 +62,7 @@ class CampaignJobContext:
     attempt: int
     state_root: Path
     progress_path: Path
+    progress_heartbeat_cadence_s: float | None = None
 
 
 class CampaignLifecycle(Protocol):
@@ -68,6 +77,7 @@ class CampaignLifecycle(Protocol):
     def trial_count(self, context: CampaignJobContext) -> int: ...
     def dispatch_one(self, context: CampaignJobContext) -> Sequence[str] | CampaignOutcomeRecord: ...
     def heartbeat(self, context: CampaignJobContext) -> None: ...
+    def void_arm(self, context: CampaignJobContext, reason: str) -> None: ...
 
 
 def _atomic_json(path: Path, payload: Mapping[str, object]) -> None:
@@ -92,7 +102,10 @@ def _load_adapter(reference: str, options: Mapping[str, object]) -> CampaignLife
     except (ValueError, ImportError, AttributeError) as exc:
         raise CampaignJobError(f"cannot load supervision adapter {reference!r}: {exc}") from exc
     adapter = factory(dict(options)) if callable(factory) else factory
-    required = ("preflight", "complete", "blocking_diagnosis", "trial_count", "dispatch_one", "heartbeat")
+    required = (
+        "preflight", "complete", "blocking_diagnosis", "trial_count", "dispatch_one",
+        "heartbeat", "void_arm",
+    )
     missing = [name for name in required if not callable(getattr(adapter, name, None))]
     if missing:
         raise CampaignJobError("supervision adapter is missing methods: " + ", ".join(missing))
@@ -100,17 +113,31 @@ def _load_adapter(reference: str, options: Mapping[str, object]) -> CampaignLife
 
 
 class _ArmProcess:
-    def __init__(self, *, progress_path: Path, heartbeat: Callable[[], None], heartbeat_s: float) -> None:
+    def __init__(self, *, progress_path: Path, heartbeat: Callable[[], None], heartbeat_s: float,
+                 timeout_s: float) -> None:
         self.progress_path = progress_path
         self.heartbeat = heartbeat
         self.heartbeat_s = heartbeat_s
+        self.timeout_s = timeout_s
         self.process: subprocess.Popen[str] | None = None
-        self._stop = threading.Event()
+        self.failure_reason: str | None = None
 
-    def cancel(self) -> None:
+    def _terminate(self) -> None:
         if self.process is None or self.process.poll() is not None:
             return
-        self.process.terminate()
+        try:
+            os.killpg(self.process.pid, signal.SIGTERM)
+            self.process.wait(timeout=1)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            if self.process.poll() is None:
+                try:
+                    os.killpg(self.process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                self.process.wait()
+
+    def cancel(self) -> None:
+        self._terminate()
 
     def run(self, command: Sequence[str], *, cwd: Path) -> int:
         if not command or not all(isinstance(item, str) and item for item in command):
@@ -120,29 +147,89 @@ class _ArmProcess:
         self.process = subprocess.Popen(
             list(command), cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-            start_new_session=False,
+            start_new_session=True,
         )
+        assert self.process.stdout is not None
+        lines: queue.Queue[str] = queue.Queue()
+        reader_done = threading.Event()
 
-        def beat() -> None:
-            while not self._stop.wait(self.heartbeat_s):
-                if self.process is None or self.process.poll() is not None:
-                    return
+        def read_output() -> None:
+            try:
+                assert self.process is not None and self.process.stdout is not None
+                for line in self.process.stdout:
+                    lines.put(line)
+            finally:
+                reader_done.set()
+
+        reader = threading.Thread(target=read_output, name="campaign-output", daemon=True)
+        reader.start()
+        started = time.monotonic()
+        last_progress = started
+
+        def record_line(line: str) -> None:
+            nonlocal last_progress
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            snapshot = parse_progress_line(line)
+            if snapshot is not None:
+                last_progress = time.monotonic()
+                write_progress_snapshot(self.progress_path, snapshot)
                 self.heartbeat()
 
-        thread = threading.Thread(target=beat, name="campaign-heartbeat", daemon=True)
-        thread.start()
         try:
-            assert self.process.stdout is not None
-            for line in iter(self.process.stdout.readline, ""):
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                snapshot = parse_progress_line(line)
-                if snapshot is not None:
-                    write_progress_snapshot(self.progress_path, snapshot)
-            return self.process.wait()
+            while True:
+                # Consume an already-arrived line before declaring its cadence missed. Otherwise
+                # scheduling the monitor exactly on the boundary can kill a healthy reporter.
+                try:
+                    line = lines.get_nowait()
+                except queue.Empty:
+                    line = None
+                if line is not None:
+                    record_line(line)
+                    continue
+
+                now = time.monotonic()
+                if self.process.poll() is None:
+                    if now - started > self.timeout_s:
+                        self.failure_reason = (
+                            "VOIDED on throughput: arm exceeded wall-clock cap of "
+                            f"{self.timeout_s:g} seconds"
+                        )
+                        self._terminate()
+                    elif now - last_progress > self.heartbeat_s:
+                        self.failure_reason = (
+                            "VOIDED on throughput: arm emitted no progress heartbeat inside its "
+                            f"declared {self.heartbeat_s:g}-second cadence"
+                        )
+                        self._terminate()
+                if self.process.poll() is not None and reader_done.is_set() and lines.empty():
+                    break
+                try:
+                    line = lines.get(timeout=min(.05, self.heartbeat_s / 2, self.timeout_s / 2))
+                except queue.Empty:
+                    continue
+                record_line(line)
         finally:
-            self._stop.set()
-            thread.join(timeout=max(1.0, self.heartbeat_s + .1))
+            if self.process.poll() is None:
+                self._terminate()
+            reader.join(timeout=1)
+        return self.process.wait()
+
+
+def _disk_usage_bytes(root: Path) -> int:
+    """Count one configured root and fail closed when any part cannot be inspected."""
+    resolved = root.resolve(strict=True)
+    if resolved.is_file():
+        return resolved.stat().st_size
+    total = 0
+
+    def unreadable(error: OSError) -> None:
+        raise error
+
+    for directory, _subdirs, files in os.walk(resolved, onerror=unreadable, followlinks=False):
+        for name in files:
+            total += (Path(directory) / name).stat(follow_symlinks=False).st_size
+    return total
 
 
 class CampaignJob:
@@ -150,17 +237,32 @@ class CampaignJob:
 
     def __init__(self, *, context: CampaignJobContext, adapter: CampaignLifecycle,
                  outcome_path: Path, max_iterations: int = 40, heartbeat_s: float = 300,
+                 arm_timeout_s: float = DEFAULT_ARM_TIMEOUT_S,
+                 disk_budget_bytes: int = DEFAULT_CAMPAIGN_DISK_BUDGET_BYTES,
+                 corpus_cache_root: Path | None = None,
+                 disk_roots: Sequence[Path] = (),
                  working_directory: Path | None = None) -> None:
         if max_iterations < 1:
             raise CampaignJobError("max_iterations must be positive")
         if heartbeat_s <= 0:
             raise CampaignJobError("heartbeat_s must be positive")
-        self.context = context
+        if arm_timeout_s <= 0:
+            raise CampaignJobError("arm_timeout_s must be positive")
+        if (isinstance(disk_budget_bytes, bool) or not isinstance(disk_budget_bytes, int)
+                or disk_budget_bytes <= 0):
+            raise CampaignJobError("disk_budget_bytes must be a positive integer")
+        self.context = replace(context, progress_heartbeat_cadence_s=heartbeat_s)
         self.adapter = adapter
         self.outcome_path = outcome_path
         self.max_iterations = max_iterations
         self.heartbeat_s = heartbeat_s
-        self.working_directory = working_directory or context.state_root
+        self.arm_timeout_s = arm_timeout_s
+        self.disk_budget_bytes = disk_budget_bytes
+        external_roots = tuple(Path(root) for root in disk_roots)
+        if corpus_cache_root is not None:
+            external_roots = (Path(corpus_cache_root), *external_roots)
+        self.disk_roots = (self.context.state_root, *external_roots)
+        self.working_directory = working_directory or self.context.state_root
         self._arm: _ArmProcess | None = None
         self.cancelled = False
 
@@ -177,6 +279,28 @@ class CampaignJob:
         self.cancelled = True
         if self._arm is not None:
             self._arm.cancel()
+
+    def _disk_failure(self) -> str | None:
+        roots: list[Path] = []
+        for configured in self.disk_roots:
+            try:
+                resolved = configured.resolve(strict=True)
+            except OSError as exc:
+                return f"cannot read disk usage for {configured}: {exc}"
+            if resolved not in roots:
+                roots.append(resolved)
+        total = 0
+        for root in roots:
+            try:
+                total += _disk_usage_bytes(root)
+            except OSError as exc:
+                return f"cannot read disk usage for {root}: {exc}"
+        if total > self.disk_budget_bytes:
+            return (
+                f"campaign disk budget exceeded: {total} bytes used across "
+                f"{len(roots)} root(s), budget {self.disk_budget_bytes} bytes"
+            )
+        return None
 
     def run(self) -> CampaignOutcomeRecord:
         blocker = self.adapter.preflight(self.context)
@@ -214,6 +338,9 @@ class CampaignJob:
             blocker = self.adapter.blocking_diagnosis(self.context)
             if blocker:
                 return self._record(CampaignOutcome.BLOCKED, blocker)
+            disk_failure = self._disk_failure()
+            if disk_failure:
+                return self._record(CampaignOutcome.ABANDONED, disk_failure)
             before = self.adapter.trial_count(self.context)
             dispatch = self.adapter.dispatch_one(self.context)
             if isinstance(dispatch, CampaignOutcomeRecord):
@@ -223,9 +350,20 @@ class CampaignJob:
                 progress_path=self.context.progress_path,
                 heartbeat=lambda: self.adapter.heartbeat(self.context),
                 heartbeat_s=self.heartbeat_s,
+                timeout_s=self.arm_timeout_s,
             )
             returncode = self._arm.run(dispatch, cwd=self.working_directory)
+            void_reason = self._arm.failure_reason
             self._arm = None
+            if void_reason is not None:
+                self.adapter.void_arm(self.context, void_reason)
+                after = self.adapter.trial_count(self.context)
+                if after <= before:
+                    return self._record(
+                        CampaignOutcome.STALLED,
+                        f"iteration {iteration} was killed but its VOIDED trial was not recorded",
+                    )
+                continue
             if self.cancelled or returncode in {130, 143, -signal.SIGTERM, -signal.SIGKILL}:
                 return self._record(CampaignOutcome.CANCELLED, "arm process group was cancelled")
             if returncode != 0:
@@ -266,6 +404,15 @@ def main(argv: list[str] | None = None) -> int:
             context=context, adapter=adapter, outcome_path=outcome_path,
             max_iterations=int(config.get("max_iterations", 40)),
             heartbeat_s=float(config.get("heartbeat_s", 300)),
+            arm_timeout_s=float(config.get("arm_timeout_s", DEFAULT_ARM_TIMEOUT_S)),
+            disk_budget_bytes=int(config.get(
+                "disk_budget_bytes", DEFAULT_CAMPAIGN_DISK_BUDGET_BYTES,
+            )),
+            corpus_cache_root=(
+                None if config.get("corpus_cache_root") in (None, "")
+                else Path(str(config["corpus_cache_root"]))
+            ),
+            disk_roots=tuple(Path(str(root)) for root in config.get("disk_roots", ())),
             working_directory=Path(str(config.get("working_directory", state_root))),
         )
         previous_term = signal.getsignal(signal.SIGTERM)
