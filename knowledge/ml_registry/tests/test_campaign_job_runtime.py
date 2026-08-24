@@ -50,13 +50,13 @@ def _job(tmp_path: Path, adapter: _Adapter) -> CampaignJob:
                        heartbeat_s=.01, working_directory=tmp_path)
 
 
-def test_campaign_job_runs_one_arm_at_a_time_and_writes_typed_complete(tmp_path: Path) -> None:
+def test_campaign_job_runs_one_arm_at_a_time_and_writes_typed_promotion(tmp_path: Path) -> None:
     adapter = _Adapter(tmp_path / "run.marker")
     outcome = _job(tmp_path, adapter).run()
 
-    assert outcome.outcome is CampaignOutcome.COMPLETE
+    assert outcome.outcome is CampaignOutcome.PROMOTED
     assert outcome.production_alias == ProductionAliasRef("model-fixture", 1)
-    assert json.loads((tmp_path / "outcome.json").read_text())["outcome"] == "COMPLETE"
+    assert json.loads((tmp_path / "outcome.json").read_text())["outcome"] == "PROMOTED"
     progress = read_progress_snapshot(tmp_path / "progress.json")
     assert progress is not None and progress.current == progress.total == 1
 

@@ -9,6 +9,12 @@ from .production_alias import ProductionAliasRef
 
 
 class CampaignOutcome(str, Enum):
+    PROMOTED = "PROMOTED"
+    MEASURED = "MEASURED"
+    REFUTED = "REFUTED"
+    ABANDONED = "ABANDONED"
+
+    # Runtime transport outcomes retained for version-2 record compatibility.
     COMPLETE = "COMPLETE"
     BLOCKED = "BLOCKED"
     STALLED = "STALLED"
@@ -16,6 +22,31 @@ class CampaignOutcome(str, Enum):
     FAILED = "FAILED"
     QUOTA = "QUOTA"
     CANCELLED = "CANCELLED"
+
+
+class StageOutcome(str, Enum):
+    ADVANCED = "ADVANCED"
+    STAGNANT = "STAGNANT"
+    VACUOUS = "VACUOUS"
+
+    @classmethod
+    def for_stage(
+        cls, *, material_families: int, completed_families: int, advanced: bool,
+    ) -> "StageOutcome":
+        counts = (material_families, completed_families)
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts):
+            raise ContractError("stage family counts must be non-negative integers")
+        if completed_families > material_families:
+            raise ContractError("completed stage families cannot exceed material families")
+        if not isinstance(advanced, bool):
+            raise ContractError("advanced must be boolean")
+        if material_families == 0:
+            return cls.VACUOUS
+        if advanced:
+            return cls.ADVANCED
+        if completed_families == material_families:
+            return cls.STAGNANT
+        raise ContractError("stage is still open and has no terminal outcome")
 
 
 @dataclass(frozen=True)
@@ -28,6 +59,13 @@ class CampaignOutcomeRecord:
     production_alias: ProductionAliasRef | None = None
 
     VERSION = 2
+
+    def __post_init__(self) -> None:
+        text(self.reason, "reason")
+        integer(self.attempt, "attempt", minimum=1)
+        if self.outcome in {CampaignOutcome.COMPLETE, CampaignOutcome.PROMOTED} \
+                and self.production_alias is None:
+            raise ContractError(f"{self.outcome.value} requires a canonical production alias reference")
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "CampaignOutcomeRecord":
@@ -45,13 +83,12 @@ class CampaignOutcomeRecord:
                       if isinstance(production_raw, Mapping) else None)
         if production_raw is not None and production is None:
             raise ContractError("production must be an object or null")
-        if outcome is CampaignOutcome.COMPLETE and production is None:
-            raise ContractError("COMPLETE requires a canonical production alias reference")
         return cls(version, text(value.get("campaign_id"), "campaign_id"), outcome,
                    text(value.get("reason"), "reason"), integer(value.get("attempt"), "attempt", minimum=1),
                    production)
 
     def to_mapping(self) -> dict[str, Any]:
+        self.__post_init__()
         result = asdict(self)
         result["outcome"] = self.outcome.value
         result["production_alias"] = (None if self.production_alias is None

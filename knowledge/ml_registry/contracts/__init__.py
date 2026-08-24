@@ -17,7 +17,7 @@ from .ledger_v2 import (
     ThroughputUnit,
 )
 from .migration import LATEST_SCHEMA_VERSIONS, migrate_ledger, migrate_legacy_trial_state, migrate_mapping
-from .outcome import CampaignOutcome, CampaignOutcomeRecord
+from .outcome import CampaignOutcome, CampaignOutcomeRecord, StageOutcome
 from .partition import Partition
 from .production_alias import ProductionAliasRef
 from .runs_export import RunsExport
@@ -26,6 +26,7 @@ __all__ = [
     "CampaignLease",
     "CampaignOutcome",
     "CampaignOutcomeRecord",
+    "StageOutcome",
     "CampaignSpec",
     "CodeRef",
     "ContractError",

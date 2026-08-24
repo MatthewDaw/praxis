@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
 import os
@@ -117,6 +117,7 @@ def portfolio_schedule(
     if not 1 <= max_active <= MAX_ACTIVE_CAMPAIGNS:
         raise ControllerError(f"max_active must be between 1 and {MAX_ACTIVE_CAMPAIGNS}")
     gated: dict[str, JobState | Mapping[str, Any]] = dict(states)
+    artifact_pins: dict[str, tuple[Mapping[str, Any], ...]] = {}
     for spec in campaign_specs:
         campaign_id = str(spec.get("id", ""))
         if campaign_id not in portfolio.campaigns:
@@ -133,6 +134,10 @@ def portfolio_schedule(
                 gated[campaign_id] = JobState(
                     campaign_id, "blocked", message=artifact_readiness.reason,
                 )
+            else:
+                artifact_pins[campaign_id] = tuple(
+                    pin.to_mapping() for pin in artifact_readiness.pins
+                )
             continue
         readiness = portfolio.refresh(campaign_id)
         campaign = portfolio.campaigns[campaign_id]
@@ -148,10 +153,13 @@ def portfolio_schedule(
             if campaign.status != CampaignStatus.READY:
                 reasons.insert(0, f"campaign status is {campaign.status.value}, expected READY")
             gated[campaign_id] = JobState(campaign_id, "blocked", message="; ".join(reasons))
-    return schedule(
+    decision = schedule(
         campaign_specs, gated, capacity, max_concurrency=max_active,
         remaining_cost=remaining_cost,
     )
+    jobs = tuple(replace(job, artifact_pins=artifact_pins.get(job.campaign_id, ()))
+                 for job in decision.jobs)
+    return ScheduleDecision(jobs, decision.blocked, decision.available)
 
 
 class PortfolioController:

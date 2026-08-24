@@ -21,6 +21,25 @@ class ArtifactReadiness:
     ready: bool
     artifact_id: str | None
     reason: str
+    pins: tuple["ArtifactPin", ...] = ()
+
+
+@dataclass(frozen=True)
+class ArtifactPin:
+    producer_campaign_id: str
+    artifact_type: str
+    model_id: str
+    version: int
+    artifact_id: str
+
+    def to_mapping(self) -> dict[str, str | int]:
+        return {
+            "producer_campaign_id": self.producer_campaign_id,
+            "artifact_type": self.artifact_type,
+            "model_id": self.model_id,
+            "version": self.version,
+            "artifact_id": self.artifact_id,
+        }
 
 
 def _specs_from_events(registry: Registry) -> tuple[CampaignSpec, ...]:
@@ -132,6 +151,7 @@ def explain_readiness(
         return ArtifactReadiness(campaign_id, True, None, "no upstream artifacts required")
 
     artifacts = {row["artifact_id"]: row for row in registry.rows("artifacts")}
+    pins: list[ArtifactPin] = []
     for requirement in consumer.requires:
         producer, produced = _producer_contract(by_id, requirement, consumer_id=campaign_id)
         artifact_type = _artifact_type(requirement, owner=campaign_id)
@@ -177,5 +197,18 @@ def explain_readiness(
                 or compat.get("head_sha") != registry._git_head(code_ref["repo"])):
             return ArtifactReadiness(campaign_id, False, artifact_id,
                                      f"artifact {artifact_id} compatibility evidence is stale")
+        pins.append(ArtifactPin(
+            producer.campaign_id,
+            artifact_type,
+            str(version["model_id"]),
+            int(version["version"]),
+            artifact_id,
+        ))
 
-    return ArtifactReadiness(campaign_id, True, None, "all required production artifacts verified")
+    return ArtifactReadiness(
+        campaign_id,
+        True,
+        None,
+        "all required production artifacts verified",
+        tuple(pins),
+    )

@@ -119,6 +119,7 @@ class JobSpec:
     timeout_minutes: int | None = None
     artifact_result_path: str | None = None
     working_directory: str | None = None
+    artifact_pins: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)

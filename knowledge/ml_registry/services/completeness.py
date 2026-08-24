@@ -7,6 +7,7 @@ import subprocess
 from collections.abc import Mapping
 from typing import Any
 
+from knowledge.ml_registry.contracts import StageOutcome
 from knowledge.ml_registry.domain import CampaignView
 from knowledge.ml_registry.domain.status import answers_question, fairly_measured, retryable
 from knowledge.ml_registry.services.campaign_view import STANDARD_TABLES
@@ -60,16 +61,25 @@ def campaign_coverage(
         measured = [idea for idea in members
                     if latest[idea.fact_id] and _fair_measurement(latest[idea.fact_id])]
         open_ideas = [idea for idea in members if idea.fact_id not in closed]
-        row = {"stage": stage, "total": len(members), "measured": len(measured),
-               "closed": not open_ideas, "thin": not open_ideas and len(measured) < min_measured}
-        coverage.append(row)
+        advanced = any(idea.fact_id in adopted for idea in members)
+        outcome: StageOutcome | None = None
+        reason: str | None = None
         if not members:
-            blocking.append(_blocker("stage_never_authored", stage,
-                                     f"phase {stage!r} has ZERO registered ideas"))
-        elif open_ideas:
+            outcome = StageOutcome.VACUOUS
+            reason = "stage has no material families"
+        elif not open_ideas and len(measured) >= min_measured:
+            outcome = StageOutcome.ADVANCED if advanced else StageOutcome.STAGNANT
+            reason = ("a material family cleared the rope" if advanced
+                      else "all material families ran; none cleared the rope")
+        row = {"stage": stage, "total": len(members), "measured": len(measured),
+               "closed": not open_ideas, "thin": bool(members) and not open_ideas
+               and len(measured) < min_measured,
+               "outcome": None if outcome is None else outcome.value, "reason": reason}
+        coverage.append(row)
+        if open_ideas:
             blocking.append(_blocker("stage_open", stage,
                                      f"{len(open_ideas)} idea(s) remain unanswered in {stage!r}"))
-        elif len(measured) < min_measured:
+        elif members and len(measured) < min_measured:
             blocking.append(_blocker("stage_thin", stage,
                                      f"{stage!r} closed on {len(measured)} fair measurement(s), "
                                      f"below the floor of {min_measured}"))
