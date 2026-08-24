@@ -9,6 +9,7 @@ from knowledge.ml_registry.contracts import (
     CampaignOutcome,
     CampaignOutcomeRecord,
     ProductionAliasRef,
+    StageCloseRecord,
     StageOutcome,
 )
 from knowledge.ml_registry.contracts._validation import ContractError
@@ -101,6 +102,54 @@ def test_stage_outcomes_distinguish_vacuous_stagnant_and_advanced() -> None:
 )
 def test_stage_outcome_owns_its_terminal_reason(outcome: StageOutcome, reason: str) -> None:
     assert outcome.reason == reason
+
+
+def test_a_forced_early_close_maps_a_partial_stage_to_stagnant() -> None:
+    # Unforced, a partial stage is still open (above); the stagnation bound closes it anyway.
+    assert StageOutcome.for_stage(
+        material_families=11, completed_families=9, advanced=False, forced=True,
+    ) is StageOutcome.STAGNANT
+    assert StageOutcome.for_stage(
+        material_families=11, completed_families=9, advanced=True, forced=True,
+    ) is StageOutcome.ADVANCED
+    assert StageOutcome.for_stage(
+        material_families=0, completed_families=0, advanced=False, forced=True,
+    ) is StageOutcome.VACUOUS
+
+
+def test_a_stagnation_close_record_carries_one_truthful_reason() -> None:
+    record = StageCloseRecord.for_stagnation(
+        stage="architecture", material_families=11, completed_families=9,
+        experiments_without_improvement=10, limit=10,
+    )
+    assert record.outcome is StageOutcome.STAGNANT
+    # The enum's own STAGNANT reason claims every family ran, which is false here.
+    assert record.reason != StageOutcome.STAGNANT.reason
+    assert record.reason == (
+        "no improvement in the last 10 experiments; 2 of 11 material families untried"
+    )
+    # The limit and the observed count stay separate detail, not folded into the reason.
+    assert record.experiments_without_improvement == 10
+    assert record.limit == 10
+    assert StageCloseRecord.from_mapping(record.to_mapping()) == record
+
+
+def test_a_stagnation_close_record_refuses_an_incoherent_close() -> None:
+    with pytest.raises(ContractError, match="material families"):
+        StageCloseRecord.for_stagnation(
+            stage="architecture", material_families=0, completed_families=0,
+            experiments_without_improvement=10, limit=10,
+        )
+    with pytest.raises(ContractError, match="without an improvement"):
+        StageCloseRecord.for_stagnation(
+            stage="architecture", material_families=11, completed_families=9,
+            experiments_without_improvement=9, limit=10,
+        )
+    with pytest.raises(ContractError, match="unknown stage close fields"):
+        StageCloseRecord.from_mapping({**StageCloseRecord.for_stagnation(
+            stage="architecture", material_families=11, completed_families=9,
+            experiments_without_improvement=10, limit=10,
+        ).to_mapping(), "surplus": 1})
 
 
 def test_claim_carries_concrete_upstream_artifact_version_or_is_refused(tmp_path: Path) -> None:
