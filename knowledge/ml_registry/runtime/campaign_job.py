@@ -30,6 +30,10 @@ from knowledge.ml_registry.runtime.progress import parse_progress_line, write_pr
 
 
 EXIT_BY_OUTCOME = {
+    CampaignOutcome.PROMOTED: 0,
+    CampaignOutcome.MEASURED: 0,
+    CampaignOutcome.REFUTED: 0,
+    CampaignOutcome.ABANDONED: 3,
     CampaignOutcome.COMPLETE: 0,
     CampaignOutcome.BLOCKED: 3,
     CampaignOutcome.STALLED: 4,
@@ -57,6 +61,9 @@ class CampaignLifecycle(Protocol):
 
     def preflight(self, context: CampaignJobContext) -> str | None: ...
     def complete(self, context: CampaignJobContext) -> ProductionAliasRef | None: ...
+    def terminal_outcome(
+        self, context: CampaignJobContext,
+    ) -> tuple[CampaignOutcome, str] | None: ...
     def blocking_diagnosis(self, context: CampaignJobContext) -> str | None: ...
     def trial_count(self, context: CampaignJobContext) -> int: ...
     def dispatch_one(self, context: CampaignJobContext) -> Sequence[str] | CampaignOutcomeRecord: ...
@@ -187,10 +194,23 @@ class CampaignJob:
             production_alias = self.adapter.complete(self.context)
             if production_alias is not None:
                 return self._record(
-                    CampaignOutcome.COMPLETE,
+                    CampaignOutcome.PROMOTED,
                     "campaign reports canonical completion",
                     production_alias,
                 )
+            if hasattr(self.adapter, "terminal_outcome"):
+                declared = self.adapter.terminal_outcome(self.context)
+                if declared is not None:
+                    outcome, reason = declared
+                    if outcome not in {
+                        CampaignOutcome.MEASURED,
+                        CampaignOutcome.REFUTED,
+                        CampaignOutcome.ABANDONED,
+                    }:
+                        raise CampaignJobError(
+                            "terminal_outcome must declare MEASURED, REFUTED, or ABANDONED"
+                        )
+                    return self._record(outcome, reason)
             blocker = self.adapter.blocking_diagnosis(self.context)
             if blocker:
                 return self._record(CampaignOutcome.BLOCKED, blocker)

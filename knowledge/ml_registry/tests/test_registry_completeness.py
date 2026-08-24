@@ -94,7 +94,7 @@ def test_latest_run_status_and_verdict_drive_coverage(
     assert ("awaiting_rerun" in {item["kind"] for item in out["blocking"]}) is retry
 
 
-def test_empty_open_and_thin_stages_have_distinct_blockers(tmp_path):
+def test_empty_open_and_thin_stages_have_distinct_blockers(tmp_path: Path) -> None:
     space, registry, binding = _fixture(tmp_path, stages=("empty", "open", "thin"))
     _idea(space, binding, "open", stage="open")
     thin = _idea(space, binding, "thin", stage="thin")
@@ -106,33 +106,38 @@ def test_empty_open_and_thin_stages_have_distinct_blockers(tmp_path):
     complete_run(registry, run_id="thin", metrics=_metrics())
     adjudicate_run(registry, run_id="thin", verdict="rejected", status="succeeded", reason="loss")
     out = campaign_coverage(_view(space, registry, binding), registry, min_measured=2)
+    assert out["coverage"][0]["outcome"] == "VACUOUS"
+    assert out["coverage"][0]["reason"] == "stage has no material families"
     assert [(item["kind"], item["stage"]) for item in out["blocking"]] == [
-        ("stage_never_authored", "empty"), ("stage_open", "open"), ("stage_thin", "thin")]
+        ("stage_open", "open"), ("stage_thin", "thin")]
 
 
 @pytest.mark.parametrize("params", [
     {"incumbent_remeasurement": True},
     {"resolved_configuration": "same", "incumbent_configuration": "same"},
 ])
-def test_both_noop_encodings_are_answered_but_not_measured(tmp_path, params):
+def test_both_noop_encodings_are_answered_but_not_measured(
+    tmp_path: Path, params: dict[str, object],
+) -> None:
     space, registry, binding = _fixture(tmp_path)
     idea = _idea(space, binding, "noop")
     _run(registry, idea, "noop", params=params)
     out = campaign_coverage(_view(space, registry, binding), registry, min_measured=1)
     assert out["coverage"][0] == {"stage": "representation", "total": 1, "measured": 0,
-                                  "closed": True, "thin": True}
+                                  "closed": True, "thin": True, "outcome": None, "reason": None}
     assert [(item["kind"], item["stage"]) for item in out["blocking"]] == [
         ("stage_thin", "representation")]
 
 
-def test_latest_retry_and_noop_do_not_populate_or_close_stage(tmp_path):
+def test_latest_retry_and_noop_do_not_populate_or_close_stage(tmp_path: Path) -> None:
     space, registry, binding = _fixture(tmp_path)
     idea = _idea(space, binding, "arm")
     _run(registry, idea, "fair")
     _run(registry, idea, "retry", verdict="voided")
     out = campaign_coverage(_view(space, registry, binding), registry, min_measured=1)
     assert out["coverage"] == [{"stage": "representation", "total": 1, "measured": 0,
-                                "closed": False, "thin": False}]
+                                "closed": False, "thin": False, "outcome": None,
+                                "reason": None}]
     assert {row["kind"] for row in out["blocking"]} == {"stage_open", "awaiting_rerun"}
 
     other = _idea(space, binding, "noop")
