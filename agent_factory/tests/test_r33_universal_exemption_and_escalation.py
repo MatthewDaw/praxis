@@ -179,14 +179,17 @@ def test_unchanged_diff_escalates_within_cap_instead_of_looping(monkeypatch):
                                "kind": "graded", "rubric": RUBRIC}], ref=PLAN)
     stub = _stub(0.3, [{"file": "x", "line": 1, "problem": "p", "remedy": "r", "confidence": 8}])
 
-    r1 = gv.verify_graded_check("R4", "v1", "frozen-diff", stub, ref=PLAN, now=1.0)
+    # cap passed EXPLICITLY — the property under test is "a frozen diff still escalates WITHIN the
+    # cap", which holds at any cap. Reading the default instead just couples this to its value.
+    CAP = 3
+    r1 = gv.verify_graded_check("R4", "v1", "frozen-diff", stub, ref=PLAN, cap=CAP, now=1.0)
     assert not r1.should_block and not r1.cached
     for n in (2.0, 3.0):
-        r = gv.verify_graded_check("R4", "v1", "frozen-diff", stub, ref=PLAN, now=n)
+        r = gv.verify_graded_check("R4", "v1", "frozen-diff", stub, ref=PLAN, cap=CAP, now=n)
         assert r.cached
         if n < 3.0:
             assert not r.should_block
-    r_final = gv.verify_graded_check("R4", "v1", "frozen-diff", stub, ref=PLAN, now=4.0)
+    r_final = gv.verify_graded_check("R4", "v1", "frozen-diff", stub, ref=PLAN, cap=CAP, now=4.0)
     assert r_final.cached and r_final.should_block
     assert "unchanged" in r_final.block_reason.casefold()
     # Only ONE judge call across every repeat of the identical diff.
