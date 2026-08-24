@@ -10,21 +10,32 @@ from pathlib import Path
 
 import pytest
 
-from knowledge.ml_registry.floor import register_model_with_baseline
+from knowledge.ml_registry.floor import comparison_rope, register_model_with_baseline
 from knowledge.ml_registry.schema import MODEL, REQUIRED_META_KEYS, RegistryValidationError
 from knowledge.ml_registry.selection import REUSE_RUNGS, Candidate, select
 from knowledge.ml_registry.storage import Registry
 from knowledge.ml_registry.write_path import RegistrySpace
 
 POLICY_FIXTURES = Path(__file__).parent / "fixtures" / "policy_gate"
-#: Spelled apart so this file's own source does not trip the retirement scan below.
-RETIRED_FIELD = "noise" + "_floor"
 
 
 def _candidate(candidate_id: str, rung: int, value: float, sigma: float = 0.0,
                family: str = "") -> Candidate:
     return Candidate(candidate_id=candidate_id, rung=rung, value=value, sigma=sigma,
                      family=family or candidate_id)
+
+
+def _register(space: RegistrySpace, values: dict[str, float]) -> str:
+    """Register a minimal model whose baseline rows ARE ``values``."""
+    return register_model_with_baseline(
+        space,
+        {
+            "metric": "val_bpb", "direction": "minimize", "win_condition": "beats baseline",
+            "baseline": next(iter(values)), "diff_size_limit": 800,
+            "baseline_runs": list(values),
+        },
+        values,
+    )
 
 
 def test_n_candidates_with_known_sigma_select_the_best_one() -> None:
@@ -79,14 +90,7 @@ def test_a_deterministic_candidate_with_zero_sigma_does_not_refuse() -> None:
 
     space = RegistrySpace()
     identical = {"d1": 1.0, "d2": 1.0, "d3": 1.0, "d4": 1.0}
-    model_id = register_model_with_baseline(
-        space,
-        {
-            "metric": "val_bpb", "direction": "minimize", "win_condition": "beats baseline",
-            "baseline": "d1", "diff_size_limit": 800, "baseline_runs": list(identical),
-        },
-        identical,
-    )
+    model_id = _register(space, identical)
     assert space.get(model_id).meta["baseline_runs"] == list(identical)
 
 
@@ -130,15 +134,22 @@ def test_the_ladder_is_a_closed_first_class_field_not_opaque_text() -> None:
 
 
 def test_the_stored_threshold_field_no_longer_exists_and_nothing_reads_it() -> None:
-    """Two thresholds must not decide one verdict: the rope is computed per comparison and
-    the value stored at registration is gone from the schema and from every source file."""
-    assert RETIRED_FIELD not in REQUIRED_META_KEYS[MODEL]
+    """Two thresholds must not decide one verdict. The retired field is no part of a model's
+    registration contract, registration will not store one (see the refusals in
+    ``test_write_path`` and ``test_floor``), and a fact that carries one anyway -- written
+    before the retirement, or reached around the write path -- moves no bar: the rope is
+    measured from the baseline rows at the moment of the comparison.
 
-    root = Path(__file__).resolve().parents[3]
-    offenders = sorted(
-        str(path.relative_to(root))
-        for directory in ("knowledge", "agent_factory")
-        for path in (root / directory).rglob("*.py")
-        if RETIRED_FIELD in path.read_text(encoding="utf-8")
-    )
-    assert offenders == []
+    Asserted by BEHAVIOUR rather than by scanning the sources for the name. A grep passes
+    the moment the string is gone, which is satisfied by a field nothing reads but
+    registration still stores -- the exact state that shipped and had to be rebuilt."""
+    assert "noise_floor" not in REQUIRED_META_KEYS[MODEL]
+
+    space = RegistrySpace()
+    values = {"c1": 1.0, "c2": 1.2, "c3": 0.9, "c4": 1.1}
+    stored = space.get(_register(space, values)).meta
+    assert not [key for key in stored if "floor" in key]
+
+    rows = list(values.values())
+    fossil = {**stored, "noise_floor": 999.0}
+    assert comparison_rope(fossil, rows, 1.0) == comparison_rope(stored, rows, 1.0)

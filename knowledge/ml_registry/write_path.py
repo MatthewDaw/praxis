@@ -185,10 +185,17 @@ def register_model(space: RegistrySpace, meta: dict[str, object], *, model_id: s
     from knowledge.ml_registry.floor import (
         ROPE_SCALING_BASIS_FIELD,
         declared_sigmas,
+        guard_retired_threshold_fields,
         guard_rope_provenance,
         guard_rope_scaling,
     )
 
+    # Sits FIRST, and on this choke point rather than only on the baseline-backed path: a
+    # retired field is refused before any of the guards below can read a stale meaning out
+    # of it, and before the plain CLI registration -- which checks nothing else at all --
+    # can store one. register_model_with_baseline delegates here, so all three registration
+    # paths (plain, baseline-backed, re-registration) are closed by this one call.
+    guard_retired_threshold_fields(merged)
     guard_rope_provenance(merged)
     declared_sigmas(merged)
     # The shape, its ceiling and its armor are the only things praxis can establish about a
@@ -244,10 +251,15 @@ def mutate_model(
         raise RegistryValidationError(
             f"model {model_id!r} was never registered", field="model_id"
         )
-    from knowledge.ml_registry.floor import guard_rope_provenance
+    from knowledge.ml_registry.floor import guard_retired_threshold_fields, guard_rope_provenance
 
     guard_model_mutation(patch, source=source)
     guard_baseline_move(patch, source=source)
+    # Against the PATCH, not the merged meta: a retired field cannot get past registration,
+    # so the only way one arrives is in the patch itself. Checking the merge instead would
+    # let a single legacy fact that already carries one wedge every unrelated patch against
+    # that model forever, which retires nothing and breaks a live campaign.
+    guard_retired_threshold_fields(patch)
     # Declaring the pairing AFTER registration must not be a way around the provenance
     # guard, so it is checked against the meta the patch would leave behind, not the
     # patch alone -- a patch naming only trial_comparison is exactly how a live campaign

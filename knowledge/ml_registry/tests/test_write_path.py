@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from knowledge.ml_registry.citation import ResolvedCitation, ResolverUnreachable
+from knowledge.ml_registry.floor import RETIRED_THRESHOLD_FIELDS
 from knowledge.ml_registry.schema import IDEA, MODEL, TRIAL, RegistryValidationError
 from knowledge.ml_registry.write_path import (
     DEFAULT_MAX_DISCOVERED_IDEAS,
@@ -55,6 +56,46 @@ def test_register_model_stores_no_threshold_of_its_own() -> None:
     meta = space.get(model_id).meta
     assert meta["baseline_runs"] == ["b1", "b2", "b3", "b4"]
     assert not [key for key in meta if "floor" in key]
+
+
+@pytest.mark.parametrize("retired", sorted(RETIRED_THRESHOLD_FIELDS))
+def test_registration_refuses_every_field_retired_with_the_stored_threshold(retired: str) -> None:
+    """Not READING a retired field is not retiring it. Registration merges caller meta
+    verbatim, so an unread ``noise_floor: 999.0`` still lands on the model fact, and the
+    reader who finds it later cannot tell that fossil from a live bar -- which is the
+    two-thresholds-decide-one-verdict state R3a removed, rebuilt by the write path. Each
+    retired name is refused BY NAME, and nothing is written."""
+    space = RegistrySpace()
+    with pytest.raises(RegistryValidationError) as excinfo:
+        register_model(space, {**MODEL_META, retired: 999.0})
+    assert excinfo.value.field == retired
+    assert space.list_facts(MODEL) == []
+
+
+def test_re_registering_a_live_model_cannot_smuggle_a_retired_field_onto_it() -> None:
+    """The update path runs through the same choke point as the first registration, so the
+    second write is no way in either -- and the model it would have landed on is untouched."""
+    space = RegistrySpace()
+    model_id = register_model(space, dict(MODEL_META))
+
+    with pytest.raises(RegistryValidationError) as excinfo:
+        register_model(space, {**MODEL_META, "noise_floor": 999.0}, model_id=model_id)
+
+    assert excinfo.value.field == "noise_floor"
+    assert "noise_floor" not in space.get(model_id).meta
+
+
+def test_mutating_a_registered_model_cannot_add_a_retired_field_after_the_fact() -> None:
+    """Declaring the retired threshold AFTER registration must not be the way around the
+    refusal -- the same hole ``guard_rope_provenance`` sits on this path to close."""
+    space = RegistrySpace()
+    model_id = register_model(space, dict(MODEL_META))
+
+    with pytest.raises(RegistryValidationError) as excinfo:
+        mutate_model(space, model_id, {"noise_floor": 999.0}, source="adjudication")
+
+    assert excinfo.value.field == "noise_floor"
+    assert "noise_floor" not in space.get(model_id).meta
 
 
 def test_register_model_idea_trial_readback_returns_all_three_and_trial_derives_from_idea():

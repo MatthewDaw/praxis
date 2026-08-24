@@ -104,6 +104,18 @@ def test_registration_stores_the_ropes_evidence_and_the_throughput_but_no_thresh
     )
 
 
+def test_registration_refuses_a_stored_threshold_against_the_baseline_rows() -> None:
+    """The baseline-backed path is where a caller-supplied threshold used to arrive, and the
+    recomputation against these rows is what used to police it. The recomputation went with
+    the field, so what stands in its place is a refusal: the rope comes from these rows at
+    every comparison, and there is no second number left to reconcile with it."""
+    space = RegistrySpace()
+    with pytest.raises(RegistryValidationError) as excinfo:
+        register_model_with_baseline(space, {**MODEL_META, "noise_floor": 999.0}, LEDGER)
+    assert excinfo.value.field == "noise_floor"
+    assert space.list_facts() == []
+
+
 def test_registration_refuses_fewer_or_more_than_4_baseline_runs_naming_the_field() -> None:
     space = RegistrySpace()
     meta = dict(MODEL_META)
