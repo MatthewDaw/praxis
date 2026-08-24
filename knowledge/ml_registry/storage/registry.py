@@ -298,9 +298,14 @@ class Registry:
             return
         elif op == "trial_refused":
             return
-        elif op == "campaign_spec_registered":
+        elif op in {
+            "campaign_spec_registered",
+            "campaign_registration_refused",
+            "campaign_outcome_recorded",
+        }:
             # CampaignSpec is a versioned control-plane contract, not a ninth
-            # model-registry entity. Its canonical copy lives in the event log.
+            # model-registry entity. Runner refusals and outcomes live beside it
+            # in the event log, leaving the eight-table projection unchanged.
             return
         elif op == "adoption_invalidated":
             run = db.execute("SELECT * FROM runs WHERE run_id=?", (p["adoption_run_id"],)).fetchone()
@@ -661,6 +666,36 @@ class Registry:
         if prior and prior[-1].payload == canonical:
             return False
         self._write("campaign_spec_registered", canonical)
+        return True
+
+    def record_campaign_registration_refusal(self, campaign_id: str, reason: str) -> bool:
+        """Keep a rejected portfolio entry visible without making it a registered spec."""
+        if not campaign_id.strip() or not reason.strip():
+            raise RegistryError("campaign registration refusal requires an id and reason")
+        payload = {"campaign_id": campaign_id.strip(), "reason": reason.strip()}
+        prior = [event for event in self.events.read()
+                 if event.event_type == "campaign_registration_refused"
+                 and event.payload.get("campaign_id") == payload["campaign_id"]]
+        if prior and prior[-1].payload == payload:
+            return False
+        self._write("campaign_registration_refused", payload)
+        return True
+
+    def record_campaign_outcome(self, outcome: Mapping[str, Any]) -> bool:
+        """Commit one terminal campaign outcome idempotently before another dispatch."""
+        from knowledge.ml_registry.contracts import CampaignOutcomeRecord
+
+        record = CampaignOutcomeRecord.from_mapping(outcome)
+        payload = record.to_mapping()
+        prior = [event for event in self.events.read()
+                 if event.event_type == "campaign_outcome_recorded"
+                 and event.payload.get("campaign_id") == record.campaign_id]
+        if prior:
+            if prior[-1].payload != payload:
+                raise RegistryError("campaign outcome retry drifted from its terminal verdict")
+            self.recover()
+            return False
+        self._write("campaign_outcome_recorded", payload)
         return True
 
     def register_model(self, **values: Any) -> None:
