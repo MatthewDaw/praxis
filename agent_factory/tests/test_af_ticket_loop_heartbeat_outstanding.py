@@ -19,8 +19,6 @@ import re
 import sys
 from pathlib import Path
 
-import pytest
-
 from agent_factory import ingestion_api  # noqa: F401  -- canonicalizes the hooks modules first
 
 import _praxis  # noqa: E402
@@ -110,7 +108,8 @@ def test_tickets_outside_the_round_are_not_reported(monkeypatch, capsys):
 
 def test_the_heartbeat_is_handed_the_open_ids_not_the_whole_round():
     src = SCRIPT.read_text()
-    call = next(l for l in src.splitlines() if "af_round_heartbeat " in l and not l.strip().startswith("#"))
+    call = next(line for line in src.splitlines()
+                if "af_round_heartbeat " in line and not line.strip().startswith("#"))
     assert "$ids_csv" not in call or "hb_open" in call, call
     assert "hb_open" in call, "the heartbeat must receive the queried open set"
 
