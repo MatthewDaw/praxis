@@ -73,7 +73,7 @@ def scenario(tmp_path: Path):
     registry.create_experiment(
         experiment_id="fixture-o", spec_digest="a" * 64, stages=["representation"],
         metric="score", direction="maximize", win_condition={"metric_at_least": 0.5},
-        noise_floor=0.01, baseline_throughput=1.0,
+        rope=0.01, baseline_throughput=1.0,
     )
     registry.register_model(model_id="fixture-o-model", family="linear", sport_scope="shared",
                             axis="fixture", protocol="Detector", extends=None)

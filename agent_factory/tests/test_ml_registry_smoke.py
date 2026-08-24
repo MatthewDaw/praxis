@@ -41,13 +41,12 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess:
     )
 
 
-def test_cli_accepts_a_well_formed_model_fact():
+def test_cli_accepts_a_well_formed_model_fact() -> None:
     meta = {
         "metric": "val_bpb",
         "direction": "minimize",
-        "win_condition": "beats baseline by noise_floor",
+        "win_condition": "beats baseline by the rope",
         "baseline": "commit-abc123",
-        "noise_floor": 0.01,
         "baseline_throughput": 1200,
         "diff_size_limit": 800,
     }
@@ -63,13 +62,13 @@ def test_cli_rejects_a_fact_missing_a_required_key_naming_it():
     assert "description" in result.stdout + result.stderr
 
 
-def test_cli_refuses_worker_sourced_mutation_of_a_protected_field_naming_it():
-    patch = {"noise_floor": 0.5}
+def test_cli_refuses_worker_sourced_mutation_of_a_protected_field_naming_it() -> None:
+    patch = {"baseline_runs": ["cherry-picked"]}
     result = _run_cli(
         "guard-model-mutation", "--patch-json", json.dumps(patch), "--source", "worker"
     )
     assert result.returncode == 1
-    assert "noise_floor" in result.stdout + result.stderr
+    assert "baseline_runs" in result.stdout + result.stderr
 
 
 def test_cli_refuses_a_baseline_move_from_anywhere_other_than_adjudication():
@@ -90,9 +89,8 @@ def test_cli_allows_a_baseline_move_from_adjudication():
 MODEL_META = {
     "metric": "val_bpb",
     "direction": "minimize",
-    "win_condition": "beats baseline by noise_floor",
+    "win_condition": "beats baseline by the rope",
     "baseline": "commit-abc123",
-    "noise_floor": 0.01,
     "baseline_throughput": 1200,
     "diff_size_limit": 800,
     "max_discovered_ideas": 1,
@@ -501,11 +499,11 @@ def test_cli_registry_queries_over_a_seeded_multi_axis_multi_model_fixture(tmp_p
     }
 
 
-def test_cli_registers_a_model_with_a_ledger_recomputed_floor_and_adjudicates_a_single_trial(tmp_path: Path) -> None:
-    """R12 acceptance, CLI-driven: registration recomputes noise_floor/baseline_throughput
-    from 4 named ledger rows, refuses a disagreeing stored value, adjudicates a candidate
-    on a single trial, and a harness-field mutation retires the floor, reverts the active
-    adoption (with its re-queue side effect), and clears the ratchet counter."""
+def test_cli_registers_a_model_against_its_ledger_rows_and_adjudicates_a_single_trial(tmp_path: Path) -> None:
+    """R12 acceptance, CLI-driven: registration records the rope's evidence (4 named ledger
+    rows) and recomputes baseline_throughput from them, adjudicates a candidate against the
+    rope measured from those same rows, and a harness-field mutation retires that evidence,
+    reverts the active adoption (with its re-queue side effect), and clears the ratchet."""
     space_file = tmp_path / "space.json"
     ledger = tmp_path / "results.tsv"
     ledger.write_text(
@@ -519,7 +517,7 @@ def test_cli_registers_a_model_with_a_ledger_recomputed_floor_and_adjudicates_a_
     meta = {
         "metric": "val_bpb",
         "direction": "minimize",
-        "win_condition": "beats baseline by noise_floor",
+        "win_condition": "beats baseline by the rope",
         "baseline": "commit-abc123",
         "diff_size_limit": 800,
         "baseline_runs": ["r1", "r2", "r3", "r4"],
@@ -533,18 +531,21 @@ def test_cli_registers_a_model_with_a_ledger_recomputed_floor_and_adjudicates_a_
 
     readback = json.loads(_run_cli("readback", "--space-file", str(space_file), "--category", "model").stdout)
     registered = next(f for f in readback if f["id"] == model_id)
-    assert registered["meta"]["noise_floor"] == pytest.approx(0.02581988897471611)
+    assert registered["meta"]["baseline_runs"] == ["r1", "r2", "r3", "r4"]
     assert registered["meta"]["baseline_throughput"] == pytest.approx(1.01)
     assert registered["meta"]["ratchet_count"] == 0
+    # No threshold is stored: the bar comes from those four rows, at every comparison.
+    assert not [key for key in registered["meta"] if "floor" in key]
 
-    # a stored floor that disagrees with the recomputation is refused naming it
-    bad_meta = {**meta, "noise_floor": 999.0}
+    # a baseline run naming no scored ledger row is refused, since an absent measurement is
+    # not a narrow bar but no bar at all
+    bad_meta = {**meta, "baseline_runs": ["r1", "r2", "r3", "not-in-ledger"]}
     bad = _run_cli(
         "register-model-with-baseline", "--space-file", str(space_file),
         "--meta-json", json.dumps(bad_meta), "--ledger", str(ledger),
     )
     assert bad.returncode == 1
-    assert "noise_floor" in bad.stdout + bad.stderr
+    assert "baseline_runs" in bad.stdout + bad.stderr
 
     idea_id = _register(
         "register-idea", space_file,
@@ -588,7 +589,7 @@ def test_cli_registers_a_model_with_a_ledger_recomputed_floor_and_adjudicates_a_
     )
     assert mutate.returncode == 0, mutate.stderr
     retired = json.loads(mutate.stdout)
-    assert "noise_floor" not in retired["meta"]
+    assert "baseline_runs" not in retired["meta"]
     assert retired["meta"]["ratchet_count"] == 0
     assert retired["meta"]["campaign_status"] == "stalled_pending_baseline"
 
@@ -597,10 +598,10 @@ def test_cli_registers_a_model_with_a_ledger_recomputed_floor_and_adjudicates_a_
     assert winner["meta"]["status"] != "adopted"  # the adoption was reverted by the harness mutation
 
 
-def test_cli_resolve_verdict_adopts_a_trial_beyond_one_noise_floor(tmp_path: Path) -> None:
+def test_cli_resolve_verdict_adopts_a_trial_beyond_one_rope(tmp_path: Path) -> None:
     """R10 acceptance, CLI-driven: resolve-verdict joins a trial's commit (and the model's
     current baseline commit) against the REAL external ledger (results.tsv, including its
-    throughput/diff_lines columns), adopts the trial when its delta clears one noise_floor in
+    throughput/diff_lines columns), adopts the trial when its delta clears one rope in
     the improving direction, advances the model's baseline to the trial's commit, and records
     the previous baseline.
 
@@ -618,7 +619,7 @@ def test_cli_resolve_verdict_adopts_a_trial_beyond_one_noise_floor(tmp_path: Pat
     meta = {
         "metric": "val_bpb",
         "direction": "minimize",
-        "win_condition": "beats baseline by noise_floor",
+        "win_condition": "beats baseline by the rope",
         "baseline": "r1",
         "diff_size_limit": 800,
         "baseline_runs": ["r1", "r2", "r3", "r4"],

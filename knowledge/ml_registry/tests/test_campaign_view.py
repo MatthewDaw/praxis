@@ -16,7 +16,7 @@ SHA = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], check=True,
                      capture_output=True, text=True).stdout.strip()
 
 
-def _stores(tmp_path: Path):
+def _stores(tmp_path: Path) -> tuple[RegistrySpace, Registry, CampaignBinding, str, str]:
     space = RegistrySpace()
     model_fact = space.insert("model", {"metric": "score"})
     first = space.insert("idea", {"model_id": model_fact, "id": "pretty", "stage": "representation"})
@@ -26,7 +26,7 @@ def _stores(tmp_path: Path):
     registry.create_experiment(experiment_id="campaign", spec_digest="d" * 64,
                                stages=["representation", "architecture"], metric="score",
                                direction="maximize", win_condition={"delta": 0.1},
-                               noise_floor=.01, baseline_throughput=1.0)
+                               rope=.01, baseline_throughput=1.0)
     registry.register_model(model_id="registered", family="f", sport_scope="shared", axis="a",
                             protocol="P", extends=None)
     registry.create_run(

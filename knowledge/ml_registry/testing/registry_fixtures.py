@@ -32,7 +32,7 @@ def registry_invariant_scenario(tmp_path):
     registry.create_experiment(
         experiment_id="fixture", spec_digest="a" * 64, stages=["representation"],
         metric="f1", direction="maximize", win_condition={"metric_at_least": .5},
-        noise_floor=.01, baseline_throughput=1,
+        rope=.01, baseline_throughput=1,
     )
     registry.register_model(
         model_id="fixture-model", family="linear", sport_scope="shared", axis="fixture",

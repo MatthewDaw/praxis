@@ -70,7 +70,7 @@ def render_legacy_artifact_views(root: Path, *, include_history: bool = False) -
     registry.create_experiment(
         experiment_id="campaign-canonical", spec_digest="d" * 64,
         stages=["representation"], metric="score", direction="maximize",
-        win_condition={"metric_at_least": .9}, noise_floor=.01,
+        win_condition={"metric_at_least": .9}, rope=.01,
         baseline_throughput=1.0,
     )
     registry.create_run(

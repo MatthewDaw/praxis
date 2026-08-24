@@ -16,7 +16,7 @@ class Experiment:
     metric: str
     direction: str
     win_condition: Mapping[str, Any]
-    noise_floor: float
+    rope: float
     baseline_throughput: float
 
 

@@ -48,11 +48,11 @@ def test_fixture_a_two_root_campaigns_occupy_two_slots(tmp_path):
     assert set(controller.tick().started) == {"gpu-root", "cpu-root"}
 
 
-def test_fixture_b_a_campaign_cannot_run_two_trials_for_one_idea():
+def test_fixture_b_a_campaign_cannot_run_two_trials_for_one_idea() -> None:
     space = RegistrySpace()
     model_id = register_model(space, {
         "metric": "f1", "direction": "maximize", "win_condition": {"metric_at_least": .9},
-        "baseline": "base", "noise_floor": .01, "baseline_throughput": 1.0,
+        "baseline": "base", "baseline_throughput": 1.0,
         "diff_size_limit": 8, "max_trials": 5, "max_discovered_ideas": 0,
     })
     idea_id = register_idea(space, {"model_id": model_id, "origin": "seeded",

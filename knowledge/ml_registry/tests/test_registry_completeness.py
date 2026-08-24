@@ -25,13 +25,14 @@ def _metrics():
             "load": {"start_1m": .1, "end_1m": .2}}
 
 
-def _fixture(tmp_path: Path, stages=("representation",)):
+def _fixture(tmp_path: Path, stages: tuple[str, ...] = ("representation",)
+             ) -> tuple[RegistrySpace, Registry, CampaignBinding]:
     space = RegistrySpace()
     model_fact = space.insert("model", {"metric": "score"})
     registry = Registry(tmp_path, clock=lambda: 10.)
     registry.create_experiment(experiment_id="campaign", spec_digest="d" * 64, stages=list(stages),
                                metric="score", direction="maximize", win_condition={"delta": .1},
-                               noise_floor=.01, baseline_throughput=1.)
+                               rope=.01, baseline_throughput=1.)
     registry.register_model(model_id="model", family="f", sport_scope="shared", axis="a",
                             protocol="P", extends=None)
     return space, registry, CampaignBinding("campaign", "model", model_fact)

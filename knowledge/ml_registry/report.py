@@ -47,13 +47,14 @@ def campaign_status(space: RegistrySpace, model_id: str) -> dict[str, Any]:
         "direction": model.meta.get("direction"),
         "baseline": model.meta.get("baseline"),
         "previous_baseline": model.meta.get("previous_baseline"),
-        "noise_floor": model.meta.get("noise_floor"),
-        # HOW WIDE the bar is in sigmas, WHY, and whether anything ever checked that the
-        # floor is really that many sigmas. A campaign running a loose bar is a fact about
-        # how to read every verdict it produces, so it belongs in the routine glance.
+        # THE ROPE'S EVIDENCE, not a stored threshold: the bar is recomputed from these
+        # rows at every comparison, and a reader of this surface has no ledger in hand, so
+        # what is reportable here is what the rope will be measured over.
+        "baseline_runs": list(model.meta.get("baseline_runs") or []),
+        # HOW WIDE the bar is in sigmas and WHY. A campaign running a loose bar is a fact
+        # about how to read every verdict it produces, so it belongs in the routine glance.
         "sigmas": model.meta.get("sigmas"),
         "sigmas_reason": model.meta.get("sigmas_reason"),
-        "sigmas_basis": model.meta.get("sigmas_basis"),
         "baseline_throughput": model.meta.get("baseline_throughput"),
         "void_throughput_fraction": model.meta.get("void_throughput_fraction", 0.05),
         "ideas_total": len(ideas),
@@ -73,18 +74,16 @@ def campaign_status(space: RegistrySpace, model_id: str) -> dict[str, Any]:
 
 
 def _sigmas_note(status: dict[str, Any]) -> str:
-    """How many sigmas the floor is, and -- when nothing could check that -- say so.
+    """How many sigmas wide the rope is, and why this campaign chose that.
 
-    An unverifiable claim rendered exactly like a verified one is the shape of the original
-    defect: court-marking's record said `sigmas: 2` beside a one-sigma floor, and every reader
-    of that record, human or otherwise, took the 2 at face value.
+    The claim can no longer be at odds with the bar -- the registry multiplies by this
+    number itself at every comparison -- so what remains worth rendering is the width and
+    the operator's reason for it.
     """
     sigmas = status.get("sigmas")
     if sigmas in (None, ""):
         return ""
     note = f"  sigmas={sigmas}"
-    if status.get("sigmas_basis") == "unverified_external_measurement":
-        note += " (UNVERIFIED: floor measured outside praxis)"
     if status.get("sigmas_reason"):
         note += f"  [{status['sigmas_reason']}]"
     return note
@@ -94,7 +93,7 @@ def format_status(status: dict[str, Any]) -> str:
     """Human-readable rendering. The JSON is for programs; this is for the question being asked."""
     lines = [
         f"model      {status['model_id']}  metric={status['metric']} ({status['direction']})",
-        f"baseline   {status['baseline']}  floor={status['noise_floor']}"
+        f"baseline   {status['baseline']}  rope_over={len(status['baseline_runs'])} run(s)"
         f"{_sigmas_note(status)}"
         f"  void_ref={status['baseline_throughput']}"
         f"  speed_void={status.get('void_throughput_fraction', 0.05)}",
@@ -186,7 +185,7 @@ def _loose_bar_advisory(space: RegistrySpace, model_id: str) -> list[dict[str, s
         "kind": "loose_bar_with_large_backlog",
         "severity": "info",
         "detail": (
-            f"noise_floor is {sigmas_f} sigma with {len(untried)} untried idea(s) queued. A NULL "
+            f"the rope is {sigmas_f} sigma with {len(untried)} untried idea(s) queued. A NULL "
             f"arm clears a {sigmas_f}-sigma bar about {rate:.1%} of the time one-sided, against "
             f"{tight:.1%} at {CONSERVATIVE_SIGMAS} sigma -- roughly "
             f"{len(untried) * rate:.1f} expected false adoptions across this backlog rather than "

@@ -150,7 +150,7 @@ rebases every prior verdict.
 |---|---|
 | `metric` | One scalar the dispatch command writes to `metric_value`. A pair you care about (recall AND precision) is two campaigns or a single combined score you define now — not a footnote. |
 | `direction` | `maximize` or `minimize`. |
-| `win_condition` | Default `beats baseline by noise_floor`. |
+| `win_condition` | Default `beats baseline by the rope`. |
 | join key | `{sha}:{arm_tag}` from the first row. |
 | `void_throughput_fraction` | **0 for any campaign whose metric is not training speed** (CV, detection, tracking). That disables the SPEED void only; unfair runs still void. Do not hack `baseline_throughput=0.01`. |
 | stages | Declare the ordered stage list now if arms are expensive. Vision default: `representation,architecture,augmentation,training,tuning,capacity`. Drop any stage you will not author. Do not keep a name you will leave empty. |
@@ -492,7 +492,7 @@ Skip this subsection when skip-research is set.
 
 One research pass per generative axis, in parallel, each given:
 
-- the model's meta (`metric`, `direction`, `win_condition`, `baseline`, `noise_floor`, …)
+- the model's meta (`metric`, `direction`, `win_condition`, `baseline`, `baseline_runs`, …)
 - the ONE axis it is responsible for
 - the data inventory and the frozen contract from Phases A–B
 - **the F.1 plan**: what already solves this end to end, what is already trained

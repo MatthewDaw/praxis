@@ -163,7 +163,7 @@ CAMPAIGN_COMPLETED = "completed"
 WIN_METRIC_AT_MOST = "metric_at_most"
 WIN_METRIC_AT_LEAST = "metric_at_least"
 WIN_THRESHOLD_KINDS: tuple[str, ...] = (WIN_METRIC_AT_MOST, WIN_METRIC_AT_LEAST)
-WIN_ON_ADOPTION = "beats baseline by noise_floor"
+WIN_ON_ADOPTION = "beats baseline by the rope"
 
 #: A model's explicit, per-campaign opt-in to first-adoption-wins. Only bootstrap ever
 #: validated a win condition -- build_model_meta refuses the bare string, the
@@ -245,7 +245,7 @@ def parse_win_condition(win_condition: object) -> dict[str, object]:
       ADOPTED trial's LEDGER value reaches the threshold ``x``.
     * the string ``"metric_at_most: 0.80"`` (or ``"metric_at_least 0.80"``) -- the same, in
       the string form a registration or CLI flag can carry.
-    * the string :data:`WIN_ON_ADOPTION` (``"beats baseline by noise_floor"``) -- the model
+    * the string :data:`WIN_ON_ADOPTION` (``"beats baseline by the rope"``) -- the model
       declares that beating the baseline by more than one noise floor IS the win, i.e. the
       adjudicated adoption itself. This is a DECLARED condition, not a fallback.
 

@@ -44,7 +44,7 @@ class HistoricalLedgerImporter:
         experiment = {
             "experiment_id": experiment_id, "spec_digest": spec_digest, "stages": ["legacy"],
             "metric": metric, "direction": direction, "win_condition": {"legacy": "unknown"},
-            "noise_floor": 0, "baseline_throughput": 0,
+            "rope": 0, "baseline_throughput": 0,
         }
         occurrences: dict[str, int] = {}
         runs: list[dict[str, object]] = []

@@ -26,7 +26,7 @@ PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS experiments(
  experiment_id TEXT PRIMARY KEY, spec_digest TEXT NOT NULL, stages TEXT NOT NULL, metric TEXT NOT NULL,
  direction TEXT NOT NULL CHECK(direction IN ('maximize','minimize')), win_condition TEXT NOT NULL,
- noise_floor REAL NOT NULL CHECK(noise_floor>=0), baseline_throughput REAL NOT NULL CHECK(baseline_throughput>=0));
+ rope REAL NOT NULL CHECK(rope>=0), baseline_throughput REAL NOT NULL CHECK(baseline_throughput>=0));
 CREATE TABLE IF NOT EXISTS runs(
  run_id TEXT PRIMARY KEY, experiment_id TEXT NOT NULL REFERENCES experiments(experiment_id), idea_id TEXT NOT NULL,
  stage TEXT NOT NULL, family TEXT NOT NULL, params TEXT NOT NULL, metrics TEXT NOT NULL, code_ref TEXT NOT NULL,
@@ -256,7 +256,7 @@ class Registry:
         if op == "experiment_created":
             db.execute("INSERT INTO experiments VALUES(?,?,?,?,?,?,?,?)", (p["experiment_id"], p["spec_digest"],
                        _json(p["stages"]), p["metric"], p["direction"], _json(p["win_condition"]),
-                       p["noise_floor"], p["baseline_throughput"]))
+                       p["rope"], p["baseline_throughput"]))
         elif op == "run_created":
             self._insert_run(db, p)
         elif op == "run_adjudicated":
@@ -341,7 +341,7 @@ class Registry:
             db.execute("INSERT INTO experiments VALUES(?,?,?,?,?,?,?,?)", (
                 experiment["experiment_id"], experiment["spec_digest"], _json(experiment["stages"]),
                 experiment["metric"], experiment["direction"], _json(experiment["win_condition"]),
-                experiment["noise_floor"], experiment["baseline_throughput"],
+                experiment["rope"], experiment["baseline_throughput"],
             ))
             for run in p["runs"]:
                 LegacyCodeRef.from_mapping(run["code_ref"])
@@ -351,7 +351,7 @@ class Registry:
             db.execute("INSERT INTO experiments VALUES(?,?,?,?,?,?,?,?)", (
                 experiment["experiment_id"], experiment["spec_digest"], _json(experiment["stages"]),
                 experiment["metric"], experiment["direction"], _json(experiment["win_condition"]),
-                experiment["noise_floor"], experiment["baseline_throughput"],
+                experiment["rope"], experiment["baseline_throughput"],
             ))
             for run in p["runs"]:
                 LegacyCodeRef.from_mapping(run["code_ref"])

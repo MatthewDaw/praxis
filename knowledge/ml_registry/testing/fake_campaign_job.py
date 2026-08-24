@@ -50,7 +50,7 @@ def run_fake_campaign(*, registry_root: Path, repo: Path, campaign_id: str,
         registry.create_experiment(
             experiment_id=campaign_id, spec_digest="a" * 64, stages=["representation"],
             metric="fixture_score", direction="maximize", win_condition={"metric_at_least": .5},
-            noise_floor=.01, baseline_throughput=1,
+            rope=.01, baseline_throughput=1,
         )
         registry.register_model(
             model_id=campaign_id, family="fixture", sport_scope="shared", axis="fixture",
