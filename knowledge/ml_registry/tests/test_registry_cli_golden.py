@@ -23,6 +23,7 @@ IDEA_BRIDGE_COMMANDS = {
     "register-idea", "resolve-citation", "claim-idea", "heartbeat-idea-claim",
     "adopt-idea", "park-idea", "reject-idea", "invalidate-adoption", "reopen-idea",
     "backlog", "rejection-memory", "retriable-ideas", "seed-campaign", "readback",
+    "campaign-telemetry",
 }
 
 
