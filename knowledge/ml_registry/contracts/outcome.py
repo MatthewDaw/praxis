@@ -29,6 +29,14 @@ class StageOutcome(str, Enum):
     STAGNANT = "STAGNANT"
     VACUOUS = "VACUOUS"
 
+    @property
+    def reason(self) -> str:
+        return {
+            self.ADVANCED: "a material family cleared the rope",
+            self.STAGNANT: "all material families ran; none cleared the rope",
+            self.VACUOUS: "stage has no material families",
+        }[self]
+
     @classmethod
     def for_stage(
         cls, *, material_families: int, completed_families: int, advanced: bool,

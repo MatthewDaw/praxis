@@ -91,6 +91,18 @@ def test_stage_outcomes_distinguish_vacuous_stagnant_and_advanced() -> None:
         StageOutcome.for_stage(material_families=2, completed_families=1, advanced=False)
 
 
+@pytest.mark.parametrize(
+    ("outcome", "reason"),
+    [
+        (StageOutcome.ADVANCED, "a material family cleared the rope"),
+        (StageOutcome.STAGNANT, "all material families ran; none cleared the rope"),
+        (StageOutcome.VACUOUS, "stage has no material families"),
+    ],
+)
+def test_stage_outcome_owns_its_terminal_reason(outcome: StageOutcome, reason: str) -> None:
+    assert outcome.reason == reason
+
+
 def test_claim_carries_concrete_upstream_artifact_version_or_is_refused(tmp_path: Path) -> None:
     scenario = promoted_artifact_scenario(tmp_path)
     portfolio = Portfolio()
