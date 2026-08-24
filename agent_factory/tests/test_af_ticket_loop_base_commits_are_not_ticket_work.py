@@ -84,7 +84,7 @@ def _ticket_branch(repo: Path, name: str, *, own_work: bool) -> None:
     _sh(f"git checkout -q -b {name} main", repo)
     if own_work:
         (repo / "feature.txt").write_text("the ticket's work\n")
-        _sh(f"git add -A && git commit -qm 'feat(scope): the real work (R4b)'", repo)
+        _sh("git add -A && git commit -qm 'feat(scope): the real work (R4b)'", repo)
     _sh("git checkout -q build/research-engine", repo)
 
 

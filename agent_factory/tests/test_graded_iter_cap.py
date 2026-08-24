@@ -27,8 +27,6 @@ from __future__ import annotations
 import importlib
 import sys
 
-import pytest
-
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "hooks"))
 import _graded_verify as gv  # noqa: E402
 
