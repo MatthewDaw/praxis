@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 import hashlib
 import json
 from pathlib import Path
@@ -602,16 +602,34 @@ class Registry:
         self._write("historical_evidence_freeze_imported", payload)
         return True
 
-    def register_campaign_spec(self, spec: Mapping[str, Any]) -> bool:
+    def register_campaign_spec(
+        self,
+        spec: Mapping[str, Any],
+        *,
+        scoring_corpora: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
+    ) -> bool:
         """Persist a validated project-owned CampaignSpec in the canonical event log.
 
         Campaign specifications are control-plane inputs rather than registry entities,
         so they deliberately have no ninth projection table.  The latest event for a
         campaign is the durable portfolio-manifest snapshot used by readiness.
         """
-        from knowledge.ml_registry.contracts import CampaignSpec
+        from knowledge.ml_registry.contracts import CampaignSpec, ContractError
+        from knowledge.ml_registry.policy_gate import compute_campaign_rope
 
-        canonical = CampaignSpec.from_mapping(spec).to_mapping()
+        campaign = CampaignSpec.from_mapping(spec)
+        if campaign.rope is not None:
+            raise ContractError(
+                "rope is registration-derived and may not be supplied in the campaign spec; "
+                "omit rope and pass scoring_corpora so the registry can recompute it"
+            )
+        if scoring_corpora is None:
+            raise ContractError(
+                "scoring_corpora is required to register a campaign; pass the spec's named "
+                "scoring corpus so its split-unit bootstrap rope can be computed"
+            )
+        canonical = campaign.to_mapping()
+        canonical["rope"] = compute_campaign_rope(campaign, scoring_corpora)
         campaign_id = canonical["campaign_id"]
         prior = [event for event in self.events.read()
                  if event.event_type == "campaign_spec_registered"
