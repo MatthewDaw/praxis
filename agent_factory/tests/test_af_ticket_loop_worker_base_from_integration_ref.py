@@ -34,7 +34,9 @@ SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "af-ticket-lo
 
 def _prompt(integration_ref: str = "build/research-engine", size: int = 2) -> str:
     src = SCRIPT.read_text()
-    line = next(line for line in src.splitlines() if line.strip().startswith("round_prompt="))
+    line = next(
+        candidate for candidate in src.splitlines() if candidate.strip().startswith("round_prompt=")
+    )
     body = line.strip()[len("round_prompt=") :]
     prog = (
         "set -u\n"
