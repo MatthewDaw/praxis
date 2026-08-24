@@ -41,6 +41,33 @@ class CampaignRunReport:
 CampaignDriver = Callable[[CampaignDispatch], CampaignOutcomeRecord]
 
 
+def deregister_campaign(
+    registry: Registry,
+    campaign_id: str,
+    *,
+    reason: str,
+) -> CampaignOutcomeRecord:
+    """Close a mistaken registration as ABANDONED without blocking its siblings."""
+    campaign_id = campaign_id.strip()
+    reason = reason.strip()
+    if not campaign_id or not reason:
+        raise RegistryError("campaign de-registration requires an id and reason")
+    order, entries, outcomes = _portfolio_state(registry)
+    if campaign_id not in order or campaign_id not in entries:
+        raise RegistryError(f"cannot de-register unknown campaign {campaign_id!r}")
+    if campaign_id in outcomes:
+        raise RegistryError(f"campaign {campaign_id!r} already has a terminal outcome")
+    record = CampaignOutcomeRecord(
+        CampaignOutcomeRecord.VERSION,
+        campaign_id,
+        CampaignOutcome.ABANDONED,
+        reason,
+        1,
+    )
+    registry.record_campaign_outcome(record.to_mapping())
+    return record
+
+
 def register_campaign_for_run(
     registry: Registry,
     spec: Mapping[str, Any],
