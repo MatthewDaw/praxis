@@ -60,38 +60,25 @@ def test_the_hazard_is_real_under_the_options_the_driver_uses():
     assert res.returncode == 141, res.returncode
 
 
-def test_git_log_dies_on_a_closed_pipe_at_nine_lines():
-    """Why NINE commits was enough when four had been fine for every previous round.
+def test_the_old_shape_is_not_reliably_safe_and_the_new_one_is():
+    """Whether a SMALL producer dies is a RACE, and that is the honest characterisation.
 
-    git checks its writes and exits on a closed pipe rather than buffering through it, so the
-    threshold is not the 64KB buffer -- it is simply "did head stop reading before git finished".
-    Four subjects: git was done first, nothing noticed. Nine: head closed on the fifth and the run
-    ended.
+    An earlier version of this file asserted that nine commits deterministically kill the pipeline,
+    on the strength of one manual reproduction that did. It does not: with nine short subjects and
+    two pipeline stages it usually survives, because git finishes writing before head stops reading.
+    Adding a third stage (`| tee`) and longer subjects flips it. That is a race, and a race is
+    exactly why the bug slept through months of four-commit rounds and then killed a run on a nine.
+
+    So this asserts the thing that is actually true and actually matters: the old shape can fail and
+    the replacement cannot. The producer here is large enough to make the old shape's failure
+    reliable; the point is that the new shape is safe at EVERY size.
     """
-    import tempfile
-    with tempfile.TemporaryDirectory() as d:
-        subprocess.run(["bash", "-c",
-                        "git init -q && git config user.email t@t && git config user.name t && "
-                        "echo base > a.txt && git add -A && git commit -qm base && "
-                        "git checkout -q -b other && "
-                        "for i in $(seq 1 9); do echo $i >> a.txt; git add -A; "
-                        "git commit -qm \"fix(scope): subject number $i\"; done && git checkout -q -"],
-                       cwd=d, check=True, capture_output=True)
-        res = _run(f'set -euo pipefail; cd {d}; '
-                   'git log --format="    %h %s" "HEAD..other" 2>/dev/null | head -5 >/dev/null; '
-                   'echo SURVIVED')
-        assert "SURVIVED" not in res.stdout, "the mechanism no longer reproduces"
+    old = _run("set -euo pipefail; seq 1 200000 | head -5 >/dev/null; echo SURVIVED")
+    assert "SURVIVED" not in old.stdout, "the mechanism no longer reproduces at all"
 
-
-def test_the_full_reading_form_is_safe():
-    prog = textwrap.dedent(
-        """
-        set -euo pipefail
-        seq 1 100 | sed -n '1,5p' >/dev/null
-        echo SURVIVED
-        """
-    )
-    assert "SURVIVED" in _run(prog).stdout
+    for producer in ("seq 1 9", "seq 1 200000", "seq 1 1000000"):
+        res = _run(f"set -euo pipefail; {producer} | sed -n '1,5p' >/dev/null; echo SURVIVED")
+        assert "SURVIVED" in res.stdout, f"the replacement failed for {producer}: {res.stderr}"
 
 
 # --------------------------------------------------------------------------------- the driver ----
