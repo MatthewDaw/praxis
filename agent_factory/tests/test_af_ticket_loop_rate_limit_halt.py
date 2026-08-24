@@ -58,6 +58,9 @@ def _slice(pattern: str, *, flags: int = 0) -> str:
 def _funcs() -> str:
     """The shipped rate-limit detector + halt helper + exit-code constant, verbatim."""
     return "\n".join((
+        # The matchers rate_limited is built on. Absent, it is a silent 127 that reads as "no
+        # match" -- i.e. the detector under test would report every pane benign.
+        *re.findall(r"^af_(?:i?has|hasf|hasx)\(\)\{.*$", _script_text(), re.M),
         _slice(r"^AF_EXIT_QUOTA_BLOCKED=\d+", flags=re.M),
         _slice(r"^rate_limited\(\)\{[^\n]*\}", flags=re.M),
         _slice(r"^halt_quota_blocked\(\)\{.*?^\}", flags=re.S | re.M),
@@ -90,15 +93,28 @@ def _run(snippet: str, tmp_path: Path, *, stdin: str = "") -> tuple[int, str]:
 
 
 def test_rate_limit_menu_is_detected(tmp_path):
-    # `rate_limited` reads the captured pane on stdin.
-    rc, _ = _run('rate_limited && echo HIT', tmp_path, stdin=RATE_LIMIT_PANE)
+    # `rate_limited` takes the pane as an ARGUMENT now. It used to read stdin, and the caller
+    # spelled that `echo "$pane" | rate_limited` -- a pipeline, under `set -o pipefail`, whose grep
+    # exits on first match and SIGPIPEs the writer. The pipeline then reports FAILURE on a
+    # successful match, so the menu went undetected precisely when the pane was long enough for
+    # grep to finish early. See test_the_detector_still_fires_on_a_long_pane below.
+    rc, _ = _run('rate_limited "$(cat)" && echo HIT', tmp_path, stdin=RATE_LIMIT_PANE)
     assert rc == 0, "the interactive /rate-limit-options menu was not detected"
+
+
+def test_the_detector_still_fires_when_the_menu_is_buried_in_a_long_pane(tmp_path):
+    """The regression the argument form exists for. A real pane is tens of kilobytes and the menu
+    scrolls UP as output accumulates, so the match is near the TOP -- the exact case where grep -q
+    finishes first and the old pipeline reported no match."""
+    buried = RATE_LIMIT_PANE + "\n" + ("filler output line, entirely benign\n" * 20000)
+    rc, _ = _run('rate_limited "$(cat)" && echo HIT', tmp_path, stdin=buried)
+    assert rc == 0, "the menu was missed because it was not the last thing on screen"
 
 
 def test_ordinary_ratelimit_words_do_not_false_positive(tmp_path):
     """The whole point of keying on the menu's own strings: a bare 'rate limit' match would reap
     healthy sessions whose output merely mentions rate limiting."""
-    rc, _ = _run('rate_limited && echo HIT', tmp_path, stdin=BENIGN_PANE)
+    rc, _ = _run('rate_limited "$(cat)" && echo HIT', tmp_path, stdin=BENIGN_PANE)
     assert rc == 1, "ordinary rate/limit/reset prose was misread as the quota-blocked menu"
 
 
@@ -136,14 +152,14 @@ def test_verify_wait_checks_rate_limit_before_declaring_a_stall():
     'verify session frozen … giving up' break, so the loop halts the instant the menu appears
     instead of burning the full 15-min stall window and emitting an UNVERIFIED round."""
     text = _script_text()
-    guard = text.index('rate_limited; then halt_quota_blocked "verify round #$rnd"')
+    guard = text.index('rate_limited "$pane"; then halt_quota_blocked "verify round #$rnd"')
     frozen = text.index("verify session frozen for")
     assert guard < frozen, "the verify rate-limit guard runs AFTER the stall break — it would never fire in time"
 
 
 def test_build_wait_checks_rate_limit_before_declaring_a_stall_and_commits_wip():
     text = _script_text()
-    guard = text.index('rate_limited; then')
+    guard = text.index('rate_limited "$pane"; then')
     # the BUILD guard is the one that commits WIP first
     build_guard = text.index("commit_wip\n      halt_quota_blocked \"build round #$round\"")
     frozen = text.index("treating as frozen/stalled, ending wait")

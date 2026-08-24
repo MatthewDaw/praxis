@@ -19,6 +19,7 @@ prove nothing about them.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -51,6 +52,13 @@ def _extract(*names: str) -> str:
     return "\n".join(out)
 
 
+# The one-line text matchers every pane check now goes through. Missing from a harness they are a
+# silent 127 -- these harnesses run without `set -e` -- which reads as "no match" and quietly
+# inverts the guard under test, exactly the way the absent af_main_worktree did.
+MATCHERS = "\n".join(re.findall(r"^af_(?:i?has|hasf|hasx)\(\)\{.*$", SCRIPT.read_text(), re.M))
+assert MATCHERS.count("\n") == 3, "expected the four af_*has helpers"
+
+
 OWNERSHIP = (
     "af_owned_ids",
     "af_branch_ids",
@@ -61,12 +69,12 @@ OWNERSHIP = (
     "af_branch_is_foreign_era",
     "af_sanitize_branch",
 )
-FUNCS = _extract(*OWNERSHIP, "reap_branches")
+FUNCS = MATCHERS + "\n" + _extract(*OWNERSHIP, "reap_branches")
 
 # Everything the terminal invariant needs. `resolve_conflicts` is the one thing that cannot run here
 # — it dispatches a tmux agent — so it is stubbed to a no-op AFTER extraction (a later definition
 # wins), which is also the pessimistic case the red-path test wants: resolution that fixes nothing.
-INVARIANT_FUNCS = _extract(
+INVARIANT_FUNCS = MATCHERS + "\n" + _extract(
     *OWNERSHIP,
     # af_main_worktree was ALREADY missing here: af_scratch_roots calls it, and under the harness's
     # `set -uo pipefail` (no -e) a "command not found" is a silent 127 that degrades the scratch-root

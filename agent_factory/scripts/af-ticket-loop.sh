@@ -257,6 +257,7 @@ PYEOF
 #                persistent inconclusive to a warning -- an escape hatch for a genuinely offline
 #                box. It can never downgrade credit/quota/rejected: those are proof of failure,
 #                not absence of proof.
+AF_PROBE_CMD=""         # the last probe command run — reused by af_backend_is_live mid-run
 AF_PROBE_KIND=""        # live|credit|quota|rejected|inconclusive -- set by af_probe_generation
 AF_PROBE_OUTPUT=""      # last probe transcript, for the caller's error report
 AF_BACKEND_EXIT=1       # exit code the caller should use when resolve_backend fails
@@ -269,16 +270,16 @@ AF_BACKEND_EXIT=1       # exit code the caller should use when resolve_backend f
 _af_classify_probe(){
   local out="$1" answer
   answer="$(printf '%s\n' "$out" | grep -v 'Reply with exactly' || true)"
-  if printf '%s' "$out" | grep -qiE 'insufficient balance|insufficient_quota|insufficient funds|billing_not_active|credit balance is too low|exceeded your current quota|payment required|\b402\b'; then
+  if af_ihas "$out" 'insufficient balance|insufficient_quota|insufficient funds|billing_not_active|credit balance is too low|exceeded your current quota|payment required|\b402\b'; then
     echo credit; return 0
   fi
-  if printf '%s' "$out" | grep -qiE 'usage limit reached|rate.?limit|quota exceeded|too many requests|\b429\b|out of (credits|quota)|limit will reset|upgrade to increase'; then
+  if af_ihas "$out" 'usage limit reached|rate.?limit|quota exceeded|too many requests|\b429\b|out of (credits|quota)|limit will reset|upgrade to increase'; then
     echo quota; return 0
   fi
-  if printf '%s' "$out" | grep -qiE 'please run /login|invalid api key|authentication_error|authentication failed|oauth.*invalid|not authenticated|login required|missing bearer|\b401\b|unauthorized'; then
+  if af_ihas "$out" 'please run /login|invalid api key|authentication_error|authentication failed|oauth.*invalid|not authenticated|login required|missing bearer|\b401\b|unauthorized'; then
     echo rejected; return 0
   fi
-  if printf '%s' "$answer" | grep -q 'PONG'; then echo live; return 0; fi
+  if af_has "$answer" 'PONG'; then echo live; return 0; fi
   echo inconclusive
 }
 
@@ -299,6 +300,7 @@ _af_probe_config_dir(){
 # the credential the sessions will spend -- a probe against a different identity is theatre).
 af_probe_generation(){
   local label="$1" cmd="$2" attempt out kind
+  AF_PROBE_CMD="$cmd"
   for attempt in 1 2; do
     out="$(bash -c "$cmd" 2>&1 || true)"
     kind="$(_af_classify_probe "$out")"
@@ -313,6 +315,14 @@ af_probe_generation(){
     fi
   done
   return 1
+}
+
+# Re-ask, MID-RUN, whether the backend still works: one throwaway generation against the same
+# credential the sessions spend. Only ever called when something has already claimed it does not.
+# With nothing recorded to probe with we return success — this must never manufacture a verdict.
+af_backend_is_live(){
+  [ -n "${AF_PROBE_CMD:-}" ] || return 0
+  AF_PROBE_RETRY_S=0 af_probe_generation "${BACKEND:-backend}" "$AF_PROBE_CMD"
 }
 
 # Report a failed probe and pick the exit code. Returns 0 ONLY on the lenient-inconclusive path, so
@@ -343,6 +353,29 @@ af_probe_refuse(){
   echo "[backend]   $remedy" >&2
   return 1
 }
+
+# ------------------------------------------------------------- matching text WITHOUT a pipeline ----
+# `echo "$pane" | grep -q PATTERN` IS BROKEN UNDER `set -o pipefail`, WHICH THIS SCRIPT SETS.
+#
+# grep -q exits the INSTANT it matches. The producer on the left is then still writing, takes
+# SIGPIPE, and dies with 141 — and pipefail hands the pipeline that 141 even though grep succeeded.
+# So the `if` takes the FALSE arm precisely when the pattern WAS found. Measured on this box, with
+# the match near the top of a 500KB pane: 8 runs, 8 misses. With the match at the very END (grep has
+# to read everything, so nobody gets SIGPIPE) it matches every time — which is why this survives
+# casual testing and every small fixture.
+#
+# The consequence is not subtle. Every pane detector in this driver is one of these, and a pane
+# grows as a round runs, while an error scrolls UP. So the detectors work on a short pane and stop
+# working exactly when there is enough output to matter: the auth check, the "100% context used"
+# check, the billing check, `rate_limited` (whose whole job is to catch a session stranded on the
+# interactive /rate-limit-options menu — the thing that burns stall window after stall window), and
+# `lastpane` capture, which is why a dead session so often logged "gone" and nothing else.
+#
+# A here-string has no pipeline and therefore no exit status to steal. Same grep, same patterns.
+af_has(){   grep -qE  -- "$2" <<< "$1"; }   # $1 = text, $2 = extended regex
+af_ihas(){  grep -qiE -- "$2" <<< "$1"; }   # case-insensitive
+af_hasf(){  grep -qF  -- "$2" <<< "$1"; }   # fixed string
+af_hasx(){  grep -qxF -- "$2" <<< "$1"; }   # fixed string, whole line
 
 resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if preflight fails
   local requested
@@ -453,7 +486,7 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     af_probe_generation grok "cd /tmp; unset XAI_API_KEY GROK_CODE_XAI_API_KEY ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN; timeout 120 '$GROK_BIN' --model '$AF_GROK_MODEL' --always-approve -p 'Reply with exactly: PONG' --output-format json" && grok_ok=1
     # The WRONG-BILL refusal reads the same transcript, and is checked even on a live probe: a
     # generation that succeeded is not acceptable if it succeeded by spending API credits.
-    if printf '%s' "$AF_PROBE_OUTPUT" | grep -qiE '"apiKeySource"[[:space:]]*:[[:space:]]*"user"'; then
+    if af_ihas "$AF_PROBE_OUTPUT" '"apiKeySource"[[:space:]]*:[[:space:]]*"user"'; then
       echo "[backend] FATAL: grok probe billed as apiKeySource=user (XAI_API_KEY / API credits)." >&2
       echo "[backend]   unset XAI_API_KEY and GROK_CODE_XAI_API_KEY, confirm $GROK_AUTH is an OAuth login, rerun --check." >&2
       AF_BACKEND_EXIT=1
@@ -485,7 +518,7 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
     # disk, and only the CLI can tell them apart.
     local status_out
     status_out="$("$CODEX_BIN" login status 2>&1 || true)"
-    if printf '%s' "$status_out" | grep -qiE 'not logged in|no (stored )?credential|please (run )?(codex )?login'; then
+    if af_ihas "$status_out" 'not logged in|no (stored )?credential|please (run )?(codex )?login'; then
       echo "[backend] FATAL: codex requested but there is no credential in $CODEX_HOME_DIR:" >&2
       printf '%s\n' "$status_out" | head -3 | sed 's/^/[backend]   /' >&2
       echo "[backend]   fix, once, as ec2-user:  codex login   # then pick 'Sign in with Device Code' (this box has no browser)" >&2
@@ -493,7 +526,7 @@ resolve_backend(){   # -> BACKEND, CLAUDE_LAUNCH, BACKEND_NOTE; nonzero if prefl
       return 1
     fi
     # WRONG BILL, refused: an API-key credential masquerading as a working session.
-    if printf '%s' "$status_out" | grep -qiE 'api key'; then
+    if af_ihas "$status_out" 'api key'; then
       echo "[backend] FATAL: codex credential is an API key (usage-based billing), not the ChatGPT subscription:" >&2
       printf '%s\n' "$status_out" | head -3 | sed 's/^/[backend]   /' >&2
       echo "[backend]   fix: codex logout && codex login   # choose 'Sign in with ChatGPT' / device code" >&2
@@ -1083,16 +1116,16 @@ af_wait_ready(){   # $1=tmux session  $2=optional poll cap (default READY_POLL_M
   for i in $(seq 1 "$max"); do
     sleep 2
     pane=$(tmux capture-pane -t "$sess" -p 2>/dev/null || echo "")
-    if echo "$pane" | grep -qE "bypass permissions on"; then return 0; fi
+    if af_has "$pane" "bypass permissions on"; then return 0; fi
     if [ "$BACKEND" = grok ]; then
       # The first-run directory-trust splash also prints "Grok Build 1.0.5".
       # Treating that banner as ready made unattended grok rounds sit 10–30min
       # with the prompt never started (hudl-cv-download 2026-08-19).
-      if echo "$pane" | grep -qiE "Do you trust the contents|Yes, proceed"; then
+      if af_ihas "$pane" "Do you trust the contents|Yes, proceed"; then
         tmux send-keys -t "$sess" "y" Enter
         continue
       fi
-      if echo "$pane" | grep -qiE "always-approve|Always approve|to interrupt|Waiting for response|Subagents"; then
+      if af_ihas "$pane" "always-approve|Always approve|to interrupt|Waiting for response|Subagents"; then
         return 0
       fi
     fi
@@ -1102,7 +1135,7 @@ af_wait_ready(){   # $1=tmux session  $2=optional poll cap (default READY_POLL_M
       # praxis-devbox 2026-08-20 with a live subscription session:
       #   "Do you trust the contents of this directory?" / "1. Yes, continue" / "2. No, quit"
       # Answer it and keep polling; the composer is one screen further on.
-      if echo "$pane" | grep -qiE "Do you trust the contents|Yes, continue"; then
+      if af_ihas "$pane" "Do you trust the contents|Yes, continue"; then
         tmux send-keys -t "$sess" Enter
         continue
       fi
@@ -1111,7 +1144,7 @@ af_wait_ready(){   # $1=tmux session  $2=optional poll cap (default READY_POLL_M
       # matching "OpenAI Codex" or a version string would read a login prompt as a live agent
       # and fire a round's prompt into a void. Refuse explicitly rather than relying on the
       # positive test below to happen not to match.
-      if echo "$pane" | grep -qiE "Sign in with ChatGPT|Sign in with Device Code|Provide your own API key|Press enter to continue"; then
+      if af_ihas "$pane" "Sign in with ChatGPT|Sign in with Device Code|Provide your own API key|Press enter to continue"; then
         continue
       fi
       # READY. "Ask Codex to do anything" is the composer placeholder and is absent from both
@@ -1119,7 +1152,7 @@ af_wait_ready(){   # $1=tmux session  $2=optional poll cap (default READY_POLL_M
       # It is the only string checked BECAUSE it is the only one that discriminates: the model
       # line, the directory line and the permissions line all render on screens that are not
       # ready to accept a prompt.
-      if echo "$pane" | grep -qiE "Ask Codex to do anything"; then
+      if af_ihas "$pane" "Ask Codex to do anything"; then
         return 0
       fi
     fi
@@ -1204,8 +1237,15 @@ worktree_recently_written(){   # $1 = worktree path, $2 = minutes
   [ -n "$wt" ] && [ -d "$wt" ] || return 1
   # -mmin -N is cheap and stops at the first hit. Skip .git plumbing, whose
   # mtimes move for reasons unrelated to a worker making progress.
-  find "$wt" -path "$wt/.git" -prune -o -type f -mmin "-$mins" -print 2>/dev/null \
-    | head -1 | grep -q . && return 0
+  # Capture, then test — the same pipefail hazard af_has exists for, and this one has already been
+  # observed doing damage. `head -1` exits after the first line and SIGPIPEs `find`, so pipefail
+  # hands the pipeline find's 141 and the function answers "no recent writes" precisely when a file
+  # WAS found. That is the reading that reaps a busy worker as frozen — the failure the comment
+  # above this function describes.
+  local recent
+  recent=$(find "$wt" -path "$wt/.git" -prune -o -type f -mmin "-$mins" -print 2>/dev/null \
+    | head -1 || true)
+  [ -n "$recent" ] && return 0
   return 1
 }
 
@@ -1235,7 +1275,7 @@ verify_children_busy(){  # $1 = tmux session name
 # do not occur in ordinary tool output, so -- unlike a bare "rate limit" -- matching them is a
 # reliable, low-false-positive signal of quota exhaustion, DISTINCT from a generic quiet-pane stall
 # and from an API-credit 402 (which the billing grep owns). Reads the captured pane on stdin.
-rate_limited(){ grep -qiE "hit your (session|usage) limit|/rate-limit-options|stop and wait for limit to reset|switch to usage credits"; }
+rate_limited(){ af_ihas "$1" "hit your (session|usage) limit|/rate-limit-options|stop and wait for limit to reset|switch to usage credits"; }
 
 # Exit code 8 -- quota/session-limit blocked. Deliberately NOT folded into 3 (API-credit/billing
 # 402): the operator action is different (wait for the subscription window to reset, or switch the
@@ -2082,7 +2122,7 @@ resolve_conflicts(){   # $1 = round number
     pane=$(tmux capture-pane -p -t "$rsession" 2>/dev/null || true)
     # The conflict resolver is a headless session too: halt on the subscription rate-limit menu
     # rather than let it sit out the stall window (same invariant as the verify/build waits).
-    if echo "$pane" | rate_limited; then halt_quota_blocked "conflict resolver round #$rnd" "$rsession"; fi
+    if rate_limited "$pane"; then halt_quota_blocked "conflict resolver round #$rnd" "$rsession"; fi
     rhash=$(printf '%s' "$pane" | hash_text)
     if [ "$rhash" = "$rlast" ]; then
       rstall=$((rstall+1))
@@ -2388,7 +2428,7 @@ sweep_worktrees(){
     [ -d "$root" ] || continue
     for d in "$root"/*; do
       [ -d "$d" ] || continue
-      printf '%s\n' "$registered" | grep -qxF "$d" && continue
+      af_hasx "$registered" "$d" && continue
       if af_dir_in_use "$d"; then
         say "orphan dir $d is IN USE by a live process — skipping"
         continue
@@ -2402,7 +2442,7 @@ sweep_worktrees(){
   while read -r g; do
     for d in $g; do
       [ -d "$d" ] || continue
-      printf '%s\n' "$registered" | grep -qxF "$d" && continue
+      af_hasx "$registered" "$d" && continue
       if af_dir_in_use "$d"; then
         say "orphan dir $d is IN USE by a live process — skipping"
         continue
@@ -2639,7 +2679,7 @@ reap_branches(){
     [ -n "$br" ] || continue
     [ -n "$head_br" ] && [ "$br" = "$head_br" ] && continue
     af_is_owed_merge "$br" || continue
-    printf '%s\n' "$live" | grep -qxF "$br" && continue
+    af_hasx "$live" "$br" && continue
     # `+` = a commit with no equivalent upstream; `-` = already there under a different sha.
     uniq=$(git cherry HEAD "$br" 2>/dev/null | sed -n 's/^+ //p')
     if [ -z "$uniq" ]; then
@@ -3075,6 +3115,18 @@ SERVICES=""
 [ -n "${PG:-}" ] && [ "$PG" != "none" ] && SERVICES=" Postgres localhost:$PG"
 [ -n "${REDIS:-}" ] && [ "$REDIS" != "none" ] && SERVICES="$SERVICES${SERVICES:+,} Redis localhost:$REDIS"
 
+# Say WHAT WAS SEEN when a pane match ends a round. The "session gone" branch already dumps its
+# last pane; the two PIXEL-MATCHING branches killed rounds in silence, so an operator reading the
+# log found a round that scored zero and no way whatsoever to tell a real failure from a false one.
+af_say_pane_evidence(){   # $1 = pane text, $2 = the pattern that matched
+  local pane="$1" pat="$2"
+  say "--- why: pane line(s) matching /$pat/ ---"
+  printf '%s\n' "$pane" | grep -inE "$pat" | tail -5 | sed 's/^/    /' | tee -a "$LOG"
+  say "--- last build pane ---"
+  printf '%s\n' "$pane" | grep -vE '^[[:space:]]*$' | tail -15 | sed 's/^/    /' | tee -a "$LOG"
+  say "--- end pane ---"
+}
+
 verify_round(){   # $1 = round number, $2.. = the round's ticket ids
   local rnd="$1"; shift
   # An empty baseline would turn the attribution rule into prose about a commit that does not exist,
@@ -3128,16 +3180,16 @@ PYEOF
     # Keep the last non-empty pane. When a verify session dies without a verdict the session is
     # already gone by the time anyone looks, so without this the log says only "gone" and the reason
     # is unrecoverable — which is exactly what happened on the stage's first real run.
-    echo "$pane" | grep -qE "." && vlastpane="$pane"
+    af_has "$pane" "." && vlastpane="$pane"
     # Same rule as the build wait: a blank frame is a redraw, not a death.
     if ! tmux has-session -t "$vsession" 2>/dev/null; then say "verify session gone before writing a verdict"; break; fi
-    if echo "$pane" | grep -qiE "insufficient balance|quota exceeded|payment required|credit balance is too low|insufficient_quota|billing_(error|hard_limit)|billing (error|failure)|(http[ /]?|status[ :]?)402|402 payment required"; then
+    if af_ihas "$pane" "insufficient balance|quota exceeded|payment required|credit balance is too low|insufficient_quota|billing_(error|hard_limit)|billing (error|failure)|(http[ /]?|status[ :]?)402|402 payment required"; then
       say "BILLING FAILURE during verification — halting"; tmux kill-session -t "$vsession" 2>/dev/null || true; exit 3
     fi
     # Quota/session-limit on a subscription backend: caught BEFORE the stall accounting below so we
     # react the instant the interactive menu appears instead of wasting the full 15-min verify stall
     # window on a prompt no headless session can answer (see rate_limited/halt_quota_blocked).
-    if echo "$pane" | rate_limited; then halt_quota_blocked "verify round #$rnd" "$vsession"; fi
+    if rate_limited "$pane"; then halt_quota_blocked "verify round #$rnd" "$vsession"; fi
     vhash=$(printf '%s' "$pane" | hash_text)
     if [ "$vhash" = "$vlast" ]; then
       vstall=$((vstall+1))
@@ -3907,8 +3959,8 @@ while :; do
       for _ in $(seq 1 8); do
         sleep 5
         pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
-        if echo "$pane" | grep -q "esc to interrupt"; then landed=1; break; fi
-        if ! echo "$pane" | grep -q 'Try "'; then landed=1; break; fi
+        if af_has "$pane" "esc to interrupt"; then landed=1; break; fi
+        if ! af_has "$pane" 'Try "'; then landed=1; break; fi
       done
       if [ "$landed" = "1" ]; then submitted=1; break; fi
       say "WARNING: round #$round prompt did not land (attempt $_attempt) — input still idle, resending"
@@ -3981,7 +4033,7 @@ while :; do
     pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
     # Retain the last live frame. Three rounds died as a bare "session gone" with the pane already
     # destroyed, so the reason was unrecoverable each time and the same round was retried blind.
-    echo "$pane" | grep -qE "." && lastpane="$pane"
+    af_has "$pane" "." && lastpane="$pane"
     # An EMPTY capture does NOT mean the session died. The TUI clears the screen to redraw -- which is
     # exactly what a worker's completion notification triggers -- so a poll can legitimately catch a
     # blank frame from a perfectly healthy session. Believing that blank frame is what killed round
@@ -3998,13 +4050,34 @@ while :; do
       fi
       break
     fi
-    if echo "$pane" | grep -qE "100% context used"; then say "context exhausted mid-ticket, ending wait"; break; fi
+    if af_has "$pane" "100% context used"; then
+      say "context exhausted mid-ticket, ending wait"
+      af_say_pane_evidence "$pane" "100% context used"
+      break
+    fi
     # Deliberately NARROW. This used to also match bare "401" and "expired", which occur
     # constantly in ordinary output (line numbers, token counts, diffs, prose) and killed
     # healthy sessions on sight -- one such false positive is in the 2026-07-28 log with
     # the API verified healthy (HTTP 200) at the same moment.
-    if echo "$pane" | grep -qiE "please run /login|invalid api key|authentication_error"; then
-      say "auth error, ending wait"; break
+    if af_ihas "$pane" "please run /login|invalid api key|authentication_error"; then
+      # DO NOT TAKE THE PANE'S WORD FOR IT. This is a pixel match against arbitrary scrollback, and
+      # its own history is false positives — the narrowing comment above was written after one
+      # killed a healthy session with the API verified 200 at that exact second. These strings are
+      # also ordinary CONTENT: a worker that greps this very driver, or reads a provider SDK, puts
+      # "authentication_error" on screen with nothing wrong. Observed 2026-08-24: a round died here
+      # two minutes in, scored zero, and recorded not one byte of what it saw.
+      #
+      # There is now a way to ASK rather than guess — the same one-generation probe the preflight
+      # uses, against the same credential the session spends. If the backend answers, the credential
+      # is healthy and this was scrollback: say so loudly and keep waiting. If it does not, the
+      # round ends on a DIAGNOSIS instead of a guess.
+      af_say_pane_evidence "$pane" "please run /login|invalid api key|authentication_error"
+      if af_backend_is_live; then
+        say "...but the backend just answered a live probe — the credential is HEALTHY, so that was scrollback, not an auth failure. Continuing to wait."
+        continue
+      fi
+      say "auth error CONFIRMED by a live probe (${AF_PROBE_KIND:-unknown}), ending wait"
+      break
     fi
     # A BILLING failure is terminal for the whole run, not a per-ticket blip: every
     # subsequent session 402s the instant it starts, so restarting just burns a fresh
@@ -4012,7 +4085,7 @@ while :; do
     # ran out at 11:08 and the loop churned 46 stall/restart cycles over ~6 HOURS
     # without completing anything, because the auth check above does not match a 402
     # and a 402'd pane is otherwise indistinguishable from a frozen one. Halt loudly.
-    if echo "$pane" | grep -qiE "insufficient balance|quota exceeded|payment required|credit balance is too low|insufficient_quota|billing_(error|hard_limit)|billing (error|failure)|(http[ /]?|status[ :]?)402|402 payment required"; then
+    if af_ihas "$pane" "insufficient balance|quota exceeded|payment required|credit balance is too low|insufficient_quota|billing_(error|hard_limit)|billing (error|failure)|(http[ /]?|status[ :]?)402|402 payment required"; then
       say "BILLING FAILURE (out of credits/quota) — halting the whole loop; top up and relaunch"
       commit_wip
       tmux kill-session -t "$SESSION" 2>/dev/null || true
@@ -4022,7 +4095,7 @@ while :; do
     # which no headless worker can answer. Caught BEFORE the stall accounting below so it does not
     # burn a fresh STALL_POLLS window per ticket forever (the exact cascade that finished ZERO
     # tickets in rounds #4/#5 on 2026-08-10). Commit WIP first, then halt the whole run.
-    if echo "$pane" | rate_limited; then
+    if rate_limited "$pane"; then
       commit_wip
       halt_quota_blocked "build round #$round" "$SESSION"
     fi
