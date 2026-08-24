@@ -89,6 +89,7 @@ from dataclasses import dataclass
 from collections.abc import Mapping
 from typing import Callable, Optional
 
+from knowledge.ml_registry.contracts import StageCloseRecord
 from knowledge.ml_registry.floor import CAMPAIGN_STATUS_FIELD
 from knowledge.ml_registry.ideate import ABLATION, RETRIEVAL_AXES
 from knowledge.ml_registry.insight import LessonFiler, maybe_file_cross_model_lesson, sweep_cross_model_lessons
@@ -576,14 +577,17 @@ def _trial_axis(space: RegistrySpace, trial: Fact) -> Optional[str]:
     return str(idea.meta.get("axis")) if idea is not None else None
 
 
-def _trial_stage(space: RegistrySpace, trial: Fact) -> Optional[str]:
-    """The stage an experiment answers, with older axis-only ideas remaining compatible."""
-    idea = space.get(trial.derived_from[0]) if trial.derived_from else None
-    if idea is None:
-        return None
+def _idea_stage(idea: Fact) -> str:
+    """The stage an idea belongs to, with older axis-only ideas remaining compatible."""
     return str(
         idea.meta.get("stage") or idea.meta.get(TARGET_BLOCK_FIELD) or idea.meta.get("axis")
     )
+
+
+def _trial_stage(space: RegistrySpace, trial: Fact) -> Optional[str]:
+    """The stage an experiment answers, via the idea it was derived from."""
+    idea = space.get(trial.derived_from[0]) if trial.derived_from else None
+    return None if idea is None else _idea_stage(idea)
 
 
 def stage_stagnation(space: RegistrySpace, model_id: str) -> dict[str, object]:
@@ -605,6 +609,20 @@ def stage_stagnation(space: RegistrySpace, model_id: str) -> dict[str, object]:
             break
         count += 1
     return {"stage": stage, "experiments_without_improvement": count}
+
+
+def stage_family_counts(space: RegistrySpace, model_id: str, stage: str) -> tuple[int, int]:
+    """``(material, completed)`` arms in one stage, in :class:`StageOutcome`'s own vocabulary.
+
+    Material is every idea registered against the stage; completed is every one no longer
+    available for a trial. A ledger-voided arm's idea returns to the backlog, so it counts as
+    material-but-not-completed -- which is why a stagnation stop can fire on a stage that is
+    still open, and why that close has to be an explicitly forced one.
+    """
+    ideas = [idea for idea in space.list_facts(IDEA)
+             if idea.meta.get("model_id") == model_id and _idea_stage(idea) == stage]
+    untried = {idea.id for idea in untried_backlog(space, model_id=model_id)}
+    return len(ideas), len([idea for idea in ideas if idea.id not in untried])
 
 
 def axis_streak(space: RegistrySpace, model_id: str) -> dict[str, object]:
@@ -958,7 +976,10 @@ def _supervise_campaign_loop(
          exhausted) -> :data:`CLOSE_BACKLOG_EXHAUSTED`.
       2. the dispatcher overran ``per_trial_seconds`` -> :data:`CLOSE_TRIAL_TIMEOUT`.
       3. the current stage has seen ``stagnation_limit`` experiments without an adoption ->
-         :data:`CLOSE_STAGNATION`, with a structured explanation for the caller.
+         :data:`CLOSE_STAGNATION`, explained by a
+         :class:`~knowledge.ml_registry.contracts.StageCloseRecord` -- the same typed stage
+         outcome the rest of the registry reads, forced because the bound can fire while arms
+         in the stage are still untried.
       4. the trial was ledger-voided and that makes ``max_consecutive_voids`` voids in a
          row -> :data:`CLOSE_VOID_LIMIT`; otherwise the loop continues.
       5. the trial was adopted AND the declared ``win_condition`` is met by the LEDGER's
@@ -1020,14 +1041,17 @@ def _supervise_campaign_loop(
 
         stagnation = stage_stagnation(space, model_id)
         stagnation_limit = model_stagnation_limit(model.meta)
-        if stagnation["experiments_without_improvement"] >= stagnation_limit:
+        without_improvement = int(stagnation["experiments_without_improvement"])
+        if without_improvement >= stagnation_limit:
             stage = str(stagnation["stage"] or "unknown")
-            return close_with(CLOSE_STAGNATION, {
-                "stage": stage,
-                "reason": f"no improvement in the last {stagnation_limit} experiments",
-                "experiments_without_improvement": stagnation_limit,
-                "limit": stagnation_limit,
-            })
+            material, completed = stage_family_counts(space, model_id, stage)
+            return close_with(CLOSE_STAGNATION, StageCloseRecord.for_stagnation(
+                stage=stage,
+                material_families=material,
+                completed_families=completed,
+                experiments_without_improvement=without_improvement,
+                limit=stagnation_limit,
+            ).to_mapping())
 
         if result["status"] == TRIAL_STATUS_VOIDED:
             # Does not count against max_trials -- but a harness that keeps voiding is a
