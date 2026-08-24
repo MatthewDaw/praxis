@@ -113,9 +113,9 @@ CREATE TRIGGER IF NOT EXISTS guard_lineage_insert BEFORE INSERT ON lineage
 CREATE TRIGGER IF NOT EXISTS guard_lineage_update BEFORE UPDATE ON lineage BEGIN SELECT RAISE(ABORT,'lineage is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_lineage_delete BEFORE DELETE ON lineage BEGIN SELECT RAISE(ABORT,'lineage is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_aliases_insert BEFORE INSERT ON aliases
- WHEN registry_authority() NOT IN ('alias_set','run_adopted','registry_finalized','promotion_rolled_back') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+ WHEN registry_authority() NOT IN ('alias_set','run_adopted','registry_finalized','promotion_rolled_back','unpromotion_rolled_back') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_aliases_update BEFORE UPDATE ON aliases
- WHEN registry_authority() NOT IN ('alias_set','run_adopted','adoption_invalidated','registry_finalized','promotion_rolled_back') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+ WHEN registry_authority() NOT IN ('alias_set','run_adopted','adoption_invalidated','registry_finalized','promotion_rolled_back','unpromotion_rolled_back') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_aliases_delete BEFORE DELETE ON aliases
  WHEN registry_authority()!='promotion_rolled_back' BEGIN SELECT RAISE(ABORT,'aliases cannot be deleted'); END;
 CREATE TRIGGER IF NOT EXISTS guard_events_insert BEFORE INSERT ON events
@@ -302,6 +302,8 @@ class Registry:
             "campaign_spec_registered",
             "campaign_registration_refused",
             "campaign_outcome_recorded",
+            "campaign_landed",
+            "campaign_unpromoted",
         }:
             # CampaignSpec is a versioned control-plane contract, not a ninth
             # model-registry entity. Runner refusals and outcomes live beside it
@@ -415,20 +417,34 @@ class Registry:
             )}
             if any(row["version"] != p["failed_version"] for row in current.values()):
                 raise RegistryError("failed landing rollback found aliases moved by another writer")
-            for alias in ("champion", "production"):
-                prior = p["aliases"].get(alias)
-                if prior is None:
-                    db.execute("DELETE FROM aliases WHERE model_id=? AND alias=?", (p["model_id"], alias))
-                else:
-                    db.execute(
-                        "INSERT INTO aliases VALUES(?,?,?,?,?,?) ON CONFLICT(model_id,alias) DO UPDATE SET "
-                        "version=excluded.version,set_by=excluded.set_by,reason=excluded.reason,at=excluded.at",
-                        tuple(prior[key] for key in
-                              ("model_id", "alias", "version", "set_by", "reason", "at")),
-                    )
+            self._restore_aliases(db, p["model_id"], p["aliases"])
+        elif op == "unpromotion_rolled_back":
+            self._restore_aliases(db, p["model_id"], p["aliases"])
         else:
             raise RegistryError(f"unknown event type {op!r}")
         return True
+
+    @staticmethod
+    def _restore_aliases(
+        db: sqlite3.Connection,
+        model_id: str,
+        aliases: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        """Restore one model's complete champion/production alias pair."""
+        unknown = set(aliases) - {"champion", "production"}
+        if unknown:
+            raise RegistryError(f"cannot restore unknown aliases {sorted(unknown)!r}")
+        for alias in ("champion", "production"):
+            row = aliases.get(alias)
+            if row is None:
+                db.execute("DELETE FROM aliases WHERE model_id=? AND alias=?", (model_id, alias))
+            else:
+                db.execute(
+                    "INSERT INTO aliases VALUES(?,?,?,?,?,?) ON CONFLICT(model_id,alias) DO UPDATE SET "
+                    "version=excluded.version,set_by=excluded.set_by,reason=excluded.reason,at=excluded.at",
+                    tuple(row[key] for key in
+                          ("model_id", "alias", "version", "set_by", "reason", "at")),
+                )
 
     @staticmethod
     def _insert_run(db: sqlite3.Connection, p: Mapping[str, Any]) -> None:
@@ -788,6 +804,58 @@ class Registry:
             "model_id": model_id,
             "failed_version": failed_version,
             "aliases": {name: dict(row) for name, row in aliases.items()},
+        })
+
+    def _record_landed_promotion(
+        self,
+        *,
+        model_id: str,
+        version: int,
+        landing_commit: str,
+        aliases: Mapping[str, Mapping[str, Any]],
+        capability: object,
+    ) -> None:
+        """Record the external half needed to undo one successful promotion."""
+        if capability is not _PRODUCTION_CAPABILITY:
+            raise RegistryError("landed promotion requires finalize authority")
+        if not landing_commit.strip():
+            raise RegistryError("landed promotion requires a commit")
+        self._write("campaign_landed", {
+            "model_id": model_id,
+            "version": version,
+            "landing_commit": landing_commit.strip(),
+            "aliases": {name: dict(row) for name, row in aliases.items()},
+        })
+
+    def _restore_unpromotion(
+        self,
+        *,
+        model_id: str,
+        aliases: Mapping[str, Mapping[str, Any]],
+        capability: object,
+    ) -> None:
+        """Compensate an alias rollback when the external landing inverse refuses."""
+        if capability is not _PRODUCTION_CAPABILITY:
+            raise RegistryError("unpromotion rollback requires finalize authority")
+        self._write("unpromotion_rolled_back", {
+            "model_id": model_id,
+            "aliases": {name: dict(row) for name, row in aliases.items()},
+        })
+
+    def _record_campaign_unpromoted(
+        self,
+        *,
+        model_id: str,
+        landing_commit: str,
+        revert_commit: str,
+        capability: object,
+    ) -> None:
+        if capability is not _PRODUCTION_CAPABILITY:
+            raise RegistryError("unpromotion record requires finalize authority")
+        self._write("campaign_unpromoted", {
+            "model_id": model_id,
+            "landing_commit": landing_commit,
+            "revert_commit": revert_commit,
         })
 
     def record_compatibility(self, *, model_id: str, version: int, head_sha: str,

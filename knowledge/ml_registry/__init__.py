@@ -16,6 +16,7 @@ from .contracts import RunsExport
 from .runner import (
     CampaignDispatch,
     CampaignRunReport,
+    deregister_campaign,
     register_campaign_for_run,
     run_registered_campaigns,
 )
@@ -25,6 +26,7 @@ from .storage.importers import HistoricalLedgerImporter, HistoricalStoreImporter
 __all__ = [
     "CampaignDispatch",
     "CampaignRunReport",
+    "deregister_campaign",
     "HistoricalLedgerImporter",
     "HistoricalStoreImporter",
     "Registry",

@@ -28,6 +28,7 @@ class FinalizedModel:
 
 
 LandingCommitWriter = Callable[[FinalizedModel], str]
+LandingCommitInverse = Callable[[str], str]
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,12 @@ class ConvergePromotion:
     verdict: str
     finalized: FinalizedModel | None = None
     landing_commit: str | None = None
+
+
+@dataclass(frozen=True)
+class Unpromotion:
+    landing_commit: str
+    production_alias: Alias
 
 
 def _decoded(row: Mapping[str, Any], key: str) -> Any:
@@ -237,6 +244,7 @@ class ConvergePromoter:
         *,
         compatibility_loader: CompatibilityLoader,
         landing_commit: LandingCommitWriter,
+        landing_commit_inverse: LandingCommitInverse | None = None,
         min_measured: int = 3,
     ) -> None:
         self.registry = registry
@@ -244,6 +252,7 @@ class ConvergePromoter:
             registry, compatibility_loader=compatibility_loader, min_measured=min_measured,
         )
         self.landing_commit = landing_commit
+        self.landing_commit_inverse = landing_commit_inverse
 
     def run(
         self,
@@ -292,6 +301,13 @@ class ConvergePromoter:
             commit = self.landing_commit(finalized).strip()
             if not commit:
                 raise RegistryFinalizationError("landing writer returned no commit")
+            self.registry._record_landed_promotion(
+                model_id=view.binding.model_id,
+                version=version,
+                landing_commit=commit,
+                aliases=aliases,
+                capability=_PRODUCTION_CAPABILITY,
+            )
         except Exception as exc:
             try:
                 self.registry._rollback_failed_landing(
@@ -306,6 +322,60 @@ class ConvergePromoter:
                 ) from rollback_exc
             raise RegistryFinalizationError(f"promotion failed: {exc}") from exc
         return ConvergePromotion(verdict, finalized, commit)
+
+    def unpromote(self, *, model_id: str, reason: str) -> Unpromotion:
+        """Undo one landed promotion, compensating aliases if the landing inverse refuses."""
+        if self.landing_commit_inverse is None:
+            raise RegistryFinalizationError("unpromote requires a landing-commit inverse")
+        if not reason.strip():
+            raise RegistryFinalizationError("unpromote requires a non-empty reason")
+        lifecycle = [
+            event for event in self.registry.list_events()
+            if event.event_type in {"campaign_landed", "campaign_unpromoted"}
+            and event.payload.get("model_id") == model_id
+        ]
+        if not lifecycle or lifecycle[-1].event_type != "campaign_landed":
+            raise RegistryFinalizationError(f"model {model_id!r} has no landed promotion to undo")
+        landed = lifecycle[-1].payload
+        promoted_aliases = {
+            row["alias"]: dict(row)
+            for row in self.registry.rows("aliases")
+            if row["model_id"] == model_id and row["alias"] in {"champion", "production"}
+        }
+        self.registry._rollback_failed_landing(
+            model_id=model_id,
+            failed_version=int(landed["version"]),
+            aliases=landed["aliases"],
+            capability=_PRODUCTION_CAPABILITY,
+        )
+        try:
+            revert_commit = self.landing_commit_inverse(str(landed["landing_commit"])).strip()
+            if not revert_commit:
+                raise RegistryFinalizationError("landing inverse returned no commit")
+        except Exception as exc:
+            self.registry._restore_unpromotion(
+                model_id=model_id,
+                aliases=promoted_aliases,
+                capability=_PRODUCTION_CAPABILITY,
+            )
+            raise RegistryFinalizationError(f"unpromote failed: {exc}") from exc
+        self.registry._record_campaign_unpromoted(
+            model_id=model_id,
+            landing_commit=str(landed["landing_commit"]),
+            revert_commit=revert_commit,
+            capability=_PRODUCTION_CAPABILITY,
+        )
+        production = next(
+            (row for row in self.registry.rows("aliases")
+             if row["model_id"] == model_id and row["alias"] == "production"),
+            None,
+        )
+        if production is None:
+            raise RegistryFinalizationError("unpromote restored no production alias")
+        return Unpromotion(revert_commit, Alias(
+            production["model_id"], production["alias"], production["version"],
+            production["set_by"], production["reason"], production["at"],
+        ))
 
 
 class RegistryFinalizeService:
