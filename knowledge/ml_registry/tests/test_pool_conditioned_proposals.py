@@ -1,10 +1,12 @@
 """R5 acceptance: discovered proposals are pool-backed and ablation-conditioned."""
 
-from knowledge.ml_registry.supervisor import PoolIdeaGenerator, dispatch_trial
-from knowledge.ml_registry.survey import load_technique_pool
+from typing import Optional
+
+from knowledge.ml_registry.supervisor import Dispatcher, PoolIdeaGenerator, dispatch_trial
+from knowledge.ml_registry.survey import TechniquePool, load_technique_pool
 from knowledge.ml_registry.testing.rope_fixtures import rope_ledger_rows
 from knowledge.ml_registry.verdict import LedgerRow
-from knowledge.ml_registry.write_path import RegistrySpace, register_idea, register_model
+from knowledge.ml_registry.write_path import Fact, RegistrySpace, register_idea, register_model
 
 
 BASELINE = "baseline"
@@ -36,7 +38,7 @@ def _space() -> tuple[RegistrySpace, str]:
     return space, model_id
 
 
-def _pool(count: int = 2):
+def _pool(count: int = 2) -> TechniquePool:
     return load_technique_pool("campaign-r5", [
         {
             "id": f"technique-{index}",
@@ -50,8 +52,8 @@ def _pool(count: int = 2):
     ], minimum_size=1)
 
 
-def _loss(commit: str, **evidence: object):
-    def dispatch(space, model, idea):
+def _loss(commit: str, **evidence: object) -> Dispatcher:
+    def dispatch(space: RegistrySpace, model: Fact, idea: Fact) -> dict[str, object]:
         return {"commit": commit, **evidence}
 
     return dispatch
@@ -96,7 +98,12 @@ def test_pool_proposals_cite_entries_and_follow_the_latest_ablation_target() -> 
 def test_fallback_proposals_are_durably_marked_as_outside_the_pool() -> None:
     space, model_id = _space()
 
-    def model_prior(space, model_id, forced_axis, permitted_axes):
+    def model_prior(
+        space: RegistrySpace,
+        model_id: str,
+        forced_axis: Optional[str],
+        permitted_axes: frozenset[str],
+    ) -> Optional[dict[str, object]]:
         return {"axis": "optimizer", "description": "invent a new schedule", "basis": "model_prior"}
 
     generator = PoolIdeaGenerator(

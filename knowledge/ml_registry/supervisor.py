@@ -184,7 +184,9 @@ WIN_ON_ADOPTION_OPT_IN_FIELD = "win_on_adoption_ok"
 # generator proposes one more idea (its meta, sans ``origin``/``model_id`` which this
 # module stamps) when the backlog holds nothing more to try.
 Dispatcher = Callable[[RegistrySpace, Fact, Fact], dict[str, object]]
-IdeaGenerator = Callable[[RegistrySpace, str, Optional[str], frozenset], Optional[dict[str, object]]]
+IdeaGenerator = Callable[
+    [RegistrySpace, str, Optional[str], frozenset[str]], Optional[dict[str, object]]
+]
 
 ABLATION_RESULT_FIELD = "ablation_result"
 TARGET_BLOCK_FIELD = "target_block"
@@ -227,17 +229,19 @@ class PoolIdeaGenerator:
     outside_pool_generator: Optional[IdeaGenerator] = None
 
     def __post_init__(self) -> None:
-        if not self.default_target_block.strip():
+        target = self.default_target_block.strip()
+        if not target:
             raise RegistryValidationError(
                 "default_target_block must not be empty", field="default_target_block",
             )
+        object.__setattr__(self, "default_target_block", target)
 
     def __call__(
         self,
         space: RegistrySpace,
         model_id: str,
         forced_axis: Optional[str],
-        permitted_axes: frozenset,
+        permitted_axes: frozenset[str],
     ) -> Optional[dict[str, object]]:
         used_ids = {
             str(idea.meta[TECHNIQUE_ID_FIELD])
@@ -246,7 +250,7 @@ class PoolIdeaGenerator:
         }
         technique = next((item for item in self.pool.techniques if item.id not in used_ids), None)
         if technique is not None:
-            target = _latest_ablation_target(space, model_id) or self.default_target_block.strip()
+            target = _latest_ablation_target(space, model_id) or self.default_target_block
             return {
                 "axis": forced_axis or target,
                 "description": f"Apply vetted technique {technique.id} to block {target}",
@@ -769,8 +773,7 @@ def dispatch_trial(
         proposed = idea_generator(space, model_id, forced_axis, permitted_axes)
         if proposed is not None:
             meta = dict(proposed)
-            meta.setdefault(PROPOSAL_ORIGIN_FIELD, OUTSIDE_POOL_PROPOSAL)
-            if meta[PROPOSAL_ORIGIN_FIELD] == OUTSIDE_POOL_PROPOSAL:
+            if meta.setdefault(PROPOSAL_ORIGIN_FIELD, OUTSIDE_POOL_PROPOSAL) == OUTSIDE_POOL_PROPOSAL:
                 meta.setdefault(OUTSIDE_POOL_REASON_FIELD, "unwrapped_idea_generator")
             meta["model_id"] = model_id
             meta["origin"] = DISCOVERED
