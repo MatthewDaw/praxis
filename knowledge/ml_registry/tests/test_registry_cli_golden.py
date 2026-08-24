@@ -81,7 +81,7 @@ def test_registry_status_reads_canonical_store(tmp_path: Path, capsys) -> None:
     experiment = {
         "experiment_id": "fixture", "spec_digest": "d" * 64, "stages": ["model"],
         "metric": "score", "direction": "maximize", "win_condition": {"delta": 0.1},
-        "noise_floor": 0.01, "baseline_throughput": 1.0,
+        "rope": 0.01, "baseline_throughput": 1.0,
     }
     assert main(["create-experiment", "--registry-root", str(root),
                  "--experiment-json", json.dumps(experiment)]) == 0

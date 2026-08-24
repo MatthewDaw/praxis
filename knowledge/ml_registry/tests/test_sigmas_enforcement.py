@@ -57,7 +57,6 @@ def _meta(**extra: object) -> dict[str, object]:
         "direction": "maximize",
         "win_condition": {"metric_at_least": 0.9},
         "baseline": BASELINE_RUNS[0],
-        "noise_floor": 0.01,
         "baseline_throughput": statistics.mean(BASELINE_VALUES),
         "diff_size_limit": 800,
     }
@@ -139,7 +138,7 @@ def test_an_externally_measured_floor_is_admitted_and_labelled_unverified(tmp_pa
     model_id = register_model(space, _meta(**{
         NOISE_FLOOR_FIELD: 0.0041, SIGMAS_FIELD: 2.0,
         NOISE_FLOOR_METHOD_FIELD: "bootstrap",
-        "noise_floor_varies": "paired_delta", "trial_comparison": "paired",
+        "rope_varies": "paired_delta", "trial_comparison": "paired",
     }))
     assert space.get(model_id).meta[SIGMAS_BASIS_FIELD] == SIGMAS_BASIS_UNVERIFIED
 
@@ -205,7 +204,7 @@ def test_a_deliberate_one_sigma_campaign_registers_and_keeps_its_reason(tmp_path
         NOISE_FLOOR_SIGMA_FIELD: 0.0703,
         NOISE_FLOOR_METHOD_FIELD: "bootstrap",
         SIGMAS_REASON_FIELD: reason,
-        "noise_floor_varies": "paired_delta", "trial_comparison": "paired",
+        "rope_varies": "paired_delta", "trial_comparison": "paired",
     }))
     stored = space.get(model_id).meta
     assert stored[SIGMAS_FIELD] == 1.0
@@ -284,7 +283,7 @@ def test_the_live_campaigns_still_register(tmp_path, name, floor, sigmas, varies
         "metric": f"{name}_metric",
         NOISE_FLOOR_FIELD: floor, SIGMAS_FIELD: sigmas,
         NOISE_FLOOR_METHOD_FIELD: "bootstrap",
-        "noise_floor_varies": varies, "trial_comparison": comparison,
+        "rope_varies": varies, "trial_comparison": comparison,
         "noise_floor_override_reason": "external study over more runs than the ledger holds",
         "baseline_runs": BASELINE_RUNS,
     })

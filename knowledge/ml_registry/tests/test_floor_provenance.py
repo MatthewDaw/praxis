@@ -1,4 +1,4 @@
-"""The floor's PROVENANCE against how trials are actually compared (guard_floor_provenance).
+"""The floor's PROVENANCE against how trials are actually compared (guard_rope_provenance).
 
 The detection campaign registered a floor measured by resampling WHICH EVAL FRAMES were
 scored, then dispatched every trial PAIRED on the baseline's own draw -- where exactly
@@ -12,16 +12,16 @@ from __future__ import annotations
 import pytest
 
 from knowledge.ml_registry.floor import (
-    FLOOR_VARIES_EVAL_SAMPLE,
-    FLOOR_VARIES_PAIRED_DELTA,
-    FLOOR_VARIES_RUN_REPEAT,
+    ROPE_VARIES_EVAL_SAMPLE,
+    ROPE_VARIES_PAIRED_DELTA,
+    ROPE_VARIES_RUN_REPEAT,
     NOISE_FLOOR_METHOD_FIELD,
-    NOISE_FLOOR_VARIES_FIELD,
+    ROPE_VARIES_FIELD,
     TRIAL_COMPARISON_FIELD,
     TRIAL_COMPARISON_PAIRED,
     TRIAL_COMPARISON_UNPAIRED,
     adjudicate_trial,
-    guard_floor_provenance,
+    guard_rope_provenance,
     register_model_with_baseline,
 )
 from knowledge.ml_registry.schema import RegistryValidationError
@@ -38,7 +38,6 @@ BASE_META: dict[str, object] = {
     "direction": "maximize",
     "win_condition": {"metric_at_least": 0.9},
     "baseline": "b1",
-    "noise_floor": 0.01,
     "baseline_throughput": 1.0,
     "diff_size_limit": 800,
 }
@@ -59,29 +58,29 @@ def _recomputed_meta(**extra: object) -> dict[str, object]:
 
 def test_paired_trials_against_an_eval_sample_floor_are_refused():
     with pytest.raises(RegistryValidationError) as excinfo:
-        guard_floor_provenance(
+        guard_rope_provenance(
             _meta(
                 **{
                     TRIAL_COMPARISON_FIELD: TRIAL_COMPARISON_PAIRED,
-                    NOISE_FLOOR_VARIES_FIELD: FLOOR_VARIES_EVAL_SAMPLE,
+                    ROPE_VARIES_FIELD: ROPE_VARIES_EVAL_SAMPLE,
                 }
             )
         )
-    assert excinfo.value.field == NOISE_FLOOR_VARIES_FIELD
+    assert excinfo.value.field == ROPE_VARIES_FIELD
     assert "CANCELS" in str(excinfo.value)
 
 
 def test_unpaired_trials_against_a_paired_delta_floor_are_refused():
     with pytest.raises(RegistryValidationError) as excinfo:
-        guard_floor_provenance(
+        guard_rope_provenance(
             _meta(
                 **{
                     TRIAL_COMPARISON_FIELD: TRIAL_COMPARISON_UNPAIRED,
-                    NOISE_FLOOR_VARIES_FIELD: FLOOR_VARIES_PAIRED_DELTA,
+                    ROPE_VARIES_FIELD: ROPE_VARIES_PAIRED_DELTA,
                 }
             )
         )
-    assert excinfo.value.field == NOISE_FLOOR_VARIES_FIELD
+    assert excinfo.value.field == ROPE_VARIES_FIELD
 
 
 @pytest.mark.parametrize(
@@ -89,17 +88,17 @@ def test_unpaired_trials_against_a_paired_delta_floor_are_refused():
     [
         # The two campaigns that are RIGHT. A false refusal here would block a correct
         # campaign, which is worse than the defect this guard closes.
-        (TRIAL_COMPARISON_PAIRED, FLOOR_VARIES_PAIRED_DELTA),
-        (TRIAL_COMPARISON_UNPAIRED, FLOOR_VARIES_EVAL_SAMPLE),
+        (TRIAL_COMPARISON_PAIRED, ROPE_VARIES_PAIRED_DELTA),
+        (TRIAL_COMPARISON_UNPAIRED, ROPE_VARIES_EVAL_SAMPLE),
         # run_repeat noise neither cancels under pairing nor vanishes without it, so it is
         # defensible either way and the guard refuses only what it can be sure about.
-        (TRIAL_COMPARISON_PAIRED, FLOOR_VARIES_RUN_REPEAT),
-        (TRIAL_COMPARISON_UNPAIRED, FLOOR_VARIES_RUN_REPEAT),
+        (TRIAL_COMPARISON_PAIRED, ROPE_VARIES_RUN_REPEAT),
+        (TRIAL_COMPARISON_UNPAIRED, ROPE_VARIES_RUN_REPEAT),
     ],
 )
 def test_legitimate_combinations_are_not_refused(comparison, varies):
-    guard_floor_provenance(
-        _meta(**{TRIAL_COMPARISON_FIELD: comparison, NOISE_FLOOR_VARIES_FIELD: varies})
+    guard_rope_provenance(
+        _meta(**{TRIAL_COMPARISON_FIELD: comparison, ROPE_VARIES_FIELD: varies})
     )
 
 
@@ -108,25 +107,25 @@ def test_legitimate_combinations_are_not_refused(comparison, varies):
     [
         {},
         {TRIAL_COMPARISON_FIELD: TRIAL_COMPARISON_PAIRED},
-        {NOISE_FLOOR_VARIES_FIELD: FLOOR_VARIES_EVAL_SAMPLE},
-        {TRIAL_COMPARISON_FIELD: "", NOISE_FLOOR_VARIES_FIELD: ""},
+        {ROPE_VARIES_FIELD: ROPE_VARIES_EVAL_SAMPLE},
+        {TRIAL_COMPARISON_FIELD: "", ROPE_VARIES_FIELD: ""},
     ],
 )
 def test_an_undeclared_or_half_declared_record_has_no_opinion(extra):
-    guard_floor_provenance(_meta(**extra))
+    guard_rope_provenance(_meta(**extra))
 
 
 @pytest.mark.parametrize(
     "field,value",
     [
-        (NOISE_FLOOR_VARIES_FIELD, "bootstrap"),
-        (NOISE_FLOOR_VARIES_FIELD, "sampling"),
+        (ROPE_VARIES_FIELD, "bootstrap"),
+        (ROPE_VARIES_FIELD, "sampling"),
         (TRIAL_COMPARISON_FIELD, "same_seed"),
     ],
 )
 def test_a_word_outside_the_vocabulary_is_refused_rather_than_read_as_silence(field, value):
     with pytest.raises(RegistryValidationError) as excinfo:
-        guard_floor_provenance(_meta(**{field: value}))
+        guard_rope_provenance(_meta(**{field: value}))
     assert excinfo.value.field == field
 
 
@@ -141,7 +140,7 @@ def test_plain_register_model_refuses_the_mismatch():
             _meta(
                 **{
                     TRIAL_COMPARISON_FIELD: TRIAL_COMPARISON_PAIRED,
-                    NOISE_FLOOR_VARIES_FIELD: FLOOR_VARIES_EVAL_SAMPLE,
+                    ROPE_VARIES_FIELD: ROPE_VARIES_EVAL_SAMPLE,
                 }
             ),
         )
@@ -160,7 +159,7 @@ def test_register_model_with_baseline_refuses_the_detection_registration():
         noise_floor=0.099758,
         **{
             NOISE_FLOOR_METHOD_FIELD: "bootstrap",
-            NOISE_FLOOR_VARIES_FIELD: FLOOR_VARIES_EVAL_SAMPLE,
+            ROPE_VARIES_FIELD: ROPE_VARIES_EVAL_SAMPLE,
             TRIAL_COMPARISON_FIELD: TRIAL_COMPARISON_PAIRED,
         },
     )
@@ -171,7 +170,7 @@ def test_register_model_with_baseline_refuses_the_detection_registration():
 
     # ... and the same registration, with the floor's provenance corrected to what the
     # paired comparison actually carries, registers fine.
-    meta[NOISE_FLOOR_VARIES_FIELD] = FLOOR_VARIES_PAIRED_DELTA
+    meta[ROPE_VARIES_FIELD] = ROPE_VARIES_PAIRED_DELTA
     meta["noise_floor"] = 0.0016
     meta["noise_floor_override_reason"] = "paired-delta SD is far below the draw spread by design"
     assert register_model_with_baseline(space, meta, ledger)
@@ -179,7 +178,7 @@ def test_register_model_with_baseline_refuses_the_detection_registration():
 
 def test_declaring_the_pairing_after_registration_is_not_a_way_around_the_guard():
     space = RegistrySpace()
-    model_id = register_model(space, _meta(**{NOISE_FLOOR_VARIES_FIELD: FLOOR_VARIES_EVAL_SAMPLE}))
+    model_id = register_model(space, _meta(**{ROPE_VARIES_FIELD: ROPE_VARIES_EVAL_SAMPLE}))
     with pytest.raises(RegistryValidationError):
         mutate_model(
             space,
@@ -223,7 +222,7 @@ def test_the_four_live_campaigns_still_register_and_still_adjudicate(name):
     model_id = register_model_with_baseline(space, meta, ledger)
     model = space.get(model_id)
     assert model.meta["noise_floor"] == floor
-    assert NOISE_FLOOR_VARIES_FIELD not in model.meta
+    assert ROPE_VARIES_FIELD not in model.meta
     assert TRIAL_COMPARISON_FIELD not in model.meta
 
     idea_id = register_idea(

@@ -82,7 +82,7 @@ def _campaign(tmp_path, *, throughput_floor=3.211):
         "metric": "stroke_macro_f1",
         "direction": "maximize",
         "win_condition": {"metric_at_least": 0.70},
-        "noise_floor": 0.003,
+        "rope": 0.003,
         "baseline_throughput": throughput_floor,
     }
     assert (

@@ -35,7 +35,7 @@ from knowledge.ml_registry.write_path import RegistrySpace, register_idea, regis
 MODEL_META: dict[str, object] = {
     "metric": "val_bpb",
     "direction": "minimize",
-    "win_condition": "beats baseline by noise_floor",
+    "win_condition": "beats baseline by the rope",
     "baseline": "commit-abc123",
     "diff_size_limit": 800,
     "baseline_runs": ["r1", "r2", "r3", "r4"],
@@ -463,7 +463,7 @@ def test_stored_two_sigma_floor_from_bootstrap_agrees():
 _TPUT_META: dict[str, object] = {
     "metric": "f1",
     "direction": "maximize",
-    "win_condition": "beats baseline by noise_floor",
+    "win_condition": "beats baseline by the rope",
     "baseline": "b-metric",
     "diff_size_limit": 800,
     "baseline_runs": ["t1", "t2", "t3", "t4"],

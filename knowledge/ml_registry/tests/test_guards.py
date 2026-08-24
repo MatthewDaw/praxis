@@ -14,7 +14,7 @@ from knowledge.ml_registry.schema import RegistryValidationError
 
 @pytest.mark.parametrize("field", sorted(PROTECTED_MODEL_FIELDS))
 def test_worker_sourced_mutation_of_a_protected_field_is_refused_naming_it(field):
-    """A worker-sourced write mutating metric/direction/win_condition/noise_floor/
+    """A worker-sourced write mutating metric/direction/win_condition/baseline_runs/
     baseline_throughput/diff_size_limit is refused naming that field."""
     with pytest.raises(RegistryValidationError) as excinfo:
         guard_model_mutation({field: "new-value"}, source="worker")
@@ -32,14 +32,14 @@ def test_a_protected_field_may_not_be_patched_from_ANY_source(source):
 
     It previously refused only ``source == "worker"``, which made it a no-op for every
     other string -- and ``--source`` is free text at the CLI. Setting
-    ``noise_floor=-99``/``baseline_throughput=99`` through any other source drove a trial
+    a repointed bar/``baseline_throughput=99`` through any other source drove a trial
     whose LEDGER value was a clear loss to ``succeeded`` and advanced the baseline onto
     the losing commit. Both operands of the comparison must come from the ledger, so the
     threshold is no more patchable than the value.
     """
     with pytest.raises(RegistryValidationError) as excinfo:
-        guard_model_mutation({"noise_floor": -99.0}, source=source)
-    assert excinfo.value.field == "noise_floor"
+        guard_model_mutation({"baseline_runs": ["cherry-picked"]}, source=source)
+    assert excinfo.value.field == "baseline_runs"
 
 
 def test_baseline_move_from_adjudication_is_allowed():

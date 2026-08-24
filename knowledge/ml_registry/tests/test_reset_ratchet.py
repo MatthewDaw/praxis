@@ -18,8 +18,8 @@ from knowledge.ml_registry.schema import RegistryValidationError
 from knowledge.ml_registry.verdict import reset_ratchet
 from knowledge.ml_registry.write_path import RegistrySpace, register_model
 
-META = {"metric": "f1", "direction": "maximize", "win_condition": "beats baseline by noise_floor",
-        "baseline": "c1", "noise_floor": 0.01, "baseline_throughput": 1.0, "diff_size_limit": 8,
+META = {"metric": "f1", "direction": "maximize", "win_condition": "beats baseline by the rope",
+        "baseline": "c1", "baseline_throughput": 1.0, "diff_size_limit": 8,
         "max_trials": 5, "max_discovered_ideas": 2}
 
 

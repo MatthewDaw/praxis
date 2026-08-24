@@ -14,18 +14,18 @@ import statistics
 import pytest
 
 from knowledge.ml_registry.floor import (
-    DEFAULT_FLOOR_ARMOR,
-    FLOOR_ARMOR_FIELD,
-    FLOOR_MEASURED_AT_FIELD,
-    FLOOR_SCALING_BASIS_FIELD,
-    FLOOR_SCALING_BASIS_STATIC,
-    FLOOR_SCALING_BASIS_UNVERIFIED_MODEL,
-    FLOOR_SCALING_FIELD,
-    FLOOR_SCALING_RESIDUAL,
+    DEFAULT_ROPE_ARMOR,
+    ROPE_ARMOR_FIELD,
+    ROPE_MEASURED_AT_FIELD,
+    ROPE_SCALING_BASIS_FIELD,
+    ROPE_SCALING_BASIS_STATIC,
+    ROPE_SCALING_BASIS_UNVERIFIED_MODEL,
+    ROPE_SCALING_FIELD,
+    ROPE_SCALING_RESIDUAL,
     METRIC_CEILING_FIELD,
     NOISE_FLOOR_FIELD,
     RATCHET_COUNT_FIELD,
-    describe_noise_floor,
+    describe_rope,
     register_model_with_baseline,
     scaled_noise_floor,
 )
@@ -56,8 +56,8 @@ def _scaled_meta(direction, ceiling, measured_at, floor, **extra):
         "direction": direction,
         NOISE_FLOOR_FIELD: floor,
         METRIC_CEILING_FIELD: ceiling,
-        FLOOR_MEASURED_AT_FIELD: measured_at,
-        FLOOR_SCALING_FIELD: FLOOR_SCALING_RESIDUAL,
+        ROPE_MEASURED_AT_FIELD: measured_at,
+        ROPE_SCALING_FIELD: ROPE_SCALING_RESIDUAL,
         **extra,
     }
 
@@ -104,16 +104,16 @@ def test_armor_stops_the_bar_at_a_fraction_of_the_measured_floor():
     assert unarmored < 0.000790  # the defect, reproduced
 
     bar = scaled_noise_floor(meta, 0.99)
-    assert bar == pytest.approx(0.0016 * DEFAULT_FLOOR_ARMOR)
+    assert bar == pytest.approx(0.0016 * DEFAULT_ROPE_ARMOR)
     assert bar > 0.000790  # above the one measured null this registry holds
-    assert describe_noise_floor(meta, 0.99)["armored"] is True
+    assert describe_rope(meta, 0.99)["armored"] is True
     # and it never goes lower, however close to the ceiling the campaign gets
-    assert scaled_noise_floor(meta, 1.0) == pytest.approx(0.0016 * DEFAULT_FLOOR_ARMOR)
-    assert scaled_noise_floor(meta, 1.5) == pytest.approx(0.0016 * DEFAULT_FLOOR_ARMOR)
+    assert scaled_noise_floor(meta, 1.0) == pytest.approx(0.0016 * DEFAULT_ROPE_ARMOR)
+    assert scaled_noise_floor(meta, 1.5) == pytest.approx(0.0016 * DEFAULT_ROPE_ARMOR)
 
 
 def test_armor_is_overridable_per_model():
-    meta = _scaled_meta("maximize", 1.0, 0.851439, 0.0016, **{FLOOR_ARMOR_FIELD: 0.8})
+    meta = _scaled_meta("maximize", 1.0, 0.851439, 0.0016, **{ROPE_ARMOR_FIELD: 0.8})
     assert scaled_noise_floor(meta, 0.99) == pytest.approx(0.0016 * 0.8)
 
 
@@ -129,7 +129,7 @@ def test_derived_bar_never_leaves_the_registered_floors_neighbourhood(
     span = [-10.0, -1.0, 0.0, measured_at, win, ceiling, ceiling + 5.0, 1e6]
     for v in span:
         bar = scaled_noise_floor(meta, v)
-        assert floor * DEFAULT_FLOOR_ARMOR - 1e-15 <= bar <= floor + 1e-15, (name, v, bar)
+        assert floor * DEFAULT_ROPE_ARMOR - 1e-15 <= bar <= floor + 1e-15, (name, v, bar)
 
 
 # ---------------------------------------------------------------------------
@@ -153,8 +153,8 @@ def test_a_model_that_declares_nothing_gets_the_registered_floor_at_every_level(
     space = RegistrySpace()
     model_id = register_model_with_baseline(space, dict(UNDECLARED_META), BASELINE_LEDGER)
     meta = space.get(model_id).meta
-    assert meta[FLOOR_SCALING_BASIS_FIELD] == FLOOR_SCALING_BASIS_STATIC
-    assert FLOOR_MEASURED_AT_FIELD not in meta  # nothing stamped that nobody asked for
+    assert meta[ROPE_SCALING_BASIS_FIELD] == ROPE_SCALING_BASIS_STATIC
+    assert ROPE_MEASURED_AT_FIELD not in meta  # nothing stamped that nobody asked for
     assert scaled_noise_floor(meta, at) == meta[NOISE_FLOOR_FIELD] == pytest.approx(STATIC_FLOOR)
 
 
@@ -165,7 +165,7 @@ def test_a_live_campaign_that_does_not_opt_in_is_untouched(
     static = {"direction": direction, NOISE_FLOOR_FIELD: floor}
     assert scaled_noise_floor(static, measured_at) == floor
     assert scaled_noise_floor(static, win) == floor
-    assert describe_noise_floor(static, win)[FLOOR_SCALING_FIELD] == "static"
+    assert describe_rope(static, win)[ROPE_SCALING_FIELD] == "static"
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +182,7 @@ def _register_scaled(**overrides):
         baseline_runs=["b1", "b2", "b3", "b4"],
         win_condition={"metric_at_least": 0.9},
         void_throughput_fraction=0.0,
-        **{FLOOR_SCALING_FIELD: FLOOR_SCALING_RESIDUAL, METRIC_CEILING_FIELD: 1.0},
+        **{ROPE_SCALING_FIELD: ROPE_SCALING_RESIDUAL, METRIC_CEILING_FIELD: 1.0},
     )
     meta.update(overrides)
     ledger = {"b1": 0.50, "b2": 0.52, "b3": 0.48, "b4": 0.54}
@@ -192,21 +192,21 @@ def _register_scaled(**overrides):
 def test_registration_stamps_the_level_the_floor_was_measured_at_and_labels_what_it_checked():
     space, model_id, ledger = _register_scaled()
     meta = space.get(model_id).meta
-    assert meta[FLOOR_MEASURED_AT_FIELD] == pytest.approx(statistics.mean(ledger.values()))
+    assert meta[ROPE_MEASURED_AT_FIELD] == pytest.approx(statistics.mean(ledger.values()))
     # The shape was checked; the PROPORTIONALITY was not and cannot be -- praxis holds one
     # noise measurement, at one metric level. The stamp says so rather than staying silent.
-    assert meta[FLOOR_SCALING_BASIS_FIELD] == FLOOR_SCALING_BASIS_UNVERIFIED_MODEL
+    assert meta[ROPE_SCALING_BASIS_FIELD] == ROPE_SCALING_BASIS_UNVERIFIED_MODEL
 
 
 @pytest.mark.parametrize(
     "overrides,field",
     [
-        ({FLOOR_SCALING_FIELD: "shrinking"}, FLOOR_SCALING_FIELD),
+        ({ROPE_SCALING_FIELD: "shrinking"}, ROPE_SCALING_FIELD),
         ({METRIC_CEILING_FIELD: None}, METRIC_CEILING_FIELD),
         ({METRIC_CEILING_FIELD: 0.3}, METRIC_CEILING_FIELD),  # already past it
-        ({FLOOR_ARMOR_FIELD: 0.0}, FLOOR_ARMOR_FIELD),
-        ({FLOOR_ARMOR_FIELD: 1.5}, FLOOR_ARMOR_FIELD),
-        ({FLOOR_ARMOR_FIELD: "half"}, FLOOR_ARMOR_FIELD),
+        ({ROPE_ARMOR_FIELD: 0.0}, ROPE_ARMOR_FIELD),
+        ({ROPE_ARMOR_FIELD: 1.5}, ROPE_ARMOR_FIELD),
+        ({ROPE_ARMOR_FIELD: "half"}, ROPE_ARMOR_FIELD),
     ],
 )
 def test_a_half_declared_scaling_is_refused_naming_the_field(overrides, field):
@@ -222,13 +222,13 @@ def test_a_scaling_declared_where_no_ledger_can_supply_the_measured_level_is_ref
     meta = dict(
         UNDECLARED_META,
         direction="maximize",
-        noise_floor=0.02,
+        rope=0.02,
         baseline_throughput=0.5,
-        **{FLOOR_SCALING_FIELD: FLOOR_SCALING_RESIDUAL, METRIC_CEILING_FIELD: 1.0},
+        **{ROPE_SCALING_FIELD: ROPE_SCALING_RESIDUAL, METRIC_CEILING_FIELD: 1.0},
     )
     with pytest.raises(RegistryValidationError) as excinfo:
         register_model(space, meta)
-    assert excinfo.value.field == FLOOR_MEASURED_AT_FIELD
+    assert excinfo.value.field == ROPE_MEASURED_AT_FIELD
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +255,7 @@ def test_the_ratchet_counterfactual_uses_the_bar_of_the_era_it_asks_about():
     """
     space, model_id, ledger = _register_scaled()
     floor = space.get(model_id).meta[NOISE_FLOOR_FIELD]
-    measured_at = space.get(model_id).meta[FLOOR_MEASURED_AT_FIELD]
+    measured_at = space.get(model_id).meta[ROPE_MEASURED_AT_FIELD]
 
     idea1 = register_idea(space, {"model_id": model_id, "origin": "seeded", "axis": "a", "description": "one"})
     trial1 = register_trial(
@@ -312,14 +312,14 @@ def test_the_detection_campaign_registers_and_adjudicates_exactly_as_before():
         baseline_runs=list(DETECTION_BASELINE_LEDGER),
         noise_floor=0.099758,
         noise_floor_method="bootstrap",
-        noise_floor_varies="paired_delta",
+        rope_varies="paired_delta",
         trial_comparison="paired",
     )
     ledger = dict(DETECTION_BASELINE_LEDGER, clahe=0.6203)
     model_id = register_model_with_baseline(space, meta, ledger)
     stored = space.get(model_id).meta
     assert stored[NOISE_FLOOR_FIELD] == 0.099758
-    assert stored[FLOOR_SCALING_BASIS_FIELD] == FLOOR_SCALING_BASIS_STATIC
+    assert stored[ROPE_SCALING_BASIS_FIELD] == ROPE_SCALING_BASIS_STATIC
     assert scaled_noise_floor(stored, 0.6076) == 0.099758
 
     idea_id = register_idea(space, {"model_id": model_id, "origin": "seeded", "axis": "a", "description": "clahe"})

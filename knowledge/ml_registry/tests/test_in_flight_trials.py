@@ -19,8 +19,8 @@ LEDGER = frozenset({"c1", "c2"})
 
 
 MODEL_META = {
-    "metric": "f1", "direction": "maximize", "win_condition": "beats baseline by noise_floor",
-    "baseline": "c1", "noise_floor": 0.01, "baseline_throughput": 1.0, "diff_size_limit": 8,
+    "metric": "f1", "direction": "maximize", "win_condition": "beats baseline by the rope",
+    "baseline": "c1", "baseline_throughput": 1.0, "diff_size_limit": 8,
     "max_trials": 5, "max_discovered_ideas": 2,
 }
 
@@ -112,8 +112,9 @@ def test_supersede_requires_a_stated_reason() -> None:
 # every subsequent supervise-campaign died on the same idea.
 
 _DISPATCH_MODEL_META = {
-    "metric": "val_bpb", "direction": "minimize", "win_condition": "beats baseline by noise_floor",
-    "baseline": "base", "noise_floor": 0.01, "baseline_throughput": 1200.0, "diff_size_limit": 800,
+    "metric": "val_bpb", "direction": "minimize", "win_condition": "beats baseline by the rope",
+    "baseline": "base", "baseline_runs": ["b1", "b2", "b3", "b4"],
+    "baseline_throughput": 1200.0, "diff_size_limit": 800,
     "max_trials": 5, "max_discovered_ideas": 0,
 }
 
@@ -130,6 +131,9 @@ def _dispatch_fixture(claim_age_s: float):
         "base": LedgerRow(value=1.0, throughput=1200.0, diff_lines=0),
         "dead": LedgerRow(value=1.0, throughput=1200.0, diff_lines=10),
         "fresh": LedgerRow(value=0.5, throughput=1200.0, diff_lines=10),
+        # The rope's replicates: stdev([1.0, 1.0, 1.0, 1.02]) == 0.01.
+        **{c: LedgerRow(value=v, throughput=1200.0, diff_lines=0)
+           for c, v in (("b1", 1.0), ("b2", 1.0), ("b3", 1.0), ("b4", 1.02))},
     }
     space = RegistrySpace()
     model_id = register_model(space, dict(_DISPATCH_MODEL_META))

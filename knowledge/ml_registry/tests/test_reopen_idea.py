@@ -15,8 +15,8 @@ from knowledge.ml_registry.lifecycle import reject_idea, reopen_idea
 from knowledge.ml_registry.schema import RegistryValidationError
 from knowledge.ml_registry.write_path import RegistrySpace, register_idea, register_model
 
-META = {"metric": "f1", "direction": "maximize", "win_condition": "beats baseline by noise_floor",
-        "baseline": "c1", "noise_floor": 0.0115, "baseline_throughput": 3.38,
+META = {"metric": "f1", "direction": "maximize", "win_condition": "beats baseline by the rope",
+        "baseline": "c1", "baseline_throughput": 3.38,
         "diff_size_limit": 8, "max_trials": 9, "max_discovered_ideas": 2}
 
 

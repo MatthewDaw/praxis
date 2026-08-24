@@ -77,7 +77,7 @@ def _registry(tmp_path, baseline_throughput=1000):
         metric="f1",
         direction="maximize",
         win_condition={"metric_at_least": 0.9},
-        noise_floor=0.01,
+        rope=0.01,
         baseline_throughput=baseline_throughput,
     )
     registry.register_model(
@@ -218,7 +218,7 @@ def test_a_campaign_against_a_model_with_no_registered_throughput_is_refused_not
             metric="f1",
             direction="maximize",
             win_condition={},
-            noise_floor=0.01,
+            rope=0.01,
             baseline_throughput=None,
         )
 
@@ -288,7 +288,7 @@ def test_updating_a_registered_model_cannot_move_the_baseline_from_a_worker(tmp_
     _immutable(tmp_path)
 
 
-def test_updating_a_registered_model_cannot_widen_the_noise_floor_from_a_worker(
+def test_updating_a_registered_model_cannot_repoint_the_rope_evidence_from_a_worker(
     tmp_path,
 ):
     _immutable(tmp_path)
@@ -312,7 +312,7 @@ def test_a_registered_models_metric_stays_frozen_on_the_update_path(tmp_path):
             metric="accuracy",
             direction="maximize",
             win_condition={},
-            noise_floor=0.02,
+            rope=0.02,
             baseline_throughput=1,
         )
 

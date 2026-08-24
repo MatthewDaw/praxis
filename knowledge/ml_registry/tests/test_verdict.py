@@ -13,6 +13,7 @@ import pytest
 
 from knowledge.ml_registry.floor import (
     BASELINE_THROUGHPUT_UNITS_FIELD,
+    measure_rope,
     RATCHET_COUNT_FIELD,
     REJECTION_STREAK_FIELD,
     THROUGHPUT_UNITS_METRIC_MEAN,
@@ -44,13 +45,13 @@ from knowledge.ml_registry.verdict import (
 from knowledge.ml_registry.write_path import RegistrySpace, register_idea, register_model, register_trial
 
 RUN_VALUES = [1.0, 1.02, 0.98, 1.04]
-NOISE_FLOOR = statistics.stdev(RUN_VALUES)  # ~0.0258199
+ROPE = statistics.stdev(RUN_VALUES)  # ~0.0258199, recomputed at every comparison
 BASELINE_THROUGHPUT = statistics.mean(RUN_VALUES)  # 1.01
 
 MODEL_META: dict[str, object] = {
     "metric": "val_bpb",
     "direction": "minimize",
-    "win_condition": "beats baseline by noise_floor",
+    "win_condition": "beats baseline by the rope",
     "baseline": "r1",
     "diff_size_limit": 800,
     "baseline_runs": ["r1", "r2", "r3", "r4"],
@@ -79,7 +80,7 @@ ALL_COMMITS = frozenset(
 )
 
 # The value an adopting trial scores: a win of one floor plus a hair over the r1 baseline of 1.0.
-ADOPTED_VALUE = 1.0 - NOISE_FLOOR - 0.01
+ADOPTED_VALUE = 1.0 - ROPE - 0.01
 
 # A rejection ATTRIBUTABLE to that adoption: more than one floor WORSE than the adopted
 # baseline (so it rejects), but level with the pre-adoption baseline r1=1.0, i.e. it would
@@ -89,24 +90,25 @@ ATTRIBUTABLE_LOSS = 1.0
 
 # A rejection that says NOTHING about the adoption: 10 floors worse than the pre-adoption
 # baseline too, so it would have been rejected just as hard before the adoption existed.
-UNATTRIBUTABLE_LOSS = 1.0 + 10 * NOISE_FLOOR
+UNATTRIBUTABLE_LOSS = 1.0 + 10 * ROPE
 
 # A second model whose noise floor is EXACTLY representable in binary floating point, so a
 # delta of exactly +/- one floor can be constructed bit-for-bit rather than a hair off it.
 # Three equal runs plus one differing by d give stdev == d/2: d = 0.25 -> floor == 0.125.
 EXACT_LEDGER = {"e1": 1.0, "e2": 1.0, "e3": 1.0, "e4": 1.25}
-EXACT_FLOOR = 0.125
+EXACT_ROPE = 0.125
 EXACT_THROUGHPUT = 1.0625
 
 
-def _space_with_exact_floor_model():
+def _space_with_exact_rope_model():
     space = RegistrySpace()
     meta = dict(MODEL_META, baseline="e1", baseline_runs=["e1", "e2", "e3", "e4"])
     model_id = register_model_with_baseline(
         space, meta, EXACT_LEDGER,
         ledger_throughputs={commit: EXACT_THROUGHPUT for commit in EXACT_LEDGER},
     )
-    assert space.get(model_id).meta["noise_floor"] == EXACT_FLOOR  # exact, not merely close
+    # exact, not merely close -- and RECOMPUTED, since nothing is stored to read back
+    assert measure_rope(list(EXACT_LEDGER.values())) == EXACT_ROPE
     return space, model_id
 
 
@@ -170,11 +172,11 @@ def _rows(**by_commit: tuple[float, float, float]) -> dict[str, LedgerRow]:
 # ---------------------------------------------------------------------------
 
 
-def test_adopt_beyond_one_noise_floor_in_the_improving_direction():
+def test_adopt_beyond_one_rope_in_the_improving_direction():
     space, model_id = _space_with_model()
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
-    ledger = _rows(adopt1=(1.0 - NOISE_FLOOR - 0.01, BASELINE_THROUGHPUT, 100))
+    ledger = _rows(adopt1=(1.0 - ROPE - 0.01, BASELINE_THROUGHPUT, 100))
 
     verdict = adjudicate_verdict(space, trial_id, ledger)
 
@@ -217,11 +219,11 @@ def test_reject_when_stagnant_but_breaching_the_net_line_bound():
     assert model.meta[RATCHET_COUNT_FIELD] == 0
 
 
-def test_reject_beyond_one_noise_floor_in_the_worsening_direction():
+def test_reject_beyond_one_rope_in_the_worsening_direction():
     space, model_id = _space_with_model()
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "wr1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
-    ledger = _rows(wr1=(1.0 + NOISE_FLOOR + 0.01, BASELINE_THROUGHPUT, 100))
+    ledger = _rows(wr1=(1.0 + ROPE + 0.01, BASELINE_THROUGHPUT, 100))
 
     verdict = adjudicate_verdict(space, trial_id, ledger)
 
@@ -237,22 +239,22 @@ def test_reject_beyond_one_noise_floor_in_the_worsening_direction():
 # ---------------------------------------------------------------------------
 
 
-def test_delta_exactly_one_noise_floor_improving_is_stagnant_not_adopted():
+def test_delta_exactly_one_rope_improving_is_stagnant_not_adopted():
     space, model_id = _space_with_model()
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "boundary-park", throughput=BASELINE_THROUGHPUT, diff_lines=100)
-    ledger = _rows(**{"boundary-park": (1.0 - NOISE_FLOOR, BASELINE_THROUGHPUT, 100)})  # delta == noise_floor exactly
+    ledger = _rows(**{"boundary-park": (1.0 - ROPE, BASELINE_THROUGHPUT, 100)})  # delta == one rope exactly
 
     verdict = adjudicate_verdict(space, trial_id, ledger)
 
     assert verdict == VERDICT_PARKED  # "within" one std dev is stagnant, "beyond" (strict) adopts
 
 
-def test_delta_beyond_one_noise_floor_worsening_rejects():
+def test_delta_beyond_one_rope_worsening_rejects():
     space, model_id = _space_with_model()
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "boundary-reject", throughput=BASELINE_THROUGHPUT, diff_lines=100)
-    ledger = _rows(**{"boundary-reject": (1.0 + NOISE_FLOOR + 0.01, BASELINE_THROUGHPUT, 100)})
+    ledger = _rows(**{"boundary-reject": (1.0 + ROPE + 0.01, BASELINE_THROUGHPUT, 100)})
 
     verdict = adjudicate_verdict(space, trial_id, ledger)
 
@@ -264,25 +266,25 @@ def test_delta_beyond_one_noise_floor_worsening_rejects():
 # exact-floor model so the delta really is +/- the floor bit-for-bit, not a hair off it.
 
 
-def test_delta_exactly_one_noise_floor_improving_is_stagnant():
-    space, model_id = _space_with_exact_floor_model()
+def test_delta_exactly_one_rope_improving_is_stagnant():
+    space, model_id = _space_with_exact_rope_model()
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "exact-improving", throughput=EXACT_THROUGHPUT, diff_lines=100)
 
-    verdict = adjudicate_verdict(space, trial_id, _exact_rows("exact-improving", 1.0 - EXACT_FLOOR))
+    verdict = adjudicate_verdict(space, trial_id, _exact_rows("exact-improving", 1.0 - EXACT_ROPE))
 
     assert verdict == VERDICT_PARKED
     assert space.get(idea_id).meta["status"] == STATUS_PARKED
 
 
-def test_delta_exactly_one_noise_floor_worsening_is_stagnant_too_not_rejected():
+def test_delta_exactly_one_rope_worsening_is_stagnant_too_not_rejected():
     """Bug 3 regression: the boundary used to be asymmetric -- exactly +1sd was stagnant
     while exactly -1sd rejected, so the same amount of evidence was read two ways."""
-    space, model_id = _space_with_exact_floor_model()
+    space, model_id = _space_with_exact_rope_model()
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "exact-worsening", throughput=EXACT_THROUGHPUT, diff_lines=100)
 
-    verdict = adjudicate_verdict(space, trial_id, _exact_rows("exact-worsening", 1.0 + EXACT_FLOOR))
+    verdict = adjudicate_verdict(space, trial_id, _exact_rows("exact-worsening", 1.0 + EXACT_ROPE))
 
     assert verdict == VERDICT_PARKED
     assert space.get(idea_id).meta["status"] == STATUS_PARKED
@@ -295,7 +297,7 @@ def test_throughput_more_than_5_percent_below_baseline_is_voided_not_adjudicated
     low_throughput = BASELINE_THROUGHPUT * 0.94  # > 5% below
     trial_id = _trial(space, model_id, idea_id, "void1", throughput=low_throughput, diff_lines=100)
     # even a big improving delta must not be adjudicated once voided
-    ledger = _rows(void1=(1.0 - 10 * NOISE_FLOOR, low_throughput, 100))
+    ledger = _rows(void1=(1.0 - 10 * ROPE, low_throughput, 100))
 
     verdict = adjudicate_verdict(space, trial_id, ledger)
 
@@ -326,7 +328,7 @@ def test_void_throughput_fraction_zero_skips_the_void_gate():
     idea_id = register_idea(space, _idea_meta(model_id))
     low_throughput = BASELINE_THROUGHPUT * 0.90
     trial_id = _trial(space, model_id, idea_id, "void1", throughput=low_throughput, diff_lines=100)
-    ledger = _rows(void1=(1.0 - 10 * NOISE_FLOOR, low_throughput, 100))
+    ledger = _rows(void1=(1.0 - 10 * ROPE, low_throughput, 100))
 
     verdict = adjudicate_verdict(space, trial_id, ledger)
 
@@ -339,7 +341,7 @@ def test_throughput_void_records_a_reason_so_it_is_not_confused_with_an_unfair_r
     idea_id = register_idea(space, _idea_meta(model_id))
     low_throughput = BASELINE_THROUGHPUT * 0.94
     trial_id = _trial(space, model_id, idea_id, "void1", throughput=low_throughput, diff_lines=100)
-    ledger = _rows(void1=(1.0 - 10 * NOISE_FLOOR, low_throughput, 100))
+    ledger = _rows(void1=(1.0 - 10 * ROPE, low_throughput, 100))
 
     assert adjudicate_verdict(space, trial_id, ledger) == VERDICT_VOIDED
     reason = space.get(trial_id).meta["void_reason"]
@@ -355,9 +357,9 @@ def test_void_throughput_fraction_zero_does_not_disable_unfair_run_voids():
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "void1",
                       throughput=BASELINE_THROUGHPUT, diff_lines=100)
-    ledger = _rows(void1=(1.0 - 10 * NOISE_FLOOR, BASELINE_THROUGHPUT, 100))
+    ledger = _rows(void1=(1.0 - 10 * ROPE, BASELINE_THROUGHPUT, 100))
     ledger["void1"] = LedgerRow(
-        value=1.0 - 10 * NOISE_FLOOR, throughput=BASELINE_THROUGHPUT, diff_lines=100,
+        value=1.0 - 10 * ROPE, throughput=BASELINE_THROUGHPUT, diff_lines=100,
         status="budget_exhausted",
     )
 
@@ -371,7 +373,7 @@ def test_explicit_void_throughput_fraction_matches_the_default():
     idea_id = register_idea(space, _idea_meta(model_id))
     low_throughput = BASELINE_THROUGHPUT * 0.94
     trial_id = _trial(space, model_id, idea_id, "void1", throughput=low_throughput, diff_lines=100)
-    ledger = _rows(void1=(1.0 - 10 * NOISE_FLOOR, low_throughput, 100))
+    ledger = _rows(void1=(1.0 - 10 * ROPE, low_throughput, 100))
 
     assert adjudicate_verdict(space, trial_id, ledger) == VERDICT_VOIDED
 
@@ -431,7 +433,7 @@ def test_an_unstamped_model_keeps_the_speed_void():
     leaves the gate exactly where it was."""
     space = RegistrySpace()
     model_id = register_model(space, dict(
-        MODEL_META, noise_floor=NOISE_FLOOR, baseline_throughput=BASELINE_THROUGHPUT,
+        MODEL_META, baseline_throughput=BASELINE_THROUGHPUT,
     ))
     assert BASELINE_THROUGHPUT_UNITS_FIELD not in space.get(model_id).meta
     idea_id = register_idea(space, _idea_meta(model_id))
@@ -451,7 +453,7 @@ def test_ratchet_fires_on_the_third_consecutive_worsening_reject_on_a_distinct_i
 
     winner_id = register_idea(space, _idea_meta(model_id, "winner"))
     winner_trial = _trial(space, model_id, winner_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
-    adjudicate_verdict(space, winner_trial, _rows(adopt1=(1.0 - NOISE_FLOOR - 0.01, BASELINE_THROUGHPUT, 100)))
+    adjudicate_verdict(space, winner_trial, _rows(adopt1=(1.0 - ROPE - 0.01, BASELINE_THROUGHPUT, 100)))
     model = space.get(model_id)
     assert model.meta[BASELINE_FIELD] == "adopt1"
     assert model.meta[PREVIOUS_BASELINE_FIELD] == "r1"
@@ -496,12 +498,12 @@ def test_deep_losers_that_also_lose_against_the_old_baseline_never_wipe_a_good_a
 
     winner_id = register_idea(space, _idea_meta(model_id, "a genuine win", axis="architecture"))
     winner_trial = _trial(space, model_id, winner_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
-    big_win = 1.0 - 10 * NOISE_FLOOR
+    big_win = 1.0 - 10 * ROPE
     assert adjudicate_verdict(
         space, winner_trial, _rows(adopt1=(big_win, BASELINE_THROUGHPUT, 100))
     ) == VERDICT_ADOPTED
 
-    deep_loss = big_win + 20 * NOISE_FLOOR  # == 1.0 + 10 floors: also a rout against r1
+    deep_loss = big_win + 20 * ROPE  # == 1.0 + 10 floors: also a rout against r1
     for axis, commit in zip(["data", "architecture", "optimization"], ["deep1", "deep2", "deep3"]):
         loser_id = register_idea(space, _idea_meta(model_id, f"explore-{axis}", axis=axis))
         trial_id = _trial(space, model_id, loser_id, commit, throughput=BASELINE_THROUGHPUT, diff_lines=100)
@@ -563,7 +565,7 @@ def test_ratchet_still_fires_on_three_distinct_ideas_on_the_SAME_axis():
     winner_id = register_idea(space, _idea_meta(model_id, "winner", axis="data"))
     winner_trial = _trial(space, model_id, winner_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
     assert adjudicate_verdict(
-        space, winner_trial, _rows(adopt1=(1.0 - NOISE_FLOOR - 0.01, BASELINE_THROUGHPUT, 100))
+        space, winner_trial, _rows(adopt1=(1.0 - ROPE - 0.01, BASELINE_THROUGHPUT, 100))
     ) == VERDICT_ADOPTED
 
     worse_value = ATTRIBUTABLE_LOSS
@@ -618,7 +620,7 @@ def test_an_unattributable_rejection_does_not_wipe_the_streak_it_interrupts():
 def test_ratchet_does_not_fire_on_the_same_idea_rejected_repeatedly():
     space, model_id = _space_with_model()
     idea_id = register_idea(space, _idea_meta(model_id))
-    worse_value = 1.0 + 10 * NOISE_FLOOR
+    worse_value = 1.0 + 10 * ROPE
 
     for commit in ["same1", "same2", "same3"]:
         trial_id = _trial(space, model_id, idea_id, commit, throughput=BASELINE_THROUGHPUT, diff_lines=100)
@@ -634,7 +636,7 @@ def test_ratchet_does_not_fire_on_the_same_idea_rejected_repeatedly():
 def test_ratchet_with_no_prior_adoption_is_a_no_op_that_only_resets_the_counter():
     space, model_id = _space_with_model()
     loser_ids = [register_idea(space, _idea_meta(model_id, f"noop-{i}")) for i in range(3)]
-    worse_value = 1.0 + 10 * NOISE_FLOOR
+    worse_value = 1.0 + 10 * ROPE
 
     for loser_id, commit in zip(loser_ids, ["noop1", "noop2", "noop3"]):
         trial_id = _trial(space, model_id, loser_id, commit, throughput=BASELINE_THROUGHPUT, diff_lines=100)
@@ -658,7 +660,7 @@ def test_ratchet_invalidation_requeues_ideas_rejected_under_the_false_baseline()
 
     winner_id = register_idea(space, _idea_meta(model_id, "the noise adoption"))
     winner_trial = _trial(space, model_id, winner_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
-    adopt_rows = _rows(adopt1=(1.0 - NOISE_FLOOR - 0.01, BASELINE_THROUGHPUT, 100))
+    adopt_rows = _rows(adopt1=(1.0 - ROPE - 0.01, BASELINE_THROUGHPUT, 100))
     assert adjudicate_verdict(space, winner_trial, adopt_rows) == VERDICT_ADOPTED
 
     # Rejected while the (about to be discredited) adoption stood.
@@ -733,7 +735,7 @@ def test_a_genuine_win_survives_three_arms_that_merely_reproduce_the_old_baselin
     space, model_id = _space_with_model()
 
     winner_id = register_idea(space, _idea_meta(model_id, "a real +10 floor win"))
-    big_win = 1.0 - 10 * NOISE_FLOOR
+    big_win = 1.0 - 10 * ROPE
     winner_trial = _trial(space, model_id, winner_id, "adopt1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
     assert adjudicate_verdict(
         space, winner_trial, _rows(adopt1=(big_win, BASELINE_THROUGHPUT, 100))
@@ -856,7 +858,7 @@ def test_stacked_adoption_rollback_restores_its_direct_parent_lineage_and_adopti
         adopt1=(ADOPTED_VALUE, BASELINE_THROUGHPUT, 100))) == VERDICT_ADOPTED
     first_lineage = space.get(model_id).meta["active_adoption_lineage"]
 
-    second_value = ADOPTED_VALUE - NOISE_FLOOR - .01
+    second_value = ADOPTED_VALUE - ROPE - .01
     second_id = register_idea(space, _idea_meta(model_id, "second winner"))
     second_trial = _trial(space, model_id, second_id, "win2", throughput=BASELINE_THROUGHPUT, diff_lines=100)
     assert adjudicate_verdict(space, second_trial, _rows(
@@ -912,7 +914,7 @@ def test_a_better_adoption_supersedes_the_prior_one_and_keeps_its_rejections_rej
     space, model_id = _space_with_model()
 
     first_id = register_idea(space, _idea_meta(model_id, "first winner"))
-    first_value = 1.0 - NOISE_FLOOR - 0.01
+    first_value = 1.0 - ROPE - 0.01
     first_trial = _trial(space, model_id, first_id, "win1", throughput=BASELINE_THROUGHPUT, diff_lines=100)
     assert adjudicate_verdict(space, first_trial, _rows(win1=(first_value, BASELINE_THROUGHPUT, 100))) == VERDICT_ADOPTED
 
@@ -923,7 +925,7 @@ def test_a_better_adoption_supersedes_the_prior_one_and_keeps_its_rejections_rej
 
     # A strictly better second winner: it must beat the ADVANCED baseline by > one floor.
     second_id = register_idea(space, _idea_meta(model_id, "second, better winner"))
-    second_value = first_value - NOISE_FLOOR - 0.01
+    second_value = first_value - ROPE - 0.01
     second_trial = _trial(space, model_id, second_id, "win2", throughput=BASELINE_THROUGHPUT, diff_lines=100)
     ledger = _rows(win1=(first_value, BASELINE_THROUGHPUT, 100), win2=(second_value, BASELINE_THROUGHPUT, 100))
 

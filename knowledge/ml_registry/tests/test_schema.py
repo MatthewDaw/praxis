@@ -17,9 +17,8 @@ WELL_FORMED = {
     MODEL: {
         "metric": "val_bpb",
         "direction": "minimize",
-        "win_condition": "beats baseline by noise_floor",
+        "win_condition": "beats baseline by the rope",
         "baseline": "commit-abc123",
-        "noise_floor": 0.01,
         "baseline_throughput": 1200,
         "diff_size_limit": 800,
     },

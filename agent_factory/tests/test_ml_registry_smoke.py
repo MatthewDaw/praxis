@@ -45,7 +45,7 @@ def test_cli_accepts_a_well_formed_model_fact():
     meta = {
         "metric": "val_bpb",
         "direction": "minimize",
-        "win_condition": "beats baseline by noise_floor",
+        "win_condition": "beats baseline by the rope",
         "baseline": "commit-abc123",
         "noise_floor": 0.01,
         "baseline_throughput": 1200,
@@ -90,7 +90,7 @@ def test_cli_allows_a_baseline_move_from_adjudication():
 MODEL_META = {
     "metric": "val_bpb",
     "direction": "minimize",
-    "win_condition": "beats baseline by noise_floor",
+    "win_condition": "beats baseline by the rope",
     "baseline": "commit-abc123",
     "noise_floor": 0.01,
     "baseline_throughput": 1200,
@@ -519,7 +519,7 @@ def test_cli_registers_a_model_with_a_ledger_recomputed_floor_and_adjudicates_a_
     meta = {
         "metric": "val_bpb",
         "direction": "minimize",
-        "win_condition": "beats baseline by noise_floor",
+        "win_condition": "beats baseline by the rope",
         "baseline": "commit-abc123",
         "diff_size_limit": 800,
         "baseline_runs": ["r1", "r2", "r3", "r4"],
@@ -618,7 +618,7 @@ def test_cli_resolve_verdict_adopts_a_trial_beyond_one_noise_floor(tmp_path: Pat
     meta = {
         "metric": "val_bpb",
         "direction": "minimize",
-        "win_condition": "beats baseline by noise_floor",
+        "win_condition": "beats baseline by the rope",
         "baseline": "r1",
         "diff_size_limit": 800,
         "baseline_runs": ["r1", "r2", "r3", "r4"],

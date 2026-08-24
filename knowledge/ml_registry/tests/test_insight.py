@@ -48,9 +48,11 @@ BASELINE_COMMIT = "commit-abc123"
 MODEL_META = {
     "metric": "val_bpb",
     "direction": "minimize",
-    "win_condition": "beats baseline by noise_floor",
+    "win_condition": "beats baseline by the rope",
     "baseline": BASELINE_COMMIT,
-    "noise_floor": 0.01,
+    # The rope's evidence: stdev([1.0, 1.0, 1.0, 1.02]) == 0.01, the bar these scripted
+    # verdicts were written against.
+    "baseline_runs": ["b1", "b2", "b3", "b4"],
     "baseline_throughput": 1200,
     "diff_size_limit": 800,
     "max_trials": 5,
@@ -58,6 +60,8 @@ MODEL_META = {
 }
 
 LEDGER: dict[str, LedgerRow] = {BASELINE_COMMIT: LedgerRow(value=1.0, throughput=1200, diff_lines=0)}
+LEDGER.update({c: LedgerRow(value=v, throughput=1200, diff_lines=0)
+               for c, v in (("b1", 1.0), ("b2", 1.0), ("b3", 1.0), ("b4", 1.02))})
 LEDGER.update({f"c{i}": LedgerRow(value=0.5, throughput=1200, diff_lines=100) for i in range(1, 20)})
 LEDGER.update({f"lose{i}": LedgerRow(value=5000.0, throughput=1200, diff_lines=100) for i in range(1, 10)})
 

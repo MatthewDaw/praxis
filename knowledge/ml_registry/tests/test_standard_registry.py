@@ -35,7 +35,7 @@ def _metrics(metric: float = 0.91, *, throughput: float = 2.0,
 def _experiment(registry: Registry, name: str = "campaign") -> None:
     registry.create_experiment(
         experiment_id=name, spec_digest="d" * 64, stages=["representation"], metric="score",
-        direction="maximize", win_condition={"metric_at_least": 0.9}, noise_floor=0.01,
+        direction="maximize", win_condition={"metric_at_least": 0.9}, rope=0.01,
         baseline_throughput=1.0,
     )
 
@@ -306,7 +306,7 @@ def test_single_writer_serializes_concurrent_events(tmp_path: Path) -> None:
         list(pool.map(lambda index: registry.create_experiment(
             experiment_id=f"c{index}", spec_digest=hashlib.sha256(str(index).encode()).hexdigest(),
             stages=["s"], metric="m", direction="maximize", win_condition={"metric_at_least": 1},
-            noise_floor=0, baseline_throughput=0,
+            rope=0, baseline_throughput=0,
         ), range(24)))
     assert len(registry.rows("experiments")) == 24
     assert [event.sequence for event in registry.events.read()] == list(range(1, 25))

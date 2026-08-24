@@ -71,21 +71,27 @@ MODEL_META = {
     # These fixtures genuinely mean first-adoption-wins -- most of them dispatch one or two
     # scripted trials and assert on the close -- so they DECLARE it, which is exactly the
     # declaration check_win_on_adoption_declared asks a real campaign for.
-    "win_condition": "beats baseline by noise_floor",
+    "win_condition": "beats baseline by the rope",
     "win_on_adoption_ok": True,
     "baseline": BASELINE_COMMIT,
-    "noise_floor": 0.01,
+    # THE ROPE'S EVIDENCE. Three equal rows plus one differing by 0.02 have a sample stdev
+    # of exactly 0.01 -- the number these fixtures used to store as a floor -- so every
+    # scripted verdict below is decided against the same bar as before the retirement.
+    "baseline_runs": ["b1", "b2", "b3", "b4"],
     "baseline_throughput": 1200,
     "diff_size_limit": 800,
     "max_trials": 5,
     "max_discovered_ideas": 2,
 }
 
-# baseline_throughput=1200, noise_floor=0.01, direction=minimize -> a win needs <= 1199.99,
+# baseline_throughput=1200, rope=0.01 (recomputed from baseline_runs), direction=minimize,
 # every row holds baseline_throughput/diff_lines so a win/reject turns solely on `value`.
-# "c*" commits win beyond the noise floor against ANY baseline value used below; "lose*"
+# "c*" commits win beyond the rope against ANY baseline value used below; "lose*"
 # commits worsen far enough (5000.0) to reject against any baseline value used below too.
 LEDGER: dict[str, LedgerRow] = {BASELINE_COMMIT: LedgerRow(value=1.0, throughput=1200, diff_lines=0)}
+# The rope's replicates: stdev([1.0, 1.0, 1.0, 1.02]) == 0.01 exactly.
+LEDGER.update({c: LedgerRow(value=v, throughput=1200, diff_lines=0)
+               for c, v in (("b1", 1.0), ("b2", 1.0), ("b3", 1.0), ("b4", 1.02))})
 LEDGER.update({f"c{i}": LedgerRow(value=0.5, throughput=1200, diff_lines=100) for i in range(1, 20)})
 LEDGER.update({f"lose{i}": LedgerRow(value=5000.0, throughput=1200, diff_lines=100) for i in range(1, 10)})
 # "near*" commits reject against an ADOPTED baseline but would have parked against the 1.0 the
@@ -93,7 +99,7 @@ LEDGER.update({f"lose{i}": LedgerRow(value=5000.0, throughput=1200, diff_lines=1
 # evidence the adoption was noise if the raised bar is what caused it. A "lose*" arm at 5000.0
 # loses against both bars, says nothing about the adoption, and deliberately does not count.
 LEDGER.update({f"near{i}": LedgerRow(value=1.0, throughput=1200, diff_lines=100) for i in range(1, 10)})
-# "wobble*" commits land INSIDE the noise floor but not exactly on it -- a real measurement
+# "wobble*" commits land INSIDE the rope but not exactly on it -- a real measurement
 # that really did not help, which must still count against the axis.
 LEDGER.update({f"wobble{i}": LedgerRow(value=1.0001, throughput=1200, diff_lines=100) for i in range(1, 10)})
 # "slow*" commits are the ONLY way a trial gets voided: their LEDGER throughput falls more
@@ -418,7 +424,7 @@ def test_three_consecutive_dispatch_trial_rejections_on_distinct_ideas_fire_the_
     verdict.adjudicate_verdict, not floor.adjudicate_trial -- so the ratchet feature R10
     built is actually reachable through the campaign supervisor, the production entry
     point (this repros the exact scenario the round #5 post-merge finding used: 3
-    consecutive worsening-direction rejections on distinct ideas, beyond noise_floor,
+    consecutive worsening-direction rejections on distinct ideas, beyond the rope,
     must set ratchet_count == 3 and, on the 3rd, invalidate the active adoption and
     revert the baseline -- unlike R8's own now-deleted succeeded-trial counter, which for
     this identical sequence would leave ratchet_count stuck at 0 the whole way through)."""
@@ -809,7 +815,7 @@ def test_a_campaign_whose_win_condition_cannot_be_evaluated_is_refused_naming_it
         ({"metric_at_least": 12}, {"kind": "metric_at_least", "threshold": 12.0}),
         ("metric_at_most: 0.8", {"kind": "metric_at_most", "threshold": 0.8}),
         ("metric_at_least 12", {"kind": "metric_at_least", "threshold": 12.0}),
-        ("beats baseline by noise_floor", {"kind": "beats baseline by noise_floor"}),
+        ("beats baseline by the rope", {"kind": "beats baseline by the rope"}),
     ],
 )
 def test_parse_win_condition_accepts_the_structured_forms(declared, expected):
@@ -876,6 +882,10 @@ def test_a_maximizing_campaign_wins_only_at_its_declared_floor():
         BASELINE_COMMIT: LedgerRow(value=1.0, throughput=1200, diff_lines=0),
         "up-a": LedgerRow(value=50.0, throughput=1200, diff_lines=100),
         "up-b": LedgerRow(value=140.0, throughput=1200, diff_lines=100),
+        # The rope is recomputed from these at each comparison, so a hand-built ledger has
+        # to carry the model's baseline_runs rows too.
+        **{c: LedgerRow(value=v, throughput=1200, diff_lines=0)
+           for c, v in (("b1", 1.0), ("b2", 1.0), ("b3", 1.0), ("b4", 1.02))},
     }
     outcome = supervise_campaign(space, model_id, ledger, _scripted_dispatcher(["up-a", "up-b"]))
     assert [h["status"] for h in outcome["history"]] == ["adopted", "adopted"]

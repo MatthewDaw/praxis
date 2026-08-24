@@ -18,7 +18,7 @@ from knowledge.ml_registry.bootstrap import (
     bootstrap,
     build_ideas,
     check_ledger,
-    measure_noise_floor,
+    measure_rope,
 )
 
 
@@ -73,8 +73,8 @@ def test_heterogeneous_baseline_throughput_is_flagged(tmp_path: Path) -> None:
 def test_noise_floor_reports_its_own_uncertainty() -> None:
     """An SD from 4 points carries ~40% relative uncertainty. Reporting the value without that is
     how a floor measured on 4 runs (0.0164) gets trusted over one measured on 12 (0.0115)."""
-    few = measure_noise_floor([{"metric_value": v} for v in (0.68, 0.69, 0.67, 0.70)])
-    many = measure_noise_floor([{"metric_value": 0.68 + 0.001 * i} for i in range(13)])
+    few = measure_rope([{"metric_value": v} for v in (0.68, 0.69, 0.67, 0.70)])
+    many = measure_rope([{"metric_value": 0.68 + 0.001 * i} for i in range(13)])
     assert few["sd_relative_uncertainty"] > many["sd_relative_uncertainty"]
     assert few["n_baseline_runs"] == 4
 
@@ -85,7 +85,7 @@ def test_floor_defaults_to_one_sigma_and_says_what_that_costs() -> None:
     adoptions over a 66-idea backlog rather than ~1.5. It is accepted because a two-sigma bar
     over a noisy metric is one nothing can clear -- detection ran 34 trials and adopted
     nothing. The note must carry that reasoning, because the number alone cannot."""
-    f = measure_noise_floor([{"metric_value": v} for v in (0.68, 0.69, 0.67, 0.70)])
+    f = measure_rope([{"metric_value": v} for v in (0.68, 0.69, 0.67, 0.70)])
     assert f["sigmas"] == 1.0
     assert f["noise_floor"] == pytest.approx(f["sd"], rel=1e-6)
     assert "15.9%" in f["note"] and "ratchet" in f["note"]
@@ -93,7 +93,7 @@ def test_floor_defaults_to_one_sigma_and_says_what_that_costs() -> None:
 
 def test_two_sigma_is_one_field_away() -> None:
     """A campaign that wants the old bar back must not have to compute it by hand."""
-    f = measure_noise_floor([{"metric_value": v} for v in (0.68, 0.69, 0.67, 0.70)], sigmas=2.0)
+    f = measure_rope([{"metric_value": v} for v in (0.68, 0.69, 0.67, 0.70)], sigmas=2.0)
     assert f["sigmas"] == 2.0
     assert f["noise_floor"] == pytest.approx(2 * f["sd"], rel=1e-6)
 
@@ -239,7 +239,7 @@ def test_build_model_meta_refuses_a_missing_win_condition() -> None:
     from knowledge.ml_registry.bootstrap import build_model_meta
     from knowledge.ml_registry.schema import RegistryValidationError
 
-    kwargs = dict(metric="f1", direction="maximize", baseline_commit="sha", noise_floor=0.01,
+    kwargs = dict(metric="f1", direction="maximize", baseline_commit="sha", rope=0.01,
                   baseline_throughput=3.0, diff_size_limit=8)
     with pytest.raises(TypeError):
         build_model_meta(**kwargs)  # type: ignore[arg-type]
@@ -257,7 +257,7 @@ def test_build_model_meta_refuses_the_bare_adoption_string() -> None:
 
     with pytest.raises(RegistryValidationError) as excinfo:
         build_model_meta(metric="f1", direction="maximize", baseline_commit="sha",
-                         noise_floor=0.01, baseline_throughput=3.0, diff_size_limit=8,
+                         rope=0.01, baseline_throughput=3.0, diff_size_limit=8,
                          win_condition=WIN_ON_ADOPTION)
     assert excinfo.value.field == "win_condition"
 
