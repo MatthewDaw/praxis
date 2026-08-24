@@ -113,7 +113,7 @@ EXACT_HEARTBEAT_CALL = (
 )
 
 
-def test_the_heartbeat_is_handed_the_open_ids_in_the_right_position():
+def test_the_heartbeat_is_handed_the_open_ids_in_the_right_position() -> None:
     """Membership is not enough, and this file got that wrong first time.
 
     Verification executed the malformed call `af_round_heartbeat "$now/$open" "$round" "$hb_open"`
