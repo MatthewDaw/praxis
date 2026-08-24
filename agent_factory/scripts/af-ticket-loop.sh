@@ -1808,6 +1808,26 @@ if parked:
 PYEOF
 }
 
+batch_open_ids(){  # args: ids... -> space-separated ids of the batch that still OWE WORK
+  # The heartbeat is a report an operator ACTS on, so it has to name the tickets that are actually
+  # still out. It was being handed the whole round instead, which made every stall warning read
+  # "Still outstanding: <all four>" while three of them were finished -- the count and the list in
+  # the SAME message disagreeing. Same predicate as batch_open, which returns the tally; this
+  # returns the membership.
+  $PY - "$PROJECT" "$@" <<'PYEOF' 2>/dev/null
+import sys
+import _praxis, _ticket_state as ts
+p, want = sys.argv[1], set(sys.argv[2:])
+out = []
+for f in _praxis.facts_by(category='requirement', space=p, snapshot=f'prd-{p}'):
+    m = f.get('meta') or {}
+    ids = {str(f.get('id') or ''), str(m.get('requirement_id') or '')} - {''}
+    if (ids & want) and ts.is_open_state(m.get('build_state')):
+        out.append(str(m.get('requirement_id') or f.get('id')))
+print(' '.join(sorted(out)))
+PYEOF
+}
+
 finished_count(){
   $PY - "$PROJECT" <<'PYEOF' 2>/dev/null
 import sys
@@ -4174,7 +4194,11 @@ PREEXISTING_RULE=" ONE MORE RULE, and it is what stops the ticket gate contradic
     if [ "$open" = "0" ]; then say "round #$round complete — all $size ticket(s) finished, blocked, or parked on manual sign-off"; break; fi
     # Neither the finished count NOR the batch's open count moved? Say so out loud, on an interval,
     # so a round that is asleep reads differently from a round that is working.
-    af_round_heartbeat "$round" "$now/$open" "$ids_csv"
+    # Ask WHICH are still open, not just how many. A stall warning naming finished tickets sends
+    # an operator to look at work that is already done. Falls back to the full round when Praxis
+    # cannot answer, because an unanswerable question must widen the report, never narrow it.
+    hb_open=$(praxis_q batch_open_ids "$@") || hb_open=""
+    af_round_heartbeat "$round" "$now/$open" "$(printf '%s' "${hb_open:-$ids_csv}" | tr ' ' ',')"
     pane=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null || echo "")
     # Retain the last live frame. Three rounds died as a bare "session gone" with the pane already
     # destroyed, so the reason was unrecoverable each time and the same round was retried blind.
