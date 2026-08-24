@@ -162,7 +162,21 @@ def test_the_invariant_is_encoded_as_a_comment():
 
 def test_subscription_backend_gets_a_preflight_quota_note():
     """(d): on a subscription backend the loop warns at start that a long unattended run can hit the
-    session limit and halt."""
+    session limit and halt.
+
+    This assertion used to read `assert "*subscription*)" in text` — the shape of a case arm that
+    matched BACKEND_NOTE's prose. The dispatch was later rewritten to switch on $BACKEND by name,
+    which is strictly better (a note is now per-backend, and grok and codex got their own), and the
+    test has been red ever since against a feature that works perfectly. A check that can never pass
+    is not a check; it is 1/25th of the reason a whole-repo gate regressed a healthy ticket.
+
+    So assert the BEHAVIOUR: every subscription backend announces its billing model at startup, and
+    the Claude one specifically warns about the session quota and names the halt code.
+    """
     text = _script_text()
-    assert "*subscription*)" in text
-    assert re.search(r"NOTE: backend is a Claude subscription", text)
+    arm = text[text.index('case "$BACKEND" in\n  sonnet) say "NOTE: backend is a'):]
+    arm = arm[: arm.index("esac")]
+    for backend in ("sonnet", "codex", "grok"):
+        assert f"{backend}) say " in arm, f"{backend} announces no billing model at startup"
+    assert re.search(r"NOTE: backend is a Claude subscription \(session quota, not API credits\)", arm)
+    assert "AF_EXIT_QUOTA_BLOCKED" in arm, "the warning must name the exit code the run will halt with"
