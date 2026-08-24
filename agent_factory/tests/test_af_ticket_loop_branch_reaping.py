@@ -81,6 +81,12 @@ INVARIANT_FUNCS = MATCHERS + "\n" + _extract(
     # list instead of failing. The gap only became visible when sweep_worktrees started calling it
     # directly. Extracting it makes the harness run the same code the driver runs.
     "af_main_worktree",
+    # af_stragglers and queue_orphan_branches now ask whether a branch carries any commit of its
+    # OWN, rather than anything not on the integration ref. Absent, that predicate is a 127 and the
+    # `|| continue` beside it skips every branch — the invariant then announces it HOLDS with a
+    # straggler in plain sight.
+    "af_base_ref",
+    "af_branch_has_own_work",
     "af_dir_in_use",
     "af_worktree_is_removable",
     "af_scratch_roots",
