@@ -23,16 +23,21 @@ PROTECTED_MODEL_FIELDS: frozenset[str] = frozenset(
         "metric",
         "direction",
         "win_condition",
-        "noise_floor",
-        # The four fields a SCALED floor is derived from (knowledge.ml_registry.floor's
-        # residual-to-ceiling section). Protecting `noise_floor` alone would harden the
+        # THE ROPE'S EVIDENCE, which is what R3a left in place of the stored threshold:
+        # the rope is recomputed from these commits at every comparison, so repointing
+        # them mid-campaign moves the bar exactly as writing the retired stored
+        # threshold to -99 once did.
+        "baseline_runs",
+        "sigmas",
+        # The four fields a SCALED rope is derived from (knowledge.ml_registry.floor's
+        # residual-to-ceiling section). Protecting the evidence alone would harden the
         # bar's magnitude and leave its SHAPE writable: a patch moving `metric_ceiling`
         # from 1.0 to 0.62 shrinks every later bar toward the armor without touching a
-        # single protected field, which is the same exploit `noise_floor=-99` was.
-        "noise_floor_scaling",
+        # single protected field.
+        "rope_scaling",
         "metric_ceiling",
-        "noise_floor_armor",
-        "noise_floor_measured_at",
+        "rope_armor",
+        "rope_measured_at",
         "baseline_throughput",
         "diff_size_limit",
     }
@@ -51,7 +56,8 @@ def guard_model_mutation(patch: dict[str, object], *, source: str) -> None:
     ``source == "worker"``, which made it a no-op for every other string -- and
     ``--source`` is free text at the CLI, so ``--source adjudication`` (or any invented
     value) disabled it outright. That was exploitable end to end: setting
-    ``noise_floor=-99`` and ``baseline_throughput=99`` drove a trial whose LEDGER value
+    the stored threshold R3a has since retired to -99 and ``baseline_throughput=99``
+    drove a trial whose LEDGER value
     was a clear loss to ``succeeded`` and advanced the model's baseline onto the losing
     commit. Hardening the metric value while leaving the threshold caller-writable
     hardens nothing -- both operands of the comparison have to come from the ledger.

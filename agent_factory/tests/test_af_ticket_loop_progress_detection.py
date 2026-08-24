@@ -26,8 +26,6 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-import pytest
-
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "af-ticket-loop.sh"
 
 
@@ -86,7 +84,6 @@ def test_an_idle_worktree_reads_as_idle(tmp_path: Path):
     wt = tmp_path / "wt"
     wt.mkdir()
     (wt / "old.txt").write_text("stale")
-    old = 60 * 60 * 24
     import os
     os.utime(wt / "old.txt", (0, 0))
     os.utime(wt, (0, 0))

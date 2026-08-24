@@ -92,7 +92,7 @@ def consider_rejection(
         "run_id": run_id, "counterfactual_run_id": counterfactual_run_id,
         "idea_id": observed["idea_id"], "intervention_digest": intervention_digest,
         "evidence_digest": _evidence_digest(observed, paired, intervention_digest),
-        "harmful": harm > float(experiment["noise_floor"]),
+        "harmful": harm > float(experiment["rope"]),
         "fairness_signature": {key: observed_params[key] for key in FAIRNESS_SIGNATURE_FIELDS},
     }
     record_ratchet_evidence(registry, evidence)

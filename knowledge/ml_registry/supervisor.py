@@ -74,6 +74,9 @@ TERMINATION. Every campaign this module drives is bounded without relying on
 bounds ledger-voided ones (a void is decided ONLY by
 :func:`~knowledge.ml_registry.verdict.adjudicate_verdict`'s ledger-throughput check -- never
 by a ``status`` a dispatcher reports about itself, which :func:`dispatch_trial` overwrites),
+and :data:`DEFAULT_STAGNATION_LIMIT` closes a stage after ten experiments without an
+improvement (including voided arms), then lets the outer supervisor refresh its technique
+pool in a network-enabled pass after the sealed loop has returned. Finally,
 an exhausted discovered-idea budget CLOSES the campaign rather than raising out of it, and a
 dispatcher exceeding the model's ``per_trial_seconds`` closes it too.
 """
@@ -83,10 +86,12 @@ from __future__ import annotations
 import time
 import warnings
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Callable, Optional
 
+from knowledge.ml_registry.contracts import StageCloseRecord
 from knowledge.ml_registry.floor import CAMPAIGN_STATUS_FIELD
-from knowledge.ml_registry.ideate import RETRIEVAL_AXES
+from knowledge.ml_registry.ideate import ABLATION, RETRIEVAL_AXES
 from knowledge.ml_registry.insight import LessonFiler, maybe_file_cross_model_lesson, sweep_cross_model_lessons
 from knowledge.ml_registry.lifecycle import claim_is_stale, untried_backlog
 from knowledge.ml_registry.schema import (
@@ -97,6 +102,7 @@ from knowledge.ml_registry.schema import (
     TRIAL_STATUS_VOIDED,
     RegistryValidationError,
 )
+from knowledge.ml_registry.survey import TechniquePool
 from knowledge.ml_registry.verdict import (
     METRIC_UNMOVED_FIELD,
     LedgerRow,
@@ -150,11 +156,20 @@ TRIAL_STATUS_TIMED_OUT = "timed_out"
 DEFAULT_MAX_CONSECUTIVE_VOIDS = 3
 MAX_CONSECUTIVE_VOIDS_FIELD = "max_consecutive_voids"
 
+# A stage that has produced no adoption for this many consecutive experiments has answered
+# its question: continuing to spend the campaign budget on the same unclearable bar is not
+# exploration. Unlike the axis watchdog above, this spans axis changes within one stage and
+# counts ledger-voided arms; a hung arm therefore cannot keep the stop from ever firing.
+DEFAULT_STAGNATION_LIMIT = 10
+STAGNATION_LIMIT_FIELD = "stagnation_limit"
+STAGE_CLOSES_FIELD = "stage_closes"
+
 CLOSE_WON = "won"
 CLOSE_MAX_TRIALS = "max_trials_reached"
 CLOSE_BACKLOG_EXHAUSTED = "backlog_exhausted"
 CLOSE_VOID_LIMIT = "void_limit_reached"
 CLOSE_TRIAL_TIMEOUT = "per_trial_seconds_exceeded"
+CLOSE_STAGNATION = "stagnation_limit_reached"
 CAMPAIGN_COMPLETED = "completed"
 
 # --- win conditions (structured) ---------------------------------------------------------
@@ -163,7 +178,7 @@ CAMPAIGN_COMPLETED = "completed"
 WIN_METRIC_AT_MOST = "metric_at_most"
 WIN_METRIC_AT_LEAST = "metric_at_least"
 WIN_THRESHOLD_KINDS: tuple[str, ...] = (WIN_METRIC_AT_MOST, WIN_METRIC_AT_LEAST)
-WIN_ON_ADOPTION = "beats baseline by noise_floor"
+WIN_ON_ADOPTION = "beats baseline by the rope"
 
 #: A model's explicit, per-campaign opt-in to first-adoption-wins. Only bootstrap ever
 #: validated a win condition -- build_model_meta refuses the bare string, the
@@ -182,7 +197,95 @@ WIN_ON_ADOPTION_OPT_IN_FIELD = "win_on_adoption_ok"
 # generator proposes one more idea (its meta, sans ``origin``/``model_id`` which this
 # module stamps) when the backlog holds nothing more to try.
 Dispatcher = Callable[[RegistrySpace, Fact, Fact], dict[str, object]]
-IdeaGenerator = Callable[[RegistrySpace, str, Optional[str], frozenset], Optional[dict[str, object]]]
+IdeaGenerator = Callable[
+    [RegistrySpace, str, Optional[str], frozenset[str]], Optional[dict[str, object]]
+]
+# Deliberately called by :func:`supervise_campaign` only after its sealed dispatch loop has
+# returned. Implementations may therefore perform the network retrieval forbidden to an arm.
+PoolRefresher = Callable[[str, str], object]
+
+ABLATION_RESULT_FIELD = "ablation_result"
+TARGET_BLOCK_FIELD = "target_block"
+TECHNIQUE_ID_FIELD = "technique_id"
+PROPOSAL_ORIGIN_FIELD = "proposal_origin"
+POOL_PROPOSAL = "technique_pool"
+OUTSIDE_POOL_PROPOSAL = "outside_pool"
+OUTSIDE_POOL_REASON_FIELD = "outside_pool_reason"
+
+
+def _latest_ablation_target(space: RegistrySpace, model_id: str) -> Optional[str]:
+    """The newest measured ablation's recommended target block, if one is recorded."""
+    for trial in reversed(space.list_facts(TRIAL)):
+        if trial.meta.get("model_id") != model_id or not trial.meta.get("verdict"):
+            continue
+        idea = space.get(trial.derived_from[0]) if trial.derived_from else None
+        if idea is None or idea.meta.get("axis") != ABLATION:
+            continue
+        result = trial.meta.get(ABLATION_RESULT_FIELD)
+        if not isinstance(result, Mapping):
+            continue
+        target = str(result.get(TARGET_BLOCK_FIELD) or "").strip()
+        if target:
+            return target
+    return None
+
+
+@dataclass(frozen=True)
+class PoolIdeaGenerator:
+    """Adapt a vetted technique pool to the supervisor's :data:`IdeaGenerator` seam.
+
+    Each pool-backed proposal records the exact technique id it cites and the block selected
+    by the latest adjudicated ablation result. Once every pool entry has been proposed, an
+    optional fallback may still propose work, but that proposal is explicitly stamped as
+    outside the pool before :func:`dispatch_trial` persists it.
+    """
+
+    pool: TechniquePool
+    default_target_block: str
+    outside_pool_generator: Optional[IdeaGenerator] = None
+
+    def __post_init__(self) -> None:
+        target = self.default_target_block.strip()
+        if not target:
+            raise RegistryValidationError(
+                "default_target_block must not be empty", field="default_target_block",
+            )
+        object.__setattr__(self, "default_target_block", target)
+
+    def __call__(
+        self,
+        space: RegistrySpace,
+        model_id: str,
+        forced_axis: Optional[str],
+        permitted_axes: frozenset[str],
+    ) -> Optional[dict[str, object]]:
+        used_ids = {
+            str(idea.meta[TECHNIQUE_ID_FIELD])
+            for idea in space.list_facts(IDEA)
+            if idea.meta.get("model_id") == model_id and idea.meta.get(TECHNIQUE_ID_FIELD)
+        }
+        technique = next((item for item in self.pool.techniques if item.id not in used_ids), None)
+        if technique is not None:
+            target = _latest_ablation_target(space, model_id) or self.default_target_block
+            return {
+                "axis": forced_axis or target,
+                "description": f"Apply vetted technique {technique.id} to block {target}",
+                "basis": f"technique_pool:{technique.id}",
+                TECHNIQUE_ID_FIELD: technique.id,
+                TARGET_BLOCK_FIELD: target,
+                PROPOSAL_ORIGIN_FIELD: POOL_PROPOSAL,
+            }
+
+        if self.outside_pool_generator is None:
+            return None
+        proposal = self.outside_pool_generator(space, model_id, forced_axis, permitted_axes)
+        if proposal is None:
+            return None
+        recorded = dict(proposal)
+        recorded.pop(TECHNIQUE_ID_FIELD, None)
+        recorded[PROPOSAL_ORIGIN_FIELD] = OUTSIDE_POOL_PROPOSAL
+        recorded[OUTSIDE_POOL_REASON_FIELD] = "technique_pool_exhausted"
+        return recorded
 
 
 @dataclass(frozen=True)
@@ -236,6 +339,18 @@ def consecutive_void_count(space: RegistrySpace, model_id: str) -> int:
     return voids
 
 
+def model_stagnation_limit(model_meta: dict[str, object]) -> int:
+    """The positive stage-stagnation bound for one model, defaulting safely to ten."""
+    raw = model_meta.get(STAGNATION_LIMIT_FIELD)
+    if raw is None or isinstance(raw, bool):
+        return DEFAULT_STAGNATION_LIMIT
+    try:
+        limit = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_STAGNATION_LIMIT
+    return limit if limit >= 1 else DEFAULT_STAGNATION_LIMIT
+
+
 def parse_win_condition(win_condition: object) -> dict[str, object]:
     """Parse a model's declared ``win_condition`` into an evaluable predicate, or refuse it.
 
@@ -245,7 +360,7 @@ def parse_win_condition(win_condition: object) -> dict[str, object]:
       ADOPTED trial's LEDGER value reaches the threshold ``x``.
     * the string ``"metric_at_most: 0.80"`` (or ``"metric_at_least 0.80"``) -- the same, in
       the string form a registration or CLI flag can carry.
-    * the string :data:`WIN_ON_ADOPTION` (``"beats baseline by noise_floor"``) -- the model
+    * the string :data:`WIN_ON_ADOPTION` (``"beats baseline by the rope"``) -- the model
       declares that beating the baseline by more than one noise floor IS the win, i.e. the
       adjudicated adoption itself. This is a DECLARED condition, not a fallback.
 
@@ -460,6 +575,54 @@ def _out_of_diff_indices(space: RegistrySpace, model_id: str) -> frozenset[int]:
 def _trial_axis(space: RegistrySpace, trial: Fact) -> Optional[str]:
     idea = space.get(trial.derived_from[0]) if trial.derived_from else None
     return str(idea.meta.get("axis")) if idea is not None else None
+
+
+def _idea_stage(idea: Fact) -> str:
+    """The stage an idea belongs to, with older axis-only ideas remaining compatible."""
+    return str(
+        idea.meta.get("stage") or idea.meta.get(TARGET_BLOCK_FIELD) or idea.meta.get("axis")
+    )
+
+
+def _trial_stage(space: RegistrySpace, trial: Fact) -> Optional[str]:
+    """The stage an experiment answers, via the idea it was derived from."""
+    idea = space.get(trial.derived_from[0]) if trial.derived_from else None
+    return None if idea is None else _idea_stage(idea)
+
+
+def stage_stagnation(space: RegistrySpace, model_id: str) -> dict[str, object]:
+    """Describe the current stage's trailing experiments without an improvement.
+
+    An adopted verdict is improvement and resets the window. A stage transition also starts a
+    fresh window. Every other adjudicated trial counts, including a ledger-voided arm: the
+    runner's later hang/heartbeat handling records hangs as voids, so a wedged experiment still
+    advances this liveness bound instead of making it unreachable.
+    """
+    trials = [t for t in space.list_facts(TRIAL) if t.meta.get("model_id") == model_id]
+    if not trials:
+        return {"stage": None, "experiments_without_improvement": 0}
+
+    stage = _trial_stage(space, trials[-1])
+    count = 0
+    for trial in reversed(trials):
+        if _trial_stage(space, trial) != stage or trial.meta.get("verdict") == VERDICT_ADOPTED:
+            break
+        count += 1
+    return {"stage": stage, "experiments_without_improvement": count}
+
+
+def stage_family_counts(space: RegistrySpace, model_id: str, stage: str) -> tuple[int, int]:
+    """``(material, completed)`` arms in one stage, in :class:`StageOutcome`'s own vocabulary.
+
+    Material is every idea registered against the stage; completed is every one no longer
+    available for a trial. A ledger-voided arm's idea returns to the backlog, so it counts as
+    material-but-not-completed -- which is why a stagnation stop can fire on a stage that is
+    still open, and why that close has to be an explicitly forced one.
+    """
+    ideas = [idea for idea in space.list_facts(IDEA)
+             if idea.meta.get("model_id") == model_id and _idea_stage(idea) == stage]
+    untried = {idea.id for idea in untried_backlog(space, model_id=model_id)}
+    return len(ideas), len([idea for idea in ideas if idea.id not in untried])
 
 
 def axis_streak(space: RegistrySpace, model_id: str) -> dict[str, object]:
@@ -686,6 +849,8 @@ def dispatch_trial(
         proposed = idea_generator(space, model_id, forced_axis, permitted_axes)
         if proposed is not None:
             meta = dict(proposed)
+            if meta.setdefault(PROPOSAL_ORIGIN_FIELD, OUTSIDE_POOL_PROPOSAL) == OUTSIDE_POOL_PROPOSAL:
+                meta.setdefault(OUTSIDE_POOL_REASON_FIELD, "unwrapped_idea_generator")
             meta["model_id"] = model_id
             meta["origin"] = DISCOVERED
             meta.setdefault("axis", forced_axis or "discovered")
@@ -759,17 +924,26 @@ def dispatch_trial(
 
 
 def _record_close(
-    space: RegistrySpace, model_id: str, close: str, *, lesson_filer: Optional[LessonFiler] = None
+    space: RegistrySpace,
+    model_id: str,
+    close: str,
+    *,
+    close_detail: Optional[dict[str, object]] = None,
+    lesson_filer: Optional[LessonFiler] = None,
 ) -> None:
     model = _model(space, model_id)
     model.meta[CAMPAIGN_STATUS_FIELD] = CLOSE_WON if close == CLOSE_WON else CAMPAIGN_COMPLETED
+    if close == CLOSE_STAGNATION and close_detail is not None:
+        stage_closes = list(model.meta.get(STAGE_CLOSES_FIELD) or [])
+        stage_closes.append(dict(close_detail))
+        model.meta[STAGE_CLOSES_FIELD] = stage_closes
     # R17: model close is the final sweep -- catch any confirmed cross-model insight that
     # wasn't already filed per-trial (e.g. the second model's confirming idea reached its
     # terminal status on a dispatch this campaign never itself made).
     sweep_cross_model_lessons(space, model_id, lesson_filer=lesson_filer)
 
 
-def supervise_campaign(
+def _supervise_campaign_loop(
     space: RegistrySpace,
     model_id: str,
     ledger_rows: dict[str, LedgerRow],
@@ -781,7 +955,7 @@ def supervise_campaign(
     lesson_filer: Optional[LessonFiler] = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, object]:
-    """Drive ``model_id``'s campaign to close, dispatching one worker per trial serially.
+    """The sealed, network-free dispatch loop used by :func:`supervise_campaign`.
 
     Each iteration calls :func:`dispatch_trial` exactly once -- a fresh, independent
     worker session that ends with its trial -- and evaluates the close condition only
@@ -801,12 +975,17 @@ def supervise_campaign(
       1. the dispatch found no candidate (backlog and discovered-idea budget both
          exhausted) -> :data:`CLOSE_BACKLOG_EXHAUSTED`.
       2. the dispatcher overran ``per_trial_seconds`` -> :data:`CLOSE_TRIAL_TIMEOUT`.
-      3. the trial was ledger-voided and that makes ``max_consecutive_voids`` voids in a
+      3. the current stage has seen ``stagnation_limit`` experiments without an adoption ->
+         :data:`CLOSE_STAGNATION`, explained by a
+         :class:`~knowledge.ml_registry.contracts.StageCloseRecord` -- the same typed stage
+         outcome the rest of the registry reads, forced because the bound can fire while arms
+         in the stage are still untried.
+      4. the trial was ledger-voided and that makes ``max_consecutive_voids`` voids in a
          row -> :data:`CLOSE_VOID_LIMIT`; otherwise the loop continues.
-      4. the trial was adopted AND the declared ``win_condition`` is met by the LEDGER's
+      5. the trial was adopted AND the declared ``win_condition`` is met by the LEDGER's
          value for its commit -> :data:`CLOSE_WON`. An adoption that does not yet reach the
          declared target advances the baseline and the campaign keeps running.
-      5. the non-voided trial count has reached ``max_trials`` -> :data:`CLOSE_MAX_TRIALS`.
+      6. the non-voided trial count has reached ``max_trials`` -> :data:`CLOSE_MAX_TRIALS`.
     Every non-win close is recorded on the model as a completed outcome
     (:data:`CAMPAIGN_COMPLETED`); a win is recorded as :data:`CLOSE_WON`.
     """
@@ -832,9 +1011,16 @@ def supervise_campaign(
         # corrupting that.
         warnings.warn(f"model {model_id}: {undeclared}", stacklevel=2)
 
-    def close_with(close: str) -> dict[str, object]:
-        _record_close(space, model_id, close, lesson_filer=lesson_filer)
-        return {"history": history, "close": close}
+    def close_with(
+        close: str, close_detail: Optional[dict[str, object]] = None,
+    ) -> dict[str, object]:
+        _record_close(
+            space, model_id, close, close_detail=close_detail, lesson_filer=lesson_filer,
+        )
+        closed = {"history": history, "close": close}
+        if close_detail is not None:
+            closed["close_detail"] = close_detail
+        return closed
 
     history: list[dict[str, object]] = []
     dispatches = 0
@@ -853,6 +1039,20 @@ def supervise_campaign(
         if result["status"] == TRIAL_STATUS_TIMED_OUT:
             return close_with(CLOSE_TRIAL_TIMEOUT)
 
+        stagnation = stage_stagnation(space, model_id)
+        stagnation_limit = model_stagnation_limit(model.meta)
+        without_improvement = int(stagnation["experiments_without_improvement"])
+        if without_improvement >= stagnation_limit:
+            stage = str(stagnation["stage"] or "unknown")
+            material, completed = stage_family_counts(space, model_id, stage)
+            return close_with(CLOSE_STAGNATION, StageCloseRecord.for_stagnation(
+                stage=stage,
+                material_families=material,
+                completed_families=completed,
+                experiments_without_improvement=without_improvement,
+                limit=stagnation_limit,
+            ).to_mapping())
+
         if result["status"] == TRIAL_STATUS_VOIDED:
             # Does not count against max_trials -- but a harness that keeps voiding is a
             # cost sink, and the void run is recomputed from the registry, never counted here.
@@ -869,3 +1069,41 @@ def supervise_campaign(
             return close_with(CLOSE_MAX_TRIALS)
 
     return {"history": history, "close": None}
+
+
+def supervise_campaign(
+    space: RegistrySpace,
+    model_id: str,
+    ledger_rows: dict[str, LedgerRow],
+    dispatcher: Dispatcher,
+    *,
+    interventions: tuple[Intervention, ...] = (),
+    idea_generator: Optional[IdeaGenerator] = None,
+    max_dispatches: Optional[int] = None,
+    lesson_filer: Optional[LessonFiler] = None,
+    pool_refresher: Optional[PoolRefresher] = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict[str, object]:
+    """Drive one campaign to close, refreshing its pool after a stagnation stop.
+
+    ``_supervise_campaign_loop`` owns the sealed, network-free arm loop. Only after that
+    function has returned may ``pool_refresher`` run its network-enabled retrieval pass. The
+    callback's value is returned as ``pool_refresh`` so the caller can persist or install the
+    refreshed artifact without any retrieval crossing into an arm session.
+    """
+    result = _supervise_campaign_loop(
+        space,
+        model_id,
+        ledger_rows,
+        dispatcher,
+        interventions=interventions,
+        idea_generator=idea_generator,
+        max_dispatches=max_dispatches,
+        lesson_filer=lesson_filer,
+        clock=clock,
+    )
+    if result["close"] == CLOSE_STAGNATION and pool_refresher is not None:
+        detail = result["close_detail"]
+        assert isinstance(detail, dict)
+        result["pool_refresh"] = pool_refresher(model_id, str(detail["stage"]))
+    return result

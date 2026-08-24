@@ -33,8 +33,6 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
-
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "af-ticket-loop.sh"
 
 
@@ -44,7 +42,11 @@ def _source() -> str:
 
 def _render(sha: str = "abc1234def", rnd: str = "7") -> str:
     """The verifier prompt as the driver actually builds it."""
-    line = next(l for l in _source().splitlines() if l.strip().startswith("local vprompt="))
+    line = next(
+        source_line
+        for source_line in _source().splitlines()
+        if source_line.strip().startswith("local vprompt=")
+    )
     body = line.strip()[len("local vprompt=") :]
     prog = (
         "set -u\n"

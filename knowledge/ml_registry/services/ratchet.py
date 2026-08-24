@@ -9,9 +9,9 @@ that adoption's direct parent lineage.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Mapping, Sequence
 
-from knowledge.ml_registry.floor import scaled_noise_floor
+from knowledge.ml_registry.floor import comparison_rope
 from knowledge.ml_registry.schema import RegistryValidationError
 
 
@@ -100,9 +100,13 @@ def lineage_by_id(model_meta: Mapping[str, object], lineage_id: str) -> Adoption
 
 def counterfactual_harm(
     model_meta: Mapping[str, object], trial_meta: dict[str, object], ledger_rows: Mapping[str, object],
-    *, observed_value: float, direction: str,
+    *, observed_value: float, direction: str, rope_values: Sequence[float],
 ) -> bool | None:
-    """Return True only for causally harmful evidence; None means evidence unavailable."""
+    """Return True only for causally harmful evidence; None means evidence unavailable.
+
+    ``rope_values`` are the model's own baseline rows read from the ledger this
+    adjudication was handed -- the rope is recomputed from them rather than read off the
+    model, so this comparison and the verdict it feeds cannot disagree about the bar."""
     lineage = active_adoption_lineage(model_meta)
     cf_commit = trial_meta.get(COUNTERFACTUAL_COMMIT_FIELD)
     if lineage is None or cf_commit is None:
@@ -138,9 +142,11 @@ def counterfactual_harm(
         return None
     cf_value = float(getattr(row, "value"))
     benefit = cf_value - observed_value if direction == "minimize" else observed_value - cf_value
-    floor = scaled_noise_floor(model_meta, cf_value)
+    # The bar at the COUNTERFACTUAL's own level, recomputed from the model's baseline rows in
+    # this same ledger -- the one number this comparison is decided against.
+    rope = comparison_rope(model_meta, rope_values, cf_value)
     trial_meta[RATCHET_EVIDENCE_FIELD] = {
         "lineage_id": lineage.lineage_id, "counterfactual_lineage_id": lineage.parent_lineage_id,
-        "counterfactual_commit": str(cf_commit), "benefit": benefit, "noise_floor": floor,
+        "counterfactual_commit": str(cf_commit), "benefit": benefit, "rope": rope,
     }
-    return benefit < -floor
+    return benefit < -rope

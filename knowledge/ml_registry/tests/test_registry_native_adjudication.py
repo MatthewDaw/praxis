@@ -51,7 +51,7 @@ def registry_with_champion(tmp_path: Path) -> Registry:
     registry = Registry(tmp_path)
     registry.create_experiment(experiment_id="campaign", spec_digest="a" * 64,
         stages=["representation"], metric="f1", direction="maximize",
-        win_condition={"metric_at_least": 0.9}, noise_floor=0.01, baseline_throughput=3.3)
+        win_condition={"metric_at_least": 0.9}, rope=0.01, baseline_throughput=3.3)
     registry.register_model(model_id="model", family="linear", sport_scope="shared", axis="a01",
                             protocol="Detector", extends=None)
     create_run(registry, "baseline", 0.68)
@@ -76,7 +76,7 @@ def promotion(registry: Registry, run_id: str, version: int = 2) -> dict[str, ob
 def test_typed_metrics_reject_missing_invalid_and_nonfinite_measurements(tmp_path: Path) -> None:
     registry = Registry(tmp_path)
     registry.create_experiment(experiment_id="campaign", spec_digest="a" * 64, stages=["s"], metric="f1",
-        direction="maximize", win_condition={}, noise_floor=0.01, baseline_throughput=1)
+        direction="maximize", win_condition={}, rope=0.01, baseline_throughput=1)
     registry.create_run(run_id="run", experiment_id="campaign", idea_id="i", stage="s", family="f",
         params={}, metrics={}, code_ref={"schema_version": 1, "repo": str(REPO), "sha": SHA,
         "base_sha": SHA, "diff_hash": DIFF, "diff_lines": 0}, device_fingerprint="cpu", status="running",
@@ -178,7 +178,7 @@ def test_atomic_adoption_recovers_all_projections_after_event_boundary_crash(tmp
 def test_champion_baseline_cannot_cross_experiment_boundary(tmp_path: Path) -> None:
     registry = registry_with_champion(tmp_path)
     registry.create_experiment(experiment_id="other", spec_digest="b" * 64, stages=["representation"],
-        metric="f1", direction="maximize", win_condition={}, noise_floor=.01, baseline_throughput=3.3)
+        metric="f1", direction="maximize", win_condition={}, rope=.01, baseline_throughput=3.3)
     create_run(registry, "other-run", .72, experiment_id="other")
     with pytest.raises(RegistryError, match="different experiment"):
         adjudicate_against_champion(registry, run_id="other-run", model_id="model", reason="crossed")

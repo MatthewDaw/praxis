@@ -68,7 +68,7 @@ def _run(registry, name, value=0.68, throughput=1200, validity="valid", params=N
     complete_run(registry, run_id=name, metrics=_metrics(value, throughput, validity))
 
 
-def _registry(tmp_path, baseline_throughput=1000):
+def _registry(tmp_path: Path, baseline_throughput: float = 1000) -> Registry:
     registry = Registry(tmp_path / "registry")
     registry.create_experiment(
         experiment_id="campaign",
@@ -77,7 +77,7 @@ def _registry(tmp_path, baseline_throughput=1000):
         metric="f1",
         direction="maximize",
         win_condition={"metric_at_least": 0.9},
-        noise_floor=0.01,
+        rope=0.01,
         baseline_throughput=baseline_throughput,
     )
     registry.register_model(
@@ -207,8 +207,8 @@ def test_a_stagnant_campaign_trial_breaching_the_net_line_bound_is_rejected_not_
 
 
 def test_a_campaign_against_a_model_with_no_registered_throughput_is_refused_not_run(
-    tmp_path,
-):
+    tmp_path: Path,
+) -> None:
     registry = Registry(tmp_path / "registry")
     with pytest.raises(sqlite3.IntegrityError, match="baseline_throughput"):
         registry.create_experiment(
@@ -218,7 +218,7 @@ def test_a_campaign_against_a_model_with_no_registered_throughput_is_refused_not
             metric="f1",
             direction="maximize",
             win_condition={},
-            noise_floor=0.01,
+            rope=0.01,
             baseline_throughput=None,
         )
 
@@ -288,9 +288,9 @@ def test_updating_a_registered_model_cannot_move_the_baseline_from_a_worker(tmp_
     _immutable(tmp_path)
 
 
-def test_updating_a_registered_model_cannot_widen_the_noise_floor_from_a_worker(
-    tmp_path,
-):
+def test_updating_a_registered_model_cannot_repoint_the_rope_evidence_from_a_worker(
+    tmp_path: Path,
+) -> None:
     _immutable(tmp_path)
 
 
@@ -302,7 +302,7 @@ def test_updating_a_registered_model_without_a_source_is_refused_naming_it(tmp_p
     _immutable(tmp_path)
 
 
-def test_a_registered_models_metric_stays_frozen_on_the_update_path(tmp_path):
+def test_a_registered_models_metric_stays_frozen_on_the_update_path(tmp_path: Path) -> None:
     registry = _registry(tmp_path)
     with pytest.raises(sqlite3.IntegrityError, match="experiments.experiment_id"):
         registry.create_experiment(
@@ -312,7 +312,7 @@ def test_a_registered_models_metric_stays_frozen_on_the_update_path(tmp_path):
             metric="accuracy",
             direction="maximize",
             win_condition={},
-            noise_floor=0.02,
+            rope=0.02,
             baseline_throughput=1,
         )
 

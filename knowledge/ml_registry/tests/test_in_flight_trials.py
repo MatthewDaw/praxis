@@ -15,12 +15,18 @@ from knowledge.ml_registry.schema import RegistryValidationError
 from knowledge.ml_registry.write_path import (RegistrySpace, register_idea, register_model,
                                               register_trial, supersede_trial)
 
+from knowledge.ml_registry.testing.rope_fixtures import rope_ledger_rows
+from knowledge.ml_registry.verdict import LedgerRow
+
 LEDGER = frozenset({"c1", "c2"})
+
+#: Four rows measuring a rope of exactly 0.01, at the fixtures' baseline level.
+ROPE_ROWS = rope_ledger_rows(0.01, at=1.0, throughput=1200.0)
 
 
 MODEL_META = {
-    "metric": "f1", "direction": "maximize", "win_condition": "beats baseline by noise_floor",
-    "baseline": "c1", "noise_floor": 0.01, "baseline_throughput": 1.0, "diff_size_limit": 8,
+    "metric": "f1", "direction": "maximize", "win_condition": "beats baseline by the rope",
+    "baseline": "c1", "baseline_throughput": 1.0, "diff_size_limit": 8,
     "max_trials": 5, "max_discovered_ideas": 2,
 }
 
@@ -112,24 +118,26 @@ def test_supersede_requires_a_stated_reason() -> None:
 # every subsequent supervise-campaign died on the same idea.
 
 _DISPATCH_MODEL_META = {
-    "metric": "val_bpb", "direction": "minimize", "win_condition": "beats baseline by noise_floor",
-    "baseline": "base", "noise_floor": 0.01, "baseline_throughput": 1200.0, "diff_size_limit": 800,
+    "metric": "val_bpb", "direction": "minimize", "win_condition": "beats baseline by the rope",
+    "baseline": "base", "baseline_runs": list(ROPE_ROWS),
+    "baseline_throughput": 1200.0, "diff_size_limit": 800,
     "max_trials": 5, "max_discovered_ideas": 0,
 }
 
 
-def _dispatch_fixture(claim_age_s: float):
+def _dispatch_fixture(claim_age_s: float
+                      ) -> tuple[RegistrySpace, str, str, str, dict[str, LedgerRow]]:
     """A model whose only idea is claimed ``claim_age_s`` ago under a 900s lease, with an
     in-flight trial left behind by that claim's worker."""
     import time as _time
 
     from knowledge.ml_registry.lifecycle import DEFAULT_IDEA_CLAIM_LEASE_TTL_S, claim_idea
-    from knowledge.ml_registry.verdict import LedgerRow
 
     ledger = {
         "base": LedgerRow(value=1.0, throughput=1200.0, diff_lines=0),
         "dead": LedgerRow(value=1.0, throughput=1200.0, diff_lines=10),
         "fresh": LedgerRow(value=0.5, throughput=1200.0, diff_lines=10),
+        **ROPE_ROWS,
     }
     space = RegistrySpace()
     model_id = register_model(space, dict(_DISPATCH_MODEL_META))

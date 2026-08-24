@@ -62,10 +62,10 @@ def adjudicate_against_champion(
     else:
         delta = candidate.metric - baseline.metric
         improvement = delta if experiment["direction"] == "maximize" else -delta
-        floor = float(experiment["noise_floor"])
-        if improvement > floor:
+        rope = float(experiment["rope"])
+        if improvement > rope:
             verdict, status = "adopted", "succeeded"
-        elif abs(delta) <= floor:
+        elif abs(delta) <= rope:
             verdict, status = "parked", "succeeded"
         else:
             verdict, status = "rejected", "succeeded"

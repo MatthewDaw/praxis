@@ -28,6 +28,7 @@ class CampaignSpec:
     extends: tuple[Mapping[str, Any], ...] = ()
     deterministic_incumbent: Mapping[str, Any] | None = None
     learned_escalation: bool = False
+    rope: Mapping[str, Any] | None = None
 
     VERSION = 1
 
@@ -62,6 +63,9 @@ class CampaignSpec:
         escalation = value.get("learned_escalation", False)
         if not isinstance(escalation, bool):
             raise ContractError("learned_escalation must be boolean")
+        rope = value.get("rope")
+        if rope is not None and not isinstance(rope, Mapping):
+            raise ContractError("rope must be an object or null")
         if not sequences["produces"] and deterministic is None:
             raise ContractError("a learned campaign must declare at least one produced artifact")
         return cls(
@@ -71,10 +75,11 @@ class CampaignSpec:
             sequences["stages"], sequences["corpora"], sequences["requires"], sequences["produces"],
             mappings["supervision"], mappings["resources"], mappings["isolation"], mappings["production"],
             sequences["extends"], None if deterministic is None else dict(deterministic), escalation,
+            None if rope is None else dict(rope),
         )
 
     def to_mapping(self) -> dict[str, Any]:
-        return {
+        result = {
             "schema_version": self.schema_version,
             "campaign_id": self.campaign_id,
             "model_id_policy": self.model_id_policy,
@@ -95,3 +100,6 @@ class CampaignSpec:
                                           else dict(self.deterministic_incumbent)),
             "learned_escalation": self.learned_escalation,
         }
+        if self.rope is not None:
+            result["rope"] = dict(self.rope)
+        return result

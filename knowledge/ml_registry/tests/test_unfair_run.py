@@ -18,8 +18,14 @@ from knowledge.ml_registry.verdict import (FAIR_RUN_STATUSES, LedgerRow, VERDICT
 from knowledge.ml_registry.write_path import (RegistrySpace, register_idea, register_model,
                                               register_trial)
 
-META = {"metric": "f1", "direction": "maximize", "win_condition": "beats baseline by noise_floor",
-        "baseline": "base", "noise_floor": 0.0115, "baseline_throughput": 3.38,
+from knowledge.ml_registry.testing.rope_fixtures import rope_ledger_rows
+
+#: Four rows measuring a rope of exactly 0.01, at this campaign's baseline level.
+ROPE_ROWS = rope_ledger_rows(0.01, at=0.7, throughput=3.38)
+
+META = {"metric": "f1", "direction": "maximize", "win_condition": "beats baseline by the rope",
+        "baseline": "base", "baseline_runs": list(ROPE_ROWS),
+        "baseline_throughput": 3.38,
         "diff_size_limit": 8, "max_trials": 9, "max_discovered_ideas": 2}
 
 
@@ -33,7 +39,8 @@ def _setup(status: str, throughput: float = 3.40
     iid = register_idea(space, {"model_id": mid, "origin": "seeded", "axis": "architecture",
                                 "description": "a graph head"})
     ledger = {"base": LedgerRow(value=0.7034, throughput=3.38, diff_lines=0),
-              "c1": LedgerRow(value=0.4268, throughput=throughput, diff_lines=1, status=status)}
+              "c1": LedgerRow(value=0.4268, throughput=throughput, diff_lines=1, status=status),
+              **ROPE_ROWS}
     tid = register_trial(space, {"model_id": mid, "idea_id": iid, "commit": "c1",
                                  "status": "complete", "throughput": throughput, "diff_lines": 1},
                          frozenset(ledger))
@@ -73,5 +80,6 @@ def test_a_ledger_without_a_status_column_behaves_exactly_as_before() -> None:
     assert LedgerRow(value=0.7, throughput=3.4, diff_lines=1).status in FAIR_RUN_STATUSES
     space, tid, _ = _setup("ok")
     ledger = {"base": LedgerRow(value=0.7034, throughput=3.38, diff_lines=0),
-              "c1": LedgerRow(value=0.72, throughput=3.40, diff_lines=1)}
+              "c1": LedgerRow(value=0.72, throughput=3.40, diff_lines=1),
+              **ROPE_ROWS}
     assert adjudicate_verdict(space, tid, ledger) != VERDICT_VOIDED

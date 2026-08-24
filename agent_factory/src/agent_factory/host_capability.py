@@ -80,7 +80,7 @@ def _gpu_capability() -> Capability:
 
     if shutil.which("nvidia-smi"):
         code, out = _run(["nvidia-smi", "-L"])
-        first = next((l for l in out.splitlines() if l.strip()), "")
+        first = next((output_line for output_line in out.splitlines() if output_line.strip()), "")
         evidence.append(f"nvidia-smi -L: exit {code} — {first[:120] or 'no output'}")
         if code == 0 and "GPU" in out:
             return Capability("gpu", True, evidence)
@@ -98,7 +98,10 @@ def _gpu_capability() -> Capability:
         "import torch;print('CUDA', torch.cuda.is_available(), torch.cuda.device_count(), torch.__version__)",
     ])
     if code == 0:
-        line = next((l for l in out.splitlines() if l.startswith("CUDA")), out.strip())
+        line = next(
+            (output_line for output_line in out.splitlines() if output_line.startswith("CUDA")),
+            out.strip(),
+        )
         evidence.append(f"torch: {line[:120]}")
         if "CUDA True" in out:
             return Capability("gpu", True, evidence)

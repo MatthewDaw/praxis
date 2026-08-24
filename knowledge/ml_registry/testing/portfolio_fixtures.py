@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import json
 import os
 from pathlib import Path
@@ -65,7 +66,7 @@ def _registry(root: Path) -> tuple[Registry, CampaignView, RegistryFinalizer]:
     registry = Registry(root)
     registry.create_experiment(experiment_id="R1", spec_digest="a" * 64,
         stages=["representation"], metric="f1", direction="maximize",
-        win_condition={"metric_at_least": .5}, noise_floor=.01, baseline_throughput=1)
+        win_condition={"metric_at_least": .5}, rope=.01, baseline_throughput=1)
     registry.register_model(model_id="R1", family="linear", sport_scope="shared", axis="a01",
                             protocol="Detector", extends=None)
     _run(registry, "run-R1")
@@ -217,12 +218,23 @@ def invalid_completion_scenario(tmp_path, *, claim):
     return _InvalidCompletionScenario(tmp_path, claim=claim)
 
 
-def _campaign_spec(campaign_id, *, requires=(), schema_version="1"):
+def _campaign_spec(
+    campaign_id: str,
+    *,
+    requires: Sequence[Mapping[str, object]] = (),
+    schema_version: str = "1",
+) -> dict[str, object]:
     return {
         "schema_version": 1, "campaign_id": campaign_id,
         "model_id_policy": campaign_id, "axis": "fixture", "sport_scope": ["shared"],
-        "target_ontology": "fixture", "metric": {"name": "f1", "direction": "maximize"},
-        "stages": [{"name": "representation"}], "corpora": [{"id": "fixture"}],
+        "target_ontology": "fixture", "metric": {
+            "name": "f1", "direction": "maximize",
+            "operating_point": {"selection": "frozen", "threshold": .5},
+            "aggregation": [{"level": "item", "unit": "item_id", "minimum_sample": 2}],
+            "scoring_corpus": "fixture", "split_unit": "item_id",
+        },
+        "stages": [{"name": "representation"}],
+        "corpora": [{"id": "fixture", "roles": ["scoring"], "split_unit": "item_id"}],
         "requires": list(requires),
         "produces": [{"artifact_type": "checkpoint", "schema_version": schema_version,
                       "oof_for": []}],
@@ -233,6 +245,12 @@ def _campaign_spec(campaign_id, *, requires=(), schema_version="1"):
     }
 
 
+_SCORING_CORPORA: dict[str, list[dict[str, object]]] = {"fixture": [
+    {"item_id": "one", "f1": .7},
+    {"item_id": "two", "f1": .8},
+]}
+
+
 class _PromotedArtifactScenario:
     def __init__(self, root: Path) -> None:
         self.registry, _view, _finalizer = _registry(Path(root) / "registry")
@@ -240,11 +258,13 @@ class _PromotedArtifactScenario:
         RegistryFinalizeService(self.registry).move_production(
             model_id="R1", version=1, reason="fixture production v1",
         )
-        self.registry.register_campaign_spec(_campaign_spec("R1"))
+        self.registry.register_campaign_spec(
+            _campaign_spec("R1"), scoring_corpora=_SCORING_CORPORA,
+        )
         self.registry.register_campaign_spec(_campaign_spec("C1", requires=[{
             "artifact_type": "checkpoint", "producer_campaign_id": "R1",
             "min_coverage": 1.0, "oof": False,
-        }]))
+        }]), scoring_corpora=_SCORING_CORPORA)
 
     def apply(self, mutation: str) -> None:
         if mutation == "tamper_bytes":
@@ -252,7 +272,9 @@ class _PromotedArtifactScenario:
             return
         if mutation == "backdate_manifest":
             # The manifest advanced while production still carries the older schema.
-            self.registry.register_campaign_spec(_campaign_spec("R1", schema_version="2"))
+            self.registry.register_campaign_spec(
+                _campaign_spec("R1", schema_version="2"), scoring_corpora=_SCORING_CORPORA,
+            )
             return
         if mutation == "supersede_trial":
             _run(self.registry, "run-R1-v2", idea_id="idea-2")
@@ -302,7 +324,7 @@ class _ProcessScenario:
         for cid in ("R1", "R2"):
             self.registry.create_experiment(experiment_id=cid, spec_digest="a" * 64,
                 stages=["representation"], metric="f1", direction="maximize",
-                win_condition={"metric_at_least": .5}, noise_floor=.01, baseline_throughput=1)
+                win_condition={"metric_at_least": .5}, rope=.01, baseline_throughput=1)
             _create_named_run(self.registry, cid)
         self.coordinator = LeaseIntentCoordinator(self.root / "ownership.json")
         self.backend = ExecutorProcessBackend(self.root / "dispatch", coordinator=self.coordinator)

@@ -19,8 +19,6 @@ import re
 import sys
 from pathlib import Path
 
-import pytest
-
 from agent_factory import ingestion_api  # noqa: F401  -- canonicalizes the hooks modules first
 
 import _praxis  # noqa: E402
@@ -115,7 +113,7 @@ EXACT_HEARTBEAT_CALL = (
 )
 
 
-def test_the_heartbeat_is_handed_the_open_ids_in_the_right_position():
+def test_the_heartbeat_is_handed_the_open_ids_in_the_right_position() -> None:
     """Membership is not enough, and this file got that wrong first time.
 
     Verification executed the malformed call `af_round_heartbeat "$now/$open" "$round" "$hb_open"`
@@ -123,8 +121,11 @@ def test_the_heartbeat_is_handed_the_open_ids_in_the_right_position():
     wiring test whose subject is argument ORDER has to assert order.
     """
     src = SCRIPT.read_text()
-    call = next(l for l in src.splitlines()
-                if "af_round_heartbeat " in l and not l.strip().startswith("#"))
+    call = next(
+        line
+        for line in src.splitlines()
+        if "af_round_heartbeat " in line and not line.strip().startswith("#")
+    )
     assert call.strip() == EXACT_HEARTBEAT_CALL, (
         f"  found:    {call.strip()}\n  expected: {EXACT_HEARTBEAT_CALL}")
 

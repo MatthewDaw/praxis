@@ -42,9 +42,7 @@ _FUNCS = (
     "af_main_worktree", "af_scratch_roots", "af_scratch_globs", "af_is_scratch",
     "af_is_human_branch", "af_is_worktree_branch", "af_is_factory_named",
     "af_worktree_is_removable", "af_force_remove_worktree", "af_stragglers",
-    "af_dir_in_use",
-    "af_is_owed_merge",
-    "af_is_owed_merge", "sweep_worktrees",
+    "af_dir_in_use", "af_is_owed_merge", "sweep_worktrees",
 )
 
 
@@ -284,7 +282,11 @@ def test_the_liveness_guard_survives_pipefail(repo: Path, tmp_path: Path):
     """
     # Comments are stripped first: the fix's own comment QUOTES the broken spelling in order to
     # explain it, and a naive substring search would match that and fail forever.
-    code = "\n".join(l for l in SCRIPT.read_text().splitlines() if not l.lstrip().startswith("#"))
+    code = "\n".join(
+        line
+        for line in SCRIPT.read_text().splitlines()
+        if not line.lstrip().startswith("#")
+    )
     assert "readlink /proc/*/cwd 2>/dev/null | grep -q" not in code, (
         "the liveness check must not put readlink in a pipeline whose status pipefail can steal"
     )

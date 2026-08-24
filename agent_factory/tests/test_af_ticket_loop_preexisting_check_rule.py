@@ -30,8 +30,6 @@ import pathlib
 import subprocess
 import tempfile
 
-import pytest
-
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "af-ticket-loop.sh"
 
 
@@ -51,32 +49,33 @@ def _rule() -> str:
 
 
 def _prompt_line() -> str:
-    return next(l for l in SCRIPT.read_text().splitlines() if l.strip().startswith("round_prompt="))
+    lines = SCRIPT.read_text().splitlines()
+    return next(line for line in lines if line.strip().startswith("round_prompt="))
 
 
 # ------------------------------------------------------------------------------- the rule ------
 
-def test_a_check_already_red_at_the_merge_base_is_measured_not_fixed():
+def test_a_check_already_red_at_the_merge_base_is_measured_not_fixed() -> None:
     text = _rule()
     assert "ALREADY FAILING before your ticket existed" in text
     assert "FIRST MEASURE whether it was already red" in text
     assert "merge-base" in text
 
 
-def test_the_pass_criterion_is_a_subset_of_what_was_already_broken():
+def test_the_pass_criterion_is_a_subset_of_what_was_already_broken() -> None:
     text = _rule()
     assert "subset of the failures already present at the merge-base" in text
     assert "that check PASSES for your ticket" in text
 
 
-def test_one_new_failure_still_fails():
+def test_one_new_failure_still_fails() -> None:
     """Without this the rule is a licence to wave through a regression."""
     text = _rule()
     assert "adds even ONE failure that the merge-base does not have" in text
     assert "the check FAILS and it is yours to fix" in text
 
 
-def test_it_cannot_be_applied_to_a_check_that_was_green():
+def test_it_cannot_be_applied_to_a_check_that_was_green() -> None:
     """The single way this rule could hide a regression, named so a worker cannot reach it by
     accident."""
     text = _rule()
@@ -84,13 +83,13 @@ def test_it_cannot_be_applied_to_a_check_that_was_green():
     assert "a check that was green at the merge-base is a check you must pass outright" in text
 
 
-def test_the_evidence_is_required_to_be_checkable():
+def test_the_evidence_is_required_to_be_checkable() -> None:
     """A verdict nobody can re-derive is a claim, not evidence."""
     text = _rule()
     assert "both counts and the merge-base sha in your evidence" in text
 
 
-def test_blocking_and_lying_are_both_named_as_wrong():
+def test_blocking_and_lying_are_both_named_as_wrong() -> None:
     text = _rule()
     assert "must not record it as passed" in text
     assert "blocking wastes the round" in text
@@ -98,18 +97,18 @@ def test_blocking_and_lying_are_both_named_as_wrong():
 
 # --------------------------------------------------------------------------- it reaches a worker
 
-def test_the_rule_is_interpolated_into_the_round_prompt():
+def test_the_rule_is_interpolated_into_the_round_prompt() -> None:
     line = _prompt_line()
     assert "$PREEXISTING_RULE" in line
     assert line.count("$PREEXISTING_RULE") == 1
 
 
-def test_the_rule_is_defined_before_the_prompt_is_built():
+def test_the_rule_is_defined_before_the_prompt_is_built() -> None:
     src = SCRIPT.read_text()
     assert src.index("PREEXISTING_RULE=") < src.index("  round_prompt=")
 
 
-def test_the_rule_applies_at_every_round_width():
+def test_the_rule_applies_at_every_round_width() -> None:
     """Unlike the sweep amendment, this one is not width-conditional: a repo-wide check carrying
     pre-existing debt is exactly as unsatisfiable on a 1-wide round as on a 16-wide one."""
     src = SCRIPT.read_text()

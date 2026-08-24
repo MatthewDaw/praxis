@@ -9,19 +9,24 @@ that produced those rows had been paid for.
 What is SYSTEMATIC lives here:
 
 * verifying the ledger is version 2 and that its join keys are unique per arm
-* verifying enough baseline rows exist, and MEASURING the noise floor from them
+* verifying enough baseline rows exist, and MEASURING the rope over them
 * building a schema-valid model meta and schema-valid idea records
 * refusing, with a specific cause, rather than registering something unadjudicable
 
 What is PROJECT-SPECIFIC stays with the project: what the metric means, what trains it, and which
 hypotheses are worth trying. Those cannot be generalised and this module does not try.
 
-THE NOISE FLOOR DESERVES ITS OWN NOTE, because it is the single most consequential constant in a
-campaign and the cheapest thing to get wrong. The registry's minimum is 4 baseline runs. An SD
-estimated from 4 points carries roughly 40% relative uncertainty, and on the sports_analysis
-campaign 4 runs suggested SD 0.0164 while 12 gave 0.0115 -- the small sample was inflated by an
-artifact that only the larger one exposed. So `measure_noise_floor` reports the sample size and
-the uncertainty alongside the value.
+THE ROPE DESERVES ITS OWN NOTE, because it is the single most consequential number in a campaign
+and the cheapest thing to get wrong. The registry's minimum is 4 baseline runs. An SD estimated
+from 4 points carries roughly 40% relative uncertainty, and on the sports_analysis campaign 4 runs
+suggested SD 0.0164 while 12 gave 0.0115 -- the small sample was inflated by an artifact that only
+the larger one exposed. So `measure_rope` reports the sample size and the uncertainty alongside
+the value.
+
+It is a REPORT, not a registration input. R3a retired the stored threshold: what a campaign
+records is the baseline commits, and the rope is recomputed from their ledger rows at every
+comparison (knowledge.ml_registry.floor.comparison_rope). Nothing here can hand the registry a
+number that later disagrees with the rows it came from, because nothing here hands it a number.
 
 `sigmas` DEFAULTS TO ONE, AND THAT IS A TRADE, NOT AN OVERSIGHT. It defaulted to 2 on the
 argument -- still correct as far as it goes -- that at one sigma a large backlog manufactures
@@ -48,9 +53,9 @@ parked-or-won against the PREVIOUS baseline (counterfactual attribution). That i
 conservative, and it will NOT reliably unwind a stack of small false adoptions, each of which
 raises the bar just enough that the next honest arm looks like a loss on its own merits.
 
-A campaign that wants the old bar sets `sigmas: 2` in ONE field, and the registry then HOLDS it
-to that number: see knowledge.ml_registry.floor.check_declared_sigmas. Until recently it did
-not, which is how the court-marking campaign came to declare 2 while carrying a one-sigma floor.
+A campaign that wants the old bar sets `sigmas: 2` in ONE field, and the registry multiplies by
+that number itself at every comparison -- so a record can no longer declare 2 while carrying a
+one-sigma bar, which is what the court-marking campaign did.
 
 WHAT "WINNING" MEANS IS ASKED FOR, NEVER DEFAULTED. `win_condition` used to default to the
 string supervisor.py reads as WIN_ON_ADOPTION, which closes a campaign as WON on its FIRST
@@ -58,9 +63,6 @@ adopted trial -- so a bootstrapped campaign with nine declared stages could end 
 improvement in stage one. There is no safe automatic answer (a target metric value is a
 project fact, not a ledger fact), so a missing or bare-adoption-string win_condition is
 REFUSED at setup time, where the failure is cheap and lands on the person who can answer it.
-A floor measured some other way is treated the same: `noise_floor_override` now travels with
-a `noise_floor_method`, which is what lets floor.register_model_with_baseline accept a
-bootstrap-measured floor that disagrees with the SD of the repeats instead of refusing it.
 """
 
 from __future__ import annotations
@@ -72,6 +74,7 @@ from typing import Any
 
 from knowledge.ml_registry.contracts.ledger_v2 import read_ledger_compatibility
 from knowledge.ml_registry.floor import DEFAULT_SIGMAS as FLOOR_DEFAULT_SIGMAS
+from knowledge.ml_registry.floor import measure_rope as floor_measure_rope
 from knowledge.ml_registry.schema import RegistryValidationError
 
 LEDGER_V2_HEADER = ["commit", "metric_value", "memory_gb", "status", "description",
@@ -88,7 +91,7 @@ DEFAULT_SIGMAS = FLOOR_DEFAULT_SIGMAS
 # stage untouched. It was this module's DEFAULT, so every campaign bootstrapped here was
 # armed to close on its first 0.001 improvement unless the caller happened to override it.
 # It is now refused rather than defaulted -- see build_model_meta.
-WIN_ON_ADOPTION = "beats baseline by noise_floor"
+WIN_ON_ADOPTION = "beats baseline by the rope"
 
 WIN_CONDITION_REFUSAL = (
     "win_condition must be declared explicitly, e.g. {'metric_at_most': 0.80} or "
@@ -115,14 +118,14 @@ class BootstrapReport:
     preconditions: list[Precondition] = field(default_factory=list)
     model_meta: dict[str, Any] | None = None
     ideas: list[dict[str, Any]] = field(default_factory=list)
-    floor: dict[str, Any] | None = None
+    rope: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ready": self.ready,
             "preconditions": [p.__dict__ for p in self.preconditions],
             "blocking": [p.name for p in self.preconditions if not p.ok],
-            "noise_floor": self.floor,
+            "rope": self.rope,
             "model_meta": self.model_meta,
             "ideas": len(self.ideas),
         }
@@ -173,7 +176,15 @@ def check_ledger(path: Path, baseline_prefix: str) -> tuple[list[Precondition], 
     return out, baselines
 
 
-def measure_noise_floor(baselines: list[dict], sigmas: float = DEFAULT_SIGMAS) -> dict[str, Any]:
+def measure_rope(baselines: list[dict[str, Any]],
+                 sigmas: float = DEFAULT_SIGMAS) -> dict[str, Any]:
+    """The rope these baseline rows imply, WITH the evidence a reader needs to judge it.
+
+    Reported for the operator, never registered: the registry recomputes this same number
+    from the same commits at every comparison, so WHAT the rope is comes from
+    :func:`knowledge.ml_registry.floor.measure_rope` rather than being restated here --
+    two definitions of one bar is the defect R3a retired in the first place.
+    """
     values = [float(b["metric_value"]) for b in baselines]
     sd = st.stdev(values) if len(values) > 1 else 0.0
     # Relative uncertainty of an SD estimated from n points, ~1/sqrt(2(n-1)).
@@ -184,7 +195,7 @@ def measure_noise_floor(baselines: list[dict], sigmas: float = DEFAULT_SIGMAS) -
         "sd": round(sd, 6),
         "sd_relative_uncertainty": round(rel_unc, 3),
         "sigmas": sigmas,
-        "noise_floor": round(sigmas * sd, 6),
+        "rope": round(floor_measure_rope(values, sigmas=sigmas), 6) if len(values) > 1 else 0.0,
         "note": ("SD from few runs is itself uncertain; prefer >= 12 runs when a run is cheap. "
                  "sigmas defaults to 1: a null arm clears a one-sigma bar 15.9% of the time "
                  "one-sided (2.3% at two sigma), ~10 expected false adoptions over a 66-idea "
@@ -196,13 +207,12 @@ def measure_noise_floor(baselines: list[dict], sigmas: float = DEFAULT_SIGMAS) -
     }
 
 
-def build_model_meta(*, metric: str, direction: str, baseline_commit: str, noise_floor: float,
+def build_model_meta(*, metric: str, direction: str, baseline_commit: str,
                      baseline_throughput: float, diff_size_limit: int,
                      win_condition: Any,
                      notes: str | None = None, sigmas: float | None = None,
                      sigmas_reason: str | None = None,
-                     noise_floor_sigma: float | None = None,
-                     baseline_runs: list | None = None,
+                     baseline_runs: list[str] | None = None,
                      void_throughput_fraction: float | None = None) -> dict[str, Any]:
     """``win_condition`` is REQUIRED and may not be the bare adoption string.
 
@@ -219,7 +229,7 @@ def build_model_meta(*, metric: str, direction: str, baseline_commit: str, noise
         raise RegistryValidationError(WIN_CONDITION_REFUSAL, field="win_condition")
     meta = {
         "metric": metric, "direction": direction, "win_condition": win_condition,
-        "baseline": baseline_commit, "noise_floor": noise_floor,
+        "baseline": baseline_commit,
         "baseline_throughput": baseline_throughput, "diff_size_limit": diff_size_limit,
     }
     if notes:
@@ -228,13 +238,8 @@ def build_model_meta(*, metric: str, direction: str, baseline_commit: str, noise
         meta["sigmas"] = sigmas
     if sigmas_reason:
         meta["sigmas_reason"] = sigmas_reason
-    # The ONE-SIGMA dispersion the floor was multiplied up from. Optional, and the only thing
-    # that makes an externally-measured floor's declared sigmas CHECKABLE: with it,
-    # floor.check_declared_sigmas does the multiplication itself and refuses a floor that
-    # contradicts its own sigmas. Without it the claim is stored and stamped unverified --
-    # which is what court-marking's `sigmas: 2` beside a one-sigma floor was.
-    if noise_floor_sigma is not None:
-        meta["noise_floor_sigma"] = noise_floor_sigma
+    # THE ROPE'S EVIDENCE. Not an optional convenience any more: adjudication recomputes
+    # the bar from these commits, so a model without them has no bar at all.
     if baseline_runs is not None:
         meta["baseline_runs"] = list(baseline_runs)
     if void_throughput_fraction is not None:
@@ -277,10 +282,7 @@ def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, met
               direction: str, diff_size_limit: int, win_condition: Any = None,
               baseline_prefix: str = "baseline",
               sigmas: float = DEFAULT_SIGMAS, sigmas_reason: str | None = None,
-              noise_floor_override: float | None = None,
-              noise_floor_sigma: float | None = None,
-              noise_floor_method: str | None = None,
-              noise_floor_varies: str | None = None,
+              rope_varies: str | None = None,
               trial_comparison: str | None = None,
               skip_ids: set[str] | None = None, notes: str | None = None,
               void_throughput_fraction: float | None = None) -> BootstrapReport:
@@ -298,28 +300,13 @@ def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, met
     if not all(c.ok for c in checks):
         return BootstrapReport(ready=False, preconditions=checks)
 
-    floor = measure_noise_floor(baselines, sigmas=sigmas)
-    effective_floor = (
-        noise_floor_override if noise_floor_override is not None else floor["noise_floor"]
-    )
-    if float(effective_floor) <= 0.0:
-        checks.append(Precondition(
-            "noise_floor_positive", False,
-            f"noise_floor {effective_floor!r} is not positive (measured "
-            f"{floor['noise_floor']!r} from identical baseline rows). A zero floor is the "
-            "absence of a bar -- pass --noise-floor with a bootstrap resample of the eval "
-            "set and --noise-floor-method naming how it was measured."))
-        return BootstrapReport(ready=False, preconditions=checks, model_meta=None)
-    if noise_floor_override is not None:
-        floor["noise_floor_measured_here"] = floor["noise_floor"]
-        floor["noise_floor"] = noise_floor_override
-        floor["override_reason"] = "caller supplied a floor measured over more runs than the ledger holds"
-        # HOW it was measured travels with the number. floor.register_model_with_baseline
-        # accepts a supplied floor that disagrees with its own recomputation only when the
-        # method is declared, and a bootstrap floor (resampling the eval set) answers a
-        # different question than the SD of repeats does -- a later reader who cannot tell
-        # which is stored cannot interpret a one-sigma margin.
-        floor["noise_floor_method"] = noise_floor_method or "caller_supplied"
+    # A DETERMINISTIC incumbent measures a rope of exactly 0.0 here, and that is reported
+    # rather than refused: R3a retired the stored threshold this precondition used to
+    # protect, so there is no number being registered that a zero could corrupt. A campaign
+    # that needs a positive bar for such a model measures one over its scoring corpus
+    # (policy_gate.compute_campaign_rope), which is where a deterministic arm's real
+    # uncertainty lives.
+    rope = measure_rope(baselines, sigmas=sigmas)
 
     # The baseline is the row CLOSEST TO THE MEAN, not the best one, and the distinction is the
     # difference between two paradigms that share this file's vocabulary.
@@ -332,7 +319,7 @@ def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, met
     # claims to describe, and the whole campaign is measured against a bar the baseline config
     # cannot itself reliably clear.
     #
-    # Two costs, both real. Statistical: an arm with a true effect of exactly one noise floor now
+    # Two costs, both real. Statistical: an arm with a true effect of exactly one rope now
     # has to clear roughly 1.6 floors, so genuine winners get rejected. Reportorial: "our baseline
     # is X" overstates, because X was chosen for being the luckiest of four.
     #
@@ -348,7 +335,6 @@ def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, met
     meta = build_model_meta(
         metric=metric, direction=direction, baseline_commit=best["commit"],
         win_condition=win_condition,
-        noise_floor=floor["noise_floor"],
         # The SLOWEST healthy baseline, not the median. The VOID gate means "this run was
         # abnormally slow, so do not trust its number", which only works if the line sits BELOW
         # the healthy range. A median puts half of all healthy runs beneath it with just
@@ -363,19 +349,17 @@ def bootstrap(*, ledger: Path, backlog: list[dict[str, Any]], model_id: str, met
         # below the slowest run the baseline configuration actually produced.
         baseline_throughput=round(min(float(b["throughput"]) for b in baselines), 4),
         diff_size_limit=diff_size_limit, notes=notes, sigmas=sigmas,
-        sigmas_reason=sigmas_reason, noise_floor_sigma=noise_floor_sigma,
+        sigmas_reason=sigmas_reason,
         baseline_runs=[b["commit"] for b in baselines],
         void_throughput_fraction=void_throughput_fraction)
-    if "noise_floor_method" in floor:
-        meta["noise_floor_method"] = floor["noise_floor_method"]
-    # WHAT VARIED when the floor was measured, and how trials are dispatched against it.
-    # Both optional and both travel unchanged to floor.guard_floor_provenance, which
-    # refuses the combination "paired trials + eval-sample floor" -- the one that cost the
-    # detection campaign 34 trials and every one of five real wins.
-    if noise_floor_varies is not None:
-        meta["noise_floor_varies"] = noise_floor_varies
+    # WHAT VARIED when the rope's replicates were taken, and how trials are dispatched
+    # against it. Both optional and both travel unchanged to floor.guard_rope_provenance,
+    # which refuses the combination "paired trials + eval-sample rope" -- the one that cost
+    # the detection campaign 34 trials and every one of five real wins.
+    if rope_varies is not None:
+        meta["rope_varies"] = rope_varies
     if trial_comparison is not None:
         meta["trial_comparison"] = trial_comparison
     return BootstrapReport(ready=True, preconditions=checks, model_meta=meta,
                            ideas=build_ideas(backlog, model_id=model_id, skip_ids=skip_ids),
-                           floor=floor)
+                           rope=rope)

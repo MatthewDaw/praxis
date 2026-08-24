@@ -2,7 +2,7 @@
 
 Builds on R1's schema (:mod:`knowledge.ml_registry.schema`) and R2's write path
 (:mod:`knowledge.ml_registry.write_path`). A model registration still requires the seven
-judging fields R1 fixed (metric, direction, win_condition, baseline, noise_floor,
+judging fields R1 fixed (metric, direction, win_condition, baseline,
 baseline_throughput, diff_size_limit) -- unchanged, still refused by name when any is
 missing. What R11 adds:
 
@@ -38,9 +38,8 @@ def _require(space: RegistrySpace, fact_id: str) -> Fact:
 MODEL_META: dict[str, object] = {
     "metric": "val_bpb",
     "direction": "minimize",
-    "win_condition": "beats baseline by noise_floor",
+    "win_condition": "beats baseline by the rope",
     "baseline": "commit-abc123",
-    "noise_floor": 0.01,
     "baseline_throughput": 1200,
     "diff_size_limit": 800,
 }
@@ -50,7 +49,6 @@ REQUIRED_FIELDS = (
     "direction",
     "win_condition",
     "baseline",
-    "noise_floor",
     "baseline_throughput",
     "diff_size_limit",
 )

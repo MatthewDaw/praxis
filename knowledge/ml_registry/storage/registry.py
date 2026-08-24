@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 import hashlib
 import json
 from pathlib import Path
@@ -26,7 +26,7 @@ PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS experiments(
  experiment_id TEXT PRIMARY KEY, spec_digest TEXT NOT NULL, stages TEXT NOT NULL, metric TEXT NOT NULL,
  direction TEXT NOT NULL CHECK(direction IN ('maximize','minimize')), win_condition TEXT NOT NULL,
- noise_floor REAL NOT NULL CHECK(noise_floor>=0), baseline_throughput REAL NOT NULL CHECK(baseline_throughput>=0));
+ rope REAL NOT NULL CHECK(rope>=0), baseline_throughput REAL NOT NULL CHECK(baseline_throughput>=0));
 CREATE TABLE IF NOT EXISTS runs(
  run_id TEXT PRIMARY KEY, experiment_id TEXT NOT NULL REFERENCES experiments(experiment_id), idea_id TEXT NOT NULL,
  stage TEXT NOT NULL, family TEXT NOT NULL, params TEXT NOT NULL, metrics TEXT NOT NULL, code_ref TEXT NOT NULL,
@@ -113,10 +113,11 @@ CREATE TRIGGER IF NOT EXISTS guard_lineage_insert BEFORE INSERT ON lineage
 CREATE TRIGGER IF NOT EXISTS guard_lineage_update BEFORE UPDATE ON lineage BEGIN SELECT RAISE(ABORT,'lineage is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_lineage_delete BEFORE DELETE ON lineage BEGIN SELECT RAISE(ABORT,'lineage is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_aliases_insert BEFORE INSERT ON aliases
- WHEN registry_authority() NOT IN ('alias_set','run_adopted','registry_finalized') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+ WHEN registry_authority() NOT IN ('alias_set','run_adopted','registry_finalized','promotion_rolled_back','unpromotion_rolled_back') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_aliases_update BEFORE UPDATE ON aliases
- WHEN registry_authority() NOT IN ('alias_set','run_adopted','adoption_invalidated','registry_finalized') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
-CREATE TRIGGER IF NOT EXISTS guard_aliases_delete BEFORE DELETE ON aliases BEGIN SELECT RAISE(ABORT,'aliases cannot be deleted'); END;
+ WHEN registry_authority() NOT IN ('alias_set','run_adopted','adoption_invalidated','registry_finalized','promotion_rolled_back','unpromotion_rolled_back') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+CREATE TRIGGER IF NOT EXISTS guard_aliases_delete BEFORE DELETE ON aliases
+ WHEN registry_authority()!='promotion_rolled_back' BEGIN SELECT RAISE(ABORT,'aliases cannot be deleted'); END;
 CREATE TRIGGER IF NOT EXISTS guard_events_insert BEFORE INSERT ON events
  WHEN registry_authority()='' BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_events_update BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT,'events are immutable'); END;
@@ -256,7 +257,7 @@ class Registry:
         if op == "experiment_created":
             db.execute("INSERT INTO experiments VALUES(?,?,?,?,?,?,?,?)", (p["experiment_id"], p["spec_digest"],
                        _json(p["stages"]), p["metric"], p["direction"], _json(p["win_condition"]),
-                       p["noise_floor"], p["baseline_throughput"]))
+                       p["rope"], p["baseline_throughput"]))
         elif op == "run_created":
             self._insert_run(db, p)
         elif op == "run_adjudicated":
@@ -297,9 +298,16 @@ class Registry:
             return
         elif op == "trial_refused":
             return
-        elif op == "campaign_spec_registered":
+        elif op in {
+            "campaign_spec_registered",
+            "campaign_registration_refused",
+            "campaign_outcome_recorded",
+            "campaign_landed",
+            "campaign_unpromoted",
+        }:
             # CampaignSpec is a versioned control-plane contract, not a ninth
-            # model-registry entity. Its canonical copy lives in the event log.
+            # model-registry entity. Runner refusals and outcomes live beside it
+            # in the event log, leaving the eight-table projection unchanged.
             return
         elif op == "adoption_invalidated":
             run = db.execute("SELECT * FROM runs WHERE run_id=?", (p["adoption_run_id"],)).fetchone()
@@ -341,7 +349,7 @@ class Registry:
             db.execute("INSERT INTO experiments VALUES(?,?,?,?,?,?,?,?)", (
                 experiment["experiment_id"], experiment["spec_digest"], _json(experiment["stages"]),
                 experiment["metric"], experiment["direction"], _json(experiment["win_condition"]),
-                experiment["noise_floor"], experiment["baseline_throughput"],
+                experiment["rope"], experiment["baseline_throughput"],
             ))
             for run in p["runs"]:
                 LegacyCodeRef.from_mapping(run["code_ref"])
@@ -351,7 +359,7 @@ class Registry:
             db.execute("INSERT INTO experiments VALUES(?,?,?,?,?,?,?,?)", (
                 experiment["experiment_id"], experiment["spec_digest"], _json(experiment["stages"]),
                 experiment["metric"], experiment["direction"], _json(experiment["win_condition"]),
-                experiment["noise_floor"], experiment["baseline_throughput"],
+                experiment["rope"], experiment["baseline_throughput"],
             ))
             for run in p["runs"]:
                 LegacyCodeRef.from_mapping(run["code_ref"])
@@ -402,9 +410,41 @@ class Registry:
             db.execute("INSERT INTO aliases VALUES(?,?,?,?,?,?) ON CONFLICT(model_id,alias) DO UPDATE SET "
                        "version=excluded.version,set_by=excluded.set_by,reason=excluded.reason,at=excluded.at",
                        (p["model_id"], "production", p["version"], "finalize", p["reason"], event.at))
+        elif op == "promotion_rolled_back":
+            current = {row["alias"]: row for row in db.execute(
+                "SELECT * FROM aliases WHERE model_id=? AND alias IN ('champion','production')",
+                (p["model_id"],),
+            )}
+            if any(row["version"] != p["failed_version"] for row in current.values()):
+                raise RegistryError("failed landing rollback found aliases moved by another writer")
+            self._restore_aliases(db, p["model_id"], p["aliases"])
+        elif op == "unpromotion_rolled_back":
+            self._restore_aliases(db, p["model_id"], p["aliases"])
         else:
             raise RegistryError(f"unknown event type {op!r}")
         return True
+
+    @staticmethod
+    def _restore_aliases(
+        db: sqlite3.Connection,
+        model_id: str,
+        aliases: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        """Restore one model's complete champion/production alias pair."""
+        unknown = set(aliases) - {"champion", "production"}
+        if unknown:
+            raise RegistryError(f"cannot restore unknown aliases {sorted(unknown)!r}")
+        for alias in ("champion", "production"):
+            row = aliases.get(alias)
+            if row is None:
+                db.execute("DELETE FROM aliases WHERE model_id=? AND alias=?", (model_id, alias))
+            else:
+                db.execute(
+                    "INSERT INTO aliases VALUES(?,?,?,?,?,?) ON CONFLICT(model_id,alias) DO UPDATE SET "
+                    "version=excluded.version,set_by=excluded.set_by,reason=excluded.reason,at=excluded.at",
+                    tuple(row[key] for key in
+                          ("model_id", "alias", "version", "set_by", "reason", "at")),
+                )
 
     @staticmethod
     def _insert_run(db: sqlite3.Connection, p: Mapping[str, Any]) -> None:
@@ -602,23 +642,80 @@ class Registry:
         self._write("historical_evidence_freeze_imported", payload)
         return True
 
-    def register_campaign_spec(self, spec: Mapping[str, Any]) -> bool:
+    def register_campaign_spec(
+        self,
+        spec: Mapping[str, Any],
+        *,
+        scoring_corpora: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
+        structural_validator: Callable[[Mapping[str, Any]], object] | None = None,
+    ) -> bool:
         """Persist a validated project-owned CampaignSpec in the canonical event log.
 
         Campaign specifications are control-plane inputs rather than registry entities,
         so they deliberately have no ninth projection table.  The latest event for a
-        campaign is the durable portfolio-manifest snapshot used by readiness.
+        campaign is the durable portfolio-manifest snapshot used by readiness.  The
+        injectable validator is the seam for the project-owned structural gate; until
+        that gate exists, fixtures can prove that its refusals propagate unchanged.
         """
-        from knowledge.ml_registry.contracts import CampaignSpec
+        from knowledge.ml_registry.contracts import CampaignSpec, ContractError
+        from knowledge.ml_registry.policy_gate import compute_campaign_rope
 
-        canonical = CampaignSpec.from_mapping(spec).to_mapping()
+        if structural_validator is not None:
+            structural_validator(spec)
+        campaign = CampaignSpec.from_mapping(spec)
+        if campaign.rope is not None:
+            raise ContractError(
+                "rope is registration-derived and may not be supplied in the campaign spec; "
+                "omit rope and pass scoring_corpora so the registry can recompute it"
+            )
+        if scoring_corpora is None:
+            raise ContractError(
+                "scoring_corpora is required to register a campaign; pass the spec's named "
+                "scoring corpus so its split-unit bootstrap rope can be computed"
+            )
+        canonical = campaign.to_mapping()
+        canonical["rope"] = compute_campaign_rope(campaign, scoring_corpora)
         campaign_id = canonical["campaign_id"]
         prior = [event for event in self.events.read()
-                 if event.event_type == "campaign_spec_registered"
-                 and event.payload.get("campaign_id") == campaign_id]
-        if prior and prior[-1].payload == canonical:
+                 if event.event_type in {
+                     "campaign_spec_registered", "campaign_registration_refused",
+                 } and event.payload.get("campaign_id") == campaign_id]
+        if (prior and prior[-1].event_type == "campaign_spec_registered"
+                and prior[-1].payload == canonical):
             return False
         self._write("campaign_spec_registered", canonical)
+        return True
+
+    def record_campaign_registration_refusal(self, campaign_id: str, reason: str) -> bool:
+        """Keep a rejected portfolio entry visible without making it a registered spec."""
+        if not campaign_id.strip() or not reason.strip():
+            raise RegistryError("campaign registration refusal requires an id and reason")
+        payload = {"campaign_id": campaign_id.strip(), "reason": reason.strip()}
+        prior = [event for event in self.events.read()
+                 if event.event_type in {
+                     "campaign_spec_registered", "campaign_registration_refused",
+                 } and event.payload.get("campaign_id") == payload["campaign_id"]]
+        if (prior and prior[-1].event_type == "campaign_registration_refused"
+                and prior[-1].payload == payload):
+            return False
+        self._write("campaign_registration_refused", payload)
+        return True
+
+    def record_campaign_outcome(self, outcome: Mapping[str, Any]) -> bool:
+        """Commit one terminal campaign outcome idempotently before another dispatch."""
+        from knowledge.ml_registry.contracts import CampaignOutcomeRecord
+
+        record = CampaignOutcomeRecord.from_mapping(outcome)
+        payload = record.to_mapping()
+        prior = [event for event in self.events.read()
+                 if event.event_type == "campaign_outcome_recorded"
+                 and event.payload.get("campaign_id") == record.campaign_id]
+        if prior:
+            if prior[-1].payload != payload:
+                raise RegistryError("campaign outcome retry drifted from its terminal verdict")
+            self.recover()
+            return False
+        self._write("campaign_outcome_recorded", payload)
         return True
 
     def register_model(self, **values: Any) -> None:
@@ -691,6 +788,75 @@ class Registry:
             return False
         self._write("registry_finalized", payload)
         return True
+
+    def _rollback_failed_landing(
+        self,
+        *,
+        model_id: str,
+        failed_version: int,
+        aliases: Mapping[str, Mapping[str, Any]],
+        capability: object,
+    ) -> None:
+        """Atomically restore both aliases after the external landing writer refuses."""
+        if capability is not _PRODUCTION_CAPABILITY:
+            raise RegistryError("failed landing rollback requires finalize authority")
+        self._write("promotion_rolled_back", {
+            "model_id": model_id,
+            "failed_version": failed_version,
+            "aliases": {name: dict(row) for name, row in aliases.items()},
+        })
+
+    def _record_landed_promotion(
+        self,
+        *,
+        model_id: str,
+        version: int,
+        landing_commit: str,
+        aliases: Mapping[str, Mapping[str, Any]],
+        capability: object,
+    ) -> None:
+        """Record the external half needed to undo one successful promotion."""
+        if capability is not _PRODUCTION_CAPABILITY:
+            raise RegistryError("landed promotion requires finalize authority")
+        if not landing_commit.strip():
+            raise RegistryError("landed promotion requires a commit")
+        self._write("campaign_landed", {
+            "model_id": model_id,
+            "version": version,
+            "landing_commit": landing_commit.strip(),
+            "aliases": {name: dict(row) for name, row in aliases.items()},
+        })
+
+    def _restore_unpromotion(
+        self,
+        *,
+        model_id: str,
+        aliases: Mapping[str, Mapping[str, Any]],
+        capability: object,
+    ) -> None:
+        """Compensate an alias rollback when the external landing inverse refuses."""
+        if capability is not _PRODUCTION_CAPABILITY:
+            raise RegistryError("unpromotion rollback requires finalize authority")
+        self._write("unpromotion_rolled_back", {
+            "model_id": model_id,
+            "aliases": {name: dict(row) for name, row in aliases.items()},
+        })
+
+    def _record_campaign_unpromoted(
+        self,
+        *,
+        model_id: str,
+        landing_commit: str,
+        revert_commit: str,
+        capability: object,
+    ) -> None:
+        if capability is not _PRODUCTION_CAPABILITY:
+            raise RegistryError("unpromotion record requires finalize authority")
+        self._write("campaign_unpromoted", {
+            "model_id": model_id,
+            "landing_commit": landing_commit,
+            "revert_commit": revert_commit,
+        })
 
     def record_compatibility(self, *, model_id: str, version: int, head_sha: str,
                              passed: bool, reason: str) -> None:

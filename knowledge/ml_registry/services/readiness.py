@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import json
 from typing import Any, Mapping, Sequence
 
-from knowledge.ml_registry.contracts import CampaignSpec
+from knowledge.ml_registry.contracts import ArtifactPin, CampaignSpec
 from knowledge.ml_registry.storage.blobs import BlobError
 from knowledge.ml_registry.storage.registry import Registry, RegistryError
 
@@ -21,6 +21,7 @@ class ArtifactReadiness:
     ready: bool
     artifact_id: str | None
     reason: str
+    pins: tuple["ArtifactPin", ...] = ()
 
 
 def _specs_from_events(registry: Registry) -> tuple[CampaignSpec, ...]:
@@ -132,6 +133,7 @@ def explain_readiness(
         return ArtifactReadiness(campaign_id, True, None, "no upstream artifacts required")
 
     artifacts = {row["artifact_id"]: row for row in registry.rows("artifacts")}
+    pins: list[ArtifactPin] = []
     for requirement in consumer.requires:
         producer, produced = _producer_contract(by_id, requirement, consumer_id=campaign_id)
         artifact_type = _artifact_type(requirement, owner=campaign_id)
@@ -177,5 +179,18 @@ def explain_readiness(
                 or compat.get("head_sha") != registry._git_head(code_ref["repo"])):
             return ArtifactReadiness(campaign_id, False, artifact_id,
                                      f"artifact {artifact_id} compatibility evidence is stale")
+        pins.append(ArtifactPin(
+            producer.campaign_id,
+            artifact_type,
+            str(version["model_id"]),
+            int(version["version"]),
+            artifact_id,
+        ))
 
-    return ArtifactReadiness(campaign_id, True, None, "all required production artifacts verified")
+    return ArtifactReadiness(
+        campaign_id,
+        True,
+        None,
+        "all required production artifacts verified",
+        tuple(pins),
+    )

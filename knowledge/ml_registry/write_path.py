@@ -19,6 +19,10 @@ rules that schema validation alone cannot express:
   are unaffected.
 * (R11) a model's ``metric`` is frozen for its life -- re-registering against an existing
   ``model_id`` that tries to change it is refused naming it (:func:`register_model`).
+* (R3a) a write carrying any field retired with the stored threshold is refused naming it
+  (:func:`~knowledge.ml_registry.floor.guard_retired_threshold_fields`). Meta is merged
+  verbatim, so a retired key nothing READS is still a retired key STORED, and a later
+  reader cannot tell that fossil from a live bar.
 * (R1) every patch against an ALREADY REGISTERED model goes through :func:`mutate_model`,
   which applies both of R1's mutation guards
   (:mod:`knowledge.ml_registry.guards`) on the data path itself rather than leaving the
@@ -163,7 +167,7 @@ def register_model(space: RegistrySpace, meta: dict[str, object], *, model_id: s
 
     Every campaign-budget field in :data:`MODEL_DEFAULTS` (``per_trial_seconds``,
     ``max_trials``, ``max_discovered_ideas``) that the caller omits adopts its default
-    before validation -- the seven ``REQUIRED_META_KEYS[MODEL]`` fields are unaffected and
+    before validation -- the ``REQUIRED_META_KEYS[MODEL]`` fields are unaffected and
     still refuse a registration missing any of them. The merged meta always runs through
     :func:`validate_fact`, defaulted or not.
 
@@ -173,53 +177,35 @@ def register_model(space: RegistrySpace, meta: dict[str, object], *, model_id: s
     merged = dict(meta)
     for field_name, default in MODEL_DEFAULTS.items():
         merged.setdefault(field_name, default)
-    # The R12 helper refuses a non-positive floor, but this is the path C1 and every
-    # test fixture actually use. A zero floor is the absence of a bar: delta > 0 adopts
-    # on a float wobble and the park band is empty. Guard it here so bypassing
-    # register_model_with_baseline cannot re-open that hole. Already-registered models
-    # are not re-validated until someone writes them again.
-    stored_floor = merged.get("noise_floor")
-    if stored_floor not in (None, ""):
-        try:
-            floor_f = float(stored_floor)
-        except (TypeError, ValueError):
-            floor_f = 0.0
-        if not (floor_f > 0.0):
-            raise RegistryValidationError(
-                f"noise_floor {stored_floor!r} is not positive. A zero floor is not a strict "
-                "bar: adjudication adopts on delta > noise_floor (a 1e-12 wobble) and rejects "
-                "on delta < -noise_floor, so the stagnant band is empty and nothing can park. "
-                "Measure a floor by resampling the eval set (not by repeating a deterministic "
-                "incumbent) and register that positive number.",
-                field="noise_floor",
-            )
-    # The floor's PROVENANCE against how trials are actually compared. Imported HERE
-    # rather than at module scope: knowledge.ml_registry.floor imports this module, so a
-    # top-level import back would be a cycle. It sits on register_model -- not only on
-    # floor.register_model_with_baseline -- for the same reason the zero-floor guard
-    # above does: this is the choke point every model write passes, including the plain
-    # `praxis register-model` CLI path that checks nothing else at all, and registration
-    # is the last moment before trials start burning against the wrong bar.
+    # The rope's PROVENANCE against how trials are actually compared, and the shape of a
+    # bar that MOVES with the metric level. Imported HERE rather than at module scope:
+    # knowledge.ml_registry.floor imports this module, so a top-level import back would be
+    # a cycle. They sit on register_model -- not only on
+    # floor.register_model_with_baseline -- because this is the choke point every model
+    # write passes, including the plain `praxis register-model` CLI path that checks
+    # nothing else at all, and registration is the last moment before trials start burning
+    # against the wrong bar. `sigmas` is checked here too, for the same reason: a value
+    # that cannot be multiplied produces no bar at all.
     from knowledge.ml_registry.floor import (
-        FLOOR_SCALING_BASIS_FIELD,
-        SIGMAS_BASIS_FIELD,
-        check_declared_sigmas,
-        guard_floor_provenance,
-        guard_floor_scaling,
+        ROPE_SCALING_BASIS_FIELD,
+        declared_sigmas,
+        guard_retired_threshold_fields,
+        guard_rope_provenance,
+        guard_rope_scaling,
     )
 
-    guard_floor_provenance(merged)
-    # A floor that MOVES with the metric level is checked on the same choke point and for
-    # the same reason: the shape, its ceiling and its armor are the only things praxis can
-    # establish about a bar that will be evaluated at levels no ledger row has reached, and
-    # the stamp says which of them were actually established.
-    merged[FLOOR_SCALING_BASIS_FIELD] = guard_floor_scaling(merged)
-    # `sigmas` used to be decoration: it appeared nowhere in this module or in verdict.py, so
-    # a record could declare 2 and carry a 1-sigma floor and nothing noticed (court-marking
-    # did exactly that). Checked here, on the same choke point and for the same reason as the
-    # provenance guard. The stamp records WHAT WAS CHECKED -- including "nothing could be",
-    # for an externally measured floor -- so silence never reads as verification.
-    merged[SIGMAS_BASIS_FIELD] = check_declared_sigmas(merged)
+    # Sits FIRST, and on this choke point rather than only on the baseline-backed path: a
+    # retired field is refused before any of the guards below can read a stale meaning out
+    # of it, and before the plain CLI registration -- which checks nothing else at all --
+    # can store one. register_model_with_baseline delegates here, so all three registration
+    # paths (plain, baseline-backed, re-registration) are closed by this one call.
+    guard_retired_threshold_fields(merged)
+    guard_rope_provenance(merged)
+    declared_sigmas(merged)
+    # The shape, its ceiling and its armor are the only things praxis can establish about a
+    # bar that will be evaluated at levels no ledger row has reached, and the stamp says
+    # which of them were actually established.
+    merged[ROPE_SCALING_BASIS_FIELD] = guard_rope_scaling(merged)
     validate_fact(MODEL, merged)
 
     if model_id is None:
@@ -251,7 +237,7 @@ def mutate_model(
 
     * :func:`~knowledge.ml_registry.guards.guard_model_mutation` -- refuses a
       ``source="worker"`` patch touching a protected judging field (``metric``,
-      ``direction``, ``win_condition``, ``noise_floor``, ``baseline_throughput``,
+      ``direction``, ``win_condition``, ``baseline_runs``, ``baseline_throughput``,
       ``diff_size_limit``). Other sources are not guarded here, matching R1's acceptance.
     * :func:`~knowledge.ml_registry.guards.guard_baseline_move` -- refuses ANY patch moving
       ``baseline`` whose ``source`` is not ``"adjudication"``.
@@ -269,15 +255,20 @@ def mutate_model(
         raise RegistryValidationError(
             f"model {model_id!r} was never registered", field="model_id"
         )
-    from knowledge.ml_registry.floor import guard_floor_provenance
+    from knowledge.ml_registry.floor import guard_retired_threshold_fields, guard_rope_provenance
 
     guard_model_mutation(patch, source=source)
     guard_baseline_move(patch, source=source)
+    # Against the PATCH, not the merged meta: a retired field cannot get past registration,
+    # so the only way one arrives is in the patch itself. Checking the merge instead would
+    # let a single legacy fact that already carries one wedge every unrelated patch against
+    # that model forever, which retires nothing and breaks a live campaign.
+    guard_retired_threshold_fields(patch)
     # Declaring the pairing AFTER registration must not be a way around the provenance
     # guard, so it is checked against the meta the patch would leave behind, not the
     # patch alone -- a patch naming only trial_comparison is exactly how a live campaign
     # would acquire the mismatch.
-    guard_floor_provenance({**model.meta, **patch})
+    guard_rope_provenance({**model.meta, **patch})
     model.meta.update(patch)
     return model
 

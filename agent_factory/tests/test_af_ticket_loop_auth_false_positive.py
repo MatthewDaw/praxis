@@ -27,8 +27,6 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-import pytest
-
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "af-ticket-loop.sh"
 
 
@@ -165,6 +163,5 @@ def test_re_probing_without_a_recorded_command_never_manufactures_a_verdict():
 
 def test_the_mid_run_probe_does_not_sleep_through_its_backoff():
     """It runs inside the 30s wait loop; the preflight's retry pause would stall the poll."""
-    src = _source()
     fn = _function("af_backend_is_live")
     assert "AF_PROBE_RETRY_S=0" in fn

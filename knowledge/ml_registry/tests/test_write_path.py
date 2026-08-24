@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from knowledge.ml_registry.citation import ResolvedCitation, ResolverUnreachable
+from knowledge.ml_registry.floor import RETIRED_THRESHOLD_FIELDS
 from knowledge.ml_registry.schema import IDEA, MODEL, TRIAL, RegistryValidationError
 from knowledge.ml_registry.write_path import (
     DEFAULT_MAX_DISCOVERED_IDEAS,
@@ -20,9 +21,9 @@ from knowledge.ml_registry.write_path import (
 MODEL_META = {
     "metric": "val_bpb",
     "direction": "minimize",
-    "win_condition": "beats baseline by noise_floor",
+    "win_condition": "beats baseline by the rope",
     "baseline": "commit-abc123",
-    "noise_floor": 0.01,
+    "baseline_runs": ["b1", "b2", "b3", "b4"],
     "baseline_throughput": 1200,
     "diff_size_limit": 800,
     "max_discovered_ideas": 1,
@@ -44,13 +45,57 @@ def _trial_meta(model_id: str, idea_id: str, *, commit: str = "deadbeef") -> dic
     return {"model_id": model_id, "idea_id": idea_id, "commit": commit, "status": "running"}
 
 
-def test_register_model_refuses_a_zero_noise_floor():
-    """register_model_with_baseline already refused this; the plain write path did not,
-    which is the path every test fixture and C1 actually use."""
+def test_register_model_stores_no_threshold_of_its_own() -> None:
+    """R3a retired the stored threshold. Both write paths used to police a caller-supplied
+    number -- and both refused a ZERO one, which is exactly what a deterministic incumbent
+    measures. There is nothing to police now: what a model records is the EVIDENCE, and the
+    rope is recomputed from those rows at every comparison."""
+    space = RegistrySpace()
+    model_id = register_model(space, dict(MODEL_META))
+
+    meta = space.get(model_id).meta
+    assert meta["baseline_runs"] == ["b1", "b2", "b3", "b4"]
+    assert not [key for key in meta if "floor" in key]
+
+
+@pytest.mark.parametrize("retired", sorted(RETIRED_THRESHOLD_FIELDS))
+def test_registration_refuses_every_field_retired_with_the_stored_threshold(retired: str) -> None:
+    """Not READING a retired field is not retiring it. Registration merges caller meta
+    verbatim, so an unread ``noise_floor: 999.0`` still lands on the model fact, and the
+    reader who finds it later cannot tell that fossil from a live bar -- which is the
+    two-thresholds-decide-one-verdict state R3a removed, rebuilt by the write path. Each
+    retired name is refused BY NAME, and nothing is written."""
     space = RegistrySpace()
     with pytest.raises(RegistryValidationError) as excinfo:
-        register_model(space, dict(MODEL_META, noise_floor=0.0))
+        register_model(space, {**MODEL_META, retired: 999.0})
+    assert excinfo.value.field == retired
+    assert space.list_facts(MODEL) == []
+
+
+def test_re_registering_a_live_model_cannot_smuggle_a_retired_field_onto_it() -> None:
+    """The update path runs through the same choke point as the first registration, so the
+    second write is no way in either -- and the model it would have landed on is untouched."""
+    space = RegistrySpace()
+    model_id = register_model(space, dict(MODEL_META))
+
+    with pytest.raises(RegistryValidationError) as excinfo:
+        register_model(space, {**MODEL_META, "noise_floor": 999.0}, model_id=model_id)
+
     assert excinfo.value.field == "noise_floor"
+    assert "noise_floor" not in space.get(model_id).meta
+
+
+def test_mutating_a_registered_model_cannot_add_a_retired_field_after_the_fact() -> None:
+    """Declaring the retired threshold AFTER registration must not be the way around the
+    refusal -- the same hole ``guard_rope_provenance`` sits on this path to close."""
+    space = RegistrySpace()
+    model_id = register_model(space, dict(MODEL_META))
+
+    with pytest.raises(RegistryValidationError) as excinfo:
+        mutate_model(space, model_id, {"noise_floor": 999.0}, source="adjudication")
+
+    assert excinfo.value.field == "noise_floor"
+    assert "noise_floor" not in space.get(model_id).meta
 
 
 def test_register_model_idea_trial_readback_returns_all_three_and_trial_derives_from_idea():
@@ -154,16 +199,16 @@ def test_a_negative_budget_that_is_not_the_sentinel_is_refused_naming_the_field(
     assert excinfo.value.field == "max_discovered_ideas"
 
 
-def test_worker_sourced_write_path_mutation_of_a_protected_field_is_refused():
+def test_worker_sourced_write_path_mutation_of_a_protected_field_is_refused() -> None:
     """The guards must sit on the DATA PATH, not only behind the CLI: a direct
     mutate_model call is refused just the same."""
     space = RegistrySpace()
     model_id = register_model(space, dict(MODEL_META))
 
     with pytest.raises(RegistryValidationError) as excinfo:
-        mutate_model(space, model_id, {"noise_floor": 99.0}, source="worker")
-    assert excinfo.value.field == "noise_floor"
-    assert space.get(model_id).meta["noise_floor"] == MODEL_META["noise_floor"]
+        mutate_model(space, model_id, {"baseline_runs": ["cherry-picked"]}, source="worker")
+    assert excinfo.value.field == "baseline_runs"
+    assert space.get(model_id).meta["baseline_runs"] == MODEL_META["baseline_runs"]
 
 
 def test_write_path_baseline_move_from_a_non_adjudication_source_is_refused():

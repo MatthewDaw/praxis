@@ -24,8 +24,6 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
-
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "af-ticket-loop.sh"
 
 # The driver's documented exit codes. Preflight must not collapse these: the remedy for each is a
