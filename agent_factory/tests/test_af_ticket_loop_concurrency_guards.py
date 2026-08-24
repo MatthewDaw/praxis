@@ -381,7 +381,7 @@ def test_unsamplable_signals_report_UNKNOWN_and_never_warn(tmp_path):
     assert "pane UNKNOWN" in p.stdout
 
 
-def test_the_wait_loop_actually_calls_the_heartbeat(tmp_path):
+def test_the_wait_loop_actually_calls_the_heartbeat(tmp_path: Path) -> None:
     """The block existing is not enough — it has to be wired into the round wait."""
     text = SCRIPT.read_text()
     # EXACT AND POSITIONAL, deliberately. This assertion was briefly rewritten as unordered
