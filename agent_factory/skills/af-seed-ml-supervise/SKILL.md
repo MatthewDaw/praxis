@@ -88,6 +88,14 @@ does not write one Run, finish every independent setup item and report BLOCKED o
   newest complete generator/retriever scripts (explicit paths first, then `<project>/registry/`,
   then newest `docs/plans/*-seed-campaign/`). Do not re-run research. Missing scripts are a hard stop.
   Setup and target provisioning still run.
+- `existing campaign`, `--existing`, `brownfield`, `expand the campaign`, or `the setup is already
+  done`: campaign code, harness, experiment, registered model, frozen metric and baseline ALREADY
+  EXIST. Phases A-D become VERIFICATION, not construction: confirm each artefact, create only what is
+  genuinely absent, and change nothing that already validates. Phase E still seeds. This is the
+  INVERSE of skip-research and the two are routinely confused: skip-research reuses existing IDEAS and
+  still builds setup; `existing campaign` reuses existing SETUP and still produces new ideas. They
+  compose - both together means verify setup and reuse ideas, which is a no-op rerun, so refuse it and
+  say why.
 - `--mode batch` approves every scripted candidate. `--mode interactive` presents candidates in
   closed-axis order and consumes one boolean per candidate. Default interactive; skip-research
   implies batch unless overridden.
@@ -124,7 +132,24 @@ and target-measured throughput policy.
 
 ## Phase C — build the project-owned path
 
-The project owns real loaders, shared preprocessing, trainer/evaluator with per-unit paired evidence,
+**Greenfield is the exception, not the rule. LOOK BEFORE YOU BUILD.** Most invocations land on a
+project that already has campaign code, and a second harness beside a working one violates the
+one-implementation-per-problem rule that every project of this shape enforces. Before writing any
+loader, trainer, evaluator or dispatch path, inventory what exists: campaign folders and their spec
+files, the structural validator that admits a spec, the typed campaign contracts, the evaluator that
+computes the frozen metric, and any existing paired-evidence harness.
+
+If a harness exists, Phase C is **wiring, not construction**. Map registry concepts onto what is
+there rather than recreating them: an arm is an entry in the existing spec's arm list, not a new
+abstraction; the loaders are the project's existing corpus template; the metric is the one the
+campaign already declares. Where the registry needs a row shape the project does not emit, write ONE
+thin adapter that projects the existing measurement into that row - never a second train/eval path.
+
+If the two cannot be reconciled without duplication, STOP and record the specific incompatibility as
+a blocker. Building parallel machinery because reconciling was harder is the failure this paragraph
+exists to prevent.
+
+When it is genuinely greenfield, the project owns real loaders, shared preprocessing, trainer/evaluator with per-unit paired evidence,
 artifact compatibility loading, and a lifecycle adapter consumed by campaign job. Tests generate
 fixtures; separate real-payload checks execute on the target. Long work emits flushed typed progress
 inside the heartbeat cadence. Measure CPU time with `resource.getrusage`, not wall time.
