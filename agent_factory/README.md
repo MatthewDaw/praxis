@@ -247,7 +247,7 @@ invocable skills listed here:
 | **af-intake-plan** | The single write-path: admit + harden requirements in Praxis **and** run all validation — the cold-eyes audit (adversarial challenge, underspecification routing, technical + **test-strategy** sweep, near-dup reconciliation), the planning checks, and the plan-finalization panel. Includes an **amend mode** for adding validation/planning checks to an existing plan. |
 | **af-build** | The build loop — claim a ticket, resolve+pin its checks, build, verify against **external** signals only, deploy — and always run validation + the work-review panel. The "go work unfinished" entry point. |
 | **af-rapid-queue** | Rapid drive-by intake — capture a mid-flight "also fix X" as an ordinary incomplete ticket and resume the interrupted task, without investigating or building it. Spools locally first (`hooks/rapid_queue.py`) so a request cannot be lost before its Praxis write lands; the drain is af-build's, unchanged. |
-| **af-seed-ml-supervise** | Stand up ONE `ml_registry` campaign until `bootstrap-campaign` is legal (inventory collected data, freeze the metric, build loaders/eval/dispatch, write four incumbent baselines), then seed the starting idea set via the nine-axis closed set and hand off to `af-ml-supervise`. This is the written `af-ml-ideate`; idea writes remain `knowledge.ml_registry.ideate` via `seed-campaign`. |
+| **af-seed-ml-supervise** | Make ONE canonical `ml_registry` campaign runnable on its actual execution host: inventory adapter-backed data, freeze the judge, build the project lifecycle adapter, register and reproduce the baseline, seed the nine-axis IDEA set, deploy the durable revision, and prove a campaign-job smoke plus portfolio handoff. |
 
 Alongside the skills the plugin ships these **commands** (`commands/`), which Claude Code exposes as
 slash commands in every repo the plugin is installed in:
@@ -255,7 +255,7 @@ slash commands in every repo the plugin is installed in:
 | Command | Role |
 |---|---|
 | **`/af-super-run`** | Drive ANY project end-to-end through the whole pipeline autonomously — af-plan → af-intake-plan → af-build — resuming at whatever stage the project has already reached. Reviews stay on; mechanically-fixable gate blocks are self-resolved, human-mandated surfaces (contradictions, `verify="manual"`, blocked tickets, the bless gate) are **parked, never overridden**, so the honest terminal state is *"done except N parked"*. |
-| **`/af-seed-ml-supervise`** | Stand up ONE campaign (data, harness, baselines, bootstrap) and seed its starting idea set, then hand off to `/af-ml-supervise`. The written `af-ml-ideate`; it does not run the campaign. |
+| **`/af-seed-ml-supervise`** | Stand up ONE campaign through target-host readiness and seed its starting idea set, then hand off to `/af-ml-supervise`. It proves the target deployment and operator path but does not consume candidate ideas. |
 
 Aliases that hardcode ONE repo's Praxis project name stay in that repo's own `.claude/commands/`
 (praxis keeps `/af-build-remote-jobs` there) — they are project identities, not reusable capability,

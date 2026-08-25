@@ -1,11 +1,4 @@
-"""The af-seed-ml-supervise skill document names the nine-axis closed set,
-seed-campaign, origin=seeded, the closed-set enforcement, AND the setup
-contract that makes bootstrap-campaign legal.
-
-Cheap structure check: a rewrite that drops an axis, forgets the CLI verb,
-stops saying the set is closed, or goes back to 'tell the human to bootstrap
-and stop' cannot land as prose that still claims to stand a campaign up.
-"""
+"""Regression guards for the target-ready af-seed-ml-supervise contract."""
 
 from __future__ import annotations
 
@@ -56,34 +49,55 @@ def test_skill_names_the_closed_set() -> None:
     )
 
 
-def test_skill_owns_setup_through_bootstrap_not_a_handoff_out() -> None:
-    """A rewrite that tells the human to bootstrap-campaign and stop is the
-    previous contract. This skill now stands the campaign up itself."""
+def test_skill_owns_setup_through_target_host_proof() -> None:
     text = SKILL_PATH.read_text()
     lowered = text.casefold()
-    assert "bootstrap-campaign" in text, (
-        "SKILL.md must name bootstrap-campaign as the setup gate"
-    )
-    assert "version-2" in lowered or "version 2" in lowered, (
-        "SKILL.md must name the version-2 ledger the dispatch command writes"
-    )
-    assert "REQUIRED_BASELINE_RUN_COUNT" in text or "≥4" in text or ">=4" in text, (
-        "SKILL.md must require the four incumbent baseline rows"
-    )
-    assert "dispatch" in lowered, (
-        "SKILL.md must require a project-owned dispatch command"
-    )
-    assert "{sha}:{arm_tag}" in text, (
-        "SKILL.md must name the unique join key, not a bare SHA"
-    )
-    assert "do not invent a model" not in lowered or "finish phase e first" in lowered, (
-        "SKILL.md must not bounce an unregistered model back to the human as the "
-        "terminal action — setup is this skill's job"
-    )
-    # The old 'tell the human to run bootstrap-campaign first / stop' exit.
-    assert "tell the human to run `bootstrap-campaign` first" not in lowered, (
-        "SKILL.md must not stop at 'go bootstrap yourself' — it runs setup"
-    )
+    for required in (
+        "execution target",
+        "durable revision",
+        "real adapter data",
+        "hardware and disk",
+        "canonical baseline",
+        "target measurement",
+        "campaign registration",
+        "one-arm smoke",
+        "portfolio proof and handoff",
+    ):
+        assert required in lowered, f"SKILL.md must require {required!r}"
+    assert "git rev-parse HEAD" in text
+    assert "register_campaign_for_run" in text
+    assert "knowledge.ml_registry.runtime.campaign_job" in text
+    assert "Laptop success is not READY" in text
+
+
+def test_skill_uses_only_the_canonical_registry_lifecycle() -> None:
+    text = SKILL_PATH.read_text()
+    for command in (
+        "create-experiment",
+        "create-run",
+        "complete-run",
+        "create-artifact",
+        "register-model",
+        "adjudicate-run",
+        "finalize",
+    ):
+        assert command in text, f"SKILL.md must name canonical command {command!r}"
+    for retired in (
+        "bootstrap-campaign",
+        "register-model-with-baseline",
+        "results.tsv",
+        "version-2 ledger",
+        "{sha}:{arm_tag}",
+    ):
+        assert retired not in text, f"SKILL.md must not revive retired contract {retired!r}"
+
+
+def test_skill_handoff_uses_current_portfolio_entrypoints() -> None:
+    text = SKILL_PATH.read_text()
+    assert "agent_factory/scripts/af-ml-portfolio-launch.sh --config <operator.json> run" in text
+    portfolio = "python -m knowledge.ml_registry.cli.portfolio --config <operator.json>"
+    for action in ("status", "stop --drain", "stop --force", "resume"):
+        assert f"{portfolio} {action}" in text
 
 
 def test_skill_has_a_skip_research_rerun_that_does_not_resweep() -> None:
@@ -94,7 +108,7 @@ def test_skill_has_a_skip_research_rerun_that_does_not_resweep() -> None:
     assert "skip research" in lowered or "--skip-research" in lowered, (
         "SKILL.md must name a skip-research rerun"
     )
-    assert "re-dispatch the nine-axis" in lowered or "skip-research short-circuit" in lowered, (
+    assert "do not re-run research" in lowered or "re-dispatch the nine-axis" in lowered, (
         "SKILL.md must skip the generative/retrieval fleet when skip-research is set"
     )
     assert "missing scripts are a hard stop" in lowered or "hard stop" in lowered, (
