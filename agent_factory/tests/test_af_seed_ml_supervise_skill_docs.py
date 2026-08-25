@@ -106,6 +106,8 @@ def test_skill_refuses_prose_only_false_ready_campaigns() -> None:
     assert "Prose hypotheses plus an unrelated finite arm list" in text
     assert "baseline-only seed-smoke adapter is not" in text
     assert "coding-agent one-arm worker" in text
+    assert "baseline-only smoke command is not the long-run start command" in text
+    assert "detached `codex exec`" in text
 
 
 def test_skill_has_a_skip_research_rerun_that_does_not_resweep() -> None:

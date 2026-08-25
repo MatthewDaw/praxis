@@ -277,6 +277,13 @@ python -m knowledge.ml_registry.cli.portfolio --config <operator.json> resume
 Also give the SSH/service/tmux wrapper when applicable. Point the next operator to
 `/af-ml-supervise`; do not start it here.
 
+When the executable IDEA frontier uses a coding-agent worker, the portfolio one-shot remains setup
+evidence; its baseline-only smoke command is not the long-run start command. Generate a target-native
+supervisor prompt/config and hand off a detached `codex exec` (or the target's equivalent coding
+agent) that explicitly reads `/af-ml-supervise`, the canonical binding, and the frozen project
+contract. Preflight the executable and authentication, and prove one candidate dispatch before
+marking that handoff READY.
+
 ## Never
 
 - Never declare READY on a different host from execution.
