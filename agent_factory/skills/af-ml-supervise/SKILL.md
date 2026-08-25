@@ -47,7 +47,8 @@ surfaces.
 Before dispatching, verify all of these from canonical state and the project-owned CampaignSpec:
 
 1. The experiment exists and freezes its ordered stages, scalar metric, direction, numeric win
-   condition, noise floor, baseline throughput, and spec digest.
+   condition, paired adjudication protocol (shared seeds, split unit, bootstrap resamples and
+   confidence level), baseline throughput, and spec digest.
 2. The registered model exists and names its family, scope, axis, production protocol, and any
    declared historical extension.
 3. `champion` resolves to an active model version whose content-addressed artifact verifies and
@@ -123,20 +124,40 @@ Adjudication compares the candidate to the model version currently named by `cha
 invalid measurement                                      -> voided
 incomparable throughput units                            -> refuse adjudication
 throughput below the frozen experiment floor             -> voided
-directional improvement greater than noise floor         -> adopted
-absolute delta no greater than noise floor               -> parked
-directional loss greater than noise floor                -> rejected
+paired 95% CI of the delta lies entirely above zero      -> adopted
+paired 95% CI of the delta crosses zero                  -> parked
+paired 95% CI of the delta lies entirely below zero      -> rejected
 ```
 
-The noise-floor comparisons are strict. A delta exactly on the floor carries no directional
-evidence. Keep metric, direction, units, split, and fairness context frozen for the comparison.
-Invalidity is evaluated before throughput, so an invalid and slow Run remains invalid evidence
-rather than being misreported as a speed loss. The throughput floor is frozen on the Experiment;
-an operator cannot disable or rewrite it while adjudicating a candidate.
+**Adjudicate on a PAIRED interval, never on the range or spread of independent baseline repeats.**
+Evaluate candidate and champion over the SAME inputs with the SAME seeds, compare the per-unit
+DIFFERENCE, and take a paired bootstrap confidence interval over the split unit. Most of the
+variance between independent repeats is common-mode -- some draws are simply harder -- and pairing
+removes it, which is what makes a real improvement detectable at all.
 
-Estimate the noise floor from enough baseline repeats for the uncertainty to be credible, and use
-repeat means when seed variance is material. A four-repeat estimate is only a minimum, not a claim
-of precision. Freeze the resulting value on the Experiment; never re-estimate it per candidate.
+**Impose no effect-size floor.** A candidate whose interval clears zero is adopted however small
+the point estimate. Effect size governs whether to BUILD something, not whether to USE something
+that already exists and measures positive; when adoption is a parameter change with no new code,
+weights, or inference cost, refusing a real gain buys nothing. Small gains also compound, and a
+floor applied per candidate means none of them ever accumulate. Report the point estimate and the
+interval for EVERY candidate regardless of verdict, and where several are adopted, report their
+COMBINED effect too -- each was measured against the champion alone and they may not simply add.
+
+Do NOT use max-minus-min of N repeats as a threshold. Range is not an uncertainty measure: it is
+inflated relative to the spread and it GROWS as repeats are added, so the test gets stricter as
+evidence accumulates, which is backwards. Measured on a real campaign, a five-repeat range was
+2.40x the standard deviation and rejected a genuine +1.05% improvement as noise. If a legacy
+noise-floor value is recorded on the Experiment, report the interval verdict beside the old
+floor-based verdict so a change of method stays auditable rather than reading as a moved goalpost.
+
+Keep metric, direction, units, split, and fairness context frozen for the comparison. Invalidity is
+evaluated before throughput, so an invalid and slow Run remains invalid evidence rather than being
+misreported as a speed loss. The throughput floor is frozen on the Experiment; an operator cannot
+disable or rewrite it while adjudicating a candidate.
+
+Record the regime each interval was measured under -- degradation settings, seeds, corpus mix --
+as bookkeeping, not as a bar. A small effect is more fragile to a regime change than a large one,
+so when the regime changes the small adopted gains are the ones to re-check first.
 
 Run status and scientific verdict are orthogonal and use only these pairs:
 
@@ -336,5 +357,7 @@ Report the campaign, current experiment and registered model, initial and final 
 every Run with metric/status/verdict/code SHA, all artifact IDs, stage coverage, dependency and
 unreachable dispositions, ratchet actions, compatibility result, and final `production` alias.
 
-Include every rejection, park, void, failure, and supersession with its reason. A campaign with no
-adoptions can be a legitimate result; never lower the frozen noise floor to manufacture a winner.
+Include every rejection, park, void, failure, and supersession with its reason, and the point
+estimate and paired interval for every candidate including the rejected ones. A campaign with no
+adoptions can be a legitimate result; never widen an interval, drop the pairing, re-seed, or
+re-estimate the frozen protocol to manufacture a winner.
