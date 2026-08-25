@@ -100,6 +100,14 @@ def test_skill_handoff_uses_current_portfolio_entrypoints() -> None:
         assert f"{portfolio} {action}" in text
 
 
+def test_skill_refuses_prose_only_false_ready_campaigns() -> None:
+    text = SKILL_PATH.read_text()
+    assert "Executable IDEA frontier" in text
+    assert "Prose hypotheses plus an unrelated finite arm list" in text
+    assert "baseline-only seed-smoke adapter is not" in text
+    assert "coding-agent one-arm worker" in text
+
+
 def test_skill_has_a_skip_research_rerun_that_does_not_resweep() -> None:
     """The owner's rerun is: skip research, stand the campaign up, hand off.
     A rewrite that always dispatches the nine-axis fleet cannot satisfy that."""

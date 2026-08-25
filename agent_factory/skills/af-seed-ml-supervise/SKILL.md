@@ -77,6 +77,11 @@ Do not say READY until every condition is true on the host that will run supervi
     configs, ownership, restart position, and typed outcome agree. The handoff contains exact target
     start, observe, tail, status, `stop --drain`, `stop --force`, and `resume` commands plus all ids,
     paths, stages, and parked prerequisites.
+14. **Executable IDEA frontier.** Every READY IDEA is either bound to a truthful executable
+    recipe/arm or the target has a preflighted coding-agent one-arm worker that claims the IDEA,
+    authors that hypothesis in an isolated worktree, runs the project trainer/evaluator, and exits
+    after canonical adjudication. Prose hypotheses plus an unrelated finite arm list are not an
+    executable campaign; never map them by position, modulo, or keyword resemblance.
 
 Laptop success is not READY for a remote campaign. If the target is unreachable, data is still
 uploading, the revision is not durable, hardware is wrong, an incumbent pin drifts, or the smoke
@@ -153,6 +158,13 @@ When it is genuinely greenfield, the project owns real loaders, shared preproces
 artifact compatibility loading, and a lifecycle adapter consumed by campaign job. Tests generate
 fixtures; separate real-payload checks execute on the target. Long work emits flushed typed progress
 inside the heartbeat cadence. Measure CPU time with `resource.getrusage`, not wall time.
+
+Before calling that lifecycle runnable, join the seeded IDEA inventory to execution. A parameter
+idea may name an already-implemented arm/config. A prose architecture, data, or training hypothesis
+normally needs a coding-agent worker to author one commit-backed arm at dispatch time. Freeze that
+worker's one-arm contract and prove its command imports, claims exactly one eligible IDEA, creates
+one Run, executes the same train/eval adapters, leaves verdict writing to Praxis, and exits. If
+neither path exists, the campaign is setup-incomplete even when its incumbent smoke passes.
 
 Campaign code does not open its registry or decide its verdict. The adapter creates/completes one
 commit-backed Run and its artifacts; Praxis adjudication is the only verdict writer. Every Run has a
@@ -232,8 +244,10 @@ for the exact model fact; report their ids.
    `operator.json`, portfolio/campaign/capacity manifests, and campaign-job config. Never copy
    laptop absolute paths into them.
 5. Run target preflight, real incumbent reproduction, compatibility load, campaign-job one-arm
-   smoke, and portfolio one-shot. Verify one new Run, heartbeat, artifact checksum, process cleanup,
-   typed outcome, and idempotent restart position.
+   smoke, one candidate-IDEA dispatch through the exact long-run worker, and portfolio one-shot.
+   Verify one new Run per proof, heartbeat, artifact checksum, process cleanup, typed outcome,
+   external adjudication, and idempotent restart position. A baseline-only seed-smoke adapter is not
+   the long supervisor and cannot satisfy this item.
 6. Prepare the detached start command and ownership-aware observe/tail/stop commands. Do not start
    unattended supervision from this skill.
 
