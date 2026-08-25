@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 from knowledge.ml_registry.domain import CampaignView
+from knowledge.ml_registry.contracts import CampaignOutcome, CampaignOutcomeRecord
 from knowledge.ml_registry.services.registry_finalize import RegistryFinalizer
 
 
@@ -25,7 +26,10 @@ class RegistryCompletionVerifier:
         self.verifications: dict[str, int] = {}
 
     def __call__(self, campaign_id: str, polled) -> dict[str, object]:
-        if polled.artifact is None or polled.artifact.get("outcome") != "COMPLETE":
+        if polled.artifact is None:
+            raise ValueError("completion outcome is missing")
+        outcome = CampaignOutcomeRecord.from_mapping(polled.artifact)
+        if outcome.outcome not in {CampaignOutcome.COMPLETE, CampaignOutcome.PROMOTED}:
             raise ValueError("completion outcome is missing")
         binding = self.campaigns[campaign_id]
         finalized = binding.finalizer.verify(binding.view, version=binding.version)

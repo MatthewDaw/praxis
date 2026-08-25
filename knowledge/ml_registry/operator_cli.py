@@ -13,6 +13,7 @@ from typing import Any, Mapping
 
 from knowledge.ml_registry import Registry
 from knowledge.ml_registry.contracts import CampaignLease
+from knowledge.ml_registry.contracts import CampaignOutcome, CampaignOutcomeRecord
 from knowledge.ml_registry.controller import ExecutorProcessBackend, PortfolioController
 from knowledge.ml_registry.domain import CampaignBinding
 from knowledge.ml_registry.portfolio import Portfolio
@@ -32,13 +33,27 @@ class _LazyCompletionVerifier:
     """Build registry views only after a job has had a chance to bootstrap its model."""
 
     def __init__(self, registry_root: Path, space_path: Path,
-                 bindings: Mapping[str, Mapping[str, object]]) -> None:
+                 bindings: Mapping[str, Mapping[str, object]],
+                 terminal_outcomes: Mapping[str, frozenset[CampaignOutcome]]) -> None:
         self.registry_root = registry_root
         self.space_path = space_path
         self.bindings = dict(bindings)
+        self.terminal_outcomes = dict(terminal_outcomes)
 
-    def __call__(self, campaign_id: str, polled) -> dict[str, object]:
-        if polled.artifact is None or polled.artifact.get("outcome") != "COMPLETE":
+    def __call__(self, campaign_id: str, polled) -> dict[str, object] | None:
+        if polled.artifact is None:
+            raise ValueError("completion outcome is missing")
+        outcome = CampaignOutcomeRecord.from_mapping(polled.artifact)
+        allowed = self.terminal_outcomes.get(campaign_id)
+        if allowed is not None:
+            if outcome.outcome not in allowed:
+                expected = ", ".join(sorted(item.value for item in allowed))
+                raise ValueError(
+                    f"campaign {campaign_id!r} returned {outcome.outcome.value}; "
+                    f"expected one of {expected}"
+                )
+            return None
+        if outcome.outcome not in {CampaignOutcome.COMPLETE, CampaignOutcome.PROMOTED}:
             raise ValueError("completion outcome is missing")
         try:
             item = self.bindings[campaign_id]
@@ -137,10 +152,20 @@ class OperatorRuntime:
         if not isinstance(raw, Mapping):
             raise OperatorConfigError("finalization must be an object")
         campaign_ids = {str(item["id"]) for item in self.campaigns}
-        missing = sorted(campaign_ids - set(raw))
+        terminal_raw = self.config.get("terminal_outcomes", {})
+        if not isinstance(terminal_raw, Mapping):
+            raise OperatorConfigError("terminal_outcomes must be an object")
+        overlap = sorted(set(raw) & set(terminal_raw))
+        if overlap:
+            raise OperatorConfigError(
+                "campaigns cannot declare both finalization and terminal outcomes: "
+                + ", ".join(overlap)
+            )
+        missing = sorted(campaign_ids - set(raw) - set(terminal_raw))
         if missing:
             raise OperatorConfigError(
-                "every campaign requires a finalization binding: " + ", ".join(missing)
+                "every campaign requires finalization or explicit terminal outcomes: "
+                + ", ".join(missing)
             )
         normalized: dict[str, Mapping[str, object]] = {}
         for campaign_id, item in raw.items():
@@ -154,7 +179,32 @@ class OperatorRuntime:
                     f"finalization.{campaign_id} is missing: " + ", ".join(absent)
                 )
             normalized[str(campaign_id)] = item
-        return _LazyCompletionVerifier(self.registry_root, self.space_path, normalized)
+        terminal: dict[str, frozenset[CampaignOutcome]] = {}
+        supported = {
+            CampaignOutcome.MEASURED,
+            CampaignOutcome.REFUTED,
+            CampaignOutcome.ABANDONED,
+        }
+        for campaign_id, values in terminal_raw.items():
+            if not isinstance(values, list) or not values:
+                raise OperatorConfigError(
+                    f"terminal_outcomes.{campaign_id} must be a non-empty list"
+                )
+            try:
+                outcomes = frozenset(CampaignOutcome(str(value)) for value in values)
+            except ValueError as exc:
+                raise OperatorConfigError(
+                    f"terminal_outcomes.{campaign_id} contains an unknown outcome"
+                ) from exc
+            if not outcomes <= supported:
+                invalid = ", ".join(sorted(item.value for item in outcomes - supported))
+                raise OperatorConfigError(
+                    f"terminal_outcomes.{campaign_id} cannot bypass finalization with: {invalid}"
+                )
+            terminal[str(campaign_id)] = outcomes
+        return _LazyCompletionVerifier(
+            self.registry_root, self.space_path, normalized, terminal,
+        )
 
     def _lease(self, job, token: str) -> CampaignLease:
         raw = self._raw_campaigns[job.campaign_id]

@@ -6,6 +6,9 @@ import sys
 
 from knowledge.ml_registry import Registry
 from knowledge.ml_registry.cli.portfolio import main
+from knowledge.ml_registry.contracts import CampaignOutcome, CampaignOutcomeRecord
+from knowledge.ml_registry.controller import PollResult
+from knowledge.ml_registry.operator_cli import OperatorRuntime
 
 
 def _write(path: Path, value: object) -> Path:
@@ -96,4 +99,35 @@ def test_operator_refuses_campaign_without_finalization_binding(tmp_path: Path, 
     payload["finalization"] = {}
     config.write_text(json.dumps(payload))
     assert main(["--config", str(config), "status"]) == 2
-    assert "every campaign requires a finalization binding" in capsys.readouterr().err
+    assert "every campaign requires finalization or explicit terminal outcomes" in capsys.readouterr().err
+
+
+def test_operator_accepts_an_explicit_non_promoting_terminal_outcome(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    payload = json.loads(config.read_text())
+    payload["finalization"] = {}
+    payload["terminal_outcomes"] = {"R1": ["MEASURED"]}
+    config.write_text(json.dumps(payload))
+    verifier = OperatorRuntime(config).completion
+    outcome = CampaignOutcomeRecord(
+        CampaignOutcomeRecord.VERSION,
+        "R1",
+        CampaignOutcome.MEASURED,
+        "measurement campaign exhausted its declared search",
+        1,
+    )
+
+    assert verifier("R1", PollResult("completed", artifact=outcome.to_mapping())) is None
+
+
+def test_operator_does_not_allow_terminal_policy_to_bypass_production_finalization(
+    tmp_path: Path, capsys,
+) -> None:
+    config = _config(tmp_path)
+    payload = json.loads(config.read_text())
+    payload["finalization"] = {}
+    payload["terminal_outcomes"] = {"R1": ["PROMOTED"]}
+    config.write_text(json.dumps(payload))
+
+    assert main(["--config", str(config), "status"]) == 2
+    assert "cannot bypass finalization" in capsys.readouterr().err
