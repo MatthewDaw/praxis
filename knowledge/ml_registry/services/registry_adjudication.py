@@ -18,6 +18,7 @@ def adjudicate_against_champion(
     promotion: Mapping[str, Any] | None = None,
     counterfactual_run_id: str | None = None,
     intervention_digest: str | None = None,
+    paired_evidence: Mapping[str, object] | None = None,
 ) -> str:
     """Derive a verdict from canonical registry state and, for a win, promote its version.
 
@@ -30,11 +31,23 @@ def adjudicate_against_champion(
     if run["status"] == "succeeded" and run["verdict"] == "adopted":
         if promotion is None:
             raise RegistryError("an adopted run retry requires its full promotion inputs")
+        prior = next(
+            event for event in reversed(registry.list_events())
+            if event.event_type == "run_adopted" and event.payload.get("run_id") == run_id
+        )
+        stored_evidence = prior.payload.get("adjudication_evidence")
+        if paired_evidence is not None:
+            from .paired_adjudication import evidence_digest
+
+            if not isinstance(stored_evidence, Mapping) or (
+                evidence_digest(paired_evidence) != stored_evidence.get("input_sha256")
+            ):
+                raise RegistryError("atomic adoption retry drifted from its paired evidence")
         values = dict(promotion)
         values["run_id"] = run_id
         values["model_id"] = model_id
         adopt_run_and_promote(registry, run_id=run_id, model_id=model_id, reason=reason,
-                              model_version=values)
+                              model_version=values, adjudication_evidence=stored_evidence)
         return "adopted"
     if run["status"] != "complete" or run["verdict"] is not None:
         raise RegistryError("adjudication requires one complete, unadjudicated run")
@@ -53,6 +66,7 @@ def adjudicate_against_champion(
     candidate = RunMetrics.from_mapping(json.loads(run["metrics"]))
     baseline = RunMetrics.from_mapping(json.loads(champion_run["metrics"]))
 
+    adjudication_evidence: Mapping[str, object] | None = None
     if candidate.validity is RunValidity.INVALID:
         verdict, status = "voided", "voided"
     elif candidate.throughput_unit is not baseline.throughput_unit:
@@ -60,15 +74,55 @@ def adjudicate_against_champion(
     elif candidate.throughput < float(experiment["baseline_throughput"]):
         verdict, status = "voided", "voided"
     else:
-        delta = candidate.metric - baseline.metric
-        improvement = delta if experiment["direction"] == "maximize" else -delta
-        rope = float(experiment["rope"])
-        if improvement > rope:
-            verdict, status = "adopted", "succeeded"
-        elif abs(delta) <= rope:
-            verdict, status = "parked", "succeeded"
+        from .paired_adjudication import (
+            LEGACY_SCALAR_ROPE,
+            PAIRED_BOOTSTRAP,
+            comparison_policy,
+            paired_interval,
+        )
+
+        policy = comparison_policy(registry, str(experiment["experiment_id"]))
+        method = LEGACY_SCALAR_ROPE if policy is None else policy.get("method")
+        if method == PAIRED_BOOTSTRAP:
+            if paired_evidence is None:
+                raise RegistryError(
+                    "paired CampaignSpec adjudication requires explicit same-unit paired evidence"
+                )
+            interval = paired_interval(
+                policy,
+                paired_evidence,
+                run_id=run_id,
+                champion_run_id=str(champion_run["run_id"]),
+                direction=str(experiment["direction"]),
+                candidate_metric=candidate.metric,
+                champion_metric=baseline.metric,
+            )
+            adjudication_evidence = interval.evidence
+            if interval.lower > 0.0:
+                verdict, status = "adopted", "succeeded"
+            elif interval.upper < 0.0:
+                verdict, status = "rejected", "succeeded"
+            else:
+                verdict, status = "parked", "succeeded"
+        elif method == LEGACY_SCALAR_ROPE:
+            if paired_evidence is not None:
+                raise RegistryError(
+                    "paired evidence was supplied to a legacy_scalar_rope experiment"
+                )
+            delta = candidate.metric - baseline.metric
+            improvement = delta if experiment["direction"] == "maximize" else -delta
+            rope = float(experiment["rope"])
+            if improvement > rope:
+                verdict, status = "adopted", "succeeded"
+            elif abs(delta) <= rope:
+                verdict, status = "parked", "succeeded"
+            else:
+                verdict, status = "rejected", "succeeded"
         else:
-            verdict, status = "rejected", "succeeded"
+            raise RegistryError(
+                "metric.adjudication.method must explicitly be paired_bootstrap_percentile "
+                "or legacy_scalar_rope"
+            )
 
     if verdict == "adopted" and promotion is None:
         raise RegistryError("an adopted run requires artifact and compatibility inputs for champion promotion")
@@ -81,9 +135,12 @@ def adjudicate_against_champion(
         values["run_id"] = run_id
         values["model_id"] = model_id
         adopt_run_and_promote(registry, run_id=run_id, model_id=model_id, reason=reason,
-                              model_version=values)
+                              model_version=values, adjudication_evidence=adjudication_evidence)
     else:
-        adjudicate_run(registry, run_id=run_id, verdict=verdict, status=status, reason=reason)
+        adjudicate_run(
+            registry, run_id=run_id, verdict=verdict, status=status, reason=reason,
+            adjudication_evidence=adjudication_evidence,
+        )
     if verdict == "rejected" and counterfactual_run_id is not None:
         from .registry_ratchet import consider_rejection
         consider_rejection(

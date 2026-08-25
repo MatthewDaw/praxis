@@ -664,6 +664,10 @@ def _semantic_parser() -> argparse.ArgumentParser:
     adjudicate.add_argument("--model-id", required=True)
     adjudicate.add_argument("--reason", required=True)
     adjudicate.add_argument("--promotion-json")
+    adjudicate.add_argument(
+        "--paired-evidence-json",
+        help="same-unit candidate/champion evidence matching the frozen CampaignSpec policy",
+    )
 
     status = registry_command(
         "registry-status", "show experiments, runs, artifacts, registered models, model versions, and aliases")
@@ -770,9 +774,11 @@ def main(argv: list[str] | None = None) -> int:
             from knowledge.ml_registry.services.registry_adjudication import adjudicate_against_champion
             promotion = (_object(args.promotion_json, noun="promotion-json")
                          if args.promotion_json else None)
+            paired_evidence = (_object(args.paired_evidence_json, noun="paired-evidence-json")
+                               if args.paired_evidence_json else None)
             verdict = adjudicate_against_champion(
                 registry, run_id=args.run_id, model_id=args.model_id,
-                reason=args.reason, promotion=promotion,
+                reason=args.reason, promotion=promotion, paired_evidence=paired_evidence,
             )
             print(json.dumps({"run_id": args.run_id, "verdict": verdict}))
             return 0

@@ -505,6 +505,7 @@ class Registry:
                     "at": self.clock()})
 
     def _adjudicate_run(self, *, run_id: str, verdict: str, status: str, reason: str,
+                        adjudication_evidence: Mapping[str, object] | None = None,
                         capability: object) -> None:
         if capability is not _ADJUDICATOR_CAPABILITY:
             raise RegistryError("run verdict requires adjudication authority")
@@ -513,11 +514,18 @@ class Registry:
         expected = {"rejected": "succeeded", "parked": "succeeded", "voided": "voided"}
         if expected.get(verdict) != status or not reason:
             raise RegistryError("run verdict and terminal status are inconsistent")
-        self._write("run_adjudicated", {"run_id": run_id, "verdict": verdict, "status": status,
-                    "reason": reason, "at": self.clock()})
+        payload: dict[str, object] = {
+            "run_id": run_id, "verdict": verdict, "status": status,
+            "reason": reason, "at": self.clock(),
+        }
+        if adjudication_evidence is not None:
+            payload["adjudication_evidence"] = dict(adjudication_evidence)
+        self._write("run_adjudicated", payload)
 
     def _adopt_run_and_promote(self, *, run_id: str, model_id: str, reason: str,
-                               model_version: Mapping[str, Any], capability: object) -> bool:
+                               model_version: Mapping[str, Any],
+                               adjudication_evidence: Mapping[str, object] | None = None,
+                               capability: object) -> bool:
         if capability is not _ADJUDICATOR_CAPABILITY:
             raise RegistryError("atomic adoption requires adjudication authority")
         version = dict(model_version)
@@ -531,6 +539,8 @@ class Registry:
                           else champion["version"] if champion is not None else None)
         payload = {"run_id": run_id, "reason": reason, "model_version": version,
                    "parent_version": parent_version}
+        if adjudication_evidence is not None:
+            payload["adjudication_evidence"] = dict(adjudication_evidence)
         if prior:
             if prior[-1].payload != payload:
                 raise RegistryError("atomic adoption retry drifted from its full semantic payload")

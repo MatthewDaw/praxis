@@ -64,6 +64,67 @@ def registry_with_champion(tmp_path: Path) -> Registry:
     return registry
 
 
+def register_adjudication_policy(
+    registry: Registry, *, method: str = "paired_bootstrap_percentile",
+    aggregation: str = "mean",
+) -> None:
+    registry.register_campaign_spec({
+        "schema_version": 1,
+        "campaign_id": "campaign",
+        "model_id_policy": "existing_registered_model",
+        "axis": "a01",
+        "sport_scope": ["shared"],
+        "target_ontology": "fixture",
+        "metric": {
+            "name": "f1",
+            "direction": "maximize",
+            "operating_point": {"selection": "frozen", "threshold": .5},
+            "aggregation": [{"level": "unit", "unit": "unit_id", "minimum_sample": 2}],
+            "scoring_corpus": "fixture",
+            "split_unit": "unit_id",
+            "adjudication": {
+                "method": method,
+                "resamples": 500,
+                "confidence_level": .95,
+                "seed": 17,
+                "aggregation": aggregation,
+            },
+        },
+        "stages": [{"name": "representation"}],
+        "corpora": [{"id": "fixture", "roles": ["scoring"], "split_unit": "unit_id"}],
+        "requires": [],
+        "produces": [{"artifact_type": "checkpoint", "schema_version": "1"}],
+        "supervision": {"mode": "composing"},
+        "resources": {"lane": "cpu"},
+        "isolation": {"state_root": "state/campaign"},
+        "production": {"protocol": "Detector"},
+        "extends": [],
+        "deterministic_incumbent": None,
+        "learned_escalation": False,
+        "rope": None,
+    }, scoring_corpora={"fixture": [
+        {"unit_id": "one", "f1": .67},
+        {"unit_id": "two", "f1": .69},
+    ]})
+
+
+def paired_evidence(candidate: list[float], champion: list[float]) -> dict[str, object]:
+    return {
+        "candidate_run_id": "candidate",
+        "champion_run_id": "baseline",
+        "resamples": 500,
+        "confidence_level": .95,
+        "seed": 17,
+        "units": [
+            {"unit_id": f"unit-{index}", "candidate": candidate_value,
+             "champion": champion_value}
+            for index, (candidate_value, champion_value) in enumerate(
+                zip(candidate, champion, strict=True)
+            )
+        ],
+    }
+
+
 def promotion(registry: Registry, run_id: str, version: int = 2) -> dict[str, object]:
     artifact = registry.create_artifact(run_id=run_id, kind="checkpoint",
                                         content=f"winner:{run_id}".encode(), schema_version="1")
@@ -108,6 +169,90 @@ def test_registry_adjudicator_owns_verdict_and_compares_current_champion(
     assert champion["version"] == (2 if expected == "adopted" else 1)
 
 
+@pytest.mark.parametrize(("candidate_values", "expected"), [
+    ([.62, .67, .72, .79], "adopted"),
+    ([.58, .67, .68, .79], "parked"),
+    ([.58, .63, .68, .75], "rejected"),
+])
+def test_paired_campaign_uses_frozen_interval_instead_of_scalar_rope(
+    tmp_path: Path, candidate_values: list[float], expected: str,
+) -> None:
+    registry = registry_with_champion(tmp_path)
+    register_adjudication_policy(registry)
+    champion_values = [.60, .65, .70, .77]
+    create_run(registry, "candidate", sum(candidate_values) / len(candidate_values))
+    inputs = promotion(registry, "candidate") if expected == "adopted" else None
+
+    verdict = adjudicate_against_champion(
+        registry,
+        run_id="candidate",
+        model_id="model",
+        reason="paired comparison",
+        promotion=inputs,
+        paired_evidence=paired_evidence(candidate_values, champion_values),
+    )
+
+    assert verdict == expected
+    event = next(
+        event for event in reversed(registry.list_events())
+        if event.event_type in {"run_adopted", "run_adjudicated"}
+        and event.payload["run_id"] == "candidate"
+    )
+    evidence = event.payload["adjudication_evidence"]
+    assert evidence["method"] == "paired_bootstrap_percentile"
+    assert evidence["unit_count"] == 4
+    assert evidence["resamples"] == 500
+    assert len(evidence["units"]) == 4
+    if expected == "adopted":
+        assert evidence["interval"][0] > 0
+    elif expected == "rejected":
+        assert evidence["interval"][1] < 0
+    else:
+        assert evidence["interval"][0] <= 0 <= evidence["interval"][1]
+
+
+def test_paired_campaign_refuses_missing_or_moved_judging_contract(tmp_path: Path) -> None:
+    registry = registry_with_champion(tmp_path)
+    register_adjudication_policy(registry)
+    create_run(registry, "candidate", .70)
+    evidence = paired_evidence([.62, .67, .72, .79], [.60, .65, .70, .77])
+
+    with pytest.raises(RegistryError, match="requires explicit same-unit"):
+        adjudicate_against_champion(
+            registry, run_id="candidate", model_id="model", reason="missing evidence",
+        )
+    with pytest.raises(RegistryError, match="confidence_level differs"):
+        adjudicate_against_champion(
+            registry, run_id="candidate", model_id="model", reason="moved judge",
+            paired_evidence={**evidence, "confidence_level": .90},
+        )
+    duplicate = dict(evidence)
+    duplicate["units"] = [*evidence["units"][:1], *evidence["units"][:1]]
+    with pytest.raises(RegistryError, match="repeats unit_id"):
+        adjudicate_against_champion(
+            registry, run_id="candidate", model_id="model", reason="duplicate",
+            paired_evidence=duplicate,
+        )
+    assert next(row for row in registry.rows("runs") if row["run_id"] == "candidate")["verdict"] is None
+
+
+def test_registered_legacy_campaign_must_name_scalar_rope_and_refuses_paired_input(
+    tmp_path: Path,
+) -> None:
+    registry = registry_with_champion(tmp_path)
+    register_adjudication_policy(registry, method="legacy_scalar_rope")
+    create_run(registry, "candidate", .685)
+    evidence = paired_evidence([.60, .67], [.59, .66])
+    with pytest.raises(RegistryError, match="legacy_scalar_rope"):
+        adjudicate_against_champion(
+            registry, run_id="candidate", model_id="model", reason="wrong evidence",
+            paired_evidence=evidence,
+        )
+    assert adjudicate_against_champion(
+        registry, run_id="candidate", model_id="model", reason="declared legacy",
+    ) == "parked"
+
+
 def test_adoption_requires_promotion_inputs_and_units_must_match(tmp_path: Path) -> None:
     registry = registry_with_champion(tmp_path)
     create_run(registry, "winner", .72)
@@ -149,6 +294,30 @@ def test_atomic_adoption_retry_is_idempotent_and_semantic_drift_is_refused(tmp_p
     with pytest.raises(RegistryError, match="full semantic payload"):
         adjudicate_against_champion(registry, run_id="winner", model_id="model",
                                     reason="different", promotion=inputs)
+
+
+def test_paired_adoption_retry_reuses_frozen_evidence_and_refuses_drift(tmp_path: Path) -> None:
+    registry = registry_with_champion(tmp_path)
+    register_adjudication_policy(registry)
+    create_run(registry, "candidate", .72)
+    inputs = promotion(registry, "candidate")
+    evidence = paired_evidence([.71, .72, .73], [.67, .68, .69])
+    assert adjudicate_against_champion(
+        registry, run_id="candidate", model_id="model", reason="won",
+        promotion=inputs, paired_evidence=evidence,
+    ) == "adopted"
+    count = len(registry.list_events())
+    assert adjudicate_against_champion(
+        registry, run_id="candidate", model_id="model", reason="won", promotion=inputs,
+    ) == "adopted"
+    assert len(registry.list_events()) == count
+    drifted = dict(evidence)
+    drifted["seed"] = 18
+    with pytest.raises(RegistryError, match="drifted from its paired evidence"):
+        adjudicate_against_champion(
+            registry, run_id="candidate", model_id="model", reason="won",
+            promotion=inputs, paired_evidence=drifted,
+        )
 
 
 def test_atomic_adoption_recovers_all_projections_after_event_boundary_crash(tmp_path: Path) -> None:

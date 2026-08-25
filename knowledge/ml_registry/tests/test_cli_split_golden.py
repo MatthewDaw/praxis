@@ -12,7 +12,7 @@ import pytest
 
 HELP_SHA256 = {
     "__root__": "65e2f81114f9100fe0098f6cdb5a41a38d268cf9d7b1047996a4666522d4f27b",
-    "adjudicate-run": "4037229e386f8e7980b0a8146f2e0dc5033e71975bf8fee85deb47322109314a",
+    "adjudicate-run": "b36d03e59b8f489808756b2e8e2606dfb6ddeec239797b128bba31e0be02d7e4",
     "adopt-idea": "2634a0014387d7fd901ae5fcc7c237ebf3af8af4e1abf652235f3a0f70554e18",
     "backlog": "d02ef7e0961d5bcfcfb24a645e4d0b8f2b7b9f83518ea58c37de7225860c41ef",
     "claim-idea": "41804fa5e205a4861c1a69984c742d233d45e2038bcbf12d1430bbef0b8952d5",
@@ -44,7 +44,7 @@ HELP_SHA256 = {
 
 ERROR_SHA256 = {
     "__root__": "a1b9564d6b0de6d38487541e32282bfbc9bffbf7fcb54c5ca854a394f5f9d5b8",
-    "adjudicate-run": "e044c8fbb511f2943f99aeb4dd2f616e262c98a308bfd98c6b55389e075a249b",
+    "adjudicate-run": "bd7bf4d4261a5ce960da17125c7e9e5274407400855355718bb920cfccd3f4c6",
     "adopt-idea": "511283fe14ca352e9a21f3d4eeb4a2222b728b63b7b251f9ac16db3808e0f472",
     "backlog": "5b316447b4dce9de3f1f330f8b7d0d7a337cfdaadb9503bdeca936754b9c6959",
     "claim-idea": "4a3a51a85f808b5c67e5f8bace9ef2d3e8007a1b058d1de2dc0cc3766ba60188",
