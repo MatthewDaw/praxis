@@ -582,12 +582,22 @@ colour signal it was rebuilding on had been measured HARMFUL on that footage. Th
 wasted build; it was a baseline, a control and a seeded backlog all committed to the wrong approach
 before anyone looked.
 
-Then cover four strands:
+Then cover four strands. The first two decide the approach; the last two build on whichever
+approach wins, and are seeded as additive with a dependency rather than raced against it:
 
-1. published end-to-end systems, rig/metric, and runnable checkpoint—or reasoned negative;
-2. pretrained candidates and the corpus/regime each actually saw;
-3. augmentations derived from measured target resolution, optics, visibility, and leakage groups;
-4. Karpathy-loop seam: allowed code/axes/budget and immutable judge, or the decision not to run it.
+1. published end-to-end systems, rig/metric, and runnable checkpoint—or reasoned negative
+   *(exclusive tier)*;
+2. pretrained candidates and the corpus/regime each actually saw *(exclusive tier)*;
+3. augmentations derived from measured target resolution, optics, visibility, and leakage groups
+   *(additive tier)*;
+4. Karpathy-loop seam: allowed code/axes/budget and immutable judge, or the decision not to run it
+   *(additive tier)*.
+
+Researching strand 3 early is fine and often cheap -- an augmentation derived from the RIG rather
+than the model is true whatever the model turns out to be, and "do not mirror, because side cues
+carry signal" does not stop being true when the architecture changes. What is not fine is letting
+it compete for budget with the approach decision, or seeding it with an empty `depends_on` as
+though it stood alone. Research it when you notice it; sequence it behind the decision it modifies.
 
 ### Seed a SEQUENCE, not a list
 
