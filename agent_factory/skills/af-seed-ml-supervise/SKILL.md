@@ -33,6 +33,12 @@ and campaign lifecycle adapter. Do not add a second campaign ledger or revive a 
 lifecycle. Discover the installed surface with `python -m knowledge.ml_registry.cli --help` and use
 the canonical campaign job and portfolio commands documented here and in `/af-ml-supervise`.
 
+The executable shell drivers `af-ml-campaign-loop.sh`, `af-ml-campaign-queue.sh`,
+`af-ml-agent-queue.sh`, and `af-ml-supervise-keepalive.sh` are retired refusal shims. Never use,
+copy, refresh, or remotely launch them. A project `CampaignLifecycle` adapter executed by
+`knowledge.ml_registry.runtime.campaign_job`, under the canonical portfolio operator, is the only
+supported long-running control plane.
+
 ## Terminal state — READY on the execution target
 
 Do not say READY until every condition is true on the host that will run supervision:
@@ -74,9 +80,11 @@ Do not say READY until every condition is true on the host that will run supervi
     `create-run`, `complete-run`, and canonical external adjudication seam. It adds exactly one
     expected Run and exits cleanly without consuming a seeded candidate.
 13. **Portfolio proof and handoff.** A one-shot portfolio run proves the operator/campaign/capacity
-    configs, ownership, restart position, and typed outcome agree. The handoff contains exact target
-    start, observe, tail, status, `stop --drain`, `stop --force`, and `resume` commands plus all ids,
-    paths, stages, and parked prerequisites.
+    configs, ownership, restart position, and typed outcome agree. Inspect the spawned command and
+    prove it is `knowledge.ml_registry.runtime.campaign_job --config <campaign-job.json>`; a clean
+    exit from a retired shell shim is impossible evidence. The handoff contains exact target start,
+    observe, tail, status, `stop --drain`, `stop --force`, and `resume` commands plus all ids, paths,
+    stages, and parked prerequisites.
 14. **Executable IDEA frontier.** Every READY IDEA is either bound to a truthful executable
     recipe/arm or the target has a preflighted coding-agent one-arm worker that claims the IDEA,
     authors that hypothesis in an isolated worktree, runs the project trainer/evaluator, and exits
@@ -248,8 +256,12 @@ for the exact model fact; report their ids.
    Verify one new Run per proof, heartbeat, artifact checksum, process cleanup, typed outcome,
    external adjudication, and idempotent restart position. A baseline-only seed-smoke adapter is not
    the long supervisor and cannot satisfy this item.
-6. Prepare the detached start command and ownership-aware observe/tail/stop commands. Do not start
-   unattended supervision from this skill.
+6. Before handoff, run `python -m knowledge.ml_registry.runtime.campaign_job --help` and
+   `python -m knowledge.ml_registry.cli.portfolio --help` in the target environment, then inspect the
+   target operator config and portfolio child command. Refuse READY if either resolves a legacy
+   shell driver, a removed registry verb, a different checkout, or a baseline-only adapter.
+7. Prepare the detached portfolio start command and ownership-aware observe/tail/stop commands. Do
+   not start unattended supervision from this skill.
 
 Copy local registry files only if embedded repo paths, artifact URIs, device evidence, and event
 history remain valid on target; normally rebuild deterministic seed state and remeasure there.
@@ -276,6 +288,10 @@ python -m knowledge.ml_registry.cli.portfolio --config <operator.json> resume
 
 Also give the SSH/service/tmux wrapper when applicable. Point the next operator to
 `/af-ml-supervise`; do not start it here.
+
+Do not offer a retired shell driver as an alternative start command. The handoff is incomplete
+unless the portfolio controller was observed spawning the configured canonical campaign job on the
+execution target and its typed outcome was read back through the portfolio status command.
 
 When the executable IDEA frontier uses a coding-agent worker, the portfolio one-shot remains setup
 evidence; its baseline-only smoke command is not the long-run start command. Generate a target-native
