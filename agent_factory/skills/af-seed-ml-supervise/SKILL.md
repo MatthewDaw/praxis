@@ -93,7 +93,11 @@ Do not say READY until every condition is true on the host that will run supervi
     `complete-run`, and canonical external adjudication seam. Use the smallest real, leakage-safe
     slice that proves the plumbing. It adds exactly one clearly non-baseline smoke Run and exits
     cleanly without consuming a seeded candidate. It must not repeat the complete baseline
-    calculation from item 8.
+    calculation from item 8. Then run ONE real candidate arm through the same path to a recorded
+    verdict -- `rejected` is a perfectly good outcome. The incumbent smoke exercises none of the
+    candidate wiring, so idea binding, verdict vocabulary and promotion are all first exercised by
+    the supervisor unless a candidate is run here. In one campaign that first candidate surfaced
+    three registry contract errors the incumbent smoke had passed straight over.
 13. **Portfolio proof and handoff.** A one-shot portfolio run proves the operator/campaign/capacity
     configs, ownership, restart position, and typed outcome agree. Inspect the spawned command and
     prove it is `knowledge.ml_registry.runtime.campaign_job --config <campaign-job.json>`; a clean
@@ -203,6 +207,12 @@ Verify through target-host adapters, not raw object listings:
 
 - enumerate bounded units and structural partitions;
 - decode representative payloads and labels;
+- **assert the specific classes and fields the plan depends on are present in the bytes, and record
+  their counts.** A catalog row is a claim, not evidence. One afternoon of checking found four rows
+  whose stated content was absent: a basketball instants set advertising "ball keypoints" with no
+  ball annotation, a corpus named `*-court-ball` containing only court keypoints, an action corpus
+  whose tubes are people rather than the ball, and a tracking set declaring a `ball` category it
+  never populates. Refuse the corpus for that role rather than discovering it mid-campaign;
 - record immutable fingerprints, cache bytes, and leakage groups;
 - prove sealed labels are unavailable to candidate code;
 - reject ephemeral download staging as a runtime source.
@@ -272,6 +282,16 @@ Declare only stages with authored arms. Vision defaults are
 the target resource lease, heartbeat cadence, arm timeout, disk/cache budget, device fingerprint,
 and target-measured throughput policy.
 
+**Every bound that changes the measurement belongs in the spec, never in an env default or a
+launcher script.** Frame caps, unit caps, clip caps and sampling seeds define what was measured as
+surely as the metric does, and a candidate measured under a different bound is not comparable to
+the champion. Register them with the experiment. A campaign that reads a cap from the environment
+must treat the spec value as the floor and record the effective value on every artifact.
+
+This is not hypothetical: a ball-possession campaign registered its baseline at a 300-frame window
+while the operator's launcher still defaulted to 60, and the portfolio then scored 0.6029 against a
+0.3697 champion -- a difference caused entirely by the bound and invisible in both reports.
+
 ## Phase C — build the project-owned path
 
 **Greenfield is the exception, not the rule. LOOK BEFORE YOU BUILD.** Most invocations land on a
@@ -330,6 +350,19 @@ commit-backed Run and its artifacts; Praxis adjudication is the only verdict wri
 full `code_ref` and fact id joins, never a display-name or bare-SHA join.
 
 ## Phase D — register canonical state on the target
+
+**Register into a throwaway registry root first, then the canonical one.** The policy gate enforces
+field requirements that no `--help` output reveals, and each refusal costs a round trip; taking
+those round trips against the live ledger risks half-written state on the registry every other
+campaign shares. Point `SPORTS_ANALYSIS_ML_REGISTRY_ROOT` (or the project's equivalent) at a temp
+directory, run the whole setup path end to end, read the result back, then delete it and run the
+identical command against canonical.
+
+One real campaign hit five sequential refusals this way -- `metric.operating_point.threshold` must
+be finite, `metric.scoring_corpus` must be a string, cross-corpus scope needs `metric.scoring_corpora`
+instead, `runs.idea_id` is NOT NULL, and verdict/status pairs are a closed vocabulary -- and every
+one was found in the sandbox for free. `knowledge/ml_registry/policy_gate.py` is the authority on
+those requirements; read it rather than guessing from the CLI.
 
 Inspect the actual CLI first:
 
