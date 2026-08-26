@@ -71,23 +71,37 @@ def paired_interval(
     champion_metric: float,
 ) -> PairedInterval:
     """Validate evidence against the frozen policy and bootstrap its paired delta."""
-    expected_policy = {
+    required_policy = {
         "method", "resamples", "confidence_level", "seed", "aggregation",
     }
-    if set(policy) != expected_policy:
+    permitted_policy = required_policy | {"effect_floor", "law"}
+    if not required_policy <= set(policy) or not set(policy) <= permitted_policy:
         raise RegistryError(
-            "metric.adjudication requires exactly method, resamples, confidence_level, "
-            f"seed, and aggregation; missing={sorted(expected_policy - set(policy))}, "
-            f"extra={sorted(set(policy) - expected_policy)}"
+            "metric.adjudication requires method, resamples, confidence_level, seed, and "
+            "aggregation; optional effect_floor/law are accepted only for the frozen no-floor "
+            f"paired law; missing={sorted(required_policy - set(policy))}, "
+            f"extra={sorted(set(policy) - permitted_policy)}"
         )
     if policy.get("method") != PAIRED_BOOTSTRAP:
         raise RegistryError(
             f"paired evidence requires metric.adjudication.method={PAIRED_BOOTSTRAP!r}"
         )
+    if "effect_floor" in policy and _finite(
+        policy["effect_floor"], "metric.adjudication.effect_floor"
+    ) != 0.0:
+        raise RegistryError("paired interval adjudication permits only effect_floor=0.0")
+    if "law" in policy and policy["law"] != (
+        "95% paired interval entirely positive ADOPT, crosses zero PARK, "
+        "entirely negative REJECT"
+    ):
+        raise RegistryError("paired interval adjudication law must preserve the zero-threshold CI rule")
     resamples = _integer(policy.get("resamples"), "metric.adjudication.resamples", minimum=2)
     confidence = _confidence(policy.get("confidence_level"), "metric.adjudication.confidence_level")
     seed = _integer(policy.get("seed"), "metric.adjudication.seed", minimum=0)
     aggregation = policy.get("aggregation")
+    if aggregation == "stitch_decision":
+        # A stitch decision is one independent paired unit; its frozen aggregation is the mean.
+        aggregation = MEAN
     if aggregation not in {MEAN, MACRO_STRATA}:
         raise RegistryError(
             f"metric.adjudication.aggregation must be {MEAN!r} or {MACRO_STRATA!r}"
