@@ -69,6 +69,11 @@ Do not say READY until every condition is true on the host that will run supervi
 6. **Project runtime.** A project lifecycle adapter implements preflight, setup, completion/terminal
    outcome, blocking diagnosis, trial count, one-arm dispatch, heartbeat, and void recording. It is
    driven by `knowledge.ml_registry.runtime.campaign_job`; candidate output never writes a verdict.
+   The harness is finished: real data has run end to end through adapter, transforms, loss and judge
+   behind a deliberately trivial model (C-END), the loss moved with its parameters, and the trivial
+   model's recorded score is the measured trivial-predictor floor. Trying a new idea must require
+   plugging in a model and nothing else -- if it needs an edit to a loader, transform, loss, metric
+   or scoring path, the harness is not finished and later measurements are not comparable.
 7. **Canonical baseline.** On the target host, the canonical registry contains the registered model
    and an active baseline ModelVersion. `champion` resolves to it, its artifact verifies and
    compatibility-loads, and every deterministic incumbent pin matches exactly.
@@ -259,14 +264,19 @@ as the actual training-data contract.
 
 If real score labels are unreachable, stop. Never substitute fixtures.
 
-## Phase B — define the objective, then freeze the judge and resources
+## Phase B — define the objective and the judge
 
 **B0 is a blocking clarification loop with the human. Nothing downstream is designed until the
 objective is fully specified, because the objective is what every later decision is derived from.**
 Ask, do not assume; a defaulted objective silently decides the corpus roles, the label rule, the
 metric and the win condition, and every one of those is then wrong in a way no later gate detects.
 
-Two distinct things are frozen here and they must not be collapsed:
+Nothing is BUILT here and nothing is sealed here. Phase B produces a specification; Phase C
+builds it and proves it runs; Phase D registers it, and registration is what makes it immutable.
+"Freeze" is the wrong verb for work that has not started -- what matters is that once the spec
+digest is registered, the judge cannot be edited, least of all by candidate code.
+
+Two distinct things are specified here and they must not be collapsed:
 
 * the **objective** — what the trainer optimises. Differentiable, per-sample, a proxy.
 * the **judge** — what decides promotion: scalar metric, direction, operating point, split unit,
@@ -300,43 +310,9 @@ not fill it from context, from the corpus, or from what a similar campaign did.
 Record the ten answers in the campaign plan. A later phase that contradicts one of them is a
 defect in that phase, and never a reason to revise the objective quietly.
 
-### B0.1 — rehearse the loss and the judge on a deliberately trivial model
+### B1 — specify the judge
 
-The ten answers are a specification. Before anything is designed around them, prove they are
-*implementable* by writing the loss and the metric and running real data through them. This is the
-cheapest gate in the whole skill and it fires before a single design decision depends on the answers.
-
-1. **Write the loss and the metric as code**, exactly as B0 specified them. Not a sketch, not a
-   library call standing in for the real aggregation -- the functions the campaign will use.
-2. **Build a deliberately trivial model.** It must be structurally correct and obviously incapable:
-   take the first two pixel values, the mean of one raw slice, a fixed constant -- anything that
-   transforms a real input into the DECLARED output shape and could not possibly solve the task.
-   Reuse an existing project model instead only when the campaign is brownfield and one already
-   serves this ontology.
-3. **Pull full representative samples through the real adapter.** Not fixtures, not a hand-built
-   array: the same enumerate/decode path Phase A proved, over enough units to include every
-   declared corpus and both ends of the class distribution.
-4. **Assert the loss is a number you could train from.** Finite, not NaN, and it MOVES when the
-   trivial model's parameters move. A loss that is constant with respect to the parameters is not a
-   loss, and finding that here costs minutes rather than a campaign.
-5. **Assert the judge returns a number on that model's predictions**, through the real aggregation
-   and split-unit path, over real units.
-6. **Record what the trivial model scores. That number is slot 7's answer**, measured rather than
-   asserted. If it is respectable under the proposed judge, the judge is not discriminating and B0
-   is not finished: revise the metric, the aggregation, or the unit definition and rehearse again.
-
-The rehearsal also settles the output-shape contract, which is where variable-size problems break:
-a frame offering a different number of candidate objects than the last one, a clip with no positive
-event, a unit with a single class. If the trivial model cannot produce a well-formed output for
-those, neither will the real one, and the failure is far cheaper to see now.
-
-Keep the rehearsal. It is the natural home for the null arm the campaign compares against later,
-and re-running it after any change to the loss, the metric, or the label rule is the fastest way to
-notice that one of them stopped meaning what it meant.
-
-### B1 — freeze the judge
-
-Freeze one scalar and direction. Define operating point, aggregation, split unit, minimum effective
+Name one scalar and direction. Define operating point, aggregation, split unit, minimum effective
 sample, shared seeds, paired bootstrap resamples/confidence, and numeric win condition before the
 baseline. Candidate and champion use identical units/seeds; adjudication uses the paired interval
 from `/af-ml-supervise`, not the spread or range of independent repeats.
@@ -361,7 +337,13 @@ This is not hypothetical: a ball-possession campaign registered its baseline at 
 while the operator's launcher still defaulted to 60, and the portfolio then scored 0.6029 against a
 0.3697 champion -- a difference caused entirely by the bound and invisible in both reports.
 
-## Phase C — build the project-owned path
+## Phase C — build and verify the harness
+
+**What Phase C delivers is a finished harness with a model-shaped hole in it.** By the end of this
+phase an experimenter imports the harness, plugs in the model they want to try, and gets a measured
+result -- without editing the loaders, the transforms, the loss, the metric, the split logic or the
+scoring path. If trying a new idea requires touching any of those, Phase C is not done, and every
+measurement taken afterwards is comparing models that were scored by different code.
 
 **Greenfield is the exception, not the rule. LOOK BEFORE YOU BUILD.** Most invocations land on a
 project that already has campaign code, and a second harness beside a working one violates the
@@ -406,6 +388,37 @@ The harness is not complete until all of the following are present and observed:
 If existing code has a partial loader, placeholder baseline, fixture-only data path, or evaluator
 that cannot score a candidate artifact, finish or replace that incomplete seam in this invocation.
 Calling it "future work" is not a handoff.
+
+### C-END — prove the whole path with a deliberately trivial model
+
+The harness is not verified because its parts have tests. It is verified when real data has gone
+all the way through it and produced a number. Do this before Phase D registers anything.
+
+1. **Pull full representative samples through the real adapter** -- the same enumerate/decode path
+   Phase A proved, over enough units to include every admitted corpus and both ends of the class
+   distribution. Not fixtures, not a hand-built array.
+2. **Run them through the real transforms** into the declared input shape.
+3. **Plug in a deliberately trivial model.** Structurally correct and obviously incapable: the first
+   two pixel values, the mean of one raw slice, a fixed constant -- anything that maps a real input
+   to the DECLARED output shape and could not possibly solve the task. Use an existing project model
+   instead only when the campaign is brownfield and one already serves this ontology.
+4. **Assert the loss is a number you could train from.** Finite, not NaN, and it MOVES when the
+   trivial model's parameters move. A loss that is constant in the parameters is not a loss, and
+   finding that here costs minutes instead of a campaign.
+5. **Assert the judge returns a number** on that model's predictions, through the real aggregation
+   and split-unit path, over real units.
+6. **Record what the trivial model scores. That is the measured answer to B0 slot 7.** If it is
+   respectable under the proposed judge, the judge is not discriminating: return to B0, revise the
+   metric, aggregation or unit definition, and run this again.
+
+This also settles the output-shape contract, which is where variable-size problems break -- a frame
+offering a different number of candidate objects than the last, a clip with no positive event, a
+unit containing a single class. If the trivial model cannot produce a well-formed output for those,
+neither will the real one.
+
+Keep it. It is the natural home for the null arm the campaign compares against later, and re-running
+it after any change to a loader, the loss, the metric or the label rule is the fastest way to notice
+that one of them stopped meaning what it meant.
 
 Before calling that lifecycle runnable, join the seeded IDEA inventory to execution. A parameter
 idea may name an already-implemented arm/config. A prose architecture, data, or training hypothesis
