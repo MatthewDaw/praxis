@@ -24,6 +24,11 @@ from knowledge.ml_registry.services.registry_finalize import RegistryFinalizer
 from knowledge.ml_registry.services.registry_runs import supersede_run
 from knowledge.ml_registry.write_path import RegistrySpace
 from knowledge.ml_registry.lifecycle import claim_idea
+from knowledge.ml_registry.runtime.agent_idea_worker import (
+    AgentIdeaWorker,
+    AgentIdeaWorkerError,
+    IdeaContract,
+)
 from knowledge.ml_registry.staging import next_queue
 
 
@@ -270,7 +275,47 @@ class OperatorRuntime:
         idea_id, stage = _load_mutate_save(str(self.space_path), select)
         environment = dict(job.environment)
         environment.update({"AF_ML_IDEA_ID": idea_id, "AF_ML_IDEA_OWNER": owner, "AF_ML_STAGE": str(stage)})
+        worker = self._idea_worker(job.campaign_id)
+        if worker is not None:
+            idea = RegistrySpace.load(self.space_path).get(idea_id)
+            if idea is None:
+                raise OperatorConfigError(f"claimed IDEA {idea_id!r} disappeared before authoring")
+            contract = IdeaContract.from_fact(idea, stage=str(stage))
+            handoff_path = self.runtime_root / "idea-workers" / job.campaign_id / token / "handoff.json"
+            try:
+                handoff = worker.prepare(contract=contract, handoff_path=handoff_path)
+            except AgentIdeaWorkerError as exc:
+                raise OperatorConfigError(f"IDEA {idea_id!r} authoring handoff refused: {exc}") from exc
+            environment.update({
+                "AF_ML_IDEA_CONTRACT": str(handoff_path.with_name("idea-contract.json")),
+                "AF_ML_IDEA_HANDOFF": str(handoff_path),
+                "AF_ML_RECIPE_COMMIT": handoff.commit,
+            })
         return replace(job, environment=environment)
+
+    def _idea_worker(self, campaign_id: str) -> AgentIdeaWorker | None:
+        """Return the explicit authoring worker; ideas never imply an arm mapping."""
+        raw = self.config.get("agent_idea_worker")
+        if raw is None:
+            return None
+        if not isinstance(raw, Mapping):
+            raise OperatorConfigError("agent_idea_worker must be an object")
+        configured = raw.get(campaign_id, raw)
+        if not isinstance(configured, Mapping):
+            raise OperatorConfigError(f"agent_idea_worker.{campaign_id} must be an object")
+        command = configured.get("command")
+        working_directory = configured.get("working_directory")
+        if not isinstance(command, list) or not all(isinstance(item, str) and item for item in command):
+            raise OperatorConfigError("agent_idea_worker command must be a non-empty argv list")
+        if not isinstance(working_directory, str) or not working_directory:
+            raise OperatorConfigError("agent_idea_worker working_directory must be a non-empty path")
+        path = Path(working_directory)
+        if not path.is_absolute():
+            path = (self.config_path.parent / path).resolve()
+        try:
+            return AgentIdeaWorker(command=command, working_directory=path)
+        except AgentIdeaWorkerError as exc:
+            raise OperatorConfigError(str(exc)) from exc
 
 
     def controller(self) -> PortfolioController:
