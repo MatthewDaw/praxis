@@ -1,11 +1,13 @@
 ---
 name: af-seed-ml-supervise
 description: >
-  Make one canonical ml_registry campaign runnable on its actual execution host: inventory real
-  data, freeze the judge, build and smoke the project campaign adapter, register canonical
-  experiment/model/baseline state, seed the nine-axis IDEA set, deploy the exact revision and
-  state to the target, and return an observed launch handoff. Use for "seed the campaign",
-  "/af-seed-ml-supervise", "get this ready for af-ml-supervise", or "skip research".
+  Take one ML campaign from a problem statement to a complete, evidence-backed, runnable handoff
+  on its execution host: exhaustively qualify every catalogued data source and external prior-art
+  lead, wire every admissible source, build or repair the end-to-end training/evaluation path,
+  freeze and reproduce the judge, run and audit a real research arm, register canonical state,
+  seed executable research-backed ideas, deploy, and prove the supervisor handoff. Use for
+  "seed the campaign", "/af-seed-ml-supervise", "get this ready for af-ml-supervise", or
+  "skip research".
 ---
 
 # af-seed-ml-supervise
@@ -15,8 +17,17 @@ Take one campaign from a question to an execution-target-specific handoff for
 The target host is part of the scientific environment: code, data, registry state, hardware,
 throughput, and process ownership must all be proven there.
 
-This skill sets up and seeds. It does not supervise candidate ideas, adjudicate a candidate, move
-`production`, or start the unattended campaign unless the human explicitly chains that work.
+This skill owns **everything required before unattended supervision can honestly begin**. A human
+who invokes it should be able to return to either a READY handoff whose supplied command starts
+the campaign, or a short, evidence-backed list of external authority/data blockers. It does not
+supervise candidate ideas, adjudicate a candidate, move `production`, or start the unattended
+campaign unless the human explicitly chains that work.
+
+"Seed" is not a registry-only operation. It includes exhaustive data reconnaissance, adapter
+completion, a runnable trainer/evaluator, prior-art research, research-backed hypotheses, a real
+research-arm rehearsal with output audit and repair, target deployment, and proof that a
+non-incumbent idea can traverse the same path as the future campaign. Do not hand the human a
+checklist of ordinary engineering left for them to do.
 
 ## Current architecture only
 
@@ -90,10 +101,66 @@ Do not say READY until every condition is true on the host that will run supervi
     authors that hypothesis in an isolated worktree, runs the project trainer/evaluator, and exits
     after canonical adjudication. Prose hypotheses plus an unrelated finite arm list are not an
     executable campaign; never map them by position, modulo, or keyword resemblance.
+15. **Exhaustive data disposition.** Every database/corpus in the project's data catalog has a
+    recorded campaign-specific disposition. Every source that can legally and honestly improve
+    training, selection, scoring, robustness measurement, or target-regime generalization is
+    wired through a tested project adapter and used in the declared role. Every non-admitted source
+    has evidence for its exclusion (for example label mismatch, no media join, leakage, licence,
+    duplicate derivation, target-scale mismatch, or inaccessible payload). "Not inspected" and
+    "probably irrelevant" are never dispositions.
+16. **Research-arm rehearsal and audit.** A bounded, non-incumbent research arm has trained,
+    selected, scored, and produced the same report/artifact shape as a long run on real target-host
+    data. Its outputs, failure renders, per-source/per-unit metrics, calibration, resource use,
+    lifecycle records, and operator visibility have been audited. Every defect found has been fixed
+    and the relevant proof rerun; the handoff names the arm, findings, repairs, and final evidence.
 
 Laptop success is not READY for a remote campaign. If the target is unreachable, data is still
 uploading, the revision is not durable, hardware is wrong, an incumbent pin drifts, or the smoke
 does not write one Run, finish every independent setup item and report BLOCKED on the named item.
+
+## Phase 0 — exhaust the evidence surface before choosing the campaign regime
+
+Do this unless the human explicitly requests `skip research`. It is not enough to inspect the
+first convenient registered corpus or repeat a campaign's existing data rows.
+
+1. **State the target contract first.** Write the target ontology, inference inputs, desired
+   output, deployment regime/camera assumptions, exact metric, and leakage unit. Distinguish
+   labels available at training/scoring time from inputs available in production. A labelled
+   position, identity, team, or outcome must never silently become an inference feature merely
+   because a corpus provides it.
+2. **Exhaust the whole local catalog.** Read every row in the complete project data catalog,
+   registered-adapter registry, adapter-gap audit, inactive/archived campaign manifest, decision
+   record, prior experiment artifact, and owner-data inventory. Do not sample by filename, sport,
+   or apparent relevance. For every corpus record label ontology, pixel/media availability,
+   temporal continuity, camera/regime/scale, split/leakage groups, licence and production
+   eligibility, size/cost, and possible train/selection/score/validation role.
+3. **Research outside the repository.** Search primary sources, official dataset pages, papers,
+   code releases, and model repositories for datasets and runnable systems that match the target
+   ontology and regime. Search task synonyms and neighbouring sports, not only the campaign's
+   initial name. For each serious lead attempt a bounded verification of accessibility, licence,
+   labels, media pairing, and evaluation suitability. A documented negative result is useful
+   evidence; do not quietly omit a rejected lead.
+4. **Produce the complete data decision matrix.** Assign each catalogued corpus and serious
+   external lead exactly one disposition: `admit`, `training-only`, `selection-only`,
+   `scoring-only`, `validation-only`, `research-only`, `refuted`, `adapter-pending`, or
+   `blocked-external`. Compare it to the target regime rather than ranking sources by raw size.
+   The matrix is incomplete if it cannot account for every catalog row. At least one real,
+   independent scoring source is mandatory; if none exists, the campaign cannot be READY and the
+   smallest required labelled-data acquisition is the explicit blocker.
+5. **Close every admissible adapter gap.** For every admitted source lacking a project adapter,
+   implement or repair the adapter and tests during this invocation. It must expose immutable
+   units, independent leakage groups, label/media joins, bounded real decoding, fingerprints, and
+   honest partitions. Do not defer routine ingestion, parsing, manifests, or label normalization to
+   a later human task. Do not wire a source merely to make the matrix look exhaustive when its
+   licence or label contract makes it harmful or unusable.
+6. **Prove the proposed regime.** Render/inspect representative real examples from every admitted
+   source and measure label census, resolution/scale, missingness, class balance, and
+   source-to-target mismatch. Revise the target contract, corpus roles, or campaign scope when
+   evidence demands it; do not preserve the original idea at the cost of an invalid experiment.
+
+Save the corpus matrix, external-search receipts, adapter probes, rejected-source reasons, and
+unresolved external blockers with the campaign plan. The final handoff links them. A prose claim
+that data is "available" is not a completed data investigation.
 
 ## Resolve mode and target first
 
@@ -115,7 +182,7 @@ does not write one Run, finish every independent setup item and report BLOCKED o
 - Use the host named by the human. Otherwise read project deployment/campaign config. If it names a
   remote/devbox host, that is the target; do not fall back to the laptop because SSH is inconvenient.
 
-## Phase A — inventory real data on the target
+## Phase A — materialize the admitted data on the target
 
 Classify each holding as train, score, validation-only, sealed, refuted, duplicate/derived, or
 adapter-pending. Catalog presence authorizes a planned idea, not dispatch. Operator timelines and
@@ -128,6 +195,11 @@ Verify through target-host adapters, not raw object listings:
 - record immutable fingerprints, licence tier, cache bytes, and leakage groups;
 - prove sealed labels are unavailable to candidate code;
 - reject ephemeral download staging as a runtime source.
+
+Run the same label/media and partition probes established in Phase 0 after target materialization.
+A source that passed locally but is unavailable, differently credentialed, or different at the
+target is no longer admitted; repair it or refuse readiness. Record the target-side corpus matrix
+as the actual training-data contract.
 
 If real score labels are unreachable, stop. Never substitute fixtures.
 
@@ -162,10 +234,32 @@ If the two cannot be reconciled without duplication, STOP and record the specifi
 a blocker. Building parallel machinery because reconciling was harder is the failure this paragraph
 exists to prevent.
 
-When it is genuinely greenfield, the project owns real loaders, shared preprocessing, trainer/evaluator with per-unit paired evidence,
-artifact compatibility loading, and a lifecycle adapter consumed by campaign job. Tests generate
-fixtures; separate real-payload checks execute on the target. Long work emits flushed typed progress
-inside the heartbeat cadence. Measure CPU time with `resource.getrusage`, not wall time.
+When it is genuinely greenfield, the project owns real loaders, shared preprocessing, trainer,
+selection decoder, evaluator with per-unit paired evidence, artifact compatibility loading, and a
+lifecycle adapter consumed by campaign job. Tests generate fixtures; separate real-payload checks
+execute on the target. Long work emits flushed typed progress inside the heartbeat cadence. Measure
+CPU time with `resource.getrusage`, not wall time.
+
+The harness is not complete until all of the following are present and observed:
+
+- one source-specific reader per admitted label shape, with parsing failures and absent labels
+  refused rather than converted to empty supervision;
+- deterministic split construction at the declared leakage boundary, with explicit selection vs
+  scoring separation and a test that catches a deliberately leaked unit;
+- a simple non-learned or published-system baseline that establishes the metric and data path;
+- every proposed trainable arm represented by a truthful configuration/recipe or by the one-arm
+  coding-agent worker described below—no unimplemented named "families";
+- a frozen selection procedure that never examines score data, calibration/abstention behavior
+  where relevant, and per-source/per-unit diagnostics beside the scalar;
+- a real render or inspectable artifact for prediction-vs-label failures, plus a bounded failure
+  census that informs at least one seeded idea;
+- a compatibility-loadable artifact and inference entry point restricted to production-legal
+  inputs; and
+- unit, contract, and target-real-payload tests covering the entire train → select → score path.
+
+If existing code has a partial loader, placeholder baseline, fixture-only data path, or evaluator
+that cannot score a candidate artifact, finish or replace that incomplete seam in this invocation.
+Calling it "future work" is not a handoff.
 
 Before calling that lifecycle runnable, join the seeded IDEA inventory to execution. A parameter
 idea may name an already-implemented arm/config. A prose architecture, data, or training hypothesis
@@ -209,7 +303,7 @@ The project setup adapter performs this idempotent sequence:
 Read it all back on the target. An identical rerun writes nothing; drift refuses by named field.
 Never mutate a model fact from a different metric/data contract.
 
-## Phase E — seed the closed nine
+## Phase E — research, document, and seed the closed nine
 
 The exact closed set is:
 
@@ -227,6 +321,22 @@ Before seeding, cover four strands:
 2. pretrained candidates and the corpus/regime each actually saw;
 3. augmentations derived from measured target resolution, optics, visibility, and leakage groups;
 4. Karpathy-loop seam: allowed code/axes/budget and immutable judge, or the decision not to run it.
+
+For every strand, preserve the source, exact applicability, regime mismatch, and disposition in
+the campaign plan or seed receipt. Research must drive decisions, not merely populate citations:
+
+- Test or faithfully reproduce an accessible near-solution when it can be evaluated through the
+  frozen harness; otherwise document the precise incompatibility (licence, input mismatch,
+  unavailable weights, invalid metric, or target-regime mismatch).
+- Include data-centric hypotheses—additional admissible sources, label normalization, sampling,
+  source weighting, augmentation, and domain-shift controls—alongside model and mathematical
+  hypotheses.
+- For `theoretical_math`, identify the loss/objective/constraint and its expected failure mode;
+  do not seed formula-shaped prose with no executable interpretation.
+- For `current_code` and `prior_trials`, retrieve actual files, run records, reports, and failure
+  artifacts. For `af_learn_lessons`, retain an empty receipt only after the real search.
+- Every idea names the admitted corpora it touches, production-legal inputs it requires, frozen
+  stage it changes, and either its executable recipe or coding-agent work item.
 
 Run against the target RegistrySpace:
 
@@ -252,10 +362,16 @@ for the exact model fact; report their ids.
    `operator.json`, portfolio/campaign/capacity manifests, and campaign-job config. Never copy
    laptop absolute paths into them.
 5. Run target preflight, real incumbent reproduction, compatibility load, campaign-job one-arm
-   smoke, one candidate-IDEA dispatch through the exact long-run worker, and portfolio one-shot.
-   Verify one new Run per proof, heartbeat, artifact checksum, process cleanup, typed outcome,
-   external adjudication, and idempotent restart position. A baseline-only seed-smoke adapter is not
-   the long supervisor and cannot satisfy this item.
+   smoke, and **one bounded non-incumbent research arm from claim through artifact and score**
+   through the exact long-run worker. Audit its outputs before the portfolio proof: inspect the
+   report/artifact schema and compatibility load, prediction-vs-label renders, per-source/per-unit
+   metrics, calibration/abstention, errors/refusals, resource use, heartbeat, lifecycle records,
+   and operator visibility. Repair every defect the audit exposes and rerun the affected proof;
+   a failed or suspicious research arm is a setup defect, not a handoff note. Then run the
+   portfolio one-shot. Verify one new Run per proof, heartbeat, artifact checksum, process cleanup,
+   typed outcome, external adjudication, and idempotent restart position. A baseline-only
+   seed-smoke adapter is not the long supervisor and cannot satisfy this item. A worker that only
+   opens a worktree or writes a plan is not a candidate dispatch.
 6. Before handoff, run `python -m knowledge.ml_registry.runtime.campaign_job --help` and
    `python -m knowledge.ml_registry.cli.portfolio --help` in the target environment, then inspect the
    target operator config and portfolio child command. Refuse READY if either resolves a legacy
@@ -303,6 +419,14 @@ marking that handoff READY.
 ## Never
 
 - Never declare READY on a different host from execution.
+- Never inspect only a sample of the data catalog. Every catalogued corpus gets a recorded,
+  evidence-backed campaign disposition, and every genuinely useful admissible source is wired.
+- Never leave an adapter, data manifest, loader, baseline, evaluator, real-payload test, or
+  executable arm as routine follow-up work for the human while claiming the campaign is seeded.
+- Never treat a research-arm run as a smoke-test checkbox: inspect its artifacts and outputs, fix
+  material defects, and rerun the relevant proof before handing off the long campaign.
+- Never use a label available only in a corpus as a production inference input, or claim
+  cross-sport/cross-rig validity without an independent scoring set in that regime.
 - Never count a bucket prefix, upload, or staging tree as adapter-proven data.
 - Never sync a dirty tree or use an unpushed revision as remote provenance.
 - Never copy laptop paths, throughput, hardware fingerprints, or baseline evidence into remote
@@ -312,4 +436,6 @@ marking that handoff READY.
   alias.
 - Never create a parallel live ledger/registry or revive pre-cutover lifecycle commands.
 - Never seed an unbound/legacy model fact, omit an empty receipt, invent a tenth axis, or pad stages.
+- Never call an IDEA executable merely because it has a citation or prose basis; it must be
+  dispatchable through the real trainer/evaluator or the preflighted one-arm worker.
 - Never start `/af-ml-supervise` unless the human explicitly chained it.
