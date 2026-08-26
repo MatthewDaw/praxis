@@ -73,7 +73,9 @@ Do not say READY until every condition is true on the host that will run supervi
    behind a deliberately trivial model (C-END), the loss moved with its parameters, and the trivial
    model's recorded score is the measured trivial-predictor floor. Trying a new idea must require
    plugging in a model and nothing else -- if it needs an edit to a loader, transform, loss, metric
-   or scoring path, the harness is not finished and later measurements are not comparable.
+   or scoring path, the harness is not finished. Repairing a genuine defect later is expected and
+   allowed; it obliges marking prior runs stale and re-measuring baseline and champion under the
+   repaired harness.
 7. **Canonical baseline.** On the target host, the canonical registry contains the registered model
    and an active baseline ModelVersion. `champion` resolves to it, its artifact verifies and
    compatibility-loads, and every deterministic incumbent pin matches exactly.
@@ -271,10 +273,14 @@ objective is fully specified, because the objective is what every later decision
 Ask, do not assume; a defaulted objective silently decides the corpus roles, the label rule, the
 metric and the win condition, and every one of those is then wrong in a way no later gate detects.
 
-Nothing is BUILT here and nothing is sealed here. Phase B produces a specification; Phase C
-builds it and proves it runs; Phase D registers it, and registration is what makes it immutable.
-"Freeze" is the wrong verb for work that has not started -- what matters is that once the spec
-digest is registered, the judge cannot be edited, least of all by candidate code.
+Nothing is BUILT here and nothing is sealed here. Phase B produces a specification; Phase C builds
+it and proves it runs; Phase D registers it, and registration is what puts it under change control.
+"Freeze" is the wrong verb for work that has not started.
+
+Under change control does not mean untouchable. A real defect found later gets FIXED, on the spot,
+in the harness -- see the repair rule at the end of Phase C. What registration buys is that the
+change becomes visible and costed instead of silent, and that no candidate can quietly adjust the
+thing measuring it in its own favour.
 
 Two distinct things are specified here and they must not be collapsed:
 
@@ -342,8 +348,10 @@ while the operator's launcher still defaulted to 60, and the portfolio then scor
 **What Phase C delivers is a finished harness with a model-shaped hole in it.** By the end of this
 phase an experimenter imports the harness, plugs in the model they want to try, and gets a measured
 result -- without editing the loaders, the transforms, the loss, the metric, the split logic or the
-scoring path. If trying a new idea requires touching any of those, Phase C is not done, and every
-measurement taken afterwards is comparing models that were scored by different code.
+scoring path. If trying a new idea requires touching any of those, Phase C is not done.
+
+The target is a harness good enough that it does not NEED changing, not one that may never change.
+Aim to build it once; expect to repair it rarely; never rebuild it per experiment.
 
 **Greenfield is the exception, not the rule. LOOK BEFORE YOU BUILD.** Most invocations land on a
 project that already has campaign code, and a second harness beside a working one violates the
@@ -419,6 +427,29 @@ neither will the real one.
 Keep it. It is the natural home for the null arm the campaign compares against later, and re-running
 it after any change to a loader, the loss, the metric or the label rule is the fastest way to notice
 that one of them stopped meaning what it meant.
+
+### Repairing the harness after it is built
+
+A defect found later is fixed, not worked around. Agents repair the harness on the spot; that is the
+correct response to a real problem and does not need permission. What separates a repair from
+tampering is which of these it is:
+
+* **Repair** -- the harness was WRONG. A metric that scores a degenerate predictor well, a loss that
+  cannot descend, a loader that silently drops data, a split that leaks. Fix it in the harness.
+* **Per-experiment modification** -- the harness is fine and an idea scores badly under it. Changing
+  the scoring path to accommodate an idea is not an experiment, it is choosing the answer. Refused.
+
+A repair is never free, and the cost is the part people skip: **every measurement taken under the old
+harness is no longer comparable.** So a repair carries three obligations, all of them in the same
+change -- say plainly what was wrong and when it started; mark the affected prior runs stale rather
+than leaving them to be read as current; and re-measure the baseline and champion under the repaired
+harness before adjudicating anything new against them.
+
+One campaign repaired its metric twice mid-flight. Both repairs were correct -- the metric had been
+capping a perfect predictor at 0.5 on single-class units, then rewarding a constant predictor on
+them -- and both invalidated every number measured before, including a registered baseline and the
+control that had been used to argue the features were worthless. The repairs were right; not
+re-baselining immediately would have been the error.
 
 Before calling that lifecycle runnable, join the seeded IDEA inventory to execution. A parameter
 idea may name an already-implemented arm/config. A prose architecture, data, or training hypothesis
