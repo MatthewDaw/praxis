@@ -174,7 +174,7 @@ class PortfolioController:
                  retry_backoff_seconds: float = 60.0, max_retry_backoff_seconds: float = 3600.0,
                  clock=time.time, coordinator: LeaseIntentCoordinator | None = None,
                  lease_factory=None, completion_verifier=None, run_superseder=None,
-                 failpoint=None, registry: Registry | None = None):
+                 failpoint=None, registry: Registry | None = None, job_preparer=None):
         if not 1 <= max_active <= MAX_ACTIVE_CAMPAIGNS:
             raise ControllerError(f"max_active must be between 1 and {MAX_ACTIVE_CAMPAIGNS}")
         self.portfolio = portfolio
@@ -191,6 +191,7 @@ class PortfolioController:
         self.completion_verifier = completion_verifier
         self.run_superseder = run_superseder
         self.registry = registry
+        self.job_preparer = job_preparer
         self.failpoint = failpoint or (lambda _boundary, _campaign_id: None)
         self.admission_stopped = False
         self._last_blocked: dict[str, str] = {}
@@ -311,6 +312,12 @@ class PortfolioController:
             prior = self.records.get(job.campaign_id)
             attempt = (prior.attempt + 1) if prior else 1
             token = f"{job.campaign_id}.attempt-{attempt}"
+            if self.job_preparer is not None:
+                try:
+                    job = self.job_preparer(job, token)
+                except Exception as exc:
+                    self._last_blocked[job.campaign_id] = f"dispatch preparation failed: {exc}"
+                    continue
             self.records[job.campaign_id] = DispatchRecord(
                 token, state="dispatching", attempt=attempt, started_at=now,
             )

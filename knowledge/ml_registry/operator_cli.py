@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import importlib
 import json
 from pathlib import Path
@@ -23,6 +23,8 @@ from knowledge.ml_registry.services.campaign_view import build_campaign_view
 from knowledge.ml_registry.services.registry_finalize import RegistryFinalizer
 from knowledge.ml_registry.services.registry_runs import supersede_run
 from knowledge.ml_registry.write_path import RegistrySpace
+from knowledge.ml_registry.lifecycle import claim_idea
+from knowledge.ml_registry.staging import next_queue
 
 
 class OperatorConfigError(ValueError):
@@ -233,6 +235,44 @@ class OperatorRuntime:
             now, now + float(named.get("ttl_seconds", 900)),
         )
 
+    def _prepare_arm(self, job, token: str):
+        configured = self.config.get("idea_dispatch", {})
+        if not isinstance(configured, Mapping):
+            raise OperatorConfigError("idea_dispatch must be an object keyed by campaign id")
+        if job.campaign_id not in configured:
+            return job
+        item = self._completion_verifier().bindings.get(job.campaign_id)
+        if item is None:
+            return job
+        binding = CampaignBinding(str(item["experiment_id"]), str(item["model_id"]), str(item["model_fact_id"]))
+        owner = f"campaign:{job.campaign_id}:{token}"
+        def select(space):
+            view = build_campaign_view(space, Registry(self.registry_root), binding)
+            answered, adopted = set(), set()
+            entries = []
+            for idea in view.ideas:
+                latest = max(idea.runs, key=lambda run: (run["started_at"], run["run_id"]), default=None)
+                if latest and latest["status"] == "succeeded" and latest["verdict"] in {"adopted", "rejected", "parked"}:
+                    answered.add(idea.fact_id)
+                    if latest["verdict"] == "adopted":
+                        adopted.add(idea.fact_id)
+                entries.append({"id": idea.fact_id, "stage": idea.stage, "depends_on": list(idea.depends_on)})
+            stages = tuple(json.loads(view.experiment["stages"]))
+            stage, queue, _blocked = next_queue(entries, answered, adopted, stages)
+            if not queue or stage is None:
+                raise OperatorConfigError(f"campaign {job.campaign_id!r} has no eligible IDEA to dispatch")
+            idea_id = str(queue[0]["id"])
+            if not claim_idea(space, idea_id, owner):
+                raise OperatorConfigError(f"selected IDEA {idea_id!r} has a live conflicting claim")
+            return idea_id, stage
+        # Reuse the RegistrySpace bridge mutation lock: selection and claim are one atomic action.
+        from knowledge.ml_registry.cli.registry import _load_mutate_save
+        idea_id, stage = _load_mutate_save(str(self.space_path), select)
+        environment = dict(job.environment)
+        environment.update({"AF_ML_IDEA_ID": idea_id, "AF_ML_IDEA_OWNER": owner, "AF_ML_STAGE": str(stage)})
+        return replace(job, environment=environment)
+
+
     def controller(self) -> PortfolioController:
         def supersede(campaign_id: str, reason: str) -> None:
             registry = Registry(self.registry_root)
@@ -246,7 +286,7 @@ class OperatorRuntime:
             retry_backoff_seconds=float(self.config.get("retry_backoff_seconds", 60)),
             coordinator=self.coordinator, lease_factory=self._lease,
             completion_verifier=self.completion, run_superseder=supersede,
-            registry=Registry(self.registry_root),
+            registry=Registry(self.registry_root), job_preparer=self._prepare_arm,
         )
 
     def status_document(self) -> dict[str, object]:
