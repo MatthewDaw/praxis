@@ -617,6 +617,48 @@ So every seeded idea declares which it is, and additions declare what they build
 - the sequence is a partial order, not a ranked list. Exclusive sets can be explored in parallel
   with each other; what cannot happen is refining an approach that has not been chosen.
 
+### Seed the approach now; seed its refinements once it has won
+
+Seeding happens in two rounds, and the second is not optional.
+
+**E1, before any arm runs.** Every exclusive candidate -- prior in-project models, external runnable
+solutions, published claims, wide-axis approaches -- plus additives that are TRULY approach
+independent. The closed nine applies here in full; what changes is that the content is
+approach-level. `ablation` in E1 means dropping a whole component of an approach, not masking one
+feature of one head.
+
+**E2, once the exclusive tier is settled.** The approach-specific refinements, generated from the
+winner's MEASURED failure census rather than from imagination. This is where Phase C's failure
+census earns its keep: a refinement backlog written against observed failures of the thing that
+actually won beats one written in advance against a thing that lost.
+
+### The independence test, because this is where the split fails
+
+An additive idea belongs in E1 only if it would survive a different approach winning, **unedited**.
+Apply it literally: if a completely different decomposition won tomorrow, could this idea be
+dispatched exactly as written? If it has to be rewritten, or it names a component that only one
+approach has, it is approach dependent and belongs in E2.
+
+Independent, and safe to seed early:
+
+- augmentations derived from the RIG -- resolution, optics, visibility, leakage groups. "Do not
+  mirror, because side cues carry signal" is true whatever the architecture is;
+- additional corpora and data supplements -- wiring another labelled source does not depend on the
+  model that will consume it;
+- supervision and label-rule variants -- how the labels are DERIVED is upstream of what consumes
+  them.
+
+Dependent, and belongs in E2:
+
+- anything naming a feature, a layer, a head or a loss term of one candidate approach;
+- ablations of a specific representation, which cease to mean anything when the representation
+  changes;
+- tuning of a hyperparameter that only one approach has.
+
+A campaign that ignored this seeded thirty ideas of which roughly twenty-four named parts of one
+head. Replacing that head killed all twenty-four at once, and every one of them had read as
+perfectly sensible when written.
+
 **Do not spend the budget tuning a losing approach.** An ablation on a head that a different
 decomposition is about to replace is wasted, and the waste is invisible because the ablation runs
 perfectly well. Settle the exclusive tier first.
