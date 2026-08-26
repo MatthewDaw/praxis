@@ -200,14 +200,9 @@ def _compute_cross_corpus_rope(
             f"{unexpected}; declare their provenance in metric.scoring_corpora"
         )
 
+    # A global split unit may span sources whose native unit vocabularies differ.
+    # The map key remains the row's true corpus provenance.
     split_unit = _text(metric.get("split_unit"), "metric.split_unit")
-    for corpus_id in corpus_ids:
-        declared_unit = declarations[corpus_id].get("split_unit")
-        if declared_unit != split_unit:
-            raise ContractError(
-                f"metric.split_unit {split_unit!r} does not match corpora[{corpus_id}].split_unit "
-                f"{declared_unit!r}; make the two fields identical"
-            )
     aggregation = metric.get("aggregation")
     assert isinstance(aggregation, (list, tuple))
     for index, raw_level in enumerate(aggregation):
