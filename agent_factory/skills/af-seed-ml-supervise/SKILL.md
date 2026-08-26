@@ -217,6 +217,41 @@ Verify through target-host adapters, not raw object listings:
 - prove sealed labels are unavailable to candidate code;
 - reject ephemeral download staging as a runtime source.
 
+### Build what is missing, and repair what is about to carry weight
+
+Adapters are part of Phase A's deliverable, not a prerequisite someone else satisfies.
+
+**Build every adapter an admitted source lacks.** A source classified `adapter-pending` is not
+admitted until it enumerates units, exposes leakage groups and label/media joins, decodes real
+bytes on the target, and carries a committed manifest and tests. Do not defer ingestion, parsing,
+manifest generation, or label normalization to a later human task.
+
+**Repair any existing adapter this campaign is about to make load-bearing.** An adapter that has
+only ever served one campaign's narrow slice will be asked for something new; check what THIS
+campaign needs from it and fix the adapter, in the adapter, before building on it. The same applies
+to shared loaders sitting behind adapters: if a campaign depends on one, its correctness is now in
+scope, and its OTHER consumers must be re-checked when you change it.
+
+**Never work around an adapter defect in campaign code.** The tell is knowledge leaking upward: if
+campaign code carries a corpus's archive layout, member prefix, annotation format, class ordering,
+or which track id is which object, that knowledge belongs in the adapter and its absence there is a
+defect you are hiding. Working around it means the next campaign pays the same cost, and the
+project ends up with two implementations of one problem.
+
+Four real examples from one campaign, all of which were worked around rather than fixed:
+
+- a shared ground-truth loader whose frame cap counted *distinct frames seen*, which silently
+  truncated an identity-major MOT file to a single track. It was already load-bearing for another
+  live campaign consuming the same corpus at the same cap;
+- an adapter exposing a MOT conversion in which two of six camera views ship no ground truth, while
+  the raw CSVs it does not expose annotate the ball in all six;
+- a per-unit payload that strips the member prefix its own manifest records, so addressing members
+  by the manifest's prefix silently missed them;
+- a person-tracking parser that drops the ball on purpose, forcing a second corpus reader to exist
+  beside it.
+
+Each was cheap to fix in the adapter and expensive to leave. Fix them here.
+
 Run the same label/media and partition probes established in Phase 0 after target materialization.
 A source that passed locally but is unavailable, differently credentialed, or different at the
 target is no longer admitted; repair it or refuse readiness. Record the target-side corpus matrix
