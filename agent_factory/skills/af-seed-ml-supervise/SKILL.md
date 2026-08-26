@@ -143,32 +143,53 @@ first convenient registered corpus or repeat a campaign's existing data rows.
    labels available at training/scoring time from inputs available in production. A labelled
    position, identity, team, or outcome must never silently become an inference feature merely
    because a corpus provides it.
-2. **Exhaust the whole local catalog.** Read every row in the complete project data catalog,
+2. **Decide greenfield or brownfield MODEL, and say which.** Is there already a model for this
+   ontology, or is this the first? Answer it explicitly and record the evidence, because it decides
+   what the incumbent is and therefore what every candidate is measured against.
+
+   This is NOT the same question as the `existing campaign` mode, which asks whether campaign SETUP
+   exists. A brand-new campaign with no registered experiment can still target a model the project
+   built long ago, and treating that as greenfield throws the existing model away.
+
+   Look in all four places, and a hit in any of them makes the campaign brownfield:
+
+   - the production tree, for a model family serving this ontology;
+   - the registry, for a registered model, champion alias or prior campaign artifact;
+   - **purged and archived code** -- `git log --diff-filter=D`, archive directories, and any
+     `ml_archive`/`legacy` tree. Code deleted in a cleanup is still evidence, and the measurement
+     recorded beside it is often the most valuable thing in the repository;
+   - prior campaign reports and ranked follow-ups, which routinely name the thing this campaign is
+     about to reinvent.
+
+   A brownfield campaign starts from the existing model as its incumbent. A greenfield one must
+   justify, in writing, why nothing found above serves -- "I did not find one" is only a finding
+   after all four have actually been searched.
+3. **Exhaust the whole local catalog.** Read every row in the complete project data catalog,
    registered-adapter registry, adapter-gap audit, inactive/archived campaign manifest, decision
    record, prior experiment artifact, and owner-data inventory. Do not sample by filename, sport,
    or apparent relevance. For every corpus record label ontology, pixel/media availability,
    temporal continuity, camera/regime/scale, split/leakage groups, size/cost, and possible
    train/selection/score/validation role.
-3. **Research outside the repository.** Search primary sources, official dataset pages, papers,
+4. **Research outside the repository.** Search primary sources, official dataset pages, papers,
    code releases, and model repositories for datasets and runnable systems that match the target
    ontology and regime. Search task synonyms and neighbouring sports, not only the campaign's
    initial name. For each serious lead attempt a bounded verification of accessibility, labels,
    media pairing, and evaluation suitability. A documented negative result is useful
    evidence; do not quietly omit a rejected lead.
-4. **Produce the complete data decision matrix.** Assign each catalogued corpus and serious
+5. **Produce the complete data decision matrix.** Assign each catalogued corpus and serious
    external lead exactly one disposition: `admit`, `training-only`, `selection-only`,
    `scoring-only`, `validation-only`, `research-only`, `refuted`, `adapter-pending`, or
    `blocked-external`. Compare it to the target regime rather than ranking sources by raw size.
    The matrix is incomplete if it cannot account for every catalog row. At least one real,
    independent scoring source is mandatory; if none exists, the campaign cannot be READY and the
    smallest required labelled-data acquisition is the explicit blocker.
-5. **Close every admissible adapter gap.** For every admitted source lacking a project adapter,
+6. **Close every admissible adapter gap.** For every admitted source lacking a project adapter,
    implement or repair the adapter and tests during this invocation. It must expose immutable
    units, independent leakage groups, label/media joins, bounded real decoding, fingerprints, and
    honest partitions. Do not defer routine ingestion, parsing, manifests, or label normalization to
    a later human task. Do not wire a source merely to make the matrix look exhaustive when its
    label contract makes it harmful or unusable.
-6. **Prove the proposed regime.** Render/inspect representative real examples from every admitted
+7. **Prove the proposed regime.** Render/inspect representative real examples from every admitted
    source and measure label census, resolution/scale, missingness, class balance, and
    source-to-target mismatch. Revise the target contract, corpus roles, or campaign scope when
    evidence demands it; do not preserve the original idea at the cost of an invalid experiment.
@@ -524,14 +545,30 @@ candidate needs `description`, `stage`, and concrete `basis`. The CLI stamps mod
 Run these as distinguishable rounds and record each one's outcome separately. Collapsing them into
 a single search produces a pile of citations rather than a decision.
 
-1. **Is there a finished solution?** Something that already runs end to end on this ontology, with
-   weights or code you can actually execute. If one exists and clears the harness, most of the rest
-   of the campaign is refinement of it rather than invention.
-2. **Is there a published claim without runnable code?** Papers asserting a solution but shipping
-   no usable implementation. These are real candidates and they carry reimplementation risk; say so
-   rather than treating them as equivalent to something you can run.
-3. **What are the genuinely different general approaches?** The wide axis. Not variations -- the
+1. **Has this project already built one?** Search the production tree, the registry's artifacts and
+   champions, prior campaign reports and ranked follow-ups, and -- the one that gets skipped --
+   **purged and archived code**: `git log --diff-filter=D`, `ml_archive`, `legacy`, anything a
+   cleanup removed. A model deleted in a tidy-up is still a built model, and the real-footage
+   measurement recorded beside it is frequently the most valuable artifact in the repository. This
+   round is first because it is the cheapest and the most often skipped.
+2. **Has anyone else built one you can run?** External code or weights that execute end to end on
+   this ontology.
+3. **Is there a published claim without runnable code?** Papers asserting a solution but shipping
+   no usable implementation. Real candidates, carrying reimplementation risk; say so rather than
+   treating them as equivalent to something you can run.
+4. **What are the genuinely different general approaches?** The wide axis. Not variations -- the
    handful of fundamentally different ways this problem gets attacked.
+
+**Anything found in rounds 1 or 2 becomes an ARM, not a citation.** A pre-existing model -- yours or
+somebody else's -- is a candidate to run through the harness and measure against, on exactly the
+same footing as a novel hypothesis. Recording it in the plan and then inventing something instead is
+the failure this round exists to stop.
+
+A campaign that skipped round 1 rebuilt a ball detector from colour statistics while its own archive
+held one measured at 84.6% recall / 95.5% precision -- along with the recorded finding that the
+colour signal it was rebuilding on had been measured HARMFUL on that footage. The cost was not the
+wasted build; it was a baseline, a control and a seeded backlog all committed to the wrong approach
+before anyone looked.
 
 Then cover four strands:
 
