@@ -40,6 +40,29 @@ def test_environment_is_filtered_and_overrides_require_allowlisting(tmp_path: Pa
         backend.execute(job("true", environment={"SECRET_VALUE": "x"}), state_path=tmp_path / "no.json")
 
 
+def test_campaign_worker_metadata_is_allowlisted_but_arbitrary_overrides_are_refused(tmp_path: Path):
+    backend = LocalSubprocessBackend(log_dir=tmp_path / "logs")
+    metadata = {
+        "AF_ML_CANONICAL_PROJECT_ROOT": "/workspace/project",
+        "AF_ML_IDEA_CONTRACT": "/tmp/contract.json",
+        "AF_ML_IDEA_HANDOFF": "/tmp/handoff.json",
+        "AF_ML_IDEA_ID": "idea-1",
+        "AF_ML_IDEA_OWNER": "agent",
+        "AF_ML_RECIPE_COMMIT": "a" * 40,
+        "AF_ML_RECIPE_JSON": "/tmp/recipe.json",
+        "AF_ML_STAGE": "reidentification",
+    }
+    result = backend.execute(
+        job(sys.executable, "-c", "import os; print(os.environ['AF_ML_IDEA_ID'])", environment=metadata),
+        state_path=tmp_path / "state.json",
+    )
+    assert result.state == "completed"
+    assert Path(result.stdout_log).read_text().strip() == "idea-1"
+    with pytest.raises(ExecutorError, match="not allowlisted: UNRELATED_SECRET"):
+        backend.execute(job("true", environment={"UNRELATED_SECRET": "x"}),
+                        state_path=tmp_path / "refused.json")
+
+
 def test_dry_run_writes_state_without_execution(tmp_path: Path):
     marker = tmp_path / "marker"
     backend = LocalSubprocessBackend(log_dir=tmp_path / "logs")

@@ -84,7 +84,16 @@ def _atomic_json(path: Path, payload: Mapping[str, object]) -> None:
 class LocalSubprocessBackend:
     """Run an argv vector locally without a shell or ambient environment leakage."""
 
-    DEFAULT_ENV_ALLOWLIST = frozenset({"PATH", "LANG", "LC_ALL", "TMPDIR"})
+    # Typed campaign-worker metadata is intentionally narrow: it contains only
+    # immutable handoff paths and identifiers, never credentials or arbitrary
+    # caller-provided process state.
+    DEFAULT_ENV_ALLOWLIST = frozenset({
+        "PATH", "LANG", "LC_ALL", "TMPDIR",
+        "AF_ML_CANONICAL_PROJECT_ROOT",
+        "AF_ML_IDEA_CONTRACT", "AF_ML_IDEA_HANDOFF", "AF_ML_IDEA_ID",
+        "AF_ML_IDEA_OWNER", "AF_ML_RECIPE_COMMIT", "AF_ML_RECIPE_JSON",
+        "AF_ML_STAGE",
+    })
 
     def __init__(self, *, log_dir: str | Path,
                  env_allowlist: set[str] | frozenset[str] | None = None,
