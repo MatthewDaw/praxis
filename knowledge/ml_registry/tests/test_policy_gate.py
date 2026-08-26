@@ -157,3 +157,50 @@ def test_fixture_structural_refusal_is_surfaced_without_restating_it(tmp_path: P
     assert str(exc_info.value) == (
         "fixture T7 says campaign_id does not match folder; rename the folder"
     )
+def test_explicit_cross_corpus_registration_counts_global_units_and_keeps_provenance(
+    tmp_path: Path,
+) -> None:
+    spec, _ = _fixture()
+    metric = spec["metric"]
+    assert isinstance(metric, dict)
+    metric.pop("scoring_corpus")
+    metric["scoring_scope"] = "cross_corpus"
+    corpus_ids = [f"source_{index}" for index in range(10)]
+    metric["scoring_corpora"] = corpus_ids
+    aggregation = metric["aggregation"]
+    assert isinstance(aggregation, list)
+    aggregation[1]["minimum_sample"] = 12
+    spec["corpora"] = [
+        {"id": corpus_id, "roles": ["scoring"], "split_unit": "match_id"}
+        for corpus_id in corpus_ids
+    ]
+    corpora = {
+        corpus_id: [
+            {"example_id": f"{corpus_id}-a", "match_id": "local-1", "fixture_score": 0.70},
+            {"example_id": f"{corpus_id}-b", "match_id": "local-2", "fixture_score": 0.80},
+        ]
+        for corpus_id in corpus_ids
+    }
+
+    registry = Registry(tmp_path)
+    assert registry.register_campaign_spec(spec, scoring_corpora=corpora)
+
+    rope = registry.list_events()[-1].payload["rope"]
+    assert rope["scoring_scope"] == "cross_corpus"
+    assert rope["scoring_corpora"] == corpus_ids
+    assert rope["corpus_sample_sizes"] == {corpus_id: 2 for corpus_id in corpus_ids}
+    assert rope["sample_size"] == 20
+    assert "scoring_corpus" not in rope
+
+
+def test_cross_corpus_refuses_false_single_corpus_relabelling(tmp_path: Path) -> None:
+    spec, corpora = _fixture()
+    metric = spec["metric"]
+    assert isinstance(metric, dict)
+    metric["scoring_scope"] = "cross_corpus"
+    metric["scoring_corpora"] = ["fixture_scoring"]
+
+    with pytest.raises(ContractError) as exc_info:
+        Registry(tmp_path).register_campaign_spec(spec, scoring_corpora=corpora)
+
+    assert "uses metric.scoring_corpora, not metric.scoring_corpus" in str(exc_info.value)
