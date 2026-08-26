@@ -23,7 +23,7 @@ from knowledge.ml_registry.services.campaign_view import build_campaign_view
 from knowledge.ml_registry.services.registry_finalize import RegistryFinalizer
 from knowledge.ml_registry.services.registry_runs import supersede_run
 from knowledge.ml_registry.write_path import RegistrySpace
-from knowledge.ml_registry.lifecycle import claim_idea
+from knowledge.ml_registry.lifecycle import claim_idea, heartbeat_idea_claim
 from knowledge.ml_registry.runtime.agent_idea_worker import (
     AgentIdeaWorker,
     AgentIdeaWorkerError,
@@ -311,8 +311,21 @@ class OperatorRuntime:
                 raise OperatorConfigError(f"claimed IDEA {idea_id!r} disappeared before authoring")
             contract = IdeaContract.from_fact(idea, stage=str(stage))
             handoff_path = self.runtime_root / "idea-workers" / job.campaign_id / token / "handoff.json"
+            def heartbeat_claim() -> None:
+                """Persist a claim heartbeat under the same mutation lock as claiming."""
+                def mutate(space):
+                    if not heartbeat_idea_claim(space, idea_id, owner):
+                        raise OperatorConfigError(
+                            f"IDEA {idea_id!r} claim was lost while its author was running"
+                        )
+                from knowledge.ml_registry.cli.registry import _load_mutate_save
+                _load_mutate_save(str(self.space_path), mutate)
             try:
-                handoff = worker.prepare(contract=contract, handoff_path=handoff_path)
+                handoff = worker.prepare(
+                    contract=contract,
+                    handoff_path=handoff_path,
+                    heartbeat=heartbeat_claim,
+                )
             except AgentIdeaWorkerError as exc:
                 raise OperatorConfigError(f"IDEA {idea_id!r} authoring handoff refused: {exc}") from exc
             environment.update({

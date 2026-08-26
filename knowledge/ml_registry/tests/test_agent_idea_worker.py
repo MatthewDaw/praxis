@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import sys
+import time
 
 import pytest
 
@@ -51,3 +54,20 @@ def test_worker_refuses_success_exit_without_machine_readable_handoff(tmp_path: 
     monkeypatch.setattr("knowledge.ml_registry.runtime.agent_idea_worker.subprocess.run", lambda *_a, **_k: type("Result", (), {"returncode": 0})())
     with pytest.raises(AgentIdeaWorkerError, match="did not write readable handoff"):
         worker.prepare(contract=IdeaContract.from_fact(_idea(), stage="representation"), handoff_path=tmp_path / "handoff.json")
+
+
+def test_worker_heartbeats_a_claim_while_the_author_subprocess_runs(tmp_path: Path) -> None:
+    worker = AgentIdeaWorker(
+        command=[sys.executable, "-c", "import time; time.sleep(.05)"],
+        working_directory=tmp_path,
+    )
+    heartbeats: list[float] = []
+
+    assert worker._run_author(
+        dict(os.environ),
+        heartbeat=lambda: heartbeats.append(time.monotonic()),
+        heartbeat_interval_s=.01,
+    ) == 0
+    # One heartbeat is made before launch; further heartbeats prove the subprocess
+    # stayed under the live claim rather than merely being claimed at selection time.
+    assert len(heartbeats) >= 2

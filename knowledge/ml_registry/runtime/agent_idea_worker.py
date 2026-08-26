@@ -7,7 +7,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from knowledge.ml_registry.schema import IDEA
 from knowledge.ml_registry.write_path import Fact
@@ -109,8 +109,24 @@ class AgentIdeaWorker:
         if not roots or Path(root).resolve() != self.working_directory or Path(roots[0]).resolve() == self.working_directory:
             raise AgentIdeaWorkerError("agent working_directory must be an isolated linked Git worktree")
 
-    def prepare(self, *, contract: IdeaContract, handoff_path: Path) -> AgentRecipeHandoff:
+    def prepare(
+        self,
+        *,
+        contract: IdeaContract,
+        handoff_path: Path,
+        heartbeat: Callable[[], None] | None = None,
+        heartbeat_interval_s: float = 60.0,
+    ) -> AgentRecipeHandoff:
+        """Author one recipe, keeping an optional external lease alive while it runs.
+
+        The callback is deliberately opaque to this typed handoff layer. The operator
+        supplies the registry-backed claim heartbeat; callers outside an operator may
+        omit it. A failed heartbeat aborts the author instead of allowing it to keep
+        writing against a claim it no longer owns.
+        """
         self._assert_isolated_worktree()
+        if heartbeat is not None and heartbeat_interval_s <= 0:
+            raise AgentIdeaWorkerError("agent heartbeat interval must be positive")
         contract_path = handoff_path.with_name("idea-contract.json")
         contract_path.parent.mkdir(parents=True, exist_ok=True)
         contract_path.write_text(json.dumps(contract.to_mapping(), indent=2, sort_keys=True) + "\n")
@@ -119,18 +135,73 @@ class AgentIdeaWorker:
             "AF_ML_IDEA_CONTRACT": str(contract_path),
             "AF_ML_IDEA_HANDOFF": str(handoff_path),
         })
-        try:
-            result = subprocess.run(self.command, cwd=self.working_directory, env=environment,
-                                    stdin=subprocess.DEVNULL, check=False)
-        except OSError as exc:
-            raise AgentIdeaWorkerError("unable to launch configured agent idea worker") from exc
-        if result.returncode != 0:
-            raise AgentIdeaWorkerError(f"agent idea worker exited {result.returncode}")
+        returncode = self._run_author(
+            environment,
+            heartbeat=heartbeat,
+            heartbeat_interval_s=heartbeat_interval_s,
+        )
+        if returncode != 0:
+            raise AgentIdeaWorkerError(f"agent idea worker exited {returncode}")
         handoff = AgentRecipeHandoff.load(handoff_path, contract=contract)
         commit = self._validated_head_commit(handoff.commit)
         recipe_path = handoff_path.with_name("recipe.json")
         recipe_path.write_text(json.dumps(handoff.recipe, indent=2, sort_keys=True) + chr(10))
         return replace(handoff, commit=commit, recipe_path=recipe_path)
+
+    def _run_author(
+        self,
+        environment: Mapping[str, str],
+        *,
+        heartbeat: Callable[[], None] | None,
+        heartbeat_interval_s: float,
+    ) -> int:
+        """Run the configured author and call ``heartbeat`` for its whole lifetime."""
+        if heartbeat is None:
+            try:
+                return subprocess.run(
+                    self.command, cwd=self.working_directory, env=environment,
+                    stdin=subprocess.DEVNULL, check=False,
+                ).returncode
+            except OSError as exc:
+                raise AgentIdeaWorkerError("unable to launch configured agent idea worker") from exc
+        try:
+            # Claim immediately before the author starts, then periodically while it
+            # remains alive. The callback itself owns atomic persistence.
+            heartbeat()
+            process = subprocess.Popen(
+                self.command, cwd=self.working_directory, env=environment,
+                stdin=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            raise AgentIdeaWorkerError("unable to launch configured agent idea worker") from exc
+        except Exception as exc:
+            raise AgentIdeaWorkerError("agent idea claim heartbeat failed before authoring") from exc
+        try:
+            while True:
+                try:
+                    return process.wait(timeout=heartbeat_interval_s)
+                except subprocess.TimeoutExpired:
+                    try:
+                        heartbeat()
+                    except Exception as exc:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+                        raise AgentIdeaWorkerError(
+                            "agent idea claim heartbeat failed while authoring"
+                        ) from exc
+        finally:
+            # No child may outlive a Python-level interruption between waits.
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
 
     def _validated_head_commit(self, declared: str) -> str:
         """Require the recipe to name the exact committed revision in this worktree."""
