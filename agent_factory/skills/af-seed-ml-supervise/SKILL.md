@@ -170,12 +170,17 @@ first convenient registered corpus or repeat a campaign's existing data rows.
    or apparent relevance. For every corpus record label ontology, pixel/media availability,
    temporal continuity, camera/regime/scale, split/leakage groups, size/cost, and possible
    train/selection/score/validation role.
-4. **Research outside the repository.** Search primary sources, official dataset pages, papers,
-   code releases, and model repositories for datasets and runnable systems that match the target
-   ontology and regime. Search task synonyms and neighbouring sports, not only the campaign's
-   initial name. For each serious lead attempt a bounded verification of accessibility, labels,
-   media pairing, and evaluation suitability. A documented negative result is useful
-   evidence; do not quietly omit a rejected lead.
+4. **Find DATA that is not in this repository.** Phase 0 is about what the campaign can be
+   measured on, so this round hunts corpora and labels only. Search primary sources, official
+   dataset pages and the data releases behind papers, using task synonyms and neighbouring sports
+   rather than the campaign's initial name. For each serious lead run a bounded verification of
+   accessibility, labels, media pairing, and evaluation suitability. A documented negative is
+   useful evidence; do not quietly omit a rejected lead.
+
+   **Searching for SOLUTIONS -- models, published methods, runnable systems -- is Phase E, not
+   here.** They are different questions asked for different reasons: this one decides what regime
+   is measurable at all, and answering it does not require knowing how anyone models the problem.
+   Doing both at once is how a promising method quietly starts driving the choice of data.
 5. **Produce the complete data decision matrix.** Assign each catalogued corpus and serious
    external lead exactly one disposition: `admit`, `training-only`, `selection-only`,
    `scoring-only`, `validation-only`, `research-only`, `refuted`, `adapter-pending`, or
@@ -206,8 +211,15 @@ that data is "available" is not a completed data investigation.
   Setup and target provisioning still run.
 - `existing campaign`, `--existing`, `brownfield`, `expand the campaign`, or `the setup is already
   done`: campaign code, harness, experiment, registered model, frozen metric and baseline ALREADY
-  EXIST. Phases A-D become VERIFICATION, not construction: confirm each artefact, create only what is
-  genuinely absent, and change nothing that already validates. Phase E still seeds. This is the
+  EXIST.
+
+  **Every phase still runs, and every READY condition still has to be met.** Brownfield changes
+  what a phase BUILDS ON, never which phases execute: A-D become verification rather than
+  construction -- confirm each artefact against the same bar, create only what is genuinely absent,
+  change nothing that already validates -- and a verification that fails is a defect to fix in this
+  invocation, not a reason to accept the artefact as-is. Skipping a phase because something already
+  exists there is how an unverified harness, an unmeasured baseline or an unsequenced backlog gets
+  inherited unexamined. Phase E still seeds. This is the
   INVERSE of skip-research and the two are routinely confused: skip-research reuses existing IDEAS and
   still builds setup; `existing campaign` reuses existing SETUP and still produces new ideas. They
   compose - both together means verify setup and reuse ideas, which is a no-op rerun, so refuse it and
