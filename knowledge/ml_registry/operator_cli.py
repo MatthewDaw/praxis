@@ -291,6 +291,24 @@ class OperatorRuntime:
                     if latest["verdict"] == "adopted":
                         adopted.add(idea.fact_id)
                 entries.append({"id": idea.fact_id, "stage": idea.stage, "depends_on": list(idea.depends_on)})
+            policy = configured[job.campaign_id]
+            if not isinstance(policy, Mapping):
+                raise OperatorConfigError(f"idea_dispatch.{job.campaign_id} must be an object")
+            only = policy.get("only_idea_ids")
+            if only is not None:
+                if (not isinstance(only, list) or not only
+                        or not all(isinstance(idea_id, str) and idea_id for idea_id in only)):
+                    raise OperatorConfigError(
+                        f"idea_dispatch.{job.campaign_id}.only_idea_ids must be a non-empty string list"
+                    )
+                requested = set(only)
+                entries = [entry for entry in entries if entry["id"] in requested]
+                missing = requested - {entry["id"] for entry in entries}
+                if missing:
+                    raise OperatorConfigError(
+                        f"idea_dispatch.{job.campaign_id}.only_idea_ids are not bound to the campaign: "
+                        + ", ".join(sorted(missing))
+                    )
             stages = tuple(json.loads(view.experiment["stages"]))
             stage, queue, _blocked = next_queue(entries, answered, adopted, stages)
             if not queue or stage is None:
