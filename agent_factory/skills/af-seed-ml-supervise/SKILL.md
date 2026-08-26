@@ -519,12 +519,52 @@ The exact closed set is:
 candidate needs `description`, `stage`, and concrete `basis`. The CLI stamps model fact id,
 `origin="seeded"`, and axis.
 
-Before seeding, cover four strands:
+### Research in rounds, because the rounds answer different questions
+
+Run these as distinguishable rounds and record each one's outcome separately. Collapsing them into
+a single search produces a pile of citations rather than a decision.
+
+1. **Is there a finished solution?** Something that already runs end to end on this ontology, with
+   weights or code you can actually execute. If one exists and clears the harness, most of the rest
+   of the campaign is refinement of it rather than invention.
+2. **Is there a published claim without runnable code?** Papers asserting a solution but shipping
+   no usable implementation. These are real candidates and they carry reimplementation risk; say so
+   rather than treating them as equivalent to something you can run.
+3. **What are the genuinely different general approaches?** The wide axis. Not variations -- the
+   handful of fundamentally different ways this problem gets attacked.
+
+Then cover four strands:
 
 1. published end-to-end systems, rig/metric, and runnable checkpoint—or reasoned negative;
 2. pretrained candidates and the corpus/regime each actually saw;
 3. augmentations derived from measured target resolution, optics, visibility, and leakage groups;
 4. Karpathy-loop seam: allowed code/axes/budget and immutable judge, or the decision not to run it.
+
+### Seed a SEQUENCE, not a list
+
+Research output must be ordered, and the order must be explicit in the seeded ideas. The reason is
+that campaign ideas are not peers. Some are **decisions**: the general approach, the model family,
+the problem decomposition -- only one can win, they are tried in isolation, and everything else is
+built on whichever survives. Others are **additions**: augmentations, mathematical heads and
+injections, sampling and weighting, then fine tuning -- they compose on top of a settled base and
+are meaningless before one exists.
+
+So every seeded idea declares which it is, and additions declare what they build on:
+
+- an idea that is one option in a mutually exclusive set names the others it competes with, and is
+  measured against them in isolation, on the same base;
+- an idea that layers on top records its prerequisite in `depends_on`, and is not dispatched until
+  that prerequisite is settled;
+- the sequence is a partial order, not a ranked list. Exclusive sets can be explored in parallel
+  with each other; what cannot happen is refining an approach that has not been chosen.
+
+**Do not spend the budget tuning a losing approach.** An ablation on a head that a different
+decomposition is about to replace is wasted, and the waste is invisible because the ablation runs
+perfectly well. Settle the exclusive tier first.
+
+The number of tiers and their names follow the evidence -- do not force a fixed taxonomy. What must
+be explicit is which ideas are exclusive commitments tried alone, and which are built on top of a
+decision already made.
 
 For every strand, preserve the source, exact applicability, regime mismatch, and disposition in
 the campaign plan or seed receipt. Research must drive decisions, not merely populate citations:
@@ -541,6 +581,9 @@ the campaign plan or seed receipt. Research must drive decisions, not merely pop
   artifacts. For `af_learn_lessons`, retain an empty receipt only after the real search.
 - Every idea names the admitted corpora it touches, production-legal inputs it requires, frozen
   stage it changes, and either its executable recipe or coding-agent work item.
+- Every idea declares its place in the sequence: `exclusive` with the set it competes in, or
+  `additive` with a populated `depends_on`. A backlog where every idea has `depends_on: []` has not
+  been sequenced; it has been listed.
 
 Run against the target RegistrySpace:
 
