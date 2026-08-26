@@ -70,6 +70,16 @@ def test_skill_owns_setup_through_target_host_proof() -> None:
     assert "Laptop success is not READY" in text
 
 
+def test_skill_allows_exactly_one_complete_baseline_calculation() -> None:
+    text = SKILL_PATH.read_text()
+    lowered = " ".join(text.casefold().split())
+    assert "exactly one baseline calculation" in lowered
+    assert "one complete baseline calculation and one canonical baseline run" in lowered
+    assert "never calculate the complete baseline more than once" in lowered
+    assert "clearly non-baseline smoke run" in lowered
+    assert "bounded real slice" in lowered
+
+
 def test_skill_uses_only_the_canonical_registry_lifecycle() -> None:
     text = SKILL_PATH.read_text()
     for command in (

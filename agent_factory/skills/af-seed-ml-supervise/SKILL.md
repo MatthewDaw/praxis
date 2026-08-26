@@ -73,10 +73,13 @@ Do not say READY until every condition is true on the host that will run supervi
 7. **Canonical baseline.** On the target host, the canonical registry contains the registered model
    and an active baseline ModelVersion. `champion` resolves to it, its artifact verifies and
    compatibility-loads, and every deterministic incumbent pin matches exactly.
-8. **Target measurement.** A real incumbent reproduction traverses the same target process, lease,
-   adapter, and evaluator path as candidates. The target host writes the canonical baseline Run with
-   per-unit paired evidence, typed metrics, device fingerprint, throughput unit, memory, CPU time,
-   and load. Laptop throughput is not copied.
+8. **Target measurement — exactly one baseline calculation.** Run the incumbent over the complete
+   frozen scoring population exactly once on the target host. That calculation traverses the target
+   process, lease, adapter, and evaluator path and writes the sole canonical baseline Run with
+   per-unit evidence, typed metrics, device fingerprint, throughput unit, memory, CPU time, and
+   load. Laptop throughput is not copied. Never repeat the complete baseline to estimate variance,
+   populate multiple rows, or satisfy a generic run-count convention: the time cost is not justified
+   during seeding, and candidate adjudication uses the frozen paired-resampling judge.
 9. **Campaign registration.** `register_campaign_for_run(...)` accepts the spec using real score
    rows plus the project structural validator. Its derived rope/evidence is visible in the target
    event log.
@@ -86,10 +89,12 @@ Do not say READY until every condition is true on the host that will run supervi
 11. **Closed-nine seed.** `seed-campaign` writes the approved ideas with `origin="seeded"`; all nine
     closed axes are swept, every retrieval axis has a receipt including empty results, and every
     declared stage has an authored arm.
-12. **One-arm smoke.** On the target host, an incumbent reproduction/preflight arm runs through the
-    actual campaign job, process group, writable roots, cache, timeout, progress heartbeat,
-    `create-run`, `complete-run`, and canonical external adjudication seam. It adds exactly one
-    expected Run and exits cleanly without consuming a seeded candidate.
+12. **One-arm smoke.** On the target host, a bounded preflight arm runs through the actual campaign
+    job, process group, writable roots, cache, timeout, progress heartbeat, `create-run`,
+    `complete-run`, and canonical external adjudication seam. Use the smallest real, leakage-safe
+    slice that proves the plumbing. It adds exactly one clearly non-baseline smoke Run and exits
+    cleanly without consuming a seeded candidate. It must not repeat the complete baseline
+    calculation from item 8.
 13. **Portfolio proof and handoff.** A one-shot portfolio run proves the operator/campaign/capacity
     configs, ownership, restart position, and typed outcome agree. Inspect the spawned command and
     prove it is `knowledge.ml_registry.runtime.campaign_job --config <campaign-job.json>`; a clean
@@ -210,6 +215,11 @@ sample, shared seeds, paired bootstrap resamples/confidence, and numeric win con
 baseline. Candidate and champion use identical units/seeds; adjudication uses the paired interval
 from `/af-ml-supervise`, not the spread or range of independent repeats.
 
+Baseline setup has a hard run-count budget: one complete baseline calculation and one canonical
+baseline Run. Do not use repeated seeds, repeated inference, or duplicate baseline rows to
+estimate a noise floor during seeding. A separate lifecycle smoke is bounded plumbing evidence,
+not another full baseline measurement and not another baseline Run.
+
 Declare only stages with authored arms. Vision defaults are
 `representation,architecture,augmentation,training,tuning,capacity`, but evidence decides. Freeze
 the target resource lease, heartbeat cadence, arm timeout, disk/cache budget, device fingerprint,
@@ -295,8 +305,9 @@ The project setup adapter performs this idempotent sequence:
    structural_validator=...)`;
 2. create the Experiment;
 3. reuse or create the canonical registered model;
-4. create/complete the real baseline Run, create its artifact, and create baseline ModelVersion plus
-   `champion` through canonical registry services;
+4. create/complete exactly one real baseline Run from exactly one complete baseline calculation,
+   create its artifact, and create baseline ModelVersion plus `champion` through canonical registry
+   services;
 5. create/save the RegistrySpace model fact with `write_path.register_model` and record its
    `CampaignBinding` to the canonical experiment/model.
 
@@ -361,16 +372,17 @@ for the exact model fact; report their ids.
 4. Materialize target-native registry, RegistrySpace, state/cache roots, resource lease,
    `operator.json`, portfolio/campaign/capacity manifests, and campaign-job config. Never copy
    laptop absolute paths into them.
-5. Run target preflight, real incumbent reproduction, compatibility load, campaign-job one-arm
-   smoke, and **one bounded non-incumbent research arm from claim through artifact and score**
+5. Run target preflight, the single complete incumbent calculation, compatibility load, a bounded
+   campaign-job plumbing smoke that does not repeat the full baseline, and **one bounded
+   non-incumbent research arm from claim through artifact and score**
    through the exact long-run worker. Audit its outputs before the portfolio proof: inspect the
    report/artifact schema and compatibility load, prediction-vs-label renders, per-source/per-unit
    metrics, calibration/abstention, errors/refusals, resource use, heartbeat, lifecycle records,
    and operator visibility. Repair every defect the audit exposes and rerun the affected proof;
    a failed or suspicious research arm is a setup defect, not a handoff note. Then run the
    portfolio one-shot. Verify one new Run per proof, heartbeat, artifact checksum, process cleanup,
-   typed outcome, external adjudication, and idempotent restart position. A baseline-only
-   seed-smoke adapter is not the long supervisor and cannot satisfy this item. A worker that only
+   typed outcome, external adjudication, and idempotent restart position. A
+   baseline-only seed-smoke adapter is not the long supervisor and cannot satisfy this item. A worker that only
    opens a worktree or writes a plan is not a candidate dispatch.
 6. Before handoff, run `python -m knowledge.ml_registry.runtime.campaign_job --help` and
    `python -m knowledge.ml_registry.cli.portfolio --help` in the target environment, then inspect the
@@ -431,6 +443,8 @@ marking that handoff READY.
 - Never sync a dirty tree or use an unpushed revision as remote provenance.
 - Never copy laptop paths, throughput, hardware fingerprints, or baseline evidence into remote
   state.
+- Never calculate the complete baseline more than once or register multiple baseline Runs. A
+  campaign-job plumbing smoke uses a bounded real slice and remains explicitly non-baseline.
 - Never run a GPU lease on a CPU host or silently change the resource declaration.
 - Never let candidate code read sealed labels, edit the judge, self-report a verdict, or move an
   alias.
