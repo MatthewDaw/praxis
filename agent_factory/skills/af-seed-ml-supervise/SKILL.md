@@ -300,6 +300,40 @@ not fill it from context, from the corpus, or from what a similar campaign did.
 Record the ten answers in the campaign plan. A later phase that contradicts one of them is a
 defect in that phase, and never a reason to revise the objective quietly.
 
+### B0.1 — rehearse the loss and the judge on a deliberately trivial model
+
+The ten answers are a specification. Before anything is designed around them, prove they are
+*implementable* by writing the loss and the metric and running real data through them. This is the
+cheapest gate in the whole skill and it fires before a single design decision depends on the answers.
+
+1. **Write the loss and the metric as code**, exactly as B0 specified them. Not a sketch, not a
+   library call standing in for the real aggregation -- the functions the campaign will use.
+2. **Build a deliberately trivial model.** It must be structurally correct and obviously incapable:
+   take the first two pixel values, the mean of one raw slice, a fixed constant -- anything that
+   transforms a real input into the DECLARED output shape and could not possibly solve the task.
+   Reuse an existing project model instead only when the campaign is brownfield and one already
+   serves this ontology.
+3. **Pull full representative samples through the real adapter.** Not fixtures, not a hand-built
+   array: the same enumerate/decode path Phase A proved, over enough units to include every
+   declared corpus and both ends of the class distribution.
+4. **Assert the loss is a number you could train from.** Finite, not NaN, and it MOVES when the
+   trivial model's parameters move. A loss that is constant with respect to the parameters is not a
+   loss, and finding that here costs minutes rather than a campaign.
+5. **Assert the judge returns a number on that model's predictions**, through the real aggregation
+   and split-unit path, over real units.
+6. **Record what the trivial model scores. That number is slot 7's answer**, measured rather than
+   asserted. If it is respectable under the proposed judge, the judge is not discriminating and B0
+   is not finished: revise the metric, the aggregation, or the unit definition and rehearse again.
+
+The rehearsal also settles the output-shape contract, which is where variable-size problems break:
+a frame offering a different number of candidate objects than the last one, a clip with no positive
+event, a unit with a single class. If the trivial model cannot produce a well-formed output for
+those, neither will the real one, and the failure is far cheaper to see now.
+
+Keep the rehearsal. It is the natural home for the null arm the campaign compares against later,
+and re-running it after any change to the loss, the metric, or the label rule is the fastest way to
+notice that one of them stopped meaning what it meant.
+
 ### B1 — freeze the judge
 
 Freeze one scalar and direction. Define operating point, aggregation, split unit, minimum effective
