@@ -87,7 +87,8 @@
 # therefore ran as 20 sequential hour-capped sessions instead of ~4 rounds.
 #
 # So each round now computes the dependency-ready FRONTIER itself and hands af-build the whole batch
-# as an explicit id scope, capped at AF_BATCH_MAX (default 16). Because the batch ids ARE the run
+# as an explicit id scope, capped at AF_BATCH_MAX (default 4 on the EC2 host). Because the batch ids
+# ARE the run
 # scope, af-build's own completeness gate releases the session exactly when the batch is done — the
 # skill's fan-out loop re-queries the frontier filtered to that scope, finds it empty, and stops
 # without reaching for the next wave. The context-hygiene property that motivated v1 is preserved:
@@ -125,10 +126,9 @@
 # Disk is then the real constraint: each worktree is a full checkout plus, if the project bootstraps
 # per-worktree deps, a full dependency tree.
 #
-# The default width is 8, not the 15 first written here. Workers are I/O-bound on the model API, so
-# width does NOT need a core apiece — but it is not free either: every worker that reaches its
-# end-of-ticket whole-repo gate runs a real test suite, and enough of those landing together turn a
-# 4-core box into a queue. 8 keeps a wide frontier moving without betting the round on that pileup.
+# The default width is four because this launcher is specifically for the four-physical-core EC2
+# devbox. Workers are I/O-bound on the model API, but each end-of-ticket whole-repo gate runs a real
+# test suite, so the default remains conservative and may be raised explicitly per campaign.
 #
 # v5: post-merge verification of each round, made 2026-07-30.
 #
@@ -187,7 +187,9 @@
 #   AF_ROUND_QUIET_WARN_S  log a STALL WARNING after this much round silence (600)
 #                          (default: <parent-of-worktree>/af-watch-stop-<project>@<worktree>;
 #                           the legacy basename-only path is still honoured, deprecated)
-#   AF_BATCH_MAX=32        round width (default 16). NOT narrowed by CPU underneath -- the round
+#   AF_BATCH_MAX=8         round width (default 4 on this EC2 host). Local af-build is unbounded;
+#                          this remote-only driver exports the chosen width into its child session.
+#                          NOT narrowed further by CPU underneath -- the round
 #                          fans out with Agent subagents, which carry no core-derived cap. DISK is
 #                          the real ceiling: each worker is a full checkout (+ deps if bootstrapped).
 #   AF_VERIFY_TIMEOUT_S    bound that verification (default 2700)
@@ -620,7 +622,8 @@ AF_REPO="${AF_REPO:-$(dirname "$AF_PLUGIN_DIR")}"
 AF_MODE=""
 if [ "${1:-}" = "--resolve-orphans" ]; then AF_MODE="resolve-orphans"; shift; fi
 PROJECT="$1"; WT="$2"; PG="${3:-}"; REDIS="${4:-}"; MAX="${5:-999}"
-# Largest frontier handed to a single session, and the ONLY parallelism cap this driver enforces.
+# Largest frontier handed to a single session, and the host-scoped parallelism cap this EC2 driver
+# enforces. Local af-build does not inherit it.
 #
 # It is NOT further narrowed underneath: the round fans out with Agent subagents, which carry no
 # core-derived cap, so a batch of N really does run N-wide. (An earlier version of this comment
@@ -632,7 +635,14 @@ PROJECT="$1"; WT="$2"; PG="${3:-}"; REDIS="${4:-}"; MAX="${5:-999}"
 # bootstraps per-worktree deps, a full dependency tree. Measure a round's footprint on the target
 # volume and set AF_BATCH_MAX from that; the AF_MIN_FREE_GB floor aborts a round that would not fit,
 # but it cannot un-spend disk already consumed mid-round.
-BATCH_MAX="${AF_BATCH_MAX:-16}"
+# --- BEGIN remote capacity ---
+# This launcher is the EC2 path. Its current host has four physical CPU cores, so four is the safe
+# campaign default; an operator/campaign may override it explicitly. Export the same number through
+# af-build's generic admission seam so the child agent cannot widen the already-scoped remote round.
+BATCH_MAX="${AF_BATCH_MAX:-4}"
+export AF_MAX_CPU_PARALLEL="${AF_MAX_CPU_PARALLEL:-$BATCH_MAX}"
+export AF_MAX_GPU_PARALLEL="${AF_MAX_GPU_PARALLEL:-1}"
+# --- END remote capacity ---
 
 # What the Workflow tool WOULD narrow us to on this specific machine, computed rather than assumed.
 # Only used to explain, in the dispatch prompt, why the round must not go through Workflow — nothing

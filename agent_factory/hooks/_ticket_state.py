@@ -2486,16 +2486,15 @@ def next_ready_ticket(items: list[dict]) -> Optional[dict]:
 
 # --------------------------------------------------------------------------- concurrency admission (R15)
 #
-# A fan-out round's ONLY sanctioned narrowing of the dependency-ready frontier: two FIXED lanes —
-# ``cpu`` and ``gpu`` — named by each ticket's ``meta.device`` (the closed set plan_gate.R_DEVICE_CLOSED_SET
-# enforces at intake, R16). Deliberately never derived from the host's core count (see
-# tools/check_no_core_derived_cap.py's scanner, which fails the build on any such expression anywhere
-# under agent_factory/): a fixed cap is the same number on every box the loop happens to run on, while a
-# core-derived one silently reshapes the round to whatever machine claimed it.
+# A fan-out round may be narrowed by an EXPLICIT lane limit, named by each ticket's ``meta.device``
+# (the closed set plan_gate.R_DEVICE_CLOSED_SET enforces at intake, R16). There is deliberately no
+# local/default limit: a provider or harness may apply its own hard limit, but Praxis must not silently
+# turn a laptop frontier of 20 ready tickets into an 8-ticket round. Resource-constrained launchers
+# (notably af-ticket-loop.sh on the EC2 devbox) export these limits in their own process environment.
+# That keeps the capacity policy attached to the host which needs it instead of every machine which
+# happens to import this module.
 
-DEFAULT_MAX_CPU_PARALLEL = 8
-DEFAULT_MAX_GPU_PARALLEL = 1
-_LANE_DEFAULTS = {"cpu": DEFAULT_MAX_CPU_PARALLEL, "gpu": DEFAULT_MAX_GPU_PARALLEL}
+_LANES = ("cpu", "gpu")
 
 
 def _lane_env_names(lane: str, project: str = "") -> list[str]:
@@ -2510,21 +2509,22 @@ def _lane_env_names(lane: str, project: str = "") -> list[str]:
     return names
 
 
-def lane_cap(lane: str, project: str = "") -> int:
-    """The admission cap for one concurrency lane (R15): 8 for ``cpu``, 1 for ``gpu`` by default.
+def lane_cap(lane: str, project: str = "") -> Optional[int]:
+    """Return an explicitly configured admission cap, or ``None`` for an unbounded local lane.
 
     Overridable per project via ``AF_MAX_<LANE>_PARALLEL__<PROJECT>`` (checked first), or globally via
     ``AF_MAX_<LANE>_PARALLEL``. An invalid or non-positive override is ignored (warned, not raised) —
-    same tolerance :func:`_ttl_env` uses for lease TTLs.
+    same tolerance :func:`_ttl_env` uses for lease TTLs. Remote launchers own their host capacity by
+    exporting one of these variables; importing Praxis on a laptop does not impose one.
     """
     lane_n = str(lane or "").strip().lower()
-    if lane_n not in _LANE_DEFAULTS:
-        raise ValueError(f"unknown concurrency lane {lane!r} — must be one of {sorted(_LANE_DEFAULTS)}")
+    if lane_n not in _LANES:
+        raise ValueError(f"unknown concurrency lane {lane!r} — must be one of {sorted(_LANES)}")
     for name in _lane_env_names(lane_n, project):
         val = _positive_int_env(name)
         if val is not None:
             return val
-    return _LANE_DEFAULTS[lane_n]
+    return None
 
 
 def ticket_device(item: dict[str, Any]) -> str:
@@ -2534,7 +2534,7 @@ def ticket_device(item: dict[str, Any]) -> str:
     not re-checked here)."""
     meta = item.get("meta") or {}
     dev = str(meta.get("device") or "").strip().lower()
-    return dev if dev in _LANE_DEFAULTS else "cpu"
+    return dev if dev in _LANES else "cpu"
 
 
 def live_claims(items: list[dict[str, Any]], now: Optional[float] = None) -> list[dict[str, Any]]:
@@ -2546,7 +2546,7 @@ def live_claims(items: list[dict[str, Any]], now: Optional[float] = None) -> lis
 
 
 class _LaneUsage(TypedDict):
-    cap: int
+    cap: Optional[int]
     used: int
 
 
@@ -2560,7 +2560,7 @@ class AdmissionResult(TypedDict):
 def admit_frontier(ready: list[dict[str, Any]], live: Optional[list[dict[str, Any]]] = None,
                     project: str = "") -> AdmissionResult:
     """Partition a dependency-ready frontier into what this round may DISPATCH vs. must DEFER, under
-    one fixed cap per lane (R15).
+    any explicitly configured cap per lane (R15). With no configured cap, the lane is unbounded.
 
     ``live`` is the RAW candidate ticket list a fresh round must respect before admitting anything
     new — this function filters it to :func:`live_claims` (a running campaign's occupied lane slots)
@@ -2572,8 +2572,8 @@ def admit_frontier(ready: list[dict[str, Any]], live: Optional[list[dict[str, An
     next round as it was this one; it may legitimately defer across many rounds without ever reading as
     a dependency stall (that detector runs purely off depends_on, never off admission).
     """
-    caps = {lane: lane_cap(lane, project) for lane in _LANE_DEFAULTS}
-    used = {lane: 0 for lane in _LANE_DEFAULTS}
+    caps = {lane: lane_cap(lane, project) for lane in _LANES}
+    used = {lane: 0 for lane in _LANES}
     for it in live_claims(live or []):
         lane = ticket_device(it)
         used[lane] += 1
@@ -2584,7 +2584,7 @@ def admit_frontier(ready: list[dict[str, Any]], live: Optional[list[dict[str, An
         if not isinstance(it, dict):
             continue
         lane = ticket_device(it)
-        if used[lane] < caps[lane]:
+        if caps[lane] is None or used[lane] < caps[lane]:
             used[lane] += 1
             admit.append(it)
         else:
@@ -2595,7 +2595,7 @@ def admit_frontier(ready: list[dict[str, Any]], live: Optional[list[dict[str, An
         "defer": defer,
         "deferred_ids": [str((it.get("meta") or {}).get("requirement_id") or it.get("id") or "")
                          for it in defer],
-        "lanes": {lane: {"cap": caps[lane], "used": used[lane]} for lane in _LANE_DEFAULTS},
+        "lanes": {lane: {"cap": caps[lane], "used": used[lane]} for lane in _LANES},
     }
 
 

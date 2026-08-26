@@ -1,6 +1,6 @@
-"""Acceptance coverage for R15 — af-build's fixed-lane concurrency admission control.
+"""Acceptance coverage for R15 — af-build's explicitly configured concurrency admission control.
 
-Ticket 2a365a1ce76d4c968d16a39d9c86d53e: the cpu cap defaults to 8 and the gpu cap to 1, both
+Local lanes are unbounded unless an operator or host-scoped launcher configures them; caps remain
 overridable per project, and no core-count expression appears anywhere in the dispatch path; a
 ticket counts against the concurrency lane named by its ``meta.device``; a campaign still live from
 an earlier round counts against its lane in the current round's admission and does not free it by
@@ -50,13 +50,17 @@ def _ticket(rid: str, device: str = "", build_state: str = "incomplete",
 
 # --------------------------------------------------------------------------- defaults + overrides
 
-def test_default_caps_are_8_cpu_1_gpu(monkeypatch: MonkeyPatch) -> None:
+def test_local_lanes_have_no_praxis_imposed_default_cap(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("AF_MAX_CPU_PARALLEL", raising=False)
     monkeypatch.delenv("AF_MAX_GPU_PARALLEL", raising=False)
-    assert ts.DEFAULT_MAX_CPU_PARALLEL == 8
-    assert ts.DEFAULT_MAX_GPU_PARALLEL == 1
-    assert ts.lane_cap("cpu") == ts.DEFAULT_MAX_CPU_PARALLEL
-    assert ts.lane_cap("gpu") == ts.DEFAULT_MAX_GPU_PARALLEL
+    assert ts.lane_cap("cpu") is None
+    assert ts.lane_cap("gpu") is None
+
+    ready = [_ticket(f"R{i}", device="cpu") for i in range(20)]
+    result = ts.admit_frontier(ready, live=[], project="local-project")
+    assert result["admit"] == ready
+    assert result["defer"] == []
+    assert result["lanes"]["cpu"]["cap"] is None
 
 
 def test_caps_overridable_per_project(monkeypatch: MonkeyPatch) -> None:
@@ -64,7 +68,7 @@ def test_caps_overridable_per_project(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("AF_MAX_CPU_PARALLEL__AF_ML_RESEARCH", "3")
     assert ts.lane_cap("cpu", project="af-ml-research") == 3
     # a DIFFERENT project is untouched by that override
-    assert ts.lane_cap("cpu", project="other-project") == 8
+    assert ts.lane_cap("cpu", project="other-project") is None
 
 
 def test_global_override_applies_when_no_project_override(monkeypatch: MonkeyPatch) -> None:
@@ -86,12 +90,12 @@ def test_ticket_counts_against_lane_named_by_meta_device() -> None:
 # --------------------------------------------------------------------------- live campaign accounting
 
 def test_live_claim_from_earlier_round_counts_against_its_lane(monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.delenv("AF_MAX_GPU_PARALLEL", raising=False)
+    monkeypatch.setenv("AF_MAX_GPU_PARALLEL", "1")
     monkeypatch.delenv("AF_MAX_GPU_PARALLEL__AF_ML_RESEARCH", raising=False)
     live = [_ticket("R-live", device="gpu", claim_owner="worker-1", lease_live=True)]
     ready = [_ticket("R-new", device="gpu")]
     result = ts.admit_frontier(ready, live=live, project="af-ml-research")
-    # gpu cap is 1 and is already fully occupied by the live campaign ticket
+    # The explicitly configured gpu cap is already occupied by the live campaign ticket.
     assert result["admit"] == []
     assert result["defer"] and result["defer"][0]["id"] == "R-new"
     assert result["lanes"]["gpu"]["used"] == 1

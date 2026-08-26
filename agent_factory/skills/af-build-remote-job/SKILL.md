@@ -1,18 +1,11 @@
 ---
 name: af-build-remote-job
 description: >
-  Trigger af-build on the EC2 devbox for ANY Praxis project and return immediately — the operator
-  path for starting a long remote build. Resolves that project's worktree and Postgres/Redis ports
-  ON the box (worktree names and project names routinely differ), preflights that the ticket set has
-  claimable work and non-empty building-validation checks, PATCHES the worktree's FACTORY_PROJECT
-  (af-ticket-loop.sh does not, and a stale value makes the completeness gate resolve the wrong
-  project and go inert rather than loud), refuses to stomp a live loop session, REFRESHES the
-  plugin-shipped driver on the box so no project runs a stale copy, launches
-  agent_factory/scripts/af-ticket-loop.sh detached under setsid so it survives the ssh closing,
-  verifies it did not die in its own backend preflight, and reports the tmux session plus observe/tail/stop commands.
-  Use when the human wants a build run on the devbox rather than locally. NOT for local builds — use
-  af-build for those; and distinct from praxis's /af-build-remote-jobs alias, which builds the
-  box-service dispatch feature locally. It never waits for the run to finish and never pushes.
+  Trigger af-build on the EC2 devbox for any Praxis project and return immediately. Resolve and
+  preflight the remote worktree, refresh the shipped driver, refuse to stomp a live loop, launch it
+  detached, verify startup, and report observe/stop commands. Use for a long build on the devbox,
+  not a local build; use af-build locally. Distinct from /af-build-remote-jobs, which builds the
+  box-service dispatch feature locally. Never waits for completion or pushes.
 ---
 
 This **triggers a build on the EC2 devbox** and returns —
@@ -71,12 +64,14 @@ growing CLI session and has hit 100% context mid-build twice; the loop script ru
 per BATCH with stall detection and is the maintained driver.
 
 **The loop is batch-parallel.** Each round it computes the dependency-ready frontier itself, caps it at
-`AF_BATCH_MAX` (default 16), and hands af-build that explicit id list as the run scope — so af-build fans
+`AF_BATCH_MAX` (default 4 on this four-physical-core EC2 host), and hands af-build that explicit id list as the run scope — so af-build fans
 the batch out across parallel per-ticket worktrees, the completeness gate releases the session when the
 batch is done, and the next round starts in fresh context. Tickets that depend on each other are never in
 the same batch.
 
-`AF_BATCH_MAX` is the ONLY parallelism cap in this path, and nothing narrows it underneath. The round
+`AF_BATCH_MAX` is the host-scoped parallelism cap in this path. The driver exports the same value as
+`AF_MAX_CPU_PARALLEL` to af-build, so nothing widens the round underneath; neither variable is set by
+local af-build. The round
 fans out with `Agent` subagents, which carry no core-derived cap — the driver explicitly forbids the
 `Workflow` tool for exactly that reason, so the Workflow concurrency limit never applies here. (An
 earlier version of this line claimed concurrency was "additionally capped by the Workflow tool"; that
@@ -327,7 +322,7 @@ mode only ever waits on a genuine drain or a dependency stall, both of which a h
 restarting anything.
 
 Optional knobs, prefixed before the command: `AF_MODEL_BACKEND=sonnet` (default deepseek),
-`AF_BATCH_MAX=<n>` (round width, default 16), `AF_MIN_FREE_GB=<n>` (disk floor, default 15),
+`AF_BATCH_MAX=<n>` (round width, default 4 on this EC2 host), `AF_MIN_FREE_GB=<n>` (disk floor, default 15),
 `AF_VERIFY_TIMEOUT_S=<n>` (verification bound, default 2700), `AF_WATCH_POLL_S=<n>` (watch cadence,
 default 300).
 

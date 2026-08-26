@@ -1,18 +1,12 @@
 ---
 name: af-build
 description: >
-  The build entry point: drive this project's incomplete set — the whole prd-<project> build set, or a
-  scoped subset — to done. Run the factory build loop (FIND the next incomplete ticket → CLAIM its lease →
-  RESOLVE + pin its checks by query → BUILD to the acceptance condition → VERIFY by running EVERY pinned
-  validation check on external signals → FINISH only when all checks pass) until no claimable incomplete
-  ticket remains, then convene the ce-* cold-eyes WORK-review panel. Verification is intrinsic and
-  always-on (the former af-verify), not a separate step. BY DEFAULT it launches an ultracode Workflow that
-  fans the dependency-ready frontier out across parallel one-ticket workers (each in its own worktree,
-  spawned with the per-ticket worker contract verbatim), looping until the set is done — falling back to a
-  single inline agent only for a linear/one-ticket frontier or when Workflow is unavailable; either way
-  exactly ONE decision-making agent per ticket, whose only delegation is a disposable read-only retrieval
-  sub-agent. All dynamic state lives in Praxis — no JSON status files or locks. The "go work unfinished"
-  entry point (not for planning new work).
+  Drive a Praxis project's incomplete build set, or a scoped subset, to done. Claim each ticket,
+  resolve and pin its checks, build to acceptance, run every validation against external signals,
+  and finish only on a full pass. Fan the dependency-ready frontier across isolated one-ticket
+  workers, using a single inline worker only for a one-wide frontier or when parallel dispatch is
+  unavailable. Verification is intrinsic and all dynamic state lives in Praxis. Use as the
+  go-build-the-unfinished entry point, not for planning new work.
 ---
 
 ## The methodology — read first, this is the loop af-build OWNS
@@ -301,11 +295,14 @@ below), the one sanctioned exception to this rule. Nothing else narrows a round.
 that each dispatches the admission-capped frontier in full, one decision-making agent per ticket, never a
 crew on one ticket.
 
-**Resource admission (R15) — the one sanctioned narrowing.** A ticket counts against the fixed concurrency
+**Resource admission (R15) — the one sanctioned narrowing.** A ticket counts against the concurrency
 lane its `meta.device` names (`cpu` or `gpu`, the closed set af-intake-plan stamps at planning time; an
-absent value defaults to `cpu`) — never a formula derived from the host's CPU core count. Each lane has a
-FIXED cap, `max_cpu_parallel` (default **8**) and `max_gpu_parallel` (default **1**), each overridable per
-project; `hooks/_ticket_state.py`'s `lane_cap`/`admit_frontier` are the source of truth (see
+absent value defaults to `cpu`) — never a formula derived from the host's CPU core count. Local execution
+has **no Praxis-imposed lane cap**: dispatch the whole ready frontier and let the active harness/provider
+apply its own hard limit. A resource-constrained host launcher may explicitly export `max_cpu_parallel`
+and/or `max_gpu_parallel`, including per-project overrides; only then does admission narrow the frontier.
+The EC2 remote driver owns its four-CPU default in its own environment, so that box policy never leaks
+onto a laptop. `hooks/_ticket_state.py`'s `lane_cap`/`admit_frontier` are the source of truth (see
 `tools/check_no_core_derived_cap.py`, which fails the build on any core-count-derived expression anywhere
 under `agent_factory/`). A ticket still claimed under a LIVE lease from an earlier round — a campaign still
 running — counts against its lane in THIS round's admission too; staying `incomplete` never frees the lane

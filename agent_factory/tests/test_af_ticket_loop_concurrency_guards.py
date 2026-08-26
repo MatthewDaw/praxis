@@ -47,6 +47,39 @@ def run(script: Path, env: dict | None = None, timeout: int = 60):
         ["bash", str(script)], capture_output=True, text=True, timeout=timeout, env=e
     )
 
+
+def capacity_runner(tmp_path: Path) -> Path:
+    """Execute the shipped remote-capacity block, not a test-side reimplementation."""
+    path = tmp_path / "capacity.sh"
+    path.write_text(
+        "set -euo pipefail\n"
+        + block("remote capacity")
+        + "\nprintf '%s %s %s\\n' \"$BATCH_MAX\" \"$AF_MAX_CPU_PARALLEL\" \"$AF_MAX_GPU_PARALLEL\"\n"
+    )
+    return path
+
+
+def test_ec2_driver_scopes_its_four_worker_default_to_child_environment(tmp_path):
+    result = run(
+        capacity_runner(tmp_path),
+        {
+            "AF_BATCH_MAX": "",
+            "AF_MAX_CPU_PARALLEL": "",
+            "AF_MAX_GPU_PARALLEL": "",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "4 4 1"
+
+
+def test_ec2_campaign_can_override_its_remote_capacity(tmp_path):
+    result = run(
+        capacity_runner(tmp_path),
+        {"AF_BATCH_MAX": "7", "AF_MAX_CPU_PARALLEL": "", "AF_MAX_GPU_PARALLEL": "2"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "7 7 2"
+
 def await_lock(path: Path, *, seconds: int = 90) -> None:
     """Wait for the holder subprocess to actually take its lock, and FAIL LOUDLY if it never does.
 
