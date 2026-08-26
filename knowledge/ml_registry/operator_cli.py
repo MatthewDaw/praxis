@@ -160,6 +160,7 @@ class OperatorRuntime:
             str(item["id"]): item for item in campaign_doc.get("campaigns", [])
         }
         self.completion = self._completion_verifier()
+        self.campaign_bindings = self._campaign_bindings()
 
     def _completion_verifier(self):
         raw = self.config.get("finalization", {})
@@ -220,6 +221,35 @@ class OperatorRuntime:
             self.registry_root, self.space_path, normalized, terminal,
         )
 
+    def _campaign_bindings(self) -> dict[str, CampaignBinding]:
+        """Bindings used for staged IDEA selection, independent of finalization."""
+        raw = self.config.get("campaign_bindings", {})
+        if not isinstance(raw, Mapping):
+            raise OperatorConfigError("campaign_bindings must be an object keyed by campaign id")
+        bindings: dict[str, CampaignBinding] = {}
+        required = {"experiment_id", "model_id", "model_fact_id"}
+        for campaign_id, item in raw.items():
+            if not isinstance(campaign_id, str) or not campaign_id:
+                raise OperatorConfigError("campaign_bindings keys must be non-empty campaign ids")
+            if campaign_id not in self._raw_campaigns:
+                raise OperatorConfigError(f"campaign_bindings names unknown campaign {campaign_id!r}")
+            if not isinstance(item, Mapping):
+                raise OperatorConfigError(f"campaign_bindings.{campaign_id} must be an object")
+            absent = sorted(required - set(item))
+            if absent:
+                raise OperatorConfigError(
+                    f"campaign_bindings.{campaign_id} is missing: " + ", ".join(absent)
+                )
+            values = {name: item[name] for name in required}
+            if not all(isinstance(value, str) and value for value in values.values()):
+                raise OperatorConfigError(
+                    f"campaign_bindings.{campaign_id} values must be non-empty strings"
+                )
+            bindings[campaign_id] = CampaignBinding(
+                values["experiment_id"], values["model_id"], values["model_fact_id"],
+            )
+        return bindings
+
     def _lease(self, job, token: str) -> CampaignLease:
         raw = self._raw_campaigns[job.campaign_id]
         named = raw.get("lease", {})
@@ -246,10 +276,9 @@ class OperatorRuntime:
             raise OperatorConfigError("idea_dispatch must be an object keyed by campaign id")
         if job.campaign_id not in configured:
             return job
-        item = self._completion_verifier().bindings.get(job.campaign_id)
-        if item is None:
+        binding = self.campaign_bindings.get(job.campaign_id)
+        if binding is None:
             return job
-        binding = CampaignBinding(str(item["experiment_id"]), str(item["model_id"]), str(item["model_fact_id"]))
         owner = f"campaign:{job.campaign_id}:{token}"
         def select(space):
             view = build_campaign_view(space, Registry(self.registry_root), binding)
@@ -289,8 +318,14 @@ class OperatorRuntime:
             environment.update({
                 "AF_ML_IDEA_CONTRACT": str(handoff_path.with_name("idea-contract.json")),
                 "AF_ML_IDEA_HANDOFF": str(handoff_path),
+                "AF_ML_RECIPE_JSON": str(handoff.recipe_path),
                 "AF_ML_RECIPE_COMMIT": handoff.commit,
             })
+            # The authoring commit and its recipe are inseparable: run the campaign
+            # job from that isolated worktree, never the operator checkout.
+            return replace(
+                job, environment=environment, working_directory=str(worker.working_directory),
+            )
         return replace(job, environment=environment)
 
     def _idea_worker(self, campaign_id: str) -> AgentIdeaWorker | None:

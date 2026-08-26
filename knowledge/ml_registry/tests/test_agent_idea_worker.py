@@ -31,13 +31,17 @@ def test_contract_preserves_prose_and_never_infers_an_arm() -> None:
 def test_worker_requires_recipe_commit_and_evidence_before_returning(tmp_path: Path, monkeypatch) -> None:
     worker = AgentIdeaWorker(command=["worker"], working_directory=tmp_path)
     monkeypatch.setattr(worker, "_assert_isolated_worktree", lambda: None)
-    def run(*_args, **kwargs):
+    def run(*args, **kwargs):
+        if "env" not in kwargs:
+            return type("Result", (), {"stdout": "a" * 40 + chr(10)})()
         handoff = Path(kwargs["env"]["AF_ML_IDEA_HANDOFF"])
         handoff.write_text(json.dumps({"schema_version": 1, "idea_id": "idea-a", "recipe": {"arm": "one"}, "commit": "abc", "evidence": {"test": "ok"}}))
         return type("Result", (), {"returncode": 0})()
     monkeypatch.setattr("knowledge.ml_registry.runtime.agent_idea_worker.subprocess.run", run)
     handoff = worker.prepare(contract=IdeaContract.from_fact(_idea(), stage="representation"), handoff_path=tmp_path / "handoff.json")
-    assert handoff.commit == "abc"
+    assert handoff.commit == "a" * 40
+    assert handoff.recipe_path == tmp_path / "recipe.json"
+    assert json.loads(handoff.recipe_path.read_text()) == {"arm": "one"}
     assert json.loads((tmp_path / "idea-contract.json").read_text())["description"] == "mine hard negatives"
 
 

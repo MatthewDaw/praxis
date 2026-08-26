@@ -141,3 +141,17 @@ def test_operator_does_not_allow_terminal_policy_to_bypass_production_finalizati
 
     assert main(["--config", str(config), "status"]) == 2
     assert "cannot bypass finalization" in capsys.readouterr().err
+
+
+def test_operator_accepts_explicit_staged_campaign_binding(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    payload = json.loads(config.read_text())
+    payload["campaign_bindings"] = {
+        "R1": {"experiment_id": "R1", "model_id": "model-R1", "model_fact_id": "fact-R1"}
+    }
+    config.write_text(json.dumps(payload))
+
+    binding = OperatorRuntime(config).campaign_bindings["R1"]
+    assert (binding.experiment_id, binding.model_id, binding.model_fact_id) == (
+        "R1", "model-R1", "fact-R1",
+    )

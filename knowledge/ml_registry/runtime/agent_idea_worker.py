@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import json
 import os
 from pathlib import Path
@@ -62,6 +62,7 @@ class AgentRecipeHandoff:
     recipe: Mapping[str, object]
     commit: str
     evidence: Mapping[str, object]
+    recipe_path: Path | None = None
 
     @classmethod
     def load(cls, path: Path, *, contract: IdeaContract) -> "AgentRecipeHandoff":
@@ -125,4 +126,30 @@ class AgentIdeaWorker:
             raise AgentIdeaWorkerError("unable to launch configured agent idea worker") from exc
         if result.returncode != 0:
             raise AgentIdeaWorkerError(f"agent idea worker exited {result.returncode}")
-        return AgentRecipeHandoff.load(handoff_path, contract=contract)
+        handoff = AgentRecipeHandoff.load(handoff_path, contract=contract)
+        commit = self._validated_head_commit(handoff.commit)
+        recipe_path = handoff_path.with_name("recipe.json")
+        recipe_path.write_text(json.dumps(handoff.recipe, indent=2, sort_keys=True) + chr(10))
+        return replace(handoff, commit=commit, recipe_path=recipe_path)
+
+    def _validated_head_commit(self, declared: str) -> str:
+        """Require the recipe to name the exact committed revision in this worktree."""
+        try:
+            commit = subprocess.run(
+                ["git", "-C", str(self.working_directory), "rev-parse", "--verify",
+                 f"{declared}^{{commit}}"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+            head = subprocess.run(
+                ["git", "-C", str(self.working_directory), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise AgentIdeaWorkerError(
+                "agent handoff commit is not present in the authoring worktree"
+            ) from exc
+        if commit != head:
+            raise AgentIdeaWorkerError(
+                "agent handoff commit must be the current HEAD of the authoring worktree"
+            )
+        return commit
