@@ -120,6 +120,16 @@ def test_operator_accepts_an_explicit_non_promoting_terminal_outcome(tmp_path: P
     assert verifier("R1", PollResult("completed", artifact=outcome.to_mapping())) is None
 
 
+def test_operator_continues_a_measured_arm_when_finalization_is_required(tmp_path: Path):
+    config = _config(tmp_path)
+    verifier = OperatorRuntime(config).completion
+    outcome = CampaignOutcomeRecord(
+        CampaignOutcomeRecord.VERSION, "R1", CampaignOutcome.MEASURED, "one arm complete", 1,
+    )
+    continued = verifier("R1", PollResult("completed", artifact=outcome.to_mapping()))
+    assert continued.__class__.__name__ == "ContinueCampaign"
+
+
 def test_operator_does_not_allow_terminal_policy_to_bypass_production_finalization(
     tmp_path: Path, capsys,
 ) -> None:

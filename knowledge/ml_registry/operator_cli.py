@@ -14,7 +14,7 @@ from typing import Any, Mapping
 from knowledge.ml_registry import Registry
 from knowledge.ml_registry.contracts import CampaignLease
 from knowledge.ml_registry.contracts import CampaignOutcome, CampaignOutcomeRecord
-from knowledge.ml_registry.controller import ExecutorProcessBackend, PortfolioController
+from knowledge.ml_registry.controller import ContinueCampaign, ExecutorProcessBackend, PortfolioController
 from knowledge.ml_registry.domain import CampaignBinding
 from knowledge.ml_registry.portfolio import Portfolio
 from knowledge.ml_registry.runtime import LeaseIntentCoordinator
@@ -40,11 +40,18 @@ class _LazyCompletionVerifier:
         self.bindings = dict(bindings)
         self.terminal_outcomes = dict(terminal_outcomes)
 
-    def __call__(self, campaign_id: str, polled) -> dict[str, object] | None:
+    def __call__(self, campaign_id: str, polled) -> dict[str, object] | ContinueCampaign | None:
         if polled.artifact is None:
             raise ValueError("completion outcome is missing")
         outcome = CampaignOutcomeRecord.from_mapping(polled.artifact)
+        # MEASURED is one completed arm, not terminal campaign completion.
+        if outcome.outcome is CampaignOutcome.RETRYABLE:
+            return ContinueCampaign(outcome.reason)
         allowed = self.terminal_outcomes.get(campaign_id)
+        if outcome.outcome is CampaignOutcome.MEASURED and (
+            allowed is None or CampaignOutcome.MEASURED not in allowed
+        ):
+            return ContinueCampaign(outcome.reason)
         if allowed is not None:
             if outcome.outcome not in allowed:
                 expected = ", ".join(sorted(item.value for item in allowed))

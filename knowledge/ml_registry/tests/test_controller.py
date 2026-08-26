@@ -6,6 +6,7 @@ import time
 import pytest
 
 from knowledge.ml_registry.controller import (
+    ContinueCampaign,
     ControllerError,
     ExecutorProcessBackend,
     PollResult,
@@ -109,6 +110,23 @@ def test_controller_refills_restarts_without_duplicate_and_completes(tmp_path: P
     backend.results["c"] = PollResult("completed")
     assert restarted.tick().status == "complete"
     assert backend.submitted == ["a", "b", "c"]
+
+
+def test_measured_arm_is_rescheduled_not_terminal(tmp_path: Path):
+    portfolio = Portfolio()
+    ready(portfolio, "a")
+    backend = FakeBackend()
+    controller = PortfolioController(
+        portfolio=portfolio, campaign_specs=[spec("a")], capacity=RESOURCES,
+        backend=backend, state_path=tmp_path / "state.json",
+        completion_verifier=lambda _cid, _poll: ContinueCampaign("one arm measured"),
+    )
+    assert controller.tick().started == ("a",)
+    backend.results["a"] = PollResult("completed")
+    follow_up = controller.tick()
+    assert follow_up.started == ("a",)
+    assert follow_up.status == "running"
+    assert backend.submitted == ["a", "a"]
 
 
 def test_completion_artifact_unlocks_dependent_on_next_tick(tmp_path: Path):

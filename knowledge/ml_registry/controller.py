@@ -31,6 +31,13 @@ class ControllerError(ValueError):
 
 
 @dataclass(frozen=True)
+class ContinueCampaign:
+    """A completed child made progress but did not settle its campaign."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
 class PollResult:
     state: str
     artifact: Mapping[str, Any] | None = None
@@ -250,6 +257,14 @@ class PortfolioController:
                     if self.completion_verifier is not None:
                         self.failpoint("finalizing", cid)
                         artifact = self.completion_verifier(cid, polled)
+                    if isinstance(artifact, ContinueCampaign):
+                        # A one-arm MEASURED outcome releases its lease and returns to scheduling.
+                        record.state = "planned"
+                        record.message = artifact.reason
+                        record.checkpoint_uri = None
+                        if self.coordinator is not None:
+                            self.coordinator.release(cid)
+                        continue
                     # Registry-native readiness resolves the producer's immutable
                     # version/artifact directly.  The compatibility Portfolio view
                     # is membership-only and must not become a second artifact store.
