@@ -596,26 +596,26 @@ approach wins, and are seeded as additive with a dependency rather than raced ag
 Researching strand 3 early is fine and often cheap -- an augmentation derived from the RIG rather
 than the model is true whatever the model turns out to be, and "do not mirror, because side cues
 carry signal" does not stop being true when the architecture changes. What is not fine is letting
-it compete for budget with the approach decision, or seeding it with an empty `depends_on` as
-though it stood alone. Research it when you notice it; sequence it behind the decision it modifies.
+it compete for budget with the approach decision. Research it when you notice it; seed it in E1
+only if it passes the independence test, and in E2 otherwise.
 
 ### Seed a SEQUENCE, not a list
 
-Research output must be ordered, and the order must be explicit in the seeded ideas. The reason is
-that campaign ideas are not peers. Some are **decisions**: the general approach, the model family,
-the problem decomposition -- only one can win, they are tried in isolation, and everything else is
-built on whichever survives. Others are **additions**: augmentations, mathematical heads and
-injections, sampling and weighting, then fine tuning -- they compose on top of a settled base and
-are meaningless before one exists.
+Campaign ideas are not peers. Some are **decisions**: the general approach, the model family, the
+problem decomposition -- only one can win, and they are tried in isolation against each other.
+Others are **additions**: augmentations, mathematical heads and injections, sampling and weighting,
+then fine tuning.
 
-So every seeded idea declares which it is, and additions declare what they build on:
+**The round a candidate is seeded in carries that distinction, so no idea tracks a dependency.**
+Everything seeded in E1 is dispatchable the moment it is written -- exclusive candidates race each
+other, and E1's additives are independent by the test above. Everything seeded in E2 applies to the
+winner, which by then exists. There is no partial order to encode and no `depends_on` to populate,
+because an idea that would need one is an idea E2 has not been written yet.
 
-- an idea that is one option in a mutually exclusive set names the others it competes with, and is
-  measured against them in isolation, on the same base;
-- an idea that layers on top records its prerequisite in `depends_on`, and is not dispatched until
-  that prerequisite is settled;
-- the sequence is a partial order, not a ranked list. Exclusive sets can be explored in parallel
-  with each other; what cannot happen is refining an approach that has not been chosen.
+If a candidate seems to require a prerequisite, that is the signal it belongs in E2 and has been
+drafted too early. Do not plan it, do not seed it with a forward reference, and do not invent a
+dependency field to hold it -- write it after the thing it depends on has won, when you can write
+it against something real.
 
 ### Seed the approach now; seed its refinements once it has won
 
@@ -682,9 +682,9 @@ the campaign plan or seed receipt. Research must drive decisions, not merely pop
   artifacts. For `af_learn_lessons`, retain an empty receipt only after the real search.
 - Every idea names the admitted corpora it touches, production-legal inputs it requires, frozen
   stage it changes, and either its executable recipe or coding-agent work item.
-- Every idea declares its place in the sequence: `exclusive` with the set it competes in, or
-  `additive` with a populated `depends_on`. A backlog where every idea has `depends_on: []` has not
-  been sequenced; it has been listed.
+- Every idea names the round it belongs to. An E1 candidate must be dispatchable as written, with
+  no prerequisite of any kind; a candidate that needs one is deferred to E2 rather than seeded with
+  a forward reference.
 
 Run against the target RegistrySpace:
 
