@@ -36,6 +36,10 @@ class CampaignView:
     registered_model: Mapping[str, Any]
     model_fact: Fact
     ideas: tuple[IdeaInventory, ...]
+    #: Metrics this campaign MEASURES AND REPORTS but does not adjudicate on -- a judged
+    #: metric demoted by a vector amendment is carried here, never dropped, so a reader can
+    #: still see the number the campaign stopped deciding on.
+    diagnostic_metrics: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def runs(self) -> tuple[Mapping[str, Any], ...]:

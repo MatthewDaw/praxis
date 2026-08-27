@@ -41,6 +41,95 @@ class PairedInterval:
     evidence: dict[str, object]
 
 
+#: The event a campaign writes when it CHANGES THE DIMENSION of its judged vector -- a
+#: metric added, or a metric demoted to a diagnostic. It carries the whole amended spec, so
+#: the effective judge is read the same way whether or not a campaign ever amended.
+VECTOR_AMENDED = "campaign_vector_amended"
+
+
+def effective_campaign_spec(registry: Any, experiment_id: str) -> Mapping[str, object] | None:
+    """The campaign spec AS IT NOW JUDGES: the last registered spec, then every later
+    vector amendment folded over it in order, or ``None`` when none was ever registered.
+
+    A campaign's judged vector is allowed to change dimension after registration (a metric
+    the product turns out to consume, a metric that turns out to be a proxy for another).
+    An amendment appends the whole amended spec rather than a patch, so this reader stays a
+    fold over the log and every downstream judge -- scalar or vector -- keeps reading ONE
+    declaration site.
+    """
+    spec: Mapping[str, object] | None = None
+    for event in registry.list_events():
+        payload = event.payload
+        if payload.get("campaign_id") != experiment_id:
+            continue
+        if event.event_type == "campaign_spec_registered":
+            spec = payload
+        elif event.event_type == VECTOR_AMENDED:
+            amended = payload.get("spec")
+            if not isinstance(amended, Mapping):
+                raise RegistryError("a judged vector amendment must carry its amended spec")
+            spec = amended
+    return spec
+
+
+def campaign_diagnostic_metrics(
+    registry: Any, experiment_id: str,
+) -> tuple[Mapping[str, object], ...]:
+    """Every metric this campaign MEASURES AND REPORTS but does not adjudicate on.
+
+    A metric removed from the judged vector is DEMOTED, never deleted: it keeps being
+    measured and keeps appearing in evidence, it merely stops deciding. Otherwise removing
+    an objective would be indistinguishable from hiding a regression behind it.
+    """
+    diagnostics: tuple[Mapping[str, object], ...] = ()
+    for event in registry.list_events():
+        if event.event_type != VECTOR_AMENDED:
+            continue
+        if event.payload.get("campaign_id") != experiment_id:
+            continue
+        raw = event.payload.get("diagnostic_metrics") or ()
+        diagnostics = tuple(dict(item) for item in raw)
+    return diagnostics
+
+
+def guard_vector_rebaseline(
+    registry: Any, *, experiment_id: str, run_id: str, champion_run_id: str,
+) -> None:
+    """REFUSE to pair a run judged under an amended vector against a champion measured
+    under the old one, naming both vectors -- never warn.
+
+    Changing the vector is a re-freeze AND a re-baseline: the champion's number was
+    produced by a judge that no longer exists, so the pair is not a comparison. The
+    campaign re-measures its champion under the amended vector and promotes that run as its
+    baseline; only then do arms resume. This is the same refusal, for the same reason, as
+    "runs fed differently are not comparable".
+    """
+    amendments = [
+        event for event in registry.list_events()
+        if event.event_type == VECTOR_AMENDED
+        and event.payload.get("campaign_id") == experiment_id
+    ]
+    if not amendments:
+        return
+    amendment = amendments[-1]
+    promotions = [
+        event.sequence for event in registry.list_events()
+        if event.event_type in {"run_adopted", "run_created"}
+        and event.payload.get("run_id") == champion_run_id
+    ]
+    if promotions and max(promotions) > amendment.sequence:
+        return
+    old_vector = amendment.payload.get("old", {}).get("judged_metrics")
+    new_vector = amendment.payload.get("new", {}).get("judged_metrics")
+    raise RegistryError(
+        f"champion run {champion_run_id!r} was measured under the judged vector {old_vector}, "
+        f"but run {run_id!r} is judged under the amended vector {new_vector}; runs judged "
+        "under different vectors are not comparable, so this pair is refused. Re-measure the "
+        "champion under the amended vector and promote that run as the campaign's baseline "
+        "before adjudicating arms."
+    )
+
+
 def campaign_metric(registry: Any, experiment_id: str) -> Mapping[str, object] | None:
     """THE JUDGE for this campaign -- the registered CampaignSpec's ``metric`` object, frozen
     before any run -- or ``None`` when no spec was ever registered for this experiment.
@@ -53,15 +142,10 @@ def campaign_metric(registry: Any, experiment_id: str) -> Mapping[str, object] |
     :func:`~knowledge.ml_registry.floor.declared_adoption_floor` -- the SAME reader, default
     and validation the Praxis-space path uses -- so the two paths cannot hold two numbers.
     """
-    specs = [
-        event.payload
-        for event in registry.list_events()
-        if event.event_type == "campaign_spec_registered"
-        and event.payload.get("campaign_id") == experiment_id
-    ]
-    if not specs:
+    spec = effective_campaign_spec(registry, experiment_id)
+    if spec is None:
         return None
-    metric = specs[-1].get("metric")
+    metric = spec.get("metric")
     if not isinstance(metric, Mapping):
         raise RegistryError("registered CampaignSpec metric must be an object")
     guard_adoption_floor(metric)
@@ -75,15 +159,10 @@ def campaign_judged_metrics(registry: Any, experiment_id: str) -> tuple[Mapping[
     same freeze, and each entry is validated by the SAME per-metric readers, so a vector
     campaign cannot hold a judging number a scalar campaign would have refused.
     """
-    specs = [
-        event.payload
-        for event in registry.list_events()
-        if event.event_type == "campaign_spec_registered"
-        and event.payload.get("campaign_id") == experiment_id
-    ]
-    if not specs:
+    spec = effective_campaign_spec(registry, experiment_id)
+    if spec is None:
         return None
-    raw = specs[-1].get("metrics")
+    raw = spec.get("metrics")
     if raw is None:
         return None
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)) or not raw or not all(
