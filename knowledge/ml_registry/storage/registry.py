@@ -52,10 +52,10 @@ CREATE TABLE IF NOT EXISTS runs(
  stage TEXT NOT NULL, family TEXT NOT NULL, params TEXT NOT NULL, metrics TEXT NOT NULL, code_ref TEXT NOT NULL,
  device_fingerprint TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN
  ('running','complete','succeeded','failed','voided','superseded')), verdict TEXT CHECK(verdict IS NULL OR verdict IN
- ('adopted','rejected','parked','voided','abandoned')), started_at REAL NOT NULL, finished_at REAL,
+ ('adopted','rejected','parked','voided','abandoned','baseline')), started_at REAL NOT NULL, finished_at REAL,
  claim_owner TEXT NOT NULL, heartbeat_at REAL NOT NULL, CHECK(COALESCE(
  (status IN ('running','complete','failed','superseded') AND verdict IS NULL) OR
- (status='succeeded' AND verdict IN ('adopted','rejected','parked','abandoned')) OR
+ (status='succeeded' AND verdict IN ('adopted','rejected','parked','abandoned','baseline')) OR
  (status='voided' AND verdict='voided'),0)));
 CREATE TABLE IF NOT EXISTS artifacts(
  artifact_id TEXT NOT NULL, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL CHECK(kind IN
@@ -111,16 +111,16 @@ CREATE TRIGGER IF NOT EXISTS guard_experiments_delete BEFORE DELETE ON experimen
 CREATE TRIGGER IF NOT EXISTS guard_runs_insert BEFORE INSERT ON runs
  WHEN registry_authority() NOT IN ('run_created','historical_ledger_imported','historical_archive_imported') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_runs_update BEFORE UPDATE ON runs
- WHEN registry_authority() NOT IN ('run_completed','run_adjudicated','run_adopted','run_superseded','adoption_invalidated','run_abandoned') BEGIN SELECT RAISE(ABORT,'run write authority required'); END;
+ WHEN registry_authority() NOT IN ('run_completed','run_adjudicated','run_adopted','run_superseded','adoption_invalidated','run_abandoned','run_baselined','adoption_reclassified_as_baseline') BEGIN SELECT RAISE(ABORT,'run write authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_runs_delete BEFORE DELETE ON runs BEGIN SELECT RAISE(ABORT,'runs cannot be deleted'); END;
 CREATE TRIGGER IF NOT EXISTS valid_run_pair_insert BEFORE INSERT ON runs WHEN NOT COALESCE(
  (NEW.status IN ('running','complete','failed','superseded') AND NEW.verdict IS NULL) OR
- (NEW.status='succeeded' AND NEW.verdict IN ('adopted','rejected','parked','abandoned')) OR
+ (NEW.status='succeeded' AND NEW.verdict IN ('adopted','rejected','parked','abandoned','baseline')) OR
  (NEW.status='voided' AND NEW.verdict='voided'),0)
  BEGIN SELECT RAISE(ABORT,'invalid run status/verdict pair'); END;
 CREATE TRIGGER IF NOT EXISTS valid_run_pair_update BEFORE UPDATE ON runs WHEN NOT COALESCE(
  (NEW.status IN ('running','complete','failed','superseded') AND NEW.verdict IS NULL) OR
- (NEW.status='succeeded' AND NEW.verdict IN ('adopted','rejected','parked','abandoned')) OR
+ (NEW.status='succeeded' AND NEW.verdict IN ('adopted','rejected','parked','abandoned','baseline')) OR
  (NEW.status='voided' AND NEW.verdict='voided'),0)
  BEGIN SELECT RAISE(ABORT,'invalid run status/verdict pair'); END;
 CREATE TRIGGER IF NOT EXISTS guard_artifacts_insert BEFORE INSERT ON artifacts
@@ -130,15 +130,15 @@ CREATE TRIGGER IF NOT EXISTS guard_models_insert BEFORE INSERT ON registered_mod
 CREATE TRIGGER IF NOT EXISTS guard_models_update BEFORE UPDATE ON registered_models BEGIN SELECT RAISE(ABORT,'registered_models are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_models_delete BEFORE DELETE ON registered_models BEGIN SELECT RAISE(ABORT,'registered_models are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_versions_insert BEFORE INSERT ON model_versions
- WHEN registry_authority() NOT IN ('model_version_created','run_adopted') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+ WHEN registry_authority() NOT IN ('model_version_created','run_adopted','run_baselined') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_lineage_insert BEFORE INSERT ON lineage
- WHEN registry_authority() NOT IN ('lineage_created','run_adopted') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+ WHEN registry_authority() NOT IN ('lineage_created','run_adopted','run_baselined') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_lineage_update BEFORE UPDATE ON lineage BEGIN SELECT RAISE(ABORT,'lineage is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_lineage_delete BEFORE DELETE ON lineage BEGIN SELECT RAISE(ABORT,'lineage is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_aliases_insert BEFORE INSERT ON aliases
- WHEN registry_authority() NOT IN ('alias_set','run_adopted','registry_finalized','promotion_rolled_back','unpromotion_rolled_back') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+ WHEN registry_authority() NOT IN ('alias_set','run_adopted','run_baselined','registry_finalized','promotion_rolled_back','unpromotion_rolled_back') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_aliases_update BEFORE UPDATE ON aliases
- WHEN registry_authority() NOT IN ('alias_set','run_adopted','adoption_invalidated','registry_finalized','promotion_rolled_back','unpromotion_rolled_back') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+ WHEN registry_authority() NOT IN ('alias_set','run_adopted','run_baselined','adoption_invalidated','registry_finalized','promotion_rolled_back','unpromotion_rolled_back') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_aliases_delete BEFORE DELETE ON aliases
  WHEN registry_authority()!='promotion_rolled_back' BEGIN SELECT RAISE(ABORT,'aliases cannot be deleted'); END;
 CREATE TRIGGER IF NOT EXISTS guard_events_insert BEFORE INSERT ON events
@@ -397,6 +397,46 @@ class Registry:
             db.execute("INSERT INTO aliases VALUES(?,?,?,?,?,?) ON CONFLICT(model_id,alias) DO UPDATE SET "
                        "version=excluded.version,set_by=excluded.set_by,reason=excluded.reason,at=excluded.at",
                        (version["model_id"], "champion", version["version"], "adjudicate", p["reason"], event.at))
+        elif op == "run_baselined":
+            # Constitution X.3: changing the vector is a re-freeze and a re-baseline.
+            # Recording that measurement as an adoption is a ledger lie -- nothing won.
+            row = db.execute("SELECT * FROM runs WHERE run_id=?", (p["run_id"],)).fetchone()
+            if row is None or row["status"] != "complete" or row["verdict"] is not None:
+                raise RegistryError("baseline registration requires one complete, unadjudicated run")
+            version = p["model_version"]
+            db.execute("UPDATE runs SET status='succeeded',verdict='baseline',finished_at=?,heartbeat_at=? "
+                       "WHERE run_id=?", (event.at, event.at, p["run_id"]))
+            db.execute("INSERT INTO model_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (
+                version["model_id"], version["version"], p["run_id"], version["artifact_id"],
+                version["checksum"], version["family_version"], version["code_sha"],
+                version["preprocessing_hash"], _json(version["calibration"]), _json(version["thresholds"]),
+                _json(version["compat_result"]), version["status"],
+            ))
+            parent_version = p.get("parent_version")
+            if parent_version is not None:
+                db.execute("INSERT INTO lineage VALUES(?,?,?,?,?)", (
+                    version["model_id"], version["version"], version["model_id"],
+                    parent_version, "derived_from",
+                ))
+            db.execute("INSERT INTO aliases VALUES(?,?,?,?,?,?) ON CONFLICT(model_id,alias) DO UPDATE SET "
+                       "version=excluded.version,set_by=excluded.set_by,reason=excluded.reason,at=excluded.at",
+                       (version["model_id"], "champion", version["version"], "adjudicate", p["reason"], event.at))
+        elif op == "adoption_reclassified_as_baseline":
+            row = db.execute("SELECT * FROM runs WHERE run_id=?", (p["run_id"],)).fetchone()
+            if row is None:
+                raise RegistryError("unknown run")
+            if row["status"] == "succeeded" and row["verdict"] == "baseline":
+                return False
+            if row["status"] != "succeeded" or row["verdict"] != "adopted":
+                raise RegistryError(
+                    "reclassification as baseline withdraws an improvement verdict from a "
+                    f"re-baseline that was filed as an adoption; got status={row['status']!r} "
+                    f"verdict={row['verdict']!r}"
+                )
+            db.execute(
+                "UPDATE runs SET verdict='baseline',heartbeat_at=? WHERE run_id=?",
+                (p["at"], p["run_id"]),
+            )
         elif op == "ratchet_evidence_recorded":
             # Evidence is canonical in the append-only event stream.  Keeping it out of
             # mutable model metadata preserves the eight-table registry contract.
@@ -887,6 +927,53 @@ class Registry:
                                         model_version=version)
         self._write("run_adopted", payload)
         return True
+
+    def _register_baseline_and_promote(self, *, run_id: str, model_id: str, reason: str,
+                                       model_version: Mapping[str, Any],
+                                       capability: object) -> bool:
+        """Promote a re-measured champion as the campaign baseline with no improvement verdict.
+
+        Constitution X.3: a vector (or judge) change is a re-freeze and a re-baseline.
+        The number is the new floor; recording it as ``adopted`` claims a win nobody earned.
+        """
+        if capability is not _ADJUDICATOR_CAPABILITY:
+            raise RegistryError("baseline registration requires adjudication authority")
+        version = dict(model_version)
+        version["model_id"] = model_id
+        version["run_id"] = run_id
+        prior = [event for event in self.events.read()
+                 if event.event_type == "run_baselined" and event.payload.get("run_id") == run_id]
+        champion = next((row for row in self.rows("aliases")
+                         if row["model_id"] == model_id and row["alias"] == "champion"), None)
+        parent_version = (prior[-1].payload.get("parent_version") if prior
+                          else champion["version"] if champion is not None else None)
+        payload = {"run_id": run_id, "reason": reason, "model_version": version,
+                   "parent_version": parent_version}
+        if prior:
+            if prior[-1].payload != payload:
+                raise RegistryError("baseline registration retry drifted from its full semantic payload")
+            self.recover()
+            return False
+        self._validate_adoption_payload(run_id=run_id, model_id=model_id, reason=reason,
+                                        model_version=version)
+        self._write("run_baselined", payload)
+        return True
+
+    def _reclassify_adoption_as_baseline(self, *, run_id: str, reason: str,
+                                         capability: object) -> None:
+        """Withdraw an improvement verdict from a re-baseline that was filed as an adoption.
+
+        The measurement, artifact and champion alias stand. Only the verdict label changes:
+        the run answered a new judge, it did not beat the old one. Does not roll the alias
+        back -- that would destroy the baseline the campaign is already scoring against.
+        """
+        if capability is not _ADJUDICATOR_CAPABILITY:
+            raise RegistryError("baseline reclassification requires adjudication authority")
+        if not reason.strip():
+            raise RegistryError("baseline reclassification requires a reason")
+        self._write("adoption_reclassified_as_baseline", {
+            "run_id": run_id, "reason": reason, "at": self.clock(),
+        })
 
     def _record_ratchet_evidence(self, payload: Mapping[str, Any], *, capability: object) -> None:
         if capability is not _ADJUDICATOR_CAPABILITY:

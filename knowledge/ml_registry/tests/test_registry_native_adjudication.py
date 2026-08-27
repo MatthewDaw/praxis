@@ -429,6 +429,7 @@ def test_run_status_and_scientific_verdict_have_one_exhaustive_pair_matrix() -> 
     assert VALID_RUN_STATUS_VERDICT_PAIRS == {
         ("running", None), ("complete", None), ("succeeded", "adopted"),
         ("succeeded", "rejected"), ("succeeded", "parked"), ("succeeded", "abandoned"),
+        ("succeeded", "baseline"),
         ("failed", None), ("voided", "voided"), ("superseded", None),
     }
 

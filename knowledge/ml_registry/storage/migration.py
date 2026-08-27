@@ -57,6 +57,7 @@ def migrate_schema(connection: sqlite3.Connection) -> int:
         raise RegistryError(f"no lossless registry schema migration from {version} to {SCHEMA_VERSION}")
     _ensure_experiment_amend_trigger(connection)
     _ensure_abandoned_verdict_allowed(connection)
+    _ensure_baseline_verdict_allowed(connection)
     return version
 
 
@@ -206,6 +207,131 @@ def _drop_rekeyed_tables(connection: sqlite3.Connection) -> None:
             # Dropping the table drops its triggers with it; foreign keys are off because
             # the implicit DELETE FROM would otherwise trip `lineage`'s reference.
             connection.execute(f"DROP TABLE IF EXISTS {table}")
+        connection.commit()
+    finally:
+        connection.execute("PRAGMA foreign_keys=ON")
+
+
+_BASELINE_PAIR_SQL = """
+ (NEW.status IN ('running','complete','failed','superseded') AND NEW.verdict IS NULL) OR
+ (NEW.status='succeeded' AND NEW.verdict IN ('adopted','rejected','parked','abandoned','baseline')) OR
+ (NEW.status='voided' AND NEW.verdict='voided')
+""".strip()
+
+_BASELINE_PAIR_INSERT = f"""
+CREATE TRIGGER IF NOT EXISTS valid_run_pair_insert BEFORE INSERT ON runs WHEN NOT COALESCE(
+ {_BASELINE_PAIR_SQL},0)
+ BEGIN SELECT RAISE(ABORT,'invalid run status/verdict pair'); END;
+"""
+
+_BASELINE_PAIR_UPDATE = f"""
+CREATE TRIGGER IF NOT EXISTS valid_run_pair_update BEFORE UPDATE ON runs WHEN NOT COALESCE(
+ {_BASELINE_PAIR_SQL},0)
+ BEGIN SELECT RAISE(ABORT,'invalid run status/verdict pair'); END;
+"""
+
+_BASELINE_GUARD_RUNS_UPDATE = """
+CREATE TRIGGER IF NOT EXISTS guard_runs_update BEFORE UPDATE ON runs
+ WHEN registry_authority() NOT IN ('run_completed','run_adjudicated','run_adopted','run_superseded','adoption_invalidated','run_abandoned','run_baselined','adoption_reclassified_as_baseline') BEGIN SELECT RAISE(ABORT,'run write authority required'); END;
+"""
+
+_BASELINE_GUARD_VERSIONS_INSERT = """
+CREATE TRIGGER IF NOT EXISTS guard_versions_insert BEFORE INSERT ON model_versions
+ WHEN registry_authority() NOT IN ('model_version_created','run_adopted','run_baselined') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+"""
+
+_BASELINE_GUARD_LINEAGE_INSERT = """
+CREATE TRIGGER IF NOT EXISTS guard_lineage_insert BEFORE INSERT ON lineage
+ WHEN registry_authority() NOT IN ('lineage_created','run_adopted','run_baselined') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+"""
+
+_BASELINE_GUARD_ALIASES_INSERT = """
+CREATE TRIGGER IF NOT EXISTS guard_aliases_insert BEFORE INSERT ON aliases
+ WHEN registry_authority() NOT IN ('alias_set','run_adopted','run_baselined','registry_finalized','promotion_rolled_back','unpromotion_rolled_back') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+"""
+
+_BASELINE_GUARD_ALIASES_UPDATE = """
+CREATE TRIGGER IF NOT EXISTS guard_aliases_update BEFORE UPDATE ON aliases
+ WHEN registry_authority() NOT IN ('alias_set','run_adopted','run_baselined','adoption_invalidated','registry_finalized','promotion_rolled_back','unpromotion_rolled_back') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
+"""
+
+
+def _ensure_baseline_verdict_allowed(connection: sqlite3.Connection) -> None:
+    """Allow (succeeded, baseline) on an already-versioned schema-6 database.
+
+    A re-baseline under a new judge is not an adoption (constitution X.3). Bumping
+    ``user_version`` would refuse live peers still compiled against 6, so this is the
+    same lossless in-place rebuild as :func:`_ensure_abandoned_verdict_allowed`.
+    """
+    _rebuild_runs_table_if_baseline_missing(connection)
+    _ensure_trigger_body(connection, "guard_runs_insert", "run_created", _GUARD_RUNS_INSERT)
+    _ensure_trigger_body(connection, "guard_runs_delete", "runs cannot be deleted", _GUARD_RUNS_DELETE)
+    _ensure_trigger_body(connection, "valid_run_pair_insert", "baseline", _BASELINE_PAIR_INSERT)
+    _ensure_trigger_body(connection, "valid_run_pair_update", "baseline", _BASELINE_PAIR_UPDATE)
+    _ensure_trigger_body(connection, "guard_runs_update", "run_baselined", _BASELINE_GUARD_RUNS_UPDATE)
+    if _table_exists(connection, "model_versions"):
+        _ensure_trigger_body(
+            connection, "guard_versions_insert", "run_baselined", _BASELINE_GUARD_VERSIONS_INSERT,
+        )
+    if _table_exists(connection, "lineage"):
+        _ensure_trigger_body(
+            connection, "guard_lineage_insert", "run_baselined", _BASELINE_GUARD_LINEAGE_INSERT,
+        )
+    if _table_exists(connection, "aliases"):
+        _ensure_trigger_body(
+            connection, "guard_aliases_insert", "run_baselined", _BASELINE_GUARD_ALIASES_INSERT,
+        )
+        _ensure_trigger_body(
+            connection, "guard_aliases_update", "run_baselined", _BASELINE_GUARD_ALIASES_UPDATE,
+        )
+
+
+def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,),
+    ).fetchone()
+    return row is not None
+
+
+def _rebuild_runs_table_if_baseline_missing(connection: sqlite3.Connection) -> None:
+    """Recreate ``runs`` so the table CHECK accepts ``baseline``. Triggers follow separately."""
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='runs'"
+    ).fetchone()
+    if row is None or "baseline" in row[0]:
+        return
+    new_sql = row[0]
+    new_sql = new_sql.replace(
+        "('adopted','rejected','parked','voided','abandoned')",
+        "('adopted','rejected','parked','voided','abandoned','baseline')",
+    )
+    new_sql = new_sql.replace(
+        "verdict IN ('adopted','rejected','parked','abandoned')",
+        "verdict IN ('adopted','rejected','parked','abandoned','baseline')",
+    )
+    if "baseline" not in new_sql:
+        raise RegistryError("could not rewrite the runs CHECK to accept baseline")
+    if new_sql.startswith("CREATE TABLE \"runs\""):
+        new_sql = "CREATE TABLE runs_new" + new_sql[len("CREATE TABLE \"runs\""):]
+    elif new_sql.startswith("CREATE TABLE runs"):
+        new_sql = "CREATE TABLE runs_new" + new_sql[len("CREATE TABLE runs"):]
+    else:
+        raise RegistryError(f"unexpected runs table SQL: {new_sql[:80]!r}")
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys=OFF")
+    try:
+        for trigger in (
+            "guard_runs_insert",
+            "guard_runs_update",
+            "guard_runs_delete",
+            "valid_run_pair_insert",
+            "valid_run_pair_update",
+        ):
+            connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        connection.executescript(new_sql)
+        connection.execute("INSERT INTO runs_new SELECT * FROM runs")
+        connection.execute("DROP TABLE runs")
+        connection.execute("ALTER TABLE runs_new RENAME TO runs")
         connection.commit()
     finally:
         connection.execute("PRAGMA foreign_keys=ON")

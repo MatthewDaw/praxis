@@ -37,6 +37,31 @@ def adopt_run_and_promote(registry: Registry, *, run_id: str, model_id: str, rea
     )
 
 
+def register_baseline_and_promote(registry: Registry, *, run_id: str, model_id: str, reason: str,
+                                  model_version: dict[str, object]) -> bool:
+    """Promote a re-measured champion as the campaign baseline with no improvement verdict.
+
+    Use this after a vector or judge change. ``adopt_run_and_promote`` records a win;
+    a re-baseline is not one (constitution X.3).
+    """
+    return registry._register_baseline_and_promote(
+        run_id=run_id, model_id=model_id, reason=reason, model_version=model_version,
+        capability=_ADJUDICATOR_CAPABILITY,
+    )
+
+
+def reclassify_adoption_as_baseline(registry: Registry, *, run_id: str, reason: str) -> None:
+    """Withdraw an improvement verdict from a re-baseline that was filed as an adoption.
+
+    Leaves the measurement, artifact and champion alias in place. Use when the ledger
+    already recorded ``adopted`` for a judge-change re-measure; do not roll the alias
+    back -- that would unseat the baseline the campaign is scoring against.
+    """
+    registry._reclassify_adoption_as_baseline(
+        run_id=run_id, reason=reason, capability=_ADJUDICATOR_CAPABILITY,
+    )
+
+
 def supersede_run(registry: Registry, *, run_id: str, reason: str) -> None:
     registry._supersede_run(run_id=run_id, reason=reason, capability=_ADJUDICATOR_CAPABILITY)
 

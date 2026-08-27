@@ -22,7 +22,10 @@ from knowledge.ml_registry.services.paired_adjudication import (
     campaign_metric,
 )
 from knowledge.ml_registry.services.registry_adjudication import adjudicate_against_champion
-from knowledge.ml_registry.services.registry_aliases import adopt_run_and_promote
+from knowledge.ml_registry.services.registry_aliases import (
+    adopt_run_and_promote,
+    register_baseline_and_promote,
+)
 from knowledge.ml_registry.storage import RegistryError
 
 from .test_vector_adjudication import (
@@ -69,7 +72,7 @@ def rebaseline(registry: Registry, run_id: str, values: dict[str, float], versio
     create_run(registry, run_id, values)
     artifact = registry.create_artifact(run_id=run_id, kind="checkpoint",
                                         content=f"rebase:{run_id}".encode(), schema_version="1")
-    adopt_run_and_promote(
+    register_baseline_and_promote(
         registry, run_id=run_id, model_id="model", reason="re-baseline under amended vector",
         model_version={"version": version, "artifact_id": artifact, "checksum": artifact,
                        "family_version": "linear@1", "code_sha": SHA, "preprocessing_hash": "prep",
@@ -279,6 +282,13 @@ def test_a_fresh_baseline_promoted_under_the_new_vector_lets_arms_resume(
     registry = vector_registry(tmp_path)
     amend(registry, ["ap50", "idf1", "recall"], REASON_ADD)
     rebaseline(registry, "rebaseline", {**CHAMPION_METRICS, "recall": .50}, version=2)
+    row = next(r for r in registry.rows("runs") if r["run_id"] == "rebaseline")
+    assert row["status"] == "succeeded"
+    assert row["verdict"] == "baseline"
+    assert not any(
+        event.event_type == "run_adopted" and event.payload.get("run_id") == "rebaseline"
+        for event in registry.list_events()
+    )
     units = {**shifted({"ap50": .03, "idf1": 0.0}), "recall": CHAMPION_RECALL}
     create_run(registry, "candidate", aggregates(units))
     assert adjudicate_against_champion(

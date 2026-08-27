@@ -118,7 +118,7 @@ def guard_vector_rebaseline(
     amendment = amendments[-1]
     promotions = [
         event.sequence for event in registry.list_events()
-        if event.event_type in {"run_adopted", "run_created"}
+        if event.event_type in {"run_adopted", "run_baselined", "run_created"}
         and event.payload.get("run_id") == champion_run_id
     ]
     if promotions and max(promotions) > amendment.sequence:
