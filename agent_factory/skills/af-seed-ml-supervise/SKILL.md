@@ -637,14 +637,36 @@ candidate needs `description`, `stage`, and concrete `basis`. The CLI stamps mod
 
 ### Brownfield starts with the incumbent's failures, not with a search
 
-On a brownfield campaign, Phase E does NOT open with research. It opens with a census of the model
-that already exists: where does it fail, on which split units, with what signature, and how much of
-the metric each failure mode costs. Phase C's failure census is the instrument; if it was not built,
-build it before searching.
+On a brownfield campaign, Phase E does NOT open with research. It opens with a diagnosis of the
+model that already exists: where does it fail, on which split units, with what signature, and how
+much of the metric each failure mode costs. Phase C's failure census is the instrument; if it was
+not built, build it before searching.
 
-Research is then DIRECTED at those holes. A round that returns citations unrelated to any measured
-failure has answered a question nobody asked -- it is the brownfield equivalent of rebuilding
-something the archive already held. State each hole, then say what would fill it.
+**Diagnose by running it, then reasoning hard about what came out.** Execute the champion over real
+units. Render the outputs and LOOK at them -- overlays, crops, filmstrips, whatever this project
+already renders; `render it, then believe it` is a diagnosis rule before it is a reporting rule.
+Compare predictions against labels case by case. Read the distribution of the loss, not its mean.
+The analysis is the point; what it must be analysis OF is observed output.
+
+The failure this replaces is deciding from the SOURCE what is probably weak -- reading the model,
+forming a theory about its limitations, and seeding against the theory. That is a plausible story
+about a model rather than a measurement of one, and plausible stories are exactly what a campaign
+cannot adjudicate. If a weakness is real it is visible in the output; if it is not visible in the
+output, seeding against it spends arms on a hypothesis no metric will confirm or refute.
+
+Name each hole concretely enough to recognise it again: which units, what the model does instead of
+the right thing, and what fraction of the metric it costs. A hole nobody can point at in a rendered
+frame is not yet a hole, it is a suspicion -- keep it, mark it as one, and go find out.
+
+Research is then DIRECTED at those holes, and it looks for two kinds of answer: a fix that closes
+the hole in the model you have, or a different model that STRUCTURALLY CANNOT have it. Both are
+legitimate outcomes of the same directed search, and the second is not a failure of the first --
+sometimes the honest reading of a census is that the incumbent's architecture guarantees the failure
+mode and no amount of patching removes it.
+
+A round that returns citations unrelated to any measured failure has answered a question nobody
+asked -- it is the brownfield equivalent of rebuilding something the archive already held. State
+each hole, then say what would fill it.
 
 Two things this must not become:
 
