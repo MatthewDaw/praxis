@@ -36,6 +36,11 @@ def adjudicate_against_champion(
             if event.event_type == "run_adopted" and event.payload.get("run_id") == run_id
         )
         stored_evidence = prior.payload.get("adjudication_evidence")
+        if isinstance(stored_evidence, Mapping) and stored_evidence.get("method") == "vector_pareto":
+            # A vector adoption's recorded reason carries the deciding-metric summary; a
+            # faithful retry supplies the same base reason, so rebuild the recorded string
+            # from the durable decision -- a genuinely different reason still drifts.
+            reason = f"{reason} -- {stored_evidence.get('decision')}"
         if paired_evidence is not None:
             from .paired_adjudication import evidence_digest
 
@@ -95,11 +100,36 @@ def adjudicate_against_champion(
         from .paired_adjudication import (
             LEGACY_SCALAR_ROPE,
             PAIRED_BOOTSTRAP,
+            campaign_judged_metrics,
             campaign_metric,
             comparison_policy,
             paired_interval,
         )
 
+        # A VECTOR JUDGE, when the registered CampaignSpec declares one, decides the whole
+        # verdict per-metric and Pareto (see _adjudicate_vector); the scalar path below is
+        # untouched for every campaign that judges one metric.
+        judged = campaign_judged_metrics(registry, str(experiment["experiment_id"]))
+        if judged is not None:
+            verdict, status, adjudication_evidence, reason = _adjudicate_vector(
+                judged,
+                run_id=run_id,
+                champion_run_id=str(champion_run["run_id"]),
+                candidate=candidate,
+                baseline=baseline,
+                paired_evidence=paired_evidence,
+                reason=reason,
+            )
+            return _record(registry, run_id=run_id, model_id=model_id, reason=reason,
+                           promotion=promotion, counterfactual_run_id=counterfactual_run_id,
+                           intervention_digest=intervention_digest, verdict=verdict,
+                           status=status, adjudication_evidence=adjudication_evidence)
+        if isinstance(candidate.metric, Mapping) or isinstance(baseline.metric, Mapping):
+            raise RegistryError(
+                "run metrics are a vector (values keyed by metric name), but this "
+                "campaign's judge is a single scalar metric; register a vector "
+                "CampaignSpec (metrics: [...]) or report one scalar metric value"
+            )
         # THE ADOPTION FLOOR ON THE CANONICAL PATH. A gain of `adoption_floor` or more in
         # absolute metric points (0.5% by default, declared with the judge) IS a win and is
         # adopted outright; the interval, or the scalar rope, decides only what falls below
@@ -193,6 +223,29 @@ def adjudicate_against_champion(
                 "or legacy_scalar_rope"
             )
 
+    return _record(registry, run_id=run_id, model_id=model_id, reason=reason,
+                   promotion=promotion, counterfactual_run_id=counterfactual_run_id,
+                   intervention_digest=intervention_digest, verdict=verdict, status=status,
+                   adjudication_evidence=adjudication_evidence)
+
+
+def _record(
+    registry: Registry,
+    *,
+    run_id: str,
+    model_id: str,
+    reason: str,
+    promotion: Mapping[str, Any] | None,
+    counterfactual_run_id: str | None,
+    intervention_digest: str | None,
+    verdict: str,
+    status: str,
+    adjudication_evidence: Mapping[str, object] | None,
+) -> str:
+    """Record a derived verdict: promote a win atomically, otherwise adjudicate the run,
+    and feed a rejection with counterfactual evidence to the ratchet. The single recording
+    tail both the scalar and the vector judge return through, so they cannot diverge on
+    what an adoption or a rejection DOES."""
     if verdict == "adopted" and promotion is None:
         raise RegistryError("an adopted run requires artifact and compatibility inputs for champion promotion")
     if verdict == "adopted":
@@ -245,3 +298,144 @@ def _one(rows: list[dict[str, Any]], field: str, value: object, noun: str) -> di
     if match is None:
         raise RegistryError(f"unknown {noun}")
     return match
+
+
+def _adjudicate_vector(
+    entries,
+    *,
+    run_id: str,
+    champion_run_id: str,
+    candidate: RunMetrics,
+    baseline: RunMetrics,
+    paired_evidence: Mapping[str, object] | None,
+    reason: str,
+) -> tuple[str, str, dict[str, object], str]:
+    """Judge a run on the campaign's declared metric VECTOR; adoption is Pareto.
+
+    Every judged metric is compared on the SAME units with its OWN paired interval, floor
+    and direction -- exactly the scalar path's tests, run per metric by the scalar helpers
+    themselves. The verdict:
+
+    - ADOPTED: at least one judged metric clears its adoption floor (or its paired lower
+      bound says gain) AND no judged metric regresses beyond its rope. A win on one output
+      with the rest unchanged is a win.
+    - REJECTED: any judged metric regresses beyond its rope, whatever the gains elsewhere.
+      A trade is not an improvement; the product ships every output.
+    - PARKED otherwise -- nothing cleared a floor and nothing regressed.
+
+    A run missing any judged metric is INVALID for adjudication and is REFUSED naming the
+    metric -- never adjudicated on the subset. Values a run or a unit reports beyond the
+    judged names are diagnostics and are ignored. Returns
+    ``(verdict, status, adjudication_evidence, reason)`` with the per-metric result (gain,
+    interval, floor, outcome) durable in the evidence and the deciding metrics named, with
+    their numbers, in the reason.
+    """
+    from knowledge.ml_registry.floor import (
+        FLOOR_ADOPTION_UNSUPPORTED_BY_INTERVAL_FIELD,
+        adoption_gain,
+        clears_adoption_floor,
+        declared_adoption_floor,
+    )
+
+    from .paired_adjudication import (
+        VECTOR_PARETO,
+        evidence_digest,
+        paired_interval,
+        project_vector_evidence,
+    )
+
+    if paired_evidence is None:
+        raise RegistryError(
+            "vector CampaignSpec adjudication requires explicit same-unit paired evidence"
+        )
+    names = [str(entry["name"]).strip() for entry in entries]
+    for label, reported in (("candidate", candidate.metric), ("champion", baseline.metric)):
+        if not isinstance(reported, Mapping):
+            raise RegistryError(
+                f"the {label} run reports one scalar metric, but this campaign judges the "
+                f"vector {names}; report every judged metric's value keyed by name"
+            )
+        missing = sorted(set(names) - set(reported))
+        if missing:
+            raise RegistryError(
+                f"the {label} run is INVALID for vector adjudication: judged metric(s) "
+                f"{missing} missing from its reported metrics {sorted(reported)}; a vector "
+                "judge never adjudicates on a subset of its metrics"
+            )
+
+    per_metric: dict[str, dict[str, object]] = {}
+    regressions: list[str] = []
+    wins: list[str] = []
+    for entry in entries:
+        name = str(entry["name"]).strip()
+        direction = str(entry["direction"])
+        candidate_value = float(candidate.metric[name])
+        champion_value = float(baseline.metric[name])
+        gain = adoption_gain(direction, champion_value, candidate_value)
+        floor = declared_adoption_floor(dict(entry))
+        adopted_by_floor = clears_adoption_floor(dict(entry), gain)
+        interval = paired_interval(
+            entry["adjudication"],
+            project_vector_evidence(paired_evidence, name),
+            run_id=run_id,
+            champion_run_id=champion_run_id,
+            direction=direction,
+            candidate_metric=candidate_value,
+            champion_metric=champion_value,
+        )
+        metric_evidence = dict(interval.evidence)
+        # The same rule, in the same order, as the scalar paired path: the floor is tested
+        # FIRST and can only ever turn a park into a win -- a floor-sized gain cannot
+        # coexist with an entirely-negative interval bootstrapped from the same deltas.
+        if adopted_by_floor:
+            outcome = "floor_cleared"
+            if not interval.lower > 0.0:
+                metric_evidence[FLOOR_ADOPTION_UNSUPPORTED_BY_INTERVAL_FIELD] = True
+        elif interval.lower > 0.0:
+            outcome = "gained"
+        elif interval.upper < 0.0:
+            outcome = "regressed"
+        else:
+            outcome = "within_rope"
+        summary = (f"{name} gain {gain:+.6g} (floor {floor:.6g}, "
+                   f"interval [{interval.lower:.6g}, {interval.upper:.6g}])")
+        if outcome == "regressed":
+            regressions.append(summary)
+        elif outcome != "within_rope":
+            wins.append(summary)
+        per_metric[name] = {
+            "direction": direction,
+            "gain": gain,
+            "adoption_floor": floor,
+            "floor_cleared": adopted_by_floor,
+            "regressed": outcome == "regressed",
+            "outcome": outcome,
+            **metric_evidence,
+        }
+
+    if regressions:
+        verdict = "rejected"
+        deciding = [name for name, item in per_metric.items() if item["regressed"]]
+        decision = ("rejected: regression beyond its rope on " + "; ".join(regressions)
+                    + ", whatever the gains elsewhere")
+    elif wins:
+        verdict = "adopted"
+        deciding = [name for name, item in per_metric.items()
+                    if item["outcome"] in {"floor_cleared", "gained"}]
+        decision = "adopted: " + "; ".join(wins) + "; no judged metric regressed"
+    else:
+        verdict = "parked"
+        deciding = []
+        decision = ("parked: no judged metric cleared its adoption floor or its interval, "
+                    "and none regressed")
+    evidence: dict[str, object] = {
+        "method": VECTOR_PARETO,
+        "candidate_run_id": run_id,
+        "champion_run_id": champion_run_id,
+        "judged_metrics": names,
+        "metrics": per_metric,
+        "deciding_metrics": deciding,
+        "decision": decision,
+        "input_sha256": evidence_digest(paired_evidence),
+    }
+    return verdict, "succeeded", evidence, f"{reason} -- {decision}"

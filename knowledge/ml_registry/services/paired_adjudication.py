@@ -17,6 +17,8 @@ from knowledge.ml_registry.storage.registry import RegistryError
 
 PAIRED_BOOTSTRAP = "paired_bootstrap_percentile"
 LEGACY_SCALAR_ROPE = "legacy_scalar_rope"
+#: The vector judge's durable evidence method: per-metric paired bootstraps, Pareto verdict.
+VECTOR_PARETO = "vector_pareto"
 MEAN = "mean"
 MACRO_STRATA = "macro_strata"
 #: Units carry per-class COUNTS, not a scalar. F1 is a ratio of sums, so a metric of
@@ -64,6 +66,75 @@ def campaign_metric(registry: Any, experiment_id: str) -> Mapping[str, object] |
         raise RegistryError("registered CampaignSpec metric must be an object")
     guard_adoption_floor(metric)
     return metric
+
+
+def campaign_judged_metrics(registry: Any, experiment_id: str) -> tuple[Mapping[str, object], ...] | None:
+    """The VECTOR judge for this campaign -- the registered CampaignSpec's ``metrics``
+    list, frozen before any run -- or ``None`` when the campaign judges a scalar (or no
+    spec was ever registered). The vector twin of :func:`campaign_metric`: same event,
+    same freeze, and each entry is validated by the SAME per-metric readers, so a vector
+    campaign cannot hold a judging number a scalar campaign would have refused.
+    """
+    specs = [
+        event.payload
+        for event in registry.list_events()
+        if event.event_type == "campaign_spec_registered"
+        and event.payload.get("campaign_id") == experiment_id
+    ]
+    if not specs:
+        return None
+    raw = specs[-1].get("metrics")
+    if raw is None:
+        return None
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)) or not raw or not all(
+        isinstance(item, Mapping) for item in raw
+    ):
+        raise RegistryError("registered CampaignSpec metrics must be a non-empty list of objects")
+    entries = tuple(raw)
+    guard_vector_judge(entries)
+    return entries
+
+
+def guard_vector_judge(entries: Sequence[Mapping[str, object]]) -> None:
+    """Validate every judged metric of a vector judge, refusing by metric name.
+
+    Each entry must carry what adjudication will read from it: a unique non-empty
+    ``name``, a ``direction`` :func:`~knowledge.ml_registry.floor.adoption_gain` can sign
+    a delta with, an adoption floor :func:`guard_adoption_floor` accepts, and a
+    ``paired_bootstrap_percentile`` adjudication policy -- ``legacy_scalar_rope`` is
+    refused because the experiment row carries ONE rope and one rope cannot bar several
+    judged metrics measured on different scales.
+    """
+    seen: set[str] = set()
+    for index, entry in enumerate(entries):
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise RegistryError(f"metrics[{index}].name must be a non-empty string")
+        name = name.strip()
+        if name in seen:
+            raise RegistryError(f"metrics names judged metric {name!r} more than once")
+        seen.add(name)
+        direction = entry.get("direction")
+        if direction not in {"maximize", "minimize"}:
+            raise RegistryError(
+                f"metrics[{name}].direction must be 'maximize' or 'minimize', got {direction!r}"
+            )
+        try:
+            guard_adoption_floor(entry)
+        except RegistryError as exc:
+            raise RegistryError(f"metrics[{name}]: {exc}") from exc
+        policy = entry.get("adjudication")
+        if not isinstance(policy, Mapping):
+            raise RegistryError(
+                f"metrics[{name}].adjudication must be an object declaring "
+                f"method={PAIRED_BOOTSTRAP!r}"
+            )
+        if policy.get("method") != PAIRED_BOOTSTRAP:
+            raise RegistryError(
+                f"metrics[{name}].adjudication.method must be {PAIRED_BOOTSTRAP!r} under a "
+                f"vector judge, got {policy.get('method')!r}; the experiment row carries one "
+                "scalar rope, which cannot bar several judged metrics"
+            )
 
 
 def guard_adoption_floor(metric: Mapping[str, object]) -> float:
@@ -258,6 +329,46 @@ def paired_interval(
         "units": canonical["units"],
     }
     return PairedInterval(point, lower, upper, durable)
+
+
+def project_vector_evidence(evidence: Mapping[str, object], name: str) -> dict[str, object]:
+    """One judged metric's same-unit slice of a vector run's paired evidence.
+
+    Vector evidence carries ONE unit list -- the same units for every judged metric, which
+    is what makes the per-metric comparisons Pareto-comparable at all -- and each unit's
+    ``candidate``/``champion`` is an object of values keyed by metric name. This projects
+    the slice for ``name`` into exactly the scalar evidence shape, so
+    :func:`paired_interval` judges it with zero new statistical machinery. A unit missing
+    a judged metric is refused naming the metric and the unit; names a unit carries beyond
+    the judged ones are diagnostics and are ignored.
+    """
+    if not isinstance(evidence, Mapping):
+        raise RegistryError("vector paired evidence must be an object")
+    units = evidence.get("units")
+    if not isinstance(units, Sequence) or isinstance(units, (str, bytes)):
+        raise RegistryError("vector paired evidence units must be a sequence of same-unit objects")
+    projected_units: list[dict[str, object]] = []
+    for index, raw in enumerate(units):
+        if not isinstance(raw, Mapping):
+            raise RegistryError(f"vector paired evidence units[{index}] must be an object")
+        unit: dict[str, object] = dict(raw)
+        for side in ("candidate", "champion"):
+            values = raw.get(side)
+            if not isinstance(values, Mapping):
+                raise RegistryError(
+                    f"vector paired evidence units[{index}].{side} must be an object of "
+                    "values keyed by metric name"
+                )
+            if name not in values:
+                raise RegistryError(
+                    f"vector paired evidence units[{index}].{side} lacks judged metric "
+                    f"{name!r}; every judged metric is measured on every unit"
+                )
+            unit[side] = values[name]
+        projected_units.append(unit)
+    projected = dict(evidence)
+    projected["units"] = projected_units
+    return projected
 
 
 def _aggregate(

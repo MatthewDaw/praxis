@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from knowledge.ml_registry.domain.run import RunMetrics, RunValidity
@@ -85,6 +86,12 @@ def consider_rejection(
     experiment = _one(registry.rows("experiments"), "experiment_id", observed["experiment_id"], "experiment")
     _validate_fair_pair(observed_metrics, paired_metrics, observed, paired,
                         float(experiment["baseline_throughput"]))
+    if isinstance(observed_metrics.metric, Mapping) or isinstance(paired_metrics.metric, Mapping):
+        raise RegistryError(
+            "ratchet counterfactual evidence over vector-judged runs is not defined: harm "
+            "would need a per-metric rope, and the experiment row carries one scalar rope; "
+            "adjudicate the rejection without counterfactual evidence"
+        )
     delta = observed_metrics.metric - paired_metrics.metric
     harm = -delta if experiment["direction"] == "maximize" else delta
     evidence = {

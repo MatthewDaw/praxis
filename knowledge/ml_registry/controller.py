@@ -79,7 +79,9 @@ class SlotStatus:
     stage: str | None = None
     idea_id: str | None = None
     run_id: str | None = None
-    latest_metric: float | None = None
+    #: The latest run's metric: one number under a scalar judge, or -- for a vector-judged
+    #: campaign -- every judged value keyed by metric name, never one picked silently.
+    latest_metric: float | Mapping[str, float] | None = None
     verdict: str | None = None
     progress: ProgressSnapshot | None = None
     heartbeat_age_seconds: float | None = None

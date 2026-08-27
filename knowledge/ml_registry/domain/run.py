@@ -61,7 +61,10 @@ class RunLoad:
 
 @dataclass(frozen=True)
 class RunMetrics:
-    metric: float
+    #: One finite number under a scalar judge; under a vector judge, an object of finite
+    #: numbers keyed by metric name -- every judged metric plus any diagnostics the run
+    #: chose to report (adjudication reads the judged names and ignores the rest).
+    metric: float | Mapping[str, float]
     validity: RunValidity
     throughput: float
     throughput_unit: ThroughputUnit
@@ -70,7 +73,7 @@ class RunMetrics:
     load: RunLoad
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "metric", _finite(self.metric, "metric"))
+        object.__setattr__(self, "metric", _metric_value(self.metric))
         object.__setattr__(self, "validity", _enum(RunValidity, self.validity, "validity"))
         object.__setattr__(self, "throughput", _nonnegative(self.throughput, "throughput"))
         object.__setattr__(self, "throughput_unit",
@@ -94,11 +97,31 @@ class RunMetrics:
         )
 
     def to_mapping(self) -> Mapping[str, Any]:
+        metric = dict(self.metric) if isinstance(self.metric, Mapping) else self.metric
         return MappingProxyType({
-            "metric": self.metric, "validity": self.validity.value,
+            "metric": metric, "validity": self.validity.value,
             "throughput": self.throughput, "throughput_unit": self.throughput_unit.value,
             "memory_gb": self.memory_gb, "cpu_time": self.cpu_time, "load": self.load.to_mapping(),
         })
+
+
+def _metric_value(value: object) -> float | Mapping[str, float]:
+    """A scalar run metric, or a vector run's per-metric object, each value finite.
+
+    The object form exists for campaigns whose judge is a metric VECTOR: the run reports
+    every judged metric keyed by name (diagnostics may ride along and are ignored by
+    adjudication). Keys must be non-empty strings and every value a finite number.
+    """
+    if not isinstance(value, Mapping):
+        return _finite(value, "metric")
+    if not value:
+        raise RunMetricError("run metric object must name at least one metric")
+    validated: dict[str, float] = {}
+    for name, item in value.items():
+        if not isinstance(name, str) or not name.strip():
+            raise RunMetricError("run metric object keys must be non-empty metric names")
+        validated[name] = _finite(item, f"metric[{name}]")
+    return validated
 
 
 def _finite(value: object, field: str) -> float:
