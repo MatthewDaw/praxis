@@ -1027,6 +1027,37 @@ agent) that explicitly reads `/af-ml-supervise`, the canonical binding, and the 
 contract. Preflight the executable and authentication, and prove one candidate dispatch before
 marking that handoff READY.
 
+## Scope guides; it never blocks
+
+Every phase names the paths it writes, and that is a statement about FOCUS, not a fence. **No
+campaign is ever blocked by something outside its scope.** If the point of failure is an upstream
+campaign, a shared model, an adapter, the harness, or anything else this campaign does not own, it
+is allowed -- and expected -- to go fix that thing rather than stop, file a note, or work around it.
+A campaign that reports "blocked on someone else's model" when it could have repaired the model has
+chosen the more expensive outcome.
+
+Two kinds of fix, and only the second needs ceremony:
+
+- **A defect.** The dependency does not do what it already claimed. Fix it wherever it lives, land
+  it in its own commit, and name the campaign that found it. No adjudication, no permission: making
+  code match its own contract is never a hypothesis.
+- **An improvement.** The dependency does what it claimed, and this campaign needs it to do BETTER.
+  That is a change to a measured model, so it belongs to the owning campaign's judge. Author it, but
+  land it as an ARM in the upstream campaign and let that campaign's frozen metric decide. What is
+  forbidden is moving another campaign's `champion` from inside this one -- a downstream campaign
+  promoting an upstream model on its own metric silently breaks the upstream's ratchet, and the next
+  person to read that campaign cannot tell what its numbers mean any more.
+
+**And you do not wait for either.** While the upstream fix is being adjudicated, the downstream
+campaign proceeds on `source: labels`. That is the whole reason the labels source is permanently
+legal rather than a migration state: it decouples a downstream campaign's schedule from an upstream
+campaign's verdicts. Measure against labels now, flip to the champion when it lands, and record both
+-- the gap between them was going to be the interesting number anyway.
+
+The one thing that IS forbidden is silence. A fix outside scope is committed separately, named as
+such, and reported with the campaign that prompted it. Scope stops being a useful signal the moment
+work drifts across it unremarked.
+
 ## Never
 
 - Never declare READY on a different host from execution.
