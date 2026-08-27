@@ -9,6 +9,7 @@ asks :class:`RegistryFinalizer` to verify the ``production`` alias.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 import importlib
@@ -51,6 +52,8 @@ EXIT_BY_OUTCOME = {
 DEFAULT_CAMPAIGN_DISK_BUDGET_BYTES = 50 * 1024**3
 DEFAULT_ARM_TIMEOUT_S = 60 * 60
 ARM_STARTUP_GRACE_S = 1.0
+_OUTPUT_TAIL_LINES = 25
+_OUTPUT_TAIL_CHARS = 900
 
 
 class CampaignJobError(ValueError):
@@ -122,6 +125,12 @@ class _ArmProcess:
         self.timeout_s = timeout_s
         self.process: subprocess.Popen[str] | None = None
         self.failure_reason: str | None = None
+        # An arm that exits non-zero streams its traceback through record_line and nowhere else:
+        # the controller writes it to ITS stdout, which the portfolio does not retain.  On
+        # 2026-08-27 that cost a01_person_model four full attempts and its whole retry budget --
+        # every artifact of the failure was the string "arm exited 1", which names no cause.
+        # Keep the tail so the recorded outcome can say what actually broke.
+        self.output_tail: deque[str] = deque(maxlen=_OUTPUT_TAIL_LINES)
 
     def _terminate(self) -> None:
         if self.process is None or self.process.poll() is not None:
@@ -139,6 +148,15 @@ class _ArmProcess:
 
     def cancel(self) -> None:
         self._terminate()
+
+    def failure_context(self) -> str:
+        """The last lines the arm printed, for an outcome reason that names its cause."""
+        if not self.output_tail:
+            return ""
+        joined = " | ".join(self.output_tail)
+        if len(joined) > _OUTPUT_TAIL_CHARS:
+            joined = "..." + joined[-(_OUTPUT_TAIL_CHARS - 3):]
+        return joined
 
     def run(self, command: Sequence[str], *, cwd: Path) -> int:
         if not command or not all(isinstance(item, str) and item for item in command):
@@ -172,6 +190,9 @@ class _ArmProcess:
             nonlocal last_progress, progress_seen
             sys.stdout.write(line)
             sys.stdout.flush()
+            stripped = line.rstrip()
+            if stripped:
+                self.output_tail.append(stripped)
             snapshot = parse_progress_line(line)
             if snapshot is not None:
                 progress_seen = True
@@ -220,6 +241,11 @@ class _ArmProcess:
                 self._terminate()
             reader.join(timeout=1)
         return self.process.wait()
+
+
+def _with_arm_output(reason: str, arm_output: str) -> str:
+    """A refusal names its cause.  An exit code alone does not."""
+    return f"{reason}; last arm output: {arm_output}" if arm_output else reason
 
 
 def _disk_usage_bytes(root: Path) -> int:
@@ -360,6 +386,7 @@ class CampaignJob:
             )
             returncode = self._arm.run(dispatch, cwd=self.working_directory)
             void_reason = self._arm.failure_reason
+            arm_output = self._arm.failure_context()
             self._arm = None
             if void_reason is not None:
                 self.adapter.void_arm(self.context, void_reason)
@@ -374,12 +401,17 @@ class CampaignJob:
             if self.cancelled or returncode in {130, 143, -signal.SIGTERM, -signal.SIGKILL}:
                 return self._record(CampaignOutcome.CANCELLED, "arm process group was cancelled")
             if returncode != 0:
-                return self._record(CampaignOutcome.RETRYABLE, f"arm exited {returncode}")
+                return self._record(
+                    CampaignOutcome.RETRYABLE,
+                    _with_arm_output(f"arm exited {returncode}", arm_output),
+                )
             after = self.adapter.trial_count(self.context)
             if after <= before:
                 return self._record(
                     CampaignOutcome.STALLED,
-                    f"iteration {iteration} produced no new registry run",
+                    _with_arm_output(
+                        f"iteration {iteration} produced no new registry run", arm_output
+                    ),
                 )
         return self._record(
             CampaignOutcome.RETRYABLE,

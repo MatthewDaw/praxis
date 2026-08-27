@@ -268,3 +268,37 @@ def test_stalled_after_a_kill_names_why_the_arm_was_killed(tmp_path: Path) -> No
     assert "VOIDED on throughput" in outcome.reason
     assert "wall-clock cap" in outcome.reason
     assert "VOIDED trial was not recorded" in outcome.reason
+
+
+def test_a_nonzero_arm_exit_records_the_arms_own_last_output_not_just_the_code(
+    tmp_path: Path,
+) -> None:
+    """A refusal names its cause.
+
+    On 2026-08-27 an a01_person_model arm produced a complete job-result.json and then exited 1
+    inside filing.  Every artifact of that failure said only "arm exited 1"; the traceback went to
+    the controller's stdout, which the portfolio does not retain.  The controller burned all four
+    attempts re-running a 25-minute measurement and left the campaign blocked on "retry budget
+    exhausted" with nothing on disk saying what broke.
+    """
+
+    class Adapter(_Adapter):
+        def dispatch_one(self, _context: CampaignJobContext) -> list[str]:
+            source = (
+                "import sys;"
+                "print('[progress] fixture arm 1/1 100% elapsed 0m01s eta 0m00s last=0.7500',"
+                " flush=True);"
+                "print('ValueError: champion evidence digest does not match', flush=True);"
+                "sys.exit(1)"
+            )
+            return [sys.executable, "-c", source]
+
+    adapter = Adapter(tmp_path / "never.marker", stalled=True)
+    outcome = _job(tmp_path, adapter).run()
+
+    assert outcome.outcome is CampaignOutcome.RETRYABLE
+    assert "arm exited 1" in outcome.reason
+    assert "champion evidence digest does not match" in outcome.reason
+    assert "champion evidence digest does not match" in json.loads(
+        (tmp_path / "outcome.json").read_text()
+    )["reason"]
