@@ -48,6 +48,10 @@ class CampaignSpec:
     #: How far ahead of the predicted frame the model may read PIXELS (never labels).
     #: Offline campaigns declare a whole-sequence window. Opaque; ``None`` when undeclared.
     lookahead_window: Mapping[str, Any] | None = None
+    #: Downstream work this model exists to enable, and the quality that work needs of it.
+    #: Opaque to Praxis; ``None`` when undeclared. Written at seeding so "good enough" is a
+    #: claim against a stated purpose, not a feeling reached at the end.
+    sufficiency: Mapping[str, Any] | None = None
 
     VERSION = 1
 
@@ -99,6 +103,9 @@ class CampaignSpec:
         lookahead_window = value.get("lookahead_window")
         if lookahead_window is not None and not isinstance(lookahead_window, Mapping):
             raise ContractError("lookahead_window must be an object or null")
+        sufficiency = value.get("sufficiency")
+        if sufficiency is not None and not isinstance(sufficiency, Mapping):
+            raise ContractError("sufficiency must be an object or null")
         if not sequences["produces"] and deterministic is None:
             raise ContractError("a learned campaign must declare at least one produced artifact")
         return cls(
@@ -113,6 +120,7 @@ class CampaignSpec:
             vector_metrics,
             None if split_policy is None else dict(split_policy),
             None if lookahead_window is None else dict(lookahead_window),
+            None if sufficiency is None else dict(sufficiency),
         )
 
     @classmethod
@@ -188,4 +196,6 @@ class CampaignSpec:
             result["split_policy"] = dict(self.split_policy)
         if self.lookahead_window is not None:
             result["lookahead_window"] = dict(self.lookahead_window)
+        if self.sufficiency is not None:
+            result["sufficiency"] = dict(self.sufficiency)
         return result
