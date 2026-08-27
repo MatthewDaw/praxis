@@ -4,18 +4,23 @@ description: >
   Take one ML campaign from a problem statement to a complete, evidence-backed, runnable handoff
   on its execution host: exhaustively qualify every catalogued data source and external prior-art
   lead, wire every admissible source, build or repair the end-to-end training/evaluation path,
-  freeze and reproduce the judge, run and audit a real research arm, register canonical state,
-  seed executable research-backed ideas, deploy, and prove the supervisor handoff. Use for
-  "seed the campaign", "/af-seed-ml-supervise", "get this ready for af-ml-supervise", or
+  define and verify the judge, register canonical state, seed executable research-backed ideas,
+  deploy, and then RUN the campaign itself -- baseline, settle the approach, diagnose and refine --
+  in one long-running job that resumes from whatever state the target is already in. Use for
+  "seed the campaign", "run the campaign", "/af-seed-ml-supervise", "resume the campaign", or
   "skip research".
 ---
 
 # af-seed-ml-supervise
 
-Take one campaign from a question to an execution-target-specific handoff for
-`/af-ml-supervise`. Setup is not complete on the laptop when the campaign will run on an EC2 box.
-The target host is part of the scientific environment: code, data, registry state, hardware,
-throughput, and process ownership must all be proven there.
+Take one campaign from a question all the way to a measured, refined model on its execution host,
+in ONE long-running job. Setup, seeding and the campaign are phases of that job, not separate
+commands with a human gate between them: answer the objective once at the front, and it runs until
+the work is done or something genuinely blocks.
+
+Nothing is complete on the laptop when the campaign will run on an EC2 box. The target host is part
+of the scientific environment: code, data, registry state, hardware, throughput, and process
+ownership must all be proven there.
 
 This skill owns **everything required before unattended supervision can honestly begin**. A human
 who invokes it should be able to return to either a READY handoff whose supplied command starts
