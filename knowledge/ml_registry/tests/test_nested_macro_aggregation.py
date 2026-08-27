@@ -123,7 +123,10 @@ def test_nested_macro_refuses_a_single_unit_cell() -> None:
 def test_nested_macro_refuses_a_unit_missing_a_macro_level() -> None:
     units = [dict(unit) for unit in _UNITS]
     del units[0]["corpus"]
-    with pytest.raises(RegistryError, match="requires exactly"):
+    # 557e5d29 let a unit carry EXTRA identity fields, so the refusal no longer says
+    # "requires exactly" -- it names the required set instead. The macro level that went
+    # missing must still be named, which is the assertion this test exists for.
+    with pytest.raises(RegistryError, match=r"units\[0\] requires .*'corpus'"):
         paired_interval(
             _policy(), _evidence(units), run_id="candidate", champion_run_id="champion",
             direction="maximize", candidate_metric=_CANDIDATE, champion_metric=_CHAMPION,

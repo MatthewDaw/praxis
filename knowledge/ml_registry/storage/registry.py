@@ -784,7 +784,24 @@ class Registry:
                 check=True, capture_output=True, text=True,
             )
         except (OSError, subprocess.CalledProcessError) as exc:
-            raise RegistryError("code_ref sha does not exist as a commit in its declared repo") from exc
+            # A refusal names its cause. This check destroyed a measured 13-minute run on
+            # 2026-08-27 because code_ref.repo was the logical name "sports_analysis" rather
+            # than a path, and `git -C sports_analysis` resolved against the caller's cwd.
+            # The bare message said neither which repo nor which sha, so the caller could not
+            # tell a bad path from a missing commit.
+            detail = getattr(exc, "stderr", None) or str(exc)
+            resolved = Path(code_ref.repo)
+            reason = (
+                f"declared repo {code_ref.repo!r} is not an existing directory "
+                f"(resolved from cwd {Path.cwd()} to {resolved.absolute()}) -- code_ref.repo is "
+                "a filesystem path to the git repo, not a repository name"
+                if not resolved.is_dir() else
+                f"repo {resolved.absolute()} has no such commit"
+            )
+            raise RegistryError(
+                f"code_ref sha {code_ref.sha} does not exist as a commit in its declared repo: "
+                f"{reason}; git said: {str(detail).strip()}"
+            ) from exc
         if values.get("verdict") is not None:
             raise RegistryError("trainer run creation cannot write a verdict")
         if values.get("status", "running") != "running" or values.get("finished_at") is not None:
