@@ -360,8 +360,12 @@ def _pooled_counts_interval(
     direction: str,
     candidate_metric: float,
     champion_metric: float,
-) -> dict[str, object]:
-    """The proposed branch, in the shape ``paired_interval`` would call it.
+) -> PairedInterval:
+    """The pooled-counts branch, returning what every other aggregation returns.
+
+    It MUST be a :class:`PairedInterval`: ``registry_adjudication`` reads ``interval.evidence``,
+    ``interval.lower`` and ``interval.upper`` off this value, so a bare mapping here refuses every
+    run under this aggregation with an ``AttributeError`` at the adjudication seam.
 
     Everything ``paired_interval`` already validates -- method, run ids, resamples, confidence,
     seed, unit-id uniqueness, minimum two units -- is validated the same way; only the unit VALUE
@@ -437,16 +441,20 @@ def _pooled_counts_interval(
     tail = (1.0 - confidence) / 2.0
     lower = ordered[max(int(round(tail * (len(ordered) - 1))), 0)]
     upper = ordered[min(int(round((1.0 - tail) * (len(ordered) - 1))), len(ordered) - 1)]
-    return {
-        "method": "paired_bootstrap_percentile",
-        "aggregation": POOLED_COUNTS,
+    canonical = json.loads(json.dumps(dict(evidence), sort_keys=True, separators=(",", ":")))
+    durable = {
+        "method": PAIRED_BOOTSTRAP,
         "candidate_run_id": run_id,
         "champion_run_id": champion_run_id,
         "resamples": resamples,
         "confidence_level": confidence,
         "seed": seed,
+        "aggregation": POOLED_COUNTS,
         "unit_count": len(candidates),
         "strata": sorted(by_stratum),
         "point_estimate": point,
         "interval": [lower, upper],
+        "input_sha256": evidence_digest(evidence),
+        "units": canonical["units"],
     }
+    return PairedInterval(point, lower, upper, durable)
