@@ -466,6 +466,13 @@ from the size of the corpus**, and the full corpus is for final convergence and 
 not for finding out whether an idea is worth pursuing. Most of what a campaign does needs far less
 data than it defaults to using.
 
+**Declare the adoption floor with the judge.** A gain of 0.5% or more on the metric is a win and is
+adopted outright -- no interval test, no rope test. The derived rope decides only what happens BELOW
+that floor, which is the job it is actually good at. The asymmetry is chosen: a good idea rejected on
+bad statistics vanishes without trace, while a weak idea adopted is visible and reversible by the
+next arm that beats it. Set the floor in the spec beside the metric; it is a statement about what
+this campaign cares about, not something to derive from replicate scatter.
+
 Declare four measurement kinds and what each is allowed to spend:
 
 | kind | question | sample |

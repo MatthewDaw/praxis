@@ -150,6 +150,39 @@ Report the final census with the verdict whatever ends it. "The remaining failur
 cost this much, and they were not worth the next arm" is actionable, and tells a successor where to
 start if the cost calculus changes. "It stopped improving" is not.
 
+## The adoption floor: 0.5% wins, full stop
+
+Two bars, and they answer different questions. Keep them apart.
+
+**A gain of 0.5% or more on the campaign's metric IS a win, and it is adopted.** Not "is adopted if
+the interval also excludes zero", not "is adopted unless the rope is wider". Adopted. This project
+has rejected too many good ideas on bad statistics, and the asymmetry is deliberate: an improvement
+wrongly rejected is gone silently and forever -- nothing in the record distinguishes it from an idea
+that deserved to lose -- while an improvement wrongly adopted is visible, re-measurable, and
+reversible by the next arm that beats it.
+
+**The rope decides only what happens BELOW that floor.** For a gain under 0.5%, the derived rope is
+the question: is this small difference worth having, given how much this baseline moves on its own?
+That is the job the measured rope is actually good at, and the only one it should be doing.
+
+So:
+
+| gain | decision |
+|---|---|
+| >= 0.5% | **adopt** -- no further test |
+| < 0.5% | the rope decides, as it does today |
+
+**Record when a floor adoption sits inside the measured rope.** A +0.6% gain against a baseline whose
+own replicates scatter by 18% is adopted under this rule and is also, honestly, indistinguishable
+from noise. Adopt it -- that is the decision -- but flag the Run so the ratchet can be audited
+later. The flag costs nothing and preserves the one fact the rule deliberately overrides. A campaign
+where most adoptions carry it is telling you its baseline is too noisy to steer by, which is a
+finding about the harness rather than about any arm.
+
+**Do not spend runs to sharpen this.** Narrowing a measured rope means more baseline replicates,
+which means retraining repeatedly to buy a bar -- forbidden. The floor is a declared number
+precisely so it costs nothing to apply.
+
 ## Escalating the sample re-baselines the incumbent
 
 **A larger sample invalidates the champion's NUMBER, not the champion.** When a campaign escalates
