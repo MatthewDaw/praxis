@@ -10,11 +10,13 @@ WORKDIR /app
 # Lockfile + project metadata first so dependency layers cache across source edits.
 COPY pyproject.toml uv.lock README.md ./
 
-# Source the package build needs (setuptools flat layout discovers `knowledge`).
+# Source the package build needs (hatchling ships the `knowledge` package).
 COPY knowledge/ ./knowledge/
 
 # Install deps + the praxis package itself, exactly as locked, without dev tools.
-RUN uv sync --frozen --no-dev
+# --all-extras: server/ml/images/observability moved out of core dependencies so
+# the package can be installed as a light library; the image still needs them all.
+RUN uv sync --frozen --no-dev --all-extras
 
 # App Runner sends traffic to 8080 and health-checks /health; uvicorn binds 0.0.0.0.
 # Secrets (OPENROUTER_API_KEY, DB creds) are NOT baked here — they'd persist in the

@@ -63,3 +63,6 @@ backend-serve.err.log
 # a dirty tree, so the two tools deadlocked: the push half could never run while a build was
 # running, which is exactly when the loop tells you to run it.
 .af-loop.lock
+
+# Build artifacts from `uv build` / `hatchling`.
+dist/

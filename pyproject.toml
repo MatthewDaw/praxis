@@ -1,11 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "praxis"
 version = "0.1.0"
-requires-python = ">=3.14"
+# 3.13, not 3.14: every shipped module parses and compiles under 3.13 (verified with
+# `compileall` over `knowledge/` + `praxis_client/` on 3.13) and nothing imports a
+# 3.14-only stdlib module (no compression.zstd, concurrent.interpreters, annotationlib,
+# t-strings, or PEP 649 runtime-annotation tricks). Keeping the floor at 3.13 is what
+# lets a 3.13 consumer (sports_analysis) depend on `knowledge.ml_registry`.
+requires-python = ">=3.13"
+# Core stays deliberately light. `knowledge.ml_registry` -- the piece other projects
+# import -- is stdlib-only apart from a lazily imported `trackio` inside
+# `ml_registry.telemetry` (ships in the `ml` extra). The server, ML and image stacks
+# are extras so installing praxis as a library does not drag fastapi/uvicorn/umap-learn
+# (and therefore numba's numpy pin) into the consumer's resolution.
 dependencies = [
     "pydantic>=2.13.4",
     "pyyaml>=6.0.3",
     "python-dotenv>=1.2.2",
+]
+
+[project.scripts]
+# Needs the `server` extra (mcp, fastapi, psycopg, ...) installed.
+praxis-mcp = "knowledge.mcp.server:main"
+
+[project.optional-dependencies]
+# The HTTP/MCP service and its database layer: knowledge.serve, knowledge.mcp.
+server = [
     "fastapi>=0.137.2",
     "uvicorn[standard]>=0.49.0",
     "psycopg[binary]>=3.2",
@@ -15,28 +38,48 @@ dependencies = [
     "pgvector>=0.3",
     "mcp>=1.2",
     "pycognito>=2024.5",
+    "yoyo-migrations>=9.0.0",
+    "slowapi>=0.1.10",
+]
+# Clustering (knowledge.knowledge_graph.clustering) and campaign telemetry
+# (knowledge.ml_registry.telemetry). Pulls numpy/scipy/numba transitively.
+ml = [
     "scikit-learn>=1.9.0",
     "umap-learn>=0.5.12",
+    "trackio==0.36.0",
+]
+# Image ingestion: knowledge.injestion.image.
+images = [
     "pillow>=11.0",
     "psd-tools>=1.10",
     "imagehash>=4.3",
-    "yoyo-migrations>=9.0.0",
-    "slowapi>=0.1.10",
-    "trackio==0.36.0",
 ]
-
-[project.scripts]
-praxis-mcp = "knowledge.mcp.server:main"
-
-[project.optional-dependencies]
 # Phoenix/OpenTelemetry tracing — install with `uv sync --extra observability`.
 observability = [
     "opentelemetry-sdk>=1.20",
     "opentelemetry-exporter-otlp-proto-http>=1.20",
 ]
 
+[tool.hatch.build.targets.wheel]
+# `knowledge` is the only shipped package. agent_factory/, tools/, scripts/ and
+# frontend/ have no top-level __init__.py and are reached only via pytest's
+# `pythonpath = ["."]` from a repo checkout -- development surface, not a
+# distribution; `knowledge` imports none of them. praxis_client/ is importable but
+# stays repo-local (the Docker image copies only knowledge/, and nothing in
+# `knowledge` imports it). Test packages are excluded: knowledge/serve/tests imports
+# agent_factory and scripts, which do not ship.
+packages = ["knowledge"]
+exclude = ["**/tests", "**/conftest.py"]
+
+[tool.hatch.build.targets.sdist]
+include = ["knowledge", "README.md", "LICENSE"]
+
 [dependency-groups]
+# praxis's own dev environment keeps everything it had before the extras split: the
+# default `uv sync` installs the `dev` group, and `dev` pulls every extra back in.
+# Non-dev call sites (Dockerfile, CI) pass `--all-extras` explicitly.
 dev = [
+    "praxis[server,ml,images,observability]",
     "httpx>=0.28.1",
     "pytest>=9.1.0",
     "ruff>=0.15",
@@ -55,7 +98,7 @@ testpaths = ["knowledge", "frontend/tests"]
 # Keep ruff's default lint set (pyflakes F + pycodestyle E4/E7/E9): high-signal,
 # low-noise — real bugs (unused imports/vars, undefined names) over style churn.
 # Widen `lint.select` deliberately if the team wants import-sorting/formatting too.
-target-version = "py314"
+target-version = "py313"
 
 [tool.ruff.lint]
 # Pinned explicitly (R16): newer ruff releases default to a much broader rule set than the
