@@ -147,28 +147,17 @@ def paired_interval(
     if aggregation == "stitch_decision":
         # A stitch decision is one independent paired unit; its frozen aggregation is the mean.
         aggregation = MEAN
-    if aggregation == POOLED_COUNTS:
-        return _pooled_counts_interval(
+    handler = AGGREGATIONS.get(str(aggregation))
+    if handler is not None:
+        return handler(
             policy, evidence, run_id=run_id, champion_run_id=champion_run_id,
             direction=direction, candidate_metric=candidate_metric,
             champion_metric=champion_metric,
         )
-    if aggregation == MACRO_TRUTH_KIND_CORPUS_GROUP:
-        return _nested_macro_interval(
-            evidence,
-            resamples=resamples,
-            confidence=confidence,
-            seed=seed,
-            run_id=run_id,
-            champion_run_id=champion_run_id,
-            direction=direction,
-            candidate_metric=candidate_metric,
-            champion_metric=champion_metric,
-        )
     if aggregation not in {MEAN, MACRO_STRATA}:
         raise RegistryError(
-            f"metric.adjudication.aggregation must be {MEAN!r}, {MACRO_STRATA!r}, "
-            f"{POOLED_COUNTS!r} or {MACRO_TRUTH_KIND_CORPUS_GROUP!r}"
+            f"metric.adjudication.aggregation must be one of "
+            f"{sorted({MEAN, MACRO_STRATA} | set(AGGREGATIONS))}, got {aggregation!r}"
         )
 
     expected_evidence = {
@@ -615,3 +604,67 @@ def _nested_macro_interval(
         "units": canonical["units"],
     }
     return PairedInterval(point, lower, upper, durable)
+
+
+#: Aggregations beyond the two built-ins, keyed by the name a CampaignSpec declares.
+#:
+#: A metric that is not the mean of a per-unit scalar -- F1 and AP are ratios of sums, and a
+#: nested macro averages within groups before across them -- cannot be expressed as ``mean`` or
+#: ``macro_strata`` without adjudicating a DIFFERENT number than the Run registered. Two campaigns
+#: were hard-blocked on exactly that today, each waiting on a branch being hand-written into the
+#: middle of ``paired_interval``. Registering a handler is now the whole change.
+#:
+#: A handler takes ``(policy, evidence, *, run_id, champion_run_id, direction, candidate_metric,
+#: champion_metric)`` and returns a ``PairedInterval``. It is NOT free to decide what is true: like
+#: the built-ins, it must refuse unless its aggregate reproduces BOTH Runs' registered metrics.
+#: That guard is the whole reason the seam is safe to open -- an aggregation that could report any
+#: number it liked would be a campaign grading its own homework.
+def _nested_macro_handler(
+    policy: Mapping[str, object],
+    evidence: Mapping[str, object],
+    *,
+    run_id: str,
+    champion_run_id: str,
+    direction: str,
+    candidate_metric: float,
+    champion_metric: float,
+) -> PairedInterval:
+    """Adapt ``_nested_macro_interval`` to the common handler signature.
+
+    It reads resamples/confidence/seed as explicit arguments rather than off the policy, so the
+    seam normalises here instead of rewriting a function two campaigns already depend on.
+    """
+    return _nested_macro_interval(
+        evidence,
+        resamples=_integer(policy.get("resamples"), "metric.adjudication.resamples", minimum=2),
+        confidence=_confidence(
+            policy.get("confidence_level"), "metric.adjudication.confidence_level"
+        ),
+        seed=_integer(policy.get("seed"), "metric.adjudication.seed", minimum=0),
+        run_id=run_id,
+        champion_run_id=champion_run_id,
+        direction=direction,
+        candidate_metric=candidate_metric,
+        champion_metric=champion_metric,
+    )
+
+
+AGGREGATIONS: dict[str, Any] = {
+    POOLED_COUNTS: _pooled_counts_interval,
+    MACRO_TRUTH_KIND_CORPUS_GROUP: _nested_macro_handler,
+}
+
+
+def register_aggregation(name: str, handler: Any) -> None:
+    """Register a paired aggregation under the name a CampaignSpec declares.
+
+    Refuses to shadow a built-in or to redefine an existing name with a different handler:
+    two campaigns silently disagreeing about what one aggregation name means is worse than
+    either of them failing loudly.
+    """
+    if name in {MEAN, MACRO_STRATA}:
+        raise RegistryError(f"aggregation {name!r} is built in and cannot be redefined")
+    existing = AGGREGATIONS.get(name)
+    if existing is not None and existing is not handler:
+        raise RegistryError(f"aggregation {name!r} is already registered to a different handler")
+    AGGREGATIONS[name] = handler
