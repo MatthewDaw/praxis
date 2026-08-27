@@ -11,7 +11,7 @@ import pytest
 
 
 HELP_SHA256 = {
-    "__root__": "65e2f81114f9100fe0098f6cdb5a41a38d268cf9d7b1047996a4666522d4f27b",
+    "__root__": "b97babb9498b807040a57f2c5f109dd85f21af19267fb5187fc3af9dd4385a07",
     "adjudicate-run": "b36d03e59b8f489808756b2e8e2606dfb6ddeec239797b128bba31e0be02d7e4",
     "adopt-idea": "2634a0014387d7fd901ae5fcc7c237ebf3af8af4e1abf652235f3a0f70554e18",
     "backlog": "d02ef7e0961d5bcfcfb24a645e4d0b8f2b7b9f83518ea58c37de7225860c41ef",
@@ -31,6 +31,7 @@ HELP_SHA256 = {
     "invalidate-adoption": "68b91014ebd4c994f4da8542daecff72f2fa60cfae6dc0d1e99090ba84d2fcbe",
     "park-idea": "261aec1db2d276d9aba326e3d6b4328b16ff090ce713cb25fc3c208dedc46bbb",
     "readback": "0ce9867c6d8e1525efb5b5c48115b010afa9eaaa8b09f6409859835f8378c395",
+    "rebuild-projection": "42f3c320a24e85d1fef14234565e3457d5a6ee52cc5687a4a4708ed9e4ac329d",
     "register-idea": "4c7ba87d2f7cb2a53181e1faee8a92ba9ed91370a0d8bac29bf22ae48671e40f",
     "register-model": "df4ce04d71e1aa36310fa0ea51ab8bd0bbaa8fafd7e52b04b03fbccf4e42725a",
     "registry-status": "5ffd0dc385e998687d91f2b8c0da2400dc32d6ad040bf495b2674c43aad7a1ea",
@@ -43,7 +44,7 @@ HELP_SHA256 = {
 }
 
 ERROR_SHA256 = {
-    "__root__": "a1b9564d6b0de6d38487541e32282bfbc9bffbf7fcb54c5ca854a394f5f9d5b8",
+    "__root__": "8637b51d3e690410d5798c52566181ed0deb9ac6c6ab1f3ab6ee6b083a498e69",
     "adjudicate-run": "bd7bf4d4261a5ce960da17125c7e9e5274407400855355718bb920cfccd3f4c6",
     "adopt-idea": "511283fe14ca352e9a21f3d4eeb4a2222b728b63b7b251f9ac16db3808e0f472",
     "backlog": "5b316447b4dce9de3f1f330f8b7d0d7a337cfdaadb9503bdeca936754b9c6959",
@@ -63,6 +64,7 @@ ERROR_SHA256 = {
     "invalidate-adoption": "b815324f9f0d8800d5b8326268665f30f45b7ebdaeda697b8f0ed6177c743bbd",
     "park-idea": "5cc4086597d65fbe311056f192b047f70f5fe62e1c2d7fda055000a14df7b3b5",
     "readback": "154b168bb86bd61b73c5cd78f8e23736034c8e84a1c5e5fae96226dae7bcf9c9",
+    "rebuild-projection": "e134acffccd5cdea8c9c738d9828d5a9479463f4279b605848e1b913ac47f559",
     "register-idea": "359fd63106367174527342ec0fe30c8bb27d4752b80797285f329ef0eebcb90a",
     "register-model": "02d329992b3529d9382c75ef9b2a10816088f85e387eede3203163e1b52d9fe2",
     "registry-status": "3f862733237cfca14139708658e2067b8085824f6436a54b757d58f4de2b6108",

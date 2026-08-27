@@ -21,7 +21,7 @@ import sys
 import time
 from pathlib import Path
 
-from typing import Callable, TypeVar
+from typing import Any, Callable, TypeVar
 
 from knowledge.ml_registry.citation import Resolver, ResolvedCitation, ResolverUnreachable
 from knowledge.ml_registry.contracts.ledger_v2 import (
@@ -688,6 +688,15 @@ def _semantic_parser() -> argparse.ArgumentParser:
                           help="JSON argv; receives artifact path and HEAD sha as its final two arguments")
     finalize.add_argument("--min-measured", type=int, default=3)
 
+    rebuild = registry_command(
+        "rebuild-projection", "replay the event log to reconstruct the SQLite projection")
+    rebuild.add_argument("--overwrite", action="store_true",
+                         help="authorise replacing an existing projection that does not match the log")
+    rebuild.add_argument("--check", action="store_true",
+                         help="verify the hash chain and report drift without writing; "
+                              "exits 1 if the projection is not current")
+    rebuild.add_argument("--json", action="store_true")
+
     archive = registry_command(
         "import-historical-archive", "explicitly import one sealed pre-registry archive")
     archive.add_argument("--archive", required=True)
@@ -738,6 +747,32 @@ def _registry_status(registry, args: argparse.Namespace) -> dict[str, object]:
             "registered_models": models, "model_versions": versions, "aliases": aliases}
 
 
+def _rebuild_projection(args: argparse.Namespace, replay: Callable[..., Any]) -> int:
+    """Replay `events.jsonl` into `registry.sqlite3`, or only report on it under `--check`.
+
+    `--check` writes nothing and takes no lock, so it is safe against a live registry; it
+    exits 1 when the projection disagrees with the log, which is the condition an operator
+    wants a nonzero status for.
+    """
+    report = replay(args.registry_root, overwrite=args.overwrite, check_only=args.check)
+    if args.json:
+        print(json.dumps({"events": report.events, "current": report.current,
+                          "rebuilt": report.rebuilt, "rows": dict(report.rows),
+                          "quarantine": str(report.quarantine) if report.quarantine else None},
+                         sort_keys=True))
+    elif args.check:
+        print(f"hash chain verified over {report.events} events; projection is "
+              f"{'current' if report.current else 'STALE'}")
+    elif not report.rebuilt:
+        print(f"replayed {report.events} events; projection was already current")
+    else:
+        counts = ", ".join(f"{table}={count}" for table, count in sorted(report.rows.items()))
+        print(f"replayed {report.events} events; projection rebuilt: {counts}")
+        if report.quarantine is not None:
+            print(f"previous projection kept at {report.quarantine}")
+    return 0 if report.current or not args.check else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = _semantic_parser()
@@ -749,7 +784,11 @@ def main(argv: list[str] | None = None) -> int:
     if remainder:
         parser.error(f"unrecognized arguments: {' '.join(remainder)}")
     try:
-        from knowledge.ml_registry.storage import Registry
+        from knowledge.ml_registry.storage import Registry, replay_projection
+        if args.command == "rebuild-projection":
+            # Handled before any Registry is opened: opening one replays the log by
+            # itself, which would defeat the --overwrite guard and --check entirely.
+            return _rebuild_projection(args, replay_projection)
         registry = Registry(args.registry_root)
         if args.command == "create-experiment":
             registry.create_experiment(**_object(args.experiment_json, noun="experiment-json"))
