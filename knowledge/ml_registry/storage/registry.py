@@ -460,6 +460,16 @@ class Registry:
             # Evidence is content-addressed in BlobStore and described by this event;
             # it deliberately has no canonical SQL projection.
             return
+        elif op == "campaign_restarted":
+            # Constitution IV: a champion converging below 0.60 is not in a weakness loop, its
+            # FRAMING is wrong, and the ledger "records RESTARTED with the reason, never a
+            # rejection". A restart re-poses the search: it moves no alias, rewrites no Run and
+            # never lowers the bar, so it deliberately has no SQL projection and the eight-table
+            # view is unchanged. Before this existed there was no seam for it at all, and three
+            # campaigns were told each sweep to record something they had no way to write --
+            # the only alternatives on offer corrupted evidence, since abandoning a fairly
+            # judged run to carry a campaign-level fact rewrites a verdict the judge did reach.
+            return
         elif op == "artifact_created":
             db.execute("INSERT INTO artifacts VALUES(?,?,?,?,?,?)", tuple(p[k] for k in
                        ("artifact_id", "run_id", "kind", "uri", "bytes", "schema_version")))
@@ -737,6 +747,27 @@ class Registry:
             raise RegistryError("supersession requires a reason")
         self._write("run_superseded", {"run_id": run_id, "reason": reason, "at": self.clock()})
 
+    def record_campaign_restarted(self, *, campaign_id: str, reason: str) -> bool:
+        """Record a constitution-IV hard restart in the event log, never as a rejection.
+
+        The payload always carries the literal marker ``RESTARTED`` beside the campaign id, so an
+        auditor reading ``events.payload`` sees both without decoding a private schema -- that is
+        exactly what ``overnight/bin/campaign_health.py`` greps for before it stops re-issuing the
+        hard-restart finding. Idempotent on the exact payload; a NEW reason is a new restart.
+
+        Deliberately does not require a registered experiment: a campaign can be re-posed while
+        it is still seeding, which is the case IV most often applies to.
+        """
+        if not str(campaign_id).strip() or not str(reason).strip():
+            raise RegistryError("campaign restart requires an id and reason")
+        payload = {"campaign_id": campaign_id.strip(), "experiment_id": campaign_id.strip(),
+                   "marker": "RESTARTED", "reason": reason.strip()}
+        for event in self.events.read():
+            if event.event_type == "campaign_restarted" and event.payload == payload:
+                return False
+        self._write("campaign_restarted", payload)
+        return True
+
     def _abandon_run(self, *, run_id: str, reason: str, capability: object) -> None:
         """Reclassify a rejected or parked run as abandoned.
 
@@ -881,6 +912,29 @@ class Registry:
             self.recover()
             return False
         self._write("campaign_outcome_recorded", payload)
+        return True
+
+    def record_experiment_restarted(self, experiment_id: str, reason: str) -> bool:
+        """Record a constitution-IV hard restart. Never a rejection, never a bar change.
+
+        Payload always carries the literal marker ``RESTARTED`` and the experiment
+        id so ``bin/campaign_health.py`` can find the row by
+        ``payload LIKE %<experiment_id>% AND payload LIKE '%RESTARTED%'``.
+        Idempotent on the exact payload. Does not move aliases or rewrite Runs.
+        """
+        if not experiment_id.strip() or not reason.strip():
+            raise RegistryError("a restart requires an experiment id and a reason")
+        payload = {
+            "experiment_id": experiment_id.strip(),
+            "marker": "RESTARTED",
+            "reason": reason.strip(),
+        }
+        prior = [event for event in self.events.read()
+                 if event.event_type == "experiment_restarted"
+                 and event.payload.get("experiment_id") == payload["experiment_id"]]
+        if prior and prior[-1].payload == payload:
+            return False
+        self._write("experiment_restarted", payload)
         return True
 
     def register_model(self, **values: Any) -> None:
