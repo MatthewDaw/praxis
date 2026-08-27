@@ -243,6 +243,10 @@ def test_vector_units_may_carry_identity_fields_another_metric_needs(tmp_path: P
     projected = {
         "candidate_run_id": "candidate",
         "champion_run_id": "baseline",
+        # Present so the baseline-reconciliation guard passes and this assertion still reaches the
+        # MISSING-unit_id refusal it exists to prove. Without it the new guard refuses first and
+        # this test silently stops testing what it names (regressed by efa56490, fixed here).
+        "baseline_run_id": "baseline",
         "resamples": 500,
         "confidence_level": .95,
         "seed": 17,
