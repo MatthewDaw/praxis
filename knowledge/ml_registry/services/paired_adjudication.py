@@ -23,6 +23,12 @@ MACRO_STRATA = "macro_strata"
 #: this shape is not the mean of any per-group quantity and cannot be declared `mean`
 #: without adjudicating a different number than the one measured and registered.
 POOLED_COUNTS = "pooled_counts_over_resampled_groups"
+#: A THREE-level macro: unit scores are meaned within a (truth_kind, corpus) cell, cells are
+#: meaned within a truth_kind, and truth kinds are meaned. `macro_strata` is the two-level case
+#: and computes a DIFFERENT number whenever the cells of a kind hold unequal unit counts, so a
+#: campaign whose frozen scalar is nested cannot declare it without adjudicating a scalar other
+#: than the one it measured and registered.
+MACRO_TRUTH_KIND_CORPUS_GROUP = "macro_truth_kind_corpus_group"
 
 
 @dataclass(frozen=True)
@@ -147,10 +153,22 @@ def paired_interval(
             direction=direction, candidate_metric=candidate_metric,
             champion_metric=champion_metric,
         )
+    if aggregation == MACRO_TRUTH_KIND_CORPUS_GROUP:
+        return _nested_macro_interval(
+            evidence,
+            resamples=resamples,
+            confidence=confidence,
+            seed=seed,
+            run_id=run_id,
+            champion_run_id=champion_run_id,
+            direction=direction,
+            candidate_metric=candidate_metric,
+            champion_metric=champion_metric,
+        )
     if aggregation not in {MEAN, MACRO_STRATA}:
         raise RegistryError(
-            f"metric.adjudication.aggregation must be {MEAN!r}, {MACRO_STRATA!r} "
-            f"or {POOLED_COUNTS!r}"
+            f"metric.adjudication.aggregation must be {MEAN!r}, {MACRO_STRATA!r}, "
+            f"{POOLED_COUNTS!r} or {MACRO_TRUTH_KIND_CORPUS_GROUP!r}"
         )
 
     expected_evidence = {
@@ -452,6 +470,133 @@ def _pooled_counts_interval(
         "aggregation": POOLED_COUNTS,
         "unit_count": len(candidates),
         "strata": sorted(by_stratum),
+        "point_estimate": point,
+        "interval": [lower, upper],
+        "input_sha256": evidence_digest(evidence),
+        "units": canonical["units"],
+    }
+    return PairedInterval(point, lower, upper, durable)
+
+
+def _nested_macro_aggregate(cells: Mapping[tuple[str, str], Sequence[float]]) -> float:
+    """Mean over truth kinds of the mean over that kind's corpora of the mean over its units."""
+    by_kind: dict[str, list[float]] = defaultdict(list)
+    for (kind, _corpus), values in cells.items():
+        by_kind[kind].append(statistics.fmean(values))
+    return statistics.fmean(statistics.fmean(by_kind[kind]) for kind in sorted(by_kind))
+
+
+def _nested_macro_interval(
+    evidence: Mapping[str, object],
+    *,
+    resamples: int,
+    confidence: float,
+    seed: int,
+    run_id: str,
+    champion_run_id: str,
+    direction: str,
+    candidate_metric: float,
+    champion_metric: float,
+) -> PairedInterval:
+    """The ``macro_truth_kind_corpus_group`` branch of :func:`paired_interval`.
+
+    A unit is one independent physical group and names both macro levels above it::
+
+        {"unit_id": <group id>, "truth_kind": <outer level>, "corpus": <inner level>,
+         "candidate": <scalar>, "champion": <scalar>}
+
+    Every level is a mean, so the aggregate is linear in the unit values and the paired delta of
+    the aggregates equals the aggregate of the paired deltas -- which is what is resampled, whole
+    units within their (truth_kind, corpus) cell, exactly as the campaign's own frozen bootstrap
+    resamples. Like every other branch it REFUSES unless the aggregate reproduces both Runs'
+    registered metrics, so an aggregation named here but not measured here cannot adjudicate.
+    """
+    expected_evidence = {
+        "candidate_run_id", "champion_run_id", "resamples", "confidence_level", "seed", "units",
+    }
+    if set(evidence) != expected_evidence:
+        raise RegistryError(
+            "paired evidence requires exactly candidate_run_id, champion_run_id, resamples, "
+            f"confidence_level, seed, and units; missing={sorted(expected_evidence - set(evidence))}, "
+            f"extra={sorted(set(evidence) - expected_evidence)}"
+        )
+    if evidence.get("candidate_run_id") != run_id:
+        raise RegistryError("paired evidence candidate_run_id does not name the adjudicated run")
+    if evidence.get("champion_run_id") != champion_run_id:
+        raise RegistryError("paired evidence champion_run_id does not name the current champion run")
+    if evidence.get("resamples") != resamples:
+        raise RegistryError("paired evidence resamples differs from the frozen CampaignSpec")
+    if evidence.get("confidence_level") != confidence:
+        raise RegistryError("paired evidence confidence_level differs from the frozen CampaignSpec")
+    if evidence.get("seed") != seed:
+        raise RegistryError("paired evidence seed differs from the frozen CampaignSpec")
+    units = evidence.get("units")
+    if not isinstance(units, Sequence) or isinstance(units, (str, bytes)) or len(units) < 2:
+        raise RegistryError("paired evidence units must contain at least two same-unit comparisons")
+
+    unit_keys = {"unit_id", "truth_kind", "corpus", "candidate", "champion"}
+    seen: set[str] = set()
+    candidate_cells: dict[tuple[str, str], list[float]] = defaultdict(list)
+    champion_cells: dict[tuple[str, str], list[float]] = defaultdict(list)
+    delta_cells: dict[tuple[str, str], list[float]] = defaultdict(list)
+    sign = 1.0 if direction == "maximize" else -1.0
+    for index, raw in enumerate(units):
+        if not isinstance(raw, Mapping) or set(raw) != unit_keys:
+            raise RegistryError(
+                f"paired evidence units[{index}] requires exactly {sorted(unit_keys)}"
+            )
+        unit_id = _text(raw.get("unit_id"), f"paired evidence units[{index}].unit_id")
+        if unit_id in seen:
+            raise RegistryError(f"paired evidence repeats unit_id {unit_id!r}")
+        seen.add(unit_id)
+        cell = (
+            _text(raw.get("truth_kind"), f"paired evidence units[{index}].truth_kind"),
+            _text(raw.get("corpus"), f"paired evidence units[{index}].corpus"),
+        )
+        candidate = _finite(raw.get("candidate"), f"paired evidence units[{index}].candidate")
+        champion = _finite(raw.get("champion"), f"paired evidence units[{index}].champion")
+        candidate_cells[cell].append(candidate)
+        champion_cells[cell].append(champion)
+        delta_cells[cell].append(sign * (candidate - champion))
+
+    if any(len(values) < 2 for values in delta_cells.values()):
+        raise RegistryError(
+            "paired nested-macro evidence requires at least two units per truth_kind:corpus cell"
+        )
+    candidate_point = _nested_macro_aggregate(candidate_cells)
+    champion_point = _nested_macro_aggregate(champion_cells)
+    if not math.isclose(candidate_point, candidate_metric, rel_tol=1e-9, abs_tol=1e-12):
+        raise RegistryError(
+            "paired evidence candidate aggregate differs from the candidate Run metric"
+        )
+    if not math.isclose(champion_point, champion_metric, rel_tol=1e-9, abs_tol=1e-12):
+        raise RegistryError(
+            "paired evidence champion aggregate differs from the champion Run metric"
+        )
+
+    point = _nested_macro_aggregate(delta_cells)
+    rng = random.Random(seed)
+    ordered_cells = sorted(delta_cells)
+    draws = sorted(
+        _nested_macro_aggregate({
+            cell: [rng.choice(delta_cells[cell]) for _ in delta_cells[cell]]
+            for cell in ordered_cells
+        })
+        for _ in range(resamples)
+    )
+    alpha = (1.0 - confidence) / 2.0
+    lower, upper = _percentile(draws, alpha), _percentile(draws, 1.0 - alpha)
+    canonical = json.loads(json.dumps(dict(evidence), sort_keys=True, separators=(",", ":")))
+    durable = {
+        "method": PAIRED_BOOTSTRAP,
+        "candidate_run_id": run_id,
+        "champion_run_id": champion_run_id,
+        "resamples": resamples,
+        "confidence_level": confidence,
+        "seed": seed,
+        "aggregation": MACRO_TRUTH_KIND_CORPUS_GROUP,
+        "unit_count": len(seen),
+        "strata": [f"{kind}:{corpus}" for kind, corpus in ordered_cells],
         "point_estimate": point,
         "interval": [lower, upper],
         "input_sha256": evidence_digest(evidence),
