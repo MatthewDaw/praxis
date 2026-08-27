@@ -287,8 +287,21 @@ attach a licence caveat to a recommendation or a handoff. A source is admitted o
 evidence about its LABELS, media join, leakage, regime match and accessibility -- never its terms.
 
 
-Classify each holding as train, score, validation-only, sealed, refuted, duplicate/derived, or
-adapter-pending. Catalog presence authorizes a planned idea, not dispatch. Operator timelines and
+**Sweep the WHOLE registered catalog first, then classify.** Before any corpus is admitted, walk
+every dataset already registered in this project and decide, for each, whether it could serve this
+campaign's task -- and record the decision either way. This is not about acquiring new data; it is
+about not leaving usable data on the shelf because nobody looked. A corpus that was never considered
+is indistinguishable in the record from one considered and refused, and the first is a mistake while
+the second is a decision.
+
+Refusal by omission is the failure this exists to stop. Every registered corpus ends the sweep with
+one of: admitted (with its role), refused (with the reason -- wrong regime, no usable labels, leakage
+against a scoring set, media join impossible, adapter absent), or adapter-pending (usable, but
+nothing reads it yet -- which is a Phase A deliverable, not an excuse). A campaign that trains on
+three corpora when eleven were available should be able to point at eight written refusals.
+
+Then classify each admitted holding as train, score, validation-only, sealed, refuted,
+duplicate/derived, or adapter-pending. Catalog presence authorizes a planned idea, not dispatch. Operator timelines and
 derived production maps are validation-only unless the project contract explicitly says otherwise.
 
 Verify through target-host adapters, not raw object listings:
@@ -1024,6 +1037,26 @@ Two supporting signals, neither sufficient alone:
 A run of cycles with no adoption is NOT by itself a stop. It may mean the hypotheses were weak while
 the mode is still expensive and still worth attacking; the census says which. That distinction is
 the difference between a campaign that finished and one that gave up.
+
+**Duds are the normal case, so the loop tolerates them — and is capped so it cannot run forever.**
+Two numbers, both declared with the judge:
+
+- **A MINIMUM of distinct attempts against the current top mode before convergence may be called,
+  default 3.** One failed hypothesis says nothing about a mode; it says something about that
+  hypothesis. Declaring convergence after a single dud is the cheapest way to abandon a campaign
+  that still had its best idea ahead of it, and it is indistinguishable afterwards from a campaign
+  that genuinely ran out.
+- **A MAXIMUM number of consecutive non-adopting cycles, default 6.** Past that the loop stops and
+  reports, whatever the census ceiling says. A high ceiling means the mode is worth attacking; it
+  does not mean this campaign is the one that will crack it, and a loop with no ceiling on its own
+  failure is an infinite loop with extra steps.
+
+Both are floors and caps on the JUDGEMENT, not replacements for it. The census ceiling remains the
+real stopping rule: if the top mode's share drops below the adoption floor, stop immediately even
+if the minimum has not been reached -- there is nothing left worth attempting. And hitting the
+maximum is a REPORTED result with the census attached, not a silent exit: "six cycles attacked this
+mode and none adopted, and it still costs 4% of the metric" tells a successor exactly where to
+start.
 
 Whatever ends it, report the final census with the verdict. "The remaining failures are these, they
 cost this much, and they were not worth the next arm" is a finding a successor can act on -- and it

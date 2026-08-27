@@ -146,6 +146,26 @@ A run of cycles with no adoption is NOT by itself terminal. It may mean the hypo
 while the mode remains expensive and worth attacking -- the census distinguishes those, and the
 difference is between a campaign that finished and one that gave up.
 
+**Duds are the normal case, so the loop tolerates them — and is capped so it cannot run forever.**
+Two numbers, both declared with the judge:
+
+- **A MINIMUM of distinct attempts against the current top mode before convergence may be called,
+  default 3.** One failed hypothesis says nothing about a mode; it says something about that
+  hypothesis. Declaring convergence after a single dud is the cheapest way to abandon a campaign
+  that still had its best idea ahead of it, and it is indistinguishable afterwards from a campaign
+  that genuinely ran out.
+- **A MAXIMUM number of consecutive non-adopting cycles, default 6.** Past that the loop stops and
+  reports, whatever the census ceiling says. A high ceiling means the mode is worth attacking; it
+  does not mean this campaign is the one that will crack it, and a loop with no ceiling on its own
+  failure is an infinite loop with extra steps.
+
+Both are floors and caps on the JUDGEMENT, not replacements for it. The census ceiling remains the
+real stopping rule: if the top mode's share drops below the adoption floor, stop immediately even
+if the minimum has not been reached -- there is nothing left worth attempting. And hitting the
+maximum is a REPORTED result with the census attached, not a silent exit: "six cycles attacked this
+mode and none adopted, and it still costs 4% of the metric" tells a successor exactly where to
+start.
+
 Report the final census with the verdict whatever ends it. "The remaining failures are these, they
 cost this much, and they were not worth the next arm" is actionable, and tells a successor where to
 start if the cost calculus changes. "It stopped improving" is not.
