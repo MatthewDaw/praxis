@@ -293,6 +293,33 @@ an iteration that creates no Run is `STALLED`; a reconciled interruption is `RET
 backlog exhaustion is a declared campaign policy and a reported scientific result, never an
 implicit success.
 
+## A fixable blocker is never a stop
+
+`BLOCKED` is reserved for a cause this loop genuinely cannot remove: absent data it has no
+credential to fetch, hardware it does not have, a licence question, a decision that is a human's to
+make. **Stopping on a cause the loop could have fixed is a defect, not a safe default.** The
+expensive failure mode is a supervisor that exits tidily, reports a blocker, and waits -- when the
+blocker was a bug in an adapter, a stale contract, or an upstream model that needed one arm.
+
+So when a run stalls on something outside this campaign:
+
+- if it is a DEFECT -- code not doing what it already claimed -- fix it where it lives, commit it
+  separately naming this campaign as the finder, and continue;
+- if it is an IMPROVEMENT to an upstream model, author it as an arm in the upstream campaign and
+  dispatch that ONE arm through the upstream's own harness and frozen judge. Record the Run against
+  the upstream experiment. Do not restart the upstream campaign, do not wake its supervisor, and do
+  not take over its backlog -- borrow its judge for one question and return;
+- if the upstream verdict has not landed yet, do not wait for it. A declared input reading
+  `source: labels` is permanently legal and decouples this campaign's schedule from another's
+  verdicts. Measure now, flip to the champion when it lands, record both.
+
+Report every out-of-scope fix with the campaign that prompted it. Silence is the one thing this
+allowance does not cover: work that drifts across a scope unremarked destroys the signal the scope
+exists to give.
+
+A blocker that gets fixed immediately costs one arm. The same blocker deferred costs a campaign,
+because everything measured after it is measured against a known-broken dependency.
+
 ## Ancestry-aware ratchet
 
 Three distinct harmful comparisons may invalidate the current adoption only when every rejection

@@ -1042,11 +1042,22 @@ Two kinds of fix, and only the second needs ceremony:
   it in its own commit, and name the campaign that found it. No adjudication, no permission: making
   code match its own contract is never a hypothesis.
 - **An improvement.** The dependency does what it claimed, and this campaign needs it to do BETTER.
-  That is a change to a measured model, so it belongs to the owning campaign's judge. Author it, but
-  land it as an ARM in the upstream campaign and let that campaign's frozen metric decide. What is
-  forbidden is moving another campaign's `champion` from inside this one -- a downstream campaign
-  promoting an upstream model on its own metric silently breaks the upstream's ratchet, and the next
-  person to read that campaign cannot tell what its numbers mean any more.
+  That is a change to a measured model, so it belongs to the owning campaign's judge -- and the
+  blocked campaign **runs it there itself**. Author the fix as an arm in the upstream campaign and
+  dispatch that ONE arm through the upstream's own harness, judge, corpora, split units and seeds.
+  The one-arm lifecycle is already the unit of work; nothing needs restarting, and no supervisor
+  needs waking. Record the Run against the upstream experiment, let Praxis adjudicate it as it would
+  any other arm, and carry on.
+
+  Run the arm that unblocks you, not a campaign's worth of them. You are borrowing the upstream's
+  judge to settle one question, not taking over its backlog -- its seeded ideas remain its own to
+  dispatch. If unblocking appears to need several arms, that is the signal it is not a fix but a
+  campaign, and it belongs to the upstream's own run.
+
+  What is forbidden is moving another campaign's `champion` on YOUR metric. Through the upstream's
+  frozen judge the promotion is legitimate and its ratchet holds; scored on the downstream's metric
+  it is meaningless, and the next person to read that campaign cannot tell what its numbers mean any
+  more. The judge you use is what makes the difference, not who is running.
 
 **And you do not wait for either.** While the upstream fix is being adjudicated, the downstream
 campaign proceeds on `source: labels`. That is the whole reason the labels source is permanently
