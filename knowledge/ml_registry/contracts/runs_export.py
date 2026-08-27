@@ -51,7 +51,14 @@ class RunsExport:
             status = metrics.get("export_status")
             if status is None:
                 status = "ok" if row["status"] in {"complete", "succeeded", "failed"} else row["status"]
-            writer.writerow((code_ref["sha"], metrics["metric"], metrics.get("memory_gb", 0), status,
+            metric_value = metrics["metric"]
+            if isinstance(metric_value, dict):
+                raise ContractError(
+                    f"run {row['run_id']!r} reports vector metrics {sorted(metric_value)}; "
+                    "the v2 ledger carries one metric_value column and cannot represent a "
+                    "vector-judged run"
+                )
+            writer.writerow((code_ref["sha"], metric_value, metrics.get("memory_gb", 0), status,
                              params.get("description", row["idea_id"]), metrics.get("throughput", 0),
                              code_ref["diff_lines"]))
         content = stream.getvalue()

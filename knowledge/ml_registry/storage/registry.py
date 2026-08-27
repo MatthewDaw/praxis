@@ -822,10 +822,19 @@ class Registry:
         # enforces at `write_path.register_model`. Refused at registration for the same
         # reason `sigmas` is: a floor that cannot state a gain must not survive to silently
         # become the default when the first arm is adjudicated.
-        from knowledge.ml_registry.services.paired_adjudication import guard_adoption_floor
+        from knowledge.ml_registry.services.paired_adjudication import (
+            guard_adoption_floor,
+            guard_vector_judge,
+        )
 
         try:
-            guard_adoption_floor(campaign.metric)
+            if campaign.metric is not None:
+                guard_adoption_floor(campaign.metric)
+            else:
+                # A vector judge validates every judged metric at registration -- floor,
+                # direction, and a per-metric paired adjudication policy -- so nothing
+                # unusable survives to adjudication time.
+                guard_vector_judge(campaign.metrics)
         except RegistryError as exc:
             raise ContractError(str(exc)) from exc
         if campaign.rope is not None:

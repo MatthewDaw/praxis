@@ -34,8 +34,7 @@ def _finite(value: object, field: str) -> float:
     return result
 
 
-def _metric_contract(spec: CampaignSpec) -> tuple[str, str, tuple[tuple[str, str, int], ...]]:
-    metric = spec.metric
+def _metric_contract(metric: Mapping[str, object]) -> tuple[str, str, tuple[tuple[str, str, int], ...]]:
     operating_point = _mapping(metric.get("operating_point"), "metric.operating_point")
     selection = operating_point.get("selection")
     if selection != "frozen":
@@ -142,11 +141,11 @@ def _validate_disposition(spec: CampaignSpec) -> None:
 
 def _compute_cross_corpus_rope(
     spec: CampaignSpec,
+    metric: Mapping[str, object],
     scoring_corpora: Mapping[str, Sequence[Mapping[str, object]]],
 ) -> dict[str, object]:
     """Compute an explicitly declared global rope without erasing source provenance."""
 
-    metric = spec.metric
     if "scoring_corpus" in metric:
         raise ContractError(
             "metric.scoring_scope 'cross_corpus' uses metric.scoring_corpora, not "
@@ -264,17 +263,40 @@ def compute_campaign_rope(
     spec: CampaignSpec,
     scoring_corpora: Mapping[str, Sequence[Mapping[str, object]]],
 ) -> dict[str, object]:
-    """Validate ``spec`` policy and return its deterministic split-unit bootstrap rope."""
+    """Validate ``spec`` policy and return its deterministic split-unit bootstrap rope.
+
+    A scalar judge (``spec.metric``) returns exactly the rope it always has. A vector
+    judge (``spec.metrics``) validates and measures every judged metric through the SAME
+    per-metric machinery and returns one rope per metric, keyed by name -- no metric's
+    provenance is collapsed into another's.
+    """
 
     _validate_disposition(spec)
-    if spec.metric.get("scoring_scope") == "cross_corpus":
-        return _compute_cross_corpus_rope(spec, scoring_corpora)
-    if spec.metric.get("scoring_scope", "per_corpus") != "per_corpus":
+    if spec.metric is not None:
+        return _single_metric_rope(spec, spec.metric, scoring_corpora)
+    return {
+        "method": "vector",
+        "metrics": {
+            _text(entry.get("name"), f"metrics[{index}].name"):
+                _single_metric_rope(spec, entry, scoring_corpora)
+            for index, entry in enumerate(spec.metrics)
+        },
+    }
+
+
+def _single_metric_rope(
+    spec: CampaignSpec,
+    metric: Mapping[str, object],
+    scoring_corpora: Mapping[str, Sequence[Mapping[str, object]]],
+) -> dict[str, object]:
+    if metric.get("scoring_scope") == "cross_corpus":
+        return _compute_cross_corpus_rope(spec, metric, scoring_corpora)
+    if metric.get("scoring_scope", "per_corpus") != "per_corpus":
         raise ContractError("metric.scoring_scope must be 'per_corpus' or explicit 'cross_corpus'")
-    metric_name, corpus_id, aggregation = _metric_contract(spec)
+    metric_name, corpus_id, aggregation = _metric_contract(metric)
     corpus, rows = _scoring_rows(spec, scoring_corpora, corpus_id)
     _validate_sample_sizes(rows, aggregation)
-    split_unit = _text(spec.metric.get("split_unit"), "metric.split_unit")
+    split_unit = _text(metric.get("split_unit"), "metric.split_unit")
     if corpus.get("split_unit") != split_unit:
         raise ContractError(
             f"metric.split_unit {split_unit!r} does not match corpora[{corpus_id}].split_unit "
