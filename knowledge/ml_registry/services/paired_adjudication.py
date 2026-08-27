@@ -339,9 +339,12 @@ def paired_interval(
     if aggregation == MACRO_STRATA:
         unit_keys.add("stratum")
     for index, raw in enumerate(units):
-        if not isinstance(raw, Mapping) or set(raw) != unit_keys:
+        # Required keys must be present; extra identity fields are allowed so a VECTOR
+        # run can carry one unit list whose per-metric aggregations need different
+        # labels (stratum vs truth_kind/corpus). Extra keys are ignored, never scored.
+        if not isinstance(raw, Mapping) or not unit_keys <= set(raw):
             raise RegistryError(
-                f"paired evidence units[{index}] requires exactly {sorted(unit_keys)}"
+                f"paired evidence units[{index}] requires {sorted(unit_keys)}"
             )
         unit_id = _text(raw.get("unit_id"), f"paired evidence units[{index}].unit_id")
         if unit_id in seen:
@@ -728,9 +731,12 @@ def _nested_macro_interval(
     delta_cells: dict[tuple[str, str], list[float]] = defaultdict(list)
     sign = 1.0 if direction == "maximize" else -1.0
     for index, raw in enumerate(units):
-        if not isinstance(raw, Mapping) or set(raw) != unit_keys:
+        # Required keys must be present; extra identity fields are allowed so a VECTOR
+        # run can carry one unit list whose per-metric aggregations need different
+        # labels (stratum vs truth_kind/corpus). Extra keys are ignored, never scored.
+        if not isinstance(raw, Mapping) or not unit_keys <= set(raw):
             raise RegistryError(
-                f"paired evidence units[{index}] requires exactly {sorted(unit_keys)}"
+                f"paired evidence units[{index}] requires {sorted(unit_keys)}"
             )
         unit_id = _text(raw.get("unit_id"), f"paired evidence units[{index}].unit_id")
         if unit_id in seen:

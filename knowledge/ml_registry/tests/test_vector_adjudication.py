@@ -214,6 +214,49 @@ def test_vector_registration_computes_one_rope_per_judged_metric(tmp_path: Path)
         assert rope["metrics"][name]["metric"] == name
 
 
+def test_vector_units_may_carry_identity_fields_another_metric_needs(tmp_path: Path) -> None:
+    """One unit list, two aggregations: extra identity fields are not a refusal.
+
+    Mapping scores macro-by-sport (needs ``stratum``); paint scores a nested
+    truth-kind/corpus macro (needs ``truth_kind`` and ``corpus``). The vector
+    judge carries both on every unit. Extra keys must be ignored, not scored
+    and not refused -- a missing *required* key is still a refusal.
+    """
+    from knowledge.ml_registry.services.paired_adjudication import paired_interval
+
+    registry = vector_registry(tmp_path)
+    evidence = vector_evidence(shifted({"ap50": .03, "idf1": 0.0}))
+    for unit in evidence["units"]:
+        unit["stratum"] = "basketball"
+        unit["truth_kind"] = "derived_calibration"
+        unit["corpus"] = "deepsport-basketball-instants"
+    create_run(registry, "candidate", aggregates(shifted({"ap50": .03, "idf1": 0.0})))
+    verdict = adjudicate_against_champion(
+        registry, run_id="candidate", model_id="model", reason="extra identity fields",
+        promotion=promotion(registry, "candidate"),
+        paired_evidence=evidence,
+    )
+    assert verdict == "adopted"
+
+    policy = metric_entry("ap50")["adjudication"]
+    projected = {
+        "candidate_run_id": "candidate",
+        "champion_run_id": "baseline",
+        "resamples": 500,
+        "confidence_level": .95,
+        "seed": 17,
+        "units": [
+            {"champion": .5, "candidate": .6, "stratum": "x"},
+            {"champion": .4, "candidate": .7, "stratum": "x"},
+        ],
+    }
+    with pytest.raises(RegistryError, match="requires .*unit_id"):
+        paired_interval(
+            policy, projected, run_id="candidate", champion_run_id="baseline",
+            direction="maximize", candidate_metric=.6, champion_metric=.5,
+        )
+
+
 def test_vector_entry_declaring_legacy_scalar_rope_is_refused_at_registration(
     tmp_path: Path,
 ) -> None:
