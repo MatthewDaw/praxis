@@ -41,6 +41,17 @@ def supersede_run(registry: Registry, *, run_id: str, reason: str) -> None:
     registry._supersede_run(run_id=run_id, reason=reason, capability=_ADJUDICATOR_CAPABILITY)
 
 
+def abandon_run(registry: Registry, *, run_id: str, reason: str) -> None:
+    """Reclassify a rejected or parked run as abandoned through the adjudicator seam.
+
+    Candidate code never writes a verdict. This is the canonical path for the case where
+    the judge never fairly saw the hypothesis -- so a rejection it did not reach cannot
+    later be cited as proof the approach fails. The idea goes back on the backlog:
+    ``abandoned`` is not an answering verdict.
+    """
+    registry._abandon_run(run_id=run_id, reason=reason, capability=_ADJUDICATOR_CAPABILITY)
+
+
 def record_ratchet_evidence(registry: Registry, payload: dict[str, object]) -> None:
     registry._record_ratchet_evidence(payload, capability=_ADJUDICATOR_CAPABILITY)
 

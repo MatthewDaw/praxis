@@ -17,6 +17,7 @@ class Verdict(str, Enum):
     REJECTED = "rejected"
     PARKED = "parked"
     VOIDED = "voided"
+    ABANDONED = "abandoned"
 
 
 VERDICT_TO_TRIAL_STATUS = {
@@ -24,6 +25,7 @@ VERDICT_TO_TRIAL_STATUS = {
     Verdict.REJECTED: TrialStatus.SUCCEEDED,
     Verdict.PARKED: TrialStatus.SUCCEEDED,
     Verdict.VOIDED: TrialStatus.VOIDED,
+    Verdict.ABANDONED: TrialStatus.SUCCEEDED,
 }
 
 TERMINAL_TRIAL_STATUSES = frozenset({

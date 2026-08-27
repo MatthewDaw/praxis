@@ -425,8 +425,8 @@ def test_exactly_eight_registry_tables_and_metrics_are_canonical_json(tmp_path: 
 def test_run_status_and_scientific_verdict_have_one_exhaustive_pair_matrix() -> None:
     assert VALID_RUN_STATUS_VERDICT_PAIRS == {
         ("running", None), ("complete", None), ("succeeded", "adopted"),
-        ("succeeded", "rejected"), ("succeeded", "parked"), ("failed", None),
-        ("voided", "voided"), ("superseded", None),
+        ("succeeded", "rejected"), ("succeeded", "parked"), ("succeeded", "abandoned"),
+        ("failed", None), ("voided", "voided"), ("superseded", None),
     }
 
 

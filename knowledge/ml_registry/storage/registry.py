@@ -33,10 +33,10 @@ CREATE TABLE IF NOT EXISTS runs(
  stage TEXT NOT NULL, family TEXT NOT NULL, params TEXT NOT NULL, metrics TEXT NOT NULL, code_ref TEXT NOT NULL,
  device_fingerprint TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN
  ('running','complete','succeeded','failed','voided','superseded')), verdict TEXT CHECK(verdict IS NULL OR verdict IN
- ('adopted','rejected','parked','voided')), started_at REAL NOT NULL, finished_at REAL,
+ ('adopted','rejected','parked','voided','abandoned')), started_at REAL NOT NULL, finished_at REAL,
  claim_owner TEXT NOT NULL, heartbeat_at REAL NOT NULL, CHECK(COALESCE(
  (status IN ('running','complete','failed','superseded') AND verdict IS NULL) OR
- (status='succeeded' AND verdict IN ('adopted','rejected','parked')) OR
+ (status='succeeded' AND verdict IN ('adopted','rejected','parked','abandoned')) OR
  (status='voided' AND verdict='voided'),0)));
 CREATE TABLE IF NOT EXISTS artifacts(
  artifact_id TEXT NOT NULL, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL CHECK(kind IN
@@ -92,16 +92,16 @@ CREATE TRIGGER IF NOT EXISTS guard_experiments_delete BEFORE DELETE ON experimen
 CREATE TRIGGER IF NOT EXISTS guard_runs_insert BEFORE INSERT ON runs
  WHEN registry_authority() NOT IN ('run_created','historical_ledger_imported','historical_archive_imported') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_runs_update BEFORE UPDATE ON runs
- WHEN registry_authority() NOT IN ('run_completed','run_adjudicated','run_adopted','run_superseded','adoption_invalidated') BEGIN SELECT RAISE(ABORT,'run write authority required'); END;
+ WHEN registry_authority() NOT IN ('run_completed','run_adjudicated','run_adopted','run_superseded','adoption_invalidated','run_abandoned') BEGIN SELECT RAISE(ABORT,'run write authority required'); END;
 CREATE TRIGGER IF NOT EXISTS guard_runs_delete BEFORE DELETE ON runs BEGIN SELECT RAISE(ABORT,'runs cannot be deleted'); END;
 CREATE TRIGGER IF NOT EXISTS valid_run_pair_insert BEFORE INSERT ON runs WHEN NOT COALESCE(
  (NEW.status IN ('running','complete','failed','superseded') AND NEW.verdict IS NULL) OR
- (NEW.status='succeeded' AND NEW.verdict IN ('adopted','rejected','parked')) OR
+ (NEW.status='succeeded' AND NEW.verdict IN ('adopted','rejected','parked','abandoned')) OR
  (NEW.status='voided' AND NEW.verdict='voided'),0)
  BEGIN SELECT RAISE(ABORT,'invalid run status/verdict pair'); END;
 CREATE TRIGGER IF NOT EXISTS valid_run_pair_update BEFORE UPDATE ON runs WHEN NOT COALESCE(
  (NEW.status IN ('running','complete','failed','superseded') AND NEW.verdict IS NULL) OR
- (NEW.status='succeeded' AND NEW.verdict IN ('adopted','rejected','parked')) OR
+ (NEW.status='succeeded' AND NEW.verdict IN ('adopted','rejected','parked','abandoned')) OR
  (NEW.status='voided' AND NEW.verdict='voided'),0)
  BEGIN SELECT RAISE(ABORT,'invalid run status/verdict pair'); END;
 CREATE TRIGGER IF NOT EXISTS guard_artifacts_insert BEFORE INSERT ON artifacts
@@ -341,6 +341,21 @@ class Registry:
                 raise RegistryError("adjudication requires one complete, unadjudicated run")
             db.execute("UPDATE runs SET status=?,verdict=?,finished_at=?,heartbeat_at=? WHERE run_id=?",
                        (p["status"], p["verdict"], p["at"], p["at"], p["run_id"]))
+        elif op == "run_abandoned":
+            row = db.execute("SELECT * FROM runs WHERE run_id=?", (p["run_id"],)).fetchone()
+            if row is None:
+                raise RegistryError("unknown run")
+            if row["status"] == "succeeded" and row["verdict"] == "abandoned":
+                return False
+            if row["status"] != "succeeded" or row["verdict"] not in {"rejected", "parked"}:
+                raise RegistryError(
+                    "abandonment reclassifies a rejected or parked run whose hypothesis was "
+                    f"never fairly tested; got status={row['status']!r} verdict={row['verdict']!r}"
+                )
+            db.execute(
+                "UPDATE runs SET verdict='abandoned',heartbeat_at=? WHERE run_id=?",
+                (p["at"], p["run_id"]),
+            )
         elif op == "run_adopted":
             row = db.execute("SELECT * FROM runs WHERE run_id=?", (p["run_id"],)).fetchone()
             if row is None or row["status"] != "complete" or row["verdict"] is not None:
@@ -623,7 +638,8 @@ class Registry:
             raise RegistryError("run verdict requires adjudication authority")
         if verdict == "adopted":
             raise RegistryError("adoption requires the atomic model-version and champion promotion path")
-        expected = {"rejected": "succeeded", "parked": "succeeded", "voided": "voided"}
+        expected = {"rejected": "succeeded", "parked": "succeeded", "abandoned": "succeeded",
+                    "voided": "voided"}
         if expected.get(verdict) != status or not reason:
             raise RegistryError("run verdict and terminal status are inconsistent")
         payload: dict[str, object] = {
@@ -720,6 +736,21 @@ class Registry:
         if not reason.strip():
             raise RegistryError("supersession requires a reason")
         self._write("run_superseded", {"run_id": run_id, "reason": reason, "at": self.clock()})
+
+    def _abandon_run(self, *, run_id: str, reason: str, capability: object) -> None:
+        """Reclassify a rejected or parked run as abandoned.
+
+        Abandoned is not a verdict the judge reached: it is a decision taken because the
+        hypothesis was never fairly tested (fitted on a superseded mute base, killed mid-fit,
+        scored against a broken incumbent). A rejection it did not reach must never be cited
+        later as proof the approach fails. The prior verdict stays in the event log; the
+        projection's verdict becomes ``abandoned`` so readers cannot treat it as a refutation.
+        """
+        if capability is not _ADJUDICATOR_CAPABILITY:
+            raise RegistryError("abandonment requires adjudication authority")
+        if not reason.strip():
+            raise RegistryError("abandonment requires a reason")
+        self._write("run_abandoned", {"run_id": run_id, "reason": reason, "at": self.clock()})
 
     def create_artifact(self, *, run_id: str, kind: str, content: bytes, schema_version: str) -> str:
         digest, path = self.blobs.put(content)

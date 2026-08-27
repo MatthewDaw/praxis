@@ -33,6 +33,7 @@ VALID_RUN_STATUS_VERDICT_PAIRS = frozenset({
     (RunStatus.SUCCEEDED.value, "adopted"),
     (RunStatus.SUCCEEDED.value, "rejected"),
     (RunStatus.SUCCEEDED.value, "parked"),
+    (RunStatus.SUCCEEDED.value, "abandoned"),
     (RunStatus.FAILED.value, None),
     (RunStatus.VOIDED.value, "voided"),
     (RunStatus.SUPERSEDED.value, None),
