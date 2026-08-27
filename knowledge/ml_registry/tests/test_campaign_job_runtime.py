@@ -237,3 +237,34 @@ def test_unreadable_corpus_cache_refuses_launch_instead_of_counting_zero(tmp_pat
 
 def test_default_campaign_disk_budget_is_stated_and_finite() -> None:
     assert DEFAULT_CAMPAIGN_DISK_BUDGET_BYTES == 50 * 1024**3
+
+
+def test_stalled_after_a_kill_names_why_the_arm_was_killed(tmp_path: Path) -> None:
+    """A void that its adapter failed to record still has to say WHAT killed the arm.
+
+    The reason previously named only the bookkeeping failure ("its VOIDED trial was not
+    recorded"), so an operator reading outcome.json could not tell a wall-clock cap from a
+    missed heartbeat and had to re-derive it from the arm's stdout. a01 stalled exactly this
+    way on 2026-08-27.
+    """
+
+    class Adapter(_Adapter):
+        def dispatch_one(self, _context: CampaignJobContext) -> list[str]:
+            return [sys.executable, "-c", "import time; time.sleep(1)"]
+
+        def void_arm(self, _context: CampaignJobContext, reason: str) -> None:
+            pass  # the adapter drops it, so trial_count never advances
+
+    outcome = CampaignJob(
+        context=CampaignJobContext("fixture", 1, tmp_path, tmp_path / "progress.json"),
+        adapter=Adapter(tmp_path / "never.marker", stalled=True),
+        outcome_path=tmp_path / "outcome.json",
+        arm_timeout_s=.05,
+        heartbeat_s=1,
+        working_directory=tmp_path,
+    ).run()
+
+    assert outcome.outcome is CampaignOutcome.STALLED
+    assert "VOIDED on throughput" in outcome.reason
+    assert "wall-clock cap" in outcome.reason
+    assert "VOIDED trial was not recorded" in outcome.reason

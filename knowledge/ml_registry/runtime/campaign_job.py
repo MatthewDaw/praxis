@@ -367,7 +367,8 @@ class CampaignJob:
                 if after <= before:
                     return self._record(
                         CampaignOutcome.STALLED,
-                        f"iteration {iteration} was killed but its VOIDED trial was not recorded",
+                        f"iteration {iteration} was killed ({void_reason}) but its VOIDED "
+                        "trial was not recorded",
                     )
                 continue
             if self.cancelled or returncode in {130, 143, -signal.SIGTERM, -signal.SIGKILL}:
