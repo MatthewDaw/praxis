@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
@@ -14,7 +15,7 @@ from knowledge.ml_registry.domain.run import RunMetricError, RunMetrics
 from knowledge.ml_registry.file_lock import exclusive_file_lock
 
 from .blobs import BlobStore
-from .events import EventLog, RegistryEvent
+from .events import EventLog, EventLogError, RegistryEvent
 
 
 class RegistryError(ValueError):
@@ -139,7 +140,8 @@ class Registry:
     """Single-writer registry: durable event first, recoverable SQLite projection second."""
 
     def __init__(self, root: str | Path, *, clock: Callable[[], float] = time.time,
-                 after_event: Callable[[RegistryEvent], None] | None = None) -> None:
+                 after_event: Callable[[RegistryEvent], None] | None = None,
+                 auto_recover: bool = True) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.db_path = self.root / "registry.sqlite3"
@@ -151,7 +153,11 @@ class Registry:
         with self._connect() as db:
             from .migration import migrate_schema
             migrate_schema(db)
-        self.recover()
+        # `auto_recover=False` opens the projection WITHOUT replaying, so a caller can
+        # inspect whether it is current before deciding to overwrite it -- see
+        # `replay_projection`. Every ordinary caller wants the default self-healing open.
+        if auto_recover:
+            self.recover()
 
     @classmethod
     def open(cls, root: str | Path, **kwargs: Any) -> "Registry":
@@ -188,26 +194,9 @@ class Registry:
 
     def _projection_matches(self, db: sqlite3.Connection,
                             events: tuple[RegistryEvent, ...]) -> bool:
-        expected = sqlite3.connect(":memory:")
-        expected.row_factory = sqlite3.Row
-        expected.execute("PRAGMA foreign_keys=ON")
-        authority = {"value": ""}
-        expected.create_function("registry_authority", 0, lambda: authority["value"])
-        expected.executescript(DDL)
-        for event in events:
-            authority["value"] = event.event_type
-            self._project(expected, event)
-            self._record_event(expected, event)
-        expected.commit()
+        expected = expected_projection(events)
         try:
-            for table in self.table_names():
-                columns = [row[1] for row in expected.execute(f"PRAGMA table_info({table})")]
-                select = ",".join(columns)
-                actual = [tuple(row) for row in db.execute(f"SELECT {select} FROM {table} ORDER BY rowid")]
-                wanted = [tuple(row) for row in expected.execute(f"SELECT {select} FROM {table} ORDER BY rowid")]
-                if actual != wanted:
-                    return False
-            return True
+            return projections_agree(db, expected)
         finally:
             expected.close()
 
@@ -223,8 +212,21 @@ class Registry:
             migrate_schema(bootstrap)
         for event in events:
             with self._connect(event.event_type) as db:
-                self._project(db, event)
+                self._replay_one(db, event)
                 self._record_event(db, event)
+
+    @classmethod
+    def _replay_one(cls, db: sqlite3.Connection, event: RegistryEvent) -> None:
+        """Project one logged event, naming its event-log line if it cannot be projected.
+
+        An event the projection does not understand is REFUSED here rather than skipped:
+        a replay that drops what it cannot read produces a view that looks complete and
+        is not. `sequence` is the event's 1-based line in `events.jsonl`.
+        """
+        try:
+            cls._project(db, event)
+        except RegistryError as exc:
+            raise RegistryError(f"{exc} at events.jsonl line {event.sequence}") from exc
 
     def _write(self, event_type: str, payload: Mapping[str, Any]) -> None:
         with exclusive_file_lock(self.lock_path):
@@ -247,11 +249,13 @@ class Registry:
                     db.rollback()
                     raise
 
-    def _record_event(self, db: sqlite3.Connection, event: RegistryEvent) -> None:
+    @staticmethod
+    def _record_event(db: sqlite3.Connection, event: RegistryEvent) -> None:
         db.execute("INSERT INTO events VALUES(?,?,?,?,?,?,?)", (event.sequence, event.schema_version,
                    event.event_type, _json(event.payload), event.at, event.previous_hash, event.event_hash))
 
-    def _project(self, db: sqlite3.Connection, event: RegistryEvent) -> bool:
+    @classmethod
+    def _project(cls, db: sqlite3.Connection, event: RegistryEvent) -> bool:
         p = event.payload
         op = event.event_type
         if op == "experiment_created":
@@ -259,7 +263,7 @@ class Registry:
                        _json(p["stages"]), p["metric"], p["direction"], _json(p["win_condition"]),
                        p["rope"], p["baseline_throughput"]))
         elif op == "run_created":
-            self._insert_run(db, p)
+            cls._insert_run(db, p)
         elif op == "run_adjudicated":
             row = db.execute("SELECT * FROM runs WHERE run_id=?", (p["run_id"],)).fetchone()
             if row is None:
@@ -353,7 +357,7 @@ class Registry:
             ))
             for run in p["runs"]:
                 LegacyCodeRef.from_mapping(run["code_ref"])
-                self._insert_run(db, run)
+                cls._insert_run(db, run)
         elif op == "historical_archive_imported":
             experiment = p["experiment"]
             db.execute("INSERT INTO experiments VALUES(?,?,?,?,?,?,?,?)", (
@@ -363,7 +367,7 @@ class Registry:
             ))
             for run in p["runs"]:
                 LegacyCodeRef.from_mapping(run["code_ref"])
-                self._insert_run(db, run)
+                cls._insert_run(db, run)
             model = p.get("model")
             if model is not None:
                 db.execute("INSERT INTO registered_models VALUES(?,?,?,?,?,?)", (
@@ -417,9 +421,9 @@ class Registry:
             )}
             if any(row["version"] != p["failed_version"] for row in current.values()):
                 raise RegistryError("failed landing rollback found aliases moved by another writer")
-            self._restore_aliases(db, p["model_id"], p["aliases"])
+            cls._restore_aliases(db, p["model_id"], p["aliases"])
         elif op == "unpromotion_rolled_back":
-            self._restore_aliases(db, p["model_id"], p["aliases"])
+            cls._restore_aliases(db, p["model_id"], p["aliases"])
         else:
             raise RegistryError(f"unknown event type {op!r}")
         return True
@@ -972,3 +976,167 @@ class Registry:
 
     def verdicts(self) -> list[dict[str, Any]]:
         return [row for row in self.rows("runs") if row["verdict"] is not None]
+
+
+# --- replaying the event log into the SQLite projection ----------------------------------
+# The event log is the durable record; `registry.sqlite3` is only a projection of it. That
+# is only TRUE if the projection can actually be rebuilt from the log, which is what this
+# section provides. It adds no second projector and no second schema: the projection is
+# built by `Registry._project` against `DDL`, exactly as the live writer builds it, so a
+# replayed view cannot drift from a written one.
+
+
+@dataclass(frozen=True)
+class ReplayReport:
+    """What one :func:`replay_projection` call read, verified and wrote."""
+
+    events: int
+    #: The projection already on disk agreed with the log, row for row, on every table.
+    current: bool
+    #: This call actually rewrote the projection. Always ``False`` under ``check_only``.
+    rebuilt: bool
+    #: Row counts of the projection the log implies, per table.
+    rows: Mapping[str, int]
+    #: Where the replaced projection was kept, when one was replaced.
+    quarantine: Path | None
+
+
+def expected_projection(events: Sequence[RegistryEvent]) -> sqlite3.Connection:
+    """The in-memory projection ``events`` imply, built by the one and only projector.
+
+    Events are applied in file order, so the result is a pure function of the log.
+    """
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys=ON")
+    authority = {"value": ""}
+    db.create_function("registry_authority", 0, lambda: authority["value"])
+    db.executescript(DDL)
+    for event in events:
+        authority["value"] = event.event_type
+        Registry._replay_one(db, event)
+        Registry._record_event(db, event)
+    db.commit()
+    return db
+
+
+def _projected_tables(db: sqlite3.Connection) -> list[str]:
+    return [row[0] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    ).fetchall()]
+
+
+def projections_agree(actual: sqlite3.Connection, expected: sqlite3.Connection) -> bool:
+    """Whether two projections hold identical rows, in order, on every declared table."""
+    for table in _projected_tables(expected):
+        columns = ",".join(row[1] for row in expected.execute(f"PRAGMA table_info({table})").fetchall())
+        left = [tuple(row) for row in actual.execute(f"SELECT {columns} FROM {table} ORDER BY rowid")]
+        right = [tuple(row) for row in expected.execute(f"SELECT {columns} FROM {table} ORDER BY rowid")]
+        if left != right:
+            return False
+    return True
+
+
+def _refuse_torn_log(path: Path) -> None:
+    """Refuse a truncated or unparsable FINAL line rather than letting it be quarantined.
+
+    :meth:`EventLog.read` repairs a torn tail -- it moves the partial bytes aside and
+    truncates the file -- because the live writer must survive a crash mid-append. A replay
+    must not: it reads the log as evidence, and silently trimming the very end would hide
+    exactly the loss the reader came to detect. Every other malformed line, and any break in
+    the hash chain, is already refused by ``read`` naming its line number.
+    """
+    if not path.exists():
+        return
+    content = path.read_bytes()
+    if not content:
+        return
+    lines = content.splitlines()
+    if not content.endswith((b"\n", b"\r")):
+        raise EventLogError(f"event line {len(lines)} is truncated: no terminating newline")
+    try:
+        json.loads(lines[-1])
+    except json.JSONDecodeError as exc:
+        raise EventLogError(f"malformed event line {len(lines)}") from exc
+
+
+def _read_only(db_path: Path) -> sqlite3.Connection:
+    """Open a projection strictly for reading: no ``writer.lock``, no PRAGMA writes.
+
+    ``Registry._connect`` sets ``journal_mode=WAL`` and ``synchronous=FULL``, both of which
+    WRITE; a check must be safe to run while a campaign is writing, so it takes neither,
+    and never touches the lock.
+
+    Honest caveat: SQLite cannot read a WAL-mode database without its shared-memory index,
+    so this open MATERIALISES ``registry.sqlite3-shm`` and an empty ``-wal`` beside the
+    database if they are absent. Those are transient sidecars every reader creates -- an
+    ordinary ``registry-status`` does the same -- and the durable record (the database file
+    itself and ``events.jsonl``) is left byte-identical. ``immutable=1`` would avoid even
+    that, and is deliberately NOT used: it asserts the file cannot change underneath the
+    reader, which is exactly false on a live registry.
+    """
+    return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
+
+
+def replay_projection(root: str | Path, *, overwrite: bool = False,
+                      check_only: bool = False) -> ReplayReport:
+    """Reconstruct ``root/registry.sqlite3`` from ``root/events.jsonl``.
+
+    This is what makes the append-only log the durable record: a projection lost, corrupted,
+    or clobbered by a ``git checkout`` is rebuilt from the log alone. It drives the SAME
+    engine the writer self-heals with (:meth:`Registry.recover`), exposed as a deliberate,
+    guarded operation.
+
+    Refuses rather than guesses. Every event carries the SHA-256 of its own body together
+    with its predecessor's digest, so the log is a hash CHAIN and any edit, reorder, or
+    deletion breaks it at a line :meth:`EventLog.read` names. A torn final line is refused
+    rather than repaired (:func:`_refuse_torn_log`), and an ``event_type`` the projection
+    does not know is refused naming its line BEFORE the database on disk is touched -- a
+    replay that dropped what it could not read would produce a view that looks complete and
+    is not.
+
+    Idempotent: replaying an already-current log rewrites nothing and reports
+    ``current=True, rebuilt=False``. A rebuild never destroys the projection it replaces --
+    that file is moved to ``registry.sqlite3.projection-quarantine``, named in the report.
+
+    ``overwrite=False`` refuses to replace an existing projection that disagrees with the
+    log; replacing one is a decision the caller must make explicitly. ``check_only=True``
+    writes NOTHING at all -- it reads the log, verifies the chain, and compares against a
+    read-only handle on the projection, so it is safe against a live registry.
+    """
+    root = Path(root)
+    log_path, db_path = root / "events.jsonl", root / "registry.sqlite3"
+    _refuse_torn_log(log_path)
+    events = EventLog(log_path).read()
+    expected = expected_projection(events)
+    try:
+        rows = {table: expected.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in _projected_tables(expected)}
+        if check_only:
+            if not db_path.exists():
+                return ReplayReport(len(events), False, False, rows, None)
+            actual = _read_only(db_path)
+            try:
+                current = projections_agree(actual, expected)
+            finally:
+                actual.close()
+            return ReplayReport(len(events), current, False, rows, None)
+        existed = db_path.exists()
+        # `auto_recover=False`: opening a registry normally replays the log by itself,
+        # which would silently overwrite the projection before the guard below could run.
+        registry = Registry(root, auto_recover=False)
+        with exclusive_file_lock(registry.lock_path):
+            with registry._connect() as db:
+                current = projections_agree(db, expected)
+            if current:
+                return ReplayReport(len(events), True, False, rows, None)
+            if existed and not overwrite:
+                raise RegistryError(
+                    f"{db_path} disagrees with {log_path} and would be replaced; "
+                    "pass overwrite to authorise it"
+                )
+            registry._rebuild_projection(events)
+        quarantine = db_path.with_name(f"{db_path.name}.projection-quarantine")
+        return ReplayReport(len(events), False, True, rows, quarantine if existed else None)
+    finally:
+        expected.close()
