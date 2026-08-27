@@ -529,9 +529,26 @@ all the way through it and produced a number. Do this before Phase D registers a
 4. **Assert the loss is a number you could train from.** Finite, not NaN, and it MOVES when the
    trivial model's parameters move. A loss that is constant in the parameters is not a loss, and
    finding that here costs minutes instead of a campaign.
-5. **Assert the judge returns a number** on that model's predictions, through the real aggregation
+5. **Take real optimizer steps and watch the loss fall.** Fit the trivial model to a handful of
+   samples it is allowed to memorise, through the REAL training loop -- the actual batching,
+   collation, optimizer, scheduler and update path a candidate will use, not a hand-rolled loop
+   written for this check. The loss must fall over steps. If it does not, the defect is in the LOOP,
+   not the model, and this is the only moment you can tell those apart cheaply.
+
+   A loss that is finite and gradient-sensitive can still never be trained: a campaign once
+   accumulated a whole epoch's gradient into a single update, so forty epochs took forty steps. Every
+   other assertion here passed. The failure surfaced much later and read as a weak model, which is
+   the most expensive way to discover a batching bug.
+
+   This is NOT the capacity probe. Here the model is deliberately incapable and the subject under
+   test is the plumbing; there the model is the real one and the subject is whether its hypothesis
+   class contains the answer. Same shape, opposite question -- and running this one first means a
+   later capacity failure is a real verdict on the architecture rather than a broken loop wearing an
+   architecture's name.
+
+6. **Assert the judge returns a number** on that model's predictions, through the real aggregation
    and split-unit path, over real units.
-6. **Record what the trivial model scores. That is the measured answer to B0 slot 7.** If it is
+7. **Record what the trivial model scores. That is the measured answer to B0 slot 7.** If it is
    respectable under the proposed judge, the judge is not discriminating: return to B0, revise the
    metric, aggregation or unit definition, and run this again.
 
