@@ -956,6 +956,33 @@ winner's MEASURED failure census rather than from imagination. This is where Pha
 census earns its keep: a refinement backlog written against observed failures of the thing that
 actually won beats one written in advance against a thing that lost.
 
+**E2 is a CYCLE, not a round.** Once the direction is settled the campaign keeps turning:
+
+1. **Census the current champion.** Run a `diagnose` measurement over units chosen for coverage of
+   failure modes. Group by cause, attribute each mode's share of the metric, and rank by what it
+   costs.
+2. **Take the top mode and find out why**, output beside source, as in the brownfield diagnosis.
+3. **Research a fix for THAT mode.** Search externally -- this is encouraged, not a fallback.
+   Somebody has usually met this failure before, and a published fix that transfers is worth more
+   than an invented one that might.
+4. **Seed it, run it, adjudicate it** through the normal one-arm lifecycle.
+5. **If it is adopted, go back to step 1 -- and re-census.** Do not carry the old ranking forward.
+
+That last point is the whole reason this is a loop and not a longer list. **Adopting an arm changes
+the failure distribution.** The mode that ranked second before a fix is frequently not the mode that
+ranks first after it: the fix may have removed both, or exposed one that was previously masked, or
+made a rare mode dominant by shrinking everything around it. A backlog ranked once and worked
+top-to-bottom is optimising against a model that no longer exists after its first adoption.
+
+A rejected arm does NOT trigger a re-census -- nothing changed, so the ranking still holds. Take the
+next hypothesis for the same mode, or the next mode down.
+
+**Stopping.** The cycle ends when the census's top remaining mode is not worth what it would cost to
+fix, when the declared budget is exhausted, or after a declared number of consecutive cycles with no
+adoption. Each of those is a reported result with the final census attached -- "we stopped because
+the remaining failures were these, and they were not worth it" is a finding a successor can act on.
+"It stopped improving" is not.
+
 ### The independence test, because this is where the split fails
 
 An additive idea belongs in E1 only if it would survive a different approach winning, **unedited**.
