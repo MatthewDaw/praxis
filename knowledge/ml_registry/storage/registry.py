@@ -914,29 +914,6 @@ class Registry:
         self._write("campaign_outcome_recorded", payload)
         return True
 
-    def record_experiment_restarted(self, experiment_id: str, reason: str) -> bool:
-        """Record a constitution-IV hard restart. Never a rejection, never a bar change.
-
-        Payload always carries the literal marker ``RESTARTED`` and the experiment
-        id so ``bin/campaign_health.py`` can find the row by
-        ``payload LIKE %<experiment_id>% AND payload LIKE '%RESTARTED%'``.
-        Idempotent on the exact payload. Does not move aliases or rewrite Runs.
-        """
-        if not experiment_id.strip() or not reason.strip():
-            raise RegistryError("a restart requires an experiment id and a reason")
-        payload = {
-            "experiment_id": experiment_id.strip(),
-            "marker": "RESTARTED",
-            "reason": reason.strip(),
-        }
-        prior = [event for event in self.events.read()
-                 if event.event_type == "experiment_restarted"
-                 and event.payload.get("experiment_id") == payload["experiment_id"]]
-        if prior and prior[-1].payload == payload:
-            return False
-        self._write("experiment_restarted", payload)
-        return True
-
     def register_model(self, **values: Any) -> None:
         self._write("registered_model_created", values)
 
