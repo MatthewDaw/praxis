@@ -219,6 +219,37 @@ finding about the harness rather than about any arm.
 which means retraining repeatedly to buy a bar -- forbidden. The floor is a declared number
 precisely so it costs nothing to apply.
 
+## Abandon a clearly losing arm early — do not finish being rigorous
+
+**A measurement that is already obviously worse does not need to be completed.** If an arm is running
+well below a RELIABLE baseline and the gap is large rather than marginal, stop it. Roughly **30
+minutes** is the ceiling on a losing arm; past that you are buying precision about how much it lost,
+which nobody will ever use.
+
+Rigour exists to make a CLOSE call trustworthy. Spending it on an arm that is nowhere near the bar is
+not rigour, it is a slow way to reach a conclusion you already had — and the cost is real, because
+every minute on a dead arm is a minute the next hypothesis is not being tested.
+
+**The precondition is load-bearing: the baseline must be known reliable.** Abandoning against an
+unverified champion is how a good arm gets discarded for beating a broken number. This project had a
+campaign whose registered incumbent read 0.067 when its real value was 0.847 — under that baseline
+every arm looked like a triumph, and under the inverse mistake every arm looks like a failure. If the
+baseline has not been reproduced, do not use this rule; verify the baseline first.
+
+**Large, not marginal.** This is for arms that are obviously out, not ones trailing slightly. A
+partial measurement over the first few units can be unlucky in ordering; a gap that could plausibly
+close with the remaining units is not a clear loss, and killing it there is exactly the
+under-measured rejection the sampling policy exists to prevent. If you are arguing with yourself
+about whether it is clear, it is not clear — let it finish.
+
+**Record it as ABANDONED, never as rejected.** A rejection is a verdict the judge reached; an
+abandonment is a decision you made before the judge could. Write down what it scored, over how many
+units, and why you stopped. That distinction matters twice over: an abandoned arm can be resumed if
+the picture changes, and an abandonment does not carry the evidential weight of a refutation.
+
+It counts as an ATTEMPT against a failure mode — you did try the idea — but it is not a REFUTATION of
+it. Do not cite an abandoned arm as proof the approach fails.
+
 ## Escalating the sample re-baselines the incumbent
 
 **A larger sample invalidates the champion's NUMBER, not the champion.** When a campaign escalates

@@ -527,6 +527,14 @@ different units is not a repeat measurement, and only the fingerprint distinguis
 campaign that confirms every idea at full scale spends most of its budget proving that bad ideas are
 bad.
 
+**And a clearly losing arm is abandoned, not completed.** If an arm is running far below a baseline
+KNOWN to be reliable, stop it — roughly 30 minutes is the ceiling. Finishing buys precision about how
+much it lost, which nobody uses, while the next hypothesis waits. Two guards: the baseline must have
+been reproduced (against an unverified champion this discards good arms for beating a broken number),
+and the gap must be large rather than marginal (a partial sample can be unlucky in ordering; if you
+are arguing about whether it is clear, it is not). Record it as ABANDONED, never rejected — it counts
+as an attempt against the failure mode, but it is not a refutation of it.
+
 **And escalating re-baselines the incumbent.** The champion is re-measured on the new sample before
 anything is judged against it. A candidate that scores lower on a bigger sample than the champion
 scored on a smaller one has NOT lost -- the numbers were computed over different units, and a wider
