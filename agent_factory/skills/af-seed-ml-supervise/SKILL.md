@@ -834,6 +834,34 @@ unmeasurable, and usually the number that tells you whether to keep investing in
 that the two runs are correctly NOT comparable to each other: they were fed different inputs, and
 adjudication refuses to pit them against one another.
 
+**The pivot is not finished when the sibling has a champion. It is finished when the parent has been
+resumed on it.** A split that ends with two campaigns and no composed measurement has spent two
+budgets to learn nothing: the sibling's stage-level number says it beat the parent's implicit
+behaviour at the SUB-task, which is not the question anybody asked. Close the loop explicitly:
+
+1. The sibling campaign reaches a champion and finalizes.
+2. The parent flips its declared input from `source: labels` to
+   `source: model: <sibling>@champion`. One line; no code change, because both resolve to the same
+   canonical record.
+3. The parent RE-MEASURES end to end.
+4. **That number against the parent's pre-split incumbent is the verdict on the decomposition** --
+   the only comparison that answers whether splitting was right. Record it as the pivot's outcome,
+   not as a routine arm.
+5. The parent then resumes its normal loop with the input in place.
+
+Step 4 needs care, and it is the one place the split genuinely costs something. The parent's pre-split
+runs were fed by its own internal sub-step; the composed run is fed by the sibling. Different inputs,
+so the paired machinery will refuse to compare them -- correctly. This comparison is therefore a
+deliberate, one-time RE-BASELINE, judged as an adoption decision and recorded with the input change
+named, never slipped through as an ordinary ratchet step. Anyone reading the campaign later must be
+able to see that the incumbent changed shape here and why.
+
+If the composed number does NOT beat the pre-split incumbent, the decomposition failed. Say so, keep
+both records, and let the parent revert to its pre-split incumbent. The sibling is not thereby
+worthless -- it is a measured model of a real sub-problem, and it stays registered -- but the
+composition does not ship. A pivot that cannot fail is not a hypothesis, and this is the step where
+it is allowed to.
+
 ### Seed the approach now; seed its refinements once it has won
 
 Seeding happens in two rounds, and the second is not optional.
