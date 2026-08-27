@@ -107,6 +107,45 @@ IDEA claim operations remain on the RegistrySpace bridge. Use `claim-idea` befor
 `heartbeat-idea-claim` with the exact same owner while the child is alive. Use `registry-status`
 and the campaign view for Run state; never infer it from an IDEA display tag.
 
+## Spend the smallest measurement that answers the question
+
+An arm dispatched at full corpus scale by default is how a campaign spends a day proving a bad idea
+is bad. Before step 5 launches anything, decide which question this dispatch is answering and size
+it accordingly -- the spec's B2 block declares the kinds and their unit sets:
+
+- **screen** -- is this worth more compute? The smallest set that could show an effect worth acting
+  on, on fit/selection units.
+- **confirm** -- does it beat the champion? The declared judge in full, at or above the minimum
+  effective sample. This is the expensive one; it runs once, on an arm that already survived a
+  screen.
+- **diagnose** -- where does it fail? Sized for coverage of failure modes, deliberately skewed to
+  hard units, not powered for statistics. Its output is a census, not a verdict.
+- **regress** -- did we break something? A small fixed set, run often.
+
+**An arm earns a bigger sample by surviving a smaller one.** Escalate on survival; never open at
+full scale. An arm that dies in screening cost minutes, and the record shows what it was screened
+against.
+
+Two things a cheap screen must not do, because either silently invalidates everything downstream:
+
+- **Never screen two arms on different units.** The paired protocol pairs by split unit; a per-arm
+  subset makes the interval meaningless while still printing one. The screening set is fixed, shared
+  and declared -- if it is not in the spec, it is not a screen, it is an anecdote.
+- **Never screen against the scoring set.** Every look is a comparison. Enough cheap looks is
+  selection on the score units with nothing in the record saying so, and the confirm that follows is
+  then measuring a choice it helped make. Scoring units are touched at confirm, once.
+
+A run that exceeds its declared arm timeout is a **defect in the sampling plan**, not a fact of
+nature: report it, resize, redispatch. Waiting out a multi-hour measurement teaches nothing and
+holds a lane the rest of the campaign needs. Where the cutoff sits depends on effect size, variance
+and unit count, so it is judgement -- but "how long will this take, and what will I do with the
+answer" is answered before dispatch, not discovered during it.
+
+Stop early on a CLEAR verdict, never on impatience. An interval still straddling the rope means NOT
+ENOUGH EVIDENCE, which calls for more units or a better-powered design. Rejecting there kills a good
+arm for being under-measured, and nothing in the record afterwards distinguishes that from an idea
+that deserved to lose.
+
 ## Typed measurements and verdicts
 
 A completed Run records:
