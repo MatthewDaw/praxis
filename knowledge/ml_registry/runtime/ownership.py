@@ -116,6 +116,15 @@ class LeaseIntentCoordinator:
         if existing == lease:
             return
         for other in self.leases.values():
+            # A campaign never contends with ITSELF. The coordinator holds at most one lease per
+            # campaign and `acquire` replaces it, so comparing the new lease against the campaign's
+            # own previous one always matched on state_root/checkout/cache_root and raised
+            # `shared_isolation_namespace` -- a reason code that names a cross-campaign conflict --
+            # for what is really the same campaign taking its next attempt. Measured 2026-08-27:
+            # a01_baseball_object_detection wedged on this after one failed dispatch, with no other
+            # campaign involved and nothing running.
+            if other.campaign_id == lease.campaign_id:
+                continue
             reason = self.conflict(lease, other)
             if reason:
                 raise ResourceConflict(reason)

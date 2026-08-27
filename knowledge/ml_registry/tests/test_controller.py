@@ -285,3 +285,35 @@ def test_real_executor_process_publishes_artifact_and_unlocks_downstream(tmp_pat
     result = controller.tick()
     assert "fit" in portfolio.artifacts
     assert result.started == ("down",)
+
+
+def test_a_failed_job_releases_the_campaigns_lease_so_the_retry_can_take_it(tmp_path):
+    """MEASURED 2026-08-27, a01_baseball_object_detection: the completed branch released the
+    lease and the FAILED branch did not, so a campaign whose child had exited kept holding the
+    box. The retry then contended with its own stale lease and admission refused
+    `shared_isolation_namespace` with nothing running. A campaign that is not running holds
+    nothing."""
+    import time as _time
+
+    from knowledge.ml_registry.contracts import CampaignLease
+    from knowledge.ml_registry.runtime import LeaseIntentCoordinator
+
+    portfolio = Portfolio()
+    ready(portfolio, "R1")
+    backend = FakeBackend()
+    coordinator = LeaseIntentCoordinator(tmp_path / "ownership.json")
+    controller = PortfolioController(
+        portfolio=portfolio, campaign_specs=[spec("R1")], capacity=RESOURCES, backend=backend,
+        state_path=tmp_path / "controller.json", coordinator=coordinator,
+        lease_factory=lambda job, token: CampaignLease(
+            1, f"lease:{token}", "R1", token, "cpu", "cpu:R1", True, 1, "forbid", False,
+            "state/R1", "checkout/R1", "cache/R1", "registry:runs:R1",
+            _time.time(), _time.time() + 60,
+        ),
+    )
+    controller.tick()
+    assert "R1" in coordinator.leases
+    backend.results["R1"] = PollResult("failed", message="child exited 3")
+    result = controller.tick()
+    assert coordinator.leases == {}, "a failed job must not keep holding its campaign's lease"
+    assert result.blocked.get("R1", "").startswith("retry backoff")

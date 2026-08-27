@@ -87,3 +87,34 @@ def test_a_prepared_intent_is_not_reaped_because_it_names_no_process(tmp_path: P
 
     assert coordinator.reap_dead_intents(is_alive=lambda _pid: False) == ()
     assert set(coordinator.leases) == {"P1"}
+
+
+def test_a_campaigns_next_attempt_does_not_contend_with_its_own_lease(tmp_path: Path) -> None:
+    """MEASURED 2026-08-27: one failed dispatch wedged a campaign against ITSELF, forever.
+
+    ``a01_baseball_object_detection`` dispatched attempt-1, the child failed, and the retry tick
+    tried to acquire attempt-2's lease. Every isolation field matched -- same state_root, same
+    checkout, same cache_root, because it is the same campaign -- so ``conflict`` fired and the
+    controller refused admission with ``shared_isolation_namespace``, a reason code that names a
+    conflict between two DIFFERENT campaigns. No other campaign was involved and nothing was
+    running. A campaign's own successor lease must simply replace it.
+    """
+    coordinator = LeaseIntentCoordinator(tmp_path / "ownership.json")
+    first = lease("a01", device="cpu")
+    coordinator.acquire(first)
+    successor = CampaignLease(1, "lease-a01.attempt-2", "a01", "run-a01-2", first.lane,
+                              first.device, first.exclusive, first.cpu_threads, first.cotenancy,
+                              first.throughput_gated, first.state_root, first.checkout,
+                              first.cache_root, first.ledger_path, 2, 200)
+    coordinator.acquire(successor)
+    assert coordinator.leases["a01"] == successor
+    assert LeaseIntentCoordinator(tmp_path / "ownership.json").leases["a01"] == successor
+    # The guard is scoped to the campaign's OWN id and nothing else: a different campaign sharing
+    # the isolation namespace must still be refused by name.
+    intruder = CampaignLease(1, "lease-other", "other", "run-other", first.lane, "cpu:other",
+                             first.exclusive, first.cpu_threads, first.cotenancy,
+                             first.throughput_gated, first.state_root, first.checkout,
+                             first.cache_root, first.ledger_path, 1, 100)
+    with pytest.raises(ResourceConflict) as exc:
+        coordinator.acquire(intruder)
+    assert exc.value.reason_code == "shared_isolation_namespace"

@@ -293,6 +293,11 @@ class PortfolioController:
                 record.checkpoint_uri = polled.checkpoint_uri or record.checkpoint_uri
                 record.next_retry_at = now + self._backoff(cid, record.attempt)
                 record.message = polled.message
+                # A campaign whose job has FAILED is not using the box, so it must not keep
+                # holding the box. The completed branch already releases; this one did not, and
+                # the campaign's own stale lease then blocked its every retry.
+                if self.coordinator is not None:
+                    self.coordinator.release(cid)
             elif polled.state != "running":
                 record.state = "failed"
                 record.message = f"unknown backend state: {polled.state!r}"
