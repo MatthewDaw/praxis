@@ -459,6 +459,49 @@ This is not hypothetical: a ball-possession campaign registered its baseline at 
 while the operator's launcher still defaulted to 60, and the portfolio then scored 0.6029 against a
 0.3697 champion -- a difference caused entirely by the bound and invisible in both reports.
 
+### B2 — size every measurement to the decision it serves
+
+A measurement that takes hours has to earn them. **The sample is derived from the QUESTION, never
+from the size of the corpus**, and the full corpus is for final convergence and promotion evidence,
+not for finding out whether an idea is worth pursuing. Most of what a campaign does needs far less
+data than it defaults to using.
+
+Declare four measurement kinds and what each is allowed to spend:
+
+| kind | question | sample |
+|---|---|---|
+| screen | is this worth more compute? | the smallest set that could show an effect you would act on |
+| confirm | does it beat the incumbent? | the declared judge in full, at or above the minimum effective sample |
+| diagnose | where does it fail? | chosen for coverage of failure modes, not statistical power; deliberately skewed to hard units |
+| regress | did we break something? | a small fixed set, run often |
+
+**An arm earns a bigger sample by surviving a smaller one.** Screen first, escalate on survival, and
+never open at the full corpus. A campaign that confirms every idea at full scale spends most of its
+budget proving that bad ideas are bad.
+
+Two constraints make cheap screening sound rather than merely fast, and skipping either turns a
+saving into a wrong answer:
+
+- **A screening subset is FIXED and SHARED, declared in the spec like any other unit set.** The
+  paired protocol pairs by split unit; a per-arm random subset makes arms incomparable and the
+  interval meaningless. Different sizes across kinds are fine. Different UNITS between two things
+  being compared are not.
+- **Screening runs on fit/selection units, never on the scoring set.** Every look at scoring data is
+  a comparison, and enough cheap looks is selection on the score set with no record that it
+  happened. The scoring units are touched at confirm, once.
+
+**A run that exceeds its declared time budget is a defect in the sampling plan, not a fact of
+nature.** Report it, resize, rerun. Waiting it out teaches nothing and costs the campaign a slot.
+Where the right cutoff is depends on the effect size, the variance and the unit count, so it is
+judgement rather than a constant -- but "how long will this take, and what will I do with the
+answer" is asked BEFORE dispatch, and an arm timeout is declared with the lease in B1.
+
+Stop early on a CLEAR verdict, not on impatience. An interval that still straddles the rope means
+NOT ENOUGH EVIDENCE -- which is a call for more units or a better-powered design, never a rejection.
+Killing a good arm because the screen was too small to see it is the failure this whole policy has
+to avoid, and it is invisible: nothing in the record distinguishes it from an idea that deserved to
+lose.
+
 ## Phase C — build and verify the harness
 
 **What Phase C delivers is a finished harness with a model-shaped hole in it.** By the end of this
