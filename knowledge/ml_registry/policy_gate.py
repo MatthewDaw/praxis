@@ -203,6 +203,21 @@ def _compute_cross_corpus_rope(
                 f"{unexpected}; declare their provenance in metric.scoring_corpora"
             )
 
+    metric_name = _text(metric.get("name"), "metric.name")
+    if spec.metric is None:
+        # Same corpus may carry disjoint unit sets for two judged metrics. Keep
+        # only rows that actually report THIS metric; sibling rows stay for theirs.
+        rows = [(corpus_id, row) for corpus_id, row in rows if row.get(metric_name) not in (None, "")]
+        missing_corpora = [
+            corpus_id for corpus_id in corpus_ids
+            if not any(source == corpus_id for source, _ in rows)
+        ]
+        if missing_corpora:
+            raise ContractError(
+                f"scoring_corpora is missing {metric_name} rows for {missing_corpora}; a vector "
+                "judge's shared map may mix corpora, but each judged metric still needs its own scores"
+            )
+
     # A global split unit may span sources whose native unit vocabularies differ.
     # The map key remains the row's true corpus provenance.
     split_unit = _text(metric.get("split_unit"), "metric.split_unit")
@@ -230,7 +245,6 @@ def _compute_cross_corpus_rope(
                 f"values but found {found}; add scoring units until the declared minimum is real"
             )
 
-    metric_name = _text(metric.get("name"), "metric.name")
     by_unit: dict[tuple[str, str], list[float]] = {}
     for index, (corpus_id, row) in enumerate(rows):
         unit = row.get(split_unit)

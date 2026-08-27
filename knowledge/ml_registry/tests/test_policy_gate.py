@@ -249,7 +249,11 @@ def test_vector_judge_accepts_a_union_scoring_corpora_map(tmp_path: Path) -> Non
         {"id": "ident_a", "roles": ["scoring"], "split_unit": "match_id"},
     ]
     corpora = {
-        "boxes_a": [{"match_id": "m1", "ap50": 0.5}, {"match_id": "m2", "ap50": 0.6}],
+        "boxes_a": [
+            {"match_id": "m1", "ap50": 0.5},
+            {"match_id": "m2", "ap50": 0.6},
+            {"match_id": "m3", "idf1": 0.55},  # sibling-metric row on a shared corpus
+        ],
         "boxes_b": [{"match_id": "m1", "ap50": 0.4}, {"match_id": "m2", "ap50": 0.7}],
         "ident_a": [{"match_id": "m1", "idf1": 0.8}, {"match_id": "m2", "idf1": 0.9}],
     }
