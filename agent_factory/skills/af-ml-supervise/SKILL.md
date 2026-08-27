@@ -122,9 +122,19 @@ it accordingly -- the spec's B2 block declares the kinds and their unit sets:
   hard units, not powered for statistics. Its output is a census, not a verdict.
 - **regress** -- did we break something? A small fixed set, run often.
 
-**An arm earns a bigger sample by surviving a smaller one.** Escalate on survival; never open at
-full scale. An arm that dies in screening cost minutes, and the record shows what it was screened
-against.
+Those four are vocabulary for the record, not a quota to hit. How many units it takes to show an
+effect depends on the effect size, the variance and the units, and the dispatcher can see all three.
+Choose the smallest sample that answers the question, escalate when it does not.
+
+**Recording it is not optional.** Every Run carries, beside its typed metrics: the measurement kind,
+the number of split units AND a fingerprint of which ones, and the cost in CPU time and wall clock.
+The fingerprint is the load-bearing part -- `n=40` twice over different units is not a repeat
+measurement, and nothing else distinguishes them. Without this the campaign cannot say why one arm
+took four minutes and another four hours, cannot tell an under-powered rejection from a real one,
+and cannot accumulate any evidence about how much data its own questions need.
+
+**An arm earns a bigger sample by surviving a smaller one.** Escalating on survival is cheap; an arm
+that dies in screening cost minutes, and the record shows exactly what it was screened against.
 
 Two things a cheap screen must not do, because either silently invalidates everything downstream:
 

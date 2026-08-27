@@ -475,9 +475,27 @@ Declare four measurement kinds and what each is allowed to spend:
 | diagnose | where does it fail? | chosen for coverage of failure modes, not statistical power; deliberately skewed to hard units |
 | regress | did we break something? | a small fixed set, run often |
 
-**An arm earns a bigger sample by surviving a smaller one.** Screen first, escalate on survival, and
-never open at the full corpus. A campaign that confirms every idea at full scale spends most of its
-budget proving that bad ideas are bad.
+Treat those four as VOCABULARY, not a quota. How many units it actually takes to show an effect, to
+locate a failure, or to be confident nothing broke depends on the effect size, the variance and the
+units themselves -- and whoever is running the arm can see all three and this document cannot. Pick
+the smallest sample that answers the question in front of you, escalate when it does not, and do not
+wait for permission to stop.
+
+**What is NOT optional is recording what you ran on.** Every run carries, beside its metrics:
+
+- the measurement kind it was serving;
+- the number of split units, and a fingerprint of WHICH units -- not just how many;
+- what it cost, in CPU time and wall clock.
+
+Without that, two numbers from the same campaign are not comparable and nobody can tell why one took
+four minutes and the other four hours. With it, the campaign accumulates its own evidence about how
+much data its questions actually need, which is the only way that judgement gets better instead of
+being re-guessed every time. The unit fingerprint is the load-bearing part: `n=40` twice over
+different units is not a repeat measurement, and only the fingerprint distinguishes them.
+
+**An arm earns a bigger sample by surviving a smaller one.** Escalating on survival is cheap; a
+campaign that confirms every idea at full scale spends most of its budget proving that bad ideas are
+bad.
 
 Two constraints make cheap screening sound rather than merely fast, and skipping either turns a
 saving into a wrong answer:
@@ -499,8 +517,9 @@ answer" is asked BEFORE dispatch, and an arm timeout is declared with the lease 
 Stop early on a CLEAR verdict, not on impatience. An interval that still straddles the rope means
 NOT ENOUGH EVIDENCE -- which is a call for more units or a better-powered design, never a rejection.
 Killing a good arm because the screen was too small to see it is the failure this whole policy has
-to avoid, and it is invisible: nothing in the record distinguishes it from an idea that deserved to
-lose.
+to avoid, and it is invisible UNLESS the sample was recorded: with the unit count and fingerprint in
+the run, an under-powered rejection can be spotted and rerun later; without them it is
+indistinguishable forever from an idea that deserved to lose.
 
 ## Phase C — build and verify the harness
 
