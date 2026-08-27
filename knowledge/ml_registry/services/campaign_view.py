@@ -6,6 +6,7 @@ import json
 
 from knowledge.ml_registry.domain.campaign_view import CampaignBinding, CampaignView, IdeaInventory
 from knowledge.ml_registry.schema import IDEA, MODEL
+from knowledge.ml_registry.services.paired_adjudication import campaign_diagnostic_metrics
 from knowledge.ml_registry.storage.registry import Registry, RegistryError
 from knowledge.ml_registry.write_path import RegistrySpace
 
@@ -114,4 +115,5 @@ def build_campaign_view(
         item = inventories[fact.id]
         ordered.append(IdeaInventory(item.fact, item.display_id, item.stage, item.depends_on,
                                      tuple(runs_by_idea[fact.id])))
-    return CampaignView(binding, experiment, registered_model, model_fact, tuple(ordered))
+    return CampaignView(binding, experiment, registered_model, model_fact, tuple(ordered),
+                        campaign_diagnostic_metrics(registry, binding.experiment_id))

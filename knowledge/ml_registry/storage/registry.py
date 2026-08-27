@@ -22,6 +22,25 @@ class RegistryError(ValueError):
     pass
 
 
+def _judged_entries(spec: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every judged metric object of a spec, whichever judge spelling declared it."""
+    metric = spec.get("metric")
+    if isinstance(metric, Mapping):
+        return [dict(metric)]
+    raw = spec.get("metrics")
+    if (not isinstance(raw, Sequence) or isinstance(raw, (str, bytes))
+            or not all(isinstance(item, Mapping) for item in raw)):
+        raise RegistryError("registered CampaignSpec declares no readable judged metric")
+    return [dict(item) for item in raw]
+
+
+def _metric_name(entry: Mapping[str, Any], index: int) -> str:
+    name = entry.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise RegistryError(f"judged metric {index} must carry a non-empty name")
+    return name.strip()
+
+
 DDL = """
 PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS experiments(
@@ -386,6 +405,7 @@ class Registry:
             return
         elif op in {
             "campaign_spec_registered",
+            "campaign_vector_amended",
             "campaign_registration_refused",
             "campaign_outcome_recorded",
             "campaign_landed",
@@ -593,6 +613,168 @@ class Registry:
             "old": old_fields,
             "new": new_fields,
         })
+
+    def amend_judged_vector(
+        self,
+        campaign_id: str,
+        *,
+        metrics: Sequence[Mapping[str, Any]],
+        reason: str,
+        scoring_corpora: Mapping[str, Sequence[Mapping[str, object]]],
+    ) -> bool:
+        """Change the DIMENSION of a campaign's judged vector: add a metric, or demote one.
+
+        The right objectives are rarely knowable when a campaign freezes its judge, and a
+        campaign stuck optimising the wrong set is worse off than one that re-freezes. The
+        sibling of :meth:`amend_experiment` -- append-only, reason-bearing, refusing by name
+        -- for the judge rather than the win condition, because the judged vector lives in
+        the registered CampaignSpec and not in the immutable ``experiments`` row.
+
+        Four things make it honest, and all four are enforced here or by the readers this
+        writes for:
+
+        1. The WHOLE new vector is revalidated exactly as registration validates it --
+           per-entry floor, direction and paired method, ``legacy_scalar_rope`` still refused
+           under a vector -- and the rope is recomputed for every judged metric, the newly
+           added one included, by the same ``compute_campaign_rope``. An amendment cannot
+           smuggle in a declaration registration would have refused.
+        2. A written ``reason`` is required and recorded. An empty one is refused by name.
+        3. A removed metric is DEMOTED to a diagnostic, never deleted: it is carried in
+           ``diagnostic_metrics`` so runs keep reporting it and it keeps appearing in
+           evidence. It stops adjudicating; it does not stop being measured.
+        4. A metric that is CURRENTLY DECIDING cannot be removed -- if the most recent
+           adjudication rejected an arm on it, removing it is removing the referee that just
+           ruled against you, and it is refused naming the metric and quoting the run.
+
+        Adjudication then refuses to pair a run judged under the amended vector against a
+        champion measured under the old one until the campaign re-baselines; see
+        :func:`~knowledge.ml_registry.services.paired_adjudication.guard_vector_rebaseline`.
+        """
+        from knowledge.ml_registry.contracts import CampaignSpec, ContractError
+        from knowledge.ml_registry.policy_gate import compute_campaign_rope
+        from knowledge.ml_registry.services.paired_adjudication import (
+            VECTOR_AMENDED,
+            campaign_diagnostic_metrics,
+            effective_campaign_spec,
+            guard_adoption_floor,
+            guard_vector_judge,
+        )
+
+        if not str(reason).strip():
+            raise RegistryError("judged vector amendment requires a reason")
+        if (not isinstance(metrics, Sequence) or isinstance(metrics, (str, bytes))
+                or not metrics or not all(isinstance(item, Mapping) for item in metrics)):
+            raise RegistryError(
+                "judged vector amendment requires the whole new vector as a non-empty list "
+                "of judged metric objects"
+            )
+        spec = effective_campaign_spec(self, campaign_id)
+        if spec is None:
+            raise RegistryError(f"unknown campaign spec {campaign_id!r}")
+
+        old_entries = tuple(_judged_entries(spec))
+        new_entries = tuple(dict(item) for item in metrics)
+        old_names = [_metric_name(entry, index) for index, entry in enumerate(old_entries)]
+        new_names = [_metric_name(entry, index) for index, entry in enumerate(new_entries)]
+        added = [name for name in new_names if name not in old_names]
+        removed = [name for name in old_names if name not in new_names]
+        if not added and not removed:
+            raise RegistryError(
+                f"judged vector amendment requires an added or removed judged metric; "
+                f"the vector is already {new_names}"
+            )
+        self._refuse_removing_a_deciding_metric(campaign_id, removed)
+
+        candidate = dict(spec)
+        candidate.pop("metric", None)
+        candidate.pop("metrics", None)
+        candidate.pop("rope", None)
+        candidate["metrics"] = [dict(entry) for entry in new_entries]
+        try:
+            amended = CampaignSpec.from_mapping(candidate)
+            # The SAME guards registration runs, in the same order: a single-entry vector
+            # normalises back to the scalar judge and is validated as one.
+            if amended.metric is not None:
+                guard_adoption_floor(amended.metric)
+            else:
+                guard_vector_judge(amended.metrics)
+        except ContractError as exc:
+            raise RegistryError(f"judged vector amendment is not a valid campaign spec: {exc}") from exc
+        canonical = amended.to_mapping()
+        try:
+            canonical["rope"] = compute_campaign_rope(amended, scoring_corpora)
+        except ContractError as exc:
+            raise RegistryError(f"judged vector amendment cannot recompute its rope: {exc}") from exc
+
+        by_name = {name: entry for name, entry in zip(old_names, old_entries)}
+        diagnostics = [dict(item) for item in campaign_diagnostic_metrics(self, campaign_id)]
+        known = {str(item.get("name")) for item in diagnostics}
+        for name in removed:
+            if name not in known:
+                diagnostics.append(dict(by_name[name]))
+        # A metric promoted back INTO the vector is no longer a diagnostic; it adjudicates.
+        diagnostics = [item for item in diagnostics if str(item.get("name")) not in set(new_names)]
+        diagnostic_names = [str(item.get("name")) for item in diagnostics]
+
+        self._write(VECTOR_AMENDED, {
+            "campaign_id": campaign_id,
+            "reason": str(reason).strip(),
+            "added": added,
+            "removed": removed,
+            "old": {"judged_metrics": old_names,
+                    "diagnostic_metrics": [str(item.get("name")) for item in
+                                           campaign_diagnostic_metrics(self, campaign_id)]},
+            "new": {"judged_metrics": new_names, "diagnostic_metrics": diagnostic_names},
+            "diagnostic_metrics": diagnostics,
+            "spec": canonical,
+        })
+        return True
+
+    def _refuse_removing_a_deciding_metric(self, campaign_id: str, removed: Sequence[str]) -> None:
+        """Refuse, by name, removing a metric the last adjudication rejected an arm on.
+
+        This is the abuse the whole rule is built around: an arm regresses on an objective,
+        and the objective disappears. The evidence the judge already recorded is what
+        refuses it -- the deciding metrics of the most recent REJECTED adjudication -- so the
+        refusal quotes the run and the regression rather than asserting a policy.
+        """
+        if not removed:
+            return
+        experiment_runs = {row["run_id"] for row in self.rows("runs")
+                           if row["experiment_id"] == campaign_id}
+        latest = next(
+            (event for event in reversed(self.list_events())
+             if event.event_type in {"run_adjudicated", "run_adopted"}
+             and event.payload.get("run_id") in experiment_runs),
+            None,
+        )
+        if latest is None or latest.payload.get("verdict") != "rejected":
+            return
+        evidence = latest.payload.get("adjudication_evidence")
+        if not isinstance(evidence, Mapping):
+            return
+        deciding = evidence.get("deciding_metrics")
+        deciding = list(deciding) if isinstance(deciding, Sequence) and not isinstance(
+            deciding, (str, bytes)) else []
+        per_metric = evidence.get("metrics")
+        run_id = latest.payload.get("run_id")
+        for name in removed:
+            if name not in deciding:
+                continue
+            detail = ""
+            if isinstance(per_metric, Mapping) and isinstance(per_metric.get(name), Mapping):
+                item = per_metric[name]
+                interval = item.get("interval")
+                detail = f" (gain {item.get('gain')}"
+                if isinstance(interval, Sequence) and not isinstance(interval, (str, bytes)):
+                    detail += f", interval {list(interval)}"
+                detail += ")"
+            raise RegistryError(
+                f"judged vector amendment cannot remove {name!r}: it is currently deciding -- "
+                f"the most recent adjudication REJECTED run {run_id!r} on it{detail}. A metric "
+                "that just ruled against an arm stays in the vector until an arm is judged "
+                "without it deciding; removing the referee is not an amendment."
+            )
 
     def create_run(self, **values: Any) -> None:
         code_ref = CodeRef.from_mapping(values["code_ref"])

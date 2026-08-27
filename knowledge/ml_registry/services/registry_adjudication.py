@@ -68,6 +68,16 @@ def adjudicate_against_champion(
     champion_run = _one(registry.rows("runs"), "run_id", champion_version["run_id"], "champion run")
     if champion_run["experiment_id"] != run["experiment_id"]:
         raise RegistryError("champion baseline belongs to a different experiment")
+    # A VECTOR AMENDMENT IS A RE-BASELINE. If this campaign changed the dimension of its
+    # judged vector after the champion was measured, the champion's number was produced by a
+    # judge that no longer exists and the pair is not a comparison. Refused, naming both
+    # vectors -- the same refusal, for the same reason, as runs fed differently.
+    from .paired_adjudication import guard_vector_rebaseline
+
+    guard_vector_rebaseline(
+        registry, experiment_id=str(run["experiment_id"]), run_id=run_id,
+        champion_run_id=str(champion_run["run_id"]),
+    )
     candidate = RunMetrics.from_mapping(json.loads(run["metrics"]))
     baseline = RunMetrics.from_mapping(json.loads(champion_run["metrics"]))
 
@@ -100,6 +110,7 @@ def adjudicate_against_champion(
         from .paired_adjudication import (
             LEGACY_SCALAR_ROPE,
             PAIRED_BOOTSTRAP,
+            campaign_diagnostic_metrics,
             campaign_judged_metrics,
             campaign_metric,
             comparison_policy,
@@ -124,7 +135,24 @@ def adjudicate_against_champion(
                            promotion=promotion, counterfactual_run_id=counterfactual_run_id,
                            intervention_digest=intervention_digest, verdict=verdict,
                            status=status, adjudication_evidence=adjudication_evidence)
-        if isinstance(candidate.metric, Mapping) or isinstance(baseline.metric, Mapping):
+        # A DEMOTED METRIC STAYS REPORTED. A campaign that removed a judged metric carries
+        # it in its declared DIAGNOSTICS, and its runs go on reporting every measured value
+        # keyed by name even though the judge is a single scalar again. Project the judged
+        # name out and ignore the rest -- the same rule the vector path applies to
+        # diagnostics -- but only for a campaign that actually declared diagnostics: a
+        # campaign with no such declaration reporting a vector under a scalar judge is still
+        # refused immediately below, unchanged.
+        spec_metric = campaign_metric(registry, str(experiment["experiment_id"]))
+        candidate_value, champion_value = candidate.metric, baseline.metric
+        if campaign_diagnostic_metrics(registry, str(experiment["experiment_id"])) and (
+            spec_metric is not None
+            and (isinstance(candidate_value, Mapping) or isinstance(champion_value, Mapping))
+        ):
+            judged_name = str(spec_metric.get("name", "")).strip()
+            candidate_value = _judged_value(candidate_value, judged_name, "candidate")
+            champion_value = _judged_value(champion_value, judged_name, "champion")
+            paired_evidence = _project_scalar_evidence(paired_evidence, judged_name)
+        if isinstance(candidate_value, Mapping) or isinstance(champion_value, Mapping):
             raise RegistryError(
                 "run metrics are a vector (values keyed by metric name), but this "
                 "campaign's judge is a single scalar metric; register a vector "
@@ -146,8 +174,7 @@ def adjudicate_against_champion(
         #
         # DIRECTION lives in `adoption_gain` and nowhere else here: on a `minimize` metric a
         # floor-sized REGRESSION is a gain of -0.005 and clears nothing.
-        spec_metric = campaign_metric(registry, str(experiment["experiment_id"]))
-        gain = adoption_gain(str(experiment["direction"]), baseline.metric, candidate.metric)
+        gain = adoption_gain(str(experiment["direction"]), champion_value, candidate_value)
         adopted_by_floor = clears_adoption_floor(dict(spec_metric or {}), gain)
 
         policy = comparison_policy(registry, str(experiment["experiment_id"]))
@@ -163,8 +190,8 @@ def adjudicate_against_champion(
                 run_id=run_id,
                 champion_run_id=str(champion_run["run_id"]),
                 direction=str(experiment["direction"]),
-                candidate_metric=candidate.metric,
-                champion_metric=baseline.metric,
+                candidate_metric=candidate_value,
+                champion_metric=champion_value,
             )
             adjudication_evidence = interval.evidence
             # THE FLOOR IS TESTED FIRST, and it can only ever turn a PARK into an adoption.
@@ -291,6 +318,36 @@ def _validate_promotion_inputs(registry: Registry, run_id: str, model_id: str,
     compat = promotion["compat_result"]
     if not isinstance(compat, Mapping) or set(compat) != {"head_sha", "passed", "at"} or compat["passed"] is not True:
         raise RegistryError("champion promotion requires passing compatibility inputs")
+
+
+def _judged_value(reported: object, name: str, label: str) -> object:
+    """The judged scalar's value out of a run that also reports its diagnostics."""
+    if not isinstance(reported, Mapping):
+        return reported
+    if name not in reported:
+        raise RegistryError(
+            f"the {label} run is INVALID for adjudication: the judged metric {name!r} is "
+            f"missing from its reported metrics {sorted(reported)}; a demoted metric stops "
+            "adjudicating, it never replaces the one that still does"
+        )
+    return reported[name]
+
+
+def _project_scalar_evidence(
+    paired_evidence: Mapping[str, object] | None, name: str,
+) -> Mapping[str, object] | None:
+    """Project vector-shaped paired evidence onto the one metric that still adjudicates."""
+    if paired_evidence is None:
+        return None
+    units = paired_evidence.get("units")
+    if not isinstance(units, (list, tuple)) or not units:
+        return paired_evidence
+    first = units[0]
+    if not isinstance(first, Mapping) or not isinstance(first.get("candidate"), Mapping):
+        return paired_evidence
+    from .paired_adjudication import project_vector_evidence
+
+    return project_vector_evidence(paired_evidence, name)
 
 
 def _one(rows: list[dict[str, Any]], field: str, value: object, noun: str) -> dict[str, Any]:
