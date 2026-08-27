@@ -132,10 +132,23 @@ shrinking everything around it. Carrying the old ranking forward optimises again
 stopped existing at its first adoption. A REJECTED arm changes nothing, so it does not trigger a
 re-census: take the next hypothesis for the same mode, or the next mode down.
 
-The campaign is finished when the top remaining mode is not worth what fixing it would cost, when
-the declared budget is spent, or after the declared number of consecutive cycles with no adoption --
-and it reports the final census with that verdict. "The remaining failures are these, and they were
-not worth it" is something a successor can act on; "it stopped improving" is not.
+**Cycle until the improvements go marginal, and take that number from the census.** Step 1 computes
+it: the top remaining mode's share of the metric is a CEILING on what the next cycle can win. A
+perfect fix for a mode costing 2% wins 2%; every imperfect one wins less. When that ceiling falls
+inside the rope, the next cycle's best possible outcome is a result the judge would not call a win,
+and dispatching it spends budget to learn what the census already said.
+
+Supporting signals, neither sufficient alone: adoptions clustering at the rope's edge (still
+winning, no longer winning anything that matters), and cost per unit of gain rising across cycles
+(the cheap modes are gone).
+
+A run of cycles with no adoption is NOT by itself terminal. It may mean the hypotheses were weak
+while the mode remains expensive and worth attacking -- the census distinguishes those, and the
+difference is between a campaign that finished and one that gave up.
+
+Report the final census with the verdict whatever ends it. "The remaining failures are these, they
+cost this much, and they were not worth the next arm" is actionable, and tells a successor where to
+start if the cost calculus changes. "It stopped improving" is not.
 
 ## Spend the smallest measurement that answers the question
 

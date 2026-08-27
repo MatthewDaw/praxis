@@ -977,11 +977,32 @@ top-to-bottom is optimising against a model that no longer exists after its firs
 A rejected arm does NOT trigger a re-census -- nothing changed, so the ranking still holds. Take the
 next hypothesis for the same mode, or the next mode down.
 
-**Stopping.** The cycle ends when the census's top remaining mode is not worth what it would cost to
-fix, when the declared budget is exhausted, or after a declared number of consecutive cycles with no
-adoption. Each of those is a reported result with the final census attached -- "we stopped because
-the remaining failures were these, and they were not worth it" is a finding a successor can act on.
-"It stopped improving" is not.
+**Stopping: keep cycling until the improvements go marginal, and read that off the census.**
+
+Step 1 already gives you the stopping number. **The top remaining mode's share of the metric is a
+CEILING on what the next cycle can win** -- if the biggest failure mode costs 2% of the metric, a
+perfect fix for it wins 2%, and every imperfect one wins less. So marginality is not a feeling about
+recent results; it is a quantity computed before the cycle starts.
+
+Stop when that ceiling drops below what the campaign declared it cares about -- the rope is the
+natural threshold, since it is already the campaign's own statement of what difference is worth
+having. A cycle whose best possible outcome lands inside the rope cannot produce a result the judge
+would call a win, and running it is spending budget to learn something you could have read off the
+census.
+
+Two supporting signals, neither sufficient alone:
+
+- **adoptions clustering at the rope's edge** -- still winning, no longer winning anything that
+  matters;
+- **cost per unit of gain rising across cycles** -- the cheap modes are gone.
+
+A run of cycles with no adoption is NOT by itself a stop. It may mean the hypotheses were weak while
+the mode is still expensive and still worth attacking; the census says which. That distinction is
+the difference between a campaign that finished and one that gave up.
+
+Whatever ends it, report the final census with the verdict. "The remaining failures are these, they
+cost this much, and they were not worth the next arm" is a finding a successor can act on -- and it
+tells them exactly where to start if the cost calculus ever changes. "It stopped improving" is not.
 
 ### The independence test, because this is where the split fails
 
