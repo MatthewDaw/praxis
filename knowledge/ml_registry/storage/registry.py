@@ -39,19 +39,21 @@ CREATE TABLE IF NOT EXISTS runs(
  (status='succeeded' AND verdict IN ('adopted','rejected','parked')) OR
  (status='voided' AND verdict='voided'),0)));
 CREATE TABLE IF NOT EXISTS artifacts(
- artifact_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL CHECK(kind IN
+ artifact_id TEXT NOT NULL, run_id TEXT NOT NULL REFERENCES runs(run_id), kind TEXT NOT NULL CHECK(kind IN
  ('checkpoint','oof_predictions','split_manifest','dataset_manifest','report')), uri TEXT NOT NULL,
- bytes INTEGER NOT NULL CHECK(bytes>=0), schema_version TEXT NOT NULL);
+ bytes INTEGER NOT NULL CHECK(bytes>=0), schema_version TEXT NOT NULL,
+ PRIMARY KEY(run_id,artifact_id));
 CREATE TABLE IF NOT EXISTS registered_models(
  model_id TEXT PRIMARY KEY, family TEXT NOT NULL, sport_scope TEXT NOT NULL, axis TEXT NOT NULL,
  protocol TEXT NOT NULL, extends_json TEXT);
 CREATE TABLE IF NOT EXISTS model_versions(
  model_id TEXT NOT NULL REFERENCES registered_models(model_id), version INTEGER NOT NULL CHECK(version>=1),
- run_id TEXT NOT NULL REFERENCES runs(run_id), artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id),
+ run_id TEXT NOT NULL REFERENCES runs(run_id), artifact_id TEXT NOT NULL,
  checksum TEXT NOT NULL, family_version TEXT NOT NULL, code_sha TEXT NOT NULL,
  preprocessing_hash TEXT NOT NULL, calibration TEXT NOT NULL, thresholds TEXT NOT NULL,
  compat_result TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('active','incompatible','superseded')),
- PRIMARY KEY(model_id,version));
+ PRIMARY KEY(model_id,version),
+ FOREIGN KEY(run_id,artifact_id) REFERENCES artifacts(run_id,artifact_id));
 CREATE TABLE IF NOT EXISTS lineage(
  child_model_id TEXT NOT NULL, child_version INTEGER NOT NULL, parent_model_id TEXT NOT NULL,
  parent_version INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('input_artifact','derived_from','backbone')),
@@ -584,8 +586,9 @@ class Registry:
         if not any(row["model_id"] == model_id for row in self.rows("registered_models")):
             raise RegistryError("atomic adoption references an unknown registered model")
         artifact_id = str(model_version.get("artifact_id", ""))
-        artifact = next((row for row in self.rows("artifacts") if row["artifact_id"] == artifact_id), None)
-        if artifact is None or artifact["run_id"] != run_id:
+        artifact = next((row for row in self.rows("artifacts")
+                         if row["artifact_id"] == artifact_id and row["run_id"] == run_id), None)
+        if artifact is None:
             raise RegistryError("atomic adoption requires the adjudicated run's artifact")
         self.blobs.verify(artifact_id)
         if model_version.get("checksum") != artifact_id:
