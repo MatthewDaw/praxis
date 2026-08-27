@@ -788,6 +788,31 @@ class Registry:
             raise RegistryError("production alias requires finalize authority")
         if alias == "champion" and capability is not _CHAMPION_CAPABILITY:
             raise RegistryError("champion alias requires adjudication authority")
+        if alias == "champion":
+            # A champion must point at a run that actually measured something. Four models were
+            # given champions today whose runs carried validity=invalid with metric 0.0 and
+            # throughput 0.0 -- id-reservation registrations that never ran. Adjudication voids an
+            # INVALID run, but a direct registration path reaches this seam without passing
+            # through it, so the guard has to live here too.
+            #
+            # This matters because the law is that a MISSING promotion FAILS rather than falling
+            # back: a campaign declaring `model: <x>@champion` must not silently receive a fiction
+            # instead of an error. An alias resolving to an unmeasured run is worse than no alias.
+            effective = self.effective_model_version(model_id, version)
+            run = next(
+                (row for row in self.rows("runs") if row["run_id"] == effective["run_id"]), None
+            )
+            if run is not None:
+                try:
+                    validity = json.loads(run["metrics"] or "{}").get("validity")
+                except (TypeError, ValueError):
+                    validity = None
+                if validity == "invalid":
+                    raise RegistryError(
+                        f"champion alias for {model_id!r} would point at run "
+                        f"{effective['run_id']!r} whose validity is 'invalid'; a champion must "
+                        "name a run that measured something"
+                    )
         if alias == "production":
             effective = self.effective_model_version(model_id, version)
             compat = effective["effective_compat_result"]
