@@ -431,9 +431,17 @@ def _adjudicate_vector(
         gain = adoption_gain(direction, champion_value, candidate_value)
         floor = declared_adoption_floor(dict(entry))
         adopted_by_floor = clears_adoption_floor(dict(entry), gain)
+        policy = dict(entry["adjudication"])
+        projected = project_vector_evidence(paired_evidence, name)
+        # Each judged metric keeps its own frozen bootstrap contract. Overlay it so a
+        # vector whose metrics inherited different seeds (AP50/IDF1 vs team vs possession)
+        # is judged under that metric's CampaignSpec, not a single shared seed.
+        for field in ("resamples", "confidence_level", "seed"):
+            if field in policy:
+                projected[field] = policy[field]
         interval = paired_interval(
-            entry["adjudication"],
-            project_vector_evidence(paired_evidence, name),
+            policy,
+            projected,
             run_id=run_id,
             champion_run_id=champion_run_id,
             direction=direction,

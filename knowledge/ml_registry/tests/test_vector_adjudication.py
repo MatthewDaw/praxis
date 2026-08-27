@@ -343,16 +343,109 @@ def test_diagnostics_beyond_the_judged_vector_are_ignored(tmp_path: Path) -> Non
 def test_vector_evidence_missing_a_judged_metric_on_a_unit_is_refused(
     tmp_path: Path,
 ) -> None:
+    """One-sided: the unit reports the metric on the champion but not the candidate."""
     registry = vector_registry(tmp_path)
     units = shifted({"ap50": .03, "idf1": 0.0})
     create_run(registry, "candidate", aggregates(units))
     evidence = vector_evidence(units)
     del evidence["units"][2]["candidate"]["idf1"]
-    with pytest.raises(RegistryError, match=r"units\[2\].candidate lacks judged metric 'idf1'"):
+    with pytest.raises(RegistryError, match=r"units\[2\].champion has judged metric 'idf1' on one side only"):
         adjudicate_against_champion(
             registry, run_id="candidate", model_id="model", reason="short evidence",
             paired_evidence=evidence,
         )
+
+
+def test_vector_evidence_skips_sibling_metric_rows(tmp_path: Path) -> None:
+    """A vector whose judged metrics live on different corpora still Pareto-adjudicates.
+
+    AP50 rows do not carry IDF1 and IDF1 rows do not carry AP50 -- the same union
+    scoring_corpora map registration already accepts. Sibling-metric rows are skipped
+    per projection, not refused.
+    """
+    registry = vector_registry(tmp_path)
+    ap50_cand = [0.58, 0.63, 0.68, 0.63]  # champion AP50 units +0.03
+    ap50_champ = CHAMPION_UNITS["ap50"]
+    idf1_cand = [0.68, 0.70, 0.72, 0.70]  # champion IDF1 units, no gain
+    idf1_champ = CHAMPION_UNITS["idf1"]
+    create_run(registry, "candidate", {
+        "ap50": sum(ap50_cand) / len(ap50_cand),
+        "idf1": sum(idf1_cand) / len(idf1_cand),
+    })
+    evidence = {
+        "candidate_run_id": "candidate",
+        "champion_run_id": "baseline",
+        "baseline_run_id": "baseline",
+        "resamples": 500,
+        "confidence_level": .95,
+        "seed": 17,
+        "units": (
+            [
+                {"unit_id": f"boxes-{index}",
+                 "candidate": {"ap50": ap50_cand[index]},
+                 "champion": {"ap50": ap50_champ[index]}}
+                for index in range(4)
+            ]
+            + [
+                {"unit_id": f"ident-{index}",
+                 "candidate": {"idf1": idf1_cand[index]},
+                 "champion": {"idf1": idf1_champ[index]}}
+                for index in range(4)
+            ]
+        ),
+    }
+    assert adjudicate_against_champion(
+        registry, run_id="candidate", model_id="model", reason="union corpora",
+        promotion=promotion(registry, "candidate"), paired_evidence=evidence,
+    ) == "adopted"
+
+
+def test_per_metric_seed_is_taken_from_that_metric_policy(tmp_path: Path) -> None:
+    """A vector that inherited different bootstrap seeds still adjudicates each metric."""
+    registry = vector_registry(tmp_path)
+    spec = spec_mapping(metrics=[
+        metric_entry("ap50", adjudication={
+            "method": "paired_bootstrap_percentile", "resamples": 500,
+            "confidence_level": .95, "seed": 17, "aggregation": "mean",
+        }),
+        metric_entry("idf1", adjudication={
+            "method": "paired_bootstrap_percentile", "resamples": 500,
+            "confidence_level": .95, "seed": 20260826, "aggregation": "mean",
+        }),
+    ])
+    registry.register_campaign_spec(spec, scoring_corpora=SCORING_CORPORA)
+    units = shifted({"ap50": .03, "idf1": 0.0})
+    assert adjudicate(registry, units, adopt=True) == "adopted"
+
+
+def test_sequence_split_unit_aggregation_is_the_mean(tmp_path: Path) -> None:
+    """Person-model AP50/IDF1 declare aggregation: sequence_split_unit -- that is mean."""
+    from knowledge.ml_registry.services.paired_adjudication import paired_interval
+
+    policy = {
+        "method": "paired_bootstrap_percentile",
+        "resamples": 500,
+        "confidence_level": .95,
+        "seed": 17,
+        "aggregation": "sequence_split_unit",
+    }
+    evidence = {
+        "candidate_run_id": "candidate",
+        "champion_run_id": "baseline",
+        "baseline_run_id": "baseline",
+        "resamples": 500,
+        "confidence_level": .95,
+        "seed": 17,
+        "units": [
+            {"unit_id": "a", "candidate": 0.6, "champion": 0.5},
+            {"unit_id": "b", "candidate": 0.8, "champion": 0.7},
+        ],
+    }
+    interval = paired_interval(
+        policy, evidence, run_id="candidate", champion_run_id="baseline",
+        direction="maximize", candidate_metric=0.7, champion_metric=0.6,
+    )
+    assert interval.lower > 0.0
 
 
 def test_vector_adjudication_requires_paired_evidence(tmp_path: Path) -> None:
