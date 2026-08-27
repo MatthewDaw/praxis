@@ -50,6 +50,49 @@ copy, refresh, or remotely launch them. A project `CampaignLifecycle` adapter ex
 `knowledge.ml_registry.runtime.campaign_job`, under the canonical portfolio operator, is the only
 supported long-running control plane.
 
+## One command, resumed from derived state
+
+This skill is ONE long-running job, not a setup step someone chains a campaign onto. Invoke it and
+it takes the campaign as far as it can go: finish whatever setup is unfinished, then start, resume
+or continue the campaign itself, and keep going until the work is done or something genuinely
+blocks.
+
+**Human input happens once, at the front.** Resolve the target and lane, then answer B0's ten
+objective slots. Everything after that runs unattended. Do not return to the human for a decision
+the spec already froze, and do not stop at READY to ask permission to continue -- READY is a
+checkpoint in one job, not the end of it.
+
+**Derive the current state from artifacts, never from a stored phase marker.** A checkpoint file
+says what someone believed last time; artifacts say what is actually true, and they stay true
+across a killed session, a manual fix, or a change someone made by hand. Probe in order and run the
+first unsatisfied phase:
+
+| evidence on the target | phase already satisfied |
+|---|---|
+| corpus matrix recorded, adapters decode real payloads | A |
+| `spec.yaml` validates and its ten objective slots are answered | B |
+| the harness runs C-END's trivial model end to end | C |
+| the registry holds the experiment, registered model and binding | D |
+| E1 ideas exist for this model fact with their receipts | E |
+| a candidate arm has reached a recorded verdict on this host | F |
+| a champion stands on a measured baseline | campaign C1 |
+| the exclusive tier is settled | campaign C2 |
+
+A phase whose evidence is present is verified, not re-run; a phase whose evidence is absent or
+fails verification is executed. That is the same rule brownfield already follows, applied to the
+whole job.
+
+**Three ways to arrive, one code path.** `fresh` ignores derived state and rebuilds; `resume` picks
+up an interrupted phase; `continue` extends a campaign that already reached a verdict frontier with
+another refinement round. They differ only in where the probe is allowed to start, so there is no
+separate mode logic to keep consistent.
+
+**Stop for a blocker, not for a boundary.** Blockers are: an unanswered objective slot, an
+unreachable target, absent score labels, a judge that cannot separate its trivial predictor, a
+same-family train-over-sealed corpus collision, or a harness that fails C-END. Report those and
+stop. Everything else -- a rejected arm, a failed candidate, an exhausted stage -- is the campaign
+working, and it continues.
+
 ## Terminal state — READY on the execution target
 
 Do not say READY until every condition is true on the host that will run supervision:
@@ -778,7 +821,12 @@ a baseline; it is a number taken under conditions no later run will reproduce.
 Copy local registry files only if embedded repo paths, artifact URIs, device evidence, and event
 history remain valid on target; normally rebuild deterministic seed state and remeasure there.
 
-## Phase G — handoff, then stop
+## Phase G — report, then continue into the campaign
+
+READY is a checkpoint, not an exit. Report the evidence, then carry straight on into the campaign
+loop in the same job: establish the measured baseline, settle the exclusive tier, then diagnose and
+refine. Hand back to a human only on a blocker from the list above, or when the campaign has
+genuinely finished.
 
 Report target evidence for every READY item, frozen contract, corpus fingerprints, resources,
 canonical ids/paths, baseline Run, derived rope, seeded ids/receipts, stage coverage, prerequisites,
@@ -836,4 +884,7 @@ marking that handoff READY.
 - Never seed an unbound/legacy model fact, omit an empty receipt, invent a tenth axis, or pad stages.
 - Never call an IDEA executable merely because it has a citation or prose basis; it must be
   dispatchable through the real trainer/evaluator or the preflighted one-arm worker.
-- Never start `/af-ml-supervise` unless the human explicitly chained it.
+- Never stop at READY to ask permission to continue; READY is a checkpoint inside one job. Stop for
+  a blocker, never for a phase boundary.
+- Never trust a stored phase marker over the artifacts on the target; derive state from evidence so
+  a killed session, a manual fix, or a hand-made change cannot desynchronise it.
