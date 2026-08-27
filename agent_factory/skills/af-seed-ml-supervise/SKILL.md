@@ -255,7 +255,31 @@ Verify through target-host adapters, not raw object listings:
   never populates. Refuse the corpus for that role rather than discovering it mid-campaign;
 - record immutable fingerprints, cache bytes, and leakage groups;
 - prove sealed labels are unavailable to candidate code;
-- reject ephemeral download staging as a runtime source.
+- reject ephemeral download staging as a runtime source;
+- **check the corpus against every OTHER campaign's declared roles before admitting it.**
+
+### The cross-campaign corpus ledger
+
+A corpus is not free just because this campaign has not used it. Projects of this shape share model
+families across campaigns, and that is what makes reuse dangerous:
+
+> **A corpus held as sealed or test data for a model family must not be used for TRAINING by any
+> campaign that touches the same family.** Doing so contaminates the other campaign's test set
+> retroactively, and nothing in that campaign will ever notice -- its numbers simply become wrong.
+
+Cross-family reuse is fine and should be recorded rather than refused: two campaigns training
+different families on the same units leak nothing.
+
+Build the check from what the project already keeps -- the committed consumer ledger beside the data
+catalog, plus every registered campaign spec's `corpora[].roles`. For each corpus this campaign
+wants, resolve: which campaigns already declare it, in which role, against which model family. Then
+
+- refuse a same-family train-over-sealed collision outright, naming the campaign it would corrupt;
+- record every other overlap in the corpus matrix, with the campaigns and roles named.
+
+**Regenerate the ledger before trusting it.** A committed ledger is a snapshot, and a stale one is
+worse than none: it will confidently report that nothing collides. Check its source commit against
+HEAD and rebuild if they differ.
 
 ### Build what is missing, and repair what is about to carry weight
 
@@ -365,6 +389,17 @@ Declare only stages with authored arms. Vision defaults are
 `representation,architecture,augmentation,training,tuning,capacity`, but evidence decides. Freeze
 the target resource lease, heartbeat cadence, arm timeout, disk/cache budget, device fingerprint,
 and target-measured throughput policy.
+
+**Declare what the host must look like for a measurement to count.** A shared box makes throughput,
+CPU time and wall clock into fiction, and nothing notices because the numbers still look like
+numbers. The lease therefore carries a load ceiling as well as a core count -- the maximum
+1-minute load average, relative to the declared cores, under which a measurement is admissible.
+
+`os.getloadavg()` is already recorded on every run in most harnesses of this shape; what is missing
+is a consequence. Give it one: a run whose observed load exceeds the ceiling is completed with
+`validity` marked contended rather than valid, and a contended measurement may not be compared for
+throughput, may not set a baseline, and may not promote. It stays in the ledger as evidence, which
+is the point -- a silently-degraded number is worse than an obviously-quarantined one.
 
 **Every bound that changes the measurement belongs in the spec, never in an env default or a
 launcher script.** Frame caps, unit caps, clip caps and sampling seeds define what was measured as
@@ -700,6 +735,18 @@ Interactive mode adds `--confirm-script`. With skip-research, do not duplicate e
 for the exact model fact; report their ids.
 
 ## Phase F — deploy and prove the target host
+
+**Take a host-level lane slot, not just a portfolio slot.** A portfolio's `max_active` governs only
+its own campaigns; it cannot see another session, another checkout, or a human running something by
+hand on the same box. Those are exactly what contend in practice. If the project already has a
+cross-process slot mechanism for accelerators -- an `flock` semaphore over N slots is the usual
+shape -- extend the same mechanism to the CPU lane rather than inventing a second one. A campaign
+job then blocks until a lane is free instead of quietly halving everyone's throughput.
+
+Before the first measurement, record what else is running on the host and its load, and treat that
+as part of the target evidence. A baseline established while another campaign was mid-sweep is not
+a baseline; it is a number taken under conditions no later run will reproduce.
+
 
 1. Push the reviewed revision, update the target checkout without overwriting target work, and prove
    clean HEAD equality.
