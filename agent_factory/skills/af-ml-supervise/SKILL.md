@@ -169,8 +169,20 @@ So:
 
 | gain | decision |
 |---|---|
-| >= 0.5% | **adopt** -- no further test |
-| < 0.5% | the rope decides, as it does today |
+| >= the floor | **adopt** -- no further test |
+| < the floor | the rope decides, as it does today |
+
+**The floor is ABSOLUTE percentage points, and 0.5% is the default.** A champion at 0.600 is beaten
+by 0.605. A campaign may declare a different floor with its judge at seed time, and then that number
+governs -- but it is declared once, before the baseline, like every other part of the judge, and
+never renegotiated because an arm landed just under it.
+
+**Above roughly 0.95 the campaign closes, rather than adopting a smaller floor.** An absolute 0.5%
+at that level is a tenth of the remaining headroom, so the floor stops being a modest bar and
+becomes a demand that almost nothing meets. That is the signal to finish: report the result, hand
+over the final census, and let a successor open a new campaign if the last few points ever justify
+their own judge. Lowering the floor to keep a campaign alive at 0.97 converts it into a search for
+noise -- the region where this project's derived ropes are widest relative to what is left to win.
 
 **Record when a floor adoption sits inside the measured rope.** A +0.6% gain against a baseline whose
 own replicates scatter by 18% is adopted under this rule and is also, honestly, indistinguishable
