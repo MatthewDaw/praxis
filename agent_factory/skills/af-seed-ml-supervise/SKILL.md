@@ -807,6 +807,33 @@ deserves.
 If a second seam is genuinely there, it will still be there after the first split has been measured,
 and by then you will know from evidence rather than from architecture taste whether it matters.
 
+**The sibling campaign is greenfield in REGIME and brownfield in EVIDENCE.** No model exists for the
+sub-problem, so it runs Phase 0 through G properly: its own frozen judge, its own harness, its own
+registered model, its own closed nine. But it does not start from a blank search -- the parent's
+census is what justified the split, so round 1 arrives already answered. Carry it across rather than
+re-deriving it.
+
+**Its baseline is the parent's IMPLICIT behaviour, extracted.** Before the split the parent was
+already doing that sub-task somehow -- badly, internally, unmeasured. Lift that out and register it
+as the sibling's incumbent. This is the rule that makes a decomposition falsifiable: if a dedicated
+model cannot beat what the monolith was already doing by accident, the seam was wrong, and one arm
+tells you so. A sibling that registers a trivial or refusing baseline instead has skipped the single
+comparison that would have caught a bad split, and will spend a campaign discovering it.
+
+**The parent does NOT narrow its judge.** It is tempting to rescore the parent on only what it still
+does, and it destroys the campaign's own record: every historical run becomes incomparable and the
+incumbent it was ratcheting against stops meaning anything. The parent keeps its end-to-end metric,
+because that is the outcome anyone actually wants; the sibling gets a stage-level one. What the
+parent gains is not a smaller problem but a declared input.
+
+That combination is what the input layer is for, and it yields two honest numbers instead of one
+ambiguous one. The parent measured with `source: labels` isolates its own contribution with a
+perfect upstream. Measured with `source: model: <sibling>@champion` it gives the composed,
+shippable number. The gap between them is the error the upstream contributes -- previously
+unmeasurable, and usually the number that tells you whether to keep investing in the sibling. Note
+that the two runs are correctly NOT comparable to each other: they were fed different inputs, and
+adjudication refuses to pit them against one another.
+
 ### Seed the approach now; seed its refinements once it has won
 
 Seeding happens in two rounds, and the second is not optional.
