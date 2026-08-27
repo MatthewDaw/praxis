@@ -74,12 +74,40 @@ def adjudicate_against_champion(
     elif candidate.throughput < float(experiment["baseline_throughput"]):
         verdict, status = "voided", "voided"
     else:
+        from knowledge.ml_registry.floor import (
+            FLOOR_ADOPTION_INSIDE_ROPE_FIELD,
+            FLOOR_ADOPTION_UNSUPPORTED_BY_INTERVAL_FIELD,
+            adoption_gain,
+            clears_adoption_floor,
+        )
+
         from .paired_adjudication import (
             LEGACY_SCALAR_ROPE,
             PAIRED_BOOTSTRAP,
+            campaign_metric,
             comparison_policy,
             paired_interval,
         )
+
+        # THE ADOPTION FLOOR ON THE CANONICAL PATH. A gain of `adoption_floor` or more in
+        # absolute metric points (0.5% by default, declared with the judge) IS a win and is
+        # adopted outright; the interval, or the scalar rope, decides only what falls below
+        # it. Same rule, same reader, same default as `verdict.adjudicate_verdict` -- the
+        # Praxis-space adjudication -- so the two cannot answer one question two ways.
+        #
+        # WHERE THE NUMBER COMES FROM, and it is one place: the registered CampaignSpec's
+        # `metric` object, frozen before any run of this campaign, read by
+        # `floor.declared_adoption_floor`. `campaign_metric` also VALIDATES it, so an
+        # unusable floor is refused rather than silently replaced by the default. An
+        # experiment with no CampaignSpec at all (a historical import) has no declaration to
+        # read and takes the documented default, exactly as an undeclared model does on the
+        # other path -- a default, not a second source.
+        #
+        # DIRECTION lives in `adoption_gain` and nowhere else here: on a `minimize` metric a
+        # floor-sized REGRESSION is a gain of -0.005 and clears nothing.
+        spec_metric = campaign_metric(registry, str(experiment["experiment_id"]))
+        gain = adoption_gain(str(experiment["direction"]), baseline.metric, candidate.metric)
+        adopted_by_floor = clears_adoption_floor(dict(spec_metric or {}), gain)
 
         policy = comparison_policy(registry, str(experiment["experiment_id"]))
         method = LEGACY_SCALAR_ROPE if policy is None else policy.get("method")
@@ -98,7 +126,27 @@ def adjudicate_against_champion(
                 champion_metric=baseline.metric,
             )
             adjudication_evidence = interval.evidence
-            if interval.lower > 0.0:
+            # THE FLOOR IS TESTED FIRST, and it can only ever turn a PARK into an adoption.
+            # An entirely-negative interval means every paired unit moved the wrong way, and
+            # a gain of +0.5% or more cannot coexist with it: the interval is bootstrapped
+            # from the same paired deltas whose aggregate IS this gain. The reject branch is
+            # therefore left exactly where it was, BELOW this test and untouched -- do not
+            # "simplify" the order by hoisting the floor past it or by folding the two into
+            # one condition, because either edit turns this into a rule that adopts
+            # regressions.
+            #
+            # A floor adoption the interval did not SUPPORT is stamped into the durable
+            # evidence rather than blocked. It is adopted -- that is the decision -- and the
+            # mark preserves the one fact the rule deliberately overrides, so a later audit of
+            # the ratchet can separate "the evidence said yes" from "the policy said yes".
+            if adopted_by_floor:
+                verdict, status = "adopted", "succeeded"
+                if not interval.lower > 0.0:
+                    adjudication_evidence = {
+                        **interval.evidence,
+                        FLOOR_ADOPTION_UNSUPPORTED_BY_INTERVAL_FIELD: True,
+                    }
+            elif interval.lower > 0.0:
                 verdict, status = "adopted", "succeeded"
             elif interval.upper < 0.0:
                 verdict, status = "rejected", "succeeded"
@@ -109,12 +157,22 @@ def adjudicate_against_champion(
                 raise RegistryError(
                     "paired evidence was supplied to a legacy_scalar_rope experiment"
                 )
-            delta = candidate.metric - baseline.metric
-            improvement = delta if experiment["direction"] == "maximize" else -delta
+            # `gain` above IS this branch's `improvement`, signed once by `adoption_gain`
+            # instead of a second time here -- one sign convention for both branches and both
+            # adjudication paths.
             rope = float(experiment["rope"])
-            if improvement > rope:
+            # The floor binds here too. Leaving this branch rope-only would leave the registry
+            # answering one question two ways depending on which method a campaign declared,
+            # and "0.5% is a win" is a statement about the campaign's metric, not about the
+            # machinery that measured it. The reject branch keeps its place for the same
+            # reason as above: a floor-sized gain is positive and cannot be a rope-width loss.
+            if adopted_by_floor or gain > rope:
                 verdict, status = "adopted", "succeeded"
-            elif abs(delta) <= rope:
+                if adopted_by_floor and gain <= rope:
+                    # The rope path's own mark: adopted by policy over a gain the measured
+                    # bar could not distinguish from noise.
+                    adjudication_evidence = {FLOOR_ADOPTION_INSIDE_ROPE_FIELD: True}
+            elif abs(gain) <= rope:
                 verdict, status = "parked", "succeeded"
             else:
                 verdict, status = "rejected", "succeeded"

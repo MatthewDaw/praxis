@@ -233,6 +233,13 @@ ADOPTION_FLOOR_FIELD = "adoption_floor"
 #: its baseline is too noisy to steer by, which is a finding about the harness rather than
 #: about any arm.
 FLOOR_ADOPTION_INSIDE_ROPE_FIELD = "floor_adoption_inside_rope"
+#: THE SAME AUDIT MARK on the canonical registry's paired-bootstrap path, where the evidence
+#: is a confidence interval rather than a measured rope: stamped into a run's durable
+#: ``adjudication_evidence`` when the floor adopted a run whose interval did NOT exclude zero
+#: on the improving side. Two names rather than one, because the two paths hold two different
+#: KINDS of evidence and a mark that said "inside the rope" about an interval would be a lie;
+#: they answer one question -- did the evidence support this adoption, or only the policy?
+FLOOR_ADOPTION_UNSUPPORTED_BY_INTERVAL_FIELD = "floor_adoption_unsupported_by_interval"
 
 
 def declared_adoption_floor(meta: dict[str, object]) -> float:

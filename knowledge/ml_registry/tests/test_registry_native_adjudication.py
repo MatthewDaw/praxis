@@ -7,6 +7,11 @@ import subprocess
 import pytest
 
 from knowledge.ml_registry import Registry
+from knowledge.ml_registry.contracts import ContractError
+from knowledge.ml_registry.floor import (
+    FLOOR_ADOPTION_INSIDE_ROPE_FIELD,
+    FLOOR_ADOPTION_UNSUPPORTED_BY_INTERVAL_FIELD,
+)
 from knowledge.ml_registry.domain import VALID_RUN_STATUS_VERDICT_PAIRS
 from knowledge.ml_registry.services.registry_adjudication import adjudicate_against_champion
 from knowledge.ml_registry.services.registry_aliases import adopt_run_and_promote
@@ -66,8 +71,9 @@ def registry_with_champion(tmp_path: Path) -> Registry:
 
 def register_adjudication_policy(
     registry: Registry, *, method: str = "paired_bootstrap_percentile",
-    aggregation: str = "mean",
+    aggregation: str = "mean", adoption_floor: float | None = None,
 ) -> None:
+    floor = {} if adoption_floor is None else {"adoption_floor": adoption_floor}
     registry.register_campaign_spec({
         "schema_version": 1,
         "campaign_id": "campaign",
@@ -76,6 +82,7 @@ def register_adjudication_policy(
         "sport_scope": ["shared"],
         "target_ontology": "fixture",
         "metric": {
+            **floor,
             "name": "f1",
             "direction": "maximize",
             "operating_point": {"selection": "frozen", "threshold": .5},
@@ -149,9 +156,14 @@ def test_typed_metrics_reject_missing_invalid_and_nonfinite_measurements(tmp_pat
         complete_run(registry, run_id="run", metrics=bad)
 
 
+# RETARGETED by the adoption floor. The champion scores 0.68, so the old "parked" fixture
+# (0.685) is a gain of EXACTLY 0.005 -- the floor -- and is now a win on this path too; it is
+# kept, as an adoption, rather than deleted. 0.684 is a gain of 0.004, under the floor and
+# inside this experiment's 0.01 rope, which is what the park case was always testing.
 @pytest.mark.parametrize(("value", "validity", "expected", "status"), [
     (0.70, "valid", "adopted", "succeeded"),
-    (0.685, "valid", "parked", "succeeded"),
+    (0.685, "valid", "adopted", "succeeded"),   # exactly the floor: adopted, rope notwithstanding
+    (0.684, "valid", "parked", "succeeded"),    # under the floor: the rope decides, and parks
     (0.66, "valid", "rejected", "succeeded"),
     (0.72, "invalid", "voided", "voided"),
 ])
@@ -211,6 +223,140 @@ def test_paired_campaign_uses_frozen_interval_instead_of_scalar_rope(
         assert evidence["interval"][0] <= 0 <= evidence["interval"][1]
 
 
+# ---------------------------------------------------------------------------
+# THE ADOPTION FLOOR on the canonical registry's paired path -- the branch every real
+# campaign takes. The champion scores 0.68. `FLOOR_UNITS` are four paired units whose
+# aggregate gain is EXACTLY the 0.005 default floor and whose per-unit deltas
+# (+.10, -.09, +.08, -.07) scatter so widely that the 95% bootstrap interval is
+# [-0.080, +0.090] -- it straddles zero, so before the floor existed this parked. That is
+# the case the rule exists for: a real gain thrown away because the evidence around it is
+# noisy.
+# ---------------------------------------------------------------------------
+CHAMPION_UNITS = [.60, .65, .70, .77]
+FLOOR_UNITS = [.70, .56, .78, .70]        # aggregate .685 -- a gain of exactly 0.005
+UNDER_FLOOR_UNITS = [.70, .56, .78, .696]  # aggregate .684 -- a gain of 0.004, just under
+WORSE_UNITS = [.58, .63, .68, .75]         # aggregate .660 -- interval entirely negative
+CLEAN_WIN_UNITS = [.62, .67, .72, .79]     # aggregate .700 -- interval entirely positive
+
+
+def _adjudicate_paired(registry: Registry, candidate_units: list[float], *, adopt: bool) -> str:
+    create_run(registry, "candidate", sum(candidate_units) / len(candidate_units))
+    return adjudicate_against_champion(
+        registry, run_id="candidate", model_id="model", reason="paired comparison",
+        promotion=promotion(registry, "candidate") if adopt else None,
+        paired_evidence=paired_evidence(candidate_units, CHAMPION_UNITS),
+    )
+
+
+def _evidence(registry: Registry) -> dict:
+    event = next(
+        event for event in reversed(registry.list_events())
+        if event.event_type in {"run_adopted", "run_adjudicated"}
+        and event.payload["run_id"] == "candidate"
+    )
+    return event.payload["adjudication_evidence"]
+
+
+def test_a_floor_gain_adopts_on_the_paired_path_even_though_its_interval_straddles_zero(
+    tmp_path: Path,
+) -> None:
+    """THE CASE THAT PARKS TODAY. The gain is exactly 0.5 points and the 95% paired interval
+    runs from -0.080 to +0.090, so the evidence alone cannot distinguish it from noise. The
+    floor decides, and the interval is recorded UNCHANGED beside the verdict it did not
+    reach -- two facts, both durable, allowed to disagree."""
+    registry = registry_with_champion(tmp_path)
+    register_adjudication_policy(registry)
+
+    assert _adjudicate_paired(registry, FLOOR_UNITS, adopt=True) == "adopted"
+
+    evidence = _evidence(registry)
+    assert evidence["interval"][0] < 0 < evidence["interval"][1]  # the interval still straddles
+    assert evidence["point_estimate"] == pytest.approx(0.005)
+    champion = next(row for row in registry.rows("aliases") if row["alias"] == "champion")
+    assert champion["version"] == 2
+
+
+def test_a_gain_under_the_floor_with_a_straddling_interval_still_parks(tmp_path: Path) -> None:
+    """One thousandth of a point lower and the floor has nothing to say: the interval decides,
+    exactly as it did before, and a straddling interval parks."""
+    registry = registry_with_champion(tmp_path)
+    register_adjudication_policy(registry)
+
+    assert _adjudicate_paired(registry, UNDER_FLOOR_UNITS, adopt=False) == "parked"
+
+
+def test_an_entirely_negative_interval_still_rejects_with_the_floor_in_place(
+    tmp_path: Path,
+) -> None:
+    """The reject branch is untouched. A candidate 2 points WORSE has a gain of -0.02, which
+    clears no floor in the improving direction, so the ordering of the two tests never gets a
+    chance to matter here -- and must not be rearranged until it does."""
+    registry = registry_with_champion(tmp_path)
+    register_adjudication_policy(registry)
+
+    assert _adjudicate_paired(registry, WORSE_UNITS, adopt=False) == "rejected"
+    assert _evidence(registry)["interval"][1] < 0
+
+
+def test_the_audit_mark_says_when_the_interval_did_not_support_a_floor_adoption(
+    tmp_path: Path,
+) -> None:
+    """The mark is stamped on the adoption the evidence did not reach, and ONLY on it: a
+    floor-sized gain whose interval is entirely positive was supported by the interval too,
+    so there is nothing for an auditor to know. A campaign where most adoptions carry the
+    mark is reporting a harness too noisy to steer by rather than a run of weak arms."""
+    straddled = registry_with_champion(tmp_path / "straddled")
+    register_adjudication_policy(straddled)
+    assert _adjudicate_paired(straddled, FLOOR_UNITS, adopt=True) == "adopted"
+
+    supported = registry_with_champion(tmp_path / "supported")
+    register_adjudication_policy(supported)
+    assert _adjudicate_paired(supported, CLEAN_WIN_UNITS, adopt=True) == "adopted"
+
+    assert _evidence(straddled)[FLOOR_ADOPTION_UNSUPPORTED_BY_INTERVAL_FIELD] is True
+    assert FLOOR_ADOPTION_UNSUPPORTED_BY_INTERVAL_FIELD not in _evidence(supported)
+
+
+def test_a_campaign_declaring_its_own_floor_on_this_path_is_judged_on_that_number(
+    tmp_path: Path,
+) -> None:
+    """Declared in the CampaignSpec's `metric` object -- the judge, frozen before any run --
+    and read by the SAME `floor.declared_adoption_floor` the Praxis-space path uses. A 2%
+    floor parks the gain the 0.5% default would have adopted."""
+    registry = registry_with_champion(tmp_path)
+    register_adjudication_policy(registry, adoption_floor=0.02)
+
+    assert _adjudicate_paired(registry, FLOOR_UNITS, adopt=False) == "parked"
+
+
+def test_a_floor_that_names_no_gain_is_refused_when_the_campaign_spec_is_registered(
+    tmp_path: Path,
+) -> None:
+    """The floor is declared once, before the baseline, so registration is where an unusable
+    one has to die -- the canonical-registry twin of `write_path.register_model`'s refusal."""
+    registry = registry_with_champion(tmp_path)
+
+    with pytest.raises(ContractError, match="adoption_floor"):
+        register_adjudication_policy(registry, adoption_floor=0.0)
+
+
+def test_the_floor_binds_on_the_legacy_scalar_rope_branch_too(tmp_path: Path) -> None:
+    """Coherence: the registry must not answer "is this a win" two ways depending on which
+    method a campaign declared. A gain of exactly the floor is adopted here as well, and it
+    carries the rope path's own mark because it sits inside this experiment's 0.01 rope."""
+    registry = registry_with_champion(tmp_path)
+    register_adjudication_policy(registry, method="legacy_scalar_rope")
+    create_run(registry, "candidate", .685)
+
+    verdict = adjudicate_against_champion(
+        registry, run_id="candidate", model_id="model", reason="declared legacy",
+        promotion=promotion(registry, "candidate"),
+    )
+
+    assert verdict == "adopted"
+    assert _evidence(registry)[FLOOR_ADOPTION_INSIDE_ROPE_FIELD] is True
+
+
 def test_paired_campaign_refuses_missing_or_moved_judging_contract(tmp_path: Path) -> None:
     registry = registry_with_champion(tmp_path)
     register_adjudication_policy(registry)
@@ -241,7 +387,10 @@ def test_registered_legacy_campaign_must_name_scalar_rope_and_refuses_paired_inp
 ) -> None:
     registry = registry_with_champion(tmp_path)
     register_adjudication_policy(registry, method="legacy_scalar_rope")
-    create_run(registry, "candidate", .685)
+    # .684 is a gain of 0.004 against the 0.68 champion -- under the adoption floor, so this
+    # test still asks its own question (a legacy spec refuses paired input) rather than
+    # accidentally asking whether the floor binds.
+    create_run(registry, "candidate", .684)
     evidence = paired_evidence([.60, .67], [.59, .66])
     with pytest.raises(RegistryError, match="legacy_scalar_rope"):
         adjudicate_against_champion(

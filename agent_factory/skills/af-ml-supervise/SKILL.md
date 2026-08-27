@@ -188,8 +188,9 @@ noise -- the region where this project's derived ropes are widest relative to wh
 **Record when a floor adoption sits inside the measured rope.** A +0.6% gain against a baseline whose
 own replicates scatter by 18% is adopted under this rule and is also, honestly, indistinguishable
 from noise. Adopt it -- that is the decision -- but flag the Run so the ratchet can be audited
-later -- `floor_adoption_inside_rope` on the trial, and `floor.describe_rope` reports whether this
-campaign's floor sits inside its measured rope at all. The flag costs nothing and
+later -- `floor_adoption_inside_rope` on a rope-adjudicated trial,
+`floor_adoption_unsupported_by_interval` in a paired run's durable `adjudication_evidence`, and
+`floor.describe_rope` reports whether this campaign's floor sits inside its measured rope at all. The flag costs nothing and
 preserves the one fact the rule deliberately overrides. A campaign
 where most adoptions carry it is telling you its baseline is too noisy to steer by, which is a
 finding about the harness rather than about any arm.

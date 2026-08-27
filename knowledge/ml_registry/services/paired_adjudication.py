@@ -29,8 +29,18 @@ class PairedInterval:
     evidence: dict[str, object]
 
 
-def comparison_policy(registry: Any, experiment_id: str) -> Mapping[str, object] | None:
-    """Return the immutable CampaignSpec adjudication policy, when one was registered."""
+def campaign_metric(registry: Any, experiment_id: str) -> Mapping[str, object] | None:
+    """THE JUDGE for this campaign -- the registered CampaignSpec's ``metric`` object, frozen
+    before any run -- or ``None`` when no spec was ever registered for this experiment.
+
+    This is the single declaration site the canonical-registry path reads its judging numbers
+    from, the adoption floor included. The floor is VALIDATED here as well as at
+    :meth:`Registry.register_campaign_spec`, for the same reason ``sigmas`` is validated at
+    registration: a value that cannot state a gain must be refused before it silently becomes
+    the default at adjudication time. It is read by
+    :func:`~knowledge.ml_registry.floor.declared_adoption_floor` -- the SAME reader, default
+    and validation the Praxis-space path uses -- so the two paths cannot hold two numbers.
+    """
     specs = [
         event.payload
         for event in registry.list_events()
@@ -42,6 +52,31 @@ def comparison_policy(registry: Any, experiment_id: str) -> Mapping[str, object]
     metric = specs[-1].get("metric")
     if not isinstance(metric, Mapping):
         raise RegistryError("registered CampaignSpec metric must be an object")
+    guard_adoption_floor(metric)
+    return metric
+
+
+def guard_adoption_floor(metric: Mapping[str, object]) -> float:
+    """Read (and so validate) the declared adoption floor, in this registry's error dialect.
+
+    The canonical registry speaks :class:`RegistryError`; the floor's reader raises the
+    Praxis-space :class:`RegistryValidationError`. Converting HERE, once, is what lets both
+    paths share one reader without either one inventing its own threshold or its own default.
+    """
+    from knowledge.ml_registry.floor import declared_adoption_floor
+    from knowledge.ml_registry.schema import RegistryValidationError
+
+    try:
+        return declared_adoption_floor(dict(metric))
+    except RegistryValidationError as exc:
+        raise RegistryError(str(exc)) from exc
+
+
+def comparison_policy(registry: Any, experiment_id: str) -> Mapping[str, object] | None:
+    """Return the immutable CampaignSpec adjudication policy, when one was registered."""
+    metric = campaign_metric(registry, experiment_id)
+    if metric is None:
+        return None
     policy = metric.get("adjudication")
     if not isinstance(policy, Mapping):
         raise RegistryError(

@@ -92,7 +92,10 @@ def test_failed_landing_commit_restores_both_aliases(tmp_path: Path) -> None:
 def test_converge_that_does_not_beat_predecessor_keeps_production(tmp_path: Path) -> None:
     registry = registry_with_champion(tmp_path)
     _baseline_in_production(registry)
-    create_run(registry, "converge", .685)
+    # .684 against the .68 predecessor is a gain of 0.004 -- under the 0.005 adoption floor,
+    # so this really is a run that does not beat its predecessor. (.685, the old fixture, is
+    # a gain of EXACTLY the floor and is now a win; see test_registry_native_adjudication.)
+    create_run(registry, "converge", .684)
     calls: list[FinalizedModel] = []
 
     result = _promoter(registry, lambda finalized: calls.append(finalized) or "unexpected").run(

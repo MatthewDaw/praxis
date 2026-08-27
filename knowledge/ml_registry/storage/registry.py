@@ -677,6 +677,17 @@ class Registry:
         if structural_validator is not None:
             structural_validator(spec)
         campaign = CampaignSpec.from_mapping(spec)
+        # THE ADOPTION FLOOR IS DECLARED HERE, ONCE, before any run of this campaign -- the
+        # same "set it with the judge, never renegotiate it" rule the Praxis-space path
+        # enforces at `write_path.register_model`. Refused at registration for the same
+        # reason `sigmas` is: a floor that cannot state a gain must not survive to silently
+        # become the default when the first arm is adjudicated.
+        from knowledge.ml_registry.services.paired_adjudication import guard_adoption_floor
+
+        try:
+            guard_adoption_floor(campaign.metric)
+        except RegistryError as exc:
+            raise ContractError(str(exc)) from exc
         if campaign.rope is not None:
             raise ContractError(
                 "rope is registration-derived and may not be supplied in the campaign spec; "
