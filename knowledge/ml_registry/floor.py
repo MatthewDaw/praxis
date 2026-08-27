@@ -46,8 +46,9 @@ verdict comes from the SAME external ledger: it reads the value for the trial's 
 ``commit`` itself and refuses a commit with no scored row, so no number an agent reports
 about its own run can decide that run's outcome. (The full production adjudication,
 including throughput voiding, the stagnant band and the idea lifecycle, is R10's
-:func:`~knowledge.ml_registry.verdict.adjudicate_verdict`; both use the same strict
-``delta > rope`` win test so they cannot reach opposite conclusions.)
+:func:`~knowledge.ml_registry.verdict.adjudicate_verdict`; both run the same two tests in
+the same order -- the declared :data:`ADOPTION_FLOOR_FIELD` first, then the strict
+``delta > rope`` -- so they cannot reach opposite conclusions.)
 
 A model's "harness" (:data:`HARNESS_FIELDS` -- eval size, precision, hardware) is held
 more tightly than an ordinary judging field: :func:`retire_harness` refuses to let a
@@ -193,6 +194,113 @@ def declared_sigmas(meta: dict[str, object]) -> float:
             field=SIGMAS_FIELD,
         )
     return sigmas
+
+
+# THE ADOPTION FLOOR: a gain this big IS a win, whatever the rope says.
+#
+# NOT A ROPE, and the name says so. The rope is MEASURED -- `sigmas` x the spread of the
+# baseline's own replicates -- and it answers "how much does this baseline move on its
+# own". The floor is DECLARED, once, with the rest of the judge, and answers a different
+# question: "how big a gain does this campaign care about at all". Two facts, both
+# visible, allowed to disagree loudly; nothing here changes what `measure_rope` or
+# `comparison_rope` report.
+#
+# WHY, and it is a measured failure rather than a preference. The measured rope in this
+# project's real campaigns ranges from 0.000790 (0.08%, association) to 0.188458 (18.8%,
+# contact_point). At an 18.8% rope a genuine 5% improvement is "practically equivalent"
+# and is rejected. That is how good ideas die on bad statistics, and it is the whole
+# reason this constant exists.
+#
+# THE ASYMMETRY IS DELIBERATE. An improvement wrongly REJECTED disappears silently and
+# forever -- nothing in the record distinguishes it from an idea that deserved to lose.
+# An improvement wrongly ADOPTED is visible, re-measurable, and reversible by the next arm
+# that beats it. Given a choice of error, take the one that leaves a trace.
+#
+# ABSOLUTE PERCENTAGE POINTS, never relative: 0.600 is beaten by 0.605, and by 0.605 at
+# every metric level. Unlike the residual scaling above, the floor does not move with the
+# campaign's position -- a campaign close enough to its ceiling that 0.5% is out of reach
+# is a campaign that should CLOSE (af-ml-supervise, "the adoption floor"), not one that
+# should be handed a smaller bar.
+DEFAULT_ADOPTION_FLOOR = 0.005
+#: The gain, in absolute metric points, that is adopted outright. Declared with the judge
+#: before the baseline, exactly like :data:`SIGMAS_FIELD`; below it the derived rope
+#: decides, unchanged.
+ADOPTION_FLOOR_FIELD = "adoption_floor"
+#: Stamped on a trial adopted BY THE FLOOR whose gain also sits inside the measured rope --
+#: honestly indistinguishable from this baseline's own wobble. It is an AUDIT MARK, never a
+#: block: the trial is adopted, that is the decision, and this preserves the one fact the
+#: rule deliberately overrides. A campaign where most adoptions carry it is reporting that
+#: its baseline is too noisy to steer by, which is a finding about the harness rather than
+#: about any arm.
+FLOOR_ADOPTION_INSIDE_ROPE_FIELD = "floor_adoption_inside_rope"
+
+
+def declared_adoption_floor(meta: dict[str, object]) -> float:
+    """The gain this model adopts outright, defaulting to :data:`DEFAULT_ADOPTION_FLOOR`.
+
+    Read exactly as :func:`declared_sigmas` reads its multiplier -- one optional meta
+    field, absent means the default -- because it is the same kind of thing: part of the
+    judge, declared once before the baseline and never renegotiated because an arm landed
+    just under it. It is NOT a rope and is never compared to one: see this section's
+    header for why the two numbers are allowed to disagree.
+    """
+    declared = meta.get(ADOPTION_FLOOR_FIELD)
+    if declared in (None, ""):
+        return DEFAULT_ADOPTION_FLOOR
+    floor = _as_float(
+        declared, ADOPTION_FLOOR_FIELD,
+        "It states the gain in absolute metric points that is adopted outright, and a value "
+        "that is not a number names no gain at all",
+    )
+    if not floor > 0.0:
+        raise RegistryValidationError(
+            f"{ADOPTION_FLOOR_FIELD} {floor!r} is not positive; a floor of zero or less adopts "
+            "an arm that improved nothing, which is the rope's question and not the floor's",
+            field=ADOPTION_FLOOR_FIELD,
+        )
+    return floor
+
+
+def adoption_gain(direction: str, baseline_value: float, value: float) -> float:
+    """How far ``value`` beats ``baseline_value`` IN THE MODEL'S IMPROVING DIRECTION.
+
+    The single place the sign is decided, so the floor and the rope cannot read a delta
+    the opposite way round. Inverting this on a `minimize` metric would adopt every
+    regression it was meant to reject, which is why both adjudication paths call it rather
+    than subtracting in place. Mirrors :func:`_residual`'s reading of ``direction``.
+    """
+    if direction == "minimize":
+        return baseline_value - value
+    if direction == "maximize":
+        return value - baseline_value
+    raise RegistryValidationError(
+        f"model direction must be 'minimize' or 'maximize', got {direction!r}", field="direction"
+    )
+
+
+def clears_adoption_floor(meta: dict[str, object], gain: float) -> bool:
+    """Is ``gain`` -- already signed by :func:`adoption_gain` -- at or above the declared
+    floor, and therefore adopted with no further test?
+
+    Inclusive at the floor: 0.5% is stated as a win, so exactly 0.5% is one. (The rope
+    tests either side of it stay strict, and they decide only what falls below here.)
+    """
+    return gain >= declared_adoption_floor(meta)
+
+
+def floor_adoption_inside_rope(
+    meta: dict[str, object], values: Sequence[float], gain: float
+) -> bool:
+    """Would this floor adoption also be indistinguishable from the baseline's own noise?
+
+    True when the gain clears the floor AND sits inside the MEASURED rope -- the spread of
+    the replicates themselves, not the derived per-comparison bar, because the question is
+    about noise rather than about the bar the campaign happens to be running. Callers stamp
+    :data:`FLOOR_ADOPTION_INSIDE_ROPE_FIELD` with the answer; nothing branches on it.
+    """
+    if not clears_adoption_floor(meta, gain):
+        return False
+    return gain <= measure_rope(values, sigmas=declared_sigmas(meta))
 
 
 # WHAT VARIED when the rope was measured, and HOW a trial is compared to the baseline.
@@ -593,9 +701,13 @@ def adjudicate_trial(
     :func:`~knowledge.ml_registry.verdict.adjudicate_verdict` uses for a trial's
     self-reported throughput/diff_lines.
 
-    The win test is STRICT (``delta > rope``) so that this and
-    :func:`~knowledge.ml_registry.verdict.adjudicate_verdict` cannot disagree about a
-    delta of exactly one standard deviation. ``adjudicate_verdict`` is the full production
+    A gain at or above the model's declared adoption floor
+    (:func:`declared_adoption_floor`, 0.5% by default) succeeds outright, with no rope test
+    at all; below it the rope decides and its win test is STRICT (``delta > rope``) so that
+    this and :func:`~knowledge.ml_registry.verdict.adjudicate_verdict` cannot disagree about
+    a delta of exactly one standard deviation. A floor win whose gain also sits inside the
+    measured rope is stamped :data:`FLOOR_ADOPTION_INSIDE_ROPE_FIELD` -- an audit mark on a
+    trial that still succeeded. ``adjudicate_verdict`` is the full production
     adjudication (it also voids on throughput collapse, parks the stagnant band, drives the
     idea lifecycle and the ratchet); this function decides the trial's status ALONE and
     exists for the model-level bar check without idea-lifecycle side effects.
@@ -636,18 +748,16 @@ def adjudicate_trial(
             field=BASELINE_THROUGHPUT_FIELD,
         )
     baseline = _metric_baseline(model, model_id, ledger_values, stored_bar)
+    values = baseline_values(model.meta, ledger_values)
     # The bar is derived AT THE BASELINE LEVEL, never at the trial's own value: an arm that
     # could shrink its own bar by scoring well would be grading its own homework.
-    rope = comparison_rope(model.meta, baseline_values(model.meta, ledger_values), baseline)
-    direction = model.meta.get("direction")
-    if direction == "minimize":
-        delta = float(baseline) - observed_value
-    elif direction == "maximize":
-        delta = observed_value - float(baseline)
-    else:
-        raise RegistryValidationError(
-            f"model direction must be 'minimize' or 'maximize', got {direction!r}", field="direction"
-        )
+    rope = comparison_rope(model.meta, values, baseline)
+    delta = adoption_gain(str(model.meta.get("direction")), float(baseline), observed_value)
+    # THE ROPE ALONE, and deliberately: this is the model-level BAR CHECK -- "did this run
+    # clear the measured noise" -- not the adoption verdict. The adoption floor is a rule
+    # about what gets ADOPTED, and adoption is decided in exactly one place
+    # (`verdict.adjudicate_verdict`), which is where it is applied. Answering the noise
+    # question with the floor as well would leave no caller able to ask it at all.
     status = "succeeded" if delta > rope else "failed"
     trial.meta["status"] = status
     trial.meta["observed_value"] = observed_value
@@ -990,13 +1100,31 @@ def describe_rope(
     mode = _rope_scaling_mode(meta)
     measured = measure_rope(values, sigmas=declared_sigmas(meta))
     bar = comparison_rope(meta, values, at_value)
+    floor = declared_adoption_floor(meta)
     described: dict[str, object] = {
         "rope": bar,
         "measured_rope": measured,
         "at_value": at_value,
         ROPE_SCALING_FIELD: mode,
         ROPE_SCALING_BASIS_FIELD: meta.get(ROPE_SCALING_BASIS_FIELD, ROPE_SCALING_BASIS_STATIC),
+        # THE OTHER BAR, reported beside this one because a human told only the rope will
+        # read a verdict it did not decide. A gain at or above the floor is adopted whatever
+        # the rope says; the rope decides only below it.
+        ADOPTION_FLOOR_FIELD: floor,
+        # Whether this campaign's declared floor sits INSIDE its own measured noise. When it
+        # does, adoptions here will routinely carry
+        # FLOOR_ADOPTION_INSIDE_ROPE_FIELD -- that is the rule working as intended, and it is
+        # also the signal that the baseline is too noisy to steer by.
+        "floor_inside_measured_rope": floor <= measured,
     }
+    if floor <= measured:
+        described["floor_caveat"] = (
+            f"the declared adoption floor ({floor}) is INSIDE this baseline's measured rope "
+            f"({measured}), so a gain that clears the floor is adopted while remaining "
+            "indistinguishable from the baseline's own run-to-run wobble -- adoptions here are "
+            f"stamped {FLOOR_ADOPTION_INSIDE_ROPE_FIELD}, and a campaign where most of them are "
+            "is reporting a harness too noisy to steer by rather than a run of weak arms"
+        )
     if mode == ROPE_SCALING_RESIDUAL:
         armor = _as_float(meta.get(ROPE_ARMOR_FIELD, DEFAULT_ROPE_ARMOR), ROPE_ARMOR_FIELD,
                           _SCALING_INPUT)

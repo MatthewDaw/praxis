@@ -173,8 +173,9 @@ So:
 | < the floor | the rope decides, as it does today |
 
 **The floor is ABSOLUTE percentage points, and 0.5% is the default.** A champion at 0.600 is beaten
-by 0.605. A campaign may declare a different floor with its judge at seed time, and then that number
-governs -- but it is declared once, before the baseline, like every other part of the judge, and
+by 0.605. A campaign may declare a different floor with its judge at seed time -- `adoption_floor` on
+the model record, read by `knowledge.ml_registry.floor.declared_adoption_floor` -- and then that
+number governs, but it is declared once, before the baseline, like every other part of the judge, and
 never renegotiated because an arm landed just under it.
 
 **Above roughly 0.95 the campaign closes, rather than adopting a smaller floor.** An absolute 0.5%
@@ -187,7 +188,9 @@ noise -- the region where this project's derived ropes are widest relative to wh
 **Record when a floor adoption sits inside the measured rope.** A +0.6% gain against a baseline whose
 own replicates scatter by 18% is adopted under this rule and is also, honestly, indistinguishable
 from noise. Adopt it -- that is the decision -- but flag the Run so the ratchet can be audited
-later. The flag costs nothing and preserves the one fact the rule deliberately overrides. A campaign
+later -- `floor_adoption_inside_rope` on the trial, and `floor.describe_rope` reports whether this
+campaign's floor sits inside its measured rope at all. The flag costs nothing and
+preserves the one fact the rule deliberately overrides. A campaign
 where most adoptions carry it is telling you its baseline is too noisy to steer by, which is a
 finding about the harness rather than about any arm.
 

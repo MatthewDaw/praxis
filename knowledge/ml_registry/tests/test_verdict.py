@@ -12,6 +12,7 @@ import statistics
 import pytest
 
 from knowledge.ml_registry.floor import (
+    ADOPTION_FLOOR_FIELD,
     BASELINE_THROUGHPUT_UNITS_FIELD,
     measure_rope,
     RATCHET_COUNT_FIELD,
@@ -100,9 +101,9 @@ EXACT_ROPE = 0.125
 EXACT_THROUGHPUT = 1.0625
 
 
-def _space_with_exact_rope_model() -> tuple[RegistrySpace, str]:
+def _space_with_exact_rope_model(**extra: object) -> tuple[RegistrySpace, str]:
     space = RegistrySpace()
-    meta = dict(MODEL_META, baseline="e1", baseline_runs=["e1", "e2", "e3", "e4"])
+    meta = dict(MODEL_META, baseline="e1", baseline_runs=["e1", "e2", "e3", "e4"], **extra)
     model_id = register_model_with_baseline(
         space, meta, EXACT_LEDGER,
         ledger_throughputs={commit: EXACT_THROUGHPUT for commit in EXACT_LEDGER},
@@ -125,7 +126,7 @@ def _idea_meta(model_id, description="try RoPE scaling", axis="architecture"):
     return {"model_id": model_id, "origin": "seeded", "axis": axis, "description": description}
 
 
-def _space_with_model():
+def _space_with_model(**extra: object):
     """A model whose baseline_throughput is a REAL rows/sec bar, stamped as one.
 
     Registering without ledger throughputs stores the mean of the baseline METRIC values and
@@ -136,7 +137,7 @@ def _space_with_model():
     """
     space = RegistrySpace()
     model_id = register_model_with_baseline(
-        space, dict(MODEL_META), BASELINE_LEDGER,
+        space, dict(MODEL_META, **extra), BASELINE_LEDGER,
         ledger_throughputs={commit: BASELINE_THROUGHPUT for commit in BASELINE_LEDGER},
     )
     assert space.get(model_id).meta[BASELINE_THROUGHPUT_UNITS_FIELD] == THROUGHPUT_UNITS_ROWS_PER_SEC
@@ -240,7 +241,13 @@ def test_reject_beyond_one_rope_in_the_worsening_direction() -> None:
 
 
 def test_delta_exactly_one_rope_improving_is_stagnant_not_adopted() -> None:
-    space, model_id = _space_with_model()
+    """RETARGETED by the adoption floor: the rope only ever decides a gain BELOW the declared
+    floor, so the boundary question has to be asked there. This model declares a floor wider
+    than its own rope (0.0258), which puts the whole rope boundary underneath it and leaves the
+    rope as the sole decider -- exactly the regime this test was written to pin. At the default
+    floor of 0.005 a one-rope gain is 5x the floor and adopts outright, which
+    ``test_a_gain_at_exactly_the_floor_adopts_against_a_rope_that_would_reject_it`` covers."""
+    space, model_id = _space_with_model(**{ADOPTION_FLOOR_FIELD: 10 * ROPE})
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "boundary-park", throughput=BASELINE_THROUGHPUT, diff_lines=100)
     ledger = _rows(**{"boundary-park": (1.0 - ROPE, BASELINE_THROUGHPUT, 100)})  # delta == one rope exactly
@@ -267,7 +274,11 @@ def test_delta_beyond_one_rope_worsening_rejects() -> None:
 
 
 def test_delta_exactly_one_rope_improving_is_stagnant() -> None:
-    space, model_id = _space_with_exact_rope_model()
+    """RETARGETED like its sibling above: an improving delta is measured against the adoption
+    floor FIRST, so the bit-exact rope boundary is only reachable below the floor. The declared
+    floor here (10x the rope) puts it there; the worsening twin below needs no such declaration,
+    because a REGRESSION never clears a floor in the improving direction at all."""
+    space, model_id = _space_with_exact_rope_model(**{ADOPTION_FLOOR_FIELD: 10 * EXACT_ROPE})
     idea_id = register_idea(space, _idea_meta(model_id))
     trial_id = _trial(space, model_id, idea_id, "exact-improving", throughput=EXACT_THROUGHPUT, diff_lines=100)
 

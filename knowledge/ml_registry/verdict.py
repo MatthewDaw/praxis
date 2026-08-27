@@ -12,11 +12,19 @@ rows in the ledger this call was handed (:func:`~knowledge.ml_registry.floor.com
 -- R3a retired the threshold a model used to store at registration, so one number decides
 one verdict. The stagnant band is CLOSED on both sides: ``-rope <= delta <= rope`` is
 stagnant. The rope is ``sigmas`` standard deviations of the baseline runs, so a delta of
-exactly one rope is not evidence of anything in EITHER direction -- adoption needs
-``delta > rope`` and rejection needs ``delta < -rope``, both strict.
+exactly one rope is not evidence of anything in EITHER direction -- adoption on the rope
+needs ``delta > rope`` and rejection needs ``delta < -rope``, both strict. The rope is only
+the SECOND test: a delta at or above the declared adoption floor is adopted before the rope
+is consulted at all.
 
-* ``"adopted"``  -- the trial's ledger value beats the current baseline by MORE than one
-  ``rope`` in the model's improving direction. The model's ``baseline`` advances to
+* ``"adopted"``  -- the trial's ledger value beats the current baseline by at least the
+  model's declared adoption floor
+  (:func:`~knowledge.ml_registry.floor.declared_adoption_floor`, 0.5% of absolute metric by
+  default) OR by MORE than one ``rope``, in the model's improving direction. The floor is
+  tested FIRST and needs no rope test; the rope decides only what falls below it, and a
+  floor adoption whose gain sits inside the MEASURED rope is stamped
+  :data:`~knowledge.ml_registry.floor.FLOOR_ADOPTION_INSIDE_ROPE_FIELD` for later audit
+  rather than blocked. The model's ``baseline`` advances to
   the trial's commit, the commit it replaces is retained as ``previous_baseline``, and the
   idea is adopted (:func:`~knowledge.ml_registry.lifecycle.adopt_idea`). Any PRIOR adoption
   for the model is superseded
@@ -70,11 +78,15 @@ from dataclasses import dataclass
 from knowledge.ml_registry.guards import ADJUDICATION_SOURCE
 from knowledge.ml_registry.floor import (
     BASELINE_THROUGHPUT_UNITS_FIELD,
+    FLOOR_ADOPTION_INSIDE_ROPE_FIELD,
     RATCHET_COUNT_FIELD,
     REJECTION_STREAK_FIELD,
     THROUGHPUT_UNITS_METRIC_MEAN,
+    adoption_gain,
     baseline_values,
+    clears_adoption_floor,
     comparison_rope,
+    floor_adoption_inside_rope,
 )
 from knowledge.ml_registry.contracts.ledger_v2 import FAIR_LEDGER_STATUSES
 from knowledge.ml_registry.lifecycle import (
@@ -185,9 +197,10 @@ def _reset_ratchet(model: Fact) -> None:
     model.meta.pop(REJECTION_STREAK_AXIS_FIELD, None)
 
 
-def _delta_against(direction: str, baseline_value: float, value: float) -> float:
-    """How far ``value`` beats ``baseline_value`` in the model's improving direction."""
-    return baseline_value - value if direction == "minimize" else value - baseline_value
+#: How far a value beats a baseline in the model's improving direction. Delegated to R12's
+#: :func:`~knowledge.ml_registry.floor.adoption_gain` rather than re-subtracted here, so the
+#: rope test, the floor test and the ratchet's counterfactual all read the sign one way.
+_delta_against = adoption_gain
 
 
 def _attributable_to_the_adoption(
@@ -383,7 +396,25 @@ def adjudicate_verdict(
     rope = comparison_rope(model.meta, rope_values, baseline_row.value)
     diff_size_limit = float(model.meta["diff_size_limit"])
 
-    if delta > rope:
+    # THE ADOPTION FLOOR, and it is the FIRST of the two tests. A gain of
+    # `adoption_floor` or more (0.5% by default, declared with the judge) IS a win and is
+    # adopted outright -- no interval test, no rope test. The rope decides only what falls
+    # BELOW that floor, which is the question it is genuinely good at answering. See
+    # `floor.declared_adoption_floor` for why: the measured rope in this project's own
+    # campaigns runs from 0.08% to 18.8%, and at the wide end a real 5% gain adjudicates as
+    # "practically equivalent" and is thrown away. `delta` is already signed by
+    # `adoption_gain`, so on a `minimize` metric a floor-sized REGRESSION is a delta of
+    # -0.005 and clears nothing.
+    #
+    # Neither call changes what the rope measures. `comparison_rope` above still reports the
+    # replicate spread it always did; the floor is a separate, declared bar, and a floor
+    # adoption that sits inside the measured rope is STAMPED rather than blocked so the
+    # ratchet can be audited later.
+    by_floor = clears_adoption_floor(model.meta, delta)
+    if floor_adoption_inside_rope(model.meta, rope_values, delta):
+        trial.meta[FLOOR_ADOPTION_INSIDE_ROPE_FIELD] = True
+
+    if by_floor or delta > rope:
         parent_lineage_id = current_lineage(model_id, model.meta)
         trial.meta["status"] = trial_status_for_verdict(VERDICT_ADOPTED).value
         trial.meta["verdict"] = VERDICT_ADOPTED

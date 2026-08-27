@@ -472,7 +472,8 @@ that floor, which is the job it is actually good at. The asymmetry is chosen: a 
 bad statistics vanishes without trace, while a weak idea adopted is visible and reversible by the
 next arm that beats it. Set the floor in the spec beside the metric; it is a statement about what
 this campaign cares about, not something to derive from replicate scatter. 0.5% is the default and a
-campaign may declare its own -- once, before the baseline, like the rest of the judge.
+campaign may declare its own -- `adoption_floor` on the model record, once, before the baseline, like
+the rest of the judge. Registration refuses a floor that is not a positive number of metric points.
 
 Declare a metric CEILING with it. Above roughly 0.95 an absolute 0.5% floor asks for a tenth of the
 remaining headroom, so the campaign closes rather than lowering its bar: report, hand over the final

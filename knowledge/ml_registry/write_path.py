@@ -188,6 +188,7 @@ def register_model(space: RegistrySpace, meta: dict[str, object], *, model_id: s
     # that cannot be multiplied produces no bar at all.
     from knowledge.ml_registry.floor import (
         ROPE_SCALING_BASIS_FIELD,
+        declared_adoption_floor,
         declared_sigmas,
         guard_retired_threshold_fields,
         guard_rope_provenance,
@@ -202,6 +203,10 @@ def register_model(space: RegistrySpace, meta: dict[str, object], *, model_id: s
     guard_retired_threshold_fields(merged)
     guard_rope_provenance(merged)
     declared_sigmas(merged)
+    # The adoption floor is declared ONCE, before the baseline, like the rest of the judge --
+    # so this is the moment an unusable one has to be refused. It is not a rope and is never
+    # checked against one; it only has to be a positive number of metric points.
+    declared_adoption_floor(merged)
     # The shape, its ceiling and its armor are the only things praxis can establish about a
     # bar that will be evaluated at levels no ledger row has reached, and the stamp says
     # which of them were actually established.
