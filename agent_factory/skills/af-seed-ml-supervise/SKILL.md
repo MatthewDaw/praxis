@@ -648,11 +648,22 @@ already renders; `render it, then believe it` is a diagnosis rule before it is a
 Compare predictions against labels case by case. Read the distribution of the loss, not its mean.
 The analysis is the point; what it must be analysis OF is observed output.
 
-The failure this replaces is deciding from the SOURCE what is probably weak -- reading the model,
-forming a theory about its limitations, and seeding against the theory. That is a plausible story
-about a model rather than a measurement of one, and plausible stories are exactly what a campaign
-cannot adjudicate. If a weakness is real it is visible in the output; if it is not visible in the
-output, seeding against it spends arms on a hypothesis no metric will confirm or refute.
+**Then read the code against what you just saw.** The output tells you WHAT fails; the source tells
+you WHY. Neither alone is a diagnosis. An observed failure with no mechanism leaves the fix to
+guesswork -- you can group the symptom and still have no idea which of five plausible causes to
+seed against. A mechanism with no observed failure is a story. Put them together and you get
+something a campaign can act on: this frame is wrong, and it is wrong because THIS assumption in
+the model does not hold on THIS kind of unit.
+
+That pairing is also what makes a structural claim checkable. "A different architecture would not
+have this problem" is unfalsifiable until you can name the mechanism the current one is stuck with;
+once you can, the claim becomes an arm somebody can lose.
+
+The failure this replaces is source reading INSTEAD of output -- reading the model, forming a
+theory about its limitations, and seeding against the theory without ever running it. That is a
+plausible story about a model rather than a measurement of one, and plausible stories are exactly
+what a campaign cannot adjudicate. The order matters: observe first, then explain, because a theory
+formed before looking decides what you notice afterwards.
 
 Name each hole concretely enough to recognise it again: which units, what the model does instead of
 the right thing, and what fraction of the metric it costs. A hole nobody can point at in a rendered
