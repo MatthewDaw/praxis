@@ -40,7 +40,12 @@ from dataclasses import dataclass
 from typing import Callable, Iterable
 
 from knowledge.ml_registry.schema import RegistryValidationError
-from knowledge.ml_registry.write_path import SEEDED, RegistrySpace, register_idea
+from knowledge.ml_registry.write_path import (
+    SEEDED,
+    RegistrySpace,
+    declared_model_stages,
+    register_idea,
+)
 
 # --- the nine-value closed axis set (R6's acceptance floor) ---
 
@@ -136,7 +141,13 @@ def always_confirm(axis: str, candidate: dict[str, object]) -> bool:
     return True
 
 
-def _seed_idea(space: RegistrySpace, model_id: str, axis: str, candidate: dict[str, object]) -> str:
+def _seed_idea(
+    space: RegistrySpace,
+    model_id: str,
+    axis: str,
+    candidate: dict[str, object],
+    model_meta: dict[str, object],
+) -> str:
     """Write ONE seeded idea on ``axis``, refusing any axis outside the closed nine-value set.
 
     The closed set is enforced HERE, at the only write this module performs, so a caller
@@ -149,6 +160,15 @@ def _seed_idea(space: RegistrySpace, model_id: str, axis: str, candidate: dict[s
     meta["model_id"] = model_id
     meta["origin"] = SEEDED
     meta["axis"] = axis
+    legal = declared_model_stages(model_meta)
+    stage = meta.get("stage")
+    if legal is not None and stage is not None and stage not in legal:
+        idea_name = meta.get("id") or meta.get("description") or model_id
+        raise RegistryValidationError(
+            f"idea {idea_name!r} has unknown stage {stage!r}; "
+            f"legal stages are {list(legal)}",
+            field="stage",
+        )
     return register_idea(space, meta)
 
 
@@ -158,11 +178,12 @@ def _confirm_and_seed(
     axis: str,
     candidates: Iterable[dict[str, object]],
     confirm: ConfirmFn,
+    model_meta: dict[str, object],
 ) -> list[str]:
     """Run ``confirm`` over each candidate and seed the ones it lets through -- the one loop
     shared by both the generative and retrieval sweeps below."""
     return [
-        _seed_idea(space, model_id, axis, candidate)
+        _seed_idea(space, model_id, axis, candidate, model_meta)
         for candidate in candidates
         if confirm(axis, candidate)
     ]
@@ -189,7 +210,9 @@ def sweep_generative_axes(
     written: dict[str, list[str]] = {}
     for axis in axes:
         require_closed_axis(axis)
-        written[axis] = _confirm_and_seed(space, model_id, axis, generator(axis, model_meta), confirm)
+        written[axis] = _confirm_and_seed(
+            space, model_id, axis, generator(axis, model_meta), confirm, model_meta,
+        )
     return written
 
 
@@ -217,7 +240,9 @@ def sweep_retrieval_axes(
         result = retriever(axis, model_meta)
         receipts.append(ExecutionReceipt(axis=axis, query=result.query, count=result.count, ids=result.ids))
         candidates = ({k: v for k, v in row.items() if k != "id"} for row in result.rows)
-        written[axis] = _confirm_and_seed(space, model_id, axis, candidates, confirm)
+        written[axis] = _confirm_and_seed(
+            space, model_id, axis, candidates, confirm, model_meta,
+        )
     return written, receipts
 
 

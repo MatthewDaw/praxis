@@ -128,6 +128,14 @@ def test_idea_with_an_invalid_origin_is_refused_naming_it():
     assert excinfo.value.field == "origin"
 
 
+def test_register_idea_refuses_a_stage_the_model_did_not_declare():
+    space = RegistrySpace()
+    model_id = register_model(space, {**MODEL_META, "stages": ["representation"]})
+    with pytest.raises(RegistryValidationError, match="unknown stage.*current_code.*representation") as excinfo:
+        register_idea(space, {**_idea_meta(model_id), "stage": "current_code"})
+    assert excinfo.value.field == "stage"
+
+
 def test_discovered_idea_beyond_the_model_budget_is_refused_naming_the_budget():
     space = RegistrySpace()
     model_id = register_model(space, dict(MODEL_META))  # max_discovered_ideas=1

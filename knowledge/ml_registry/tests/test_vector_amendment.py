@@ -87,6 +87,7 @@ def evidence_for(candidate_units: dict[str, list[float]], champion_run_id: str,
     return {
         "candidate_run_id": "candidate",
         "champion_run_id": champion_run_id,
+        "baseline_run_id": champion_run_id,
         "resamples": 500,
         "confidence_level": .95,
         "seed": 17,

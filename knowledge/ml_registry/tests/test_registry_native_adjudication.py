@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 from pathlib import Path
 import subprocess
 
@@ -13,6 +14,7 @@ from knowledge.ml_registry.floor import (
     FLOOR_ADOPTION_UNSUPPORTED_BY_INTERVAL_FIELD,
 )
 from knowledge.ml_registry.domain import VALID_RUN_STATUS_VERDICT_PAIRS
+from knowledge.ml_registry.services.paired_adjudication import paired_interval
 from knowledge.ml_registry.services.registry_adjudication import adjudicate_against_champion
 from knowledge.ml_registry.services.registry_aliases import adopt_run_and_promote
 from knowledge.ml_registry.services.registry_aliases import record_ratchet_evidence
@@ -119,6 +121,7 @@ def paired_evidence(candidate: list[float], champion: list[float]) -> dict[str, 
     return {
         "candidate_run_id": "candidate",
         "champion_run_id": "baseline",
+        "baseline_run_id": "baseline",
         "resamples": 500,
         "confidence_level": .95,
         "seed": 17,
@@ -708,4 +711,42 @@ def test_every_explicit_fairness_signature_field_must_match(tmp_path: Path, fiel
         adjudicate_against_champion(
             registry, run_id="observed", model_id="model", reason="unfair signature",
             counterfactual_run_id="cf", intervention_digest="sha256:pair",
+        )
+
+
+def test_paired_evidence_refuses_when_champion_column_mean_is_not_the_champion_metric() -> None:
+    """Units whose champion column averages 0.0927 cannot adjudicate a 0.2470 champion."""
+    evidence = paired_evidence([0.10, 0.12], [0.0900, 0.0954])
+    assert statistics.fmean(unit["champion"] for unit in evidence["units"]) == pytest.approx(0.0927)
+    policy = {
+        "method": "paired_bootstrap_percentile",
+        "resamples": 500,
+        "confidence_level": 0.95,
+        "seed": 17,
+        "aggregation": "mean",
+    }
+    with pytest.raises(RegistryError, match=r"0\.0927") as excinfo:
+        paired_interval(
+            policy, evidence, run_id="candidate", champion_run_id="baseline",
+            direction="maximize", candidate_metric=0.11, champion_metric=0.2470,
+        )
+    message = str(excinfo.value)
+    assert "0.247" in message
+    assert "candidate" in message and "baseline" in message
+
+
+def test_paired_evidence_refuses_omitted_baseline_run_id_by_name() -> None:
+    evidence = paired_evidence([.62, .67, .72, .79], CHAMPION_UNITS)
+    del evidence["baseline_run_id"]
+    policy = {
+        "method": "paired_bootstrap_percentile",
+        "resamples": 500,
+        "confidence_level": 0.95,
+        "seed": 17,
+        "aggregation": "mean",
+    }
+    with pytest.raises(RegistryError, match="baseline_run_id"):
+        paired_interval(
+            policy, evidence, run_id="candidate", champion_run_id="baseline",
+            direction="maximize", candidate_metric=0.70, champion_metric=0.68,
         )

@@ -132,6 +132,7 @@ def vector_evidence(candidate_units: dict[str, list[float]]) -> dict[str, object
     return {
         "candidate_run_id": "candidate",
         "champion_run_id": "baseline",
+        "baseline_run_id": "baseline",
         "resamples": 500,
         "confidence_level": .95,
         "seed": 17,

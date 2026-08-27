@@ -171,6 +171,31 @@ def test_run_is_not_required_to_enumerate_every_idea_the_loop_will_eventually_tr
     assert all(r.count == 0 for r in run.receipts)
 
 
+def test_seed_campaign_refuses_an_idea_stage_that_is_not_a_declared_model_stage():
+    space = RegistrySpace()
+    model_id = register_model(space, {**MODEL_META, "stages": ["representation"]})
+
+    def retriever(axis: str, model_meta: dict[str, object]) -> RetrievalResult:
+        if axis == "current_code":
+            return RetrievalResult(
+                query="axis name leaked into stage",
+                rows=({
+                    "id": "leak",
+                    "description": "retrieval axis written as stage",
+                    "stage": "current_code",
+                },),
+            )
+        return RetrievalResult(query=f"query for {axis}", rows=())
+
+    with pytest.raises(RegistryValidationError, match="unknown stage.*current_code") as excinfo:
+        seed_campaign(
+            space, model_id, generator=_empty_generator, retriever=retriever,
+        )
+    assert excinfo.value.field == "stage"
+    assert "representation" in str(excinfo.value)
+    assert space.list_facts("idea") == []
+
+
 def test_seed_campaign_refuses_an_unregistered_model_naming_it():
     space = RegistrySpace()
     with pytest.raises(RegistryValidationError) as exc_info:

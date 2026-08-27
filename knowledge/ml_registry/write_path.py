@@ -301,6 +301,48 @@ def discovered_idea_budget(model_meta: dict[str, object]) -> int:
     return budget
 
 
+def declared_model_stages(model_meta: dict[str, object]) -> tuple[str, ...] | None:
+    """Stage names a model fact declares, or ``None`` when it declares none.
+
+    Accepts ``stages`` as a list of strings or a list of ``{name: ...}`` maps. An
+    empty or absent list is ``None`` so existing ideate fixtures that never named
+    stages keep working.
+    """
+    raw = model_meta.get("stages")
+    if not isinstance(raw, list) or not raw:
+        return None
+    names: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item:
+            names.append(item)
+        elif isinstance(item, dict):
+            name = item.get("name")
+            if isinstance(name, str) and name:
+                names.append(name)
+    return tuple(names) if names else None
+
+
+def _guard_idea_stage(space: RegistrySpace, meta: dict[str, object]) -> None:
+    """Refuse an idea ``stage`` that is not in the model's declared stages."""
+    stage = meta.get("stage")
+    if stage is None:
+        return
+    model_id = str(meta.get("model_id") or "")
+    model = space.get(model_id)
+    if model is None or model.category != MODEL:
+        return
+    legal = declared_model_stages(model.meta)
+    if legal is None:
+        return
+    if stage not in legal:
+        idea_name = meta.get("id") or meta.get("description") or model_id
+        raise RegistryValidationError(
+            f"idea {idea_name!r} has unknown stage {stage!r}; "
+            f"legal stages are {list(legal)}",
+            field="stage",
+        )
+
+
 def register_idea(space: RegistrySpace, meta: dict[str, object]) -> str:
     """Register an idea fact.
 
@@ -309,6 +351,7 @@ def register_idea(space: RegistrySpace, meta: dict[str, object]) -> str:
     met -- no matter which caller made the request.
     """
     validate_fact(IDEA, meta)
+    _guard_idea_stage(space, meta)
     origin = meta.get("origin")
     if origin not in IDEA_ORIGINS:
         raise RegistryValidationError(

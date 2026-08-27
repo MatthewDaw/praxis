@@ -52,6 +52,7 @@ def _evidence(units: list[dict[str, object]] | None = None) -> dict[str, object]
     return {
         "candidate_run_id": "candidate",
         "champion_run_id": "champion",
+        "baseline_run_id": "champion",
         "resamples": 200,
         "confidence_level": 0.95,
         "seed": 20260826,

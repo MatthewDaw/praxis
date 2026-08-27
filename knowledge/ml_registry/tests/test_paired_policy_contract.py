@@ -31,6 +31,7 @@ def _evidence() -> dict[str, object]:
     return {
         "candidate_run_id": "candidate",
         "champion_run_id": "champion",
+        "baseline_run_id": "champion",
         "resamples": 100,
         "confidence_level": 0.95,
         "seed": 17,
@@ -103,6 +104,7 @@ def _pooled_evidence(**overrides: object) -> dict[str, object]:
     return {
         "candidate_run_id": "candidate",
         "champion_run_id": "champion",
+        "baseline_run_id": "champion",
         "resamples": 64,
         "confidence_level": 0.95,
         "seed": 20260827,

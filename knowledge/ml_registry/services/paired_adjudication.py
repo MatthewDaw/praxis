@@ -255,6 +255,63 @@ def evidence_digest(evidence: Mapping[str, object]) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+_CHAMPION_COLUMN_TOL = 1e-6
+
+
+def _require_paired_baseline(
+    evidence: Mapping[str, object], *, run_id: str, champion_run_id: str,
+) -> None:
+    """Paired evidence must name the champion it was measured against.
+
+    ``champion_run_id`` matching the argument is not enough: campaigns that omit
+    ``baseline_run_id`` (or copy units from a different baseline) must be refused by
+    name so they migrate rather than adjudicate against the wrong numbers.
+    """
+    baseline = evidence.get("baseline_run_id")
+    if baseline != champion_run_id:
+        raise RegistryError(
+            f"paired evidence requires baseline_run_id equal to the champion run being "
+            f"compared (candidate run {run_id!r}, champion run {champion_run_id!r}); "
+            f"got {baseline!r}. Campaigns must add baseline_run_id equal to the "
+            "champion run being compared"
+        )
+
+
+def _require_champion_column_mean(
+    units: Sequence[object],
+    *,
+    run_id: str,
+    champion_run_id: str,
+    champion_metric: float,
+) -> None:
+    """Refuse when the unit ``champion`` column is not the champion run's recorded metric.
+
+    The mean of the per-unit champion scores must reproduce ``champion_metric`` (the
+    champion run's registered metric) within float noise. A copy of another baseline's
+    units that still names the current champion is the live failure this catches.
+    """
+    values: list[float] = []
+    for raw in units:
+        if not isinstance(raw, Mapping):
+            return
+        champion = raw.get("champion")
+        if isinstance(champion, bool) or not isinstance(champion, (int, float)):
+            return
+        values.append(float(champion))
+    if len(values) < 2:
+        return
+    column_mean = statistics.fmean(values)
+    if abs(column_mean - champion_metric) > _CHAMPION_COLUMN_TOL and not math.isclose(
+        column_mean, champion_metric, rel_tol=1e-6, abs_tol=_CHAMPION_COLUMN_TOL,
+    ):
+        raise RegistryError(
+            "paired evidence champion-column mean disagrees with the champion run's "
+            f"recorded metric: column mean {column_mean!r} vs champion_metric "
+            f"{champion_metric!r} (candidate run {run_id!r}, champion run "
+            f"{champion_run_id!r})"
+        )
+
+
 def paired_interval(
     policy: Mapping[str, object],
     evidence: Mapping[str, object],
@@ -297,6 +354,7 @@ def paired_interval(
     if aggregation == "stitch_decision":
         # A stitch decision is one independent paired unit; its frozen aggregation is the mean.
         aggregation = MEAN
+    _require_paired_baseline(evidence, run_id=run_id, champion_run_id=champion_run_id)
     handler = AGGREGATIONS.get(str(aggregation))
     if handler is not None:
         return handler(
@@ -311,12 +369,14 @@ def paired_interval(
         )
 
     expected_evidence = {
-        "candidate_run_id", "champion_run_id", "resamples", "confidence_level", "seed", "units",
+        "candidate_run_id", "champion_run_id", "baseline_run_id", "resamples",
+        "confidence_level", "seed", "units",
     }
     if set(evidence) != expected_evidence:
         raise RegistryError(
-            "paired evidence requires exactly candidate_run_id, champion_run_id, resamples, "
-            f"confidence_level, seed, and units; missing={sorted(expected_evidence - set(evidence))}, "
+            "paired evidence requires exactly candidate_run_id, champion_run_id, "
+            "baseline_run_id, resamples, confidence_level, seed, and units; "
+            f"missing={sorted(expected_evidence - set(evidence))}, "
             f"extra={sorted(set(evidence) - expected_evidence)}"
         )
     if evidence.get("candidate_run_id") != run_id:
@@ -360,6 +420,12 @@ def paired_interval(
             _finite(raw.get("candidate"), f"paired evidence units[{index}].candidate"),
             _finite(raw.get("champion"), f"paired evidence units[{index}].champion"),
         ))
+
+    if aggregation == MEAN:
+        _require_champion_column_mean(
+            units, run_id=run_id, champion_run_id=champion_run_id,
+            champion_metric=champion_metric,
+        )
 
     candidate_point = _aggregate(parsed, value_index=2, aggregation=str(aggregation))
     champion_point = _aggregate(parsed, value_index=3, aggregation=str(aggregation))
@@ -450,6 +516,11 @@ def project_vector_evidence(evidence: Mapping[str, object], name: str) -> dict[s
         projected_units.append(unit)
     projected = dict(evidence)
     projected["units"] = projected_units
+    _require_paired_baseline(
+        projected,
+        run_id=str(projected.get("candidate_run_id", "")),
+        champion_run_id=str(projected.get("champion_run_id", "")),
+    )
     return projected
 
 
@@ -702,12 +773,14 @@ def _nested_macro_interval(
     registered metrics, so an aggregation named here but not measured here cannot adjudicate.
     """
     expected_evidence = {
-        "candidate_run_id", "champion_run_id", "resamples", "confidence_level", "seed", "units",
+        "candidate_run_id", "champion_run_id", "baseline_run_id", "resamples",
+        "confidence_level", "seed", "units",
     }
     if set(evidence) != expected_evidence:
         raise RegistryError(
-            "paired evidence requires exactly candidate_run_id, champion_run_id, resamples, "
-            f"confidence_level, seed, and units; missing={sorted(expected_evidence - set(evidence))}, "
+            "paired evidence requires exactly candidate_run_id, champion_run_id, "
+            "baseline_run_id, resamples, confidence_level, seed, and units; "
+            f"missing={sorted(expected_evidence - set(evidence))}, "
             f"extra={sorted(set(evidence) - expected_evidence)}"
         )
     if evidence.get("candidate_run_id") != run_id:
