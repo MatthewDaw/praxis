@@ -196,6 +196,7 @@ class PortfolioController:
         self.admission_stopped = False
         self._last_blocked: dict[str, str] = {}
         self.records: dict[str, DispatchRecord] = {}
+        self.reaped_intents: tuple[str, ...] = ()
         if self.state_path.exists():
             try:
                 raw = json.loads(self.state_path.read_text())
@@ -217,6 +218,14 @@ class PortfolioController:
                     else:
                         record.state = "failed"
                         record.message = "unresolved launch intent; duplicate launch refused"
+        # A fresh controller process is the recovery moment for ownership left behind by a dead
+        # one. A `spawned` launch intent whose process is gone can never reach `terminal`, so its
+        # lease is held forever and every later tick refuses admission with
+        # `shared_isolation_namespace` -- the campaign wedges with nothing running, which is what
+        # a one-shot `portfolio run` leaves behind. Only PROVABLY dead pids are reaped; a live one
+        # is left strictly alone.
+        if self.coordinator is not None:
+            self.reaped_intents = self.coordinator.reap_dead_intents()
 
     def _persist(self, status: str) -> None:
         _atomic(self.state_path, {

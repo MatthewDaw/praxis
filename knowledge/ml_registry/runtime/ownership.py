@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import tempfile
 import time
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from knowledge.ml_registry.contracts import CampaignLease, LaunchIntent
 
@@ -59,6 +59,17 @@ def _atomic(path: Path, value: Mapping[str, Any]) -> None:
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _process_alive(pid: int) -> bool:
+    """Whether ``pid`` still exists. A pid we may not signal is still a pid that exists."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 class LeaseIntentCoordinator:
@@ -121,6 +132,37 @@ class LeaseIntentCoordinator:
             raise ValueError("launch intent semantic payload drifted")
         self.intents[intent.intent_id] = intent
         self._save()
+
+    def reap_dead_intents(self, *, is_alive: Callable[[int], bool] | None = None) -> tuple[str, ...]:
+        """Drop ``spawned`` intents whose process is gone and release the leases they held.
+
+        A ``spawned`` intent names a process that is doing the work. If that process is gone, the
+        intent can never reach ``terminal`` under its own steam, so its lease is held forever and
+        every later tick refuses admission with ``shared_isolation_namespace`` -- the campaign is
+        wedged with nothing running. That is exactly what a one-shot ``portfolio run`` leaves
+        behind: it spawns the executor and exits without waiting, and the next CLI process has no
+        record to release against.
+
+        The liveness test is deliberately one-sided. A pid that still exists is treated as ALIVE
+        and nothing is touched, because pids are reused and releasing a live lease would let two
+        executors run one campaign. Only a pid that is provably gone is reaped.
+
+        Returns the intent ids reaped, so the caller can say what it recovered rather than
+        silently mutating shared state.
+        """
+        alive = is_alive if is_alive is not None else _process_alive
+        reaped: list[str] = []
+        for intent_id, intent in list(self.intents.items()):
+            if intent.state != "spawned" or intent.pid is None or alive(intent.pid):
+                continue
+            self.intents.pop(intent_id, None)
+            held = self.leases.get(intent.campaign_id)
+            if held is not None and held.lease_id in intent.lease_ids:
+                self.leases.pop(intent.campaign_id, None)
+            reaped.append(intent_id)
+        if reaped:
+            self._save()
+        return tuple(reaped)
 
     def transition(self, intent_id: str, *, state: str, pid: int | None = None,
                    pgid: int | None = None) -> LaunchIntent:
