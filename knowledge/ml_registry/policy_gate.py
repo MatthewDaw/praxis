@@ -192,12 +192,16 @@ def _compute_cross_corpus_rope(
                 "declared scoring corpus at registration so its rope can be recomputed"
             )
         rows.extend((corpus_id, row) for row in corpus_rows)
-    unexpected = sorted(set(scoring_corpora) - set(corpus_ids))
-    if unexpected:
-        raise ContractError(
-            "metric.scoring_scope 'cross_corpus' received undeclared scoring_corpora "
-            f"{unexpected}; declare their provenance in metric.scoring_corpora"
-        )
+    # A VECTOR judge passes one scoring_corpora map covering every judged metric.
+    # Extra keys are the other metrics' corpora, not undeclared provenance. A
+    # scalar judge still refuses extras: that campaign has one scoring_corpora list.
+    if spec.metric is not None:
+        unexpected = sorted(set(scoring_corpora) - set(corpus_ids))
+        if unexpected:
+            raise ContractError(
+                "metric.scoring_scope 'cross_corpus' received undeclared scoring_corpora "
+                f"{unexpected}; declare their provenance in metric.scoring_corpora"
+            )
 
     # A global split unit may span sources whose native unit vocabularies differ.
     # The map key remains the row's true corpus provenance.

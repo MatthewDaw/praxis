@@ -204,3 +204,57 @@ def test_cross_corpus_refuses_false_single_corpus_relabelling(tmp_path: Path) ->
         Registry(tmp_path).register_campaign_spec(spec, scoring_corpora=corpora)
 
     assert "uses metric.scoring_corpora, not metric.scoring_corpus" in str(exc_info.value)
+
+
+def test_vector_judge_accepts_a_union_scoring_corpora_map(tmp_path: Path) -> None:
+    """Per-metric scoring_corpora lists share one map; extra keys are the other metrics."""
+    spec, _ = _fixture()
+    spec.pop("metric")
+    adjudicate = {
+        "method": "paired_bootstrap_percentile",
+        "resamples": 200,
+        "confidence_level": 0.95,
+        "seed": 1,
+        "aggregation": "mean",
+    }
+    operating = {"selection": "frozen", "threshold": 0.5}
+    aggregation = [{"level": "match", "unit": "match_id", "minimum_sample": 2}]
+    spec["metrics"] = [
+        {
+            "name": "ap50",
+            "direction": "maximize",
+            "adoption_floor": 0.005,
+            "operating_point": operating,
+            "aggregation": aggregation,
+            "scoring_scope": "cross_corpus",
+            "scoring_corpora": ["boxes_a", "boxes_b"],
+            "split_unit": "match_id",
+            "adjudication": adjudicate,
+        },
+        {
+            "name": "idf1",
+            "direction": "maximize",
+            "adoption_floor": 0.005,
+            "operating_point": operating,
+            "aggregation": aggregation,
+            "scoring_scope": "cross_corpus",
+            "scoring_corpora": ["ident_a"],
+            "split_unit": "match_id",
+            "adjudication": adjudicate,
+        },
+    ]
+    spec["corpora"] = [
+        {"id": "boxes_a", "roles": ["scoring"], "split_unit": "match_id"},
+        {"id": "boxes_b", "roles": ["scoring"], "split_unit": "match_id"},
+        {"id": "ident_a", "roles": ["scoring"], "split_unit": "match_id"},
+    ]
+    corpora = {
+        "boxes_a": [{"match_id": "m1", "ap50": 0.5}, {"match_id": "m2", "ap50": 0.6}],
+        "boxes_b": [{"match_id": "m1", "ap50": 0.4}, {"match_id": "m2", "ap50": 0.7}],
+        "ident_a": [{"match_id": "m1", "idf1": 0.8}, {"match_id": "m2", "idf1": 0.9}],
+    }
+    registry = Registry(tmp_path)
+    assert registry.register_campaign_spec(spec, scoring_corpora=corpora)
+    rope = registry.list_events()[-1].payload["rope"]
+    assert rope["method"] == "vector"
+    assert set(rope["metrics"]) == {"ap50", "idf1"}
