@@ -94,3 +94,8 @@ def test_campaign_spec_is_versioned_and_rejects_unknown_fields():
     assert CampaignSpec.from_mapping(payload).to_mapping() == {**payload, "sport_scope": ["shared"]}
     with pytest.raises(ContractError, match="unknown campaign spec"):
         CampaignSpec.from_mapping({**payload, "depends_on": ["upstream"]})
+    split = {**payload, "split_policy": {"train_fraction": 0.9, "group_pure": True},
+             "lookahead_window": {"kind": "whole_sequence"}}
+    mapped = CampaignSpec.from_mapping(split).to_mapping()
+    assert mapped["split_policy"] == {"train_fraction": 0.9, "group_pure": True}
+    assert mapped["lookahead_window"] == {"kind": "whole_sequence"}

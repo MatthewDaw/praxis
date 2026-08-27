@@ -41,6 +41,13 @@ class CampaignSpec:
     #: adjudication). Adoption over a vector is Pareto -- at least one judged metric wins
     #: and none regresses beyond its rope. Empty whenever ``metric`` is present.
     metrics: tuple[Mapping[str, Any], ...] = ()
+    #: Within-corpus split: every dataset trains AND scores; held-out evidence comes from
+    #: splitting inside the corpus at its own split unit, group-pure and frozen. Opaque to
+    #: Praxis like the rest of a spec. ``None`` when a campaign has not declared one yet.
+    split_policy: Mapping[str, Any] | None = None
+    #: How far ahead of the predicted frame the model may read PIXELS (never labels).
+    #: Offline campaigns declare a whole-sequence window. Opaque; ``None`` when undeclared.
+    lookahead_window: Mapping[str, Any] | None = None
 
     VERSION = 1
 
@@ -86,6 +93,12 @@ class CampaignSpec:
         rope = value.get("rope")
         if rope is not None and not isinstance(rope, Mapping):
             raise ContractError("rope must be an object or null")
+        split_policy = value.get("split_policy")
+        if split_policy is not None and not isinstance(split_policy, Mapping):
+            raise ContractError("split_policy must be an object or null")
+        lookahead_window = value.get("lookahead_window")
+        if lookahead_window is not None and not isinstance(lookahead_window, Mapping):
+            raise ContractError("lookahead_window must be an object or null")
         if not sequences["produces"] and deterministic is None:
             raise ContractError("a learned campaign must declare at least one produced artifact")
         return cls(
@@ -98,6 +111,8 @@ class CampaignSpec:
             None if deterministic is None else dict(deterministic), escalation,
             None if rope is None else dict(rope),
             vector_metrics,
+            None if split_policy is None else dict(split_policy),
+            None if lookahead_window is None else dict(lookahead_window),
         )
 
     @classmethod
@@ -169,4 +184,8 @@ class CampaignSpec:
         }
         if self.rope is not None:
             result["rope"] = dict(self.rope)
+        if self.split_policy is not None:
+            result["split_policy"] = dict(self.split_policy)
+        if self.lookahead_window is not None:
+            result["lookahead_window"] = dict(self.lookahead_window)
         return result
