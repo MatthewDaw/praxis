@@ -150,6 +150,35 @@ Report the final census with the verdict whatever ends it. "The remaining failur
 cost this much, and they were not worth the next arm" is actionable, and tells a successor where to
 start if the cost calculus changes. "It stopped improving" is not.
 
+## Escalating the sample re-baselines the incumbent
+
+**A larger sample invalidates the champion's NUMBER, not the champion.** When a campaign escalates
+-- screen to confirm, or confirm to a wider set -- the incumbent is re-measured on the new sample
+before anything is compared against it. That re-measurement becomes the bar.
+
+**A candidate scoring lower on a bigger sample than the champion scored on a smaller one is not a
+loss, and rejecting it is a bug.** The two numbers answer different questions: they were computed
+over different units, and a wider sample usually includes harder ones the narrow sample happened to
+omit. Performance falling as coverage grows is the normal shape of an honest measurement, not
+evidence against the idea. Treating it as a regression rejects good arms for the crime of being
+measured more thoroughly, and biases the whole campaign toward whatever the first small sample made
+look easy.
+
+There is no such thing as "the champion's score". There is the champion's score ON A SAMPLE, and
+every comparison names one. Concretely:
+
+- when the sample changes, re-run the incumbent on it and record that Run with the new
+  `unit_fingerprint`, then adjudicate candidate against THAT;
+- never compare across fingerprints -- `measurements_comparable` already refuses this, and the
+  refusal is a signal to re-baseline, not an error to work around;
+- keep both incumbent measurements. The pair is informative: the gap between the champion's narrow
+  and wide numbers is what the narrow sample was hiding, and it is the cheapest estimate available
+  of how much the earlier screening was flattering everyone.
+
+This is the same deliberate re-baseline a decomposition triggers when the parent's inputs change,
+and it is recorded the same way: an adoption decision with the reason named, never slipped through
+as an ordinary ratchet step.
+
 ## Spend the smallest measurement that answers the question
 
 An arm dispatched at full corpus scale by default is how a campaign spends a day proving a bad idea

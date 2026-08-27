@@ -497,6 +497,14 @@ different units is not a repeat measurement, and only the fingerprint distinguis
 campaign that confirms every idea at full scale spends most of its budget proving that bad ideas are
 bad.
 
+**And escalating re-baselines the incumbent.** The champion is re-measured on the new sample before
+anything is judged against it. A candidate that scores lower on a bigger sample than the champion
+scored on a smaller one has NOT lost -- the numbers were computed over different units, and a wider
+sample usually includes harder ones the narrow one omitted. Performance falling as coverage grows is
+what an honest measurement looks like; rejecting it discards good arms for being measured more
+thoroughly and tilts the campaign toward whatever the first small sample made look easy. Keep both
+incumbent numbers: the gap between them is what the narrow sample was hiding.
+
 Two constraints make cheap screening sound rather than merely fast, and skipping either turns a
 saving into a wrong answer:
 
