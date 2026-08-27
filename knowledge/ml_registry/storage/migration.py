@@ -20,7 +20,17 @@ _REKEYED_TABLES = ("artifacts", "model_versions")
 # `CREATE TRIGGER IF NOT EXISTS` cannot update one in place, so an upgrade drops them first.
 _STALE_TRIGGERS = ("guard_runs_update", "guard_versions_insert", "guard_lineage_insert",
                    "guard_aliases_insert", "guard_aliases_update", "guard_aliases_delete",
-                   "valid_run_pair_insert", "valid_run_pair_update")
+                   "valid_run_pair_insert", "valid_run_pair_update",
+                   "guard_experiments_update")
+
+# Recreated on every open: schema 6 left experiments fully immutable, which trapped any
+# campaign that needed to *tighten* a registered win condition. The body lives in DDL;
+# dropping first is what makes the recreate take effect on an already-versioned database
+# without a schema-version bump that would refuse other live lanes still on 6.
+_EXPERIMENT_AMEND_TRIGGER = """
+CREATE TRIGGER IF NOT EXISTS guard_experiments_update BEFORE UPDATE ON experiments
+ WHEN registry_authority() NOT IN ('experiment_amended') BEGIN SELECT RAISE(ABORT,'experiments are immutable'); END;
+"""
 
 
 def migrate_schema(connection: sqlite3.Connection) -> int:
@@ -45,7 +55,26 @@ def migrate_schema(connection: sqlite3.Connection) -> int:
         version = SCHEMA_VERSION
     if version != SCHEMA_VERSION:
         raise RegistryError(f"no lossless registry schema migration from {version} to {SCHEMA_VERSION}")
+    _ensure_experiment_amend_trigger(connection)
     return version
+
+
+def _ensure_experiment_amend_trigger(connection: sqlite3.Connection) -> None:
+    """Install the amend-aware experiments-update trigger without bumping user_version.
+
+    Schema 6 left the row fully immutable. Replacing that trigger is lossless and
+    additive -- a live peer still compiled against SCHEMA_VERSION=6 must not find
+    this database "too new". Skip when the body is already the amend-aware one so
+    a check-only replay does not rewrite a current projection.
+    """
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='guard_experiments_update'"
+    ).fetchone()
+    sql = row[0] if row else ""
+    if "experiment_amended" in sql:
+        return
+    connection.execute("DROP TRIGGER IF EXISTS guard_experiments_update")
+    connection.executescript(_EXPERIMENT_AMEND_TRIGGER)
 
 
 def _drop_rekeyed_tables(connection: sqlite3.Connection) -> None:

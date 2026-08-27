@@ -53,6 +53,12 @@ def _populated(root: Path) -> Registry:
         direction="maximize", win_condition={"metric_at_least": 0.9}, rope=0.01,
         baseline_throughput=1.0,
     )
+    registry.amend_experiment(
+        "campaign",
+        reason="tighten the declared bar",
+        win_condition={"metric_at_least": 0.9, "constant_control_margin_at_least": 0.005},
+        spec_digest="e" * 64,
+    )
     registry.create_run(
         run_id="run-1", experiment_id="campaign", idea_id="idea-1", stage="representation",
         family="linear", params={"description": "baseline"}, metrics={},

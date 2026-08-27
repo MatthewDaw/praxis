@@ -86,7 +86,8 @@ CREATE TRIGGER IF NOT EXISTS champion_authority_update BEFORE UPDATE ON aliases
 WHEN NEW.alias='champion' AND NEW.set_by NOT IN ('adjudicate','ratchet') BEGIN SELECT RAISE(ABORT,'champion alias requires adjudicate or ratchet'); END;
 CREATE TRIGGER IF NOT EXISTS guard_experiments_insert BEFORE INSERT ON experiments
  WHEN registry_authority() NOT IN ('experiment_created','historical_ledger_imported','historical_archive_imported') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
-CREATE TRIGGER IF NOT EXISTS guard_experiments_update BEFORE UPDATE ON experiments BEGIN SELECT RAISE(ABORT,'experiments are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS guard_experiments_update BEFORE UPDATE ON experiments
+ WHEN registry_authority() NOT IN ('experiment_amended') BEGIN SELECT RAISE(ABORT,'experiments are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_experiments_delete BEFORE DELETE ON experiments BEGIN SELECT RAISE(ABORT,'experiments are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS guard_runs_insert BEFORE INSERT ON runs
  WHEN registry_authority() NOT IN ('run_created','historical_ledger_imported','historical_archive_imported') BEGIN SELECT RAISE(ABORT,'registry projection authority required'); END;
@@ -130,6 +131,55 @@ CREATE TRIGGER IF NOT EXISTS guard_events_delete BEFORE DELETE ON events BEGIN S
 
 def _json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _as_mapping(value: object) -> dict[str, Any]:
+    parsed = json.loads(value) if isinstance(value, str) else value
+    if not isinstance(parsed, Mapping):
+        raise RegistryError("win_condition must be a mapping")
+    return dict(parsed)
+
+
+def _is_numeric_floor(key: str, previous: object, current: object) -> bool:
+    """Whether ``key`` is a numeric floor that may rise but must not fall.
+
+    Keys carrying ``at_least`` or starting ``minimum`` are floors by name. Anything else
+    has no direction we can defend, so a rewrite is refused rather than guessed at.
+    """
+    if isinstance(previous, bool) or isinstance(current, bool):
+        return False
+    if not isinstance(previous, (int, float)) or not isinstance(current, (int, float)):
+        return False
+    return "at_least" in key or key.startswith("minimum")
+
+
+def _require_win_condition_tightening(old: Mapping[str, Any], new: Mapping[str, Any]) -> None:
+    """Refuse a loosening. Additional constraints and raised floors are the only legal edits."""
+    missing = sorted(set(old) - set(new))
+    if missing:
+        raise RegistryError(
+            f"amending win_condition cannot drop constraints {missing}"
+        )
+    raised = False
+    for key, previous in old.items():
+        current = new[key]
+        if _is_numeric_floor(key, previous, current):
+            if float(current) < float(previous):
+                raise RegistryError(
+                    f"amending win_condition cannot loosen {key}: {current} < {previous}"
+                )
+            if float(current) > float(previous):
+                raised = True
+        elif current != previous:
+            raise RegistryError(
+                f"amending win_condition cannot rewrite {key!r} "
+                f"({previous!r} -> {current!r}); only numeric floors may rise"
+            )
+    added = [key for key in new if key not in old]
+    if not added and not raised:
+        raise RegistryError(
+            "amending win_condition requires a tightening: add a constraint or raise a floor"
+        )
 
 
 _CHAMPION_CAPABILITY = object()
@@ -264,6 +314,21 @@ class Registry:
             db.execute("INSERT INTO experiments VALUES(?,?,?,?,?,?,?,?)", (p["experiment_id"], p["spec_digest"],
                        _json(p["stages"]), p["metric"], p["direction"], _json(p["win_condition"]),
                        p["rope"], p["baseline_throughput"]))
+        elif op == "experiment_amended":
+            row = db.execute(
+                "SELECT * FROM experiments WHERE experiment_id=?", (p["experiment_id"],),
+            ).fetchone()
+            if row is None:
+                raise RegistryError("unknown experiment")
+            new = p["new"]
+            spec_digest = new["spec_digest"] if "spec_digest" in new else row["spec_digest"]
+            win_condition = (
+                _json(new["win_condition"]) if "win_condition" in new else row["win_condition"]
+            )
+            db.execute(
+                "UPDATE experiments SET spec_digest=?,win_condition=? WHERE experiment_id=?",
+                (spec_digest, win_condition, p["experiment_id"]),
+            )
         elif op == "run_created":
             cls._insert_run(db, p)
         elif op == "run_adjudicated":
@@ -462,6 +527,47 @@ class Registry:
 
     def create_experiment(self, **values: Any) -> None:
         self._write("experiment_created", values)
+
+    def amend_experiment(self, experiment_id: str, *, reason: str, **fields: Any) -> None:
+        """Append-only tightening of a registered experiment's declared win condition.
+
+        The experiments row is otherwise immutable: metric, direction, stages, rope and
+        baseline_throughput cannot move, and a win condition can only get *stricter*. The
+        amendment is itself evidence -- old value, new value, and the reason -- the same
+        way an adjudication is. A silent overwrite of the bar a campaign is judged by
+        would be worse than a bar that could not move.
+        """
+        if not str(reason).strip():
+            raise RegistryError("experiment amendment requires a reason")
+        allowed = {"win_condition", "spec_digest"}
+        unknown = set(fields) - allowed
+        if unknown:
+            raise RegistryError(
+                f"experiment amendment cannot rewrite {sorted(unknown)}; "
+                f"only {sorted(allowed)} may change, and win_condition only by tightening"
+            )
+        if "win_condition" not in fields:
+            raise RegistryError("experiment amendment requires a win_condition tightening")
+        existing = next(
+            (row for row in self.rows("experiments") if row["experiment_id"] == experiment_id),
+            None,
+        )
+        if existing is None:
+            raise RegistryError(f"unknown experiment {experiment_id!r}")
+        old_win = _as_mapping(existing["win_condition"])
+        new_win = dict(fields["win_condition"])
+        _require_win_condition_tightening(old_win, new_win)
+        new_fields: dict[str, Any] = {"win_condition": new_win}
+        old_fields: dict[str, Any] = {"win_condition": old_win}
+        if "spec_digest" in fields and fields["spec_digest"] != existing["spec_digest"]:
+            old_fields["spec_digest"] = existing["spec_digest"]
+            new_fields["spec_digest"] = fields["spec_digest"]
+        self._write("experiment_amended", {
+            "experiment_id": experiment_id,
+            "reason": str(reason).strip(),
+            "old": old_fields,
+            "new": new_fields,
+        })
 
     def create_run(self, **values: Any) -> None:
         code_ref = CodeRef.from_mapping(values["code_ref"])
