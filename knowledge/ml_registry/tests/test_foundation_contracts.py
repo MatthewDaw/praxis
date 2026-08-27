@@ -87,7 +87,8 @@ def test_campaign_spec_is_versioned_and_rejects_unknown_fields():
         "stages": [{"name": "representation"}], "corpora": [{"id": "fixture"}], "requires": [],
         "produces": [{"artifact_type": "weights"}], "supervision": {"mode": "composing"},
         "resources": {"lane": "cpu"}, "isolation": {"state_root": "state/c"},
-        "production": {"protocol": "Detector"}, "extends": [], "deterministic_incumbent": None,
+        "production": {"protocol": "Detector"}, "inputs": [], "extends": [],
+        "deterministic_incumbent": None,
         "learned_escalation": False,
     }
     assert CampaignSpec.from_mapping(payload).to_mapping() == {**payload, "sport_scope": ["shared"]}
