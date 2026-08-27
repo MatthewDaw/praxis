@@ -19,6 +19,10 @@ PAIRED_BOOTSTRAP = "paired_bootstrap_percentile"
 LEGACY_SCALAR_ROPE = "legacy_scalar_rope"
 MEAN = "mean"
 MACRO_STRATA = "macro_strata"
+#: Units carry per-class COUNTS, not a scalar. F1 is a ratio of sums, so a metric of
+#: this shape is not the mean of any per-group quantity and cannot be declared `mean`
+#: without adjudicating a different number than the one measured and registered.
+POOLED_COUNTS = "pooled_counts_over_resampled_groups"
 
 
 @dataclass(frozen=True)
@@ -137,9 +141,16 @@ def paired_interval(
     if aggregation == "stitch_decision":
         # A stitch decision is one independent paired unit; its frozen aggregation is the mean.
         aggregation = MEAN
+    if aggregation == POOLED_COUNTS:
+        return _pooled_counts_interval(
+            policy, evidence, run_id=run_id, champion_run_id=champion_run_id,
+            direction=direction, candidate_metric=candidate_metric,
+            champion_metric=champion_metric,
+        )
     if aggregation not in {MEAN, MACRO_STRATA}:
         raise RegistryError(
-            f"metric.adjudication.aggregation must be {MEAN!r} or {MACRO_STRATA!r}"
+            f"metric.adjudication.aggregation must be {MEAN!r}, {MACRO_STRATA!r} "
+            f"or {POOLED_COUNTS!r}"
         )
 
     expected_evidence = {
@@ -282,3 +293,160 @@ def _text(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise RegistryError(f"{field} must be a non-empty string")
     return value.strip()
+
+
+def _pooled_counts_payload(raw: object, field: str) -> dict[str, dict[str, tuple[int, int, int]]]:
+    if not isinstance(raw, Mapping) or not raw:
+        raise RegistryError(f"{field} must be a non-empty scale-stratum mapping")
+    parsed: dict[str, dict[str, tuple[int, int, int]]] = {}
+    for stratum, classes in raw.items():
+        if not isinstance(classes, Mapping) or not classes:
+            raise RegistryError(f"{field}[{stratum!r}] must be a non-empty class mapping")
+        bucket: dict[str, tuple[int, int, int]] = {}
+        for class_key, cell in classes.items():
+            if not isinstance(cell, Sequence) or isinstance(cell, (str, bytes)) or len(cell) != 3:
+                raise RegistryError(
+                    f"{field}[{stratum!r}][{class_key!r}] must be [tp, fp, fn]"
+                )
+            values = []
+            for value in cell:
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise RegistryError(
+                        f"{field}[{stratum!r}][{class_key!r}] counts must be non-negative integers"
+                    )
+                values.append(int(value))
+            bucket[str(class_key)] = (values[0], values[1], values[2])
+        parsed[str(stratum)] = bucket
+    return parsed
+
+
+def _pooled_scale_macro_f1(
+    units: Sequence[Mapping[str, dict[str, tuple[int, int, int]]]],
+) -> float:
+    """Pool counts over units, then macro over classes within a scale stratum, then over strata.
+
+    A (stratum, class) with no scored cell at all contributes nothing and is not counted, so a
+    resample that never presents a class is not silently credited with a zero for it.
+    """
+    pooled: dict[str, dict[str, list[int]]] = {}
+    for unit in units:
+        for stratum, classes in unit.items():
+            bucket = pooled.setdefault(stratum, {})
+            for class_key, (tp, fp, fn) in classes.items():
+                cell = bucket.setdefault(class_key, [0, 0, 0])
+                cell[0] += tp
+                cell[1] += fp
+                cell[2] += fn
+    per_stratum: list[float] = []
+    for stratum in sorted(pooled):
+        members = []
+        for _class_key, (tp, fp, fn) in sorted(pooled[stratum].items()):
+            if tp + fp + fn == 0:
+                continue
+            members.append(0.0 if tp == 0 else 2.0 * tp / (2.0 * tp + fp + fn))
+        if members:
+            per_stratum.append(sum(members) / len(members))
+    if not per_stratum:
+        raise RegistryError("no scale stratum carried a scored cell")
+    return sum(per_stratum) / len(per_stratum)
+
+
+def _pooled_counts_interval(
+    policy: Mapping[str, object],
+    evidence: Mapping[str, object],
+    *,
+    run_id: str,
+    champion_run_id: str,
+    direction: str,
+    candidate_metric: float,
+    champion_metric: float,
+) -> dict[str, object]:
+    """The proposed branch, in the shape ``paired_interval`` would call it.
+
+    Everything ``paired_interval`` already validates -- method, run ids, resamples, confidence,
+    seed, unit-id uniqueness, minimum two units -- is validated the same way; only the unit VALUE
+    model and the aggregate differ.
+    """
+    if policy.get("aggregation") != POOLED_COUNTS:
+        raise RegistryError(f"this branch handles only aggregation={POOLED_COUNTS!r}")
+    resamples = int(policy["resamples"])
+    confidence = float(policy["confidence_level"])
+    seed = int(policy["seed"])
+    if evidence.get("candidate_run_id") != run_id:
+        raise RegistryError("paired evidence candidate_run_id does not name the run")
+    if evidence.get("champion_run_id") != champion_run_id:
+        raise RegistryError("paired evidence champion_run_id does not name the champion")
+    for field, expected in (("resamples", resamples), ("confidence_level", confidence),
+                            ("seed", seed)):
+        if evidence.get(field) != expected:
+            raise RegistryError(f"paired evidence {field} differs from the frozen spec")
+    raw_units = evidence.get("units")
+    if not isinstance(raw_units, Sequence) or isinstance(raw_units, (str, bytes)) or len(raw_units) < 2:
+        raise RegistryError("paired evidence units must contain at least two comparisons")
+
+    seen: set[str] = set()
+    by_stratum: dict[str, list[int]] = {}
+    candidates: list[dict[str, dict[str, tuple[int, int, int]]]] = []
+    champions: list[dict[str, dict[str, tuple[int, int, int]]]] = []
+    for index, raw in enumerate(raw_units):
+        if not isinstance(raw, Mapping) or set(raw) != {"unit_id", "stratum", "candidate", "champion"}:
+            raise RegistryError(
+                f"paired evidence units[{index}] requires exactly "
+                "['candidate', 'champion', 'stratum', 'unit_id']"
+            )
+        unit_id = str(raw["unit_id"]).strip()
+        if not unit_id:
+            raise RegistryError(f"paired evidence units[{index}].unit_id must be non-empty")
+        if unit_id in seen:
+            raise RegistryError(f"paired evidence repeats unit_id {unit_id!r}")
+        seen.add(unit_id)
+        by_stratum.setdefault(str(raw["stratum"]), []).append(index)
+        candidates.append(_pooled_counts_payload(raw["candidate"], f"units[{index}].candidate"))
+        champions.append(_pooled_counts_payload(raw["champion"], f"units[{index}].champion"))
+
+    candidate_point = _pooled_scale_macro_f1(candidates)
+    champion_point = _pooled_scale_macro_f1(champions)
+    if not math.isclose(candidate_point, candidate_metric, rel_tol=1e-9, abs_tol=1e-12):
+        raise RegistryError(
+            "paired evidence candidate aggregate differs from the candidate Run metric"
+        )
+    if not math.isclose(champion_point, champion_metric, rel_tol=1e-9, abs_tol=1e-12):
+        raise RegistryError(
+            "paired evidence champion aggregate differs from the champion Run metric"
+        )
+
+    sign = 1.0 if direction == "maximize" else -1.0
+    point = sign * (candidate_point - champion_point)
+    rng = random.Random(seed)
+    draws: list[float] = []
+    for _ in range(resamples):
+        drawn: list[int] = []
+        for stratum in sorted(by_stratum):
+            pool = by_stratum[stratum]
+            drawn.extend(rng.choice(pool) for _ in range(len(pool)))
+        try:
+            draws.append(sign * (
+                _pooled_scale_macro_f1([candidates[i] for i in drawn])
+                - _pooled_scale_macro_f1([champions[i] for i in drawn])
+            ))
+        except RegistryError:
+            continue
+    if not draws:
+        raise RegistryError("no paired bootstrap draw produced a defined delta")
+    ordered = sorted(draws)
+    tail = (1.0 - confidence) / 2.0
+    lower = ordered[max(int(round(tail * (len(ordered) - 1))), 0)]
+    upper = ordered[min(int(round((1.0 - tail) * (len(ordered) - 1))), len(ordered) - 1)]
+    return {
+        "method": "paired_bootstrap_percentile",
+        "aggregation": POOLED_COUNTS,
+        "candidate_run_id": run_id,
+        "champion_run_id": champion_run_id,
+        "resamples": resamples,
+        "confidence_level": confidence,
+        "seed": seed,
+        "unit_count": len(candidates),
+        "strata": sorted(by_stratum),
+        "point_estimate": point,
+        "interval": [lower, upper],
+    }
