@@ -635,6 +635,29 @@ The exact closed set is:
 candidate needs `description`, `stage`, and concrete `basis`. The CLI stamps model fact id,
 `origin="seeded"`, and axis.
 
+### Brownfield starts with the incumbent's failures, not with a search
+
+On a brownfield campaign, Phase E does NOT open with research. It opens with a census of the model
+that already exists: where does it fail, on which split units, with what signature, and how much of
+the metric each failure mode costs. Phase C's failure census is the instrument; if it was not built,
+build it before searching.
+
+Research is then DIRECTED at those holes. A round that returns citations unrelated to any measured
+failure has answered a question nobody asked -- it is the brownfield equivalent of rebuilding
+something the archive already held. State each hole, then say what would fill it.
+
+Two things this must not become:
+
+- **A refinement-only backlog.** Directed research biases toward patching the incumbent, and
+  sometimes the incumbent is the problem. A wholly different approach stays admissible and belongs
+  in the exclusive tier alongside the patches -- but it needs a stated reason to believe it wins
+  BY A LOT, grounded in the census. "Different" is not a reason; "the census says 60% of the loss is
+  a failure mode this approach structurally cannot have" is.
+- **A census of symptoms.** Group failures by cause, not by appearance. Two units failing for the
+  same reason are one hole, and ten cosmetic variants of one hole will consume a campaign.
+
+Greenfield skips this and starts at round 1 below.
+
 ### Research in rounds, because the rounds answer different questions
 
 Run these as distinguishable rounds and record each one's outcome separately. Collapsing them into
@@ -699,6 +722,57 @@ If a candidate seems to require a prerequisite, that is the signal it belongs in
 drafted too early. Do not plan it, do not seed it with a forward reference, and do not invent a
 dependency field to hold it -- write it after the thing it depends on has won, when you can write
 it against something real.
+
+### Decomposition is a candidate, and often the winning one
+
+When the census says the incumbent's biggest problem is that it is DOING TOO MUCH -- one model
+carrying two problems whose failures have nothing in common -- splitting it is a first-class
+candidate in the exclusive tier, not a refactor to propose later. Seed it. It is frequently the
+answer, and it is systematically under-proposed because it looks like architecture work rather than
+a hypothesis.
+
+Court fitting is the worked example: one model asked to find the paint AND fit the court fails at
+both, and the split -- a paint detector, then a fitter that consumes its output -- makes each half
+separately measurable and separately improvable.
+
+A natural break point has three properties. Check all three before seeding it, because a split at
+the wrong seam costs two campaigns and buys nothing:
+
+1. **The halves fail differently.** If both halves fail on the same units for the same reason, the
+   seam is imaginary and you have split one problem into two copies of itself.
+2. **Each half is measurable alone.** There is a judge for the upstream half that does not require
+   the downstream half to exist. If the only way to score the first stage is to run the second, it
+   is not a stage, it is an internal layer.
+3. **The seam is a contract, not a tensor.** What crosses it is a canonical record another model
+   could produce instead -- which is exactly what makes the upstream half replaceable by ground
+   truth labels while the downstream half is developed.
+
+**A split creates a MODEL, so it creates a CAMPAIGN.** One campaign per model is not suspended
+here: the new stage gets its own campaign number and its own frozen judge, and the existing campaign
+narrows to what remains. It does NOT become a second model inside this campaign. The downstream
+campaign then declares the upstream as an input -- `source: labels` while the upstream is still
+being built, `source: model: <registered>@<alias>` once it has a champion -- and because both
+resolve to the same canonical record, the downstream campaign can start before the upstream one
+finishes.
+
+That last point is what makes the split cheap enough to be worth trying: it does not serialize the
+work. Seed the decomposition, and if it wins the exclusive tier, open the sibling campaign rather
+than growing this one.
+
+**A campaign may take this pivot ONCE.** Decomposition is admissible exactly one time per campaign,
+and the campaign that took it may not take it again. A campaign allowed to keep splitting never
+converges: every split defers the measurement that would have told you whether the last one helped,
+and the backlog grows a level of indirection per round while the metric stays unmeasured. One split,
+then run.
+
+The narrowed campaign inherits that spent allowance -- it has already been decomposed and must now
+produce a model. The NEW sibling campaign starts with its own unspent one, because it is a different
+model with a different judge and its own census may find a real seam. That is not a loophole: each
+model gets one look at whether it is doing too much, which is the number of looks the question
+deserves.
+
+If a second seam is genuinely there, it will still be there after the first split has been measured,
+and by then you will know from evidence rather than from architecture taste whether it matters.
 
 ### Seed the approach now; seed its refinements once it has won
 
