@@ -66,13 +66,24 @@ def adjudicate_against_champion(
     candidate = RunMetrics.from_mapping(json.loads(run["metrics"]))
     baseline = RunMetrics.from_mapping(json.loads(champion_run["metrics"]))
 
+    # There is deliberately NO throughput gate here. It used to read
+    #     elif candidate.throughput < float(experiment["baseline_throughput"]):
+    #         verdict, status = "voided", "voided"
+    # and it was removed because SCORE decides a run and cost does not: an expensive arm that
+    # scores better is adopted. The gate never guarded what it appeared to -- it refuses runs BELOW
+    # the floor, so a degenerate FAST arm always passed it; it only ever punished slow ones. What it
+    # did do was stall campaigns whose floor was unbeatable. a05_event_spotting registered 0.29828
+    # against a champion measuring 0.29307, so every faithful reproduction of its own champion
+    # voided and its preflight could never pass; three sibling campaigns sat at exact parity and
+    # voided on contention alone. `experiments` is immutable by SQL trigger, so those floors cannot
+    # be corrected in place -- which is precisely why this belongs in code and not in per-campaign
+    # data. `baseline_throughput` is still stored and still reported; nothing reads it to refuse.
+    # INVALID validity still voids: that is a run with no trustworthy measurement, not a slow one.
     adjudication_evidence: Mapping[str, object] | None = None
     if candidate.validity is RunValidity.INVALID:
         verdict, status = "voided", "voided"
     elif candidate.throughput_unit is not baseline.throughput_unit:
         raise RegistryError("candidate and champion throughput units are incomparable")
-    elif candidate.throughput < float(experiment["baseline_throughput"]):
-        verdict, status = "voided", "voided"
     else:
         from knowledge.ml_registry.floor import (
             FLOOR_ADOPTION_INSIDE_ROPE_FIELD,

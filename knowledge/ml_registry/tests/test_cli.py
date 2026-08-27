@@ -182,12 +182,37 @@ def test_supervise_campaign_refuses_a_ledger_that_cannot_decide_a_verdict(tmp_pa
     test_a_verdict_refuses_a_ledger_that_does_not_measure_throughput(tmp_path)
 
 
-def test_a_campaign_trial_whose_ledger_throughput_collapsed_is_voided(tmp_path):
+def test_a_slower_trial_that_scores_better_is_adopted_not_voided(tmp_path):
+    """Score decides a run; cost does not. An expensive arm that wins is adopted.
+
+    This asserted ``"voided"`` until the throughput gate was removed. That gate refused runs
+    BELOW the floor, so a degenerate FAST arm always passed it and only slow ones were punished
+    -- and campaigns whose floor was unbeatable could never adjudicate at all. Here the run is
+    1/1000th under the floor and scores 0.72 against a 0.68 champion: a real 4% gain, far above
+    the 0.5% adoption floor, and it must be adopted on that basis alone.
+    """
     registry = _registry(tmp_path)
     _run(registry, "slow", 0.72, 999)
     assert (
         adjudicate_against_champion(
-            registry, run_id="slow", model_id="model", reason="slow"
+            registry, run_id="slow", model_id="model", reason="slow",
+            promotion=_promotion(registry, "slow"),
+        )
+        == "adopted"
+    )
+
+
+def test_an_invalid_trial_is_still_voided_however_fast_it_ran(tmp_path):
+    """Removing the throughput gate did not remove the validity gate.
+
+    INVALID means the run produced no trustworthy measurement at all, which is not the same as
+    producing an honest measurement slowly. It still voids, at full speed.
+    """
+    registry = _registry(tmp_path)
+    _run(registry, "broken", 0.99, 5000, validity="invalid")
+    assert (
+        adjudicate_against_champion(
+            registry, run_id="broken", model_id="model", reason="broken"
         )
         == "voided"
     )
