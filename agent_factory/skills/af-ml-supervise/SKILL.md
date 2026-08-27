@@ -107,6 +107,36 @@ IDEA claim operations remain on the RegistrySpace bridge. Use `claim-idea` befor
 `heartbeat-idea-claim` with the exact same owner while the child is alive. Use `registry-status`
 and the campaign view for Run state; never infer it from an IDEA display tag.
 
+## An empty backlog is a census, not an ending
+
+Once the exclusive tier has settled and a champion exists, running out of eligible IDEAs does NOT
+finalize the campaign. It means the last census has been worked, and the next one is due.
+
+On exhaustion, before reporting anything terminal:
+
+1. **Census the CURRENT champion** with a `diagnose` measurement, over units chosen for coverage of
+   failure modes rather than statistical power. Group by cause; rank by the share of the metric each
+   mode costs.
+2. **Take the top mode and establish WHY** -- its outputs beside the code that produced them. A mode
+   named from the metric alone is a guess, and seeding against a guess spends an arm to learn
+   nothing.
+3. **Research a fix for that specific mode**, including externally. A published fix that transfers
+   beats an invented one that might, and this is the cheapest research a campaign ever does because
+   it is aimed at a failure you can already describe precisely.
+4. **Seed what you find and keep dispatching.**
+
+**Re-census after every ADOPTION, not once per campaign.** Adopting an arm changes the failure
+distribution -- the second-ranked mode before a fix is frequently not the first-ranked mode after
+it, because the fix removed both, exposed one it had been masking, or made a rare mode dominant by
+shrinking everything around it. Carrying the old ranking forward optimises against a model that
+stopped existing at its first adoption. A REJECTED arm changes nothing, so it does not trigger a
+re-census: take the next hypothesis for the same mode, or the next mode down.
+
+The campaign is finished when the top remaining mode is not worth what fixing it would cost, when
+the declared budget is spent, or after the declared number of consecutive cycles with no adoption --
+and it reports the final census with that verdict. "The remaining failures are these, and they were
+not worth it" is something a successor can act on; "it stopped improving" is not.
+
 ## Spend the smallest measurement that answers the question
 
 An arm dispatched at full corpus scale by default is how a campaign spends a day proving a bad idea
