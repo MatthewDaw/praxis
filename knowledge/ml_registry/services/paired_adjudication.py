@@ -224,10 +224,14 @@ def paired_interval(
     if not math.isclose(candidate_point, candidate_metric, rel_tol=1e-9, abs_tol=1e-12):
         raise RegistryError(
             "paired evidence candidate aggregate differs from the candidate Run metric"
+            f" -- aggregate {candidate_point!r} vs Run metric {candidate_metric!r}"
+            f" (difference {candidate_point - candidate_metric:+.12g})"
         )
     if not math.isclose(champion_point, champion_metric, rel_tol=1e-9, abs_tol=1e-12):
         raise RegistryError(
             "paired evidence champion aggregate differs from the champion Run metric"
+            f" -- aggregate {champion_point!r} vs Run metric {champion_metric!r}"
+            f" (difference {champion_point - champion_metric:+.12g})"
         )
 
     sign = 1.0 if direction == "maximize" else -1.0
@@ -431,10 +435,14 @@ def _pooled_counts_interval(
     if not math.isclose(candidate_point, candidate_metric, rel_tol=1e-9, abs_tol=1e-12):
         raise RegistryError(
             "paired evidence candidate aggregate differs from the candidate Run metric"
+            f" -- aggregate {candidate_point!r} vs Run metric {candidate_metric!r}"
+            f" (difference {candidate_point - candidate_metric:+.12g})"
         )
     if not math.isclose(champion_point, champion_metric, rel_tol=1e-9, abs_tol=1e-12):
         raise RegistryError(
             "paired evidence champion aggregate differs from the champion Run metric"
+            f" -- aggregate {champion_point!r} vs Run metric {champion_metric!r}"
+            f" (difference {champion_point - champion_metric:+.12g})"
         )
 
     sign = 1.0 if direction == "maximize" else -1.0
@@ -568,10 +576,14 @@ def _nested_macro_interval(
     if not math.isclose(candidate_point, candidate_metric, rel_tol=1e-9, abs_tol=1e-12):
         raise RegistryError(
             "paired evidence candidate aggregate differs from the candidate Run metric"
+            f" -- aggregate {candidate_point!r} vs Run metric {candidate_metric!r}"
+            f" (difference {candidate_point - candidate_metric:+.12g})"
         )
     if not math.isclose(champion_point, champion_metric, rel_tol=1e-9, abs_tol=1e-12):
         raise RegistryError(
             "paired evidence champion aggregate differs from the champion Run metric"
+            f" -- aggregate {champion_point!r} vs Run metric {champion_metric!r}"
+            f" (difference {champion_point - champion_metric:+.12g})"
         )
 
     point = _nested_macro_aggregate(delta_cells)
