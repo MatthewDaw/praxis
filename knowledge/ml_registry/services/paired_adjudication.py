@@ -475,6 +475,10 @@ def paired_interval(
         "aggregation": aggregation,
         "unit_count": len(parsed),
         "strata": sorted(by_stratum),
+        STRATUM_BREAKDOWN: stratum_breakdown(
+            [(stratum, candidate, champion) for _unit, stratum, candidate, champion in parsed],
+            sign=sign,
+        ),
         "point_estimate": point,
         "interval": [lower, upper],
         "input_sha256": digest,
@@ -538,6 +542,55 @@ def project_vector_evidence(evidence: Mapping[str, object], name: str) -> dict[s
         champion_run_id=str(projected.get("champion_run_id", "")),
     )
     return projected
+
+
+#: The durable, reporting-only field carrying :func:`stratum_breakdown`'s rows.
+STRATUM_BREAKDOWN = "stratum_breakdown"
+
+
+def stratum_breakdown(
+    rows: Sequence[tuple[str, float, float]], *, sign: float,
+) -> list[dict[str, object]]:
+    """Per DECLARED stratum: unit count, candidate mean, champion mean, signed delta.
+
+    Every aggregation that declares strata or domains -- ``macro_strata``'s ``stratum``, the
+    nested macro's ``truth_kind:corpus`` cell, pooled counts' resampled group -- reports them
+    through this ONE function, so the durable evidence has a single breakdown shape no matter
+    which branch judged the run. ``mean`` declares no strata and reports its single ``all``
+    row through the same call rather than a second, differently-shaped report.
+
+    REPORTING ONLY. The verdict remains the frozen interval over the whole paired sample: no
+    row here is tested against a floor, and no stratum can adopt, park or reject a run on its
+    own. ``delta`` is signed by ``direction`` exactly as ``point_estimate`` is, so a positive
+    number always means "the candidate moved this stratum the right way" and a reader cannot
+    pick up the rows under one sign convention and the verdict under another.
+    """
+    grouped: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for stratum, candidate, champion in rows:
+        grouped[stratum].append((candidate, champion))
+    return [
+        _breakdown_row(
+            stratum,
+            unit_count=len(values),
+            candidate=statistics.fmean(candidate for candidate, _ in values),
+            champion=statistics.fmean(champion for _, champion in values),
+            sign=sign,
+        )
+        for stratum, values in sorted(grouped.items())
+    ]
+
+
+def _breakdown_row(
+    stratum: str, *, unit_count: int, candidate: float, champion: float, sign: float,
+) -> dict[str, object]:
+    """One breakdown row, so every branch spells the same keys the same way."""
+    return {
+        "stratum": stratum,
+        "unit_count": unit_count,
+        "candidate_mean": candidate,
+        "champion_mean": champion,
+        "delta": sign * (candidate - champion),
+    }
 
 
 def _aggregate(
@@ -732,6 +785,24 @@ def _pooled_counts_interval(
             continue
     if not draws:
         raise RegistryError("no paired bootstrap draw produced a defined delta")
+    # A pooled-counts unit carries per-class COUNTS, so a stratum's reported score is its own
+    # pooled macro-F1 -- the very quantity the run's registered scalar means over -- rather than
+    # a mean of per-unit scores, which for a ratio of sums would be a different number.
+    breakdown: list[dict[str, object]] = []
+    for stratum in sorted(by_stratum):
+        indices = by_stratum[stratum]
+        try:
+            stratum_candidate = _pooled_scale_macro_f1([candidates[index] for index in indices])
+            stratum_champion = _pooled_scale_macro_f1([champions[index] for index in indices])
+        except RegistryError:
+            # A stratum whose units carry no scored cell has no score to report. The verdict was
+            # already computed from the whole sample above; a hole in the REPORT must never turn
+            # an otherwise-valid adjudication into a refusal.
+            continue
+        breakdown.append(_breakdown_row(
+            stratum, unit_count=len(indices), candidate=stratum_candidate,
+            champion=stratum_champion, sign=sign,
+        ))
     ordered = sorted(draws)
     tail = (1.0 - confidence) / 2.0
     lower = ordered[max(int(round(tail * (len(ordered) - 1))), 0)]
@@ -747,6 +818,7 @@ def _pooled_counts_interval(
         "aggregation": POOLED_COUNTS,
         "unit_count": len(candidates),
         "strata": sorted(by_stratum),
+        STRATUM_BREAKDOWN: breakdown,
         "point_estimate": point,
         "interval": [lower, upper],
         "input_sha256": evidence_digest(evidence),
@@ -818,6 +890,7 @@ def _nested_macro_interval(
     candidate_cells: dict[tuple[str, str], list[float]] = defaultdict(list)
     champion_cells: dict[tuple[str, str], list[float]] = defaultdict(list)
     delta_cells: dict[tuple[str, str], list[float]] = defaultdict(list)
+    breakdown_rows: list[tuple[str, float, float]] = []
     sign = 1.0 if direction == "maximize" else -1.0
     for index, raw in enumerate(units):
         # Required keys must be present; extra identity fields are allowed so a VECTOR
@@ -840,6 +913,9 @@ def _nested_macro_interval(
         candidate_cells[cell].append(candidate)
         champion_cells[cell].append(champion)
         delta_cells[cell].append(sign * (candidate - champion))
+        # The breakdown's domain is the cell label the durable `strata` list already uses, so
+        # the two fields name the same domains rather than two spellings of them.
+        breakdown_rows.append((f"{cell[0]}:{cell[1]}", candidate, champion))
 
     if any(len(values) < 2 for values in delta_cells.values()):
         raise RegistryError(
@@ -883,6 +959,7 @@ def _nested_macro_interval(
         "aggregation": MACRO_TRUTH_KIND_CORPUS_GROUP,
         "unit_count": len(seen),
         "strata": [f"{kind}:{corpus}" for kind, corpus in ordered_cells],
+        STRATUM_BREAKDOWN: stratum_breakdown(breakdown_rows, sign=sign),
         "point_estimate": point,
         "interval": [lower, upper],
         "input_sha256": evidence_digest(evidence),
