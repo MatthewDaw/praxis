@@ -492,8 +492,13 @@ class Registry:
                 raise RegistryError("unknown run")
             if row["status"] == "superseded" and row["verdict"] is None:
                 return False
-            if row["status"] not in {"running", "complete"}:
-                raise RegistryError("only a non-terminal run can be superseded")
+            corrects_abandonment = (
+                row["status"] == "succeeded" and row["verdict"] == "abandoned"
+            )
+            if row["status"] not in {"running", "complete"} and not corrects_abandonment:
+                raise RegistryError(
+                    "only a non-terminal or previously abandoned run can be superseded"
+                )
             db.execute("UPDATE runs SET status='superseded',verdict=NULL,finished_at=?,heartbeat_at=? WHERE run_id=?",
                        (p["at"], p["at"], p["run_id"]))
         elif op == "historical_ledger_imported":

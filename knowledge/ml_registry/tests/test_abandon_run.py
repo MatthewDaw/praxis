@@ -19,6 +19,7 @@ from knowledge.ml_registry.services.registry_aliases import (
     adopt_run_and_promote,
     adjudicate_run,
     invalidate_adoption,
+    supersede_run,
 )
 from knowledge.ml_registry.storage import RegistryError
 from knowledge.ml_registry.tests.test_registry_completeness import (
@@ -113,6 +114,22 @@ def test_an_invalidated_adoption_can_be_recorded_as_abandoned(tmp_path: Path) ->
     )
     row = next(r for r in registry.rows("runs") if r["run_id"] == "superseded-slate")
     assert (row["status"], row["verdict"]) == ("succeeded", "abandoned")
+
+
+def test_a_factual_abandonment_error_can_be_corrected_to_superseded(tmp_path: Path) -> None:
+    registry = registry_with_champion(tmp_path)
+    create_run(registry, "finished-before-drain", 0.9)
+    adjudicate_run(
+        registry, run_id="finished-before-drain", verdict="parked", status="succeeded",
+        reason="old slate",
+    )
+    abandon_run(registry, run_id="finished-before-drain", reason="mistakenly reported killed")
+    supersede_run(
+        registry, run_id="finished-before-drain",
+        reason="completed before drain but measured on a superseded slate",
+    )
+    row = next(r for r in registry.rows("runs") if r["run_id"] == "finished-before-drain")
+    assert (row["status"], row["verdict"]) == ("superseded", None)
 
 
 def test_a_reason_is_required(tmp_path: Path) -> None:
