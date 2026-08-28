@@ -9,6 +9,7 @@ asks :class:`RegistryFinalizer` to verify the ``production`` alias.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 import importlib
@@ -51,6 +52,8 @@ EXIT_BY_OUTCOME = {
 DEFAULT_CAMPAIGN_DISK_BUDGET_BYTES = 50 * 1024**3
 DEFAULT_ARM_TIMEOUT_S = 60 * 60
 ARM_STARTUP_GRACE_S = 1.0
+_OUTPUT_TAIL_LINES = 25
+_OUTPUT_TAIL_CHARS = 900
 
 
 class CampaignJobError(ValueError):
@@ -122,6 +125,12 @@ class _ArmProcess:
         self.timeout_s = timeout_s
         self.process: subprocess.Popen[str] | None = None
         self.failure_reason: str | None = None
+        # An arm that exits non-zero streams its traceback through record_line and nowhere else:
+        # the controller writes it to ITS stdout, which the portfolio does not retain.  On
+        # 2026-08-27 that cost a01_person_model four full attempts and its whole retry budget --
+        # every artifact of the failure was the string "arm exited 1", which names no cause.
+        # Keep the tail so the recorded outcome can say what actually broke.
+        self.output_tail: deque[str] = deque(maxlen=_OUTPUT_TAIL_LINES)
 
     def _terminate(self) -> None:
         if self.process is None or self.process.poll() is not None:
@@ -139,6 +148,15 @@ class _ArmProcess:
 
     def cancel(self) -> None:
         self._terminate()
+
+    def failure_context(self) -> str:
+        """The last lines the arm printed, for an outcome reason that names its cause."""
+        if not self.output_tail:
+            return ""
+        joined = " | ".join(self.output_tail)
+        if len(joined) > _OUTPUT_TAIL_CHARS:
+            joined = "..." + joined[-(_OUTPUT_TAIL_CHARS - 3):]
+        return joined
 
     def run(self, command: Sequence[str], *, cwd: Path) -> int:
         if not command or not all(isinstance(item, str) and item for item in command):
@@ -168,16 +186,37 @@ class _ArmProcess:
         last_progress = started
         progress_seen = False
 
+        # A [progress]-PREFIXED LINE THE PARSER REFUSED IS NOT THE SAME EVENT AS SILENCE, and
+        # telling them apart is the whole difference between a one-line fix and a lost night.
+        # MEASURED 2026-08-28, auditor run 40: a05_event_spotting queued for the one A10G printing
+        # `[progress] a05-gpu-wait spin 19 elapsed 288s` every fifteen seconds -- unparseable,
+        # because it states no i/n -- and was killed at 300 s and told it "emitted no progress
+        # heartbeat", which was false nineteen times over. Ten attempts died on that sentence and
+        # nobody could see why from it. a01_tracking_association carries the identical wording.
+        # The kill itself stays: constitution VII makes an undeclared denominator the abandon
+        # trigger, so an arm that only ever prints unparseable lines SHOULD stop. What must change
+        # is that the refusal names its cause and quotes the line, so the lane fixes its transport
+        # instead of re-deriving the parser.
+        unparsed_progress: list[str] = []
+
         def record_line(line: str) -> None:
             nonlocal last_progress, progress_seen
             sys.stdout.write(line)
             sys.stdout.flush()
+            stripped = line.rstrip()
+            if stripped:
+                self.output_tail.append(stripped)
             snapshot = parse_progress_line(line)
-            if snapshot is not None:
-                progress_seen = True
-                last_progress = time.monotonic()
-                write_progress_snapshot(self.progress_path, snapshot)
-                self.heartbeat()
+            if snapshot is None:
+                if stripped.startswith("[progress]"):
+                    unparsed_progress.append(stripped)
+                    del unparsed_progress[:-3]
+                return
+            unparsed_progress.clear()
+            progress_seen = True
+            last_progress = time.monotonic()
+            write_progress_snapshot(self.progress_path, snapshot)
+            self.heartbeat()
 
         try:
             while True:
@@ -207,6 +246,13 @@ class _ArmProcess:
                             "VOIDED on throughput: arm emitted no progress heartbeat inside its "
                             f"declared {self.heartbeat_s:g}-second cadence"
                         )
+                        if unparsed_progress:
+                            self.failure_reason += (
+                                f"; it DID print {len(unparsed_progress)} [progress] line(s) that "
+                                "this parser could not read -- a progress line must state an "
+                                "`i/n pct% elapsed X eta Y` (or `COMPLETE n unit(s) in X`). "
+                                f"Last unreadable line: {unparsed_progress[-1]!r}"
+                            )
                         self._terminate()
                 if self.process.poll() is not None and reader_done.is_set() and lines.empty():
                     break
@@ -220,6 +266,11 @@ class _ArmProcess:
                 self._terminate()
             reader.join(timeout=1)
         return self.process.wait()
+
+
+def _with_arm_output(reason: str, arm_output: str) -> str:
+    """A refusal names its cause.  An exit code alone does not."""
+    return f"{reason}; last arm output: {arm_output}" if arm_output else reason
 
 
 def _disk_usage_bytes(root: Path) -> int:
@@ -360,6 +411,7 @@ class CampaignJob:
             )
             returncode = self._arm.run(dispatch, cwd=self.working_directory)
             void_reason = self._arm.failure_reason
+            arm_output = self._arm.failure_context()
             self._arm = None
             if void_reason is not None:
                 self.adapter.void_arm(self.context, void_reason)
@@ -374,12 +426,17 @@ class CampaignJob:
             if self.cancelled or returncode in {130, 143, -signal.SIGTERM, -signal.SIGKILL}:
                 return self._record(CampaignOutcome.CANCELLED, "arm process group was cancelled")
             if returncode != 0:
-                return self._record(CampaignOutcome.RETRYABLE, f"arm exited {returncode}")
+                return self._record(
+                    CampaignOutcome.RETRYABLE,
+                    _with_arm_output(f"arm exited {returncode}", arm_output),
+                )
             after = self.adapter.trial_count(self.context)
             if after <= before:
                 return self._record(
                     CampaignOutcome.STALLED,
-                    f"iteration {iteration} produced no new registry run",
+                    _with_arm_output(
+                        f"iteration {iteration} produced no new registry run", arm_output
+                    ),
                 )
         return self._record(
             CampaignOutcome.RETRYABLE,

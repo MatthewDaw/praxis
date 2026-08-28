@@ -21,6 +21,10 @@ LEGACY_SCALAR_ROPE = "legacy_scalar_rope"
 VECTOR_PARETO = "vector_pareto"
 MEAN = "mean"
 MACRO_STRATA = "macro_strata"
+#: Mean of per-``sequence_split_unit`` scores. The person-model vector (and any campaign
+#: whose frozen scalar is already that mean) declares this name; it is the built-in
+#: ``mean`` under the split-unit vocabulary, not a second statistic.
+SEQUENCE_SPLIT_UNIT = "sequence_split_unit"
 #: Units carry per-class COUNTS, not a scalar. F1 is a ratio of sums, so a metric of
 #: this shape is not the mean of any per-group quantity and cannot be declared `mean`
 #: without adjudicating a different number than the one measured and registered.
@@ -114,7 +118,7 @@ def guard_vector_rebaseline(
     amendment = amendments[-1]
     promotions = [
         event.sequence for event in registry.list_events()
-        if event.event_type in {"run_adopted", "run_created"}
+        if event.event_type in {"run_adopted", "run_baselined", "run_created"}
         and event.payload.get("run_id") == champion_run_id
     ]
     if promotions and max(promotions) > amendment.sequence:
@@ -482,13 +486,14 @@ def paired_interval(
 def project_vector_evidence(evidence: Mapping[str, object], name: str) -> dict[str, object]:
     """One judged metric's same-unit slice of a vector run's paired evidence.
 
-    Vector evidence carries ONE unit list -- the same units for every judged metric, which
-    is what makes the per-metric comparisons Pareto-comparable at all -- and each unit's
-    ``candidate``/``champion`` is an object of values keyed by metric name. This projects
-    the slice for ``name`` into exactly the scalar evidence shape, so
-    :func:`paired_interval` judges it with zero new statistical machinery. A unit missing
-    a judged metric is refused naming the metric and the unit; names a unit carries beyond
-    the judged ones are diagnostics and are ignored.
+    Vector evidence carries ONE unit list. Units that report ``name`` on both sides are
+    that metric's paired sample; units that report neither are sibling-metric rows
+    (a vector whose judged metrics live on different corpora -- AP50/IDF1 on identity
+    sequences, team on GSR, possession on teamtrack) and are skipped, the same skip
+    registration already applies to a union ``scoring_corpora`` map. A unit that
+    reports ``name`` on only one side is a pairing bug and is refused naming the
+    metric and the unit. Names a unit carries beyond the projected one are diagnostics
+    and are ignored.
     """
     if not isinstance(evidence, Mapping):
         raise RegistryError("vector paired evidence must be an object")
@@ -499,21 +504,32 @@ def project_vector_evidence(evidence: Mapping[str, object], name: str) -> dict[s
     for index, raw in enumerate(units):
         if not isinstance(raw, Mapping):
             raise RegistryError(f"vector paired evidence units[{index}] must be an object")
-        unit: dict[str, object] = dict(raw)
-        for side in ("candidate", "champion"):
-            values = raw.get(side)
-            if not isinstance(values, Mapping):
-                raise RegistryError(
-                    f"vector paired evidence units[{index}].{side} must be an object of "
-                    "values keyed by metric name"
-                )
-            if name not in values:
-                raise RegistryError(
-                    f"vector paired evidence units[{index}].{side} lacks judged metric "
-                    f"{name!r}; every judged metric is measured on every unit"
-                )
-            unit[side] = values[name]
+        candidate_values = raw.get("candidate")
+        champion_values = raw.get("champion")
+        if not isinstance(candidate_values, Mapping) or not isinstance(champion_values, Mapping):
+            raise RegistryError(
+                f"vector paired evidence units[{index}] candidate and champion must be "
+                "objects of values keyed by metric name"
+            )
+        candidate_has = name in candidate_values
+        champion_has = name in champion_values
+        if not candidate_has and not champion_has:
+            continue
+        if candidate_has != champion_has:
+            side = "candidate" if candidate_has else "champion"
+            raise RegistryError(
+                f"vector paired evidence units[{index}].{side} has judged metric "
+                f"{name!r} on one side only; both sides or neither"
+            )
+        unit = dict(raw)
+        unit["candidate"] = candidate_values[name]
+        unit["champion"] = champion_values[name]
         projected_units.append(unit)
+    if len(projected_units) < 2:
+        raise RegistryError(
+            f"vector paired evidence has {len(projected_units)} unit(s) carrying judged "
+            f"metric {name!r}; each judged metric needs at least two same-unit pairs"
+        )
     projected = dict(evidence)
     projected["units"] = projected_units
     _require_paired_baseline(
@@ -918,9 +934,30 @@ def _nested_macro_handler(
     )
 
 
+def _mean_alias_handler(
+    policy: Mapping[str, object],
+    evidence: Mapping[str, object],
+    *,
+    run_id: str,
+    champion_run_id: str,
+    direction: str,
+    candidate_metric: float,
+    champion_metric: float,
+) -> PairedInterval:
+    """``sequence_split_unit`` is the mean of per-split-unit scores -- rewrite and reuse."""
+    aliased = dict(policy)
+    aliased["aggregation"] = MEAN
+    return paired_interval(
+        aliased, evidence, run_id=run_id, champion_run_id=champion_run_id,
+        direction=direction, candidate_metric=candidate_metric,
+        champion_metric=champion_metric,
+    )
+
+
 AGGREGATIONS: dict[str, Any] = {
     POOLED_COUNTS: _pooled_counts_interval,
     MACRO_TRUTH_KIND_CORPUS_GROUP: _nested_macro_handler,
+    SEQUENCE_SPLIT_UNIT: _mean_alias_handler,
 }
 
 

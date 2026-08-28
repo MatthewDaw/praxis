@@ -31,7 +31,7 @@ def _commit_exists(repo: Path, sha: str) -> bool:
 
 def _champion_move(event: Any) -> tuple[str, int] | None:
     payload = event.payload
-    if event.event_type == "run_adopted":
+    if event.event_type in {"run_adopted", "run_baselined"}:
         version = payload.get("model_version")
         if isinstance(version, dict):
             return str(version.get("model_id", "")), int(version.get("version", 0))

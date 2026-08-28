@@ -308,8 +308,14 @@ class PortfolioController:
         states: dict[str, JobState] = {}
         for cid, record in self.records.items():
             if record.state == "failed" and now < record.next_retry_at:
+                # `%g` on a unix epoch renders `1.78789e+09`: four significant digits thrown
+                # away, so an operator cannot tell a thirty-second backoff from an hour-long one.
+                # A refusal names its cause in terms the reader can act on (auditor run 40, where
+                # a05_event_spotting sat "blocked: retry backoff until 1.78789e+09").
                 states[cid] = JobState(cid, "blocked", attempt=record.attempt,
-                                       message=f"retry backoff until {record.next_retry_at:g}")
+                                       message=(f"retry backoff: {record.next_retry_at - now:.0f}s "
+                                                f"remaining of attempt {record.attempt}'s wait "
+                                                f"(until epoch {record.next_retry_at:.0f})"))
             else:
                 states[cid] = JobState(cid, record.state, attempt=record.attempt,
                                        backend_job_id=record.backend_job_id,
