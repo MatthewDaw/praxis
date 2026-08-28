@@ -287,21 +287,24 @@ def test_one_metric_gain_with_the_other_within_rope_is_adopted(tmp_path: Path) -
     assert champion["version"] == 2
 
 
-def test_a_regression_beyond_its_rope_rejects_despite_a_larger_gain_elsewhere(
+def test_mixed_vector_evidence_parks_for_one_head_isolation(
     tmp_path: Path,
 ) -> None:
-    """THE PLANTED TRADE. ap50 gains a full five points; idf1 regresses two, every paired
-    unit agreeing, so its interval sits entirely below zero. The product ships both
-    outputs, so the arm does not get to buy one with the other: REJECTED."""
+    """A bundled trade preserves its evidence but cannot advance the champion.
+
+    The next experiment must isolate one optimization head, rather than treating this as
+    either a product improvement or a rejection of every constituent idea.
+    """
     registry = vector_registry(tmp_path)
     verdict = adjudicate(registry, shifted({"ap50": .05, "idf1": -.02}), adopt=False)
-    assert verdict == "rejected"
+    assert verdict == "parked"
     payload = _candidate_event(registry)
     evidence = payload["adjudication_evidence"]
     assert evidence["metrics"]["ap50"]["outcome"] == "floor_cleared"
     assert evidence["metrics"]["idf1"]["regressed"] is True
     assert evidence["deciding_metrics"] == ["idf1"]
-    assert "idf1" in payload["reason"] and "-0.02" in payload["reason"]
+    assert evidence["isolation_required"] is True
+    assert "head isolation" in payload["reason"] and "idf1" in payload["reason"]
     champion = next(row for row in registry.rows("aliases") if row["alias"] == "champion")
     assert champion["version"] == 1
 

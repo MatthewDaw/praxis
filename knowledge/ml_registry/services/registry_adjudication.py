@@ -374,10 +374,14 @@ def _adjudicate_vector(
     themselves. The verdict:
 
     - ADOPTED: at least one judged metric clears its adoption floor (or its paired lower
-      bound says gain) AND no judged metric regresses beyond its rope. A win on one output
-      with the rest unchanged is a win.
-    - REJECTED: any judged metric regresses beyond its rope, whatever the gains elsewhere.
-      A trade is not an improvement; the product ships every output.
+      bound says gain) AND the other metrics have no negative estimated effect. A win on
+      one output with the rest unchanged is a win.
+    - PARKED FOR ISOLATION: a run both wins and has a negative paired-interval midpoint on
+      another metric. Preserve the evidence, but repeat the hypothesis with exactly one
+      optimization head changed; a bundled trade must not ratchet the champion or discard
+      every constituent idea.
+    - REJECTED: a run has a regression and no wins. A trade never becomes an adoption merely
+      because gains elsewhere are larger.
     - PARKED otherwise -- nothing cleared a floor and nothing regressed.
 
     A run missing any judged metric is INVALID for adjudication and is REFUSED naming the
@@ -422,6 +426,7 @@ def _adjudicate_vector(
 
     per_metric: dict[str, dict[str, object]] = {}
     regressions: list[str] = []
+    negative_estimates: list[tuple[str, str]] = []
     wins: list[str] = []
     for entry in entries:
         name = str(entry["name"]).strip()
@@ -456,6 +461,8 @@ def _adjudicate_vector(
             outcome = "within_rope"
         summary = (f"{name} gain {gain:+.6g} (floor {floor:.6g}, "
                    f"interval [{interval.lower:.6g}, {interval.upper:.6g}])")
+        if interval.lower + interval.upper < 0.0:
+            negative_estimates.append((name, summary))
         if outcome == "regressed":
             regressions.append(summary)
         elif outcome != "within_rope":
@@ -470,7 +477,16 @@ def _adjudicate_vector(
             **metric_evidence,
         }
 
-    if regressions:
+    if wins and negative_estimates:
+        verdict = "parked"
+        deciding = [name for name, _ in negative_estimates]
+        decision = (
+            "parked for head isolation: mixed vector evidence; keep the measured gains, "
+            "but rerun the hypothesis against this champion with exactly one optimization "
+            "head changed. Negative estimated effect on "
+            + "; ".join(summary for _, summary in negative_estimates)
+        )
+    elif regressions:
         verdict = "rejected"
         deciding = [name for name, item in per_metric.items() if item["regressed"]]
         decision = ("rejected: regression beyond its rope on " + "; ".join(regressions)
@@ -492,6 +508,7 @@ def _adjudicate_vector(
         "judged_metrics": names,
         "metrics": per_metric,
         "deciding_metrics": deciding,
+        "isolation_required": bool(wins and negative_estimates),
         "decision": decision,
         "input_sha256": evidence_digest(paired_evidence),
     }
