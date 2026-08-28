@@ -14,7 +14,12 @@ import pytest
 
 from knowledge.ml_registry.domain import VALID_RUN_STATUS_VERDICT_PAIRS
 from knowledge.ml_registry.services.completeness import campaign_coverage
-from knowledge.ml_registry.services.registry_aliases import abandon_run, adjudicate_run
+from knowledge.ml_registry.services.registry_aliases import (
+    abandon_run,
+    adopt_run_and_promote,
+    adjudicate_run,
+    invalidate_adoption,
+)
 from knowledge.ml_registry.storage import RegistryError
 from knowledge.ml_registry.tests.test_registry_completeness import (
     _fixture,
@@ -24,6 +29,7 @@ from knowledge.ml_registry.tests.test_registry_completeness import (
 )
 from knowledge.ml_registry.tests.test_registry_native_adjudication import (
     create_run,
+    promotion,
     registry_with_champion,
 )
 
@@ -80,8 +86,33 @@ def test_abandonment_is_idempotent(tmp_path: Path) -> None:
 
 def test_an_adopted_champion_cannot_be_abandoned(tmp_path: Path) -> None:
     registry = registry_with_champion(tmp_path)
-    with pytest.raises(RegistryError, match="rejected or parked"):
+    with pytest.raises(RegistryError, match="rejected, parked, or superseded"):
         abandon_run(registry, run_id="baseline", reason="no")
+
+
+def test_an_invalidated_adoption_can_be_recorded_as_abandoned(tmp_path: Path) -> None:
+    registry = registry_with_champion(tmp_path)
+    create_run(registry, "superseded-slate", 0.9)
+    adopt_run_and_promote(
+        registry, run_id="superseded-slate", model_id="model", reason="measured win",
+        model_version=promotion(registry, "superseded-slate"),
+    )
+    invalidate_adoption(registry, {
+        "model_id": "model",
+        "invalidated_version": 2,
+        "parent_version": 1,
+        "adoption_run_id": "superseded-slate",
+        "evidence_run_ids": [],
+        "invalidated_lineage_id": "model@2",
+        "requeue_idea_ids": ["idea-superseded-slate"],
+        "reason": "judge slate changed",
+    })
+    abandon_run(
+        registry, run_id="superseded-slate",
+        reason="measured on a slate that is no longer judged",
+    )
+    row = next(r for r in registry.rows("runs") if r["run_id"] == "superseded-slate")
+    assert (row["status"], row["verdict"]) == ("succeeded", "abandoned")
 
 
 def test_a_reason_is_required(tmp_path: Path) -> None:

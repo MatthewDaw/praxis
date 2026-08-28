@@ -366,13 +366,19 @@ class Registry:
                 raise RegistryError("unknown run")
             if row["status"] == "succeeded" and row["verdict"] == "abandoned":
                 return False
-            if row["status"] != "succeeded" or row["verdict"] not in {"rejected", "parked"}:
+            abandonable = (
+                row["status"] == "succeeded" and row["verdict"] in {"rejected", "parked"}
+            ) or (
+                row["status"] == "superseded" and row["verdict"] is None
+            )
+            if not abandonable:
                 raise RegistryError(
-                    "abandonment reclassifies a rejected or parked run whose hypothesis was "
+                    "abandonment reclassifies a rejected, parked, or superseded run whose "
+                    "hypothesis was "
                     f"never fairly tested; got status={row['status']!r} verdict={row['verdict']!r}"
                 )
             db.execute(
-                "UPDATE runs SET verdict='abandoned',heartbeat_at=? WHERE run_id=?",
+                "UPDATE runs SET status='succeeded',verdict='abandoned',heartbeat_at=? WHERE run_id=?",
                 (p["at"], p["run_id"]),
             )
         elif op == "run_adopted":
@@ -1055,12 +1061,12 @@ class Registry:
         return True
 
     def _abandon_run(self, *, run_id: str, reason: str, capability: object) -> None:
-        """Reclassify a rejected or parked run as abandoned.
+        """Reclassify a rejected, parked, or superseded run as abandoned.
 
         Abandoned is not a verdict the judge reached: it is a decision taken because the
         hypothesis was never fairly tested (fitted on a superseded mute base, killed mid-fit,
-        scored against a broken incumbent). A rejection it did not reach must never be cited
-        later as proof the approach fails. The prior verdict stays in the event log; the
+        scored against a broken incumbent or slate). A rejection it did not reach must never be
+        cited later as proof the approach fails. The prior verdict stays in the event log; the
         projection's verdict becomes ``abandoned`` so readers cannot treat it as a refutation.
         """
         if capability is not _ADJUDICATOR_CAPABILITY:

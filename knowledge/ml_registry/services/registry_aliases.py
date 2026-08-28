@@ -67,7 +67,7 @@ def supersede_run(registry: Registry, *, run_id: str, reason: str) -> None:
 
 
 def abandon_run(registry: Registry, *, run_id: str, reason: str) -> None:
-    """Reclassify a rejected or parked run as abandoned through the adjudicator seam.
+    """Reclassify a rejected, parked, or superseded run through the adjudicator seam.
 
     Candidate code never writes a verdict. This is the canonical path for the case where
     the judge never fairly saw the hypothesis -- so a rejection it did not reach cannot
