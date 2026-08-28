@@ -835,6 +835,22 @@ class Registry:
             )
 
     def create_run(self, **values: Any) -> None:
+        # Scope and fold provenance change the experiment's semantic unit.  Validate them
+        # before allocating a run so a lane cannot fold unmeasured guesses or silently aim
+        # at an undeclared partition.
+        from knowledge.ml_registry.services.paired_adjudication import effective_campaign_spec
+        from knowledge.ml_registry.services.scoped_arms import (
+            scope_from_params, validate_constituents, validate_scope,
+        )
+        try:
+            scope = scope_from_params(values.get("params"))
+            validate_scope(scope, effective_campaign_spec(self, str(values.get("experiment_id", ""))))
+            validate_constituents(
+                self, experiment_id=values.get("experiment_id"), run_id=values.get("run_id"),
+                params=values.get("params"),
+            )
+        except ValueError as exc:
+            raise RegistryError(str(exc)) from exc
         code_ref = CodeRef.from_mapping(values["code_ref"])
         try:
             subprocess.run(
