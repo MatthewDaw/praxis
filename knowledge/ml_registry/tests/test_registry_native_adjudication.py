@@ -74,6 +74,7 @@ def registry_with_champion(tmp_path: Path) -> Registry:
 def register_adjudication_policy(
     registry: Registry, *, method: str = "paired_bootstrap_percentile",
     aggregation: str = "mean", adoption_floor: float | None = None,
+    judge: dict[str, object] | None = None,
 ) -> None:
     floor = {} if adoption_floor is None else {"adoption_floor": adoption_floor}
     registry.register_campaign_spec({
@@ -91,6 +92,7 @@ def register_adjudication_policy(
             "aggregation": [{"level": "unit", "unit": "unit_id", "minimum_sample": 2}],
             "scoring_corpus": "fixture",
             "split_unit": "unit_id",
+            **({"judge": judge} if judge is not None else {}),
             "adjudication": {
                 "method": method,
                 "resamples": 500,
@@ -133,6 +135,28 @@ def paired_evidence(candidate: list[float], champion: list[float]) -> dict[str, 
             )
         ],
     }
+
+
+def test_scalar_per_group_guard_parks_mixed_pooled_win_for_isolation(tmp_path: Path) -> None:
+    """The scalar path uses the same group guard as a vector metric."""
+    registry = registry_with_champion(tmp_path)
+    register_adjudication_policy(registry, judge={"non_regression": "per_group"})
+    candidate, champion = [.73, .73, .62, .62], [.68, .68, .68, .68]
+    create_run(registry, "candidate", sum(candidate) / len(candidate))
+    evidence = paired_evidence(candidate, champion)
+    for index, unit in enumerate(evidence["units"]):
+        unit["stratum"] = "good" if index < 2 else "bad"
+
+    assert adjudicate_against_champion(
+        registry, run_id="candidate", model_id="model", reason="group guard",
+        promotion=promotion(registry, "candidate"), paired_evidence=evidence,
+    ) == "parked"
+    event = next(event for event in reversed(registry.list_events())
+                 if event.event_type == "run_adjudicated" and event.payload["run_id"] == "candidate")
+    adjudication = event.payload["adjudication_evidence"]
+    assert adjudication["park_kind"] == "group_isolation"
+    assert adjudication["group_gains"] == pytest.approx({"good": .05})
+    assert adjudication["group_regressions"] == pytest.approx({"bad": -.06})
 
 
 def promotion(registry: Registry, run_id: str, version: int = 2) -> dict[str, object]:

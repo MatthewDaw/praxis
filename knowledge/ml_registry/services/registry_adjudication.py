@@ -194,6 +194,12 @@ def adjudicate_against_champion(
                 champion_metric=champion_value,
             )
             adjudication_evidence = interval.evidence
+            group_guard = _group_non_regression(
+                dict(spec_metric or {}).get("judge"), adjudication_evidence,
+                metric_name=str(dict(spec_metric or {}).get("name", "metric")),
+            )
+            if group_guard is not None:
+                adjudication_evidence = {**adjudication_evidence, **group_guard}
             # THE FLOOR IS TESTED FIRST, and it can only ever turn a PARK into an adoption.
             # An entirely-negative interval means every paired unit moved the wrong way, and
             # a gain of +0.5% or more cannot coexist with it: the interval is bootstrapped
@@ -207,7 +213,23 @@ def adjudicate_against_champion(
             # evidence rather than blocked. It is adopted -- that is the decision -- and the
             # mark preserves the one fact the rule deliberately overrides, so a later audit of
             # the ratchet can separate "the evidence said yes" from "the policy said yes".
-            if adopted_by_floor:
+            if group_guard is not None and group_guard["group_regressions"]:
+                if group_guard["group_gains"]:
+                    verdict, status = "parked", "succeeded"
+                    adjudication_evidence = {
+                        **adjudication_evidence,
+                        "isolation_required": True,
+                        "park_kind": "group_isolation",
+                        "decision": (
+                            "parked for group isolation: paired groups moved in opposite "
+                            "directions; retain the positive signal, then rerun it scoped to "
+                            "one declared group without changing the others"
+                        ),
+                    }
+                    reason = f"{reason} -- {adjudication_evidence['decision']}"
+                else:
+                    verdict, status = "rejected", "succeeded"
+            elif adopted_by_floor:
                 verdict, status = "adopted", "succeeded"
                 if not interval.lower > 0.0:
                     adjudication_evidence = {
@@ -350,6 +372,47 @@ def _project_scalar_evidence(
     return project_vector_evidence(paired_evidence, name)
 
 
+def _group_non_regression(
+    judge: object, evidence: Mapping[str, object], *, metric_name: str,
+) -> dict[str, object] | None:
+    """Read a declared group guard from durable paired-breakdown rows.
+
+    ``per_sport`` is retained as the historical spelling. ``per_group`` applies to any
+    declared data partition. Both scalar and vector judges consume the aggregation's
+    already-computed rows, so neither path gets to re-aggregate raw units differently.
+    """
+    if not isinstance(judge, Mapping) or judge.get("non_regression") not in {
+        "per_sport", "per_group",
+    }:
+        return None
+    rows = evidence.get("stratum_breakdown")
+    if not isinstance(rows, (list, tuple)) or not rows:
+        raise RegistryError(
+            f"metric {metric_name!r} per-group non-regression requires paired stratum breakdown"
+        )
+    deltas: dict[str, float] = {}
+    for index, raw in enumerate(rows):
+        if not isinstance(raw, Mapping):
+            raise RegistryError(
+                f"metric {metric_name!r} stratum_breakdown[{index}] must be an object"
+            )
+        group, delta = raw.get("stratum"), raw.get("delta")
+        if (not isinstance(group, str) or not group.strip() or isinstance(delta, bool)
+                or not isinstance(delta, (int, float))):
+            raise RegistryError(
+                f"metric {metric_name!r} stratum_breakdown[{index}] requires stratum and delta"
+            )
+        deltas[group.strip()] = float(delta)
+    regressions = {group: delta for group, delta in deltas.items() if delta < 0.0}
+    gains = {group: delta for group, delta in deltas.items() if delta > 0.0}
+    return {
+        "group_non_regression": not bool(regressions),
+        "group_deltas": deltas,
+        "group_gains": gains,
+        "group_regressions": regressions,
+    }
+
+
 def _one(rows: list[dict[str, Any]], field: str, value: object, noun: str) -> dict[str, Any]:
     match = next((row for row in rows if row[field] == value), None)
     if match is None:
@@ -454,44 +517,19 @@ def _adjudicate_vector(
             champion_metric=champion_value,
         )
         metric_evidence = dict(interval.evidence)
-        stratum_regressions: dict[str, float] = {}
-        judge = entry.get("judge")
-        if isinstance(judge, Mapping) and judge.get("non_regression") == "per_sport":
-            units = projected.get("units")
-            if not isinstance(units, (list, tuple)):
-                raise RegistryError(
-                    f"metric {name!r} per_sport non-regression requires paired units"
-                )
-            grouped: dict[str, list[tuple[float, float]]] = {}
-            for index, unit in enumerate(units):
-                if not isinstance(unit, Mapping):
-                    raise RegistryError(
-                        f"metric {name!r} per_sport units[{index}] must be an object"
-                    )
-                stratum = unit.get("stratum")
-                if not isinstance(stratum, str) or not stratum.strip():
-                    raise RegistryError(
-                        f"metric {name!r} per_sport units[{index}] requires stratum"
-                    )
-                grouped.setdefault(stratum.strip(), []).append(
-                    (float(unit["candidate"]), float(unit["champion"]))
-                )
-            stratum_gains: dict[str, float] = {}
-            for stratum, pairs in sorted(grouped.items()):
-                candidate_mean = sum(pair[0] for pair in pairs) / len(pairs)
-                champion_mean = sum(pair[1] for pair in pairs) / len(pairs)
-                stratum_gain = adoption_gain(direction, champion_mean, candidate_mean)
-                stratum_gains[stratum] = stratum_gain
-                if stratum_gain < 0.0:
-                    stratum_regressions[stratum] = stratum_gain
-            metric_evidence["per_sport_non_regression"] = not stratum_regressions
-            metric_evidence["per_sport_gains"] = stratum_gains
+        group_guard = _group_non_regression(entry.get("judge"), metric_evidence, metric_name=name)
+        if group_guard is not None:
+            metric_evidence.update(group_guard)
+        stratum_regressions = (group_guard or {}).get("group_regressions", {})
+        # Compatibility names retained for current court campaigns and their reports.
+        if (group_guard is not None and isinstance(entry.get("judge"), Mapping)
+                and entry["judge"].get("non_regression") == "per_sport"):
+            metric_evidence["per_sport_non_regression"] = not bool(stratum_regressions)
+            metric_evidence["per_sport_gains"] = group_guard["group_deltas"]
         # The same rule, in the same order, as the scalar paired path: the floor is tested
         # FIRST and can only ever turn a park into a win -- a floor-sized gain cannot
         # coexist with an entirely-negative interval bootstrapped from the same deltas.
-        if stratum_regressions:
-            outcome = "regressed"
-        elif adopted_by_floor:
+        if adopted_by_floor:
             outcome = "floor_cleared"
             if not interval.lower > 0.0:
                 metric_evidence[FLOOR_ADOPTION_UNSUPPORTED_BY_INTERVAL_FIELD] = True
@@ -505,15 +543,25 @@ def _adjudicate_vector(
                    f"interval [{interval.lower:.6g}, {interval.upper:.6g}])")
         if interval.lower + interval.upper < 0.0:
             negative_estimates.append((name, summary))
+        group_mixed = bool(stratum_regressions and (group_guard or {}).get("group_gains"))
         if stratum_regressions:
             detail = ", ".join(
                 f"{stratum} {value:+.6g}"
                 for stratum, value in stratum_regressions.items()
             )
-            summary += f"; per_sport regression [{detail}]"
+            summary += f"; per-group regression [{detail}]"
+        if group_mixed:
+            outcome = "mixed_groups"
+            summary += "; mixed declared groups require isolation"
+        elif stratum_regressions:
+            outcome = "regressed"
         if outcome == "regressed":
             regressions.append(summary)
-        elif outcome != "within_rope":
+        elif outcome not in {"within_rope", "mixed_groups"}:
+            wins.append(summary)
+        elif outcome == "mixed_groups":
+            # The pooled score may be inside its rope while one group clearly improved;
+            # that is still useful causal signal and must be isolated, not discarded.
             wins.append(summary)
         per_metric[name] = {
             "direction": direction,
@@ -525,14 +573,18 @@ def _adjudicate_vector(
             **metric_evidence,
         }
 
-    if wins and negative_estimates:
+    group_mixes = [name for name, item in per_metric.items()
+                   if item["outcome"] == "mixed_groups"]
+    if group_mixes or (wins and negative_estimates):
         verdict = "parked"
-        deciding = [name for name, _ in negative_estimates]
+        deciding = sorted(set(group_mixes + [name for name, _ in negative_estimates]))
+        kind = "group_isolation" if group_mixes else "head_isolation"
         decision = (
-            "parked for head isolation: mixed vector evidence; keep the measured gains, "
-            "but rerun the hypothesis against this champion with exactly one optimization "
-            "head changed. Negative estimated effect on "
-            + "; ".join(summary for _, summary in negative_estimates)
+            f"parked for {kind.replace('_', ' ')}: mixed vector evidence; keep the measured "
+            "gains, but rerun the hypothesis against this champion with exactly one "
+            "optimization head or declared group branch changed. "
+            + ("Negative estimated effect on " + "; ".join(summary for _, summary in negative_estimates)
+               if negative_estimates else "Opposite-sign declared group deltas require isolation")
         )
     elif regressions:
         verdict = "rejected"
@@ -556,7 +608,8 @@ def _adjudicate_vector(
         "judged_metrics": names,
         "metrics": per_metric,
         "deciding_metrics": deciding,
-        "isolation_required": bool(wins and negative_estimates),
+        "isolation_required": bool(group_mixes or (wins and negative_estimates)),
+        **({"park_kind": kind} if group_mixes or (wins and negative_estimates) else {}),
         "decision": decision,
         "input_sha256": evidence_digest(paired_evidence),
     }

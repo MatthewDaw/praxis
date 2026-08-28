@@ -312,7 +312,7 @@ def test_mixed_vector_evidence_parks_for_one_head_isolation(
     assert champion["version"] == 1
 
 
-def test_per_sport_non_regression_rejects_an_aggregate_vector_win(tmp_path: Path) -> None:
+def test_per_sport_non_regression_parks_an_aggregate_vector_win_for_isolation(tmp_path: Path) -> None:
     registry = vector_registry(tmp_path, ap50_per_sport=True)
     candidate = {
         # Overall +0.01 clears the floor, while sport-b regresses by 0.01.
@@ -327,11 +327,14 @@ def test_per_sport_non_regression_rejects_an_aggregate_vector_win(tmp_path: Path
     assert adjudicate_against_champion(
         registry, run_id="candidate", model_id="model", reason="stratum guard",
         paired_evidence=evidence,
-    ) == "rejected"
-    metric = _candidate_event(registry)["adjudication_evidence"]["metrics"]["ap50"]
+    ) == "parked"
+    evidence = _candidate_event(registry)["adjudication_evidence"]
+    assert evidence["isolation_required"] is True
+    assert evidence["park_kind"] == "group_isolation"
+    metric = evidence["metrics"]["ap50"]
     assert metric["per_sport_non_regression"] is False
     assert metric["per_sport_gains"] == pytest.approx({"sport-a": 0.03, "sport-b": -0.01})
-    assert metric["outcome"] == "regressed"
+    assert metric["outcome"] == "mixed_groups"
 
 
 def test_nothing_cleared_and_nothing_regressed_parks(tmp_path: Path) -> None:
