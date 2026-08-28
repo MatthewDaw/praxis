@@ -80,6 +80,11 @@ def adjudicate_against_champion(
     )
     candidate = RunMetrics.from_mapping(json.loads(run["metrics"]))
     baseline = RunMetrics.from_mapping(json.loads(champion_run["metrics"]))
+    from .scoped_arms import scope_from_params
+    try:
+        scope = scope_from_params(json.loads(run["params"]))
+    except ValueError as exc:
+        raise RegistryError(str(exc)) from exc
 
     # There is deliberately NO throughput gate here. It used to read
     #     elif candidate.throughput < float(experiment["baseline_throughput"]):
@@ -197,9 +202,27 @@ def adjudicate_against_champion(
             group_guard = _group_non_regression(
                 dict(spec_metric or {}).get("judge"), adjudication_evidence,
                 metric_name=str(dict(spec_metric or {}).get("name", "metric")),
+                group_name=_declared_group_name(dict(spec_metric or {})),
             )
             if group_guard is not None:
                 adjudication_evidence = {**adjudication_evidence, **group_guard}
+            scoped = None
+            if scope is not None:
+                from .scoped_arms import scoped_interval
+                try:
+                    scoped = scoped_interval(
+                        paired_evidence, scope=scope, policy=policy, run_id=run_id,
+                        champion_run_id=str(champion_run["run_id"]),
+                        direction=str(experiment["direction"]),
+                    )
+                except ValueError as exc:
+                    raise RegistryError(str(exc)) from exc
+                adjudication_evidence = {
+                    **adjudication_evidence,
+                    "scope": scope,
+                    "scoped_target_interval": [scoped.lower, scoped.upper],
+                    "scoped_target_point_estimate": scoped.point_estimate,
+                }
             # THE FLOOR IS TESTED FIRST, and it can only ever turn a PARK into an adoption.
             # An entirely-negative interval means every paired unit moved the wrong way, and
             # a gain of +0.5% or more cannot coexist with it: the interval is bootstrapped
@@ -213,7 +236,32 @@ def adjudicate_against_champion(
             # evidence rather than blocked. It is adopted -- that is the decision -- and the
             # mark preserves the one fact the rule deliberately overrides, so a later audit of
             # the ratchet can separate "the evidence said yes" from "the policy said yes".
-            if group_guard is not None and group_guard["group_regressions"]:
+            if scope is not None:
+                # A scoped branch earns adoption on its declared group, while every other
+                # group remains a non-regression guard.  The pooled score is reporting
+                # evidence only: it cannot drown a target signal or hide collateral loss.
+                target = scope["value"]
+                collateral = {
+                    group: delta for group, delta in (group_guard or {}).get("group_regressions", {}).items()
+                    if group != target
+                }
+                if collateral:
+                    verdict, status = "rejected", "succeeded"
+                    adjudication_evidence = {**adjudication_evidence, "scope_guard_regressions": collateral,
+                                              "decision": "rejected: scoped target may not regress another declared group"}
+                elif scoped is not None and scoped.lower > 0.0:
+                    verdict, status = "adopted", "succeeded"
+                    adjudication_evidence = {**adjudication_evidence,
+                                              "decision": "adopted: scoped target paired interval improved and other groups did not regress"}
+                elif scoped is not None and scoped.upper < 0.0:
+                    verdict, status = "rejected", "succeeded"
+                    adjudication_evidence = {**adjudication_evidence,
+                                              "decision": "rejected: scoped target paired interval regressed"}
+                else:
+                    verdict, status = "parked", "succeeded"
+                    adjudication_evidence = {**adjudication_evidence,
+                                              "decision": "parked: scoped target interval is inconclusive"}
+            elif group_guard is not None and group_guard["group_regressions"]:
                 if group_guard["group_gains"]:
                     verdict, status = "parked", "succeeded"
                     adjudication_evidence = {
@@ -295,6 +343,23 @@ def _record(
     and feed a rejection with counterfactual evidence to the ratchet. The single recording
     tail both the scalar and the vector judge return through, so they cannot diverge on
     what an adoption or a rejection DOES."""
+    if adjudication_evidence is not None and adjudication_evidence.get("isolation_required"):
+        # The registry has no mutable idea queue of its own; the campaign lifecycle owns
+        # filing.  Persist an executable child-idea payload here so that lifecycle cannot
+        # lose the parent link or invent a scope while rendering a parked result.
+        parent = _one(registry.rows("runs"), "run_id", run_id, "run")
+        evidence = dict(adjudication_evidence)
+        follow_up: dict[str, object] = {
+            "parent_run_id": run_id,
+            "parent_idea_id": parent["idea_id"],
+            "kind": evidence.get("park_kind", "isolation"),
+            "params": {"parent_run_id": run_id},
+        }
+        scope = _suggested_isolation_scope(evidence)
+        if scope is not None:
+            follow_up["params"] = {"parent_run_id": run_id, "scope": scope}
+        evidence["isolation_follow_up"] = follow_up
+        adjudication_evidence = evidence
     if verdict == "adopted" and promotion is None:
         raise RegistryError("an adopted run requires artifact and compatibility inputs for champion promotion")
     if verdict == "adopted":
@@ -320,6 +385,28 @@ def _record(
             intervention_digest=str(intervention_digest),
         )
     return verdict
+
+
+def _suggested_isolation_scope(evidence: Mapping[str, object]) -> dict[str, str] | None:
+    """Extract the first positive stratum signal as a child arm's concrete scope."""
+    metrics = evidence.get("metrics")
+    candidates: list[Mapping[str, object]] = []
+    if isinstance(metrics, Mapping):
+        candidates.extend(item for item in metrics.values() if isinstance(item, Mapping))
+    candidates.append(evidence)
+    for item in candidates:
+        gains = item.get("group_gains")
+        if not isinstance(gains, Mapping) or not gains:
+            continue
+        value = next((str(key) for key, delta in gains.items()
+                      if isinstance(key, str) and isinstance(delta, (int, float)) and delta > 0), None)
+        if value is None:
+            continue
+        # A metric declares the dimension name; historical per_sport spells it plainly.
+        group = item.get("group_key")
+        if isinstance(group, str) and group.strip():
+            return {"group": group.strip(), "value": value}
+    return None
 
 
 def _validate_promotion_inputs(registry: Registry, run_id: str, model_id: str,
@@ -374,6 +461,7 @@ def _project_scalar_evidence(
 
 def _group_non_regression(
     judge: object, evidence: Mapping[str, object], *, metric_name: str,
+    group_name: str | None = None,
 ) -> dict[str, object] | None:
     """Read a declared group guard from durable paired-breakdown rows.
 
@@ -405,12 +493,23 @@ def _group_non_regression(
         deltas[group.strip()] = float(delta)
     regressions = {group: delta for group, delta in deltas.items() if delta < 0.0}
     gains = {group: delta for group, delta in deltas.items() if delta > 0.0}
-    return {
+    result: dict[str, object] = {
         "group_non_regression": not bool(regressions),
         "group_deltas": deltas,
         "group_gains": gains,
         "group_regressions": regressions,
     }
+    if group_name is not None:
+        result["group_key"] = group_name
+    return result
+
+
+def _declared_group_name(metric: Mapping[str, object]) -> str | None:
+    groups = metric.get("groups")
+    if not isinstance(groups, Mapping) or len(groups) != 1:
+        return None
+    name = next(iter(groups))
+    return name.strip() if isinstance(name, str) and name.strip() else None
 
 
 def _one(rows: list[dict[str, Any]], field: str, value: object, noun: str) -> dict[str, Any]:
@@ -517,7 +616,10 @@ def _adjudicate_vector(
             champion_metric=champion_value,
         )
         metric_evidence = dict(interval.evidence)
-        group_guard = _group_non_regression(entry.get("judge"), metric_evidence, metric_name=name)
+        group_guard = _group_non_regression(
+            entry.get("judge"), metric_evidence, metric_name=name,
+            group_name=_declared_group_name(entry),
+        )
         if group_guard is not None:
             metric_evidence.update(group_guard)
         stratum_regressions = (group_guard or {}).get("group_regressions", {})
