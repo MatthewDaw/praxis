@@ -414,9 +414,15 @@ def paired_interval(
         if unit_id in seen:
             raise RegistryError(f"paired evidence repeats unit_id {unit_id!r}")
         seen.add(unit_id)
+        # A mean still aggregates every unit together, but a campaign may declare a
+        # domain/group guard over that mean.  Preserve an optional label for the durable
+        # breakdown instead of flattening it to ``all``; this never changes the scalar
+        # being adjudicated.  Macro strata continues to REQUIRE the label.
         stratum = (
             _text(raw.get("stratum"), f"paired evidence units[{index}].stratum")
-            if aggregation == MACRO_STRATA else "all"
+            if aggregation == MACRO_STRATA
+            else (_text(raw.get("stratum"), f"paired evidence units[{index}].stratum")
+                  if raw.get("stratum") is not None else "all")
         )
         parsed.append((
             unit_id,
@@ -544,7 +550,9 @@ def project_vector_evidence(evidence: Mapping[str, object], name: str) -> dict[s
     return projected
 
 
-#: The durable, reporting-only field carrying :func:`stratum_breakdown`'s rows.
+#: The durable field carrying :func:`stratum_breakdown`'s rows.  It is reporting data by
+#: default; a CampaignSpec which explicitly declares a per-group non-regression guard makes
+#: these rows adjudication evidence too.
 STRATUM_BREAKDOWN = "stratum_breakdown"
 
 
@@ -559,11 +567,12 @@ def stratum_breakdown(
     which branch judged the run. ``mean`` declares no strata and reports its single ``all``
     row through the same call rather than a second, differently-shaped report.
 
-    REPORTING ONLY. The verdict remains the frozen interval over the whole paired sample: no
-    row here is tested against a floor, and no stratum can adopt, park or reject a run on its
-    own. ``delta`` is signed by ``direction`` exactly as ``point_estimate`` is, so a positive
-    number always means "the candidate moved this stratum the right way" and a reader cannot
-    pick up the rows under one sign convention and the verdict under another.
+    The verdict remains the frozen interval over the whole paired sample unless its CampaignSpec
+    explicitly declares a per-group non-regression guard.  Even then a mixed group result parks
+    for isolation rather than silently adopting a pooled win or rejecting the useful signal.
+    ``delta`` is signed by ``direction`` exactly as ``point_estimate`` is, so a positive number
+    always means "the candidate moved this stratum the right way" and a reader cannot pick up
+    the rows under one sign convention and the verdict under another.
     """
     grouped: dict[str, list[tuple[float, float]]] = defaultdict(list)
     for stratum, candidate, champion in rows:

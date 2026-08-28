@@ -192,11 +192,15 @@ def test_a_vector_metric_projection_carries_the_same_breakdown() -> None:
         champion_metric=(0.60 + 0.40 + 0.20) / 3.0,
     )
 
+    # A mean remains pooled for the verdict, but preserves its input's optional group
+    # labels so a declared per-group guard can reason from the same evidence.
     assert interval.evidence[STRATUM_BREAKDOWN] == [
-        {"stratum": "all", "unit_count": 3,
-         "candidate_mean": pytest.approx((0.90 + 0.30 + 0.10) / 3.0),
-         "champion_mean": pytest.approx((0.60 + 0.40 + 0.20) / 3.0),
-         "delta": pytest.approx(0.1 / 3.0)},
+        {"stratum": "close", "unit_count": 2,
+         "candidate_mean": pytest.approx(0.20),
+         "champion_mean": pytest.approx(0.30), "delta": pytest.approx(-0.10)},
+        {"stratum": "wide", "unit_count": 1,
+         "candidate_mean": pytest.approx(0.90),
+         "champion_mean": pytest.approx(0.60), "delta": pytest.approx(0.30)},
     ]
 
 
