@@ -26,6 +26,18 @@ def adjudicate_run(
                              capability=_ADJUDICATOR_CAPABILITY)
 
 
+def adjudicate_invalidated_adoption(
+    registry: Registry, *, run_id: str, verdict: str, reason: str,
+    adjudication_evidence: Mapping[str, object] | None = None,
+) -> None:
+    """Record the corrected verdict after an invalid adoption has been rolled back."""
+    registry._adjudicate_invalidated_adoption(
+        run_id=run_id, verdict=verdict, reason=reason,
+        adjudication_evidence=adjudication_evidence,
+        capability=_ADJUDICATOR_CAPABILITY,
+    )
+
+
 def adopt_run_and_promote(registry: Registry, *, run_id: str, model_id: str, reason: str,
                           model_version: dict[str, object],
                           adjudication_evidence: Mapping[str, object] | None = None) -> bool:

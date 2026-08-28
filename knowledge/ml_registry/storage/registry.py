@@ -356,7 +356,14 @@ class Registry:
                 raise RegistryError("unknown run")
             if row["status"] == p["status"] and row["verdict"] == p["verdict"]:
                 return False
-            if row["status"] != "complete" or row["verdict"] is not None:
+            corrects_invalidated = (
+                p.get("corrects_invalidated_adoption") is True
+                and row["status"] == "superseded"
+                and row["verdict"] is None
+            )
+            if not corrects_invalidated and (
+                row["status"] != "complete" or row["verdict"] is not None
+            ):
                 raise RegistryError("adjudication requires one complete, unadjudicated run")
             db.execute("UPDATE runs SET status=?,verdict=?,finished_at=?,heartbeat_at=? WHERE run_id=?",
                        (p["status"], p["verdict"], p["at"], p["at"], p["run_id"]))
@@ -905,6 +912,43 @@ class Registry:
         payload: dict[str, object] = {
             "run_id": run_id, "verdict": verdict, "status": status,
             "reason": reason, "at": self.clock(),
+        }
+        if adjudication_evidence is not None:
+            payload["adjudication_evidence"] = dict(adjudication_evidence)
+        self._write("run_adjudicated", payload)
+
+    def _adjudicate_invalidated_adoption(
+        self, *, run_id: str, verdict: str, reason: str,
+        adjudication_evidence: Mapping[str, object] | None = None,
+        capability: object,
+    ) -> None:
+        """File the corrected verdict after an invalid adoption is rolled back."""
+        if capability is not _ADJUDICATOR_CAPABILITY:
+            raise RegistryError("invalidated-adoption correction requires adjudication authority")
+        if verdict not in {"rejected", "parked"} or not reason.strip():
+            raise RegistryError("invalidated adoption correction requires rejected or parked")
+        run = next((row for row in self.rows("runs") if row["run_id"] == run_id), None)
+        invalidated = any(
+            event.event_type == "adoption_invalidated"
+            and event.payload.get("adoption_run_id") == run_id
+            for event in self.events.read()
+        )
+        if (
+            run is None
+            or run["status"] != "superseded"
+            or run["verdict"] is not None
+            or not invalidated
+        ):
+            raise RegistryError(
+                "correction requires a superseded adoption with an invalidation event"
+            )
+        payload: dict[str, object] = {
+            "run_id": run_id,
+            "verdict": verdict,
+            "status": "succeeded",
+            "reason": reason,
+            "at": self.clock(),
+            "corrects_invalidated_adoption": True,
         }
         if adjudication_evidence is not None:
             payload["adjudication_evidence"] = dict(adjudication_evidence)

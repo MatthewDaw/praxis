@@ -96,15 +96,18 @@ def create_run(registry: Registry, run_id: str, value: object) -> None:
     complete_run(registry, run_id=run_id, metrics=run_metrics(value))
 
 
-def vector_registry(tmp_path: Path) -> Registry:
+def vector_registry(tmp_path: Path, *, ap50_per_sport: bool = False) -> Registry:
     registry = Registry(tmp_path)
     registry.create_experiment(experiment_id="campaign", spec_digest="a" * 64,
         stages=["representation"], metric="vector", direction="maximize",
         win_condition={"metric_at_least": 0.9}, rope=0.01, baseline_throughput=3.3)
     registry.register_model(model_id="model", family="linear", sport_scope="shared",
                             axis="a01", protocol="Detector", extends=None)
+    ap50 = metric_entry("ap50")
+    if ap50_per_sport:
+        ap50["judge"] = {"non_regression": "per_sport"}
     registry.register_campaign_spec(
-        spec_mapping(metrics=[metric_entry("ap50"), metric_entry("idf1")]),
+        spec_mapping(metrics=[ap50, metric_entry("idf1")]),
         scoring_corpora=SCORING_CORPORA,
     )
     create_run(registry, "baseline", CHAMPION_METRICS)
@@ -304,6 +307,28 @@ def test_a_regression_beyond_its_rope_rejects_despite_a_larger_gain_elsewhere(
     assert "idf1" in payload["reason"] and "-0.02" in payload["reason"]
     champion = next(row for row in registry.rows("aliases") if row["alias"] == "champion")
     assert champion["version"] == 1
+
+
+def test_per_sport_non_regression_rejects_an_aggregate_vector_win(tmp_path: Path) -> None:
+    registry = vector_registry(tmp_path, ap50_per_sport=True)
+    candidate = {
+        # Overall +0.01 clears the floor, while sport-b regresses by 0.01.
+        "ap50": [0.58, 0.63, 0.64, 0.59],
+        "idf1": list(CHAMPION_UNITS["idf1"]),
+    }
+    create_run(registry, "candidate", aggregates(candidate))
+    evidence = vector_evidence(candidate)
+    for index, unit in enumerate(evidence["units"]):
+        unit["stratum"] = "sport-a" if index < 2 else "sport-b"
+
+    assert adjudicate_against_champion(
+        registry, run_id="candidate", model_id="model", reason="stratum guard",
+        paired_evidence=evidence,
+    ) == "rejected"
+    metric = _candidate_event(registry)["adjudication_evidence"]["metrics"]["ap50"]
+    assert metric["per_sport_non_regression"] is False
+    assert metric["per_sport_gains"] == pytest.approx({"sport-a": 0.03, "sport-b": -0.01})
+    assert metric["outcome"] == "regressed"
 
 
 def test_nothing_cleared_and_nothing_regressed_parks(tmp_path: Path) -> None:

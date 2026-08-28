@@ -449,10 +449,44 @@ def _adjudicate_vector(
             champion_metric=champion_value,
         )
         metric_evidence = dict(interval.evidence)
+        stratum_regressions: dict[str, float] = {}
+        judge = entry.get("judge")
+        if isinstance(judge, Mapping) and judge.get("non_regression") == "per_sport":
+            units = projected.get("units")
+            if not isinstance(units, (list, tuple)):
+                raise RegistryError(
+                    f"metric {name!r} per_sport non-regression requires paired units"
+                )
+            grouped: dict[str, list[tuple[float, float]]] = {}
+            for index, unit in enumerate(units):
+                if not isinstance(unit, Mapping):
+                    raise RegistryError(
+                        f"metric {name!r} per_sport units[{index}] must be an object"
+                    )
+                stratum = unit.get("stratum")
+                if not isinstance(stratum, str) or not stratum.strip():
+                    raise RegistryError(
+                        f"metric {name!r} per_sport units[{index}] requires stratum"
+                    )
+                grouped.setdefault(stratum.strip(), []).append(
+                    (float(unit["candidate"]), float(unit["champion"]))
+                )
+            stratum_gains: dict[str, float] = {}
+            for stratum, pairs in sorted(grouped.items()):
+                candidate_mean = sum(pair[0] for pair in pairs) / len(pairs)
+                champion_mean = sum(pair[1] for pair in pairs) / len(pairs)
+                stratum_gain = adoption_gain(direction, champion_mean, candidate_mean)
+                stratum_gains[stratum] = stratum_gain
+                if stratum_gain < 0.0:
+                    stratum_regressions[stratum] = stratum_gain
+            metric_evidence["per_sport_non_regression"] = not stratum_regressions
+            metric_evidence["per_sport_gains"] = stratum_gains
         # The same rule, in the same order, as the scalar paired path: the floor is tested
         # FIRST and can only ever turn a park into a win -- a floor-sized gain cannot
         # coexist with an entirely-negative interval bootstrapped from the same deltas.
-        if adopted_by_floor:
+        if stratum_regressions:
+            outcome = "regressed"
+        elif adopted_by_floor:
             outcome = "floor_cleared"
             if not interval.lower > 0.0:
                 metric_evidence[FLOOR_ADOPTION_UNSUPPORTED_BY_INTERVAL_FIELD] = True
@@ -464,6 +498,12 @@ def _adjudicate_vector(
             outcome = "within_rope"
         summary = (f"{name} gain {gain:+.6g} (floor {floor:.6g}, "
                    f"interval [{interval.lower:.6g}, {interval.upper:.6g}])")
+        if stratum_regressions:
+            detail = ", ".join(
+                f"{stratum} {value:+.6g}"
+                for stratum, value in stratum_regressions.items()
+            )
+            summary += f"; per_sport regression [{detail}]"
         if outcome == "regressed":
             regressions.append(summary)
         elif outcome != "within_rope":

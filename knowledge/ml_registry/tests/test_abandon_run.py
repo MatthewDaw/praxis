@@ -17,6 +17,7 @@ from knowledge.ml_registry.services.completeness import campaign_coverage
 from knowledge.ml_registry.services.registry_aliases import (
     abandon_run,
     adopt_run_and_promote,
+    adjudicate_invalidated_adoption,
     adjudicate_run,
     invalidate_adoption,
     supersede_run,
@@ -114,6 +115,36 @@ def test_an_invalidated_adoption_can_be_recorded_as_abandoned(tmp_path: Path) ->
     )
     row = next(r for r in registry.rows("runs") if r["run_id"] == "superseded-slate")
     assert (row["status"], row["verdict"]) == ("succeeded", "abandoned")
+
+
+def test_an_invalidated_adoption_can_receive_the_corrected_judge_verdict(
+    tmp_path: Path,
+) -> None:
+    registry = registry_with_champion(tmp_path)
+    create_run(registry, "guard-skipping-win", 0.9)
+    adopt_run_and_promote(
+        registry, run_id="guard-skipping-win", model_id="model", reason="measured win",
+        model_version=promotion(registry, "guard-skipping-win"),
+    )
+    invalidate_adoption(registry, {
+        "model_id": "model",
+        "invalidated_version": 2,
+        "parent_version": 1,
+        "adoption_run_id": "guard-skipping-win",
+        "evidence_run_ids": ["guard-skipping-win"],
+        "invalidated_lineage_id": "model@2",
+        "requeue_idea_ids": [],
+        "reason": "frozen non-regression guard was skipped",
+    })
+    adjudicate_invalidated_adoption(
+        registry, run_id="guard-skipping-win", verdict="rejected",
+        reason="corrected judge finds a stratum regression",
+        adjudication_evidence={"guard": "per_sport"},
+    )
+    row = next(r for r in registry.rows("runs") if r["run_id"] == "guard-skipping-win")
+    assert (row["status"], row["verdict"]) == ("succeeded", "rejected")
+    alias = next(r for r in registry.rows("aliases") if r["alias"] == "champion")
+    assert alias["version"] == 1
 
 
 def test_a_factual_abandonment_error_can_be_corrected_to_superseded(tmp_path: Path) -> None:
