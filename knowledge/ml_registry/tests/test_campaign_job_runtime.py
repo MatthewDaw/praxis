@@ -191,6 +191,47 @@ def test_progress_inside_declared_cadence_is_not_mistaken_for_a_hang(tmp_path: P
     assert adapter.void_reasons == []
 
 
+def test_unreadable_progress_lines_are_named_in_the_cadence_refusal(tmp_path: Path) -> None:
+    """An arm that PRINTS progress the parser cannot read is not told it printed nothing.
+
+    Regression for the real a05_event_spotting shape (auditor run 40): a GPU-queue poll emitted
+    `[progress] a05-gpu-wait spin 19 elapsed 288s` every fifteen seconds, which states no i/n and
+    so parses to None. Ten consecutive attempts were killed and each was told it "emitted no
+    progress heartbeat", which was false. The kill is still correct -- an undeclared denominator is
+    constitution VII's abandon trigger -- but the refusal must name its cause and quote the line.
+    """
+    marker = tmp_path / "trial.marker"
+
+    class Adapter(_Adapter):
+        def dispatch_one(self, _context: CampaignJobContext) -> list[str]:
+            # Exactly a05's sequence: a readable gather stage (so the arm is past the startup
+            # grace and its cadence is live), then the unreadable queue poll that killed it.
+            source = (
+                "import time; "
+                "print('[progress] gather 16/16 100.0% elapsed 6s eta 0s', flush=True); "
+                "[(print(f'[progress] gpu-wait spin {i} elapsed {i * 15}s', flush=True), "
+                "time.sleep(.02)) for i in range(1, 200)]"
+            )
+            return [sys.executable, "-c", source]
+
+    adapter = Adapter(marker)
+    CampaignJob(
+        context=CampaignJobContext("fixture", 1, tmp_path, tmp_path / "progress.json"),
+        adapter=adapter,
+        outcome_path=tmp_path / "outcome.json",
+        arm_timeout_s=5,
+        heartbeat_s=.05,
+        working_directory=tmp_path,
+    ).run()
+
+    assert adapter.void_reasons, "an arm with no readable denominator is still voided"
+    reason = adapter.void_reasons[-1]
+    assert "no progress heartbeat" in reason
+    assert "could not read" in reason, reason
+    assert "i/n pct% elapsed X eta Y" in reason, reason
+    assert "gpu-wait spin" in reason, reason
+
+
 def test_disk_budget_includes_external_corpus_cache_before_dispatch(tmp_path: Path) -> None:
     state_root = tmp_path / "state"
     corpus_cache = tmp_path / "other-repo" / "data" / "cache"

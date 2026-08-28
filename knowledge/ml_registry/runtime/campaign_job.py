@@ -186,6 +186,19 @@ class _ArmProcess:
         last_progress = started
         progress_seen = False
 
+        # A [progress]-PREFIXED LINE THE PARSER REFUSED IS NOT THE SAME EVENT AS SILENCE, and
+        # telling them apart is the whole difference between a one-line fix and a lost night.
+        # MEASURED 2026-08-28, auditor run 40: a05_event_spotting queued for the one A10G printing
+        # `[progress] a05-gpu-wait spin 19 elapsed 288s` every fifteen seconds -- unparseable,
+        # because it states no i/n -- and was killed at 300 s and told it "emitted no progress
+        # heartbeat", which was false nineteen times over. Ten attempts died on that sentence and
+        # nobody could see why from it. a01_tracking_association carries the identical wording.
+        # The kill itself stays: constitution VII makes an undeclared denominator the abandon
+        # trigger, so an arm that only ever prints unparseable lines SHOULD stop. What must change
+        # is that the refusal names its cause and quotes the line, so the lane fixes its transport
+        # instead of re-deriving the parser.
+        unparsed_progress: list[str] = []
+
         def record_line(line: str) -> None:
             nonlocal last_progress, progress_seen
             sys.stdout.write(line)
@@ -194,11 +207,16 @@ class _ArmProcess:
             if stripped:
                 self.output_tail.append(stripped)
             snapshot = parse_progress_line(line)
-            if snapshot is not None:
-                progress_seen = True
-                last_progress = time.monotonic()
-                write_progress_snapshot(self.progress_path, snapshot)
-                self.heartbeat()
+            if snapshot is None:
+                if stripped.startswith("[progress]"):
+                    unparsed_progress.append(stripped)
+                    del unparsed_progress[:-3]
+                return
+            unparsed_progress.clear()
+            progress_seen = True
+            last_progress = time.monotonic()
+            write_progress_snapshot(self.progress_path, snapshot)
+            self.heartbeat()
 
         try:
             while True:
@@ -228,6 +246,13 @@ class _ArmProcess:
                             "VOIDED on throughput: arm emitted no progress heartbeat inside its "
                             f"declared {self.heartbeat_s:g}-second cadence"
                         )
+                        if unparsed_progress:
+                            self.failure_reason += (
+                                f"; it DID print {len(unparsed_progress)} [progress] line(s) that "
+                                "this parser could not read -- a progress line must state an "
+                                "`i/n pct% elapsed X eta Y` (or `COMPLETE n unit(s) in X`). "
+                                f"Last unreadable line: {unparsed_progress[-1]!r}"
+                            )
                         self._terminate()
                 if self.process.poll() is not None and reader_done.is_set() and lines.empty():
                     break
