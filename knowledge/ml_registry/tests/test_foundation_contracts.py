@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hashlib import sha256
+
 import pytest
 
 from knowledge.ml_registry.contracts import (
@@ -101,3 +103,33 @@ def test_campaign_spec_is_versioned_and_rejects_unknown_fields():
     assert mapped["split_policy"] == {"train_fraction": 0.9, "group_pure": True}
     assert mapped["lookahead_window"] == {"kind": "whole_sequence"}
     assert mapped["sufficiency"] == {"enables": "event spotting", "idf1": 0.70}
+
+
+def test_campaign_spec_freezes_a_screen_before_confirmation_can_adjudicate():
+    units = ["apidis:camera1", "apidis:camera2"]
+    payload = {
+        "schema_version": 1, "campaign_id": "c", "model_id_policy": "mint", "axis": "01",
+        "sport_scope": "shared", "target_ontology": "person", "metric": {"name": "f1"},
+        "stages": [{"name": "representation"}], "corpora": [{"id": "fixture"}], "requires": [],
+        "produces": [{"artifact_type": "weights"}], "supervision": {"mode": "composing"},
+        "resources": {"lane": "cpu"}, "isolation": {"state_root": "state/c"},
+        "production": {"protocol": "Detector"}, "inputs": [], "extends": [],
+        "deterministic_incumbent": None, "learned_escalation": False,
+        "measurement_protocol": {
+            "screen": {
+                "kind": "screen", "target": "player_f1", "units": units,
+                "unit_fingerprint": sha256("\n".join(sorted(units)).encode()).hexdigest(),
+                "minimum_units": 2, "sentinels": ["AP50", "IDF1"],
+            },
+            "confirm": {
+                "kind": "confirm",
+                "required_for": ["external_adjudication", "alias_move"],
+            },
+        },
+    }
+    assert CampaignSpec.from_mapping(payload).to_mapping()["measurement_protocol"] == payload[
+        "measurement_protocol"
+    ]
+    payload["measurement_protocol"]["screen"]["unit_fingerprint"] = "wrong"
+    with pytest.raises(ContractError, match="unit_fingerprint"):
+        CampaignSpec.from_mapping(payload)

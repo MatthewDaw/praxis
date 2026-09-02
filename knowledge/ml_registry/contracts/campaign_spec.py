@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Any, Mapping
 
 from ._validation import ContractError, exact_keys, integer, text
@@ -52,6 +53,9 @@ class CampaignSpec:
     #: Opaque to Praxis; ``None`` when undeclared. Written at seeding so "good enough" is a
     #: claim against a stated purpose, not a feeling reached at the end.
     sufficiency: Mapping[str, Any] | None = None
+    #: Optional, immutable staged-measurement control.  It makes a campaign's cheap screen
+    #: reproducible and prevents that screen from being mistaken for an alias-moving verdict.
+    measurement_protocol: Mapping[str, Any] | None = None
 
     VERSION = 1
 
@@ -106,6 +110,9 @@ class CampaignSpec:
         sufficiency = value.get("sufficiency")
         if sufficiency is not None and not isinstance(sufficiency, Mapping):
             raise ContractError("sufficiency must be an object or null")
+        measurement_protocol = value.get("measurement_protocol")
+        if measurement_protocol is not None:
+            cls._measurement_protocol(measurement_protocol)
         if not sequences["produces"] and deterministic is None:
             raise ContractError("a learned campaign must declare at least one produced artifact")
         return cls(
@@ -121,7 +128,52 @@ class CampaignSpec:
             None if split_policy is None else dict(split_policy),
             None if lookahead_window is None else dict(lookahead_window),
             None if sufficiency is None else dict(sufficiency),
+            None if measurement_protocol is None else dict(measurement_protocol),
         )
+
+    @staticmethod
+    def _measurement_protocol(value: object) -> None:
+        """Validate the small immutable control plane for screen-then-confirm campaigns.
+
+        This deliberately validates only the facts the registry can enforce without knowing a
+        campaign's science: a screen's units and their fingerprint are frozen before it runs,
+        its guards are named, and only a confirmation may reach external adjudication or an alias.
+        """
+        if not isinstance(value, Mapping):
+            raise ContractError("measurement_protocol must be an object or null")
+        screen, confirm = value.get("screen"), value.get("confirm")
+        if not isinstance(screen, Mapping) or not isinstance(confirm, Mapping):
+            raise ContractError("measurement_protocol requires screen and confirm objects")
+        if screen.get("kind") != "screen":
+            raise ContractError("measurement_protocol.screen.kind must be 'screen'")
+        if confirm.get("kind") != "confirm":
+            raise ContractError("measurement_protocol.confirm.kind must be 'confirm'")
+        units = screen.get("units")
+        if (not isinstance(units, (list, tuple)) or not units
+                or not all(isinstance(unit, str) and unit.strip() for unit in units)):
+            raise ContractError("measurement_protocol.screen.units must be a non-empty string sequence")
+        canonical_units = tuple(sorted(str(unit) for unit in units))
+        if len(set(canonical_units)) != len(canonical_units):
+            raise ContractError("measurement_protocol.screen.units must not contain duplicates")
+        fingerprint = screen.get("unit_fingerprint")
+        expected = sha256("\n".join(canonical_units).encode()).hexdigest()
+        if fingerprint != expected:
+            raise ContractError("measurement_protocol.screen.unit_fingerprint does not match units")
+        if screen.get("minimum_units") != len(canonical_units):
+            raise ContractError("measurement_protocol.screen.minimum_units must equal frozen unit count")
+        if not isinstance(screen.get("target"), str) or not screen["target"].strip():
+            raise ContractError("measurement_protocol.screen.target must be a non-empty string")
+        sentinels = screen.get("sentinels")
+        if (not isinstance(sentinels, (list, tuple)) or not sentinels
+                or not all(isinstance(item, str) and item.strip() for item in sentinels)):
+            raise ContractError("measurement_protocol.screen.sentinels must be a non-empty string sequence")
+        required_for = confirm.get("required_for")
+        if not isinstance(required_for, (list, tuple)) or not {
+            "external_adjudication", "alias_move"
+        }.issubset(required_for):
+            raise ContractError(
+                "measurement_protocol.confirm.required_for must include external_adjudication and alias_move"
+            )
 
     @classmethod
     def _judge(
@@ -198,4 +250,6 @@ class CampaignSpec:
             result["lookahead_window"] = dict(self.lookahead_window)
         if self.sufficiency is not None:
             result["sufficiency"] = dict(self.sufficiency)
+        if self.measurement_protocol is not None:
+            result["measurement_protocol"] = dict(self.measurement_protocol)
         return result
