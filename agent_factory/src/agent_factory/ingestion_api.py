@@ -155,11 +155,13 @@ EVENT_PROOF_DEMOTED = "proof_demoted"              # R18/R17: quiet re-prove fai
 EVENT_SUSPEND = "suspend"                          # R19: auto false-positive signal / kill switch
 EVENT_RESURRECT = "resurrect"                      # R20: a recurring class resurrects its check
 EVENT_ARCHIVE = "archive"                          # explicit manual rollback only — never on silence
+EVENT_REINSTATE = "reinstate"                      # explicit manual correction of a wrongful proof_demoted
 
 ENFORCEMENT_TRANSITIONS: dict[tuple[str | None, str], str] = {
     (None, EVENT_INSERT_GATING): STATE_GATING,
     (None, EVENT_INSERT_REPORT_ONLY): STATE_REPORT_ONLY,
     (STATE_REPORT_ONLY, EVENT_FIRST_REAL_PASS): STATE_GATING,
+    (STATE_REPORT_ONLY, EVENT_REINSTATE): STATE_GATING,
     (STATE_GATING, EVENT_PROOF_DEMOTED): STATE_REPORT_ONLY,
     (STATE_GATING, EVENT_SUSPEND): STATE_SUSPENDED,
     (STATE_REPORT_ONLY, EVENT_SUSPEND): STATE_SUSPENDED,
@@ -2048,6 +2050,20 @@ def find_resurrectable_check(class_id: str, project: str) -> dict[str, Any] | No
     return candidates[0]
 
 
+def reinstate(check_id: str, project: str, reason: str, *, identity: str | None = None) -> dict[str, Any]:
+    """Explicit manual correction: return a WRONGLY demoted report_only check to gating
+    (:data:`EVENT_REINSTATE`), recording why. The only other road back is ``first_real_pass``, which a
+    plan-time check demoted before any work exists can never reach on its own."""
+    authenticated_as = _require_authenticated(identity)
+    reason_s = str(reason or "")
+
+    def _patch(check: dict[str, Any]) -> dict[str, Any]:
+        current = (check.get("meta") or {}).get(M_ENFORCEMENT_STATE)
+        return {M_ENFORCEMENT_STATE: transition_enforcement_state(current, EVENT_REINSTATE),
+                "reinstate_reason": reason_s, "reinstated_at": time.time()}
+    return _patch_check(check_id, project, _patch, identity=authenticated_as)
+
+
 def resurrect_check(check_id: str, project: str, *, evidence: str | None = None,
                     identity: str | None = None) -> dict[str, Any]:
     """R20/FL15 — resurrect a suspended/archived check via the ``EVENT_RESURRECT`` transition,
@@ -2317,7 +2333,8 @@ def reprove_quiet_checks(project: str, *, now: float | None = None,
     """KD7 — the af-build loop-end-hook-triggered re-prove sweep: every GATING check quiet past
     ``cadence_seconds`` re-runs against its retained bad artifact (:func:`run_fail_then_pass_proof`).
     Still-failing keeps it gating (the re-prove timestamp is bumped, R18); the pinned artifact being
-    unavailable — or the check declaring none — demotes it to REPORT_ONLY with a recorded reason
+    unavailable demotes it to REPORT_ONLY (a check that pins NO artifact — every plan-time
+    author-check — is skipped and stays gating) with a recorded reason
     (never silent deletion, never ``archived``: only :func:`rollback_wave`'s explicit manual action
     reaches that state). Returns one outcome dict per check considered."""
     authenticated_as = _require_authenticated(identity)
@@ -2334,6 +2351,14 @@ def reprove_quiet_checks(project: str, *, now: float | None = None,
         fact_id = check.get("id")
         check_id = meta.get("check_id") or fact_id
         artifact_id = meta.get("artifact_id")
+        if not artifact_id:
+            # A plan-time check (af-ingest author-check) never pins a bad artifact: it is authored
+            # red-to-green BEFORE the work exists, so there is nothing to re-prove it against, and it
+            # carries no createdAt/reprove_at, so it also reads as infinitely overdue. Demoting it for
+            # that is evidence of nothing, and it silently turned every plan-time gate report-only at
+            # the first round boundary (mvpvue, 2026-09-14: 21 of 21 checks). Skip it; it stays gating.
+            outcomes.append({"check_id": check_id, "result": "skipped", "reason": "no-artifact"})
+            continue
         artifact_meta = artifact_reader(meta) if artifact_reader is not None else (
             (read_artifact(artifact_id).get("meta") if artifact_id else None)
         )

@@ -40,7 +40,8 @@ _ALL_STATES = [None, ingestion_api.STATE_GATING, ingestion_api.STATE_REPORT_ONLY
               ingestion_api.STATE_SUSPENDED, ingestion_api.STATE_ARCHIVED]
 _ALL_EVENTS = [ingestion_api.EVENT_INSERT_GATING, ingestion_api.EVENT_INSERT_REPORT_ONLY,
               ingestion_api.EVENT_FIRST_REAL_PASS, ingestion_api.EVENT_PROOF_DEMOTED,
-              ingestion_api.EVENT_SUSPEND, ingestion_api.EVENT_RESURRECT, ingestion_api.EVENT_ARCHIVE]
+              ingestion_api.EVENT_SUSPEND, ingestion_api.EVENT_RESURRECT, ingestion_api.EVENT_ARCHIVE,
+              ingestion_api.EVENT_REINSTATE]
 
 
 @pytest.mark.parametrize("state,event", list(itertools.product(_ALL_STATES, _ALL_EVENTS)))
@@ -159,6 +160,28 @@ def test_not_yet_due_gating_check_is_left_untouched(store: _FakeStore) -> None:
 
     assert outcomes == []
     assert store.check("c1")["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_GATING
+
+
+def test_plan_time_check_without_an_artifact_is_skipped_not_demoted(store: _FakeStore) -> None:
+    """A plan-time author-check pins no artifact and carries no timestamp; the sweep must leave it
+    gating instead of reading "no artifact" as evidence (mvpvue, 2026-09-14: 21 of 21 demoted)."""
+    store.seed_check("c1", {"check_id": "c1", ingestion_api.M_ENFORCEMENT_STATE: ingestion_api.STATE_GATING,
+                           "run": "npm run verify", "channel": "human"})
+
+    outcomes = ingestion_api.reprove_quiet_checks("proj", now=1_000_000.0, artifact_reader=lambda meta: None)
+
+    assert outcomes == [{"check_id": "c1", "result": "skipped", "reason": "no-artifact"}]
+    assert store.check("c1")["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_GATING
+
+
+def test_reinstate_returns_a_wrongly_demoted_check_to_gating(store: _FakeStore) -> None:
+    store.seed_check("c1", {"check_id": "c1", ingestion_api.M_ENFORCEMENT_STATE: ingestion_api.STATE_REPORT_ONLY,
+                           "run": "npm run verify", "reprove_reason": "artifact-unavailable"})
+
+    result = ingestion_api.reinstate("c1", "proj", "demoted by the no-artifact re-prove defect")
+
+    assert result["meta"][ingestion_api.M_ENFORCEMENT_STATE] == ingestion_api.STATE_GATING
+    assert result["meta"]["reinstate_reason"] == "demoted by the no-artifact re-prove defect"
 
 
 def test_reprove_never_archives_regardless_of_scenario(store: _FakeStore) -> None:
