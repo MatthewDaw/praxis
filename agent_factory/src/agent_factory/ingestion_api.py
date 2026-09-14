@@ -237,7 +237,7 @@ _AWS_ALLOWED_OPERATIONS = {
 # s3api is prefix-shaped rather than enumerated: every read verb it has is list-*/head-*, and every
 # mutation is put-*/delete-*/create-*/copy-*/restore-*.
 _AWS_S3API_READ_PREFIXES = ("list-", "head-")
-_RCLONE_ALLOWED_OPERATIONS = frozenset({"lsjson", "ls", "lsl", "size", "about"})
+_RCLONE_ALLOWED_OPERATIONS = frozenset({"lsjson", "ls", "lsf", "lsl", "size", "about"})
 # curl is allowlisted TOKEN BY TOKEN: anything not named here is refused, so ``-d``/``--data-raw``/
 # ``-T``/``-F``/``-o``/``--upload-file`` need no denylist entry to be rejected, and neither does the
 # next upload flag curl grows.

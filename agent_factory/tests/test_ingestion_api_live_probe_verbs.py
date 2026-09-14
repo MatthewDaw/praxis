@@ -20,6 +20,7 @@ ACCEPTED = [
     "aws sts get-caller-identity",
     "rclone lsjson remote:farm-corpus/raw",
     "rclone ls remote:farm-corpus/raw",
+    "rclone lsf remote:farm-corpus/raw",
     "rclone lsl remote:farm-corpus/raw",
     "rclone size remote:farm-corpus/raw",
     "rclone about remote:",
