@@ -112,8 +112,12 @@ def test_dispatch_prompt_orders_base_alignment_before_any_work():
     the worktree itself."""
     assert "GET YOUR BASE RIGHT" in SRC
     assert "git worktree add -b <your-branch> <path> $INTEGRATION_REF" in SRC
-    assert "git merge --ff-only $INTEGRATION_REF" in SRC
-    assert "git rebase $INTEGRATION_REF" in SRC, "no fallback when ff-only is refused"
+    assert "git reset --hard $INTEGRATION_REF" in SRC, "a harness-made worktree must be RESET, not rebased"
+    assert "git rebase --onto $INTEGRATION_REF" in SRC, "no way to move already-committed work"
+    # A plain rebase/merge onto the integration ref replays the default branch's unrelated commits
+    # into the ticket branch (mvpvue T01, 2026-09-14: 35 stray A01 commits), so neither may be the fix.
+    assert "git merge --ff-only $INTEGRATION_REF" not in SRC
+    assert "git rebase $INTEGRATION_REF instead" not in SRC
 
 
 def test_rebase_instruction_precedes_the_build_instructions():

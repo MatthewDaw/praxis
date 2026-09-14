@@ -74,10 +74,14 @@ def test_the_integration_ref_is_interpolated_not_left_as_a_variable():
 
 # --------------------------------------------------- the fallback, and what it must warn about --
 
-def test_the_rebase_fallback_survives_for_harness_created_worktrees():
+def test_a_harness_created_worktree_is_reset_not_rebased():
+    """A rebase or merge onto the integration ref drags the default branch's unrelated commits into
+    the ticket branch; a fresh worktree holds nothing of the worker's, so a hard reset is lossless."""
     p = _prompt()
-    assert "git merge --ff-only build/research-engine" in p
-    assert "git rebase build/research-engine instead" in p
+    assert "git reset --hard build/research-engine" in p
+    assert "git rebase --onto build/research-engine" in p
+    assert "git merge --ff-only build/research-engine" not in p
+    assert "git rebase build/research-engine instead" not in p
 
 
 def test_the_worker_is_warned_that_a_base_conflict_is_not_its_ticket():
