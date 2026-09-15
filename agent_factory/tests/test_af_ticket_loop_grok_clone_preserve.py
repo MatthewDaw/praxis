@@ -73,4 +73,4 @@ def test_a_multi_ticket_round_does_not_guess_the_ticket(tmp_path: Path) -> None:
     wt, home, clone = _setup(tmp_path)
     (clone / "data.ts").write_text("x\n")
     _salvage(wt, home, "T03,T04")
-    assert _sh("git for-each-ref --format=%(refname) refs/af-preserved", wt) == "refs/af-preserved/grok-subagent-abc-latest"
+    assert _sh("git for-each-ref --format='%(refname)' refs/af-preserved", wt) == "refs/af-preserved/grok-subagent-abc-latest"

@@ -2211,7 +2211,7 @@ salvage_external_grok_clones(){   # $1 = this round's ticket ids (comma or space
   [ -d "$root" ] || return 0
   for d in "$root"/subagent-*; do
     [ -d "$d" ] || continue
-    short=$(basename "$d" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40)
+    short=$(basename "$d" | tr -d '\n' | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40)   # tr -c would turn basename's newline into a trailing '-'
     # UNCOMMITTED edits in the clone first: they are on no branch, so the fetch below cannot carry
     # them, and a retry that cannot see them starts over. Snapshot inside the clone, then fetch the
     # snapshot here; skip it when the tree is unchanged since the last salvage of this clone.
