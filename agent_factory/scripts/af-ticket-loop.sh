@@ -2590,6 +2590,34 @@ af_dir_in_use(){   # $1 = directory
 # through a THROWAWAY index: the worker's own index, working files and branch are untouched, and the
 # snapshot is a ref, not a branch, so the orphan-landing sweep never merges half-finished work into
 # the build. Prints the ref when something was preserved; prints nothing for a clean tree.
+# RESUME, DO NOT RESTART. A ticket whose round timed out used to be retried FROM SCRATCH: the next
+# worker cut a fresh tree from the integration ref and never looked at the earlier attempt's commits
+# (on its unmerged branch) or its uncommitted edits (preserved by af_preserve_uncommitted), so every
+# retry re-did the same work and hit the same deadline at the same place (mvpvue T03, 2026-09-14).
+# For each ticket id in a batch this finds the newest unmerged ref whose name carries that exact id --
+# a refs/af-preserved snapshot or a refs/heads worker branch, younger than AF_RESUME_MAX_AGE_S so a
+# later regression retry is never pointed at stale work -- and emits a prompt amendment telling that
+# ticket's worker to start from it. Prints nothing when there is nothing to resume.
+af_resume_rule(){   # $@ = ticket ids in this batch
+  local id best best_t ref t n subj out="" max_age="${AF_RESUME_MAX_AGE_S:-86400}" now
+  now=$(date +%s)
+  for id in "$@"; do
+    best=""; best_t=0
+    while read -r ref t; do
+      [ -n "$ref" ] || continue
+      case "$ref" in *[-/]"$id"|*[-/]"$id"[-/]*) ;; *) continue ;; esac
+      if git -C "$WT" merge-base --is-ancestor "$ref" HEAD 2>/dev/null; then continue; fi
+      [ $(( now - t )) -le "$max_age" ] || continue
+      if [ "$t" -gt "$best_t" ]; then best="$ref"; best_t="$t"; fi
+    done < <(git -C "$WT" for-each-ref --format='%(refname) %(committerdate:unix)' refs/af-preserved refs/heads 2>/dev/null)
+    [ -n "$best" ] || continue
+    n=$(git -C "$WT" rev-list --count "HEAD..$best" 2>/dev/null || echo "?")
+    subj=$(git -C "$WT" log -1 --format=%s "$best" 2>/dev/null || echo "")
+    out="$out RESUME, DO NOT RESTART, for ticket $id: an earlier attempt that ran out of round time left work at $best ($n commit(s) not yet on $INTEGRATION_REF; latest: '$subj'). For $id ONLY this replaces the worktree base above: cut its worktree FROM THAT REF (git worktree add -b <your-branch> <path> $best), then git merge $INTEGRATION_REF into it so it carries everything integrated since, read what is already done (git diff $INTEGRATION_REF...HEAD and the earlier commits), and CONTINUE from there. That attempt was cut off by the deadline, not rejected: treat its partial work as your starting point, keep what is correct, fix what is not, and do not redo finished work."
+  done
+  printf '%s' "$out"
+}
+
 af_preserve_uncommitted(){   # $1 = worktree path
   local path="$1" br tree base commit ref idx
   [ -n "$(git -C "$path" status --porcelain --untracked-files=all 2>/dev/null)" ] || return 0
@@ -4337,6 +4365,8 @@ fi
 WORKTREE_LOCATION_RULE=" WORKTREE LOCATION IS A HARD PRECONDITION. Create manual trees under $AF_WORKTREE_ROOT, never under the factory checkout $AF_FACTORY_CHECKOUT. Immediately after every isolated spawn, inspect its actual worktree path. If it equals $AF_FACTORY_CHECKOUT or begins $AF_FACTORY_CHECKOUT/, interrupt that worker before it reads or edits anything, remove the clean empty tree, and respawn it under $AF_WORKTREE_ROOT. A harness-created path is not exempt. The factory checkout holds hooks imported live by every project's loop, so a ticket tree inside it mutates executable shared tooling before merge or verification."
 AUTHORED_SCOPE_RULE=" TICKET-AUTHORED SCOPE IS THE GATE BOUNDARY. Immediately after base alignment and before editing, record the current HEAD as the ticket base. For minimalism-dry, typed-and-linted, every other graded gate, and every path-scoped type or lint command, compute the changed paths from the diff between that recorded ticket base and current HEAD. Grade or type ONLY those authored paths. Do not use the aligned base's incoming files, the repository default branch's later commits, or the whole combined tree as the ticket diff. A finding in a path absent from that diff is not this ticket's finding and must neither fail nor block it. Whole-repo executable gates still run where required, but their failures are attributed by the same parent-baseline comparison and never converted into source-quality findings against unowned files."
 SWEEP_AMENDMENT="$WORKTREE_LOCATION_RULE$AUTHORED_SCOPE_RULE$SWEEP_AMENDMENT"
+RESUME_RULE="$(af_resume_rule ${ids_csv//,/ })"
+SWEEP_AMENDMENT="$SWEEP_AMENDMENT$RESUME_RULE"
 
 # ------------------------------------------- a pinned check that was ALREADY RED before you ----
 # The rule that keeps the ticket gate and post-merge verification from contradicting each other.
