@@ -86,3 +86,14 @@ def test_the_rule_reaches_the_worker_prompt() -> None:
     text = SCRIPT.read_text()
     assert 'RESUME_RULE="$(af_resume_rule ${ids_csv//,/ })"' in text
     assert 'SWEEP_AMENDMENT="$SWEEP_AMENDMENT$RESUME_RULE"' in text
+
+
+def test_work_is_found_by_the_ticket_id_in_its_commit_subjects(tmp_path: Path) -> None:
+    """Grok clone salvage lands on worktree-agent-salvage-* -- no id in the name, only in the commits."""
+    repo = _repo(tmp_path)
+    _sh("git checkout -q -b tmp && echo w > c.txt && git add c.txt && git commit -q -m 'feat: data layer (T03)' "
+        "&& git update-ref refs/heads/worktree-agent-salvage-subagent-1 HEAD && git checkout -q build "
+        "&& git branch -q -D tmp", repo)
+    out = _rule(repo, "T03")
+    assert "refs/heads/worktree-agent-salvage-subagent-1" in out
+    assert _rule(repo, "T0") == ""

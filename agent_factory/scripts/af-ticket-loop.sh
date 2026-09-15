@@ -2201,19 +2201,36 @@ integrate_round(){
 # worktree-agent-* ref so the existing merge/orphan path can land it.
 # Observed 2026-08-19 on hudl-cv-download: 16 tickets finished in those clones,
 # this repo had zero worker branches, post-merge verification regressed all 16.
-salvage_external_grok_clones(){
+salvage_external_grok_clones(){   # $1 = this round's ticket ids (comma or space separated), optional
   cd "$WT" || return 0
-  local root d sha short br ahead
+  local root d sha short br ahead cref dest idpart ids
+  ids=$(printf '%s' "${1:-}" | tr ',' ' ' | xargs 2>/dev/null || true)
+  # A single-ticket round names the snapshot after its ticket so af_resume_rule can find it.
+  case "$ids" in *" "*|"") idpart="" ;; *) idpart="$ids" ;; esac
   root="${HOME}/.grok/worktrees/workspace-$(basename "$WT")"
   [ -d "$root" ] || return 0
   for d in "$root"/subagent-*; do
     [ -d "$d" ] || continue
+    short=$(basename "$d" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40)
+    # UNCOMMITTED edits in the clone first: they are on no branch, so the fetch below cannot carry
+    # them, and a retry that cannot see them starts over. Snapshot inside the clone, then fetch the
+    # snapshot here; skip it when the tree is unchanged since the last salvage of this clone.
+    cref=$(af_preserve_uncommitted "$d" || true)
+    if [ -n "$cref" ]; then
+      dest="refs/af-preserved/grok-${short}${idpart:+-$idpart}-latest"
+      if [ "$(git rev-parse -q --verify "$dest^{tree}" 2>/dev/null)" != "$(git -C "$d" rev-parse "$cref^{tree}" 2>/dev/null)" ]; then
+        if git fetch --no-tags "$d" "+$cref:$dest" 2>/dev/null; then
+          say "preserved UNCOMMITTED work from grok clone $d at $dest"
+        else
+          say "WARNING: could not fetch uncommitted snapshot from grok clone $d ($cref stays in the clone)"
+        fi
+      fi
+    fi
     sha=$(git -C "$d" rev-parse HEAD 2>/dev/null || echo "")
     [ -n "$sha" ] || continue
     if git merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
       continue
     fi
-    short=$(basename "$d" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-40)
     br="worktree-agent-salvage-${short}"
     if git fetch --no-tags "$d" "HEAD:refs/heads/$br" 2>/dev/null; then
       ahead=$(git rev-list --count "HEAD..$br" 2>/dev/null || echo 0)
@@ -2605,8 +2622,13 @@ af_resume_rule(){   # $@ = ticket ids in this batch
     best=""; best_t=0
     while read -r ref t; do
       [ -n "$ref" ] || continue
-      case "$ref" in *[-/]"$id"|*[-/]"$id"[-/]*) ;; *) continue ;; esac
       if git -C "$WT" merge-base --is-ancestor "$ref" HEAD 2>/dev/null; then continue; fi
+      # By NAME (a worker branch or a preserved snapshot carrying the id), or by the trailing (ID) of
+      # its unmerged commits -- Grok clone salvage lands on worktree-agent-salvage-* with no id in it.
+      case "$ref" in
+        *[-/]"$id"|*[-/]"$id"[-/]*) ;;
+        *) git -C "$WT" log --format=%s "HEAD..$ref" 2>/dev/null | grep -Eq "\\($id\\)[[:space:]]*\$" || continue ;;
+      esac
       [ $(( now - t )) -le "$max_age" ] || continue
       if [ "$t" -gt "$best_t" ]; then best="$ref"; best_t="$t"; fi
     done < <(git -C "$WT" for-each-ref --format='%(refname) %(committerdate:unix)' refs/af-preserved refs/heads 2>/dev/null)
@@ -4658,7 +4680,7 @@ PREEXISTING_RULE=" ONE MORE RULE, and it is what stops the ticket gate contradic
   # already there, and the only honest reference is the exact tree the round merged into. Captured
   # here, before a single branch lands, because afterwards it is unrecoverable.
   AF_PREMERGE_SHA=$(git -C "$WT" rev-parse HEAD 2>/dev/null || echo "")
-  salvage_external_grok_clones
+  salvage_external_grok_clones "${ids_csv:-}"
   integrate_round
   # REQUIRED, not optional: sweep in any branch stranded by an earlier round so the resolver lands it
   # too. Without this the resolver only ever fixes the round that created the conflict, and anything
